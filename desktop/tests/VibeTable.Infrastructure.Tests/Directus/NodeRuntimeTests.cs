@@ -64,6 +64,36 @@ public sealed class NodeRuntimeTests
         });
     }
 
+    [TestMethod]
+    public void ResolveBundledNode_FindsPortableRuntimeFromNestedBuildDirectory()
+    {
+        WithTemporaryDirectory(root =>
+        {
+            File.WriteAllText(Path.Combine(root, ".nvmrc"), "24.18.0");
+            string nodeDir = Path.Combine(root, "runtime", "node");
+            Directory.CreateDirectory(nodeDir);
+            string nodeExe = Path.Combine(nodeDir, "node.exe");
+            File.WriteAllText(nodeExe, "fake");
+
+            string buildDir = Path.Combine(root, "desktop", "src", "App", "bin", "Release");
+            Directory.CreateDirectory(buildDir);
+
+            Assert.AreEqual(nodeExe, NodeRuntime.ResolveBundledNode(buildDir));
+        });
+    }
+
+    [TestMethod]
+    public void FindNode_UsesVersionedRepositoryRuntimeFromTestBuildDirectory()
+    {
+        string? bundled = NodeRuntime.ResolveBundledNode(AppContext.BaseDirectory);
+        Assert.IsNotNull(bundled, "repository portable Node should be discoverable from test output");
+
+        string? resolved = NodeRuntime.FindNode(appBaseDirectory: AppContext.BaseDirectory);
+
+        Assert.AreEqual(bundled, resolved);
+        Assert.IsTrue(Path.IsPathFullyQualified(resolved!));
+    }
+
     private static void WithTemporaryDirectory(Action<string> body)
     {
         string root = Path.Combine(Path.GetTempPath(), "vibetable-node-" + Guid.NewGuid().ToString("N"));

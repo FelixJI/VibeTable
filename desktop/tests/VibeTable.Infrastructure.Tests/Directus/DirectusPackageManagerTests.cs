@@ -20,6 +20,33 @@ namespace VibeTable.Infrastructure.Tests.Directus;
 public sealed class DirectusPackageManagerTests
 {
     [TestMethod]
+    public void ResolveNpmCli_FallsBackToNpmInstallationOnPath()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            string portableDir = Path.Combine(dir, "portable-node");
+            string systemNodeDir = Path.Combine(dir, "system-node");
+            Directory.CreateDirectory(portableDir);
+            string npmCli = Path.Combine(systemNodeDir, "node_modules", "npm", "bin", "npm-cli.js");
+            Directory.CreateDirectory(Path.GetDirectoryName(npmCli)!);
+            File.WriteAllText(npmCli, "// fixture");
+
+            string? originalPath = Environment.GetEnvironmentVariable("PATH");
+            try
+            {
+                Environment.SetEnvironmentVariable("PATH", systemNodeDir);
+                string resolved = DirectusPackageManager.ResolveNpmCli(
+                    Path.Combine(portableDir, "node.exe"));
+                Assert.AreEqual(npmCli, resolved);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("PATH", originalPath);
+            }
+        });
+    }
+
+    [TestMethod]
     public async Task VerifyAsync_ReturnsFalse_WhenDirectusPackageAbsent()
     {
         WithTemporaryDirectory(dir =>

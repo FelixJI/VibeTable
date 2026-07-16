@@ -14,9 +14,8 @@ namespace VibeTable.Infrastructure.Directus;
 /// </para>
 /// <list type="number">
 /// <item>A bundled portable Node shipped beside the app
-/// (<c>&lt;appBase&gt;/runtime/node/node.exe</c>). This makes the packaged app
-/// work with zero user-side Node installation; the developer checkout also
-/// ships this directory so dev runs are self-contained.</item>
+/// (<c>&lt;appBase&gt;/runtime/node/node.exe</c>) or at the root of a developer
+/// checkout. This makes packaged and repository runs self-contained.</item>
 /// <item><c>node.exe</c> on the system PATH (version-checked). The fallback for
 /// environments that have their own Node install.</item>
 /// </list>
@@ -81,7 +80,8 @@ public static class NodeRuntime
 
     /// <summary>
     /// Returns the absolute path to the bundled <c>node.exe</c> if it exists
-    /// beside <paramref name="appBaseDirectory"/>, else null. Does NOT version
+    /// beside <paramref name="appBaseDirectory"/> or at a repository root above
+    /// it, else null. Does NOT version
     /// check — the caller does that so a single <c>-v</c> probe covers both
     /// resolution paths.
     /// </summary>
@@ -91,35 +91,75 @@ public static class NodeRuntime
         {
             return null;
         }
-        string bundled = Path.GetFullPath(Path.Combine(appBaseDirectory, BundledNodeRelativePath, "node.exe"));
-        return File.Exists(bundled) ? bundled : null;
+        string baseDirectory;
+        try
+        {
+            baseDirectory = Path.GetFullPath(appBaseDirectory);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+
+        // Packaged layout: runtime/node is directly beside the host.
+        string bundled = Path.Combine(baseDirectory, BundledNodeRelativePath, "node.exe");
+        if (File.Exists(bundled))
+        {
+            return Path.GetFullPath(bundled);
+        }
+
+        // Development layout: AppContext.BaseDirectory is normally deep under
+        // desktop/src/.../bin/<configuration>/<tfm>. Walk to the Git checkout
+        // and use its portable runtime without copying it on every build.
+        for (DirectoryInfo? current = new(baseDirectory); current is not null; current = current.Parent)
+        {
+            if (!File.Exists(Path.Combine(current.FullName, ".nvmrc")))
+            {
+                continue;
+            }
+
+            string repositoryNode = Path.Combine(
+                current.FullName, BundledNodeRelativePath, "node.exe");
+            if (File.Exists(repositoryNode))
+            {
+                return Path.GetFullPath(repositoryNode);
+            }
+        }
+
+        return null;
     }
 
     private static string? ResolveOnPath()
     {
-        // Prefer a direct "node" lookup so the OS PATH resolution applies; fall
-        // back to the .exe form on Windows.
-        foreach (string name in new[] { "node", "node.exe" })
+        string? path = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(path))
         {
-            try
+            return null;
+        }
+
+        string[] names = OperatingSystem.IsWindows()
+            ? new[] { "node.exe", "node" }
+            : new[] { "node" };
+        foreach (string entry in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            string directory = entry.Trim().Trim('"');
+            foreach (string name in names)
             {
-                using var proc = Process.Start(new ProcessStartInfo
+                try
                 {
-                    FileName = name,
-                    Arguments = "-v",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true,
-                });
-                if (proc is not null && proc.WaitForExit(3000) && proc.ExitCode == 0)
-                {
-                    return name;
+                    string candidate = Path.GetFullPath(Path.Combine(directory, name));
+                    if (File.Exists(candidate))
+                    {
+                        // npm is resolved beside Node, so callers require an
+                        // absolute path rather than a bare "node" command.
+                        return candidate;
+                    }
                 }
-            }
-            catch
-            {
-                // Not on PATH in this form; try the next.
+                catch (Exception ex) when (
+                    ex is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    // Ignore malformed PATH entries and continue searching.
+                }
             }
         }
         return null;

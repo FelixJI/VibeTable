@@ -272,21 +272,46 @@ public sealed class DirectusPackageManager
     }
 
     /// <summary>
-    /// Locates <c>npm-cli.js</c> shipped with the bundled Node so npm can be run
-    /// as <c>node &lt;npm-cli.js&gt; ci</c> without npm being on PATH.
+    /// Locates <c>npm-cli.js</c> beside the selected Node, or beside a Node/npm
+    /// installation on PATH. npm can then be run with the selected portable
+    /// Node as <c>node &lt;npm-cli.js&gt; ci</c> without vendoring npm in Git.
     /// </summary>
-    private static string ResolveNpmCli(string nodeExe)
+    internal static string ResolveNpmCli(string nodeExe)
     {
         // Layout: <nodeDir>/node_modules/npm/bin/npm-cli.js
         string nodeDir = Path.GetDirectoryName(nodeExe) ?? string.Empty;
         string candidate = Path.Combine(nodeDir, "node_modules", "npm", "bin", "npm-cli.js");
         if (File.Exists(candidate))
         {
-            return candidate;
+            return Path.GetFullPath(candidate);
         }
+
+        string? path = Environment.GetEnvironmentVariable("PATH");
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            foreach (string entry in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                try
+                {
+                    string pathDirectory = entry.Trim().Trim('"');
+                    string pathCandidate = Path.GetFullPath(Path.Combine(
+                        pathDirectory, "node_modules", "npm", "bin", "npm-cli.js"));
+                    if (File.Exists(pathCandidate))
+                    {
+                        return pathCandidate;
+                    }
+                }
+                catch (Exception ex) when (
+                    ex is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    // Ignore malformed PATH entries and continue searching.
+                }
+            }
+        }
+
         throw new InvalidOperationException(
-            $"npm-cli.js not found beside bundled node (looked at {candidate}). " +
-            "The bundled Node runtime is incomplete.");
+            $"npm-cli.js not found beside Node or on PATH (first looked at {candidate}). " +
+            "Install Node.js with npm, or repair the system PATH.");
     }
 
     // ---------- verification internals ----------
