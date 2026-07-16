@@ -25,11 +25,13 @@
         <DockPanel Grid.Row="0" LastChildFill="True"
                    Background="{DynamicResource {x:Static SystemColors.ControlLightBrushKey}}">
             <Button
+                x:Name="ManageTablesButton"
                 DockPanel.Dock="Left"
                 Padding="12,2" Margin="0,0,8,0"
                 Content="表管理"
+                IsEnabled="False"
                 Click="OnManageTables"
-                ToolTip="创建或删除数据表"/>
+                ToolTip="登录 Directus 后创建或删除数据表"/>
             <Button
                 DockPanel.Dock="Right"
                 Padding="12,2" Margin="8,0,0,0"

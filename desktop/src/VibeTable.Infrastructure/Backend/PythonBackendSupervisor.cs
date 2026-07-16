@@ -136,6 +136,14 @@ public sealed class PythonBackendSupervisor : IAsyncDisposable
     public event Action<object?, BackendState>? StateChanged;
 
     /// <summary>
+    /// Raised for each diagnostic line written by the backend to stderr.
+    /// stdout is reserved for JSON-RPC frames and is never exposed as a log
+    /// stream. Handlers run on the background stderr reader and must return
+    /// promptly.
+    /// </summary>
+    public event Action<object?, string>? LogReceived;
+
+    /// <summary>
     /// True once the child process has exited (cleanly or otherwise).
     /// </summary>
     public bool HasExited => Volatile.Read(ref _hasExited);
@@ -576,6 +584,7 @@ public sealed class PythonBackendSupervisor : IAsyncDisposable
                     {
                         _stderrBuffer.AppendLine(line);
                     }
+                    PublishLogLine(line);
                     if (logWriter is not null)
                     {
                         try
@@ -599,6 +608,23 @@ public sealed class PythonBackendSupervisor : IAsyncDisposable
                 logWriter?.Dispose();
             }
         });
+    }
+
+    private void PublishLogLine(string line)
+    {
+        var handler = LogReceived;
+        if (handler is null)
+        {
+            return;
+        }
+        try
+        {
+            handler(this, line);
+        }
+        catch
+        {
+            // A C# log consumer must never stop draining backend stderr.
+        }
     }
 
     private void OnProcessExited(object? sender, EventArgs e)

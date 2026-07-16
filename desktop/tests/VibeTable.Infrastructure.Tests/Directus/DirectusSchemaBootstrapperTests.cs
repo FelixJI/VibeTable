@@ -1,4 +1,12 @@
+using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Text.Json.Nodes;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using VibeTable.Infrastructure.Directus;
@@ -101,6 +109,164 @@ public sealed class DirectusSchemaBootstrapperTests
         var first = (JsonObject)perms[0]!;
         Assert.AreEqual("policy-1", first["policy"]!.GetValue<string>());
         Assert.IsNotNull(first["fields"], "permission must carry the field allow-list");
+    }
+
+    [TestMethod]
+    public void Directus12RoleAndAccessPayloads_KeepPolicyOutOfRole()
+    {
+        JsonObject role = DirectusSchemaBootstrapper.BuildRolePayload("VibeTable Viewer");
+        JsonObject access = DirectusSchemaBootstrapper.BuildAccessPayload("role-1", "policy-1");
+
+        Assert.AreEqual("VibeTable Viewer", role["name"]!.GetValue<string>());
+        Assert.IsFalse(role.ContainsKey("policies"),
+            "Directus 12 stores role-policy links in directus_access, not directus_roles");
+        Assert.AreEqual("role-1", access["role"]!.GetValue<string>());
+        Assert.AreEqual("policy-1", access["policy"]!.GetValue<string>());
+    }
+
+    [TestMethod]
+    public async Task EnsureSuccessAsync_IncludesEndpointStatusAndDirectusBody()
+    {
+        using var response = new HttpResponseMessage(HttpStatusCode.Forbidden)
+        {
+            RequestMessage = new HttpRequestMessage(HttpMethod.Post, "http://localhost:8055/roles"),
+            Content = new StringContent("{\"errors\":[{\"message\":\"Forbidden\"}]}")
+        };
+
+        var error = await Assert.ThrowsExceptionAsync<InvalidOperationException>(() =>
+            DirectusSchemaBootstrapper.EnsureSuccessAsync(response, CancellationToken.None));
+
+        StringAssert.Contains(error.Message, "POST /roles");
+        StringAssert.Contains(error.Message, "403 (Forbidden)");
+        StringAssert.Contains(error.Message, "\"message\":\"Forbidden\"");
+    }
+
+    [TestMethod]
+    public async Task ApplySchemaIfFirstBootAsync_ResumesPartialDirectus12State()
+    {
+        string runtime = Path.Combine(Path.GetTempPath(), "vibetable-schema-resume-" + Guid.NewGuid());
+        Directory.CreateDirectory(runtime);
+        try
+        {
+            var handler = new ResumeSchemaHandler();
+            await using var bootstrapper = new DirectusSchemaBootstrapper(handler);
+
+            await bootstrapper.ApplySchemaIfFirstBootAsync(
+                "http://localhost:8055",
+                "admin@vibetable.app",
+                "password",
+                BlueprintPath,
+                runtime,
+                CancellationToken.None);
+
+            Assert.IsTrue(File.Exists(Path.Combine(runtime, ".schema-applied")));
+            Assert.AreEqual(0, handler.Count(HttpMethod.Post, "/collections"),
+                "collections left by the interrupted attempt must be reused");
+            Assert.AreEqual(2, handler.Count(HttpMethod.Post, "/policies"),
+                "the existing Viewer policy must be reused while Editor and Manager are created");
+            Assert.AreEqual(3, handler.Count(HttpMethod.Post, "/roles"));
+            Assert.AreEqual(3, handler.Count(HttpMethod.Post, "/access"));
+            Assert.AreEqual(3, handler.Count(HttpMethod.Post, "/permissions"));
+            Assert.IsTrue(handler.BodiesFor(HttpMethod.Post, "/roles").All(body => !body.ContainsKey("policies")));
+        }
+        finally
+        {
+            Directory.Delete(runtime, recursive: true);
+        }
+    }
+
+    private sealed class ResumeSchemaHandler : HttpMessageHandler
+    {
+        private static readonly string[] Collections =
+        {
+            "vibetable_workspaces",
+            "vibetable_workspace_folders",
+            "vibetable_documents",
+            "vibetable_document_schemes",
+            "vibetable_document_revisions",
+            "vibetable_document_links",
+        };
+
+        private readonly List<(HttpMethod Method, string Path, JsonNode? Body)> _requests = new();
+
+        public int Count(HttpMethod method, string path) =>
+            _requests.Count(item => item.Method == method && item.Path == path);
+
+        public IEnumerable<JsonObject> BodiesFor(HttpMethod method, string path) =>
+            _requests.Where(item => item.Method == method && item.Path == path)
+                .Select(item => item.Body!.AsObject());
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            string path = request.RequestUri!.AbsolutePath;
+            JsonNode? body = null;
+            if (request.Content is not null)
+            {
+                string text = await request.Content.ReadAsStringAsync(cancellationToken);
+                body = string.IsNullOrWhiteSpace(text) ? null : JsonNode.Parse(text);
+            }
+            _requests.Add((request.Method, path, body));
+
+            JsonNode responseBody = Resolve(request.Method, path, body);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent(responseBody.ToJsonString(), Encoding.UTF8, "application/json"),
+            };
+        }
+
+        private static JsonNode Resolve(HttpMethod method, string path, JsonNode? body)
+        {
+            if (method == HttpMethod.Post && path == "/auth/login")
+            {
+                return JsonNode.Parse("{\"data\":{\"access_token\":\"admin-token\"}}")!;
+            }
+            if (method == HttpMethod.Get && path == "/collections")
+            {
+                var data = new JsonArray();
+                foreach (string collection in Collections)
+                {
+                    data.Add(new JsonObject { ["collection"] = collection });
+                }
+                return new JsonObject { ["data"] = data };
+            }
+            if (method == HttpMethod.Get && path == "/relations")
+            {
+                return new JsonObject { ["data"] = new JsonArray() };
+            }
+            if (method == HttpMethod.Get && path == "/policies")
+            {
+                return new JsonObject
+                {
+                    ["data"] = new JsonArray
+                    {
+                        new JsonObject { ["id"] = "policy-viewer", ["name"] = "VibeTable Viewer" }
+                    }
+                };
+            }
+            if (method == HttpMethod.Get && path is "/roles" or "/access" or "/permissions")
+            {
+                return new JsonObject { ["data"] = new JsonArray() };
+            }
+            if (method == HttpMethod.Post && path is "/policies" or "/roles")
+            {
+                string name = body!["name"]!.GetValue<string>();
+                return new JsonObject
+                {
+                    ["data"] = new JsonObject { ["id"] = path[1..^1] + "-" + name.Replace(' ', '-').ToLowerInvariant() }
+                };
+            }
+            if (method == HttpMethod.Post && path is "/relations" or "/access")
+            {
+                return new JsonObject { ["data"] = new JsonObject { ["id"] = Guid.NewGuid().ToString() } };
+            }
+            if (method == HttpMethod.Post && path == "/permissions")
+            {
+                return new JsonObject { ["data"] = new JsonArray() };
+            }
+            throw new InvalidOperationException($"Unexpected request: {method} {path}");
+        }
     }
 
     private static string ResolveRepoFile(params string[] parts)

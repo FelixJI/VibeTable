@@ -63,6 +63,7 @@ public partial class MainWindow : Window
     private DirectusSupervisor? _directusSupervisor;
     private readonly TaskCompletionSource<bool>? _directusSessionReady;
     private JsonRpcDirectusGateway? _directusGateway;
+    private bool _directusSessionAuthenticated;
     private int _directusWorkspaceOpened;
     private readonly GridStateCoordinator? _coordinator;
     private readonly TestModeReadinessWriter? _readinessWriter;
@@ -70,6 +71,9 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _sessionCts;
     private string? _pendingLoginEmail;
     private string? _pendingLoginPassword;
+    private string? _localDirectusDirectory;
+    private DirectusStartupWindow? _directusStartupWindow;
+    private CancellationTokenSource? _directusStartupCts;
 
     public MainWindow()
     {
@@ -131,23 +135,12 @@ public partial class MainWindow : Window
             ? new TestModeReadinessWriter(startupOptions.ReadinessDir)
             : null;
 
-        if (_readinessWriter is not null)
-        {
-            _supervisor.StateChanged += (_, state) =>
-            {
-                _readinessWriter.Trace($"Backend state={state}");
-                if (state == BackendState.Faulted)
-                {
-                    _readinessWriter.Trace(
-                        $"Backend stderr: {_supervisor.GetStdErrorLog()}");
-                }
-            };
-        }
-
         _dispatcher = new WorkspaceRequestDispatcher(
             _workspace, picker, _webBridge, _coordinator);
 
         _viewModel = new MainWindowViewModel(_backendAdapter, _webBridge);
+        _supervisor.LogReceived += OnBackendLogReceived;
+        _supervisor.StateChanged += OnBackendStateChanged;
         if (_shellSmokeMode)
         {
             _viewModel.PropertyChanged += (_, args) =>
@@ -189,6 +182,10 @@ public partial class MainWindow : Window
                     Close();
                     return;
                 }
+                UpdateStartupHostStage(
+                    5,
+                    "启动应用后端",
+                    "Directus 已就绪，正在启动 VibeTable 后端。");
                 Environment.SetEnvironmentVariable("VIBETABLE_DIRECTUS_URL", url);
                 Environment.SetEnvironmentVariable("VIBETABLE_DIRECTUS_PROJECT", "default");
                 string packagedManifest = Path.Combine(
@@ -205,10 +202,39 @@ public partial class MainWindow : Window
 
             await _viewModel.StartAsync();
             _readinessWriter?.Trace($"OnLoaded: StartAsync complete, VM state={_viewModel.State}");
+            if (_directusAuto && _supervisor.State != BackendState.Ready)
+            {
+                _directusStartupWindow?.ShowFailure(
+                    "VibeTable 后端未能启动。主窗口已切换到故障状态，可关闭初始化窗口后重试。");
+                MessageBox.Show(
+                    this,
+                    "VibeTable 后端启动失败，请查看 Rider 输出或主窗口状态后重试。",
+                    "VibeTable",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+                CloseStartupWindow();
+                return;
+            }
             if (_supervisor.State == BackendState.Ready && _directusEnabled)
             {
+                UpdateStartupHostStage(
+                    6,
+                    "建立登录会话",
+                    "正在使用首次设置的本地管理员自动登录。");
                 bool authenticated = await EnsureDirectusSessionAsync();
+                _directusSessionAuthenticated = authenticated;
                 _directusSessionReady?.TrySetResult(authenticated);
+                ManageTablesButton.IsEnabled = authenticated;
+                if (authenticated && _directusAuto)
+                {
+                    MarkFirstRunCompleted();
+                    _directusStartupWindow?.UpdateHostStage(
+                        6,
+                        "首次启动完成",
+                        "本地数据服务、应用后端和登录会话均已就绪。");
+                    await Task.Delay(450);
+                    CompleteStartupWindow();
+                }
                 if (!authenticated)
                 {
                     Close();
@@ -271,9 +297,113 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnBackendLogReceived(object? sender, string line)
+        => TraceProcessLog("backend", line);
+
+    private void OnBackendStateChanged(object? sender, BackendState state)
+    {
+        string status = $"Backend state={state}";
+        if (state == BackendState.Faulted)
+        {
+            status += $", exitCode={_supervisor.ExitCode?.ToString() ?? "unknown"}";
+        }
+        Trace.WriteLine($"[backend] {status}");
+        _readinessWriter?.Trace(status);
+
+        if (state == BackendState.Faulted)
+        {
+            _readinessWriter?.Trace(
+                $"Backend stderr: {_supervisor.GetStdErrorLog()}");
+            MoveUiToFaulted("Backend process exited unexpectedly.");
+        }
+    }
+
+    private void OnDirectusLogReceived(object? sender, string line)
+    {
+        TraceProcessLog("directus", line);
+        try
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (ReferenceEquals(sender, _directusSupervisor))
+                {
+                    _directusStartupWindow?.AppendLog(line);
+                }
+            });
+        }
+        catch
+        {
+            // The progress window may be closing.
+        }
+    }
+
+    private void OnDirectusProgressChanged(
+        object? sender,
+        DirectusStartupProgress progress)
+    {
+        Trace.WriteLine($"[directus] startup stage={progress.Stage}: {progress.Detail}");
+        _readinessWriter?.Trace(
+            $"Directus startup stage={progress.Stage}: {progress.Detail}");
+        try
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (ReferenceEquals(sender, _directusSupervisor))
+                {
+                    _directusStartupWindow?.UpdateProgress(progress);
+                }
+            });
+        }
+        catch
+        {
+            // The progress window may be closing.
+        }
+    }
+
+    private void OnDirectusStateChanged(object? sender, DirectusState state)
+    {
+        string status = $"Directus state={state}";
+        Trace.WriteLine($"[directus] {status}");
+        _readinessWriter?.Trace(status);
+        if (state == DirectusState.Faulted)
+        {
+            MoveUiToFaulted("Local Directus process exited unexpectedly.");
+        }
+    }
+
+    private void TraceProcessLog(string source, string line)
+    {
+        Trace.WriteLine($"[{source}] {line}");
+        _readinessWriter?.Trace($"[{source}] {line}");
+    }
+
+    private void MoveUiToFaulted(string reason)
+    {
+        try
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                // Startup failures are handled by StartAsync itself. This path
+                // is for a child that disappears after the shell has moved on.
+                if (_viewModel.State is StartupState.LoadingWeb or StartupState.Ready)
+                {
+                    _viewModel.MoveToFaulted(reason);
+                }
+            });
+        }
+        catch
+        {
+            // The window may already be closing; the process state was still
+            // written to Trace for diagnostics.
+        }
+    }
+
     private void OnClosed(object? sender, EventArgs e)
     {
         _sessionCts?.Cancel();
+        _directusStartupCts?.Cancel();
+        CloseStartupWindow();
+        _directusSessionAuthenticated = false;
         _directusSessionReady?.TrySetResult(false);
         _directusGateway?.Dispose();
         if (_workspaceGateway is IDisposable disposableGateway)
@@ -345,51 +475,172 @@ public partial class MainWindow : Window
             return null;
         }
 
-        bool firstRun = !File.Exists(
-            Path.Combine(options.LocalDirectusDirectory, ".bootstrapped"));
-        if (firstRun)
+        _localDirectusDirectory = options.LocalDirectusDirectory;
+
+        var firstRunStatus = DirectusFirstRunState.Inspect(
+            options.LocalDirectusDirectory);
+        options.ForcePackageVerification = !firstRunStatus.IsExperienceComplete;
+        bool firstRun = firstRunStatus.IsFresh;
+        bool firstRunExperience = firstRunStatus.NeedsWelcome;
+        if (firstRunExperience)
         {
-            var setup = new DirectusFirstRunWindow { Owner = this };
+            string? existingEmail = null;
+            if (!firstRun
+                && DirectusEnvMaterializer.TryReadBootstrapCredentials(
+                    options.LocalDirectusDirectory,
+                    out string recoveredEmail,
+                    out _))
+            {
+                existingEmail = recoveredEmail;
+            }
+            var setup = new DirectusFirstRunWindow(
+                resumeExisting: !firstRun,
+                existingEmail: existingEmail)
+            {
+                Owner = this,
+            };
             if (setup.ShowDialog() != true)
             {
                 return null;
             }
 
-            _pendingLoginEmail = setup.Email;
-            _pendingLoginPassword = setup.Password;
-            _loginStore?.Save(
-                new DirectusLoginPreferences(
-                    setup.Email,
-                    setup.RememberPassword,
-                    setup.AutoLogin,
-                    setup.ManagedLogin),
-                setup.RememberPassword ? setup.Password : null);
-            options.Environment["VIBETABLE_DIRECTUS_BOOTSTRAP_EMAIL"] = setup.Email;
-            options.Environment["VIBETABLE_DIRECTUS_BOOTSTRAP_PASSWORD"] = setup.Password;
+            if (firstRun)
+            {
+                _pendingLoginEmail = setup.Email;
+                _pendingLoginPassword = setup.Password;
+                _loginStore?.Save(
+                    new DirectusLoginPreferences(
+                        setup.Email,
+                        setup.RememberPassword,
+                        setup.AutoLogin,
+                        setup.ManagedLogin),
+                    setup.RememberPassword ? setup.Password : null);
+                options.Environment["VIBETABLE_DIRECTUS_BOOTSTRAP_EMAIL"] = setup.Email;
+                options.Environment["VIBETABLE_DIRECTUS_BOOTSTRAP_PASSWORD"] = setup.Password;
+            }
         }
 
-        _directusSupervisor = new DirectusSupervisor(options);
+        if (!firstRun && _loginStore is not null)
+        {
+            // Older/interrupted first runs can have a Directus admin without a
+            // saved desktop login. The original credentials in .env remain
+            // authoritative for this app-owned local instance. Adopt them only
+            // when no login preference exists, so an existing user choice is
+            // never overwritten.
+            var preferences = _loginStore.LoadPreferences();
+            if (string.IsNullOrWhiteSpace(preferences.Email)
+                && DirectusEnvMaterializer.TryReadBootstrapCredentials(
+                    options.LocalDirectusDirectory,
+                    out string recoveryEmail,
+                    out string recoveryPassword))
+            {
+                _pendingLoginEmail = recoveryEmail;
+                _pendingLoginPassword = recoveryPassword;
+                _loginStore.Save(
+                    new DirectusLoginPreferences(
+                        recoveryEmail,
+                        RememberPassword: true,
+                        AutoLogin: true,
+                        ManagedPassword: true),
+                    recoveryPassword);
+            }
+        }
+
+        EnsureStartupWindow();
         try
         {
-            await _directusSupervisor.StartAsync(CancellationToken.None);
-            return _directusSupervisor.BaseUrl;
-        }
-        catch (Exception ex)
-        {
-            string log = _directusSupervisor.GetStdErrorLog();
-            MessageBox.Show(
-                this,
-                $"本机 Directus 启动失败：{ex.Message}\n\nDirectus 日志：\n{log}",
-                "VibeTable",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-            return null;
+            while (true)
+            {
+                _directusSupervisor = new DirectusSupervisor(options);
+                _directusSupervisor.LogReceived += OnDirectusLogReceived;
+                _directusSupervisor.ProgressChanged += OnDirectusProgressChanged;
+                _directusSupervisor.StateChanged += OnDirectusStateChanged;
+                using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(
+                    _sessionCts?.Token ?? CancellationToken.None);
+                _directusStartupCts = attemptCts;
+                try
+                {
+                    await _directusSupervisor.StartAsync(attemptCts.Token);
+                    return _directusSupervisor.BaseUrl;
+                }
+                catch (OperationCanceledException)
+                {
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    _directusStartupWindow?.ShowFailure(ex.Message);
+                    bool retry = _directusStartupWindow is not null
+                        && await _directusStartupWindow.WaitForFailureDecisionAsync();
+                    await _directusSupervisor.DisposeAsync();
+                    if (!retry)
+                    {
+                        return null;
+                    }
+                    _directusStartupWindow?.ResetForRetry();
+                }
+                finally
+                {
+                    if (ReferenceEquals(_directusStartupCts, attemptCts))
+                    {
+                        _directusStartupCts = null;
+                    }
+                }
+            }
         }
         finally
         {
             options.Environment.Remove("VIBETABLE_DIRECTUS_BOOTSTRAP_EMAIL");
             options.Environment.Remove("VIBETABLE_DIRECTUS_BOOTSTRAP_PASSWORD");
         }
+    }
+
+    private void EnsureStartupWindow()
+    {
+        if (_directusStartupWindow is not null)
+        {
+            return;
+        }
+        _directusStartupWindow = new DirectusStartupWindow { Owner = this };
+        _directusStartupWindow.CancelRequested += (_, _) =>
+            _directusStartupCts?.Cancel();
+        _directusStartupWindow.Show();
+    }
+
+    private void UpdateStartupHostStage(int step, string title, string detail)
+        => _directusStartupWindow?.UpdateHostStage(step, title, detail);
+
+    private void MarkFirstRunCompleted()
+    {
+        if (string.IsNullOrWhiteSpace(_localDirectusDirectory))
+        {
+            return;
+        }
+        try
+        {
+            DirectusFirstRunState.MarkExperienceComplete(
+                _localDirectusDirectory);
+        }
+        catch (Exception ex)
+        {
+            Trace.WriteLine($"[directus] unable to persist first-run marker: {ex.Message}");
+        }
+    }
+
+    private void CompleteStartupWindow()
+    {
+        var window = _directusStartupWindow;
+        _directusStartupWindow = null;
+        try { window?.CompleteAndClose(); }
+        catch { /* best-effort UI cleanup */ }
+    }
+
+    private void CloseStartupWindow()
+    {
+        var window = _directusStartupWindow;
+        _directusStartupWindow = null;
+        try { window?.ForceClose(); }
+        catch { /* best-effort UI cleanup */ }
     }
 
     private async Task<bool> EnsureDirectusSessionAsync()
@@ -591,17 +842,16 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Opens the table-management dialog (create/delete collections) when the
-    /// Directus gateway is available. The gateway is created lazily during
-    /// <see cref="EnsureDirectusSessionAsync"/>; if the session never came up
-    /// the button is a no-op rather than crashing on a null gateway.
+    /// authenticated Directus gateway is available. The button remains
+    /// disabled during local startup and interactive login.
     /// </summary>
     private void OnManageTables(object sender, RoutedEventArgs e)
     {
-        if (_directusGateway is null)
+        if (_directusGateway is null || !_directusSessionAuthenticated)
         {
             MessageBox.Show(
                 this,
-                "Directus 会话尚未就绪，无法管理表。请先完成登录。",
+                "Directus 正在启动或登录尚未完成，请稍候。",
                 "表管理",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);

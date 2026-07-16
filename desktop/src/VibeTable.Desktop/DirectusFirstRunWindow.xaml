@@ -17,11 +17,11 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="设置本机管理员账号"
+        <TextBlock x:Name="HeadingText" Grid.Row="0" Text="欢迎使用 VibeTable"
                    FontSize="24" FontWeight="SemiBold"/>
-        <TextBlock Grid.Row="1" Margin="0,8,0,18" TextWrapping="Wrap"
+        <TextBlock x:Name="IntroductionText" Grid.Row="1" Margin="0,8,0,18" TextWrapping="Wrap"
                    Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
-                   Text="该账号用于本机 Directus 数据服务。密码只保存在 Windows 凭据管理器，不会写入配置文件。"/>
+                   Text="接下来会安装并校验本地数据服务，然后创建管理员账号。无需提前准备 Directus 账号。"/>
 
         <StackPanel Grid.Row="2">
             <TextBlock Text="登录邮箱" Margin="0,0,0,5"/>
@@ -31,7 +31,7 @@
 
         <CheckBox x:Name="ManagedLoginBox" Grid.Row="3" Margin="0,16,0,0"
                   IsChecked="True" Checked="OnModeChanged" Unchecked="OnModeChanged"
-                  Content="无密码登录（由 VibeTable 生成并安全托管密码）"/>
+                  Content="无需已有账号（由 VibeTable 创建并自动登录，推荐）"/>
 
         <StackPanel x:Name="PasswordPanel" Grid.Row="4" Margin="0,14,0,0">
             <TextBlock Text="密码（至少 8 位）" Margin="0,0,0,5"/>
@@ -53,7 +53,7 @@
         <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="取消" Width="88" Height="34" Margin="0,0,10,0"
                     IsCancel="True"/>
-            <Button Content="开始使用" Width="110" Height="34"
+            <Button x:Name="ConfirmButton" Content="开始初始化" Width="110" Height="34"
                     IsDefault="True" Click="OnConfirmClick"/>
         </StackPanel>
     </Grid>

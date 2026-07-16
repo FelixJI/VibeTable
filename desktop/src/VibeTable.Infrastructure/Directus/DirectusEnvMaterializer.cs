@@ -99,8 +99,82 @@ public static class DirectusEnvMaterializer
             }
         }
 
+        EnsureSqliteDatabaseDirectory(directory, values);
         WriteEnv(envFile, values);
         return values;
+    }
+
+    /// <summary>
+    /// Ensures the parent directory for the configured app-private SQLite
+    /// database exists before <c>directus bootstrap</c> opens the file.
+    /// A fresh first run has no <c>data/</c> directory yet.
+    /// </summary>
+    private static void EnsureSqliteDatabaseDirectory(
+        string runtimeDirectory,
+        IReadOnlyDictionary<string, string> values)
+    {
+        if (!values.TryGetValue("DB_CLIENT", out string? client)
+            || !string.Equals(client, "sqlite3", StringComparison.OrdinalIgnoreCase)
+            || !values.TryGetValue("DB_FILENAME", out string? filename)
+            || string.IsNullOrWhiteSpace(filename)
+            || string.Equals(filename, ":memory:", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        string runtimeRoot = Path.GetFullPath(runtimeDirectory);
+        string databasePath = Path.GetFullPath(
+            Path.IsPathRooted(filename)
+                ? filename
+                : Path.Combine(runtimeRoot, filename));
+        string runtimePrefix = runtimeRoot.TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!databasePath.StartsWith(runtimePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"SQLite DB_FILENAME must remain inside the local Directus runtime: {filename}");
+        }
+
+        string? parent = Path.GetDirectoryName(databasePath);
+        if (!string.IsNullOrEmpty(parent))
+        {
+            Directory.CreateDirectory(parent);
+        }
+    }
+
+    /// <summary>
+    /// Reads the administrator credentials persisted by a previous local
+    /// bootstrap. This is used only to recover an interrupted legacy first run
+    /// where Directus created its admin but VibeTable never saved the managed
+    /// login preference. The secret remains in memory and is never logged.
+    /// </summary>
+    public static bool TryReadBootstrapCredentials(
+        string directory,
+        out string email,
+        out string password)
+    {
+        email = string.Empty;
+        password = string.Empty;
+        string envFile = Path.Combine(directory, ".env");
+        if (!File.Exists(envFile))
+        {
+            return false;
+        }
+
+        var values = ParseEnvFile(File.ReadAllText(envFile));
+        if (!values.TryGetValue("ADMIN_EMAIL", out string? savedEmail)
+            || string.IsNullOrWhiteSpace(savedEmail)
+            || !values.TryGetValue("ADMIN_PASSWORD", out string? savedPassword)
+            || string.IsNullOrEmpty(savedPassword)
+            || string.Equals(savedPassword, GeneratePlaceholder, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        email = savedEmail;
+        password = savedPassword;
+        return true;
     }
 
     /// <summary>

@@ -182,3 +182,6 @@ scripts/local_directus/uploads/
 scripts/local_directus/extensions/
 scripts/local_directus/.schema-applied
 scripts/local_directus/.bootstrapped
+scripts/local_directus/.install-verified
+scripts/local_directus/.vibetable-initialized
+scripts/local_directus/.first-run-backups/

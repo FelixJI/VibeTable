@@ -21,7 +21,6 @@
       "directus/extensions/vibetable-bulk-mutation",
       "directus/extensions/vibetable-workspace-index"
     ],
-    "localDirectus": "local-directus",
-    "localDirectusRunner": "backend/vibetable-backend.exe"
+    "localDirectus": "local-directus"
   }
 }

@@ -65,6 +65,14 @@ public sealed class DirectusLaunchOptions
     public string? LogPath { get; set; }
 
     /// <summary>
+    /// Forces a real package structure/native-module verification even when
+    /// the cached install marker is fresh. Used while the first-run experience
+    /// is incomplete, so a previous failed attempt can never grant trust to a
+    /// partially installed runtime.
+    /// </summary>
+    public bool ForcePackageVerification { get; set; }
+
+    /// <summary>
     /// Additional environment variables for the Directus child (additive over
     /// the host environment).
     /// </summary>
@@ -121,4 +129,3 @@ public sealed class DirectusLaunchOptions
     }
 
 }
-

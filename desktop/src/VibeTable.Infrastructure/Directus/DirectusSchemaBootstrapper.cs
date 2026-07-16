@@ -13,7 +13,7 @@ using System.Threading.Tasks;
 namespace VibeTable.Infrastructure.Directus;
 
 /// <summary>
-/// Bootstraps a greenfield local Directus 12 instance: runs the
+/// Bootstraps a local Directus 12 instance: runs the
 /// <c>directus bootstrap</c> CLI (creates internal tables + admin), then seeds
 /// the VibeTable collections/relations/policies via the REST API. This is the
 /// 1:1 C# port of <c>run.py</c>'s <c>bootstrap_database</c> +
@@ -57,6 +57,12 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
         _cliTimeout = cliTimeout ?? TimeSpan.FromMinutes(3);
     }
 
+    internal DirectusSchemaBootstrapper(HttpMessageHandler handler, TimeSpan? cliTimeout = null)
+    {
+        _http = new HttpClient(handler);
+        _cliTimeout = cliTimeout ?? TimeSpan.FromMinutes(3);
+    }
+
     /// <summary>
     /// Runs <c>directus bootstrap</c> (CLI) to install internal tables + the
     /// admin user. Idempotent: a no-op once <c>.bootstrapped</c> exists.
@@ -67,7 +73,11 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
     /// <param name="env">The materialized <c>.env</c> values (admin creds live
     /// here).</param>
     public async Task BootstrapDatabaseAsync(
-        string nodeExe, string localDirectusDir, IDictionary<string, string> env, CancellationToken cancellationToken)
+        string nodeExe,
+        string localDirectusDir,
+        IDictionary<string, string> env,
+        CancellationToken cancellationToken,
+        Action<string>? logLine = null)
     {
         string marker = Path.Combine(localDirectusDir, ".bootstrapped");
         if (File.Exists(marker))
@@ -97,24 +107,26 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
 
         using var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start directus bootstrap.");
-        string stdout = await proc.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-        string stderr = await proc.StandardError.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-        await proc.WaitForExitAsync(cancellationToken).WaitAsync(_cliTimeout, cancellationToken).ConfigureAwait(false);
+        var (stdout, stderr) = await ProcessOutputPump.CaptureUntilExitAsync(
+            proc,
+            _cliTimeout,
+            cancellationToken,
+            logLine,
+            logLine).ConfigureAwait(false);
 
         string combined = stdout + stderr;
         if (proc.ExitCode != 0 && !combined.Contains("already", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                $"directus bootstrap failed (exit {proc.ExitCode}).\nstdout:\n{stdout}\nstderr:\n{stderr}\n" +
-                "(common cause: ADMIN_EMAIL not a valid email address)");
+                $"directus bootstrap failed (exit {proc.ExitCode}).\nstdout:\n{stdout}\nstderr:\n{stderr}");
         }
         await File.WriteAllTextAsync(marker, "ok", cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Seeds VibeTable collections/relations/policies on a blank instance.
-    /// Idempotent: a no-op once <c>.schema-applied</c> exists. Greenfield-only:
-    /// throws if any blueprint collection already exists (matches Python).
+    /// Seeds VibeTable collections/relations/policies. Idempotent: a no-op once
+    /// <c>.schema-applied</c> exists, and safely resumes resource-by-resource
+    /// when an earlier first-run attempt stopped before writing the marker.
     /// </summary>
     /// <param name="baseUrl">Directus base URL (e.g. http://localhost:8055).</param>
     /// <param name="adminEmail">Admin email (from .env ADMIN_EMAIL).</param>
@@ -134,33 +146,25 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
         JsonNode blueprint = LoadBlueprint(blueprintPath);
         string token = await AdminLoginAsync(baseUrl, adminEmail, adminPassword, cancellationToken).ConfigureAwait(false);
 
-        // Greenfield check: reject if any blueprint collection already exists.
+        // Create only missing resources. Directus creates a collection and its
+        // fields atomically, so an existing app-owned collection is safe to reuse
+        // after a prior first-run attempt was interrupted.
         var existing = await GetExistingCollectionsAsync(baseUrl, token, cancellationToken).ConfigureAwait(false);
-        var conflicts = new List<string>();
-        foreach (var collectionNode in ((JsonObject)blueprint["collections"]!))
-        {
-            string name = collectionNode.Key;
-            if (existing.Contains(name))
-            {
-                conflicts.Add(name);
-            }
-        }
-        if (conflicts.Count > 0)
-        {
-            throw new InvalidOperationException(
-                "bootstrap is greenfield-only; existing collections require schema diff: "
-                + string.Join(", ", conflicts));
-        }
-
-        // Create collections (with fields), then relations, then policies.
         var collections = (JsonObject)blueprint["collections"]!;
         foreach (var entry in collections)
         {
             string name = entry.Key;
+            if (existing.Contains(name))
+            {
+                continue;
+            }
             var definition = (JsonObject)entry.Value!;
             await PostJsonAsync(baseUrl, "/collections", token,
                 BuildCollectionPayload(name, definition), cancellationToken).ConfigureAwait(false);
+            existing.Add(name);
         }
+
+        var existingRelations = await GetExistingRelationsAsync(baseUrl, token, cancellationToken).ConfigureAwait(false);
         foreach (var entry in collections)
         {
             string name = entry.Key;
@@ -172,14 +176,33 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
                 if (field.ContainsKey("relation"))
                 {
                     string related = field["relation"]!.GetValue<string>();
+                    var key = (Collection: name, Field: fieldName);
+                    if (existingRelations.TryGetValue(key, out string? existingRelated))
+                    {
+                        if (!string.Equals(existingRelated, related, StringComparison.Ordinal))
+                        {
+                            throw new InvalidOperationException(
+                                $"Directus relation conflict for {name}.{fieldName}: " +
+                                $"expected {related}, found {existingRelated}.");
+                        }
+                        continue;
+                    }
                     await PostJsonAsync(baseUrl, "/relations", token,
                         BuildRelationPayload(name, fieldName, related), cancellationToken).ConfigureAwait(false);
+                    existingRelations[key] = related;
                 }
             }
         }
 
         if (blueprint["policies"] is JsonObject policies)
         {
+            var existingPolicies = await GetNamedIdsAsync(
+                baseUrl, "/policies?limit=-1&fields=id,name", token, cancellationToken).ConfigureAwait(false);
+            var existingRoles = await GetNamedIdsAsync(
+                baseUrl, "/roles?limit=-1&fields=id,name", token, cancellationToken).ConfigureAwait(false);
+            var existingAccess = await GetExistingAccessAsync(baseUrl, token, cancellationToken).ConfigureAwait(false);
+            var existingPermissions = await GetExistingPermissionsAsync(baseUrl, token, cancellationToken).ConfigureAwait(false);
+
             foreach (var policyEntry in policies)
             {
                 string policyName = policyEntry.Key;
@@ -188,26 +211,57 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
                 string contract = blueprint["contract"]?.GetValue<string>() ?? BlueprintContract;
                 string schemaVersion = blueprint["schema_version"]?.GetValue<string>() ?? "vibetable";
 
-                var policyResp = await PostJsonAsync(baseUrl, "/policies", token, new JsonObject
+                string policyId;
+                if (existingPolicies.TryGetValue(displayName, out string? foundPolicyId))
                 {
-                    ["name"] = displayName,
-                    ["description"] = $"Managed by {contract} {schemaVersion}",
-                    ["admin_access"] = false,
-                    ["app_access"] = false,
-                }, cancellationToken).ConfigureAwait(false);
-                string policyId = policyResp["data"]!["id"]!.GetValue<string>();
+                    policyId = foundPolicyId;
+                }
+                else
+                {
+                    var policyResp = await PostJsonAsync(baseUrl, "/policies", token, new JsonObject
+                    {
+                        ["name"] = displayName,
+                        ["description"] = $"Managed by {contract} {schemaVersion}",
+                        ["admin_access"] = false,
+                        ["app_access"] = false,
+                    }, cancellationToken).ConfigureAwait(false);
+                    policyId = RequiredResponseId(policyResp, "/policies");
+                    existingPolicies[displayName] = policyId;
+                }
 
-                await PostJsonAsync(baseUrl, "/roles", token, new JsonObject
+                string roleId;
+                if (existingRoles.TryGetValue(displayName, out string? foundRoleId))
                 {
-                    ["name"] = displayName,
-                    ["description"] = "Assign users to this role; permissions come from its policy.",
-                    ["policies"] = new JsonArray { policyId },
-                }, cancellationToken).ConfigureAwait(false);
+                    roleId = foundRoleId;
+                }
+                else
+                {
+                    var roleResp = await PostJsonAsync(baseUrl, "/roles", token,
+                        BuildRolePayload(displayName), cancellationToken).ConfigureAwait(false);
+                    roleId = RequiredResponseId(roleResp, "/roles");
+                    existingRoles[displayName] = roleId;
+                }
+
+                if (existingAccess.Add((roleId, policyId)))
+                {
+                    await PostJsonAsync(baseUrl, "/access", token,
+                        BuildAccessPayload(roleId, policyId), cancellationToken).ConfigureAwait(false);
+                }
 
                 var permissions = BuildPermissionPayloads(policyId, grants, collections);
-                if (permissions.Count > 0)
+                var missingPermissions = new JsonArray();
+                foreach (JsonObject permission in permissions.OfType<JsonObject>())
                 {
-                    await PostJsonAsync(baseUrl, "/permissions", token, permissions, cancellationToken).ConfigureAwait(false);
+                    string collection = permission["collection"]!.GetValue<string>();
+                    string action = permission["action"]!.GetValue<string>();
+                    if (existingPermissions.Add((policyId, collection, action)))
+                    {
+                        missingPermissions.Add(permission.DeepClone());
+                    }
+                }
+                if (missingPermissions.Count > 0)
+                {
+                    await PostJsonAsync(baseUrl, "/permissions", token, missingPermissions, cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -282,6 +336,18 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
             ["on_delete"] = "SET NULL",
             ["on_update"] = "NO ACTION",
         },
+    };
+
+    internal static JsonObject BuildRolePayload(string displayName) => new()
+    {
+        ["name"] = displayName,
+        ["description"] = "Assign users to this role; permissions come from its policy.",
+    };
+
+    internal static JsonObject BuildAccessPayload(string roleId, string policyId) => new()
+    {
+        ["role"] = roleId,
+        ["policy"] = policyId,
     };
 
     /// <summary>Port of bootstrap.build_permission_payloads.</summary>
@@ -414,6 +480,7 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
             ["mode"] = "json",
         };
         using var resp = await PostAsync($"{baseUrl.TrimEnd('/')}/auth/login", body, token: null, cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(resp, cancellationToken).ConfigureAwait(false);
         var payload = await ReadJsonAsync(resp, cancellationToken).ConfigureAwait(false);
         string? token = payload["data"]?["access_token"]?.GetValue<string>();
         if (string.IsNullOrEmpty(token))
@@ -429,7 +496,7 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
         using var req = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl.TrimEnd('/')}/collections");
         req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
         using var resp = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(resp, cancellationToken).ConfigureAwait(false);
         var payload = await ReadJsonAsync(resp, cancellationToken).ConfigureAwait(false);
         var set = new HashSet<string>(StringComparer.Ordinal);
         if (payload["data"] is JsonArray data)
@@ -446,12 +513,103 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
         return set;
     }
 
+    private async Task<Dictionary<(string Collection, string Field), string>> GetExistingRelationsAsync(
+        string baseUrl, string token, CancellationToken cancellationToken)
+    {
+        JsonArray data = await GetDataArrayAsync(
+            baseUrl, "/relations?limit=-1&fields=collection,field,related_collection", token, cancellationToken)
+            .ConfigureAwait(false);
+        var result = new Dictionary<(string Collection, string Field), string>();
+        foreach (JsonObject item in data.OfType<JsonObject>())
+        {
+            string? collection = StringValue(item["collection"]);
+            string? field = StringValue(item["field"]);
+            string? related = StringValue(item["related_collection"]);
+            if (collection is not null && field is not null && related is not null)
+            {
+                result[(collection, field)] = related;
+            }
+        }
+        return result;
+    }
+
+    private async Task<Dictionary<string, string>> GetNamedIdsAsync(
+        string baseUrl, string path, string token, CancellationToken cancellationToken)
+    {
+        JsonArray data = await GetDataArrayAsync(baseUrl, path, token, cancellationToken).ConfigureAwait(false);
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (JsonObject item in data.OfType<JsonObject>())
+        {
+            string? id = StringValue(item["id"]);
+            string? name = StringValue(item["name"]);
+            if (id is null || name is null)
+            {
+                continue;
+            }
+            if (result.TryGetValue(name, out string? duplicateId) && duplicateId != id)
+            {
+                throw new InvalidOperationException($"Directus contains duplicate named resources: {name}.");
+            }
+            result[name] = id;
+        }
+        return result;
+    }
+
+    private async Task<HashSet<(string Role, string Policy)>> GetExistingAccessAsync(
+        string baseUrl, string token, CancellationToken cancellationToken)
+    {
+        JsonArray data = await GetDataArrayAsync(
+            baseUrl, "/access?limit=-1&fields=role,policy", token, cancellationToken).ConfigureAwait(false);
+        var result = new HashSet<(string Role, string Policy)>();
+        foreach (JsonObject item in data.OfType<JsonObject>())
+        {
+            string? role = StringValue(item["role"]);
+            string? policy = StringValue(item["policy"]);
+            if (role is not null && policy is not null)
+            {
+                result.Add((role, policy));
+            }
+        }
+        return result;
+    }
+
+    private async Task<HashSet<(string Policy, string Collection, string Action)>> GetExistingPermissionsAsync(
+        string baseUrl, string token, CancellationToken cancellationToken)
+    {
+        JsonArray data = await GetDataArrayAsync(
+            baseUrl, "/permissions?limit=-1&fields=policy,collection,action", token, cancellationToken)
+            .ConfigureAwait(false);
+        var result = new HashSet<(string Policy, string Collection, string Action)>();
+        foreach (JsonObject item in data.OfType<JsonObject>())
+        {
+            string? policy = StringValue(item["policy"]);
+            string? collection = StringValue(item["collection"]);
+            string? action = StringValue(item["action"]);
+            if (policy is not null && collection is not null && action is not null)
+            {
+                result.Add((policy, collection, action));
+            }
+        }
+        return result;
+    }
+
+    private async Task<JsonArray> GetDataArrayAsync(
+        string baseUrl, string path, string token, CancellationToken cancellationToken)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl.TrimEnd('/')}{path}");
+        req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        using var resp = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(resp, cancellationToken).ConfigureAwait(false);
+        JsonObject payload = await ReadJsonAsync(resp, cancellationToken).ConfigureAwait(false);
+        return payload["data"] as JsonArray ?? new JsonArray();
+    }
+
     /// <summary>POST a single JSON object body (collections, relations, policies, roles).</summary>
     private async Task<JsonObject> PostJsonAsync(
         string baseUrl, string path, string token, JsonNode body, CancellationToken cancellationToken)
     {
         using var resp = await PostAsync($"{baseUrl.TrimEnd('/')}{path}", body, token, cancellationToken).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(resp, cancellationToken).ConfigureAwait(false);
         return await ReadJsonAsync(resp, cancellationToken).ConfigureAwait(false);
     }
 
@@ -460,7 +618,7 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
         string baseUrl, string path, string token, JsonArray body, CancellationToken cancellationToken)
     {
         using var resp = await PostAsync($"{baseUrl.TrimEnd('/')}{path}", body, token, cancellationToken).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(resp, cancellationToken).ConfigureAwait(false);
         return await ReadJsonAsync(resp, cancellationToken).ConfigureAwait(false);
     }
 
@@ -476,10 +634,44 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
         return await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
     }
 
+    internal static async Task EnsureSuccessAsync(
+        HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode)
+        {
+            return;
+        }
+
+        string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (body.Length > 4096)
+        {
+            body = body[..4096] + "…";
+        }
+        string method = response.RequestMessage?.Method.Method ?? "HTTP";
+        string path = response.RequestMessage?.RequestUri?.PathAndQuery ?? "(unknown endpoint)";
+        string reason = response.ReasonPhrase ?? "Request failed";
+        throw new InvalidOperationException(
+            $"Directus request failed: {method} {path} -> {(int)response.StatusCode} ({reason})." +
+            (string.IsNullOrWhiteSpace(body) ? string.Empty : $"\nresponse:\n{body}"));
+    }
+
     private static async Task<JsonObject> ReadJsonAsync(HttpResponseMessage resp, CancellationToken cancellationToken)
     {
         string text = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         return JsonNode.Parse(text)?.AsObject() ?? new JsonObject();
+    }
+
+    private static string RequiredResponseId(JsonObject response, string endpoint) =>
+        StringValue(response["data"]?["id"])
+        ?? throw new InvalidOperationException($"Directus {endpoint} response returned no data.id.");
+
+    private static string? StringValue(JsonNode? node)
+    {
+        if (node is JsonValue value && value.TryGetValue<string>(out string? text))
+        {
+            return text;
+        }
+        return node is JsonObject obj ? StringValue(obj["id"]) : null;
     }
 
     // ---------- misc ----------

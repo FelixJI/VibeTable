@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Threading;
@@ -19,6 +21,34 @@ namespace VibeTable.Infrastructure.Tests.Directus;
 [TestClass]
 public sealed class DirectusPackageManagerTests
 {
+    [TestMethod]
+    public async Task ProcessOutputPump_ForwardsStdoutAndStderrLines()
+    {
+        var stdoutLines = new List<string>();
+        var stderrLines = new List<string>();
+        using var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = BundledNodePath(),
+            Arguments = "-e \"console.log('npm-out'); console.error('npm-err')\"",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        }) ?? throw new InvalidOperationException("Unable to start Node test fixture.");
+
+        var captured = await ProcessOutputPump.CaptureUntilExitAsync(
+            process,
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None,
+            stdoutLines.Add,
+            stderrLines.Add);
+
+        CollectionAssert.Contains(stdoutLines, "npm-out");
+        CollectionAssert.Contains(stderrLines, "npm-err");
+        StringAssert.Contains(captured.Stdout, "npm-out");
+        StringAssert.Contains(captured.Stderr, "npm-err");
+    }
+
     [TestMethod]
     public void ResolveNpmCli_FallsBackToNpmInstallationOnPath()
     {
@@ -96,13 +126,61 @@ public sealed class DirectusPackageManagerTests
             WriteMarker(dir, new { lockHash = hash, verifiedAt = DateTimeOffset.UtcNow, nodeVersion = "v24.18.0" });
 
             var manager = new DirectusPackageManager();
+            var progress = new List<DirectusStartupProgress>();
             // Should return without throwing AND without creating node_modules
             // (which only npm ci would do).
-            manager.EnsureInstalledAsync(BundledNodePath(), dir, CancellationToken.None)
+            manager.EnsureInstalledAsync(
+                    BundledNodePath(),
+                    dir,
+                    CancellationToken.None,
+                    progress.Add,
+                    logLine: null)
                 .GetAwaiter().GetResult();
 
             Assert.IsFalse(Directory.Exists(Path.Combine(dir, "node_modules")),
                 "a fresh matching marker must short-circuit before npm runs");
+            CollectionAssert.AreEqual(
+                new[]
+                {
+                    DirectusStartupStage.CheckingPackages,
+                    DirectusStartupStage.VerifyingPackages,
+                },
+                progress.ConvertAll(item => item.Stage));
+            Assert.IsTrue(progress[^1].UsedFastPath);
+        });
+        await Task.CompletedTask;
+    }
+
+    [TestMethod]
+    public async Task EnsureInstalled_DoesNotTrustFreshMarker_WhenFirstRunIncomplete()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            File.WriteAllText(Path.Combine(dir, "package-lock.json"), "{\"name\":\"x\"}");
+            string hash = ComputeLockHashFor(dir);
+            WriteMarker(dir, new
+            {
+                lockHash = hash,
+                verifiedAt = DateTimeOffset.UtcNow,
+                nodeVersion = "v24.18.0",
+            });
+            var progress = new List<DirectusStartupProgress>();
+            var manager = new DirectusPackageManager(npmTimeout: TimeSpan.FromSeconds(5));
+
+            Assert.Throws<InvalidOperationException>(() =>
+                manager.EnsureInstalledAsync(
+                        BundledNodePath(),
+                        dir,
+                        CancellationToken.None,
+                        progress.Add,
+                        logLine: null,
+                        forceFullVerification: true)
+                    .GetAwaiter().GetResult());
+
+            CollectionAssert.Contains(
+                progress.ConvertAll(item => item.Stage),
+                DirectusStartupStage.InstallingPackages,
+                "an incomplete first run must not return through the marker fast path");
         });
         await Task.CompletedTask;
     }

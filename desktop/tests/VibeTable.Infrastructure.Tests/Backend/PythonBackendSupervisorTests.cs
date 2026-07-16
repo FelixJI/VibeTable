@@ -208,12 +208,24 @@ public sealed class PythonBackendSupervisorTests
     }
 
     [TestMethod]
-    public async Task StartAsync_CapturesStderrSentinel()
+    public async Task StartAsync_CapturesAndForwardsStderrSentinel()
     {
         await using var supervisor = new PythonBackendSupervisor(FakeOptions());
+        var forwarded = new TaskCompletionSource<string>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        supervisor.LogReceived += (_, line) =>
+        {
+            if (line.Contains("vibetable-fake-backend: ready", StringComparison.Ordinal))
+            {
+                forwarded.TrySetResult(line);
+            }
+        };
         try
         {
             await supervisor.StartAsync(CancellationToken.None);
+            string forwardedLine = await forwarded.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            StringAssert.Contains(forwardedLine, "vibetable-fake-backend: ready");
+
             // Give the fake a moment to flush stderr (it writes the sentinel
             // before the first read).
             string stderr = await WaitForStderrAsync(

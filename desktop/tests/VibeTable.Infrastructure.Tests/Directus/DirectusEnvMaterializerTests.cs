@@ -73,6 +73,54 @@ public sealed class DirectusEnvMaterializerTests
     }
 
     [TestMethod]
+    public void Materialize_CreatesConfiguredSqliteParentDirectory()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            File.WriteAllText(Path.Combine(dir, ".env.template"),
+                "KEY=__GENERATE__\nSECRET=__GENERATE__\n"
+                + "DB_CLIENT=sqlite3\nDB_FILENAME=./data/directus.sqlite\n"
+                + "ADMIN_EMAIL=admin@example.com\nADMIN_PASSWORD=__GENERATE__\n");
+
+            DirectusEnvMaterializer.Materialize(dir);
+
+            Assert.IsTrue(Directory.Exists(Path.Combine(dir, "data")));
+        });
+    }
+
+    [TestMethod]
+    public void TryReadBootstrapCredentials_RecoversInterruptedFirstRun()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            File.WriteAllText(Path.Combine(dir, ".env"),
+                "ADMIN_EMAIL=legacy-admin@example.com\nADMIN_PASSWORD=generated-secret\n");
+
+            bool found = DirectusEnvMaterializer.TryReadBootstrapCredentials(
+                dir, out string email, out string password);
+
+            Assert.IsTrue(found);
+            Assert.AreEqual("legacy-admin@example.com", email);
+            Assert.AreEqual("generated-secret", password);
+        });
+    }
+
+    [TestMethod]
+    public void TryReadBootstrapCredentials_RejectsMissingOrPlaceholderPassword()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            Assert.IsFalse(DirectusEnvMaterializer.TryReadBootstrapCredentials(
+                dir, out _, out _));
+
+            File.WriteAllText(Path.Combine(dir, ".env"),
+                "ADMIN_EMAIL=admin@example.com\nADMIN_PASSWORD=__GENERATE__\n");
+            Assert.IsFalse(DirectusEnvMaterializer.TryReadBootstrapCredentials(
+                dir, out _, out _));
+        });
+    }
+
+    [TestMethod]
     public void PickFreePort_ReturnsPreferredWhenFree()
     {
         // Pick an ephemeral range port that is very likely free.

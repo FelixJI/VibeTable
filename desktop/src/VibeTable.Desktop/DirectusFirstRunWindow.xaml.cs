@@ -6,9 +6,29 @@ namespace VibeTable.Desktop;
 
 public partial class DirectusFirstRunWindow : Window
 {
-    public DirectusFirstRunWindow()
+    private readonly bool _resumeExisting;
+
+    public DirectusFirstRunWindow(bool resumeExisting = false, string? existingEmail = null)
     {
+        _resumeExisting = resumeExisting;
         InitializeComponent();
+        if (resumeExisting)
+        {
+            HeadingText.Text = "继续首次初始化";
+            IntroductionText.Text =
+                "检测到上次已创建本地管理员，但初始化尚未完成。VibeTable 将保留现有数据库和账号，从中断处继续。";
+            EmailBox.Text = existingEmail ?? "本地托管管理员";
+            EmailBox.IsEnabled = false;
+            ManagedLoginBox.IsChecked = true;
+            ManagedLoginBox.IsEnabled = false;
+            ManagedLoginBox.Content = "继续使用已创建的本地托管管理员";
+            PasswordPanel.Visibility = Visibility.Collapsed;
+            RememberPasswordBox.IsChecked = true;
+            RememberPasswordBox.IsEnabled = false;
+            AutoLoginBox.IsChecked = true;
+            AutoLoginBox.IsEnabled = false;
+            ConfirmButton.Content = "继续初始化";
+        }
         UpdateMode();
     }
 
@@ -36,6 +56,16 @@ public partial class DirectusFirstRunWindow : Window
 
     private void OnConfirmClick(object sender, RoutedEventArgs e)
     {
+        if (_resumeExisting)
+        {
+            Email = EmailBox.Text.Trim();
+            ManagedLogin = true;
+            RememberPassword = true;
+            AutoLogin = true;
+            DialogResult = true;
+            return;
+        }
+
         string email = EmailBox.Text.Trim();
         if (!LooksLikeEmail(email))
         {

@@ -54,6 +54,7 @@ public sealed class DirectusSupervisor : IAsyncDisposable
     private DirectusState _state = DirectusState.Stopped;
     private Process? _process;
     private JobObject? _job;
+    private Task? _stdoutTask;
     private Task? _stderrTask;
     private string? _baseUrl;
     private string? _nodeExe;
@@ -92,6 +93,22 @@ public sealed class DirectusSupervisor : IAsyncDisposable
     /// </summary>
     public string? BaseUrl => _baseUrl;
 
+    /// <summary>Raised whenever the Directus lifecycle state changes.</summary>
+    public event Action<object?, DirectusState>? StateChanged;
+
+    /// <summary>
+    /// Raised for fine-grained startup stages while <see cref="State"/> is
+    /// <see cref="DirectusState.Starting"/>.
+    /// </summary>
+    public event Action<object?, DirectusStartupProgress>? ProgressChanged;
+
+    /// <summary>
+    /// Raised for each line written by Directus to stdout or stderr. Directus
+    /// uses both streams for diagnostics, so both must be drained continuously.
+    /// Handlers run on background stream readers and must return promptly.
+    /// </summary>
+    public event Action<object?, string>? LogReceived;
+
     /// <summary>Captured stderr from the Directus child (for diagnostics).</summary>
     public string GetStdErrorLog()
     {
@@ -117,6 +134,9 @@ public sealed class DirectusSupervisor : IAsyncDisposable
 
         try
         {
+            ReportProgress(
+                DirectusStartupStage.PreparingRuntime,
+                "Preparing the local Directus runtime directory.");
             PrepareRuntimeDirectory();
             // Stage 2: npm ci + integrity verification (no run.py involvement).
             await RunInstallAsync(cancellationToken).ConfigureAwait(false);
@@ -143,11 +163,22 @@ public sealed class DirectusSupervisor : IAsyncDisposable
             // 3. Stage the bulk-mutation extension so Directus loads it.
             DeployExtension();
             // 4. Bootstrap the DB + seed the VibeTable schema (idempotent).
+            ReportProgress(
+                DirectusStartupStage.InitializingDatabase,
+                alreadyBootstrapped
+                    ? "The Directus database already exists; checking initialization state."
+                    : "Creating the Directus database and local administrator.");
             await BootstrapAsync(env, cancellationToken).ConfigureAwait(false);
             // 5. Start directus directly (no run.py): node <directus-cli> start.
+            ReportProgress(
+                DirectusStartupStage.StartingService,
+                $"Starting the local Directus service on port {port}.");
             (_process, _job) = SpawnDirectus(port, env);
 
             _baseUrl = $"http://localhost:{port}";
+            ReportProgress(
+                DirectusStartupStage.WaitingForService,
+                "Waiting for the Directus health endpoint to respond.");
             await WaitForPingAsync(_baseUrl, cancellationToken).ConfigureAwait(false);
 
             // 6. Now that directus is reachable, seed the VibeTable schema (REST).
@@ -155,20 +186,40 @@ public sealed class DirectusSupervisor : IAsyncDisposable
             //    relation/policy seeding. Idempotent (skipped once .schema-applied).
             if (_pendingSchemaApply is { } pending)
             {
+                ReportProgress(
+                    DirectusStartupStage.ApplyingSchema,
+                    "Creating the initial VibeTable collections, relations, and permissions.");
                 string adminEmail = pending.Env.TryGetValue("ADMIN_EMAIL", out string? em) ? em : "admin@local";
                 string adminPassword = pending.Env.TryGetValue("ADMIN_PASSWORD", out string? pw) ? pw : "";
-                await pending.Bootstrapper.ApplySchemaIfFirstBootAsync(
-                    _baseUrl!,
-                    adminEmail,
-                    adminPassword,
-                    Path.Combine(_options.ResourceRoot, "directus", "blueprints", "vibetable-empty.json"),
-                    _options.LocalDirectusDirectory,
-                    cancellationToken).ConfigureAwait(false);
-                await pending.Bootstrapper.DisposeAsync().ConfigureAwait(false);
-                _pendingSchemaApply = null;
+                try
+                {
+                    await pending.Bootstrapper.ApplySchemaIfFirstBootAsync(
+                        _baseUrl!,
+                        adminEmail,
+                        adminPassword,
+                        Path.Combine(_options.ResourceRoot, "directus", "blueprints", "vibetable-empty.json"),
+                        _options.LocalDirectusDirectory,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    await pending.Bootstrapper.DisposeAsync().ConfigureAwait(false);
+                    _pendingSchemaApply = null;
+                }
             }
 
-            lock (_stateGate) { TransitionLocked(DirectusState.Ready); }
+            lock (_stateGate)
+            {
+                if (_state == DirectusState.Faulted)
+                {
+                    throw new InvalidOperationException(
+                        "Directus exited before the Ready transition.");
+                }
+                TransitionLocked(DirectusState.Ready);
+            }
+            ReportProgress(
+                DirectusStartupStage.Ready,
+                "Directus initialization is complete.");
         }
         catch
         {
@@ -181,12 +232,26 @@ public sealed class DirectusSupervisor : IAsyncDisposable
     /// <summary>Gracefully stops the Directus child, then force-kills if needed.</summary>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        lock (_stateGate)
+        {
+            if (_state is not (DirectusState.Stopped or DirectusState.Faulted))
+            {
+                TransitionLocked(DirectusState.Stopping);
+            }
+        }
         await TeardownAsync().ConfigureAwait(false);
         lock (_stateGate) { TransitionLocked(DirectusState.Stopped); }
     }
 
     public async ValueTask DisposeAsync()
     {
+        lock (_stateGate)
+        {
+            if (_state is not (DirectusState.Stopped or DirectusState.Faulted))
+            {
+                TransitionLocked(DirectusState.Stopping);
+            }
+        }
         try { await TeardownAsync().ConfigureAwait(false); }
         catch { /* best-effort */ }
         lock (_stateGate)
@@ -215,7 +280,13 @@ public sealed class DirectusSupervisor : IAsyncDisposable
                 "Node.js 24.x not found (neither bundled nor on PATH); cannot install Directus.");
         }
         await _packageManager
-            .EnsureInstalledAsync(_nodeExe, _options.LocalDirectusDirectory, cancellationToken)
+            .EnsureInstalledAsync(
+                _nodeExe,
+                _options.LocalDirectusDirectory,
+                cancellationToken,
+                progress => PublishProgress(progress),
+                line => PublishLogLine(line),
+                forceFullVerification: _options.ForcePackageVerification)
             .ConfigureAwait(false);
     }
 
@@ -226,13 +297,25 @@ public sealed class DirectusSupervisor : IAsyncDisposable
     /// </summary>
     private async Task BootstrapAsync(IDictionary<string, string> env, CancellationToken cancellationToken)
     {
-        await using var bootstrapper = new DirectusSchemaBootstrapper();
-        await bootstrapper.BootstrapDatabaseAsync(
-            _nodeExe!, _options.LocalDirectusDirectory, env, cancellationToken).ConfigureAwait(false);
+        var bootstrapper = new DirectusSchemaBootstrapper();
+        try
+        {
+            await bootstrapper.BootstrapDatabaseAsync(
+                _nodeExe!,
+                _options.LocalDirectusDirectory,
+                env,
+                cancellationToken,
+                line => PublishLogLine(line)).ConfigureAwait(false);
 
-        // Schema apply needs a reachable server: we have not started directus yet,
-        // so defer it to after SpawnDirectus+ping. Hand off via a continuation.
-        _pendingSchemaApply = (bootstrapper, env);
+            // Schema apply needs a reachable server. Keep this bootstrapper alive
+            // until Directus has started and the REST seeding step has finished.
+            _pendingSchemaApply = (bootstrapper, env);
+        }
+        catch
+        {
+            await bootstrapper.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <summary>
@@ -326,7 +409,8 @@ public sealed class DirectusSupervisor : IAsyncDisposable
             catch { /* soft-degrade; teardown still force-kills */ }
         }
 
-        StartStderrCapture(process);
+        process.Exited += OnProcessExited;
+        StartLogCapture(process);
         return (process, job);
     }
 
@@ -350,6 +434,27 @@ public sealed class DirectusSupervisor : IAsyncDisposable
                 Path.Combine(_options.LocalDirectusDirectory, name),
                 overwrite: true);
         }
+    }
+
+    private void StartLogCapture(Process process)
+    {
+        // Directus writes normal operational logs to stdout. Leaving the
+        // redirected stream unread can eventually fill the OS pipe and stall
+        // the child, so always drain it even when there are no subscribers.
+        _stdoutTask = Task.Run(async () =>
+        {
+            var sr = process.StandardOutput;
+            while (true)
+            {
+                string? line;
+                try { line = await sr.ReadLineAsync().ConfigureAwait(false); }
+                catch { break; }
+                if (line is null) { break; }
+                PublishLogLine(line);
+            }
+        });
+
+        StartStderrCapture(process);
     }
 
     private void StartStderrCapture(Process process)
@@ -379,6 +484,7 @@ public sealed class DirectusSupervisor : IAsyncDisposable
                     catch { break; }
                     if (line is null) { break; }
                     lock (_stderrBuffer) { _stderrBuffer.AppendLine(line); }
+                    PublishLogLine(line);
                     if (logWriter is not null)
                     {
                         try { await logWriter.WriteLineAsync(line).ConfigureAwait(false); }
@@ -389,6 +495,45 @@ public sealed class DirectusSupervisor : IAsyncDisposable
             catch { /* never fault the capture task */ }
             finally { logWriter?.Dispose(); }
         });
+    }
+
+    private void PublishLogLine(string line)
+    {
+        var handler = LogReceived;
+        if (handler is null)
+        {
+            return;
+        }
+        try { handler(this, line); }
+        catch { /* a C# log consumer must never stop draining the child */ }
+    }
+
+    private void ReportProgress(
+        DirectusStartupStage stage,
+        string detail,
+        bool usedFastPath = false)
+        => PublishProgress(new DirectusStartupProgress(stage, detail, usedFastPath));
+
+    private void PublishProgress(DirectusStartupProgress progress)
+    {
+        var handler = ProgressChanged;
+        if (handler is null)
+        {
+            return;
+        }
+        try { handler(this, progress); }
+        catch { /* observers must not break startup */ }
+    }
+
+    private void OnProcessExited(object? sender, EventArgs e)
+    {
+        lock (_stateGate)
+        {
+            if (_state is DirectusState.Starting or DirectusState.Ready)
+            {
+                TransitionLocked(DirectusState.Faulted);
+            }
+        }
     }
 
     /// <summary>
@@ -430,6 +575,12 @@ public sealed class DirectusSupervisor : IAsyncDisposable
 
     private async Task TeardownAsync()
     {
+        if (_pendingSchemaApply is { } pending)
+        {
+            _pendingSchemaApply = null;
+            try { await pending.Bootstrapper.DisposeAsync().ConfigureAwait(false); }
+            catch { /* best-effort cleanup after a failed spawn/readiness poll */ }
+        }
         var process = _process;
         if (process is not null && !process.HasExited)
         {
@@ -444,6 +595,11 @@ public sealed class DirectusSupervisor : IAsyncDisposable
         try { _job?.Dispose(); } catch { }
         _job = null;
         _process = null;
+        if (_stdoutTask is not null)
+        {
+            try { await _stdoutTask.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
+            catch { /* best-effort drain */ }
+        }
         if (_stderrTask is not null)
         {
             try { await _stderrTask.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
@@ -454,7 +610,20 @@ public sealed class DirectusSupervisor : IAsyncDisposable
     private void TransitionLocked(DirectusState next)
     {
         // Caller holds _stateGate.
+        if (_state == next)
+        {
+            return;
+        }
         _state = next;
+        var handler = StateChanged;
+        if (handler is not null)
+        {
+            Task.Run(() =>
+            {
+                try { handler(this, next); }
+                catch { /* observers must not break lifecycle transitions */ }
+            });
+        }
     }
 }
 

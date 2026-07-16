@@ -93,6 +93,21 @@ public sealed class DirectusPackageManager
     /// <c>package.json</c>/<c>package-lock.json</c>; <c>node_modules</c> lands
     /// here.</param>
     public async Task EnsureInstalledAsync(string nodeExe, string localDirectusDir, CancellationToken cancellationToken)
+        => await EnsureInstalledAsync(
+            nodeExe,
+            localDirectusDir,
+            cancellationToken,
+            progress: null,
+            logLine: null,
+            forceFullVerification: false).ConfigureAwait(false);
+
+    internal async Task EnsureInstalledAsync(
+        string nodeExe,
+        string localDirectusDir,
+        CancellationToken cancellationToken,
+        Action<DirectusStartupProgress>? progress,
+        Action<string>? logLine,
+        bool forceFullVerification = false)
     {
         if (!File.Exists(nodeExe))
         {
@@ -102,25 +117,69 @@ public sealed class DirectusPackageManager
 
         string npmScript = ResolveNpmCli(nodeExe);
         string lockHash = ComputeLockHash(localDirectusDir);
+        progress?.Invoke(new DirectusStartupProgress(
+            DirectusStartupStage.CheckingPackages,
+            "Checking the local Directus package cache."));
 
-        // Fast path: a fresh, matching marker short-circuits everything.
-        if (TryReadMarker(localDirectusDir, out InstallMarker? read)
+        bool markerIsCurrent = TryReadMarker(localDirectusDir, out InstallMarker? read)
             && read is { } marker
             && marker.LockHash == lockHash
-            && !IsExpired(marker))
+            && !IsExpired(marker);
+
+        // Only a completed first-run experience may trust the cached marker
+        // without touching package files. An interrupted initialization forces
+        // the real structural/native verification on the next attempt.
+        if (markerIsCurrent && !forceFullVerification)
         {
+            progress?.Invoke(new DirectusStartupProgress(
+                DirectusStartupStage.VerifyingPackages,
+                "The cached package verification is current; no reinstall is needed.",
+                UsedFastPath: true));
             return;
+        }
+
+        bool hasExistingInstall = Directory.Exists(Path.Combine(
+            localDirectusDir, "node_modules", "directus"));
+        if (forceFullVerification && hasExistingInstall)
+        {
+            progress?.Invoke(new DirectusStartupProgress(
+                DirectusStartupStage.VerifyingPackages,
+                "The previous initialization did not finish; rechecking all package files and native modules."));
+            bool existingVerified = await VerifyAsync(
+                nodeExe, localDirectusDir, lockHash, cancellationToken).ConfigureAwait(false);
+            if (existingVerified)
+            {
+                WriteMarker(localDirectusDir, new InstallMarker(
+                    LockHash: lockHash,
+                    VerifiedAt: DateTimeOffset.UtcNow,
+                    NodeVersion: ReadNodeVersion(nodeExe)));
+                return;
+            }
         }
 
         // Install (idempotent: npm ci is a no-op if node_modules is already
         // consistent with the lockfile) then verify. If verification fails once,
         // self-heal by wiping node_modules and reinstalling.
-        await RunNpmCiAsync(nodeExe, npmScript, localDirectusDir, cancellationToken).ConfigureAwait(false);
+        progress?.Invoke(new DirectusStartupProgress(
+            DirectusStartupStage.InstallingPackages,
+            "Installing Directus packages. The first run can take several minutes."));
+        await RunNpmCiAsync(
+            nodeExe, npmScript, localDirectusDir, cancellationToken, logLine).ConfigureAwait(false);
+        progress?.Invoke(new DirectusStartupProgress(
+            DirectusStartupStage.VerifyingPackages,
+            "Verifying package structure and native modules."));
         bool verified = await VerifyAsync(nodeExe, localDirectusDir, lockHash, cancellationToken).ConfigureAwait(false);
         if (!verified)
         {
+            progress?.Invoke(new DirectusStartupProgress(
+                DirectusStartupStage.RepairingPackages,
+                "Package verification failed; repairing the local installation once."));
             SelfHeal(localDirectusDir);
-            await RunNpmCiAsync(nodeExe, npmScript, localDirectusDir, cancellationToken).ConfigureAwait(false);
+            await RunNpmCiAsync(
+                nodeExe, npmScript, localDirectusDir, cancellationToken, logLine).ConfigureAwait(false);
+            progress?.Invoke(new DirectusStartupProgress(
+                DirectusStartupStage.VerifyingPackages,
+                "Verifying the repaired package installation."));
             verified = await VerifyAsync(nodeExe, localDirectusDir, lockHash, cancellationToken).ConfigureAwait(false);
             if (!verified)
             {
@@ -186,7 +245,11 @@ public sealed class DirectusPackageManager
     // ---------- npm orchestration ----------
 
     private async Task RunNpmCiAsync(
-        string nodeExe, string npmCli, string localDirectusDir, CancellationToken cancellationToken)
+        string nodeExe,
+        string npmCli,
+        string localDirectusDir,
+        CancellationToken cancellationToken,
+        Action<string>? logLine)
     {
         var env = BuildIsolatedNpmEnvironment(nodeExe, localDirectusDir);
         // `node <npm-cli> ci` runs npm without depending on npm being on PATH.
@@ -210,10 +273,12 @@ public sealed class DirectusPackageManager
 
         using var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start npm ci.");
-        // npm ci streams progress to stdout/stderr; we only need exit + tail.
-        string stdout = await proc.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-        string stderr = await proc.StandardError.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-        await proc.WaitForExitAsync(cancellationToken).WaitAsync(_npmTimeout, cancellationToken).ConfigureAwait(false);
+        var (stdout, stderr) = await ProcessOutputPump.CaptureUntilExitAsync(
+            proc,
+            _npmTimeout,
+            cancellationToken,
+            logLine,
+            logLine).ConfigureAwait(false);
 
         if (proc.ExitCode != 0)
         {
