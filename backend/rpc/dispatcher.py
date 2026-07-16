@@ -1,0 +1,355 @@
+"""JSON-RPC 2.0 dispatcher.
+
+Validates inbound request frames, looks up the registered handler, validates
+params with the registered Pydantic model, awaits the handler, and serializes
+the result by alias. Errors are mapped to JSON-RPC codes:
+
+================  ===========================  =========================
+JSON-RPC code     Name                         Source
+================  ===========================  =========================
+``-32600``        Invalid Request              ``RpcRequest`` validation
+``-32601``        Method not found             unknown ``method``
+``-32602``        Invalid params               params model validation
+``-32001``        Protocol mismatch            ``ProtocolMismatchError``
+``-32010``        Edit conflict                ``EditConflictError`` (B1)
+``-32011``        Mutation validation          ``MutationValidationError`` (B1)
+``-32020``        Table not found              ``TableNotFoundError``
+``-32021``        Invalid argument             ``InvalidArgumentError`` /
+                                              ``QueryCompileError`` (B3)
+``-32022``        Database not found           ``DatabaseNotFoundError``
+``-32603``        Internal error               any other handler exception
+================  ===========================  =========================
+
+Typed application errors are mapped to ``(code, kind)`` pairs through the
+``_APP_ERROR_MAP`` registry below. To add a new mapping, extend both the table
+and the ``CODE_*`` constant. Application errors must NOT subclass each other:
+the dispatcher iterates the registry in definition order, so common base
+classes would shadow their more specific subclasses.
+
+The B1 mutation errors (:class:`EditConflictError`,
+:class:`MutationValidationError`) carry **extra structured data** beyond the
+generic ``{kind, message}`` envelope: a conflict carries ``currentRow`` and a
+validation error carries ``fieldErrors``. Application errors may expose an
+``rpc_error_data`` attribute returning a dict that the dispatcher merges into
+the error object's ``data``; the registry's ``kind``/``message`` are still
+applied so the generic envelope stays stable.
+
+B3 reuses the existing ``-32021`` invalid-argument code for query-compile
+errors (unknown columns, bad operator arity, remote-regex rejection): they
+share the same ``invalid_argument`` kind so no new protocol code is needed.
+``QueryCompileError`` carries an optional ``field`` in its ``rpc_error_data``
+to tell the host which column triggered the rejection.
+
+Notifications (requests with no ``id``) are dispatched for side effects but
+produce no response object — ``dispatch`` returns ``None`` for them.
+"""
+
+from __future__ import annotations
+
+import inspect
+from collections.abc import Callable
+from typing import Any
+
+from pydantic import BaseModel, ValidationError
+
+from backend.application.system_service import ProtocolMismatchError
+from backend.rpc.messages import RpcRequest
+
+#: JSON-RPC error codes used by this dispatcher.
+CODE_INVALID_REQUEST = -32600
+CODE_METHOD_NOT_FOUND = -32601
+CODE_INVALID_PARAMS = -32602
+CODE_INTERNAL_ERROR = -32603
+CODE_PROTOCOL_MISMATCH = -32001
+CODE_EDIT_CONFLICT = -32010
+CODE_MUTATION_VALIDATION = -32011
+CODE_TABLE_NOT_FOUND = -32020
+CODE_INVALID_ARGUMENT = -32021
+CODE_DATABASE_NOT_FOUND = -32022
+CODE_DIRECTUS_SESSION = -32030
+CODE_DIRECTUS_API = -32031
+CODE_DIRECTUS_SCHEMA = -32032
+CODE_PASTE = -32040
+CODE_PATH_GRANT = -32050
+CODE_IMPORT = -32060
+CODE_COLLABORATION = -32070
+CODE_INSIGHTS = -32080
+CODE_FILE_TOOLS = -32090
+CODE_SETTINGS_COMMAND = -32100
+CODE_TABLE_ADMIN = -32110
+
+#: Maps each typed application error class to a ``(code, message, kind)``
+#: tuple. Order matters only if classes share a base class — they do not here.
+#: Keep ``Exception`` *out* of this map: the dispatcher falls back to
+#: ``CODE_INTERNAL_ERROR`` for any exception not listed.
+_APP_ERROR_MAP: dict[type[Exception], tuple[int, str, str]] = {
+    ProtocolMismatchError: (CODE_PROTOCOL_MISMATCH, "Protocol mismatch", "protocol_mismatch"),
+}
+
+
+def register_directus_errors() -> None:
+    """Register B4 Directus errors without importing the adapter at startup."""
+    from backend.adapters.directus.errors import (
+        DirectusSchemaError,
+        DirectusSessionError,
+        DirectusTransportError,
+    )
+
+    _APP_ERROR_MAP[DirectusSessionError] = (
+        CODE_DIRECTUS_SESSION,
+        "Directus session error",
+        "directus_session",
+    )
+    _APP_ERROR_MAP[DirectusTransportError] = (
+        CODE_DIRECTUS_API,
+        "Directus API error",
+        "directus_api",
+    )
+    _APP_ERROR_MAP[DirectusSchemaError] = (
+        CODE_DIRECTUS_SCHEMA,
+        "Directus schema error",
+        "directus_schema",
+    )
+
+
+def register_paste_errors() -> None:
+    """Register B2 paste errors without importing the service at startup."""
+    from backend.application.paste_service import PasteError
+
+    if PasteError not in _APP_ERROR_MAP:
+        _APP_ERROR_MAP[PasteError] = (
+            CODE_PASTE,
+            "Paste error",
+            "paste_error",
+        )
+
+
+def register_path_grant_errors() -> None:
+    """Register C1 path-grant errors without importing the service at startup."""
+    from backend.application.path_grant import PathGrantError
+
+    if PathGrantError not in _APP_ERROR_MAP:
+        _APP_ERROR_MAP[PathGrantError] = (
+            CODE_PATH_GRANT,
+            "Path grant error",
+            "path_grant_error",
+        )
+
+
+def register_import_errors() -> None:
+    """Register C1 import errors without importing the service at startup."""
+    from backend.application.import_service import ImportFlowError
+
+    if ImportFlowError not in _APP_ERROR_MAP:
+        _APP_ERROR_MAP[ImportFlowError] = (
+            CODE_IMPORT,
+            "Import error",
+            "import_error",
+        )
+
+
+def register_collaboration_errors() -> None:
+    """Register C2 collaboration errors without importing the service at startup."""
+    from backend.application.collaboration_service import CollaborationError
+
+    if CollaborationError not in _APP_ERROR_MAP:
+        _APP_ERROR_MAP[CollaborationError] = (
+            CODE_COLLABORATION,
+            "Collaboration error",
+            "collaboration_error",
+        )
+
+
+def register_insights_errors() -> None:
+    """Register C2 insights errors without importing the service at startup."""
+    from backend.application.insights_service import InsightsError
+
+    if InsightsError not in _APP_ERROR_MAP:
+        _APP_ERROR_MAP[InsightsError] = (
+            CODE_INSIGHTS,
+            "Insights error",
+            "insights_error",
+        )
+
+
+def register_file_tools_errors() -> None:
+    """Register D1 file-tools errors without importing the service at startup."""
+    from backend.application.file_tools_service import FileToolsError
+
+    if FileToolsError not in _APP_ERROR_MAP:
+        _APP_ERROR_MAP[FileToolsError] = (
+            CODE_FILE_TOOLS,
+            "File tools error",
+            "file_tools_error",
+        )
+
+
+def register_settings_command_errors() -> None:
+    """Register D2 settings/command errors without importing the service at startup."""
+    from backend.application.settings_command_service import SettingsCommandError
+
+    if SettingsCommandError not in _APP_ERROR_MAP:
+        _APP_ERROR_MAP[SettingsCommandError] = (
+            CODE_SETTINGS_COMMAND,
+            "Settings/command error",
+            "settings_command_error",
+        )
+
+
+def register_table_admin_errors() -> None:
+    """Register Phase 4 table-admin errors without importing the service at startup."""
+    from backend.application.table_admin_service import TableAdminError
+
+    if TableAdminError not in _APP_ERROR_MAP:
+        _APP_ERROR_MAP[TableAdminError] = (
+            CODE_TABLE_ADMIN,
+            "Table admin error",
+            "table_admin_error",
+        )
+
+
+Handler = Callable[..., Any]
+ParamsModel = type[BaseModel]
+
+
+class RpcDispatcher:
+    """Registry of JSON-RPC method handlers."""
+
+    def __init__(self) -> None:
+        self._handlers: dict[str, tuple[Handler, ParamsModel, bool]] = {}
+
+    @property
+    def registered_methods(self) -> tuple[str, ...]:
+        """Return the currently registered method names in deterministic order."""
+        return tuple(sorted(self._handlers))
+
+    def register(self, method: str, handler: Handler, params_model: ParamsModel) -> None:
+        """Register ``handler`` for ``method``.
+
+        ``params_model`` validates the request. Handlers whose parameter names
+        match model fields receive validated keyword arguments; DTO-oriented
+        handlers receive the model instance. Sync and async handlers are both
+        supported so pure local services need no fake coroutine wrapper.
+        """
+        parameters = [
+            parameter
+            for parameter in inspect.signature(handler).parameters.values()
+            if parameter.kind
+            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        unpack_params = bool(parameters) and all(
+            parameter.name in params_model.model_fields for parameter in parameters
+        )
+        self._handlers[method] = (handler, params_model, unpack_params)
+
+    async def dispatch(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """Dispatch one decoded request frame.
+
+        Returns the JSON-RPC response object (ready for framing) or ``None``
+        for notifications (requests without an ``id``).
+        """
+        # --- 1. Validate the request envelope ----------------------------
+        try:
+            request = RpcRequest.model_validate(payload)
+        except ValidationError:
+            return self._error_response(
+                payload.get("id"),
+                CODE_INVALID_REQUEST,
+                "Invalid Request",
+            )
+
+        is_notification = request.id is None
+
+        # --- 2. Look up the handler --------------------------------------
+        registered = self._handlers.get(request.method)
+        if registered is None:
+            if is_notification:
+                return None
+            return self._error_response(
+                request.id,
+                CODE_METHOD_NOT_FOUND,
+                "Method not found",
+            )
+
+        handler, params_model, unpack_params = registered
+
+        # --- 3. Validate params ------------------------------------------
+        try:
+            params = params_model.model_validate(request.params)
+        except ValidationError:
+            if is_notification:
+                return None
+            return self._error_response(
+                request.id,
+                CODE_INVALID_PARAMS,
+                "Invalid params",
+            )
+
+        # --- 4. Await the handler ----------------------------------------
+        try:
+            if unpack_params:
+                kwargs = {
+                    name: getattr(params, name)
+                    for name in params_model.model_fields
+                    if name in inspect.signature(handler).parameters
+                }
+                result = handler(**kwargs)
+            else:
+                result = handler(params)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:
+            if is_notification:
+                return None
+            mapping = _APP_ERROR_MAP.get(type(exc))
+            if mapping is not None:
+                code, message, kind = mapping
+                # B1 mutation errors carry extra structured data (currentRow,
+                # fieldErrors) exposed via ``rpc_error_data``. Merge it into
+                # the generic envelope.
+                data: dict[str, Any] = {"kind": kind, "message": str(exc)}
+                extra = getattr(exc, "rpc_error_data", None)
+                if isinstance(extra, dict):
+                    data.update(extra)
+                return self._error_response(
+                    request.id,
+                    code,
+                    message,
+                    data=data,
+                )
+            return self._error_response(
+                request.id,
+                CODE_INTERNAL_ERROR,
+                "Internal error",
+            )
+
+        if is_notification:
+            return None
+
+        # --- 5. Serialize the result by alias ----------------------------
+        if isinstance(result, BaseModel):
+            serialized = result.model_dump(by_alias=True, mode="json")
+        else:
+            serialized = result
+        return {
+            "jsonrpc": "2.0",
+            "id": request.id,
+            "result": serialized,
+        }
+
+    @staticmethod
+    def _error_response(
+        request_id: str | int | None,
+        code: int,
+        message: str,
+        *,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        error: dict[str, Any] = {"code": code, "message": message}
+        if data is not None:
+            error["data"] = data
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": error,
+        }

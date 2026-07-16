@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- G2: BCL-only version kernel. No third-party packages. -->
+  </PropertyGroup>
+
+</Project>

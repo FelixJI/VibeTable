@@ -1,0 +1,99 @@
+{
+  "contract": "table.e2-e3.release.fixtures.v1",
+  "schemaVersion": "vibetable-1.0",
+  "releaseManifest": {
+    "releaseVersion": "1.0.0",
+    "directusCompatibility": {
+      "apiRange": ">=12 <13",
+      "requiredCapabilities": [
+        "directus.project.v1",
+        "auth.local-session.v1",
+        "directus.schema.v1",
+        "table.query.directus.v1",
+        "table.mutation.directus.v1",
+        "directus.realtime.v1"
+      ],
+      "schemaContract": "vibetable-1.0",
+      "dashboardPanelManifestVersion": "dashboard-panel-manifest.v1",
+      "assetPresetKeys": ["thumbnail-small", "thumbnail-medium", "preview-large", "card-cover"]
+    },
+    "components": [
+      {"component": "backend", "sha256": "abc123def456abc123def456abc123def456abc123def456abc123def456abcd"},
+      {"component": "desktop", "sha256": "def456abc123def456abc123def456abc123def456abc123def456abc123def0"}
+    ],
+    "sbomPath": "sbom.json",
+    "signature": "signed-by-build-pipeline",
+    "builtAt": "2026-07-14T12:00:00Z"
+  },
+  "launcherPointer": {
+    "activeVersion": "1.0.0",
+    "versionDirectory": "C:/ProgramData/VibeTable/versions/1.0.0",
+    "manifestPath": "C:/ProgramData/VibeTable/versions/1.0.0/manifest.json",
+    "previousVersion": null
+  },
+  "updateResult": {
+    "targetVersion": "1.1.0",
+    "state": "succeeded",
+    "previousVersion": "1.0.0",
+    "error": null
+  },
+  "rollbackResult": {
+    "rolledBackTo": "1.0.0",
+    "currentVersion": "1.1.0",
+    "reason": "new version self-check failed"
+  },
+  "compatibilityReport": {
+    "compatible": {"status": "compatible", "serverVersion": "12.1.1", "missingCapabilities": [], "schemaContractMatch": true, "message": "Directus server is compatible."},
+    "offline": {"status": "offline", "serverVersion": null, "missingCapabilities": [], "schemaContractMatch": true, "message": "Directus server unreachable."},
+    "incompatible": {"status": "incompatible", "serverVersion": "10.0.0", "missingCapabilities": ["directus.realtime.v1"], "schemaContractMatch": false, "message": "Missing capabilities."}
+  },
+  "productionBootstrap": {
+    "plan": {
+      "directusVersion": "12.1.1",
+      "schemaVersion": "vibetable-1.0",
+      "capabilityManifestPath": "directus/capabilities/vibetable-empty-capabilities.json",
+      "blueprintPath": "directus/blueprints/vibetable-empty.json",
+      "extensions": ["vibetable-bulk-mutation"],
+      "flows": ["vibetable-notify-owner"],
+      "state": "planned"
+    },
+    "result": {
+      "state": "applied",
+      "collectionsCreated": 6,
+      "policiesCreated": 3,
+      "rolesCreated": 3,
+      "extensionsDeployed": 1,
+      "error": null
+    }
+  },
+  "acceptanceReport": {
+    "checks": [
+      {"category": "auth", "name": "Local login", "passed": true, "evidence": "E2E passed"},
+      {"category": "permissions", "name": "Role CRUD matrix", "passed": true, "evidence": "viewer/editor/manager verified"},
+      {"category": "core", "name": "Schema/query/CRUD/Realtime", "passed": true, "evidence": "B4 regression"},
+      {"category": "batch", "name": "Paste preview/apply", "passed": true, "evidence": "B2 regression"},
+      {"category": "disabled-features", "name": "Shares/Translations/SSO absent", "passed": true, "evidence": "Non-existence gate"}
+    ],
+    "p0Passed": true,
+    "p1Passed": true,
+    "disabledFeaturesConfirmed": true,
+    "summary": "All P0/P1 checks passed; production-ready."
+  },
+  "operationsRunbook": {
+    "deploymentSteps": ["Apply schema via directus_project.py", "Deploy extensions", "Create admin + business roles", "Rotate bootstrap secret"],
+    "schemaApplyCommand": "uv run python scripts/directus_project.py apply --yes",
+    "backupStrategy": "Daily PostgreSQL pg_dump + file storage snapshot",
+    "rpoRto": "RPO=24h, RTO=4h",
+    "monitoringEndpoints": ["/server/health", "/server/info"],
+    "incidentResponse": "See runbook section 5"
+  },
+  "releaseApproval": {
+    "releaseVersion": "1.0.0",
+    "approved": true,
+    "approvedAt": "2026-07-14T18:00:00Z",
+    "conditions": [],
+    "acceptanceReport": {"checks": [], "p0Passed": true, "p1Passed": true, "disabledFeaturesConfirmed": true, "summary": "Approved"}
+  },
+  "noSecretsInPackage": true,
+  "noDirectusServerInPackage": true
+}

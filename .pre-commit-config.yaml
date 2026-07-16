@@ -1,0 +1,28 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: Ruff 格式检查
+        entry: python -m ruff format --check
+        language: system
+        types: [python]
+
+      - id: ruff-check
+        name: Ruff 静态检查
+        entry: python -m ruff check
+        language: system
+        types: [python]
+
+      - id: version-consistency
+        name: VibeTable 跨组件版本一致性
+        entry: python qa/version_check.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: package-contract
+        name: VibeTable 打包契约
+        entry: python qa/package_check.py
+        language: system
+        pass_filenames: false
+        always_run: true

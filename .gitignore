@@ -1,0 +1,184 @@
+# Lock files
+# Use uv.lock, ignore poetry.lock
+poetry.lock
+poetry.lock.backup
+pyproject.toml.poetry_backup
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+.ruff_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+# local_settings.py
+# db.sqlite3
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# celery beat schedule file
+celerybeat-schedule
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+# dmypy.json
+# dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# IDE
+.vscode/
+.idea/
+
+# AI/Claude related files
+.claude/
+CLAUDE.md
+.qoder/
+.trae/
+.workflow/
+.gitee/
+.zcode/
+
+# OS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Log files
+*.log
+logs/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Reports output
+reports/
+
+# Backup files
+.BACKUP/
+
+# Git Bash on Windows - nul file from shell redirection issues
+nul
+
+# .NET and new WebView frontend
+node_modules/
+desktop/**/bin/
+desktop/**/obj/
+desktop/web-grid/node_modules/
+desktop/web-grid/dist/
+TestResults/
+
+# Git worktrees
+.worktrees/
+
+# scripts/local_directus — runtime-introduced Directus 12 instance
+# (the package.json/.env.template/README are committed; everything else is local)
+scripts/local_directus/.env
+scripts/local_directus/.npm-cache/
+scripts/local_directus/.npm-prefix/
+scripts/local_directus/.npmrc.user
+scripts/local_directus/.npmrc.global
+scripts/local_directus/node_modules/
+scripts/local_directus/data/
+scripts/local_directus/uploads/
+scripts/local_directus/extensions/
+scripts/local_directus/.schema-applied
+scripts/local_directus/.bootstrapped

@@ -1,0 +1,151 @@
+{
+  "contract": "table.g1.history.fixtures.v1",
+  "schemaVersion": "vibetable-1.0",
+  "disabledFeatures": ["content_versions", "shares", "translations", "external_sso", "share_email_flow"],
+  "readChangeSets": {
+    "params": {
+      "collection": "vibetable_demo",
+      "itemId": "c-001",
+      "limit": 50,
+      "offset": 0
+    },
+    "result": {
+      "collection": "vibetable_demo",
+      "itemId": "c-001",
+      "changeSets": [
+        {
+          "rootRevisionId": "rev-10",
+          "activityId": "act-10",
+          "action": "update",
+          "timestamp": "2026-07-15T10:00:00Z",
+          "actor": {"userId": "u-1", "displayName": "Ada Lovelace"},
+          "scalarChanges": [
+            {"field": "title", "before": "Old Title", "after": "New Title"},
+            {"field": "amount", "before": 10000.0, "after": 15000.0}
+          ],
+          "relationChanges": [
+            {
+              "field": "project",
+              "kind": "m2o",
+              "relatedCollection": "vibetable_demo",
+              "relatedItemId": "p-002",
+              "displayValue": "P-002 Alpha Project",
+              "beforeItemId": "p-001",
+              "afterItemId": "p-002"
+            }
+          ]
+        },
+        {
+          "rootRevisionId": "rev-9",
+          "activityId": "act-9",
+          "action": "create",
+          "timestamp": "2026-07-15T09:00:00Z",
+          "actor": {"userId": "u-1", "displayName": "Ada Lovelace"},
+          "scalarChanges": [
+            {"field": "title", "before": null, "after": "Old Title"},
+            {"field": "amount", "before": null, "after": 10000.0}
+          ],
+          "relationChanges": [
+            {
+              "field": "project",
+              "kind": "m2o",
+              "relatedCollection": "vibetable_demo",
+              "relatedItemId": "p-001",
+              "displayValue": "P-001 Beta Project",
+              "beforeItemId": null,
+              "afterItemId": "p-001"
+            }
+          ]
+        }
+      ],
+      "total": 2,
+      "capabilityHash": "g1-fixture-capability-hash",
+      "schemaRevision": "vibetable-1.0"
+    }
+  },
+  "previewRestore": {
+    "params": {
+      "collection": "vibetable_demo",
+      "itemId": "c-001",
+      "targetRevision": "rev-9"
+    },
+    "result": {
+      "collection": "vibetable_demo",
+      "itemId": "c-001",
+      "targetRevision": "rev-9",
+      "currentHash": "current-hash-abc",
+      "schemaRevision": "vibetable-1.0",
+      "scalarChanges": [
+        {"field": "title", "before": "New Title", "after": "Old Title"},
+        {"field": "amount", "before": 15000.0, "after": 10000.0}
+      ],
+      "relationChanges": [
+        {
+          "field": "project",
+          "kind": "m2o",
+          "relatedCollection": "vibetable_demo",
+          "relatedItemId": "p-001",
+          "displayValue": "P-001 Beta Project",
+          "beforeItemId": "p-002",
+          "afterItemId": "p-001"
+        }
+      ],
+      "diagnostics": [],
+      "token": "restore-token-fixture",
+      "expiresAt": "2026-07-15T10:05:00Z"
+    }
+  },
+  "previewRestoreWithDiagnostics": {
+    "params": {
+      "collection": "vibetable_demo",
+      "itemId": "c-001",
+      "targetRevision": "rev-8"
+    },
+    "result": {
+      "collection": "vibetable_demo",
+      "itemId": "c-001",
+      "targetRevision": "rev-8",
+      "currentHash": "current-hash-abc",
+      "schemaRevision": "vibetable-1.0",
+      "scalarChanges": [],
+      "relationChanges": [],
+      "diagnostics": [
+        {
+          "field": "legacy_field",
+          "classification": "schema_retired",
+          "severity": "error",
+          "code": "field_deleted",
+          "message": "Field 'legacy_field' was deleted in the current schema."
+        },
+        {
+          "field": "amount",
+          "classification": "recoverable",
+          "severity": "warning",
+          "code": "type_check",
+          "message": "Amount value is compatible."
+        }
+      ],
+      "token": "restore-token-diag-fixture",
+      "expiresAt": "2026-07-15T10:05:00Z"
+    }
+  },
+  "applyRestore": {
+    "params": {
+      "collection": "vibetable_demo",
+      "itemId": "c-001",
+      "token": "restore-token-fixture"
+    },
+    "result": {
+      "collection": "vibetable_demo",
+      "itemId": "c-001",
+      "restoredToRevision": "rev-9",
+      "newRevisionId": "rev-11",
+      "item": {
+        "id": "c-001",
+        "title": "Old Title",
+        "amount": 10000.0,
+        "project": "p-001"
+      }
+    }
+  }
+}

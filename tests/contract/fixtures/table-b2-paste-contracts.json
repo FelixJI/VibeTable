@@ -1,0 +1,119 @@
+{
+  "contract": "table.paste.fixtures.v1",
+  "schemaVersion": "vibetable-1.0",
+  "preview": {
+    "params": {
+      "collection": "vibetable_demo",
+      "schemaRevision": "fixture-capability-hash",
+      "selection": {
+        "querySnapshot": {
+          "snapshotId": "snap-1",
+          "digest": "digest-1",
+          "databaseId": "db-1",
+          "table": "vibetable_demo",
+          "schemaRevision": "schema-1",
+          "dataRevision": 1,
+          "normalizedQuery": {}
+        },
+        "dataRevision": 1,
+        "rowKeys": ["contract-1", "contract-2"]
+      },
+      "startCell": {"rowKey": "contract-1", "column": "number"},
+      "cells": [
+        [
+          {"rowIndex": 0, "columnIndex": 0, "column": "number", "rawValue": "B-1", "parsedValue": "B-1"},
+          {"rowIndex": 0, "columnIndex": 1, "column": "title", "rawValue": "Updated 1", "parsedValue": "Updated 1"}
+        ],
+        [
+          {"rowIndex": 1, "columnIndex": 0, "column": "number", "rawValue": "B-2", "parsedValue": "B-2"}
+        ]
+      ]
+    },
+    "plan": {
+      "collection": "vibetable_demo",
+      "schemaRevision": "fixture-capability-hash",
+      "capabilityHash": "fixture-capability-hash",
+      "summary": {"updateRows": 2, "insertRows": 0, "skipRows": 0, "errorCount": 0, "warningCount": 0},
+      "rows": [
+        {
+          "kind": "update",
+          "targetRowKey": "contract-1",
+          "expectedDateUpdated": "2026-07-14T00:00:00Z",
+          "changes": {
+            "number": {"before": "A-1", "after": "B-1"},
+            "title": {"before": "Old 1", "after": "Updated 1"}
+          },
+          "diagnostics": []
+        },
+        {
+          "kind": "update",
+          "targetRowKey": "contract-2",
+          "expectedDateUpdated": "2026-07-14T00:00:01Z",
+          "changes": {"number": {"before": "A-2", "after": "B-2"}},
+          "diagnostics": []
+        }
+      ],
+      "diagnostics": [],
+      "token": {"token": "fixture-opaque-token.abc123", "expiresAt": 1753000000.0, "consumed": false},
+      "overflow": false
+    }
+  },
+  "validationErrors": {
+    "rows": [
+      {
+        "kind": "update",
+        "targetRowKey": "contract-3",
+        "changes": {},
+        "diagnostics": [
+          {"rowIndex": 0, "columnIndex": 2, "severity": "error", "code": "column_readonly", "message": "target column is read-only"},
+          {"rowIndex": 0, "columnIndex": 3, "severity": "error", "code": "column_out_of_range", "message": "target column is outside the editable range"}
+        ]
+      }
+    ],
+    "summary": {"updateRows": 1, "insertRows": 0, "skipRows": 0, "errorCount": 2, "warningCount": 0}
+  },
+  "overflow": {
+    "cellCount": 10001,
+    "error": {"code": "paste_overflow", "message": "clipboard exceeds the 10000 cell limit; use file import", "data": {"maxCells": 10000, "cellCount": 10001}}
+  },
+  "applyCommitted": {
+    "params": {"collection": "vibetable_demo", "token": "fixture-opaque-token.abc123", "idempotencyKey": "idem-1"},
+    "result": {
+      "collection": "vibetable_demo",
+      "outcome": "committed",
+      "createdRowKeys": [],
+      "updatedRowKeys": ["contract-1", "contract-2"],
+      "skippedRowKeys": [],
+      "conflicts": [],
+      "requestId": "idem-1"
+    }
+  },
+  "applyConflict": {
+    "result": {
+      "collection": "vibetable_demo",
+      "outcome": "conflict",
+      "createdRowKeys": [],
+      "updatedRowKeys": [],
+      "skippedRowKeys": [],
+      "conflicts": [
+        {"rowKey": "contract-1", "currentValue": {"id": "contract-1", "number": "A-9"}, "expectedDateUpdated": "2026-07-14T00:00:00Z"}
+      ],
+      "requestId": "idem-2"
+    }
+  },
+  "applyPending": {
+    "result": {
+      "collection": "vibetable_demo",
+      "outcome": "pending",
+      "createdRowKeys": [],
+      "updatedRowKeys": [],
+      "skippedRowKeys": [],
+      "conflicts": [],
+      "requestId": "idem-3"
+    }
+  },
+  "tokenExpiry": {
+    "token": "expired.0000000000000000000000000000000000000000000000000000000000000000",
+    "errorCode": "paste_token_expired"
+  }
+}

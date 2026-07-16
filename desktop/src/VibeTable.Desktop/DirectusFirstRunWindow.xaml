@@ -1,0 +1,60 @@
+<Window x:Class="VibeTable.Desktop.DirectusFirstRunWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="首次设置 VibeTable" Height="520" Width="500"
+        ResizeMode="NoResize" WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+        Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}">
+    <Grid Margin="32">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="设置本机管理员账号"
+                   FontSize="24" FontWeight="SemiBold"/>
+        <TextBlock Grid.Row="1" Margin="0,8,0,18" TextWrapping="Wrap"
+                   Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
+                   Text="该账号用于本机 Directus 数据服务。密码只保存在 Windows 凭据管理器，不会写入配置文件。"/>
+
+        <StackPanel Grid.Row="2">
+            <TextBlock Text="登录邮箱" Margin="0,0,0,5"/>
+            <TextBox x:Name="EmailBox" Height="34" Padding="8,5"
+                     Text="admin@vibetable.app"/>
+        </StackPanel>
+
+        <CheckBox x:Name="ManagedLoginBox" Grid.Row="3" Margin="0,16,0,0"
+                  IsChecked="True" Checked="OnModeChanged" Unchecked="OnModeChanged"
+                  Content="无密码登录（由 VibeTable 生成并安全托管密码）"/>
+
+        <StackPanel x:Name="PasswordPanel" Grid.Row="4" Margin="0,14,0,0">
+            <TextBlock Text="密码（至少 8 位）" Margin="0,0,0,5"/>
+            <PasswordBox x:Name="PasswordBox" Height="34" Padding="8,5"/>
+            <TextBlock Text="确认密码" Margin="0,12,0,5"/>
+            <PasswordBox x:Name="ConfirmPasswordBox" Height="34" Padding="8,5"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="5" Margin="0,14,0,0">
+            <CheckBox x:Name="RememberPasswordBox" IsChecked="True"
+                      Content="保存密码到 Windows 凭据管理器"/>
+            <CheckBox x:Name="AutoLoginBox" Margin="0,8,0,0" IsChecked="True"
+                      Content="以后自动登录"/>
+        </StackPanel>
+
+        <TextBlock x:Name="ErrorText" Grid.Row="6" Margin="0,14,0,0"
+                   Foreground="#c62828" TextWrapping="Wrap"/>
+
+        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="取消" Width="88" Height="34" Margin="0,0,10,0"
+                    IsCancel="True"/>
+            <Button Content="开始使用" Width="110" Height="34"
+                    IsDefault="True" Click="OnConfirmClick"/>
+        </StackPanel>
+    </Grid>
+</Window>

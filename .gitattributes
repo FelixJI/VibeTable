@@ -1,0 +1,12 @@
+# Normalize text files to LF in the repository regardless of platform.
+# Contract fixtures under tests/contract/fixtures/** are hashed byte-for-byte
+# by qa/handoff.py (with CRLF->LF normalization) and recorded into the stage
+# handoff manifests; pin them to LF on disk so Windows checkouts with
+# core.autocrlf=true do not silently change the bytes.
+* text=auto eol=lf
+
+# Contract fixtures are byte-stable evidence — never let autocrlf touch them.
+tests/contract/fixtures/** eol=lf
+
+# Stage handoff manifests are also byte-stable evidence.
+docs/handoffs/*.json eol=lf

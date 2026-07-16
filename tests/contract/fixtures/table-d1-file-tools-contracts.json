@@ -1,0 +1,34 @@
+{
+  "contract": "table.d1.file-tools.fixtures.v1",
+  "schemaVersion": "vibetable-1.0",
+  "directusFile": {
+    "metadata": {
+      "id": "file-1",
+      "filename": "contract.pdf",
+      "mimeType": "application/pdf",
+      "fileSize": 18432,
+      "uploadedOn": "2026-07-14T00:00:00Z",
+      "storage": "local",
+      "checksum": "sha256-abc"
+    },
+    "readParams": {"collection": "vibetable_demo", "itemId": "1", "relationField": "document"},
+    "presetPreview": {
+      "params": {"fileId": "file-1", "presetKey": "thumbnail-medium"},
+      "result": {"fileId": "file-1", "presetKey": "thumbnail-medium", "url": "/assets/file-1?key=thumbnail-medium", "cached": false}
+    }
+  },
+  "journal": {
+    "entry": {
+      "journalId": "journal-abc123",
+      "operation": "replace",
+      "state": "rollback-required",
+      "steps": [
+        {"kind": "replace", "source": "C:/safe/a.txt", "target": "C:/safe/a.txt", "backupPath": "C:/tmp/backup-a.txt", "backupHash": "sha256-old"}
+      ],
+      "createdAt": "2026-07-14T00:00:00Z",
+      "error": "process interrupted"
+    },
+    "resolveActions": ["rollback", "keep"]
+  },
+  "approvedAssetPresets": ["thumbnail-small", "thumbnail-medium", "preview-large", "card-cover"]
+}

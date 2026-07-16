@@ -1,0 +1,144 @@
+[project]
+name = "VibeTable"
+version = "1.0.0"
+description = "VibeTable — 通用建表与文件管理桌面工具"
+requires-python = ">=3.11"
+dependencies = [
+    "openpyxl>=3.1.5",
+    "pydantic>=2.13.4",
+    "websockets>=16.0",
+]
+
+[dependency-groups]
+# 代码质量 + 测试（开发环境安装）
+dev = [
+    "ruff>=0.15.14",
+    "mypy>=2.1.0",
+    "pyright>=1.1.409",
+    "pre-commit>=4.6.0",
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
+    "pytest-asyncio>=1.4.0",
+    "coverage[toml]>=7.14.1",
+]
+# 构建工具（打包时安装）
+build = [
+    "uv>=0.11.16",
+    "nuitka>=4.1.1",
+    "setuptools>=82.0.1",
+    "wheel>=0.47.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# ---- 代码质量工具 ----
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".venv", "build", "dist", "*.egg-info"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "N",    # pep8-naming
+    "A",    # flake8-builtins
+    "PT",   # flake8-pytest-style
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",   # 行过长（由格式化工具处理）
+    "RUF001", # 字符串中的中文标点
+    "RUF002", # 文档字符串中的中文标点
+    "RUF003", # 注释中的中文标点
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+# 独立运行脚本需要在标准导入后兼容仓库内导入。
+"scripts/build_next.py" = ["E402"]
+"scripts/release.py" = ["E402"]
+"qa/package_check.py" = ["E402"]
+"qa/version_check.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+# 库（sqlite3/json/subprocess 等）返回 Any 大量误报，按需放宽；
+# 真实类型 bug（attr-defined/override/var-annotated）不受影响。
+warn_return_any = false
+warn_unused_configs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+strict_optional = true
+exclude = ['(^|[/\\])(tests|scripts)([/\\]|$)', '\.venv']
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+    "--cov=backend",
+    "--cov-report=term-missing",
+    "--cov-report=html:htmlcov",
+]
+asyncio_mode = "auto"
+filterwarnings = ["error"]
+markers = [
+    "unit: 单元测试",
+    "integration: 集成测试",
+    "slow: 慢速测试",
+    "e2e: 端到端集成测试 (WPF host + Python backend + WebView2 bridge)",
+]
+
+[tool.coverage.run]
+source = ["backend"]
+omit = [
+    "*/__pycache__/*",
+    "*/test_*.py",
+]
+
+[tool.coverage.report]
+fail_under = 30
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+
+[tool.pyright]
+extraPaths = ["."]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+reportMissingImports = true
+reportMissingModuleSource = false
+exclude = [".venv"]

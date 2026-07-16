@@ -1,0 +1,129 @@
+using System.Text.Json;
+using VibeTable.Contracts;
+using VibeTable.Desktop.Services;
+
+namespace VibeTable.Desktop.Tests;
+
+[TestClass]
+public sealed class DirectusTableGatewayTests
+{
+    [TestMethod]
+    public async Task Read_MapsCollectionSchemaAndRowsToExistingGridContract()
+    {
+        using var directus = new FakeDirectusGateway();
+        var gateway = new DirectusTableGateway(directus, new FakeLocalStateGateway());
+
+        var opened = await gateway.OpenDatabaseAsync("directus://configured", CancellationToken.None);
+        var page = await gateway.ReadTablePageAsync("vibetable_demo", 0, 100, CancellationToken.None);
+
+        CollectionAssert.AreEqual(new[] { "vibetable_demo" }, opened.Tables.ToArray());
+        Assert.AreEqual("vibetable_demo", page.Table);
+        Assert.AreEqual("Project One", page.Rows[0]["name"]);
+        Assert.AreEqual("p1", page.Rows[0]["rowKey"]);
+        Assert.AreEqual("client", page.Mode);
+        Assert.IsNotNull(page.Revision);
+        Assert.AreEqual("schema-1", page.Revision!.SchemaRevision);
+        Assert.IsNotNull(page.QuerySnapshot);
+        Assert.AreEqual("schema-1", page.QuerySnapshot!.SchemaRevision);
+        Assert.AreEqual("vibetable_demo", page.QuerySnapshot.Table);
+    }
+
+    [TestMethod]
+    public async Task DeleteRows_UsesArchiveInsteadOfPermanentDelete()
+    {
+        using var directus = new FakeDirectusGateway();
+        var gateway = new DirectusTableGateway(directus, new FakeLocalStateGateway());
+
+        var result = await gateway.DeleteRowsAsync(
+            "vibetable_demo", new[] { ((object)"p1", "digest") }, "schema-1", CancellationToken.None);
+
+        CollectionAssert.AreEqual(new object[] { "p1" }, result.DeletedRowKeys.ToArray());
+        CollectionAssert.AreEqual(new[] { "p1" }, directus.ArchivedIds.ToArray());
+        Assert.AreEqual(0, directus.PermanentDeleteCalls);
+    }
+
+    private sealed class FakeDirectusGateway : IDirectusRpcGateway
+    {
+        public List<string> ArchivedIds { get; } = [];
+        public int PermanentDeleteCalls { get; private set; }
+        public event Action<DirectusChange>? Changed
+        {
+            add { }
+            remove { }
+        }
+
+        public Task<DirectusCollectionList> ListCollectionsAsync(CancellationToken token)
+            => Task.FromResult(new DirectusCollectionList(
+                new[] { "vibetable_demo" },
+                new Dictionary<string, string> { ["vibetable_demo"] = "hash" }));
+
+        public Task<DirectusSchema> GetSchemaAsync(string collection, CancellationToken token)
+            => Task.FromResult(new DirectusSchema(
+                collection,
+                "id",
+                new[]
+                {
+                    new ColumnSchema("id", "Id", "string", false, false),
+                    new ColumnSchema("name", "Name", "string", true, false),
+                },
+                Array.Empty<JsonElement>(),
+                "schema-1",
+                "hash"));
+
+        public Task<DirectusPage> ReadAsync(
+            string collection, TableQuery query, bool includeArchived, CancellationToken token)
+        {
+            using var id = JsonDocument.Parse("\"p1\"");
+            using var name = JsonDocument.Parse("\"Project One\"");
+            IReadOnlyDictionary<string, JsonElement> row = new Dictionary<string, JsonElement>
+            {
+                ["id"] = id.RootElement.Clone(),
+                ["name"] = name.RootElement.Clone(),
+            };
+            return Task.FromResult(new DirectusPage(
+                collection, new[] { row }, query.Offset, query.Limit, 1, 1, Array.Empty<string>(), "hash"));
+        }
+
+        public Task<DirectusItem> ArchiveAsync(
+            string collection, string itemId, CancellationToken token)
+        {
+            ArchivedIds.Add(itemId);
+            return Task.FromResult(EmptyItem(collection));
+        }
+
+        public Task<DirectusItem> DeleteAsync(
+            string collection, string itemId, CancellationToken token)
+        {
+            PermanentDeleteCalls++;
+            return Task.FromResult(EmptyItem(collection));
+        }
+
+        public Task<DirectusSessionStatus> LoginAsync(string email, string password, string? otp, CancellationToken token) => throw new NotSupportedException();
+        public Task<DirectusSessionStatus> RefreshAsync(CancellationToken token) => throw new NotSupportedException();
+        public Task<DirectusSessionStatus> LogoutAsync(CancellationToken token) => throw new NotSupportedException();
+        public Task<DirectusSessionStatus> GetStatusAsync(CancellationToken token) => throw new NotSupportedException();
+        public Task<DirectusServerInfo> GetServerInfoAsync(CancellationToken token) => throw new NotSupportedException();
+        public Task<DirectusCurrentUser> GetCurrentUserAsync(CancellationToken token) => throw new NotSupportedException();
+        public Task<DirectusItem> CreateAsync(string collection, IReadOnlyDictionary<string, object?> values, string? requestId, CancellationToken token) => throw new NotSupportedException();
+        public Task<DirectusItem> UpdateAsync(string collection, string itemId, IReadOnlyDictionary<string, object?> values, string? expectedDateUpdated, string? requestId, CancellationToken token) => throw new NotSupportedException();
+        public Task<DirectusItem> RestoreAsync(string collection, string itemId, CancellationToken token) => throw new NotSupportedException();
+        public Task<DirectusSubscription> SubscribeAsync(string uid, string collection, IReadOnlyList<string> fields, CancellationToken token) => throw new NotSupportedException();
+        public Task<DirectusSubscription> UnsubscribeAsync(string uid, CancellationToken token) => throw new NotSupportedException();
+        public Task<CreateTableResult> CreateTableAsync(string name, IReadOnlyList<FieldDefinition> fields, CancellationToken token) => throw new NotSupportedException();
+        public Task<DeleteTableResult> DeleteTableAsync(string name, CancellationToken token) => throw new NotSupportedException();
+        public void Dispose() { }
+
+        private static DirectusItem EmptyItem(string collection)
+            => new(collection, new Dictionary<string, JsonElement>());
+    }
+
+    private sealed class FakeLocalStateGateway : IWorkspaceSupportRpcGateway
+    {
+        public Task<GridStateResult> GetGridStateAsync(string databaseId, string table, CancellationToken token)
+            => Task.FromResult(new GridStateResult(new GridState(), "1"));
+        public Task<GridStateResult> SaveGridStateAsync(string databaseId, string table, GridState state, string? revision, CancellationToken token)
+            => Task.FromResult(new GridStateResult(state, "2"));
+        public Task<PastePlan> PreviewPasteAsync(string collection, string schemaRevision, IReadOnlyDictionary<string, object?> selection, PasteStartCell startCell, IReadOnlyList<IReadOnlyList<PasteCell>> cells, CancellationToken token) => throw new NotSupportedException();
+        public Task<ApplyPasteResult> ApplyPasteAsync(string collection, string token, string idempotencyKey, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+}

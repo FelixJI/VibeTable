@@ -1,0 +1,1 @@
+{"columns":[{"name":"amount","width":120,"visible":true,"frozen":false,"order":2},{"name":"name","width":200,"visible":true,"frozen":false,"order":1}],"sorts":[{"field":"amount","direction":"desc","nullsLast":true}],"filters":[{"field":"status","operator":"eq","value":"open","logic":"AND"}],"keyword":null,"density":"comfortable","forcedRemote":false,"revision":"rev-3"}

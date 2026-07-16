@@ -1,0 +1,1 @@
+{"snapshotId":"a1b2c3d4e5f60718","digest":"9e8f7a6b5c4d3e2f","databaseId":"c:/data/contracts.db","table":"contracts","schemaRevision":"1a2b3c4d5e6f7081","dataRevision":42,"normalizedQuery":{"keyword":null,"filters":[{"field":"amount","operator":"gt","value":100,"logic":"AND"}],"sorts":[{"field":"amount","direction":"desc","nullsLast":true}],"offset":0,"limit":100}}

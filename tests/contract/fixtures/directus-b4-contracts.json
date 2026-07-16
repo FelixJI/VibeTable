@@ -1,0 +1,55 @@
+{
+  "contract": "directus.b4.fixtures.v1",
+  "schemaVersion": "vibetable-1.0",
+  "serverInfo": {
+    "projectName": "VibeTable Test",
+    "directusVersion": "12.1.1",
+    "compatibility": ">=12 <13"
+  },
+  "localSession": {
+    "state": "authenticated",
+    "expiresAt": 160.0,
+    "user": {
+      "id": "user-1",
+      "displayName": "Ada Lovelace",
+      "avatarFileId": "file-1",
+      "roleId": "role-1",
+      "capabilities": ["vibetable_demo.read"]
+    }
+  },
+  "permissionDenial": {
+    "code": -32043,
+    "message": "Directus permission denied",
+    "data": {"kind": "permission"}
+  },
+  "collectionSchema": {
+    "collection": "vibetable_demo",
+    "primaryKey": "id",
+    "schemaRevision": "schema-fixture-1",
+    "capabilityHash": "fixture-capability-hash"
+  },
+  "relationQuery": {
+    "fields": ["id", "name", "owner.first_name", "owner.last_name"],
+    "filter": {"owner": {"id": {"_eq": "user-1"}}},
+    "sort": ["name", "id"],
+    "limit": 100,
+    "offset": 0
+  },
+  "crud": {
+    "create": {"collection": "vibetable_demo", "requestId": "request-create-1"},
+    "update": {"collection": "vibetable_demo", "itemId": "project-1", "expectedDateUpdated": "2026-07-14T00:00:00Z"}
+  },
+  "archiveRestore": {
+    "archive": {"status": "archived"},
+    "restore": {"status": "active"},
+    "permanentDeleteDefault": false
+  },
+  "realtimeLifecycle": [
+    {"type": "auth", "status": "ok"},
+    {"type": "subscribe", "uid": "grid-vibetable_demo", "collection": "vibetable_demo"},
+    {"type": "ping"},
+    {"type": "pong"},
+    {"type": "subscription", "uid": "grid-vibetable_demo", "event": "update", "invalidateQuery": true},
+    {"type": "unsubscribe", "uid": "grid-vibetable_demo"}
+  ]
+}

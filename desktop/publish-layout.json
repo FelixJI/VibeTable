@@ -1,0 +1,27 @@
+{
+  "protocolVersion": "1.0",
+  "components": {
+    "host": { "version": "1.0.0" },
+    "backend": { "version": "1.0.0" },
+    "web": { "version": "1.0.0" },
+    "directusExtension": { "version": "1.0.0" },
+    "directusExtensions": [
+      { "name": "vibetable-bulk-mutation", "version": "1.0.0" },
+      { "name": "vibetable-workspace-index", "version": "1.0.0" }
+    ],
+    "localDirectus": { "version": "1.0.0" }
+  },
+  "webview2": { "sdk": "1.0.4078.44" },
+  "webGrid": { "tabulator": "6.5.2" },
+  "launch": {
+    "backend": "backend/vibetable-backend.exe",
+    "webGrid": "web-grid",
+    "directusExtension": "directus/extensions/vibetable-bulk-mutation",
+    "directusExtensions": [
+      "directus/extensions/vibetable-bulk-mutation",
+      "directus/extensions/vibetable-workspace-index"
+    ],
+    "localDirectus": "local-directus",
+    "localDirectusRunner": "backend/vibetable-backend.exe"
+  }
+}

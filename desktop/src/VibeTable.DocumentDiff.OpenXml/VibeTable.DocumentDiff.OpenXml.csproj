@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- G5.1: OpenXml diff adapter. Depends on DocumentFormat.OpenXml for
+         structured DOCX/XLSX/PPTX diff. The core VibeTable.Workspace library
+         never depends on this package. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\VibeTable.Workspace\VibeTable.Workspace.csproj" />
+  </ItemGroup>
+
+</Project>

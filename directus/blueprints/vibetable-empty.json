@@ -1,0 +1,115 @@
+{
+  "contract": "vibetable.directus-blueprint.v1",
+  "schema_version": "vibetable-1.0",
+  "database_vendor": "postgres",
+  "primary_key_strategy": "client-generated-uuid",
+  "system_fields": ["status", "sort", "date_created", "user_created", "date_updated", "user_updated"],
+  "collections": {
+    "vibetable_workspaces": {
+      "accountability": "all",
+      "archive_field": "status",
+      "archive_value": "archived",
+      "unarchive_value": "active",
+      "versioning": false,
+      "fields": {
+        "id": {"type": "uuid", "primary_key": true},
+        "status": {"type": "string", "required": true, "default": "active", "choices": ["active", "archived"]},
+        "name": {"type": "string", "required": true, "max_length": 255},
+        "workspace_id": {"type": "string", "required": true, "unique": true, "max_length": 128}
+      }
+    },
+    "vibetable_workspace_folders": {
+      "accountability": "all",
+      "archive_field": "status",
+      "archive_value": "archived",
+      "unarchive_value": "active",
+      "versioning": false,
+      "fields": {
+        "id": {"type": "uuid", "primary_key": true},
+        "status": {"type": "string", "required": true, "default": "active", "choices": ["active", "archived"]},
+        "workspace": {"type": "uuid", "required": true, "relation": "vibetable_workspaces"},
+        "parent": {"type": "uuid", "relation": "vibetable_workspace_folders"},
+        "relative_path": {"type": "string", "required": true, "max_length": 512},
+        "display_name": {"type": "string", "max_length": 255}
+      }
+    },
+    "vibetable_documents": {
+      "accountability": "all",
+      "archive_field": "status",
+      "archive_value": "archived",
+      "unarchive_value": "active",
+      "versioning": false,
+      "fields": {
+        "id": {"type": "uuid", "primary_key": true},
+        "status": {"type": "string", "required": true, "default": "active", "choices": ["active", "archived"]},
+        "workspace": {"type": "uuid", "required": true, "relation": "vibetable_workspaces"},
+        "folder": {"type": "uuid", "relation": "vibetable_workspace_folders"},
+        "file_name": {"type": "string", "required": true, "max_length": 255},
+        "mime_type": {"type": "string", "max_length": 128},
+        "main_head": {"type": "string", "max_length": 128},
+        "main_hash": {"type": "string", "max_length": 64}
+      }
+    },
+    "vibetable_document_schemes": {
+      "accountability": "all",
+      "archive_field": "status",
+      "archive_value": "archived",
+      "unarchive_value": "active",
+      "versioning": false,
+      "fields": {
+        "id": {"type": "uuid", "primary_key": true},
+        "status": {"type": "string", "required": true, "default": "active", "choices": ["active", "archived", "adopted"]},
+        "document": {"type": "uuid", "required": true, "relation": "vibetable_documents"},
+        "name": {"type": "string", "required": true, "max_length": 128},
+        "source_revision": {"type": "string", "max_length": 128},
+        "head_revision": {"type": "string", "max_length": 128},
+        "working_path": {"type": "string", "max_length": 512}
+      }
+    },
+    "vibetable_document_revisions": {
+      "accountability": "all",
+      "archive_field": "status",
+      "archive_value": "archived",
+      "unarchive_value": "active",
+      "versioning": false,
+      "fields": {
+        "id": {"type": "uuid", "primary_key": true},
+        "status": {"type": "string", "required": true, "default": "active", "choices": ["active", "archived"]},
+        "document": {"type": "uuid", "required": true, "relation": "vibetable_documents"},
+        "scheme": {"type": "uuid", "required": true, "relation": "vibetable_document_schemes"},
+        "parent_revision": {"type": "uuid", "relation": "vibetable_document_revisions"},
+        "source_revision": {"type": "uuid"},
+        "sequence": {"type": "integer", "required": true},
+        "version_label": {"type": "string", "max_length": 128},
+        "kind": {"type": "string", "required": true, "max_length": 32, "choices": ["snapshot", "formal", "restore"]},
+        "hash": {"type": "string", "required": true, "max_length": 64},
+        "size": {"type": "bigInteger"},
+        "mime_type": {"type": "string", "max_length": 128},
+        "created_by": {"type": "uuid", "relation": "directus_users"},
+        "device_id": {"type": "string", "max_length": 128},
+        "comment": {"type": "text"}
+      }
+    },
+    "vibetable_document_links": {
+      "accountability": "all",
+      "archive_field": "status",
+      "archive_value": "archived",
+      "unarchive_value": "active",
+      "versioning": false,
+      "fields": {
+        "id": {"type": "uuid", "primary_key": true},
+        "status": {"type": "string", "required": true, "default": "active", "choices": ["active", "archived"]},
+        "document": {"type": "uuid", "required": true, "relation": "vibetable_documents"},
+        "item_collection": {"type": "string", "required": true, "max_length": 128},
+        "item_id": {"type": "uuid", "required": true},
+        "link_type": {"type": "string", "required": true, "max_length": 64, "default": "primary", "choices": ["primary", "reference", "attachment"]}
+      }
+    }
+  },
+  "policies": {
+    "viewer": {"create": [], "read": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links"], "update": [], "delete": []},
+    "editor": {"create": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links"], "read": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links"], "update": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links"], "delete": []},
+    "manager": {"create": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links"], "read": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links"], "update": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links"], "delete": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links"]}
+  },
+  "disabled": ["shares", "translations", "external_sso", "share_email_flow"]
+}

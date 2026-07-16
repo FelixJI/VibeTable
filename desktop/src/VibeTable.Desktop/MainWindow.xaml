@@ -1,0 +1,61 @@
+<Window x:Class="VibeTable.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        xmlns:vm="clr-namespace:VibeTable.Desktop.ViewModels"
+        xmlns:local="clr-namespace:VibeTable.Desktop"
+        mc:Ignorable="d"
+        Title="VibeTable"
+        Height="720" Width="1024"
+        Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+        Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"
+        WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+    </Window.Resources>
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Status chrome (always visible): table-admin entry + status text + retry button. -->
+        <DockPanel Grid.Row="0" LastChildFill="True"
+                   Background="{DynamicResource {x:Static SystemColors.ControlLightBrushKey}}">
+            <Button
+                DockPanel.Dock="Left"
+                Padding="12,2" Margin="0,0,8,0"
+                Content="表管理"
+                Click="OnManageTables"
+                ToolTip="创建或删除数据表"/>
+            <Button
+                DockPanel.Dock="Right"
+                Padding="12,2" Margin="8,0,0,0"
+                Content="Retry"
+                Visibility="{Binding IsRetryVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+                Command="{Binding RetryCommand}"
+                ToolTip="Restart the backend and reload the grid"/>
+            <TextBlock
+                Text="{Binding StatusText}"
+                VerticalAlignment="Center"
+                FontSize="14"
+                FontWeight="SemiBold"/>
+        </DockPanel>
+
+        <!--
+            Hardened WebView2 host. The control is realized (visible) whenever a
+            WebView2 instance exists (LoadingWeb + Ready): a Collapsed/Hidden
+            WebView2 has a zero-size HWND and its virtual-host navigation can
+            fail with success=False http=0. Binding to IsWebViewVisible (NOT
+            IsGridVisible) keeps the HWND alive during the LoadingWeb navigate.
+            The WebMessageRouter attached in code-behind is the sole path from
+            the renderer into the .NET host.
+        -->
+        <wv2:WebView2
+            x:Name="WebView"
+            Grid.Row="1"
+            Visibility="{Binding IsWebViewVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+    </Grid>
+</Window>

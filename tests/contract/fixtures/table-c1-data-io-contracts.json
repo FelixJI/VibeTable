@@ -1,0 +1,105 @@
+{
+  "contract": "table.c1.data-io.fixtures.v1",
+  "schemaVersion": "vibetable-1.0",
+  "taskRuntime": {
+    "createParams": {"kind": "data.import", "params": {"grantId": "grant-1"}},
+    "status": {
+      "taskId": "task-abc123",
+      "kind": "data.import",
+      "state": "running",
+      "progress": {"done": 42, "total": 100, "message": "Importing chunk 3…"},
+      "result": null,
+      "error": null
+    },
+    "abortedState": "aborted"
+  },
+  "pathGrant": {
+    "descriptor": {
+      "grantId": "grant-1",
+      "purpose": "import_source",
+      "direction": "read",
+      "displayName": "contracts.xlsx",
+      "sizeBytes": 18432,
+      "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "expiresAt": 1753000000.0
+    },
+    "expiredErrorCode": "grant_expired"
+  },
+  "importPlan": {
+    "params": {
+      "grantId": "grant-1",
+      "collection": "vibetable_demo",
+      "schemaRevision": "fixture-capability-hash",
+      "mode": "create_only",
+      "columnMapping": [
+        {"sourceColumn": "合同编号", "targetField": "number", "relationLookup": false}
+      ]
+    },
+    "plan": {
+      "collection": "vibetable_demo",
+      "schemaRevision": "fixture-capability-hash",
+      "capabilityHash": "fixture-capability-hash",
+      "sourceHash": "abc123def456",
+      "summary": {"totalRows": 3, "validRows": 2, "errorRows": 1, "warningRows": 0, "errorCount": 1, "warningCount": 0},
+      "rows": [
+        {
+          "sourceRow": 2,
+          "values": {"number": "B-1", "title": "Contract 1"},
+          "diagnostics": []
+        },
+        {
+          "sourceRow": 3,
+          "values": {"number": "B-2"},
+          "diagnostics": []
+        },
+        {
+          "sourceRow": 4,
+          "values": {},
+          "diagnostics": [
+            {"sheet": "", "row": 4, "column": 3, "severity": "error", "code": "value_invalid", "message": "amount 'abc' is not a valid number", "originalValue": "abc"}
+          ]
+        }
+      ],
+      "unmatchedColumns": ["备注"],
+      "diagnostics": [],
+      "token": {"token": "imp-fixture-token", "expiresAt": 1753000600.0, "consumed": false}
+    }
+  },
+  "applyImport": {
+    "params": {"grantId": "grant-1", "collection": "vibetable_demo", "token": "imp-fixture-token", "mode": "create_only", "chunkSize": 500, "idempotencyPrefix": "imp-uuid-1"},
+    "result": {
+      "collection": "vibetable_demo",
+      "createdCount": 2,
+      "updatedCount": 0,
+      "failedRows": [4],
+      "chunks": [
+        {"chunkIndex": 0, "createdRowKeys": ["c1", "c2"], "updatedRowKeys": [], "failedRows": [], "idempotencyKey": "imp-uuid-1-0"}
+      ],
+      "directusRequestIds": ["imp-uuid-1-0"]
+    }
+  },
+  "export": {
+    "params": {"grantId": "grant-2", "collection": "vibetable_demo", "query": {}, "format": "csv", "includeRelations": true},
+    "result": {
+      "collection": "vibetable_demo",
+      "format": "csv",
+      "rowsWritten": 150,
+      "schemaRevision": "fixture-capability-hash",
+      "capabilityHash": "fixture-capability-hash",
+      "outputDisplayName": "contracts-export.csv"
+    }
+  },
+  "relationProjection": {
+    "params": {"collection": "vibetable_demo", "query": {}, "relations": ["project"], "maxDepth": 1},
+    "result": {
+      "collection": "vibetable_demo",
+      "rows": [{"id": "1", "number": "A-1", "project": {"code": "P1", "name": "Project One"}}],
+      "relationColumns": [
+        {"relation": "project", "field": "code", "relatedCollection": "vibetable_demo", "displayPath": "project.code"},
+        {"relation": "project", "field": "name", "relatedCollection": "vibetable_demo", "displayPath": "project.name"}
+      ],
+      "restrictedRelations": [],
+      "capabilityHash": "fixture-capability-hash"
+    }
+  }
+}

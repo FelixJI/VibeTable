@@ -1,0 +1,95 @@
+{
+  "contract": "table.g3.document-workspace.fixtures.v1",
+  "schemaVersion": "vibetable-1.0",
+  "readFolder": {
+    "params": {
+      "collection": "vibetable_demo",
+      "itemId": "c-001"
+    },
+    "result": {
+      "collection": "vibetable_demo",
+      "itemId": "c-001",
+      "folderId": "folder-001",
+      "documents": [
+        {
+          "documentId": "doc-001",
+          "fileName": "main-contract.docx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "mainHead": "rev-010",
+          "mainHash": "abcdef1234567890",
+          "status": "active",
+          "linkType": "primary",
+          "folderRelativePath": "contracts/main-contract.docx",
+          "isMissing": false
+        }
+      ]
+    }
+  },
+  "publishIndexBatch": {
+    "params": {
+      "revisions": [
+        {
+          "revisionId": "rev-010",
+          "documentId": "doc-001",
+          "schemeId": "scheme-main",
+          "parentRevisionId": null,
+          "sequence": 1,
+          "versionLabel": "main/V1",
+          "kind": "formal",
+          "hash": "abcdef1234567890",
+          "size": 12345,
+          "mimeType": "application/octet-stream",
+          "createdBy": "user-001",
+          "deviceId": "device-001",
+          "comment": "initial publish"
+        }
+      ],
+      "idempotencyKey": "idem-001"
+    },
+    "result": {
+      "results": [
+        {
+          "revisionId": "rev-010",
+          "status": "created"
+        }
+      ],
+      "conflicts": []
+    }
+  },
+  "linkDocument": {
+    "params": {
+      "documentId": "doc-001",
+      "itemCollection": "vibetable_demo",
+      "itemId": "c-001",
+      "linkType": "primary"
+    },
+    "result": {
+      "linkId": "link-001",
+      "status": "created"
+    }
+  },
+  "readDocumentHistory": {
+    "params": {
+      "documentId": "doc-001",
+      "limit": 50,
+      "offset": 0
+    },
+    "result": {
+      "documentId": "doc-001",
+      "revisions": [
+        {
+          "revisionId": "rev-010",
+          "schemeName": "main",
+          "sequence": 1,
+          "versionLabel": "main/V1",
+          "kind": "formal",
+          "hash": "abcdef1234567890",
+          "size": 12345,
+          "createdAt": "2026-07-15T10:00:00Z",
+          "createdBy": "Ada Lovelace"
+        }
+      ],
+      "total": 1
+    }
+  }
+}
