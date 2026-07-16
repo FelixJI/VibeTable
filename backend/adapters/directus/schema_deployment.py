@@ -1,7 +1,8 @@
 """Directus schema diff/apply deployment support (G0.3).
 
-Provides a reviewed, dry-run-capable schema diff/apply pipeline that extends
-the existing greenfield-only ``DirectusProjectBootstrapper.apply_empty``.
+Provides a reviewed, dry-run-capable schema diff/apply pipeline that builds on
+the greenfield seed applied at first boot (now done by the C# host's
+DirectusSchemaBootstrapper; the Python bootstrapper was removed).
 
 Design:
 

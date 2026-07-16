@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using VibeTable.Infrastructure;
 
 namespace VibeTable.Desktop.Services;
 
@@ -38,6 +39,17 @@ public sealed class HostStartupOptions
     /// </summary>
     public bool DirectusAuto { get; set; }
 
+    /// <summary>
+    /// Bare flag: <c>--no-directus-auto</c>. When set, the host never starts a
+    /// local Directus even when it otherwise would (packaged layout, dev
+    /// layout, or an explicit <c>--directus-auto</c>). This is the "just start
+    /// the WPF host" escape hatch — useful for connecting to an already-running
+    /// external Directus via <c>VIBETABLE_DIRECTUS_URL</c>, or for debugging the
+    /// host/UI in isolation. Highest priority in
+    /// <see cref="ShouldAutoStartLocalDirectus"/>.
+    /// </summary>
+    public bool NoDirectusAuto { get; set; }
+
     /// <summary>Readiness-file directory from <c>--readiness-dir &lt;path&gt;</c>.</summary>
     public string? ReadinessDir { get; set; }
 
@@ -62,6 +74,9 @@ public sealed class HostStartupOptions
                     break;
                 case "--directus-auto":
                     options.DirectusAuto = true;
+                    break;
+                case "--no-directus-auto":
+                    options.NoDirectusAuto = true;
                     break;
                 case "--readiness-dir":
                     if (i + 1 < args.Count)
@@ -88,15 +103,35 @@ public sealed class HostStartupOptions
     }
 
     /// <summary>
-    /// Packaged single-machine releases auto-start their shipped local
-    /// Directus runtime when no external URL is configured. Development keeps
-    /// requiring the explicit <c>--directus-auto</c> flag.
+    /// Decides whether the host should auto-start a local Directus 12 runtime.
+    /// Priority (highest first):
+    /// <list type="number">
+    /// <item><paramref name="explicitlyDisabled"/> (<c>--no-directus-auto</c>)
+    /// → <c>false</c>. The explicit escape hatch always wins.</item>
+    /// <item><paramref name="explicitlyRequested"/> (<c>--directus-auto</c>)
+    /// → <c>true</c>.</item>
+    /// <item>A non-empty <paramref name="configuredUrl"/> → <c>false</c>
+    /// (an external Directus is already configured via
+    /// <c>VIBETABLE_DIRECTUS_URL</c>).</item>
+    /// <item>Packaged layout (a <c>local-directus/run.py</c> AND a
+    /// <c>backend/vibetable-backend.exe</c> beside the host) → <c>true</c>.</item>
+    /// <item>Development layout (the repo's <c>scripts/local_directus</c> is
+    /// discoverable by walking up from <paramref name="hostBaseDirectory"/>)
+    /// → <c>true</c>. This makes a bare dev run of the WPF host bring up the
+    /// full stack without any flag.</item>
+    /// <item>Otherwise → <c>false</c>.</item>
+    /// </list>
     /// </summary>
     public static bool ShouldAutoStartLocalDirectus(
         bool explicitlyRequested,
         string? configuredUrl,
-        string hostBaseDirectory)
+        string hostBaseDirectory,
+        bool explicitlyDisabled = false)
     {
+        if (explicitlyDisabled)
+        {
+            return false;
+        }
         if (explicitlyRequested)
         {
             return true;
@@ -106,7 +141,13 @@ public sealed class HostStartupOptions
             return false;
         }
         string root = Path.GetFullPath(hostBaseDirectory);
-        return File.Exists(Path.Combine(root, "local-directus", "run.py"))
-            && File.Exists(Path.Combine(root, "backend", "vibetable-backend.exe"));
+        // Packaged layout: both shipped artefacts sit beside the host exe.
+        if (File.Exists(Path.Combine(root, "local-directus", "run.py"))
+            && File.Exists(Path.Combine(root, "backend", "vibetable-backend.exe")))
+        {
+            return true;
+        }
+        // Development layout: the repo's scripts/local_directus is discoverable.
+        return LaunchPaths.ResolveLocalDirectusDirectory(root) is not null;
     }
 }

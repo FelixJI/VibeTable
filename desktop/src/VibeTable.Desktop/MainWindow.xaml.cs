@@ -84,7 +84,8 @@ public partial class MainWindow : Window
         _directusAuto = HostStartupOptions.ShouldAutoStartLocalDirectus(
             startupOptions.DirectusAuto,
             configuredDirectusUrl,
-            AppContext.BaseDirectory);
+            AppContext.BaseDirectory,
+            startupOptions.NoDirectusAuto);
         _directusEnabled = _directusAuto
             || !string.IsNullOrWhiteSpace(configuredDirectusUrl);
         if (_directusEnabled)
@@ -306,8 +307,9 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task<string?> EnsureLocalDirectusAsync()
     {
-        // Node.js is required to run npm install / directus start.
-        if (NodeRuntime.FindNode() is null)
+        // Node.js is required to run npm install / directus start. The bundled
+        // portable Node (runtime/node/) is tried first; PATH is the fallback.
+        if (NodeRuntime.FindNode(appBaseDirectory: AppContext.BaseDirectory) is null)
         {
             MessageBox.Show(
                 this,

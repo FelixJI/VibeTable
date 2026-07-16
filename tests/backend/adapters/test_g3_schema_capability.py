@@ -17,12 +17,26 @@ replaces the former G3-specific assertions and now validates:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
-from backend.adapters.directus.bootstrap import load_blueprint
 from backend.adapters.directus.profile import CapabilityManifest
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+def load_blueprint(path: Path) -> dict[str, Any]:
+    """Load + lightly validate the VibeTable Directus blueprint.
+
+    Inlined here (previously imported from backend.adapters.directus.bootstrap,
+    which was removed once schema bootstrap moved to the C# host). Only the
+    contract/collections guard these tests rely on is reproduced.
+    """
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload.get("contract") == "vibetable.directus-blueprint.v1", "unsupported blueprint contract"
+    assert isinstance(payload.get("collections"), dict) and payload["collections"], "no collections"
+    return payload
 VT_BLUEPRINT = ROOT / "directus" / "blueprints" / "vibetable-empty.json"
 VT_CAPABILITY = ROOT / "directus" / "capabilities" / "vibetable-empty-capabilities.json"
 

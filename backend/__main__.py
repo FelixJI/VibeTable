@@ -561,12 +561,10 @@ async def _main() -> None:
 
 
 def main() -> None:
-    if len(sys.argv) in {3, 4} and sys.argv[1] == "--local-directus-runner":
-        from backend.local_directus_runner import run_local_directus
-
-        resource_root = sys.argv[3] if len(sys.argv) == 4 else None
-        run_local_directus(sys.argv[2], resource_root)
-        return
+    # The host now drives the local Directus runtime directly (DirectusSupervisor
+    # + DirectusPackageManager + DirectusSchemaBootstrapper in C#), so the BFF no
+    # longer has a --local-directus-runner sub-mode. The packaged backend is a
+    # pure JSON-RPC BFF.
     if sys.platform == "win32":
         # ProactorEventLoop is the default on Windows since 3.8 and is what we
         # want for asyncio.run; set the policy explicitly so a host process

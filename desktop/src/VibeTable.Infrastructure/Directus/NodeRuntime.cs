@@ -8,8 +8,33 @@ namespace VibeTable.Infrastructure.Directus;
 /// Detects a usable Node.js runtime on the machine. The local Directus
 /// runtime needs Node.js 24.x to run <c>npm install</c> / <c>directus start</c>.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Resolution order (highest priority first):
+/// </para>
+/// <list type="number">
+/// <item>A bundled portable Node shipped beside the app
+/// (<c>&lt;appBase&gt;/runtime/node/node.exe</c>). This makes the packaged app
+/// work with zero user-side Node installation; the developer checkout also
+/// ships this directory so dev runs are self-contained.</item>
+/// <item><c>node.exe</c> on the system PATH (version-checked). The fallback for
+/// environments that have their own Node install.</item>
+/// </list>
+/// <para>
+/// Both paths are version-gated against <see cref="MinimumMajorVersion"/>. A
+/// bundled-but-too-old Node is not silently used; the caller falls through to
+/// PATH and, if that also fails, prompts the user.
+/// </para>
+/// </remarks>
 public static class NodeRuntime
 {
+    /// <summary>
+    /// Relative path (from the host base directory) to the bundled portable
+    /// Node executable. Kept as a constant so <c>DirectusPackageManager</c> and
+    /// <c>DirectusLaunchOptions</c> resolve the same location.
+    /// </summary>
+    public const string BundledNodeRelativePath = "runtime/node";
+
     /// <summary>
     /// Minimum supported Node major version. Matches the repository's
     /// <c>.nvmrc</c> (24.x). isolated-vm@6.1.2 ships a win32-x64 prebuilt
@@ -18,24 +43,56 @@ public static class NodeRuntime
     public const int MinimumMajorVersion = 24;
 
     /// <summary>
-    /// Finds <c>node.exe</c> on PATH and verifies its major version is at least
-    /// <see cref="MinimumMajorVersion"/>. Returns null if Node is absent or too
-    /// old (the caller then prompts the user to install it).
+    /// Finds a usable <c>node.exe</c>: the bundled portable Node first, then the
+    /// system PATH. Returns null if Node is absent or too old (the caller then
+    /// prompts the user to install it).
     /// </summary>
-    public static string? FindNode(int minMajor = MinimumMajorVersion)
+    /// <param name="minMajor">Minimum required major version.</param>
+    /// <param name="appBaseDirectory">The host's base directory
+    /// (<c>AppContext.BaseDirectory</c> in production). When supplied, a bundled
+    /// <c>runtime/node/node.exe</c> here is tried before PATH. Pass null to
+    /// only ever consult PATH (back-compat for callers that haven't been
+    /// wired up yet).</param>
+    public static string? FindNode(int minMajor = MinimumMajorVersion, string? appBaseDirectory = null)
     {
-        string? node = ResolveOnPath();
-        if (node is null || !File.Exists(node))
+        // 1. Bundled portable Node — preferred, makes the app self-contained.
+        string? bundled = ResolveBundledNode(appBaseDirectory);
+        if (bundled is not null
+            && TryGetMajorVersion(bundled, out int bundledMajor)
+            && bundledMajor >= minMajor)
+        {
+            return bundled;
+        }
+
+        // 2. System PATH — fallback for dev or user-installed Node.
+        string? onPath = ResolveOnPath();
+        if (onPath is null || !File.Exists(onPath))
         {
             return null;
         }
 
-        if (!TryGetMajorVersion(node, out int major) || major < minMajor)
+        if (!TryGetMajorVersion(onPath, out int major) || major < minMajor)
         {
             return null;
         }
 
-        return node;
+        return onPath;
+    }
+
+    /// <summary>
+    /// Returns the absolute path to the bundled <c>node.exe</c> if it exists
+    /// beside <paramref name="appBaseDirectory"/>, else null. Does NOT version
+    /// check — the caller does that so a single <c>-v</c> probe covers both
+    /// resolution paths.
+    /// </summary>
+    public static string? ResolveBundledNode(string? appBaseDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(appBaseDirectory))
+        {
+            return null;
+        }
+        string bundled = Path.GetFullPath(Path.Combine(appBaseDirectory, BundledNodeRelativePath, "node.exe"));
+        return File.Exists(bundled) ? bundled : null;
     }
 
     private static string? ResolveOnPath()

@@ -80,8 +80,8 @@
     "summary": "All P0/P1 checks passed; production-ready."
   },
   "operationsRunbook": {
-    "deploymentSteps": ["Apply schema via directus_project.py", "Deploy extensions", "Create admin + business roles", "Rotate bootstrap secret"],
-    "schemaApplyCommand": "uv run python scripts/directus_project.py apply --yes",
+    "deploymentSteps": ["Apply schema via host DirectusSchemaBootstrapper (first launch)", "Deploy extensions", "Create admin + business roles", "Rotate bootstrap secret"],
+    "schemaApplyCommand": "host applies vibetable-empty.json blueprint on first launch (DirectusSchemaBootstrapper, idempotent)",
     "backupStrategy": "Daily PostgreSQL pg_dump + file storage snapshot",
     "rpoRto": "RPO=24h, RTO=4h",
     "monitoringEndpoints": ["/server/health", "/server/info"],

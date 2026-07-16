@@ -19,19 +19,6 @@ public sealed class DirectusSupervisorTests
         var options = new DirectusLaunchOptions
         {
             LocalDirectusDirectory = string.Empty,
-            Command = "python.exe",
-        };
-        Assert.Throws<ArgumentException>(
-            () => new DirectusSupervisor(options));
-    }
-
-    [TestMethod]
-    public void Constructor_RejectsEmptyCommand()
-    {
-        var options = new DirectusLaunchOptions
-        {
-            LocalDirectusDirectory = "C:\\directus",
-            Command = string.Empty,
         };
         Assert.Throws<ArgumentException>(
             () => new DirectusSupervisor(options));
@@ -43,7 +30,6 @@ public sealed class DirectusSupervisorTests
         var options = new DirectusLaunchOptions
         {
             LocalDirectusDirectory = "C:\\directus",
-            Command = "python.exe",
         };
         var supervisor = new DirectusSupervisor(options);
 

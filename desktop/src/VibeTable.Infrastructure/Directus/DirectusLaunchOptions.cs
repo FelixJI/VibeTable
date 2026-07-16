@@ -32,8 +32,9 @@ public sealed class DirectusLaunchOptions
     public static readonly TimeSpan DefaultStopTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>
-    /// Resolved local-Directus directory (contains <c>run.py</c>,
-    /// <c>install.py</c>, <c>package.json</c>). Required.
+    /// Resolved local-Directus directory (contains <c>package.json</c>,
+    /// <c>package-lock.json</c>, <c>.env.template</c>; <c>node_modules</c> is
+    /// pulled here at first launch). Required.
     /// </summary>
     public string LocalDirectusDirectory { get; set; } = string.Empty;
 
@@ -46,23 +47,6 @@ public sealed class DirectusLaunchOptions
 
     /// <summary>Release/repository root containing versioned Directus resources.</summary>
     public string ResourceRoot { get; set; } = string.Empty;
-
-    /// <summary>
-    /// Executable used to run the local Directus launcher. Development uses
-    /// the repository virtual-environment Python; packaged builds reuse the
-    /// standalone <c>backend/vibetable-backend.exe</c>. Required.
-    /// </summary>
-    public string Command { get; set; } = string.Empty;
-
-    /// <summary>
-    /// Arguments before the runtime directory. Empty in development, where
-    /// the supervisor appends <c>run.py</c>; packaged builds use
-    /// <c>--local-directus-runner</c> and append the local runtime directory.
-    /// </summary>
-    public string ArgumentsPrefix { get; set; } = string.Empty;
-
-    /// <summary>True when <see cref="Command"/> is the packaged backend runner.</summary>
-    public bool UsesPackagedRunner { get; set; }
 
     /// <summary>
     /// Timeout for the readiness poll after spawn.
@@ -90,10 +74,9 @@ public sealed class DirectusLaunchOptions
     /// <summary>
     /// Resolves options for the running host: packaged layout first
     /// (<c>&lt;baseDir&gt;/local-directus/</c> copied into the per-user writable
-    /// runtime), then dev
-    /// (<c>&lt;repoRoot&gt;/scripts/local_directus/</c> with the repo
-    /// <c>.venv</c> Python). Returns null if the local-Directus directory or a
-    /// packaged backend/dev Python runner cannot be found.
+    /// runtime), then dev (<c>&lt;repoRoot&gt;/scripts/local_directus/</c>).
+    /// Returns null if the local-Directus directory cannot be found. The host
+    /// drives Directus via the bundled Node regardless of layout.
     /// </summary>
     public static DirectusLaunchOptions? ResolveForHost(
         string? hostBaseDirectory = null,
@@ -110,12 +93,15 @@ public sealed class DirectusLaunchOptions
             return null;
         }
 
-        string packagedBackend = Path.GetFullPath(
-            Path.Combine(baseDirectory, "backend", "vibetable-backend.exe"));
-        if (File.Exists(packagedBackend))
+        // The host drives Directus via the bundled Node (DirectusPackageManager +
+        // DirectusSupervisor spawn `node <directus-cli>`), so the options only
+        // need the runtime directory layout — not a Python/Nuitka runner.
+        bool isPackaged = File.Exists(Path.Combine(baseDirectory, "backend", "vibetable-backend.exe"));
+        if (isPackaged)
         {
             return new DirectusLaunchOptions
             {
+                // Per-user writable runtime dir; the template is copied in here.
                 LocalDirectusDirectory = Path.Combine(
                     localStateRoot ?? Path.Combine(
                         System.Environment.GetFolderPath(
@@ -124,36 +110,15 @@ public sealed class DirectusLaunchOptions
                     "directus"),
                 TemplateDirectory = localDirectus,
                 ResourceRoot = baseDirectory,
-                Command = packagedBackend,
-                ArgumentsPrefix = "--local-directus-runner",
-                UsesPackagedRunner = true,
             };
-        }
-
-        string? python = ResolveDevelopmentPython(baseDirectory);
-        if (python is null)
-        {
-            return null;
         }
 
         return new DirectusLaunchOptions
         {
             LocalDirectusDirectory = localDirectus,
             ResourceRoot = LaunchPaths.FindRepositoryRoot(baseDirectory) ?? baseDirectory,
-            Command = python,
         };
     }
 
-    private static string? ResolveDevelopmentPython(string baseDirectory)
-    {
-        // Dev: <repoRoot>/.venv/Scripts/python.exe.
-        string? repoRoot = LaunchPaths.FindRepositoryRoot(baseDirectory);
-        if (repoRoot is null)
-        {
-            return null;
-        }
-
-        string venv = Path.Combine(repoRoot, ".venv", "Scripts", "python.exe");
-        return File.Exists(venv) ? venv : null;
-    }
 }
+

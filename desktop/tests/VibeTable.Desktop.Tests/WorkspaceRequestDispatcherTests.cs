@@ -120,6 +120,78 @@ public sealed class WorkspaceRequestDispatcherTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    /// <summary>
+    /// A bare dev run (no flag, no external URL) auto-starts Directus when the
+    /// repo's scripts/local_directus is discoverable from the host output dir.
+    /// </summary>
+    [TestMethod]
+    public void HostStartupOptions_AutoStartsDevLocalDirectusOnBareRun()
+    {
+        // Simulate a repo root: pyproject.toml + backend/ + scripts/local_directus.
+        string repo = Path.Combine(
+            Path.GetTempPath(), "vibetable-dev-repo-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(repo, "backend"));
+        Directory.CreateDirectory(Path.Combine(repo, "scripts", "local_directus"));
+        // Simulate the host's output directory deep inside the repo.
+        string hostOut = Path.Combine(repo, "bin", "Release", "net10.0-windows");
+        Directory.CreateDirectory(hostOut);
+        try
+        {
+            File.WriteAllText(Path.Combine(repo, "pyproject.toml"), "");
+            File.WriteAllText(Path.Combine(repo, "scripts", "local_directus", "run.py"), "");
+
+            // Bare run: no flags, no URL → the full stack should come up.
+            Assert.IsTrue(HostStartupOptions.ShouldAutoStartLocalDirectus(
+                explicitlyRequested: false,
+                configuredUrl: null,
+                hostOut));
+            // External URL still wins (no auto-start against a remote Directus).
+            Assert.IsFalse(HostStartupOptions.ShouldAutoStartLocalDirectus(
+                explicitlyRequested: false,
+                configuredUrl: "https://directus.example.com",
+                hostOut));
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// --no-directus-auto disables auto-start even in a layout that would
+    /// otherwise start Directus (and even with --directus-auto also set).
+    /// </summary>
+    [TestMethod]
+    public void HostStartupOptions_NoDirectusAutoOverridesEverything()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(), "vibetable-noauto-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "local-directus"));
+        Directory.CreateDirectory(Path.Combine(root, "backend"));
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "local-directus", "run.py"), "");
+            File.WriteAllText(Path.Combine(root, "backend", "vibetable-backend.exe"), "");
+
+            // Packaged layout that would normally auto-start, but disabled.
+            Assert.IsFalse(HostStartupOptions.ShouldAutoStartLocalDirectus(
+                explicitlyRequested: false,
+                configuredUrl: null,
+                root,
+                explicitlyDisabled: true));
+            // Disabled wins even over an explicit --directus-auto.
+            Assert.IsFalse(HostStartupOptions.ShouldAutoStartLocalDirectus(
+                explicitlyRequested: true,
+                configuredUrl: null,
+                root,
+                explicitlyDisabled: true));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

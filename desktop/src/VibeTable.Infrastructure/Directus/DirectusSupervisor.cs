@@ -18,12 +18,14 @@ namespace VibeTable.Infrastructure.Directus;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Lifecycle: <see cref="StartAsync"/> runs <c>install.py</c> (first run only,
-/// online <c>npm install</c>) then spawns <c>run.py</c>, which starts
-/// <c>directus start</c>. Readiness is polled against
-/// <c>http://localhost:&lt;port&gt;/server/ping</c>. The actual port (which may
-/// have auto-evaded conflicts) is read back from <c>.env</c> and exposed via
-/// <see cref="BaseUrl"/> so the host can set <c>VIBETABLE_DIRECTUS_URL</c>.
+/// Lifecycle: <see cref="StartAsync"/> installs + integrity-verifies the npm
+/// Directus dependency (<see cref="DirectusPackageManager"/>), materializes the
+/// runtime <c>.env</c> (<see cref="DirectusEnvMaterializer"/>), bootstraps the
+/// DB + seeds the VibeTable schema (<see cref="DirectusSchemaBootstrapper"/>),
+/// then starts <c>directus start</c> directly via the bundled node. Readiness
+/// is polled against <c>http://localhost:&lt;port&gt;/server/ping</c>. The port
+/// (which may have auto-evaded conflicts) is exposed via <see cref="BaseUrl"/>
+/// so the host can set <c>VIBETABLE_DIRECTUS_URL</c>.
 /// </para>
 /// <para>
 /// The child is bound to a Windows Job Object (kill-on-close) so the Directus
@@ -33,16 +35,20 @@ namespace VibeTable.Infrastructure.Directus;
 /// </remarks>
 public sealed class DirectusSupervisor : IAsyncDisposable
 {
+    /// <summary>
+    /// Files copied from the packaged template into the per-user runtime
+    /// directory. Only the npm manifest + lockfile + env template are needed
+    /// now that the supervisor drives Directus directly (no run.py/install.py
+    /// on the runtime path).
+    /// </summary>
     private static readonly string[] RuntimeTemplateFiles =
     {
         "package.json",
         "package-lock.json",
-        "run.py",
-        "install.py",
         ".env.template",
-        "README.md",
     };
     private readonly DirectusLaunchOptions _options;
+    private readonly DirectusPackageManager _packageManager;
     private readonly object _stateGate = new();
     private readonly StringBuilder _stderrBuffer = new();
     private DirectusState _state = DirectusState.Stopped;
@@ -50,8 +56,15 @@ public sealed class DirectusSupervisor : IAsyncDisposable
     private JobObject? _job;
     private Task? _stderrTask;
     private string? _baseUrl;
+    private string? _nodeExe;
+    private (DirectusSchemaBootstrapper Bootstrapper, IDictionary<string, string> Env)? _pendingSchemaApply;
 
-    public DirectusSupervisor(DirectusLaunchOptions options)
+    public DirectusSupervisor(DirectusLaunchOptions options) : this(options, packageManager: null) { }
+
+    /// <param name="packageManager">Optional injected package manager (for tests
+    /// that need to fake install/verify). When null, a default
+    /// <see cref="DirectusPackageManager"/> is used.</param>
+    public DirectusSupervisor(DirectusLaunchOptions options, DirectusPackageManager? packageManager)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         if (string.IsNullOrWhiteSpace(_options.LocalDirectusDirectory))
@@ -60,11 +73,7 @@ public sealed class DirectusSupervisor : IAsyncDisposable
                 "DirectusLaunchOptions.LocalDirectusDirectory must be non-empty.",
                 nameof(options));
         }
-        if (string.IsNullOrWhiteSpace(_options.Command))
-        {
-            throw new ArgumentException(
-                "DirectusLaunchOptions.Command must be non-empty.", nameof(options));
-        }
+        _packageManager = packageManager ?? new DirectusPackageManager();
     }
 
     /// <summary>Current supervisor state (thread-safe).</summary>
@@ -109,22 +118,55 @@ public sealed class DirectusSupervisor : IAsyncDisposable
         try
         {
             PrepareRuntimeDirectory();
-            // First-run install (idempotent: run.py also checks, but doing it
-            // here surfaces install failures with a clear step before start).
+            // Stage 2: npm ci + integrity verification (no run.py involvement).
             await RunInstallAsync(cancellationToken).ConfigureAwait(false);
 
-            // Read the requested port (may auto-evade; we re-read .env after start).
-            int requestedPort = ReadPortFromEnv(_options.LocalDirectusDirectory) ?? 8055;
+            // Stage 3: the host now owns everything run.py used to do.
+            // 1. Materialize .env (secrets generated/preserved, port resolved).
+            bool alreadyBootstrapped = File.Exists(
+                Path.Combine(_options.LocalDirectusDirectory, ".bootstrapped"));
+            string? bsEmail, bsPassword;
+            _options.Environment.TryGetValue("VIBETABLE_DIRECTUS_BOOTSTRAP_EMAIL", out bsEmail);
+            _options.Environment.TryGetValue("VIBETABLE_DIRECTUS_BOOTSTRAP_PASSWORD", out bsPassword);
+            var env = DirectusEnvMaterializer.Materialize(
+                _options.LocalDirectusDirectory, bsEmail, bsPassword, alreadyBootstrapped);
+            // 2. Resolve a free port + persist it into .env.
+            int requestedPort = int.TryParse(
+                env.GetValueOrDefault("PORT", "8055"), out int rp) ? rp : 8055;
+            int port = DirectusEnvMaterializer.PickFreePort(requestedPort);
+            if (port != requestedPort)
+            {
+                env["PORT"] = port.ToString();
+                DirectusEnvMaterializer.WriteEnv(
+                    Path.Combine(_options.LocalDirectusDirectory, ".env"), env);
+            }
+            // 3. Stage the bulk-mutation extension so Directus loads it.
+            DeployExtension();
+            // 4. Bootstrap the DB + seed the VibeTable schema (idempotent).
+            await BootstrapAsync(env, cancellationToken).ConfigureAwait(false);
+            // 5. Start directus directly (no run.py): node <directus-cli> start.
+            (_process, _job) = SpawnDirectus(port, env);
 
-            (_process, _job) = SpawnRunPy();
-
-            // run.py writes the (possibly evaded) port back into .env before
-            // starting directus; poll .env until it stabilises or start polls.
-            int actualPort = await WaitForPortAsync(requestedPort, cancellationToken)
-                .ConfigureAwait(false);
-
-            _baseUrl = $"http://localhost:{actualPort}";
+            _baseUrl = $"http://localhost:{port}";
             await WaitForPingAsync(_baseUrl, cancellationToken).ConfigureAwait(false);
+
+            // 6. Now that directus is reachable, seed the VibeTable schema (REST).
+            //    Bootstrap (DB tables) already ran above; this is the collection/
+            //    relation/policy seeding. Idempotent (skipped once .schema-applied).
+            if (_pendingSchemaApply is { } pending)
+            {
+                string adminEmail = pending.Env.TryGetValue("ADMIN_EMAIL", out string? em) ? em : "admin@local";
+                string adminPassword = pending.Env.TryGetValue("ADMIN_PASSWORD", out string? pw) ? pw : "";
+                await pending.Bootstrapper.ApplySchemaIfFirstBootAsync(
+                    _baseUrl!,
+                    adminEmail,
+                    adminPassword,
+                    Path.Combine(_options.ResourceRoot, "directus", "blueprints", "vibetable-empty.json"),
+                    _options.LocalDirectusDirectory,
+                    cancellationToken).ConfigureAwait(false);
+                await pending.Bootstrapper.DisposeAsync().ConfigureAwait(false);
+                _pendingSchemaApply = null;
+            }
 
             lock (_stateGate) { TransitionLocked(DirectusState.Ready); }
         }
@@ -160,25 +202,92 @@ public sealed class DirectusSupervisor : IAsyncDisposable
 
     private async Task RunInstallAsync(CancellationToken cancellationToken)
     {
-        // run.py's ensure_npm_installed() is idempotent; invoking install.py
-        // explicitly is optional but gives a clean first-run signal. To keep
-        // the host resilient, we rely on run.py to install if missing and skip
-        // a separate install step here. (install.py remains the documented
-        // installer entry point for packagers.)
-        await Task.CompletedTask.ConfigureAwait(false);
+        // Ensure the npm Directus dependency is installed and integrity-verified
+        // BEFORE anything else, so install/verification failures surface here
+        // with a clear step. The bundled node (runtime/node/) is preferred.
+        _nodeExe = NodeRuntime.FindNode(appBaseDirectory: AppContext.BaseDirectory);
+        if (_nodeExe is null)
+        {
+            // The MainWindow path already prompts the user when Node is missing;
+            // reaching here means this supervisor was constructed directly
+            // without that guard. Fail loudly.
+            throw new InvalidOperationException(
+                "Node.js 24.x not found (neither bundled nor on PATH); cannot install Directus.");
+        }
+        await _packageManager
+            .EnsureInstalledAsync(_nodeExe, _options.LocalDirectusDirectory, cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    private (Process, JobObject) SpawnRunPy()
+    /// <summary>
+    /// Runs <c>directus bootstrap</c> (internal tables + admin) then seeds the
+    /// VibeTable schema via REST — both idempotent, both previously done by
+    /// run.py. Delegates to <see cref="DirectusSchemaBootstrapper"/>.
+    /// </summary>
+    private async Task BootstrapAsync(IDictionary<string, string> env, CancellationToken cancellationToken)
     {
-        string runPy = Path.Combine(_options.LocalDirectusDirectory, "run.py");
-        string arguments = _options.UsesPackagedRunner
-            ? $"{_options.ArgumentsPrefix} \"{_options.LocalDirectusDirectory}\" "
-                + $"\"{_options.ResourceRoot}\""
-            : $"\"{runPy}\"";
+        await using var bootstrapper = new DirectusSchemaBootstrapper();
+        await bootstrapper.BootstrapDatabaseAsync(
+            _nodeExe!, _options.LocalDirectusDirectory, env, cancellationToken).ConfigureAwait(false);
+
+        // Schema apply needs a reachable server: we have not started directus yet,
+        // so defer it to after SpawnDirectus+ping. Hand off via a continuation.
+        _pendingSchemaApply = (bootstrapper, env);
+    }
+
+    /// <summary>
+    /// Stages the built bulk-mutation extension into the local Directus
+    /// extensions/ dir so the endpoint registers. Port of run.py's
+    /// link_bulk_mutation_extension.
+    /// </summary>
+    private void DeployExtension()
+    {
+        string source = Path.Combine(_options.ResourceRoot, "directus", "extensions",
+            "vibetable-bulk-mutation", "dist", "index.js");
+        string pkg = Path.Combine(_options.ResourceRoot, "directus", "extensions",
+            "vibetable-bulk-mutation", "package.json");
+        if (!File.Exists(source))
+        {
+            // Extension is optional for basic operation; warn but do not fail.
+            return;
+        }
+        string targetDir = Path.Combine(_options.LocalDirectusDirectory, "extensions",
+            "vibetable-bulk-mutation");
+        Directory.CreateDirectory(targetDir);
+        try { File.Copy(pkg, Path.Combine(targetDir, "package.json"), overwrite: true); }
+        catch { /* best-effort */ }
+        string distTarget = Path.Combine(targetDir, "dist");
+        if (Directory.Exists(distTarget))
+        {
+            Directory.Delete(distTarget, recursive: true);
+        }
+        CopyDirectory(Path.GetDirectoryName(source)!, distTarget);
+    }
+
+    private static void CopyDirectory(string source, string target)
+    {
+        Directory.CreateDirectory(target);
+        foreach (string file in Directory.GetFiles(source))
+        {
+            File.Copy(file, Path.Combine(target, Path.GetFileName(file)), overwrite: true);
+        }
+        foreach (string dir in Directory.GetDirectories(source))
+        {
+            CopyDirectory(dir, Path.Combine(target, Path.GetFileName(dir)));
+        }
+    }
+
+    /// <summary>
+    /// Starts <c>directus start</c> directly via the bundled node — no run.py.
+    /// The child reads .env from its working directory (already materialized).
+    /// </summary>
+    private (Process, JobObject) SpawnDirectus(int port, IDictionary<string, string> env)
+    {
+        string cli = Path.Combine(_options.LocalDirectusDirectory, "node_modules", "directus", "cli.js");
         var psi = new ProcessStartInfo
         {
-            FileName = _options.Command,
-            Arguments = arguments,
+            FileName = _nodeExe!,
+            Arguments = $"\"{cli}\" start",
             UseShellExecute = false,
             RedirectStandardError = true,
             RedirectStandardOutput = true,
@@ -188,8 +297,13 @@ public sealed class DirectusSupervisor : IAsyncDisposable
             StandardErrorEncoding = Encoding.UTF8,
             WorkingDirectory = _options.LocalDirectusDirectory,
         };
-        foreach (var kv in _options.Environment)
+        // Pass the materialized env; scrub bootstrap creds from the runtime env.
+        foreach (var kv in env)
         {
+            if (kv.Key is "ADMIN_EMAIL" or "ADMIN_PASSWORD")
+            {
+                continue;
+            }
             psi.Environment[kv.Key] = kv.Value;
         }
 
@@ -203,8 +317,7 @@ public sealed class DirectusSupervisor : IAsyncDisposable
         {
             process.Dispose();
             job.Dispose();
-            throw new InvalidOperationException(
-                $"Failed to spawn Directus run.py: {ex.Message}", ex);
+            throw new InvalidOperationException($"Failed to spawn directus start: {ex.Message}", ex);
         }
 
         if (JobObject.IsSupported)
@@ -279,39 +392,9 @@ public sealed class DirectusSupervisor : IAsyncDisposable
     }
 
     /// <summary>
-    /// Polls <c>.env</c> for a stable PORT (run.py rewrites it on evasion), or
-    /// falls back to the requested port after a short window.
+    /// Polls <c>/server/ping</c> until Directus answers or the startup timeout
+    /// elapses. Throws if the child exits first.
     /// </summary>
-    private async Task<int> WaitForPortAsync(int requestedPort, CancellationToken cancellationToken)
-    {
-        TimeSpan deadline = TimeSpan.FromSeconds(30);
-        var sw = Stopwatch.StartNew();
-        int lastSeen = requestedPort;
-        int stableCount = 0;
-        while (sw.Elapsed < deadline && !cancellationToken.IsCancellationRequested)
-        {
-            int? current = ReadPortFromEnv(_options.LocalDirectusDirectory);
-            if (current is int port)
-            {
-                if (port == lastSeen)
-                {
-                    stableCount++;
-                    if (stableCount >= 2)
-                    {
-                        return port;
-                    }
-                }
-                else
-                {
-                    lastSeen = port;
-                    stableCount = 1;
-                }
-            }
-            await Task.Delay(500, cancellationToken).ConfigureAwait(false);
-        }
-        return requestedPort;
-    }
-
     private async Task WaitForPingAsync(string baseUrl, CancellationToken cancellationToken)
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
@@ -343,32 +426,6 @@ public sealed class DirectusSupervisor : IAsyncDisposable
         throw new TimeoutException(
             $"Directus did not become ready within {_options.StartupTimeout}. " +
             $"Last error: {lastError}. Stderr:\n{GetStdErrorLog()}");
-    }
-
-    private static int? ReadPortFromEnv(string localDirectusDir)
-    {
-        string envFile = Path.Combine(localDirectusDir, ".env");
-        if (!File.Exists(envFile))
-        {
-            return null;
-        }
-        try
-        {
-            foreach (string raw in File.ReadAllLines(envFile))
-            {
-                string line = raw.Trim();
-                if (line.StartsWith("PORT=", StringComparison.Ordinal))
-                {
-                    string value = line["PORT=".Length..].Trim();
-                    if (int.TryParse(value, out int port))
-                    {
-                        return port;
-                    }
-                }
-            }
-        }
-        catch { /* best-effort */ }
-        return null;
     }
 
     private async Task TeardownAsync()

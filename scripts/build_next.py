@@ -15,9 +15,8 @@ Design contract (verbatim from the Task 11 brief):
       npm run build
       dotnet publish desktop/src/VibeTable.Desktop/VibeTable.Desktop.csproj
           --configuration Release --runtime win-x64 --self-contained true
-      python -m nuitka --standalone --python-flag=-m
-          --output-dir=<staging> --output-filename=vibetable-backend.exe
-          --nofollow-import-to=<dev-or-unused-optional-package> backend/
+      python -m PyInstaller --onedir --name vibetable-backend
+          --hidden-import=<runtime-submodule> backend/__main__.py
 
 * ``--skip-web`` / ``--skip-backend`` / ``--skip-desktop`` / ``--skip-directus``
   / ``--skip-local-directus`` are dev flags. They are REJECTED when combined
@@ -73,10 +72,24 @@ LOCAL_DIRECTUS_DIR_NAME = "local-directus"
 MANIFEST_NAME = "publish-layout.json"
 PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
 
-# Present in a development venv, but not imported by production code. Pydantic
-# and Pillow expose optional import hooks that otherwise make Nuitka pull these
-# packages (and their native payloads) into the standalone backend.
-BACKEND_EXCLUDED_PACKAGES = ("mypy", "numpy", "pandas", "pytest")
+# Hidden imports PyInstaller cannot always infer statically for the backend's
+# runtime dependencies. These are the transitive submodules the BFF actually
+# needs; listed explicitly so a cold PyInstaller bundle resolves them without
+# running the app first.
+BACKEND_HIDDEN_IMPORTS = (
+    "pydantic",
+    "pydantic.deprecated.decorator",
+    "openpyxl",
+    "openpyxl.workbook",
+    "websockets",
+)
+
+#: Dev/test packages that must never be bundled into the shipped backend. The
+#: post-build verify scans the onedir's _internal/ for these as a guard against
+#: an accidental collect-all.
+_DEV_PACKAGES_FORBIDDEN_IN_BUNDLE = frozenset(
+    {"mypy", "numpy", "pandas", "pytest", "_pytest"}
+)
 
 #: Dev-only skip flags. They MUST be rejected when combined with --release.
 DEV_SKIP_FLAGS = (
@@ -149,7 +162,7 @@ class RepoPaths:
 
         Used while staging: we build into ``staging_root`` (treating it as
         the publish layout), verify it, then atomically swap it into place.
-        The ``scratch_root`` is carried over so intermediate Nuitka/dotnet
+        The ``scratch_root`` is carried over so intermediate PyInstaller/dotnet
         output stays OUT of the staging (publish) subtree.
         """
         return RepoPaths(
@@ -218,30 +231,47 @@ def build_dotnet_publish_command(
     return cmd
 
 
-def build_nuitka_backend_command(paths: RepoPaths, output_dir: str | os.PathLike[str]) -> list[str]:
-    """Return the Nuitka standalone backend command array.
+def build_pyinstaller_backend_command(
+    paths: RepoPaths, output_dir: str | os.PathLike[str]
+) -> list[str]:
+    """Return the PyInstaller onedir command array for the backend.
 
-    Brief verbatim::
+    Produces a self-contained ``vibetable-backend/`` directory (onedir) holding
+    ``vibetable-backend.exe`` + ``_internal/``. The host spawns that exe as its
+    BFF child. Uses the SAME interpreter that invoked this script
+    (``sys.executable``) so the build is reproducible.
 
-        python -m nuitka --standalone --python-flag=-m
-            --output-dir=<staging> --output-filename=vibetable-backend.exe
-            --nofollow-import-to=mypy ... backend/
-
-    Uses the SAME interpreter that invoked this script (``sys.executable``)
-    so the build is reproducible under ``uv run``.
+    ``--onedir`` (not ``--onefile``) is deliberate: the host treats the backend
+    as a directory it locates by manifest path, and a directory layout is also
+    what the package-integrity checks (and debugging) need.
     """
     out = os.fsdecode(Path(output_dir))
-    command = [
+    workpath = os.fsdecode(Path(output_dir).parent / "_pyinstaller_build")
+    command: list[str] = [
         sys.executable,
         "-m",
-        "nuitka",
-        "--standalone",
-        "--python-flag=-m",
-        f"--output-dir={out}",
-        f"--output-filename={BACKEND_EXE_NAME}",
+        "PyInstaller",
+        "--noconfirm",
+        "--clean",
+        "--distpath",
+        out,
+        "--workpath",
+        workpath,
+        "--specpath",
+        workpath,
+        "--name",
+        BACKEND_EXE_NAME[:-4],  # strip ".exe"; PyInstaller appends it
+        "--onedir",
+        # Console build: the backend is a stdio JSON-RPC server; it must never
+        # pop a window, and a console subsystem would do that on Windows.
+        "--console",
     ]
-    command.extend(f"--nofollow-import-to={package}" for package in BACKEND_EXCLUDED_PACKAGES)
-    command.append(str(paths.backend_main.parent))
+    for hidden in BACKEND_HIDDEN_IMPORTS:
+        command.extend(["--hidden-import", hidden])
+    # Collect pydantic's data files (py.typed) so the bundle is self-contained.
+    command.extend(["--collect-data", "pydantic"])
+    # The entrypoint: backend/__main__.py (run as a module via -m in dev).
+    command.append(str(paths.backend_main))
     return command
 
 
@@ -283,14 +313,11 @@ def render_manifest(paths: RepoPaths) -> str:
         "webGrid": WEB_GRID_DIR_NAME,
         # Plural: relative paths to every extension's deployable directory.
         "directusExtensions": [f"directus/extensions/{name}" for name in extension_names],
-        # local-directus ships source-only (package.json/run.py/install.py).
-        # node_modules is pulled at first launch by install.py (app-private,
-        # online) so the installer stays small and native modules are built
-        # against the customer's Node ABI.
+        # local-directus ships the npm manifest + lockfile + env template only.
+        # node_modules is pulled at first launch by the host's package manager
+        # (app-private, online) so the installer stays small and native modules
+        # are built against the customer's Node ABI.
         "localDirectus": LOCAL_DIRECTUS_DIR_NAME,
-        # The packaged backend contains a dedicated runner sub-mode, so no
-        # second portable Python distribution is required.
-        "localDirectusRunner": f"{BACKEND_DIR_NAME}/{BACKEND_EXE_NAME}",
     }
     # Singular launch path (backward-compatible): first extension.
     if extension_names:
@@ -342,7 +369,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip-backend",
         action="store_true",
-        help=("DEV ONLY: skip the Nuitka backend stage. Rejected with --release."),
+        help=("DEV ONLY: skip the PyInstaller backend stage. Rejected with --release."),
     )
     parser.add_argument(
         "--skip-desktop",
@@ -512,22 +539,19 @@ def _build_directus_stage(stage: RepoPaths, skip: bool) -> None:
 _LOCAL_DIRECTUS_SHIPPED_FILES = (
     "package.json",
     "package-lock.json",
-    "run.py",
-    "install.py",
     ".env.template",
-    "README.md",
 )
 
 
 def _build_local_directus_stage(stage: RepoPaths, skip: bool) -> None:
     """Stage the local-Directus runtime source into ``local-directus/``.
 
-    Ships only the launcher source (``package.json``, ``run.py``,
-    ``install.py``, ``.env.template``, ``README.md``, ``package-lock.json``).
-    ``node_modules`` and every runtime artifact (``.npm-cache``,
-    ``.npm-prefix``, ``data/``, ``uploads/``, ``extensions/``, ``.env``,
-    markers) are excluded — the customer's first launch runs ``install.py``
-    which pulls Directus into the app-private directory online.
+    Ships only what the host needs to introduce Directus at first launch: the
+    npm manifest + lockfile + env template. The host's package manager pulls
+    Directus online into this app-private directory; no run.py/install.py is
+    shipped (the host drives Directus directly). ``node_modules`` and every
+    runtime artifact (``.npm-cache``, ``.npm-prefix``, ``data/``, ``uploads/``,
+    ``extensions/``, ``.env``, markers) are excluded.
     """
     if skip:
         print("[build_next] skipping local-directus stage (--skip-local-directus)")
@@ -536,9 +560,8 @@ def _build_local_directus_stage(stage: RepoPaths, skip: bool) -> None:
     if not source.is_dir():
         raise BuildError(f"local-directus source missing: {source}")
     package_json = source / "package.json"
-    run_py = source / "run.py"
-    if not package_json.is_file() or not run_py.is_file():
-        raise BuildError(f"local-directus source incomplete (need package.json + run.py): {source}")
+    if not package_json.is_file():
+        raise BuildError(f"local-directus source incomplete (need package.json): {source}")
 
     target = stage.local_directus_publish_dir
     if target.exists():
@@ -556,10 +579,10 @@ def _build_local_directus_stage(stage: RepoPaths, skip: bool) -> None:
 
 
 def _build_backend_stage(stage: RepoPaths, skip: bool) -> None:
-    """Nuitka standalone backend -> ``stage.backend_dir/vibetable-backend.exe``.
+    """PyInstaller onedir backend -> ``stage.backend_dir/vibetable-backend.exe``.
 
-    Nuitka emits ``backend.dist/`` next to the output dir; we rename/move
-    the produced folder to ``backend/`` so the host finds
+    PyInstaller emits ``vibetable-backend/`` (the onedir: exe + ``_internal/``)
+    under the distpath; we relocate it to ``backend/`` so the host finds
     ``backend/vibetable-backend.exe``.
     """
     if skip:
@@ -567,19 +590,18 @@ def _build_backend_stage(stage: RepoPaths, skip: bool) -> None:
         return
     if not stage.backend_main.is_file():
         raise BuildError(f"backend entrypoint missing: {stage.backend_main}")
-    # Nuitka compiles ``backend`` in package ``-m`` mode and writes
-    # ``backend.dist``. Build into a SCRATCH dir (sibling of staging, NOT
-    # inside the publish subtree) then relocate to <publish>/backend so the
-    # scratch artifacts never leak into the published layout.
+    # Build into a SCRATCH dir (sibling of staging, NOT inside the publish
+    # subtree) then relocate to <publish>/backend so the scratch artifacts
+    # never leak into the published layout.
     scratch = stage.scratch_root / "_backend_build"
     scratch.mkdir(parents=True, exist_ok=True)
     _run(
-        build_nuitka_backend_command(stage, output_dir=scratch),
+        build_pyinstaller_backend_command(stage, output_dir=scratch),
         cwd=stage.repo_root,
     )
-    produced = scratch / "backend.dist"
+    produced = scratch / BACKEND_EXE_NAME[:-4]  # "vibetable-backend" (no .exe)
     if not produced.is_dir():
-        raise BuildError(f"Nuitka did not produce {produced} — backend stage incomplete")
+        raise BuildError(f"PyInstaller did not produce {produced} — backend stage incomplete")
     # Relocate to <publish>/backend so the manifest's relative path resolves.
     target = stage.backend_dir
     if target.exists():
@@ -587,7 +609,7 @@ def _build_backend_stage(stage: RepoPaths, skip: bool) -> None:
     shutil.move(str(produced), str(target))
     # Sanity: the exe must be where the manifest says it is.
     if not (target / BACKEND_EXE_NAME).is_file():
-        raise BuildError(f"expected {target / BACKEND_EXE_NAME} after Nuitka relocate")
+        raise BuildError(f"expected {target / BACKEND_EXE_NAME} after PyInstaller relocate")
     print(f"[build_next] backend staged -> {target}", flush=True)
 
 
@@ -651,17 +673,19 @@ def _verify_stage(
     if not skip_backend and not (stage.backend_dir / BACKEND_EXE_NAME).is_file():
         raise BuildError(f"missing backend exe: {stage.backend_dir / BACKEND_EXE_NAME}")
     if not skip_backend:
-        forbidden = [
-            child.name
-            for child in stage.backend_dir.iterdir()
-            if any(
-                child.name == package or child.name.startswith(f"{package}.")
-                for package in BACKEND_EXCLUDED_PACKAGES
-            )
-        ]
+        # PyInstaller onedir nests packages under _internal/. Scan it for the
+        # dev/test packages that must never ship (PyInstaller only bundles what
+        # is imported, but this is a belt-and-braces guard against an accidental
+        # collect-all that drags them in).
+        forbidden = set()
+        scan_root = stage.backend_dir / "_internal"
+        if scan_root.is_dir():
+            for child in scan_root.iterdir():
+                if child.name in _DEV_PACKAGES_FORBIDDEN_IN_BUNDLE:
+                    forbidden.add(child.name)
         if forbidden:
             raise BuildError(
-                "backend contains excluded development/optional packages: "
+                "backend contains forbidden development/optional packages: "
                 + ", ".join(sorted(forbidden))
             )
     if not skip_web and not stage.web_grid_publish_dir.is_dir():

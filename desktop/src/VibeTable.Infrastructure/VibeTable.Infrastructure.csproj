@@ -8,4 +8,15 @@
     <ProjectReference Include="..\VibeTable.Contracts\VibeTable.Contracts.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- VibeTable.Desktop's HostStartupOptions reaches into LaunchPaths to
+         detect the dev local-Directus directory when deciding whether to
+         auto-start Directus on a bare run. Internal keeps the path helpers
+         out of the public surface while still letting the host see them. -->
+    <InternalsVisibleTo Include="VibeTable.Desktop" />
+    <!-- Test project exercises the internal payload-construction methods
+         (1:1 Python-port fidelity checks). -->
+    <InternalsVisibleTo Include="VibeTable.Infrastructure.Tests" />
+  </ItemGroup>
+
 </Project>

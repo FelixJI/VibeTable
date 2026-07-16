@@ -54,8 +54,10 @@ def test_manifest_contains_all_components_at_project_version() -> None:
         f"directus/extensions/{name}" for name in ext_names
     ]
     # local-directus ships source-only; node_modules is pulled at first launch.
+    # The host drives Directus directly now, so there is no packaged-runner
+    # launch path in the manifest (localDirectusRunner was removed).
     assert manifest["launch"]["localDirectus"] == "local-directus"
-    assert manifest["launch"]["localDirectusRunner"] == "backend/vibetable-backend.exe"
+    assert "localDirectusRunner" not in manifest["launch"]
 
 
 def test_release_mode_rejects_skipping_directus() -> None:
@@ -78,11 +80,12 @@ def test_local_directus_stage_ships_source_only(tmp_path: Path) -> None:
     build_next._build_local_directus_stage(stage, skip=False)
 
     target = stage.local_directus_publish_dir
-    # Required launcher files are shipped.
-    assert (target / "run.py").is_file()
-    assert (target / "install.py").is_file()
+    # The host drives Directus directly, so only the npm manifest, lockfile and
+    # env template are shipped (no run.py/install.py launcher).
     assert (target / "package.json").is_file()
     assert (target / ".env.template").is_file()
+    assert not (target / "run.py").exists()
+    assert not (target / "install.py").exists()
     # Per-machine / downloaded artifacts must NOT leak into the installer.
     assert not (target / "node_modules").exists()
     assert not (target / ".env").exists()
@@ -96,13 +99,20 @@ def test_build_executor_prefers_x64_dotnet_when_available() -> None:
         assert resolved == str(build_next.PREFERRED_DOTNET)
 
 
-def test_nuitka_build_uses_package_mode_and_excludes_dev_bloat(tmp_path: Path) -> None:
+def test_pyinstaller_build_uses_onedir_and_hidden_imports(tmp_path: Path) -> None:
+    """PyInstaller onedir command pins the entrypoint, name, hidden imports."""
     paths = build_next.RepoPaths.default(REPO_ROOT)
-    command = build_next.build_nuitka_backend_command(paths, tmp_path)
-    assert "--python-flag=-m" in command
-    assert command[-1] == str(REPO_ROOT / "backend")
-    for package in build_next.BACKEND_EXCLUDED_PACKAGES:
-        assert f"--nofollow-import-to={package}" in command
+    command = build_next.build_pyinstaller_backend_command(paths, tmp_path)
+    assert "--onedir" in command
+    assert "--console" in command
+    assert "--name" in command
+    # The entrypoint is backend/__main__.py (the BFF).
+    assert command[-1] == str(REPO_ROOT / "backend" / "__main__.py")
+    for hidden in build_next.BACKEND_HIDDEN_IMPORTS:
+        assert hidden in command, f"hidden import {hidden} missing from command"
+    # pydantic data files collected so the bundle is self-contained.
+    assert "--collect-data" in command
+    assert "pydantic" in command
 
 
 # ---------------------------------------------------------------------------

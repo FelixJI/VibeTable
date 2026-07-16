@@ -98,6 +98,12 @@ def test_next_shell_reaches_backend_webview_and_renderer_ready(tmp_path: Path) -
         [
             str(host),
             "--test-mode",
+            # This smoke targets the backend + WebView2 + app.ready bridge only
+            # (see the module docstring: it does not require Directus). A bare
+            # launch in the repo layout would otherwise auto-start a local
+            # Directus and block the backend readiness window. --no-directus-auto
+            # pins the host to the backend-only startup path this test asserts.
+            "--no-directus-auto",
             "--readiness-dir",
             str(readiness_dir),
         ],

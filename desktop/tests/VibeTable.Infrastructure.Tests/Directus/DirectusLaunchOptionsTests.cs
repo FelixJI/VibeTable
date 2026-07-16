@@ -37,28 +37,23 @@ public sealed class DirectusLaunchOptionsTests
             var options = DirectusLaunchOptions.ResolveForHost(host, stateRoot);
 
             Assert.IsNotNull(options);
+            // Packaged layout: per-user writable runtime dir + template copy.
             Assert.AreEqual(
                 Path.Combine(stateRoot, "directus"),
                 options!.LocalDirectusDirectory);
             Assert.AreEqual(localDirectus, options.TemplateDirectory);
             Assert.AreEqual(Path.GetFullPath(host), options.ResourceRoot);
-            Assert.AreEqual(backend, options.Command);
-            Assert.IsTrue(options.UsesPackagedRunner);
-            Assert.AreEqual("--local-directus-runner", options.ArgumentsPrefix);
         });
     }
 
     [TestMethod]
-    public void ResolveForHost_UsesRepositoryVenvInDevelopment()
+    public void ResolveForHost_UsesRepoLocalDirectusInDevelopment()
     {
         WithTemporaryDirectory(root =>
         {
             // Repo markers so the walk-up resolves the root.
             File.WriteAllText(Path.Combine(root, "pyproject.toml"), "[project]");
             Directory.CreateDirectory(Path.Combine(root, "backend"));
-            string venv = Path.Combine(root, ".venv", "Scripts", "python.exe");
-            Directory.CreateDirectory(Path.GetDirectoryName(venv)!);
-            File.WriteAllText(venv, string.Empty);
             // The local_directus dir lives under scripts/.
             Directory.CreateDirectory(Path.Combine(root, "scripts", "local_directus"));
             // Host sits several levels under the repo root, like a real build output.
@@ -70,22 +65,18 @@ public sealed class DirectusLaunchOptionsTests
 
             Assert.IsNotNull(options);
             StringAssert.Contains(options!.LocalDirectusDirectory, "local_directus");
-            Assert.AreEqual(venv, options.Command);
-            Assert.IsFalse(options.UsesPackagedRunner);
             Assert.IsNull(options.TemplateDirectory);
             Assert.AreEqual(Path.GetFullPath(root), options.ResourceRoot);
         });
     }
 
     [TestMethod]
-    public void ResolveForHost_ReturnsNullWhenRunnerUnavailable()
+    public void ResolveForHost_ReturnsNullWhenNoLocalDirectusResolvable()
     {
         WithTemporaryDirectory(root =>
         {
+            // A host dir with no local-directus beside it and no repo root above.
             string host = Path.Combine(root, "publish");
-            string localDirectus = Path.Combine(host, "local-directus");
-            Directory.CreateDirectory(localDirectus);
-            // No packaged backend and no repo root above -> runner unresolvable.
             Directory.CreateDirectory(host);
 
             var options = DirectusLaunchOptions.ResolveForHost(host);
