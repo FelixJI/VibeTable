@@ -315,6 +315,33 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it("parses inbound messages delivered as a JSON string (PostWebMessageAsString contract)", () => {
+    // The C# host posts via CoreWebView2.PostWebMessageAsString(json), so
+    // window.chrome.webview delivers event.data as a JSON *string*, not a
+    // parsed object. The bridge must parse it before dispatching.
+    const onDiagnostic = vi.fn();
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "req-s",
+      onDiagnostic,
+    });
+
+    const openedHandler = vi.fn();
+    bridge.on("database.opened", openedHandler);
+    bridge.start();
+
+    const opened: DatabaseOpenedPayload = { tables: ["contracts", "users"], views: [] };
+    // Mirrors the real wire shape: a single JSON.stringify of the envelope.
+    webview.emit(JSON.stringify({ type: "database.opened", payload: opened }));
+
+    expect(onDiagnostic).not.toHaveBeenCalled();
+    expect(openedHandler).toHaveBeenCalledTimes(1);
+    expect(openedHandler).toHaveBeenCalledWith(opened);
+
+    bridge.stop();
+  });
+
   it("notify posts a fire-and-forget envelope with no requestId (e.g. app.ready)", () => {
     const bridge = createHostBridge({ webview, timeoutMs: 1000 });
     bridge.start();

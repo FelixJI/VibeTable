@@ -225,9 +225,28 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
   // -----------------------------------------------------------------------
 
   const onHostMessage = (event: { readonly data: unknown }): void => {
-    // The bridge treats `event.data` as the envelope. (WebView2 posts the
-    // message object directly as `e.data`.)
-    handleMessage(event.data);
+    // Normalize the envelope shape. The C# host posts via
+    // `CoreWebView2.PostWebMessageAsString(json)` (see MainWindow.xaml.cs),
+    // so `event.data` arrives as a JSON *string* and must be parsed here.
+    // `PostWebMessageAsJson` (and the object-based webview shims used in unit
+    // tests) deliver an already-parsed object, which we pass through as-is.
+    const data = event.data;
+    if (typeof data === "string") {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        onDiagnostic({
+          kind: "malformed",
+          reason: "inbound message string is not valid JSON",
+          raw: data,
+        });
+        return;
+      }
+      handleMessage(parsed);
+      return;
+    }
+    handleMessage(data);
   };
 
   function handleMessage(raw: unknown): void {
