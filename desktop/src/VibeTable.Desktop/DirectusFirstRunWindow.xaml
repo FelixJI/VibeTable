@@ -18,7 +18,7 @@
         </Grid.RowDefinitions>
 
         <TextBlock x:Name="HeadingText" Grid.Row="0" Text="欢迎使用 VibeTable"
-                   FontSize="24" FontWeight="SemiBold"/>
+                   FontSize="18" FontWeight="SemiBold"/>
         <TextBlock x:Name="IntroductionText" Grid.Row="1" Margin="0,8,0,18" TextWrapping="Wrap"
                    Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                    Text="接下来会安装并校验本地数据服务，然后创建管理员账号。无需提前准备 Directus 账号。"/>

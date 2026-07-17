@@ -14,9 +14,9 @@
         <Border Grid.Row="0" Background="#17324D" Padding="30,24">
             <StackPanel>
                 <TextBlock Text="正在准备本地数据服务" Foreground="White"
-                           FontSize="24" FontWeight="SemiBold"/>
+                           FontSize="18" FontWeight="SemiBold"/>
                 <TextBlock x:Name="StageTitleText" Text="准备运行环境"
-                           Foreground="#D9E8F5" FontSize="15" Margin="0,8,0,0"/>
+                           Foreground="#D9E8F5" FontSize="13" Margin="0,8,0,0"/>
             </StackPanel>
         </Border>
 
