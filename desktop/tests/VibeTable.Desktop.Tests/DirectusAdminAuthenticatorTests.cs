@@ -65,6 +65,23 @@ public sealed class DirectusAdminAuthenticatorTests
         Assert.IsNull(token);
     }
 
+    [TestMethod]
+    public async Task LoginAsync_ReturnsNull_OnCancellation()
+    {
+        var handler = new FakeHandler(HttpStatusCode.OK, setCookieHeader: "directus_session_token=x; Path=/");
+        // Honor the token so SendAsync throws OCE like a real HttpClient.
+        handler.HonorCancellation = true;
+        var auth = new DirectusAdminAuthenticator(handler);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel(); // pre-cancelled
+
+        string? token = await auth.LoginAsync(
+            "http://127.0.0.1:49152", "admin@example.com", "pw", cts.Token);
+
+        Assert.IsNull(token, "cancellation must return null, not throw");
+    }
+
     private sealed class FakeHandler : HttpMessageHandler
     {
         private readonly HttpStatusCode _status;
@@ -73,6 +90,7 @@ public sealed class DirectusAdminAuthenticatorTests
 
         public string? LastRequestBodyMode { get; private set; }
         public string? LastRequestEmail { get; private set; }
+        public bool HonorCancellation { get; set; }
 
         public FakeHandler(HttpStatusCode status = HttpStatusCode.OK, string? setCookieHeader = null, bool throwOnSend = false)
         {
@@ -81,6 +99,7 @@ public sealed class DirectusAdminAuthenticatorTests
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
+            if (HonorCancellation) ct.ThrowIfCancellationRequested();
             if (_throw) throw new HttpRequestException("simulated network failure");
             // Parse the JSON body to capture mode/email for assertions.
             if (request.Content is StringContent sc)

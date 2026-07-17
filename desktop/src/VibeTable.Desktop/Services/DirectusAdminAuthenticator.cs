@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -71,6 +70,12 @@ public sealed class DirectusAdminAuthenticator : IDirectusAdminAuthenticator
         }
         catch (HttpRequestException)
         {
+            return null;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Genuine caller cancellation — treat as failure (return null),
+            // do NOT throw. Keeps the "never throws" contract.
             return null;
         }
     }
