@@ -38,7 +38,7 @@ public sealed class MainWindowViewModelTests
         var vm = await CreateAndStartAsync(backend, web);
 
         Assert.AreEqual(StartupState.LoadingWeb, vm.State);
-        Assert.AreEqual("Loading web", vm.StatusText);
+        Assert.AreEqual("正在加载界面…", vm.StatusText);
         Assert.IsFalse(vm.IsGridVisible);
         // The WebView2 HWND is realized during LoadingWeb so navigation has a
         // non-zero surface; IsGridVisible (user-facing) stays false until Ready.
@@ -49,7 +49,7 @@ public sealed class MainWindowViewModelTests
         web.CompleteLoad();
 
         Assert.AreEqual(StartupState.Ready, vm.State);
-        Assert.AreEqual("Ready", vm.StatusText);
+        Assert.AreEqual("就绪", vm.StatusText);
         Assert.IsTrue(vm.IsGridVisible);
         Assert.IsTrue(vm.IsWebViewVisible);
         Assert.IsFalse(vm.IsRetryVisible);
@@ -63,7 +63,7 @@ public sealed class MainWindowViewModelTests
         var vm = await CreateAndStartAsync(backend, web, failBackend: true);
 
         Assert.AreEqual(StartupState.Faulted, vm.State);
-        Assert.AreEqual("Faulted", vm.StatusText);
+        Assert.AreEqual("出现错误", vm.StatusText);
         Assert.IsFalse(vm.IsGridVisible);
         Assert.IsTrue(vm.IsRetryVisible);
     }
@@ -159,6 +159,38 @@ public sealed class MainWindowViewModelTests
 
         // Pre-start: no Retry yet enabled.
         Assert.IsFalse(vm.RetryCommand.CanExecute(null));
+    }
+
+    [TestMethod]
+    public void DetailMessage_RaisesPropertyChanged_WhenSet()
+    {
+        var backend = new FakeBackendLifecycle();
+        var web = new FakeWebViewBridge();
+        var vm = new MainWindowViewModel(backend, web);
+
+        var changed = new List<string?>();
+        vm.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        vm.DetailMessage = "正在创建 VibeTable 数据结构…";
+
+        Assert.AreEqual("正在创建 VibeTable 数据结构…", vm.DetailMessage);
+        CollectionAssert.Contains(changed, nameof(MainWindowViewModel.DetailMessage));
+    }
+
+    [TestMethod]
+    public void DetailMessage_SetToSameValue_DoesNotRaise()
+    {
+        var backend = new FakeBackendLifecycle();
+        var web = new FakeWebViewBridge();
+        var vm = new MainWindowViewModel(backend, web);
+        vm.DetailMessage = "same";
+
+        var changed = new List<string?>();
+        vm.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        vm.DetailMessage = "same"; // identical
+
+        CollectionAssert.DoesNotContain(changed, nameof(MainWindowViewModel.DetailMessage));
     }
 
     private static async Task<MainWindowViewModel> CreateAndStartAsync(

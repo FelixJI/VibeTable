@@ -94,12 +94,34 @@ public sealed class MainWindowViewModel : ViewModelBase
     /// </summary>
     public string StatusText => State switch
     {
-        StartupState.StartingBackend => "Starting backend",
-        StartupState.LoadingWeb => "Loading web",
-        StartupState.Ready => "Ready",
-        StartupState.Faulted => "Faulted",
+        StartupState.StartingBackend => "正在启动后端…",
+        StartupState.LoadingWeb => "正在加载界面…",
+        StartupState.Ready => "就绪",
+        StartupState.Faulted => "出现错误",
         _ => State.ToString(),
     };
+
+    private string _detailMessage = string.Empty;
+
+    /// <summary>
+    /// The most recent backend / Directus progress line, shown in the bottom
+    /// status bar while the system is starting or busy. Cleared by the host
+    /// (MainWindow code-behind) when the WebView reaches Ready. The ViewModel
+    /// itself does not clear it on state transitions — it has no notion of
+    /// "host progress" semantics.
+    /// </summary>
+    public string DetailMessage
+    {
+        get => _detailMessage;
+        set
+        {
+            if (_detailMessage != value)
+            {
+                _detailMessage = value;
+                RaisePropertyChanged(nameof(DetailMessage));
+            }
+        }
+    }
 
     /// <summary>
     /// Whether the WebView2 grid area is visible (only in
