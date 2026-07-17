@@ -31,13 +31,21 @@ namespace VibeTable.Infrastructure.Directus;
 /// </remarks>
 public static class DirectusEnvMaterializer
 {
-    /// <summary>Default port (matches <c>.env.template</c> PORT and run.py).</summary>
-    public const int DefaultPort = 8055;
+    /// <summary>
+    /// Default port in the IANA ephemeral range (49152+), off the well-known
+    /// 8055. Avoids clashes with registered services.
+    /// </summary>
+    public const int DefaultPort = 49152;
 
     private const string GeneratePlaceholder = "__GENERATE__";
     private static readonly string[] GeneratedKeys = { "KEY", "SECRET", "ADMIN_PASSWORD" };
-    private const int PortProbeRangeStart = DefaultPort;
-    private const int PortProbeRangeEnd = DefaultPort + 100;
+
+    /// <summary>
+    /// Probe range for port-conflict evasion. Exposed for tests so the
+    /// "high ephemeral range" invariant can be asserted.
+    /// </summary>
+    public const int PortProbeRangeStart = DefaultPort;
+    public const int PortProbeRangeEnd = DefaultPort + 50;
 
     /// <summary>
     /// Creates/refreshes <c>.env</c> in <paramref name="directory"/> and returns
@@ -100,6 +108,15 @@ public static class DirectusEnvMaterializer
         }
 
         EnsureSqliteDatabaseDirectory(directory, values);
+
+        // Host-owned security defaults. These close the default 0.0.0.0
+        // exposure (HOST) and make the injected session cookie usable on a
+        // loopback http origin (SESSION_COOKIE_*). Applied on every
+        // materialization; not user-overridable in the supported workflow.
+        values["HOST"] = "127.0.0.1";
+        values["SESSION_COOKIE_TTL"] = "7d";
+        values["SESSION_COOKIE_SAME_SITE"] = "lax";
+
         WriteEnv(envFile, values);
         return values;
     }

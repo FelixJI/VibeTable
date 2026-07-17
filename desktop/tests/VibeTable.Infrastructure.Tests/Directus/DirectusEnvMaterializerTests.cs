@@ -128,6 +128,45 @@ public sealed class DirectusEnvMaterializerTests
         Assert.IsTrue(port >= 0);
     }
 
+    [TestMethod]
+    public void Materialize_WritesLoopbackHostAndSessionCookieConfig()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            File.WriteAllText(Path.Combine(dir, ".env.template"),
+                "KEY=__GENERATE__\nSECRET=__GENERATE__\nPORT=49152\n"
+                + "ADMIN_EMAIL=admin@example.com\nADMIN_PASSWORD=__GENERATE__\n");
+
+            var env = DirectusEnvMaterializer.Materialize(dir);
+
+            Assert.AreEqual("127.0.0.1", env["HOST"],
+                "Directus must bind loopback to close the default 0.0.0.0 exposure");
+            Assert.AreEqual("7d", env["SESSION_COOKIE_TTL"],
+                "long TTL so the injected session survives a long-running app session");
+            Assert.AreEqual("lax", env["SESSION_COOKIE_SAME_SITE"],
+                "lax avoids cross-site cookie drop on localhost");
+        });
+    }
+
+    [TestMethod]
+    public void DefaultPort_IsInHighEphemeralRange()
+    {
+        // The constant must move off the well-known 8055 to the IANA ephemeral range.
+        // These assert against `public const int` fields; the MSTest analyzer
+        // constant-folds the comparisons (MSTEST0025 when they'd be false,
+        // MSTEST0032 when true) and this project sets TreatWarningsAsErrors +
+        // AnalysisLevel=latest, so they surface as build errors. Suppress locally:
+        // these are deliberate regression guards against someone bumping the
+        // port/range constants back out of the ephemeral range.
+#pragma warning disable MSTEST0025, MSTEST0032
+        Assert.AreEqual(49152, DirectusEnvMaterializer.DefaultPort);
+        Assert.IsTrue(DirectusEnvMaterializer.PortProbeRangeStart >= 49152,
+            "probe range must start in the ephemeral range");
+        Assert.IsTrue(DirectusEnvMaterializer.PortProbeRangeEnd <= 49152 + 50 + 1,
+            "probe range must be within +50 of the default");
+#pragma warning restore MSTEST0025, MSTEST0032
+    }
+
     private static void WithTemporaryDirectory(System.Action<string> body)
     {
         string root = Path.Combine(Path.GetTempPath(), "vibetable-env-" + System.Guid.NewGuid().ToString("N"));
