@@ -176,6 +176,45 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it("fans out operation.failed with null requestId (PostReply production shape)", () => {
+    // Regression: the C# host serializes a null RequestId as `"requestId":null`
+    // when a notify-based request (e.g. table-admin create/delete, which use
+    // bridge.notify with no requestId) fails. PostReply emits an envelope of
+    // the shape `{ type, requestId, payload }` with requestId=null. The bridge
+    // must treat null as absent (not malformed) so the failure reaches
+    // on("operation.failed") handlers instead of being silently dropped.
+    const onDiagnostic = vi.fn();
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "should-not-match",
+      onDiagnostic,
+    });
+
+    const failedHandler = vi.fn();
+    bridge.on("operation.failed", failedHandler);
+    bridge.start();
+
+    // No pending request() was made for this id; ensure the bridge does not
+    // falsely resolve an unrelated pending entry.
+    bridge
+      .request("table.pageRequested", { table: "x", offset: 0, limit: 10 })
+      .catch(() => undefined); // swallow eventual stop() rejection
+
+    webview.emit({
+      type: "operation.failed",
+      requestId: null,
+      payload: { message: "boom" },
+    });
+
+    expect(failedHandler).toHaveBeenCalledTimes(1);
+    expect(failedHandler).toHaveBeenCalledWith({ message: "boom" });
+    // Must NOT have been dropped as malformed.
+    expect(onDiagnostic).not.toHaveBeenCalled();
+
+    bridge.stop();
+  });
+
   it("times out after the configured duration when no response arrives", async () => {
     vi.useFakeTimers();
     const bridge = createHostBridge({

@@ -247,8 +247,18 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
       });
       return;
     }
+    // The C# host's PostReply serializes a null RequestId as `"requestId":null`
+    // when a notify-based request (fire-and-forget, no requestId) fails. Treat
+    // `null` the same as absent (not malformed) so failure broadcasts still
+    // reach the handler fan-out below. A null requestId will NOT match any
+    // pending request() (the `pending` Map is keyed by strings), so it falls
+    // through to the fan-out path exactly like an absent requestId.
     const requestId = (raw as { requestId?: unknown }).requestId;
-    if (requestId !== undefined && typeof requestId !== "string") {
+    if (
+      requestId !== undefined &&
+      requestId !== null &&
+      typeof requestId !== "string"
+    ) {
       onDiagnostic({
         kind: "malformed",
         reason: "inbound message `requestId` must be a string when present",
@@ -272,7 +282,10 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     }
 
     // --- Resolve pending request (if any) --------------------------------
-    if (requestId !== undefined) {
+    // Only a real string requestId can match a pending request(). null (the
+    // PostReply-with-null shape) and undefined (PostNotification shape) fall
+    // through to the handler fan-out below.
+    if (typeof requestId === "string") {
       const entry = pending.get(requestId);
       if (entry) {
         clearTimeout(entry.timer);
