@@ -60,6 +60,7 @@ public partial class MainWindow : Window
     private readonly bool _directusEnabled;
     private readonly bool _directusAuto;
     private readonly DirectusLoginStore? _loginStore;
+    private readonly IDirectusAdminAuthenticator _adminAuth = new DirectusAdminAuthenticator();
     private DirectusSupervisor? _directusSupervisor;
     private readonly TaskCompletionSource<bool>? _directusSessionReady;
     private JsonRpcDirectusGateway? _directusGateway;
@@ -746,6 +747,55 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Determines whether a navigation target URI is a trusted app origin.
+    /// Accepts (1) the web-grid virtual host <c>https://app.vibetable.local</c>
+    /// and (2) the running Directus admin origin — <c>http</c> on
+    /// <c>127.0.0.1</c>/<c>localhost</c> at the supervisor's runtime-resolved
+    /// port. Everything else (data:, blob:, file:, external sites) is rejected.
+    /// </summary>
+    /// <remarks>
+    /// Instance (not static) because the Directus port is read from
+    /// <c>_directusSupervisor.BaseUrl</c> at runtime. Called from the
+    /// <see cref="WebViewBridge"/> navigation lambdas via <c>_owner.IsAppOrigin</c>.
+    /// </remarks>
+    private bool IsAppOrigin(string? uri)
+    {
+        if (string.IsNullOrEmpty(uri)) return false;
+        if (!Uri.TryCreate(uri, UriKind.Absolute, out var u)) return false;
+
+        // 1. The web-grid virtual host.
+        if (string.Equals(u.Scheme, "https", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(u.Host, WebViewAssetService.AppHostName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // 2. The Directus admin origin: http + 127.0.0.1/localhost + the
+        //    running Directus port (runtime-resolved from the supervisor).
+        if (string.Equals(u.Scheme, "http", StringComparison.OrdinalIgnoreCase)
+            && (string.Equals(u.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(u.Host, "localhost", StringComparison.OrdinalIgnoreCase)))
+        {
+            int allowedPort = ResolveDirectusPort();
+            if (allowedPort > 0 && u.Port == allowedPort) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Parses the running Directus port from <c>_directusSupervisor.BaseUrl</c>.
+    /// Returns 0 when the supervisor is not started or the URL is unparseable.
+    /// </summary>
+    private int ResolveDirectusPort()
+    {
+        string? baseUrl = _directusSupervisor?.BaseUrl;
+        if (string.IsNullOrEmpty(baseUrl)) return 0;
+        try { return new Uri(baseUrl).Port; }
+        catch (UriFormatException) { return 0; }
+    }
+
+    /// <summary>
     /// Dispatch callback for messages that passed the router's whitelist.
     /// Marks the host ready on <c>app.ready</c>, then forwards the four
     /// Phase-A web request types to the workspace dispatcher which drives the
@@ -778,7 +828,57 @@ public partial class MainWindow : Window
 
     private async Task OpenDirectusAdminAsync(string? requestId)
     {
-        await Task.CompletedTask; // implemented in Task 5
+        try
+        {
+            string? baseUrl = _directusSupervisor?.BaseUrl;
+            if (string.IsNullOrEmpty(baseUrl))
+            {
+                _webBridge.PostOperationFailed(requestId,
+                    "管理后台暂不可用：Directus 未启动。", "ADMIN_NOT_READY");
+                return;
+            }
+
+            string runtimeDir = _localDirectusDirectory
+                ?? throw new InvalidOperationException("Directus runtime directory not initialized");
+
+            if (!DirectusEnvMaterializer.TryReadBootstrapCredentials(
+                    runtimeDir, out string email, out string password))
+            {
+                _webBridge.PostOperationFailed(requestId,
+                    "管理后台不可用：找不到管理员凭据。", "ADMIN_CREDENTIALS_MISSING");
+                return;
+            }
+
+            string? cookie = await _adminAuth.LoginAsync(baseUrl, email, password, default)
+                .ConfigureAwait(true);
+            if (cookie is null)
+            {
+                _webBridge.PostOperationFailed(requestId,
+                    "管理后台登录失败，请稍后重试。", "ADMIN_LOGIN_FAILED");
+                return;
+            }
+
+            var core = WebView.CoreWebView2;
+            if (core is null)
+            {
+                _webBridge.PostOperationFailed(requestId,
+                    "管理后台不可用：WebView 未就绪。", "WEBVIEW_NOT_READY");
+                return;
+            }
+
+            var cm = core.CookieManager;
+            string host = new Uri(baseUrl).Host; // matches the navigated URL's host (127.0.0.1)
+            var c = cm.CreateCookie("directus_session_token", cookie, host, "/");
+            cm.AddOrUpdateCookie(c);
+
+            _readinessWriter?.Trace($"OpenDirectusAdminAsync: navigating to admin at {baseUrl}");
+            core.Navigate(baseUrl.TrimEnd('/') + "/admin/");
+        }
+        catch (Exception ex)
+        {
+            _webBridge.PostOperationFailed(requestId,
+                $"管理后台打开失败：{ex.Message}", "ADMIN_OPEN_ERROR");
+        }
     }
 
     private void TryWriteShellReadiness()
@@ -1053,24 +1153,50 @@ public partial class MainWindow : Window
             // 2. Navigation gating: cancel anything that is not the app origin.
             core.NavigationStarting += (_, args) =>
             {
-                _owner._readinessWriter?.Trace($"NavigationStarting: uri='{args.Uri}' isAppOrigin={IsAppOrigin(args.Uri)}");
-                if (!IsAppOrigin(args.Uri))
+                _owner._readinessWriter?.Trace($"NavigationStarting: uri='{args.Uri}' isAppOrigin={_owner.IsAppOrigin(args.Uri)}");
+                if (!_owner.IsAppOrigin(args.Uri))
                 {
                     args.Cancel = true;
                 }
             };
             core.FrameNavigationStarting += (_, args) =>
             {
-                if (!IsAppOrigin(args.Uri))
+                if (!_owner.IsAppOrigin(args.Uri))
                 {
                     args.Cancel = true;
                 }
             };
 
-            // 3. Cancel all popups / new windows.
+            // 3. New-window discrimination: cancel the popup in all cases, then
+            //    decide where the link goes. Same trusted origin (web-grid or
+            //    Directus admin) → navigate the current webview there instead
+            //    of opening a new window; external site → system browser.
             core.NewWindowRequested += (_, args) =>
             {
                 args.Handled = true;
+                if (args.Uri is null || !Uri.TryCreate(args.Uri, UriKind.Absolute, out var u))
+                {
+                    return;
+                }
+                if (_owner.IsAppOrigin(args.Uri))
+                {
+                    _owner.Dispatcher.Invoke(() => core.Navigate(u.AbsoluteUri));
+                }
+                else
+                {
+                    try
+                    {
+                        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(u.AbsoluteUri)
+                        {
+                            UseShellExecute = true,
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        _owner._readinessWriter?.Trace(
+                            $"NewWindowRequested: failed to launch system browser for '{u.AbsoluteUri}': {ex.Message}");
+                    }
+                }
             };
 
             // 4. Release-mode disabling of devtools, context menus, status bar,
@@ -1111,31 +1237,6 @@ public partial class MainWindow : Window
                     _owner._viewModel.MoveToFaulted(
                         $"WebView2 process failed: {args.ProcessFailedKind}"));
             };
-        }
-
-        private static bool IsAppOrigin(string? uri)
-        {
-            if (string.IsNullOrEmpty(uri))
-            {
-                return false;
-            }
-            try
-            {
-                // The virtual host maps to https://app.vibetable.local/. Accept any
-            // path under that origin; reject everything else (including
-            // data:, blob:, file:, and any other scheme/host).
-            if (!Uri.TryCreate(uri, UriKind.Absolute, out var u))
-            {
-                return false;
-            }
-            return string.Equals(u.Scheme, "https", StringComparison.OrdinalIgnoreCase)
-                && string.Equals(u.Host, WebViewAssetService.AppHostName,
-                    StringComparison.OrdinalIgnoreCase);
-            }
-            catch (UriFormatException)
-            {
-                return false;
-            }
         }
 
         private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
