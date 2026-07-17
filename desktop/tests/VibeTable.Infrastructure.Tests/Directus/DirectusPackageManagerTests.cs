@@ -186,6 +186,82 @@ public sealed class DirectusPackageManagerTests
     }
 
     /// <summary>
+    /// When forceFullVerification is set AND an existing install is present
+    /// (node_modules/directus exists), EnsureInstalled must emit the
+    /// RecheckingPackages stage (not VerifyingPackages) so the UI can show the
+    /// user that a forced re-verification happened after a failed first run.
+    /// The existing install here is a stub directory; VerifyAsync will fail
+    /// (no real node_modules contents), so we only assert the stage event was
+    /// raised before the method threw.
+    /// </summary>
+    [TestMethod]
+    public async Task EnsureInstalled_EmitsRecheckingPackages_WhenForcedAndInstallExists()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            File.WriteAllText(Path.Combine(dir, "package-lock.json"), "{\"name\":\"x\"}");
+            // Stub an existing install so the verify-existing branch is taken.
+            Directory.CreateDirectory(Path.Combine(dir, "node_modules", "directus"));
+            var progress = new List<DirectusStartupProgress>();
+            var manager = new DirectusPackageManager(npmTimeout: TimeSpan.FromSeconds(5));
+
+            // The stub install will fail verification (no real contents) and fall
+            // through to npm ci, which also fails in the unit fixture. We expect a
+            // throw, but BEFORE throwing, RecheckingPackages must have been emitted.
+            Assert.Throws<InvalidOperationException>(() =>
+                manager.EnsureInstalledAsync(
+                        BundledNodePath(),
+                        dir,
+                        CancellationToken.None,
+                        progress.Add,
+                        logLine: null,
+                        forceFullVerification: true)
+                    .GetAwaiter().GetResult());
+
+            CollectionAssert.Contains(
+                progress.ConvertAll(item => item.Stage),
+                DirectusStartupStage.RecheckingPackages,
+                "a forced recheck of an existing install must emit RecheckingPackages, " +
+                "not the ordinary VerifyingPackages stage");
+        });
+        await Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Sanity: when forceFullVerification is set but NO existing install is on
+    /// disk, the verify-existing branch is skipped and RecheckingPackages is NOT
+    /// emitted (the install path runs instead). This guards against accidentally
+    /// emitting RecheckingPackages from the wrong branch.
+    /// </summary>
+    [TestMethod]
+    public async Task EnsureInstalled_DoesNotEmitRecheckingPackages_WhenNoExistingInstall()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            File.WriteAllText(Path.Combine(dir, "package-lock.json"), "{\"name\":\"x\"}");
+            var progress = new List<DirectusStartupProgress>();
+            var manager = new DirectusPackageManager(npmTimeout: TimeSpan.FromSeconds(5));
+
+            Assert.Throws<InvalidOperationException>(() =>
+                manager.EnsureInstalledAsync(
+                        BundledNodePath(),
+                        dir,
+                        CancellationToken.None,
+                        progress.Add,
+                        logLine: null,
+                        forceFullVerification: true)
+                    .GetAwaiter().GetResult());
+
+            CollectionAssert.DoesNotContain(
+                progress.ConvertAll(item => item.Stage),
+                DirectusStartupStage.RecheckingPackages,
+                "RecheckingPackages must only fire when an existing install is being " +
+                "force-rechecked, not on a fresh install path");
+        });
+        await Task.CompletedTask;
+    }
+
+    /// <summary>
     /// An expired marker (older than the 7-day window) must NOT short-circuit:
     /// EnsureInstalled proceeds to install. We assert it does NOT silently
     /// return — it either installs or throws, but it does not treat the stale

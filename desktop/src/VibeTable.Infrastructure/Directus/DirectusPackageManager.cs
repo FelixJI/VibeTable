@@ -143,7 +143,7 @@ public sealed class DirectusPackageManager
         if (forceFullVerification && hasExistingInstall)
         {
             progress?.Invoke(new DirectusStartupProgress(
-                DirectusStartupStage.VerifyingPackages,
+                DirectusStartupStage.RecheckingPackages,
                 "The previous initialization did not finish; rechecking all package files and native modules."));
             bool existingVerified = await VerifyAsync(
                 nodeExe, localDirectusDir, lockHash, cancellationToken).ConfigureAwait(false);
