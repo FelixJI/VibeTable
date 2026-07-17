@@ -176,3 +176,209 @@ body {
   background: transparent; border: 1px solid var(--vibetable-border, #d1d5db);
   border-radius: 4px; padding: 4px 12px; cursor: pointer;
 }
+
+/* Sidebar + main layout. */
+#app {
+  flex-direction: row;
+}
+#main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sidebar {
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--vibetable-border);
+  background: #fafafa;
+  overflow: hidden;
+}
+.sidebar__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px;
+  border-bottom: 1px solid var(--vibetable-border);
+}
+.sidebar__title {
+  font-weight: 600;
+  color: var(--vibetable-fg);
+}
+.sidebar__new-btn {
+  font: inherit;
+  padding: 2px 8px;
+  border: 1px solid var(--vibetable-border);
+  border-radius: 4px;
+  background: var(--vibetable-bg);
+  color: var(--vibetable-fg);
+  cursor: pointer;
+}
+.sidebar__new-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.table-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+.table-list__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--vibetable-fg);
+}
+.table-list__item:hover {
+  background: #eef2ff;
+}
+.table-list__item--active {
+  background: #dbeafe;
+  font-weight: 600;
+}
+.table-list__name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.table-list__delete {
+  border: none;
+  background: transparent;
+  color: var(--vibetable-muted);
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.table-list__delete:hover {
+  color: #991b1b;
+  background: rgba(254, 226, 226, 0.6);
+}
+
+/* Modal (create-table, delete-confirm). */
+.modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 50;
+}
+.modal[hidden] {
+  display: none;
+}
+.modal__panel {
+  background: var(--vibetable-bg);
+  border: 1px solid var(--vibetable-border);
+  border-radius: 8px;
+  min-width: 360px;
+  max-width: 560px;
+  padding: 16px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+.modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.modal__title {
+  margin: 0;
+  font-size: 16px;
+}
+.modal__close {
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  cursor: pointer;
+  color: var(--vibetable-muted);
+}
+.modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.modal__text {
+  margin: 0;
+}
+.modal__error {
+  color: #991b1b;
+  background: rgba(254, 226, 226, 0.9);
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+.modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.field__label {
+  font-size: 13px;
+  color: var(--vibetable-muted);
+}
+.field__input,
+.field__select {
+  font: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--vibetable-border);
+  border-radius: 4px;
+}
+.field-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 140px auto;
+  gap: 6px;
+  align-items: center;
+}
+.field__add {
+  align-self: flex-start;
+  padding: 4px 8px;
+  border: 1px dashed var(--vibetable-border);
+  border-radius: 4px;
+  background: var(--vibetable-bg);
+  cursor: pointer;
+}
+.btn {
+  font: inherit;
+  padding: 6px 14px;
+  border-radius: 4px;
+  border: 1px solid var(--vibetable-border);
+  cursor: pointer;
+}
+.btn--primary {
+  background: var(--vibetable-accent);
+  color: #fff;
+  border-color: var(--vibetable-accent);
+}
+.btn--secondary {
+  background: var(--vibetable-bg);
+  color: var(--vibetable-fg);
+}
+.btn--danger {
+  background: #dc2626;
+  color: #fff;
+  border-color: #dc2626;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

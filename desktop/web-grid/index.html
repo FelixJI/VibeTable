@@ -25,37 +25,74 @@
       has been selected yet we show a small status line.
     -->
     <div id="app">
-      <!--
-        Phase-A toolbar (Task 10). The host owns the table flow:
-        - "连接 Directus" posts database.openRequested; the host resolves the
-          configured source and replies with database.opened (collections).
-        - The table <select> is populated from database.opened; choosing an
-          option posts table.selected, which drives the host's multi-page
-          client-mode fetch (table.pageLoaded per page, table.datasetReady on
-          completion).
-        - Row-count + status line surface the load progress.
-        - Refresh re-selects the current table (re-issues table.selected).
-        The grid mount point is below; loading/error overlays cover it during
-        fetches and failures.
-      -->
-      <div id="toolbar" class="toolbar">
-        <button id="open-database" type="button" disabled>连接 Directus</button>
-        <label for="table-select" class="visually-hidden">集合</label>
-        <select id="table-select" disabled>
-          <option value="">(尚未连接 Directus)</option>
-        </select>
-        <button id="refresh" type="button" disabled>刷新</button>
-        <span id="row-count" class="row-count" aria-live="polite"></span>
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar__head">
+          <span class="sidebar__title">表</span>
+          <button id="new-table-btn" type="button" class="sidebar__new-btn" disabled>+ 新建表</button>
+        </div>
+        <ul id="table-list" class="table-list"></ul>
+      </aside>
+      <div id="main">
+        <!--
+          Phase-A toolbar. The host owns the table flow:
+          - "连接 Directus" posts database.openRequested; the host resolves the
+            configured source and replies with database.opened (collections).
+          - Table switching now happens via the sidebar (#table-list); the
+            old #table-select dropdown has been removed.
+          - Row-count + status line surface the load progress.
+          - Refresh re-selects the current table (re-issues table.selected).
+          The grid mount point is below; loading/error overlays cover it during
+          fetches and failures.
+        -->
+        <div id="toolbar" class="toolbar">
+          <button id="open-database" type="button" disabled>连接 Directus</button>
+          <button id="refresh" type="button" disabled>刷新</button>
+          <span id="row-count" class="row-count" aria-live="polite"></span>
+        </div>
+        <div id="status" class="status">Loading…</div>
+        <div id="grid-wrapper" class="grid-wrapper">
+          <div id="loading-overlay" class="overlay overlay--loading" hidden>
+            <span>加载中…</span>
+          </div>
+          <div id="error-overlay" class="overlay overlay--error" hidden>
+            <span id="error-message"></span>
+          </div>
+          <div id="grid"></div>
+        </div>
       </div>
-      <div id="status" class="status">Loading…</div>
-      <div id="grid-wrapper" class="grid-wrapper">
-        <div id="loading-overlay" class="overlay overlay--loading" hidden>
-          <span>加载中…</span>
+      <!-- Create-table modal -->
+      <div id="create-table-modal" class="modal" hidden>
+        <div class="modal__panel">
+          <div class="modal__head">
+            <h2 class="modal__title">新建表</h2>
+            <button id="create-table-close" type="button" class="modal__close" aria-label="关闭">×</button>
+          </div>
+          <div class="modal__body">
+            <label class="field">
+              <span class="field__label">表名</span>
+              <input id="create-table-name" type="text" class="field__input" maxlength="64" />
+            </label>
+            <div id="create-table-fields" class="field-rows"></div>
+            <button id="create-table-add-field" type="button" class="field__add">+ 添加字段</button>
+            <div id="create-table-error" class="modal__error" hidden></div>
+          </div>
+          <div class="modal__actions">
+            <button id="create-table-cancel" type="button" class="btn btn--secondary">取消</button>
+            <button id="create-table-submit" type="button" class="btn btn--primary" disabled>创建</button>
+          </div>
         </div>
-        <div id="error-overlay" class="overlay overlay--error" hidden>
-          <span id="error-message"></span>
+      </div>
+      <!-- Delete-confirm modal -->
+      <div id="delete-confirm-modal" class="modal" hidden>
+        <div class="modal__panel">
+          <div class="modal__body">
+            <p id="delete-confirm-text" class="modal__text"></p>
+          </div>
+          <div class="modal__actions">
+            <button id="delete-confirm-cancel" type="button" class="btn btn--secondary">取消</button>
+            <button id="delete-confirm-ok" type="button" class="btn btn--danger">删除</button>
+          </div>
         </div>
-        <div id="grid"></div>
       </div>
       <!--
         B2 paste panel (Task 4). Hidden by default; shown when the user pastes
