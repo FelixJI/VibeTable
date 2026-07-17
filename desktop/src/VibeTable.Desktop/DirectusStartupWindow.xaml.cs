@@ -57,7 +57,8 @@ public partial class DirectusStartupWindow : Window
             DirectusStartupStage.CheckingPackages
                 or DirectusStartupStage.InstallingPackages
                 or DirectusStartupStage.VerifyingPackages
-                or DirectusStartupStage.RepairingPackages => 1,
+                or DirectusStartupStage.RepairingPackages
+                or DirectusStartupStage.RecheckingPackages => 1,
             DirectusStartupStage.InitializingDatabase => 2,
             DirectusStartupStage.StartingService
                 or DirectusStartupStage.WaitingForService => 3,
@@ -74,6 +75,7 @@ public partial class DirectusStartupWindow : Window
                 ? "依赖已安装，无需重复安装"
                 : "校验 Directus 依赖",
             DirectusStartupStage.RepairingPackages => "修复 Directus 依赖",
+            DirectusStartupStage.RecheckingPackages => "检测到上次未完成，正在复检 Directus 依赖",
             DirectusStartupStage.InitializingDatabase => "初始化本地数据库",
             DirectusStartupStage.StartingService => "启动 Directus 服务",
             DirectusStartupStage.WaitingForService => "等待 Directus 就绪",
@@ -120,7 +122,7 @@ public partial class DirectusStartupWindow : Window
         CancelButton.Visibility = Visibility.Visible;
         RetryButton.Visibility = Visibility.Collapsed;
         ExitButton.Visibility = Visibility.Collapsed;
-        HintText.Text = "正在重试；已完成的安装文件会继续复用。";
+        HintText.Text = "正在重试。已安装的依赖会被重新校验（结构、原生模块、lock hash）；仅在校验失败时才会重装。";
         StageTitleText.Text = "重新开始初始化";
         DetailText.Text = "正在重新检查本地运行环境…";
         RenderSteps();
@@ -251,7 +253,7 @@ public partial class DirectusStartupWindow : Window
                 "正在安装 Directus npm 包；首次安装可能需要几分钟。",
             "Verifying package structure and native modules." => "正在校验包结构和原生模块。",
             "The previous initialization did not finish; rechecking all package files and native modules." =>
-                "检测到上次初始化未完成，正在重新校验全部包文件和原生模块。",
+                "检测到上次初始化未完成，正在重新校验全部包文件和原生模块（结构、原生模块、lock hash）。",
             "Package verification failed; repairing the local installation once." =>
                 "完整性校验失败，正在自动修复本地安装。",
             "Verifying the repaired package installation." => "正在校验修复后的依赖。",
