@@ -185,3 +185,9 @@ scripts/local_directus/.bootstrapped
 scripts/local_directus/.install-verified
 scripts/local_directus/.vibetable-initialized
 scripts/local_directus/.first-run-backups/
+
+# Local planning/scratch artifacts (planning-with-files and ad-hoc debugging)
+/.tmp-shot/
+/task_plan.md
+/progress.md
+/findings.md
