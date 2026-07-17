@@ -460,8 +460,21 @@ public sealed class WorkspaceRequestDispatcher
         }
         try
         {
-            await _directusGateway.DeleteTableAsync(collection, CancellationToken.None)
+            var result = await _directusGateway.DeleteTableAsync(collection, CancellationToken.None)
                 .ConfigureAwait(false);
+            // The backend may decline to delete (e.g. protected/system collection,
+            // or a no-op because the table no longer exists). Surface that as an
+            // explicit operation.failed rather than silently reporting success via
+            // collectionsChanged — mirrors the deleted native TableManagementWindow
+            // which warned on !result.Deleted.
+            if (!result.Deleted)
+            {
+                _reply.PostOperationFailed(
+                    request.RequestId,
+                    $"后端未删除表 \"{collection}\"。",
+                    code: "DELETE_DECLINED");
+                return;
+            }
             await PostCollectionsChangedAsync().ConfigureAwait(false);
         }
         catch (Exception ex)

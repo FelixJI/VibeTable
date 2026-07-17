@@ -277,6 +277,37 @@ public sealed class WorkspaceRequestDispatcherTests
     }
 
     [TestMethod]
+    public async Task DeleteTableRequested_WhenBackendDeclines_PostsDeleteDeclined()
+    {
+        // The backend may return Deleted:false (e.g. protected/system collection,
+        // or already gone). The host must NOT silently report success via
+        // collectionsChanged; it posts operation.failed code DELETE_DECLINED and
+        // does not re-list collections.
+        var directus = new FakeDirectusRpcGateway
+        {
+            DeleteTableResult = new DeleteTableResult("protected", Deleted: false),
+            ListCollectionsResult = new DirectusCollectionList(
+                new[] { "protected" }, new Dictionary<string, string>()),
+        };
+        var workspace = new TableWorkspaceService(new FakeTableRpcGateway());
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            workspace, new FakeDatabasePicker("db"), sink);
+        dispatcher.SetDirectusGateway(directus);
+
+        var payload = JsonDocument.Parse("""{"collection":"protected"}""").RootElement.Clone();
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "tableAdmin.deleteRequested", "req-d", payload, ""));
+
+        var failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        Assert.AreEqual("DELETE_DECLINED", (string)((dynamic)failed!.Payload!).code);
+        Assert.AreEqual(1, directus.DeleteTableCalls.Count);
+        // No re-list / collectionsChanged when declined.
+        Assert.AreEqual(0, directus.ListCollectionsCalls.Count);
+    }
+
+    [TestMethod]
     public async Task CreateTableRequested_OnBackendError_PostsOperationFailed()
     {
         var directus = new FakeDirectusRpcGateway

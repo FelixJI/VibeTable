@@ -14,15 +14,13 @@ import {
 import type { HostBridgeLike } from "./tableAdminFlow";
 
 function makeBridge(): HostBridgeLike & {
-  requests: Array<{ type: string; payload: unknown }>;
-  rejectNextWith?: Error;
+  notifies: Array<{ type: string; payload: unknown }>;
 } {
-  const requests: Array<{ type: string; payload: unknown }> = [];
+  const notifies: Array<{ type: string; payload: unknown }> = [];
   return {
-    requests,
-    async request(type, payload) {
-      requests.push({ type, payload });
-      return undefined;
+    notifies,
+    notify(type, payload) {
+      notifies.push({ type, payload });
     },
   };
 }
@@ -61,35 +59,43 @@ describe("reducers", () => {
 });
 
 describe("orchestrators", () => {
-  it("requestCreate posts createRequested and resolves on success", async () => {
+  it("requestCreate notifies createRequested and dispatches only createStarted", () => {
     const bridge = makeBridge();
     const events: string[] = [];
-    await requestCreate(bridge, "projects", [{ key: "name", type: "string" }], (e) =>
+    requestCreate(bridge, "projects", [{ key: "name", type: "string" }], (e) =>
       events.push(e.type),
     );
-    expect(bridge.requests).toEqual([
+    // notify is fire-and-forget: only createStarted is dispatched here. Success
+    // is observed indirectly via the host-pushed database.collectionsChanged,
+    // and failure via an uncorrelated operation.failed broadcast (routed by
+    // main.ts). The orchestrator must NOT dispatch createSucceeded/createFailed.
+    expect(bridge.notifies).toEqual([
       { type: "tableAdmin.createRequested", payload: { name: "projects", fields: [{ key: "name", type: "string" }] } },
     ]);
-    expect(events).toEqual(["createStarted", "createSucceeded"]);
+    expect(events).toEqual(["createStarted"]);
   });
 
-  it("requestCreate dispatches createFailed on rejection", async () => {
-    const bridge = makeBridge();
-    bridge.request = async () => {
-      throw new Error("backend said no");
-    };
-    const events: string[] = [];
-    await requestCreate(bridge, "x", [], (e) => events.push(e.type));
-    expect(events).toEqual(["createStarted", "createFailed"]);
-  });
-
-  it("requestDelete posts deleteRequested", async () => {
+  it("requestDelete notifies deleteRequested and dispatches only deleteStarted", () => {
     const bridge = makeBridge();
     const events: string[] = [];
-    await requestDelete(bridge, "old_table", (e) => events.push(e.type));
-    expect(bridge.requests).toEqual([
+    requestDelete(bridge, "old_table", (e) => events.push(e.type));
+    expect(bridge.notifies).toEqual([
       { type: "tableAdmin.deleteRequested", payload: { collection: "old_table" } },
     ]);
-    expect(events).toEqual(["deleteStarted", "deleteSucceeded"]);
+    expect(events).toEqual(["deleteStarted"]);
+  });
+
+  it("orchestrators never dispatch succeeded/failed (host broadcasts drive them)", () => {
+    // Belt-and-braces: with notify there is no per-request result, so neither
+    // orchestrator may emit createSucceeded/createFailed/deleteSucceeded/
+    // deleteFailed. main.ts derives those from database.collectionsChanged and
+    // the global operation.failed handler.
+    const createEvents: string[] = [];
+    requestCreate(makeBridge(), "x", [], (e) => createEvents.push(e.type));
+    expect(createEvents).toEqual(["createStarted"]);
+
+    const deleteEvents: string[] = [];
+    requestDelete(makeBridge(), "y", (e) => deleteEvents.push(e.type));
+    expect(deleteEvents).toEqual(["deleteStarted"]);
   });
 });

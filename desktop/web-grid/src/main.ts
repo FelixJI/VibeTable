@@ -46,6 +46,7 @@ import {
   requestDelete,
   type TableAdminEvent,
   type TableAdminState,
+  type TableAdminStatus,
 } from "./tableAdminFlow";
 import {
   TABLE_FIELD_TYPES,
@@ -218,9 +219,50 @@ const flow = createTableFlow({
 let tableAdmin: TableAdminState = initialTableAdminState;
 let pendingDeleteCollection: string | null = null;
 
+/**
+ * Apply a tableAdmin reducer event and react to the resulting state.
+ *
+ * Modal lifecycle: create/delete use `bridge.notify` (fire-and-forget, no
+ * requestId). The orchestrator only sets status="creating"/"deleting"; it does
+ * NOT emit success/failure. Instead:
+ *   - Success is observed when the host pushes `database.collectionsChanged`
+ *     → applyCollectionsChanged sets status back to "idle". When the create
+ *     modal is open and status transitions creating→idle (no error), we close
+ *     the modal.
+ *   - Failure arrives as an uncorrelated `operation.failed` broadcast
+ *     (requestId is null because notify carries none); the global
+ *     operation.failed handler below routes it into createFailed/deleteFailed,
+ *     which sets status="error". When the create modal is open and status is
+ *     "error", we surface the message and re-enable the submit button.
+ */
 function dispatchTableAdmin(event: TableAdminEvent): void {
+  const prevStatus = tableAdmin.status;
   tableAdmin = reduceTableAdmin(tableAdmin, event);
   renderSidebar();
+  reactToTableAdminStatus(prevStatus, tableAdmin);
+}
+
+/**
+ * Drive create-modal lifecycle from tableAdmin status transitions. Called after
+ * every reducer step. The create modal is the only async-tracked modal; the
+ * delete-confirm modal is dismissed immediately on click (delete errors surface
+ * via the status line through the table-flow).
+ */
+function reactToTableAdminStatus(prev: TableAdminStatus, next: TableAdminState): void {
+  if (!createTableModal || createTableModal.hidden) return;
+  if (next.status === "idle" && prev === "creating") {
+    // Create succeeded (collectionsChanged arrived). Close the modal.
+    closeCreateTableModal();
+    return;
+  }
+  if (next.status === "error" && next.error) {
+    // A create (or delete) failed; surface the message and re-enable submit.
+    if (createTableError) {
+      createTableError.textContent = next.error;
+      createTableError.hidden = false;
+    }
+    if (createTableSubmit) createTableSubmit.disabled = false;
+  }
 }
 
 function renderSidebar(): void {
@@ -437,6 +479,16 @@ bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
   // new-table button now that a database is open. The same collectionsChanged
   // event is reused for incremental updates pushed by the host after a
   // successful create/delete.
+  //
+  // KNOWN LIMITATION: only `payload.tables` is shown in the sidebar; views
+  // (`payload.views`) are NOT surfaced, even though database.opened carries
+  // them. This intentionally matches the minimal behavior shipped with the
+  // web-unified sidebar: `database.collectionsChanged` (the incremental
+  // refresh) has no `views` field, and views are not selectable through the
+  // sidebar today. The deleted native populateTableSelect used [...tables,
+  // ...views]; that behavior is intentionally dropped here. If views become
+  // first-class (selectable/editable) later, add a `views` field to
+  // collectionsChanged + sidebar rendering at the same time.
   dispatchTableAdmin({ type: "collectionsChanged", tables: payload.tables });
   if (newTableBtn) newTableBtn.disabled = false;
   const total = payload.tables.length + payload.views.length;
@@ -470,6 +522,18 @@ bridge.on("directus.changed", (payload) => {
 
 bridge.on("operation.failed", (payload) => {
   flow.onOperationFailed(payload.message);
+  // tableAdmin create/delete use notify (no requestId), so the host's
+  // operation.failed reply for them is an UNCORRELATED broadcast (requestId
+  // null) — it does not match a pending bridge.request(). Route it into the
+  // tableAdmin reducer so the in-flight modal surfaces the error. Only route
+  // when a create/delete is actually in flight (status creating/deleting), so
+  // unrelated operation.failed broadcasts (e.g. paste) do not clobber the
+  // table-admin error slot.
+  if (tableAdmin.status === "creating") {
+    dispatchTableAdmin({ type: "createFailed", message: payload.message });
+  } else if (tableAdmin.status === "deleting") {
+    dispatchTableAdmin({ type: "deleteFailed", message: payload.message });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -495,7 +559,7 @@ createTableClose?.addEventListener("click", closeCreateTableModal);
 createTableCancel?.addEventListener("click", closeCreateTableModal);
 createTableAddField?.addEventListener("click", () => addFieldRow());
 
-createTableSubmit?.addEventListener("click", async () => {
+createTableSubmit?.addEventListener("click", () => {
   if (!createTableName) return;
   const nameErr = validateTableName(createTableName.value);
   const { fields, errors } = validateFields(collectFieldRows());
@@ -508,20 +572,17 @@ createTableSubmit?.addEventListener("click", async () => {
     return;
   }
   if (createTableSubmit) createTableSubmit.disabled = true;
-  await requestCreate(
+  // requestCreate is fire-and-forget (notify, no requestId): it dispatches
+  // createStarted (status="creating") and returns. The modal stays open showing
+  // a disabled-submit "creating" state; it is closed by reactToTableAdminStatus
+  // when database.collectionsChanged arrives (creating→idle), or it surfaces an
+  // error when an operation.failed broadcast is routed into createFailed.
+  requestCreate(
     bridge,
     createTableName.value.trim(),
     fields,
     dispatchTableAdmin,
   );
-  // Close on success (status idle and no error). If error, keep open w/ message.
-  if (tableAdmin.status === "idle" && tableAdmin.error === null) {
-    closeCreateTableModal();
-  } else if (createTableError && tableAdmin.error) {
-    createTableError.textContent = tableAdmin.error;
-    createTableError.hidden = false;
-    if (createTableSubmit) createTableSubmit.disabled = false;
-  }
 });
 
 deleteConfirmCancel?.addEventListener("click", () => {
@@ -529,12 +590,16 @@ deleteConfirmCancel?.addEventListener("click", () => {
   if (deleteConfirmModal) deleteConfirmModal.hidden = true;
 });
 
-deleteConfirmOk?.addEventListener("click", async () => {
+deleteConfirmOk?.addEventListener("click", () => {
   const collection = pendingDeleteCollection;
   if (!collection) return;
   pendingDeleteCollection = null;
   if (deleteConfirmModal) deleteConfirmModal.hidden = true;
-  await requestDelete(bridge, collection, dispatchTableAdmin);
+  // requestDelete is fire-and-forget (notify): dispatches deleteStarted and
+  // returns. Delete errors surface via the status line through the table-flow
+  // (global operation.failed handler), and a declined delete (Deleted:false) is
+  // posted by the host as operation.failed code DELETE_DECLINED.
+  requestDelete(bridge, collection, dispatchTableAdmin);
 });
 
 // ---------------------------------------------------------------------------

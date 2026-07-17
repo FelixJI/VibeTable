@@ -1,13 +1,23 @@
 /**
  * tableAdminFlow — sidebar state machine for the table-management UI.
  *
- * Pattern: pure reducer functions (no I/O) + thin async orchestrators that
- * call the bridge and dispatch reducer events. Modeled on fieldHistoryFlow.
+ * Pattern: pure reducer functions (no I/O) + thin orchestrators that call the
+ * bridge and dispatch reducer events. Modeled on fieldHistoryFlow.
  *
  * State is held by the caller (main.ts); the flow does not retain state.
  * The table list is NOT updated on create/delete success here — the host
  * pushes `database.collectionsChanged` after a successful mutation, and
  * `applyCollectionsChanged` is what updates `collections`.
+ *
+ * Request model: create/delete use `bridge.notify(...)` (fire-and-forget, no
+ * requestId), matching the codebase convention for web→host mutations (see
+ * paste flow + B1 cell edits). The orchestrator therefore only dispatches
+ * `createStarted`/`deleteStarted` (sets status="creating"/"deleting"); it does
+ * NOT dispatch createSucceeded/createFailed. Success is observed indirectly
+ * when the host pushes `database.collectionsChanged` (status → "idle").
+ * Failure arrives as an uncorrelated `operation.failed` broadcast (requestId
+ * is null because notify carries none); main.ts routes that into the
+ * createFailed/deleteFailed reducers when a modal is mid-flight.
  */
 import type {
   TableAdminCreatePayload,
@@ -30,14 +40,8 @@ export const initialTableAdminState: TableAdminState = {
 
 /** Minimal bridge surface this flow needs. HostBridge satisfies this. */
 export interface HostBridgeLike {
-  request<T = void>(
-    type: "tableAdmin.createRequested",
-    payload: TableAdminCreatePayload,
-  ): Promise<T>;
-  request<T = void>(
-    type: "tableAdmin.deleteRequested",
-    payload: TableAdminDeletePayload,
-  ): Promise<T>;
+  notify(type: "tableAdmin.createRequested", payload: TableAdminCreatePayload): void;
+  notify(type: "tableAdmin.deleteRequested", payload: TableAdminDeletePayload): void;
 }
 
 export type TableAdminEvent =
@@ -98,33 +102,27 @@ export function reduce(state: TableAdminState, event: TableAdminEvent): TableAdm
   }
 }
 
-// --- async orchestrators ---
+// --- orchestrators ---
+//
+// These use bridge.notify (fire-and-forget, no requestId). They only dispatch
+// the *Started event; success/failure is observed via the host-pushed
+// database.collectionsChanged / operation.failed broadcasts (routed by main.ts).
 
-export async function requestCreate(
+export function requestCreate(
   bridge: HostBridgeLike,
   name: string,
   fields: TableAdminCreatePayload["fields"],
   dispatch: (event: TableAdminEvent) => void,
-): Promise<void> {
+): void {
   dispatch({ type: "createStarted" });
-  try {
-    await bridge.request("tableAdmin.createRequested", { name, fields });
-    dispatch({ type: "createSucceeded" });
-  } catch (e) {
-    dispatch({ type: "createFailed", message: (e as Error).message });
-  }
+  bridge.notify("tableAdmin.createRequested", { name, fields });
 }
 
-export async function requestDelete(
+export function requestDelete(
   bridge: HostBridgeLike,
   collection: string,
   dispatch: (event: TableAdminEvent) => void,
-): Promise<void> {
+): void {
   dispatch({ type: "deleteStarted" });
-  try {
-    await bridge.request("tableAdmin.deleteRequested", { collection });
-    dispatch({ type: "deleteSucceeded" });
-  } catch (e) {
-    dispatch({ type: "deleteFailed", message: (e as Error).message });
-  }
+  bridge.notify("tableAdmin.deleteRequested", { collection });
 }
