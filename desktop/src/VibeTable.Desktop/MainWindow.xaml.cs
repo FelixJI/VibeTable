@@ -654,6 +654,7 @@ public partial class MainWindow : Window
         {
             _directusGateway = new JsonRpcDirectusGateway(client);
             _directusGateway.Changed += OnDirectusChanged;
+            _dispatcher.SetDirectusGateway(_directusGateway);
         }
         try
         {
