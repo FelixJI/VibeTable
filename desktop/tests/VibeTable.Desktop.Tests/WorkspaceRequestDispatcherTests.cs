@@ -192,6 +192,112 @@ public sealed class WorkspaceRequestDispatcherTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Task 8: tableAdmin create/delete handlers wired to IDirectusRpcGateway.
+    // -----------------------------------------------------------------------
+
+    [TestMethod]
+    public async Task CreateTableRequested_WhenGatewayNull_PostsNotAuthenticated()
+    {
+        var workspace = new TableWorkspaceService(new FakeTableRpcGateway());
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            workspace, new FakeDatabasePicker("db"), sink);
+        // No SetDirectusGateway call -> gateway is null.
+
+        var payload = JsonDocument.Parse(
+            """{"name":"projects","fields":[{"key":"name","type":"string"}]}""").RootElement.Clone();
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "tableAdmin.createRequested", "req-c", payload, ""));
+
+        var failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        Assert.AreEqual("NOT_AUTHENTICATED", ((dynamic)failed!.Payload!).code);
+    }
+
+    [TestMethod]
+    public async Task CreateTableRequested_CallsGatewayAndPostsCollectionsChanged()
+    {
+        var directus = new FakeDirectusRpcGateway
+        {
+            // After create, list returns these (incl. system tables to prove filtering).
+            ListCollectionsResult = new DirectusCollectionList(
+                new[] { "projects", "directus_users", "tasks" },
+                new Dictionary<string, string>()),
+        };
+        var workspace = new TableWorkspaceService(new FakeTableRpcGateway());
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            workspace, new FakeDatabasePicker("db"), sink);
+        dispatcher.SetDirectusGateway(directus);
+
+        var payload = JsonDocument.Parse(
+            """{"name":"projects","fields":[{"key":"name","type":"string"}]}""").RootElement.Clone();
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "tableAdmin.createRequested", "req-c", payload, ""));
+
+        var notif = await sink.WaitForAsync("database.collectionsChanged");
+        Assert.IsNotNull(notif);
+        Assert.AreEqual(1, directus.CreateTableCalls.Count);
+        Assert.AreEqual("projects", directus.CreateTableCalls[0].Name);
+        // The notification payload is an anonymous type created in the
+        // VibeTable.Desktop assembly (internal there), so read its 'tables'
+        // member via reflection rather than dynamic binding. The list must be
+        // FILTERED (directus_users removed) + SORTED (projects before tasks).
+        var tablesObj = notif!.Payload!.GetType()
+            .GetProperty("tables")?.GetValue(notif.Payload);
+        var tables = ((IEnumerable<string>)tablesObj!).ToList();
+        CollectionAssert.AreEqual(new[] { "projects", "tasks" }, tables);
+    }
+
+    [TestMethod]
+    public async Task DeleteTableRequested_CallsGatewayAndPostsCollectionsChanged()
+    {
+        var directus = new FakeDirectusRpcGateway
+        {
+            DeleteTableResult = new DeleteTableResult("old", Deleted: true),
+            ListCollectionsResult = new DirectusCollectionList(
+                new[] { "remaining" }, new Dictionary<string, string>()),
+        };
+        var workspace = new TableWorkspaceService(new FakeTableRpcGateway());
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            workspace, new FakeDatabasePicker("db"), sink);
+        dispatcher.SetDirectusGateway(directus);
+
+        var payload = JsonDocument.Parse("""{"collection":"old"}""").RootElement.Clone();
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "tableAdmin.deleteRequested", "req-d", payload, ""));
+
+        var notif = await sink.WaitForAsync("database.collectionsChanged");
+        Assert.IsNotNull(notif);
+        Assert.AreEqual(1, directus.DeleteTableCalls.Count);
+        Assert.AreEqual("old", directus.DeleteTableCalls[0]);
+    }
+
+    [TestMethod]
+    public async Task CreateTableRequested_OnBackendError_PostsOperationFailed()
+    {
+        var directus = new FakeDirectusRpcGateway
+        {
+            CreateTableException = new InvalidOperationException("name already exists"),
+        };
+        var workspace = new TableWorkspaceService(new FakeTableRpcGateway());
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            workspace, new FakeDatabasePicker("db"), sink);
+        dispatcher.SetDirectusGateway(directus);
+
+        var payload = JsonDocument.Parse(
+            """{"name":"x","fields":[]}""").RootElement.Clone();
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "tableAdmin.createRequested", "req-c", payload, ""));
+
+        var failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        StringAssert.Contains((string)((dynamic)failed!.Payload!).message, "name already exists");
+    }
 }
 
 // ---------------------------------------------------------------------------

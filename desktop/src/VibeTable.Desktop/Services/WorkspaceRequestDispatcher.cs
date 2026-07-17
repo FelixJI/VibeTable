@@ -46,6 +46,7 @@ public sealed class WorkspaceRequestDispatcher
     private readonly IDatabasePicker _picker;
     private readonly IWebReplySink _reply;
     private readonly GridStateCoordinator? _coordinator;
+    private IDirectusRpcGateway? _directusGateway;
 
     public WorkspaceRequestDispatcher(
         TableWorkspaceService workspace,
@@ -58,6 +59,14 @@ public sealed class WorkspaceRequestDispatcher
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _coordinator = coordinator;
     }
+
+    /// <summary>
+    /// Injects the Directus RPC gateway used by table-management handlers.
+    /// Called by MainWindow after the session is authenticated; null before
+    /// that (handlers return operation.failed code NOT_AUTHENTICATED).
+    /// </summary>
+    public void SetDirectusGateway(IDirectusRpcGateway gateway)
+        => _directusGateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
 
     /// <summary>
     /// Dispatches a routed web request to its handler. Each handler is
@@ -120,6 +129,12 @@ public sealed class WorkspaceRequestDispatcher
                 break;
             case "table.applyPasteRequested":
                 await OnApplyPasteRequestedAsync(request).ConfigureAwait(false);
+                break;
+            case "tableAdmin.createRequested":
+                await OnCreateTableRequestedAsync(request).ConfigureAwait(false);
+                break;
+            case "tableAdmin.deleteRequested":
+                await OnDeleteTableRequestedAsync(request).ConfigureAwait(false);
                 break;
             default:
                 // Unknown types never reach here (router whitelists), but be
@@ -379,6 +394,96 @@ public sealed class WorkspaceRequestDispatcher
         {
             _reply.PostOperationFailed(request.RequestId, ex.Message, code: "PASTE_APPLY_FAILED");
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Task 8: table admin (create/delete) handlers wired to the Directus
+    // RPC gateway. On success both re-list collections and push
+    // database.collectionsChanged so the web sidebar refreshes.
+    // -------------------------------------------------------------------
+
+    private async Task OnCreateTableRequestedAsync(RoutedWebRequest request)
+    {
+        if (_directusGateway is null)
+        {
+            _reply.PostOperationFailed(request.RequestId, "Directus 尚未登录。", code: "NOT_AUTHENTICATED");
+            return;
+        }
+        string? name = TryGetString(request.Payload, "name");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            _reply.PostOperationFailed(request.RequestId, "缺少表名。", code: "BAD_PAYLOAD");
+            return;
+        }
+        var fields = new List<FieldDefinition>();
+        if (TryGetProperty(request.Payload, "fields", out var fieldsEl)
+            && fieldsEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in fieldsEl.EnumerateArray())
+            {
+                string? key = item.ValueKind == JsonValueKind.Object
+                    && item.TryGetProperty("key", out var kEl) && kEl.ValueKind == JsonValueKind.String
+                    ? kEl.GetString() : null;
+                string? type = item.ValueKind == JsonValueKind.Object
+                    && item.TryGetProperty("type", out var tEl) && tEl.ValueKind == JsonValueKind.String
+                    ? tEl.GetString() : null;
+                if (!string.IsNullOrWhiteSpace(key) && !string.IsNullOrWhiteSpace(type))
+                {
+                    fields.Add(new FieldDefinition(key!, type!));
+                }
+            }
+        }
+        try
+        {
+            await _directusGateway.CreateTableAsync(name, fields, CancellationToken.None)
+                .ConfigureAwait(false);
+            await PostCollectionsChangedAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _reply.PostOperationFailed(request.RequestId, ex.Message, code: "CREATE_TABLE_FAILED");
+        }
+    }
+
+    private async Task OnDeleteTableRequestedAsync(RoutedWebRequest request)
+    {
+        if (_directusGateway is null)
+        {
+            _reply.PostOperationFailed(request.RequestId, "Directus 尚未登录。", code: "NOT_AUTHENTICATED");
+            return;
+        }
+        string? collection = TryGetString(request.Payload, "collection");
+        if (string.IsNullOrWhiteSpace(collection))
+        {
+            _reply.PostOperationFailed(request.RequestId, "缺少表名。", code: "BAD_PAYLOAD");
+            return;
+        }
+        try
+        {
+            await _directusGateway.DeleteTableAsync(collection, CancellationToken.None)
+                .ConfigureAwait(false);
+            await PostCollectionsChangedAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _reply.PostOperationFailed(request.RequestId, ex.Message, code: "DELETE_TABLE_FAILED");
+        }
+    }
+
+    /// <summary>
+    /// Re-lists collections, filters to user tables, and pushes
+    /// database.collectionsChanged so the sidebar refreshes.
+    /// </summary>
+    private async Task PostCollectionsChangedAsync()
+    {
+        var list = await _directusGateway!.ListCollectionsAsync(CancellationToken.None)
+            .ConfigureAwait(false);
+        var tables = DirectusCollectionFilter.FilterUserTables(list.Collections);
+        _reply.PostNotification("database.collectionsChanged", new
+        {
+            tables,
+            capabilityHashes = list.CapabilityHashes,
+        });
     }
 
     private static PasteStartCell? TryGetStartCell(JsonElement payload)
