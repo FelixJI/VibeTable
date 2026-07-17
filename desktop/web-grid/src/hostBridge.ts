@@ -118,6 +118,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "table.rowsInserted",
   "table.rowsDeleted",
   "directus.changed",
+  // Table management: collection lifecycle events.
+  "database.collectionsChanged",
 ]);
 
 /**
@@ -140,6 +142,9 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   // B2 paste preview + apply requests.
   "table.previewPasteRequested",
   "table.applyPasteRequested",
+  // Table management: create/delete collection requests.
+  "tableAdmin.createRequested",
+  "tableAdmin.deleteRequested",
 ]);
 
 // ---------------------------------------------------------------------------
