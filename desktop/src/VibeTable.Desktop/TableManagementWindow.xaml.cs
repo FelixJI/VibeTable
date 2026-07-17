@@ -37,10 +37,7 @@ public partial class TableManagementWindow : Window
         try
         {
             var list = await _gateway.ListCollectionsAsync(CancellationToken.None);
-            var userTables = list.Collections
-                .Where(IsUserTable)
-                .OrderBy(c => c, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            var userTables = DirectusCollectionFilter.FilterUserTables(list.Collections);
             TablesList.ItemsSource = userTables;
             StatusText.Text = userTables.Count == 0
                 ? "没有可管理的用户表。"
@@ -60,29 +57,6 @@ public partial class TableManagementWindow : Window
         {
             NewTableButton.IsEnabled = true;
         }
-    }
-
-    /// <summary>
-    /// A collection is user-manageable unless it is a Directus system
-    /// collection (<c>directus_*</c>) or part of the VibeTable document
-    /// system (<c>vibetable_document*</c> / <c>vibetable_workspace*</c>).
-    /// </summary>
-    private static bool IsUserTable(string collection)
-    {
-        if (string.IsNullOrWhiteSpace(collection))
-        {
-            return false;
-        }
-        if (collection.StartsWith("directus_", StringComparison.Ordinal))
-        {
-            return false;
-        }
-        if (collection.StartsWith("vibetable_document", StringComparison.Ordinal)
-            || collection.StartsWith("vibetable_workspace", StringComparison.Ordinal))
-        {
-            return false;
-        }
-        return true;
     }
 
     private async void OnNewTableClick(object sender, RoutedEventArgs e)
