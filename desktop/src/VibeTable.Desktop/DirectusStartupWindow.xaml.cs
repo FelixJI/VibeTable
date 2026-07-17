@@ -234,7 +234,7 @@ public partial class DirectusStartupWindow : Window
         }).ToArray();
     }
 
-    private static string TranslateDetail(string detail)
+    internal static string TranslateDetail(string detail)
     {
         if (detail.StartsWith("Starting the local Directus service on port ",
             StringComparison.Ordinal))

@@ -142,17 +142,11 @@ public partial class MainWindow : Window
         _viewModel = new MainWindowViewModel(_backendAdapter, _webBridge);
         _supervisor.LogReceived += OnBackendLogReceived;
         _supervisor.StateChanged += OnBackendStateChanged;
-        if (_shellSmokeMode)
-        {
-            _viewModel.PropertyChanged += (_, args) =>
-            {
-                if (string.Equals(args.PropertyName, nameof(MainWindowViewModel.State),
-                    StringComparison.Ordinal))
-                {
-                    TryWriteShellReadiness();
-                }
-            };
-        }
+        // Unconditional subscription: clear DetailMessage once the system
+        // reaches Ready (so the bottom bar shows only "就绪"), and — only in
+        // shell smoke mode — write the readiness marker. Previously this was
+        // an inline lambda gated by _shellSmokeMode.
+        _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         DataContext = _viewModel;
 
         Loaded += OnLoaded;
@@ -298,7 +292,10 @@ public partial class MainWindow : Window
     }
 
     private void OnBackendLogReceived(object? sender, string line)
-        => TraceProcessLog("backend", line);
+    {
+        TraceProcessLog("backend", line);
+        SetDetailMessage(line);
+    }
 
     private void OnBackendStateChanged(object? sender, BackendState state)
     {
@@ -306,6 +303,17 @@ public partial class MainWindow : Window
         if (state == BackendState.Faulted)
         {
             status += $", exitCode={_supervisor.ExitCode?.ToString() ?? "unknown"}";
+        }
+        string? detail = state switch
+        {
+            BackendState.Starting => "正在启动应用后端…",
+            BackendState.Ready => "应用后端已就绪。",
+            BackendState.Faulted => "应用后端进程意外退出。",
+            _ => null,
+        };
+        if (detail is not null)
+        {
+            SetDetailMessage(detail);
         }
         Trace.WriteLine($"[backend] {status}");
         _readinessWriter?.Trace(status);
@@ -351,6 +359,7 @@ public partial class MainWindow : Window
                 if (ReferenceEquals(sender, _directusSupervisor))
                 {
                     _directusStartupWindow?.UpdateProgress(progress);
+                    SetDetailMessage(DirectusStartupWindow.TranslateDetail(progress.Detail));
                 }
             });
         }
@@ -595,7 +604,71 @@ public partial class MainWindow : Window
     }
 
     private void UpdateStartupHostStage(int step, string title, string detail)
-        => _directusStartupWindow?.UpdateHostStage(step, title, detail);
+    {
+        _directusStartupWindow?.UpdateHostStage(step, title, detail);
+        SetDetailMessage(detail);
+    }
+
+    /// <summary>
+    /// Pushes a progress line into <see cref="MainWindowViewModel.DetailMessage"/>
+    /// so it shows in the bottom status bar while the system is starting or
+    /// busy. Truncates to 80 chars to keep the bar on one line, and is a no-op
+    /// once the VM has left the starting states (Ready/Faulted) so the bar
+    /// shows only the status summary. Marshals to the UI thread best-effort.
+    /// </summary>
+    private void SetDetailMessage(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return;
+        }
+        string trimmed = message.Length > 80
+            ? message[..77] + "…"
+            : message;
+        try
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                // Only update while the system is not yet Ready; once Ready
+                // the bottom bar shows just "就绪" and DetailMessage is cleared.
+                if (_viewModel.State is StartupState.StartingBackend
+                    or StartupState.LoadingWeb)
+                {
+                    _viewModel.DetailMessage = trimmed;
+                }
+            });
+        }
+        catch
+        {
+            // Window may be closing; best-effort.
+        }
+    }
+
+    /// <summary>
+    /// Reacts to ViewModel state changes. When the system reaches Ready the
+    /// stale progress line in the bottom bar is cleared (the bar then shows
+    /// only "就绪"). In shell smoke mode, also writes the readiness marker.
+    /// </summary>
+    private void OnViewModelPropertyChanged(
+        object? sender,
+        System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (!string.Equals(e.PropertyName, nameof(MainWindowViewModel.State),
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+        // Clear the bottom-bar detail line once the system reaches Ready; the
+        // bar then shows only the "就绪" status, not stale progress text.
+        if (_viewModel.State == StartupState.Ready)
+        {
+            _viewModel.DetailMessage = string.Empty;
+        }
+        if (_shellSmokeMode)
+        {
+            TryWriteShellReadiness();
+        }
+    }
 
     private void MarkFirstRunCompleted()
     {
