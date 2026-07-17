@@ -87,9 +87,10 @@ public sealed class DirectusSupervisor : IAsyncDisposable
     }
 
     /// <summary>
-    /// The resolved Directus base URL (<c>http://localhost:&lt;port&gt;</c>)
-    /// once readiness succeeds; null before. The host sets this as
-    /// <c>VIBETABLE_DIRECTUS_URL</c> for the backend.
+    /// The resolved base URL (<c>http://{HOST}:{PORT}</c>). HOST defaults to
+    /// <c>127.0.0.1</c> (set by <see cref="DirectusEnvMaterializer"/>). The
+    /// WebView2 admin nav target and the injected session cookie's Domain
+    /// MUST use the same host string this URL reports.
     /// </summary>
     public string? BaseUrl => _baseUrl;
 
@@ -151,8 +152,12 @@ public sealed class DirectusSupervisor : IAsyncDisposable
             var env = DirectusEnvMaterializer.Materialize(
                 _options.LocalDirectusDirectory, bsEmail, bsPassword, alreadyBootstrapped);
             // 2. Resolve a free port + persist it into .env.
+            // PORT default + parse fallback must track DirectusEnvMaterializer.DefaultPort
+            // (not the legacy well-known 8055) so a template that loses its PORT line
+            // never silently reverts to the old port.
             int requestedPort = int.TryParse(
-                env.GetValueOrDefault("PORT", "8055"), out int rp) ? rp : 8055;
+                env.GetValueOrDefault("PORT", DirectusEnvMaterializer.DefaultPort.ToString()),
+                out int rp) ? rp : DirectusEnvMaterializer.DefaultPort;
             int port = DirectusEnvMaterializer.PickFreePort(requestedPort);
             if (port != requestedPort)
             {
@@ -175,7 +180,14 @@ public sealed class DirectusSupervisor : IAsyncDisposable
                 $"Starting the local Directus service on port {port}.");
             (_process, _job) = SpawnDirectus(port, env);
 
-            _baseUrl = $"http://localhost:{port}";
+            // HOST comes from the materialised .env (DirectusEnvMaterializer sets
+            // 127.0.0.1). Use it so BaseUrl matches the cookie domain / nav target.
+            // Verification: by inspection + Task 7 smoke (supervisor is process-heavy;
+            // no isolated unit test for BaseUrl construction).
+            string host = env.TryGetValue("HOST", out string? h) && !string.IsNullOrWhiteSpace(h)
+                ? h
+                : "localhost";
+            _baseUrl = $"http://{host}:{port}";
             ReportProgress(
                 DirectusStartupStage.WaitingForService,
                 "Waiting for the Directus health endpoint to respond.");
