@@ -69,6 +69,7 @@ const errorMessageEl = document.getElementById("error-message");
 
 // Sidebar + table-admin modal DOM bindings (Task 11).
 const newTableBtn = document.getElementById("new-table-btn") as HTMLButtonElement | null;
+const openAdminBtn = document.getElementById("open-admin-btn") as HTMLButtonElement | null;
 const tableList = document.getElementById("table-list");
 const createTableModal = document.getElementById("create-table-modal");
 const createTableClose = document.getElementById("create-table-close");
@@ -555,6 +556,9 @@ if (refreshBtn) {
 
 // Sidebar + table-admin modal wiring (Task 11).
 newTableBtn?.addEventListener("click", () => openCreateTableModal());
+// Open Directus admin (Data Studio) in this webview. Fire-and-forget notify:
+// the host logs in to Directus and navigates the WebView2 to /admin/.
+openAdminBtn?.addEventListener("click", () => bridge.notify("admin.openRequested", {}));
 createTableClose?.addEventListener("click", closeCreateTableModal);
 createTableCancel?.addEventListener("click", closeCreateTableModal);
 createTableAddField?.addEventListener("click", () => addFieldRow());

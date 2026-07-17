@@ -565,7 +565,9 @@ export type WebMessageType =
   | "document.openFolderRequested"
   // Table-admin requests.
   | "tableAdmin.createRequested"
-  | "tableAdmin.deleteRequested";
+  | "tableAdmin.deleteRequested"
+  // Open the embedded Directus admin (Data Studio) in this webview.
+  | "admin.openRequested";
 
 /**
  * Inbound (host -> web) message types consumed by this layer.
@@ -659,6 +661,8 @@ export interface WebPayloadMap {
   // Table-admin requests.
   "tableAdmin.createRequested": TableAdminCreatePayload;
   "tableAdmin.deleteRequested": TableAdminDeletePayload;
+  // Open Directus admin. Empty payload.
+  "admin.openRequested": Record<string, never>;
 }
 
 /** Payload produced by the web layer for `table.queryRequested`. */

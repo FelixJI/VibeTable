@@ -145,6 +145,8 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   // Table management: create/delete collection requests.
   "tableAdmin.createRequested",
   "tableAdmin.deleteRequested",
+  // Open the embedded Directus admin (Data Studio) in this webview.
+  "admin.openRequested",
 ]);
 
 // ---------------------------------------------------------------------------
