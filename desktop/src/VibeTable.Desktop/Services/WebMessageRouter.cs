@@ -68,6 +68,8 @@ public sealed class WebMessageRouter
         // Table management (web sidebar).
         "tableAdmin.createRequested",
         "tableAdmin.deleteRequested",
+        // Directus admin: open the embedded Data Studio in this webview.
+        "admin.openRequested",
     };
 
     /// <summary>

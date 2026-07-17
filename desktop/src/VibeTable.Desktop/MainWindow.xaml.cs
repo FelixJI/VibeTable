@@ -765,7 +765,20 @@ public partial class MainWindow : Window
             }
         }
 
+        if (string.Equals(request.Type, "admin.openRequested", StringComparison.Ordinal))
+        {
+            // Navigation/cookie-injection is a UI concern handled in MainWindow
+            // (Task 5). Do NOT forward to _dispatcher.
+            _ = OpenDirectusAdminAsync(request.RequestId);
+            return;
+        }
+
         _dispatcher.Dispatch(request);
+    }
+
+    private async Task OpenDirectusAdminAsync(string? requestId)
+    {
+        await Task.CompletedTask; // implemented in Task 5
     }
 
     private void TryWriteShellReadiness()

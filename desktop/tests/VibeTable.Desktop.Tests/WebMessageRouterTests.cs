@@ -279,4 +279,21 @@ public sealed class WebMessageRouterTests
         Assert.AreEqual("bad", envelope.Payload!.Message);
         Assert.AreEqual("BAD", envelope.Payload.Code);
     }
+
+    [TestMethod]
+    public void Route_AcceptsAdminOpenRequested()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(req => dispatched.Add(req))
+        {
+            IsReady = true
+        };
+
+        string json = """{"type":"admin.openRequested","requestId":"r1","payload":{}}""";
+        var reply = router.Route(json);
+
+        Assert.IsNull(reply, "admin.openRequested should be accepted, not rejected");
+        Assert.AreEqual(1, dispatched.Count);
+        Assert.AreEqual("admin.openRequested", dispatched[0].Type);
+    }
 }
