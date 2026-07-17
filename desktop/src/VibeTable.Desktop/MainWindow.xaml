@@ -53,10 +53,21 @@
                 <TextBlock
                     Text="{Binding DetailMessage}"
                     FontSize="11"
-                    Margin="10,0,0,0"
                     Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                     TextTrimming="CharacterEllipsis"
-                    MaxWidth="600"/>
+                    MaxWidth="600">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Margin" Value="10,0,0,0"/>
+                            <Setter Property="Visibility" Value="Visible"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding DetailMessage}" Value="">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
             </StackPanel>
         </DockPanel>
     </Grid>

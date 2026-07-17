@@ -294,7 +294,7 @@ public partial class MainWindow : Window
     private void OnBackendLogReceived(object? sender, string line)
     {
         TraceProcessLog("backend", line);
-        SetDetailMessage(line);
+        SetDetailMessage("后端：" + line);
     }
 
     private void OnBackendStateChanged(object? sender, BackendState state)
@@ -329,6 +329,15 @@ public partial class MainWindow : Window
     private void OnDirectusLogReceived(object? sender, string line)
     {
         TraceProcessLog("directus", line);
+        // Surface significant directus lifecycle/error lines to the bottom
+        // status bar alongside the backend-prefixed lines. Filtered to
+        // keywords to avoid drowning the bar in verbose routine directus
+        // logs; uses the marshalling SetDetailMessage (not Core) because this
+        // handler runs on the directus stdout pump thread, not the UI thread.
+        if (ContainsSignificantDirectusKeyword(line))
+        {
+            SetDetailMessage("Directus：" + line);
+        }
         try
         {
             Dispatcher.BeginInvoke(() =>
@@ -359,7 +368,11 @@ public partial class MainWindow : Window
                 if (ReferenceEquals(sender, _directusSupervisor))
                 {
                     _directusStartupWindow?.UpdateProgress(progress);
-                    SetDetailMessage(DirectusStartupWindow.TranslateDetail(progress.Detail));
+                    // Already inside the outer Dispatcher.BeginInvoke above;
+                    // call the core writer directly to avoid a redundant nested
+                    // dispatch (whose deferred execution would also escape the
+                    // surrounding try/catch).
+                    SetDetailMessageCore(DirectusStartupWindow.TranslateDetail(progress.Detail));
                 }
             });
         }
@@ -614,8 +627,18 @@ public partial class MainWindow : Window
     /// so it shows in the bottom status bar while the system is starting or
     /// busy. Truncates to 80 chars to keep the bar on one line, and is a no-op
     /// once the VM has left the starting states (Ready/Faulted) so the bar
-    /// shows only the status summary. Marshals to the UI thread best-effort.
+    /// shows only the status summary. Marshals the write to the UI thread
+    /// best-effort, then delegates to <see cref="SetDetailMessageCore"/> for
+    /// the actual VM-state-gated write.
     /// </summary>
+    /// <remarks>
+    /// Use this overload for callers that are NOT already on the UI thread
+    /// (e.g. <see cref="OnBackendLogReceived"/>, <see cref="OnBackendStateChanged"/>,
+    /// <see cref="OnDirectusLogReceived"/>). Callers already inside a
+    /// <c>Dispatcher.BeginInvoke</c> block should call
+    /// <see cref="SetDetailMessageCore"/> directly to avoid a redundant nested
+    /// dispatch (whose deferred execution also escapes the caller's try/catch).
+    /// </remarks>
     private void SetDetailMessage(string? message)
     {
         if (string.IsNullOrWhiteSpace(message))
@@ -627,22 +650,54 @@ public partial class MainWindow : Window
             : message;
         try
         {
-            Dispatcher.BeginInvoke(() =>
-            {
-                // Only update while the system is not yet Ready; once Ready
-                // the bottom bar shows just "就绪" and DetailMessage is cleared.
-                if (_viewModel.State is StartupState.StartingBackend
-                    or StartupState.LoadingWeb)
-                {
-                    _viewModel.DetailMessage = trimmed;
-                }
-            });
+            Dispatcher.BeginInvoke(() => SetDetailMessageCore(trimmed));
         }
         catch
         {
             // Window may be closing; best-effort.
         }
     }
+
+    /// <summary>
+    /// Performs the VM-state-gated write to
+    /// <see cref="MainWindowViewModel.DetailMessage"/>. The caller MUST already
+    /// be on the UI thread — no marshalling is performed here. Only updates
+    /// while the system is in a starting state (<c>StartingBackend</c> /
+    /// <c>LoadingWeb</c>); once <c>Ready</c> the bottom bar shows just "就绪"
+    /// and <see cref="MainWindowViewModel.DetailMessage"/> is cleared.
+    /// </summary>
+    private void SetDetailMessageCore(string trimmed)
+    {
+        // Only update while the system is not yet Ready; once Ready
+        // the bottom bar shows just "就绪" and DetailMessage is cleared.
+        if (_viewModel.State is StartupState.StartingBackend
+            or StartupState.LoadingWeb)
+        {
+            _viewModel.DetailMessage = trimmed;
+        }
+    }
+
+    /// <summary>
+    /// Conservative keyword filter for <see cref="OnDirectusLogReceived"/>:
+    /// only directus stdout lines that look significant (server lifecycle /
+    /// errors / readiness) are surfaced to the bottom status bar, to avoid
+    /// drowning it in verbose routine logs. Case-sensitive as directus emits
+    /// these tokens in English.
+    /// </summary>
+    private static bool ContainsSignificantDirectusKeyword(string line)
+    {
+        foreach (string keyword in SignificantDirectusLogKeywords)
+        {
+            if (line.Contains(keyword, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static readonly string[] SignificantDirectusLogKeywords =
+        { "Listening", "Server", "started", "error", "Error", "ready", "Ready" };
 
     /// <summary>
     /// Reacts to ViewModel state changes. When the system reaches Ready the
@@ -660,6 +715,12 @@ public partial class MainWindow : Window
         }
         // Clear the bottom-bar detail line once the system reaches Ready; the
         // bar then shows only the "就绪" status, not stale progress text.
+        //
+        // This direct write (no Dispatcher marshal) is safe because this
+        // handler is invoked synchronously from the VM's State setter via
+        // RaisePropertyChanged, and every TransitionTo/state-change call site
+        // already runs on the UI thread — so the handler observes the UI
+        // thread and the DetailMessage write happens there.
         if (_viewModel.State == StartupState.Ready)
         {
             _viewModel.DetailMessage = string.Empty;
