@@ -350,7 +350,14 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
         ["policy"] = policyId,
     };
 
-    /// <summary>Port of bootstrap.build_permission_payloads.</summary>
+    /// <summary>
+    /// Builds one permission per (collection, action) granted by the policy.
+    /// Diverges from <c>bootstrap.build_permission_payloads</c>: emits
+    /// <c>fields:["*"]</c> and omits <c>permissions</c>/<c>validation</c>/<c>presets</c>
+    /// so unlicensed Directus 12 does not classify the rule as a paid
+    /// "custom permission rule" (see <c>hasCustomRule</c> in
+    /// <c>@directus/api/.../custom-permission-rules-enabled.js</c>).
+    /// </summary>
     internal static JsonArray BuildPermissionPayloads(
         string policyId, JsonObject grants, JsonObject collections)
     {
@@ -368,25 +375,22 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
                 {
                     continue;
                 }
-                var definition = (JsonObject)collections[collection]!;
-                var built = BuildCollectionPayload(collection, definition);
-                var fieldNames = new JsonArray();
-                foreach (var f in (JsonArray)built["fields"]!)
-                {
-                    if (f is JsonObject fo && fo["field"] is JsonValue fv)
-                    {
-                        fieldNames.Add(fv.GetValue<string>());
-                    }
-                }
+                // Unlicensed Directus 12 treats a permission as a paid "custom
+                // permission rule" (entitlement custom_permission_rules_enabled)
+                // whenever fields != ["*"] or permissions/validation/presets are
+                // non-empty. The previous payload sent an explicit field allow-list
+                // and three empty {} objects, which triggered a 403 RESOURCE
+                // RESTRICTED on POST /permissions. fields:["*"] with the rule
+                // objects omitted makes hasCustomRule() return false, so the
+                // permission is accepted. Access semantics are unchanged: an
+                // empty permissions/validation rule already granted full access,
+                // and the field allow-list was decorative in that case.
                 payloads.Add(new JsonObject
                 {
                     ["policy"] = policyId,
                     ["collection"] = collection,
                     ["action"] = action,
-                    ["permissions"] = new JsonObject(),
-                    ["validation"] = new JsonObject(),
-                    ["presets"] = new JsonObject(),
-                    ["fields"] = fieldNames,
+                    ["fields"] = new JsonArray { "*" },
                 });
             }
         }

@@ -258,7 +258,7 @@ public partial class DirectusStartupWindow : Window
             "Creating the Directus database and local administrator." =>
                 "正在创建本地数据库和管理员账号。",
             "The Directus database already exists; checking initialization state." =>
-                "检测到未完成的本地数据库，正在继续初始化。",
+                "检测到未完成的本地数据库，正在重新初始化。",
             "Waiting for the Directus health endpoint to respond." =>
                 "服务进程已启动，正在等待健康检查通过。",
             "Creating the initial VibeTable collections, relations, and permissions." =>

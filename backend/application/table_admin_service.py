@@ -32,7 +32,12 @@ _TYPE_MAP: dict[str, str] = {
 }
 
 _SYSTEM_FIELDS = ["status", "sort", "date_created", "user_created", "date_updated", "user_updated"]
-_RESERVED_PREFIXES = ("directus_", "vibetable_document", "vibetable_workspace")
+# The whole ``vibetable_`` namespace is reserved for system/bootstrap tables
+# (vibetable_workspaces, vibetable_documents, vibetable_settings, ...). Matching
+# the full prefix (rather than enumerating each singular substring like
+# ``vibetable_document``) also covers system tables added later without silently
+# letting a user shadow them. ``directus_`` covers all Directus internal tables.
+_RESERVED_PREFIXES = ("directus_", "vibetable_")
 
 
 class TableAdminError(Exception):
@@ -75,6 +80,23 @@ class TableAdminService:
     async def create_table(self, params: CreateTableParams) -> CreateTableResult:
         name = params.name
         self._validate_name(name)
+        # Build the runtime profile BEFORE touching Directus. If profile
+        # construction fails (e.g. the identifier rules in CollectionProfile
+        # reject a name the contract layer somehow let through), we raise here
+        # and never POST /collections — otherwise Directus would create the
+        # collection and we would leave an orphan behind when this call fails.
+        # ValidationError is wrapped as TableAdminError so the dispatcher maps
+        # it to the registered table_admin code (-32110) instead of falling
+        # through to the opaque -32603 "Internal error" bucket.
+        try:
+            profile = self._profile_for(name, params.fields)
+        except TableAdminError:
+            raise
+        except Exception as exc:
+            raise TableAdminError(
+                f"cannot build capability profile for {name!r}: {exc}",
+                code="profile_build_failed",
+            ) from exc
         token = await self._auth.access_token()
         collection_body = self._build_collection_body(name, params.fields)
         await self._transport.request(
@@ -83,7 +105,6 @@ class TableAdminService:
         )
         # 同步更新运行时 manifest 白名单：写入真正的 CollectionProfile，
         # 使建表后当前会话内即可对该表执行 read/create/update（_profiles 查询生效）。
-        profile = self._profile_for(name, params.fields)
         self._profiles[name] = profile
         return CreateTableResult(collection=name, primary_key=profile.primary_key, fields=list(profile.fields))
 
@@ -99,7 +120,7 @@ class TableAdminService:
         return DeleteTableResult(collection=name, deleted=True)
 
     def _validate_name(self, name: str) -> None:
-        if name.startswith(_RESERVED_PREFIXES) or name in {"directus_users", "directus_files"}:
+        if name.startswith(_RESERVED_PREFIXES):
             raise TableAdminError(
                 f"collection name {name!r} is reserved or conflicts with system tables",
                 code="table_name_reserved",

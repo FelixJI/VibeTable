@@ -108,7 +108,16 @@ public sealed class DirectusSchemaBootstrapperTests
         Assert.AreEqual(24, perms.Count);
         var first = (JsonObject)perms[0]!;
         Assert.AreEqual("policy-1", first["policy"]!.GetValue<string>());
-        Assert.IsNotNull(first["fields"], "permission must carry the field allow-list");
+        // fields must be exactly ["*"] so unlicensed Directus 12 does not reject
+        // the permission as a paid "custom permission rule".
+        var fields = (JsonArray)first["fields"]!;
+        CollectionAssert.AreEqual(new[] { "*" }, fields.Select(f => f!.GetValue<string>()).ToList());
+        Assert.IsFalse(first.ContainsKey("permissions"),
+            "permissions must be omitted (hasCustomRule trigger)");
+        Assert.IsFalse(first.ContainsKey("validation"),
+            "validation must be omitted (hasCustomRule trigger)");
+        Assert.IsFalse(first.ContainsKey("presets"),
+            "presets must be omitted (hasCustomRule trigger)");
     }
 
     [TestMethod]
@@ -133,7 +142,7 @@ public sealed class DirectusSchemaBootstrapperTests
             Content = new StringContent("{\"errors\":[{\"message\":\"Forbidden\"}]}")
         };
 
-        var error = await Assert.ThrowsExceptionAsync<InvalidOperationException>(() =>
+        var error = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
             DirectusSchemaBootstrapper.EnsureSuccessAsync(response, CancellationToken.None));
 
         StringAssert.Contains(error.Message, "POST /roles");

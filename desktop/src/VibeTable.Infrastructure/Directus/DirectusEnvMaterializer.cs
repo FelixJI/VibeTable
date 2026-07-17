@@ -145,9 +145,11 @@ public static class DirectusEnvMaterializer
 
     /// <summary>
     /// Reads the administrator credentials persisted by a previous local
-    /// bootstrap. This is used only to recover an interrupted legacy first run
-    /// where Directus created its admin but VibeTable never saved the managed
-    /// login preference. The secret remains in memory and is never logged.
+    /// bootstrap. Retained as a defensive utility: the desktop host no longer
+    /// consumes it (an interrupted first run is now reset back to fresh via
+    /// <see cref="DirectusFirstRunState.ResetUncompletedBootstrap"/> rather
+    /// than resumed), but the credential-read path is kept for diagnostics and
+    /// future tooling. The secret remains in memory and is never logged.
     /// </summary>
     public static bool TryReadBootstrapCredentials(
         string directory,

@@ -8,20 +8,20 @@ namespace VibeTable.Infrastructure.Tests.Directus;
 public sealed class DirectusFirstRunStateTests
 {
     [TestMethod]
-    public void Inspect_FreshDirectoryNeedsFullWelcome()
+    public void Inspect_FreshDirectoryIsFresh()
     {
         WithTemporaryDirectory(dir =>
         {
             var status = DirectusFirstRunState.Inspect(dir);
 
             Assert.IsTrue(status.IsFresh);
-            Assert.IsTrue(status.NeedsWelcome);
+            Assert.IsFalse(status.IsExperienceIncomplete);
             Assert.IsFalse(status.IsExperienceComplete);
         });
     }
 
     [TestMethod]
-    public void Inspect_BootstrappedWithoutExperienceIsInterrupted()
+    public void Inspect_BootstrappedWithoutExperienceIsIncomplete()
     {
         WithTemporaryDirectory(dir =>
         {
@@ -29,13 +29,13 @@ public sealed class DirectusFirstRunStateTests
 
             var status = DirectusFirstRunState.Inspect(dir);
 
-            Assert.IsTrue(status.IsInterrupted);
-            Assert.IsTrue(status.NeedsWelcome);
+            Assert.IsFalse(status.IsFresh);
+            Assert.IsTrue(status.IsExperienceIncomplete);
         });
     }
 
     [TestMethod]
-    public void MarkExperienceComplete_SuppressesWelcomeOnWarmStart()
+    public void MarkExperienceComplete_MarksExperienceComplete()
     {
         WithTemporaryDirectory(dir =>
         {
@@ -46,7 +46,88 @@ public sealed class DirectusFirstRunStateTests
             var status = DirectusFirstRunState.Inspect(dir);
 
             Assert.IsTrue(status.IsExperienceComplete);
-            Assert.IsFalse(status.NeedsWelcome);
+            Assert.IsFalse(status.IsExperienceIncomplete);
+        });
+    }
+
+    [TestMethod]
+    public void ResetUncompletedBootstrap_RemovesMarkersAndDatabaseFile()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            File.WriteAllText(Path.Combine(dir, DirectusFirstRunState.BootstrapMarker), "ok");
+            File.WriteAllText(Path.Combine(dir, DirectusFirstRunState.SchemaMarker), "ok");
+            string dataDir = Path.Combine(dir, "data");
+            Directory.CreateDirectory(dataDir);
+            File.WriteAllText(Path.Combine(dataDir, "directus.sqlite"), "sqlite-bytes");
+            File.WriteAllText(Path.Combine(dir, ".env"), "ADMIN_EMAIL=admin@example.com");
+
+            DirectusFirstRunState.ResetUncompletedBootstrap(dir);
+
+            Assert.IsFalse(File.Exists(Path.Combine(dir, DirectusFirstRunState.BootstrapMarker)));
+            Assert.IsFalse(File.Exists(Path.Combine(dir, DirectusFirstRunState.SchemaMarker)));
+            Assert.IsFalse(File.Exists(Path.Combine(dataDir, "directus.sqlite")),
+                "the SQLite database file must be deleted");
+            Assert.IsFalse(Directory.Exists(dataDir),
+                "the data directory must be removed once empty");
+            Assert.IsTrue(File.Exists(Path.Combine(dir, ".env")),
+                ".env must be preserved so KEY/SECRET do not rotate");
+        });
+    }
+
+    [TestMethod]
+    public void ResetUncompletedBootstrap_DeletesWalAndShmSidecars()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            File.WriteAllText(Path.Combine(dir, DirectusFirstRunState.BootstrapMarker), "ok");
+            string dataDir = Path.Combine(dir, "data");
+            Directory.CreateDirectory(dataDir);
+            File.WriteAllText(Path.Combine(dataDir, "directus.sqlite"), "main");
+            File.WriteAllText(Path.Combine(dataDir, "directus.sqlite-wal"), "wal");
+            File.WriteAllText(Path.Combine(dataDir, "directus.sqlite-shm"), "shm");
+
+            DirectusFirstRunState.ResetUncompletedBootstrap(dir);
+
+            Assert.IsFalse(File.Exists(Path.Combine(dataDir, "directus.sqlite")));
+            Assert.IsFalse(File.Exists(Path.Combine(dataDir, "directus.sqlite-wal")),
+                "-wal sidecar must be deleted");
+            Assert.IsFalse(File.Exists(Path.Combine(dataDir, "directus.sqlite-shm")),
+                "-shm sidecar must be deleted");
+        });
+    }
+
+    [TestMethod]
+    public void ResetUncompletedBootstrap_RefusesWhenExperienceComplete()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            File.WriteAllText(Path.Combine(dir, DirectusFirstRunState.BootstrapMarker), "ok");
+            File.WriteAllText(Path.Combine(dir, DirectusFirstRunState.SchemaMarker), "ok");
+            File.WriteAllText(Path.Combine(dir, DirectusFirstRunState.ExperienceMarker), "ok");
+            string dataDir = Path.Combine(dir, "data");
+            Directory.CreateDirectory(dataDir);
+            File.WriteAllText(Path.Combine(dataDir, "directus.sqlite"), "sqlite-bytes");
+
+            DirectusFirstRunState.ResetUncompletedBootstrap(dir);
+
+            // Safety gate: a completed experience must never be reset.
+            Assert.IsTrue(File.Exists(Path.Combine(dir, DirectusFirstRunState.BootstrapMarker)));
+            Assert.IsTrue(File.Exists(Path.Combine(dir, DirectusFirstRunState.SchemaMarker)));
+            Assert.IsTrue(File.Exists(Path.Combine(dataDir, "directus.sqlite")));
+        });
+    }
+
+    [TestMethod]
+    public void ResetUncompletedBootstrap_FreshDirectoryIsNoOp()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            // No markers, no database. Reset must not throw.
+            DirectusFirstRunState.ResetUncompletedBootstrap(dir);
+
+            var status = DirectusFirstRunState.Inspect(dir);
+            Assert.IsTrue(status.IsFresh);
         });
     }
 

@@ -479,22 +479,38 @@ public partial class MainWindow : Window
         var firstRunStatus = DirectusFirstRunState.Inspect(
             options.LocalDirectusDirectory);
         options.ForcePackageVerification = !firstRunStatus.IsExperienceComplete;
-        bool firstRun = firstRunStatus.IsFresh;
-        bool firstRunExperience = firstRunStatus.NeedsWelcome;
-        if (firstRunExperience)
+
+        // An earlier first-run attempt that stopped before the experience
+        // marker was written cannot be "continued" — directus bootstrap would
+        // be skipped, Materialize would ignore freshly entered credentials, and
+        // the user's new admin email/password would silently be discarded. The
+        // only honest fix is to wipe the bootstrap state and start over. The
+        // package install and uploads are preserved (see ResetUncompletedBootstrap).
+        if (firstRunStatus.IsExperienceIncomplete)
         {
-            string? existingEmail = null;
-            if (!firstRun
-                && DirectusEnvMaterializer.TryReadBootstrapCredentials(
-                    options.LocalDirectusDirectory,
-                    out string recoveredEmail,
-                    out _))
+            string dataPath = Path.Combine(options.LocalDirectusDirectory, "data");
+            var confirm = MessageBox.Show(
+                this,
+                "检测到上次初始化未完成。继续将删除本地 Directus 数据库文件" +
+                $"（位于 {dataPath}）并重新创建管理员账号。\n\n" +
+                "如果你已经产生实际业务数据，请先手动备份 data 目录后再继续。\n" +
+                "Node 运行时和上传文件（uploads 目录）不会被删除。",
+                "重新初始化将清除本地数据库",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning);
+            if (confirm != MessageBoxResult.OK)
             {
-                existingEmail = recoveredEmail;
+                return null;
             }
-            var setup = new DirectusFirstRunWindow(
-                resumeExisting: !firstRun,
-                existingEmail: existingEmail)
+            DirectusFirstRunState.ResetUncompletedBootstrap(options.LocalDirectusDirectory);
+            firstRunStatus = DirectusFirstRunState.Inspect(options.LocalDirectusDirectory);
+        }
+
+        // After the reset above, IsFresh is the single gate for the welcome
+        // dialog: either a brand-new install, or a wiped-and-restarted one.
+        if (firstRunStatus.IsFresh)
+        {
+            var setup = new DirectusFirstRunWindow
             {
                 Owner = this,
             };
@@ -503,46 +519,17 @@ public partial class MainWindow : Window
                 return null;
             }
 
-            if (firstRun)
-            {
-                _pendingLoginEmail = setup.Email;
-                _pendingLoginPassword = setup.Password;
-                _loginStore?.Save(
-                    new DirectusLoginPreferences(
-                        setup.Email,
-                        setup.RememberPassword,
-                        setup.AutoLogin,
-                        setup.ManagedLogin),
-                    setup.RememberPassword ? setup.Password : null);
-                options.Environment["VIBETABLE_DIRECTUS_BOOTSTRAP_EMAIL"] = setup.Email;
-                options.Environment["VIBETABLE_DIRECTUS_BOOTSTRAP_PASSWORD"] = setup.Password;
-            }
-        }
-
-        if (!firstRun && _loginStore is not null)
-        {
-            // Older/interrupted first runs can have a Directus admin without a
-            // saved desktop login. The original credentials in .env remain
-            // authoritative for this app-owned local instance. Adopt them only
-            // when no login preference exists, so an existing user choice is
-            // never overwritten.
-            var preferences = _loginStore.LoadPreferences();
-            if (string.IsNullOrWhiteSpace(preferences.Email)
-                && DirectusEnvMaterializer.TryReadBootstrapCredentials(
-                    options.LocalDirectusDirectory,
-                    out string recoveryEmail,
-                    out string recoveryPassword))
-            {
-                _pendingLoginEmail = recoveryEmail;
-                _pendingLoginPassword = recoveryPassword;
-                _loginStore.Save(
-                    new DirectusLoginPreferences(
-                        recoveryEmail,
-                        RememberPassword: true,
-                        AutoLogin: true,
-                        ManagedPassword: true),
-                    recoveryPassword);
-            }
+            _pendingLoginEmail = setup.Email;
+            _pendingLoginPassword = setup.Password;
+            _loginStore?.Save(
+                new DirectusLoginPreferences(
+                    setup.Email,
+                    setup.RememberPassword,
+                    setup.AutoLogin,
+                    setup.ManagedLogin),
+                setup.RememberPassword ? setup.Password : null);
+            options.Environment["VIBETABLE_DIRECTUS_BOOTSTRAP_EMAIL"] = setup.Email;
+            options.Environment["VIBETABLE_DIRECTUS_BOOTSTRAP_PASSWORD"] = setup.Password;
         }
 
         EnsureStartupWindow();
