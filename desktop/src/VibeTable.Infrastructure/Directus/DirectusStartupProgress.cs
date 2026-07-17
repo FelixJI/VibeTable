@@ -8,11 +8,18 @@ public enum DirectusStartupStage
     InstallingPackages = 2,
     VerifyingPackages = 3,
     RepairingPackages = 4,
-    InitializingDatabase = 5,
-    StartingService = 6,
-    WaitingForService = 7,
-    ApplyingSchema = 8,
-    Ready = 9,
+    /// <summary>
+    /// A previous first-run attempt did not complete; the existing install on
+    /// disk is being fully re-verified (structure + native modules + lock
+    /// hash) before reuse. Distinct from <see cref="VerifyingPackages"/> so the
+    /// UI can surface that a forced recheck happened after a failed init.
+    /// </summary>
+    RecheckingPackages = 5,
+    InitializingDatabase = 6,
+    StartingService = 7,
+    WaitingForService = 8,
+    ApplyingSchema = 9,
+    Ready = 10,
 }
 
 /// <summary>Progress notification raised while the local Directus runtime starts.</summary>
