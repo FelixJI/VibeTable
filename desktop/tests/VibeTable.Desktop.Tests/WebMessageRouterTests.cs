@@ -233,6 +233,39 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
+    public void Whitelists_AcceptTableAdminRequestsAndCollectionsChangedNotification()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(req => dispatched.Add(req))
+        {
+            IsReady = true
+        };
+
+        // Inbound: the two new tableAdmin requests MUST be whitelisted (a null
+        // reply means the message was accepted and dispatched, not rejected as
+        // out-of-whitelist).
+        foreach (var (type, payload) in new[]
+        {
+            ("tableAdmin.createRequested", """{"name":"t","fields":[]}"""),
+            ("tableAdmin.deleteRequested", """{"collection":"t"}""")
+        })
+        {
+            var json = $"{{\"type\":\"{type}\",\"requestId\":\"id-{type}\",\"payload\":{payload}}}";
+            var reply = router.Route(json);
+            Assert.IsNull(reply, $"{type} should be whitelisted inbound");
+        }
+
+        Assert.AreEqual(2, dispatched.Count);
+        Assert.AreEqual("tableAdmin.createRequested", dispatched[0].Type);
+        Assert.AreEqual("tableAdmin.deleteRequested", dispatched[1].Type);
+
+        // Outbound: database.collectionsChanged MUST be allowed so the host can
+        // push a refreshed collection list to the web sidebar after a
+        // create/delete.
+        Assert.IsTrue(router.IsHostNotificationAllowed("database.collectionsChanged"));
+    }
+
+    [TestMethod]
     public void BuildOperationFailed_ProducesValidEnvelope()
     {
         var envelope = WebMessageRouter.BuildOperationFailed(

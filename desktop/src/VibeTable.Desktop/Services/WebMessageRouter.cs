@@ -65,6 +65,9 @@ public sealed class WebMessageRouter
         // B2 paste preview + apply requests.
         "table.previewPasteRequested",
         "table.applyPasteRequested",
+        // Table management (web sidebar).
+        "tableAdmin.createRequested",
+        "tableAdmin.deleteRequested",
     };
 
     /// <summary>
@@ -90,6 +93,8 @@ public sealed class WebMessageRouter
         // B2 paste preview + apply outcomes.
         "table.pastePreviewReady",
         "table.pasteApplied",
+        // Table management: host pushes refreshed collection list after create/delete.
+        "database.collectionsChanged",
     };
 
     private readonly Action<RoutedWebRequest> _dispatch;
