@@ -33,10 +33,25 @@ import { classifyClipboard, mapCellsToColumns, parseClipboard } from "./grid/cli
 import { resolvePasteContext } from "./grid/pasteContext";
 import type {
   ApplyPasteResult,
+  CollectionsChangedPayload,
   DatabaseOpenedPayload,
   PastePlan,
+  TableFieldType,
   TablePage,
 } from "./contracts";
+import {
+  initialTableAdminState,
+  reduce as reduceTableAdmin,
+  requestCreate,
+  requestDelete,
+  type TableAdminEvent,
+  type TableAdminState,
+} from "./tableAdminFlow";
+import {
+  TABLE_FIELD_TYPES,
+  validateFields,
+  validateTableName,
+} from "./tableAdminValidation";
 
 // ---------------------------------------------------------------------------
 // DOM bindings
@@ -45,12 +60,27 @@ import type {
 const statusEl = document.getElementById("status");
 const gridEl = document.getElementById("grid");
 const openBtn = document.getElementById("open-database") as HTMLButtonElement | null;
-const tableSelect = document.getElementById("table-select") as HTMLSelectElement | null;
 const refreshBtn = document.getElementById("refresh") as HTMLButtonElement | null;
 const rowCountEl = document.getElementById("row-count");
 const loadingOverlay = document.getElementById("loading-overlay");
 const errorOverlay = document.getElementById("error-overlay");
 const errorMessageEl = document.getElementById("error-message");
+
+// Sidebar + table-admin modal DOM bindings (Task 11).
+const newTableBtn = document.getElementById("new-table-btn") as HTMLButtonElement | null;
+const tableList = document.getElementById("table-list");
+const createTableModal = document.getElementById("create-table-modal");
+const createTableClose = document.getElementById("create-table-close");
+const createTableName = document.getElementById("create-table-name") as HTMLInputElement | null;
+const createTableFields = document.getElementById("create-table-fields");
+const createTableAddField = document.getElementById("create-table-add-field");
+const createTableError = document.getElementById("create-table-error");
+const createTableCancel = document.getElementById("create-table-cancel");
+const createTableSubmit = document.getElementById("create-table-submit") as HTMLButtonElement | null;
+const deleteConfirmModal = document.getElementById("delete-confirm-modal");
+const deleteConfirmText = document.getElementById("delete-confirm-text");
+const deleteConfirmCancel = document.getElementById("delete-confirm-cancel");
+const deleteConfirmOk = document.getElementById("delete-confirm-ok");
 
 // B2 paste panel DOM bindings (Task 4).
 const pastePanel = document.getElementById("paste-panel");
@@ -84,24 +114,6 @@ function showError(message: string | null): void {
   } else {
     (errorOverlay as HTMLElement).hidden = true;
   }
-}
-
-function populateTableSelect(tables: readonly string[], views: readonly string[]): void {
-  if (!tableSelect) return;
-  tableSelect.innerHTML = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = tables.length + views.length === 0
-    ? "(no tables)"
-    : "(select a table)";
-  tableSelect.appendChild(placeholder);
-  for (const name of [...tables, ...views]) {
-    const opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = name;
-    tableSelect.appendChild(opt);
-  }
-  tableSelect.disabled = tables.length + views.length === 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,12 +163,6 @@ const flow = createTableFlow({
   onStateChange: (state: TableFlowState) => {
     // Toolbar enabled-state.
     if (openBtn) openBtn.disabled = false;
-    if (tableSelect) {
-      // Disable the selector only while a load is in progress so the user
-      // can't re-select mid-fetch (the host cancels, but we lock the UI too).
-      // It stays enabled after a database is open.
-      tableSelect.disabled = state.loading && state.currentTable !== null;
-    }
     if (refreshBtn) {
       refreshBtn.disabled = state.currentTable === null;
     }
@@ -199,8 +205,119 @@ const flow = createTableFlow({
     if (!state.loading) {
       renderGrid(state);
     }
+
+    // Keep the sidebar active highlight in sync with the selected table.
+    renderSidebar();
   },
 });
+
+// ---------------------------------------------------------------------------
+// Sidebar + table-admin state (create/delete modals)
+// ---------------------------------------------------------------------------
+
+let tableAdmin: TableAdminState = initialTableAdminState;
+let pendingDeleteCollection: string | null = null;
+
+function dispatchTableAdmin(event: TableAdminEvent): void {
+  tableAdmin = reduceTableAdmin(tableAdmin, event);
+  renderSidebar();
+}
+
+function renderSidebar(): void {
+  if (!tableList) return;
+  tableList.innerHTML = "";
+  for (const name of tableAdmin.collections) {
+    const li = document.createElement("li");
+    li.className = "table-list__item";
+    if (name === flow.getState().currentTable) {
+      li.classList.add("table-list__item--active");
+    }
+    const span = document.createElement("span");
+    span.className = "table-list__name";
+    span.textContent = name;
+    span.addEventListener("click", () => {
+      flow.selectTable(name, (type, payload) => bridge.notify(type, payload));
+    });
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "table-list__delete";
+    del.textContent = "删除";
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openDeleteConfirm(name);
+    });
+    li.appendChild(span);
+    li.appendChild(del);
+    tableList.appendChild(li);
+  }
+}
+
+// --- create-table modal ----------------------------------------------------
+
+function openCreateTableModal(): void {
+  if (!createTableModal || !createTableName || !createTableFields) return;
+  createTableName.value = "";
+  createTableFields.innerHTML = "";
+  addFieldRow();
+  if (createTableError) createTableError.hidden = true;
+  if (createTableSubmit) createTableSubmit.disabled = true;
+  createTableModal.hidden = false;
+  createTableName.focus();
+}
+
+function addFieldRow(): void {
+  if (!createTableFields) return;
+  const row = document.createElement("div");
+  row.className = "field-row";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "field__input";
+  input.maxLength = 64;
+  input.placeholder = "字段名";
+  const select = document.createElement("select");
+  select.className = "field__select";
+  for (const t of TABLE_FIELD_TYPES) {
+    const opt = document.createElement("option");
+    opt.value = t;
+    opt.textContent = t;
+    select.appendChild(opt);
+  }
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "btn btn--secondary";
+  remove.textContent = "−";
+  remove.addEventListener("click", () => row.remove());
+  row.appendChild(input);
+  row.appendChild(select);
+  row.appendChild(remove);
+  createTableFields.appendChild(row);
+}
+
+function closeCreateTableModal(): void {
+  if (createTableModal) createTableModal.hidden = true;
+}
+
+function collectFieldRows(): Array<{ key: string; type: TableFieldType }> {
+  if (!createTableFields) return [];
+  const rows: Array<{ key: string; type: TableFieldType }> = [];
+  for (const row of Array.from(createTableFields.querySelectorAll(".field-row"))) {
+    const input = row.querySelector(".field__input") as HTMLInputElement | null;
+    const select = row.querySelector(".field__select") as HTMLSelectElement | null;
+    if (!input || !select) continue;
+    rows.push({ key: input.value, type: select.value as TableFieldType });
+  }
+  return rows;
+}
+
+// --- delete-confirm modal --------------------------------------------------
+
+function openDeleteConfirm(collection: string): void {
+  pendingDeleteCollection = collection;
+  if (deleteConfirmText) {
+    deleteConfirmText.textContent = `确定要删除表 "${collection}" 吗？该操作将移除集合及其全部数据，且不可恢复。`;
+  }
+  if (deleteConfirmModal) deleteConfirmModal.hidden = false;
+}
 
 // ---------------------------------------------------------------------------
 // B2 paste flow controller + bridge sender
@@ -316,13 +433,22 @@ function escapeHtml(value: string): string {
 
 bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
   flow.onDatabaseOpened(payload);
-  populateTableSelect(payload.tables, payload.views);
+  // Seed the sidebar with the initial collection list and enable the
+  // new-table button now that a database is open. The same collectionsChanged
+  // event is reused for incremental updates pushed by the host after a
+  // successful create/delete.
+  dispatchTableAdmin({ type: "collectionsChanged", tables: payload.tables });
+  if (newTableBtn) newTableBtn.disabled = false;
   const total = payload.tables.length + payload.views.length;
   setStatus(
     total === 0
       ? "Database opened (no tables)."
       : `Database opened: ${total} object${total === 1 ? "" : "s"}.`,
   );
+});
+
+bridge.on("database.collectionsChanged", (payload: CollectionsChangedPayload) => {
+  dispatchTableAdmin({ type: "collectionsChanged", tables: payload.tables });
 });
 
 bridge.on("table.pageLoaded", flow.onTablePageLoaded);
@@ -357,20 +483,59 @@ if (openBtn) {
   });
 }
 
-if (tableSelect) {
-  tableSelect.addEventListener("change", () => {
-    const table = tableSelect.value;
-    if (table) {
-      flow.selectTable(table, (type, payload) => bridge.notify(type, payload));
-    }
-  });
-}
-
 if (refreshBtn) {
   refreshBtn.addEventListener("click", () => {
     flow.refresh((type, payload) => bridge.notify(type, payload));
   });
 }
+
+// Sidebar + table-admin modal wiring (Task 11).
+newTableBtn?.addEventListener("click", () => openCreateTableModal());
+createTableClose?.addEventListener("click", closeCreateTableModal);
+createTableCancel?.addEventListener("click", closeCreateTableModal);
+createTableAddField?.addEventListener("click", () => addFieldRow());
+
+createTableSubmit?.addEventListener("click", async () => {
+  if (!createTableName) return;
+  const nameErr = validateTableName(createTableName.value);
+  const { fields, errors } = validateFields(collectFieldRows());
+  const allErrors = [nameErr, ...errors].filter((e): e is string => e !== null);
+  if (allErrors.length > 0) {
+    if (createTableError) {
+      createTableError.textContent = allErrors.join(" / ");
+      createTableError.hidden = false;
+    }
+    return;
+  }
+  if (createTableSubmit) createTableSubmit.disabled = true;
+  await requestCreate(
+    bridge,
+    createTableName.value.trim(),
+    fields,
+    dispatchTableAdmin,
+  );
+  // Close on success (status idle and no error). If error, keep open w/ message.
+  if (tableAdmin.status === "idle" && tableAdmin.error === null) {
+    closeCreateTableModal();
+  } else if (createTableError && tableAdmin.error) {
+    createTableError.textContent = tableAdmin.error;
+    createTableError.hidden = false;
+    if (createTableSubmit) createTableSubmit.disabled = false;
+  }
+});
+
+deleteConfirmCancel?.addEventListener("click", () => {
+  pendingDeleteCollection = null;
+  if (deleteConfirmModal) deleteConfirmModal.hidden = true;
+});
+
+deleteConfirmOk?.addEventListener("click", async () => {
+  const collection = pendingDeleteCollection;
+  if (!collection) return;
+  pendingDeleteCollection = null;
+  if (deleteConfirmModal) deleteConfirmModal.hidden = true;
+  await requestDelete(bridge, collection, dispatchTableAdmin);
+});
 
 // ---------------------------------------------------------------------------
 // B2 paste wiring: Ctrl+V / paste over a selection → preview → confirm → apply.
