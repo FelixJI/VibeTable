@@ -17,26 +17,9 @@
     </Window.Resources>
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
-
-        <!-- Status chrome (always visible): status text + retry button. -->
-        <DockPanel Grid.Row="0" LastChildFill="True"
-                   Background="{DynamicResource {x:Static SystemColors.ControlLightBrushKey}}">
-            <Button
-                DockPanel.Dock="Right"
-                Padding="12,2" Margin="8,0,0,0"
-                Content="Retry"
-                Visibility="{Binding IsRetryVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
-                Command="{Binding RetryCommand}"
-                ToolTip="Restart the backend and reload the grid"/>
-            <TextBlock
-                Text="{Binding StatusText}"
-                VerticalAlignment="Center"
-                FontSize="14"
-                FontWeight="SemiBold"/>
-        </DockPanel>
 
         <!--
             Hardened WebView2 host. The control is realized (visible) whenever a
@@ -49,7 +32,32 @@
         -->
         <wv2:WebView2
             x:Name="WebView"
-            Grid.Row="1"
+            Grid.Row="0"
             Visibility="{Binding IsWebViewVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+
+        <!-- Bottom status bar (always visible): status text + detail + retry. -->
+        <DockPanel Grid.Row="1" LastChildFill="True"
+                   Background="{DynamicResource {x:Static SystemColors.ControlLightBrushKey}}">
+            <Button
+                DockPanel.Dock="Right"
+                Padding="12,2" Margin="8,0,8,0"
+                Content="重试"
+                Visibility="{Binding IsRetryVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+                Command="{Binding RetryCommand}"
+                ToolTip="重新启动后端并刷新界面"/>
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
+                <TextBlock
+                    Text="{Binding StatusText}"
+                    FontSize="11"
+                    Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
+                <TextBlock
+                    Text="{Binding DetailMessage}"
+                    FontSize="11"
+                    Margin="10,0,0,0"
+                    Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
+                    TextTrimming="CharacterEllipsis"
+                    MaxWidth="600"/>
+            </StackPanel>
+        </DockPanel>
     </Grid>
 </Window>
