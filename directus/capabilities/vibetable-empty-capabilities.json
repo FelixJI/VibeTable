@@ -12,7 +12,7 @@
       "create_fields": ["id", "status", "name", "workspace_id", "sort"],
       "update_fields": ["status", "name", "workspace_id", "sort"],
       "archive_field": "status", "archive_value": "archived", "restore_value": "active", "date_updated_field": "date_updated",
-      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": true
+      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": true, "hidden": true
     },
     {
       "collection": "vibetable_workspace_folders",
@@ -25,7 +25,7 @@
       "create_fields": ["id", "status", "workspace", "parent", "relative_path", "display_name", "sort"],
       "update_fields": ["status", "workspace", "parent", "relative_path", "display_name", "sort"],
       "archive_field": "status", "archive_value": "archived", "restore_value": "active", "date_updated_field": "date_updated",
-      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false
+      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false, "hidden": true
     },
     {
       "collection": "vibetable_documents",
@@ -38,7 +38,7 @@
       "create_fields": ["id", "status", "workspace", "folder", "file_name", "mime_type", "main_head", "main_hash", "sort"],
       "update_fields": ["status", "workspace", "folder", "file_name", "mime_type", "main_head", "main_hash", "sort"],
       "archive_field": "status", "archive_value": "archived", "restore_value": "active", "date_updated_field": "date_updated",
-      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false
+      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false, "hidden": true
     },
     {
       "collection": "vibetable_document_schemes",
@@ -50,7 +50,7 @@
       "create_fields": ["id", "status", "document", "name", "source_revision", "head_revision", "working_path", "sort"],
       "update_fields": ["status", "document", "name", "source_revision", "head_revision", "working_path", "sort"],
       "archive_field": "status", "archive_value": "archived", "restore_value": "active", "date_updated_field": "date_updated",
-      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false
+      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false, "hidden": true
     },
     {
       "collection": "vibetable_document_revisions",
@@ -64,7 +64,7 @@
       "create_fields": ["id", "status", "document", "scheme", "parent_revision", "source_revision", "sequence", "version_label", "kind", "hash", "size", "mime_type", "created_by", "device_id", "comment", "sort"],
       "update_fields": ["status", "comment", "sort"],
       "archive_field": "status", "archive_value": "archived", "restore_value": "active", "date_updated_field": "date_updated",
-      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false
+      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false, "hidden": true
     },
     {
       "collection": "vibetable_document_links",
@@ -76,7 +76,7 @@
       "create_fields": ["id", "status", "document", "item_collection", "item_id", "link_type", "sort"],
       "update_fields": ["status", "link_type", "sort"],
       "archive_field": "status", "archive_value": "archived", "restore_value": "active", "date_updated_field": "date_updated",
-      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false
+      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false, "hidden": true
     }
   ]
 }

@@ -203,10 +203,17 @@ class DirectusService:
         )
 
     async def list_collections(self, params: DirectusEmptyParams) -> DirectusCollectionListResult:
+        # Hidden collections (the built-in vibetable_* workspace tables) are
+        # valid schema/capability profiles but must not surface in the sidebar.
+        # They remain reachable via `directus.schema` and internal flows; only
+        # the "list of user-facing tables" excludes them.
+        visible = [name for name, profile in self._profiles.items() if not profile.hidden]
         return DirectusCollectionListResult(
-            collections=sorted(self._profiles),
+            collections=sorted(visible),
             capability_hashes={
-                name: profile.capability_hash for name, profile in self._profiles.items()
+                name: profile.capability_hash
+                for name, profile in self._profiles.items()
+                if not profile.hidden
             },
         )
 

@@ -48,6 +48,7 @@ class CollectionProfile(BaseModel):
     allow_revision_history: bool = False
     allow_revision_revert: bool = False
     allow_dashboards: bool = False
+    hidden: bool = False
 
     @field_validator("collection", "primary_key")
     @classmethod

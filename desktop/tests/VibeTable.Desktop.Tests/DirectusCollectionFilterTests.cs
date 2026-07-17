@@ -15,10 +15,14 @@ public sealed class DirectusCollectionFilterTests
     }
 
     [TestMethod]
-    public void IsUserTable_ExcludesVibetableDocumentAndWorkspaceCollections()
+    public void IsUserTable_ExcludesAllVibetableCollections()
     {
+        // Built-in workspace/document collections...
         Assert.IsFalse(DirectusCollectionFilter.IsUserTable("vibetable_document_things"));
         Assert.IsFalse(DirectusCollectionFilter.IsUserTable("vibetable_workspace_main"));
+        // ...plus any future vibetable_* prefix (the `vibetable_` prefix is
+        // reserved for built-ins; user-created tables cannot use it).
+        Assert.IsFalse(DirectusCollectionFilter.IsUserTable("vibetable_anyfuture"));
     }
 
     [TestMethod]

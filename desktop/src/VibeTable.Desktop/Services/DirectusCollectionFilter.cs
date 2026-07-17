@@ -23,8 +23,7 @@ public static class DirectusCollectionFilter
         {
             return false;
         }
-        if (collection.StartsWith("vibetable_document", StringComparison.Ordinal)
-            || collection.StartsWith("vibetable_workspace", StringComparison.Ordinal))
+        if (collection.StartsWith("vibetable_", StringComparison.Ordinal))
         {
             return false;
         }

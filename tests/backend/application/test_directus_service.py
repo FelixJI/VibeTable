@@ -84,9 +84,7 @@ def _service() -> DirectusService:
 
 @pytest.mark.asyncio
 async def test_schema_marks_only_manifest_update_fields_editable() -> None:
-    result = await _service().schema(
-        DirectusCollectionParams(collection="vibetable_documents")
-    )
+    result = await _service().schema(DirectusCollectionParams(collection="vibetable_documents"))
 
     columns = {column.name: column for column in result.columns}
     assert columns["id"].editable is False
@@ -116,18 +114,47 @@ async def test_collection_list_and_current_user_are_safe_dtos() -> None:
     collections = await service.list_collections(DirectusEmptyParams())
     user = await service.current_user(DirectusEmptyParams())
 
-    assert collections.collections == sorted(
-        [
-            "vibetable_workspaces",
-            "vibetable_workspace_folders",
-            "vibetable_documents",
-            "vibetable_document_schemes",
-            "vibetable_document_revisions",
-            "vibetable_document_links",
-        ]
-    )
-    assert set(collections.capability_hashes) == set(collections.collections)
+    # Every built-in vibetable_* workspace collection is marked hidden in the
+    # manifest, so none surface in the user-facing list.
+    assert collections.collections == []
+    assert collections.capability_hashes == {}
     assert user.model_dump(by_alias=True)["displayName"] == "Test User"
+
+
+@pytest.mark.asyncio
+async def test_list_collections_excludes_hidden_but_keeps_visible() -> None:
+    # A custom manifest mixing one hidden and one visible collection proves the
+    # filter keys off the hidden flag (not the empty-list boundary the real
+    # manifest happens to hit when all six built-ins are hidden).
+    manifest = CapabilityManifest.model_validate(
+        {
+            "contract": "directus.project.v1",
+            "schema_version": "test-1.0",
+            "directus_compatibility": ">=12 <13",
+            "collections": [
+                {
+                    "collection": "internal_log",
+                    "fields": ["id", "status", "date_updated"],
+                    "create_fields": ["id", "status"],
+                    "update_fields": ["status"],
+                    "hidden": True,
+                },
+                {
+                    "collection": "projects",
+                    "fields": ["id", "status", "name", "date_updated"],
+                    "create_fields": ["id", "status", "name"],
+                    "update_fields": ["status", "name"],
+                    "hidden": False,
+                },
+            ],
+        }
+    )
+    service = DirectusService(manifest, FakeAuth(), FakeClient())
+
+    collections = await service.list_collections(DirectusEmptyParams())
+
+    assert collections.collections == ["projects"]
+    assert set(collections.capability_hashes) == {"projects"}
 
 
 @pytest.mark.asyncio
