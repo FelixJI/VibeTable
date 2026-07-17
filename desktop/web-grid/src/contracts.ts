@@ -496,6 +496,43 @@ export interface ApplyPasteResult {
 }
 
 // ---------------------------------------------------------------------------
+// Table-admin contracts (mirror backend/contracts/table_admin.py)
+// ---------------------------------------------------------------------------
+
+/** Field types supported by the backend table_admin contract.
+ *  Mirrors backend/contracts/table_admin.py:FieldType and
+ *  TableAdminWindow.SupportedFieldTypes. Keep all three in sync. */
+export const TABLE_FIELD_TYPES = [
+  "string",
+  "integer",
+  "decimal",
+  "date",
+  "boolean",
+  "text",
+] as const;
+export type TableFieldType = (typeof TABLE_FIELD_TYPES)[number];
+
+/** Identifier rule for table names and field keys.
+ *  Mirrors backend/contracts/table_admin.py:_IDENTIFIER. */
+export const TABLE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+export interface TableAdminFieldInput {
+  readonly key: string;
+  readonly type: TableFieldType;
+}
+export interface TableAdminCreatePayload {
+  readonly name: string;
+  readonly fields: readonly TableAdminFieldInput[];
+}
+export interface TableAdminDeletePayload {
+  readonly collection: string;
+}
+export interface CollectionsChangedPayload {
+  readonly tables: readonly string[];
+  readonly capabilityHashes?: Readonly<Record<string, string>>;
+}
+
+// ---------------------------------------------------------------------------
 // Host bridge envelope
 // ---------------------------------------------------------------------------
 
@@ -525,7 +562,10 @@ export type WebMessageType =
   | "document.folderRequested"
   | "document.historyRequested"
   | "document.openRequested"
-  | "document.openFolderRequested";
+  | "document.openFolderRequested"
+  // Table-admin requests.
+  | "tableAdmin.createRequested"
+  | "tableAdmin.deleteRequested";
 
 /**
  * Inbound (host -> web) message types consumed by this layer.
@@ -551,7 +591,9 @@ export type HostMessageType =
   | "history.restoreApplied"
   // G3 document workspace outcomes.
   | "document.folderLoaded"
-  | "document.historyLoaded";
+  | "document.historyLoaded"
+  // Collections-changed notifications.
+  | "database.collectionsChanged";
 
 export interface DirectusChangePayload {
   readonly uid: string;
@@ -587,6 +629,8 @@ export interface HostPayloadMap {
   "history.restoreApplied": RestoreResult;
   "document.folderLoaded": DocumentFolderResult;
   "document.historyLoaded": DocumentHistoryResult;
+  // Collections-changed notifications.
+  "database.collectionsChanged": CollectionsChangedPayload;
 }
 
 /** Map of (outbound) message type -> payload type, for typed requests. */
@@ -612,6 +656,9 @@ export interface WebPayloadMap {
   "document.historyRequested": DocumentHistoryRequestPayload;
   "document.openRequested": DocumentOpenPayload;
   "document.openFolderRequested": DocumentOpenFolderPayload;
+  // Table-admin requests.
+  "tableAdmin.createRequested": TableAdminCreatePayload;
+  "tableAdmin.deleteRequested": TableAdminDeletePayload;
 }
 
 /** Payload produced by the web layer for `table.queryRequested`. */
