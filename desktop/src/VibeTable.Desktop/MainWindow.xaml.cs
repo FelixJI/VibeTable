@@ -224,7 +224,6 @@ public partial class MainWindow : Window
                 bool authenticated = await EnsureDirectusSessionAsync();
                 _directusSessionAuthenticated = authenticated;
                 _directusSessionReady?.TrySetResult(authenticated);
-                ManageTablesButton.IsEnabled = authenticated;
                 if (authenticated && _directusAuto)
                 {
                     MarkFirstRunCompleted();
@@ -840,27 +839,6 @@ public partial class MainWindow : Window
 
     private void OnDirectusChanged(DirectusChange change)
         => _webBridge.PostNotification("directus.changed", change);
-
-    /// <summary>
-    /// Opens the table-management dialog (create/delete collections) when the
-    /// authenticated Directus gateway is available. The button remains
-    /// disabled during local startup and interactive login.
-    /// </summary>
-    private void OnManageTables(object sender, RoutedEventArgs e)
-    {
-        if (_directusGateway is null || !_directusSessionAuthenticated)
-        {
-            MessageBox.Show(
-                this,
-                "Directus 正在启动或登录尚未完成，请稍候。",
-                "表管理",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
-        }
-        var window = new TableManagementWindow(_directusGateway) { Owner = this };
-        window.ShowDialog();
-    }
 
     /// <summary>
     /// Forwards a workspace notification to the WebView as a typed host event
