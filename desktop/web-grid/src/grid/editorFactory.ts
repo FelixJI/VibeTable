@@ -14,7 +14,7 @@ import type {
   MultiSelectEditor,
   DateEditor,
   ValidationRule,
-} from "../contracts";
+} from "@/contracts";
 
 /** Outcome of local validation for one cell value. */
 export interface LocalValidation {

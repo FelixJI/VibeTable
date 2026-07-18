@@ -1,0 +1,103 @@
+/* VibeTable design tokens — Feishu-style. Light default, dark under :root.dark. */
+:root {
+  /* Brand primary — Feishu blue-violet #3370FF + lightness scale */
+  --vt-color-primary-50:  #e8f0ff;
+  --vt-color-primary-100: #d4e3ff;
+  --vt-color-primary-200: #b3ccff;
+  --vt-color-primary-500: #3370ff;
+  --vt-color-primary-600: #2b5fe0;
+  --vt-color-primary-700: #1f47b3;
+
+  /* Semantic colors (Feishu) */
+  --vt-color-success: #00b88a;
+  --vt-color-warning: #ffa600;
+  --vt-color-danger:  #f54a45;
+  --vt-color-info:    #3370ff;
+
+  /* Neutral grayscale — 7 stops */
+  --vt-gray-0:   #ffffff;
+  --vt-gray-50:  #f7f8fa;
+  --vt-gray-100: #f2f3f5;
+  --vt-gray-200: #e5e6eb;
+  --vt-gray-300: #c9cdd4;
+  --vt-gray-400: #86909c;
+  --vt-gray-500: #4e5969;
+  --vt-gray-600: #272e3b;
+
+  /* Surfaces */
+  --vt-bg:        var(--vt-gray-0);
+  --vt-bg-subtle: var(--vt-gray-50);
+  --vt-bg-sunken: var(--vt-gray-100);
+  --vt-fg:        var(--vt-gray-600);
+  --vt-fg-muted:  var(--vt-gray-400);
+  --vt-border:    var(--vt-gray-200);
+
+  /* Shadows — restrained */
+  --vt-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --vt-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --vt-shadow-3: 0 8px 24px rgba(0, 0, 0, 0.12);
+
+  /* Radius */
+  --vt-radius-sm: 4px;
+  --vt-radius-md: 6px;
+  --vt-radius-lg: 8px;
+
+  /* Spacing — 4px base */
+  --vt-space-1: 4px;
+  --vt-space-2: 8px;
+  --vt-space-3: 12px;
+  --vt-space-4: 16px;
+  --vt-space-5: 24px;
+
+  /* Type scale (Feishu) */
+  --vt-font-caption: 12px;
+  --vt-font-body:    13px;
+  --vt-font-label:   14px;
+  --vt-font-title:   16px;
+  --vt-font-heading: 18px;
+  --vt-line-base:    1.5;
+
+  /* Motion — restrained */
+  --vt-ease: cubic-bezier(0.34, 0.6, 0.2, 1);
+  --vt-duration-fast: 120ms;
+  --vt-duration-base: 200ms;
+
+  /* Font stack — system fonts only (CSP bans CDN web fonts) */
+  --vt-font-family: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+}
+
+:root.dark {
+  --vt-color-primary-500: #5b8bff;  /* lifted for contrast on dark */
+  --vt-color-primary-600: #4a7dff;
+  --vt-color-primary-700: #3a6bff;
+
+  --vt-gray-0:   #17191f;
+  --vt-gray-50:  #1e2128;
+  --vt-gray-100: #23262e;
+  --vt-gray-200: #2a2e37;
+  --vt-gray-300: #3a3f4a;
+  --vt-gray-400: #6b7280;
+  --vt-gray-500: #9ca3af;
+  --vt-gray-600: #c9cdd4;
+
+  --vt-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --vt-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --vt-shadow-3: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--vt-bg);
+  color: var(--vt-fg);
+  font-family: var(--vt-font-family);
+  font-size: var(--vt-font-body);
+  line-height: var(--vt-line-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  height: 100%;
+}

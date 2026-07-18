@@ -31,9 +31,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Run both as ``python scripts/dev.py`` (sibling import) and as a package
+# member; mirrors the try/except used for ``versioning`` elsewhere.
+try:
+    from scripts._host_paths import host_bin_exe, host_target_framework
+except ImportError:  # pragma: no cover - exercised only by direct script runs
+    from _host_paths import host_bin_exe, host_target_framework
+
 ROOT = Path(__file__).resolve().parents[1]
 HOST_PROJECT = ROOT / "desktop" / "src" / "VibeTable.Desktop"
-HOST_EXE = HOST_PROJECT / "bin" / "Release" / "net10.0-windows" / "VibeTable.Desktop.exe"
+HOST_CONFIG = "Release"
+HOST_TFM = host_target_framework(ROOT)
+HOST_EXE = host_bin_exe(ROOT, config=HOST_CONFIG)
 PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
 DOTNET = (
     str(PREFERRED_DOTNET) if PREFERRED_DOTNET.is_file() else (shutil.which("dotnet") or "dotnet")
@@ -67,9 +76,9 @@ def _ensure_host_built() -> Path:
             "dotnet SDK not found; build the host manually: "
             "dotnet build desktop/VibeTable.Desktop.sln --configuration Release"
         )
-    _info("building WPF host (Release) ...")
+    _info(f"building WPF host ({HOST_CONFIG}/{HOST_TFM}) ...")
     proc = subprocess.run(
-        [DOTNET, "build", str(HOST_PROJECT), "--configuration", "Release"],
+        [DOTNET, "build", str(HOST_PROJECT), "--configuration", HOST_CONFIG],
         cwd=ROOT,
         capture_output=True,
         text=True,

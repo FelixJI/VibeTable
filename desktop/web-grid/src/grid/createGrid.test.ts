@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { buildColumns, buildOptions } from "./createGrid";
-import type { TablePage } from "../contracts";
+import type { ColumnEditSchema, TablePage } from "@/contracts";
 
 /** A representative Phase-A page: text/integer/decimal/boolean/date + rowKey. */
 function samplePage(): TablePage {
@@ -113,5 +113,259 @@ describe("buildOptions (read-only Tabulator options)", () => {
     const data = opts.data as Array<Record<string, unknown>>;
     expect(data[0]!.amount).toBe(12.1);
     expect(data[2]!.amount).toBe(123456.789);
+  });
+});
+
+/**
+ * Editable column wiring (Task M3). When an `editSchema` is provided, columns
+ * the host marks `editable:true` get a Tabulator editor attached; multi_select
+ * and non-editable columns stay read-only.
+ *
+ * Build-only (no Tabulator runtime): we assert on the structural props of the
+ * returned `GridColumnDefinition`. The cellEditing/cellEdited wiring is not
+ * unit-tested here (it needs a live Tabulator in a real DOM).
+ */
+
+/** Edit schema entry builder for tests (keeps the verbose object literal terse). */
+function editCol(
+  name: string,
+  editor: ColumnEditSchema["editor"],
+  editable = true,
+): ColumnEditSchema {
+  return {
+    name,
+    storageName: name,
+    dataType: "text",
+    editable,
+    nullable: true,
+    primaryKey: false,
+    editor,
+    validation: [],
+  };
+}
+
+describe("buildColumns (with editSchema — Task M3)", () => {
+  it("attaches a Tabulator editor to editable columns", () => {
+    const page: TablePage = {
+      table: "t",
+      columns: [
+        { name: "id", title: "Id", dataType: "integer", editable: false, nullable: false },
+        { name: "name", title: "Name", dataType: "text", editable: true, nullable: false },
+      ],
+      rows: [],
+      offset: 0,
+      limit: 0,
+      totalRows: 0,
+      mode: "client",
+    };
+    const editSchema: ColumnEditSchema[] = [
+      editCol("id", { kind: "number", storage: "integer" }, false),
+      editCol("name", { kind: "text" }, true),
+    ];
+    const cols = buildColumns(page, editSchema);
+    expect((cols[0] as { editable: boolean }).editable).toBe(false);
+    expect((cols[1] as { editable: boolean }).editable).toBe(true);
+    // The editable column carries a Tabulator editor name (input for text).
+    expect((cols[0] as { editor?: string }).editor).toBeUndefined();
+    expect((cols[1] as { editor?: string }).editor).toBe("input");
+  });
+
+  it("downgrades multi_select columns to read-only (no host dialog)", () => {
+    const page: TablePage = {
+      table: "t",
+      columns: [
+        { name: "tags", title: "Tags", dataType: "text", editable: true, nullable: true },
+      ],
+      rows: [],
+      offset: 0,
+      limit: 0,
+      totalRows: 0,
+      mode: "client",
+    };
+    // The host advertises tags as editable + multi_select. Spec §7.3: multi_select
+    // cannot be edited inline (no host dialog in web-grid), so it MUST degrade.
+    const editSchema: ColumnEditSchema[] = [
+      editCol("tags", { kind: "multi_select", options: ["a", "b"], allowCustom: false }, true),
+    ];
+    const cols = buildColumns(page, editSchema);
+    expect((cols[0] as { editable: boolean }).editable).toBe(false);
+    expect((cols[0] as { editor?: string }).editor).toBeUndefined();
+  });
+
+  it("leaves columns absent from editSchema read-only (editable:false, no editor)", () => {
+    const page: TablePage = {
+      table: "t",
+      columns: [
+        { name: "id", title: "Id", dataType: "integer", editable: false, nullable: false },
+        { name: "name", title: "Name", dataType: "text", editable: true, nullable: false },
+      ],
+      rows: [],
+      offset: 0,
+      limit: 0,
+      totalRows: 0,
+      mode: "client",
+    };
+    // editSchema only describes `id`; `name` has no entry -> stays read-only.
+    const editSchema: ColumnEditSchema[] = [
+      editCol("id", { kind: "number", storage: "integer" }, false),
+    ];
+    const cols = buildColumns(page, editSchema);
+    expect((cols[0] as { editable: boolean }).editable).toBe(false);
+    expect((cols[1] as { editable: boolean }).editable).toBe(false);
+    expect((cols[1] as { editor?: string }).editor).toBeUndefined();
+  });
+
+  it("treats columns flagged editable:false in editSchema as read-only", () => {
+    const page: TablePage = {
+      table: "t",
+      columns: [
+        { name: "name", title: "Name", dataType: "text", editable: true, nullable: false },
+      ],
+      rows: [],
+      offset: 0,
+      limit: 0,
+      totalRows: 0,
+      mode: "client",
+    };
+    // Backend says editable:false despite the column existing -> no editor.
+    const editSchema: ColumnEditSchema[] = [
+      editCol("name", { kind: "text" }, false),
+    ];
+    const cols = buildColumns(page, editSchema);
+    expect((cols[0] as { editable: boolean }).editable).toBe(false);
+    expect((cols[0] as { editor?: string }).editor).toBeUndefined();
+  });
+
+  it("preserves existing formatter when attaching an editor (no display regression)", () => {
+    const page: TablePage = {
+      table: "t",
+      columns: [
+        { name: "amount", title: "Amount", dataType: "decimal", editable: true, nullable: true },
+      ],
+      rows: [],
+      offset: 0,
+      limit: 0,
+      totalRows: 0,
+      mode: "client",
+    };
+    const editSchema: ColumnEditSchema[] = [
+      {
+        name: "amount",
+        storageName: "amount",
+        dataType: "decimal",
+        editable: true,
+        nullable: true,
+        primaryKey: false,
+        editor: { kind: "number", storage: "decimal" },
+        validation: [],
+      },
+    ];
+    const cols = buildColumns(page, editSchema);
+    // Editor attached AND money formatter preserved.
+    expect((cols[0] as { editable: boolean }).editable).toBe(true);
+    expect((cols[0] as { editor?: string }).editor).toBe("number");
+    expect((cols[0] as { formatter?: string }).formatter).toBe("money");
+  });
+
+  it("when editSchema is null/undefined, every column stays read-only (Phase-A behavior)", () => {
+    const page: TablePage = {
+      table: "t",
+      columns: [
+        { name: "name", title: "Name", dataType: "text", editable: true, nullable: false },
+      ],
+      rows: [],
+      offset: 0,
+      limit: 0,
+      totalRows: 0,
+      mode: "client",
+    };
+    const colsNoSchema = buildColumns(page);
+    const colsNull = buildColumns(page, null);
+    for (const cols of [colsNoSchema, colsNull]) {
+      expect((cols[0] as { editable: boolean }).editable).toBe(false);
+      expect((cols[0] as { editor?: string }).editor).toBeUndefined();
+    }
+  });
+});
+
+describe("buildOptions (with onCellEdited — Task M3)", () => {
+  /**
+   * Tabulator's cellEdited fires AFTER the value is already changed; oldValue
+   * must be captured in cellEditing. We cannot drive a real Tabulator in jsdom,
+   * but we CAN assert that buildOptions wires both callbacks onto the options
+   * object so the grid layer hands them to Tabulator.
+   */
+  it("registers cellEditing + cellEdited callbacks when onCellEdited is supplied", () => {
+    const page: TablePage = {
+      table: "t",
+      columns: [
+        { name: "name", title: "Name", dataType: "text", editable: true, nullable: false },
+      ],
+      rows: [{ rowKey: 1, name: "old" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    };
+    const onCellEdited = vi.fn();
+    const opts = buildOptions(page, { onCellEdited });
+    expect(typeof opts.cellEditing).toBe("function");
+    expect(typeof opts.cellEdited).toBe("function");
+  });
+
+  it("does NOT register cellEditing/cellEdited when no onCellEdited callback is given (read-only)", () => {
+    const page: TablePage = {
+      table: "t",
+      columns: [
+        { name: "name", title: "Name", dataType: "text", editable: false, nullable: false },
+      ],
+      rows: [],
+      offset: 0,
+      limit: 0,
+      totalRows: 0,
+      mode: "client",
+    };
+    const opts = buildOptions(page);
+    expect(opts.cellEditing ?? null).toBeNull();
+    expect(opts.cellEdited ?? null).toBeNull();
+  });
+
+  /**
+   * oldValue capture: simulate Tabulator's two-phase edit by invoking the
+   * callbacks with hand-built cell stubs. cellEditing captures the pre-edit
+   * value; cellEdited retrieves it and forwards (rowKey, column, oldValue,
+   * newValue) to onCellEdited.
+   */
+  it("captures oldValue in cellEditing and forwards (rk, col, old, new) in cellEdited", () => {
+    const page: TablePage = {
+      table: "t",
+      columns: [
+        { name: "name", title: "Name", dataType: "text", editable: true, nullable: false },
+      ],
+      rows: [{ rowKey: 7, name: "old" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    };
+    const onCellEdited = vi.fn();
+    const opts = buildOptions(page, { onCellEdited });
+
+    // A minimal cell stub that mimics Tabulator's CellComponent for our wiring.
+    let current = "old";
+    const cell = {
+      getField: () => "name",
+      getValue: () => current,
+      getRow: () => ({ getData: () => ({ rowKey: 7, name: current }) }),
+    };
+    // Phase 1: cellEditing fires BEFORE the value changes. cell.getValue() is
+    // still the old value; the wiring caches it.
+    (opts.cellEditing as (c: typeof cell) => void)(cell);
+    // Phase 2: Tabulator commits the new value, THEN fires cellEdited.
+    current = "new";
+    (opts.cellEdited as (c: typeof cell) => void)(cell);
+
+    expect(onCellEdited).toHaveBeenCalledTimes(1);
+    expect(onCellEdited).toHaveBeenCalledWith(7, "name", "old", "new");
   });
 });

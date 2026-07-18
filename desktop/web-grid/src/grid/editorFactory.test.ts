@@ -9,7 +9,7 @@ import {
   tabulatorEditor,
   validateLocally,
 } from "./editorFactory";
-import type { Editor, ValidationRule } from "../contracts";
+import type { Editor, ValidationRule } from "@/contracts";
 
 const textEditor: Editor = { kind: "text" };
 const numberEditor: Editor = { kind: "number", storage: "decimal" };

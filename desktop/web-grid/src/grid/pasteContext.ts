@@ -7,7 +7,7 @@ import type {
   MutationRevision,
   QuerySnapshot,
   SelectionSnapshot,
-} from "../contracts";
+} from "@/contracts";
 
 export interface PasteContext {
   readonly schemaRevision: string;
