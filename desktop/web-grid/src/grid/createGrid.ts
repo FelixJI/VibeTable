@@ -18,7 +18,7 @@
 
 import { TabulatorFull } from "tabulator-tables";
 import type { TabulatorOptions } from "tabulator-tables";
-import type { ColumnSchema, TablePage } from "../contracts";
+import type { ColumnSchema, TablePage } from "@/contracts";
 
 /**
  * The hidden `rowKey` field name in the host/WebView contract.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { MutationRevision, QuerySnapshot } from "../contracts";
+import type { MutationRevision, QuerySnapshot } from "@/contracts";
 import { resolvePasteContext } from "./pasteContext";
 
 const SNAPSHOT: QuerySnapshot = {

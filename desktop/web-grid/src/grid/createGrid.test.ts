@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildColumns, buildOptions } from "./createGrid";
-import type { TablePage } from "../contracts";
+import type { TablePage } from "@/contracts";
 
 /** A representative Phase-A page: text/integer/decimal/boolean/date + rowKey. */
 function samplePage(): TablePage {
