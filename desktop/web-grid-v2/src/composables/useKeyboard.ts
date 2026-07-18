@@ -3,7 +3,13 @@ import type { Tabulator } from "tabulator-tables";
 import { useKeyboardStore } from "@/stores/keyboardStore";
 
 export interface UseKeyboardOptions {
-  tabulator: Ref<Tabulator | null>;
+  /**
+   * Optional Tabulator instance ref. Currently UNUSED — arrow / Tab / Enter
+   * navigation is handled by Tabulator's own range API directly. Kept on the
+   * options shape for forward-compat (e.g. if a future grid-scoped shortcut
+   * needs to read the active cell range). App.vue deliberately passes nothing.
+   */
+  tabulator?: Ref<Tabulator | null>;
   onCopy?: () => void;
   onPaste?: () => void;
   onRefresh?: () => void;
