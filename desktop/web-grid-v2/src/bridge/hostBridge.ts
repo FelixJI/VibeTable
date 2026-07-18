@@ -118,6 +118,9 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "table.rowsInserted",
   "table.rowsDeleted",
   "directus.changed",
+  // B2 paste preview + apply outcomes.
+  "table.pastePreviewReady",
+  "table.pasteApplied",
   // Table management: collection lifecycle events.
   "database.collectionsChanged",
 ]);
