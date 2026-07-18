@@ -3,6 +3,7 @@ import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useTableStore } from "@/stores/tableStore";
 import type {
   DatasetReadyPayload,
+  EditSchemaResult,
   TablePage,
   TablePageLoadedPayload,
 } from "@/contracts";
@@ -61,6 +62,16 @@ export function useTableService(): {
     bridge.on("table.datasetReady", (payload: DatasetReadyPayload) => {
       // DatasetReadyPayload extends TablePage — it IS the authoritative page.
       tableStore.setDatasetReady(payload);
+    });
+    bridge.on("table.editSchemaLoaded", (payload: EditSchemaResult) => {
+      // EditSchemaResult only carries schemaRevision; the full MutationRevision
+      // (with real databaseSessionId/dataRevision) arrives later via
+      // datasetReady, whose handler overrides this placeholder revision.
+      tableStore.setEditSchema(payload.columns, {
+        databaseSessionId: "",
+        schemaRevision: payload.schemaRevision,
+        dataRevision: 0,
+      });
     });
   }
 

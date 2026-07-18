@@ -2,9 +2,12 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useTableStore } from "./tableStore";
 import type {
+  ColumnEditSchema,
   ColumnSchema,
   DatasetReadyPayload,
+  MutationRevision,
   TablePage,
+  UpdateCellResult,
 } from "@/contracts";
 
 /**
@@ -136,5 +139,108 @@ describe("tableStore", () => {
     expect(s.schema).toBeNull();
     expect(s.datasetReady).toBe(false);
     expect(s.error).toBeNull();
+  });
+});
+
+const editSchema: readonly ColumnEditSchema[] = [
+  {
+    name: "id",
+    storageName: "id",
+    dataType: "integer",
+    editable: false,
+    nullable: false,
+    primaryKey: true,
+    editor: { kind: "number", storage: "integer" },
+    validation: [],
+  },
+  {
+    name: "name",
+    storageName: "name",
+    dataType: "text",
+    editable: true,
+    nullable: true,
+    primaryKey: false,
+    editor: { kind: "text" },
+    validation: [],
+  },
+];
+
+function makeRevision(
+  overrides: Partial<MutationRevision> = {},
+): MutationRevision {
+  return {
+    databaseSessionId: "s",
+    schemaRevision: "sr",
+    dataRevision: 1,
+    ...overrides,
+  };
+}
+
+describe("tableStore mutation extensions", () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it("setEditSchema stores columns + revision", () => {
+    const s = useTableStore();
+    const rev = makeRevision({ schemaRevision: "sr1" });
+    s.setEditSchema(editSchema, rev);
+    expect(s.editSchema).toHaveLength(2);
+    expect(s.revision?.schemaRevision).toBe("sr1");
+  });
+
+  it("applyCellEdit updates the edited cell in allRows", () => {
+    const s = useTableStore();
+    s.beginLoad();
+    s.appendPage(makePage([{ rowKey: 1, name: "old" }]));
+    const res: UpdateCellResult = {
+      rowKey: 1,
+      column: "name",
+      storedValue: "new",
+      currentRow: { rowKey: 1, name: "new" },
+      revision: makeRevision({ dataRevision: 2 }),
+    };
+    s.applyCellEdit(res);
+    expect(s.allRows[0]?.name).toBe("new");
+    expect(s.revision?.dataRevision).toBe(2);
+  });
+
+  it("applyInsert appends the new row", () => {
+    const s = useTableStore();
+    s.beginLoad();
+    s.appendPage(makePage([{ rowKey: 1 }]));
+    s.applyInsert({
+      rowKey: 2,
+      row: { rowKey: 2, name: "x" },
+      revision: makeRevision({ dataRevision: 2 }),
+    });
+    expect(s.allRows).toHaveLength(2);
+    expect(s.allRows[1]?.rowKey).toBe(2);
+  });
+
+  it("applyDelete removes the deleted rows", () => {
+    const s = useTableStore();
+    s.beginLoad();
+    s.appendPage(makePage([{ rowKey: 1 }, { rowKey: 2 }, { rowKey: 3 }]));
+    s.applyDelete({
+      deletedRowKeys: [1, 3],
+      revision: makeRevision({ dataRevision: 2 }),
+    });
+    expect(s.allRows).toHaveLength(1);
+    expect(s.allRows[0]?.rowKey).toBe(2);
+  });
+
+  it("snapshotRows returns full row data for given keys (for undo cache)", () => {
+    const s = useTableStore();
+    s.beginLoad();
+    s.appendPage(makePage([{ rowKey: 1, name: "a" }, { rowKey: 2, name: "b" }]));
+    const snap = s.snapshotRows([2]);
+    expect(snap).toEqual([{ rowKey: 2, name: "b" }]);
+  });
+
+  it("reset also clears editSchema + revision", () => {
+    const s = useTableStore();
+    s.setEditSchema(editSchema, makeRevision());
+    s.reset();
+    expect(s.editSchema).toBeNull();
+    expect(s.revision).toBeNull();
   });
 });
