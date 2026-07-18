@@ -1,0 +1,63 @@
+export const messages: Record<string, string> = {
+  "app.title": "VibeTable",
+  "app.loading": "Loading…",
+  "app.ready": "Ready",
+
+  "sidebar.tables": "Tables",
+  "sidebar.newTable": "New table",
+  "sidebar.admin": "Admin",
+  "sidebar.delete": "Delete",
+  "sidebar.delete.confirm": "Delete table \"{name}\"? This cannot be undone.",
+
+  "toolbar.connectDirectus": "Connect Directus",
+  "toolbar.refresh": "Refresh",
+  "toolbar.rowCount": "{count} rows",
+  "toolbar.help": "Shortcuts",
+  "toolbar.theme": "Theme",
+
+  "status.databaseOpening": "Connecting to database…",
+  "status.databaseOpened": "Connected, {count} collections",
+  "status.databaseFailed": "Connection failed: {message}",
+  "status.tableLoading": "Loading table \"{name}\"…",
+  "status.tableLoaded": "Loaded {count} rows",
+  "status.tableLoadFailed": "Load failed: {message}",
+
+  "paste.title.preview": "Paste preview",
+  "paste.title.result": "Paste result",
+  "paste.title.error": "Paste error",
+  "paste.summary": "Will write {rows} rows × {cols} columns",
+  "paste.overflow": "Clipboard exceeds the 10,000 cell limit. Use \"File import\" instead.",
+  "paste.ack": "I acknowledge the warnings above",
+  "paste.confirm": "Apply",
+  "paste.cancel": "Cancel",
+  "paste.empty": "Clipboard is empty",
+  "paste.noTable": "Select a table before pasting",
+  "paste.noFields": "Current table has no editable fields",
+
+  "createTable.title": "New table",
+  "createTable.name": "Table name",
+  "createTable.fieldName": "Field name",
+  "createTable.fieldType": "Type",
+  "createTable.addField": "Add field",
+  "createTable.removeField": "Remove",
+  "createTable.submit": "Create",
+  "createTable.cancel": "Cancel",
+
+  "delete.title": "Confirm delete",
+  "delete.confirm": "Delete",
+  "delete.cancel": "Cancel",
+
+  "error.title": "Error",
+  "error.unknown": "Unknown error",
+
+  "undo.succeeded": "Undone: {label}",
+  "undo.failed.conflict": "Undo failed: data changed",
+  "undo.failed.partial": "Some operations cannot be fully restored",
+  "redo.succeeded": "Redone: {label}",
+
+  "shortcuts.title": "Keyboard shortcuts",
+  "shortcuts.category.general": "General",
+  "shortcuts.category.navigation": "Grid navigation",
+  "shortcuts.category.notes": "Notes",
+  "shortcuts.close": "Close",
+};

@@ -1,0 +1,63 @@
+export const messages: Record<string, string> = {
+  "app.title": "VibeTable",
+  "app.loading": "加载中…",
+  "app.ready": "就绪",
+
+  "sidebar.tables": "表",
+  "sidebar.newTable": "新建表",
+  "sidebar.admin": "管理后台",
+  "sidebar.delete": "删除",
+  "sidebar.delete.confirm": "确定要删除表「{name}」吗？此操作不可撤销。",
+
+  "toolbar.connectDirectus": "连接 Directus",
+  "toolbar.refresh": "刷新",
+  "toolbar.rowCount": "{count} 行",
+  "toolbar.help": "快捷键",
+  "toolbar.theme": "主题",
+
+  "status.databaseOpening": "正在连接数据库…",
+  "status.databaseOpened": "已连接，共 {count} 个集合",
+  "status.databaseFailed": "连接失败：{message}",
+  "status.tableLoading": "正在加载表「{name}」…",
+  "status.tableLoaded": "已加载 {count} 行",
+  "status.tableLoadFailed": "加载失败：{message}",
+
+  "paste.title.preview": "粘贴预览",
+  "paste.title.result": "粘贴结果",
+  "paste.title.error": "粘贴出错",
+  "paste.summary": "将写入 {rows} 行 × {cols} 列",
+  "paste.overflow": "剪贴板超过 10,000 单元格上限。请改用「文件导入」。",
+  "paste.ack": "我已确认上述警告",
+  "paste.confirm": "提交",
+  "paste.cancel": "取消",
+  "paste.empty": "剪贴板内容为空",
+  "paste.noTable": "请先选择一个表再粘贴",
+  "paste.noFields": "当前表没有可编辑字段",
+
+  "createTable.title": "新建表",
+  "createTable.name": "表名",
+  "createTable.fieldName": "字段名",
+  "createTable.fieldType": "类型",
+  "createTable.addField": "添加字段",
+  "createTable.removeField": "删除",
+  "createTable.submit": "创建",
+  "createTable.cancel": "取消",
+
+  "delete.title": "确认删除",
+  "delete.confirm": "删除",
+  "delete.cancel": "取消",
+
+  "error.title": "出错了",
+  "error.unknown": "未知错误",
+
+  "undo.succeeded": "已撤销：{label}",
+  "undo.failed.conflict": "撤销失败：数据已变化",
+  "undo.failed.partial": "部分操作无法完美恢复",
+  "redo.succeeded": "已重做：{label}",
+
+  "shortcuts.title": "快捷键",
+  "shortcuts.category.general": "通用",
+  "shortcuts.category.navigation": "网格导航",
+  "shortcuts.category.notes": "说明",
+  "shortcuts.close": "关闭",
+};
