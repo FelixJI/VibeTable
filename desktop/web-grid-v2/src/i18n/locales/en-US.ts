@@ -36,6 +36,7 @@ export const messages: Record<string, string> = {
   "paste.empty": "Clipboard is empty",
   "paste.noTable": "Select a table before pasting",
   "paste.noFields": "Current table has no editable fields",
+  "paste.diagnostic.rowCol": "Row {row} Col {col}: {message}",
 
   "createTable.title": "New table",
   "createTable.name": "Table name",

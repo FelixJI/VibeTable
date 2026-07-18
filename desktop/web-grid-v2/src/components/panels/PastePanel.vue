@@ -70,7 +70,7 @@ const canConfirm = computed(() => paste.phase === "previewing" && paste.acked);
             :type="d.severity === 'error' ? 'error' : 'warning'"
             size="small"
           >
-            行 {{ g.rowIndex + 1 }} 列 {{ d.columnIndex + 1 }}: {{ d.message }}
+            {{ t("paste.diagnostic.rowCol", { row: g.rowIndex + 1, col: d.columnIndex + 1, message: d.message }) }}
           </NTag>
         </div>
       </div>

@@ -36,6 +36,7 @@ export const messages: Record<string, string> = {
   "paste.empty": "剪贴板内容为空",
   "paste.noTable": "请先选择一个表再粘贴",
   "paste.noFields": "当前表没有可编辑字段",
+  "paste.diagnostic.rowCol": "行 {row} 列 {col}: {message}",
 
   "createTable.title": "新建表",
   "createTable.name": "表名",
