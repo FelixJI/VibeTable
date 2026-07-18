@@ -27,6 +27,7 @@ import type {
   PastePlan,
   PasteSummary,
 } from "@/contracts";
+import { t } from "@/i18n";
 
 /**
  * One-line preview summary derived from {@link PasteSummary}, e.g.
@@ -35,35 +36,51 @@ import type {
  *
  * Includes a trailing warning/error hint when the summary reports any, so the
  * user is warned before applying.
+ *
+ * Localization: the line is assembled from `paste.summary.*` i18n keys (will /
+ * skip / errors / warnings + a joiner) so the zh-CN output stays byte-identical
+ * to the pre-i18n hardcoded strings while en-US gets translated text.
  */
 export function summaryLine(plan: PastePlan | null): string {
   if (!plan) return "";
   const s = plan.summary;
   const written = s.updateRows + s.insertRows;
-  const parts: string[] = [`将写入 ${written} 行`];
-  if (s.skipRows > 0) parts.push(`跳过 ${s.skipRows} 行`);
-  if (s.errorCount > 0) parts.push(`${s.errorCount} 项错误`);
-  else if (s.warningCount > 0) parts.push(`${s.warningCount} 项警告`);
-  return parts.join("，");
+  const parts: string[] = [t("paste.summary.will", { rows: written })];
+  if (s.skipRows > 0) parts.push(t("paste.summary.skip", { rows: s.skipRows }));
+  if (s.errorCount > 0) parts.push(t("paste.summary.errors", { count: s.errorCount }));
+  else if (s.warningCount > 0)
+    parts.push(t("paste.summary.warnings", { count: s.warningCount }));
+  return parts.join(t("paste.summary.join"));
 }
 
 /**
  * Outcome line after apply, e.g. "已创建 5 行，更新 7 行". Returns "无变更"
  * when nothing was written.
+ *
+ * Localization: assembled from `paste.outcome.*` keys (created / updated /
+ * skipped + prefix + joiner + none) so zh-CN stays byte-identical to the
+ * pre-i18n strings while en-US is translated.
  */
 export function outcomeLine(result: ApplyPasteResult | null): string {
   if (!result) return "";
   const parts: string[] = [];
   if (result.createdRowKeys.length) {
-    parts.push(`创建 ${result.createdRowKeys.length} 行`);
+    parts.push(
+      t("paste.outcome.created", { rows: result.createdRowKeys.length }),
+    );
   }
   if (result.updatedRowKeys.length) {
-    parts.push(`更新 ${result.updatedRowKeys.length} 行`);
+    parts.push(
+      t("paste.outcome.updated", { rows: result.updatedRowKeys.length }),
+    );
   }
   if (result.skippedRowKeys.length) {
-    parts.push(`跳过 ${result.skippedRowKeys.length} 行`);
+    parts.push(
+      t("paste.outcome.skipped", { rows: result.skippedRowKeys.length }),
+    );
   }
-  return parts.length ? `已${parts.join("，")}` : "无变更";
+  if (!parts.length) return t("paste.outcome.none");
+  return t("paste.outcome.prefix") + parts.join(t("paste.outcome.join"));
 }
 
 /**

@@ -1,10 +1,15 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 
 import ShortcutsView from "./ShortcutsView.vue";
 import { useUiStore } from "@/stores/uiStore";
-import { SHORTCUTS, UNDO_LIMITATIONS_ZH } from "@/keyboard/shortcuts";
+import {
+  SHORTCUTS,
+  UNDO_LIMITATIONS_ZH,
+  UNDO_LIMITATIONS_EN,
+} from "@/keyboard/shortcuts";
+import { setLocale, getLocale } from "@/i18n";
 
 /**
  * ShortcutsView renders inside an NModal. By default NModal teleports its
@@ -30,10 +35,18 @@ function mountView() {
 }
 
 describe("ShortcutsView", () => {
+  const prevLocale = getLocale();
+
   beforeEach(() => {
     document.body.innerHTML = "";
     setActivePinia(createPinia());
+    // Default to zh-CN so the existing assertions (which expect Chinese) hold.
+    setLocale("zh-CN");
   });
+
+  // The i18n module holds locale in module state; restore so other test files
+  // are not affected by a locale flip here.
+  afterEach(() => setLocale(prevLocale));
 
   it("does not render the modal body when shortcutsOpen is false", async () => {
     const ui = useUiStore();
@@ -120,5 +133,28 @@ describe("ShortcutsView", () => {
     modal.vm.$emit("update:show", false);
     await flushPromises();
     expect(ui.shortcutsOpen).toBe(false);
+  });
+
+  it("renders English descriptions + EN undo-limitations when locale is en-US", async () => {
+    // Issue I4(b): ShortcutsView must be locale-aware, selecting descriptionEn
+    // / UNDO_LIMITATIONS_EN (previously dead code) when the locale is en-US.
+    setLocale("en-US");
+    const ui = useUiStore();
+    ui.openShortcuts();
+    mountView();
+    await flushPromises();
+
+    const text = bodyText();
+    // Title + first shortcut's English description render.
+    expect(text).toContain("Keyboard shortcuts");
+    expect(text).toContain(SHORTCUTS[0].descriptionEn);
+    // The Chinese description must NOT be shown in en-US.
+    expect(text).not.toContain(SHORTCUTS[0].descriptionZh);
+    // Each English undo-limitation note renders.
+    for (const note of UNDO_LIMITATIONS_EN) {
+      expect(text).toContain(note);
+    }
+    // And the Chinese notes are absent.
+    expect(text).not.toContain(UNDO_LIMITATIONS_ZH[0]);
   });
 });
