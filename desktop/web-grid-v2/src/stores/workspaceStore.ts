@@ -1,8 +1,18 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { CollectionSummary } from "@/contracts";
 
 export type WorkspacePhase = "idle" | "opening" | "opened" | "failed";
+
+/**
+ * Frontend-only view-model summarizing one collection (table or view) for the
+ * workspace list. This is NOT a wire contract: the workspace service derives
+ * these from the wire-level `database.opened`/`database.collectionsChanged`
+ * payloads (see `@/contracts`) and layers in capability metadata as needed.
+ */
+export interface CollectionSummary {
+  readonly collection: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
 
 export const useWorkspaceStore = defineStore("workspace", () => {
   const phase = ref<WorkspacePhase>("idle");

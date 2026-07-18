@@ -527,18 +527,6 @@ export interface TableAdminCreatePayload {
 export interface TableAdminDeletePayload {
   readonly collection: string;
 }
-
-/**
- * Lightweight summary of one collection (table/view) surfaced to the
- * workspace list. The web grid derives `tables`/`views` from this when
- * handling `database.opened`/`database.collectionsChanged`, then exposes
- * the richer `capabilityHashes` metadata for downstream consumers.
- */
-export interface CollectionSummary {
-  readonly collection: string;
-  readonly metadata?: Readonly<Record<string, unknown>>;
-}
-
 export interface CollectionsChangedPayload {
   readonly tables: readonly string[];
   readonly capabilityHashes?: Readonly<Record<string, string>>;

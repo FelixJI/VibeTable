@@ -1,10 +1,7 @@
 import { useHostBridge } from "./bridgeContext";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
-import type {
-  CollectionSummary,
-  CollectionsChangedPayload,
-  DatabaseOpenedPayload,
-} from "@/contracts";
+import type { CollectionSummary } from "@/stores/workspaceStore";
+import type { CollectionsChangedPayload, DatabaseOpenedPayload } from "@/contracts";
 
 /**
  * Translate the wire-level `database.opened` payload (which carries separate
