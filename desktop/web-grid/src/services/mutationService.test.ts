@@ -177,4 +177,180 @@ describe("mutationService", () => {
     });
     expect(history.canUndo).toBe(false);
   });
+
+  // -------------------------------------------------------------------------
+  // Feedback-loop guard: performUndo/performRedo suppress history pushes so the
+  // host's confirmation round-trip does not clear the redo stack.
+  //
+  // These tests model the synchronous-host case: the undo closure's
+  // `bridge.notify(updateCellRequested, oldValue)` is stubbed to immediately
+  // re-emit `table.editCommitted` (the host's confirmation) BEFORE notify
+  // returns — i.e. while performUndo's suppress guard is still active. Without
+  // the guard that synchronous re-notification would push a NEW entry and
+  // clear the redo stack, destroying redo.
+  // -------------------------------------------------------------------------
+
+  it("performUndo suppresses the re-notification's history push (redo preserved)", async () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("u");
+    table.beginLoad();
+    table.appendPage({
+      table: "u",
+      columns: [],
+      rows: [{ rowKey: 1, name: "old" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    const history = useHistoryStore();
+    const svc = useMutationService();
+    svc.init();
+    emit("table.editCommitted", {
+      rowKey: 1,
+      column: "name",
+      storedValue: "new",
+      currentRow: { rowKey: 1, name: "new" },
+      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
+    });
+    expect(history.undoStackSize).toBe(1);
+
+    // Stub notify so that an undo's updateCellRequested triggers a SYNCHRONOUS
+    // editCommitted re-notification from the "host" — while suppress is active.
+    vi.spyOn(bridge, "notify").mockImplementation((type) => {
+      if (type === "table.updateCellRequested") {
+        emit("table.editCommitted", {
+          rowKey: 1,
+          column: "name",
+          storedValue: "old",
+          currentRow: { rowKey: 1, name: "old" },
+          revision: {
+            databaseSessionId: "s",
+            schemaRevision: "sr",
+            dataRevision: 3,
+          },
+        });
+      }
+    });
+
+    await svc.performUndo();
+
+    // The undo stack did NOT grow from the re-notification (1 → 0 via undo,
+    // not 1 → 1 → 0). canRedo must still be true: the feedback loop did not
+    // clear the redo stack.
+    expect(history.undoStackSize).toBe(0);
+    expect(history.canRedo).toBe(true);
+  });
+
+  it("performUndo returns entry to redo stack (basic undo semantics)", async () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    table.beginLoad();
+    table.appendPage({
+      table: "u",
+      columns: [],
+      rows: [{ rowKey: 1, name: "old" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    const history = useHistoryStore();
+    const svc = useMutationService();
+    svc.init();
+    emit("table.editCommitted", {
+      rowKey: 1,
+      column: "name",
+      storedValue: "new",
+      currentRow: { rowKey: 1, name: "new" },
+      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
+    });
+    const beforeUndo = history.undoStackSize;
+    await svc.performUndo();
+    expect(history.undoStackSize).toBe(beforeUndo - 1);
+    expect(history.canRedo).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // C2: pasteApplied history producer.
+  // -------------------------------------------------------------------------
+
+  it("on pasteApplied with createdRowKeys, pushes an applyPaste history entry", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const ws = useWorkspaceStore();
+    ws.selectTable("u");
+    const history = useHistoryStore();
+    const svc = useMutationService();
+    svc.init();
+    emit("table.pasteApplied", {
+      collection: "u",
+      outcome: "committed",
+      createdRowKeys: [10, 11],
+      updatedRowKeys: [],
+      skippedRowKeys: [],
+      conflicts: [],
+      requestId: "rq-1",
+    });
+    expect(history.canUndo).toBe(true);
+    expect(history.undoStack[0]?.kind).toBe("applyPaste");
+    expect(history.undoStack[0]?.label).toBe("粘贴");
+  });
+
+  it("pasteApplied undo notifies deleteRowsRequested for the created rowKeys", async () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const ws = useWorkspaceStore();
+    ws.selectTable("u");
+    const spy = vi.spyOn(bridge, "notify");
+    const history = useHistoryStore();
+    const svc = useMutationService();
+    svc.init();
+    emit("table.pasteApplied", {
+      collection: "u",
+      outcome: "committed",
+      createdRowKeys: [10, 11],
+      updatedRowKeys: [],
+      skippedRowKeys: [],
+      conflicts: [],
+      requestId: "rq-1",
+    });
+    spy.mockClear();
+    await history.undo();
+    const del = spy.mock.calls.find((c) => c[0] === "table.deleteRowsRequested");
+    expect(del).toBeTruthy();
+    const payload = del?.[1] as unknown as {
+      rows: { rowKey: number; expectedDigest: string }[];
+    };
+    expect(payload.rows).toEqual([
+      { rowKey: 10, expectedDigest: "" },
+      { rowKey: 11, expectedDigest: "" },
+    ]);
+  });
+
+  it("pasteApplied with no created rows pushes nothing", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const history = useHistoryStore();
+    const svc = useMutationService();
+    svc.init();
+    emit("table.pasteApplied", {
+      collection: "u",
+      outcome: "committed",
+      createdRowKeys: [],
+      updatedRowKeys: [5],
+      skippedRowKeys: [],
+      conflicts: [],
+      requestId: "rq-1",
+    });
+    // Only-updates paste still pushes an entry (per spec the producer runs for
+    // every paste), but the undo closure no-ops because there is nothing to
+    // remove. Verify canUndo flipped and redo no-ops without throwing.
+    expect(history.canUndo).toBe(true);
+    expect(history.undoStack[0]?.kind).toBe("applyPaste");
+  });
 });

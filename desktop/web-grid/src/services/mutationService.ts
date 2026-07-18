@@ -3,6 +3,7 @@ import { useTableStore } from "@/stores/tableStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import type {
+  ApplyPasteResult,
   DeleteRowsResult,
   InsertRowResult,
   UpdateCellResult,
@@ -46,11 +47,31 @@ export function useMutationService(): {
   ) => void;
   insertRow: (values: Readonly<Record<string, unknown>>) => void;
   deleteRows: (rows: readonly DeleteRowReqItem[]) => void;
+  /**
+   * Undo the latest entry with the feedback-loop guard active: while the
+   * undo closure runs (it re-notifies the host), inbound `editCommitted` /
+   * `rowsInserted` / `rowsDeleted` / `pasteApplied` events are NOT pushed onto
+   * the history stack — otherwise the host's confirmation would push a NEW
+   * entry that clears the redo stack, breaking redo. Use this (not
+   * `history.undo()` directly) from the keyboard shortcut handler.
+   */
+  performUndo: () => Promise<void>;
+  /** Redo counterpart to {@link performUndo}. */
+  performRedo: () => Promise<void>;
 } {
   const bridge = useHostBridge();
   const table = useTableStore();
   const ws = useWorkspaceStore();
   const history = useHistoryStore();
+
+  /**
+   * Feedback-loop guard: while true, inbound handlers still apply their result
+   * to the store but skip pushing a new history entry. Set around undo/redo so
+   * the host's confirmation re-notification (e.g. editCommitted with oldValue)
+   * does not clear the redo stack. Module-level inside the closure so it is
+   * shared across all inbound handlers of this service instance.
+   */
+  let suppressHistory = false;
 
   /** Caches row snapshots for pending deleteRows, keyed by stringified keys. */
   const pendingDeleteSnapshot = new Map<string, Record<string, unknown>[]>();
@@ -79,7 +100,9 @@ export function useMutationService(): {
     if (prevSchemaRev !== null && prevSchemaRev !== newSchemaRev) {
       // Schema changed across this mutation — undo/redo is no longer safe.
       history.clear();
-    } else {
+    } else if (!suppressHistory) {
+      // Skip pushing only when a suppress guard is active (undo/redo
+      // re-notification); the store was already updated above.
       pushEntry();
     }
   }
@@ -189,6 +212,46 @@ export function useMutationService(): {
         },
       );
     });
+
+    bridge.on("table.pasteApplied", (r: ApplyPasteResult) => {
+      // ApplyPasteResult only carries createdRowKeys / updatedRowKeys /
+      // skippedRowKeys (keys only, NO full row data) — there is not enough
+      // information here to mutate tableStore directly. The host emits a
+      // subsequent `table.datasetReady` (or pageLoaded) refresh after a paste,
+      // which is what actually updates the store's rows. So this handler only
+      // owns the history entry. Skip the apply/store update and skip the schema
+      // clear path (no revision on ApplyPasteResult); push directly.
+      if (suppressHistory) return;
+      const created = r.createdRowKeys as readonly (number | string)[];
+      const createdCount = created.length;
+      history.push({
+        id: crypto.randomUUID(),
+        kind: "applyPaste",
+        label: "粘贴",
+        timestamp: Date.now(),
+        undo: async () => {
+          // Undo a paste by deleting any created rows. Updated rows are
+          // NOT reverted here (their pre-paste values are not available on the
+          // web side; the host would need a restore primitive). expectedDigest
+          // is required by the wire contract but ignored by the backend; "" is
+          // a stable filler that mirrors the insertRow undo closure above.
+          if (created.length === 0) return;
+          bridge.notify("table.deleteRowsRequested", {
+            table: ws.currentTable ?? "",
+            rows: created.map((k) => ({ rowKey: k, expectedDigest: "" })),
+            schemaRevision: currentSchemaRev(),
+          });
+        },
+        redo: async () => {
+          // Paste tokens are single-use: the host consumed `token` during the
+          // original apply and will reject a replay. We cannot re-issue the
+          // paste without re-running the preview flow, so redo is a no-op.
+          // Keeping a closure (rather than throwing) means the entry cleanly
+          // returns to the redo stack without surfacing an error toast.
+          void createdCount;
+        },
+      });
+    });
   }
 
   /** Look up the current stored value of (rowKey, column) in tableStore. */
@@ -242,7 +305,33 @@ export function useMutationService(): {
     });
   }
 
-  return { init, updateCell, insertRow, deleteRows };
+  /**
+   * Run `history.undo()` with the suppress guard active. The undo closure
+   * re-notifies the host (e.g. updateCellRequested with oldValue); the host
+   * then broadcasts `table.editCommitted`, which would otherwise push a NEW
+   * entry onto the undo stack and clear the redo stack — destroying redo.
+   * Suppressing inbound pushes during the round-trip preserves the redo entry.
+   */
+  async function performUndo(): Promise<void> {
+    suppressHistory = true;
+    try {
+      await history.undo();
+    } finally {
+      suppressHistory = false;
+    }
+  }
+
+  /** Redo counterpart to {@link performUndo}. */
+  async function performRedo(): Promise<void> {
+    suppressHistory = true;
+    try {
+      await history.redo();
+    } finally {
+      suppressHistory = false;
+    }
+  }
+
+  return { init, updateCell, insertRow, deleteRows, performUndo, performRedo };
 }
 
 /** Local shape mirror of `DeleteRowRequestItem` to keep the public surface typed. */

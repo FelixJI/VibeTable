@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import { defineComponent, h } from "vue";
+import { NMessageProvider } from "naive-ui";
 
 import WorkspaceView from "./WorkspaceView.vue";
 import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
@@ -86,7 +88,17 @@ vi.mock("@/grid/createGrid", () => ({
 }));
 
 function mountView() {
-  return mount(WorkspaceView, { attachTo: document.body });
+  // WorkspaceView.setup() calls useMessage() (to surface history.lastError),
+  // which requires an ancestor NMessageProvider. Mirror App.vue's wrapper here.
+  // We mount the wrapper with attachTo so queries against document.body still
+  // work (e.g. [data-testid="sidebar-table-name"]).
+  const Host = defineComponent({
+    components: { NMessageProvider, WorkspaceView },
+    render() {
+      return h(NMessageProvider, () => h(WorkspaceView));
+    },
+  });
+  return mount(Host, { attachTo: document.body });
 }
 
 /** Build a valid `PastePlan` carrying a non-consumed token for apply tests. */
@@ -417,6 +429,37 @@ describe("WorkspaceView", () => {
     expect(ui.shortcutsOpen).toBe(true);
   });
 
+  it("Ctrl+Z routes through mutationService.performUndo (entry moves to redo)", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const history = useHistoryStore();
+    let undoCalled = 0;
+    // Seed an entry whose undo closure is observable. WorkspaceView's onUndo
+    // calls mutationService.performUndo -> history.undo -> entry.undo().
+    history.push({
+      id: "seed",
+      kind: "updateCell",
+      label: "seed",
+      timestamp: 0,
+      undo: async () => {
+        undoCalled++;
+      },
+      redo: async () => {},
+    });
+
+    mountView();
+    await flushPromises();
+
+    fireKey("z", { ctrlKey: true });
+    await flushPromises();
+
+    // The undo closure ran (proving the shortcut reached history.undo via
+    // performUndo), and the entry has moved to the redo stack.
+    expect(undoCalled).toBe(1);
+    expect(history.canRedo).toBe(true);
+    expect(history.canUndo).toBe(false);
+  });
+
   it("switching tables (sidebar select) clears the undo history", async () => {
     const { bridge } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
@@ -442,10 +485,39 @@ describe("WorkspaceView", () => {
     mountView();
     await flushPromises();
 
-    // Click the first table row to trigger onSelect -> history.clear().
+    // Click the first table row to trigger onSelect -> tableService.selectTable
+    // -> history.clear() (now lives inside the service, not onSelect).
     const row = document.body.querySelector('[data-testid="sidebar-table-name"]');
     expect(row).toBeTruthy();
     (row as HTMLElement).click();
+    await flushPromises();
+
+    expect(history.canUndo).toBe(false);
+  });
+
+  it("Ctrl+R refresh clears the undo history (service owns the clear)", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const history = useHistoryStore();
+    workspace.selectTable("orders");
+
+    // Seed history; refresh must clear it (tableService.refresh now clears).
+    history.push({
+      id: "seed",
+      kind: "updateCell",
+      label: "seed",
+      timestamp: 0,
+      undo: async () => {},
+      redo: async () => {},
+    });
+    expect(history.canUndo).toBe(true);
+
+    mountView();
+    await flushPromises();
+    posted.length = 0;
+
+    fireKey("r", { ctrlKey: true });
     await flushPromises();
 
     expect(history.canUndo).toBe(false);

@@ -1,6 +1,7 @@
 import { useHostBridge } from "./bridgeContext";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useTableStore } from "@/stores/tableStore";
+import { useHistoryStore } from "@/stores/historyStore";
 import type {
   DatasetReadyPayload,
   EditSchemaResult,
@@ -40,6 +41,7 @@ export function useTableService(): {
   const bridge = useHostBridge();
   const tableStore = useTableStore();
   const workspaceStore = useWorkspaceStore();
+  const history = useHistoryStore();
 
   function init(): void {
     bridge.on("table.pageLoaded", (payload: TablePageLoadedPayload) => {
@@ -79,6 +81,11 @@ export function useTableService(): {
     if (!name) return;
     workspaceStore.selectTable(name);
     tableStore.reset();
+    // A table switch invalidates the undo stack: history entries reference
+    // rowKeys / columns / schemaRevision that no longer apply. Spec §7.3.
+    // Clearing here (not just in WorkspaceView.onSelect) covers every code
+    // path that resets the table context — including any future caller.
+    history.clear();
     tableStore.beginLoad();
     bridge.notify("table.selected", { table: name });
   }
@@ -87,6 +94,9 @@ export function useTableService(): {
     const current = workspaceStore.currentTable;
     if (!current) return;
     tableStore.reset();
+    // Refresh re-fetches the full dataset; pending edits / undo entries are
+    // no longer valid against the freshly loaded data.
+    history.clear();
     tableStore.beginLoad();
     bridge.notify("table.selected", { table: current });
   }

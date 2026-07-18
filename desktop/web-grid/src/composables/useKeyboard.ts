@@ -17,6 +17,10 @@ export interface UseKeyboardOptions {
   onRefresh?: () => void;
   onNewTable?: () => void;
   onHelp?: () => void;
+  /** Ctrl+Z: invoke undo on the history stack. */
+  onUndo?: () => void;
+  /** Ctrl+Shift+Z / Ctrl+Y: invoke redo on the history stack. */
+  onRedo?: () => void;
 }
 
 /**
@@ -97,11 +101,13 @@ export function useKeyboard(opts: UseKeyboardOptions): void {
     if (matchesShortcut(e, "Ctrl+Z")) {
       e.preventDefault();
       kb.fire("undo");
+      opts.onUndo?.();
       return;
     }
     if (matchesShortcut(e, "Ctrl+Shift+Z") || matchesShortcut(e, "Ctrl+Y")) {
       e.preventDefault();
       kb.fire("redo");
+      opts.onRedo?.();
       return;
     }
     if (matchesShortcut(e, "Ctrl+R")) {

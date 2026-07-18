@@ -104,6 +104,21 @@ describe("useKeyboard", () => {
     expect(kb.lastFired).toBe("redo");
     wrapper.unmount();
   });
+
+  it("invokes onUndo on Ctrl+Z and onRedo on Ctrl+Shift+Z / Ctrl+Y", () => {
+    const onUndo = vi.fn();
+    const onRedo = vi.fn();
+    const wrapper = mountKeyboard({ ...noopTabulator, onUndo, onRedo });
+    fireKey("z", { ctrlKey: true });
+    expect(onUndo).toHaveBeenCalledTimes(1);
+    expect(onRedo).not.toHaveBeenCalled();
+    fireKey("z", { ctrlKey: true, shiftKey: true });
+    expect(onRedo).toHaveBeenCalledTimes(1);
+    // Ctrl+Y also routes to onRedo.
+    fireKey("y", { ctrlKey: true });
+    expect(onRedo).toHaveBeenCalledTimes(2);
+    wrapper.unmount();
+  });
 });
 
 describe("matchesShortcut", () => {

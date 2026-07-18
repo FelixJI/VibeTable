@@ -21,7 +21,8 @@
  * idempotency key; we read those from the paste + workspace stores here so the
  * PastePanel component stays free of service knowledge.
  */
-import { onMounted, provide, ref } from "vue";
+import { onMounted, provide, ref, watch } from "vue";
+import { useMessage } from "naive-ui";
 import type { TabulatorFull } from "tabulator-tables";
 import AppSidebar from "@/components/layout/AppSidebar.vue";
 import AppToolbar from "@/components/layout/AppToolbar.vue";
@@ -71,6 +72,25 @@ const history = useHistoryStore();
 const workspace = useWorkspaceStore();
 
 /**
+ * Naive UI message API (requires NMessageProvider, which App.vue wraps around
+ * WorkspaceView). Used to surface history.lastError so undo/redo failures are
+ * not silent (e.g. when the host rejects an undo because of a stale digest).
+ */
+const message = useMessage();
+
+/**
+ * Surface history failures as toasts. historyStore captures the message in
+ * lastError when undo()/redo() throws (e.g. host rejects the inverse op); we
+ * watch and toast, then rely on the next successful op or clear() to reset.
+ */
+watch(
+  () => history.lastError,
+  (err) => {
+    if (err) message.error(err);
+  },
+);
+
+/**
  * Tabulator instance ref owned by WorkspaceView and shared with GridHost via
  * provide/inject. GridHost injects this ref and forwards it to useTabulator,
  * which populates it when the grid initializes. Null until the first page
@@ -111,10 +131,9 @@ function onCellEdited(
 
 /** Sidebar: select a table from the list. */
 function onSelect(name: string) {
+  // history.clear() now happens inside tableService.selectTable so EVERY table
+  // context reset clears the stack (select + refresh + any future caller).
   tableService.selectTable(name);
-  // Switching tables invalidates the undo stack: history entries reference
-  // rowKeys / columns / schemaRevision that no longer apply. Spec §7.3.
-  history.clear();
 }
 
 /** Sidebar: open the create-table modal (reset form + flip UI flag). */
@@ -323,6 +342,12 @@ useKeyboard({
     ui.openCreate();
   },
   onHelp: () => ui.openShortcuts(),
+  // Ctrl+Z / Ctrl+Shift+Z route through mutationService.performUndo /
+  // performRedo (NOT history.undo directly): the service sets a suppress
+  // guard so the host's confirmation round-trip does not push a duplicate
+  // entry that would clear the redo stack.
+  onUndo: () => void mutationService.performUndo(),
+  onRedo: () => void mutationService.performRedo(),
 });
 </script>
 
