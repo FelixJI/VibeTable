@@ -20,9 +20,11 @@ from pathlib import Path
 
 import pytest
 
+from scripts._host_paths import host_bin_exe
+
 ROOT = Path(__file__).resolve().parents[2]
 HOST_PROJECT = ROOT / "desktop" / "src" / "VibeTable.Desktop"
-HOST_EXE = HOST_PROJECT / "bin" / "Release" / "net10.0-windows" / "VibeTable.Desktop.exe"
+HOST_EXE = host_bin_exe(ROOT, config="Release")
 PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
 DOTNET = (
     str(PREFERRED_DOTNET) if PREFERRED_DOTNET.is_file() else (shutil.which("dotnet") or "dotnet")

@@ -49,9 +49,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 try:
+    from scripts._host_paths import host_assembly_name
     from scripts.extension_manifest import list_extensions
     from scripts.versioning import check_versions, read_project_version
 except ModuleNotFoundError:  # direct execution: python scripts/build_next.py
+    from _host_paths import host_assembly_name
     from extension_manifest import list_extensions
     from versioning import check_versions, read_project_version
 
@@ -87,9 +89,7 @@ BACKEND_HIDDEN_IMPORTS = (
 #: Dev/test packages that must never be bundled into the shipped backend. The
 #: post-build verify scans the onedir's _internal/ for these as a guard against
 #: an accidental collect-all.
-_DEV_PACKAGES_FORBIDDEN_IN_BUNDLE = frozenset(
-    {"mypy", "numpy", "pandas", "pytest", "_pytest"}
-)
+_DEV_PACKAGES_FORBIDDEN_IN_BUNDLE = frozenset({"mypy", "numpy", "pandas", "pytest", "_pytest"})
 
 #: Dev-only skip flags. They MUST be rejected when combined with --release.
 DEV_SKIP_FLAGS = (
@@ -150,7 +150,9 @@ class RepoPaths:
             web_grid_dir=repo_root / "desktop" / "web-grid",
             directus_extension_dirs=extension_dirs,
             local_directus_source_dir=repo_root / "scripts" / "local_directus",
-            desktop_csproj=(repo_root / "desktop" / "src" / "VibeTable.Desktop" / "VibeTable.Desktop.csproj"),
+            desktop_csproj=(
+                repo_root / "desktop" / "src" / "VibeTable.Desktop" / "VibeTable.Desktop.csproj"
+            ),
             backend_main=repo_root / "backend" / "__main__.py",
             staging_root=repo_root / "dist" / ".VibeTable.Next.staging",
             scratch_root=repo_root / "build" / "next-scratch",
@@ -624,16 +626,19 @@ def _build_desktop_stage(stage: RepoPaths, skip: bool) -> None:
     # subtree) so the raw dotnet output doesn't pollute the published layout.
     # We then relocate only the host exe (+ WebView2 runtime siblings) the
     # manifest expects. dotnet names the host exe after the assembly
-    # (VibeTable.Desktop.exe); we rename to VibeTable.Next.exe.
+    # (resolved from the csproj); we rename to VibeTable.Next.exe.
     out = stage.scratch_root / "_desktop_publish"
     out.mkdir(parents=True, exist_ok=True)
     _run(
         build_dotnet_publish_command(stage, output_dir=out),
         cwd=stage.repo_root,
     )
-    # Locate the produced host exe.
+    # Locate the produced host exe. The primary candidate is the assembly
+    # name (resolved from project metadata); HOST_EXE_NAME is kept as a
+    # defensive fallback for any renamed publish output.
+    primary_name = f"{host_assembly_name(stage.repo_root, stage.desktop_csproj.parent)}.exe"
     host_src = None
-    for candidate_name in ("VibeTable.Desktop.exe", "VibeTable.Next.exe"):
+    for candidate_name in (primary_name, HOST_EXE_NAME):
         cand = out / candidate_name
         if cand.is_file():
             host_src = cand
