@@ -8,6 +8,8 @@ import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { useUiStore } from "@/stores/uiStore";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { usePasteStore } from "@/stores/pasteStore";
+import type { PastePlan, PasteSummary } from "@/contracts";
 
 /**
  * WorkspaceView integration tests. WorkspaceView is the CONTAINER that wires
@@ -66,6 +68,27 @@ vi.mock("@/grid/createGrid", () => ({
 
 function mountView() {
   return mount(WorkspaceView, { attachTo: document.body });
+}
+
+/** Build a valid `PastePlan` carrying a non-consumed token for apply tests. */
+function makePlan(token = "tok-xyz"): PastePlan {
+  const summary: PasteSummary = {
+    updateRows: 1,
+    insertRows: 0,
+    skipRows: 0,
+    errorCount: 0,
+    warningCount: 0,
+  };
+  return {
+    collection: "users",
+    schemaRevision: "schema-1",
+    capabilityHash: "cap-1",
+    summary,
+    rows: [],
+    diagnostics: [],
+    token: { token, expiresAt: 0, consumed: false },
+    overflow: false,
+  };
 }
 
 describe("WorkspaceView", () => {
@@ -171,5 +194,63 @@ describe("WorkspaceView", () => {
     // The host was notified and the modal was closed by the container.
     expect(posted.some((p) => p.type === "tableAdmin.deleteRequested")).toBe(true);
     expect(ui.deleteModalOpen).toBe(false);
+  });
+
+  it("wires paste-confirm -> pasteService.apply (table.applyPasteRequested with token + idempotencyKey)", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const paste = usePasteStore();
+    const workspace = useWorkspaceStore();
+    const ui = useUiStore();
+
+    // Stage the paste flow: a current collection + a previewed plan + open panel.
+    workspace.setOpened([{ collection: "users", metadata: {} }]);
+    workspace.selectTable("users");
+    paste.setPlan(makePlan("tok-xyz"));
+    paste.toggleAck(); // canConfirm requires phase=previewing && acked
+    ui.openPastePanel();
+
+    mountView();
+    await flushPromises();
+
+    const confirmBtn = document.body.querySelector('[data-testid="paste-confirm"]');
+    expect(confirmBtn).toBeTruthy();
+    (confirmBtn as HTMLElement).click();
+    await flushPromises();
+
+    // Bridge received `table.applyPasteRequested` with collection, the non-empty
+    // single-use token from the plan, and a fresh non-empty idempotencyKey.
+    const apply = posted.find((p) => p.type === "table.applyPasteRequested");
+    expect(apply).toBeTruthy();
+    const payload = apply?.payload as {
+      collection: string;
+      token: string;
+      idempotencyKey: string;
+    };
+    expect(payload.collection).toBe("users");
+    expect(payload.token).toBe("tok-xyz");
+    expect(payload.idempotencyKey).toBeTruthy();
+    // idempotencyKey should be unique per call (UUID shape).
+    expect(payload.idempotencyKey).not.toBe("tok-xyz");
+
+    // pasteService.apply flips the store to "applying" synchronously.
+    expect(paste.phase).toBe("applying");
+  });
+
+  it("on paste-confirm with no plan or no table, does NOT post applyPasteRequested", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+
+    mountView();
+    await flushPromises();
+
+    // No plan staged and no table selected: clicking confirm (if rendered)
+    // must not produce an apply notification.
+    const confirmBtn = document.body.querySelector('[data-testid="paste-confirm"]');
+    if (confirmBtn) {
+      (confirmBtn as HTMLElement).click();
+      await flushPromises();
+    }
+    expect(posted.some((p) => p.type === "table.applyPasteRequested")).toBe(false);
   });
 });

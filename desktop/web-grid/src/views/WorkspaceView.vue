@@ -118,6 +118,11 @@ function onConfirmDelete() {
 /**
  * Paste panel: user confirmed the preview. Build the apply payload from the
  * current plan + workspace and forward to the paste service.
+ *
+ * `pasteService.apply` stamps `beginApply()` on the store first (so the panel
+ * flips to "applying" synchronously) before posting
+ * `table.applyPasteRequested` with the single-use `token` from `plan.token`
+ * and a fresh `idempotencyKey` so retries do not double-write.
  */
 function onConfirmPaste() {
   const plan = paste.plan;
@@ -127,7 +132,7 @@ function onConfirmPaste() {
   const input: ApplyPasteInput = {
     collection,
     token,
-    idempotencyKey: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    idempotencyKey: crypto.randomUUID(),
   };
   pasteService.apply(input);
 }
