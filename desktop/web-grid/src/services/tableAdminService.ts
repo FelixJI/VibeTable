@@ -1,5 +1,6 @@
 import { useHostBridge } from "./bridgeContext";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
+import { useUiStore } from "@/stores/uiStore";
 import type { CollectionSummary } from "@/stores/workspaceStore";
 import type {
   CollectionsChangedPayload,
@@ -56,13 +57,38 @@ export function useTableAdminService(): {
 } {
   const bridge = useHostBridge();
   const store = useTableAdminStore();
+  const ui = useUiStore();
+
+  /**
+   * Resolve an in-flight create/delete when the host signals the collection
+   * list changed (or a fresh `database.opened` arrived). The host emits
+   * `database.collectionsChanged` for ANY collection change — including the
+   * initial load — so we ONLY transition + close the modal when `phase` is
+   * actually `creating`/`deleting` (meaning the user kicked off an op and is
+   * waiting on its round-trip). This restores the auto-close-on-success
+   * behavior that the pre-rewrite `main.ts` had (the rewrite dropped it; see
+   * issue I3 in the final review).
+   */
+  function resolveIfPending(): void {
+    if (store.phase === "creating") {
+      store.succeed();
+      ui.closeCreate();
+    } else if (store.phase === "deleting") {
+      store.succeed();
+      ui.closeDelete();
+    }
+  }
 
   function init(): void {
     bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
       store.setCollections(toCollections(payload));
+      // A `database.opened` after a create/delete also implies success: the
+      // host re-announces the full collection list once the new schema lands.
+      resolveIfPending();
     });
     bridge.on("database.collectionsChanged", (payload) => {
       store.setCollections(toCollectionsFromChanged(payload));
+      resolveIfPending();
     });
   }
 
