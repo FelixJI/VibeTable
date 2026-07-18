@@ -3,7 +3,8 @@ import type { TabulatorFull } from "tabulator-tables";
 
 import { useTableStore } from "@/stores/tableStore";
 import { buildColumns, createGrid } from "@/grid/createGrid";
-import type { ColumnSchema, TablePage } from "@/contracts";
+import type { CellEditedHandler } from "@/grid/createGrid";
+import type { ColumnEditSchema, ColumnSchema, TablePage } from "@/contracts";
 
 // Lazy CSS import — Tabulator's own stylesheet, bundled by Vite. Importing at
 // module load guarantees the styles are present before the grid mounts.
@@ -17,6 +18,26 @@ import "tabulator-tables/dist/css/tabulator.min.css";
  */
 function colSignature(columns: readonly ColumnSchema[]): string {
   return columns.map((c) => `${c.name}:${c.dataType}`).join("|");
+}
+
+/**
+ * Stable signature for an edit schema, used to detect when the editable column
+ * set actually changed (different editors / editable flags) vs. a no-op
+ * re-emit of the same schema. Drives a `setColumns` refresh so newly-arrived
+ * editors attach without a full grid rebuild.
+ */
+function editSchemaSignature(
+  columns: readonly ColumnEditSchema[] | null | undefined,
+): string {
+  if (!columns) return "";
+  return columns
+    .map(
+      (c) =>
+        `${c.name}:${c.editable ? 1 : 0}:${c.editor.kind}:${
+          c.editor.kind === "multi_select" ? 1 : 0
+        }`,
+    )
+    .join("|");
 }
 
 /**
@@ -40,6 +61,17 @@ function sameRows(
   return true;
 }
 
+/** Options accepted by `useTabulator` (Task M3: editable grid wiring). */
+export interface UseTabulatorOptions {
+  /**
+   * Invoked when the user commits an inline cell edit, with the row's
+   * `rowKey`, the column name, the pre-edit value (captured in `cellEditing`),
+   * and the new value. The caller (WorkspaceView) routes this to
+   * `mutationService.updateCell`.
+   */
+  readonly onCellEdited?: CellEditedHandler;
+}
+
 /**
  * useTabulator — owns the Tabulator lifecycle for a single grid host.
  *
@@ -47,11 +79,11 @@ function sameRows(
  * incrementally via `setData`, instead of destroy+rebuild on every change.
  *
  * Init rule (adapts to `createGrid`'s real signature):
- *   `createGrid(element, page)` REQUIRES a full `TablePage` to initialize —
- *   it cannot build an empty grid first. So we wait until BOTH:
+ *   `createGrid(element, page, opts?)` REQUIRES a full `TablePage` to
+ *   initialize — it cannot build an empty grid first. So we wait until BOTH:
  *     (a) the host element is mounted (template ref populated), AND
  *     (b) the first `TablePage` has arrived in `store.pages`.
- *   Only then do we call `createGrid(el, pages[0])`.
+ *   Only then do we call `createGrid(el, pages[0], { editSchema, onCellEdited })`.
  *
  * After init:
  *   - Row-data changes -> `tabulator.setData(store.allRows)` (incremental).
@@ -60,12 +92,31 @@ function sameRows(
  *     robust to flush-ordering quirks.
  *   - Column-schema changes -> `tabulator.setColumns(buildColumns(...))`
  *     (rare; Tabulator's `setColumns` exists per the env.d.ts type shim).
+ *   - editSchema arrival/change -> `tabulator.setColumns(buildColumns(...,
+ *     editSchema))` so editors attach without a grid rebuild (Task M3).
  *   - Unmount -> `tabulator.destroy()`.
+ *
+ * `onCellEdited` is captured in a ref-like holder so the latest caller-provided
+ * callback always runs even if the composable is re-invoked with a new function
+ * identity (closures built once at init must not go stale).
  */
-export function useTabulator(gridEl: Ref<HTMLElement | null>) {
+export function useTabulator(
+  gridEl: Ref<HTMLElement | null>,
+  options?: UseTabulatorOptions,
+) {
   const store = useTableStore();
   const tabulator = ref<TabulatorFull | null>(null);
   let lastColSignature: string | null = null;
+  let lastEditSignature = editSchemaSignature(store.editSchema);
+
+  /**
+   * Holder for the latest `onCellEdited` callback. We read this inside the
+   * `createGrid` init closure so the callback passed at init time forwards to
+   * whatever the caller currently provides (avoids stale-capture when the
+   * parent re-renders with a new function identity).
+   */
+  let currentOnCellEdited: CellEditedHandler | undefined = options?.onCellEdited;
+
   /**
    * Snapshot of the row array last handed to Tabulator (either via createGrid
    * at init or via setData). Used to skip no-op setData calls and, crucially,
@@ -73,18 +124,33 @@ export function useTabulator(gridEl: Ref<HTMLElement | null>) {
    */
   let lastSeededRows: ReadonlyArray<Record<string, unknown>> = [];
 
+  // Keep currentOnCellEdited fresh if the caller passes a new callback after
+  // mount (defensive — typically the same function identity is stable across
+  // re-renders, but we should not assume that).
+  watch(
+    () => options?.onCellEdited,
+    (cb) => {
+      currentOnCellEdited = cb;
+    },
+  );
+
   // Init: wait for the host element AND the first page. Fires immediately so
   // an already-mounted element with an existing page (e.g. a table reselect
   // while the component re-uses its element) initializes without an extra
-  // tick.
+  // tick. Pass the current editSchema + onCellEdited so editors attach on
+  // first paint if the schema arrived before the page.
   watch(
     [() => gridEl.value, () => store.pages.length],
     ([el, pageCount]) => {
       if (!el || tabulator.value || pageCount === 0) return;
       const firstPage = store.pages[0];
       if (!firstPage) return;
-      tabulator.value = createGrid(el, firstPage);
+      tabulator.value = createGrid(el, firstPage, {
+        editSchema: store.editSchema,
+        onCellEdited: (rk, col, old, nw) => currentOnCellEdited?.(rk, col, old, nw),
+      });
       lastColSignature = colSignature(firstPage.columns);
+      lastEditSignature = editSchemaSignature(store.editSchema);
       // Record the rows we just seeded so the data watcher can recognize and
       // skip them (createGrid embedded these in its `data` option).
       lastSeededRows = firstPage.rows;
@@ -121,10 +187,38 @@ export function useTabulator(gridEl: Ref<HTMLElement | null>) {
         // buildColumns reads only `page.columns`; construct a minimal carrier
         // so the call stays type-safe without a full TablePage.
         const carrier = { columns: schema } as TablePage;
-        tabulator.value.setColumns(buildColumns(carrier) as unknown[]);
+        tabulator.value.setColumns(
+          buildColumns(carrier, store.editSchema) as unknown[],
+        );
       } catch {
         // setColumns failed (Tabulator version quirk) -> refresh data only.
         void tabulator.value.setData([...store.allRows]);
+      }
+    },
+  );
+
+  // editSchema arrival/change (Task M3): rebuild columns IN PLACE via
+  // setColumns so the per-column editors attach without a grid rebuild. The
+  // editSchema typically arrives AFTER the first page (table.editSchemaLoaded
+  // is a separate host event), so this is the primary path by which editable
+  // columns get their editors.
+  watch(
+    () => store.editSchema,
+    (editSchema) => {
+      if (!tabulator.value) return;
+      const sig = editSchemaSignature(editSchema);
+      if (sig === lastEditSignature) return;
+      lastEditSignature = sig;
+      const schema = store.schema ?? store.pages[0]?.columns;
+      if (!schema) return;
+      try {
+        const carrier = { columns: schema } as TablePage;
+        tabulator.value.setColumns(
+          buildColumns(carrier, editSchema) as unknown[],
+        );
+      } catch {
+        // setColumns rejected (Tabulator version quirk) -> no-op; the grid
+        // stays read-only until the next schema change forces a rebuild.
       }
     },
   );

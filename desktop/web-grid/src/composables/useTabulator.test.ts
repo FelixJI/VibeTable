@@ -151,7 +151,14 @@ describe("useTabulator", () => {
     await flushPromises();
 
     expect(createGrid).toHaveBeenCalledTimes(1);
-    expect(createGrid).toHaveBeenCalledWith(gridEl.value, page1);
+    // createGrid now takes a 3rd options arg { editSchema, onCellEdited } so
+    // editors attach on first paint when the schema has already arrived. Here
+    // no editSchema has been set, so editSchema is null and onCellEdited is
+    // a forwarding wrapper (useTabulator wraps it to avoid stale capture).
+    expect(createGrid).toHaveBeenCalledWith(gridEl.value, page1, {
+      editSchema: null,
+      onCellEdited: expect.any(Function),
+    });
     wrapper.unmount();
   });
 
@@ -207,6 +214,88 @@ describe("useTabulator", () => {
 
     wrapper.unmount();
     expect(lastMock!.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Task M3: when tableStore.editSchema arrives AFTER the grid is already
+   * initialized, useTabulator rebuilds the columns in place via setColumns so
+   * per-column editors attach without a full grid rebuild. The editSchema
+   * typically arrives via a separate `table.editSchemaLoaded` host event.
+   */
+  it("rebuilds columns via setColumns when editSchema arrives after init", async () => {
+    const { buildColumns } = await import("@/grid/createGrid");
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+
+    const wrapper = mountHost(gridEl);
+    gridEl.value = document.createElement("div");
+    await flushPromises();
+
+    table.beginLoad();
+    table.appendPage(makePage([{ id: 1 }], [makeColumn("id")]));
+    await flushPromises();
+    expect(lastMock).not.toBeNull();
+    expect(lastMock!.setColumns).not.toHaveBeenCalled();
+
+    // editSchema arrives -> setColumns called with columns built from the
+    // current schema + the new editSchema (editors attach in place).
+    table.setEditSchema(
+      [
+        {
+          name: "id",
+          storageName: "id",
+          dataType: "integer",
+          editable: false,
+          nullable: false,
+          primaryKey: true,
+          editor: { kind: "number", storage: "integer" },
+          validation: [],
+        },
+      ],
+      { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 1 },
+    );
+    await flushPromises();
+
+    expect(lastMock!.setColumns).toHaveBeenCalledTimes(1);
+    expect(buildColumns).toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  /**
+   * Task M3: when the caller supplies an onCellEdited callback, it must be
+   * forwarded to createGrid so committed edits reach mutationService. We
+   * verify the wiring by reading the options createGrid was called with and
+   * invoking the captured onCellEdited wrapper.
+   */
+  it("forwards onCellEdited to createGrid so edits reach the caller", async () => {
+    const { createGrid } = await import("@/grid/createGrid");
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+    const onCellEdited = vi.fn();
+
+    const Host = defineComponent({
+      setup() {
+        useTabulator(gridEl, { onCellEdited });
+        return () => h("div");
+      },
+    });
+    const wrapper = mount(Host);
+    gridEl.value = document.createElement("div");
+    await flushPromises();
+
+    table.beginLoad();
+    table.appendPage(makePage([{ id: 1 }], [makeColumn("id")]));
+    await flushPromises();
+
+    expect(createGrid).toHaveBeenCalledTimes(1);
+    const thirdArg = (createGrid as unknown as {
+      mock: { calls: unknown[][] };
+    }).mock.calls[0]![2] as { onCellEdited?: (a: number, b: string, c: unknown, d: unknown) => void };
+    expect(typeof thirdArg.onCellEdited).toBe("function");
+    // Invoke the captured wrapper — it should forward to our onCellEdited.
+    thirdArg.onCellEdited!(7, "name", "old", "new");
+    expect(onCellEdited).toHaveBeenCalledWith(7, "name", "old", "new");
+    wrapper.unmount();
   });
 
   it("waits for the grid element to mount before initializing", async () => {

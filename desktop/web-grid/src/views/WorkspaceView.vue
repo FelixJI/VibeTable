@@ -31,6 +31,7 @@ import { useWorkspaceService } from "@/services/workspaceService";
 import { useTableService } from "@/services/tableService";
 import { usePasteService } from "@/services/pasteService";
 import type { ApplyPasteInput } from "@/services/pasteService";
+import { useMutationService } from "@/services/mutationService";
 import { useTableAdminService } from "@/services/tableAdminService";
 import { useErrorRouter } from "@/services/errorRouter";
 import { useUiStore } from "@/stores/uiStore";
@@ -41,6 +42,7 @@ import { useWorkspaceStore } from "@/stores/workspaceStore";
 const workspaceService = useWorkspaceService();
 const tableService = useTableService();
 const pasteService = usePasteService();
+const mutationService = useMutationService();
 const tableAdminService = useTableAdminService();
 const errorRouter = useErrorRouter();
 const ui = useUiStore();
@@ -55,9 +57,27 @@ onMounted(() => {
   workspaceService.init();
   tableService.init();
   pasteService.init();
+  mutationService.init();
   tableAdminService.init();
   errorRouter.init();
 });
+
+/**
+ * Inline cell-edit handler for GridHost. Tabulator fires cellEdited AFTER the
+ * cell value is already changed, so oldValue was captured up-front in the
+ * cellEditing callback (see createGrid.buildOptions). We forward the full
+ * (rowKey, column, oldValue, newValue) tuple to mutationService.updateCell,
+ * which notifies the host; the host's `table.editCommitted` inbound event
+ * then applies the canonical result to tableStore.
+ */
+function onCellEdited(
+  rowKey: number | string,
+  column: string,
+  oldValue: unknown,
+  newValue: unknown,
+) {
+  mutationService.updateCell(rowKey, column, oldValue, newValue);
+}
 
 /** Sidebar: select a table from the list. */
 function onSelect(name: string) {
@@ -133,7 +153,7 @@ function onCancelPaste() {
         @refresh="tableService.refresh"
         @open-help="ui.openShortcuts"
       />
-      <GridHost />
+      <GridHost :on-cell-edited="onCellEdited" />
       <StatusBar />
     </main>
     <PastePanel @confirm="onConfirmPaste" @cancel="onCancelPaste" />

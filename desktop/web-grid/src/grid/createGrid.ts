@@ -1,24 +1,30 @@
 /**
- * Read-only Tabulator grid builder.
+ * Tabulator grid builder — read-only by default, editable per-column when an
+ * `editSchema` is supplied (Task M3).
  *
  * Builds the base grid from a host `TablePage`; mutation and paste controllers
  * attach their behavior separately.
  *
  * Design:
- *   - `buildColumns(page)`  : pure. Maps the backend `ColumnSchema[]` to
- *     Tabulator column definitions, hides `rowKey`
- *     (transport metadata, never a visible column), and leaves decimal raw
- *     values untouched.
- *   - `buildOptions(page)`  : pure. Returns the Tabulator options object:
- *     `selectableRange:true`, data passed through
- *     verbatim (decimals intact).
- *   - `createGrid(element, page)`: side-effectful. Instantiates a Tabulator
- *     on `element` using the above. Returns the instance for teardown/refresh.
+ *   - `buildColumns(page, editSchema?)`: pure. Maps the backend `ColumnSchema[]`
+ *     to Tabulator column definitions, hides `rowKey` (transport metadata,
+ *     never a visible column), and leaves decimal raw values untouched. When
+ *     `editSchema` is provided, columns the host marks `editable:true` get a
+ *     Tabulator editor attached via `editorFactory.tabulatorEditor`;
+ *     `multi_select` columns degrade to read-only (no host dialog).
+ *   - `buildOptions(page, opts?)`  : pure. Returns the Tabulator options object:
+ *     `selectableRange:true`, data passed through verbatim (decimals intact),
+ *     and — when `onCellEdited` is supplied — `cellEditing`/`cellEdited`
+ *     callbacks that capture oldValue and forward the edit.
+ *   - `createGrid(element, page, opts?)`: side-effectful. Instantiates a
+ *     Tabulator on `element` using the above. Returns the instance for
+ *     teardown/refresh.
  */
 
 import { TabulatorFull } from "tabulator-tables";
 import type { TabulatorOptions } from "tabulator-tables";
-import type { ColumnSchema, TablePage } from "@/contracts";
+import type { ColumnEditSchema, ColumnSchema, TablePage } from "@/contracts";
+import { tabulatorEditor } from "./editorFactory";
 
 /**
  * The hidden `rowKey` field name in the host/WebView contract.
@@ -26,13 +32,13 @@ import type { ColumnSchema, TablePage } from "@/contracts";
  */
 export const ROW_KEY_FIELD = "rowKey";
 
-/** A Tabulator column definition (structural — we only set what Phase A needs). */
+/** A Tabulator column definition (structural — we only set what we use). */
 export interface GridColumnDefinition {
   /** Row-dict key this column reads. */
   readonly field: string;
   /** Heading text. */
   readonly title: string;
-  /** Base-grid editability; mutation controllers may supply editors separately. */
+  /** Whether Tabulator should allow inline editing of this column. */
   readonly editable: boolean;
   /** Hint for formatters; aligns with backend `ColumnSchema.dataType`. */
   readonly dataType: ColumnSchema["dataType"];
@@ -50,6 +56,33 @@ export interface GridColumnDefinition {
   readonly formatterParams?: Record<string, unknown>;
   /** Whether NULL is allowed (display hint). */
   readonly nullable?: boolean;
+  /**
+   * Tabulator editor name (e.g. "input", "number", "tickbox", "select",
+   * "datetime"). Present only on editable columns; undefined means read-only.
+   * Set via `editorFactory.tabulatorEditor` from the host's `Editor` spec.
+   */
+  readonly editor?: string;
+  /** Tabulator editor params (e.g. `{ min, max }`, `{ values, autocomplete }`). */
+  readonly editorParams?: Record<string, unknown>;
+}
+
+/**
+ * Callback shape for an inline cell edit. Forwarded by `cellEdited` after
+ * oldValue is captured in `cellEditing`. Routed by `useTabulator` ->
+ * `WorkspaceView` to `mutationService.updateCell`.
+ */
+export type CellEditedHandler = (
+  rowKey: number | string,
+  column: string,
+  oldValue: unknown,
+  newValue: unknown,
+) => void;
+
+/** Minimal Tabulator CellComponent surface our wiring relies on. */
+interface TabulatorCellLike {
+  getField(): string;
+  getValue(): unknown;
+  getRow(): { getData(): Record<string, unknown> };
 }
 
 /**
@@ -57,9 +90,36 @@ export interface GridColumnDefinition {
  *
  * Pure & total: identical input -> identical output. No DOM access. The grid
  * test exercises this directly.
+ *
+ * When `editSchema` is provided, each column whose matching `ColumnEditSchema`
+ * entry is `editable:true` AND whose `editor.kind !== "multi_select"` gets a
+ * Tabulator editor attached. multi_select columns degrade to read-only
+ * (web-grid ships no host dialog for them); columns absent from `editSchema`
+ * or flagged `editable:false` stay read-only.
  */
-export function buildColumns(page: TablePage): GridColumnDefinition[] {
-  return page.columns.map((col) => toColumnDef(col));
+export function buildColumns(
+  page: TablePage,
+  editSchema?: readonly ColumnEditSchema[] | null,
+): GridColumnDefinition[] {
+  const editByName = new Map(
+    (editSchema ?? []).map((c) => [c.name, c] as const),
+  );
+  return page.columns.map((col) => {
+    const def = toColumnDef(col);
+    const edit = editByName.get(col.name);
+    // multi_select degrades: no host dialog in web-grid (spec §7.3).
+    const editable = !!edit?.editable && edit.editor.kind !== "multi_select";
+    if (editable && edit) {
+      const ed = tabulatorEditor(edit.editor);
+      return {
+        ...def,
+        editable: true,
+        editor: ed.editor,
+        ...(ed.editorParams ? { editorParams: ed.editorParams } : {}),
+      };
+    }
+    return { ...def, editable: false };
+  });
 }
 
 function toColumnDef(col: ColumnSchema): GridColumnDefinition {
@@ -102,7 +162,23 @@ function toColumnDef(col: ColumnSchema): GridColumnDefinition {
 }
 
 /**
- * Build Tabulator options for a read-only Phase-A grid.
+ * Module-level cache of pre-edit cell values, keyed by `${rowKey}:${field}`.
+ *
+ * Tabulator fires `cellEditing` BEFORE the value changes (so `cell.getValue()`
+ * is still the old value) and `cellEdited` AFTER (so the old value is gone).
+ * We stash the old value here between the two callbacks so `cellEdited` can
+ * forward `(rowKey, column, oldValue, newValue)` to the host.
+ *
+ * Module-scoped (not per-grid): there is only one grid per WebView, so a single
+ * map is sufficient and avoids plumbing a closure through buildOptions. Entries
+ * are deleted in `cellEdited` as they're consumed; the map never grows beyond
+ * the number of in-flight edits (typically one).
+ */
+const editingOldValues = new Map<string, unknown>();
+
+/**
+ * Build Tabulator options for a grid that is read-only unless `onCellEdited`
+ * is supplied (Task M3: enabling edits).
  *
  * - `selectableRange:true` enables range selection (highlight, copy-out via
  *   the host clipboard later). It does NOT enable paste.
@@ -111,14 +187,27 @@ function toColumnDef(col: ColumnSchema): GridColumnDefinition {
  *   if a future override turns clipboard on, no paste handler is wired.
  * - `data` carries the rows verbatim; decimals are not reformatted here.
  *   `rowKey` stays in the row dicts but has no column, so it is invisible.
+ * - When `onCellEdited` is supplied, `cellEditing` captures the pre-edit value
+ *   and `cellEdited` forwards `(rowKey, column, oldValue, newValue)` to it.
+ *   Tabulator still gates editing per-column via each column's `editable` flag
+ *   (set in `buildColumns`); these callbacks only fire for editable cells.
+ * - When `editSchema` is supplied, columns are built with editors attached.
  */
-export function buildOptions(page: TablePage): TabulatorOptions {
+export function buildOptions(
+  page: TablePage,
+  opts?: {
+    editSchema?: readonly ColumnEditSchema[] | null;
+    onCellEdited?: CellEditedHandler;
+  },
+): TabulatorOptions {
   // Defensive copy of rows so external mutation cannot leak back into the
   // caller's TablePage. Values (incl. decimals) are NOT transformed.
   const data = page.rows.map((row) => ({ ...row }));
 
+  const onCellEdited = opts?.onCellEdited;
+
   const options: TabulatorOptions = {
-    columns: buildColumns(page) as unknown[],
+    columns: buildColumns(page, opts?.editSchema) as unknown[],
     data,
     layout: "fitColumns",
     // Read-only Phase A:
@@ -130,6 +219,30 @@ export function buildOptions(page: TablePage): TabulatorOptions {
     editEventQueue: undefined,
     // Header sort off by default for remote-mode pages (Phase A).
     ...(page.mode === "remote" ? { headerSort: false } : {}),
+    // Task M3: editable grid wiring. Only registered when the caller cares
+    // about edits (keeps the read-only Phase-A options object clean).
+    ...(onCellEdited
+      ? {
+          // cellEditing fires BEFORE Tabulator commits the new value, so the
+          // cell still holds the OLD value. Cache it for cellEdited.
+          cellEditing: (cell: TabulatorCellLike) => {
+            const row = cell.getRow().getData();
+            const rowKey = row[ROW_KEY_FIELD] as number | string;
+            editingOldValues.set(`${rowKey}:${cell.getField()}`, cell.getValue());
+          },
+          // cellEdited fires AFTER the value is committed; oldValue is gone
+          // from the cell, so retrieve it from the cache built in cellEditing.
+          cellEdited: (cell: TabulatorCellLike) => {
+            const row = cell.getRow().getData();
+            const rowKey = row[ROW_KEY_FIELD] as number | string;
+            const field = cell.getField();
+            const key = `${rowKey}:${field}`;
+            const oldValue = editingOldValues.get(key);
+            editingOldValues.delete(key);
+            onCellEdited(rowKey, field, oldValue, cell.getValue());
+          },
+        }
+      : {}),
   };
 
   // Strip the undefined keys so the object is clean for assertion & wire.
@@ -137,14 +250,21 @@ export function buildOptions(page: TablePage): TabulatorOptions {
 }
 
 /**
- * Instantiate a Tabulator grid on `element` using the read-only options
- * derived from `page`. Returns the instance (caller owns lifecycle/teardown).
+ * Instantiate a Tabulator grid on `element` using the options derived from
+ * `page`. Returns the instance (caller owns lifecycle/teardown).
+ *
+ * Pass `{ editSchema, onCellEdited }` to enable per-column editing and route
+ * committed edits to the mutation service.
  */
 export function createGrid(
   element: HTMLElement | string,
   page: TablePage,
+  opts?: {
+    editSchema?: readonly ColumnEditSchema[] | null;
+    onCellEdited?: CellEditedHandler;
+  },
 ): TabulatorFull {
-  const options = buildOptions(page);
+  const options = buildOptions(page, opts);
   // Cast: our minimal ambient TabulatorOptions is intentionally permissive;
   // Tabulator's real options object is far larger than Phase A needs.
   return new TabulatorFull(element, options);

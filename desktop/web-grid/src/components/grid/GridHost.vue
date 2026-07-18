@@ -1,13 +1,22 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useTabulator } from "@/composables/useTabulator";
+import type { CellEditedHandler } from "@/grid/createGrid";
 import { useTableStore } from "@/stores/tableStore";
 import LoadingOverlay from "@/components/feedback/LoadingOverlay.vue";
 import ErrorOverlay from "@/components/feedback/ErrorOverlay.vue";
 
+/**
+ * Inline-edit callback. GridHost is a thin presentational wrapper around
+ * `useTabulator`; the actual routing to `mutationService.updateCell` lives in
+ * WorkspaceView (the integration layer). Optional so GridHost stays usable in
+ * read-only contexts.
+ */
+const props = defineProps<{ onCellEdited?: CellEditedHandler }>();
+
 const gridEl = ref<HTMLElement | null>(null);
 const store = useTableStore();
-useTabulator(gridEl);
+useTabulator(gridEl, { onCellEdited: props.onCellEdited });
 </script>
 
 <template>
