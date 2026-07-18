@@ -9,6 +9,8 @@ import { useUiStore } from "@/stores/uiStore";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { usePasteStore } from "@/stores/pasteStore";
+import { useHistoryStore } from "@/stores/historyStore";
+import { useTableStore } from "@/stores/tableStore";
 import type { PastePlan, PasteSummary } from "@/contracts";
 
 /**
@@ -57,12 +59,29 @@ function makeRecordingBridge(): {
   return { bridge, posted };
 }
 
-vi.mock("@/grid/createGrid", () => ({
-  createGrid: () => ({
+/**
+ * The Tabulator instance returned by the mocked createGrid. Tests can mutate
+ * `mockTabulatorRef.current` (e.g. install a fresh `getRanges` stub) BEFORE
+ * mounting WorkspaceView so the GridHost's provide/inject sees the new value.
+ */
+const mockTabulatorRef: {
+  current: {
+    setData: ReturnType<typeof vi.fn>;
+    setColumns: ReturnType<typeof vi.fn>;
+    destroy: ReturnType<typeof vi.fn>;
+    getRanges: () => unknown[];
+  };
+} = {
+  current: {
     setData: vi.fn().mockResolvedValue(undefined),
     setColumns: vi.fn(),
     destroy: vi.fn(),
-  }),
+    getRanges: () => [],
+  },
+};
+
+vi.mock("@/grid/createGrid", () => ({
+  createGrid: () => mockTabulatorRef.current,
   buildColumns: () => [],
 }));
 
@@ -95,6 +114,14 @@ describe("WorkspaceView", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
     setActivePinia(createPinia());
+    // Reset the mocked Tabulator instance between tests (in particular,
+    // restore getRanges to "no selection" so shortcut tests start clean).
+    mockTabulatorRef.current = {
+      setData: vi.fn().mockResolvedValue(undefined),
+      setColumns: vi.fn(),
+      destroy: vi.fn(),
+      getRanges: () => [],
+    };
   });
 
   afterEach(() => setHostBridgeForTesting(null));
@@ -252,5 +279,175 @@ describe("WorkspaceView", () => {
       await flushPromises();
     }
     expect(posted.some((p) => p.type === "table.applyPasteRequested")).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // Task M5: keyboard shortcut wiring (copy/paste/delete/refresh/newTable).
+  // -------------------------------------------------------------------------
+
+  /**
+   * Dispatch a keydown for a single key + modifier set on document (the same
+   * surface useKeyboard listens on). Mirrors the helper in useKeyboard.test.ts.
+   */
+  function fireKey(key: string, init: KeyboardEventInit = {}): void {
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }),
+    );
+  }
+
+  it("Delete shortcut with an active range posts table.deleteRowsRequested (no confirm dialog)", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const tableStore = useTableStore();
+    workspace.selectTable("users");
+    // Seed a page so useTabulator's init watch fires and the mocked Tabulator
+    // instance (with our getRanges stub) is instantiated + provided.
+    tableStore.beginLoad();
+    tableStore.appendPage({
+      table: "users",
+      columns: [{ name: "name", title: "Name", dataType: "text", editable: true, nullable: true }],
+      rows: [{ rowKey: 7, name: "a" }, { rowKey: 11, name: "b" }],
+      offset: 0,
+      limit: 2,
+      totalRows: 2,
+      mode: "client",
+    });
+
+    // Stage an active Tabulator range with two selected rows. mutationService
+    // uses ws.currentTable as the `table` field; the bridge call should carry
+    // the rowKeys with stringified expectedDigest (per M5 contract).
+    mockTabulatorRef.current = {
+      setData: vi.fn().mockResolvedValue(undefined),
+      setColumns: vi.fn(),
+      destroy: vi.fn(),
+      getRanges: () => [
+        {
+          getRows: () => [
+            { getData: () => ({ rowKey: 7, name: "a" }) },
+            { getData: () => ({ rowKey: 11, name: "b" }) },
+          ],
+          getColumns: () => [{ getField: () => "name" }],
+        },
+      ],
+    };
+
+    mountView();
+    await flushPromises();
+
+    fireKey("Delete");
+    await flushPromises();
+
+    const del = posted.find((p) => p.type === "table.deleteRowsRequested");
+    expect(del).toBeTruthy();
+    const payload = del?.payload as {
+      table: string;
+      rows: { rowKey: number; expectedDigest: string }[];
+      schemaRevision: string;
+    };
+    expect(payload.table).toBe("users");
+    expect(payload.rows).toEqual([
+      { rowKey: 7, expectedDigest: "7" },
+      { rowKey: 11, expectedDigest: "11" },
+    ]);
+  });
+
+  it("Delete shortcut with NO active range does not post deleteRowsRequested", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.selectTable("users");
+
+    // Default mock has getRanges -> []; no range active.
+    mountView();
+    await flushPromises();
+
+    fireKey("Delete");
+    await flushPromises();
+
+    expect(posted.some((p) => p.type === "table.deleteRowsRequested")).toBe(false);
+  });
+
+  it("Ctrl+R shortcut posts table.selected (refresh re-uses selectTable channel)", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.selectTable("orders");
+
+    mountView();
+    await flushPromises();
+    posted.length = 0; // ignore the mount-time notifications
+
+    fireKey("r", { ctrlKey: true });
+    await flushPromises();
+
+    // tableService.refresh re-posts `table.selected` for the current table.
+    const sel = posted.find((p) => p.type === "table.selected");
+    expect(sel).toBeTruthy();
+    expect((sel?.payload as { table: string }).table).toBe("orders");
+  });
+
+  it("Ctrl+N shortcut opens the create-table modal (admin + ui)", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const ui = useUiStore();
+    const admin = useTableAdminStore();
+
+    mountView();
+    await flushPromises();
+
+    fireKey("n", { ctrlKey: true });
+    await flushPromises();
+
+    expect(admin.phase).toBe("creating");
+    expect(ui.createModalOpen).toBe(true);
+  });
+
+  it("'?' shortcut opens the shortcuts help page", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const ui = useUiStore();
+
+    mountView();
+    await flushPromises();
+
+    fireKey("?");
+    await flushPromises();
+
+    expect(ui.shortcutsOpen).toBe(true);
+  });
+
+  it("switching tables (sidebar select) clears the undo history", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const history = useHistoryStore();
+
+    workspace.setOpened([
+      { collection: "users", metadata: {} },
+      { collection: "orders", metadata: {} },
+    ]);
+
+    // Seed the history with a fake entry so we can observe the clear.
+    history.push({
+      id: "seed",
+      kind: "updateCell",
+      label: "seed",
+      timestamp: 0,
+      undo: async () => {},
+      redo: async () => {},
+    });
+    expect(history.canUndo).toBe(true);
+
+    mountView();
+    await flushPromises();
+
+    // Click the first table row to trigger onSelect -> history.clear().
+    const row = document.body.querySelector('[data-testid="sidebar-table-name"]');
+    expect(row).toBeTruthy();
+    (row as HTMLElement).click();
+    await flushPromises();
+
+    expect(history.canUndo).toBe(false);
   });
 });

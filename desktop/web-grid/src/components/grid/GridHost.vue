@@ -1,22 +1,37 @@
 <script setup lang="ts">
-import { ref } from "vue";
+/**
+ * GridHost — thin presentational wrapper around `useTabulator`.
+ *
+ * Inline-edit callback: the actual routing to `mutationService.updateCell`
+ * lives in WorkspaceView (the integration layer). Optional so GridHost stays
+ * usable in read-only contexts.
+ *
+ * Tabulator instance sharing: WorkspaceView owns the Tabulator ref (created in
+ * its setup) and provides it via {@link TABULATOR_INJECTION_KEY}. GridHost
+ * injects it and forwards it to `useTabulator` so the composable populates
+ * THAT ref (not a fresh internal one). This lets WorkspaceView read the active
+ * range for the copy/paste/delete keyboard shortcuts (Task M5) without lifting
+ * the entire useTabulator call out of GridHost.
+ */
+import { inject, ref } from "vue";
+import type { Ref } from "vue";
+import type { TabulatorFull } from "tabulator-tables";
 import { useTabulator } from "@/composables/useTabulator";
 import type { CellEditedHandler } from "@/grid/createGrid";
 import { useTableStore } from "@/stores/tableStore";
+import { TABULATOR_INJECTION_KEY } from "./tabulatorInjection";
 import LoadingOverlay from "@/components/feedback/LoadingOverlay.vue";
 import ErrorOverlay from "@/components/feedback/ErrorOverlay.vue";
 
-/**
- * Inline-edit callback. GridHost is a thin presentational wrapper around
- * `useTabulator`; the actual routing to `mutationService.updateCell` lives in
- * WorkspaceView (the integration layer). Optional so GridHost stays usable in
- * read-only contexts.
- */
 const props = defineProps<{ onCellEdited?: CellEditedHandler }>();
 
 const gridEl = ref<HTMLElement | null>(null);
 const store = useTableStore();
-useTabulator(gridEl, { onCellEdited: props.onCellEdited });
+const tabulator = inject<Ref<TabulatorFull | null>>(TABULATOR_INJECTION_KEY);
+useTabulator(gridEl, {
+  onCellEdited: props.onCellEdited,
+  tabulator: tabulator ?? undefined,
+});
 </script>
 
 <template>

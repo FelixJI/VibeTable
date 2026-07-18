@@ -7,11 +7,13 @@ export interface UseKeyboardOptions {
    * Optional Tabulator instance ref. Currently UNUSED — arrow / Tab / Enter
    * navigation is handled by Tabulator's own range API directly. Kept on the
    * options shape for forward-compat (e.g. if a future grid-scoped shortcut
-   * needs to read the active cell range). App.vue deliberately passes nothing.
+   * needs to read the active cell range). WorkspaceView deliberately passes
+   * nothing (it reads the Tabulator instance from GridHost via inject instead).
    */
   tabulator?: Ref<Tabulator | null>;
   onCopy?: () => void;
   onPaste?: () => void;
+  onDelete?: () => void;
   onRefresh?: () => void;
   onNewTable?: () => void;
   onHelp?: () => void;
@@ -74,9 +76,12 @@ function isFocusInInput(): boolean {
  * Register global + grid-scoped keyboard shortcuts on `document`. Should be
  * called from a component's setup(). The listener is removed on unmount.
  *
- * Consumed by App.vue (Task 19). Grid-scoped shortcuts (copy/paste/selectAll/
- * delete) are suppressed while focus is in a form field; global shortcuts are
- * also suppressed there, except Escape which bubbles up to close modals.
+ * Consumed by WorkspaceView (Task M5) — WorkspaceView owns the Tabulator ref
+ * (via GridHost's provide) and all services, so the copy/paste/delete/refresh/
+ * newTable callbacks can route to the right service directly. App.vue keeps
+ * only the theme provider. Grid-scoped shortcuts (copy/paste/selectAll/delete)
+ * are suppressed while focus is in a form field; global shortcuts are also
+ * suppressed there, except Escape which bubbles up to close modals.
  */
 export function useKeyboard(opts: UseKeyboardOptions): void {
   const kb = useKeyboardStore();
@@ -136,7 +141,9 @@ export function useKeyboard(opts: UseKeyboardOptions): void {
       e.preventDefault();
       kb.fire("selectAll");
     } else if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
       kb.fire("deleteRows");
+      opts.onDelete?.();
     } else if (e.key === "F2") {
       e.preventDefault();
       kb.fire("editCell");

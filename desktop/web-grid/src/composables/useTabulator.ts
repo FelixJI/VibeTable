@@ -70,6 +70,15 @@ export interface UseTabulatorOptions {
    * `mutationService.updateCell`.
    */
   readonly onCellEdited?: CellEditedHandler;
+  /**
+   * Optional EXTERNAL ref to populate with the Tabulator instance. When
+   * provided (Task M5: WorkspaceView creates the ref, provides it via
+   * inject, and GridHost forwards it here), useTabulator populates THIS ref
+   * instead of a fresh internal one — so the caller can read the active range
+   * for copy/paste/delete shortcuts. When omitted, useTabulator creates its
+   * own ref (the historical behavior).
+   */
+  readonly tabulator?: Ref<TabulatorFull | null>;
 }
 
 /**
@@ -105,7 +114,10 @@ export function useTabulator(
   options?: UseTabulatorOptions,
 ) {
   const store = useTableStore();
-  const tabulator = ref<TabulatorFull | null>(null);
+  // Use the caller-provided ref if present (Task M5: WorkspaceView shares the
+  // ref with the keyboard shortcuts via provide/inject). Otherwise create a
+  // fresh internal ref (historical behavior).
+  const tabulator = options?.tabulator ?? ref<TabulatorFull | null>(null);
   let lastColSignature: string | null = null;
   let lastEditSignature = editSchemaSignature(store.editSchema);
 
