@@ -14,6 +14,9 @@ export const messages: Record<string, string> = {
   "toolbar.rowCount": "{count} rows",
   "toolbar.help": "Shortcuts",
   "toolbar.theme": "Theme",
+  "toolbar.theme.system": "System",
+  "toolbar.theme.light": "Light",
+  "toolbar.theme.dark": "Dark",
 
   "status.databaseOpening": "Connecting to database…",
   "status.databaseOpened": "Connected, {count} collections",

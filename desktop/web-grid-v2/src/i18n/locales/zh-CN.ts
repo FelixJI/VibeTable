@@ -14,6 +14,9 @@ export const messages: Record<string, string> = {
   "toolbar.rowCount": "{count} 行",
   "toolbar.help": "快捷键",
   "toolbar.theme": "主题",
+  "toolbar.theme.system": "跟随系统",
+  "toolbar.theme.light": "浅色",
+  "toolbar.theme.dark": "深色",
 
   "status.databaseOpening": "正在连接数据库…",
   "status.databaseOpened": "已连接，共 {count} 个集合",
