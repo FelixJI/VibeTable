@@ -182,12 +182,19 @@ describe("mutationService", () => {
   // Feedback-loop guard: performUndo/performRedo suppress history pushes so the
   // host's confirmation round-trip does not clear the redo stack.
   //
-  // These tests model the synchronous-host case: the undo closure's
-  // `bridge.notify(updateCellRequested, oldValue)` is stubbed to immediately
-  // re-emit `table.editCommitted` (the host's confirmation) BEFORE notify
-  // returns — i.e. while performUndo's suppress guard is still active. Without
-  // the guard that synchronous re-notification would push a NEW entry and
-  // clear the redo stack, destroying redo.
+  // The guard is CONSUME-ON-INBOUND, not time/await based. performUndo arms
+  // the suppress flag and DOES NOT clear it on await; the matching inbound
+  // result (editCommitted/rowsInserted/rowsDeleted/pasteApplied) consumes it.
+  // This is what makes the guard survive the real WebView2 host's async
+  // response — `await history.undo()` resolves long before the C# host
+  // processes the re-notification and broadcasts its confirmation.
+  //
+  // Two scenarios are covered:
+  //   (a) Synchronous host (shim emits inside the undo closure): the existing
+  //       "performUndo suppresses the re-notification's history push" test.
+  //   (b) Asynchronous host (response emitted AFTER undo resolves): the new
+  //       "performUndo survives an ASYNC host confirmation" test below — this
+  //       is the case the previous await-based flag could NOT handle.
   // -------------------------------------------------------------------------
 
   it("performUndo suppresses the re-notification's history push (redo preserved)", async () => {
@@ -273,6 +280,141 @@ describe("mutationService", () => {
     await svc.performUndo();
     expect(history.undoStackSize).toBe(beforeUndo - 1);
     expect(history.canRedo).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // ASYNC feedback-loop guard: the real WebView2 host processes the undo's
+  // re-notification asynchronously and emits `table.editCommitted` AFTER
+  // `performUndo`'s promise has already resolved. A time/await-based suppress
+  // flag would have flipped back off by then and the inbound handler would
+  // push a duplicate entry, clearing the redo stack. The consume-on-inbound
+  // guard survives the async gap.
+  // -------------------------------------------------------------------------
+
+  it("performUndo survives an ASYNC host confirmation (redo preserved)", async () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("u");
+    table.beginLoad();
+    table.appendPage({
+      table: "u",
+      columns: [],
+      rows: [{ rowKey: 1, name: "old" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    const history = useHistoryStore();
+    const svc = useMutationService();
+    svc.init();
+    emit("table.editCommitted", {
+      rowKey: 1,
+      column: "name",
+      storedValue: "new",
+      currentRow: { rowKey: 1, name: "new" },
+      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
+    });
+    expect(history.undoStackSize).toBe(1);
+
+    // Stub notify so the undo's updateCellRequested schedules the host's
+    // editCommitted confirmation via setTimeout(0) — i.e. AFTER the
+    // microtask queue drains and `await svc.performUndo()` resolves. This
+    // mirrors the real WebView2 host's async behavior.
+    vi.spyOn(bridge, "notify").mockImplementation((type) => {
+      if (type === "table.updateCellRequested") {
+        setTimeout(() => {
+          emit("table.editCommitted", {
+            rowKey: 1,
+            column: "name",
+            storedValue: "old",
+            currentRow: { rowKey: 1, name: "old" },
+            revision: {
+              databaseSessionId: "s",
+              schemaRevision: "sr",
+              dataRevision: 3,
+            },
+          });
+        }, 0);
+      }
+    });
+
+    // performUndo resolves BEFORE the host's async confirmation lands.
+    await svc.performUndo();
+    // At this instant, suppressHistory is STILL up (not cleared by await).
+    // The redo stack already has the entry (history.undo moved it there).
+    expect(history.canRedo).toBe(true);
+
+    // Flush the setTimeout(0) so the host's async confirmation arrives now.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    // The async confirmation did NOT push a duplicate entry (undoStackSize
+    // stayed at 0, not 1) and did NOT clear the redo stack.
+    expect(history.undoStackSize).toBe(0);
+    expect(history.canRedo).toBe(true);
+    // The store WAS updated by the inbound handler (apply still runs).
+    expect(table.allRows[0]?.name).toBe("old");
+  });
+
+  it("performUndo clears the suppress guard when the host emits operation.failed", async () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("u");
+    table.beginLoad();
+    table.appendPage({
+      table: "u",
+      columns: [],
+      rows: [{ rowKey: 1, name: "old" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    const history = useHistoryStore();
+    const svc = useMutationService();
+    svc.init();
+    emit("table.editCommitted", {
+      rowKey: 1,
+      column: "name",
+      storedValue: "new",
+      currentRow: { rowKey: 1, name: "new" },
+      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
+    });
+    expect(history.undoStackSize).toBe(1);
+
+    // Host fails the undo's re-notification — no editCommitted will arrive.
+    vi.spyOn(bridge, "notify").mockImplementation((type) => {
+      if (type === "table.updateCellRequested") {
+        setTimeout(() => {
+          emit("operation.failed", { message: "host rejected undo" });
+        }, 0);
+      }
+    });
+
+    await svc.performUndo();
+    // Note: history.undo() popped the entry but the undo closure's notify
+    // was stubbed; entry is now on the redo stack. The host then fails.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    // operation.failed cleared the suppress guard. The NEXT user edit must
+    // be recorded normally (not silently swallowed).
+    emit("table.editCommitted", {
+      rowKey: 1,
+      column: "name",
+      storedValue: "user-typed",
+      currentRow: { rowKey: 1, name: "user-typed" },
+      revision: {
+        databaseSessionId: "s",
+        schemaRevision: "sr",
+        dataRevision: 4,
+      },
+    });
+    expect(history.undoStackSize).toBe(1);
+    expect(table.allRows[0]?.name).toBe("user-typed");
   });
 
   // -------------------------------------------------------------------------
