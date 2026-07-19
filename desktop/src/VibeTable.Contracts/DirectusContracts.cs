@@ -19,7 +19,8 @@ public sealed record DirectusCurrentUser(
 
 public sealed record DirectusCollectionList(
     IReadOnlyList<string> Collections,
-    IReadOnlyDictionary<string, string> CapabilityHashes);
+    IReadOnlyDictionary<string, string> CapabilityHashes,
+    IReadOnlyDictionary<string, string>? DisplayNames = null);
 
 public sealed record DirectusServerInfo(
     string? ProjectName,

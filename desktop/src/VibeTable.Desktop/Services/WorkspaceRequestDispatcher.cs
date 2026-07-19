@@ -136,6 +136,18 @@ public sealed class WorkspaceRequestDispatcher
             case "tableAdmin.deleteRequested":
                 await OnDeleteTableRequestedAsync(request).ConfigureAwait(false);
                 break;
+            case "identifierMappings.listRequested":
+                await OnListIdentifierMappingsAsync(request).ConfigureAwait(false);
+                break;
+            case "identifierMappings.updateAliasesRequested":
+                await OnUpdateIdentifierAliasesAsync(request).ConfigureAwait(false);
+                break;
+            case "identifierMappings.importRequested":
+                await OnImportIdentifierMappingsAsync(request).ConfigureAwait(false);
+                break;
+            case "identifierMappings.reconcileRequested":
+                await OnReconcileIdentifierMappingsAsync(request).ConfigureAwait(false);
+                break;
             default:
                 // Unknown types never reach here (router whitelists), but be
                 // defensive: surface as operation.failed.
@@ -156,7 +168,12 @@ public sealed class WorkspaceRequestDispatcher
         {
             // User cancelled the picker — not an error, but nothing to open.
             // Post an empty database.opened so the web resets its state.
-            _reply.PostNotification("database.opened", new { tables = Array.Empty<string>(), views = Array.Empty<string>() });
+            _reply.PostNotification("database.opened", new
+            {
+                tables = Array.Empty<string>(),
+                views = Array.Empty<string>(),
+                displayNames = new Dictionary<string, string>(),
+            });
             return;
         }
 
@@ -165,6 +182,7 @@ public sealed class WorkspaceRequestDispatcher
         {
             tables = result.Tables,
             views = result.Views,
+            displayNames = result.DisplayNames,
         });
     }
 
@@ -483,6 +501,110 @@ public sealed class WorkspaceRequestDispatcher
         }
     }
 
+    private async Task OnListIdentifierMappingsAsync(RoutedWebRequest request)
+    {
+        if (!TryRequireDirectus(request)) return;
+        try
+        {
+            var result = await _directusGateway!.ListIdentifierMappingsAsync(
+                TryGetString(request.Payload, "search"), CancellationToken.None)
+                .ConfigureAwait(false);
+            _reply.PostResponse("identifierMappings.result", request.RequestId, result);
+        }
+        catch (Exception ex)
+        {
+            _reply.PostOperationFailed(request.RequestId, ex.Message, "MAPPING_LIST_FAILED");
+        }
+    }
+
+    private async Task OnUpdateIdentifierAliasesAsync(RoutedWebRequest request)
+    {
+        if (!TryRequireDirectus(request)) return;
+        string? mappingId = TryGetString(request.Payload, "mappingId");
+        var aliases = TryGetStringArray(request.Payload, "aliases");
+        if (string.IsNullOrWhiteSpace(mappingId) || aliases is null)
+        {
+            _reply.PostOperationFailed(request.RequestId, "映射别名参数无效。", "BAD_PAYLOAD");
+            return;
+        }
+        try
+        {
+            var result = await _directusGateway!.UpdateIdentifierAliasesAsync(
+                mappingId, aliases, CancellationToken.None).ConfigureAwait(false);
+            _reply.PostResponse("identifierMappings.result", request.RequestId, result);
+        }
+        catch (Exception ex)
+        {
+            _reply.PostOperationFailed(request.RequestId, ex.Message, "MAPPING_UPDATE_FAILED");
+        }
+    }
+
+    private async Task OnImportIdentifierMappingsAsync(RoutedWebRequest request)
+    {
+        if (!TryRequireDirectus(request)) return;
+        if (!TryGetProperty(request.Payload, "mappings", out var mappingsElement)
+            || mappingsElement.ValueKind != JsonValueKind.Array)
+        {
+            _reply.PostOperationFailed(request.RequestId, "映射导入文件格式无效。", "BAD_PAYLOAD");
+            return;
+        }
+        var mappings = new List<IdentifierMappingImportItem>();
+        foreach (var item in mappingsElement.EnumerateArray())
+        {
+            string? entityKind = TryGetString(item, "entityKind");
+            string? physicalName = TryGetString(item, "physicalName");
+            string? displayName = TryGetString(item, "displayName");
+            var aliases = TryGetStringArray(item, "aliases");
+            if (string.IsNullOrWhiteSpace(entityKind)
+                || string.IsNullOrWhiteSpace(physicalName)
+                || string.IsNullOrWhiteSpace(displayName)
+                || aliases is null)
+            {
+                _reply.PostOperationFailed(request.RequestId, "映射导入项格式无效。", "BAD_PAYLOAD");
+                return;
+            }
+            mappings.Add(new IdentifierMappingImportItem(
+                entityKind,
+                TryGetString(item, "parentPhysicalName"),
+                physicalName,
+                displayName,
+                aliases));
+        }
+        try
+        {
+            var result = await _directusGateway!.ImportIdentifierMappingsAsync(
+                mappings, CancellationToken.None).ConfigureAwait(false);
+            _reply.PostResponse("identifierMappings.result", request.RequestId, result);
+        }
+        catch (Exception ex)
+        {
+            _reply.PostOperationFailed(request.RequestId, ex.Message, "MAPPING_IMPORT_FAILED");
+        }
+    }
+
+    private async Task OnReconcileIdentifierMappingsAsync(RoutedWebRequest request)
+    {
+        if (!TryRequireDirectus(request)) return;
+        try
+        {
+            var result = await _directusGateway!.ReconcileIdentifierMappingsAsync(
+                CancellationToken.None).ConfigureAwait(false);
+            _reply.PostResponse("identifierMappings.result", request.RequestId, result);
+            await PostCollectionsChangedAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _reply.PostOperationFailed(request.RequestId, ex.Message, "MAPPING_RECONCILE_FAILED");
+        }
+    }
+
+    private bool TryRequireDirectus(RoutedWebRequest request)
+    {
+        if (_directusGateway is not null) return true;
+        _reply.PostOperationFailed(request.RequestId, "Directus 尚未登录。", "NOT_AUTHENTICATED");
+        return false;
+    }
+
     /// <summary>
     /// Re-lists collections, filters to user tables, and pushes
     /// database.collectionsChanged so the sidebar refreshes.
@@ -496,6 +618,7 @@ public sealed class WorkspaceRequestDispatcher
         {
             tables,
             capabilityHashes = list.CapabilityHashes,
+            displayNames = list.DisplayNames,
         });
     }
 
@@ -623,6 +746,23 @@ public sealed class WorkspaceRequestDispatcher
             return el.GetString();
         }
         return null;
+    }
+
+    private static IReadOnlyList<string>? TryGetStringArray(JsonElement payload, string name)
+    {
+        if (payload.ValueKind != JsonValueKind.Object
+            || !payload.TryGetProperty(name, out var element)
+            || element.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+        var values = new List<string>();
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String) return null;
+            values.Add(item.GetString() ?? string.Empty);
+        }
+        return values;
     }
 
     private static int TryGetInt(JsonElement payload, string name, int defaultValue)

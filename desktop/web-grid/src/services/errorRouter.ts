@@ -12,7 +12,7 @@ import { useTableStore } from "@/stores/tableStore";
  * Decision key: the currently-active operation phase across the three business
  * stores. Whoever is "in flight" claims the failure:
  *
- *   - `tableAdminStore` in `creating` or `deleting` -> `admin.fail`
+ *   - `tableAdminStore` in `submitting` or `deleting` -> `admin.fail`
  *     (create-table / delete-table flow owns the error surface).
  *   - `pasteStore` in `applying` -> `paste.setError`
  *     (paste-in-progress owns the error surface).
@@ -31,7 +31,7 @@ export function useErrorRouter(): { init: () => void } {
 
   function init(): void {
     bridge.on("operation.failed", (payload: OperationFailedPayload) => {
-      if (admin.phase === "creating" || admin.phase === "deleting") {
+      if (admin.phase === "submitting" || admin.phase === "deleting") {
         admin.fail(payload.message);
       } else if (paste.phase === "applying") {
         paste.setError(payload.message);

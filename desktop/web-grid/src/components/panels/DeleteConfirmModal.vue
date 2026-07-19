@@ -8,17 +8,16 @@
  * call `tableAdminService.deleteTable` — `WorkspaceView` wires confirm to
  * `service.deleteTable(ui.deleteTarget)`.
  *
- * Brief-template deviation: the brief imports `useTableAdminStore` but only
- * uses `uiStore` for both the open flag and the target name (which matches
- * where `ui.openDelete(name)` actually writes — see uiStore.openDelete). The
- * admin-store import is dropped here because it was unused (and would trip
- * `noUnusedLocals`).
+ * The UI store owns visibility/target; the admin store owns in-flight/error
+ * state so a rejected delete remains visible and retryable.
  */
 import { NModal, NSpace, NButton } from "naive-ui";
 import { useUiStore } from "@/stores/uiStore";
+import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { t } from "@/i18n";
 
 const ui = useUiStore();
+const admin = useTableAdminStore();
 
 const emit = defineEmits<{ confirm: []; cancel: [] }>();
 </script>
@@ -33,6 +32,9 @@ const emit = defineEmits<{ confirm: []; cancel: [] }>();
     <p data-testid="delete-confirm-message">
       {{ t("sidebar.delete.confirm", { name: ui.deleteTarget ?? "" }) }}
     </p>
+    <p v-if="admin.error" class="delete-error" role="alert" data-testid="delete-error">
+      {{ admin.error }}
+    </p>
     <template #action>
       <NSpace justify="end">
         <NButton size="small" data-testid="delete-confirm-cancel" @click="emit('cancel')">
@@ -41,6 +43,7 @@ const emit = defineEmits<{ confirm: []; cancel: [] }>();
         <NButton
           size="small"
           type="error"
+          :loading="admin.phase === 'deleting'"
           data-testid="delete-confirm-ok"
           @click="emit('confirm')"
         >
@@ -50,3 +53,9 @@ const emit = defineEmits<{ confirm: []; cancel: [] }>();
     </template>
   </NModal>
 </template>
+
+<style scoped>
+.delete-error {
+  color: var(--vt-color-danger);
+}
+</style>

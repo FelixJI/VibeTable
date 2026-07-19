@@ -6,7 +6,12 @@ import { validateFields, validateTableName } from "@/services/tableAdminValidati
 import type { CollectionSummary } from "@/stores/workspaceStore";
 
 /** Lifecycle of the create/delete admin flows. */
-export type TableAdminPhase = "idle" | "creating" | "deleting" | "failed";
+export type TableAdminPhase =
+  | "idle"
+  | "creating"
+  | "submitting"
+  | "deleting"
+  | "failed";
 
 /**
  * One editable field row in the create-table form. This is the STORE's own
@@ -45,14 +50,14 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
 
   /**
    * The form is submittable when:
-   *   - we are in the `creating` phase,
+   *   - the form is editable (`creating`, or `failed` after a retryable error),
    *   - `form.name` passes the identifier rule, and
    *   - at least one field has a valid, non-blank name with no validation
    *     errors (blank-key rows are silently skipped by `validateFields`, so a
    *     single valid row among blank placeholders still counts).
    */
   const canSubmit = computed(() => {
-    if (phase.value !== "creating") return false;
+    if (phase.value !== "creating" && phase.value !== "failed") return false;
     if (validateTableName(form.name) !== null) return false;
     const rows = form.fields.map((f) => ({ key: f.name, type: f.type }));
     const result = validateFields(rows);
@@ -85,7 +90,7 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
   }
 
   function beginSubmit(): void {
-    // phase stays "creating" until success/fail; the service drives the notify.
+    phase.value = "submitting";
     error.value = null;
   }
 

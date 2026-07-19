@@ -25,6 +25,13 @@ public interface IDirectusRpcGateway : IDisposable
     Task<CreateTableResult> CreateTableAsync(
         string name, IReadOnlyList<FieldDefinition> fields, CancellationToken token);
     Task<DeleteTableResult> DeleteTableAsync(string name, CancellationToken token);
+    Task<IdentifierMappingsResult> ListIdentifierMappingsAsync(
+        string? search, CancellationToken token);
+    Task<IdentifierMappingsResult> UpdateIdentifierAliasesAsync(
+        string mappingId, IReadOnlyList<string> aliases, CancellationToken token);
+    Task<IdentifierMappingsResult> ImportIdentifierMappingsAsync(
+        IReadOnlyList<IdentifierMappingImportItem> mappings, CancellationToken token);
+    Task<IdentifierMappingsResult> ReconcileIdentifierMappingsAsync(CancellationToken token);
     Task<DirectusSchema> GetSchemaAsync(string collection, CancellationToken token);
     Task<DirectusPage> ReadAsync(
         string collection, TableQuery query, bool includeArchived, CancellationToken token);
@@ -49,7 +56,29 @@ public sealed record FieldDefinition(string Key, string Type);
 public sealed record CreateTableResult(
     string Collection,
     string PrimaryKey,
-    IReadOnlyList<string> Fields);
+    IReadOnlyList<string> Fields,
+    string? DisplayName = null,
+    IReadOnlyDictionary<string, string>? FieldDisplayNames = null);
 
 /// <summary>Result of <c>table_admin.deleteTable</c>: the collection name and whether it was deleted.</summary>
 public sealed record DeleteTableResult(string Collection, bool Deleted);
+
+public sealed record IdentifierMappingEntry(
+    string Id,
+    string EntityKind,
+    string? ParentPhysicalName,
+    string PhysicalName,
+    string DisplayName,
+    string Locale,
+    IReadOnlyList<string> Aliases,
+    string Origin,
+    string Status);
+
+public sealed record IdentifierMappingImportItem(
+    string EntityKind,
+    string? ParentPhysicalName,
+    string PhysicalName,
+    string DisplayName,
+    IReadOnlyList<string> Aliases);
+
+public sealed record IdentifierMappingsResult(IReadOnlyList<IdentifierMappingEntry> Mappings);

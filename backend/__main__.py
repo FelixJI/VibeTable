@@ -286,10 +286,34 @@ def _register_table_admin_methods(dispatcher: RpcDispatcher, service: Any) -> No
     from backend.contracts.table_admin import (
         CreateTableParams,
         DeleteTableParams,
+        ImportIdentifierMappingsParams,
+        ListIdentifierMappingsParams,
+        ReconcileIdentifierMappingsParams,
+        UpdateIdentifierAliasesParams,
     )
 
     dispatcher.register("table_admin.createTable", service.create_table, CreateTableParams)
     dispatcher.register("table_admin.deleteTable", service.delete_table, DeleteTableParams)
+    dispatcher.register(
+        "table_admin.listIdentifierMappings",
+        service.list_identifier_mappings,
+        ListIdentifierMappingsParams,
+    )
+    dispatcher.register(
+        "table_admin.updateIdentifierAliases",
+        service.update_identifier_aliases,
+        UpdateIdentifierAliasesParams,
+    )
+    dispatcher.register(
+        "table_admin.importIdentifierMappings",
+        service.import_identifier_mappings,
+        ImportIdentifierMappingsParams,
+    )
+    dispatcher.register(
+        "table_admin.reconcileIdentifierMappings",
+        service.reconcile_identifier_mappings,
+        ReconcileIdentifierMappingsParams,
+    )
 
 
 async def _build_server() -> tuple[RpcServer, Any | None]:

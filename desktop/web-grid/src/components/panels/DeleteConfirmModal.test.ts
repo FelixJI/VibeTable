@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 
 import DeleteConfirmModal from "./DeleteConfirmModal.vue";
 import { useUiStore } from "@/stores/uiStore";
+import { useTableAdminStore } from "@/stores/tableAdminStore";
 
 /**
  * DeleteConfirmModal is pure-presentation. It reads `uiStore.deleteModalOpen`
@@ -84,5 +85,17 @@ describe("DeleteConfirmModal", () => {
     await flushPromises();
     // The title still renders (zh-CN: 确认删除) even without a target name.
     expect(bodyText()).toContain("删除");
+  });
+
+  it("renders a delete failure so the user can retry", async () => {
+    const ui = useUiStore();
+    const admin = useTableAdminStore();
+    ui.openDelete("orders");
+    admin.requestDelete("orders");
+    admin.fail("该表受保护，无法删除");
+    mountModal();
+    await flushPromises();
+
+    expect(bodyEl("delete-error").textContent).toContain("无法删除");
   });
 });

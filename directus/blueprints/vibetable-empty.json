@@ -104,6 +104,26 @@
         "item_id": {"type": "uuid", "required": true},
         "link_type": {"type": "string", "required": true, "max_length": 64, "default": "primary", "choices": ["primary", "reference", "attachment"]}
       }
+    },
+    "vibetable_identifier_map": {
+      "accountability": "all",
+      "archive_field": "status",
+      "archive_value": "deleted",
+      "unarchive_value": "active",
+      "versioning": false,
+      "hidden": true,
+      "fields": {
+        "id": {"type": "uuid", "primary_key": true},
+        "status": {"type": "string", "required": true, "default": "pending", "choices": ["pending", "active", "orphaned", "deleted"]},
+        "entity_kind": {"type": "string", "required": true, "max_length": 32, "choices": ["collection", "field"]},
+        "parent_physical_name": {"type": "string", "max_length": 128},
+        "physical_name": {"type": "string", "required": true, "max_length": 128},
+        "display_name": {"type": "string", "required": true, "max_length": 128},
+        "normalized_name": {"type": "string", "required": true, "max_length": 256},
+        "locale": {"type": "string", "required": true, "default": "zh-CN", "max_length": 32},
+        "aliases": {"type": "json"},
+        "origin": {"type": "string", "required": true, "default": "vibetable", "max_length": 32, "choices": ["vibetable", "directus", "import"]}
+      }
     }
   },
   "policies": {

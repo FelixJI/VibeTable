@@ -35,7 +35,13 @@ public sealed class WorkspaceRequestDispatcherTests
         // and use the picker's path instead (paths come only from the picker).
         var gateway = new FakeTableRpcGateway();
         gateway.DatabaseOpenResults["C:/picker/chosen.db"] =
-            new DatabaseOpenResult(new[] { "contracts" }, Array.Empty<string>());
+            new DatabaseOpenResult(
+                new[] { "vt_t_contracts" },
+                Array.Empty<string>(),
+                DisplayNames: new Dictionary<string, string>
+                {
+                    ["vt_t_contracts"] = "合同清单",
+                });
         var workspace = new TableWorkspaceService(gateway);
         var picker = new FakeDatabasePicker("C:/picker/chosen.db");
         var sink = new FakeWebReplySink();
@@ -48,10 +54,14 @@ public sealed class WorkspaceRequestDispatcherTests
         dispatcher.Dispatch(new RoutedWebRequest(
             "database.openRequested", "req-1", payload, Raw: ""));
 
-        await sink.WaitForAsync("database.opened");
+        var opened = await sink.WaitForAsync("database.opened");
 
         Assert.AreEqual(1, gateway.OpenDatabaseCalls.Count);
         Assert.AreEqual("C:/picker/chosen.db", gateway.OpenDatabaseCalls[0]);
+        var namesObj = opened!.Payload!.GetType()
+            .GetProperty("displayNames")?.GetValue(opened.Payload);
+        var names = (IReadOnlyDictionary<string, string>)namesObj!;
+        Assert.AreEqual("合同清单", names["vt_t_contracts"]);
     }
 
     [TestMethod]
@@ -354,6 +364,15 @@ internal sealed class FakeWebReplySink : IWebReplySink
         lock (_gate)
         {
             _replies.Add(new Reply(type, null, payload));
+            Monitor.PulseAll(_gate);
+        }
+    }
+
+    public void PostResponse(string type, string? requestId, object? payload)
+    {
+        lock (_gate)
+        {
+            _replies.Add(new Reply(type, requestId, payload));
             Monitor.PulseAll(_gate);
         }
     }

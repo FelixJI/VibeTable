@@ -17,6 +17,7 @@ public sealed class DirectusTableGatewayTests
         var page = await gateway.ReadTablePageAsync("vibetable_demo", 0, 100, CancellationToken.None);
 
         CollectionAssert.AreEqual(new[] { "vibetable_demo" }, opened.Tables.ToArray());
+        Assert.AreEqual("项目表", opened.DisplayNames!["vibetable_demo"]);
         Assert.AreEqual("vibetable_demo", page.Table);
         Assert.AreEqual("Project One", page.Rows[0]["name"]);
         Assert.AreEqual("p1", page.Rows[0]["rowKey"]);
@@ -55,7 +56,8 @@ public sealed class DirectusTableGatewayTests
         public Task<DirectusCollectionList> ListCollectionsAsync(CancellationToken token)
             => Task.FromResult(new DirectusCollectionList(
                 new[] { "vibetable_demo" },
-                new Dictionary<string, string> { ["vibetable_demo"] = "hash" }));
+                new Dictionary<string, string> { ["vibetable_demo"] = "hash" },
+                new Dictionary<string, string> { ["vibetable_demo"] = "项目表" }));
 
         public Task<DirectusSchema> GetSchemaAsync(string collection, CancellationToken token)
             => Task.FromResult(new DirectusSchema(
@@ -111,6 +113,10 @@ public sealed class DirectusTableGatewayTests
         public Task<DirectusSubscription> UnsubscribeAsync(string uid, CancellationToken token) => throw new NotSupportedException();
         public Task<CreateTableResult> CreateTableAsync(string name, IReadOnlyList<FieldDefinition> fields, CancellationToken token) => throw new NotSupportedException();
         public Task<DeleteTableResult> DeleteTableAsync(string name, CancellationToken token) => throw new NotSupportedException();
+        public Task<IdentifierMappingsResult> ListIdentifierMappingsAsync(string? search, CancellationToken token) => throw new NotSupportedException();
+        public Task<IdentifierMappingsResult> UpdateIdentifierAliasesAsync(string mappingId, IReadOnlyList<string> aliases, CancellationToken token) => throw new NotSupportedException();
+        public Task<IdentifierMappingsResult> ImportIdentifierMappingsAsync(IReadOnlyList<IdentifierMappingImportItem> mappings, CancellationToken token) => throw new NotSupportedException();
+        public Task<IdentifierMappingsResult> ReconcileIdentifierMappingsAsync(CancellationToken token) => throw new NotSupportedException();
         public void Dispose() { }
 
         private static DirectusItem EmptyItem(string collection)

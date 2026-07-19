@@ -53,10 +53,20 @@ describe("AppSidebar", () => {
     expect(wrapper.emitted("newTable")!.length).toBe(1);
   });
 
-  it("emits openAdmin when the admin button is clicked", async () => {
+  it("does not duplicate the Directus entry from the application navigation", () => {
     const wrapper = mountSidebar();
-    await wrapper.find('[data-testid="sidebar-open-admin"]').trigger("click");
-    expect(wrapper.emitted("openAdmin")).toBeTruthy();
+    expect(wrapper.find('[data-testid="sidebar-open-admin"]').exists()).toBe(false);
+  });
+
+  it("renders display names but emits the physical collection key", async () => {
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([
+      { collection: "vt_t_01abc", metadata: { displayName: "客户清单" } },
+    ]);
+    const wrapper = mountSidebar();
+    expect(wrapper.get('[data-testid="sidebar-table-name"]').text()).toBe("客户清单");
+    await wrapper.get('[data-testid="sidebar-table-name"]').trigger("click");
+    expect(wrapper.emitted("select")?.[0]).toEqual(["vt_t_01abc"]);
   });
 
   it("emits select with the collection name when a row is clicked", async () => {

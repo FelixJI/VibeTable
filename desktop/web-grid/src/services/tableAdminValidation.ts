@@ -14,7 +14,7 @@ export function validateTableName(name: string): string | null {
     return "请输入表名。";
   }
   if (!TABLE_NAME_PATTERN.test(trimmed)) {
-    return "表名只能用英文字母、数字和下划线，且必须以字母开头（最多 64 个字符）。";
+    return "表名称不能包含控制字符，且最多 128 个字符。";
   }
   return null;
 }
@@ -41,10 +41,14 @@ export function validateFields(
       continue;
     }
     if (!TABLE_NAME_PATTERN.test(key)) {
-      errors.push(`字段名『${row.key}』无效：只能用英文字母、数字和下划线，且必须以字母开头。`);
+      errors.push(`字段名称『${row.key}』无效：不能包含控制字符，且最多 128 个字符。`);
       continue;
     }
     fields.push({ key, type: row.type });
+  }
+  const normalized = fields.map((field) => field.key.normalize("NFKC").toLocaleLowerCase());
+  if (new Set(normalized).size !== normalized.length) {
+    errors.push("同一张表内的字段名称不能重复。");
   }
   return { fields, errors };
 }

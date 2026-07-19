@@ -7,7 +7,7 @@ from backend.adapters.directus.profile import CapabilityManifest
 
 ROOT = Path(__file__).resolve().parents[3]
 
-#: The six document-system collections the empty VibeTable manifest exposes.
+#: Hidden system collections exposed by the empty VibeTable manifest.
 WORKSPACE_COLLECTIONS = {
     "vibetable_workspaces",
     "vibetable_workspace_folders",
@@ -15,6 +15,7 @@ WORKSPACE_COLLECTIONS = {
     "vibetable_document_schemes",
     "vibetable_document_revisions",
     "vibetable_document_links",
+    "vibetable_identifier_map",
 }
 
 

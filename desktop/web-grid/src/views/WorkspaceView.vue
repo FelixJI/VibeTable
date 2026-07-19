@@ -21,18 +21,23 @@
  * idempotency key; we read those from the paste + workspace stores here so the
  * PastePanel component stays free of service knowledge.
  */
-import { onMounted, provide, ref, watch } from "vue";
+import { computed, onMounted, provide, ref, watch } from "vue";
 import { useMessage } from "naive-ui";
+import { NButton, NIcon } from "naive-ui";
+import { FilePlus2 } from "lucide-vue-next";
 import type { TabulatorFull } from "tabulator-tables";
+import AppNavigation from "@/components/layout/AppNavigation.vue";
 import AppSidebar from "@/components/layout/AppSidebar.vue";
 import AppToolbar from "@/components/layout/AppToolbar.vue";
+import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import GridHost from "@/components/grid/GridHost.vue";
 import { TABULATOR_INJECTION_KEY } from "@/components/grid/tabulatorInjection";
-import StatusBar from "@/components/feedback/StatusBar.vue";
 import PastePanel from "@/components/panels/PastePanel.vue";
 import CreateTableModal from "@/components/panels/CreateTableModal.vue";
 import DeleteConfirmModal from "@/components/panels/DeleteConfirmModal.vue";
 import ShortcutsView from "@/views/ShortcutsView.vue";
+import HomeView from "@/views/HomeView.vue";
+import SettingsView from "@/views/SettingsView.vue";
 import { useWorkspaceService } from "@/services/workspaceService";
 import { useTableService } from "@/services/tableService";
 import { usePasteService } from "@/services/pasteService";
@@ -40,6 +45,7 @@ import type { ApplyPasteInput } from "@/services/pasteService";
 import { useMutationService } from "@/services/mutationService";
 import { useTableAdminService } from "@/services/tableAdminService";
 import { useErrorRouter } from "@/services/errorRouter";
+import { useIdentifierMappingService } from "@/services/identifierMappingService";
 import { useKeyboard } from "@/composables/useKeyboard";
 import { useUiStore } from "@/stores/uiStore";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
@@ -57,6 +63,7 @@ import type {
   PasteCellPayload,
   PreviewPasteRequestedPayload,
 } from "@/contracts";
+import { t } from "@/i18n";
 
 const workspaceService = useWorkspaceService();
 const tableService = useTableService();
@@ -64,6 +71,7 @@ const pasteService = usePasteService();
 const mutationService = useMutationService();
 const tableAdminService = useTableAdminService();
 const errorRouter = useErrorRouter();
+const identifierMappingService = useIdentifierMappingService();
 const ui = useUiStore();
 const admin = useTableAdminStore();
 const paste = usePasteStore();
@@ -110,6 +118,8 @@ onMounted(() => {
   mutationService.init();
   tableAdminService.init();
   errorRouter.init();
+  // Database/Directus connection is application lifecycle, not a toolbar task.
+  if (workspace.phase === "idle") workspaceService.openDatabase();
 });
 
 /**
@@ -134,6 +144,8 @@ function onSelect(name: string) {
   // history.clear() now happens inside tableService.selectTable so EVERY table
   // context reset clears the stack (select + refresh + any future caller).
   tableService.selectTable(name);
+  ui.rememberTable(name);
+  ui.navigate("tables");
 }
 
 /** Sidebar: open the create-table modal (reset form + flip UI flag). */
@@ -146,6 +158,16 @@ function onNewTable() {
 function onOpenAdmin() {
   tableAdminService.openAdmin();
 }
+
+function onOpenTableFromHome(name: string) {
+  onSelect(name);
+}
+
+const pageTitle = computed(() => {
+  if (ui.activeView === "home") return t("nav.home");
+  if (ui.activeView === "settings") return t("nav.settings");
+  return t("nav.tables");
+});
 
 /** Sidebar: ask the user to confirm deleting a table. */
 function onRequestDelete(name: string) {
@@ -164,7 +186,16 @@ function onSubmitCreate() {
 function onConfirmDelete() {
   const target = ui.deleteTarget;
   if (target) tableAdminService.deleteTable(target);
+}
+
+function onCancelCreate() {
+  ui.closeCreate();
+  admin.close();
+}
+
+function onCancelDelete() {
   ui.closeDelete();
+  admin.close();
 }
 
 /**
@@ -333,6 +364,7 @@ function onDelete() {
 }
 
 useKeyboard({
+  isTableContext: () => ui.activeView === "tables",
   onCopy,
   onPaste,
   onDelete,
@@ -353,24 +385,64 @@ useKeyboard({
 
 <template>
   <div class="workspace">
-    <AppSidebar
-      @select="onSelect"
-      @new-table="onNewTable"
+    <AppNavigation
       @open-admin="onOpenAdmin"
-      @request-delete="onRequestDelete"
+      @open-help="ui.openShortcuts"
     />
-    <main class="main">
-      <AppToolbar
-        @connect="workspaceService.openDatabase"
-        @refresh="tableService.refresh"
-        @open-help="ui.openShortcuts"
-      />
-      <GridHost :on-cell-edited="onCellEdited" />
-      <StatusBar />
-    </main>
+    <section class="app-surface" :class="`density-${ui.density}`">
+      <header class="app-header">
+        <div class="app-title">
+          <span>VibeTable</span>
+          <i></i>
+          <strong>{{ pageTitle }}</strong>
+        </div>
+        <ConnectionPill @reconnect="workspaceService.openDatabase" />
+      </header>
+      <div class="view-stack">
+        <HomeView
+          v-show="ui.activeView === 'home'"
+          @open-table="onOpenTableFromHome"
+          @new-table="onNewTable"
+          @open-admin="onOpenAdmin"
+        />
+        <div v-show="ui.activeView === 'tables'" class="tables-view">
+          <AppSidebar
+            @select="onSelect"
+            @new-table="onNewTable"
+            @request-delete="onRequestDelete"
+          />
+          <main class="main">
+            <AppToolbar
+              @refresh="tableService.refresh"
+              @open-help="ui.openShortcuts"
+            />
+            <div v-if="!workspace.currentTable" class="table-empty" data-testid="table-empty">
+              <span><NIcon :size="21"><FilePlus2 /></NIcon></span>
+              <h2>{{ t("table.empty.title") }}</h2>
+              <p>{{ t("table.empty.description") }}</p>
+              <NButton type="primary" size="small" @click="onNewTable">{{ t("sidebar.newTable") }}</NButton>
+            </div>
+            <GridHost v-else :on-cell-edited="onCellEdited" />
+            <div v-if="workspace.currentTable && tableStore.datasetReady" class="table-summary" data-testid="table-summary">
+              {{ t("toolbar.rowCount", { count: tableStore.rowCount }) }}
+            </div>
+          </main>
+        </div>
+        <SettingsView
+          v-show="ui.activeView === 'settings'"
+          @reconnect="workspaceService.openDatabase"
+          @open-help="ui.openShortcuts"
+          @open-admin="onOpenAdmin"
+          @load-mappings="identifierMappingService.load()"
+          @save-mapping-aliases="identifierMappingService.updateAliases"
+          @import-mappings="identifierMappingService.importMappings"
+          @reconcile-mappings="identifierMappingService.reconcile"
+        />
+      </div>
+    </section>
     <PastePanel @confirm="onConfirmPaste" @cancel="onCancelPaste" />
-    <CreateTableModal @submit="onSubmitCreate" @cancel="ui.closeCreate()" />
-    <DeleteConfirmModal @confirm="onConfirmDelete" @cancel="ui.closeDelete()" />
+    <CreateTableModal @submit="onSubmitCreate" @cancel="onCancelCreate" />
+    <DeleteConfirmModal @confirm="onConfirmDelete" @cancel="onCancelDelete" />
     <ShortcutsView />
   </div>
 </template>
@@ -381,10 +453,55 @@ useKeyboard({
   flex-direction: row;
   height: 100%;
 }
+.app-surface {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+.app-header {
+  display: flex;
+  flex: 0 0 44px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px 0 16px;
+  border-bottom: 1px solid var(--vt-border);
+  background: var(--vt-bg);
+}
+.app-title { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.app-title span { font-weight: 650; letter-spacing: -0.01em; }
+.app-title i { width: 1px; height: 13px; background: var(--vt-border); }
+.app-title strong { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); font-weight: 500; }
+.view-stack { position: relative; flex: 1 1 auto; min-height: 0; }
+.view-stack > * { width: 100%; height: 100%; }
+.tables-view { display: flex; min-width: 0; }
 .main {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-width: 0;
 }
+.table-empty {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--vt-fg-muted);
+  background: var(--vt-bg);
+}
+.table-empty > span { display: grid; place-items: center; width: 42px; height: 42px; margin-bottom: 12px; color: var(--vt-color-primary-500); border-radius: var(--vt-radius-lg); background: var(--vt-color-primary-50); }
+.table-empty h2 { margin: 0 0 4px; color: var(--vt-fg); font-size: var(--vt-font-title); font-weight: 600; }
+.table-empty p { margin: 0 0 16px; }
+.table-summary {
+  flex: 0 0 26px;
+  padding: 4px 12px;
+  color: var(--vt-fg-muted);
+  font-size: var(--vt-font-caption);
+  text-align: right;
+  border-top: 1px solid var(--vt-border);
+  background: var(--vt-bg);
+}
+.density-compact :deep(.sidebar .table-row) { min-height: 30px; }
+.density-compact :deep(.toolbar) { min-height: 36px; }
 </style>

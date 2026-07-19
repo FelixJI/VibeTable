@@ -66,6 +66,7 @@ class DirectusUnsubscribeParams(CamelModel):
 class DirectusCollectionListResult(CamelModel):
     collections: list[str]
     capability_hashes: dict[str, str]
+    display_names: dict[str, str] = Field(default_factory=dict)
 
 
 class DirectusServerInfoResult(CamelModel):

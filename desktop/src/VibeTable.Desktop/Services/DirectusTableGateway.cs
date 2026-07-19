@@ -34,13 +34,14 @@ public sealed class DirectusTableGateway : ITableRpcGateway, IDisposable
         string path, CancellationToken token)
     {
         var result = await _directus.ListCollectionsAsync(token);
-        return new DatabaseOpenResult(result.Collections, Array.Empty<string>());
+        return new DatabaseOpenResult(
+            result.Collections, Array.Empty<string>(), DisplayNames: result.DisplayNames);
     }
 
     public async Task<TableSummary> ListTablesAsync(CancellationToken token)
     {
         var result = await _directus.ListCollectionsAsync(token);
-        return new TableSummary(result.Collections, Array.Empty<string>());
+        return new TableSummary(result.Collections, Array.Empty<string>(), result.DisplayNames);
     }
 
     public Task<TablePage> ReadTablePageAsync(

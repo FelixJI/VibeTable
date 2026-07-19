@@ -25,6 +25,8 @@ internal sealed class FakeDirectusRpcGateway : IDirectusRpcGateway
     public List<string> DeleteTableCalls { get; } = new();
     public DeleteTableResult? DeleteTableResult { get; set; }
     public Exception? DeleteTableException { get; set; }
+    public IdentifierMappingsResult IdentifierMappingsResult { get; set; }
+        = new IdentifierMappingsResult(Array.Empty<IdentifierMappingEntry>());
 
     public Task<DirectusCollectionList> ListCollectionsAsync(CancellationToken token)
     {
@@ -50,6 +52,17 @@ internal sealed class FakeDirectusRpcGateway : IDirectusRpcGateway
         return Task.FromResult(DeleteTableResult
             ?? new DeleteTableResult(name, Deleted: true));
     }
+
+    public Task<IdentifierMappingsResult> ListIdentifierMappingsAsync(
+        string? search, CancellationToken token) => Task.FromResult(IdentifierMappingsResult);
+    public Task<IdentifierMappingsResult> UpdateIdentifierAliasesAsync(
+        string mappingId, IReadOnlyList<string> aliases, CancellationToken token)
+        => Task.FromResult(IdentifierMappingsResult);
+    public Task<IdentifierMappingsResult> ImportIdentifierMappingsAsync(
+        IReadOnlyList<IdentifierMappingImportItem> mappings, CancellationToken token)
+        => Task.FromResult(IdentifierMappingsResult);
+    public Task<IdentifierMappingsResult> ReconcileIdentifierMappingsAsync(CancellationToken token)
+        => Task.FromResult(IdentifierMappingsResult);
 
     // The rest of the interface is unused by the dispatcher; throw to keep tests honest.
     public event Action<DirectusChange>? Changed { add { } remove { } }

@@ -1,5 +1,6 @@
 import { messages as zhCN } from "./locales/zh-CN";
 import { messages as enUS } from "./locales/en-US";
+import { ref } from "vue";
 
 export type Locale = "zh-CN" | "en-US";
 
@@ -8,23 +9,23 @@ const locales: Record<Locale, Record<string, string>> = {
   "en-US": enUS,
 };
 
-let current: Locale = "zh-CN";
+export const currentLocale = ref<Locale>("zh-CN");
 
 const STORAGE_KEY = "vt:locale";
 
 /** Initialize locale from localStorage at module load. Call once in main.ts. */
 export function initLocale(): void {
   const stored = localStorage.getItem(STORAGE_KEY) as Locale | null;
-  if (stored && stored in locales) current = stored;
+  if (stored && stored in locales) currentLocale.value = stored;
 }
 
 export function getLocale(): Locale {
-  return current;
+  return currentLocale.value;
 }
 
 export function setLocale(locale: Locale): void {
   if (!(locale in locales)) return;
-  current = locale;
+  currentLocale.value = locale;
   try {
     localStorage.setItem(STORAGE_KEY, locale);
   } catch {
@@ -40,6 +41,7 @@ function interpolate(msg: string, params?: Record<string, string | number>): str
 }
 
 export function t(key: string, params?: Record<string, string | number>): string {
-  const msg = locales[current][key] ?? locales["zh-CN"][key] ?? key;
+  // Reading the ref makes calls from Vue render/computed contexts reactive.
+  const msg = locales[currentLocale.value][key] ?? locales["zh-CN"][key] ?? key;
   return interpolate(msg, params);
 }

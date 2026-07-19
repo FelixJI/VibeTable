@@ -28,6 +28,17 @@ describe("workspaceStore", () => {
     expect(s.collections).toHaveLength(1);
   });
 
+  it("stores display names separately from physical collection keys", () => {
+    const s = useWorkspaceStore();
+    s.setOpened(
+      [{ collection: "vt_t_01", displayName: "客户清单", metadata: {} }],
+      { vt_t_01: "客户清单" },
+    );
+    expect(s.displayNames).toEqual({ vt_t_01: "客户清单" });
+    expect(s.collections[0].collection).toBe("vt_t_01");
+    expect(s.collections[0].displayName).toBe("客户清单");
+  });
+
   it("selectTable sets currentTable", () => {
     const s = useWorkspaceStore();
     s.selectTable("orders");
@@ -49,6 +60,7 @@ describe("workspaceStore", () => {
     s.clear();
     expect(s.phase).toBe("idle");
     expect(s.collections).toEqual([]);
+    expect(s.displayNames).toEqual({});
     expect(s.currentTable).toBeNull();
   });
 });

@@ -11,12 +11,14 @@ export type WorkspacePhase = "idle" | "opening" | "opened" | "failed";
  */
 export interface CollectionSummary {
   readonly collection: string;
+  readonly displayName?: string;
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
 export const useWorkspaceStore = defineStore("workspace", () => {
   const phase = ref<WorkspacePhase>("idle");
   const collections = ref<readonly CollectionSummary[]>([]);
+  const displayNames = ref<Readonly<Record<string, string>>>({});
   const currentTable = ref<string | null>(null);
   const lastError = ref<string | null>(null);
 
@@ -25,14 +27,22 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     lastError.value = null;
   }
 
-  function setOpened(cols: readonly CollectionSummary[]): void {
+  function setOpened(
+    cols: readonly CollectionSummary[],
+    names: Readonly<Record<string, string>> = {},
+  ): void {
     collections.value = cols;
+    displayNames.value = names;
     phase.value = "opened";
     lastError.value = null;
   }
 
-  function setCollections(cols: readonly CollectionSummary[]): void {
+  function setCollections(
+    cols: readonly CollectionSummary[],
+    names: Readonly<Record<string, string>> = {},
+  ): void {
     collections.value = cols;
+    displayNames.value = names;
   }
 
   function selectTable(name: string): void {
@@ -47,6 +57,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   function clear(): void {
     phase.value = "idle";
     collections.value = [];
+    displayNames.value = {};
     currentTable.value = null;
     lastError.value = null;
   }
@@ -54,6 +65,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   return {
     phase,
     collections,
+    displayNames,
     currentTable,
     lastError,
     beginOpen,

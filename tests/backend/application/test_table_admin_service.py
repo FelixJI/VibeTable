@@ -19,21 +19,24 @@ async def test_create_table_posts_collection_and_fields():
     transport.request = AsyncMock(return_value={"data": {}})
     profiles: dict = {}
     service = TableAdminService(transport=transport, auth=_make_auth(), profiles=profiles)
-    params = CreateTableParams(name="customers", fields=[FieldDefinition(key="name", type="string")])
+    params = CreateTableParams(name="客户清单", fields=[FieldDefinition(key="姓名", type="string")])
     result = await service.create_table(params)
-    assert result.collection == "customers"
+    assert result.collection.startswith("vt_t_")
+    assert result.display_name == "客户清单"
+    assert list(result.field_display_names.values()) == ["姓名"]
     # 应调用了 POST /collections
     calls = list(transport.request.call_args_list)
     assert any(c.args[0] == "POST" and "/collections" in c.args[1] for c in calls)
     # 当前用户 token 应按调用传入
     assert all(c.kwargs.get("access_token") == "tok" for c in calls)
     # manifest 应更新：写入真正的 CollectionProfile（而非占位），使会话内立即可用
-    assert "customers" in profiles
-    profile = profiles["customers"]
-    assert profile.collection == "customers"
+    assert result.collection in profiles
+    profile = profiles[result.collection]
+    assert profile.collection == result.collection
     assert profile.primary_key == "id"
-    assert "name" in profile.fields
-    assert "name" in profile.create_fields
+    physical_field = next(iter(result.field_display_names))
+    assert physical_field in profile.fields
+    assert physical_field in profile.create_fields
     assert profile.archive_field == "status"
 
 
@@ -61,8 +64,9 @@ async def test_create_table_builds_profile_before_calling_directus():
     # stored. (The ordering guarantee itself is enforced structurally —
     # _profile_for is called before transport.request in the source — and a
     # failure there is covered by test_create_table_wraps_profile_failure.)
-    assert "orders" in profiles
-    assert {"title", "amount"} <= set(profiles["orders"].fields)
+    assert len(profiles) == 1
+    profile = next(iter(profiles.values()))
+    assert len([field for field in profile.fields if field.startswith("f_")]) == 2
 
 
 @pytest.mark.asyncio
@@ -74,9 +78,7 @@ async def test_create_table_wraps_profile_failure_as_table_admin_error():
     Directus must NOT be called when this happens (no orphan collection)."""
     transport = MagicMock()
     transport.request = AsyncMock(return_value={"data": {}})
-    service = TableAdminService(
-        transport=transport, auth=_make_auth(), profiles={}
-    )
+    service = TableAdminService(transport=transport, auth=_make_auth(), profiles={})
     # Force _profile_for to fail by monkeypatching it.
     service._profile_for = MagicMock(side_effect=ValueError("simulated profile failure"))
     # Bypass contract validation by constructing params that the service would
@@ -86,43 +88,13 @@ async def test_create_table_wraps_profile_failure_as_table_admin_error():
     with pytest.raises(TableAdminError) as exc_info:
         await service.create_table(params)
     assert "simulated profile failure" in str(exc_info.value)
-    # Critical: Directus was never contacted, so no orphan collection is left.
-    transport.request.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "reserved_name",
-    [
-        "directus_users",
-        "directus_files",
-        "directus_anything_new",
-        "vibetable_documents",
-        "vibetable_workspaces",
-        "vibetable_settings",  # previously slipped through (only document/workspace were reserved)
-        "vibetable_future_system_table",
-    ],
-)
-@pytest.mark.asyncio
-async def test_create_table_rejects_all_system_namespaces(reserved_name: str):
-    """The entire ``vibetable_`` and ``directus_`` namespaces are reserved so a
-    user can never shadow a system/bootstrap table — including ones added
-    later (regression: previously only ``vibetable_document*`` /
-    ``vibetable_workspace*`` substrings were blocked)."""
-    transport = MagicMock()
-    service = TableAdminService(transport=transport, auth=_make_auth(), profiles={})
-    params = CreateTableParams(name=reserved_name, fields=[])
-    with pytest.raises(TableAdminError):
-        await service.create_table(params)
-    transport.request.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_create_table_rejects_system_prefix():
-    transport = MagicMock()
-    service = TableAdminService(transport=transport, auth=_make_auth(), profiles={})
-    params = CreateTableParams(name="directus_users", fields=[])
-    with pytest.raises(TableAdminError):
-        await service.create_table(params)
+    # Registry reads may occur, but no user collection or mapping item is POSTed.
+    assert not any(
+        call.args[:2] == ("POST", "/collections")
+        and isinstance(call.kwargs.get("json_body"), dict)
+        and call.kwargs["json_body"].get("collection", "").startswith("vt_t_")
+        for call in transport.request.call_args_list
+    )
 
 
 @pytest.mark.asyncio
@@ -131,6 +103,19 @@ async def test_delete_table_rejects_system_prefix():
     service = TableAdminService(transport=transport, auth=_make_auth(), profiles={})
     with pytest.raises(TableAdminError):
         await service.delete_table(DeleteTableParams(name="vibetable_documents"))
+
+
+@pytest.mark.asyncio
+async def test_delete_table_rejects_non_physical_identifier_before_transport():
+    transport = MagicMock()
+    transport.request = AsyncMock(return_value={})
+    service = TableAdminService(transport=transport, auth=_make_auth(), profiles={})
+
+    with pytest.raises(TableAdminError) as error:
+        await service.delete_table(DeleteTableParams(name="orders/../../directus_users"))
+
+    assert error.value.code == "table_name_invalid"
+    transport.request.assert_not_called()
 
 
 @pytest.mark.asyncio

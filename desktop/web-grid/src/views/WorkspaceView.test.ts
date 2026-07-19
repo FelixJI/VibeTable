@@ -208,7 +208,7 @@ describe("WorkspaceView", () => {
     mountView();
     await flushPromises();
 
-    const adminBtn = document.body.querySelector('[data-testid="sidebar-open-admin"]');
+    const adminBtn = document.body.querySelector('[data-testid="nav-directus"]');
     expect(adminBtn).toBeTruthy();
     (adminBtn as HTMLElement).click();
     await flushPromises();
@@ -216,7 +216,7 @@ describe("WorkspaceView", () => {
     expect(posted.some((p) => p.type === "admin.openRequested")).toBe(true);
   });
 
-  it("wires delete-confirm-ok -> tableAdminService.deleteTable + ui.closeDelete", async () => {
+  it("keeps delete confirmation visible until the host reports success", async () => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const ui = useUiStore();
@@ -230,9 +230,10 @@ describe("WorkspaceView", () => {
     (confirmBtn as HTMLElement).click();
     await flushPromises();
 
-    // The host was notified and the modal was closed by the container.
+    // The host was notified; the modal stays visible so an operation.failed
+    // message has somewhere to render and the user can retry.
     expect(posted.some((p) => p.type === "tableAdmin.deleteRequested")).toBe(true);
-    expect(ui.deleteModalOpen).toBe(false);
+    expect(ui.deleteModalOpen).toBe(true);
   });
 
   it("wires paste-confirm -> pasteService.apply (table.applyPasteRequested with token + idempotencyKey)", async () => {
@@ -312,6 +313,8 @@ describe("WorkspaceView", () => {
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
     const tableStore = useTableStore();
+    const ui = useUiStore();
+    ui.navigate("tables");
     workspace.selectTable("users");
     // Seed a page so useTabulator's init watch fires and the mocked Tabulator
     // instance (with our getRanges stub) is instantiated + provided.
@@ -368,6 +371,8 @@ describe("WorkspaceView", () => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
+    const ui = useUiStore();
+    ui.navigate("tables");
     workspace.selectTable("users");
 
     // Default mock has getRanges -> []; no range active.
@@ -384,6 +389,8 @@ describe("WorkspaceView", () => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
+    const ui = useUiStore();
+    ui.navigate("tables");
     workspace.selectTable("orders");
 
     mountView();
@@ -433,6 +440,8 @@ describe("WorkspaceView", () => {
     const { bridge } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const history = useHistoryStore();
+    const ui = useUiStore();
+    ui.navigate("tables");
     let undoCalled = 0;
     // Seed an entry whose undo closure is observable. WorkspaceView's onUndo
     // calls mutationService.performUndo -> history.undo -> entry.undo().
@@ -500,6 +509,8 @@ describe("WorkspaceView", () => {
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
     const history = useHistoryStore();
+    const ui = useUiStore();
+    ui.navigate("tables");
     workspace.selectTable("orders");
 
     // Seed history; refresh must clear it (tableService.refresh now clears).

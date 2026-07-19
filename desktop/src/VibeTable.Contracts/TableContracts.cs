@@ -29,14 +29,16 @@ public sealed record DatabaseOpenResult(
     IReadOnlyList<string> Tables,
     IReadOnlyList<string> Views,
     string OpenMode = "read_write",
-    string? LeaseHolder = null);
+    string? LeaseHolder = null,
+    IReadOnlyDictionary<string, string>? DisplayNames = null);
 
 /// <summary>
 /// Summary of collections and views exposed by the configured source.
 /// </summary>
 public sealed record TableSummary(
     IReadOnlyList<string> Tables,
-    IReadOnlyList<string> Views);
+    IReadOnlyList<string> Views,
+    IReadOnlyDictionary<string, string>? DisplayNames = null);
 
 /// <summary>
 /// One page of rows from a Directus-backed collection view:

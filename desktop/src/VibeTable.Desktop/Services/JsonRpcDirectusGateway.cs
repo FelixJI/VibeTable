@@ -24,6 +24,9 @@ public sealed record DirectusSubscribeParams(
 public sealed record DirectusUnsubscribeParams(string Uid);
 public sealed record CreateTableParams(string Name, FieldDefinition[] Fields);
 public sealed record DeleteTableParams(string Name);
+public sealed record ListIdentifierMappingsParams(string? Search);
+public sealed record UpdateIdentifierAliasesParams(string MappingId, IReadOnlyList<string> Aliases);
+public sealed record ImportIdentifierMappingsParams(IReadOnlyList<IdentifierMappingImportItem> Mappings);
 
 /// <summary>Directus JSON-RPC adapter over the supervisor-owned local pipe.</summary>
 public sealed class JsonRpcDirectusGateway : IDirectusRpcGateway
@@ -75,6 +78,25 @@ public sealed class JsonRpcDirectusGateway : IDirectusRpcGateway
     public Task<DeleteTableResult> DeleteTableAsync(string name, CancellationToken token)
         => _client.InvokeAsync<DeleteTableParams, DeleteTableResult>(
             "table_admin.deleteTable", new(name), token);
+
+    public Task<IdentifierMappingsResult> ListIdentifierMappingsAsync(
+        string? search, CancellationToken token)
+        => _client.InvokeAsync<ListIdentifierMappingsParams, IdentifierMappingsResult>(
+            "table_admin.listIdentifierMappings", new(search), token);
+
+    public Task<IdentifierMappingsResult> UpdateIdentifierAliasesAsync(
+        string mappingId, IReadOnlyList<string> aliases, CancellationToken token)
+        => _client.InvokeAsync<UpdateIdentifierAliasesParams, IdentifierMappingsResult>(
+            "table_admin.updateIdentifierAliases", new(mappingId, aliases), token);
+
+    public Task<IdentifierMappingsResult> ImportIdentifierMappingsAsync(
+        IReadOnlyList<IdentifierMappingImportItem> mappings, CancellationToken token)
+        => _client.InvokeAsync<ImportIdentifierMappingsParams, IdentifierMappingsResult>(
+            "table_admin.importIdentifierMappings", new(mappings), token);
+
+    public Task<IdentifierMappingsResult> ReconcileIdentifierMappingsAsync(CancellationToken token)
+        => InvokeEmptyAsync<IdentifierMappingsResult>(
+            "table_admin.reconcileIdentifierMappings", token);
 
     public Task<DirectusSchema> GetSchemaAsync(string collection, CancellationToken token)
         => _client.InvokeAsync<DirectusCollectionParams, DirectusSchema>(

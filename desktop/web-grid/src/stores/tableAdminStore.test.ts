@@ -45,8 +45,23 @@ describe("tableAdminStore", () => {
   it("canSubmit true when name + at least one named field", () => {
     const s = useTableAdminStore();
     s.openCreate();
-    s.form.name = "orders";
-    s.updateField(0, { name: "id" });
+    s.form.name = "订单";
+    s.updateField(0, { name: "订单编号" });
+    expect(s.canSubmit).toBe(true);
+  });
+
+  it("distinguishes editable and in-flight create phases and permits retry after failure", () => {
+    const s = useTableAdminStore();
+    s.openCreate();
+    s.form.name = "订单";
+    s.updateField(0, { name: "订单编号" });
+
+    s.beginSubmit();
+    expect(s.phase).toBe("submitting");
+    expect(s.canSubmit).toBe(false);
+
+    s.fail("temporary failure");
+    expect(s.phase).toBe("failed");
     expect(s.canSubmit).toBe(true);
   });
 

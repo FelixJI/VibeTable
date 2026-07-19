@@ -37,6 +37,21 @@ public sealed class TableContractsFixtureTests
             new[] { "contracts" },
             (System.Collections.ICollection)result!.Tables);
         Assert.AreEqual(0, result.Views.Count);
+        Assert.IsNull(result.DisplayNames, "legacy payloads omit the optional displayNames map");
+    }
+
+    [TestMethod]
+    public void DatabaseOpenResult_DeserializesPhysicalKeysAndUnicodeDisplayNames()
+    {
+        const string json = """
+            {"tables":["vt_t_01K0000000000000"],"views":[],"displayNames":{"vt_t_01K0000000000000":"客户清单 ✅"}}
+            """;
+
+        var result = JsonSerializer.Deserialize<DatabaseOpenResult>(json, Options);
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual("vt_t_01K0000000000000", result!.Tables[0]);
+        Assert.AreEqual("客户清单 ✅", result.DisplayNames![result.Tables[0]]);
     }
 
     [TestMethod]

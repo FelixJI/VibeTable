@@ -123,6 +123,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "table.pasteApplied",
   // Table management: collection lifecycle events.
   "database.collectionsChanged",
+  "identifierMappings.result",
 ]);
 
 /**
@@ -148,6 +149,10 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   // Table management: create/delete collection requests.
   "tableAdmin.createRequested",
   "tableAdmin.deleteRequested",
+  "identifierMappings.listRequested",
+  "identifierMappings.updateAliasesRequested",
+  "identifierMappings.importRequested",
+  "identifierMappings.reconcileRequested",
   // Open the embedded Directus admin (Data Studio) in this webview.
   "admin.openRequested",
 ]);

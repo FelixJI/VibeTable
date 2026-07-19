@@ -10,9 +10,15 @@ import type { CollectionsChangedPayload, DatabaseOpenedPayload } from "@/contrac
  * in later via `database.collectionsChanged`.
  */
 function toCollections(payload: DatabaseOpenedPayload): readonly CollectionSummary[] {
-  const tables = payload.tables.map((t) => ({ collection: t, metadata: {} }));
+  const displayNames = payload.displayNames ?? {};
+  const tables = payload.tables.map((t) => ({
+    collection: t,
+    displayName: displayNames[t],
+    metadata: {},
+  }));
   const views = payload.views.map((v) => ({
     collection: v,
+    displayName: displayNames[v],
     metadata: { kind: "view" } as const,
   }));
   return [...tables, ...views];
@@ -26,8 +32,10 @@ function toCollectionsFromChanged(
   payload: CollectionsChangedPayload,
 ): readonly CollectionSummary[] {
   const hashes = payload.capabilityHashes ?? {};
+  const displayNames = payload.displayNames ?? {};
   return payload.tables.map((t) => ({
     collection: t,
+    displayName: displayNames[t],
     metadata:
       t in hashes ? { capabilityHash: hashes[t] } : {},
   }));
@@ -43,10 +51,13 @@ export function useWorkspaceService(): {
 
   function init(): void {
     bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
-      store.setOpened(toCollections(payload));
+      store.setOpened(toCollections(payload), payload.displayNames ?? {});
     });
     bridge.on("database.collectionsChanged", (payload) => {
-      store.setCollections(toCollectionsFromChanged(payload));
+      store.setCollections(
+        toCollectionsFromChanged(payload),
+        payload.displayNames ?? {},
+      );
     });
   }
 

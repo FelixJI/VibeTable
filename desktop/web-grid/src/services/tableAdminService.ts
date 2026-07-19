@@ -16,7 +16,12 @@ import type {
 function toCollections(
   payload: DatabaseOpenedPayload,
 ): readonly CollectionSummary[] {
-  const tables = payload.tables.map((t) => ({ collection: t, metadata: {} }));
+  const labels = payload.displayNames ?? {};
+  const tables = payload.tables.map((t) => ({
+    collection: t,
+    displayName: labels[t],
+    metadata: {},
+  }));
   const views = payload.views.map((v) => ({
     collection: v,
     metadata: { kind: "view" } as const,
@@ -32,8 +37,10 @@ function toCollectionsFromChanged(
   payload: CollectionsChangedPayload,
 ): readonly CollectionSummary[] {
   const hashes = payload.capabilityHashes ?? {};
+  const labels = payload.displayNames ?? {};
   return payload.tables.map((t) => ({
     collection: t,
+    displayName: labels[t],
     metadata: t in hashes ? { capabilityHash: hashes[t] } : {},
   }));
 }
@@ -64,13 +71,13 @@ export function useTableAdminService(): {
    * list changed (or a fresh `database.opened` arrived). The host emits
    * `database.collectionsChanged` for ANY collection change — including the
    * initial load — so we ONLY transition + close the modal when `phase` is
-   * actually `creating`/`deleting` (meaning the user kicked off an op and is
+   * actually `submitting`/`deleting` (meaning the user kicked off an op and is
    * waiting on its round-trip). This restores the auto-close-on-success
    * behavior that the pre-rewrite `main.ts` had (the rewrite dropped it; see
    * issue I3 in the final review).
    */
   function resolveIfPending(): void {
-    if (store.phase === "creating") {
+    if (store.phase === "submitting") {
       store.succeed();
       ui.closeCreate();
     } else if (store.phase === "deleting") {
@@ -108,7 +115,11 @@ export function useTableAdminService(): {
   }
 
   function openAdmin(): void {
-    bridge.notify("admin.openRequested", {});
+    bridge.notify("admin.openRequested", {
+      floatingButtonEnabled: ui.adminFloatingButton,
+      confirmClose: ui.adminConfirmClose,
+      releaseWhenIdle: ui.adminReleaseWhenIdle,
+    });
   }
 
   return { init, createTable, deleteTable, openAdmin };

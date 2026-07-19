@@ -8,6 +8,9 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 using VibeTable.Contracts;
@@ -61,6 +64,16 @@ public partial class MainWindow : Window
     private readonly bool _directusAuto;
     private readonly DirectusLoginStore? _loginStore;
     private readonly IDirectusAdminAuthenticator _adminAuth = new DirectusAdminAuthenticator();
+    private readonly AdminSurfaceStateMachine _adminSurfaceState = new();
+    private readonly SemaphoreSlim _adminOpenGate = new(1, 1);
+    private readonly DispatcherTimer _adminIdleReleaseTimer;
+    private CancellationTokenSource? _adminOpenCts;
+    private Task<CoreWebView2Environment>? _webViewEnvironmentTask;
+    private string? _lastAdminRequestId;
+    private int _adminSurfaceGeneration;
+    private bool _adminFloatingButtonEnabled = true;
+    private bool _adminConfirmClose = true;
+    private bool _adminReleaseWhenIdle = true;
     private DirectusSupervisor? _directusSupervisor;
     private readonly TaskCompletionSource<bool>? _directusSessionReady;
     private JsonRpcDirectusGateway? _directusGateway;
@@ -79,6 +92,11 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        _adminIdleReleaseTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMinutes(10),
+        };
+        _adminIdleReleaseTimer.Tick += OnAdminIdleReleaseTick;
 
         // Parse CLI options once. --test-mode enables the shell readiness
         // report used by the real WPF/WebView2/backend smoke test.
@@ -143,7 +161,7 @@ public partial class MainWindow : Window
         _supervisor.LogReceived += OnBackendLogReceived;
         _supervisor.StateChanged += OnBackendStateChanged;
         // Unconditional subscription: clear DetailMessage once the system
-        // reaches Ready (so the bottom bar shows only "就绪"), and — only in
+        // reaches Ready (so the bootstrap fallback disappears), and — only in
         // shell smoke mode — write the readiness marker. Previously this was
         // an inline lambda gated by _shellSmokeMode.
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
@@ -329,9 +347,8 @@ public partial class MainWindow : Window
     private void OnDirectusLogReceived(object? sender, string line)
     {
         TraceProcessLog("directus", line);
-        // Surface significant directus lifecycle/error lines to the bottom
-        // status bar alongside the backend-prefixed lines. Filtered to
-        // keywords to avoid drowning the bar in verbose routine directus
+        // Surface significant Directus lifecycle/error lines to the bootstrap
+        // fallback. Filtered to avoid drowning the host UI in routine Directus
         // logs; uses the marshalling SetDetailMessage (not Core) because this
         // handler runs on the directus stdout pump thread, not the UI thread.
         if (ContainsSignificantDirectusKeyword(line))
@@ -422,6 +439,7 @@ public partial class MainWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        _adminIdleReleaseTimer.Stop();
         _sessionCts?.Cancel();
         _directusStartupCts?.Cancel();
         CloseStartupWindow();
@@ -624,10 +642,9 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Pushes a progress line into <see cref="MainWindowViewModel.DetailMessage"/>
-    /// so it shows in the bottom status bar while the system is starting or
-    /// busy. Truncates to 80 chars to keep the bar on one line, and is a no-op
-    /// once the VM has left the starting states (Ready/Faulted) so the bar
-    /// shows only the status summary. Marshals the write to the UI thread
+    /// so it shows in the host bootstrap fallback while the system is starting.
+    /// Truncates to 80 chars to keep the message compact, and is a no-op
+    /// once the VM has left the starting states (Ready/Faulted). Marshals the write to the UI thread
     /// best-effort, then delegates to <see cref="SetDetailMessageCore"/> for
     /// the actual VM-state-gated write.
     /// </summary>
@@ -663,13 +680,13 @@ public partial class MainWindow : Window
     /// <see cref="MainWindowViewModel.DetailMessage"/>. The caller MUST already
     /// be on the UI thread — no marshalling is performed here. Only updates
     /// while the system is in a starting state (<c>StartingBackend</c> /
-    /// <c>LoadingWeb</c>); once <c>Ready</c> the bottom bar shows just "就绪"
-    /// and <see cref="MainWindowViewModel.DetailMessage"/> is cleared.
+    /// <c>LoadingWeb</c>); once <c>Ready</c> the host fallback disappears and
+    /// <see cref="MainWindowViewModel.DetailMessage"/> is cleared.
     /// </summary>
     private void SetDetailMessageCore(string trimmed)
     {
-        // Only update while the system is not yet Ready; once Ready
-        // the bottom bar shows just "就绪" and DetailMessage is cleared.
+        // Only update while the system is not yet Ready; normal operation has
+        // no host status strip.
         if (_viewModel.State is StartupState.StartingBackend
             or StartupState.LoadingWeb)
         {
@@ -680,7 +697,7 @@ public partial class MainWindow : Window
     /// <summary>
     /// Conservative keyword filter for <see cref="OnDirectusLogReceived"/>:
     /// only directus stdout lines that look significant (server lifecycle /
-    /// errors / readiness) are surfaced to the bottom status bar, to avoid
+    /// errors / readiness) are surfaced to the bootstrap fallback, to avoid
     /// drowning it in verbose routine logs. Case-sensitive as directus emits
     /// these tokens in English.
     /// </summary>
@@ -701,8 +718,8 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Reacts to ViewModel state changes. When the system reaches Ready the
-    /// stale progress line in the bottom bar is cleared (the bar then shows
-    /// only "就绪"). In shell smoke mode, also writes the readiness marker.
+    /// stale bootstrap progress line is cleared. In shell smoke mode, also
+    /// writes the readiness marker.
     /// </summary>
     private void OnViewModelPropertyChanged(
         object? sender,
@@ -713,8 +730,7 @@ public partial class MainWindow : Window
         {
             return;
         }
-        // Clear the bottom-bar detail line once the system reaches Ready; the
-        // bar then shows only the "就绪" status, not stale progress text.
+        // Clear the host fallback detail once the system reaches Ready.
         //
         // This direct write (no Dispatcher marshal) is safe because this
         // handler is invoked synchronously from the VM's State setter via
@@ -881,53 +897,15 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Determines whether a navigation target URI is a trusted app origin.
-    /// Accepts (1) the web-grid virtual host <c>https://app.vibetable.local</c>
-    /// and (2) the running Directus admin origin — <c>http</c> on
-    /// <c>127.0.0.1</c>/<c>localhost</c> at the supervisor's runtime-resolved
-    /// port. Everything else (data:, blob:, file:, external sites) is rejected.
+    /// Determines whether a navigation target belongs to the primary app.
+    /// Directus deliberately is not accepted here; its WebView has a separate
+    /// policy bound to the current local Directus origin.
     /// </summary>
     /// <remarks>
-    /// Instance (not static) because the Directus port is read from
-    /// <c>_directusSupervisor.BaseUrl</c> at runtime. Called from the
-    /// <see cref="WebViewBridge"/> navigation lambdas via <c>_owner.IsAppOrigin</c>.
+    /// Kept as a small wrapper for trace readability in the bridge.
     /// </remarks>
     private bool IsAppOrigin(string? uri)
-    {
-        if (string.IsNullOrEmpty(uri)) return false;
-        if (!Uri.TryCreate(uri, UriKind.Absolute, out var u)) return false;
-
-        // 1. The web-grid virtual host.
-        if (string.Equals(u.Scheme, "https", StringComparison.OrdinalIgnoreCase)
-            && string.Equals(u.Host, WebViewAssetService.AppHostName, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        // 2. The Directus admin origin: http + 127.0.0.1/localhost + the
-        //    running Directus port (runtime-resolved from the supervisor).
-        if (string.Equals(u.Scheme, "http", StringComparison.OrdinalIgnoreCase)
-            && (string.Equals(u.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(u.Host, "localhost", StringComparison.OrdinalIgnoreCase)))
-        {
-            int allowedPort = ResolveDirectusPort();
-            if (allowedPort > 0 && u.Port == allowedPort) return true;
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Parses the running Directus port from <c>_directusSupervisor.BaseUrl</c>.
-    /// Returns 0 when the supervisor is not started or the URL is unparseable.
-    /// </summary>
-    private int ResolveDirectusPort()
-    {
-        string? baseUrl = _directusSupervisor?.BaseUrl;
-        if (string.IsNullOrEmpty(baseUrl)) return 0;
-        try { return new Uri(baseUrl).Port; }
-        catch (UriFormatException) { return 0; }
-    }
+        => WebViewNavigationPolicy.IsAppNavigation(uri);
 
     /// <summary>
     /// Dispatch callback for messages that passed the router's whitelist.
@@ -951,6 +929,7 @@ public partial class MainWindow : Window
 
         if (string.Equals(request.Type, "admin.openRequested", StringComparison.Ordinal))
         {
+            ApplyAdminPreferences(request.Payload);
             // Navigation/cookie-injection is a UI concern handled in MainWindow
             // (Task 5). Do NOT forward to _dispatcher.
             _ = OpenDirectusAdminAsync(request.RequestId);
@@ -962,13 +941,44 @@ public partial class MainWindow : Window
 
     private async Task OpenDirectusAdminAsync(string? requestId)
     {
+        _adminIdleReleaseTimer.Stop();
+        _lastAdminRequestId = requestId;
+        int generation = Interlocked.Increment(ref _adminSurfaceGeneration);
+        var openCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        Interlocked.Exchange(ref _adminOpenCts, openCts)?.Cancel();
+        bool gateEntered = false;
         try
         {
+            await _adminOpenGate.WaitAsync(openCts.Token);
+            gateEntered = true;
+            if (generation != Volatile.Read(ref _adminSurfaceGeneration))
+            {
+                return;
+            }
+
             string? baseUrl = _directusSupervisor?.BaseUrl;
             if (string.IsNullOrEmpty(baseUrl))
             {
-                _webBridge.PostOperationFailed(requestId,
-                    "管理后台暂不可用：Directus 未启动。", "ADMIN_NOT_READY");
+                ShowAdminFailure(requestId, "Directus 尚未启动，请稍后重试。", "ADMIN_NOT_READY");
+                return;
+            }
+
+            bool initializeWebView = _adminSurfaceState.BeginOpen();
+            ShowAdminLoading();
+
+            // Closing the admin surface deliberately keeps the Directus page
+            // alive. Reopening it must reveal that existing page directly:
+            // requesting another bootstrap login can invalidate or race the
+            // session that the retained page is already using.
+            if (_adminSurfaceState.HasReadyPage
+                && DirectusWebView.CoreWebView2 is { } reusableCore)
+            {
+                await reusableCore.ExecuteScriptAsync(
+                    $"window.__vibetableSetFloating?.({(_adminFloatingButtonEnabled ? "true" : "false")});");
+                DirectusWebView.Visibility = Visibility.Visible;
+                AdminLoadingOverlay.Visibility = Visibility.Collapsed;
+                AdminErrorOverlay.Visibility = Visibility.Collapsed;
+                DirectusWebView.Focus();
                 return;
             }
 
@@ -978,25 +988,37 @@ public partial class MainWindow : Window
             if (!DirectusEnvMaterializer.TryReadBootstrapCredentials(
                     runtimeDir, out string email, out string password))
             {
-                _webBridge.PostOperationFailed(requestId,
-                    "管理后台不可用：找不到管理员凭据。", "ADMIN_CREDENTIALS_MISSING");
+                ShowAdminFailure(requestId, "找不到本地管理员凭据。", "ADMIN_CREDENTIALS_MISSING");
                 return;
             }
 
-            string? cookie = await _adminAuth.LoginAsync(baseUrl, email, password, default)
+            string? cookie = await _adminAuth.LoginAsync(
+                    baseUrl, email, password, openCts.Token)
                 .ConfigureAwait(true);
+            if (generation != Volatile.Read(ref _adminSurfaceGeneration))
+            {
+                return;
+            }
             if (cookie is null)
             {
-                _webBridge.PostOperationFailed(requestId,
-                    "管理后台登录失败，请稍后重试。", "ADMIN_LOGIN_FAILED");
+                ShowAdminFailure(requestId, "管理员会话建立失败，请稍后重试。", "ADMIN_LOGIN_FAILED");
                 return;
             }
 
-            var core = WebView.CoreWebView2;
+            if (initializeWebView || DirectusWebView.CoreWebView2 is null)
+            {
+                await InitializeAdminWebViewAsync(baseUrl);
+                _adminSurfaceState.MarkInitialized();
+            }
+            if (generation != Volatile.Read(ref _adminSurfaceGeneration))
+            {
+                return;
+            }
+
+            var core = DirectusWebView.CoreWebView2;
             if (core is null)
             {
-                _webBridge.PostOperationFailed(requestId,
-                    "管理后台不可用：WebView 未就绪。", "WEBVIEW_NOT_READY");
+                ShowAdminFailure(requestId, "管理后台 WebView 未就绪。", "WEBVIEW_NOT_READY");
                 return;
             }
 
@@ -1006,12 +1028,439 @@ public partial class MainWindow : Window
             cm.AddOrUpdateCookie(c);
 
             _readinessWriter?.Trace($"OpenDirectusAdminAsync: navigating to admin at {baseUrl}");
-            core.Navigate(baseUrl.TrimEnd('/') + "/admin/");
+            await NavigateAdminAsync(
+                core, baseUrl.TrimEnd('/') + "/admin/", openCts.Token);
+            if (generation != Volatile.Read(ref _adminSurfaceGeneration))
+            {
+                return;
+            }
+            _adminSurfaceState.MarkReady();
+            await core.ExecuteScriptAsync(
+                $"window.__vibetableSetFloating?.({(_adminFloatingButtonEnabled ? "true" : "false")});");
+            DirectusWebView.Visibility = Visibility.Visible;
+            AdminLoadingOverlay.Visibility = Visibility.Collapsed;
+            AdminErrorOverlay.Visibility = Visibility.Collapsed;
+            DirectusWebView.Focus();
+        }
+        catch (OperationCanceledException) when (openCts.IsCancellationRequested)
+        {
+            // Closing the surface or starting a newer open cancels this flow.
+            // A 30-second timeout while the same surface remains visible is a
+            // real failure and should offer the normal retry UI.
+            if (ReferenceEquals(Volatile.Read(ref _adminOpenCts), openCts)
+                && generation == Volatile.Read(ref _adminSurfaceGeneration)
+                && _adminSurfaceState.IsVisible)
+            {
+                ShowAdminFailure(
+                    requestId,
+                    "管理后台打开超时，请重试。",
+                    "ADMIN_OPEN_TIMEOUT");
+            }
         }
         catch (Exception ex)
         {
-            _webBridge.PostOperationFailed(requestId,
-                $"管理后台打开失败：{ex.Message}", "ADMIN_OPEN_ERROR");
+            if (generation == Volatile.Read(ref _adminSurfaceGeneration))
+            {
+                ShowAdminFailure(requestId, $"管理后台打开失败：{ex.Message}", "ADMIN_OPEN_ERROR");
+            }
+        }
+        finally
+        {
+            if (gateEntered)
+            {
+                _adminOpenGate.Release();
+            }
+            Interlocked.CompareExchange(ref _adminOpenCts, null, openCts);
+            openCts.Dispose();
+        }
+    }
+
+    private async Task InitializeAdminWebViewAsync(string baseUrl)
+    {
+        var environment = await GetWebViewEnvironmentAsync();
+        await DirectusWebView.EnsureCoreWebView2Async(environment);
+        var core = DirectusWebView.CoreWebView2
+            ?? throw new InvalidOperationException("Directus WebView2 initialization returned no core.");
+
+        core.NavigationStarting += (_, args) =>
+        {
+            if (!WebViewNavigationPolicy.IsAdminNavigation(args.Uri, ResolveDirectusBaseUrl()))
+            {
+                args.Cancel = true;
+            }
+        };
+        core.FrameNavigationStarting += (_, args) =>
+        {
+            if (!WebViewNavigationPolicy.IsAdminNavigation(args.Uri, ResolveDirectusBaseUrl()))
+            {
+                args.Cancel = true;
+            }
+        };
+        core.NewWindowRequested += (_, args) =>
+        {
+            args.Handled = true;
+            switch (WebViewNavigationPolicy.ClassifyAdminNewWindow(
+                        args.Uri, ResolveDirectusBaseUrl()))
+            {
+                case WebViewLinkDisposition.CurrentView:
+                    core.Navigate(args.Uri);
+                    break;
+                case WebViewLinkDisposition.ExternalBrowser:
+                    OpenExternalUri(args.Uri);
+                    break;
+            }
+        };
+        core.ProcessFailed += (_, args) => Dispatcher.BeginInvoke(() =>
+        {
+            if (_adminSurfaceState.IsVisible)
+            {
+                ShowAdminFailure(
+                    _lastAdminRequestId,
+                    $"管理后台渲染进程异常：{args.ProcessFailedKind}",
+                    "ADMIN_WEBVIEW_FAILED");
+            }
+        });
+        core.WebMessageReceived += OnAdminWebMessageReceived;
+        await core.AddScriptToExecuteOnDocumentCreatedAsync(
+            BuildAdminFloatingButtonScript(_adminFloatingButtonEnabled));
+
+#if !DEBUG
+        core.Settings.AreDevToolsEnabled = false;
+        core.Settings.AreDefaultContextMenusEnabled = false;
+        core.Settings.AreBrowserAcceleratorKeysEnabled = false;
+#endif
+        core.Settings.IsStatusBarEnabled = false;
+        _readinessWriter?.Trace($"DirectusWebView initialized for {baseUrl}");
+    }
+
+    private static async Task NavigateAdminAsync(
+        CoreWebView2 core,
+        string url,
+        CancellationToken cancellationToken)
+    {
+        var navigation = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        EventHandler<CoreWebView2NavigationCompletedEventArgs>? completed = null;
+        completed = (_, args) =>
+        {
+            if (args.IsSuccess)
+            {
+                navigation.TrySetResult(true);
+            }
+            else
+            {
+                navigation.TrySetException(new InvalidOperationException(
+                    $"Directus navigation failed: {args.WebErrorStatus}, HTTP {args.HttpStatusCode}."));
+            }
+        };
+        core.NavigationCompleted += completed;
+        using var cancellation = cancellationToken.Register(
+            () => navigation.TrySetCanceled(cancellationToken));
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            core.Navigate(url);
+            await navigation.Task;
+        }
+        finally
+        {
+            core.NavigationCompleted -= completed;
+        }
+    }
+
+    private string? ResolveDirectusBaseUrl()
+        => _directusSupervisor?.BaseUrl;
+
+    private void ShowAdminLoading()
+    {
+        // WebView2 uses a child HWND; WPF Panel.ZIndex cannot place another
+        // sibling WebView or host chrome above that native surface. Hide only
+        // the AppWebView HWND while keeping its CoreWebView2/page alive so the
+        // table selection, scroll position, and in-memory state are preserved.
+        AppWebView.SetCurrentValue(VisibilityProperty, Visibility.Hidden);
+        DirectusWebView.Visibility = Visibility.Hidden;
+        AdminSurface.Visibility = Visibility.Visible;
+        AdminLoadingOverlay.Visibility = Visibility.Visible;
+        AdminErrorOverlay.Visibility = Visibility.Collapsed;
+    }
+
+    private void ShowAdminFailure(string? requestId, string message, string code)
+    {
+        if (!_adminSurfaceState.IsVisible)
+        {
+            _adminSurfaceState.BeginOpen();
+        }
+        _adminSurfaceState.MarkFailed(message);
+        AppWebView.SetCurrentValue(VisibilityProperty, Visibility.Hidden);
+        DirectusWebView.Visibility = Visibility.Hidden;
+        AdminSurface.Visibility = Visibility.Visible;
+        AdminLoadingOverlay.Visibility = Visibility.Collapsed;
+        AdminErrorText.Text = message;
+        AdminErrorOverlay.Visibility = Visibility.Visible;
+        _webBridge.PostOperationFailed(requestId, message, code);
+    }
+
+    private void CloseAdminSurface()
+    {
+        Interlocked.Increment(ref _adminSurfaceGeneration);
+        Interlocked.Exchange(ref _adminOpenCts, null)?.Cancel();
+        _adminSurfaceState.Close();
+        AdminSurface.Visibility = Visibility.Collapsed;
+        AppWebView.SetCurrentValue(VisibilityProperty, Visibility.Visible);
+        AdminCloseConfirmOverlay.Visibility = Visibility.Collapsed;
+        if (_adminReleaseWhenIdle)
+        {
+            _adminIdleReleaseTimer.Stop();
+            _adminIdleReleaseTimer.Start();
+        }
+        AppWebView.Focus();
+        _ = RefreshCollectionsAfterAdminCloseAsync();
+    }
+
+    /// <summary>
+    /// Directus can change schema while its Studio is open. Re-listing on close
+    /// lets the backend reconcile identifier mappings and refreshes the web
+    /// sidebar without recreating the persistent app WebView.
+    /// </summary>
+    private async Task RefreshCollectionsAfterAdminCloseAsync()
+    {
+        if (_directusGateway is null || _directusSessionReady is null
+            || !_directusSessionReady.Task.IsCompletedSuccessfully
+            || !_directusSessionReady.Task.Result)
+        {
+            return;
+        }
+
+        try
+        {
+            var list = await _directusGateway.ListCollectionsAsync(CancellationToken.None);
+            var tables = DirectusCollectionFilter.FilterUserTables(list.Collections);
+            _webBridge.PostNotification("database.collectionsChanged", new
+            {
+                tables,
+                capabilityHashes = list.CapabilityHashes,
+                displayNames = list.DisplayNames,
+            });
+        }
+        catch (Exception ex)
+        {
+            _webBridge.PostOperationFailed(
+                null,
+                $"Directus 结构刷新失败：{ex.Message}",
+                "DIRECTUS_SCHEMA_REFRESH_FAILED");
+        }
+    }
+
+    private void OnCloseAdminClick(object sender, RoutedEventArgs e)
+        => RequestCloseAdminSurface();
+
+    private void OnReloadAdminClick(object sender, RoutedEventArgs e)
+        => DirectusWebView.CoreWebView2?.Reload();
+
+    private void OnAdminMoreClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Button button
+            && button.ContextMenu is { } menu)
+        {
+            menu.PlacementTarget = button;
+            menu.IsOpen = true;
+        }
+    }
+
+    private void OnRetryAdminClick(object sender, RoutedEventArgs e)
+        => _ = OpenDirectusAdminAsync(_lastAdminRequestId);
+
+    private void OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape && _adminSurfaceState.IsVisible)
+        {
+            if (AdminCloseConfirmOverlay.Visibility == Visibility.Visible)
+            {
+                AdminCloseConfirmOverlay.Visibility = Visibility.Collapsed;
+                DirectusWebView.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                RequestCloseAdminSurface();
+            }
+            e.Handled = true;
+        }
+    }
+
+    private void ApplyAdminPreferences(JsonElement payload)
+    {
+        if (payload.ValueKind != JsonValueKind.Object) return;
+        if (payload.TryGetProperty("floatingButtonEnabled", out var floating)
+            && floating.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            _adminFloatingButtonEnabled = floating.GetBoolean();
+        }
+        if (payload.TryGetProperty("confirmClose", out var confirm)
+            && confirm.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            _adminConfirmClose = confirm.GetBoolean();
+        }
+        if (payload.TryGetProperty("releaseWhenIdle", out var release)
+            && release.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            _adminReleaseWhenIdle = release.GetBoolean();
+        }
+    }
+
+    private void RequestCloseAdminSurface()
+    {
+        if (_adminConfirmClose && _adminSurfaceState.State == AdminSurfaceState.Ready)
+        {
+            // The Directus WebView is another child HWND; hide only its visual
+            // surface while the WPF confirmation card is displayed above it.
+            DirectusWebView.Visibility = Visibility.Hidden;
+            AdminCloseConfirmOverlay.Visibility = Visibility.Visible;
+            return;
+        }
+        CloseAdminSurface();
+    }
+
+    private void OnCancelAdminCloseClick(object sender, RoutedEventArgs e)
+    {
+        AdminCloseConfirmOverlay.Visibility = Visibility.Collapsed;
+        DirectusWebView.Visibility = Visibility.Visible;
+        DirectusWebView.Focus();
+    }
+
+    private void OnConfirmAdminCloseClick(object sender, RoutedEventArgs e)
+        => CloseAdminSurface();
+
+    private void OnAdminIdleReleaseTick(object? sender, EventArgs e)
+    {
+        _adminIdleReleaseTimer.Stop();
+        if (_adminReleaseWhenIdle && !_adminSurfaceState.IsVisible)
+        {
+            ReleaseAdminWebView();
+        }
+    }
+
+    private void ReleaseAdminWebView()
+    {
+        Interlocked.Increment(ref _adminSurfaceGeneration);
+        Interlocked.Exchange(ref _adminOpenCts, null)?.Cancel();
+        var previous = DirectusWebView;
+        try { previous.CoreWebView2?.Stop(); } catch { }
+        previous.Dispose();
+        AdminSurface.Children.Remove(previous);
+        try { UnregisterName("DirectusWebView"); } catch { }
+
+        var replacement = new WebView2 { Name = "DirectusWebView" };
+        Grid.SetRow(replacement, 1);
+        AdminSurface.Children.Insert(1, replacement);
+        DirectusWebView = replacement;
+        try { RegisterName("DirectusWebView", replacement); } catch { }
+        _adminSurfaceState.Release();
+        _readinessWriter?.Trace("DirectusWebView released after 10 minutes idle.");
+    }
+
+    private void OnAdminWebMessageReceived(
+        object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        if (!WebViewNavigationPolicy.IsAdminNavigation(e.Source, ResolveDirectusBaseUrl()))
+        {
+            return;
+        }
+        try
+        {
+            using var document = JsonDocument.Parse(e.WebMessageAsJson);
+            if (document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("type", out var type)
+                && type.ValueKind == JsonValueKind.String
+                && string.Equals(type.GetString(), "admin.closeRequested", StringComparison.Ordinal))
+            {
+                Dispatcher.BeginInvoke(new Action(RequestCloseAdminSurface));
+            }
+        }
+        catch (JsonException)
+        {
+            // The admin bridge accepts one closed message shape only.
+        }
+    }
+
+    public static string BuildAdminFloatingButtonScript(bool enabled)
+    {
+        string initial = enabled ? "true" : "false";
+        return $$"""
+            (() => {
+              if (window.top !== window) return;
+              const hostId = 'vibetable-admin-return-host';
+              const storageKey = 'vibetable.admin-return-position.v1';
+              function remove() { document.getElementById(hostId)?.remove(); }
+              function create() {
+                if (document.getElementById(hostId) || !document.body) return;
+                const host = document.createElement('div');
+                host.id = hostId;
+                host.style.cssText = 'position:fixed;z-index:2147483647;right:20px;bottom:20px;width:max-content;height:36px;';
+                const shadow = host.attachShadow({ mode: 'closed' });
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.textContent = '返回 VibeTable';
+                button.setAttribute('aria-label', '返回 VibeTable');
+                button.style.cssText = 'height:36px;padding:0 14px;border:1px solid #d9dce1;border-radius:18px;background:#fff;color:#1f2329;font:500 13px/34px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 4px 16px rgba(31,35,41,.14);cursor:grab;user-select:none;touch-action:none;';
+                shadow.append(button);
+                document.body.append(host);
+                try {
+                  const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
+                  if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+                    host.style.left = `${Math.max(8, Math.min(innerWidth - host.offsetWidth - 8, saved.x * innerWidth))}px`;
+                    host.style.top = `${Math.max(8, Math.min(innerHeight - 44, saved.y * innerHeight))}px`;
+                    host.style.right = host.style.bottom = 'auto';
+                  }
+                } catch {}
+                let startX = 0, startY = 0, originX = 0, originY = 0, moved = false;
+                button.addEventListener('pointerdown', event => {
+                  const rect = host.getBoundingClientRect();
+                  startX = event.clientX; startY = event.clientY;
+                  originX = rect.left; originY = rect.top; moved = false;
+                  button.setPointerCapture(event.pointerId); button.style.cursor = 'grabbing';
+                });
+                button.addEventListener('pointermove', event => {
+                  if (!button.hasPointerCapture(event.pointerId)) return;
+                  const dx = event.clientX - startX, dy = event.clientY - startY;
+                  moved ||= Math.abs(dx) + Math.abs(dy) > 4;
+                  host.style.left = `${Math.max(8, Math.min(innerWidth - host.offsetWidth - 8, originX + dx))}px`;
+                  host.style.top = `${Math.max(8, Math.min(innerHeight - host.offsetHeight - 8, originY + dy))}px`;
+                  host.style.right = host.style.bottom = 'auto';
+                });
+                button.addEventListener('pointerup', event => {
+                  button.releasePointerCapture(event.pointerId); button.style.cursor = 'grab';
+                  const rect = host.getBoundingClientRect();
+                  try { localStorage.setItem(storageKey, JSON.stringify({ x: rect.left / innerWidth, y: rect.top / innerHeight })); } catch {}
+                  if (!moved) window.chrome?.webview?.postMessage({ type: 'admin.closeRequested' });
+                });
+                addEventListener('resize', () => {
+                  const rect = host.getBoundingClientRect();
+                  host.style.left = `${Math.max(8, Math.min(innerWidth - rect.width - 8, rect.left))}px`;
+                  host.style.top = `${Math.max(8, Math.min(innerHeight - rect.height - 8, rect.top))}px`;
+                }, { passive: true });
+              }
+              window.__vibetableSetFloating = value => value ? create() : remove();
+              if ({{initial}}) {
+                if (document.readyState === 'loading') addEventListener('DOMContentLoaded', create, { once: true });
+                else create();
+              }
+            })();
+            """;
+    }
+
+    private static void OpenExternalUri(string? uri)
+    {
+        if (string.IsNullOrWhiteSpace(uri))
+        {
+            return;
+        }
+        try
+        {
+            Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
+        }
+        catch
+        {
+            // External navigation is best-effort and never weakens the in-app gate.
         }
     }
 
@@ -1062,6 +1511,7 @@ public partial class MainWindow : Window
             {
                 tables = result.Tables,
                 views = result.Views,
+                displayNames = result.DisplayNames,
             });
         }
         catch (Exception ex)
@@ -1139,6 +1589,15 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Both WebViews share one environment/profile so the existing host-owned
+    /// Directus session cookie is visible to the lazy admin renderer.
+    /// </summary>
+    private Task<CoreWebView2Environment> GetWebViewEnvironmentAsync()
+        => _webViewEnvironmentTask ??= CoreWebView2Environment.CreateAsync(
+            browserExecutableFolder: null,
+            userDataFolder: BuildWebViewUserDataFolder());
+
+    /// <summary>
     /// Adapter that exposes <see cref="PythonBackendSupervisor"/> through the
     /// <see cref="IBackendLifecycle"/> interface consumed by the ViewModel.
     /// </summary>
@@ -1181,37 +1640,13 @@ public partial class MainWindow : Window
 
         public async Task LoadAsync(CancellationToken cancellationToken)
         {
-            var webview = _owner.WebView;
+            var webview = _owner.AppWebView;
             _owner._readinessWriter?.Trace("WebViewBridge.LoadAsync: EnsureCoreWebView2Async");
 
-            // Use an explicit per-process user-data folder. The default folder
-            // is shared across all WebView2 instances in the same executable
-            // directory; orphaned msedgewebview2.exe processes from prior runs
-            // (or a concurrently-running host) hold a lock on it, which makes
-            // EnsureCoreWebView2Async silently serve a stale/corrupted profile
-            // and the virtual-host navigation fail with success=False http=0.
-            // A unique subfolder under the local app-data VibeTable folder isolates
-            // each session.
-            try
-            {
-                if (webview.CreationProperties is null)
-                {
-                    webview.CreationProperties = new CoreWebView2CreationProperties();
-                }
-                webview.CreationProperties.UserDataFolder =
-                    _owner.BuildWebViewUserDataFolder();
-                _owner._readinessWriter?.Trace(
-                    $"WebViewBridge.LoadAsync: UserDataFolder='{webview.CreationProperties.UserDataFolder}'");
-            }
-            catch (Exception ex)
-            {
-                _owner._readinessWriter?.Trace(
-                    $"WebViewBridge.LoadAsync: UserDataFolder set failed: {ex.Message}");
-            }
-
-            // EnsureCoreWebView2Async is idempotent; awaiting here guarantees
-            // CoreWebView2 is non-null for the hardening steps below.
-            await webview.EnsureCoreWebView2Async()
+            // A single explicit environment/profile is shared with the lazy
+            // Directus WebView. EnsureCoreWebView2Async is idempotent.
+            var environment = await _owner.GetWebViewEnvironmentAsync();
+            await webview.EnsureCoreWebView2Async(environment)
                 .ConfigureAwait(true);
 
             _owner._readinessWriter?.Trace("WebViewBridge.LoadAsync: CoreWebView2 ready");
@@ -1284,7 +1719,8 @@ public partial class MainWindow : Window
                 folder,
                 CoreWebView2HostResourceAccessKind.DenyCors);
 
-            // 2. Navigation gating: cancel anything that is not the app origin.
+            // 2. App navigation is deliberately limited to the virtual app
+            // origin. Directus is trusted only by the separate admin WebView.
             core.NavigationStarting += (_, args) =>
             {
                 _owner._readinessWriter?.Trace($"NavigationStarting: uri='{args.Uri}' isAppOrigin={_owner.IsAppOrigin(args.Uri)}");
@@ -1301,35 +1737,19 @@ public partial class MainWindow : Window
                 }
             };
 
-            // 3. New-window discrimination: cancel the popup in all cases, then
-            //    decide where the link goes. Same trusted origin (web-grid or
-            //    Directus admin) → navigate the current webview there instead
-            //    of opening a new window; external site → system browser.
+            // 3. Same-app links stay here; ordinary http(s) links go to the
+            // system browser; unsafe or malformed schemes are swallowed.
             core.NewWindowRequested += (_, args) =>
             {
                 args.Handled = true;
-                if (args.Uri is null || !Uri.TryCreate(args.Uri, UriKind.Absolute, out var u))
+                switch (WebViewNavigationPolicy.ClassifyAppNewWindow(args.Uri))
                 {
-                    return;
-                }
-                if (_owner.IsAppOrigin(args.Uri))
-                {
-                    _owner.Dispatcher.Invoke(() => core.Navigate(u.AbsoluteUri));
-                }
-                else
-                {
-                    try
-                    {
-                        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(u.AbsoluteUri)
-                        {
-                            UseShellExecute = true,
-                        });
-                    }
-                    catch (Exception ex)
-                    {
-                        _owner._readinessWriter?.Trace(
-                            $"NewWindowRequested: failed to launch system browser for '{u.AbsoluteUri}': {ex.Message}");
-                    }
+                    case WebViewLinkDisposition.CurrentView:
+                        _owner.Dispatcher.Invoke(() => core.Navigate(args.Uri));
+                        break;
+                    case WebViewLinkDisposition.ExternalBrowser:
+                        OpenExternalUri(args.Uri);
+                        break;
                 }
             };
 
@@ -1433,7 +1853,7 @@ public partial class MainWindow : Window
             }
             _owner.Dispatcher.Invoke(() =>
             {
-                var core = _owner.WebView.CoreWebView2;
+                var core = _owner.AppWebView.CoreWebView2;
                 if (core is null)
                 {
                     // WebView not ready yet; drop the notification. The renderer
@@ -1452,6 +1872,24 @@ public partial class MainWindow : Window
             });
         }
 
+
+        public void PostResponse(string type, string? requestId, object? payload)
+        {
+            if (!_router.IsHostNotificationAllowed(type))
+            {
+                return;
+            }
+            _owner.Dispatcher.Invoke(() =>
+            {
+                var core = _owner.AppWebView.CoreWebView2;
+                if (core is null) return;
+                string json = JsonSerializer.Serialize(
+                    new { type, requestId, payload },
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                core.PostWebMessageAsString(json);
+            });
+        }
+
         /// <summary>
         /// Posts an <c>operation.failed</c> reply. Reuses the router's builder
         /// so the envelope shape matches the router-originated rejections.
@@ -1460,7 +1898,7 @@ public partial class MainWindow : Window
         {
             _owner.Dispatcher.Invoke(() =>
             {
-                var core = _owner.WebView.CoreWebView2;
+                var core = _owner.AppWebView.CoreWebView2;
                 if (core is null)
                 {
                     return;

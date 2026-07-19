@@ -91,6 +91,8 @@ export interface DatasetReadyPayload extends TablePage {
 export interface DatabaseOpenedPayload {
   readonly tables: readonly string[];
   readonly views: readonly string[];
+  /** Physical collection -> user-facing label. Optional for old hosts. */
+  readonly displayNames?: Readonly<Record<string, string>>;
 }
 
 /** Payload produced by the web layer for `database.openRequested`. */
@@ -512,9 +514,8 @@ export const TABLE_FIELD_TYPES = [
 ] as const;
 export type TableFieldType = (typeof TABLE_FIELD_TYPES)[number];
 
-/** Identifier rule for table names and field keys.
- *  Mirrors backend/contracts/table_admin.py:_IDENTIFIER. */
-export const TABLE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+/** Unicode display-name rule. Physical Directus identifiers are host-owned. */
+export const TABLE_NAME_PATTERN = /^[^\u0000-\u001F\u007F-\u009F]{1,128}$/u;
 
 export interface TableAdminFieldInput {
   readonly key: string;
@@ -530,6 +531,32 @@ export interface TableAdminDeletePayload {
 export interface CollectionsChangedPayload {
   readonly tables: readonly string[];
   readonly capabilityHashes?: Readonly<Record<string, string>>;
+  /** Physical collection -> user-facing label. */
+  readonly displayNames?: Readonly<Record<string, string>>;
+}
+
+export interface IdentifierMappingEntry {
+  readonly id: string;
+  readonly entityKind: "collection" | "field";
+  readonly parentPhysicalName?: string | null;
+  readonly physicalName: string;
+  readonly displayName: string;
+  readonly locale: string;
+  readonly aliases: readonly string[];
+  readonly origin: "vibetable" | "directus" | "import";
+  readonly status: "pending" | "active" | "orphaned" | "deleted";
+}
+
+export interface IdentifierMappingImportItem {
+  readonly entityKind: "collection" | "field";
+  readonly parentPhysicalName?: string | null;
+  readonly physicalName: string;
+  readonly displayName: string;
+  readonly aliases: readonly string[];
+}
+
+export interface IdentifierMappingsResult {
+  readonly mappings: readonly IdentifierMappingEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -566,6 +593,10 @@ export type WebMessageType =
   // Table-admin requests.
   | "tableAdmin.createRequested"
   | "tableAdmin.deleteRequested"
+  | "identifierMappings.listRequested"
+  | "identifierMappings.updateAliasesRequested"
+  | "identifierMappings.importRequested"
+  | "identifierMappings.reconcileRequested"
   // Open the embedded Directus admin (Data Studio) in this webview.
   | "admin.openRequested";
 
@@ -595,7 +626,8 @@ export type HostMessageType =
   | "document.folderLoaded"
   | "document.historyLoaded"
   // Collections-changed notifications.
-  | "database.collectionsChanged";
+  | "database.collectionsChanged"
+  | "identifierMappings.result";
 
 export interface DirectusChangePayload {
   readonly uid: string;
@@ -633,6 +665,7 @@ export interface HostPayloadMap {
   "document.historyLoaded": DocumentHistoryResult;
   // Collections-changed notifications.
   "database.collectionsChanged": CollectionsChangedPayload;
+  "identifierMappings.result": IdentifierMappingsResult;
 }
 
 /** Map of (outbound) message type -> payload type, for typed requests. */
@@ -661,8 +694,20 @@ export interface WebPayloadMap {
   // Table-admin requests.
   "tableAdmin.createRequested": TableAdminCreatePayload;
   "tableAdmin.deleteRequested": TableAdminDeletePayload;
-  // Open Directus admin. Empty payload.
-  "admin.openRequested": Record<string, never>;
+  "identifierMappings.listRequested": { readonly search?: string | null };
+  "identifierMappings.updateAliasesRequested": {
+    readonly mappingId: string;
+    readonly aliases: readonly string[];
+  };
+  "identifierMappings.importRequested": {
+    readonly mappings: readonly IdentifierMappingImportItem[];
+  };
+  "identifierMappings.reconcileRequested": Record<string, never>;
+  "admin.openRequested": {
+    readonly floatingButtonEnabled: boolean;
+    readonly confirmClose: boolean;
+    readonly releaseWhenIdle: boolean;
+  };
 }
 
 /** Payload produced by the web layer for `table.queryRequested`. */

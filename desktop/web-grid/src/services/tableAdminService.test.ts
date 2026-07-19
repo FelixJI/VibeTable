@@ -54,7 +54,7 @@ describe("tableAdminService", () => {
   // pattern + architecture-debt note in errorRouter.test.ts).
   afterEach(() => setHostBridgeForTesting(null));
 
-  it("transitions phase creating -> idle AND closes the create modal on collectionsChanged", () => {
+  it("transitions phase submitting -> idle AND closes the create modal on collectionsChanged", () => {
     const { bridge, emit } = makeShimBridge();
     setHostBridgeForTesting(bridge);
     const admin = useTableAdminStore();
@@ -66,7 +66,7 @@ describe("tableAdminService", () => {
     admin.openCreate();
     ui.openCreate();
     admin.beginSubmit();
-    expect(admin.phase).toBe("creating");
+    expect(admin.phase).toBe("submitting");
     expect(ui.createModalOpen).toBe(true);
 
     // Host signals success by re-announcing the (now changed) collection list.
@@ -101,7 +101,7 @@ describe("tableAdminService", () => {
     expect(ui.deleteModalOpen).toBe(false);
   });
 
-  it("does NOT close the modal when collectionsChanged fires while idle (initial load)", () => {
+  it("does NOT close an unsubmitted create form on collectionsChanged", () => {
     // Regression guard: collectionsChanged fires for ANY collection change,
     // including the initial load. Only an in-flight create/delete should be
     // resolved; an idle store must not be touched.
@@ -112,21 +112,18 @@ describe("tableAdminService", () => {
     const svc = useTableAdminService();
     svc.init();
 
-    // Idle + create modal happens to be open (e.g. user typing in the form),
-    // but no create is in flight. The collection list refresh should NOT close
-    // the modal — only a phase transition from creating/deleting does.
-    admin.openCreate(); // phase = creating, but...
-    admin.close(); // ...back to idle (no submit pending)
+    // The form is open and editable, but no create request is in flight.
+    admin.openCreate();
     ui.openCreate();
-    expect(admin.phase).toBe("idle");
+    expect(admin.phase).toBe("creating");
     expect(ui.createModalOpen).toBe(true);
 
     emit("database.collectionsChanged", {
       tables: ["users"],
     } as CollectionsChangedPayload);
 
-    // Phase stays idle, modal stays open: no false close.
-    expect(admin.phase).toBe("idle");
+    // Phase stays editable and modal stays open: no false success.
+    expect(admin.phase).toBe("creating");
     expect(ui.createModalOpen).toBe(true);
   });
 
@@ -159,12 +156,14 @@ describe("tableAdminService", () => {
     svc.init();
 
     emit("database.collectionsChanged", {
-      tables: ["users", "orders", "items"],
-      capabilityHashes: { users: "abc" },
+      tables: ["vt_t_users", "vt_t_orders", "vt_t_items"],
+      capabilityHashes: { vt_t_users: "abc" },
+      displayNames: { vt_t_users: "用户", vt_t_orders: "订单" },
     } as CollectionsChangedPayload);
 
     expect(admin.collections).toHaveLength(3);
-    expect(admin.collections[0]?.collection).toBe("users");
+    expect(admin.collections[0]?.collection).toBe("vt_t_users");
     expect(admin.collections[0]?.metadata?.capabilityHash).toBe("abc");
+    expect(admin.collections[0]?.displayName).toBe("用户");
   });
 });

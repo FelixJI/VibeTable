@@ -109,8 +109,8 @@ describe("CreateTableModal", () => {
     const ui = useUiStore();
     const admin = useTableAdminStore();
     admin.openCreate();
-    admin.form.name = "orders";
-    admin.updateField(0, { name: "id" });
+    admin.form.name = "订单";
+    admin.updateField(0, { name: "订单编号" });
     ui.openCreate();
     mountModal();
     await flushPromises();
@@ -123,8 +123,8 @@ describe("CreateTableModal", () => {
     const ui = useUiStore();
     const admin = useTableAdminStore();
     admin.openCreate();
-    admin.form.name = "orders";
-    admin.updateField(0, { name: "id" });
+    admin.form.name = "订单";
+    admin.updateField(0, { name: "订单编号" });
     ui.openCreate();
     const wrapper = mountModal();
     await flushPromises();
@@ -159,5 +159,31 @@ describe("CreateTableModal", () => {
     const nameInput = bodyEl("create-table-field-name-0").querySelector("input");
     expect(nameInput?.value).toBe("price");
     expect(admin.form.fields[0].name).toBe("price");
+  });
+
+  it("explains that physical identifiers are generated and stable", async () => {
+    const ui = useUiStore();
+    const admin = useTableAdminStore();
+    admin.openCreate();
+    ui.openCreate();
+    mountModal();
+    await flushPromises();
+    expect(bodyEl("physical-name-hint").textContent).toContain("自动生成");
+    expect(bodyEl("physical-name-hint").textContent).toContain("保持不变");
+  });
+
+  it("renders a create failure and keeps the valid form retryable", async () => {
+    const ui = useUiStore();
+    const admin = useTableAdminStore();
+    admin.openCreate();
+    admin.form.name = "订单";
+    admin.updateField(0, { name: "订单编号" });
+    admin.fail("名称已经存在");
+    ui.openCreate();
+    mountModal();
+    await flushPromises();
+
+    expect(bodyEl("create-table-error").textContent).toContain("名称已经存在");
+    expect(bodyEl("create-table-submit").hasAttribute("disabled")).toBe(false);
   });
 });

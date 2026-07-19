@@ -68,6 +68,10 @@ public sealed class WebMessageRouter
         // Table management (web sidebar).
         "tableAdmin.createRequested",
         "tableAdmin.deleteRequested",
+        "identifierMappings.listRequested",
+        "identifierMappings.updateAliasesRequested",
+        "identifierMappings.importRequested",
+        "identifierMappings.reconcileRequested",
         // Directus admin: open the embedded Data Studio in this webview.
         "admin.openRequested",
     };
@@ -97,6 +101,7 @@ public sealed class WebMessageRouter
         "table.pasteApplied",
         // Table management: host pushes refreshed collection list after create/delete.
         "database.collectionsChanged",
+        "identifierMappings.result",
     };
 
     private readonly Action<RoutedWebRequest> _dispatch;

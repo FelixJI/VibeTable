@@ -50,12 +50,13 @@ describe("errorRouter", () => {
   // the architecture-debt note from the task brief.
   afterEach(() => setHostBridgeForTesting(null));
 
-  it("routes operation.failed to tableAdmin when creating", () => {
+  it("routes operation.failed to tableAdmin only after create submission", () => {
     const { bridge, emit } = makeShimBridge();
     setHostBridgeForTesting(bridge);
     const admin = useTableAdminStore();
     const table = useTableStore();
-    admin.openCreate(); // phase = creating
+    admin.openCreate();
+    admin.beginSubmit(); // phase = submitting
     const router = useErrorRouter();
     router.init();
     emit("operation.failed", { message: "bad name", code: "X" });
@@ -63,6 +64,22 @@ describe("errorRouter", () => {
     expect(admin.error).toBe("bad name");
     // fallback store should NOT have received it
     expect(table.error).toBeNull();
+  });
+
+  it("does not claim unrelated failures while the create form is only being edited", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const admin = useTableAdminStore();
+    const table = useTableStore();
+    admin.openCreate();
+    const router = useErrorRouter();
+    router.init();
+
+    emit("operation.failed", { message: "table load failed", code: "X" });
+
+    expect(admin.phase).toBe("creating");
+    expect(admin.error).toBeNull();
+    expect(table.error).toBe("table load failed");
   });
 
   it("routes to tableAdmin when deleting", () => {

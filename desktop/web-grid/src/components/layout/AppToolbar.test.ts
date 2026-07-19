@@ -1,106 +1,51 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-
+import { NDropdown } from "naive-ui";
 import AppToolbar from "./AppToolbar.vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
-import { useTableStore } from "@/stores/tableStore";
-import { useUiStore } from "@/stores/uiStore";
-
-/**
- * AppToolbar is pure-presentation. It reads from workspace/table/ui stores and
- * EMITS connect / refresh / openHelp. The theme dropdown writes to the uiStore
- * directly (pure UI concern). These tests verify:
- *   1. Row-count text binds to table.datasetReady + table.rowCount.
- *   2. Connect is disabled when phase is opened/opening; refresh disabled when
- *      no current table.
- *   3. Clicks emit the right events.
- *   4. The theme dropdown's @select updates ui.themeMode through the store.
- */
-function mountToolbar() {
-  return mount(AppToolbar);
-}
-
-function findButton(wrapper: ReturnType<typeof mountToolbar>, testId: string) {
-  return wrapper.find(`[data-testid="${testId}"]`);
-}
 
 describe("AppToolbar", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
-  it("shows no row-count text before the dataset is ready", () => {
-    const wrapper = mountToolbar();
+  it("does not render the former connect, refresh, row-count, or theme controls", () => {
+    const wrapper = mount(AppToolbar);
+    expect(wrapper.find('[data-testid="toolbar-connect"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="toolbar-refresh"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="toolbar-row-count"]').exists()).toBe(false);
+    expect(wrapper.find('[aria-label="主题"]').exists()).toBe(false);
   });
 
-  it("shows the row-count text once the dataset is ready", async () => {
-    const table = useTableStore();
-    table.setDatasetReady({
-      table: "orders",
-      columns: [],
-      rows: [{ id: 1 }, { id: 2 }],
-      offset: 0,
-      limit: 2,
-      totalRows: 2,
-      mode: "client",
-      loadedRows: 2,
-    });
-    const wrapper = mountToolbar();
-    await wrapper.vm.$nextTick();
-    const rc = wrapper.find('[data-testid="toolbar-row-count"]');
-    expect(rc.exists()).toBe(true);
-    expect(rc.text()).toContain("2");
+  it("shows a restrained empty title when no table is selected", () => {
+    const wrapper = mount(AppToolbar);
+    expect(wrapper.get('[data-testid="toolbar-table-title"]').text()).toBe("选择一张数据表");
   });
 
-  it("disables connect when workspace is already opened", () => {
+  it("shows the selected table label while preserving the physical key as secondary text", () => {
     const workspace = useWorkspaceStore();
-    workspace.beginOpen();
-    workspace.setOpened([{ collection: "users", metadata: {} }]);
-    const wrapper = mountToolbar();
-    const connect = findButton(wrapper, "toolbar-connect");
-    expect(connect.attributes("disabled")).toBeDefined();
+    workspace.setOpened([
+      { collection: "vt_t_01abc", metadata: { displayName: "客户清单" } },
+    ]);
+    workspace.selectTable("vt_t_01abc");
+    const wrapper = mount(AppToolbar);
+    expect(wrapper.get('[data-testid="toolbar-table-title"]').text()).toBe("客户清单");
+    expect(wrapper.text()).toContain("vt_t_01abc");
   });
 
-  it("disables refresh when there is no current table", () => {
-    const wrapper = mountToolbar();
-    const refresh = findButton(wrapper, "toolbar-refresh");
-    expect(refresh.attributes("disabled")).toBeDefined();
-  });
-
-  it("enables refresh when a current table is selected", () => {
+  it("exposes refresh and help through the More menu", () => {
     const workspace = useWorkspaceStore();
     workspace.selectTable("orders");
-    const wrapper = mountToolbar();
-    const refresh = findButton(wrapper, "toolbar-refresh");
-    expect(refresh.attributes("disabled")).toBeUndefined();
+    const wrapper = mount(AppToolbar);
+    const dropdown = wrapper.getComponent(NDropdown);
+    const select = dropdown.props("onSelect") as (key: string) => void;
+    select("refresh");
+    select("help");
+    expect(wrapper.emitted("refresh")).toHaveLength(1);
+    expect(wrapper.emitted("openHelp")).toHaveLength(1);
   });
 
-  it("emits connect when the connect button is clicked", async () => {
-    const wrapper = mountToolbar();
-    await findButton(wrapper, "toolbar-connect").trigger("click");
-    expect(wrapper.emitted("connect")).toBeTruthy();
-  });
-
-  it("emits refresh when the refresh button is clicked (with a current table)", async () => {
-    const workspace = useWorkspaceStore();
-    workspace.selectTable("orders");
-    const wrapper = mountToolbar();
-    await findButton(wrapper, "toolbar-refresh").trigger("click");
-    expect(wrapper.emitted("refresh")).toBeTruthy();
-  });
-
-  it("emits openHelp when the help button is clicked", async () => {
-    const wrapper = mountToolbar();
-    await findButton(wrapper, "toolbar-open-help").trigger("click");
-    expect(wrapper.emitted("openHelp")).toBeTruthy();
-  });
-
-  it("reflects the uiStore themeMode in the rendered icon-button state", () => {
-    const ui = useUiStore();
-    ui.setThemeMode("dark");
-    const wrapper = mountToolbar();
-    expect(wrapper.findComponent({ name: "Icon" }).exists()).toBe(true);
-    // No exception means the icon computed handled dark mode.
-    expect(wrapper.html()).toBeTruthy();
+  it("provides an accessible tooltip trigger for More", () => {
+    const wrapper = mount(AppToolbar);
+    expect(wrapper.get('[data-testid="toolbar-more"]').attributes("aria-label")).toBe("更多操作");
   });
 });

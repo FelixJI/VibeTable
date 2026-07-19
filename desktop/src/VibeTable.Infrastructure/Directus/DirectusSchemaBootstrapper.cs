@@ -306,6 +306,7 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
             ["meta"] = new JsonObject
             {
                 ["collection"] = name,
+                ["hidden"] = definition["hidden"]?.GetValue<bool>() ?? false,
                 ["accountability"] = definition["accountability"]?.GetValue<string>() ?? "all",
                 ["archive_field"] = definition["archive_field"]?.GetValue<string>(),
                 ["archive_value"] = definition["archive_value"]?.GetValue<string>(),

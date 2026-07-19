@@ -28,7 +28,9 @@
   --vt-bg:        var(--vt-gray-0);
   --vt-bg-subtle: var(--vt-gray-50);
   --vt-bg-sunken: var(--vt-gray-100);
+  --vt-bg-elevated: var(--vt-gray-0);
   --vt-fg:        var(--vt-gray-600);
+  --vt-fg-secondary: var(--vt-gray-500);
   --vt-fg-muted:  var(--vt-gray-400);
   --vt-border:    var(--vt-gray-200);
 
@@ -48,6 +50,8 @@
   --vt-space-3: 12px;
   --vt-space-4: 16px;
   --vt-space-5: 24px;
+  --vt-space-6: 32px;
+  --vt-space-7: 40px;
 
   /* Type scale (Feishu) */
   --vt-font-caption: 12px;
@@ -96,6 +100,19 @@ html, body {
   font-size: var(--vt-font-body);
   line-height: var(--vt-line-base);
   -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button, input, select, textarea {
+  font: inherit;
+}
+
+::selection {
+  color: #fff;
+  background: var(--vt-color-primary-500);
 }
 
 #app {

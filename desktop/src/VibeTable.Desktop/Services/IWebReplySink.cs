@@ -21,6 +21,9 @@ public interface IWebReplySink
     /// </summary>
     void PostNotification(string type, object? payload);
 
+    /// <summary>Posts a typed result correlated to a renderer request.</summary>
+    void PostResponse(string type, string? requestId, object? payload);
+
     /// <summary>
     /// Posts an <c>operation.failed</c> reply correlated to the inbound
     /// <paramref name="requestId"/> (or uncorrelated when null).

@@ -1,81 +1,99 @@
 <script setup lang="ts">
-/**
- * AppSidebar — pure-presentation table list.
- *
- * Reads collections and currentTable from `workspaceStore` and EMITS user
- * intent (select / newTable / openAdmin / requestDelete). It does NOT import or
- * call any service. `WorkspaceView` is the container that translates these
- * emits into service calls — this separation is the layered-architecture rule
- * (spec §2.2): components never call services directly.
- */
-import { computed } from "vue";
-import { NButton, NIcon, NList, NListItem } from "naive-ui";
-import { Plus, Settings, Trash2 } from "lucide-vue-next";
+import { computed, ref } from "vue";
+import { NButton, NIcon, NInput, NTooltip } from "naive-ui";
+import { Plus, Search, Table2, Trash2 } from "lucide-vue-next";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { collectionLabel } from "./collectionLabel";
 import { t } from "@/i18n";
 
 const workspace = useWorkspaceStore();
+const query = ref("");
 
 const emit = defineEmits<{
   select: [name: string];
   newTable: [];
-  openAdmin: [];
   requestDelete: [name: string];
 }>();
 
-const collections = computed(() => workspace.collections);
+const displayNames = computed(() => workspace.displayNames);
+const collections = computed(() => {
+  const needle = query.value.trim().toLocaleLowerCase();
+  if (!needle) return workspace.collections;
+  return workspace.collections.filter((item) =>
+    `${collectionLabel(item, displayNames.value)} ${item.collection}`
+      .toLocaleLowerCase()
+      .includes(needle),
+  );
+});
 </script>
 
 <template>
   <aside class="sidebar">
     <div class="sidebar-head">
-      <span class="sidebar-title">{{ t("sidebar.tables") }}</span>
-      <NButton
-        size="small"
-        quaternary
-        :aria-label="t('sidebar.newTable')"
-        data-testid="sidebar-new-table"
-        @click="emit('newTable')"
-      >
-        <template #icon><NIcon :component="Plus" /></template>
-      </NButton>
-      <NButton
-        size="small"
-        quaternary
-        :aria-label="t('sidebar.admin')"
-        data-testid="sidebar-open-admin"
-        @click="emit('openAdmin')"
-      >
-        <template #icon><NIcon :component="Settings" /></template>
-      </NButton>
+      <div>
+        <span class="sidebar-title">{{ t("sidebar.tables") }}</span>
+        <small>{{ workspace.collections.length }}</small>
+      </div>
+      <NTooltip placement="bottom" :delay="450">
+        <template #trigger>
+          <NButton
+            size="small"
+            quaternary
+            :aria-label="t('sidebar.newTable')"
+            data-testid="sidebar-new-table"
+            @click="emit('newTable')"
+          >
+            <template #icon><NIcon><Plus /></NIcon></template>
+          </NButton>
+        </template>
+        {{ t("sidebar.newTable") }}（Ctrl+N）
+      </NTooltip>
     </div>
-    <NList hoverable clickable class="table-list" data-testid="sidebar-table-list">
-      <NListItem
+    <div class="sidebar-search">
+      <NInput v-model:value="query" size="small" clearable :placeholder="t('sidebar.search')">
+        <template #prefix><NIcon :size="14"><Search /></NIcon></template>
+      </NInput>
+    </div>
+    <div class="table-list" data-testid="sidebar-table-list">
+      <button
         v-for="col in collections"
         :key="col.collection"
+        type="button"
+        class="table-row"
         :class="{ 'table-item--active': col.collection === workspace.currentTable }"
         @click="emit('select', col.collection)"
       >
-        <div class="table-item">
-          <span class="table-name" data-testid="sidebar-table-name">{{ col.collection }}</span>
+        <span class="table-icon"><NIcon :size="15"><Table2 /></NIcon></span>
+        <span class="table-copy">
+          <span class="table-name" data-testid="sidebar-table-name">{{ collectionLabel(col, displayNames) }}</span>
+          <small v-if="collectionLabel(col, displayNames) !== col.collection">{{ col.collection }}</small>
+        </span>
+        <NTooltip placement="right" :delay="450">
+          <template #trigger>
           <NButton
             size="tiny"
             quaternary
+            class="delete-button"
             :aria-label="t('sidebar.delete')"
             data-testid="sidebar-request-delete"
             @click.stop="emit('requestDelete', col.collection)"
           >
-            <template #icon><NIcon :component="Trash2" :size="14" /></template>
+            <template #icon><NIcon :size="14"><Trash2 /></NIcon></template>
           </NButton>
-        </div>
-      </NListItem>
-    </NList>
+          </template>
+          {{ t("sidebar.delete") }}
+        </NTooltip>
+      </button>
+      <div v-if="collections.length === 0" class="sidebar-empty">
+        {{ query ? t("sidebar.search.empty") : t("sidebar.empty") }}
+      </div>
+    </div>
   </aside>
 </template>
 
 <style scoped>
 .sidebar {
-  flex: 0 0 220px;
+  flex: 0 0 232px;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--vt-border);
@@ -86,33 +104,53 @@ const collections = computed(() => workspace.collections);
   display: flex;
   align-items: center;
   gap: var(--vt-space-1);
-  padding: var(--vt-space-2) var(--vt-space-2);
-  border-bottom: 1px solid var(--vt-border);
+  height: 46px;
+  padding: 6px 10px 4px 14px;
 }
+.sidebar-head > div { display: flex; align-items: baseline; gap: 7px; }
+.sidebar-head small { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .sidebar-title {
   font-weight: 600;
   flex: 1;
   color: var(--vt-fg);
 }
+.sidebar-search { padding: 6px 10px 10px; }
 .table-list {
   flex: 1 1 auto;
   overflow-y: auto;
+  padding: 0 6px 10px;
 }
-.table-item {
-  display: flex;
-  justify-content: space-between;
+.table-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 26px;
   align-items: center;
   width: 100%;
+  min-height: 36px;
+  padding: 3px 4px 3px 7px;
+  color: var(--vt-fg-secondary);
+  text-align: left;
+  border: 0;
+  border-radius: var(--vt-radius-md);
+  background: transparent;
+  cursor: pointer;
 }
+.table-row:hover { color: var(--vt-fg); background: var(--vt-bg-sunken); }
+.table-icon { color: var(--vt-fg-muted); }
+.table-copy { display: flex; flex-direction: column; min-width: 0; }
 .table-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-:deep(.table-item--active) {
+.table-copy small { overflow: hidden; color: var(--vt-fg-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.table-item--active {
+  color: var(--vt-color-primary-500);
   background: var(--vt-color-primary-50);
 }
-:root.dark :deep(.table-item--active) {
+:root.dark .table-item--active {
   background: rgba(91, 139, 255, 0.15);
 }
+.delete-button { opacity: 0; }
+.table-row:hover .delete-button, .delete-button:focus-visible { opacity: 1; }
+.sidebar-empty { padding: 20px 10px; color: var(--vt-fg-muted); text-align: center; font-size: var(--vt-font-caption); }
 </style>

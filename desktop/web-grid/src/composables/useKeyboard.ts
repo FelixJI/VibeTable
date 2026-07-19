@@ -3,6 +3,8 @@ import type { Tabulator } from "tabulator-tables";
 import { useKeyboardStore } from "@/stores/keyboardStore";
 
 export interface UseKeyboardOptions {
+  /** Whether table-scoped actions are valid in the currently visible view. */
+  isTableContext?: () => boolean;
   /**
    * Optional Tabulator instance ref. Currently UNUSED — arrow / Tab / Enter
    * navigation is handled by Tabulator's own range API directly. Kept on the
@@ -92,25 +94,26 @@ export function useKeyboard(opts: UseKeyboardOptions): void {
 
   function onKeydown(e: KeyboardEvent): void {
     const inInput = isFocusInInput();
+    const tableContext = opts.isTableContext?.() ?? true;
 
     // Inside a form field, ignore everything except Escape (which must bubble
     // so modals/panels can close).
     if (inInput && e.key !== "Escape") return;
 
     // --- Global scope -------------------------------------------------------
-    if (matchesShortcut(e, "Ctrl+Z")) {
+    if (tableContext && matchesShortcut(e, "Ctrl+Z")) {
       e.preventDefault();
       kb.fire("undo");
       opts.onUndo?.();
       return;
     }
-    if (matchesShortcut(e, "Ctrl+Shift+Z") || matchesShortcut(e, "Ctrl+Y")) {
+    if (tableContext && (matchesShortcut(e, "Ctrl+Shift+Z") || matchesShortcut(e, "Ctrl+Y"))) {
       e.preventDefault();
       kb.fire("redo");
       opts.onRedo?.();
       return;
     }
-    if (matchesShortcut(e, "Ctrl+R")) {
+    if (tableContext && matchesShortcut(e, "Ctrl+R")) {
       e.preventDefault();
       kb.fire("refresh");
       opts.onRefresh?.();
@@ -133,7 +136,7 @@ export function useKeyboard(opts: UseKeyboardOptions): void {
     }
 
     // --- Grid scope (suppressed in form fields) -----------------------------
-    if (inInput) return;
+    if (inInput || !tableContext) return;
 
     if (matchesShortcut(e, "Ctrl+C")) {
       e.preventDefault();

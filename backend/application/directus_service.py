@@ -203,6 +203,9 @@ class DirectusService:
         )
 
     async def list_collections(self, params: DirectusEmptyParams) -> DirectusCollectionListResult:
+        display_names: dict[str, str] = {}
+        if self._table_admin_service is not None:
+            display_names = await self._table_admin_service.reconcile_identifiers()
         # Hidden collections (the built-in vibetable_* workspace tables) are
         # valid schema/capability profiles but must not surface in the sidebar.
         # They remain reachable via `directus.schema` and internal flows; only
@@ -215,6 +218,7 @@ class DirectusService:
                 for name, profile in self._profiles.items()
                 if not profile.hidden
             },
+            display_names={name: display_names.get(name, name) for name in visible},
         )
 
     async def schema(self, params: DirectusCollectionParams) -> DirectusSchemaResult:
@@ -450,7 +454,7 @@ def build_directus_service_from_environment(
         client=client,
         auth=auth,
         bulk=BulkMutationClient(transport, auth),
-        profiles=manifest.by_collection,
+        profiles=service._profiles,
         project=project,
         token_store=PasteTokenStore(),
     )
@@ -459,52 +463,52 @@ def build_directus_service_from_environment(
             client=client,
             auth=auth,
             bulk=BulkMutationClient(transport, auth),
-            profiles=manifest.by_collection,
+            profiles=service._profiles,
             resolve_path=task_service.resolve_path,
             consume_grant=task_service.consume_grant,
         )
         service.export_service = ExportService(
             client=client,
             auth=auth,
-            profiles=manifest.by_collection,
+            profiles=service._profiles,
             resolve_path=task_service.resolve_path,
         )
         service.collaboration_service = CollaborationService(
             client=client,
             auth=auth,
-            profiles=manifest.by_collection,
+            profiles=service._profiles,
             transport=transport,
         )
         service.history_service = HistoryService(
             client=client,
             auth=auth,
-            profiles=manifest.by_collection,
+            profiles=service._profiles,
             transport=transport,
             schema_revision=manifest.schema_version,
         )
         service.document_workspace_service = DocumentWorkspaceService(
             auth=auth,
-            profiles=manifest.by_collection,
+            profiles=service._profiles,
             transport=transport,
         )
         service.table_admin_service = TableAdminService(
             transport=transport,
             auth=auth,
-            # manifest.by_collection 是只读计算属性；这里传入的是同一快照引用，
-            # create_table/delete_table 的 ``_profiles[name] = True`` 增删会就地生效。
-            # 单会话桌面场景下足够：重启后 manifest 从已更新的 Directus 重读。
-            profiles=manifest.by_collection,
+            # Share the service's mutable runtime profile registry. Calling
+            # manifest.by_collection here would create a second dict and make
+            # freshly created/reconciled tables invisible to directus.schema.
+            profiles=service._profiles,
         )
         service.insights_service = InsightsService(
             client=client,
             auth=auth,
-            profiles=manifest.by_collection,
+            profiles=service._profiles,
             transport=transport,
         )
         service.file_tools_service = FileToolsService(
             client=client,
             auth=auth,
-            profiles=manifest.by_collection,
+            profiles=service._profiles,
             transport=transport,
             resolve_path=task_service.resolve_path,
             consume_grant=task_service.consume_grant,
@@ -512,7 +516,7 @@ def build_directus_service_from_environment(
         local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".vibetable"))
         service.settings_command_service = SettingsCommandService(
             auth=auth,
-            profiles=manifest.by_collection,
+            profiles=service._profiles,
             transport=transport,
             device_state_path=local_app_data / "VibeTable" / "device-settings.json",
         )

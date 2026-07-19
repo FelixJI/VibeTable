@@ -14,7 +14,7 @@
  * disabled unless `admin.canSubmit` is true (the store derives this from the
  * validation rules in `tableAdminValidation`).
  */
-import { NModal, NForm, NFormItem, NInput, NButton, NSpace, NSelect, NIcon } from "naive-ui";
+import { NModal, NForm, NFormItem, NInput, NButton, NSpace, NSelect } from "naive-ui";
 import { Plus, Trash2 } from "lucide-vue-next";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -43,7 +43,7 @@ const fieldTypeOptions = TABLE_FIELD_TYPES.map((tp) => ({ label: tp, value: tp }
       <NFormItem :label="t('createTable.name')">
         <NInput
           v-model:value="admin.form.name"
-          :maxlength="64"
+          :maxlength="128"
           :placeholder="t('createTable.name')"
           data-testid="create-table-name-input"
         />
@@ -57,7 +57,7 @@ const fieldTypeOptions = TABLE_FIELD_TYPES.map((tp) => ({ label: tp, value: tp }
         <NInput
           v-model:value="field.name"
           :placeholder="t('createTable.fieldName')"
-          :maxlength="64"
+          :maxlength="128"
           :data-testid="`create-table-field-name-${idx}`"
         />
         <NSelect
@@ -73,13 +73,19 @@ const fieldTypeOptions = TABLE_FIELD_TYPES.map((tp) => ({ label: tp, value: tp }
           :data-testid="`create-table-remove-field-${idx}`"
           @click="admin.removeField(idx)"
         >
-          <template #icon><NIcon :component="Trash2" :size="14" /></template>
+          <template #icon><Trash2 :size="14" /></template>
         </NButton>
       </div>
       <NButton size="small" dashed data-testid="create-table-add-field" @click="admin.addField()">
-        <template #icon><NIcon :component="Plus" /></template>
+        <template #icon><Plus /></template>
         {{ t("createTable.addField") }}
       </NButton>
+      <p class="identifier-hint" data-testid="physical-name-hint">
+        {{ t("createTable.identifierHint") }}
+      </p>
+      <p v-if="admin.error" class="form-error" role="alert" data-testid="create-table-error">
+        {{ admin.error }}
+      </p>
     </NForm>
     <template #action>
       <NSpace justify="end">
@@ -90,6 +96,7 @@ const fieldTypeOptions = TABLE_FIELD_TYPES.map((tp) => ({ label: tp, value: tp }
           size="small"
           type="primary"
           :disabled="!admin.canSubmit"
+          :loading="admin.phase === 'submitting'"
           data-testid="create-table-submit"
           @click="emit('submit')"
         >
@@ -107,5 +114,17 @@ const fieldTypeOptions = TABLE_FIELD_TYPES.map((tp) => ({ label: tp, value: tp }
   gap: var(--vt-space-2);
   align-items: center;
   margin-bottom: var(--vt-space-2);
+}
+
+.identifier-hint {
+  margin: var(--vt-space-3) 0 0;
+  color: var(--vt-text-secondary);
+  font-size: 12px;
+}
+
+.form-error {
+  margin: var(--vt-space-2) 0 0;
+  color: var(--vt-color-danger);
+  font-size: 12px;
 }
 </style>

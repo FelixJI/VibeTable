@@ -119,6 +119,30 @@ describe("useKeyboard", () => {
     expect(onRedo).toHaveBeenCalledTimes(2);
     wrapper.unmount();
   });
+
+  it("suppresses table shortcuts outside the visible table view", () => {
+    const kb = useKeyboardStore();
+    const onDelete = vi.fn();
+    const onRefresh = vi.fn();
+    const onHelp = vi.fn();
+    const wrapper = mountKeyboard({
+      isTableContext: () => false,
+      onDelete,
+      onRefresh,
+      onHelp,
+    });
+
+    fireKey("Delete");
+    fireKey("r", { ctrlKey: true });
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(onRefresh).not.toHaveBeenCalled();
+    expect(kb.lastFired).toBeNull();
+
+    fireKey("?");
+    expect(onHelp).toHaveBeenCalledTimes(1);
+    expect(kb.lastFired).toBe("help");
+    wrapper.unmount();
+  });
 });
 
 describe("matchesShortcut", () => {

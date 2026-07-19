@@ -66,6 +66,23 @@ public sealed class DirectusSchemaBootstrapperTests
     }
 
     [TestMethod]
+    public void IdentifierMap_IsBootstrappedAsHiddenSystemCollection()
+    {
+        JsonNode blueprint = DirectusSchemaBootstrapper.LoadBlueprint(BlueprintPath);
+        var definition = (JsonObject)blueprint["collections"]!["vibetable_identifier_map"]!;
+        JsonObject payload = DirectusSchemaBootstrapper.BuildCollectionPayload(
+            "vibetable_identifier_map", definition);
+
+        Assert.IsTrue(payload["meta"]!["hidden"]!.GetValue<bool>());
+        var names = ((JsonArray)payload["fields"]!).Select(field =>
+            field!["field"]!.GetValue<string>()).ToList();
+        CollectionAssert.Contains(names, "physical_name");
+        CollectionAssert.Contains(names, "display_name");
+        CollectionAssert.Contains(names, "normalized_name");
+        CollectionAssert.Contains(names, "aliases");
+    }
+
+    [TestMethod]
     public void FieldPayload_MarksPrimaryKeyAndRequired()
     {
         var def = new JsonObject
@@ -104,7 +121,8 @@ public sealed class DirectusSchemaBootstrapperTests
         JsonArray perms = DirectusSchemaBootstrapper.BuildPermissionPayloads(
             "policy-1", managerGrants, collections);
 
-        // manager has create+read+update+delete on all 6 collections = 24 entries.
+        // The mapping collection is admin-only and intentionally absent from
+        // manager grants, so the six workspace collections still yield 24.
         Assert.AreEqual(24, perms.Count);
         var first = (JsonObject)perms[0]!;
         Assert.AreEqual("policy-1", first["policy"]!.GetValue<string>());
@@ -194,6 +212,7 @@ public sealed class DirectusSchemaBootstrapperTests
             "vibetable_document_schemes",
             "vibetable_document_revisions",
             "vibetable_document_links",
+            "vibetable_identifier_map",
         };
 
         private readonly List<(HttpMethod Method, string Path, JsonNode? Body)> _requests = new();
