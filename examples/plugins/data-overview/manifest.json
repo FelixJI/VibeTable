@@ -1,0 +1,43 @@
+{
+  "$schema": "vibetable.plugin-manifest.v1",
+  "pluginId": "com.vibetable.examples.data-overview",
+  "version": "1.0.0",
+  "displayName": { "zh-CN": "数据概览面板", "en": "Data overview" },
+  "description": { "zh-CN": "通过分页能力读取聚合和样本数据" },
+  "compatibility": {
+    "minHostVersion": "1.0.0",
+    "pluginApi": "1.x",
+    "directus": ">=12.1 <13"
+  },
+  "permissions": {
+    "data": [
+      { "collection": "$active", "operations": ["read"], "fields": ["$configured"] }
+    ],
+    "files": ["pickWrite"],
+    "privateStorage": true
+  },
+  "actions": [
+    {
+      "actionId": "open-overview",
+      "displayName": { "zh-CN": "打开数据概览" },
+      "mode": "local",
+      "risk": "read",
+      "invocation": "manual",
+      "placements": ["table.toolbar"],
+      "workerEntry": "dist/workers/overview.js",
+      "inputSchema": "schemas/action-input.v1.json",
+      "outputSchema": "schemas/action-output.v1.json"
+    }
+  ],
+  "flows": [],
+  "ui": {
+    "customViews": [
+      {
+        "viewId": "overview",
+        "actionId": "open-overview",
+        "displayName": { "zh-CN": "数据概览" },
+        "entry": "dist/views/overview/index.html"
+      }
+    ]
+  }
+}

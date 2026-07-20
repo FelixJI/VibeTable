@@ -170,6 +170,8 @@ describe("CreateTableModal", () => {
     await flushPromises();
     expect(bodyEl("physical-name-hint").textContent).toContain("自动生成");
     expect(bodyEl("physical-name-hint").textContent).toContain("保持不变");
+    expect(bodyEl("field-type-hint").textContent).toContain("Directus");
+    expect(bodyEl("field-type-hint").textContent).toContain("关系与别名字段");
   });
 
   it("renders a create failure and keeps the valid form retryable", async () => {

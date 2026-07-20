@@ -91,6 +91,13 @@ export interface DatasetReadyPayload extends TablePage {
 export interface DatabaseOpenedPayload {
   readonly tables: readonly string[];
   readonly views: readonly string[];
+  /** Stable host-normalized Directus identity used for project-local plugin state. */
+  readonly projectKey?: string;
+  /** Host workspace revision used to invalidate stale install plans. */
+  readonly projectRevision?: string;
+  /** Safe display identity; authentication secrets are never included. */
+  readonly currentUser?: Readonly<Record<string, unknown>>;
+  readonly hostVersion?: string;
   /** Physical collection -> user-facing label. Optional for old hosts. */
   readonly displayNames?: Readonly<Record<string, string>>;
 }
@@ -501,16 +508,26 @@ export interface ApplyPasteResult {
 // Table-admin contracts (mirror backend/contracts/table_admin.py)
 // ---------------------------------------------------------------------------
 
-/** Field types supported by the backend table_admin contract.
- *  Mirrors backend/contracts/table_admin.py:FieldType and
- *  TableAdminWindow.SupportedFieldTypes. Keep all three in sync. */
+/** Persisted Directus field types supported by the create-table wizard.
+ *  `alias` is intentionally excluded: it is a virtual relationship/display
+ *  field and requires relation-specific configuration rather than a column. */
 export const TABLE_FIELD_TYPES = [
   "string",
-  "integer",
-  "decimal",
-  "date",
-  "boolean",
   "text",
+  "integer",
+  "bigInteger",
+  "float",
+  "decimal",
+  "boolean",
+  "date",
+  "dateTime",
+  "timestamp",
+  "time",
+  "json",
+  "csv",
+  "uuid",
+  "hash",
+  "binary",
 ] as const;
 export type TableFieldType = (typeof TABLE_FIELD_TYPES)[number];
 
@@ -533,6 +550,7 @@ export interface CollectionsChangedPayload {
   readonly capabilityHashes?: Readonly<Record<string, string>>;
   /** Physical collection -> user-facing label. */
   readonly displayNames?: Readonly<Record<string, string>>;
+  readonly projectRevision?: string;
 }
 
 export interface IdentifierMappingEntry {
@@ -557,6 +575,337 @@ export interface IdentifierMappingImportItem {
 
 export interface IdentifierMappingsResult {
   readonly mappings: readonly IdentifierMappingEntry[];
+}
+
+// ---------------------------------------------------------------------------
+// Flow-first plugin platform (host/WebView contract v1)
+// ---------------------------------------------------------------------------
+
+export type PluginRisk = "read" | "write" | "destructive";
+export type PluginSourceType = "package" | "local-folder";
+export type PluginStatus = "disabled" | "enabled" | "error";
+export type PluginFlowOwnership = "managed" | "external";
+export type PluginFlowTrigger = "manual" | "webhook" | "schedule" | "event";
+export type PluginFlowHealth = "healthy" | "missing" | "incompatible" | "drifted";
+export type PluginTaskState =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "aborted";
+
+export interface PluginAction {
+  readonly actionId: string;
+  readonly displayName: Readonly<Record<string, string>>;
+  readonly description: Readonly<Record<string, string>>;
+  readonly mode: "flow" | "local" | "hybrid";
+  readonly risk: PluginRisk;
+  readonly invocation: "manual" | "webhook";
+  readonly placements: readonly string[];
+  readonly requires: Readonly<Record<string, unknown>>;
+  readonly entryFlow: string | null;
+  readonly workerEntry: string | null;
+  readonly formSchema: string | null;
+  readonly inputSchema: string | null;
+  readonly outputSchema: string | null;
+}
+
+export interface PluginManifest {
+  readonly $schema: "vibetable.plugin-manifest.v1";
+  readonly pluginId: string;
+  readonly version: string;
+  readonly displayName: Readonly<Record<string, string>>;
+  readonly description: Readonly<Record<string, string>>;
+  readonly compatibility: Readonly<Record<string, unknown>>;
+  readonly permissions: Readonly<Record<string, unknown>>;
+  readonly actions: readonly PluginAction[];
+  readonly flows: readonly Readonly<Record<string, unknown>>[];
+  readonly ui: Readonly<Record<string, unknown>>;
+}
+
+export interface PluginFlowRequirement {
+  readonly logicalFlowId: string;
+  readonly ownership: PluginFlowOwnership;
+  readonly trigger: PluginFlowTrigger;
+  readonly risk: PluginRisk;
+  readonly contractVersion: string;
+  readonly requiresOperations: readonly string[];
+  readonly inputSchema: Readonly<Record<string, unknown>>;
+  readonly outputSchema: Readonly<Record<string, unknown>>;
+  readonly definition: Readonly<Record<string, unknown>> | null;
+}
+
+/** Canonical Python PluginSnapshot; WPF forwards it unchanged. */
+export interface PluginSnapshot {
+  readonly projectKey: string;
+  readonly pluginId: string;
+  readonly version: string;
+  readonly packageHash: string;
+  readonly sourceType: PluginSourceType;
+  readonly sourceLocation: string;
+  readonly sourceChanged?: boolean;
+  readonly manifest: PluginManifest;
+  readonly flowRequirements: readonly PluginFlowRequirement[];
+  readonly flowBindings?: readonly PluginFlowBindingSnapshot[];
+  readonly schemas: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+  readonly status: PluginStatus;
+  readonly disabledReason: string | null;
+  readonly blockingReasons?: readonly string[];
+  readonly revision: number;
+}
+
+export interface PluginInstallPlan {
+  readonly planId: string;
+  readonly projectKey: string;
+  readonly projectRevision: string;
+  readonly sourceType: PluginSourceType;
+  readonly sourceLocation: string;
+  readonly packageHash: string;
+  readonly manifest: PluginManifest;
+  readonly flowRequirements: readonly PluginFlowRequirement[];
+  readonly schemas: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+}
+
+export interface PluginExternalFlowCandidate {
+  readonly directusFlowUuid: string;
+  readonly name: string;
+  readonly triggerType: PluginFlowTrigger;
+  readonly status: "active" | "inactive";
+  readonly operationKeys: readonly string[];
+  readonly compatible: boolean;
+  readonly reasons: readonly string[];
+}
+
+export interface PluginFlowBindingSnapshot {
+  readonly projectKey: string;
+  readonly pluginId: string;
+  readonly logicalFlowId: string;
+  readonly ownership: PluginFlowOwnership;
+  readonly directusFlowUuid: string;
+  readonly rollbackFlowUuid: string | null;
+  readonly rollbackContractVersion: string | null;
+  readonly rollbackDefinitionHash: string | null;
+  readonly triggerType: PluginFlowTrigger;
+  readonly contractVersion: string;
+  readonly installedDefinitionHash: string | null;
+  readonly observedDefinitionHash: string;
+  readonly revision: number;
+  readonly health: PluginFlowHealth;
+  readonly driftStatus: "clean" | "drifted" | "not-applicable";
+  readonly lastError: string | null;
+}
+
+export interface PluginUninstallResult {
+  readonly managedFlowsRemoved: number;
+  readonly externalFlowsUnbound: number;
+  readonly uninstalled: boolean;
+  readonly privateSettingsRetained: boolean;
+  readonly cleanupPending: boolean;
+}
+
+export interface PluginAuditEvent {
+  readonly eventId: string;
+  readonly projectKey: string;
+  readonly pluginId: string;
+  readonly pluginVersion: string;
+  readonly packageHash: string;
+  readonly eventType: string;
+  readonly outcome: string;
+  readonly actionId: string | null;
+  readonly runId: string | null;
+  readonly actor: string;
+  readonly risk: PluginRisk | null;
+  readonly targetCollection: string | null;
+  readonly targetCount: number | null;
+  readonly startedAt: string;
+  readonly finishedAt: string | null;
+  readonly durationMs: number | null;
+  readonly errorCode: string | null;
+  readonly details: Readonly<Record<string, unknown>>;
+}
+
+export interface PluginActionAvailability {
+  readonly available: boolean;
+  readonly reasons: readonly string[];
+}
+
+export interface PluginCommandContext {
+  readonly contract: "vibetable.command-context.v1";
+  readonly projectKey: string;
+  readonly collection: string | null;
+  readonly selectedKeys: readonly (string | number)[];
+  readonly querySnapshot: Readonly<Record<string, unknown>> | null;
+  readonly locale: string;
+  readonly theme: "light" | "dark";
+  readonly density: string;
+  readonly user: Readonly<Record<string, unknown>>;
+  readonly hostVersion: string;
+}
+
+/** Web-only standard/custom surface projection. It never crosses HostBridge. */
+export interface WebPluginActionDescription {
+  readonly pluginId: string;
+  readonly actionId: string;
+  readonly title: string;
+  readonly description?: string | null;
+  readonly risk: PluginRisk;
+  readonly inputSchema: Readonly<Record<string, unknown>>;
+  readonly uiSchema?: Readonly<Record<string, unknown>>;
+  readonly presentation?: "standard" | "custom";
+  readonly surface?: {
+    readonly src: string;
+    readonly surfaceToken: string;
+    readonly title: string;
+  } | null;
+}
+
+export interface WebPluginConfirmationPreview {
+  readonly runId: string;
+  readonly interactionId: string;
+  readonly pluginId: string;
+  readonly actionId: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly risk: "write" | "destructive";
+  readonly targetCount?: number | null;
+  readonly sample?: readonly Readonly<Record<string, unknown>>[];
+  readonly expiresAt: string;
+}
+
+export interface PluginMetric {
+  readonly label: string;
+  readonly value: string | number;
+}
+
+/** Python runtime result — this exact shape is shared through WPF unchanged. */
+export interface PluginResult {
+  readonly contract: "vibetable.plugin-result.v1";
+  readonly status: "success" | "warning" | "error";
+  readonly summary: string;
+  readonly metrics: readonly PluginMetric[];
+  readonly table: Readonly<Record<string, unknown>> | null;
+  readonly artifacts: readonly Readonly<Record<string, unknown>>[];
+  readonly refresh: Readonly<Record<string, unknown>> | null;
+  readonly warnings: readonly string[];
+}
+
+/** Python runtime task — revision lives on PluginEventEnvelope, not the task. */
+export interface PluginTaskSnapshot {
+  readonly taskId: string;
+  readonly runId: string;
+  readonly pluginId: string;
+  readonly pluginVersion: string;
+  readonly actionId: string;
+  readonly projectKey: string;
+  readonly collection: string | null;
+  readonly targetCount: number;
+  readonly risk: PluginRisk;
+  readonly state: PluginTaskState;
+  readonly cancelRequested: boolean;
+  readonly progress?: PluginRuntimeProgress | null;
+  readonly result: PluginResult | null;
+  readonly error: PluginSafeError | null;
+}
+
+export interface PluginRuntimeProgress {
+  readonly current: number;
+  readonly total: number;
+  readonly message: string;
+  readonly cancellable: boolean;
+}
+
+export interface PluginRuntimeConfirmationPreview {
+  readonly summary: readonly Readonly<Record<string, unknown>>[];
+  readonly sampleRows: readonly Readonly<Record<string, unknown>>[];
+  readonly affectedCount: number;
+  readonly warnings: readonly string[];
+}
+
+export interface PluginRuntimePendingConfirmation {
+  readonly interactionId: string;
+  readonly risk: PluginRisk;
+  readonly title: string;
+  readonly preview: PluginRuntimeConfirmationPreview;
+  readonly expiresAt: number;
+}
+
+export interface PluginInteractionSnapshot {
+  readonly runId: string;
+  readonly projectKey: string;
+  readonly pluginId: string;
+  readonly actionId: string;
+  readonly caller: string;
+  readonly progress: PluginRuntimeProgress | null;
+  readonly pendingConfirmation: PluginRuntimePendingConfirmation | null;
+  readonly cancelRequested: boolean;
+}
+
+export interface PluginSafeError {
+  readonly contract: "vibetable.plugin-error.v1";
+  readonly code: string;
+  readonly message: string;
+  readonly recoverability: "retry" | "rebind" | "reconfigure" | "reinstall" | "none";
+  readonly pluginId: string | null;
+  readonly actionId: string | null;
+  readonly runId: string | null;
+  readonly details: Readonly<Record<string, unknown>>;
+  readonly causeId: string | null;
+}
+
+export interface PluginInteractionResolveResult {
+  readonly status: "resolved" | "already-resolved" | "expired";
+  readonly decision: "approved" | "rejected" | null;
+}
+
+/** Web-only projection. It never crosses HostBridge. */
+export interface PluginTaskViewSnapshot extends PluginTaskSnapshot {
+  readonly revision: number;
+  readonly progressPercent?: number | null;
+  readonly progressMessage?: string | null;
+  readonly confirmation?: WebPluginConfirmationPreview | null;
+}
+
+export interface PluginSurfaceThemeSnapshot {
+  readonly contract: "vibetable.plugin-theme.v1";
+  readonly mode: "light" | "dark";
+  readonly locale: "zh-CN" | "en-US";
+  readonly density: "comfortable" | "compact";
+  readonly variables: Readonly<Record<
+    | "--vt-plugin-bg"
+    | "--vt-plugin-surface"
+    | "--vt-plugin-text"
+    | "--vt-plugin-text-muted"
+    | "--vt-plugin-border"
+    | "--vt-plugin-primary"
+    | "--vt-plugin-danger"
+    | "--vt-plugin-radius"
+    | "--vt-plugin-space-unit",
+    string
+  >>;
+}
+
+export interface PluginSurfaceEventPayload {
+  readonly contract: "vibetable.plugin-surface.v1";
+  readonly surfaceToken: string;
+  readonly event: "ready" | "close" | "action";
+  readonly payload: Readonly<Record<string, unknown>>;
+}
+
+export interface PluginSurfaceHostMessage {
+  readonly contract: "vibetable.plugin-surface.v1";
+  readonly surfaceToken: string;
+  readonly event: "themeChanged";
+  readonly payload: PluginSurfaceThemeSnapshot;
+}
+
+export interface PluginEventEnvelope {
+  readonly contract: "vibetable.plugin-event.v1";
+  readonly eventType: "plugin.catalog.changed" | "plugin.task.changed" | "plugin.interaction.requested" | "plugin.surface.message";
+  readonly projectKey: string;
+  readonly entityId: string;
+  readonly revision: number;
+  readonly snapshot: Readonly<Record<string, unknown>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -606,6 +955,24 @@ export type WebMessageType =
   | "identifierMappings.updateAliasesRequested"
   | "identifierMappings.importRequested"
   | "identifierMappings.reconcileRequested"
+  | "plugin.catalog.list"
+  | "plugin.audit.list"
+  | "plugin.cleanup.listPending"
+  | "plugin.install.inspect"
+  | "plugin.install.commit"
+  | "plugin.externalFlow.listCandidates"
+  | "plugin.externalFlow.bind"
+  | "plugin.lifecycle.setEnabled"
+  | "plugin.lifecycle.upgrade"
+  | "plugin.lifecycle.rollback"
+  | "plugin.lifecycle.resolveDrift"
+  | "plugin.lifecycle.uninstall"
+  | "plugin.action.describe"
+  | "plugin.action.start"
+  | "plugin.interaction.resolve"
+  | "plugin.task.cancel"
+  | "plugin.task.get"
+  | "plugin.surface.event"
   // Open the embedded Directus admin (Data Studio) in this webview.
   | "admin.openRequested";
 
@@ -640,7 +1007,30 @@ export type HostMessageType =
   | "document.workspaceChanged"
   // Collections-changed notifications.
   | "database.collectionsChanged"
-  | "identifierMappings.result";
+  | "identifierMappings.result"
+  | "plugin.catalog.changed"
+  | "plugin.task.changed"
+  | "plugin.interaction.requested"
+  | "plugin.surface.message"
+  // Fixed request replies echo their use-case type and requestId.
+  | "plugin.catalog.list"
+  | "plugin.audit.list"
+  | "plugin.cleanup.listPending"
+  | "plugin.install.inspect"
+  | "plugin.install.commit"
+  | "plugin.externalFlow.listCandidates"
+  | "plugin.externalFlow.bind"
+  | "plugin.lifecycle.setEnabled"
+  | "plugin.lifecycle.upgrade"
+  | "plugin.lifecycle.rollback"
+  | "plugin.lifecycle.resolveDrift"
+  | "plugin.lifecycle.uninstall"
+  | "plugin.action.describe"
+  | "plugin.action.start"
+  | "plugin.interaction.resolve"
+  | "plugin.task.cancel"
+  | "plugin.task.get"
+  | "plugin.surface.event";
 
 export interface DirectusChangePayload {
   readonly uid: string;
@@ -683,6 +1073,28 @@ export interface HostPayloadMap {
   // Collections-changed notifications.
   "database.collectionsChanged": CollectionsChangedPayload;
   "identifierMappings.result": IdentifierMappingsResult;
+  "plugin.catalog.changed": PluginEventEnvelope;
+  "plugin.task.changed": PluginEventEnvelope;
+  "plugin.interaction.requested": PluginEventEnvelope;
+  "plugin.surface.message": PluginSurfaceHostMessage;
+  "plugin.catalog.list": readonly PluginSnapshot[];
+  "plugin.audit.list": readonly PluginAuditEvent[];
+  "plugin.cleanup.listPending": readonly PluginAuditEvent[];
+  "plugin.install.inspect": PluginInstallPlan;
+  "plugin.install.commit": PluginSnapshot;
+  "plugin.externalFlow.listCandidates": readonly PluginExternalFlowCandidate[];
+  "plugin.externalFlow.bind": PluginFlowBindingSnapshot;
+  "plugin.lifecycle.setEnabled": PluginSnapshot;
+  "plugin.lifecycle.upgrade": PluginSnapshot;
+  "plugin.lifecycle.rollback": PluginSnapshot;
+  "plugin.lifecycle.resolveDrift": PluginSnapshot;
+  "plugin.lifecycle.uninstall": PluginUninstallResult;
+  "plugin.action.describe": PluginActionAvailability;
+  "plugin.action.start": PluginTaskSnapshot;
+  "plugin.interaction.resolve": PluginInteractionResolveResult;
+  "plugin.task.cancel": PluginTaskSnapshot;
+  "plugin.task.get": PluginTaskSnapshot;
+  "plugin.surface.event": { readonly accepted: boolean };
 }
 
 /** Map of (outbound) message type -> payload type, for typed requests. */
@@ -732,6 +1144,71 @@ export interface WebPayloadMap {
     readonly mappings: readonly IdentifierMappingImportItem[];
   };
   "identifierMappings.reconcileRequested": Record<string, never>;
+  "plugin.catalog.list": { readonly projectKey: string };
+  "plugin.audit.list": { readonly projectKey: string; readonly pluginId: string };
+  "plugin.cleanup.listPending": { readonly projectKey: string };
+  "plugin.install.inspect": {
+    readonly projectKey: string;
+    readonly projectRevision: string;
+    readonly sourceLocation: string;
+  };
+  "plugin.install.commit": { readonly planId: string; readonly projectRevision: string };
+  "plugin.externalFlow.listCandidates": {
+    readonly projectKey: string;
+    readonly pluginId: string;
+    readonly logicalFlowId: string;
+  };
+  "plugin.externalFlow.bind": {
+    readonly projectKey: string;
+    readonly pluginId: string;
+    readonly logicalFlowId: string;
+    readonly directusFlowUuid: string;
+    readonly acceptsUnknownSideEffects: boolean;
+  };
+  "plugin.lifecycle.setEnabled": {
+    readonly projectKey: string;
+    readonly pluginId: string;
+    readonly enabled: boolean;
+  };
+  "plugin.lifecycle.upgrade": {
+    readonly projectKey: string;
+    readonly pluginId: string;
+    readonly planId: string;
+    readonly projectRevision: string;
+  };
+  "plugin.lifecycle.rollback": { readonly projectKey: string; readonly pluginId: string };
+  "plugin.lifecycle.resolveDrift": {
+    readonly projectKey: string;
+    readonly pluginId: string;
+    readonly logicalFlowId: string;
+    readonly strategy: "restore" | "detach";
+  };
+  "plugin.lifecycle.uninstall": {
+    readonly projectKey: string;
+    readonly pluginId: string;
+    readonly cleanupPrivateSettings: boolean;
+  };
+  "plugin.action.describe": {
+    readonly projectKey: string;
+    readonly pluginId: string;
+    readonly actionId: string;
+    readonly context: PluginCommandContext;
+  };
+  "plugin.action.start": {
+    readonly projectKey: string;
+    readonly pluginId: string;
+    readonly actionId: string;
+    readonly context: PluginCommandContext;
+    readonly input: Readonly<Record<string, unknown>>;
+  };
+  "plugin.interaction.resolve": {
+    readonly runId: string;
+    readonly interactionId: string;
+    readonly decision: "approved" | "rejected";
+  };
+  "plugin.task.cancel": { readonly taskId: string };
+  "plugin.task.get": { readonly taskId: string };
+  "plugin.surface.event": PluginSurfaceEventPayload;
   "admin.openRequested": {
     readonly floatingButtonEnabled: boolean;
     readonly confirmClose: boolean;
@@ -745,6 +1222,12 @@ export interface WebPayloadMap {
 
 export type StartupPhase = "starting" | "firstRun" | "login" | "ready" | "faulted";
 
+export interface StartupLogEntry {
+  readonly time: string;
+  readonly source: string;
+  readonly message: string;
+}
+
 export interface StartupStatePayload {
   readonly phase: StartupPhase;
   readonly stage?: string | null;
@@ -754,6 +1237,7 @@ export interface StartupStatePayload {
   readonly autoLogin?: boolean;
   readonly canRetry?: boolean;
   readonly canCancel?: boolean;
+  readonly logs?: readonly StartupLogEntry[];
 }
 
 export interface FirstRunSubmittedPayload {

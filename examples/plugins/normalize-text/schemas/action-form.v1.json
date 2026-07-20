@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["field", "strategy"],
+  "properties": {
+    "field": { "type": "string", "title": "字段" },
+    "strategy": {
+      "type": "string",
+      "title": "规范化方式",
+      "enum": ["trim", "collapse-whitespace", "lowercase", "uppercase"]
+    }
+  }
+}

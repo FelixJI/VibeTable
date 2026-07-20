@@ -1,0 +1,56 @@
+{
+  "name": "VibeTable 示例：批量文本规范化",
+  "trigger": "manual",
+  "operations": [
+    {
+      "key": "prepare-preview",
+      "type": "transform",
+      "purpose": "分页读取选中记录并计算最终预览、数量与警告"
+    },
+    {
+      "key": "confirm-final-preview",
+      "type": "vibetable.confirm@1",
+      "contract": "vibetable.confirm.v1",
+      "runId": "{{ $trigger.payload.runId }}",
+      "risk": "write",
+      "title": "确认批量规范化文本",
+      "preview": "{{ prepare-preview }}",
+      "timeoutMs": 300000
+    },
+    {
+      "key": "apply-normalization",
+      "type": "items.update",
+      "guard": "{{ confirm-final-preview.approved }}"
+    },
+    {
+      "key": "report-progress",
+      "type": "vibetable.progress@1",
+      "contract": "vibetable.progress.v1",
+      "runId": "{{ $trigger.payload.runId }}",
+      "current": "{{ apply-normalization.completed }}",
+      "total": "{{ prepare-preview.affectedCount }}",
+      "message": "正在应用文本规范化",
+      "cancellable": true
+    },
+    {
+      "key": "build-result",
+      "type": "transform",
+      "options": {
+        "json": {
+          "contract": "vibetable.plugin-result.v1",
+          "status": "success",
+          "summary": "文本规范化已完成",
+          "metrics": [],
+          "table": {
+            "data": {
+              "updated": "{{ prepare-preview.affectedCount }}",
+              "skipped": 0,
+              "conflicts": 0
+            }
+          },
+          "warnings": []
+        }
+      }
+    }
+  ]
+}

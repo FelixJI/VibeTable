@@ -498,7 +498,10 @@ public sealed class WorkspaceRequestDispatcher
         }
         catch (Exception ex)
         {
-            _reply.PostOperationFailed(request.RequestId, ex.Message, code: "CREATE_TABLE_FAILED");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                $"创建表失败：{ex.Message}",
+                code: "CREATE_TABLE_FAILED");
         }
     }
 

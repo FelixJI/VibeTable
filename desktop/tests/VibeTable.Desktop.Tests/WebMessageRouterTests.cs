@@ -367,4 +367,53 @@ public sealed class WebMessageRouterTests
         Assert.AreEqual(1, dispatched.Count);
         Assert.AreEqual("admin.openRequested", dispatched[0].Type);
     }
+
+    [TestMethod]
+    public void WhitelistsAcceptExactlyTheFixedPluginUseCasesAndNotifications()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+        string[] requestTypes =
+        [
+            "plugin.catalog.list",
+            "plugin.install.inspect",
+            "plugin.install.commit",
+            "plugin.externalFlow.listCandidates",
+            "plugin.externalFlow.bind",
+            "plugin.lifecycle.setEnabled",
+            "plugin.lifecycle.upgrade",
+            "plugin.lifecycle.rollback",
+            "plugin.lifecycle.uninstall",
+            "plugin.action.describe",
+            "plugin.action.start",
+            "plugin.interaction.resolve",
+            "plugin.task.cancel",
+            "plugin.task.get",
+            "plugin.surface.event",
+        ];
+
+        foreach (string type in requestTypes)
+        {
+            var reply = router.Route(JsonSerializer.Serialize(new
+            {
+                type,
+                requestId = $"request-{type}",
+                payload = new { },
+            }));
+            Assert.IsNull(reply, type);
+        }
+
+        Assert.AreEqual(requestTypes.Length, dispatched.Count);
+        Assert.IsTrue(router.IsHostNotificationAllowed("plugin.catalog.changed"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("plugin.task.changed"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("plugin.interaction.requested"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("plugin.surface.message"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("plugin.install.inspect"));
+        Assert.IsFalse(router.IsHostNotificationAllowed("plugin.rpc.result"));
+
+        var genericReply = router.Route(
+            """{"type":"rpc.invoke","requestId":"generic","payload":{"method":"plugin.uninstall"}}""");
+        Assert.IsNotNull(genericReply);
+        Assert.AreEqual("UNKNOWN_TYPE", genericReply!.Payload!.Code);
+    }
 }

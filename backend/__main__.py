@@ -78,6 +78,25 @@ from backend.contracts.history import (
     ReadChangeSetsParams,
 )
 from backend.contracts.paste import ApplyPasteParams, PreviewPasteParams
+from backend.contracts.plugin import PluginEventEnvelope
+from backend.contracts.plugin_rpc import (
+    BindExternalFlowParams,
+    CommitInstallParams,
+    DescribePluginActionParams,
+    ExternalFlowCandidatesParams,
+    InspectInstallParams,
+    PluginIdentityParams,
+    PluginProjectParams,
+    PluginTaskParams,
+    ResolvePluginDriftParams,
+    ResolvePluginFileParams,
+    ResolvePluginInteractionParams,
+    RollbackPluginParams,
+    SetPluginEnabledParams,
+    StartPluginActionParams,
+    UninstallPluginParams,
+    UpgradePluginParams,
+)
 from backend.contracts.relation import RelationProjectionParams
 from backend.contracts.system import HandshakeParams
 from backend.contracts.task import (
@@ -96,6 +115,7 @@ from backend.rpc.dispatcher import (
     register_insights_errors,
     register_paste_errors,
     register_path_grant_errors,
+    register_plugin_errors,
     register_settings_command_errors,
     register_table_admin_errors,
 )
@@ -216,6 +236,43 @@ def _register_insights_methods(dispatcher: RpcDispatcher, service: Any) -> None:
         lambda _params=None: service.panel_manifest(),
         DirectusEmptyParams,
     )
+
+
+def _register_plugin_methods(dispatcher: RpcDispatcher, service: Any) -> None:
+    """Register the closed plugin use-case surface; never a generic invoke."""
+
+    dispatcher.register("plugin.listCatalog", service.list_catalog, PluginProjectParams)
+    dispatcher.register("plugin.listAudit", service.list_audit, PluginIdentityParams)
+    dispatcher.register(
+        "plugin.listPendingCleanup", service.list_pending_cleanup, PluginProjectParams
+    )
+    dispatcher.register("plugin.inspectInstall", service.inspect_install, InspectInstallParams)
+    dispatcher.register("plugin.commitInstall", service.commit_install, CommitInstallParams)
+    dispatcher.register(
+        "plugin.listExternalFlowCandidates",
+        service.list_external_flow_candidates,
+        ExternalFlowCandidatesParams,
+    )
+    dispatcher.register(
+        "plugin.bindExternalFlow", service.bind_external_flow, BindExternalFlowParams
+    )
+    dispatcher.register("plugin.setEnabled", service.set_enabled, SetPluginEnabledParams)
+    dispatcher.register("plugin.upgrade", service.upgrade, UpgradePluginParams)
+    dispatcher.register("plugin.rollback", service.rollback, RollbackPluginParams)
+    dispatcher.register("plugin.resolveDrift", service.resolve_drift, ResolvePluginDriftParams)
+    dispatcher.register("plugin.uninstall", service.uninstall, UninstallPluginParams)
+    dispatcher.register(
+        "plugin.describeAction", service.describe_action, DescribePluginActionParams
+    )
+    dispatcher.register("plugin.startAction", service.start_action, StartPluginActionParams)
+    dispatcher.register(
+        "plugin.resolveInteraction",
+        service.resolve_interaction,
+        ResolvePluginInteractionParams,
+    )
+    dispatcher.register("plugin.resolveFile", service.resolve_file, ResolvePluginFileParams)
+    dispatcher.register("plugin.cancelTask", service.cancel_task, PluginTaskParams)
+    dispatcher.register("plugin.getTask", service.get_task, PluginTaskParams)
 
 
 def _register_file_tools_methods(dispatcher: RpcDispatcher, service: Any) -> None:
@@ -349,10 +406,37 @@ async def _build_server() -> tuple[RpcServer, Any | None]:
     # picker runs in WPF and registers grants host-side).
     register_path_grant_errors()
     server_ref: RpcServer | None = None
+    directus_service: Any | None = None
+    plugin_task_revisions: dict[str, int] = {}
 
     async def notify_task_status(status: Any) -> None:
         if server_ref is not None:
             await server_ref.notify("task.status", status)
+        if not str(getattr(status, "kind", "")).startswith("plugin.action."):
+            return
+        plugin_service = directus_service.plugin_service if directus_service is not None else None
+        if server_ref is None or plugin_service is None:
+            return
+        try:
+            snapshot = plugin_service.get_task(task_id=status.task_id)
+        except KeyError:
+            # The TaskRuntime can emit its first running status just before the
+            # plugin runtime has attached the run metadata. startAction already
+            # returns that initial snapshot; subsequent progress/terminal
+            # notifications are projected here.
+            return
+        revision = plugin_task_revisions.get(status.task_id, 0) + 1
+        plugin_task_revisions[status.task_id] = revision
+        await server_ref.notify(
+            "plugin.taskChanged",
+            PluginEventEnvelope(
+                event_type="plugin.task.changed",
+                project_key=snapshot.project_key,
+                entity_id=status.task_id,
+                revision=revision,
+                snapshot=snapshot.model_dump(mode="json", by_alias=True),
+            ),
+        )
 
     task_service = build_task_service(notification_sink=notify_task_status)
     dispatcher.register("task.create", task_service.create_task, CreateTaskParams)
@@ -502,6 +586,10 @@ async def _build_server() -> tuple[RpcServer, Any | None]:
         if settings_command_service is not None:
             register_settings_command_errors()
             _register_settings_command_methods(dispatcher, settings_command_service)
+        plugin_service = directus_service.plugin_service
+        if plugin_service is not None:
+            register_plugin_errors()
+            _register_plugin_methods(dispatcher, plugin_service)
         # G1: full-field history ChangeSets + safe restore.
         history_service = directus_service.history_service
         if history_service is not None:
@@ -578,6 +666,23 @@ async def _build_server() -> tuple[RpcServer, Any | None]:
     if directus_service is not None:
         directus_service.set_notification_sink(
             lambda event: server.notify("directus.changed", event)
+        )
+
+        async def notify_plugin_event(event: Any) -> None:
+            event_type = getattr(event, "event_type", None)
+            if not isinstance(event_type, str):
+                return
+            method = {
+                "plugin.catalog.changed": "plugin.catalogChanged",
+                "plugin.task.changed": "plugin.taskChanged",
+                "plugin.interaction.requested": "plugin.interactionRequested",
+            }.get(event_type)
+            if method is not None:
+                await server.notify(method, event)
+
+        directus_service.set_plugin_notification_sink(notify_plugin_event)
+        directus_service.set_plugin_file_notification_sink(
+            lambda event: server.notify("plugin.fileRequested", event)
         )
     return server, directus_service
 

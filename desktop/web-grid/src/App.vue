@@ -71,6 +71,7 @@ onBeforeUnmount(() => {
         :auto-login="startup.autoLogin"
         :can-retry="startup.canRetry"
         :can-cancel="startup.canCancel"
+        :logs="startup.logs"
         @first-run-submit="startupService.submitFirstRun"
         @login-submit="startupService.submitLogin"
         @retry="startupService.retry"

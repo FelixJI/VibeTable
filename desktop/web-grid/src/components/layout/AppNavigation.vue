@@ -5,6 +5,7 @@ import {
   Database,
   Files,
   Home,
+  Blocks,
   Settings,
   Table2,
 } from "lucide-vue-next";
@@ -24,6 +25,7 @@ const primary = [
   { view: "home" as const, icon: Home, label: "nav.home" },
   { view: "tables" as const, icon: Table2, label: "nav.tables" },
   { view: "files" as const, icon: Files, label: "nav.files" },
+  { view: "plugins" as const, icon: Blocks, label: "nav.plugins" },
 ];
 
 function navigate(view: AppView) {

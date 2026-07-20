@@ -36,10 +36,10 @@ from pathlib import Path
 # member; mirrors the try/except used for ``versioning`` elsewhere.
 try:
     from scripts._host_paths import host_bin_exe, host_target_framework
-    from scripts.extension_manifest import extension_names
+    from scripts.extension_manifest import extension_names, package_entry_paths
 except ImportError:  # pragma: no cover - exercised only by direct script runs
     from _host_paths import host_bin_exe, host_target_framework
-    from extension_manifest import extension_names
+    from extension_manifest import extension_names, package_entry_paths
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST_PROJECT = ROOT / "desktop" / "src" / "VibeTable.Desktop"
@@ -132,14 +132,15 @@ def _ensure_web_built() -> None:
 
 def _ensure_directus_extensions_built() -> None:
     for project in DIRECTUS_EXTENSION_DIRS:
-        output = project / "dist" / "index.js"
-        if not _is_stale(output, _project_inputs(project)):
+        outputs = [project / entry for entry in package_entry_paths(project)]
+        if all(not _is_stale(output, _project_inputs(project)) for output in outputs):
             _info(f"Directus extension up to date: {project.name}")
             continue
         _ensure_node_dependencies(project)
         _run_build(f"Directus extension {project.name}", [NPM, "run", "build"], project)
-        if not output.is_file():
-            raise RuntimeError(f"Directus extension entry not found after build: {output}")
+        for output in outputs:
+            if not output.is_file():
+                raise RuntimeError(f"Directus extension entry not found after build: {output}")
 
 
 def _ensure_host_built() -> Path:

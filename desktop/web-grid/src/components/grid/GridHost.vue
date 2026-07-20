@@ -24,6 +24,9 @@ import LoadingOverlay from "@/components/feedback/LoadingOverlay.vue";
 import ErrorOverlay from "@/components/feedback/ErrorOverlay.vue";
 
 const props = defineProps<{ onCellEdited?: CellEditedHandler }>();
+const emit = defineEmits<{
+  rowContext: [payload: { rowKey: string | number; x: number; y: number }];
+}>();
 
 const gridEl = ref<HTMLElement | null>(null);
 const store = useTableStore();
@@ -32,10 +35,22 @@ useTabulator(gridEl, {
   onCellEdited: props.onCellEdited,
   tabulator: tabulator ?? undefined,
 });
+
+function onContextMenu(event: MouseEvent): void {
+  const target = event.target;
+  if (!(target instanceof Node) || !tabulator?.value) return;
+  const row = tabulator.value.getRows("active").find((candidate) =>
+    candidate.getElement?.().contains(target),
+  );
+  const rowKey = row?.getData()?.rowKey;
+  if (typeof rowKey !== "string" && typeof rowKey !== "number") return;
+  event.preventDefault();
+  emit("rowContext", { rowKey, x: event.clientX, y: event.clientY });
+}
 </script>
 
 <template>
-  <div class="grid-wrapper">
+  <div class="grid-wrapper" @contextmenu="onContextMenu">
     <div ref="gridEl" class="grid-host"></div>
     <LoadingOverlay :show="store.loading" />
     <ErrorOverlay :show="!!store.error" :message="store.error ?? ''" />

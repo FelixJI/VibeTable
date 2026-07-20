@@ -101,3 +101,37 @@ def extension_names(repo_root: Path) -> list[str]:
 def extension_dir(repo_root: Path, name: str) -> Path:
     """Return the source directory for extension ``name``."""
     return repo_root / "directus" / "extensions" / name
+
+
+def package_entry_paths(extension_directory: Path) -> tuple[Path, ...]:
+    """Return every JavaScript entry declared by a Directus package.
+
+    Endpoint extensions use one string path; bundles use an ``app``/``api``
+    mapping. Development, QA and release packaging share this parser so they
+    enforce the same contract.
+    """
+
+    package_path = extension_directory / "package.json"
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ExtensionManifestError(
+            f"extension package is invalid: {package_path}: {exc}"
+        ) from exc
+    raw_path = package.get("directus:extension", {}).get("path")
+    if isinstance(raw_path, str):
+        values = [raw_path]
+    elif isinstance(raw_path, dict):
+        values = list(raw_path.values())
+    else:
+        values = []
+    if not values or any(not isinstance(value, str) or not value for value in values):
+        raise ExtensionManifestError(
+            f"extension package must declare a string path or path mapping: {package_path}"
+        )
+    entries = tuple(Path(value) for value in values)
+    if any(entry.is_absolute() or ".." in entry.parts for entry in entries):
+        raise ExtensionManifestError(
+            f"extension package entry escapes its directory: {package_path}"
+        )
+    return entries

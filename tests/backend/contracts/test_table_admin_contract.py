@@ -40,3 +40,33 @@ def test_create_table_params_preserves_legacy_wire_keys() -> None:
     )
     assert params.model_dump(by_alias=True)["name"] == "2026年客户清单 ✅"
     assert params.model_dump(by_alias=True)["fields"][0]["key"] == "联系电话（备用）"
+
+
+@pytest.mark.parametrize(
+    "field_type",
+    [
+        "string",
+        "text",
+        "integer",
+        "bigInteger",
+        "float",
+        "decimal",
+        "boolean",
+        "date",
+        "dateTime",
+        "timestamp",
+        "time",
+        "json",
+        "csv",
+        "uuid",
+        "hash",
+        "binary",
+    ],
+)
+def test_field_definition_accepts_all_standalone_directus_types(field_type: str) -> None:
+    assert FieldDefinition(key="字段", type=field_type).type == field_type  # type: ignore[arg-type]
+
+
+def test_field_definition_rejects_relation_alias_without_configuration() -> None:
+    with pytest.raises(ValidationError):
+        FieldDefinition(key="关联", type="alias")  # type: ignore[arg-type]

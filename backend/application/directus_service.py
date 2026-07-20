@@ -28,6 +28,7 @@ from backend.application.collaboration_service import CollaborationService
 from backend.application.document_workspace_service import DocumentWorkspaceService
 from backend.application.export_service import ExportService
 from backend.application.file_tools_service import FileToolsService
+from backend.application.flow_binding_manager import FlowBindingManager
 from backend.application.history_service import HistoryService
 from backend.application.import_service import ImportService
 from backend.application.insights_service import InsightsService
@@ -36,6 +37,10 @@ from backend.application.paste_service import (
     PasteService,
     PasteTokenStore,
 )
+from backend.application.plugin_execution_runtime import PluginExecutionRuntime
+from backend.application.plugin_interaction_broker import PluginInteractionBroker
+from backend.application.plugin_platform_service import PluginPlatformService
+from backend.application.plugin_registry import PluginRegistry
 from backend.application.settings_command_service import SettingsCommandService
 from backend.application.table_admin_service import TableAdminService
 from backend.contracts.directus import (
@@ -59,6 +64,15 @@ from backend.contracts.relation import (
     RelationColumn,
     RelationProjectionParams,
     RelationProjectionResult,
+)
+from backend.infrastructure.directus_flow import DirectusFlowAdapter
+from backend.infrastructure.directus_interaction import DirectusInteractionAdapter
+from backend.infrastructure.plugin_file_capability import HostFileCapabilityAdapter
+from backend.infrastructure.plugin_interaction import HostConfirmationAdapter
+from backend.infrastructure.plugin_store import PluginProjectStore
+from backend.infrastructure.plugin_worker import (
+    DirectusBulkMutationAdapter,
+    NodePluginWorkerAdapter,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -93,6 +107,11 @@ class DirectusService:
         self._history_service: HistoryService | None = None
         self._document_workspace_service: DocumentWorkspaceService | None = None
         self._table_admin_service: TableAdminService | None = None
+        self._plugin_service: PluginPlatformService | None = None
+        self._plugin_store: PluginProjectStore | None = None
+        self._plugin_runtime: PluginExecutionRuntime | None = None
+        self._plugin_confirmation: HostConfirmationAdapter | None = None
+        self._plugin_files: HostFileCapabilityAdapter | None = None
 
     @property
     def paste_service(self) -> PasteService | None:
@@ -174,8 +193,28 @@ class DirectusService:
     def settings_command_service(self, value: SettingsCommandService | None) -> None:
         self._settings_command_service = value
 
+    @property
+    def plugin_service(self) -> PluginPlatformService | None:
+        return self._plugin_service
+
+    @plugin_service.setter
+    def plugin_service(self, value: PluginPlatformService | None) -> None:
+        self._plugin_service = value
+
     def set_notification_sink(self, sink: Callable[[DirectusChangeEvent], Awaitable[None]]) -> None:
         self._notification_sink = sink
+
+    def set_plugin_notification_sink(self, sink: Callable[[Any], Awaitable[None]]) -> None:
+        if self._plugin_runtime is not None:
+            self._plugin_runtime.set_notification_sink(sink)
+        if self._plugin_confirmation is not None:
+            self._plugin_confirmation.set_notification_sink(sink)
+        if self._plugin_service is not None:
+            self._plugin_service.set_notification_sink(sink)
+
+    def set_plugin_file_notification_sink(self, sink: Callable[[Any], Awaitable[None]]) -> None:
+        if self._plugin_files is not None:
+            self._plugin_files.set_notification_sink(sink)
 
     async def login(self, params: DirectusLoginParams) -> SessionStatus:
         return await self._auth.login(params.email, params.password, params.otp)
@@ -198,7 +237,11 @@ class DirectusService:
         directus = payload.get("directus")
         return DirectusServerInfoResult(
             project_name=_nested_string(project, "project_name", "name"),
-            directus_version=_nested_string(directus, "version"),
+            directus_version=(
+                payload.get("version")
+                if isinstance(payload.get("version"), str)
+                else _nested_string(directus, "version")
+            ),
             compatibility=self._manifest.directus_compatibility,
         )
 
@@ -393,6 +436,11 @@ class DirectusService:
         async with self._realtime_lock:
             self._subscriptions.clear()
             await self._stop_realtime_locked()
+        if self._plugin_service is not None:
+            await self._plugin_service.close()
+        if self._plugin_store is not None:
+            self._plugin_store.close()
+            self._plugin_store = None
 
     async def _restart_realtime_locked(self) -> None:
         await self._stop_realtime_locked()
@@ -523,6 +571,49 @@ def build_directus_service_from_environment(
             profiles=service._profiles,
             transport=transport,
             device_state_path=local_app_data / "VibeTable" / "device-settings.json",
+        )
+        plugin_state_dir = local_app_data / "VibeTable" / "plugins"
+        plugin_state_dir.mkdir(parents=True, exist_ok=True)
+        plugin_store = PluginProjectStore(plugin_state_dir / "plugin-state.db")
+        flow_adapter = DirectusFlowAdapter(transport=transport, auth=auth)
+        interaction_adapter = DirectusInteractionAdapter(transport=transport, auth=auth)
+        bindings = FlowBindingManager(store=plugin_store, directus=flow_adapter)
+        registry = PluginRegistry(store=plugin_store, bindings=bindings)
+        host_confirmation = HostConfirmationAdapter()
+        host_files = HostFileCapabilityAdapter(task_service=task_service)
+        runtime = PluginExecutionRuntime(
+            registry=registry,
+            bindings=bindings,
+            tasks=task_service.runtime,
+            flow_adapter=flow_adapter,
+            worker_adapter=NodePluginWorkerAdapter(
+                store=plugin_store,
+                profiles=service._profiles,
+                client=client,
+                file_adapter=host_files,
+            ),
+            confirmation_adapter=host_confirmation,
+            bulk_mutation_adapter=DirectusBulkMutationAdapter(
+                transport=transport,
+                auth=auth,
+                profiles=service._profiles,
+            ),
+            interaction_adapter=interaction_adapter,
+        )
+        service._plugin_store = plugin_store
+        service._plugin_runtime = runtime
+        service._plugin_confirmation = host_confirmation
+        service._plugin_files = host_files
+        service.plugin_service = PluginPlatformService(
+            store=plugin_store,
+            registry=registry,
+            bindings=bindings,
+            directus=flow_adapter,
+            runtime=runtime,
+            interactions=PluginInteractionBroker(adapter=interaction_adapter),
+            package_cache=plugin_state_dir / "packages",
+            local_confirmations=host_confirmation,
+            local_files=host_files,
         )
     return service
 

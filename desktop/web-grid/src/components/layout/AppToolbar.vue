@@ -7,11 +7,20 @@ import { collectionLabel } from "./collectionLabel";
 import { t } from "@/i18n";
 
 const workspace = useWorkspaceStore();
+const props = withDefaults(defineProps<{
+  pluginActions?: readonly {
+    key: string;
+    label: string;
+    risk: "read" | "write" | "destructive";
+    disabled: boolean;
+  }[];
+}>(), { pluginActions: () => [] });
 
 const emit = defineEmits<{
   refresh: [];
   insertRow: [];
   openHelp: [];
+  pluginAction: [key: string];
 }>();
 
 const displayNames = computed(() => workspace.displayNames);
@@ -47,6 +56,19 @@ function onMore(key: string) {
       <span v-if="workspace.currentTable && currentLabel !== workspace.currentTable">{{ workspace.currentTable }}</span>
     </div>
     <div class="toolbar-actions">
+      <NTooltip v-for="action in props.pluginActions" :key="action.key" placement="bottom" :delay="450">
+        <template #trigger>
+          <NButton
+            size="small"
+            tertiary
+            :type="action.risk === 'destructive' ? 'error' : action.risk === 'write' ? 'warning' : 'default'"
+            :disabled="action.disabled"
+            :data-testid="`plugin-toolbar-${action.key}`"
+            @click="emit('pluginAction', action.key)"
+          >{{ action.label }}</NButton>
+        </template>
+        插件动作 · {{ action.risk === 'read' ? '只读' : action.risk === 'write' ? '写入' : '危险' }}
+      </NTooltip>
       <NTooltip placement="bottom" :delay="450">
         <template #trigger>
           <NButton

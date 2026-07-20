@@ -130,6 +130,36 @@ public sealed class JsonRpcClientTests
     }
 
     [TestMethod]
+    public async Task InvokeAsync_PrefersSanitizedErrorDataMessage()
+    {
+        var transport = new FakeTransport();
+        await using var client = new JsonRpcClient(transport);
+        var call = client.InvokeAsync<object, ValueResult>(
+            "table_admin.createTable", new { }, CancellationToken.None);
+
+        transport.EnqueueError(
+            "1",
+            -32031,
+            "Directus API error",
+            JsonDocument.Parse(
+                "{\"kind\":\"directus_api\",\"message\":\"字段查询格式无效\"}")
+                .RootElement.Clone());
+
+        RpcRemoteException? caught = null;
+        try
+        {
+            await call;
+        }
+        catch (RpcRemoteException thrown)
+        {
+            caught = thrown;
+        }
+        Assert.IsNotNull(caught, "Expected RpcRemoteException to be thrown.");
+        Assert.AreEqual("字段查询格式无效", caught.Message);
+        Assert.AreEqual(-32031, caught.Code);
+    }
+
+    [TestMethod]
     public async Task InvokeAsync_CancellationRemovesPendingEntryAndCancels()
     {
         var transport = new FakeTransport();

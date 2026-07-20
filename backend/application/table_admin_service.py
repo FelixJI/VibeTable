@@ -46,11 +46,21 @@ class _AccessTokenProvider(Protocol):
 # Directus 类型映射（VibeTable 字段类型 → Directus schema data_type）
 _TYPE_MAP: dict[str, str] = {
     "string": "string",
-    "integer": "integer",
-    "decimal": "decimal",
-    "date": "date",
-    "boolean": "boolean",
     "text": "text",
+    "integer": "integer",
+    "bigInteger": "bigInteger",
+    "float": "float",
+    "decimal": "decimal",
+    "boolean": "boolean",
+    "date": "date",
+    "dateTime": "dateTime",
+    "timestamp": "timestamp",
+    "time": "time",
+    "json": "json",
+    "csv": "csv",
+    "uuid": "uuid",
+    "hash": "hash",
+    "binary": "binary",
 }
 
 _SYSTEM_FIELDS = ["status", "sort", "date_created", "user_created", "date_updated", "user_updated"]

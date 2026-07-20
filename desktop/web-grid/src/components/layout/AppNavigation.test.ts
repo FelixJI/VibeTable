@@ -10,7 +10,7 @@ describe("AppNavigation", () => {
     setActivePinia(createPinia());
   });
 
-  it("navigates between Home, Tables, Files, and Settings", async () => {
+  it("navigates between Home, Tables, Files, Plugins, and Settings", async () => {
     const ui = useUiStore();
     const wrapper = mount(AppNavigation);
     expect(ui.activeView).toBe("home");
@@ -18,6 +18,8 @@ describe("AppNavigation", () => {
     expect(ui.activeView).toBe("tables");
     await wrapper.get('[data-testid="nav-files"]').trigger("click");
     expect(ui.activeView).toBe("files");
+    await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
+    expect(ui.activeView).toBe("plugins");
     await wrapper.get('[data-testid="nav-settings"]').trigger("click");
     expect(ui.activeView).toBe("settings");
   });

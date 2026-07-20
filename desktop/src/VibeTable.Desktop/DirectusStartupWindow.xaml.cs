@@ -59,7 +59,8 @@ public partial class DirectusStartupWindow : Window
                 or DirectusStartupStage.VerifyingPackages
                 or DirectusStartupStage.RepairingPackages
                 or DirectusStartupStage.RecheckingPackages => 1,
-            DirectusStartupStage.InitializingDatabase => 2,
+            DirectusStartupStage.InitializingDatabase
+                or DirectusStartupStage.ReusingDatabase => 2,
             DirectusStartupStage.StartingService
                 or DirectusStartupStage.WaitingForService => 3,
             DirectusStartupStage.ApplyingSchema
@@ -77,6 +78,7 @@ public partial class DirectusStartupWindow : Window
             DirectusStartupStage.RepairingPackages => "修复 Directus 依赖",
             DirectusStartupStage.RecheckingPackages => "检测到上次未完成，正在复检 Directus 依赖",
             DirectusStartupStage.InitializingDatabase => "初始化本地数据库",
+            DirectusStartupStage.ReusingDatabase => "复用已有本地数据库",
             DirectusStartupStage.StartingService => "启动 Directus 服务",
             DirectusStartupStage.WaitingForService => "等待 Directus 就绪",
             DirectusStartupStage.ApplyingSchema => "创建 VibeTable 数据结构",
@@ -261,11 +263,14 @@ public partial class DirectusStartupWindow : Window
                 "正在创建本地数据库和管理员账号。",
             "The Directus database already exists; checking initialization state." =>
                 "检测到未完成的本地数据库，正在重新初始化。",
+            "The local Directus runtime is initialized; reusing the existing database." =>
+                "本地数据库与数据结构已完成初始化，本次直接复用。",
             "Waiting for the Directus health endpoint to respond." =>
                 "服务进程已启动，正在等待健康检查通过。",
             "Creating the initial VibeTable collections, relations, and permissions." =>
                 "正在创建初始数据表、关系和权限。",
             "Directus initialization is complete." => "Directus 初始化已完成。",
+            "Directus startup is complete." => "Directus 启动已完成。",
             _ => detail,
         };
     }

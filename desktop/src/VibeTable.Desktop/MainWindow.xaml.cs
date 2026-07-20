@@ -6,6 +6,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -62,6 +63,10 @@ public partial class MainWindow : Window
     private readonly TableWorkspaceService _workspace;
     private readonly ITableRpcGateway _workspaceGateway;
     private readonly WorkspaceRequestDispatcher _dispatcher;
+    private readonly PluginSurfaceSessionManager _pluginSurfaces;
+    private readonly PluginWebViewResourceHost _pluginResourceHost;
+    private readonly IPluginPackageSourcePicker _pluginPackagePicker;
+    private readonly PluginRequestDispatcher _pluginDispatcher;
     private readonly WorkspaceMountStore _workspaceMounts;
     private readonly ILocalDocumentFilePicker _documentFilePicker;
     private readonly string _documentWorkspaceSourceScope;
@@ -82,6 +87,7 @@ public partial class MainWindow : Window
     private DirectusSupervisor? _directusSupervisor;
     private readonly TaskCompletionSource<bool>? _directusSessionReady;
     private JsonRpcDirectusGateway? _directusGateway;
+    private JsonRpcPluginGateway? _pluginGateway;
     private DocumentWorkspaceHostService? _documentWorkspace;
     private bool _directusSessionAuthenticated;
     private int _directusWorkspaceOpened;
@@ -93,10 +99,15 @@ public partial class MainWindow : Window
     private string? _pendingLoginEmail;
     private string? _pendingLoginPassword;
     private string? _authenticatedDirectusUserId;
+    private DirectusCurrentUser? _authenticatedDirectusUser;
+    private long _pluginProjectRevision;
     private string? _localDirectusDirectory;
+    private bool _localDirectusWasReady;
     private DirectusStartupWindow? _directusStartupWindow;
     private CancellationTokenSource? _directusStartupCts;
     private readonly object _startupStateGate = new();
+    private readonly List<HostStartupLogEntry> _startupLogs = [];
+    private const int MaxStartupLogLines = 24;
     private HostStartupStatePayload _startupStateSnapshot = new(
         "starting",
         "准备启动",
@@ -105,7 +116,8 @@ public partial class MainWindow : Window
         false,
         false,
         false,
-        false);
+        false,
+        Array.Empty<HostStartupLogEntry>());
     private TaskCompletionSource<FirstRunSubmission?>? _firstRunSubmission;
     private TaskCompletionSource<LoginSubmission?>? _loginSubmission;
     private IReadOnlyList<string>? _activeExternalDropPaths;
@@ -150,6 +162,17 @@ public partial class MainWindow : Window
         _router = new WebMessageRouter(OnRoutedWebRequest);
         _backendAdapter = new BackendLifecycleAdapter(_supervisor);
         _webBridge = new WebViewBridge(this, _router);
+        _pluginSurfaces = new PluginSurfaceSessionManager();
+        _pluginResourceHost = new PluginWebViewResourceHost(
+            new PluginResourceHost(),
+            _pluginSurfaces);
+        _pluginPackagePicker = new WindowsPluginPackageSourcePicker();
+        _pluginDispatcher = new PluginRequestDispatcher(
+            _webBridge,
+            _pluginSurfaces,
+            _pluginPackagePicker,
+            _pluginResourceHost,
+            new WindowsPluginFilePicker());
         _workspaceMounts = new WorkspaceMountStore();
         _documentFilePicker = new WindowsLocalDocumentFilePicker();
 
@@ -409,6 +432,7 @@ public partial class MainWindow : Window
     private void OnDirectusLogReceived(object? sender, string line)
     {
         TraceProcessLog("directus", line);
+        AppendStartupLog("Directus", line);
         // Surface significant Directus lifecycle/error lines to the bootstrap
         // fallback. Filtered to avoid drowning the host UI in routine Directus
         // logs; uses the marshalling SetDetailMessage (not Core) because this
@@ -452,10 +476,15 @@ public partial class MainWindow : Window
                     // dispatch (whose deferred execution would also escape the
                     // surrounding try/catch).
                     string detail = DirectusStartupWindow.TranslateDetail(progress.Detail);
+                    AppendStartupLog(
+                        progress.UsedFastPath ? "复用" : "阶段",
+                        detail);
                     SetDetailMessageCore(detail);
                     SetHostStartupState(
                         "starting",
-                        "初始化本地数据服务",
+                        _localDirectusWasReady
+                            ? "启动本地数据服务"
+                            : "初始化本地数据服务",
                         detail,
                         canCancel: true);
                 }
@@ -524,6 +553,9 @@ public partial class MainWindow : Window
         SetDirectusSessionAuthenticated(false, sessionBoundary: true);
         _directusSessionReady?.TrySetResult(false);
         _directusGateway?.Dispose();
+        _pluginDispatcher.Dispose();
+        _pluginGateway?.Dispose();
+        _pluginResourceHost.Dispose();
         _documentWorkspace?.Dispose();
         if (_workspaceGateway is IDisposable disposableGateway)
         {
@@ -598,6 +630,7 @@ public partial class MainWindow : Window
 
         var firstRunStatus = DirectusFirstRunState.Inspect(
             options.LocalDirectusDirectory);
+        _localDirectusWasReady = firstRunStatus.IsRuntimeReady;
         options.ForcePackageVerification = firstRunStatus.NeedsRuntimeInitialization;
 
         // Only a genuinely fresh runtime needs local administrator creation.
@@ -700,6 +733,7 @@ public partial class MainWindow : Window
     private void UpdateStartupHostStage(int step, string title, string detail)
     {
         _directusStartupWindow?.UpdateHostStage(step, title, detail);
+        AppendStartupLog("VibeTable", detail);
         SetDetailMessage(detail);
         SetHostStartupState("starting", title, detail, canCancel: true);
     }
@@ -821,17 +855,19 @@ public partial class MainWindow : Window
         bool canRetry = false,
         bool canCancel = false)
     {
-        var snapshot = new HostStartupStatePayload(
-            phase,
-            stage,
-            detail,
-            email,
-            rememberPassword,
-            autoLogin,
-            canRetry,
-            canCancel);
+        HostStartupStatePayload snapshot;
         lock (_startupStateGate)
         {
+            snapshot = new HostStartupStatePayload(
+                phase,
+                stage,
+                detail,
+                email,
+                rememberPassword,
+                autoLogin,
+                canRetry,
+                canCancel,
+                _startupLogs.ToArray());
             _startupStateSnapshot = snapshot;
         }
         if (!_router.IsReady) return;
@@ -850,6 +886,33 @@ public partial class MainWindow : Window
         catch
         {
             // Renderer may be reloading; app.ready replays the cached snapshot.
+        }
+    }
+
+    private void AppendStartupLog(string source, string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return;
+        }
+        string clean = Regex.Replace(
+            message,
+            "\\x1B\\[[0-?]*[ -/]*[@-~]",
+            string.Empty).Trim();
+        if (clean.Length > 240)
+        {
+            clean = clean[..237] + "…";
+        }
+        lock (_startupStateGate)
+        {
+            _startupLogs.Add(new HostStartupLogEntry(
+                DateTimeOffset.Now.ToString("HH:mm:ss"),
+                source,
+                clean));
+            if (_startupLogs.Count > MaxStartupLogLines)
+            {
+                _startupLogs.RemoveRange(0, _startupLogs.Count - MaxStartupLogLines);
+            }
         }
     }
 
@@ -919,7 +982,13 @@ public partial class MainWindow : Window
         bool RememberPassword,
         bool AutoLogin,
         bool CanRetry,
-        bool CanCancel);
+        bool CanCancel,
+        IReadOnlyList<HostStartupLogEntry> Logs);
+
+    private sealed record HostStartupLogEntry(
+        string Time,
+        string Source,
+        string Message);
 
     private sealed record FirstRunSubmission(
         string Email,
@@ -980,6 +1049,8 @@ public partial class MainWindow : Window
             _directusGateway = new JsonRpcDirectusGateway(client);
             _directusGateway.Changed += OnDirectusChanged;
             _dispatcher.SetDirectusGateway(_directusGateway);
+            _pluginGateway = new JsonRpcPluginGateway(client);
+            _pluginDispatcher.SetGateway(_pluginGateway);
             _documentWorkspace = new DocumentWorkspaceHostService(
                 new JsonRpcDocumentWorkspaceGateway(client),
                 _workspaceMounts,
@@ -1201,6 +1272,7 @@ public partial class MainWindow : Window
             // issued to an earlier page before enabling or replaying state to
             // the new renderer.
             _dispatcher.RotateDocumentCapabilityEpoch();
+            _pluginResourceHost.CloseAllSurfaces();
             _router.IsReady = true;
             PostHostStartupStateSnapshot();
             TryWriteShellReadiness();
@@ -1277,6 +1349,12 @@ public partial class MainWindow : Window
             // Navigation/cookie-injection is a UI concern handled in MainWindow
             // (Task 5). Do NOT forward to _dispatcher.
             _ = OpenDirectusAdminAsync(request.RequestId);
+            return;
+        }
+
+        if (request.Type.StartsWith("plugin.", StringComparison.Ordinal))
+        {
+            _pluginDispatcher.Dispatch(request);
             return;
         }
 
@@ -1445,6 +1523,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(user.Id))
             throw new InvalidOperationException("Directus 当前用户缺少稳定标识。");
         _authenticatedDirectusUserId = user.Id;
+        _authenticatedDirectusUser = user;
     }
 
     private static string BuildDirectusSourceScope(
@@ -1908,11 +1987,14 @@ public partial class MainWindow : Window
             await _directusGateway.ReconcileIdentifierMappingsAsync(timeout.Token);
             var list = await _directusGateway.ListCollectionsAsync(timeout.Token);
             var tables = DirectusCollectionFilter.FilterUserTables(list.Collections);
+            string projectRevision = Interlocked.Increment(
+                ref _pluginProjectRevision).ToString();
             _webBridge.PostNotification("database.collectionsChanged", new
             {
                 tables,
                 capabilityHashes = list.CapabilityHashes,
                 displayNames = list.DisplayNames,
+                projectRevision,
             });
         }
         catch (Exception ex)
@@ -2190,6 +2272,7 @@ public partial class MainWindow : Window
         // and realtime setup, so those secondary capabilities cannot leave the
         // renderer stuck on "connecting".
         _directusWorkspaceSnapshot = result;
+        Interlocked.Increment(ref _pluginProjectRevision);
         PostDirectusWorkspaceOpened(result);
         _ = ReconcileAndRefreshCollectionsAsync(reportFailure: false);
 
@@ -2229,6 +2312,11 @@ public partial class MainWindow : Window
             tables = result.Tables,
             views = result.Views,
             displayNames = result.DisplayNames,
+            projectKey = _documentWorkspaceSourceScope,
+            projectRevision = Volatile.Read(ref _pluginProjectRevision).ToString(),
+            currentUser = _authenticatedDirectusUser,
+            hostVersion = typeof(MainWindow).Assembly.GetName().Version?.ToString()
+                ?? "unknown",
         });
 
     private void OnDirectusChanged(DirectusChange change)
@@ -2453,6 +2541,7 @@ public partial class MainWindow : Window
                 WebViewAssetService.AppHostName,
                 folder,
                 CoreWebView2HostResourceAccessKind.DenyCors);
+            _owner._pluginResourceHost.Attach(core);
 
             // 2. App navigation is deliberately limited to the virtual app
             // origin. Directus is trusted only by the separate admin WebView.
@@ -2466,7 +2555,9 @@ public partial class MainWindow : Window
             };
             core.FrameNavigationStarting += (_, args) =>
             {
-                if (!_owner.IsAppOrigin(args.Uri))
+                bool pluginOrigin = Uri.TryCreate(args.Uri, UriKind.Absolute, out var frameUri)
+                    && _owner._pluginResourceHost.IsRegisteredUri(frameUri);
+                if (!pluginOrigin)
                 {
                     args.Cancel = true;
                 }
@@ -2477,6 +2568,21 @@ public partial class MainWindow : Window
             core.NewWindowRequested += (_, args) =>
             {
                 args.Handled = true;
+                if (Uri.TryCreate(
+                        args.OriginalSourceFrameInfo.Source,
+                        UriKind.Absolute,
+                        out var sourceUri)
+                    && PluginWebViewResourceHost.IsPluginUri(sourceUri))
+                {
+                    // A plugin surface cannot escape its iframe through the
+                    // app page or the user's external browser.
+                    return;
+                }
+                if (Uri.TryCreate(args.Uri, UriKind.Absolute, out var requestedUri)
+                    && _owner._pluginResourceHost.IsRegisteredUri(requestedUri))
+                {
+                    return;
+                }
                 switch (WebViewNavigationPolicy.ClassifyAppNewWindow(args.Uri))
                 {
                     case WebViewLinkDisposition.CurrentView:

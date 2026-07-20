@@ -146,6 +146,8 @@ public sealed class DirectusSupervisor : IAsyncDisposable
             // 1. Materialize .env (secrets generated/preserved, port resolved).
             bool alreadyBootstrapped = File.Exists(
                 Path.Combine(_options.LocalDirectusDirectory, ".bootstrapped"));
+            bool alreadyInitialized = alreadyBootstrapped && File.Exists(
+                Path.Combine(_options.LocalDirectusDirectory, ".schema-applied"));
             string? bsEmail, bsPassword;
             _options.Environment.TryGetValue("VIBETABLE_DIRECTUS_BOOTSTRAP_EMAIL", out bsEmail);
             _options.Environment.TryGetValue("VIBETABLE_DIRECTUS_BOOTSTRAP_PASSWORD", out bsPassword);
@@ -169,11 +171,18 @@ public sealed class DirectusSupervisor : IAsyncDisposable
             DeployExtension();
             // 4. Bootstrap the DB + seed the VibeTable schema (idempotent).
             ReportProgress(
-                DirectusStartupStage.InitializingDatabase,
-                alreadyBootstrapped
+                alreadyInitialized
+                    ? DirectusStartupStage.ReusingDatabase
+                    : DirectusStartupStage.InitializingDatabase,
+                alreadyInitialized
+                    ? "The local Directus runtime is initialized; reusing the existing database."
+                    : alreadyBootstrapped
                     ? "The Directus database already exists; checking initialization state."
                     : "Creating the Directus database and local administrator.");
-            await BootstrapAsync(env, cancellationToken).ConfigureAwait(false);
+            if (!alreadyInitialized)
+            {
+                await BootstrapAsync(env, cancellationToken).ConfigureAwait(false);
+            }
             // 5. Start directus directly (no run.py): node <directus-cli> start.
             ReportProgress(
                 DirectusStartupStage.StartingService,
@@ -231,7 +240,10 @@ public sealed class DirectusSupervisor : IAsyncDisposable
             }
             ReportProgress(
                 DirectusStartupStage.Ready,
-                "Directus initialization is complete.");
+                alreadyInitialized
+                    ? "Directus startup is complete."
+                    : "Directus initialization is complete.",
+                usedFastPath: alreadyInitialized);
         }
         catch
         {

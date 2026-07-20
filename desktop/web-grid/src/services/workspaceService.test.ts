@@ -4,21 +4,25 @@ import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { useWorkspaceService } from "./workspaceService";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { usePluginStore } from "@/stores/pluginStore";
 
 function makeShimBridge(): {
   bridge: HostBridge;
   emit: (type: string, payload: unknown) => void;
+  posted: unknown[];
 } {
   let listener: ((event: { data: unknown }) => void) | null = null;
+  const posted: unknown[] = [];
   const shim = {
     addEventListener: (_: string, fn: (event: { data: unknown }) => void) => { listener = fn; },
     removeEventListener: () => {},
-    postMessage: () => {},
+    postMessage: (message: unknown) => { posted.push(message); },
   };
   const bridge = createHostBridge({ webview: shim });
   bridge.start();
   return {
     bridge,
+    posted,
     emit: (type, payload) => listener?.({ data: JSON.stringify({ type, payload }) }),
   };
 }
@@ -55,5 +59,44 @@ describe("workspaceService display names", () => {
     const store = useWorkspaceStore();
     expect(store.displayNames).toEqual({ vt_t_02: "订单" });
     expect(store.collections[0].collection).toBe("vt_t_02");
+  });
+
+  it("switches plugin isolation to the opened Directus project", () => {
+    const { bridge, emit, posted } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    useWorkspaceService().init();
+
+    emit("database.opened", {
+      tables: ["orders"],
+      views: [],
+      projectKey: "remote:https://directus.example.test",
+      projectRevision: "workspace-r7",
+      currentUser: { id: "user-7", displayName: "Alice" },
+      hostVersion: "2.4.1",
+    });
+
+    expect(usePluginStore().projectKey).toBe("remote:https://directus.example.test");
+    expect(usePluginStore().projectRevision).toBe("workspace-r7");
+    expect(usePluginStore().currentUser).toMatchObject({ id: "user-7", displayName: "Alice" });
+    expect(usePluginStore().hostVersion).toBe("2.4.1");
+    expect(posted.at(-1)).toMatchObject({
+      type: "plugin.catalog.list",
+      payload: { projectKey: "remote:https://directus.example.test" },
+    });
+  });
+
+  it("advances plugin project revision when Directus collections change", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    useWorkspaceService().init();
+    const pluginStore = usePluginStore();
+    pluginStore.setProjectContext("remote:https://directus.example.test", "workspace-r7");
+
+    emit("database.collectionsChanged", {
+      tables: ["orders"],
+      projectRevision: "workspace-r8",
+    });
+
+    expect(pluginStore.projectRevision).toBe("workspace-r8");
   });
 });

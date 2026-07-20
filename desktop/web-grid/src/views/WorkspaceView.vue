@@ -21,9 +21,9 @@
  * idempotency key; we read those from the paste + workspace stores here so the
  * PastePanel component stays free of service knowledge.
  */
-import { computed, onMounted, provide, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
 import { useMessage } from "naive-ui";
-import { NButton, NIcon } from "naive-ui";
+import { NButton, NDropdown, NIcon } from "naive-ui";
 import { FilePlus2 } from "lucide-vue-next";
 import type { TabulatorFull } from "tabulator-tables";
 import AppNavigation from "@/components/layout/AppNavigation.vue";
@@ -39,6 +39,10 @@ import ShortcutsView from "@/views/ShortcutsView.vue";
 import HomeView from "@/views/HomeView.vue";
 import SettingsView from "@/views/SettingsView.vue";
 import FileWorkspaceView from "@/views/FileWorkspaceView.vue";
+import PluginCenterView from "@/views/PluginCenterView.vue";
+import PluginActionPanel from "@/components/plugins/PluginActionPanel.vue";
+import PluginSurfaceHost from "@/components/plugins/PluginSurfaceHost.vue";
+import { projectPluginTheme } from "@/components/plugins/pluginTheme";
 import { useDocumentWorkspaceService } from "@/services/documentWorkspaceService";
 import { useHostBridge } from "@/services/bridgeContext";
 import { useWorkspaceService } from "@/services/workspaceService";
@@ -49,6 +53,7 @@ import { useMutationService } from "@/services/mutationService";
 import { useTableAdminService } from "@/services/tableAdminService";
 import { useErrorRouter } from "@/services/errorRouter";
 import { useIdentifierMappingService } from "@/services/identifierMappingService";
+import { createPluginCommandContext, usePluginService } from "@/services/pluginService";
 import { useKeyboard } from "@/composables/useKeyboard";
 import { useUiStore } from "@/stores/uiStore";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
@@ -56,6 +61,7 @@ import { usePasteStore } from "@/stores/pasteStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { usePluginStore } from "@/stores/pluginStore";
 import {
   classifyClipboard,
   mapCellsToColumns,
@@ -77,12 +83,14 @@ const mutationService = useMutationService();
 const tableAdminService = useTableAdminService();
 const errorRouter = useErrorRouter();
 const identifierMappingService = useIdentifierMappingService();
+const pluginService = usePluginService();
 const ui = useUiStore();
 const admin = useTableAdminStore();
 const paste = usePasteStore();
 const tableStore = useTableStore();
 const history = useHistoryStore();
 const workspace = useWorkspaceStore();
+const plugins = usePluginStore();
 
 /**
  * Naive UI message API (requires NMessageProvider, which App.vue wraps around
@@ -123,6 +131,126 @@ watch(
 const tabulator = ref<TabulatorFull | null>(null);
 provide(TABULATOR_INJECTION_KEY, tabulator);
 
+const pluginTheme = computed(() => projectPluginTheme({
+  themeMode: ui.themeMode,
+  locale: ui.locale,
+  density: ui.density,
+}));
+const registeredPluginActions = computed(() => plugins.plugins.flatMap((plugin) =>
+  plugin.manifest.actions.map((action) => ({
+    key: `${plugin.pluginId}/${action.actionId}`,
+    plugin,
+    action,
+    label: action.displayName[ui.locale]
+      ?? action.displayName["zh-CN"]
+      ?? action.displayName["en-US"]
+      ?? action.actionId,
+  })),
+));
+const toolbarPluginActions = computed(() => registeredPluginActions.value
+  .filter(({ action }) => action.placements.includes("table.toolbar"))
+  .map(({ key, label, plugin, action }) => ({
+    key,
+    label,
+    risk: action.risk,
+    disabled: plugin.status !== "enabled"
+      || action.invocation !== "manual"
+      || !workspace.currentTable,
+  })));
+const pluginContextMenu = ref({ show: false, x: 0, y: 0, rowKey: null as string | number | null });
+const pluginContextOptions = computed(() => registeredPluginActions.value
+  .filter(({ action }) => action.placements.includes("table.context-menu"))
+  .map(({ key, label, plugin, action }) => ({
+    key,
+    label: `${label} · ${action.risk === "read" ? "只读" : action.risk === "write" ? "写入" : "危险"}`,
+    disabled: plugin.status !== "enabled" || action.invocation !== "manual",
+  })));
+
+function selectedRowKeys(): readonly (string | number)[] {
+  return (tabulator.value?.getSelectedData() ?? []).flatMap((row) =>
+    typeof row.rowKey === "string" || typeof row.rowKey === "number" ? [row.rowKey] : [],
+  );
+}
+
+function pluginContext(keys: readonly (string | number)[]) {
+  return createPluginCommandContext({
+    projectKey: plugins.projectKey,
+    collection: workspace.currentTable,
+    selectedKeys: keys,
+    querySnapshot: tableStore.pages[0]?.querySnapshot ?? null,
+    locale: ui.locale,
+    theme: pluginTheme.value.mode,
+    density: ui.density,
+    user: plugins.currentUser,
+    hostVersion: plugins.hostVersion,
+  });
+}
+
+async function openRegisteredPluginAction(
+  key: string,
+  forcedKeys?: readonly (string | number)[],
+): Promise<void> {
+  const registered = registeredPluginActions.value.find((item) => item.key === key);
+  if (!registered) return;
+  try {
+    await pluginService.describeAction(
+      registered.plugin.pluginId,
+      registered.action.actionId,
+      pluginContext(forcedKeys ?? selectedRowKeys()),
+    );
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function openPluginContextMenu(payload: { rowKey: string | number; x: number; y: number }): void {
+  if (!pluginContextOptions.value.length) return;
+  pluginContextMenu.value = { show: true, ...payload };
+}
+
+function selectPluginContextAction(key: string): void {
+  const rowKey = pluginContextMenu.value.rowKey;
+  pluginContextMenu.value.show = false;
+  if (rowKey !== null) void openRegisteredPluginAction(key, [rowKey]);
+}
+
+async function startDescribedPluginAction(
+  payload: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  const description = plugins.describedAction;
+  const context = plugins.activeContext;
+  if (!description || !context) return;
+  const input: Record<string, unknown> = { ...payload };
+  const properties = description.inputSchema.properties;
+  if (
+    typeof properties === "object" && properties !== null && !Array.isArray(properties)
+    && "collection" in properties && input.collection === undefined && context.collection
+  ) input.collection = context.collection;
+  try {
+    await pluginService.startAction(description.pluginId, description.actionId, input, context);
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function resolvePluginInteraction(decision: "approved" | "rejected"): Promise<void> {
+  if (!plugins.activeTask) return;
+  try {
+    await pluginService.resolveInteraction(plugins.activeTask, decision);
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function cancelPluginTask(): Promise<void> {
+  if (!plugins.activeTask) return;
+  try {
+    await pluginService.cancelTask(plugins.activeTask.taskId);
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
 onMounted(() => {
   // Subscribe each service to its inbound host events. Idempotent across
   // strict-mode double-mount in dev because each bridge.on replaces prior
@@ -133,11 +261,15 @@ onMounted(() => {
   mutationService.init();
   tableAdminService.init();
   errorRouter.init();
+  pluginService.init();
+  void pluginService.list().catch(() => undefined);
   // App.vue gates this workspace until host startup/auth is ready. Re-announce
   // app.ready only after all business subscriptions are installed so the host
   // replays database.opened that may have completed while StartupGate was shown.
   hostBridge.notify("app.ready", {});
 });
+
+onBeforeUnmount(() => pluginService.dispose());
 
 /**
  * Inline cell-edit handler for GridHost. Tabulator fires cellEdited AFTER the
@@ -184,6 +316,7 @@ const pageTitle = computed(() => {
   if (ui.activeView === "home") return t("nav.home");
   if (ui.activeView === "settings") return t("nav.settings");
   if (ui.activeView === "files") return t("nav.files");
+  if (ui.activeView === "plugins") return t("nav.plugins");
   return t("nav.tables");
 });
 
@@ -459,9 +592,11 @@ useKeyboard({
           />
           <main class="main">
             <AppToolbar
+              :plugin-actions="toolbarPluginActions"
               @refresh="tableService.refresh"
               @insert-row="mutationService.insertRow({})"
               @open-help="ui.openShortcuts"
+              @plugin-action="openRegisteredPluginAction"
             />
             <div v-if="!workspace.currentTable" class="table-empty" data-testid="table-empty">
               <span><NIcon :size="21"><FilePlus2 /></NIcon></span>
@@ -469,7 +604,11 @@ useKeyboard({
               <p>{{ t("table.empty.description") }}</p>
               <NButton type="primary" size="small" @click="onNewTable">{{ t("sidebar.newTable") }}</NButton>
             </div>
-            <GridHost v-else :on-cell-edited="onCellEdited" />
+            <GridHost
+              v-else
+              :on-cell-edited="onCellEdited"
+              @row-context="openPluginContextMenu"
+            />
             <div v-if="workspace.currentTable && tableStore.datasetReady" class="table-summary" data-testid="table-summary">
               {{ t("toolbar.rowCount", { count: tableStore.rowCount }) }}
             </div>
@@ -489,12 +628,46 @@ useKeyboard({
           v-if="ui.activeView === 'files'"
           @intent="documentWorkspaceService.dispatch"
         />
+        <PluginCenterView v-if="ui.activeView === 'plugins'" />
       </div>
     </section>
     <PastePanel @confirm="onConfirmPaste" @cancel="onCancelPaste" />
     <CreateTableModal @submit="onSubmitCreate" @cancel="onCancelCreate" />
     <DeleteConfirmModal @confirm="onConfirmDelete" @cancel="onCancelDelete" />
     <ShortcutsView />
+    <NDropdown
+      trigger="manual"
+      placement="bottom-start"
+      :show="pluginContextMenu.show"
+      :x="pluginContextMenu.x"
+      :y="pluginContextMenu.y"
+      :options="pluginContextOptions"
+      @select="selectPluginContextAction"
+      @clickoutside="pluginContextMenu.show = false"
+    />
+    <div v-if="plugins.actionOpen && plugins.describedAction" class="plugin-action-overlay">
+      <PluginSurfaceHost
+        v-if="plugins.describedAction.presentation === 'custom' && plugins.describedAction.surface"
+        :src="plugins.describedAction.surface.src"
+        :surface-token="plugins.describedAction.surface.surfaceToken"
+        :title="plugins.describedAction.surface.title"
+        :theme="pluginTheme"
+        :task="plugins.activeTask"
+        @action="startDescribedPluginAction"
+        @resolve="resolvePluginInteraction"
+        @cancel="cancelPluginTask"
+        @close="plugins.closeAction"
+      />
+      <PluginActionPanel
+        v-else
+        :description="plugins.describedAction"
+        :task="plugins.activeTask"
+        @start="startDescribedPluginAction"
+        @resolve="resolvePluginInteraction"
+        @cancel="cancelPluginTask"
+        @close="plugins.closeAction"
+      />
+    </div>
   </div>
 </template>
 
@@ -509,6 +682,9 @@ useKeyboard({
   overflow: hidden;
   background: var(--vt-bg);
 }
+.plugin-action-overlay { position: fixed; z-index: 80; inset: 0; display: grid; place-items: stretch end; background: rgba(10, 15, 22, .38); backdrop-filter: blur(2px); }
+.plugin-action-overlay > :deep(*) { height: 100%; }
+.plugin-action-overlay :deep(.surface-shell) { width: min(920px, calc(100% - 60px)); margin: 30px; }
 .app-surface {
   display: flex;
   flex: 1 1 auto;

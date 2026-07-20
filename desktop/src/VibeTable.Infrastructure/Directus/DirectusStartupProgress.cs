@@ -16,10 +16,12 @@ public enum DirectusStartupStage
     /// </summary>
     RecheckingPackages = 5,
     InitializingDatabase = 6,
-    StartingService = 7,
-    WaitingForService = 8,
-    ApplyingSchema = 9,
-    Ready = 10,
+    /// <summary>The persisted database and VibeTable schema are complete and reusable.</summary>
+    ReusingDatabase = 7,
+    StartingService = 8,
+    WaitingForService = 9,
+    ApplyingSchema = 10,
+    Ready = 11,
 }
 
 /// <summary>Progress notification raised while the local Directus runtime starts.</summary>

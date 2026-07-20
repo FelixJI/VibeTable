@@ -19,7 +19,24 @@ class CamelModel(BaseModel):
     model_config = _camel_config()
 
 
-FieldType = Literal["string", "integer", "decimal", "date", "boolean", "text"]
+FieldType = Literal[
+    "string",
+    "text",
+    "integer",
+    "bigInteger",
+    "float",
+    "decimal",
+    "boolean",
+    "date",
+    "dateTime",
+    "timestamp",
+    "time",
+    "json",
+    "csv",
+    "uuid",
+    "hash",
+    "binary",
+]
 
 
 def _display_name(value: str) -> str:

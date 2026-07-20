@@ -18,6 +18,9 @@ describe("startupStore", () => {
       rememberPassword: true,
       autoLogin: true,
       canCancel: true,
+      logs: [
+        { time: "08:30:01", source: "复用", message: "依赖校验缓存有效。" },
+      ],
     });
     expect(store).toMatchObject({
       phase: "login",
@@ -26,6 +29,9 @@ describe("startupStore", () => {
       rememberPassword: true,
       autoLogin: true,
       canCancel: true,
+      logs: [
+        { time: "08:30:01", source: "复用", message: "依赖校验缓存有效。" },
+      ],
     });
     expect(Object.keys(store.$state)).not.toContain("password");
     expect(Object.keys(store.$state)).not.toContain("otp");

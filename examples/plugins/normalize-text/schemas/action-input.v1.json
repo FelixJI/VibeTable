@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["collection", "keys", "field", "strategy"],
+  "properties": {
+    "collection": { "type": "string" },
+    "keys": { "type": "array", "items": { "type": ["string", "number"] } },
+    "field": { "type": "string" },
+    "strategy": { "enum": ["trim", "collapse-whitespace", "lowercase", "uppercase"] }
+  },
+  "additionalProperties": false
+}
