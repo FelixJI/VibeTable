@@ -83,6 +83,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                 RaisePropertyChanged(nameof(StatusText));
                 RaisePropertyChanged(nameof(IsGridVisible));
                 RaisePropertyChanged(nameof(IsWebViewVisible));
+                RaisePropertyChanged(nameof(IsHostFallbackVisible));
                 RaisePropertyChanged(nameof(IsRetryVisible));
                 ((RelayCommand)RetryCommand).RaiseCanExecuteChanged();
             }
@@ -138,8 +139,23 @@ public sealed class MainWindowViewModel : ViewModelBase
     /// the user-facing "grid is interactive" signal; this is the
     /// realization/HWND signal.
     /// </summary>
-    public bool IsWebViewVisible =>
-        State is StartupState.LoadingWeb or StartupState.Ready;
+    public bool IsWebViewVisible => true;
+
+    private bool _shellLoaded;
+
+    /// <summary>
+    /// The native surface is only an initial WebView2/runtime guard and a
+    /// fatal-error fallback. Normal Directus/bootstrap/auth progress belongs
+    /// to the web renderer once its first navigation succeeds.
+    /// </summary>
+    public bool IsHostFallbackVisible => !_shellLoaded || State == StartupState.Faulted;
+
+    public void MarkShellLoaded()
+    {
+        if (_shellLoaded) return;
+        _shellLoaded = true;
+        RaisePropertyChanged(nameof(IsHostFallbackVisible));
+    }
 
     /// <summary>
     /// Whether the Retry button is visible (only in
@@ -232,6 +248,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         if (State != StartupState.Faulted)
         {
+            MarkShellLoaded();
             TransitionTo(StartupState.Ready);
         }
     }

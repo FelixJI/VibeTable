@@ -82,6 +82,21 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
+    public void Route_StartupSubmissionAfterAppReady_IsWhitelisted()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(req => dispatched.Add(req)) { IsReady = true };
+
+        var reply = router.Route(
+            """{"type":"host.loginSubmitted","payload":{"email":"admin@example.com","password":"secret123"}}""");
+
+        Assert.IsNull(reply);
+        Assert.AreEqual("host.loginSubmitted", dispatched.Single().Type);
+        Assert.AreEqual(string.Empty, dispatched.Single().Raw);
+        Assert.IsTrue(router.IsHostNotificationAllowed("host.startupStateChanged"));
+    }
+
+    [TestMethod]
     public void Route_UnknownType_ReturnsOperationFailed_AndDoesNotDispatch()
     {
         var dispatched = new List<RoutedWebRequest>();

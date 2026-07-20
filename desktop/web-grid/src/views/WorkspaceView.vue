@@ -40,6 +40,7 @@ import HomeView from "@/views/HomeView.vue";
 import SettingsView from "@/views/SettingsView.vue";
 import FileWorkspaceView from "@/views/FileWorkspaceView.vue";
 import { useDocumentWorkspaceService } from "@/services/documentWorkspaceService";
+import { useHostBridge } from "@/services/bridgeContext";
 import { useWorkspaceService } from "@/services/workspaceService";
 import { useTableService } from "@/services/tableService";
 import { usePasteService } from "@/services/pasteService";
@@ -68,6 +69,7 @@ import type {
 import { t } from "@/i18n";
 
 const workspaceService = useWorkspaceService();
+const hostBridge = useHostBridge();
 const documentWorkspaceService = useDocumentWorkspaceService();
 const tableService = useTableService();
 const pasteService = usePasteService();
@@ -121,9 +123,10 @@ onMounted(() => {
   mutationService.init();
   tableAdminService.init();
   errorRouter.init();
-  // Database/Directus opening belongs to the host lifecycle. app.ready is sent
-  // after these subscriptions are installed; the host then replays its
-  // authoritative workspace snapshot.
+  // App.vue gates this workspace until host startup/auth is ready. Re-announce
+  // app.ready only after all business subscriptions are installed so the host
+  // replays database.opened that may have completed while StartupGate was shown.
+  hostBridge.notify("app.ready", {});
 });
 
 /**

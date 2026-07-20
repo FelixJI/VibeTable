@@ -127,17 +127,8 @@
         </Grid>
 
         <!-- Host fallback exists only while bootstrapping or after a fatal fault. -->
-        <Grid Panel.ZIndex="30" Background="#F7F8FA">
-            <Grid.Style>
-                <Style TargetType="Grid">
-                    <Setter Property="Visibility" Value="Visible"/>
-                    <Style.Triggers>
-                        <DataTrigger Binding="{Binding State}" Value="{x:Static local:StartupState.Ready}">
-                            <Setter Property="Visibility" Value="Collapsed"/>
-                        </DataTrigger>
-                    </Style.Triggers>
-                </Style>
-            </Grid.Style>
+        <Grid Panel.ZIndex="30" Background="#F7F8FA"
+              Visibility="{Binding IsHostFallbackVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
             <StackPanel Width="440" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <Border Width="44" Height="44" Background="#3370FF" CornerRadius="10" HorizontalAlignment="Center">
                     <TextBlock Text="V" Foreground="White" FontSize="22" FontWeight="SemiBold"

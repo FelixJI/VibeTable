@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -91,6 +92,18 @@ public partial class MainWindow : Window
     private string? _localDirectusDirectory;
     private DirectusStartupWindow? _directusStartupWindow;
     private CancellationTokenSource? _directusStartupCts;
+    private readonly object _startupStateGate = new();
+    private HostStartupStatePayload _startupStateSnapshot = new(
+        "starting",
+        "准备启动",
+        "正在加载 VibeTable 界面…",
+        null,
+        false,
+        false,
+        false,
+        false);
+    private TaskCompletionSource<FirstRunSubmission?>? _firstRunSubmission;
+    private TaskCompletionSource<LoginSubmission?>? _loginSubmission;
 
     public MainWindow()
     {
@@ -180,10 +193,17 @@ public partial class MainWindow : Window
     /// </summary>
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        _readinessWriter?.Trace("OnLoaded: starting backend");
+        _readinessWriter?.Trace("OnLoaded: loading web shell before services");
         _sessionCts = new CancellationTokenSource();
         try
         {
+            SetHostStartupState(
+                "starting",
+                "准备启动",
+                "正在加载 VibeTable 界面…");
+            await _webBridge.LoadAsync(_sessionCts.Token);
+            _viewModel.MarkShellLoaded();
+
             // --directus-auto: the host itself brings up the local Directus 12
             // (SQLite) runtime before the backend starts, so the backend can
             // connect to it. Single-machine VibeTable uses this instead of an
@@ -255,12 +275,30 @@ public partial class MainWindow : Window
                 if (!authenticated)
                 {
                     Close();
+                    return;
                 }
+                SetHostStartupState(
+                    "ready",
+                    "已连接",
+                    "VibeTable 与 Directus 已就绪。");
+            }
+            else if (_supervisor.State == BackendState.Ready)
+            {
+                SetHostStartupState(
+                    "ready",
+                    "已就绪",
+                    "VibeTable 已就绪。");
             }
         }
         catch (InvalidOperationException ex)
         {
             _readinessWriter?.Trace($"OnLoaded: InvalidOperationException: {ex.Message}");
+            SetHostStartupState(
+                "faulted",
+                "启动失败",
+                "VibeTable 启动状态异常，请使用原生故障界面重试。",
+                canRetry: true,
+                canCancel: true);
             // Illegal-transition / double-start: the VM is already in a
             // terminal state. Surface it so startup faults are never silent.
             LogStartupFault(ex);
@@ -268,6 +306,12 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _readinessWriter?.Trace($"OnLoaded: unhandled {ex.GetType().Name}: {ex.Message}");
+            SetHostStartupState(
+                "faulted",
+                "启动失败",
+                "VibeTable 无法完成启动，请使用原生故障界面重试。",
+                canRetry: true,
+                canCancel: true);
             LogStartupFault(ex);
         }
     }
@@ -337,6 +381,12 @@ public partial class MainWindow : Window
         if (detail is not null)
         {
             SetDetailMessage(detail);
+            SetHostStartupState(
+                state == BackendState.Faulted ? "faulted" : "starting",
+                state == BackendState.Faulted ? "后端异常" : "启动应用后端",
+                detail,
+                canRetry: state == BackendState.Faulted,
+                canCancel: state == BackendState.Faulted);
         }
         Trace.WriteLine($"[backend] {status}");
         _readinessWriter?.Trace(status);
@@ -394,7 +444,13 @@ public partial class MainWindow : Window
                     // call the core writer directly to avoid a redundant nested
                     // dispatch (whose deferred execution would also escape the
                     // surrounding try/catch).
-                    SetDetailMessageCore(DirectusStartupWindow.TranslateDetail(progress.Detail));
+                    string detail = DirectusStartupWindow.TranslateDetail(progress.Detail);
+                    SetDetailMessageCore(detail);
+                    SetHostStartupState(
+                        "starting",
+                        "初始化本地数据服务",
+                        detail,
+                        canCancel: true);
                 }
             });
         }
@@ -411,6 +467,12 @@ public partial class MainWindow : Window
         _readinessWriter?.Trace(status);
         if (state == DirectusState.Faulted)
         {
+            SetHostStartupState(
+                "faulted",
+                "本地数据服务异常",
+                "Directus 意外退出，请使用原生故障界面重试。",
+                canRetry: true,
+                canCancel: true);
             MoveUiToFaulted("Local Directus process exited unexpectedly.");
         }
     }
@@ -447,6 +509,8 @@ public partial class MainWindow : Window
         _adminIdleReleaseTimer.Stop();
         _sessionCts?.Cancel();
         _directusStartupCts?.Cancel();
+        _firstRunSubmission?.TrySetResult(null);
+        _loginSubmission?.TrySetResult(null);
         CloseStartupWindow();
         // Closing is always a capability boundary, including startup failures
         // that never reached an authenticated Directus session.
@@ -534,11 +598,9 @@ public partial class MainWindow : Window
         // idempotent schema step with its persisted credentials.
         if (firstRunStatus.IsFresh)
         {
-            var setup = new DirectusFirstRunWindow
-            {
-                Owner = this,
-            };
-            if (setup.ShowDialog() != true)
+            FirstRunSubmission? setup = await RequestFirstRunSubmissionAsync(
+                _sessionCts?.Token ?? CancellationToken.None);
+            if (setup is null)
             {
                 return null;
             }
@@ -550,7 +612,7 @@ public partial class MainWindow : Window
                     setup.Email,
                     setup.RememberPassword,
                     setup.AutoLogin,
-                    setup.ManagedLogin),
+                setup.ManagedLogin),
                 setup.RememberPassword ? setup.Password : null);
             options.Environment["VIBETABLE_DIRECTUS_BOOTSTRAP_EMAIL"] = setup.Email;
             options.Environment["VIBETABLE_DIRECTUS_BOOTSTRAP_PASSWORD"] = setup.Password;
@@ -561,10 +623,9 @@ public partial class MainWindow : Window
         // the renderer was interrupted after the database and schema were
         // already ready; it must not show initialization again or trigger a
         // destructive reset.
-        if (firstRunStatus.NeedsRuntimeInitialization)
-        {
-            EnsureStartupWindow();
-        }
+        // Normal first-run progress is rendered by the primary web shell.
+        // The native startup window is materialized only inside the failure
+        // path below, where Web/Directus recovery needs a last-resort surface.
         try
         {
             while (true)
@@ -633,6 +694,7 @@ public partial class MainWindow : Window
     {
         _directusStartupWindow?.UpdateHostStage(step, title, detail);
         SetDetailMessage(detail);
+        SetHostStartupState("starting", title, detail, canCancel: true);
     }
 
     /// <summary>
@@ -741,6 +803,130 @@ public partial class MainWindow : Window
             TryWriteShellReadiness();
         }
     }
+
+    private void SetHostStartupState(
+        string phase,
+        string stage,
+        string detail,
+        string? email = null,
+        bool rememberPassword = false,
+        bool autoLogin = false,
+        bool canRetry = false,
+        bool canCancel = false)
+    {
+        var snapshot = new HostStartupStatePayload(
+            phase,
+            stage,
+            detail,
+            email,
+            rememberPassword,
+            autoLogin,
+            canRetry,
+            canCancel);
+        lock (_startupStateGate)
+        {
+            _startupStateSnapshot = snapshot;
+        }
+        if (!_router.IsReady) return;
+        try
+        {
+            if (Dispatcher.CheckAccess())
+            {
+                _webBridge.PostNotification("host.startupStateChanged", snapshot);
+            }
+            else
+            {
+                Dispatcher.BeginInvoke(() =>
+                    _webBridge.PostNotification("host.startupStateChanged", snapshot));
+            }
+        }
+        catch
+        {
+            // Renderer may be reloading; app.ready replays the cached snapshot.
+        }
+    }
+
+    private void PostHostStartupStateSnapshot()
+    {
+        HostStartupStatePayload snapshot;
+        lock (_startupStateGate)
+        {
+            snapshot = _startupStateSnapshot;
+        }
+        _webBridge.PostNotification("host.startupStateChanged", snapshot);
+    }
+
+    private async Task<FirstRunSubmission?> RequestFirstRunSubmissionAsync(
+        CancellationToken token)
+    {
+        var preferences = _loginStore?.LoadPreferences()
+            ?? DirectusLoginPreferences.Empty;
+        var completion = new TaskCompletionSource<FirstRunSubmission?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _firstRunSubmission?.TrySetResult(null);
+        _firstRunSubmission = completion;
+        SetHostStartupState(
+            "firstRun",
+            "首次设置",
+            "创建本机 Directus 管理员。凭据仅交给原生宿主处理。",
+            preferences.Email,
+            preferences.RememberPassword,
+            preferences.AutoLogin,
+            canCancel: true);
+        using var registration = token.Register(() => completion.TrySetResult(null));
+        FirstRunSubmission? result = await completion.Task;
+        if (ReferenceEquals(_firstRunSubmission, completion))
+            _firstRunSubmission = null;
+        return result;
+    }
+
+    private async Task<LoginSubmission?> RequestLoginSubmissionAsync(
+        DirectusLoginPreferences preferences,
+        string detail,
+        CancellationToken token)
+    {
+        var completion = new TaskCompletionSource<LoginSubmission?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _loginSubmission?.TrySetResult(null);
+        _loginSubmission = completion;
+        SetHostStartupState(
+            "login",
+            "登录 Directus",
+            detail,
+            preferences.Email,
+            preferences.RememberPassword,
+            preferences.AutoLogin,
+            canCancel: true);
+        using var registration = token.Register(() => completion.TrySetResult(null));
+        LoginSubmission? result = await completion.Task;
+        if (ReferenceEquals(_loginSubmission, completion))
+            _loginSubmission = null;
+        return result;
+    }
+
+    private sealed record HostStartupStatePayload(
+        string Phase,
+        string Stage,
+        string Detail,
+        string? Email,
+        bool RememberPassword,
+        bool AutoLogin,
+        bool CanRetry,
+        bool CanCancel);
+
+    private sealed record FirstRunSubmission(
+        string Email,
+        string Password,
+        bool ManagedLogin,
+        bool RememberPassword,
+        bool AutoLogin);
+
+    private sealed record LoginSubmission(
+        string Email,
+        string Password,
+        string? Otp,
+        bool RememberPassword,
+        bool AutoLogin);
 
     private void MarkFirstRunCompleted()
     {
@@ -879,11 +1065,61 @@ public partial class MainWindow : Window
             {
                 return false;
             }
-            var dialog = new DirectusLoginWindow(_directusGateway, _loginStore)
+            var interactivePreferences = _loginStore.LoadPreferences();
+            string loginDetail = "请输入 Directus 管理员账号。密码不会保存到网页或日志。";
+            while (true)
             {
-                Owner = this,
-            };
-            return dialog.ShowDialog() == true;
+                LoginSubmission? submission = await RequestLoginSubmissionAsync(
+                    interactivePreferences,
+                    loginDetail,
+                    _sessionCts?.Token ?? CancellationToken.None);
+                if (submission is null)
+                {
+                    return false;
+                }
+                try
+                {
+                    status = await _directusGateway.LoginAsync(
+                        submission.Email,
+                        submission.Password,
+                        submission.Otp,
+                        _sessionCts?.Token ?? CancellationToken.None);
+                    if (!string.Equals(
+                        status.State, "authenticated", StringComparison.Ordinal))
+                    {
+                        loginDetail = "登录未建立有效会话，请核对账号后重试。";
+                        interactivePreferences = interactivePreferences with
+                        {
+                            Email = submission.Email,
+                            RememberPassword = submission.RememberPassword,
+                            AutoLogin = submission.AutoLogin,
+                        };
+                        continue;
+                    }
+                    _loginStore.Save(
+                        new DirectusLoginPreferences(
+                            submission.Email,
+                            submission.RememberPassword,
+                            submission.AutoLogin,
+                            ManagedPassword: false),
+                        submission.RememberPassword ? submission.Password : null);
+                    return true;
+                }
+                catch (OperationCanceledException)
+                {
+                    return false;
+                }
+                catch
+                {
+                    loginDetail = "登录失败，请检查邮箱、密码或动态验证码后重试。";
+                    interactivePreferences = interactivePreferences with
+                    {
+                        Email = submission.Email,
+                        RememberPassword = submission.RememberPassword,
+                        AutoLogin = submission.AutoLogin,
+                    };
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -911,6 +1147,10 @@ public partial class MainWindow : Window
         if (sessionBoundary || changed)
         {
             _dispatcher.RotateDocumentCapabilityEpoch();
+        }
+        if (authenticated)
+        {
+            TryWriteShellReadiness();
         }
     }
 
@@ -944,11 +1184,44 @@ public partial class MainWindow : Window
             // the new renderer.
             _dispatcher.RotateDocumentCapabilityEpoch();
             _router.IsReady = true;
+            PostHostStartupStateSnapshot();
             TryWriteShellReadiness();
             if (_directusEnabled)
             {
                 _ = OpenDirectusWorkspaceAsync();
             }
+        }
+
+        if (string.Equals(
+            request.Type, "host.firstRunSubmitted", StringComparison.Ordinal))
+        {
+            HandleFirstRunSubmission(request);
+            return;
+        }
+        if (string.Equals(
+            request.Type, "host.loginSubmitted", StringComparison.Ordinal))
+        {
+            HandleLoginSubmission(request);
+            return;
+        }
+        if (string.Equals(
+            request.Type, "host.startupCancelRequested", StringComparison.Ordinal))
+        {
+            _firstRunSubmission?.TrySetResult(null);
+            _loginSubmission?.TrySetResult(null);
+            _directusStartupCts?.Cancel();
+            Dispatcher.BeginInvoke(Close);
+            return;
+        }
+        if (string.Equals(
+            request.Type, "host.startupRetryRequested", StringComparison.Ordinal))
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (_viewModel.RetryCommand.CanExecute(null))
+                    _viewModel.RetryCommand.Execute(null);
+            });
+            return;
         }
 
         if (string.Equals(request.Type, "admin.openRequested", StringComparison.Ordinal))
@@ -961,6 +1234,95 @@ public partial class MainWindow : Window
         }
 
         _dispatcher.Dispatch(request);
+    }
+
+    private void HandleFirstRunSubmission(RoutedWebRequest request)
+    {
+        if (_firstRunSubmission is null) return;
+        string email = ReadStartupString(request.Payload, "email")?.Trim() ?? string.Empty;
+        bool managed = ReadStartupBoolean(request.Payload, "managedLogin");
+        string password = managed
+            ? Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+            : ReadStartupString(request.Payload, "password") ?? string.Empty;
+        bool remember = managed || ReadStartupBoolean(request.Payload, "rememberPassword");
+        bool autoLogin = managed || ReadStartupBoolean(request.Payload, "autoLogin");
+        if (!LooksLikeEmail(email))
+        {
+            SetHostStartupState(
+                "firstRun", "首次设置", "请输入有效邮箱地址，例如 admin@company.com。",
+                email, remember, autoLogin, canCancel: true);
+            return;
+        }
+        if (!managed && password.Length < 8)
+        {
+            SetHostStartupState(
+                "firstRun", "首次设置", "密码至少需要 8 位。",
+                email, remember, autoLogin, canCancel: true);
+            return;
+        }
+        if (autoLogin && !remember)
+        {
+            SetHostStartupState(
+                "firstRun", "首次设置", "启用自动登录时必须同时保存密码。",
+                email, remember, autoLogin, canCancel: true);
+            return;
+        }
+
+        if (_firstRunSubmission.TrySetResult(new FirstRunSubmission(
+            email, password, managed, remember, autoLogin)))
+        {
+            SetHostStartupState(
+                "starting", "初始化本地数据服务", "正在创建本地 Directus 环境…",
+                canCancel: true);
+        }
+    }
+
+    private void HandleLoginSubmission(RoutedWebRequest request)
+    {
+        if (_loginSubmission is null) return;
+        string email = ReadStartupString(request.Payload, "email")?.Trim() ?? string.Empty;
+        string password = ReadStartupString(request.Payload, "password") ?? string.Empty;
+        string? otp = ReadStartupString(request.Payload, "otp")?.Trim();
+        bool remember = ReadStartupBoolean(request.Payload, "rememberPassword");
+        bool autoLogin = ReadStartupBoolean(request.Payload, "autoLogin") && remember;
+        if (!LooksLikeEmail(email) || password.Length == 0)
+        {
+            SetHostStartupState(
+                "login", "登录 Directus", "请输入有效邮箱和密码。",
+                email, remember, autoLogin, canCancel: true);
+            return;
+        }
+        if (_loginSubmission.TrySetResult(new LoginSubmission(
+            email,
+            password,
+            string.IsNullOrWhiteSpace(otp) ? null : otp,
+            remember,
+            autoLogin)))
+        {
+            SetHostStartupState(
+                "starting", "登录 Directus", "正在验证登录信息…",
+                canCancel: true);
+        }
+    }
+
+    private static string? ReadStartupString(JsonElement payload, string name)
+        => payload.ValueKind == JsonValueKind.Object
+            && payload.TryGetProperty(name, out var value)
+            && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+
+    private static bool ReadStartupBoolean(JsonElement payload, string name)
+        => payload.ValueKind == JsonValueKind.Object
+            && payload.TryGetProperty(name, out var value)
+            && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            && value.GetBoolean();
+
+    private static bool LooksLikeEmail(string value)
+    {
+        int at = value.IndexOf('@');
+        int dot = value.LastIndexOf('.');
+        return at > 0 && dot > at + 1 && dot < value.Length - 1;
     }
 
     private async Task OpenDirectusAdminAsync(string? requestId)
@@ -1502,7 +1864,8 @@ public partial class MainWindow : Window
         }
         if (_supervisor.State == BackendState.Ready
             && _viewModel.State == StartupState.Ready
-            && _router.IsReady)
+            && _router.IsReady
+            && (!_directusEnabled || _directusSessionAuthenticated))
         {
             _readinessWriter.Trace(
                 "shell-smoke: backend, WebView2 navigation, and app.ready are ready");
@@ -1693,6 +2056,8 @@ public partial class MainWindow : Window
     {
         private readonly MainWindow _owner;
         private readonly WebMessageRouter _router;
+        private readonly object _loadGate = new();
+        private Task? _loadTask;
 
         public WebViewBridge(MainWindow owner, WebMessageRouter router)
         {
@@ -1700,7 +2065,21 @@ public partial class MainWindow : Window
             _router = router;
         }
 
-        public async Task LoadAsync(CancellationToken cancellationToken)
+        public Task LoadAsync(CancellationToken cancellationToken)
+        {
+            Task loadTask;
+            lock (_loadGate)
+            {
+                if (_loadTask is null || _loadTask.IsFaulted || _loadTask.IsCanceled)
+                {
+                    _loadTask = LoadCoreAsync();
+                }
+                loadTask = _loadTask;
+            }
+            return loadTask.WaitAsync(cancellationToken);
+        }
+
+        private async Task LoadCoreAsync()
         {
             var webview = _owner.AppWebView;
             _owner._readinessWriter?.Trace("WebViewBridge.LoadAsync: EnsureCoreWebView2Async");
@@ -1722,6 +2101,7 @@ public partial class MainWindow : Window
 
             // Attach the message pump BEFORE navigation so an early app.ready
             // is not lost.
+            core.WebMessageReceived -= OnWebMessageReceived;
             core.WebMessageReceived += OnWebMessageReceived;
             var navigation = new TaskCompletionSource<bool>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1750,8 +2130,7 @@ public partial class MainWindow : Window
                 core.Navigate(url);
                 _owner._readinessWriter?.Trace(
                     $"WebViewBridge.LoadAsync: Navigate issued to '{url}'");
-                await navigation.Task.WaitAsync(cancellationToken)
-                    .ConfigureAwait(true);
+                await navigation.Task.ConfigureAwait(true);
             }
             finally
             {

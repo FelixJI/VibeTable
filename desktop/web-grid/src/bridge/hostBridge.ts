@@ -107,6 +107,7 @@ export class BridgeOperationError extends Error {
 const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   HostMessageType
 >([
+  "host.startupStateChanged",
   "database.opened",
   "table.pageLoaded",
   "table.datasetReady",
@@ -137,6 +138,10 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   WebMessageType
 >([
   "app.ready",
+  "host.firstRunSubmitted",
+  "host.loginSubmitted",
+  "host.startupRetryRequested",
+  "host.startupCancelRequested",
   "database.openRequested",
   "table.selected",
   "table.pageRequested",

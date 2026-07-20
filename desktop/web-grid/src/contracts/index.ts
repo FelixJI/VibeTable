@@ -569,6 +569,10 @@ export interface IdentifierMappingsResult {
  */
 export type WebMessageType =
   | "app.ready"
+  | "host.firstRunSubmitted"
+  | "host.loginSubmitted"
+  | "host.startupRetryRequested"
+  | "host.startupCancelRequested"
   | "database.openRequested"
   | "table.selected"
   | "table.pageRequested"
@@ -608,6 +612,7 @@ export type WebMessageType =
  * Unknown inbound types are dropped after a diagnostic callback.
  */
 export type HostMessageType =
+  | "host.startupStateChanged"
   | "database.opened"
   | "table.pageLoaded"
   | "table.datasetReady"
@@ -650,6 +655,7 @@ export interface BridgeMessage<P = unknown> {
 
 /** Map of (inbound) message type -> resolved payload type, for typed handlers. */
 export interface HostPayloadMap {
+  "host.startupStateChanged": StartupStatePayload;
   "database.opened": DatabaseOpenedPayload;
   "table.pageLoaded": TablePageLoadedPayload;
   "table.datasetReady": DatasetReadyPayload;
@@ -676,6 +682,10 @@ export interface HostPayloadMap {
 /** Map of (outbound) message type -> payload type, for typed requests. */
 export interface WebPayloadMap {
   "app.ready": Record<string, never>;
+  "host.firstRunSubmitted": FirstRunSubmittedPayload;
+  "host.loginSubmitted": LoginSubmittedPayload;
+  "host.startupRetryRequested": Record<string, never>;
+  "host.startupCancelRequested": Record<string, never>;
   "database.openRequested": DatabaseOpenRequestedPayload;
   "table.selected": TableSelectedPayload;
   "table.pageRequested": TablePageRequestedPayload;
@@ -719,6 +729,39 @@ export interface WebPayloadMap {
     readonly confirmClose: boolean;
     readonly releaseWhenIdle: boolean;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Web-first startup lifecycle contracts
+// ---------------------------------------------------------------------------
+
+export type StartupPhase = "starting" | "firstRun" | "login" | "ready" | "faulted";
+
+export interface StartupStatePayload {
+  readonly phase: StartupPhase;
+  readonly stage?: string | null;
+  readonly detail?: string | null;
+  readonly email?: string | null;
+  readonly rememberPassword?: boolean;
+  readonly autoLogin?: boolean;
+  readonly canRetry?: boolean;
+  readonly canCancel?: boolean;
+}
+
+export interface FirstRunSubmittedPayload {
+  readonly email: string;
+  readonly password: string;
+  readonly managedLogin: boolean;
+  readonly rememberPassword: boolean;
+  readonly autoLogin: boolean;
+}
+
+export interface LoginSubmittedPayload {
+  readonly email: string;
+  readonly password: string;
+  readonly otp?: string;
+  readonly rememberPassword: boolean;
+  readonly autoLogin: boolean;
 }
 
 /** Payload produced by the web layer for `table.queryRequested`. */

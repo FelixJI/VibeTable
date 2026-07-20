@@ -43,6 +43,7 @@ public sealed class MainWindowViewModelTests
         // The WebView2 HWND is realized during LoadingWeb so navigation has a
         // non-zero surface; IsGridVisible (user-facing) stays false until Ready.
         Assert.IsTrue(vm.IsWebViewVisible);
+        Assert.IsTrue(vm.IsHostFallbackVisible);
         Assert.IsFalse(vm.IsRetryVisible);
 
         // WebView reports the grid loaded -> Ready.
@@ -52,6 +53,7 @@ public sealed class MainWindowViewModelTests
         Assert.AreEqual("就绪", vm.StatusText);
         Assert.IsTrue(vm.IsGridVisible);
         Assert.IsTrue(vm.IsWebViewVisible);
+        Assert.IsFalse(vm.IsHostFallbackVisible);
         Assert.IsFalse(vm.IsRetryVisible);
     }
 
@@ -191,6 +193,22 @@ public sealed class MainWindowViewModelTests
         vm.DetailMessage = "same"; // identical
 
         CollectionAssert.DoesNotContain(changed, nameof(MainWindowViewModel.DetailMessage));
+    }
+
+    [TestMethod]
+    public void MarkShellLoaded_HidesNativeFallbackBeforeBackendIsReady()
+    {
+        var vm = new MainWindowViewModel(
+            new FakeBackendLifecycle().BlockStart(),
+            new FakeWebViewBridge());
+
+        Assert.IsTrue(vm.IsWebViewVisible);
+        Assert.IsTrue(vm.IsHostFallbackVisible);
+
+        vm.MarkShellLoaded();
+
+        Assert.IsFalse(vm.IsHostFallbackVisible);
+        Assert.AreEqual(StartupState.StartingBackend, vm.State);
     }
 
     private static async Task<MainWindowViewModel> CreateAndStartAsync(

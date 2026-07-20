@@ -52,6 +52,10 @@ public sealed class WebMessageRouter
     private static readonly HashSet<string> WebRequestWhitelist = new(StringComparer.Ordinal)
     {
         "app.ready",
+        "host.firstRunSubmitted",
+        "host.loginSubmitted",
+        "host.startupRetryRequested",
+        "host.startupCancelRequested",
         "database.openRequested",
         "table.selected",
         "table.pageRequested",
@@ -91,6 +95,7 @@ public sealed class WebMessageRouter
     /// </summary>
     private static readonly HashSet<string> HostNotificationWhitelist = new(StringComparer.Ordinal)
     {
+        "host.startupStateChanged",
         "database.opened",
         "table.pageLoaded",
         "table.datasetReady",
@@ -206,7 +211,13 @@ public sealed class WebMessageRouter
                 ? payloadEl.Clone()
                 : default;
 
-            _dispatch(new RoutedWebRequest(type, requestId, payload, raw));
+            // Startup submissions may contain a password. The parsed payload
+            // is needed only for immediate host handling; never retain the raw
+            // JSON copy on the routed request.
+            string retainedRaw = type is "host.firstRunSubmitted" or "host.loginSubmitted"
+                ? string.Empty
+                : raw;
+            _dispatch(new RoutedWebRequest(type, requestId, payload, retainedRaw));
             return null;
         }
     }
