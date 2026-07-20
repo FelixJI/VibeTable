@@ -1,0 +1,218 @@
+.work-calendar {
+  --work-calendar-rest: #b94a48;
+  --work-calendar-rest-bg: rgba(185, 74, 72, 0.09);
+  --work-calendar-work: #2f67a8;
+  --work-calendar-work-bg: rgba(47, 103, 168, 0.1);
+  width: 100%;
+  color: var(--vt-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.work-calendar__week,
+.work-calendar__days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.work-calendar__week {
+  margin-bottom: 5px;
+  color: var(--vt-fg-muted);
+  font-size: var(--vt-font-caption);
+  text-align: center;
+}
+
+.work-calendar__week span {
+  padding: 3px 0;
+}
+
+.work-calendar__days {
+  gap: 4px;
+}
+
+.work-calendar__day {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 64px;
+  padding: 7px;
+  color: inherit;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: var(--vt-radius-md);
+  background: var(--vt-bg-subtle);
+  cursor: pointer;
+}
+
+.work-calendar__day:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.work-calendar__day:not(:disabled):hover {
+  border-color: var(--vt-color-primary-200);
+  background: var(--vt-color-primary-50);
+}
+
+.work-calendar__day--other {
+  color: var(--vt-fg-placeholder);
+  background: transparent;
+  opacity: 0.48 !important;
+}
+
+.work-calendar__day--today {
+  box-shadow: inset 0 0 0 1px var(--vt-color-primary-500);
+}
+
+.work-calendar__day--selected {
+  border-color: var(--vt-color-primary-500);
+  background: var(--vt-color-primary-50);
+}
+
+.work-calendar__number {
+  line-height: 20px;
+}
+
+.work-calendar__marker {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  color: var(--work-calendar-rest);
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 50%;
+  background: var(--work-calendar-rest-bg);
+}
+
+.work-calendar__day--workday .work-calendar__marker {
+  color: var(--work-calendar-work);
+  border-radius: 5px;
+  background: var(--work-calendar-work-bg);
+}
+
+.work-calendar__name {
+  position: absolute;
+  right: 6px;
+  bottom: 5px;
+  left: 6px;
+  overflow: hidden;
+  color: var(--vt-fg-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-calendar--compact .work-calendar__days {
+  gap: 3px;
+}
+
+.work-calendar--compact .work-calendar__day {
+  align-items: center;
+  justify-content: center;
+  min-height: 29px;
+  padding: 0;
+  font-size: var(--vt-font-caption);
+  border-radius: 8px;
+  background: transparent;
+}
+
+.work-calendar--compact .work-calendar__day--today {
+  color: #fff;
+  background: var(--vt-color-primary-500);
+  box-shadow: none;
+}
+
+.work-calendar--compact .work-calendar__marker {
+  top: -2px;
+  right: -1px;
+  width: 13px;
+  height: 13px;
+  font-size: 8px;
+  box-shadow: 0 0 0 1px var(--vt-bg);
+}
+
+:root.dark .work-calendar {
+  --work-calendar-rest: #ef9a96;
+  --work-calendar-rest-bg: rgba(239, 154, 150, 0.13);
+  --work-calendar-work: #8bb8ed;
+  --work-calendar-work-bg: rgba(139, 184, 237, 0.13);
+}
+
+.work-date-popup {
+  position: fixed;
+  z-index: 10000;
+  width: 310px;
+  padding: 12px;
+  border: 1px solid var(--vt-border);
+  border-radius: var(--vt-radius-lg);
+  background: var(--vt-bg-elevated);
+  box-shadow: var(--vt-shadow-3);
+}
+
+.work-date-popup__header,
+.work-date-popup__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.work-date-popup__header {
+  margin-bottom: 9px;
+}
+
+.work-date-popup__header strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.work-date-popup__nav,
+.work-date-popup__action {
+  height: 28px;
+  padding: 0 9px;
+  color: var(--vt-fg-secondary);
+  border: 1px solid var(--vt-border);
+  border-radius: var(--vt-radius-md);
+  background: var(--vt-bg);
+  cursor: pointer;
+}
+
+.work-date-popup__nav:hover,
+.work-date-popup__action:hover {
+  border-color: var(--vt-color-primary-300);
+}
+
+.work-date-popup__footer {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--vt-border);
+}
+
+.work-date-popup__time {
+  height: 28px;
+  color: var(--vt-fg);
+  border: 1px solid var(--vt-border);
+  border-radius: var(--vt-radius-md);
+  background: var(--vt-bg);
+}
+
+.work-date-popup .work-calendar__day {
+  min-height: 31px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  background: transparent;
+}
+
+.work-date-popup .work-calendar__marker {
+  top: -2px;
+  right: -1px;
+  width: 14px;
+  height: 14px;
+  font-size: 8px;
+  box-shadow: 0 0 0 1px var(--vt-bg-elevated);
+}

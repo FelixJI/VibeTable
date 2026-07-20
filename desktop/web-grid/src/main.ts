@@ -22,6 +22,7 @@
 import { createApp } from "vue";
 import { createPinia } from "pinia";
 import "./design-tokens/tokens.css";
+import "./components/calendar/work-calendar.css";
 import { initLocale } from "@/i18n";
 import { useHostBridge } from "@/services/bridgeContext";
 import App from "./App.vue";

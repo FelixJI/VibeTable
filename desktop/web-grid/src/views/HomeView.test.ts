@@ -2,9 +2,16 @@ import { nextTick } from "vue";
 import { beforeEach, describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import { vi } from "vitest";
 import HomeView from "./HomeView.vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useUiStore } from "@/stores/uiStore";
+import { useWorkCalendarStore } from "@/stores/workCalendarStore";
+import { formatDateKey } from "@/calendar/workCalendar";
+
+vi.mock("@/services/dailyQuoteService", () => ({
+  loadDailyQuote: vi.fn(async ({ fallback }) => fallback),
+}));
 
 describe("HomeView", () => {
   beforeEach(() => {
@@ -52,5 +59,15 @@ describe("HomeView", () => {
     ui.setShowMiniCalendar(false);
     await nextTick();
     expect(wrapper.find(".calendar-card").exists()).toBe(false);
+  });
+
+  it("shows the shared holiday and adjusted-workday markers", async () => {
+    const calendar = useWorkCalendarStore();
+    const today = formatDateKey(new Date());
+    calendar.setOverride(today, "workday", "调休上班");
+    const wrapper = mount(HomeView);
+    const cell = wrapper.get(`[data-date="${today}"]`);
+    expect(cell.text()).toContain("班");
+    expect(cell.attributes("title")).toContain("调休上班");
   });
 });

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { NButton, NIcon, NInput } from "naive-ui";
 import {
   ArrowRight,
@@ -13,9 +13,14 @@ import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useUiStore } from "@/stores/uiStore";
 import { collectionLabel } from "@/components/layout/collectionLabel";
 import { t } from "@/i18n";
+import WorkCalendarMonth from "@/components/calendar/WorkCalendarMonth.vue";
+import { formatMonthKey } from "@/calendar/workCalendar";
+import { useWorkCalendarStore } from "@/stores/workCalendarStore";
+import { loadDailyQuote, type DailyQuote } from "@/services/dailyQuoteService";
 
 const workspace = useWorkspaceStore();
 const ui = useUiStore();
+const workCalendar = useWorkCalendarStore();
 const query = ref("");
 
 const emit = defineEmits<{
@@ -80,25 +85,21 @@ const daySeed = Math.floor(
   Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86_400_000,
 );
 const quoteKey = quotes[daySeed % quotes.length];
-
-const calendarDays = computed(() => {
-  const year = now.getFullYear();
-  const month = now.getMonth();
-  const first = new Date(year, month, 1).getDay();
-  const total = new Date(year, month + 1, 0).getDate();
-  return [
-    ...Array.from({ length: first }, () => null),
-    ...Array.from({ length: total }, (_, index) => index + 1),
-  ];
-});
+const dailyQuote = ref<DailyQuote>({ text: t(quoteKey), attribution: "", url: "", origin: "builtin" });
+const calendarMonth = formatMonthKey(now);
 const monthText = computed(() =>
   new Intl.DateTimeFormat(localeName.value, { year: "numeric", month: "long" }).format(now),
 );
-const weekLabels = computed(() =>
-  ui.locale === "zh-CN"
-    ? ["日", "一", "二", "三", "四", "五", "六"]
-    : ["S", "M", "T", "W", "T", "F", "S"],
-);
+
+async function refreshDailyQuote(): Promise<void> {
+  const fallback: DailyQuote = { text: t(quoteKey), attribution: "", url: "", origin: "builtin" };
+  dailyQuote.value = fallback;
+  if (!ui.showDailyQuote) return;
+  dailyQuote.value = await loadDailyQuote({ fallback, locale: ui.locale });
+}
+
+onMounted(() => { void refreshDailyQuote(); });
+watch(() => [ui.showDailyQuote, ui.locale] as const, () => { void refreshDailyQuote(); });
 
 function relativeTime(timestamp: number): string {
   if (!timestamp) return t("home.recent.available");
@@ -216,21 +217,27 @@ function openTable(name: string) {
           <div class="mini-heading">
             <span>{{ t("home.today") }}</span><strong>{{ monthText }}</strong>
           </div>
-          <div class="calendar-grid calendar-grid--week">
-            <span v-for="day in weekLabels" :key="day">{{ day }}</span>
-          </div>
-          <div class="calendar-grid">
-            <span
-              v-for="(day, index) in calendarDays"
-              :key="index"
-              :class="{ today: day === now.getDate() }"
-            >{{ day }}</span>
+          <WorkCalendarMonth
+            :month-key="calendarMonth"
+            :overrides="workCalendar.overrides"
+            :locale="ui.locale"
+            compact
+          />
+          <div class="calendar-legend">
+            <span><i class="legend-rest">休</i>{{ t("calendar.legend.rest") }}</span>
+            <span><i class="legend-work">班</i>{{ t("calendar.legend.work") }}</span>
           </div>
         </section>
 
         <section v-if="ui.showDailyQuote" class="content-card quote-card">
           <p>{{ t("home.quote.label") }}</p>
-          <blockquote>{{ t(quoteKey) }}</blockquote>
+          <blockquote>{{ dailyQuote.text }}</blockquote>
+          <footer>
+            <a v-if="dailyQuote.origin !== 'builtin'" :href="dailyQuote.url" target="_blank" rel="noreferrer">
+              {{ dailyQuote.attribution || t("home.quote.source") }}
+            </a>
+            <span v-else>{{ t("home.quote.builtin") }}</span>
+          </footer>
         </section>
 
         <section class="health-line" :class="`health-line--${workspace.phase}`">
@@ -378,14 +385,18 @@ h1 {
 .mini-heading { display: flex; justify-content: space-between; margin-bottom: 12px; }
 .mini-heading span { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .mini-heading strong { font-weight: 500; }
-.calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
-.calendar-grid span { display: grid; place-items: center; min-height: 27px; font-size: var(--vt-font-caption); border-radius: 50%; }
-.calendar-grid--week span { min-height: 20px; color: var(--vt-fg-muted); }
-.calendar-grid .today { color: #fff; background: var(--vt-color-primary-500); }
+.calendar-legend { display: flex; gap: 10px; margin-top: 9px; color: var(--vt-fg-muted); font-size: 10px; }
+.calendar-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.calendar-legend i { display: grid; place-items: center; width: 14px; height: 14px; font-size: 8px; font-style: normal; font-weight: 700; }
+.legend-rest { color: #b94a48; border-radius: 50%; background: rgba(185, 74, 72, .09); }
+.legend-work { color: #2f67a8; border-radius: 4px; background: rgba(47, 103, 168, .1); }
 .quote-card { background: #fbfaf7; }
 :root.dark .quote-card { background: #24231f; }
 .quote-card p { margin-bottom: 10px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .quote-card blockquote { margin: 0; color: var(--vt-fg-secondary); line-height: 1.75; }
+.quote-card footer { margin-top: 10px; font-size: 10px; }
+.quote-card footer a, .quote-card footer span { color: var(--vt-fg-muted); text-decoration: none; }
+.quote-card footer a:hover { color: var(--vt-color-primary-500); }
 .health-line { display: flex; gap: 9px; align-items: flex-start; padding: 8px 5px; }
 .health-dot { width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; background: var(--vt-gray-300); }
 .health-line--opened .health-dot { background: var(--vt-color-success); }

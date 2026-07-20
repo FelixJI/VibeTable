@@ -15,6 +15,7 @@ import type {
   DateEditor,
   ValidationRule,
 } from "@/contracts";
+import { createCalendarDateEditor, type CalendarDateEditor } from "./calendarDateEditor";
 
 /** Outcome of local validation for one cell value. */
 export interface LocalValidation {
@@ -113,7 +114,7 @@ export function parseValue(editor: Editor, raw: string): unknown {
  * wires up separately (Task 6 integration).
  */
 export function tabulatorEditor(editor: Editor): {
-  editor: string;
+  editor: string | CalendarDateEditor;
   editorParams?: Record<string, unknown>;
 } {
   switch (editor.kind) {
@@ -133,10 +134,7 @@ export function tabulatorEditor(editor: Editor): {
     case "date": {
       const d = editor as DateEditor;
       return {
-        editor: "datetime",
-        editorParams: {
-          format: d.format ?? "yyyy-MM-dd",
-        },
+        editor: createCalendarDateEditor(d.dateType),
       };
     }
     case "single_select": {

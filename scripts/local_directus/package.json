@@ -9,7 +9,7 @@
     "start:dev": "directus start --watch"
   },
   "dependencies": {
-    "directus": "^12.0.0"
+    "directus": "^12.1.1"
   },
   "overrides": {
     "isolated-vm": "6.1.2"

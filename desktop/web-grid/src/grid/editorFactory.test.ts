@@ -119,6 +119,10 @@ describe("tabulatorEditor", () => {
     expect(tabulatorEditor({ kind: "boolean" }).editor).toBe("tickbox");
   });
 
+  it("returns the work-calendar editor for dates", () => {
+    expect(typeof tabulatorEditor({ kind: "date", dateType: "date" }).editor).toBe("function");
+  });
+
   it("returns select for single-select with a blank option", () => {
     const result = tabulatorEditor({
       kind: "single_select",

@@ -13,7 +13,7 @@
     "type": "endpoint",
     "path": "dist/index.js",
     "source": "src/index.ts",
-    "host": "^12.0.0",
+    "host": "^12.1.1",
     "hidden": false
   },
   "devDependencies": {

@@ -25,6 +25,7 @@ import { TabulatorFull } from "tabulator-tables";
 import type { TabulatorOptions } from "tabulator-tables";
 import type { ColumnEditSchema, ColumnSchema, TablePage } from "@/contracts";
 import { tabulatorEditor } from "./editorFactory";
+import type { CalendarDateEditor } from "./calendarDateEditor";
 
 /**
  * The hidden `rowKey` field name in the host/WebView contract.
@@ -61,7 +62,7 @@ export interface GridColumnDefinition {
    * "datetime"). Present only on editable columns; undefined means read-only.
    * Set via `editorFactory.tabulatorEditor` from the host's `Editor` spec.
    */
-  readonly editor?: string;
+  readonly editor?: string | CalendarDateEditor;
   /** Tabulator editor params (e.g. `{ min, max }`, `{ values, autocomplete }`). */
   readonly editorParams?: Record<string, unknown>;
 }

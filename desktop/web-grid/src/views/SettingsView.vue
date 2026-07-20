@@ -14,7 +14,9 @@ import {
 } from "naive-ui";
 import {
   Braces,
+  CalendarDays,
   Check,
+  ChevronLeft,
   ChevronRight,
   HelpCircle,
   Database,
@@ -39,12 +41,17 @@ import type { IdentifierMappingImportItem } from "@/contracts";
 import type { DensityMode, StartupPage, ThemeMode } from "@/stores/uiStore";
 import type { Locale } from "@/i18n";
 import { t } from "@/i18n";
+import WorkCalendarMonth from "@/components/calendar/WorkCalendarMonth.vue";
+import { formatDateKey, formatMonthKey, monthLabel, parseDateKey, shiftMonthKey } from "@/calendar/workCalendar";
+import { useWorkCalendarStore } from "@/stores/workCalendarStore";
+import type { WorkCalendarOverrideKind } from "@/calendar/workCalendar";
 
-type Section = "general" | "mapping" | "source" | "interaction" | "about";
+type Section = "general" | "calendar" | "mapping" | "source" | "interaction" | "about";
 
 const ui = useUiStore();
 const workspace = useWorkspaceStore();
 const mappings = useIdentifierMappingStore();
+const workCalendar = useWorkCalendarStore();
 const current = ref<Section>("general");
 const emit = defineEmits<{
   reconnect: [];
@@ -60,6 +67,8 @@ const editingMappingId = ref<string | null>(null);
 const aliasDraft = ref<string[]>([]);
 const importInput = ref<HTMLInputElement | null>(null);
 const transferMessage = ref<string | null>(null);
+const calendarMonth = ref(formatMonthKey(new Date()));
+const selectedCalendarDate = ref(formatDateKey(new Date()));
 
 const filteredMappings = computed(() => {
   const needle = mappingQuery.value.trim().toLocaleLowerCase();
@@ -139,6 +148,7 @@ async function onImportFile(event: Event): Promise<void> {
 
 const sections = [
   { key: "general" as const, icon: Palette, label: "settings.general" },
+  { key: "calendar" as const, icon: CalendarDays, label: "settings.workCalendar" },
   { key: "mapping" as const, icon: Braces, label: "settings.mapping" },
   { key: "source" as const, icon: Database, label: "settings.source" },
   { key: "interaction" as const, icon: SlidersHorizontal, label: "settings.interaction" },
@@ -167,6 +177,31 @@ const connectionDetail = computed(() => {
   if (workspace.phase === "opening") return t("connection.connecting");
   return t("connection.waiting");
 });
+
+const selectedCalendarOverride = computed(() => workCalendar.getOverride(selectedCalendarDate.value));
+const selectedCalendarRule = computed(() => selectedCalendarOverride.value?.kind ?? "default");
+const selectedCalendarName = computed(() => selectedCalendarOverride.value?.name ?? "");
+const selectedCalendarText = computed(() => {
+  const date = parseDateKey(selectedCalendarDate.value) ?? new Date();
+  return new Intl.DateTimeFormat(ui.locale, {
+    year: "numeric", month: "long", day: "numeric", weekday: "long",
+  }).format(date);
+});
+const calendarMonthText = computed(() => monthLabel(calendarMonth.value, ui.locale));
+
+function selectCalendarDate(date: string): void {
+  selectedCalendarDate.value = date;
+}
+
+function setCalendarRule(rule: "default" | WorkCalendarOverrideKind): void {
+  if (rule === "default") workCalendar.clearOverride(selectedCalendarDate.value);
+  else workCalendar.setOverride(selectedCalendarDate.value, rule, selectedCalendarName.value);
+}
+
+function setCalendarName(name: string): void {
+  const rule = selectedCalendarOverride.value?.kind;
+  if (rule) workCalendar.setOverride(selectedCalendarDate.value, rule, name);
+}
 </script>
 
 <template>
@@ -244,6 +279,62 @@ const connectionDetail = computed(() => {
                 <NRadioButton value="compact">{{ t("settings.density.compact") }}</NRadioButton>
               </NRadioGroup>
             </div>
+          </section>
+        </template>
+
+        <template v-else-if="current === 'calendar'">
+          <header><h1>{{ t("settings.workCalendar") }}</h1><p>{{ t("settings.workCalendar.description") }}</p></header>
+          <section class="calendar-workbench">
+            <div class="calendar-toolbar">
+              <NButton quaternary circle :aria-label="t('settings.workCalendar.previous')" @click="calendarMonth = shiftMonthKey(calendarMonth, -1)">
+                <template #icon><NIcon><ChevronLeft /></NIcon></template>
+              </NButton>
+              <strong>{{ calendarMonthText }}</strong>
+              <span>{{ t("settings.workCalendar.overrides", { count: workCalendar.overrideCount }) }}</span>
+              <NButton quaternary circle :aria-label="t('settings.workCalendar.next')" @click="calendarMonth = shiftMonthKey(calendarMonth, 1)">
+                <template #icon><NIcon><ChevronRight /></NIcon></template>
+              </NButton>
+            </div>
+            <div class="calendar-layout">
+              <WorkCalendarMonth
+                :month-key="calendarMonth"
+                :overrides="workCalendar.overrides"
+                :locale="ui.locale"
+                :selected-date="selectedCalendarDate"
+                interactive
+                @select="selectCalendarDate"
+              />
+              <aside class="calendar-rule-panel">
+                <span>{{ t("settings.workCalendar.selected") }}</span>
+                <strong>{{ selectedCalendarText }}</strong>
+                <label>{{ t("settings.workCalendar.rule") }}</label>
+                <NRadioGroup
+                  :value="selectedCalendarRule"
+                  size="small"
+                  @update:value="setCalendarRule($event as 'default' | WorkCalendarOverrideKind)"
+                >
+                  <div class="calendar-rule-options">
+                    <NRadioButton value="default">{{ t("settings.workCalendar.rule.default") }}</NRadioButton>
+                    <NRadioButton value="holiday">{{ t("settings.workCalendar.rule.holiday") }}</NRadioButton>
+                    <NRadioButton value="workday">{{ t("settings.workCalendar.rule.workday") }}</NRadioButton>
+                  </div>
+                </NRadioGroup>
+                <label>{{ t("settings.workCalendar.name") }}</label>
+                <NInput
+                  :value="selectedCalendarName"
+                  :disabled="selectedCalendarRule === 'default'"
+                  :placeholder="t('settings.workCalendar.name.placeholder')"
+                  maxlength="40"
+                  @update:value="setCalendarName"
+                />
+                <p>{{ selectedCalendarRule === "default" ? t("settings.workCalendar.defaultHint") : t("settings.workCalendar.saved") }}</p>
+              </aside>
+            </div>
+            <footer class="calendar-footer">
+              <span><i class="calendar-seal calendar-seal--rest">休</i>{{ t("calendar.legend.rest") }}</span>
+              <span><i class="calendar-seal calendar-seal--work">班</i>{{ t("calendar.legend.work") }}</span>
+              <small>{{ t("settings.workCalendar.saved") }}</small>
+            </footer>
           </section>
         </template>
 
@@ -391,6 +482,24 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .setting-row strong, .setting-action strong { font-weight: 500; }
 .setting-row small, .setting-action small { color: var(--vt-fg-muted); }
 .setting-control { width: 170px; }
+.calendar-workbench { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
+.calendar-toolbar { display: grid; grid-template-columns: 32px auto 1fr 32px; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--vt-border); }
+.calendar-toolbar strong { font-weight: 600; }
+.calendar-toolbar > span { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); text-align: right; }
+.calendar-layout { display: grid; grid-template-columns: minmax(360px, 1fr) 230px; gap: 18px; padding: 16px; }
+.calendar-rule-panel { display: flex; flex-direction: column; gap: 8px; padding: 14px; border-left: 1px solid var(--vt-border); }
+.calendar-rule-panel > span, .calendar-rule-panel > label { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
+.calendar-rule-panel > strong { margin-bottom: 7px; font-size: 15px; font-weight: 600; line-height: 1.45; }
+.calendar-rule-panel > label { margin-top: 7px; }
+.calendar-rule-panel > p { margin: 8px 0 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); line-height: 1.55; }
+.calendar-rule-options { display: flex; flex-direction: column; gap: 5px; }
+.calendar-rule-options :deep(.n-radio-button) { width: 100%; }
+.calendar-footer { display: flex; align-items: center; gap: 14px; padding: 10px 14px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); border-top: 1px solid var(--vt-border); background: var(--vt-bg-subtle); }
+.calendar-footer > span { display: inline-flex; align-items: center; gap: 5px; }
+.calendar-footer small { margin-left: auto; }
+.calendar-seal { display: grid; place-items: center; width: 18px; height: 18px; font-size: 9px; font-style: normal; font-weight: 700; }
+.calendar-seal--rest { color: #b94a48; border-radius: 50%; background: rgba(185, 74, 72, .09); }
+.calendar-seal--work { color: #2f67a8; border-radius: 5px; background: rgba(47, 103, 168, .1); }
 .mapping-visual {
   display: flex;
   align-items: center;
@@ -460,5 +569,7 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   .settings-nav-title { display: none; }
   .settings-nav button { justify-content: center; padding: 0; font-size: 0; }
   .settings-content { padding: 28px 20px; }
+  .calendar-layout { grid-template-columns: 1fr; }
+  .calendar-rule-panel { border-top: 1px solid var(--vt-border); border-left: 0; }
 }
 </style>

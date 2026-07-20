@@ -4,6 +4,8 @@ import { createPinia, setActivePinia } from "pinia";
 import SettingsView from "./SettingsView.vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useIdentifierMappingStore } from "@/stores/identifierMappingStore";
+import { useWorkCalendarStore } from "@/stores/workCalendarStore";
+import { formatDateKey } from "@/calendar/workCalendar";
 
 describe("SettingsView", () => {
   beforeEach(() => {
@@ -11,11 +13,22 @@ describe("SettingsView", () => {
     setActivePinia(createPinia());
   });
 
-  it("organizes discoverable settings into five sections", () => {
+  it("organizes discoverable settings into six sections", () => {
     const wrapper = mount(SettingsView);
-    expect(wrapper.findAll(".settings-nav button")).toHaveLength(5);
+    expect(wrapper.findAll(".settings-nav button")).toHaveLength(6);
     expect(wrapper.text()).toContain("界面语言");
     expect(wrapper.text()).toContain("启动页面");
+  });
+
+  it("manages manual holidays and adjusted workdays from the shared calendar", async () => {
+    const wrapper = mount(SettingsView);
+    await wrapper.get('[data-testid="settings-nav-calendar"]').trigger("click");
+    const today = formatDateKey(new Date());
+    await wrapper.get(`[data-date="${today}"]`).trigger("click");
+    const holiday = wrapper.get<HTMLInputElement>('.calendar-rule-options input[value="holiday"]');
+    await holiday.setValue(true);
+    expect(useWorkCalendarStore().day(today).kind).toBe("holiday");
+    expect(wrapper.get(`[data-date="${today}"]`).text()).toContain("休");
   });
 
   it("shows searchable mapping tools while keeping physical keys read-only", async () => {
