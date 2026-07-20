@@ -3,12 +3,17 @@ import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import { fileURLToPath, URL } from "node:url";
 
+const projectRoot = fileURLToPath(new URL(".", import.meta.url));
+
 // Vite production build + vitest config for web-grid-v2.
 // - build: bundles Vue + Naive UI + Tabulator CSS into dist/ (local-only).
 // - test:   jsdom so Vue components + Tabulator can render during unit tests.
 // - base: './' so the virtual host https://app.vibetable.local/ serves
 //          relative asset paths (matches WebView2 SetVirtualHostNameToFolderMapping).
 export default defineConfig({
+  // Resolve from the config file instead of process.cwd(). Desktop builds can be
+  // launched by MSBuild or a sandboxed host whose logical and real cwd differ.
+  root: projectRoot,
   plugins: [vue()],
   base: "./",
   resolve: {

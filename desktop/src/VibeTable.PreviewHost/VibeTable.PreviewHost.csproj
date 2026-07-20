@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>VibeTable.PreviewHost</AssemblyName>
+    <RootNamespace>VibeTable.PreviewHost</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="VibeTable.Desktop.Tests" />
+  </ItemGroup>
+
+</Project>

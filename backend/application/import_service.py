@@ -350,7 +350,7 @@ class ImportService:
         auth: DirectusAuthBroker,
         bulk: BulkMutationClient,
         profiles: dict[str, CollectionProfile],
-        resolve_path: Callable[[str, str, str], str],
+        resolve_path: Callable[..., str],
         consume_grant: Callable[[str], None],
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -374,7 +374,11 @@ class ImportService:
                     "expectedSchemaRevision": params.schema_revision,
                 },
             )
-        path = self._resolve_path(params.grant_id, "import_source", "read")
+        path = self._resolve_path(
+            params.grant_id,
+            purpose="import_source",
+            direction="read",
+        )
         source = SourceFile(path)
         header, rows, source_hash = source.read_header_and_rows()
         mapping, unmatched = auto_map_columns(header, profile, params.column_mapping)

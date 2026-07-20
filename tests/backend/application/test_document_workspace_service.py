@@ -21,6 +21,7 @@ from backend.contracts.document_workspace import (
     LinkDocumentParams,
     PublishIndexBatchParams,
     ReadDocumentHistoryParams,
+    ReadDocumentsParams,
     ReadFolderParams,
     RevisionIndexEntry,
 )
@@ -85,6 +86,7 @@ async def test_read_folder_returns_linked_documents() -> None:
                         "link_type": "primary",
                         "document": {
                             "id": "doc-1",
+                            "workspace": {"workspace_id": "workspace-1"},
                             "file_name": "main.docx",
                             "mime_type": "application/octet-stream",
                             "main_head": "rev-1",
@@ -103,6 +105,8 @@ async def test_read_folder_returns_linked_documents() -> None:
     )
     assert len(result.documents) == 1
     assert result.documents[0].document_id == "doc-1"
+    assert result.documents[0].link_id == "link-1"
+    assert result.documents[0].workspace_id == "workspace-1"
     assert result.documents[0].file_name == "main.docx"
 
 
@@ -123,6 +127,35 @@ async def test_read_folder_allows_any_declared_collection() -> None:
         r["method"] == "GET" and "/items/vibetable_document_links" in r["path"]
         for r in transport.requests
     )
+
+
+@pytest.mark.asyncio
+async def test_read_documents_returns_global_workspace_documents() -> None:
+    transport = FakeTransport(
+        responses=[
+            {
+                "data": [
+                    {
+                        "id": "doc-global",
+                        "workspace": {"workspace_id": "workspace-1"},
+                        "file_name": "roadmap.xlsx",
+                        "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "status": "active",
+                        "folder": {"relative_path": "planning"},
+                    }
+                ],
+                "meta": {"filter_count": 1},
+            }
+        ]
+    )
+    service = _make_service(transport)
+
+    result = await service.read_documents(ReadDocumentsParams())
+
+    assert result.total == 1
+    assert result.documents[0].document_id == "doc-global"
+    assert result.documents[0].workspace_id == "workspace-1"
+    assert result.documents[0].link_id is None
 
 
 @pytest.mark.asyncio
@@ -158,6 +191,29 @@ async def test_publish_index_batch_sends_to_extension() -> None:
     # Verify the request went to the extension endpoint.
     posts = [r for r in transport.requests if r["method"] == "POST"]
     assert any("vibetable-workspace-index/publish" in r["path"] for r in posts)
+
+
+@pytest.mark.asyncio
+async def test_publish_index_batch_accepts_extension_list_response() -> None:
+    transport = FakeTransport(responses=[{"data": [{"revisionId": "rev-1", "status": "created"}]}])
+    service = _make_service(transport)
+
+    result = await service.publish_index_batch(
+        PublishIndexBatchParams(
+            revisions=[
+                RevisionIndexEntry(
+                    revision_id="rev-1",
+                    document_id="doc-1",
+                    scheme_id="scheme-1",
+                    sequence=1,
+                    hash="abcdef12345678",
+                )
+            ],
+            idempotency_key="idem-1",
+        )
+    )
+
+    assert [(entry.revision_id, entry.status) for entry in result.results] == [("rev-1", "created")]
 
 
 @pytest.mark.asyncio

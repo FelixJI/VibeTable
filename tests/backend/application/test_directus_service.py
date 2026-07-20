@@ -151,10 +151,21 @@ async def test_list_collections_excludes_hidden_but_keeps_visible() -> None:
     )
     service = DirectusService(manifest, FakeAuth(), FakeClient())
 
+    class CachedTableAdmin:
+        @property
+        def display_names(self) -> dict[str, str]:
+            return {"projects": "项目"}
+
+        async def reconcile_identifiers(self) -> dict[str, str]:
+            raise AssertionError("collection discovery must not run a full reconcile")
+
+    service.table_admin_service = CachedTableAdmin()  # type: ignore[assignment]
+
     collections = await service.list_collections(DirectusEmptyParams())
 
     assert collections.collections == ["projects"]
     assert set(collections.capability_hashes) == {"projects"}
+    assert collections.display_names == {"projects": "项目"}
 
 
 @pytest.mark.asyncio

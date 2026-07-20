@@ -116,7 +116,7 @@ def _service(
         auth=FakeDirectusAuth(),  # type: ignore[arg-type]
         bulk=BulkMutationClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
         profiles=manifest.by_collection,
-        resolve_path=lambda _grant, _purpose, _direction: path_for_grant,
+        resolve_path=lambda _grant, *, purpose, direction: path_for_grant,
         consume_grant=lambda _grant: None,
     )
 
@@ -343,7 +343,7 @@ async def test_apply_rejects_expired_token(tmp_path: Any) -> None:
         auth=FakeDirectusAuth(),  # type: ignore[arg-type]
         bulk=BulkMutationClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
         profiles=manifest.by_collection,
-        resolve_path=lambda _g, _p, _d: str(path),
+        resolve_path=lambda _g, *, purpose, direction: str(path),
         consume_grant=lambda _g: None,
         clock=lambda: clock[0],
     )

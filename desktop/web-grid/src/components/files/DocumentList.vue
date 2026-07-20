@@ -1,0 +1,171 @@
+<script setup lang="ts">
+import { NIcon } from "naive-ui";
+import {
+  Cloud,
+  File,
+  FileArchive,
+  FileImage,
+  FileSpreadsheet,
+  FileText,
+  FileType2,
+  AlertTriangle,
+} from "lucide-vue-next";
+import type { Component } from "vue";
+import type { DocumentEntry } from "@/stores/documentWorkspaceStore";
+import { t } from "@/i18n";
+
+defineProps<{
+  entries: readonly DocumentEntry[];
+  selectedHandles: readonly string[];
+}>();
+
+const emit = defineEmits<{
+  select: [index: number, options: { toggle: boolean; range: boolean }];
+  open: [entry: DocumentEntry];
+  preview: [entry: DocumentEntry];
+  context: [entry: DocumentEntry, point: { x: number; y: number }];
+  selectAll: [];
+}>();
+
+function iconFor(entry: DocumentEntry): Component {
+  if (entry.authority === "cloud") return Cloud;
+  const mime = entry.mimeType ?? "";
+  if (mime.startsWith("image/")) return FileImage;
+  if (mime.includes("spreadsheet") || mime.includes("excel") || /\.(csv|xlsx?)$/i.test(entry.displayName)) return FileSpreadsheet;
+  if (mime.includes("zip") || /\.(zip|7z|rar)$/i.test(entry.displayName)) return FileArchive;
+  if (mime.includes("pdf") || mime.startsWith("text/")) return FileText;
+  if (/\.(docx?|pptx?)$/i.test(entry.displayName)) return FileType2;
+  return File;
+}
+
+function formatSize(value?: number): string {
+  if (value === undefined) return "—";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(value / 1024 ** 2).toFixed(value < 10 * 1024 ** 2 ? 1 : 0)} MB`;
+}
+
+function formatDate(value?: string): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function onSelect(event: MouseEvent, index: number): void {
+  emit("select", index, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey });
+}
+
+function availabilityLabel(entry: DocumentEntry): string {
+  if (entry.availability === "missing") return t("files.missing");
+  if (entry.availability === "unmounted") return t("files.unmounted");
+  if (entry.availability === "unmanaged") return t("files.unmanaged");
+  if (entry.availability === "unsafe") return t("files.unsafe");
+  return entry.authority === "workspace"
+    ? t("files.authority.workspace")
+    : t("files.authority.cloud");
+}
+
+function onKeydown(event: KeyboardEvent, entry: DocumentEntry, index: number): void {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "a") {
+    event.preventDefault();
+    emit("selectAll");
+  } else if (event.key === "Enter" && entry.capabilities.includes("open")) {
+    event.preventDefault();
+    emit("open", entry);
+  } else if (event.key === " ") {
+    event.preventDefault();
+    emit("select", index, { toggle: false, range: false });
+    if (entry.capabilities.includes("preview")) emit("preview", entry);
+  } else if (event.key === "F10" && event.shiftKey) {
+    event.preventDefault();
+    const target = event.currentTarget as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    emit("context", entry, { x: rect.left + 36, y: rect.top + 24 });
+  }
+}
+</script>
+
+<template>
+  <div class="document-list" role="grid" :aria-label="t('files.listLabel')">
+    <div class="document-head" role="row">
+      <span role="columnheader">{{ t("files.column.name") }}</span>
+      <span role="columnheader">{{ t("files.column.modified") }}</span>
+      <span role="columnheader">{{ t("files.column.size") }}</span>
+      <span role="columnheader">{{ t("files.column.version") }}</span>
+    </div>
+    <button
+      v-for="(entry, index) in entries"
+      :key="entry.entryHandle"
+      type="button"
+      role="row"
+      class="document-row"
+      :class="{
+        'document-row--selected': selectedHandles.includes(entry.entryHandle),
+        'document-row--missing': !['available', 'remote'].includes(entry.availability),
+      }"
+      :aria-selected="selectedHandles.includes(entry.entryHandle)"
+      :data-testid="`document-row-${entry.entryHandle}`"
+      @click="onSelect($event, index)"
+      @dblclick="entry.capabilities.includes('open') && emit('open', entry)"
+      @keydown="onKeydown($event, entry, index)"
+      @contextmenu.prevent="emit('context', entry, { x: $event.clientX, y: $event.clientY })"
+    >
+      <span class="document-name" role="gridcell">
+        <NIcon :size="18" class="file-icon"><component :is="iconFor(entry)" /></NIcon>
+        <span class="name-copy">
+          <strong>{{ entry.displayName }}</strong>
+          <small>
+            <NIcon v-if="!['available', 'remote'].includes(entry.availability)" :size="12"><AlertTriangle /></NIcon>{{ availabilityLabel(entry) }}
+          </small>
+        </span>
+      </span>
+      <span role="gridcell">{{ formatDate(entry.modifiedAt) }}</span>
+      <span role="gridcell">{{ formatSize(entry.size) }}</span>
+      <span role="gridcell">{{ entry.versionLabel ?? "—" }}</span>
+    </button>
+  </div>
+</template>
+
+<style scoped>
+.document-list { min-width: 640px; color: var(--vt-fg); }
+.document-head, .document-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 142px 90px 86px;
+  align-items: center;
+}
+.document-head {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  min-height: 32px;
+  color: var(--vt-fg-muted);
+  font-size: var(--vt-font-caption);
+  border-bottom: 1px solid var(--vt-border);
+  background: var(--vt-bg-subtle);
+}
+.document-head > span, .document-row > span { padding: 0 10px; }
+.document-row {
+  width: 100%;
+  min-height: 40px;
+  padding: 0;
+  color: var(--vt-fg-secondary);
+  font-size: var(--vt-font-caption);
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--vt-border) 70%, transparent);
+  background: var(--vt-bg);
+  cursor: default;
+}
+.document-row:hover { background: var(--vt-bg-subtle); }
+.document-row--selected, .document-row--selected:hover { background: var(--vt-color-primary-50); }
+:root.dark .document-row--selected, :root.dark .document-row--selected:hover { background: rgba(91, 139, 255, 0.13); }
+.document-row:focus-visible { position: relative; z-index: 1; outline: 2px solid var(--vt-color-primary-500); outline-offset: -2px; }
+.document-name { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.file-icon { flex: 0 0 auto; color: var(--vt-color-primary-500); }
+.name-copy { display: flex; flex-direction: column; min-width: 0; padding: 4px 0; }
+.name-copy strong { overflow: hidden; color: var(--vt-fg); font-size: var(--vt-font-body); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.name-copy small { display: flex; align-items: center; gap: 3px; color: var(--vt-fg-muted); line-height: 1.2; }
+.document-row--missing .file-icon, .document-row--missing .name-copy small { color: var(--vt-color-warning); }
+</style>

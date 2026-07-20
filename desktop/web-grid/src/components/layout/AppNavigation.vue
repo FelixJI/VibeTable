@@ -3,6 +3,7 @@ import { NButton, NIcon, NTooltip } from "naive-ui";
 import {
   HelpCircle,
   Database,
+  Files,
   Home,
   Settings,
   Table2,
@@ -21,6 +22,7 @@ const emit = defineEmits<{
 const primary = [
   { view: "home" as const, icon: Home, label: "nav.home" },
   { view: "tables" as const, icon: Table2, label: "nav.tables" },
+  { view: "files" as const, icon: Files, label: "nav.files" },
 ];
 
 function navigate(view: AppView) {

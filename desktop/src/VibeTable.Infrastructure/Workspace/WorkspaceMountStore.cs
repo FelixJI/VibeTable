@@ -64,9 +64,25 @@ public sealed class WorkspaceMountStore
     /// </summary>
     public void Mount(string workspaceId, string localRoot, string displayName)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(localRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(displayName);
+
+        var normalizedRoot = Path.GetFullPath(localRoot);
+        if (!Directory.Exists(normalizedRoot))
+            throw new DirectoryNotFoundException(
+                $"workspace root does not exist: {normalizedRoot}");
+        if (File.GetAttributes(normalizedRoot).HasFlag(FileAttributes.ReparsePoint))
+            throw new InvalidOperationException(
+                $"workspace root may not be a reparse point: {normalizedRoot}");
+
         var mounts = ReadAll();
         mounts = mounts.Where(m => m.WorkspaceId != workspaceId).ToList();
-        mounts.Add(new MountEntry(workspaceId, localRoot, displayName, DateTime.UtcNow.ToString("o")));
+        mounts.Add(new MountEntry(
+            workspaceId,
+            normalizedRoot,
+            displayName,
+            DateTime.UtcNow.ToString("o")));
         Write(mounts);
     }
 

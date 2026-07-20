@@ -203,9 +203,13 @@ class DirectusService:
         )
 
     async def list_collections(self, params: DirectusEmptyParams) -> DirectusCollectionListResult:
-        display_names: dict[str, str] = {}
-        if self._table_admin_service is not None:
-            display_names = await self._table_admin_service.reconcile_identifiers()
+        # Collection discovery is the connection-readiness boundary. Keep it
+        # read-only and fast: a full identifier reconcile can issue many schema
+        # reads and registry writes, so the desktop host runs that explicitly
+        # after publishing its first database.opened snapshot.
+        display_names = (
+            self._table_admin_service.display_names if self._table_admin_service is not None else {}
+        )
         # Hidden collections (the built-in vibetable_* workspace tables) are
         # valid schema/capability profiles but must not surface in the sidebar.
         # They remain reachable via `directus.schema` and internal flows; only

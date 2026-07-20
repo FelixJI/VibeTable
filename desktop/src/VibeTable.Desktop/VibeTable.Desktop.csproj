@@ -13,6 +13,25 @@
   <ItemGroup>
     <ProjectReference Include="..\VibeTable.Contracts\VibeTable.Contracts.csproj" />
     <ProjectReference Include="..\VibeTable.Infrastructure\VibeTable.Infrastructure.csproj" />
+    <ProjectReference Include="..\VibeTable.PreviewHost\VibeTable.PreviewHost.csproj"
+                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\VibeTable.Workspace\VibeTable.Workspace.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="VibeTable.Desktop.Tests" />
+  </ItemGroup>
+
+  <Target Name="CopyPreviewHostOutput"
+          AfterTargets="Build"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <ItemGroup>
+      <_PreviewHostOutput Include="$(MSBuildProjectDirectory)\..\VibeTable.PreviewHost\bin\$(Configuration)\$(TargetFramework)\VibeTable.PreviewHost.*" />
+    </ItemGroup>
+    <MakeDir Directories="$(TargetDir)PreviewHost" />
+    <Copy SourceFiles="@(_PreviewHostOutput)"
+          DestinationFolder="$(TargetDir)PreviewHost"
+          SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

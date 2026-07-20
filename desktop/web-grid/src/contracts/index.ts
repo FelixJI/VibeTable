@@ -585,11 +585,14 @@ export type WebMessageType =
   | "history.readRequested"
   | "history.previewRestoreRequested"
   | "history.applyRestoreRequested"
-  // G3 document workspace requests.
-  | "document.folderRequested"
+  // Web-first document workspace requests. Every local action uses an opaque handle.
+  | "document.listRequested"
+  | "document.pickRequested"
   | "document.historyRequested"
   | "document.openRequested"
-  | "document.openFolderRequested"
+  | "document.previewRequested"
+  | "document.revealRequested"
+  | "document.relinkRequested"
   // Table-admin requests.
   | "tableAdmin.createRequested"
   | "tableAdmin.deleteRequested"
@@ -622,9 +625,10 @@ export type HostMessageType =
   | "history.loaded"
   | "history.restorePreviewReady"
   | "history.restoreApplied"
-  // G3 document workspace outcomes.
-  | "document.folderLoaded"
+  // Web-first document workspace outcomes.
+  | "document.listLoaded"
   | "document.historyLoaded"
+  | "document.actionCompleted"
   // Collections-changed notifications.
   | "database.collectionsChanged"
   | "identifierMappings.result";
@@ -661,8 +665,9 @@ export interface HostPayloadMap {
   "history.loaded": HistoryPage;
   "history.restorePreviewReady": RestorePreview;
   "history.restoreApplied": RestoreResult;
-  "document.folderLoaded": DocumentFolderResult;
-  "document.historyLoaded": DocumentHistoryResult;
+  "document.listLoaded": DocumentListLoadedPayload;
+  "document.historyLoaded": DocumentHistoryLoadedPayload;
+  "document.actionCompleted": DocumentActionCompletedPayload;
   // Collections-changed notifications.
   "database.collectionsChanged": CollectionsChangedPayload;
   "identifierMappings.result": IdentifierMappingsResult;
@@ -687,10 +692,16 @@ export interface WebPayloadMap {
   "history.readRequested": HistoryReadPayload;
   "history.previewRestoreRequested": HistoryPreviewRestorePayload;
   "history.applyRestoreRequested": HistoryApplyRestorePayload;
-  "document.folderRequested": DocumentFolderRequestPayload;
-  "document.historyRequested": DocumentHistoryRequestPayload;
-  "document.openRequested": DocumentOpenPayload;
-  "document.openFolderRequested": DocumentOpenFolderPayload;
+  "document.listRequested": DocumentListRequestedPayload;
+  "document.pickRequested": DocumentPickRequestedPayload;
+  "document.historyRequested": DocumentHandlePayload & {
+    readonly limit?: number;
+    readonly offset?: number;
+  };
+  "document.openRequested": DocumentHandlePayload;
+  "document.previewRequested": DocumentHandlePayload;
+  "document.revealRequested": DocumentHandlePayload;
+  "document.relinkRequested": DocumentHandlePayload;
   // Table-admin requests.
   "tableAdmin.createRequested": TableAdminCreatePayload;
   "tableAdmin.deleteRequested": TableAdminDeletePayload;
@@ -903,4 +914,62 @@ export interface DocumentOpenFolderPayload {
   readonly folderId: string | null;
   readonly collection: string;
   readonly itemId: string;
+}
+
+export type DocumentBridgeScope =
+  | { readonly kind: "global" }
+  | {
+      readonly kind: "record";
+      readonly collection: string;
+      readonly itemId: string | number;
+    };
+
+export interface DocumentListRequestedPayload {
+  readonly scope: DocumentBridgeScope;
+  readonly authority: "workspace" | "cloud";
+}
+
+export interface DocumentPickRequestedPayload {
+  readonly scope: DocumentBridgeScope;
+}
+
+export interface DocumentHandlePayload {
+  readonly entryHandle: string;
+}
+
+export interface DocumentBridgeEntry {
+  readonly entryHandle: string;
+  readonly documentId: string;
+  readonly displayName: string;
+  readonly mimeType: string | null;
+  readonly availability: "available" | "missing" | "unmounted" | "unmanaged" | "unsafe" | "remote";
+  readonly previewKind: "web" | "system" | "none";
+  readonly currentRevision: string | null;
+  readonly linkType: string;
+  readonly capabilities: readonly string[];
+}
+
+export interface DocumentListLoadedPayload {
+  readonly collection: string | null;
+  readonly itemId: string | null;
+  readonly entries: readonly DocumentBridgeEntry[];
+}
+
+export interface DocumentRevisionBridgeEntry {
+  readonly revisionHandle: string;
+  readonly label: string;
+  readonly createdAt: string;
+  readonly size: number;
+  readonly author: string | null;
+}
+
+export interface DocumentHistoryLoadedPayload {
+  readonly entryHandle: string;
+  readonly revisions: readonly DocumentRevisionBridgeEntry[];
+  readonly total: number;
+}
+
+export interface DocumentActionCompletedPayload {
+  readonly entryHandle: string;
+  readonly action: "open" | "preview" | "reveal";
 }

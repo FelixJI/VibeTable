@@ -24,6 +24,14 @@ public static class WorkspacePathGuard
     /// </summary>
     private static readonly char[] AdsSeparators = [':'];
 
+    private static readonly HashSet<string> ReservedDeviceNames = new(
+        StringComparer.OrdinalIgnoreCase)
+    {
+        "CON", "PRN", "AUX", "NUL", "CLOCK$",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+
     /// <summary>
     /// Validate a relative path and return it normalized with forward slashes.
     /// Throws <see cref="InvalidOperationException"/> if the path is unsafe.
@@ -56,13 +64,26 @@ public static class WorkspacePathGuard
         var segments = normalized.Split('/');
         foreach (var segment in segments)
         {
-            if (segment == "..")
+            if (segment is "." or "..")
                 throw new InvalidOperationException(
-                    $"path traversal (..) is not allowed: {relativePath}");
+                    $"dot path segments are not allowed: {relativePath}");
             // Reject empty segments from doubled separators or leading/trailing slash.
             if (segment.Length == 0 && segments.Length > 1)
                 throw new InvalidOperationException(
                     $"path has empty segment: {relativePath}");
+            if (segment.EndsWith(' ') || segment.EndsWith('.'))
+                throw new InvalidOperationException(
+                    $"path segments may not end with a space or dot: {relativePath}");
+            if (segment.Any(char.IsControl))
+                throw new InvalidOperationException(
+                    $"path contains control characters: {relativePath}");
+
+            // Windows resolves device names even when an extension is present
+            // (for example NUL.txt). Reject them in every path segment.
+            string deviceCandidate = Path.GetFileNameWithoutExtension(segment);
+            if (ReservedDeviceNames.Contains(deviceCandidate))
+                throw new InvalidOperationException(
+                    $"reserved device names are not allowed: {relativePath}");
         }
 
         return normalized;
@@ -78,6 +99,11 @@ public static class WorkspacePathGuard
     {
         var validated = ValidateRelativePath(relativePath);
         var root = Path.GetFullPath(workspaceRoot);
+        if (!Directory.Exists(root))
+            throw new DirectoryNotFoundException($"workspace root does not exist: {root}");
+        if (IsReparsePoint(root))
+            throw new InvalidOperationException(
+                $"workspace root may not be a reparse point: {root}");
         if (!root.EndsWith(Path.DirectorySeparatorChar))
             root += Path.DirectorySeparatorChar;
 
@@ -88,14 +114,22 @@ public static class WorkspacePathGuard
             throw new InvalidOperationException(
                 $"path escapes workspace root: {relativePath} -> {full}");
 
-        // Reject reparse points (symlinks/junctions) on the resolved path.
-        var parent = Path.GetDirectoryName(full);
-        if (parent is not null && Directory.Exists(parent))
+        // Reject every existing reparse point in the ancestry, not only the
+        // immediate parent. Non-existing tail segments are safe to resolve but
+        // must be checked again immediately before a later write operation.
+        string current = root.TrimEnd(Path.DirectorySeparatorChar);
+        var relativeSegments = validated.Split('/');
+        for (int index = 0; index < relativeSegments.Length; index++)
         {
-            var parentInfo = new DirectoryInfo(parent);
-            if (parentInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            current = Path.Combine(current, relativeSegments[index]);
+            bool existsAsDirectory = Directory.Exists(current);
+            bool existsAsFile = File.Exists(current);
+            if ((existsAsDirectory || existsAsFile) && IsReparsePoint(current))
                 throw new InvalidOperationException(
-                    $"path traverses a reparse point: {parent}");
+                    $"path traverses a reparse point: {current}");
+            if (existsAsFile && index < relativeSegments.Length - 1)
+                throw new InvalidOperationException(
+                    $"path traverses a file: {current}");
         }
 
         return full;

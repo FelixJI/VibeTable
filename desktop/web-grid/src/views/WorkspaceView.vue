@@ -38,6 +38,8 @@ import DeleteConfirmModal from "@/components/panels/DeleteConfirmModal.vue";
 import ShortcutsView from "@/views/ShortcutsView.vue";
 import HomeView from "@/views/HomeView.vue";
 import SettingsView from "@/views/SettingsView.vue";
+import FileWorkspaceView from "@/views/FileWorkspaceView.vue";
+import { useDocumentWorkspaceService } from "@/services/documentWorkspaceService";
 import { useWorkspaceService } from "@/services/workspaceService";
 import { useTableService } from "@/services/tableService";
 import { usePasteService } from "@/services/pasteService";
@@ -66,6 +68,7 @@ import type {
 import { t } from "@/i18n";
 
 const workspaceService = useWorkspaceService();
+const documentWorkspaceService = useDocumentWorkspaceService();
 const tableService = useTableService();
 const pasteService = usePasteService();
 const mutationService = useMutationService();
@@ -118,8 +121,9 @@ onMounted(() => {
   mutationService.init();
   tableAdminService.init();
   errorRouter.init();
-  // Database/Directus connection is application lifecycle, not a toolbar task.
-  if (workspace.phase === "idle") workspaceService.openDatabase();
+  // Database/Directus opening belongs to the host lifecycle. app.ready is sent
+  // after these subscriptions are installed; the host then replays its
+  // authoritative workspace snapshot.
 });
 
 /**
@@ -166,6 +170,7 @@ function onOpenTableFromHome(name: string) {
 const pageTitle = computed(() => {
   if (ui.activeView === "home") return t("nav.home");
   if (ui.activeView === "settings") return t("nav.settings");
+  if (ui.activeView === "files") return t("nav.files");
   return t("nav.tables");
 });
 
@@ -437,6 +442,10 @@ useKeyboard({
           @save-mapping-aliases="identifierMappingService.updateAliases"
           @import-mappings="identifierMappingService.importMappings"
           @reconcile-mappings="identifierMappingService.reconcile"
+        />
+        <FileWorkspaceView
+          v-if="ui.activeView === 'files'"
+          @intent="documentWorkspaceService.dispatch"
         />
       </div>
     </section>

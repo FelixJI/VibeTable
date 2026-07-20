@@ -72,6 +72,13 @@ public sealed class WebMessageRouter
         "identifierMappings.updateAliasesRequested",
         "identifierMappings.importRequested",
         "identifierMappings.reconcileRequested",
+        "document.listRequested",
+        "document.pickRequested",
+        "document.openRequested",
+        "document.previewRequested",
+        "document.revealRequested",
+        "document.historyRequested",
+        "document.relinkRequested",
         // Directus admin: open the embedded Data Studio in this webview.
         "admin.openRequested",
     };
@@ -102,6 +109,9 @@ public sealed class WebMessageRouter
         // Table management: host pushes refreshed collection list after create/delete.
         "database.collectionsChanged",
         "identifierMappings.result",
+        "document.listLoaded",
+        "document.historyLoaded",
+        "document.actionCompleted",
     };
 
     private readonly Action<RoutedWebRequest> _dispatch;

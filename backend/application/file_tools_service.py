@@ -161,7 +161,7 @@ class FileToolsService:
         auth: DirectusAuthBroker,
         profiles: dict[str, CollectionProfile],
         transport: Any,
-        resolve_path: Callable[[str, str, str], str],
+        resolve_path: Callable[..., str],
         consume_grant: Callable[[str], None],
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -218,7 +218,11 @@ class FileToolsService:
                 f"{params.relation_field!r} is not updatable",
                 code="field_not_updatable",
             )
-        path = self._resolve_path(params.grant_id, "import_source", "read")
+        path = self._resolve_path(
+            params.grant_id,
+            purpose="import_source",
+            direction="read",
+        )
         token = await self._auth.access_token()
         filename = os.path.basename(path)
         with open(path, "rb") as fh:

@@ -203,6 +203,21 @@ def test_grant_unknown_rejected() -> None:
     assert exc_info.value.code == "grant_unknown"
 
 
+def test_grant_consumed_cannot_be_replayed(tmp_path: Any) -> None:
+    store = SessionPathGrantStore()
+    grant = store.issue(
+        purpose="import_source",
+        direction="read",
+        path=str(tmp_path / "contracts.xlsx"),
+    )
+    store.consume(grant.grant_id)
+
+    with pytest.raises(PathGrantError) as exc_info:
+        store.resolve(grant.grant_id, purpose="import_source", direction="read")
+
+    assert exc_info.value.code == "grant_consumed"
+
+
 def test_grant_descriptor_hides_raw_path(tmp_path: Any) -> None:
     store = SessionPathGrantStore()
     raw_path = str(tmp_path / "secret.xlsx")

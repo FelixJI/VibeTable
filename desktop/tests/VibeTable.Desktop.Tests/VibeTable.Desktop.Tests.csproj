@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\VibeTable.Desktop\VibeTable.Desktop.csproj" />
+    <ProjectReference Include="..\..\src\VibeTable.PreviewHost\VibeTable.PreviewHost.csproj" />
   </ItemGroup>
 
 </Project>

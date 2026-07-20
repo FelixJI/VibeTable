@@ -19,6 +19,7 @@ using VibeTable.Desktop.ViewModels;
 using VibeTable.Infrastructure.Backend;
 using VibeTable.Infrastructure.Directus;
 using VibeTable.Infrastructure.Rpc;
+using VibeTable.Infrastructure.Workspace;
 
 namespace VibeTable.Desktop;
 
@@ -77,8 +78,10 @@ public partial class MainWindow : Window
     private DirectusSupervisor? _directusSupervisor;
     private readonly TaskCompletionSource<bool>? _directusSessionReady;
     private JsonRpcDirectusGateway? _directusGateway;
+    private DocumentWorkspaceHostService? _documentWorkspace;
     private bool _directusSessionAuthenticated;
     private int _directusWorkspaceOpened;
+    private DatabaseOpenResult? _directusWorkspaceSnapshot;
     private readonly GridStateCoordinator? _coordinator;
     private readonly TestModeReadinessWriter? _readinessWriter;
     private readonly bool _shellSmokeMode;
@@ -235,7 +238,9 @@ public partial class MainWindow : Window
                     "建立登录会话",
                     "正在使用首次设置的本地管理员自动登录。");
                 bool authenticated = await EnsureDirectusSessionAsync();
-                _directusSessionAuthenticated = authenticated;
+                SetDirectusSessionAuthenticated(
+                    authenticated,
+                    sessionBoundary: authenticated);
                 _directusSessionReady?.TrySetResult(authenticated);
                 if (authenticated && _directusAuto)
                 {
@@ -443,9 +448,12 @@ public partial class MainWindow : Window
         _sessionCts?.Cancel();
         _directusStartupCts?.Cancel();
         CloseStartupWindow();
-        _directusSessionAuthenticated = false;
+        // Closing is always a capability boundary, including startup failures
+        // that never reached an authenticated Directus session.
+        SetDirectusSessionAuthenticated(false, sessionBoundary: true);
         _directusSessionReady?.TrySetResult(false);
         _directusGateway?.Dispose();
+        _documentWorkspace?.Dispose();
         if (_workspaceGateway is IDisposable disposableGateway)
         {
             disposableGateway.Dispose();
@@ -519,36 +527,11 @@ public partial class MainWindow : Window
 
         var firstRunStatus = DirectusFirstRunState.Inspect(
             options.LocalDirectusDirectory);
-        options.ForcePackageVerification = !firstRunStatus.IsExperienceComplete;
+        options.ForcePackageVerification = firstRunStatus.NeedsRuntimeInitialization;
 
-        // An earlier first-run attempt that stopped before the experience
-        // marker was written cannot be "continued" — directus bootstrap would
-        // be skipped, Materialize would ignore freshly entered credentials, and
-        // the user's new admin email/password would silently be discarded. The
-        // only honest fix is to wipe the bootstrap state and start over. The
-        // package install and uploads are preserved (see ResetUncompletedBootstrap).
-        if (firstRunStatus.IsExperienceIncomplete)
-        {
-            string dataPath = Path.Combine(options.LocalDirectusDirectory, "data");
-            var confirm = MessageBox.Show(
-                this,
-                "检测到上次初始化未完成。继续将删除本地 Directus 数据库文件" +
-                $"（位于 {dataPath}）并重新创建管理员账号。\n\n" +
-                "如果你已经产生实际业务数据，请先手动备份 data 目录后再继续。\n" +
-                "Node 运行时和上传文件（uploads 目录）不会被删除。",
-                "重新初始化将清除本地数据库",
-                MessageBoxButton.OKCancel,
-                MessageBoxImage.Warning);
-            if (confirm != MessageBoxResult.OK)
-            {
-                return null;
-            }
-            DirectusFirstRunState.ResetUncompletedBootstrap(options.LocalDirectusDirectory);
-            firstRunStatus = DirectusFirstRunState.Inspect(options.LocalDirectusDirectory);
-        }
-
-        // After the reset above, IsFresh is the single gate for the welcome
-        // dialog: either a brand-new install, or a wiped-and-restarted one.
+        // Only a genuinely fresh runtime needs local administrator creation.
+        // An existing database with an incomplete schema resumes the
+        // idempotent schema step with its persisted credentials.
         if (firstRunStatus.IsFresh)
         {
             var setup = new DirectusFirstRunWindow
@@ -573,7 +556,15 @@ public partial class MainWindow : Window
             options.Environment["VIBETABLE_DIRECTUS_BOOTSTRAP_PASSWORD"] = setup.Password;
         }
 
-        EnsureStartupWindow();
+        // The native progress window is a runtime bootstrap/fatal-error
+        // fallback only. A missing experience marker can mean that login or
+        // the renderer was interrupted after the database and schema were
+        // already ready; it must not show initialization again or trigger a
+        // destructive reset.
+        if (firstRunStatus.NeedsRuntimeInitialization)
+        {
+            EnsureStartupWindow();
+        }
         try
         {
             while (true)
@@ -596,6 +587,10 @@ public partial class MainWindow : Window
                 }
                 catch (Exception ex)
                 {
+                    // An already-initialized runtime normally starts without
+                    // native chrome. Materialize the fallback only when a real
+                    // runtime failure needs a retry/close decision.
+                    EnsureStartupWindow();
                     _directusStartupWindow?.ShowFailure(ex.Message);
                     bool retry = _directusStartupWindow is not null
                         && await _directusStartupWindow.WaitForFailureDecisionAsync();
@@ -792,6 +787,12 @@ public partial class MainWindow : Window
             _directusGateway = new JsonRpcDirectusGateway(client);
             _directusGateway.Changed += OnDirectusChanged;
             _dispatcher.SetDirectusGateway(_directusGateway);
+            _documentWorkspace = new DocumentWorkspaceHostService(
+                new JsonRpcDocumentWorkspaceGateway(client),
+                new WorkspaceMountStore(),
+                new DocumentCapabilityStore(),
+                new WindowsLocalDocumentActions());
+            _dispatcher.SetDocumentWorkspace(_documentWorkspace);
         }
         try
         {
@@ -897,6 +898,23 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Applies an authentication lifecycle boundary and invalidates all
+    /// renderer-visible document handles. Call with <paramref name="sessionBoundary"/>
+    /// for every successful login/refresh, logout, and host shutdown.
+    /// </summary>
+    private void SetDirectusSessionAuthenticated(
+        bool authenticated,
+        bool sessionBoundary)
+    {
+        bool changed = _directusSessionAuthenticated != authenticated;
+        _directusSessionAuthenticated = authenticated;
+        if (sessionBoundary || changed)
+        {
+            _dispatcher.RotateDocumentCapabilityEpoch();
+        }
+    }
+
+    /// <summary>
     /// Determines whether a navigation target belongs to the primary app.
     /// Directus deliberately is not accepted here; its WebView has a separate
     /// policy bound to the current local Directus origin.
@@ -916,9 +934,15 @@ public partial class MainWindow : Window
     private void OnRoutedWebRequest(RoutedWebRequest request)
     {
         _readinessWriter?.Trace($"OnRoutedWebRequest: type={request.Type}");
-        // Mark the host as Ready the first time the renderer signals app.ready.
+        // app.ready is replayable: a renderer refresh/rebuild must receive the
+        // current authoritative workspace snapshot instead of remaining in an
+        // old "opening" state.
         if (string.Equals(request.Type, "app.ready", StringComparison.Ordinal))
         {
+            // app.ready identifies a renderer generation. Revoke all handles
+            // issued to an earlier page before enabling or replaying state to
+            // the new renderer.
+            _dispatcher.RotateDocumentCapabilityEpoch();
             _router.IsReady = true;
             TryWriteShellReadiness();
             if (_directusEnabled)
@@ -1214,7 +1238,7 @@ public partial class MainWindow : Window
             _adminIdleReleaseTimer.Start();
         }
         AppWebView.Focus();
-        _ = RefreshCollectionsAfterAdminCloseAsync();
+        _ = ReconcileAndRefreshCollectionsAsync(reportFailure: true);
     }
 
     /// <summary>
@@ -1222,7 +1246,7 @@ public partial class MainWindow : Window
     /// lets the backend reconcile identifier mappings and refreshes the web
     /// sidebar without recreating the persistent app WebView.
     /// </summary>
-    private async Task RefreshCollectionsAfterAdminCloseAsync()
+    private async Task ReconcileAndRefreshCollectionsAsync(bool reportFailure)
     {
         if (_directusGateway is null || _directusSessionReady is null
             || !_directusSessionReady.Task.IsCompletedSuccessfully
@@ -1233,7 +1257,9 @@ public partial class MainWindow : Window
 
         try
         {
-            var list = await _directusGateway.ListCollectionsAsync(CancellationToken.None);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await _directusGateway.ReconcileIdentifierMappingsAsync(timeout.Token);
+            var list = await _directusGateway.ListCollectionsAsync(timeout.Token);
             var tables = DirectusCollectionFilter.FilterUserTables(list.Collections);
             _webBridge.PostNotification("database.collectionsChanged", new
             {
@@ -1244,10 +1270,14 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _webBridge.PostOperationFailed(
-                null,
-                $"Directus 结构刷新失败：{ex.Message}",
-                "DIRECTUS_SCHEMA_REFRESH_FAILED");
+            Trace.WriteLine($"[directus] identifier reconcile degraded: {ex.Message}");
+            if (reportFailure)
+            {
+                _webBridge.PostOperationFailed(
+                    null,
+                    "Directus 结构刷新失败，请稍后重试。",
+                    "DIRECTUS_SCHEMA_REFRESH_FAILED");
+            }
         }
     }
 
@@ -1488,38 +1518,70 @@ public partial class MainWindow : Window
         }
         if (Interlocked.Exchange(ref _directusWorkspaceOpened, 1) != 0)
         {
+            if (_directusWorkspaceSnapshot is { } snapshot)
+            {
+                PostDirectusWorkspaceOpened(snapshot);
+            }
             return;
         }
+        DatabaseOpenResult result;
         try
         {
-            var result = await _workspace.OpenDatabaseAsync("directus://configured");
+            result = await _workspace.OpenDatabaseAsync("directus://configured");
             _coordinator?.SetDatabase("directus");
-            if (_directusGateway is not null)
-            {
-                foreach (string collection in result.Tables)
-                {
-                    var schema = await _directusGateway.GetSchemaAsync(
-                        collection, CancellationToken.None);
-                    await _directusGateway.SubscribeAsync(
-                        $"grid-{collection}",
-                        collection,
-                        schema.Columns.Select(column => column.Name).ToArray(),
-                        CancellationToken.None);
-                }
-            }
-            _webBridge.PostNotification("database.opened", new
-            {
-                tables = result.Tables,
-                views = result.Views,
-                displayNames = result.DisplayNames,
-            });
         }
         catch (Exception ex)
         {
             Interlocked.Exchange(ref _directusWorkspaceOpened, 0);
             _webBridge.PostOperationFailed(null, ex.Message, "DIRECTUS_OPEN_FAILED");
+            return;
+        }
+
+        // Collection discovery is the authoritative "workspace opened"
+        // boundary. Publish and cache it before optional per-collection schema
+        // and realtime setup, so those secondary capabilities cannot leave the
+        // renderer stuck on "connecting".
+        _directusWorkspaceSnapshot = result;
+        PostDirectusWorkspaceOpened(result);
+        _ = ReconcileAndRefreshCollectionsAsync(reportFailure: false);
+
+        if (_directusGateway is null)
+        {
+            return;
+        }
+        foreach (string collection in result.Tables)
+        {
+            try
+            {
+                var schema = await _directusGateway.GetSchemaAsync(
+                    collection, _sessionCts?.Token ?? CancellationToken.None);
+                await _directusGateway.SubscribeAsync(
+                    $"grid-{collection}",
+                    collection,
+                    schema.Columns.Select(column => column.Name).ToArray(),
+                    _sessionCts?.Token ?? CancellationToken.None);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                // Realtime is an optional enhancement. Keep the opened
+                // workspace usable; the next host startup will retry setup.
+                Trace.WriteLine(
+                    $"[directus] realtime subscription degraded for {collection}: {ex.Message}");
+            }
         }
     }
+
+    private void PostDirectusWorkspaceOpened(DatabaseOpenResult result)
+        => _webBridge.PostNotification("database.opened", new
+        {
+            tables = result.Tables,
+            views = result.Views,
+            displayNames = result.DisplayNames,
+        });
 
     private void OnDirectusChanged(DirectusChange change)
         => _webBridge.PostNotification("directus.changed", change);

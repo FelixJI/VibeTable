@@ -281,6 +281,37 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
+    public void Whitelists_AcceptOpaqueDocumentRequestsAndResponses()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+        foreach (string type in new[]
+        {
+            "document.listRequested",
+            "document.pickRequested",
+            "document.openRequested",
+            "document.previewRequested",
+            "document.revealRequested",
+            "document.historyRequested",
+            "document.relinkRequested",
+        })
+        {
+            var reply = router.Route(JsonSerializer.Serialize(new
+            {
+                type,
+                requestId = "r",
+                payload = new { },
+            }));
+            Assert.IsNull(reply, type);
+        }
+
+        Assert.AreEqual(7, dispatched.Count);
+        Assert.IsTrue(router.IsHostNotificationAllowed("document.listLoaded"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("document.historyLoaded"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("document.actionCompleted"));
+    }
+
+    [TestMethod]
     public void Route_AcceptsAdminOpenRequested()
     {
         var dispatched = new List<RoutedWebRequest>();

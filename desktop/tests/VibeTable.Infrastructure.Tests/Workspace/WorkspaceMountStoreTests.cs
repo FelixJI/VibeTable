@@ -16,6 +16,13 @@ public sealed class WorkspaceMountStoreTests
         return dir;
     }
 
+    private static string MakeWorkspaceRoot(string baseDir, string name)
+    {
+        var root = Path.Combine(baseDir, name);
+        Directory.CreateDirectory(root);
+        return root;
+    }
+
     [TestMethod]
     public void Mount_Then_ResolveRoot_ReturnsPath()
     {
@@ -23,10 +30,11 @@ public sealed class WorkspaceMountStoreTests
         try
         {
             var store = new WorkspaceMountStore(baseDir);
-            store.Mount("ws-001", @"D:\Workspaces\ProjectA", "Project A");
+            var workspaceRoot = MakeWorkspaceRoot(baseDir, "ProjectA");
+            store.Mount("ws-001", workspaceRoot, "Project A");
 
             var root = store.ResolveRoot("ws-001");
-            Assert.AreEqual(@"D:\Workspaces\ProjectA", root);
+            Assert.AreEqual(Path.GetFullPath(workspaceRoot), root);
         }
         finally
         {
@@ -56,10 +64,12 @@ public sealed class WorkspaceMountStoreTests
         try
         {
             var store = new WorkspaceMountStore(baseDir);
-            store.Mount("ws-001", @"D:\Old", "Old");
-            store.Mount("ws-001", @"E:\New", "New");
+            var oldRoot = MakeWorkspaceRoot(baseDir, "Old");
+            var newRoot = MakeWorkspaceRoot(baseDir, "New");
+            store.Mount("ws-001", oldRoot, "Old");
+            store.Mount("ws-001", newRoot, "New");
 
-            Assert.AreEqual(@"E:\New", store.ResolveRoot("ws-001"));
+            Assert.AreEqual(Path.GetFullPath(newRoot), store.ResolveRoot("ws-001"));
         }
         finally
         {
@@ -74,12 +84,14 @@ public sealed class WorkspaceMountStoreTests
         try
         {
             var store = new WorkspaceMountStore(baseDir);
-            store.Mount("ws-001", @"D:\A", "A");
-            store.Mount("ws-002", @"D:\B", "B");
+            var rootA = MakeWorkspaceRoot(baseDir, "A");
+            var rootB = MakeWorkspaceRoot(baseDir, "B");
+            store.Mount("ws-001", rootA, "A");
+            store.Mount("ws-002", rootB, "B");
 
             store.Unmount("ws-001");
             Assert.IsNull(store.ResolveRoot("ws-001"));
-            Assert.AreEqual(@"D:\B", store.ResolveRoot("ws-002"));
+            Assert.AreEqual(Path.GetFullPath(rootB), store.ResolveRoot("ws-002"));
         }
         finally
         {
@@ -94,11 +106,12 @@ public sealed class WorkspaceMountStoreTests
         try
         {
             var store1 = new WorkspaceMountStore(baseDir);
-            store1.Mount("ws-persist", @"D:\Persist", "Persist");
+            var workspaceRoot = MakeWorkspaceRoot(baseDir, "Persist");
+            store1.Mount("ws-persist", workspaceRoot, "Persist");
 
             // Create a new store instance — it should read the persisted file.
             var store2 = new WorkspaceMountStore(baseDir);
-            Assert.AreEqual(@"D:\Persist", store2.ResolveRoot("ws-persist"));
+            Assert.AreEqual(Path.GetFullPath(workspaceRoot), store2.ResolveRoot("ws-persist"));
         }
         finally
         {
@@ -113,7 +126,7 @@ public sealed class WorkspaceMountStoreTests
         try
         {
             var store = new WorkspaceMountStore(baseDir);
-            store.Mount("ws-1", @"D:\A", "A");
+            store.Mount("ws-1", MakeWorkspaceRoot(baseDir, "A"), "A");
 
             var path = Path.Combine(baseDir, "VibeTable", "workspace-mounts.json");
             Assert.IsTrue(File.Exists(path));
@@ -121,6 +134,24 @@ public sealed class WorkspaceMountStoreTests
             var json = File.ReadAllText(path);
             Assert.IsTrue(json.Contains("\"formatVersion\""));
             Assert.IsTrue(json.Contains("\"workspaceId\""));
+        }
+        finally
+        {
+            CleanupDir(baseDir);
+        }
+    }
+
+    [TestMethod]
+    public void Mount_MissingRoot_IsRejected()
+    {
+        var baseDir = MakeTempBase();
+        try
+        {
+            var store = new WorkspaceMountStore(baseDir);
+            var missing = Path.Combine(baseDir, "missing");
+
+            Assert.Throws<DirectoryNotFoundException>(
+                () => store.Mount("ws-missing", missing, "Missing"));
         }
         finally
         {

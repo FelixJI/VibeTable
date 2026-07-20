@@ -16,7 +16,9 @@ public sealed record ReadFolderParams(
 );
 
 public sealed record DocumentSummary(
+    [property: JsonPropertyName("linkId")] string? LinkId,
     [property: JsonPropertyName("documentId")] string DocumentId,
+    [property: JsonPropertyName("workspaceId")] string WorkspaceId,
     [property: JsonPropertyName("fileName")] string FileName,
     [property: JsonPropertyName("mimeType")] string? MimeType,
     [property: JsonPropertyName("mainHead")] string? MainHead,
@@ -32,6 +34,16 @@ public sealed record FolderResult(
     [property: JsonPropertyName("itemId")] string ItemId,
     [property: JsonPropertyName("folderId")] string? FolderId,
     [property: JsonPropertyName("documents")] List<DocumentSummary> Documents
+);
+
+public sealed record ReadDocumentsParams(
+    [property: JsonPropertyName("limit")] int Limit,
+    [property: JsonPropertyName("offset")] int Offset
+);
+
+public sealed record DocumentListResult(
+    [property: JsonPropertyName("documents")] List<DocumentSummary> Documents,
+    [property: JsonPropertyName("total")] int Total
 );
 
 // --- publishIndexBatch ---

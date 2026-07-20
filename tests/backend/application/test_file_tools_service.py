@@ -92,7 +92,7 @@ def _service(
         auth=FakeDirectusAuth(),  # type: ignore[arg-type]
         profiles=manifest.by_collection,
         transport=transport,
-        resolve_path=lambda _g, _p, _d: path_for_grant,
+        resolve_path=lambda _g, *, purpose, direction: path_for_grant,
         consume_grant=lambda _g: None,
     )
 

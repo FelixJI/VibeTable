@@ -13,7 +13,24 @@ public sealed record DirectusFirstRunStatus(
 {
     public bool IsFresh => !IsBootstrapped;
 
-    public bool IsExperienceIncomplete => IsBootstrapped && !IsExperienceComplete;
+    /// <summary>
+    /// Whether the persistent Directus engine and the VibeTable schema have
+    /// both completed their idempotent initialization steps.
+    /// </summary>
+    public bool IsRuntimeReady => IsBootstrapped && IsSchemaApplied;
+
+    /// <summary>
+    /// Whether native runtime progress is still useful. Authentication and
+    /// renderer failures deliberately do not affect this value.
+    /// </summary>
+    public bool NeedsRuntimeInitialization => !IsRuntimeReady;
+
+    /// <summary>
+    /// Whether the runtime is usable but the optional desktop experience
+    /// marker has not yet been persisted. This is never a reason to reset the
+    /// database; login and renderer setup can be resumed independently.
+    /// </summary>
+    public bool IsExperienceIncomplete => IsRuntimeReady && !IsExperienceComplete;
 }
 
 public static class DirectusFirstRunState
@@ -43,15 +60,19 @@ public static class DirectusFirstRunState
     }
 
     /// <summary>
-    /// Resets an interrupted first-run attempt back to the fresh state by
-    /// removing the bootstrap/schema markers and the local SQLite database,
+    /// Explicitly resets an interrupted runtime-bootstrap attempt back to the
+    /// fresh state by removing the bootstrap/schema markers and the local
+    /// SQLite database,
     /// so <c>directus bootstrap</c> runs again with freshly entered admin
     /// credentials on the next start.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Safety gate: this is a no-op when <see cref="ExperienceMarker"/> is
-    /// present. A completed first-run experience must never be reset.
+    /// Safety gate: this is a no-op once the bootstrap and schema markers are
+    /// both present, regardless of <see cref="ExperienceMarker"/>. A login or
+    /// renderer failure after runtime initialization must never make the
+    /// database eligible for deletion. A completed experience is also never
+    /// reset even if its runtime markers are unexpectedly missing.
     /// </para>
     /// <para>
     /// Preserved on disk:
@@ -82,8 +103,11 @@ public static class DirectusFirstRunState
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
 
-        // Hard safety gate: never touch a completed experience.
-        if (File.Exists(Path.Combine(directory, ExperienceMarker)))
+        // Hard safety gate: runtime readiness is independent of login/UI
+        // completion. Never turn a missing experience marker into permission
+        // to remove an initialized database.
+        var status = Inspect(directory);
+        if (status.IsRuntimeReady || status.IsExperienceComplete)
         {
             return;
         }

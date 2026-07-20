@@ -124,6 +124,9 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   // Table management: collection lifecycle events.
   "database.collectionsChanged",
   "identifierMappings.result",
+  "document.listLoaded",
+  "document.historyLoaded",
+  "document.actionCompleted",
 ]);
 
 /**
@@ -153,6 +156,13 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "identifierMappings.updateAliasesRequested",
   "identifierMappings.importRequested",
   "identifierMappings.reconcileRequested",
+  "document.listRequested",
+  "document.pickRequested",
+  "document.openRequested",
+  "document.previewRequested",
+  "document.revealRequested",
+  "document.historyRequested",
+  "document.relinkRequested",
   // Open the embedded Directus admin (Data Studio) in this webview.
   "admin.openRequested",
 ]);

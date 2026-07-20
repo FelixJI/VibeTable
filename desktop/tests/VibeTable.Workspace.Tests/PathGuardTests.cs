@@ -59,6 +59,27 @@ public sealed class PathGuardTests
     }
 
     [TestMethod]
+    [DataRow("NUL")]
+    [DataRow("nul.txt")]
+    [DataRow("folder/COM1.docx")]
+    [DataRow("folder/LPT9")]
+    public void ReservedDeviceName_Rejected(string path)
+    {
+        Assert.Throws<InvalidOperationException>(
+            () => WorkspacePathGuard.ValidateRelativePath(path));
+    }
+
+    [TestMethod]
+    [DataRow("folder/./file.docx")]
+    [DataRow("folder./file.docx")]
+    [DataRow("folder /file.docx")]
+    public void AmbiguousWindowsSegment_Rejected(string path)
+    {
+        Assert.Throws<InvalidOperationException>(
+            () => WorkspacePathGuard.ValidateRelativePath(path));
+    }
+
+    [TestMethod]
     public void UncDevicePath_Rejected()
     {
         Assert.Throws<InvalidOperationException>(
@@ -131,5 +152,15 @@ public sealed class PathGuardTests
             if (Directory.Exists(tmp))
                 Directory.Delete(tmp, recursive: true);
         }
+    }
+
+    [TestMethod]
+    public void ResolveAndCheck_MissingRoot_Rejected()
+    {
+        var missing = Path.Combine(
+            Path.GetTempPath(), "vibetable-ws-missing-" + Guid.NewGuid().ToString("N"));
+
+        Assert.Throws<DirectoryNotFoundException>(
+            () => WorkspacePathGuard.ResolveAndCheck(missing, "file.docx"));
     }
 }

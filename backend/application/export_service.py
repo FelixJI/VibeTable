@@ -57,7 +57,7 @@ class ExportService:
         client: DirectusClient,
         auth: DirectusAuthBroker,
         profiles: dict[str, CollectionProfile],
-        resolve_path: Callable[[str, str, str], str],
+        resolve_path: Callable[..., str],
     ) -> None:
         self._client = client
         self._auth = auth
@@ -72,7 +72,11 @@ class ExportService:
         cancelled: Callable[[], bool] | None = None,
     ) -> ExportResult:
         profile = self._profile(params.collection)
-        path = self._resolve_path(params.grant_id, "export_target", "write")
+        path = self._resolve_path(
+            params.grant_id,
+            purpose="export_target",
+            direction="write",
+        )
         query = TableQuery.model_validate(params.query)
         output_columns = list(profile.fields)
         if params.include_relations:
@@ -106,7 +110,11 @@ class ExportService:
         grant_id: str,
     ) -> TemplateResult:
         profile = self._profile(collection)
-        path = self._resolve_path(grant_id, "export_target", "write")
+        path = self._resolve_path(
+            grant_id,
+            purpose="export_target",
+            direction="write",
+        )
         from openpyxl import Workbook
 
         wb = Workbook()

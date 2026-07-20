@@ -18,6 +18,7 @@ from backend.adapters.directus.auth import DirectusAuthBroker
 from backend.adapters.directus.profile import CollectionProfile
 from backend.contracts.document_workspace import (
     DocumentHistoryResult,
+    DocumentListResult,
     DocumentRevisionEntry,
     DocumentSummary,
     FolderResult,
@@ -27,6 +28,7 @@ from backend.contracts.document_workspace import (
     PublishIndexBatchResult,
     PublishResult,
     ReadDocumentHistoryParams,
+    ReadDocumentsParams,
     ReadFolderParams,
     UnlinkDocumentParams,
 )
@@ -93,6 +95,7 @@ class DocumentWorkspaceService:
                 "fields": [
                     "id",
                     "document.id",
+                    "document.workspace.workspace_id",
                     "document.file_name",
                     "document.mime_type",
                     "document.main_head",
@@ -107,28 +110,56 @@ class DocumentWorkspaceService:
         )
         raw_links = _response_list(links_payload)
 
-        documents: list[DocumentSummary] = []
-        for raw in raw_links:
-            doc = raw.get("document") or {}
-            documents.append(
-                DocumentSummary(
-                    document_id=str(doc.get("id", "")),
-                    file_name=str(doc.get("file_name", "")),
-                    mime_type=str(doc.get("mime_type", "")) or None,
-                    main_head=str(doc.get("main_head", "")) or None,
-                    main_hash=str(doc.get("main_hash", "")) or None,
-                    status=str(doc.get("status", "active")),
-                    link_type=str(raw.get("link_type", "primary")),
-                    folder_relative_path=str((doc.get("folder") or {}).get("relative_path", ""))
-                    or None,
-                )
+        documents = [
+            _document_summary(
+                raw.get("document") or {},
+                link_id=str(raw.get("id", "")) or None,
+                link_type=str(raw.get("link_type", "primary")),
             )
+            for raw in raw_links
+        ]
 
         return FolderResult(
             collection=params.collection,
             item_id=params.item_id,
             folder_id=None,
             documents=documents,
+        )
+
+    async def read_documents(self, params: ReadDocumentsParams) -> DocumentListResult:
+        """Read the global workspace-document index without local paths."""
+        token = await self._auth.access_token()
+        payload = await self._transport.request(
+            "GET",
+            "/items/vibetable_documents",
+            access_token=token,
+            query={
+                "filter": {"status": {"_eq": "active"}},
+                "fields": [
+                    "id",
+                    "workspace.workspace_id",
+                    "file_name",
+                    "mime_type",
+                    "main_head",
+                    "main_hash",
+                    "status",
+                    "folder.relative_path",
+                    "folder.display_name",
+                ],
+                "limit": params.limit,
+                "offset": params.offset,
+                "meta": "filter_count,total_count",
+                "sort": "-date_updated",
+            },
+        )
+        raw_documents = _response_list(payload)
+        meta = _response_meta(payload)
+        documents = [_document_summary(raw) for raw in raw_documents]
+        return DocumentListResult(
+            documents=documents,
+            total=_safe_int(meta.get("filter_count"))
+            or _safe_int(meta.get("total_count"))
+            or len(documents),
         )
 
     # ------------------------------------------------------------------
@@ -300,6 +331,26 @@ def _response_list(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _document_summary(
+    doc: dict[str, Any],
+    *,
+    link_id: str | None = None,
+    link_type: str | None = None,
+) -> DocumentSummary:
+    return DocumentSummary(
+        link_id=link_id,
+        document_id=str(doc.get("id", "")),
+        workspace_id=str((doc.get("workspace") or {}).get("workspace_id", "")),
+        file_name=str(doc.get("file_name", "")),
+        mime_type=str(doc.get("mime_type", "")) or None,
+        main_head=str(doc.get("main_head", "")) or None,
+        main_hash=str(doc.get("main_hash", "")) or None,
+        status=str(doc.get("status", "active")),
+        link_type=link_type,
+        folder_relative_path=str((doc.get("folder") or {}).get("relative_path", "")) or None,
+    )
+
+
 def _response_data(payload: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         data = payload.get("data")
@@ -309,11 +360,13 @@ def _response_data(payload: Any) -> dict[str, Any]:
 
 
 def _response_data_list(payload: Any) -> list[dict[str, Any]]:
-    data = _response_data(payload) if isinstance(payload, dict) else {}
-    if isinstance(data.get("results"), list):
-        return [r for r in data["results"] if isinstance(r, dict)]
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
     if isinstance(data, list):
         return [r for r in data if isinstance(r, dict)]
+    if isinstance(data, dict) and isinstance(data.get("results"), list):
+        return [r for r in data["results"] if isinstance(r, dict)]
     return []
 
 

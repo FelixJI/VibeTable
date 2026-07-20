@@ -84,7 +84,7 @@ def _service(transport: FakeTransport, manifest: CapabilityManifest, path: str) 
         client=DirectusClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
         auth=FakeDirectusAuth(),  # type: ignore[arg-type]
         profiles=manifest.by_collection,
-        resolve_path=lambda _g, _p, _d: path,
+        resolve_path=lambda _g, *, purpose, direction: path,
     )
 
 

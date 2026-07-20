@@ -5,10 +5,11 @@ picker chose. The Web layer only ever holds the opaque grant id + display
 metadata; the canonical path stays inside the Python broker and never crosses
 the WebView boundary.
 
-Grants expire after :data:`GRANT_TTL_SECONDS` (5 minutes) and are single-use
-(resolving consumes them, so a stolen grant id cannot be replayed). The store
-is in-process; grants do not survive a restart (a stale grant id is rejected
-with a clear error so the host re-requests the file).
+Grants expire after :data:`GRANT_TTL_SECONDS` (5 minutes). Import grants are
+explicitly consumed after the operation succeeds and cannot be resolved or
+described again, so a stolen grant id cannot be replayed. The store is
+in-process; grants do not survive a restart (a stale grant id is rejected with
+a clear error so the host re-requests the file).
 """
 
 from __future__ import annotations
@@ -163,6 +164,8 @@ class SessionPathGrantStore:
         if self._clock() >= stored.expires_at:
             self._grants.pop(grant_id, None)
             raise PathGrantError("path grant expired", code="grant_expired")
+        if stored.consumed:
+            raise PathGrantError("path grant already consumed", code="grant_consumed")
         return stored
 
 

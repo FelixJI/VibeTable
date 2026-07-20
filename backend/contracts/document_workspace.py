@@ -42,7 +42,9 @@ class ReadFolderParams(WorkspaceModel):
 
 
 class DocumentSummary(WorkspaceModel):
+    link_id: str | None = Field(default=None, max_length=128)
     document_id: str = Field(min_length=1, max_length=128)
+    workspace_id: str = Field(min_length=1, max_length=128)
     file_name: str = Field(min_length=1, max_length=255)
     mime_type: str | None = Field(default=None, max_length=128)
     main_head: str | None = Field(default=None, max_length=128)
@@ -58,6 +60,16 @@ class FolderResult(WorkspaceModel):
     item_id: str = Field(min_length=1, max_length=128)
     folder_id: str | None = Field(default=None, max_length=128)
     documents: list[DocumentSummary] = Field(default_factory=list)
+
+
+class ReadDocumentsParams(WorkspaceModel):
+    limit: int = Field(default=200, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+
+class DocumentListResult(WorkspaceModel):
+    documents: list[DocumentSummary] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
 
 
 # ---------------------------------------------------------------------------

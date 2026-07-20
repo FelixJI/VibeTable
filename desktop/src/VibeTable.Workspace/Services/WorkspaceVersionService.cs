@@ -201,6 +201,8 @@ public sealed class WorkspaceVersionService
         Directory.CreateDirectory(Path.Combine(_backupRoot, "objects"));
         Directory.CreateDirectory(Path.Combine(_backupRoot, "revisions"));
         Directory.CreateDirectory(Path.Combine(_backupRoot, "refs"));
+        Directory.CreateDirectory(Path.Combine(_backupRoot, "documents"));
+        Directory.CreateDirectory(Path.Combine(_backupRoot, "folders"));
 
         var workspacePath = Path.Combine(_backupRoot, "workspace.json");
         _json.Write(workspacePath, manifest);

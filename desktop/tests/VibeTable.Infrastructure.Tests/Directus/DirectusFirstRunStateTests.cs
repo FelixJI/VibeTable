@@ -15,13 +15,15 @@ public sealed class DirectusFirstRunStateTests
             var status = DirectusFirstRunState.Inspect(dir);
 
             Assert.IsTrue(status.IsFresh);
+            Assert.IsFalse(status.IsRuntimeReady);
+            Assert.IsTrue(status.NeedsRuntimeInitialization);
             Assert.IsFalse(status.IsExperienceIncomplete);
             Assert.IsFalse(status.IsExperienceComplete);
         });
     }
 
     [TestMethod]
-    public void Inspect_BootstrappedWithoutExperienceIsIncomplete()
+    public void Inspect_BootstrappedWithoutSchemaStillNeedsRuntimeInitialization()
     {
         WithTemporaryDirectory(dir =>
         {
@@ -30,6 +32,24 @@ public sealed class DirectusFirstRunStateTests
             var status = DirectusFirstRunState.Inspect(dir);
 
             Assert.IsFalse(status.IsFresh);
+            Assert.IsFalse(status.IsRuntimeReady);
+            Assert.IsTrue(status.NeedsRuntimeInitialization);
+            Assert.IsFalse(status.IsExperienceIncomplete);
+        });
+    }
+
+    [TestMethod]
+    public void Inspect_RuntimeReadyWithoutExperienceCanResumeNonDestructively()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            File.WriteAllText(Path.Combine(dir, DirectusFirstRunState.BootstrapMarker), "ok");
+            File.WriteAllText(Path.Combine(dir, DirectusFirstRunState.SchemaMarker), "ok");
+
+            var status = DirectusFirstRunState.Inspect(dir);
+
+            Assert.IsTrue(status.IsRuntimeReady);
+            Assert.IsFalse(status.NeedsRuntimeInitialization);
             Assert.IsTrue(status.IsExperienceIncomplete);
         });
     }
@@ -46,17 +66,18 @@ public sealed class DirectusFirstRunStateTests
             var status = DirectusFirstRunState.Inspect(dir);
 
             Assert.IsTrue(status.IsExperienceComplete);
+            Assert.IsTrue(status.IsRuntimeReady);
+            Assert.IsFalse(status.NeedsRuntimeInitialization);
             Assert.IsFalse(status.IsExperienceIncomplete);
         });
     }
 
     [TestMethod]
-    public void ResetUncompletedBootstrap_RemovesMarkersAndDatabaseFile()
+    public void ResetUncompletedBootstrap_InterruptedRuntimeRemovesMarkersAndDatabaseFile()
     {
         WithTemporaryDirectory(dir =>
         {
             File.WriteAllText(Path.Combine(dir, DirectusFirstRunState.BootstrapMarker), "ok");
-            File.WriteAllText(Path.Combine(dir, DirectusFirstRunState.SchemaMarker), "ok");
             string dataDir = Path.Combine(dir, "data");
             Directory.CreateDirectory(dataDir);
             File.WriteAllText(Path.Combine(dataDir, "directus.sqlite"), "sqlite-bytes");
@@ -115,6 +136,26 @@ public sealed class DirectusFirstRunStateTests
             Assert.IsTrue(File.Exists(Path.Combine(dir, DirectusFirstRunState.BootstrapMarker)));
             Assert.IsTrue(File.Exists(Path.Combine(dir, DirectusFirstRunState.SchemaMarker)));
             Assert.IsTrue(File.Exists(Path.Combine(dataDir, "directus.sqlite")));
+        });
+    }
+
+    [TestMethod]
+    public void ResetUncompletedBootstrap_RefusesRuntimeReadyWithoutExperience()
+    {
+        WithTemporaryDirectory(dir =>
+        {
+            File.WriteAllText(Path.Combine(dir, DirectusFirstRunState.BootstrapMarker), "ok");
+            File.WriteAllText(Path.Combine(dir, DirectusFirstRunState.SchemaMarker), "ok");
+            string dataDir = Path.Combine(dir, "data");
+            Directory.CreateDirectory(dataDir);
+            string database = Path.Combine(dataDir, "directus.sqlite");
+            File.WriteAllText(database, "sqlite-bytes");
+
+            DirectusFirstRunState.ResetUncompletedBootstrap(dir);
+
+            Assert.IsTrue(File.Exists(Path.Combine(dir, DirectusFirstRunState.BootstrapMarker)));
+            Assert.IsTrue(File.Exists(Path.Combine(dir, DirectusFirstRunState.SchemaMarker)));
+            Assert.IsTrue(File.Exists(database));
         });
     }
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
@@ -47,6 +48,7 @@ public sealed class WorkspaceRequestDispatcher
     private readonly IWebReplySink _reply;
     private readonly GridStateCoordinator? _coordinator;
     private IDirectusRpcGateway? _directusGateway;
+    private DocumentWorkspaceHostService? _documents;
 
     public WorkspaceRequestDispatcher(
         TableWorkspaceService workspace,
@@ -67,6 +69,16 @@ public sealed class WorkspaceRequestDispatcher
     /// </summary>
     public void SetDirectusGateway(IDirectusRpcGateway gateway)
         => _directusGateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
+
+    public void SetDocumentWorkspace(DocumentWorkspaceHostService documents)
+        => _documents = documents ?? throw new ArgumentNullException(nameof(documents));
+
+    /// <summary>
+    /// Invalidates renderer-visible document handles at a host lifecycle
+    /// boundary. Safe before document workspace initialization.
+    /// </summary>
+    public void RotateDocumentCapabilityEpoch()
+        => _documents?.RotateCapabilityEpoch();
 
     /// <summary>
     /// Dispatches a routed web request to its handler. Each handler is
@@ -147,6 +159,33 @@ public sealed class WorkspaceRequestDispatcher
                 break;
             case "identifierMappings.reconcileRequested":
                 await OnReconcileIdentifierMappingsAsync(request).ConfigureAwait(false);
+                break;
+            case "document.listRequested":
+                await OnDocumentListRequestedAsync(request).ConfigureAwait(false);
+                break;
+            case "document.historyRequested":
+                await OnDocumentHistoryRequestedAsync(request).ConfigureAwait(false);
+                break;
+            case "document.openRequested":
+                OnDocumentOpenRequested(request);
+                break;
+            case "document.revealRequested":
+                OnDocumentRevealRequested(request);
+                break;
+            case "document.previewRequested":
+                OnDocumentPreviewRequested(request);
+                break;
+            case "document.pickRequested":
+                _reply.PostOperationFailed(
+                    request.RequestId,
+                    "文件导入协议尚未就绪。",
+                    "DOCUMENT_IMPORT_NOT_READY");
+                break;
+            case "document.relinkRequested":
+                _reply.PostOperationFailed(
+                    request.RequestId,
+                    "文件重新定位协议尚未就绪。",
+                    "DOCUMENT_RELINK_NOT_READY");
                 break;
             default:
                 // Unknown types never reach here (router whitelists), but be
@@ -598,6 +637,201 @@ public sealed class WorkspaceRequestDispatcher
         }
     }
 
+    private async Task OnDocumentListRequestedAsync(RoutedWebRequest request)
+    {
+        if (!TryRequireDocuments(request)) return;
+        string? authority = TryGetString(request.Payload, "authority");
+        if (!string.Equals(authority, "workspace", StringComparison.Ordinal))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "云端资源附件需要记录关系字段，当前入口仅显示工作区文档。",
+                "CLOUD_ATTACHMENT_SCOPE_REQUIRED");
+            return;
+        }
+        if (!TryGetProperty(request.Payload, "scope", out var scope)
+            || scope.ValueKind != JsonValueKind.Object)
+        {
+            _reply.PostOperationFailed(request.RequestId, "缺少文件范围。", "BAD_PAYLOAD");
+            return;
+        }
+
+        string? kind = TryGetString(scope, "kind");
+        try
+        {
+            DocumentListPayload result;
+            if (string.Equals(kind, "global", StringComparison.Ordinal))
+            {
+                result = await _documents!.ListGlobalAsync(CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            else if (string.Equals(kind, "record", StringComparison.Ordinal))
+            {
+                string? collection = TryGetString(scope, "collection");
+                string? itemId = TryGetScalarString(scope, "itemId");
+                if (string.IsNullOrWhiteSpace(collection) || string.IsNullOrWhiteSpace(itemId))
+                {
+                    _reply.PostOperationFailed(
+                        request.RequestId,
+                        "记录文件范围缺少 collection 或 itemId。",
+                        "BAD_PAYLOAD");
+                    return;
+                }
+                result = await _documents!.ListAsync(
+                    collection,
+                    itemId,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            else
+            {
+                _reply.PostOperationFailed(request.RequestId, "未知文件范围。", "BAD_PAYLOAD");
+                return;
+            }
+            _reply.PostResponse("document.listLoaded", request.RequestId, result);
+        }
+        catch (Exception ex)
+        {
+            PostDocumentFailure(request, ex, "DOCUMENT_LIST_FAILED");
+        }
+    }
+
+    private async Task OnDocumentHistoryRequestedAsync(RoutedWebRequest request)
+    {
+        if (!TryRequireDocuments(request)) return;
+        string? handle = TryGetString(request.Payload, "entryHandle");
+        if (string.IsNullOrWhiteSpace(handle))
+        {
+            _reply.PostOperationFailed(request.RequestId, "缺少文档授权。", "BAD_PAYLOAD");
+            return;
+        }
+        try
+        {
+            var result = await _documents!.ReadHistoryAsync(
+                handle,
+                TryGetInt(request.Payload, "limit", 50),
+                TryGetInt(request.Payload, "offset", 0),
+                CancellationToken.None).ConfigureAwait(false);
+            _reply.PostResponse("document.historyLoaded", request.RequestId, result);
+        }
+        catch (Exception ex)
+        {
+            PostDocumentFailure(request, ex, "DOCUMENT_HISTORY_FAILED");
+        }
+    }
+
+    private void OnDocumentOpenRequested(RoutedWebRequest request)
+        => RunDocumentAction(request, "open", handle => _documents!.Open(handle));
+
+    private void OnDocumentRevealRequested(RoutedWebRequest request)
+        => RunDocumentAction(request, "reveal", handle => _documents!.Reveal(handle));
+
+    private void OnDocumentPreviewRequested(RoutedWebRequest request)
+        => RunDocumentAction(request, "preview", handle => _documents!.Preview(handle));
+
+    private void RunDocumentAction(
+        RoutedWebRequest request,
+        string action,
+        Action<string>? execute)
+    {
+        if (!TryRequireDocuments(request)) return;
+        string? handle = TryGetString(request.Payload, "entryHandle");
+        if (string.IsNullOrWhiteSpace(handle))
+        {
+            _reply.PostOperationFailed(request.RequestId, "缺少文档授权。", "BAD_PAYLOAD");
+            return;
+        }
+        try
+        {
+            execute!(handle);
+            _reply.PostResponse(
+                "document.actionCompleted",
+                request.RequestId,
+                new { entryHandle = handle, action });
+        }
+        catch (Exception ex)
+        {
+            PostDocumentFailure(request, ex, "DOCUMENT_ACTION_FAILED");
+        }
+    }
+
+    private bool TryRequireDocuments(RoutedWebRequest request)
+    {
+        if (_documents is not null) return true;
+        _reply.PostOperationFailed(
+            request.RequestId,
+            "文档工作区尚未连接。",
+            "DOCUMENT_WORKSPACE_UNAVAILABLE");
+        return false;
+    }
+
+    private void PostDocumentFailure(
+        RoutedWebRequest request,
+        Exception exception,
+        string fallbackCode)
+    {
+        string candidateCode = exception is DocumentCapabilityException capabilityError
+            ? capabilityError.Code
+            : exception is DocumentPreviewException previewError
+                ? previewError.Code
+            : fallbackCode;
+        var (code, message) = GetSafeDocumentFailure(candidateCode, fallbackCode);
+
+        // Keep diagnostic detail on the native side. Exception messages may
+        // contain absolute paths or COM details and must never cross the web bridge.
+        Trace.TraceError($"Document request failed ({code}): {exception}");
+        _reply.PostOperationFailed(request.RequestId, message, code);
+    }
+
+    private static (string Code, string Message) GetSafeDocumentFailure(
+        string candidateCode,
+        string fallbackCode)
+        => candidateCode switch
+        {
+            "DOCUMENT_HANDLE_INVALID" =>
+                (candidateCode, "文档授权已失效，请刷新文件列表后重试。"),
+            "DOCUMENT_HANDLE_EXPIRED" =>
+                (candidateCode, "文档授权已过期，请刷新文件列表后重试。"),
+            "DOCUMENT_CAPABILITY_DENIED" =>
+                (candidateCode, "当前文档不允许执行此操作。"),
+            "REVISION_HANDLE_INVALID" =>
+                (candidateCode, "版本授权已失效，请重新打开版本历史。"),
+            "REVISION_HANDLE_EXPIRED" =>
+                (candidateCode, "版本授权已过期，请重新打开版本历史。"),
+            "REVISION_CAPABILITY_DENIED" =>
+                (candidateCode, "当前版本不允许执行此操作。"),
+            "DOCUMENT_LINK_UNAVAILABLE" =>
+                (candidateCode, "当前文档没有可解除的记录关联。"),
+            "WORKSPACE_UNMOUNTED" =>
+                (candidateCode, "此工作区尚未挂载到本机。"),
+            "DOCUMENT_MISSING" =>
+                (candidateCode, "文件已移动或删除，请重新定位。"),
+            "PREVIEW_HANDLER_UNAVAILABLE" =>
+                (candidateCode, "系统没有可用的文件预览器，请使用默认应用打开。"),
+            "PREVIEW_HOST_CREATE_FAILED" =>
+                (candidateCode, "无法创建文件预览窗口，请稍后重试。"),
+            "PREVIEW_HANDLER_FAILED" =>
+                (candidateCode, "文件预览失败，请使用默认应用打开。"),
+            "DOCUMENT_LIST_FAILED" =>
+                (candidateCode, "文件列表加载失败，请稍后重试。"),
+            "DOCUMENT_HISTORY_FAILED" =>
+                (candidateCode, "版本历史加载失败，请稍后重试。"),
+            "DOCUMENT_ACTION_FAILED" =>
+                (candidateCode, "文档操作失败，请稍后重试。"),
+            _ => GetSafeDocumentFallback(fallbackCode),
+        };
+
+    private static (string Code, string Message) GetSafeDocumentFallback(string fallbackCode)
+        => fallbackCode switch
+        {
+            "DOCUMENT_LIST_FAILED" =>
+                (fallbackCode, "文件列表加载失败，请稍后重试。"),
+            "DOCUMENT_HISTORY_FAILED" =>
+                (fallbackCode, "版本历史加载失败，请稍后重试。"),
+            "DOCUMENT_ACTION_FAILED" =>
+                (fallbackCode, "文档操作失败，请稍后重试。"),
+            _ => ("DOCUMENT_OPERATION_FAILED", "文档操作失败，请稍后重试。"),
+        };
+
     private bool TryRequireDirectus(RoutedWebRequest request)
     {
         if (_directusGateway is not null) return true;
@@ -746,6 +980,21 @@ public sealed class WorkspaceRequestDispatcher
             return el.GetString();
         }
         return null;
+    }
+
+    private static string? TryGetScalarString(JsonElement payload, string name)
+    {
+        if (payload.ValueKind != JsonValueKind.Object
+            || !payload.TryGetProperty(name, out var element))
+        {
+            return null;
+        }
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number => element.GetRawText(),
+            _ => null,
+        };
     }
 
     private static IReadOnlyList<string>? TryGetStringArray(JsonElement payload, string name)
