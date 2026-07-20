@@ -60,7 +60,29 @@ def test_transport_serializes_structured_query_and_keeps_token_out_of_url(monkey
     assert "access-secret" not in request.full_url
     assert request.get_header("Authorization") == "Bearer access-secret"
     assert "%7B" in request.full_url
-    assert "%5B" in request.full_url
+    assert "fields=id%2Cstatus" in request.full_url
+    assert "%5B" not in request.full_url.split("fields=", 1)[1]
+
+
+def test_transport_keeps_nested_filter_arrays_as_json(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(request: Any, **kwargs: Any) -> FakeResponse:
+        captured["request"] = request
+        return FakeResponse({"data": []})
+
+    monkeypatch.setattr("backend.adapters.directus.transport.urlopen", fake_urlopen)
+    _transport()._request_sync(
+        "GET",
+        "/items/contracts",
+        {"filter": {"status": {"_in": ["open", "closed"]}}},
+        None,
+        None,
+        None,
+        (200,),
+    )
+
+    assert "%5B%22open%22%2C%22closed%22%5D" in captured["request"].full_url
 
 
 def test_transport_maps_directus_error_without_echoing_request_secret(monkeypatch: Any) -> None:

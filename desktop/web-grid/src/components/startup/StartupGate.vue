@@ -9,6 +9,7 @@ import type {
   FirstRunSubmittedPayload,
   LoginSubmittedPayload,
   StartupPhase,
+  StartupLogEntry,
 } from "@/contracts";
 import { t } from "@/i18n";
 
@@ -21,6 +22,7 @@ const props = defineProps<{
   autoLogin: boolean;
   canRetry: boolean;
   canCancel: boolean;
+  logs: readonly StartupLogEntry[];
 }>();
 defineEmits<{
   firstRunSubmit: [payload: FirstRunSubmittedPayload];
@@ -103,6 +105,20 @@ const subtitle = computed(() => props.detail || t(`startup.${props.phase}.subtit
           </div>
         </div>
 
+        <details v-if="logs.length" class="startup-log" :open="phase === 'faulted'">
+          <summary>
+            <span>{{ t("startup.logs") }}</span>
+            <b>{{ logs.length }}</b>
+          </summary>
+          <ol aria-live="polite">
+            <li v-for="(entry, index) in logs" :key="`${entry.time}-${index}`">
+              <time>{{ entry.time }}</time>
+              <strong>{{ entry.source }}</strong>
+              <span>{{ entry.message }}</span>
+            </li>
+          </ol>
+        </details>
+
         <footer><NIcon :size="14"><DatabaseZap /></NIcon>{{ t("startup.hostOwned") }}</footer>
       </div>
     </section>
@@ -142,6 +158,15 @@ const subtitle = computed(() => props.detail || t(`startup.${props.phase}.subtit
 .fault-state strong { font-weight: 600; }
 .fault-state p { margin: 5px 0 0; color: var(--vt-fg-muted); }
 .fault-actions { display: flex; gap: 8px; margin-top: 22px; }
+.startup-log { margin-top: 16px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-md); background: color-mix(in srgb, var(--vt-bg-subtle) 72%, var(--vt-bg)); }
+.startup-log summary { display: flex; align-items: center; justify-content: space-between; padding: 9px 11px; color: var(--vt-fg-muted); font-size: 11px; font-weight: 600; cursor: pointer; list-style: none; }
+.startup-log summary::-webkit-details-marker { display: none; }
+.startup-log summary b { min-width: 20px; padding: 1px 6px; color: var(--vt-color-primary-500); text-align: center; border-radius: 999px; background: var(--vt-color-primary-100); }
+.startup-log ol { max-height: 132px; margin: 0; padding: 7px 11px 9px; overflow: auto; border-top: 1px solid var(--vt-border); list-style: none; }
+.startup-log li { display: grid; grid-template-columns: 50px 58px 1fr; gap: 7px; padding: 3px 0; color: var(--vt-fg-muted); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 10px; line-height: 1.45; }
+.startup-log li time { opacity: .66; }
+.startup-log li strong { overflow: hidden; color: var(--vt-fg); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.startup-log li span { overflow-wrap: anywhere; }
 .startup-content footer { display: flex; align-items: center; gap: 6px; margin-top: auto; padding-top: 22px; color: var(--vt-fg-muted); font-size: 11px; border-top: 1px solid var(--vt-border); }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes startup-enter { from { opacity: 0; transform: translateY(5px) scale(.995); } }

@@ -29,7 +29,10 @@ const emit = defineEmits<{
   cancel: [];
 }>();
 
-const fieldTypeOptions = TABLE_FIELD_TYPES.map((tp) => ({ label: tp, value: tp }));
+const fieldTypeOptions = TABLE_FIELD_TYPES.map((type) => ({
+  label: t(`createTable.fieldType.${type}`),
+  value: type,
+}));
 </script>
 
 <template>
@@ -37,7 +40,7 @@ const fieldTypeOptions = TABLE_FIELD_TYPES.map((tp) => ({ label: tp, value: tp }
     :show="ui.createModalOpen"
     preset="card"
     :title="t('createTable.title')"
-    style="max-width: 520px"
+    style="max-width: 640px"
   >
     <NForm label-placement="top">
       <NFormItem :label="t('createTable.name')">
@@ -63,6 +66,7 @@ const fieldTypeOptions = TABLE_FIELD_TYPES.map((tp) => ({ label: tp, value: tp }
         <NSelect
           v-model:value="field.type"
           :options="fieldTypeOptions"
+          filterable
           style="width: 140px"
           :data-testid="`create-table-field-type-${idx}`"
         />
@@ -82,6 +86,9 @@ const fieldTypeOptions = TABLE_FIELD_TYPES.map((tp) => ({ label: tp, value: tp }
       </NButton>
       <p class="identifier-hint" data-testid="physical-name-hint">
         {{ t("createTable.identifierHint") }}
+      </p>
+      <p class="identifier-hint" data-testid="field-type-hint">
+        {{ t("createTable.fieldTypeHint") }}
       </p>
       <p v-if="admin.error" class="form-error" role="alert" data-testid="create-table-error">
         {{ admin.error }}
@@ -110,7 +117,7 @@ const fieldTypeOptions = TABLE_FIELD_TYPES.map((tp) => ({ label: tp, value: tp }
 <style scoped>
 .field-row {
   display: grid;
-  grid-template-columns: 1fr 140px auto;
+  grid-template-columns: minmax(160px, 1fr) minmax(210px, .8fr) auto;
   gap: var(--vt-space-2);
   align-items: center;
   margin-bottom: var(--vt-space-2);

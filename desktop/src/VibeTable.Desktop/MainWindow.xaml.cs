@@ -6,6 +6,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -94,9 +95,12 @@ public partial class MainWindow : Window
     private string? _pendingLoginPassword;
     private string? _authenticatedDirectusUserId;
     private string? _localDirectusDirectory;
+    private bool _localDirectusWasReady;
     private DirectusStartupWindow? _directusStartupWindow;
     private CancellationTokenSource? _directusStartupCts;
     private readonly object _startupStateGate = new();
+    private readonly List<HostStartupLogEntry> _startupLogs = [];
+    private const int MaxStartupLogLines = 24;
     private HostStartupStatePayload _startupStateSnapshot = new(
         "starting",
         "准备启动",
@@ -105,7 +109,8 @@ public partial class MainWindow : Window
         false,
         false,
         false,
-        false);
+        false,
+        Array.Empty<HostStartupLogEntry>());
     private TaskCompletionSource<FirstRunSubmission?>? _firstRunSubmission;
     private TaskCompletionSource<LoginSubmission?>? _loginSubmission;
     private IReadOnlyList<string>? _activeExternalDropPaths;
@@ -409,6 +414,7 @@ public partial class MainWindow : Window
     private void OnDirectusLogReceived(object? sender, string line)
     {
         TraceProcessLog("directus", line);
+        AppendStartupLog("Directus", line);
         // Surface significant Directus lifecycle/error lines to the bootstrap
         // fallback. Filtered to avoid drowning the host UI in routine Directus
         // logs; uses the marshalling SetDetailMessage (not Core) because this
@@ -452,10 +458,15 @@ public partial class MainWindow : Window
                     // dispatch (whose deferred execution would also escape the
                     // surrounding try/catch).
                     string detail = DirectusStartupWindow.TranslateDetail(progress.Detail);
+                    AppendStartupLog(
+                        progress.UsedFastPath ? "复用" : "阶段",
+                        detail);
                     SetDetailMessageCore(detail);
                     SetHostStartupState(
                         "starting",
-                        "初始化本地数据服务",
+                        _localDirectusWasReady
+                            ? "启动本地数据服务"
+                            : "初始化本地数据服务",
                         detail,
                         canCancel: true);
                 }
@@ -598,6 +609,7 @@ public partial class MainWindow : Window
 
         var firstRunStatus = DirectusFirstRunState.Inspect(
             options.LocalDirectusDirectory);
+        _localDirectusWasReady = firstRunStatus.IsRuntimeReady;
         options.ForcePackageVerification = firstRunStatus.NeedsRuntimeInitialization;
 
         // Only a genuinely fresh runtime needs local administrator creation.
@@ -700,6 +712,7 @@ public partial class MainWindow : Window
     private void UpdateStartupHostStage(int step, string title, string detail)
     {
         _directusStartupWindow?.UpdateHostStage(step, title, detail);
+        AppendStartupLog("VibeTable", detail);
         SetDetailMessage(detail);
         SetHostStartupState("starting", title, detail, canCancel: true);
     }
@@ -821,17 +834,19 @@ public partial class MainWindow : Window
         bool canRetry = false,
         bool canCancel = false)
     {
-        var snapshot = new HostStartupStatePayload(
-            phase,
-            stage,
-            detail,
-            email,
-            rememberPassword,
-            autoLogin,
-            canRetry,
-            canCancel);
+        HostStartupStatePayload snapshot;
         lock (_startupStateGate)
         {
+            snapshot = new HostStartupStatePayload(
+                phase,
+                stage,
+                detail,
+                email,
+                rememberPassword,
+                autoLogin,
+                canRetry,
+                canCancel,
+                _startupLogs.ToArray());
             _startupStateSnapshot = snapshot;
         }
         if (!_router.IsReady) return;
@@ -850,6 +865,33 @@ public partial class MainWindow : Window
         catch
         {
             // Renderer may be reloading; app.ready replays the cached snapshot.
+        }
+    }
+
+    private void AppendStartupLog(string source, string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return;
+        }
+        string clean = Regex.Replace(
+            message,
+            "\\x1B\\[[0-?]*[ -/]*[@-~]",
+            string.Empty).Trim();
+        if (clean.Length > 240)
+        {
+            clean = clean[..237] + "…";
+        }
+        lock (_startupStateGate)
+        {
+            _startupLogs.Add(new HostStartupLogEntry(
+                DateTimeOffset.Now.ToString("HH:mm:ss"),
+                source,
+                clean));
+            if (_startupLogs.Count > MaxStartupLogLines)
+            {
+                _startupLogs.RemoveRange(0, _startupLogs.Count - MaxStartupLogLines);
+            }
         }
     }
 
@@ -919,7 +961,13 @@ public partial class MainWindow : Window
         bool RememberPassword,
         bool AutoLogin,
         bool CanRetry,
-        bool CanCancel);
+        bool CanCancel,
+        IReadOnlyList<HostStartupLogEntry> Logs);
+
+    private sealed record HostStartupLogEntry(
+        string Time,
+        string Source,
+        string Message);
 
     private sealed record FirstRunSubmission(
         string Email,

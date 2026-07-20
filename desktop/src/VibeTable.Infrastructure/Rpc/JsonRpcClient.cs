@@ -259,6 +259,20 @@ public sealed class JsonRpcClient : IAsyncDisposable
                     ? dataElement.Clone()
                     : (JsonElement?)null;
 
+            // Mapped backend errors keep a stable protocol-level message and
+            // place the sanitized, actionable detail in error.data.message.
+            // Prefer that detail for Exception.Message so desktop/Web users do
+            // not see opaque text such as "Directus API error". Internal errors
+            // have no data.message and therefore remain intentionally generic.
+            if (data is JsonElement errorData
+                && errorData.ValueKind == JsonValueKind.Object
+                && errorData.TryGetProperty("message", out var detailElement)
+                && detailElement.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(detailElement.GetString()))
+            {
+                message = detailElement.GetString()!;
+            }
+
             pending.TrySetException(new RpcRemoteException(code, message, data));
             return;
         }

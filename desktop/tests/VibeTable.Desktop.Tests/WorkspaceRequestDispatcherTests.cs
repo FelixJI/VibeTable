@@ -337,7 +337,9 @@ public sealed class WorkspaceRequestDispatcherTests
 
         var failed = await sink.WaitForFailedAsync();
         Assert.IsNotNull(failed);
-        StringAssert.Contains((string)((dynamic)failed!.Payload!).message, "name already exists");
+        string message = (string)((dynamic)failed!.Payload!).message;
+        StringAssert.StartsWith(message, "创建表失败：");
+        StringAssert.Contains(message, "name already exists");
     }
 }
 

@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { StartupPhase, StartupStatePayload } from "@/contracts";
+import type { StartupLogEntry, StartupPhase, StartupStatePayload } from "@/contracts";
 
 /**
  * Host-authoritative startup projection. Credentials and OTPs deliberately do
@@ -15,6 +15,7 @@ export const useStartupStore = defineStore("startup", () => {
   const autoLogin = ref(false);
   const canRetry = ref(false);
   const canCancel = ref(false);
+  const logs = ref<readonly StartupLogEntry[]>([]);
 
   function applyHostState(payload: StartupStatePayload): void {
     phase.value = payload.phase;
@@ -25,6 +26,7 @@ export const useStartupStore = defineStore("startup", () => {
     autoLogin.value = payload.autoLogin ?? false;
     canRetry.value = payload.canRetry ?? false;
     canCancel.value = payload.canCancel ?? false;
+    logs.value = (payload.logs ?? []).slice(-24);
   }
 
   return {
@@ -36,6 +38,7 @@ export const useStartupStore = defineStore("startup", () => {
     autoLogin,
     canRetry,
     canCancel,
+    logs,
     applyHostState,
   };
 });

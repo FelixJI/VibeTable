@@ -117,7 +117,17 @@ class StdlibDirectusTransport:
 
 
 def _encode_query_value(value: Any) -> str:
-    if isinstance(value, (dict, list, tuple)):
+    if isinstance(value, Mapping):
+        return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    if isinstance(value, (list, tuple)):
+        # Directus' top-level array query parameters (notably ``fields`` and
+        # ``sort``) use comma-separated values. Encoding them as a JSON array
+        # makes Directus interpret the quotes/brackets as part of the field
+        # names and can surface as a misleading 403 FORBIDDEN response.
+        # Nested arrays such as ``filter.status._in`` are still preserved as
+        # JSON because their parent value is handled by the Mapping branch.
+        if all(not isinstance(item, (Mapping, list, tuple)) for item in value):
+            return ",".join(_encode_query_value(item) for item in value)
         return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
     if isinstance(value, bool):
         return "true" if value else "false"

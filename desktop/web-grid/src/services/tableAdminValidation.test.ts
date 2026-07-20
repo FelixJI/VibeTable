@@ -69,14 +69,24 @@ describe("validateFields", () => {
 });
 
 describe("TABLE_FIELD_TYPES / TABLE_NAME_PATTERN", () => {
-  it("exposes exactly the six backend field types", () => {
+  it("exposes all standalone Directus storage field types", () => {
     expect(TABLE_FIELD_TYPES).toEqual([
       "string",
-      "integer",
-      "decimal",
-      "date",
-      "boolean",
       "text",
+      "integer",
+      "bigInteger",
+      "float",
+      "decimal",
+      "boolean",
+      "date",
+      "dateTime",
+      "timestamp",
+      "time",
+      "json",
+      "csv",
+      "uuid",
+      "hash",
+      "binary",
     ]);
   });
 

@@ -501,16 +501,26 @@ export interface ApplyPasteResult {
 // Table-admin contracts (mirror backend/contracts/table_admin.py)
 // ---------------------------------------------------------------------------
 
-/** Field types supported by the backend table_admin contract.
- *  Mirrors backend/contracts/table_admin.py:FieldType and
- *  TableAdminWindow.SupportedFieldTypes. Keep all three in sync. */
+/** Persisted Directus field types supported by the create-table wizard.
+ *  `alias` is intentionally excluded: it is a virtual relationship/display
+ *  field and requires relation-specific configuration rather than a column. */
 export const TABLE_FIELD_TYPES = [
   "string",
-  "integer",
-  "decimal",
-  "date",
-  "boolean",
   "text",
+  "integer",
+  "bigInteger",
+  "float",
+  "decimal",
+  "boolean",
+  "date",
+  "dateTime",
+  "timestamp",
+  "time",
+  "json",
+  "csv",
+  "uuid",
+  "hash",
+  "binary",
 ] as const;
 export type TableFieldType = (typeof TABLE_FIELD_TYPES)[number];
 
@@ -745,6 +755,12 @@ export interface WebPayloadMap {
 
 export type StartupPhase = "starting" | "firstRun" | "login" | "ready" | "faulted";
 
+export interface StartupLogEntry {
+  readonly time: string;
+  readonly source: string;
+  readonly message: string;
+}
+
 export interface StartupStatePayload {
   readonly phase: StartupPhase;
   readonly stage?: string | null;
@@ -754,6 +770,7 @@ export interface StartupStatePayload {
   readonly autoLogin?: boolean;
   readonly canRetry?: boolean;
   readonly canCancel?: boolean;
+  readonly logs?: readonly StartupLogEntry[];
 }
 
 export interface FirstRunSubmittedPayload {
