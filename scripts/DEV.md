@@ -7,11 +7,11 @@
 .\.venv\Scripts\python.exe scripts\dev.py
 ```
 
-`dev.py` 只做两件宿主自己做不到的事：
+`dev.py` 负责宿主自己做不到的构建准备与启动：
 
-1. **构建 WPF host（Release）**：若 `desktop/src/VibeTable.Desktop` 的 `.cs`/`.xaml`/`.csproj`
-   比已构建的 `VibeTable.Desktop.exe` 新，则自动 `dotnet build --configuration Release`；否则复用现有产物。
-2. **用隔离环境启动 WPF 客户端**：客户端裸跑（不带参数）即自动拉起 Directus + Python 后端。
+1. **构建 Web 与扩展**：Web Grid 或 manifest 中任一 Directus 扩展缺少产物/源码更新时，自动执行依赖安装与构建。
+2. **增量构建 WPF host（Release）**：每次调用 `dotnet build --configuration Release`，由 MSBuild 根据完整项目图、共享 props 与生成目标可靠判断增量工作。
+3. **用隔离环境启动 WPF 客户端**：客户端裸跑（不带参数）即自动拉起 Directus + Python 后端。
 
 > `run.py` / `install.py` / 打包 runner 已移除：Directus 的安装、配置、bootstrap、启动现在
 > 全部由 C# 宿主负责（见下文「宿主内建的 Directus 启动」）。`dev.py` 不再自管 Directus。
@@ -68,7 +68,7 @@
 
 - Node.js 24.x 已捆绑在 `runtime/node/`（无需系统安装；开发期 PATH 上有也可作兜底）。
 - .NET 10 SDK、仓库 `.venv`（`uv sync --group dev`）。
-- bulk-mutation 扩展需已构建（`directus/extensions/vibetable-bulk-mutation` 下 `npm ci && npm run build`）。
+- Web 与 Directus 扩展由 `dev.py` 按需构建；Node 依赖缺失或 lockfile 更新时自动执行 `npm ci`。
 - WebView2 Evergreen Runtime（WPF 客户端依赖）。
 
 ## 故障排查
@@ -89,7 +89,7 @@
 
 ## 分发（客户端安装包）
 
-VibeTable 单机安装包：捆绑 Node（`runtime/node/`）+ PyInstaller onedir 后端 + npm manifest/lockfile
+VibeTable 单机安装包：捆绑 Node 与 npm 客户端（`runtime/node/`）+ PyInstaller onedir 后端 + npm manifest/lockfile
 + schema/capability + 扩展。**不含 `node_modules`**（省约 600MB），客户端首次启动时由宿主联网
 `npm ci` 拉取 Directus 12，全部写入 `%LOCALAPPDATA%\VibeTable\directus`
 （`.npm-cache`/`.npm-prefix`/`node_modules` 都在该目录内），**不污染用户全局 Node/npm/PATH**。

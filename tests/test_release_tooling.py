@@ -93,6 +93,40 @@ def test_local_directus_stage_ships_source_only(tmp_path: Path) -> None:
     assert not (target / ".npm-cache").exists()
 
 
+def test_verify_stage_accepts_source_only_local_directus(tmp_path: Path) -> None:
+    """The verifier must enforce the same launcher-free contract as staging."""
+    defaults = build_next.RepoPaths.default(REPO_ROOT)
+    paths = build_next.RepoPaths(
+        repo_root=defaults.repo_root,
+        web_grid_dir=defaults.web_grid_dir,
+        directus_extension_dirs=defaults.directus_extension_dirs,
+        local_directus_source_dir=defaults.local_directus_source_dir,
+        desktop_csproj=defaults.desktop_csproj,
+        backend_main=defaults.backend_main,
+        staging_root=tmp_path / "staging",
+        scratch_root=tmp_path / "scratch",
+        publish_root=tmp_path / "publish",
+    )
+    build_next._build_local_directus_stage(paths, skip=False)
+    paths.manifest_path.write_text(build_next.render_manifest(paths), encoding="utf-8")
+
+    build_next._verify_stage(
+        paths,
+        skip_web=True,
+        skip_backend=True,
+        skip_desktop=True,
+        skip_directus=True,
+        skip_local_directus=False,
+    )
+
+
+def test_portable_node_runtime_contains_npm_cli() -> None:
+    assert (REPO_ROOT / "runtime" / "node" / "node.exe").is_file()
+    assert (
+        REPO_ROOT / "runtime" / "node" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    ).is_file()
+
+
 def test_build_executor_prefers_x64_dotnet_when_available() -> None:
     resolved = build_next._resolve_executable("dotnet")
     if build_next.PREFERRED_DOTNET.is_file():
@@ -110,6 +144,12 @@ def test_pyinstaller_build_uses_onedir_and_hidden_imports(tmp_path: Path) -> Non
     assert command[-1] == str(REPO_ROOT / "backend" / "__main__.py")
     for hidden in build_next.BACKEND_HIDDEN_IMPORTS:
         assert hidden in command, f"hidden import {hidden} missing from command"
+    excluded = {
+        command[index + 1]
+        for index, value in enumerate(command[:-1])
+        if value == "--exclude-module"
+    }
+    assert excluded == build_next._DEV_PACKAGES_FORBIDDEN_IN_BUNDLE
     # pydantic data files collected so the bundle is self-contained.
     assert "--collect-data" in command
     assert "pydantic" in command

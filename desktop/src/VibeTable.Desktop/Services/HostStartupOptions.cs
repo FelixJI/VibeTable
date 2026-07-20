@@ -141,13 +141,9 @@ public sealed class HostStartupOptions
             return false;
         }
         string root = Path.GetFullPath(hostBaseDirectory);
-        // Packaged layout: both shipped artefacts sit beside the host exe.
-        if (File.Exists(Path.Combine(root, "local-directus", "run.py"))
-            && File.Exists(Path.Combine(root, "backend", "vibetable-backend.exe")))
-        {
-            return true;
-        }
-        // Development layout: the repo's scripts/local_directus is discoverable.
+        // Packaged layout resolves <host>/local-directus; development resolves
+        // the repository's scripts/local_directus. The C# host owns both paths
+        // directly—legacy run.py/install.py launchers no longer exist.
         return LaunchPaths.ResolveLocalDirectusDirectory(root) is not null;
     }
 }

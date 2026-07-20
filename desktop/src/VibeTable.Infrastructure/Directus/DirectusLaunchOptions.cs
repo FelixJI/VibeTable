@@ -6,9 +6,9 @@ namespace VibeTable.Infrastructure.Directus;
 
 /// <summary>
 /// Configuration for spawning the local Directus 12 runtime (SQLite) that
-/// ships with single-machine VibeTable. The runtime is introduced at first launch
-/// via <c>scripts/local_directus/install.py</c> (online <c>npm install</c>,
-/// app-private) and started every run via <c>run.py</c>.
+/// ships with single-machine VibeTable. The C# host runs an app-private
+/// <c>npm ci</c>, materializes configuration, bootstraps the database, and
+/// starts Directus directly through its CLI.
 /// </summary>
 /// <remarks>
 /// <para>
