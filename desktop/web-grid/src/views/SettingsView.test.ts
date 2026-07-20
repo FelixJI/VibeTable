@@ -6,6 +6,8 @@ import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useIdentifierMappingStore } from "@/stores/identifierMappingStore";
 import { useWorkCalendarStore } from "@/stores/workCalendarStore";
 import { formatDateKey } from "@/calendar/workCalendar";
+import { useUiStore } from "@/stores/uiStore";
+import { NSelect } from "naive-ui";
 
 describe("SettingsView", () => {
   beforeEach(() => {
@@ -62,5 +64,26 @@ describe("SettingsView", () => {
     await wrapper.get('[data-testid="settings-nav-source"]').trigger("click");
     await wrapper.get('[data-testid="connection-retry"]').trigger("click");
     expect(wrapper.emitted("reconnect")).toHaveLength(1);
+  });
+
+  it("offers persistent source and compatible style controls for daily quotes", async () => {
+    const wrapper = mount(SettingsView);
+    const selects = wrapper.findAllComponents(NSelect);
+    const source = selects.find((select) =>
+      (select.props("options") as Array<{ value: string }>).some((option) => option.value === "jinrishici"),
+    );
+    if (!source) throw new Error("quote source select not found");
+    source.vm.$emit("update:value", "jinrishici");
+    await wrapper.vm.$nextTick();
+
+    const ui = useUiStore();
+    expect(ui.dailyQuoteSource).toBe("jinrishici");
+    expect(ui.dailyQuoteStyle).toBe("poetry");
+    const style = wrapper.findAllComponents(NSelect).find((select) => {
+      const options = select.props("options") as Array<{ value: string }>;
+      return options.length === 1 && options[0]?.value === "poetry";
+    });
+    if (!style) throw new Error("quote style select not found");
+    expect(style.props("disabled")).toBe(true);
   });
 });

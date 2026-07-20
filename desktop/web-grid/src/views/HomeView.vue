@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { NButton, NIcon, NInput } from "naive-ui";
 import {
   ArrowRight,
   Database,
   FilePlus2,
+  RefreshCw,
   Search,
   Sparkles,
   Table2,
@@ -84,22 +85,49 @@ const quotes = [
 const daySeed = Math.floor(
   Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86_400_000,
 );
-const quoteKey = quotes[daySeed % quotes.length];
-const dailyQuote = ref<DailyQuote>({ text: t(quoteKey), attribution: "", url: "", origin: "builtin" });
+let fallbackCursor = daySeed % quotes.length;
+function nextFallbackQuote(): DailyQuote {
+  const key = quotes[fallbackCursor % quotes.length];
+  fallbackCursor = (fallbackCursor + 1) % quotes.length;
+  return { text: t(key), attribution: "", url: "", origin: "builtin" };
+}
+const dailyQuote = ref<DailyQuote>(nextFallbackQuote());
+const quoteLoading = ref(false);
+const quoteSourceLabel = computed(() => t(`settings.quote.source.${ui.dailyQuoteSource}`));
+let quoteRequestId = 0;
 const calendarMonth = formatMonthKey(now);
 const monthText = computed(() =>
   new Intl.DateTimeFormat(localeName.value, { year: "numeric", month: "long" }).format(now),
 );
 
 async function refreshDailyQuote(): Promise<void> {
-  const fallback: DailyQuote = { text: t(quoteKey), attribution: "", url: "", origin: "builtin" };
+  const requestId = ++quoteRequestId;
+  const fallback = nextFallbackQuote();
   dailyQuote.value = fallback;
-  if (!ui.showDailyQuote) return;
-  dailyQuote.value = await loadDailyQuote({ fallback, locale: ui.locale });
+  if (!ui.showDailyQuote || ui.activeView !== "home") return;
+  quoteLoading.value = true;
+  const quote = await loadDailyQuote({
+    fallback,
+    locale: ui.locale,
+    source: ui.dailyQuoteSource,
+    style: ui.dailyQuoteStyle,
+  });
+  if (requestId !== quoteRequestId) return;
+  dailyQuote.value = quote;
+  quoteLoading.value = false;
 }
 
-onMounted(() => { void refreshDailyQuote(); });
-watch(() => [ui.showDailyQuote, ui.locale] as const, () => { void refreshDailyQuote(); });
+watch(
+  () => [ui.activeView, ui.showDailyQuote, ui.locale, ui.dailyQuoteSource, ui.dailyQuoteStyle] as const,
+  ([view, show]) => {
+    if (view === "home" && show) void refreshDailyQuote();
+    else {
+      quoteRequestId += 1;
+      quoteLoading.value = false;
+    }
+  },
+  { immediate: true },
+);
 
 function relativeTime(timestamp: number): string {
   if (!timestamp) return t("home.recent.available");
@@ -230,11 +258,24 @@ function openTable(name: string) {
         </section>
 
         <section v-if="ui.showDailyQuote" class="content-card quote-card">
-          <p>{{ t("home.quote.label") }}</p>
+          <div class="quote-heading">
+            <p>{{ t("home.quote.label") }}<span>{{ quoteSourceLabel }}</span></p>
+            <NButton
+              text
+              circle
+              size="tiny"
+              :loading="quoteLoading"
+              :aria-label="t('home.quote.refresh')"
+              data-testid="quote-refresh"
+              @click="refreshDailyQuote"
+            >
+              <template #icon><NIcon :size="14"><RefreshCw /></NIcon></template>
+            </NButton>
+          </div>
           <blockquote>{{ dailyQuote.text }}</blockquote>
           <footer>
             <a v-if="dailyQuote.origin !== 'builtin'" :href="dailyQuote.url" target="_blank" rel="noreferrer">
-              {{ dailyQuote.attribution || t("home.quote.source") }}
+              {{ dailyQuote.attribution || quoteSourceLabel }}
             </a>
             <span v-else>{{ t("home.quote.builtin") }}</span>
           </footer>
@@ -259,6 +300,8 @@ function openTable(name: string) {
 <style scoped>
 .home-view {
   height: 100%;
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
   padding: 28px clamp(24px, 4vw, 52px) 40px;
   background: var(--vt-bg-subtle);
@@ -392,7 +435,9 @@ h1 {
 .legend-work { color: #2f67a8; border-radius: 4px; background: rgba(47, 103, 168, .1); }
 .quote-card { background: #fbfaf7; }
 :root.dark .quote-card { background: #24231f; }
-.quote-card p { margin-bottom: 10px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
+.quote-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.quote-card p { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
+.quote-card p span { padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--vt-fg-muted) 9%, transparent); font-size: 10px; }
 .quote-card blockquote { margin: 0; color: var(--vt-fg-secondary); line-height: 1.75; }
 .quote-card footer { margin-top: 10px; font-size: 10px; }
 .quote-card footer a, .quote-card footer span { color: var(--vt-fg-muted); text-decoration: none; }
@@ -411,8 +456,17 @@ h1 {
   .health-line { grid-column: 1 / 3; }
 }
 @media (max-width: 680px) {
+  .home-view { padding: 20px clamp(16px, 4vw, 24px) 28px; }
   .home-header { align-items: stretch; flex-direction: column; gap: 16px; }
   .search-wrap { width: 100%; }
+  .continue-card { min-height: 0; padding: 18px; }
+  .section-heading { align-items: flex-start; gap: 10px; }
   .guide-steps { grid-template-columns: 1fr; }
+  .home-aside { grid-template-columns: minmax(0, 1fr); }
+  .health-line { grid-column: 1; }
+}
+@media (max-height: 620px) {
+  .home-view { padding-top: 20px; padding-bottom: 24px; }
+  .continue-card { min-height: 0; }
 }
 </style>

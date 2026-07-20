@@ -6,6 +6,15 @@ export type ThemeMode = "light" | "dark" | "system";
 export type AppView = "home" | "tables" | "files" | "settings";
 export type StartupPage = "home" | "tables";
 export type DensityMode = "comfortable" | "compact";
+export type DailyQuoteSource = "hitokoto" | "jinrishici" | "quotable" | "builtin";
+export type DailyQuoteStyle = "mixed" | "inspiring" | "literary" | "philosophy" | "poetry" | "lighthearted";
+
+export const QUOTE_STYLES_BY_SOURCE: Readonly<Record<DailyQuoteSource, readonly DailyQuoteStyle[]>> = {
+  hitokoto: ["mixed", "inspiring", "literary", "philosophy", "poetry", "lighthearted"],
+  jinrishici: ["poetry"],
+  quotable: ["mixed", "inspiring", "philosophy"],
+  builtin: ["mixed", "inspiring"],
+};
 
 export interface RecentTable {
   readonly name: string;
@@ -15,6 +24,8 @@ export interface RecentTable {
 const THEME_KEY = "vt:theme";
 const STARTUP_KEY = "vt:startup-page";
 const QUOTE_KEY = "vt:show-daily-quote";
+const QUOTE_SOURCE_KEY = "vt:daily-quote-source";
+const QUOTE_STYLE_KEY = "vt:daily-quote-style";
 const CALENDAR_KEY = "vt:show-mini-calendar";
 const ADMIN_FLOATING_KEY = "vt:admin-floating-button";
 const ADMIN_CONFIRM_CLOSE_KEY = "vt:admin-confirm-close";
@@ -53,6 +64,21 @@ function loadDensity(): DensityMode {
   return readStorage(DENSITY_KEY) === "compact" ? "compact" : "comfortable";
 }
 
+function loadQuoteSource(): DailyQuoteSource {
+  const stored = readStorage(QUOTE_SOURCE_KEY);
+  if (stored === "hitokoto" || stored === "jinrishici" || stored === "quotable" || stored === "builtin") {
+    return stored;
+  }
+  return getLocale() === "en-US" ? "quotable" : "hitokoto";
+}
+
+function loadQuoteStyle(source: DailyQuoteSource): DailyQuoteStyle {
+  const stored = readStorage(QUOTE_STYLE_KEY) as DailyQuoteStyle | null;
+  return stored && QUOTE_STYLES_BY_SOURCE[source].includes(stored)
+    ? stored
+    : QUOTE_STYLES_BY_SOURCE[source][0];
+}
+
 function loadRecentTables(): RecentTable[] {
   try {
     const parsed = JSON.parse(readStorage(RECENT_KEY) ?? "[]") as unknown;
@@ -81,6 +107,8 @@ export const useUiStore = defineStore("ui", () => {
   const startupPage = ref<StartupPage>(loadStartupPage());
   const activeView = ref<AppView>(startupPage.value);
   const showDailyQuote = ref(readStorage(QUOTE_KEY) !== "false");
+  const dailyQuoteSource = ref<DailyQuoteSource>(loadQuoteSource());
+  const dailyQuoteStyle = ref<DailyQuoteStyle>(loadQuoteStyle(dailyQuoteSource.value));
   const showMiniCalendar = ref(readStorage(CALENDAR_KEY) !== "false");
   const adminFloatingButton = ref(readStorage(ADMIN_FLOATING_KEY) !== "false");
   const adminConfirmClose = ref(readStorage(ADMIN_CONFIRM_CLOSE_KEY) !== "false");
@@ -130,6 +158,18 @@ export const useUiStore = defineStore("ui", () => {
     showDailyQuote.value = show;
     writeStorage(QUOTE_KEY, String(show));
   }
+  function setDailyQuoteSource(source: DailyQuoteSource): void {
+    dailyQuoteSource.value = source;
+    writeStorage(QUOTE_SOURCE_KEY, source);
+    if (!QUOTE_STYLES_BY_SOURCE[source].includes(dailyQuoteStyle.value)) {
+      setDailyQuoteStyle(QUOTE_STYLES_BY_SOURCE[source][0]);
+    }
+  }
+  function setDailyQuoteStyle(style: DailyQuoteStyle): void {
+    if (!QUOTE_STYLES_BY_SOURCE[dailyQuoteSource.value].includes(style)) return;
+    dailyQuoteStyle.value = style;
+    writeStorage(QUOTE_STYLE_KEY, style);
+  }
   function setShowMiniCalendar(show: boolean): void {
     showMiniCalendar.value = show;
     writeStorage(CALENDAR_KEY, String(show));
@@ -173,6 +213,8 @@ export const useUiStore = defineStore("ui", () => {
     startupPage,
     activeView,
     showDailyQuote,
+    dailyQuoteSource,
+    dailyQuoteStyle,
     showMiniCalendar,
     adminFloatingButton,
     adminConfirmClose,
@@ -192,6 +234,8 @@ export const useUiStore = defineStore("ui", () => {
     navigate,
     setStartupPage,
     setShowDailyQuote,
+    setDailyQuoteSource,
+    setDailyQuoteStyle,
     setShowMiniCalendar,
     setAdminFloatingButton,
     setAdminConfirmClose,

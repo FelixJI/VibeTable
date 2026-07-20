@@ -1,6 +1,6 @@
 import { nextTick } from "vue";
 import { beforeEach, describe, expect, it } from "vitest";
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { vi } from "vitest";
 import HomeView from "./HomeView.vue";
@@ -8,6 +8,7 @@ import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useWorkCalendarStore } from "@/stores/workCalendarStore";
 import { formatDateKey } from "@/calendar/workCalendar";
+import { loadDailyQuote } from "@/services/dailyQuoteService";
 
 vi.mock("@/services/dailyQuoteService", () => ({
   loadDailyQuote: vi.fn(async ({ fallback }) => fallback),
@@ -17,6 +18,7 @@ describe("HomeView", () => {
   beforeEach(() => {
     localStorage.clear();
     setActivePinia(createPinia());
+    vi.mocked(loadDailyQuote).mockClear();
   });
 
   it("offers a useful three-step empty state with only real actions clickable", async () => {
@@ -59,6 +61,27 @@ describe("HomeView", () => {
     ui.setShowMiniCalendar(false);
     await nextTick();
     expect(wrapper.find(".calendar-card").exists()).toBe(false);
+  });
+
+  it("refreshes the quote whenever Home is entered and on explicit request", async () => {
+    const ui = useUiStore();
+    const wrapper = mount(HomeView);
+    await flushPromises();
+    expect(loadDailyQuote).toHaveBeenCalledTimes(1);
+
+    ui.navigate("settings");
+    await nextTick();
+    ui.navigate("home");
+    await flushPromises();
+    expect(loadDailyQuote).toHaveBeenCalledTimes(2);
+    expect(loadDailyQuote).toHaveBeenLastCalledWith(expect.objectContaining({
+      source: ui.dailyQuoteSource,
+      style: ui.dailyQuoteStyle,
+    }));
+
+    await wrapper.get('[data-testid="quote-refresh"]').trigger("click");
+    await flushPromises();
+    expect(loadDailyQuote).toHaveBeenCalledTimes(3);
   });
 
   it("shows the shared holiday and adjusted-workday markers", async () => {

@@ -93,7 +93,11 @@
 html, body {
   margin: 0;
   padding: 0;
+  width: 100%;
+  min-width: 0;
   height: 100%;
+  min-height: 100%;
+  overflow: hidden;
   background: var(--vt-bg);
   color: var(--vt-fg);
   font-family: var(--vt-font-family);
@@ -116,5 +120,19 @@ button, input, select, textarea {
 }
 
 #app {
+  width: 100%;
+  min-width: 0;
   height: 100%;
+  min-height: 100%;
+  overflow: hidden;
+  background: var(--vt-bg);
+}
+
+#app > .n-config-provider {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--vt-bg);
 }

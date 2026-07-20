@@ -75,4 +75,19 @@ describe("uiStore", () => {
     for (const name of ["a", "b", "c", "d", "e", "f", "c"]) s.rememberTable(name);
     expect(s.recentTables.map((item) => item.name)).toEqual(["c", "f", "e", "d", "b"]);
   });
+
+  it("persists quote source and keeps its style compatible", () => {
+    const s = useUiStore();
+    s.setDailyQuoteSource("jinrishici");
+    expect(s.dailyQuoteStyle).toBe("poetry");
+    s.setDailyQuoteStyle("mixed");
+    expect(s.dailyQuoteStyle).toBe("poetry");
+
+    s.setDailyQuoteSource("hitokoto");
+    s.setDailyQuoteStyle("lighthearted");
+    expect(s.dailyQuoteSource).toBe("hitokoto");
+    expect(s.dailyQuoteStyle).toBe("lighthearted");
+    expect(localStorage.getItem("vt:daily-quote-source")).toBe("hitokoto");
+    expect(localStorage.getItem("vt:daily-quote-style")).toBe("lighthearted");
+  });
 });

@@ -34,11 +34,17 @@ import {
 } from "lucide-vue-next";
 import brandIconUrl from "@/assets/brand/vibetable.png";
 import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
-import { useUiStore } from "@/stores/uiStore";
+import { QUOTE_STYLES_BY_SOURCE, useUiStore } from "@/stores/uiStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useIdentifierMappingStore } from "@/stores/identifierMappingStore";
 import type { IdentifierMappingImportItem } from "@/contracts";
-import type { DensityMode, StartupPage, ThemeMode } from "@/stores/uiStore";
+import type {
+  DailyQuoteSource,
+  DailyQuoteStyle,
+  DensityMode,
+  StartupPage,
+  ThemeMode,
+} from "@/stores/uiStore";
 import type { Locale } from "@/i18n";
 import { t } from "@/i18n";
 import WorkCalendarMonth from "@/components/calendar/WorkCalendarMonth.vue";
@@ -168,6 +174,10 @@ const startupOptions = computed(() => [
   { label: t("nav.home"), value: "home" },
   { label: t("nav.tables"), value: "tables" },
 ]);
+const quoteSourceOptions = computed(() => (["hitokoto", "jinrishici", "quotable", "builtin"] as const)
+  .map((value) => ({ label: t(`settings.quote.source.${value}`), value })));
+const quoteStyleOptions = computed(() => QUOTE_STYLES_BY_SOURCE[ui.dailyQuoteSource]
+  .map((value) => ({ label: t(`settings.quote.style.${value}`), value })));
 
 const connectionDetail = computed(() => {
   if (workspace.phase === "opened") {
@@ -262,6 +272,30 @@ function setCalendarName(name: string): void {
             <div class="setting-row">
               <div><strong>{{ t("settings.quote") }}</strong><small>{{ t("settings.quote.hint") }}</small></div>
               <NSwitch :value="ui.showDailyQuote" :aria-label="t('settings.quote')" @update:value="ui.setShowDailyQuote" />
+            </div>
+            <div class="setting-row setting-row--nested">
+              <div><strong>{{ t("settings.quote.source") }}</strong><small>{{ t("settings.quote.source.hint") }}</small></div>
+              <NSelect
+                :value="ui.dailyQuoteSource"
+                :disabled="!ui.showDailyQuote"
+                :aria-label="t('settings.quote.source')"
+                :options="quoteSourceOptions"
+                class="setting-control"
+                data-testid="quote-source-select"
+                @update:value="ui.setDailyQuoteSource($event as DailyQuoteSource)"
+              />
+            </div>
+            <div class="setting-row setting-row--nested">
+              <div><strong>{{ t("settings.quote.style") }}</strong><small>{{ t("settings.quote.style.hint") }}</small></div>
+              <NSelect
+                :value="ui.dailyQuoteStyle"
+                :disabled="!ui.showDailyQuote || quoteStyleOptions.length === 1"
+                :aria-label="t('settings.quote.style')"
+                :options="quoteStyleOptions"
+                class="setting-control"
+                data-testid="quote-style-select"
+                @update:value="ui.setDailyQuoteStyle($event as DailyQuoteStyle)"
+              />
             </div>
             <div class="setting-row">
               <div><strong>{{ t("settings.calendar") }}</strong><small>{{ t("settings.calendar.hint") }}</small></div>
@@ -478,6 +512,7 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 }
 .setting-row:last-child { border-bottom: 0; }
 .setting-row--tall { min-height: 82px; }
+.setting-row--nested { background: color-mix(in srgb, var(--vt-bg-subtle) 55%, transparent); }
 .setting-row > div { display: flex; flex-direction: column; }
 .setting-row strong, .setting-action strong { font-weight: 500; }
 .setting-row small, .setting-action small { color: var(--vt-fg-muted); }
@@ -571,5 +606,12 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   .settings-content { padding: 28px 20px; }
   .calendar-layout { grid-template-columns: 1fr; }
   .calendar-rule-panel { border-top: 1px solid var(--vt-border); border-left: 0; }
+}
+@media (max-width: 560px) {
+  .settings-content { padding: 24px 14px; }
+  .setting-row { align-items: stretch; flex-direction: column; gap: 10px; }
+  .setting-row > .setting-control { width: 100%; }
+  .calendar-layout { padding: 12px; }
+  .mapping-footer { align-items: flex-start; flex-direction: column; }
 }
 </style>

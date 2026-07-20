@@ -502,13 +502,21 @@ useKeyboard({
 .workspace {
   display: flex;
   flex-direction: row;
+  width: 100%;
+  min-width: 0;
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--vt-bg);
 }
 .app-surface {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--vt-bg);
 }
 .app-header {
   display: flex;
@@ -523,7 +531,7 @@ useKeyboard({
 .app-title span { font-weight: 650; letter-spacing: -0.01em; }
 .app-title i { width: 1px; height: 13px; background: var(--vt-border); }
 .app-title strong { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); font-weight: 500; }
-.view-stack { position: relative; flex: 1 1 auto; min-height: 0; }
+.view-stack { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; background: var(--vt-bg); }
 .view-stack > * { width: 100%; height: 100%; }
 .tables-view { display: flex; min-width: 0; }
 .main {
