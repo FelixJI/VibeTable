@@ -20,7 +20,7 @@
       "directusHost": "^12.0.0",
       "capability": "vibetable-workspace-index.v1",
       "stage": "G3",
-      "description": "Workspace index endpoint: idempotent revision publish, document link/unlink, and expected-head CAS reconcile."
+      "description": "Workspace index endpoint: idempotent document registration/import, revision publish, link/unlink, and expected-head CAS reconcile."
     }
   ]
 }

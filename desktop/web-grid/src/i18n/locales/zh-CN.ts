@@ -1,4 +1,9 @@
 export const messages: Record<string, string> = {
+  "files.import": "导入文件",
+  "files.drop.title": "释放以导入文件",
+  "files.drop.hint": "文件将交给桌面宿主处理，Web 不会读取本地路径。",
+  "files.drop.forwarded": "已交给桌面宿主；导入完成后列表会自动刷新。",
+  "files.dragOut.hint": "拖到资源管理器或其他应用",
   "startup.productLine": "本地优先的数据与文件工作台",
   "startup.progress": "启动进度",
   "startup.step.runtime": "本地服务",

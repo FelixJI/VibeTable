@@ -30,6 +30,8 @@ from backend.contracts.document_workspace import (
     ReadDocumentHistoryParams,
     ReadDocumentsParams,
     ReadFolderParams,
+    RegisterDocumentParams,
+    RegisterDocumentResult,
     UnlinkDocumentParams,
 )
 
@@ -160,6 +162,36 @@ class DocumentWorkspaceService:
             total=_safe_int(meta.get("filter_count"))
             or _safe_int(meta.get("total_count"))
             or len(documents),
+        )
+
+    async def register_document(self, params: RegisterDocumentParams) -> RegisterDocumentResult:
+        """Idempotently register a host-imported document and optional item link.
+
+        Only metadata crosses this boundary. The selected source path and file
+        content remain in the native host.
+        """
+        if (params.item_collection is None) != (params.item_id is None):
+            raise DocumentWorkspaceError(
+                "itemCollection and itemId must be supplied together",
+                code="document_scope_invalid",
+            )
+        if params.item_collection is not None and params.item_collection not in self._profiles:
+            raise DocumentWorkspaceError(
+                f"collection {params.item_collection!r} is not in capability manifest",
+                code="link_collection_not_allowed",
+            )
+        token = await self._auth.access_token()
+        response = await self._transport.request(
+            "POST",
+            f"{self._extension_base_url}/vibetable-workspace-index/register-document",
+            access_token=token,
+            json_body=params.model_dump(by_alias=True),
+        )
+        data = _response_data(response)
+        return RegisterDocumentResult(
+            document_id=str(data.get("documentId", params.document_id)),
+            status=str(data.get("status", "created")),
+            link_id=str(data.get("linkId", "")) or None,
         )
 
     # ------------------------------------------------------------------

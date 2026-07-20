@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { NButton, NIcon, NInput } from "naive-ui";
 import { Cloud, FilePlus2, Files, RefreshCw, Search } from "lucide-vue-next";
 import DocumentList from "@/components/files/DocumentList.vue";
@@ -16,6 +16,10 @@ const emit = defineEmits<{ intent: [intent: DocumentWorkspaceIntent] }>();
 const store = useDocumentWorkspaceStore();
 const service = createDocumentWorkspaceService((intent) => emit("intent", intent));
 const menu = ref<{ entry: DocumentEntry; x: number; y: number } | null>(null);
+const dropDepth = ref(0);
+const dropActive = ref(false);
+const dropFeedback = ref(false);
+let dropFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 const selectedCount = computed(() => store.selectedHandles.length);
 const currentRevisions = computed(() => store.primaryHandle ? store.revisions[store.primaryHandle] ?? [] : []);
 
@@ -45,11 +49,60 @@ function onAction(action: DocumentCapability, entry: DocumentEntry): void {
   else service[action](entry.entryHandle);
 }
 
+function isExternalFileDrag(event: DragEvent): boolean {
+  // Reading the type list is enough to distinguish a native file drag. Do not
+  // enumerate DataTransfer.files/items or read non-standard File.path values.
+  return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+}
+
+function onDragEnter(event: DragEvent): void {
+  if (!isExternalFileDrag(event)) return;
+  event.preventDefault();
+  dropDepth.value += 1;
+  dropActive.value = true;
+}
+
+function onDragOver(event: DragEvent): void {
+  if (!isExternalFileDrag(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+}
+
+function onDragLeave(event: DragEvent): void {
+  if (!isExternalFileDrag(event)) return;
+  dropDepth.value = Math.max(0, dropDepth.value - 1);
+  if (dropDepth.value === 0) dropActive.value = false;
+}
+
+function onExternalDrop(event: DragEvent): void {
+  if (!isExternalFileDrag(event)) return;
+  event.preventDefault();
+  dropDepth.value = 0;
+  dropActive.value = false;
+  // Enumerate only to obtain the DOM File objects required by WebView2's
+  // additionalObjects channel. Never read File.path, name, bytes, or base64.
+  const files = Array.from(event.dataTransfer?.files ?? []);
+  service.externalDrop(props.scope, files);
+  dropFeedback.value = true;
+  if (dropFeedbackTimer) clearTimeout(dropFeedbackTimer);
+  dropFeedbackTimer = setTimeout(() => { dropFeedback.value = false; }, 3_200);
+}
+
 onMounted(requestList);
+onBeforeUnmount(() => {
+  if (dropFeedbackTimer) clearTimeout(dropFeedbackTimer);
+});
 </script>
 
 <template>
-  <section class="file-workspace" data-testid="file-workspace">
+  <section
+    class="file-workspace"
+    data-testid="file-workspace"
+    @dragenter="onDragEnter"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onExternalDrop"
+  >
     <header class="file-toolbar">
       <div class="authority-switch" role="tablist" :aria-label="t('files.source')">
         <button :class="{ active: store.authorityFilter === 'workspace' }" role="tab" :aria-selected="store.authorityFilter === 'workspace'" @click="setAuthority('workspace')">
@@ -64,14 +117,22 @@ onMounted(requestList);
       </NInput>
       <span v-if="selectedCount" class="selection-count">{{ t("files.selected", { count: selectedCount }) }}</span>
       <NButton quaternary size="small" :aria-label="t('files.refresh')" @click="requestList"><template #icon><NIcon :size="16"><RefreshCw /></NIcon></template></NButton>
-      <NButton type="primary" size="small" disabled :title="t('files.add.notReady')"><template #icon><NIcon :size="16"><FilePlus2 /></NIcon></template>{{ t("files.add") }}</NButton>
+      <NButton type="primary" size="small" data-testid="document-import" @click="service.importFiles(scope)"><template #icon><NIcon :size="16"><FilePlus2 /></NIcon></template>{{ t("files.import") }}</NButton>
     </header>
 
     <div v-if="store.phase === 'failed' && store.entries.length" class="file-error" role="alert">
       <span>{{ store.lastError }}</span><NButton text size="tiny" @click="requestList">{{ t("files.retry") }}</NButton>
     </div>
+    <div v-if="dropFeedback" class="drop-feedback" role="status" data-testid="drop-feedback">
+      {{ t("files.drop.forwarded") }}
+    </div>
 
     <div class="file-body">
+      <div v-if="dropActive" class="external-drop-zone" data-testid="external-drop-zone">
+        <span><NIcon :size="24"><FilePlus2 /></NIcon></span>
+        <strong>{{ t("files.drop.title") }}</strong>
+        <p>{{ t("files.drop.hint") }}</p>
+      </div>
       <main class="file-list-pane">
         <div v-if="store.phase === 'loading' && store.entries.length === 0" class="file-skeleton" aria-busy="true">
           <i v-for="index in 8" :key="index"></i>
@@ -83,7 +144,7 @@ onMounted(requestList);
           <span><NIcon :size="22"><Files /></NIcon></span>
           <strong>{{ store.query ? t("files.search.empty") : t("files.empty") }}</strong>
           <p>{{ store.query ? t("files.search.emptyHint") : t("files.emptyHint") }}</p>
-          <NButton v-if="!store.query && store.authorityFilter === 'workspace'" size="small" type="primary" disabled :title="t('files.add.notReady')">{{ t("files.add") }}</NButton>
+          <NButton v-if="!store.query && store.authorityFilter === 'workspace'" size="small" type="primary" @click="service.importFiles(scope)">{{ t("files.import") }}</NButton>
         </div>
         <DocumentList
           v-else
@@ -94,6 +155,7 @@ onMounted(requestList);
           @open="service.open($event.entryHandle)"
           @preview="service.preview($event.entryHandle)"
           @context="(entry, point) => menu = { entry, ...point }"
+          @drag-out="service.dragOut($event.entryHandle)"
         />
       </main>
       <DocumentInspector
@@ -120,7 +182,12 @@ onMounted(requestList);
 .authority-switch button.active { color: var(--vt-fg); background: var(--vt-bg); box-shadow: var(--vt-shadow-1); }
 .file-search { width: min(280px, 30vw); margin-left: 4px; }
 .selection-count { margin-left: auto; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
-.file-body { display: flex; flex: 1; min-height: 0; }
+.file-body { position: relative; display: flex; flex: 1; min-height: 0; }
+.drop-feedback { min-height: 32px; padding: 6px 12px; color: var(--vt-color-primary-600); font-size: var(--vt-font-caption); border-bottom: 1px solid var(--vt-color-primary-100); background: var(--vt-color-primary-50); }
+.external-drop-zone { position: absolute; z-index: 80; inset: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--vt-color-primary-600); border: 2px dashed var(--vt-color-primary-200); border-radius: 12px; background: color-mix(in srgb, var(--vt-color-primary-50) 92%, var(--vt-bg)); box-shadow: inset 0 0 0 1px rgba(255,255,255,.7); pointer-events: none; }
+.external-drop-zone span { display: grid; place-items: center; width: 48px; height: 48px; margin-bottom: 10px; border-radius: 50%; background: var(--vt-bg); box-shadow: var(--vt-shadow-1); }
+.external-drop-zone strong { font-size: var(--vt-font-label); font-weight: 600; }
+.external-drop-zone p { margin: 4px 0 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .file-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; padding: 5px 12px; color: var(--vt-color-danger-600); border-bottom: 1px solid color-mix(in srgb, var(--vt-color-danger-500) 28%, var(--vt-border)); background: color-mix(in srgb, var(--vt-color-danger-500) 7%, var(--vt-bg)); font-size: var(--vt-font-caption); }
 .file-list-pane { flex: 1; min-width: 0; overflow: auto; }
 .file-empty { display: flex; height: 100%; min-height: 280px; flex-direction: column; align-items: center; justify-content: center; padding: 32px; color: var(--vt-fg-muted); text-align: center; }

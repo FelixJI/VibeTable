@@ -62,6 +62,9 @@ public partial class MainWindow : Window
     private readonly TableWorkspaceService _workspace;
     private readonly ITableRpcGateway _workspaceGateway;
     private readonly WorkspaceRequestDispatcher _dispatcher;
+    private readonly WorkspaceMountStore _workspaceMounts;
+    private readonly ILocalDocumentFilePicker _documentFilePicker;
+    private readonly string _documentWorkspaceSourceScope;
     private readonly bool _directusEnabled;
     private readonly bool _directusAuto;
     private readonly DirectusLoginStore? _loginStore;
@@ -89,6 +92,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _sessionCts;
     private string? _pendingLoginEmail;
     private string? _pendingLoginPassword;
+    private string? _authenticatedDirectusUserId;
     private string? _localDirectusDirectory;
     private DirectusStartupWindow? _directusStartupWindow;
     private CancellationTokenSource? _directusStartupCts;
@@ -104,6 +108,7 @@ public partial class MainWindow : Window
         false);
     private TaskCompletionSource<FirstRunSubmission?>? _firstRunSubmission;
     private TaskCompletionSource<LoginSubmission?>? _loginSubmission;
+    private IReadOnlyList<string>? _activeExternalDropPaths;
 
     public MainWindow()
     {
@@ -127,12 +132,12 @@ public partial class MainWindow : Window
             startupOptions.NoDirectusAuto);
         _directusEnabled = _directusAuto
             || !string.IsNullOrWhiteSpace(configuredDirectusUrl);
+        _documentWorkspaceSourceScope = BuildDirectusSourceScope(
+            _directusAuto,
+            configuredDirectusUrl);
         if (_directusEnabled)
         {
-            string sourceScope = _directusAuto
-                ? "local:default"
-                : "remote:" + configuredDirectusUrl;
-            _loginStore = new DirectusLoginStore(sourceScope);
+            _loginStore = new DirectusLoginStore(_documentWorkspaceSourceScope);
         }
         _directusSessionReady = _directusEnabled
             ? new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
@@ -145,6 +150,8 @@ public partial class MainWindow : Window
         _router = new WebMessageRouter(OnRoutedWebRequest);
         _backendAdapter = new BackendLifecycleAdapter(_supervisor);
         _webBridge = new WebViewBridge(this, _router);
+        _workspaceMounts = new WorkspaceMountStore();
+        _documentFilePicker = new WindowsLocalDocumentFilePicker();
 
         // Table workspace: gateway over the supervisor's JsonRpcClient (created
         // during StartAsync), the workspace orchestrator, and the request
@@ -975,9 +982,11 @@ public partial class MainWindow : Window
             _dispatcher.SetDirectusGateway(_directusGateway);
             _documentWorkspace = new DocumentWorkspaceHostService(
                 new JsonRpcDocumentWorkspaceGateway(client),
-                new WorkspaceMountStore(),
+                _workspaceMounts,
                 new DocumentCapabilityStore(),
-                new WindowsLocalDocumentActions());
+                new WindowsLocalDocumentActions(),
+                filePicker: _documentFilePicker,
+                partitionKeyProvider: GetDocumentWorkspacePartitionKey);
             _dispatcher.SetDocumentWorkspace(_documentWorkspace);
         }
         try
@@ -986,21 +995,26 @@ public partial class MainWindow : Window
             var status = await _directusGateway.GetStatusAsync(CancellationToken.None);
             if (string.Equals(status.State, "authenticated", StringComparison.Ordinal))
             {
+                await CaptureAuthenticatedPartitionAsync(status).ConfigureAwait(true);
+                _pendingLoginEmail = null;
+                _pendingLoginPassword = null;
                 return true;
             }
 
             if (!string.IsNullOrEmpty(_pendingLoginEmail)
                 && !string.IsNullOrEmpty(_pendingLoginPassword))
             {
+                string pendingEmail = _pendingLoginEmail;
                 try
                 {
                     status = await _directusGateway.LoginAsync(
-                        _pendingLoginEmail,
+                        pendingEmail,
                         _pendingLoginPassword,
                         otp: null,
                         CancellationToken.None);
                     if (string.Equals(status.State, "authenticated", StringComparison.Ordinal))
                     {
+                        await CaptureAuthenticatedPartitionAsync(status).ConfigureAwait(true);
                         return true;
                     }
                 }
@@ -1011,6 +1025,7 @@ public partial class MainWindow : Window
                 }
                 finally
                 {
+                    _pendingLoginEmail = null;
                     _pendingLoginPassword = null;
                 }
             }
@@ -1026,6 +1041,7 @@ public partial class MainWindow : Window
                         if (string.Equals(
                             status.State, "authenticated", StringComparison.Ordinal))
                         {
+                            await CaptureAuthenticatedPartitionAsync(status).ConfigureAwait(true);
                             return true;
                         }
                     }
@@ -1050,6 +1066,7 @@ public partial class MainWindow : Window
                         if (string.Equals(
                             status.State, "authenticated", StringComparison.Ordinal))
                         {
+                            await CaptureAuthenticatedPartitionAsync(status).ConfigureAwait(true);
                             return true;
                         }
                     }
@@ -1103,6 +1120,7 @@ public partial class MainWindow : Window
                             submission.AutoLogin,
                             ManagedPassword: false),
                         submission.RememberPassword ? submission.Password : null);
+                    await CaptureAuthenticatedPartitionAsync(status).ConfigureAwait(true);
                     return true;
                 }
                 catch (OperationCanceledException)
@@ -1224,6 +1242,35 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (string.Equals(request.Type, "document.importRequested", StringComparison.Ordinal))
+        {
+            _ = ImportDocumentsFromPickerAsync(request.Payload);
+            return;
+        }
+        if (string.Equals(
+            request.Type, "document.externalDropRequested", StringComparison.Ordinal))
+        {
+            var nativePaths = _activeExternalDropPaths?.ToArray() ?? [];
+            var dropFailure = ValidateExternalDropPaths(nativePaths);
+            if (dropFailure is not null)
+            {
+                _webBridge.PostNotification("document.operationFailed", dropFailure);
+                return;
+            }
+            _ = ImportDocumentsFromHostPathsAsync(request.Payload, nativePaths);
+            return;
+        }
+        if (string.Equals(request.Type, "document.relinkRequested", StringComparison.Ordinal))
+        {
+            _ = RelinkDocumentAsync(request.Payload);
+            return;
+        }
+        if (string.Equals(request.Type, "document.dragOutRequested", StringComparison.Ordinal))
+        {
+            DragDocumentOut(request.Payload);
+            return;
+        }
+
         if (string.Equals(request.Type, "admin.openRequested", StringComparison.Ordinal))
         {
             ApplyAdminPreferences(request.Payload);
@@ -1234,6 +1281,244 @@ public partial class MainWindow : Window
         }
 
         _dispatcher.Dispatch(request);
+    }
+
+    private async Task ImportDocumentsFromPickerAsync(JsonElement payload)
+    {
+        if (_documentWorkspace is null)
+        {
+            PostDocumentOperationFailure(
+                "文档工作区尚未连接。", "DOCUMENT_WORKSPACE_UNAVAILABLE");
+            return;
+        }
+        try
+        {
+            var request = CreateDocumentImportRequest(payload);
+            var result = await _documentWorkspace.ImportFromPickerAsync(
+                request,
+                _sessionCts?.Token ?? CancellationToken.None);
+            if (result is not null)
+                PostDocumentWorkspaceChanged("import", 1);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            PostDocumentOperationFailure(ex, "DOCUMENT_IMPORT_FAILED");
+        }
+    }
+
+    private async Task ImportDocumentsFromHostPathsAsync(
+        JsonElement payload,
+        IReadOnlyList<string> nativePaths)
+    {
+        if (_documentWorkspace is null)
+        {
+            PostDocumentOperationFailure(
+                "文档工作区尚未连接。", "DOCUMENT_WORKSPACE_UNAVAILABLE");
+            return;
+        }
+        int imported = 0;
+        try
+        {
+            var request = CreateDocumentImportRequest(payload);
+            foreach (string nativePath in nativePaths.Take(100))
+            {
+                await _documentWorkspace.ImportFromHostPathAsync(
+                    request,
+                    nativePath,
+                    _sessionCts?.Token ?? CancellationToken.None);
+                imported++;
+            }
+            if (imported > 0) PostDocumentWorkspaceChanged("import", imported);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            if (imported > 0) PostDocumentWorkspaceChanged("import", imported);
+            PostDocumentOperationFailure(ex, "DOCUMENT_IMPORT_FAILED");
+        }
+    }
+
+    private async Task RelinkDocumentAsync(JsonElement payload)
+    {
+        if (_documentWorkspace is null)
+        {
+            PostDocumentOperationFailure(
+                "文档工作区尚未连接。", "DOCUMENT_WORKSPACE_UNAVAILABLE");
+            return;
+        }
+        string? handle = ReadDocumentString(payload, "handle");
+        if (string.IsNullOrWhiteSpace(handle))
+        {
+            PostDocumentOperationFailure("缺少文档授权。", "BAD_PAYLOAD");
+            return;
+        }
+        try
+        {
+            var result = await _documentWorkspace.RelinkMissingFromPickerAsync(
+                handle,
+                _sessionCts?.Token ?? CancellationToken.None);
+            if (result is not null) PostDocumentWorkspaceChanged("relink", 1);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            PostDocumentOperationFailure(ex, "DOCUMENT_RELINK_FAILED");
+        }
+    }
+
+    private void DragDocumentOut(JsonElement payload)
+    {
+        if (_documentWorkspace is null)
+        {
+            PostDocumentOperationFailure(
+                "文档工作区尚未连接。", "DOCUMENT_WORKSPACE_UNAVAILABLE");
+            return;
+        }
+        string? handle = ReadDocumentString(payload, "handle");
+        if (string.IsNullOrWhiteSpace(handle))
+        {
+            PostDocumentOperationFailure("缺少文档授权。", "BAD_PAYLOAD");
+            return;
+        }
+        try
+        {
+            string fullPath = _documentWorkspace.ResolveDragOutPath(handle);
+            var data = new System.Windows.DataObject();
+            data.SetData(System.Windows.DataFormats.FileDrop, new[] { fullPath });
+            System.Windows.DragDrop.DoDragDrop(
+                AppWebView,
+                data,
+                System.Windows.DragDropEffects.Copy);
+        }
+        catch (Exception ex)
+        {
+            PostDocumentOperationFailure(ex, "DOCUMENT_DRAG_OUT_FAILED");
+        }
+    }
+
+    private DocumentImportRequest CreateDocumentImportRequest(JsonElement payload)
+    {
+        var selection = new ManagedWorkspaceProvisioner(
+            _workspaceMounts,
+            GetDocumentWorkspacePartitionKey()).EnsurePreferred();
+        JsonElement scope = payload.ValueKind == JsonValueKind.Object
+            && payload.TryGetProperty("scope", out var scopeElement)
+                ? scopeElement
+                : default;
+        string kind = ReadDocumentString(scope, "kind") ?? "global";
+        if (string.Equals(kind, "global", StringComparison.Ordinal))
+            return new DocumentImportRequest(selection.WorkspaceId, FolderId: null);
+        if (!string.Equals(kind, "record", StringComparison.Ordinal))
+            throw new DocumentFileOperationException("未知文件范围。", "BAD_PAYLOAD");
+
+        string? collection = ReadDocumentString(scope, "collection");
+        string? itemId = ReadDocumentScalar(scope, "itemId");
+        if (string.IsNullOrWhiteSpace(collection) || string.IsNullOrWhiteSpace(itemId))
+            throw new DocumentFileOperationException(
+                "记录文件范围缺少必要信息。", "BAD_PAYLOAD");
+        return new DocumentImportRequest(
+            selection.WorkspaceId,
+            FolderId: null,
+            ItemCollection: collection,
+            ItemId: itemId,
+            LinkType: "attachment");
+    }
+
+    private string GetDocumentWorkspacePartitionKey()
+    {
+        string account = string.IsNullOrWhiteSpace(_authenticatedDirectusUserId)
+            ? "user:unknown"
+            : "user:" + _authenticatedDirectusUserId;
+        return _documentWorkspaceSourceScope + "|" + account;
+    }
+
+    private async Task CaptureAuthenticatedPartitionAsync(
+        DirectusSessionStatus status)
+    {
+        var user = status.User;
+        if (user is null || string.IsNullOrWhiteSpace(user.Id))
+        {
+            user = await _directusGateway!.GetCurrentUserAsync(
+                _sessionCts?.Token ?? CancellationToken.None).ConfigureAwait(true);
+        }
+        if (string.IsNullOrWhiteSpace(user.Id))
+            throw new InvalidOperationException("Directus 当前用户缺少稳定标识。");
+        _authenticatedDirectusUserId = user.Id;
+    }
+
+    private static string BuildDirectusSourceScope(
+        bool directusAuto,
+        string? configuredDirectusUrl)
+    {
+        if (directusAuto) return "local:default";
+        if (!Uri.TryCreate(configuredDirectusUrl, UriKind.Absolute, out var uri))
+            return "remote:unconfigured";
+
+        var normalized = new UriBuilder(uri)
+        {
+            Host = uri.Host.ToLowerInvariant(),
+            Fragment = string.Empty,
+            Query = string.Empty,
+            Path = uri.AbsolutePath.TrimEnd('/'),
+        }.Uri.GetComponents(
+            UriComponents.SchemeAndServer | UriComponents.Path,
+            UriFormat.UriEscaped).TrimEnd('/');
+        return "remote:" + normalized;
+    }
+
+    private void PostDocumentWorkspaceChanged(string reason, int affectedCount)
+        => _webBridge.PostNotification(
+            "document.workspaceChanged",
+            new { reason, affectedCount });
+
+    private void PostDocumentOperationFailure(Exception exception, string fallbackCode)
+    {
+        string message = exception switch
+        {
+            DocumentFileOperationException fileError => fileError.Message,
+            DocumentCapabilityException capabilityError => capabilityError.Message,
+            _ => "文件操作未完成，请重试。",
+        };
+        string code = exception switch
+        {
+            DocumentFileOperationException fileError => fileError.Code,
+            DocumentCapabilityException capabilityError => capabilityError.Code,
+            _ => fallbackCode,
+        };
+        PostDocumentOperationFailure(message, code);
+    }
+
+    private void PostDocumentOperationFailure(string message, string code)
+        => _webBridge.PostNotification(
+            "document.operationFailed",
+            new DocumentOperationFailedPayload(message, code));
+
+    internal static DocumentOperationFailedPayload? ValidateExternalDropPaths(
+        IReadOnlyList<string>? nativePaths)
+        => nativePaths is null || nativePaths.Count == 0
+            ? new DocumentOperationFailedPayload(
+                "拖入请求没有携带原生文件对象，请使用“导入文件”按钮。",
+                "DOCUMENT_DROP_OBJECTS_MISSING")
+            : null;
+
+    private static string? ReadDocumentString(JsonElement payload, string name)
+        => payload.ValueKind == JsonValueKind.Object
+            && payload.TryGetProperty(name, out var value)
+            && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+
+    private static string? ReadDocumentScalar(JsonElement payload, string name)
+    {
+        if (payload.ValueKind != JsonValueKind.Object
+            || !payload.TryGetProperty(name, out var value)) return null;
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number => value.GetRawText(),
+            _ => null,
+        };
     }
 
     private void HandleFirstRunSubmission(RoutedWebRequest request)
@@ -2241,11 +2526,69 @@ public partial class MainWindow : Window
             // TryGetWebMessageAsString here rejects every object message with
             // a COM exception and silently deadlocks the app.ready handshake.
             string raw = e.WebMessageAsJson;
-
-            var reply = _router.Route(raw);
-            if (reply is not null && sender is CoreWebView2 core)
+            if (sender is not CoreWebView2 core) return;
+            if (!_owner.IsAppOrigin(e.Source))
             {
-                PostReply(core, reply);
+                PostReply(core, WebMessageRouter.BuildOperationFailed(
+                    null,
+                    "消息来源不受信任。",
+                    "UNTRUSTED_MESSAGE_SOURCE"));
+                return;
+            }
+
+            IReadOnlyList<string>? externalDropPaths = null;
+            try
+            {
+                using var envelope = JsonDocument.Parse(raw);
+                string? type = envelope.RootElement.TryGetProperty("type", out var typeElement)
+                    && typeElement.ValueKind == JsonValueKind.String
+                        ? typeElement.GetString()
+                        : null;
+                var additionalObjects = e.AdditionalObjects;
+                if (additionalObjects.Count > 0)
+                {
+                    if (!string.Equals(
+                        type,
+                        "document.externalDropRequested",
+                        StringComparison.Ordinal)
+                        || additionalObjects.Count > 100)
+                    {
+                        _owner.PostDocumentOperationFailure(
+                            "拖入文件数据无效。",
+                            "DOCUMENT_DROP_OBJECTS_INVALID");
+                        return;
+                    }
+
+                    var paths = new List<string>(additionalObjects.Count);
+                    foreach (object additionalObject in additionalObjects)
+                    {
+                        if (additionalObject is not CoreWebView2File file
+                            || string.IsNullOrWhiteSpace(file.Path))
+                        {
+                            _owner.PostDocumentOperationFailure(
+                                "拖入文件数据无效。",
+                                "DOCUMENT_DROP_OBJECTS_INVALID");
+                            return;
+                        }
+                        paths.Add(file.Path);
+                    }
+                    externalDropPaths = paths;
+                }
+            }
+            catch (JsonException)
+            {
+                // Let the normal router return the canonical BAD_JSON reply.
+            }
+
+            _owner._activeExternalDropPaths = externalDropPaths;
+            try
+            {
+                var reply = _router.Route(raw);
+                if (reply is not null) PostReply(core, reply);
+            }
+            finally
+            {
+                _owner._activeExternalDropPaths = null;
             }
         }
 

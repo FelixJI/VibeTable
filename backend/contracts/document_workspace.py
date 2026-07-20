@@ -73,6 +73,32 @@ class DocumentListResult(WorkspaceModel):
 
 
 # ---------------------------------------------------------------------------
+# registerDocument
+# ---------------------------------------------------------------------------
+
+
+class RegisterDocumentParams(WorkspaceModel):
+    workspace_id: str = Field(min_length=1, max_length=128)
+    workspace_name: str = Field(min_length=1, max_length=255)
+    document_id: str = Field(min_length=1, max_length=128)
+    file_name: str = Field(min_length=1, max_length=255)
+    mime_type: str = Field(default="application/octet-stream", max_length=128)
+    scheme_id: str = Field(min_length=1, max_length=128)
+    revision_id: str = Field(min_length=1, max_length=128)
+    hash: str = Field(min_length=8, max_length=64)
+    size: int = Field(default=0, ge=0)
+    item_collection: str | None = Field(default=None, max_length=128)
+    item_id: str | None = Field(default=None, max_length=128)
+    link_type: str = Field(default="attachment", max_length=64)
+
+
+class RegisterDocumentResult(WorkspaceModel):
+    document_id: str = Field(min_length=1, max_length=128)
+    status: str = Field(min_length=1, max_length=32)
+    link_id: str | None = Field(default=None, max_length=128)
+
+
+# ---------------------------------------------------------------------------
 # publishIndexBatch
 # ---------------------------------------------------------------------------
 

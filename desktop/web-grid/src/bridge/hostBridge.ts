@@ -55,6 +55,11 @@ export interface Diagnostic {
  */
 export interface WebViewLike {
   postMessage: (message: unknown) => void;
+  /** WebView2 native object channel; File objects never enter the JSON envelope. */
+  postMessageWithAdditionalObjects?: (
+    message: unknown,
+    additionalObjects: readonly File[],
+  ) => void;
   addEventListener: (
     type: "message",
     listener: (event: { readonly data: unknown }) => void,
@@ -128,6 +133,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "document.listLoaded",
   "document.historyLoaded",
   "document.actionCompleted",
+  "document.operationFailed",
+  "document.workspaceChanged",
 ]);
 
 /**
@@ -162,7 +169,9 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "identifierMappings.importRequested",
   "identifierMappings.reconcileRequested",
   "document.listRequested",
-  "document.pickRequested",
+  "document.importRequested",
+  "document.externalDropRequested",
+  "document.dragOutRequested",
   "document.openRequested",
   "document.previewRequested",
   "document.revealRequested",
@@ -202,6 +211,15 @@ export interface HostBridge {
     type: K,
     payload: WebPayloadMap[K],
   ): void;
+  /**
+   * Post an envelope and DOM File objects over WebView2's native additional
+   * objects channel. Returns false when the installed runtime lacks the API.
+   */
+  notifyWithAdditionalObjects<K extends WebMessageType>(
+    type: K,
+    payload: WebPayloadMap[K],
+    additionalObjects: readonly File[],
+  ): boolean;
   /** Subscribe to a whitelisted host -> web event. Returns an unsubscribe fn. */
   on<K extends HostMessageType>(
     type: K,
@@ -435,6 +453,27 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     postEnvelope({ type, payload });
   }
 
+  function notifyWithAdditionalObjects<K extends WebMessageType>(
+    type: K,
+    payload: WebPayloadMap[K],
+    additionalObjects: readonly File[],
+  ): boolean {
+    if (!WEB_MESSAGE_TYPES.has(type)) {
+      throw new Error(
+        `HostBridge: refusing to post non-whitelisted web message type "${type}"`,
+      );
+    }
+    const target = webview();
+    if (!target.postMessageWithAdditionalObjects) return false;
+    // The JSON-shaped envelope contains only the typed payload. File objects
+    // travel exclusively in WebView2's native additionalObjects collection.
+    target.postMessageWithAdditionalObjects(
+      { type, payload },
+      [...additionalObjects],
+    );
+    return true;
+  }
+
   function on<K extends HostMessageType>(
     type: K,
     handler: (payload: HostPayloadMap[K]) => void,
@@ -454,7 +493,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     };
   }
 
-  return { start, stop, request, notify, on };
+  return { start, stop, request, notify, notifyWithAdditionalObjects, on };
 }
 
 // ---------------------------------------------------------------------------

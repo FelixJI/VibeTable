@@ -39,4 +39,13 @@ describe("documentWorkspaceStore", () => {
     expect(store.phase).toBe("loading");
     expect(store.entries).toHaveLength(4);
   });
+
+  it("retains a typed document failure code until the next load", () => {
+    const store = useDocumentWorkspaceStore();
+    store.setFailed("drop failed", "DOCUMENT_DROP_OBJECTS_MISSING");
+    expect(store.lastErrorCode).toBe("DOCUMENT_DROP_OBJECTS_MISSING");
+    store.beginLoad();
+    expect(store.lastError).toBeNull();
+    expect(store.lastErrorCode).toBeNull();
+  });
 });

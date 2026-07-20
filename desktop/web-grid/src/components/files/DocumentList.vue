@@ -24,6 +24,7 @@ const emit = defineEmits<{
   open: [entry: DocumentEntry];
   preview: [entry: DocumentEntry];
   context: [entry: DocumentEntry, point: { x: number; y: number }];
+  dragOut: [entry: DocumentEntry];
   selectAll: [];
 }>();
 
@@ -85,6 +86,17 @@ function onKeydown(event: KeyboardEvent, entry: DocumentEntry, index: number): v
     emit("context", entry, { x: rect.left + 36, y: rect.top + 24 });
   }
 }
+
+function onDragStart(event: DragEvent, entry: DocumentEntry): void {
+  if (!entry.capabilities.includes("dragOut")) {
+    event.preventDefault();
+    return;
+  }
+  // Never place paths or the capability handle in browser drag data. The host
+  // receives the opaque intent and starts the real native FileDrop operation.
+  emit("dragOut", entry);
+  event.preventDefault();
+}
 </script>
 
 <template>
@@ -106,11 +118,14 @@ function onKeydown(event: KeyboardEvent, entry: DocumentEntry, index: number): v
         'document-row--missing': !['available', 'remote'].includes(entry.availability),
       }"
       :aria-selected="selectedHandles.includes(entry.entryHandle)"
+      :draggable="entry.capabilities.includes('dragOut')"
+      :title="entry.capabilities.includes('dragOut') ? t('files.dragOut.hint') : undefined"
       :data-testid="`document-row-${entry.entryHandle}`"
       @click="onSelect($event, index)"
       @dblclick="entry.capabilities.includes('open') && emit('open', entry)"
       @keydown="onKeydown($event, entry, index)"
       @contextmenu.prevent="emit('context', entry, { x: $event.clientX, y: $event.clientY })"
+      @dragstart="onDragStart($event, entry)"
     >
       <span class="document-name" role="gridcell">
         <NIcon :size="18" class="file-icon"><component :is="iconFor(entry)" /></NIcon>
@@ -159,6 +174,7 @@ function onKeydown(event: KeyboardEvent, entry: DocumentEntry, index: number): v
   cursor: default;
 }
 .document-row:hover { background: var(--vt-bg-subtle); }
+.document-row[draggable="true"] { cursor: grab; }
 .document-row--selected, .document-row--selected:hover { background: var(--vt-color-primary-50); }
 :root.dark .document-row--selected, :root.dark .document-row--selected:hover { background: rgba(91, 139, 255, 0.13); }
 .document-row:focus-visible { position: relative; z-index: 1; outline: 2px solid var(--vt-color-primary-500); outline-offset: -2px; }

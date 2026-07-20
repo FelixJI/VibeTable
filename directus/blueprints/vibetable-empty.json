@@ -101,7 +101,7 @@
         "status": {"type": "string", "required": true, "default": "active", "choices": ["active", "archived"]},
         "document": {"type": "uuid", "required": true, "relation": "vibetable_documents"},
         "item_collection": {"type": "string", "required": true, "max_length": 128},
-        "item_id": {"type": "uuid", "required": true},
+        "item_id": {"type": "string", "required": true, "max_length": 128},
         "link_type": {"type": "string", "required": true, "max_length": 64, "default": "primary", "choices": ["primary", "reference", "attachment"]}
       }
     },

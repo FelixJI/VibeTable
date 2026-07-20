@@ -58,6 +58,26 @@ public sealed class WorkspaceMountStoreTests
     }
 
     [TestMethod]
+    public void ResolveRoot_WithPartition_DoesNotCrossAccountBoundary()
+    {
+        var baseDir = MakeTempBase();
+        try
+        {
+            var store = new WorkspaceMountStore(baseDir);
+            var root = MakeWorkspaceRoot(baseDir, "Scoped");
+            store.Mount("ws-001", root, "Scoped", "server-a|account-a");
+
+            Assert.AreEqual(root, store.ResolveRoot("ws-001", "server-a|account-a"));
+            Assert.IsNull(store.ResolveRoot("ws-001", "server-a|account-b"));
+            Assert.IsNull(store.ResolveRoot("ws-001", "server-b|account-a"));
+        }
+        finally
+        {
+            CleanupDir(baseDir);
+        }
+    }
+
+    [TestMethod]
     public void Mount_Overwrite_UpdatesPath()
     {
         var baseDir = MakeTempBase();
@@ -134,6 +154,35 @@ public sealed class WorkspaceMountStoreTests
             var json = File.ReadAllText(path);
             Assert.IsTrue(json.Contains("\"formatVersion\""));
             Assert.IsTrue(json.Contains("\"workspaceId\""));
+        }
+        finally
+        {
+            CleanupDir(baseDir);
+        }
+    }
+
+    [TestMethod]
+    public void Mount_PersistsPartitionKey_AndReadsLegacyEntry()
+    {
+        var baseDir = MakeTempBase();
+        try
+        {
+            var store = new WorkspaceMountStore(baseDir);
+            var workspaceRoot = MakeWorkspaceRoot(baseDir, "Partitioned");
+            store.Mount("ws-partitioned", workspaceRoot, "Partitioned", "remote:https://example.test|user@example.test");
+
+            var entry = store.ReadAll().Single();
+            Assert.AreEqual(
+                "remote:https://example.test|user@example.test",
+                entry.PartitionKey);
+
+            string storePath = Path.Combine(baseDir, "VibeTable", "workspace-mounts.json");
+            File.WriteAllText(
+                storePath,
+                $$"""
+                {"formatVersion":1,"mounts":[{"workspaceId":"legacy","localRoot":"{{workspaceRoot.Replace("\\", "\\\\")}}","displayName":"Legacy","mountedAt":"2026-07-20T00:00:00Z"}]}
+                """);
+            Assert.IsNull(store.ReadAll().Single().PartitionKey);
         }
         finally
         {

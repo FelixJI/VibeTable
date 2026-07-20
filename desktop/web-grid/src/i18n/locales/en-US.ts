@@ -1,4 +1,9 @@
 export const messages: Record<string, string> = {
+  "files.import": "Import files",
+  "files.drop.title": "Drop to import files",
+  "files.drop.hint": "Files are handed to the desktop host; the Web never reads local paths.",
+  "files.drop.forwarded": "Handed to the desktop host. The list refreshes when import finishes.",
+  "files.dragOut.hint": "Drag to File Explorer or another app",
   "startup.productLine": "A local-first data and file workspace",
   "startup.progress": "Startup progress",
   "startup.step.runtime": "Local services",

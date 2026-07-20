@@ -1,7 +1,7 @@
 {
   "name": "vibetable-workspace-index",
   "version": "1.0.0",
-  "description": "VibeTable workspace index endpoint (vibetable-workspace-index.v1). Publishes file version metadata, links/unlinks documents to business items, and reconciles scheme heads with expected-head CAS.",
+  "description": "VibeTable workspace index endpoint (vibetable-workspace-index.v1). Registers imported documents, publishes file version metadata, links/unlinks documents, and reconciles scheme heads.",
   "private": true,
   "type": "module",
   "scripts": {

@@ -46,6 +46,29 @@ public sealed record DocumentListResult(
     [property: JsonPropertyName("total")] int Total
 );
 
+// --- registerDocument ---
+
+public sealed record RegisterDocumentParams(
+    [property: JsonPropertyName("workspaceId")] string WorkspaceId,
+    [property: JsonPropertyName("workspaceName")] string WorkspaceName,
+    [property: JsonPropertyName("documentId")] string DocumentId,
+    [property: JsonPropertyName("fileName")] string FileName,
+    [property: JsonPropertyName("mimeType")] string MimeType,
+    [property: JsonPropertyName("schemeId")] string SchemeId,
+    [property: JsonPropertyName("revisionId")] string RevisionId,
+    [property: JsonPropertyName("hash")] string Hash,
+    [property: JsonPropertyName("size")] long Size,
+    [property: JsonPropertyName("itemCollection")] string? ItemCollection,
+    [property: JsonPropertyName("itemId")] string? ItemId,
+    [property: JsonPropertyName("linkType")] string LinkType
+);
+
+public sealed record RegisterDocumentResult(
+    [property: JsonPropertyName("documentId")] string DocumentId,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("linkId")] string? LinkId
+);
+
 // --- publishIndexBatch ---
 
 public sealed record RevisionIndexEntry(
@@ -121,4 +144,16 @@ public sealed record DocumentHistoryResult(
     [property: JsonPropertyName("documentId")] string DocumentId,
     [property: JsonPropertyName("revisions")] List<DocumentRevisionEntry> Revisions,
     [property: JsonPropertyName("total")] int Total
+);
+
+// --- desktop host notifications ---
+
+/// <summary>
+/// Typed payload for the host -&gt; web <c>document.operationFailed</c>
+/// notification. File-operation failures intentionally use a domain-specific
+/// channel instead of the table-oriented generic operation failure route.
+/// </summary>
+public sealed record DocumentOperationFailedPayload(
+    [property: JsonPropertyName("message")] string Message,
+    [property: JsonPropertyName("code")] string? Code
 );

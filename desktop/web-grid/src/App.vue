@@ -12,7 +12,7 @@
  * — both of which live in WorkspaceView's setup scope. App.vue keeps only the
  * theme provider so it stays a thin shell around WorkspaceView.
  */
-import { computed } from "vue";
+import { computed, onBeforeUnmount, onMounted } from "vue";
 import { NConfigProvider, darkTheme, NMessageProvider } from "naive-ui";
 import type { GlobalTheme } from "naive-ui";
 import { lightThemeOverrides, darkThemeOverrides } from "@/design-tokens/theme";
@@ -38,6 +38,23 @@ const naiveTheme = computed<GlobalTheme | null>(() =>
 const overrides = computed(() =>
   isDark.value ? darkThemeOverrides : lightThemeOverrides,
 );
+
+function preventUnhandledFileDrop(event: DragEvent): void {
+  if (Array.from(event.dataTransfer?.types ?? []).includes("Files")) {
+    // FileWorkspaceView handles valid imports before the event bubbles here.
+    // Everywhere else, suppress Chromium's default file navigation.
+    event.preventDefault();
+  }
+}
+
+onMounted(() => {
+  window.addEventListener("dragover", preventUnhandledFileDrop);
+  window.addEventListener("drop", preventUnhandledFileDrop);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("dragover", preventUnhandledFileDrop);
+  window.removeEventListener("drop", preventUnhandledFileDrop);
+});
 </script>
 
 <template>

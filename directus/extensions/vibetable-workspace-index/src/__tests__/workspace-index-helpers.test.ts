@@ -4,11 +4,13 @@ import {
   validatePublishRequest,
   validateReconcileHeadRequest,
   validateLinkRequest,
+  validateRegisterDocumentRequest,
   computeReconcileResult,
   revisionsMatch,
   WORKSPACE_INDEX_COLLECTIONS,
   MAX_PUBLISH_BATCH,
   type PublishRevisionRequest,
+  type RegisterDocumentRequest,
 } from "../workspace-index-helpers.ts";
 
 describe("validatePublishRequest", () => {
@@ -47,6 +49,56 @@ describe("validatePublishRequest", () => {
   it("rejects non-object", () => {
     assert.ok(validatePublishRequest(null));
     assert.ok(validatePublishRequest("string"));
+  });
+});
+
+describe("validateRegisterDocumentRequest", () => {
+  const valid: RegisterDocumentRequest = {
+    workspaceId: "230c956f-fc22-401c-bdbc-9ce61e5dd758",
+    workspaceName: "VibeTable Workspace",
+    documentId: "e24f262e-06d0-4410-8097-74aac3efca30",
+    fileName: "预算.xlsx",
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    schemeId: "ca971db6-b25d-4375-8609-94c12d011c1c",
+    revisionId: "a1a3151c-a88e-4c8f-827a-628b69ee2888",
+    hash: "a".repeat(64),
+    size: 1024,
+  };
+
+  it("accepts a global document without a record link", () => {
+    assert.equal(validateRegisterDocumentRequest(valid), null);
+  });
+
+  it("accepts a declared record link", () => {
+    assert.equal(validateRegisterDocumentRequest({
+      ...valid,
+      itemCollection: "vibetable_demo",
+      itemId: "item-1",
+      linkType: "attachment",
+    }, new Set(["vibetable_demo"])), null);
+  });
+
+  it("accepts a numeric record key for string-backed polymorphic links", () => {
+    assert.equal(validateRegisterDocumentRequest({
+      ...valid,
+      itemCollection: "vibetable_demo",
+      itemId: 42,
+      linkType: "attachment",
+    }, new Set(["vibetable_demo"])), null);
+  });
+
+  it("rejects paths and executable-style path injection in fileName", () => {
+    assert.ok(validateRegisterDocumentRequest({ ...valid, fileName: "folder/file.txt" }));
+    assert.ok(validateRegisterDocumentRequest({ ...valid, fileName: "..\\file.txt" }));
+  });
+
+  it("rejects partial or undeclared record scope", () => {
+    assert.ok(validateRegisterDocumentRequest({ ...valid, itemCollection: "vibetable_demo" }));
+    assert.ok(validateRegisterDocumentRequest({
+      ...valid,
+      itemCollection: "unknown",
+      itemId: "item-1",
+    }, new Set(["vibetable_demo"])));
   });
 });
 
@@ -108,6 +160,21 @@ describe("validateLinkRequest", () => {
     );
   });
 
+  it("accepts a numeric business-record key", () => {
+    assert.equal(
+      validateLinkRequest(
+        {
+          documentId: "doc-1",
+          itemCollection: "vibetable_demo",
+          itemId: 7,
+          linkType: "attachment",
+        },
+        allowed
+      ),
+      null
+    );
+  });
+
   it("rejects a collection not in the declared manifest", () => {
     assert.ok(
       validateLinkRequest(
@@ -153,7 +220,7 @@ describe("revisionsMatch", () => {
   it("returns true when revisionId and hash match", () => {
     assert.ok(
       revisionsMatch(
-        { revisionId: "rev-1", hash: "abc123" },
+        { id: "rev-1", hash: "abc123" },
         {
           documentId: "d1",
           schemeId: "s1",
@@ -176,7 +243,7 @@ describe("revisionsMatch", () => {
   it("returns false when hash differs", () => {
     assert.ok(
       !revisionsMatch(
-        { revisionId: "rev-1", hash: "abc123" },
+        { id: "rev-1", hash: "abc123" },
         {
           documentId: "d1",
           schemeId: "s1",

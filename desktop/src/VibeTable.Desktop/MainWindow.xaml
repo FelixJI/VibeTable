@@ -20,6 +20,7 @@
         <!-- The primary app renderer is never navigated away from or removed. -->
         <wv2:WebView2
             x:Name="AppWebView"
+            AllowExternalDrop="True"
             Visibility="{Binding IsWebViewVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
 
         <!-- Lazy, host-owned Directus surface. Hiding it preserves both WebViews. -->

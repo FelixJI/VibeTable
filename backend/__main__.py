@@ -529,6 +529,7 @@ async def _build_server() -> tuple[RpcServer, Any | None]:
                 ReadDocumentHistoryParams,
                 ReadDocumentsParams,
                 ReadFolderParams,
+                RegisterDocumentParams,
                 UnlinkDocumentParams,
             )
 
@@ -541,6 +542,11 @@ async def _build_server() -> tuple[RpcServer, Any | None]:
                 "workspace.readDocuments",
                 document_workspace_service.read_documents,
                 ReadDocumentsParams,
+            )
+            dispatcher.register(
+                "workspace.registerDocument",
+                document_workspace_service.register_document,
+                RegisterDocumentParams,
             )
             dispatcher.register(
                 "workspace.publishIndexBatch",

@@ -77,7 +77,9 @@ public sealed class WebMessageRouter
         "identifierMappings.importRequested",
         "identifierMappings.reconcileRequested",
         "document.listRequested",
-        "document.pickRequested",
+        "document.importRequested",
+        "document.externalDropRequested",
+        "document.dragOutRequested",
         "document.openRequested",
         "document.previewRequested",
         "document.revealRequested",
@@ -117,6 +119,8 @@ public sealed class WebMessageRouter
         "document.listLoaded",
         "document.historyLoaded",
         "document.actionCompleted",
+        "document.operationFailed",
+        "document.workspaceChanged",
     };
 
     private readonly Action<RoutedWebRequest> _dispatch;

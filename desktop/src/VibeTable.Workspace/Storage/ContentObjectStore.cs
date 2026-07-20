@@ -63,39 +63,101 @@ public sealed class ContentObjectStore
     /// </summary>
     public CommitResult Commit(string sourceFilePath)
     {
-        // Stage 1: stable read — verify the file is readable.
         if (!File.Exists(sourceFilePath))
             throw new FileNotFoundException("source file not found", sourceFilePath);
 
         var info = new FileInfo(sourceFilePath);
-        var size = info.Length;
-
-        // Stage 2: compute hash.
-        var hash = ComputeHash(sourceFilePath);
-
-        // Stage 3: check if object already exists (deduplication).
-        var objectPath = GetObjectPath(hash);
+        long size = info.Length;
+        string hash = ComputeHash(sourceFilePath);
+        string objectPath = GetObjectPath(hash);
         if (File.Exists(objectPath))
         {
+            ValidateCommittedObject(objectPath, hash, size);
             return new CommitResult(hash, size, AlreadyExisted: true);
         }
 
-        // Stage 4: copy to final location (create parent dir first).
-        Directory.CreateDirectory(Path.GetDirectoryName(objectPath)!);
-
-        // Stage 5: hash-verify the copy matches.
-        File.Copy(sourceFilePath, objectPath, overwrite: false);
-        var verifyHash = ComputeHash(objectPath);
-        if (verifyHash != hash)
+        string objectDirectory = Path.GetDirectoryName(objectPath)!;
+        Directory.CreateDirectory(objectDirectory);
+        string temporaryPath = Path.Combine(
+            objectDirectory,
+            $".{hash}.{Guid.NewGuid():N}.tmp");
+        try
         {
-            // Hash mismatch — the file changed during copy or copy was corrupt.
-            // Clean up the bad object.
-            try { File.Delete(objectPath); } catch { /* best effort */ }
-            throw new InvalidOperationException(
-                $"object hash verification failed: expected {hash}, got {verifyHash}");
-        }
+            CopyAndFlush(sourceFilePath, temporaryPath);
+            ValidateCommittedObject(temporaryPath, hash, size);
 
-        return new CommitResult(hash, size, AlreadyExisted: false);
+            // A concurrent writer may have committed the same object while we
+            // copied. Never overwrite it; verify the winner before deduplicating.
+            if (File.Exists(objectPath))
+            {
+                ValidateCommittedObject(objectPath, hash, size);
+                return new CommitResult(hash, size, AlreadyExisted: true);
+            }
+
+            try
+            {
+                // The temp file is in the final object's directory, so this is
+                // an atomic same-volume rename and never exposes partial bytes.
+                File.Move(temporaryPath, objectPath, overwrite: false);
+                return new CommitResult(hash, size, AlreadyExisted: false);
+            }
+            catch (IOException) when (File.Exists(objectPath))
+            {
+                // Another process won between the existence check and Move.
+                ValidateCommittedObject(objectPath, hash, size);
+                return new CommitResult(hash, size, AlreadyExisted: true);
+            }
+        }
+        finally
+        {
+            TryDeleteTemporary(temporaryPath);
+        }
+    }
+
+    private static void CopyAndFlush(string sourceFilePath, string temporaryPath)
+    {
+        using var source = new FileStream(
+            sourceFilePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            128 * 1024,
+            FileOptions.SequentialScan);
+        using var temporary = new FileStream(
+            temporaryPath,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            128 * 1024,
+            FileOptions.SequentialScan);
+        source.CopyTo(temporary, 128 * 1024);
+        temporary.Flush(flushToDisk: true);
+    }
+
+    private static void ValidateCommittedObject(
+        string objectPath,
+        string expectedHash,
+        long expectedSize)
+    {
+        var info = new FileInfo(objectPath);
+        if (!info.Exists || info.Length != expectedSize)
+            throw new InvalidDataException("content object size verification failed");
+        string actualHash = ComputeHash(objectPath);
+        if (!string.Equals(actualHash, expectedHash, StringComparison.Ordinal))
+            throw new InvalidDataException("content object hash verification failed");
+    }
+
+    private static void TryDeleteTemporary(string temporaryPath)
+    {
+        try
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
+        catch
+        {
+            // Best effort only. A random name prevents a failed cleanup from
+            // colliding with a later commit, and recovery can remove stale temps.
+        }
     }
 
     /// <summary>

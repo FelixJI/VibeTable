@@ -14,7 +14,8 @@ export type DocumentCapability =
   | "preview"
   | "reveal"
   | "history"
-  | "relink";
+  | "relink"
+  | "dragOut";
 
 export interface DocumentEntry {
   /** Opaque, session-bound capability. It is never a local path. */
@@ -49,6 +50,7 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   const selectionAnchor = ref<number | null>(null);
   const inspectorTab = ref<InspectorTab>("preview");
   const lastError = ref<string | null>(null);
+  const lastErrorCode = ref<string | null>(null);
   const query = ref("");
   const authorityFilter = ref<DocumentAuthority>("workspace");
   const revisions = ref<Readonly<Record<string, readonly DocumentRevision[]>>>({});
@@ -70,12 +72,14 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   function beginLoad(): void {
     phase.value = "loading";
     lastError.value = null;
+    lastErrorCode.value = null;
   }
 
   function setEntries(next: readonly DocumentEntry[]): void {
     entries.value = next;
     phase.value = "ready";
     lastError.value = null;
+    lastErrorCode.value = null;
     const handles = new Set(next.map((entry) => entry.entryHandle));
     selectedHandles.value = selectedHandles.value.filter((handle) => handles.has(handle));
     if (!primaryHandle.value || !handles.has(primaryHandle.value)) {
@@ -84,9 +88,10 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     }
   }
 
-  function setFailed(message: string): void {
+  function setFailed(message: string, code: string | null = null): void {
     phase.value = "failed";
     lastError.value = message;
+    lastErrorCode.value = code;
     historyLoadingFor.value = null;
   }
 
@@ -156,6 +161,7 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     revisions.value = {};
     historyLoadingFor.value = null;
     lastError.value = null;
+    lastErrorCode.value = null;
     clearSelection();
   }
 
@@ -167,6 +173,7 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     primaryEntry,
     inspectorTab,
     lastError,
+    lastErrorCode,
     query,
     authorityFilter,
     revisions,

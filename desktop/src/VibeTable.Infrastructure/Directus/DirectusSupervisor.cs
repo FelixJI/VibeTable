@@ -331,23 +331,44 @@ public sealed class DirectusSupervisor : IAsyncDisposable
     }
 
     /// <summary>
-    /// Stages the built bulk-mutation extension into the local Directus
-    /// extensions/ dir so the endpoint registers. Port of run.py's
-    /// link_bulk_mutation_extension.
+    /// Stages each built first-party endpoint into the local Directus
+    /// extensions directory so the runtime exposes the same capabilities as
+    /// the repository extension manifest.
     /// </summary>
     private void DeployExtension()
     {
-        string source = Path.Combine(_options.ResourceRoot, "directus", "extensions",
-            "vibetable-bulk-mutation", "dist", "index.js");
-        string pkg = Path.Combine(_options.ResourceRoot, "directus", "extensions",
-            "vibetable-bulk-mutation", "package.json");
+        foreach (string extensionName in new[]
+        {
+            "vibetable-bulk-mutation",
+            "vibetable-workspace-index",
+        })
+        {
+            DeployBuiltExtension(extensionName);
+        }
+    }
+
+    private void DeployBuiltExtension(string extensionName)
+    {
+        string extensionRoot = Path.Combine(
+            _options.ResourceRoot, "directus", "extensions", extensionName);
+        string source = Path.Combine(extensionRoot, "dist", "index.js");
+        string pkg = Path.Combine(extensionRoot, "package.json");
         if (!File.Exists(source))
         {
-            // Extension is optional for basic operation; warn but do not fail.
+            if (string.Equals(
+                    extensionName,
+                    "vibetable-workspace-index",
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "Required Directus extension vibetable-workspace-index is not built. "
+                    + "Build first-party Directus extensions before starting VibeTable.");
+            }
+            // Bulk mutation remains optional for the read-only table fallback.
             return;
         }
         string targetDir = Path.Combine(_options.LocalDirectusDirectory, "extensions",
-            "vibetable-bulk-mutation");
+            extensionName);
         Directory.CreateDirectory(targetDir);
         try { File.Copy(pkg, Path.Combine(targetDir, "package.json"), overwrite: true); }
         catch { /* best-effort */ }

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using VibeTable.Desktop.Services;
+using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -303,7 +304,9 @@ public sealed class WebMessageRouterTests
         foreach (string type in new[]
         {
             "document.listRequested",
-            "document.pickRequested",
+            "document.importRequested",
+            "document.externalDropRequested",
+            "document.dragOutRequested",
             "document.openRequested",
             "document.previewRequested",
             "document.revealRequested",
@@ -320,10 +323,32 @@ public sealed class WebMessageRouterTests
             Assert.IsNull(reply, type);
         }
 
-        Assert.AreEqual(7, dispatched.Count);
+        Assert.AreEqual(9, dispatched.Count);
         Assert.IsTrue(router.IsHostNotificationAllowed("document.listLoaded"));
         Assert.IsTrue(router.IsHostNotificationAllowed("document.historyLoaded"));
         Assert.IsTrue(router.IsHostNotificationAllowed("document.actionCompleted"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("document.workspaceChanged"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("document.operationFailed"));
+    }
+
+    [TestMethod]
+    public void DocumentOperationFailedPayload_SerializesTypedWebShape()
+    {
+        var payload = new DocumentOperationFailedPayload("drop failed", "DROP_CODE");
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(payload));
+
+        Assert.AreEqual("drop failed", document.RootElement.GetProperty("message").GetString());
+        Assert.AreEqual("DROP_CODE", document.RootElement.GetProperty("code").GetString());
+    }
+
+    [TestMethod]
+    public void ExternalDropWithoutNativePaths_ProducesMissingObjectsFailure()
+    {
+        var failure = MainWindow.ValidateExternalDropPaths([]);
+
+        Assert.IsNotNull(failure);
+        Assert.AreEqual("DOCUMENT_DROP_OBJECTS_MISSING", failure!.Code);
+        Assert.IsNull(MainWindow.ValidateExternalDropPaths([@"C:\safe\file.txt"]));
     }
 
     [TestMethod]

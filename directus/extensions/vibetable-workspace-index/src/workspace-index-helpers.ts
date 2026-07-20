@@ -43,13 +43,28 @@ export interface ReconcileHeadResult {
 export interface LinkDocumentRequest {
   readonly documentId: string;
   readonly itemCollection: string;
-  readonly itemId: string;
+  readonly itemId: string | number;
   readonly linkType: "primary" | "reference" | "attachment";
 }
 
 export interface LinkResult {
   readonly status: "created" | "already-exists";
   readonly linkId: string;
+}
+
+export interface RegisterDocumentRequest {
+  readonly workspaceId: string;
+  readonly workspaceName: string;
+  readonly documentId: string;
+  readonly fileName: string;
+  readonly mimeType: string;
+  readonly schemeId: string;
+  readonly revisionId: string;
+  readonly hash: string;
+  readonly size: number;
+  readonly itemCollection?: string | null;
+  readonly itemId?: string | number | null;
+  readonly linkType?: "primary" | "reference" | "attachment";
 }
 
 /**
@@ -90,7 +105,7 @@ export function revisionsMatch(
   incoming: PublishRevisionRequest
 ): boolean {
   return (
-    existing.revisionId === incoming.revisionId &&
+    String(existing.id ?? existing.revisionId ?? "") === incoming.revisionId &&
     existing.hash === incoming.hash
   );
 }
@@ -145,9 +160,53 @@ export function validateLinkRequest(
     return `itemCollection ${itemCollection} is a workspace-index collection and cannot be a link target`;
   if (!allowedCollections.has(itemCollection))
     return `itemCollection ${itemCollection} is not a declared collection`;
-  if (typeof r.itemId !== "string" || !r.itemId) return "itemId is required";
+  const validItemId =
+    (typeof r.itemId === "string" && r.itemId.length > 0 && r.itemId.length <= 128) ||
+    (typeof r.itemId === "number" && Number.isSafeInteger(r.itemId));
+  if (!validItemId) return "itemId must be a non-empty string or safe integer";
   if (r.linkType !== undefined && !["primary", "reference", "attachment"].includes(r.linkType as string))
     return "invalid linkType";
+  return null;
+}
+
+/** Validate metadata for a native-host document import. No local path is accepted. */
+export function validateRegisterDocumentRequest(
+  req: unknown,
+  allowedCollections: ReadonlySet<string> = new Set()
+): string | null {
+  if (typeof req !== "object" || req === null) return "request must be an object";
+  const r = req as Record<string, unknown>;
+  for (const key of ["workspaceId", "documentId", "schemeId", "revisionId"] as const) {
+    if (typeof r[key] !== "string" || !r[key]) return `${key} is required`;
+  }
+  if (typeof r.workspaceName !== "string" || !r.workspaceName.trim())
+    return "workspaceName is required";
+  if (typeof r.fileName !== "string" || !r.fileName || /[\\/\0-\x1f]/.test(r.fileName))
+    return "fileName must be a single safe path component";
+  if (r.fileName === "." || r.fileName === "..") return "fileName is invalid";
+  if (typeof r.mimeType !== "string" || r.mimeType.length > 128) return "invalid mimeType";
+  if (typeof r.hash !== "string" || !/^[a-fA-F0-9]{64}$/.test(r.hash))
+    return "hash must be a SHA-256 hex digest";
+  if (typeof r.size !== "number" || !Number.isSafeInteger(r.size) || r.size < 0)
+    return "size must be a non-negative integer";
+
+  const hasCollection = typeof r.itemCollection === "string" && r.itemCollection.length > 0;
+  const hasItem =
+    (typeof r.itemId === "string" && r.itemId.length > 0 && r.itemId.length <= 128) ||
+    (typeof r.itemId === "number" && Number.isSafeInteger(r.itemId));
+  if (hasCollection !== hasItem) return "itemCollection and itemId must be supplied together";
+  if (hasCollection) {
+    const linkError = validateLinkRequest(
+      {
+        documentId: r.documentId,
+        itemCollection: r.itemCollection,
+        itemId: r.itemId,
+        linkType: r.linkType ?? "attachment",
+      },
+      allowedCollections
+    );
+    if (linkError) return linkError;
+  }
   return null;
 }
 

@@ -33,7 +33,8 @@ public sealed class DocumentCapabilityStore
         string documentId,
         string? linkId,
         string relativePath,
-        IEnumerable<string> capabilities)
+        IEnumerable<string> capabilities,
+        string? currentRevisionId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
@@ -51,6 +52,7 @@ public sealed class DocumentCapabilityStore
                 documentId,
                 linkId,
                 relativePath,
+                currentRevisionId,
                 grantedCapabilities,
                 now + _ttl,
                 _epoch);
@@ -210,6 +212,7 @@ public sealed record DocumentCapabilityDescriptor(
     string DocumentId,
     string? LinkId,
     string RelativePath,
+    string? CurrentRevisionId,
     IReadOnlySet<string> Capabilities,
     DateTimeOffset ExpiresAt,
     long Epoch);

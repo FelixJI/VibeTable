@@ -17,21 +17,25 @@ export type DocumentWorkspaceScope =
 
 export type DocumentWorkspaceIntent =
   | { readonly type: "document.listRequested"; readonly scope: DocumentWorkspaceScope; readonly authority: DocumentAuthority }
-  | { readonly type: "document.pickRequested"; readonly scope: DocumentWorkspaceScope }
+  | { readonly type: "document.importRequested"; readonly scope: DocumentWorkspaceScope }
+  | { readonly type: "document.externalDropRequested"; readonly scope: DocumentWorkspaceScope; readonly files: readonly File[] }
+  | { readonly type: "document.dragOutRequested"; readonly handle: string }
   | { readonly type: "document.openRequested"; readonly entryHandle: string }
   | { readonly type: "document.previewRequested"; readonly entryHandle: string }
   | { readonly type: "document.revealRequested"; readonly entryHandle: string }
   | { readonly type: "document.historyRequested"; readonly entryHandle: string }
-  | { readonly type: "document.relinkRequested"; readonly entryHandle: string };
+  | { readonly type: "document.relinkRequested"; readonly handle: string };
 
 export interface DocumentWorkspaceService {
   list(scope: DocumentWorkspaceScope, authority: DocumentAuthority): void;
-  pick(scope: DocumentWorkspaceScope): void;
+  importFiles(scope: DocumentWorkspaceScope): void;
+  externalDrop(scope: DocumentWorkspaceScope, files: readonly File[]): void;
+  dragOut(handle: string): void;
   open(entryHandle: string): void;
   preview(entryHandle: string): void;
   reveal(entryHandle: string): void;
   history(entryHandle: string): void;
-  relink(entryHandle: string): void;
+  relink(handle: string): void;
 }
 
 /**
@@ -43,12 +47,14 @@ export function createDocumentWorkspaceService(
 ): DocumentWorkspaceService {
   return {
     list: (scope, authority) => dispatch({ type: "document.listRequested", scope, authority }),
-    pick: (scope) => dispatch({ type: "document.pickRequested", scope }),
+    importFiles: (scope) => dispatch({ type: "document.importRequested", scope }),
+    externalDrop: (scope, files) => dispatch({ type: "document.externalDropRequested", scope, files }),
+    dragOut: (handle) => dispatch({ type: "document.dragOutRequested", handle }),
     open: (entryHandle) => dispatch({ type: "document.openRequested", entryHandle }),
     preview: (entryHandle) => dispatch({ type: "document.previewRequested", entryHandle }),
     reveal: (entryHandle) => dispatch({ type: "document.revealRequested", entryHandle }),
     history: (entryHandle) => dispatch({ type: "document.historyRequested", entryHandle }),
-    relink: (entryHandle) => dispatch({ type: "document.relinkRequested", entryHandle }),
+    relink: (handle) => dispatch({ type: "document.relinkRequested", handle }),
   };
 }
 
@@ -58,11 +64,13 @@ export function useDocumentWorkspaceService(): {
 } {
   const bridge = useHostBridge();
   const store = useDocumentWorkspaceStore();
+  let lastScope: DocumentWorkspaceScope = { kind: "global" };
 
   async function execute(intent: DocumentWorkspaceIntent): Promise<void> {
     try {
       switch (intent.type) {
         case "document.listRequested": {
+          lastScope = intent.scope;
           store.beginLoad();
           const payload = await bridge.request(intent.type, {
             scope: intent.scope,
@@ -86,13 +94,26 @@ export function useDocumentWorkspaceService(): {
           })));
           return;
         }
-        case "document.pickRequested":
-          await bridge.request(intent.type, { scope: intent.scope });
+        case "document.importRequested":
+          bridge.notify(intent.type, { scope: intent.scope });
+          return;
+        case "document.externalDropRequested": {
+          const sentWithFiles = intent.files.length > 0 &&
+            bridge.notifyWithAdditionalObjects(
+              intent.type,
+              { scope: intent.scope },
+              intent.files,
+            );
+          if (!sentWithFiles) bridge.notify(intent.type, { scope: intent.scope });
+          return;
+        }
+        case "document.dragOutRequested":
+        case "document.relinkRequested":
+          bridge.notify(intent.type, { handle: intent.handle });
           return;
         case "document.openRequested":
         case "document.previewRequested":
         case "document.revealRequested":
-        case "document.relinkRequested":
           await bridge.request(intent.type, { entryHandle: intent.entryHandle });
           return;
       }
@@ -100,6 +121,17 @@ export function useDocumentWorkspaceService(): {
       store.setFailed(error instanceof Error ? error.message : String(error));
     }
   }
+
+  bridge.on("document.workspaceChanged", () => {
+    void execute({
+      type: "document.listRequested",
+      scope: lastScope,
+      authority: store.authorityFilter,
+    });
+  });
+  bridge.on("document.operationFailed", (payload) => {
+    store.setFailed(payload.message, payload.code ?? null);
+  });
 
   return {
     dispatch: (intent) => { void execute(intent); },
@@ -127,7 +159,7 @@ function normalizeCapabilities(values: readonly string[]): readonly DocumentCapa
   for (const value of values) {
     if (
       value === "open" || value === "preview" || value === "reveal" ||
-      value === "history" || value === "relink"
+      value === "history" || value === "relink" || value === "dragOut"
     ) {
       result.add(value);
     } else if (value === "relocate") {

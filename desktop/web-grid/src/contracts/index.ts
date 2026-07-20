@@ -591,7 +591,9 @@ export type WebMessageType =
   | "history.applyRestoreRequested"
   // Web-first document workspace requests. Every local action uses an opaque handle.
   | "document.listRequested"
-  | "document.pickRequested"
+  | "document.importRequested"
+  | "document.externalDropRequested"
+  | "document.dragOutRequested"
   | "document.historyRequested"
   | "document.openRequested"
   | "document.previewRequested"
@@ -634,6 +636,8 @@ export type HostMessageType =
   | "document.listLoaded"
   | "document.historyLoaded"
   | "document.actionCompleted"
+  | "document.operationFailed"
+  | "document.workspaceChanged"
   // Collections-changed notifications.
   | "database.collectionsChanged"
   | "identifierMappings.result";
@@ -674,6 +678,8 @@ export interface HostPayloadMap {
   "document.listLoaded": DocumentListLoadedPayload;
   "document.historyLoaded": DocumentHistoryLoadedPayload;
   "document.actionCompleted": DocumentActionCompletedPayload;
+  "document.operationFailed": DocumentOperationFailedPayload;
+  "document.workspaceChanged": DocumentWorkspaceChangedPayload;
   // Collections-changed notifications.
   "database.collectionsChanged": CollectionsChangedPayload;
   "identifierMappings.result": IdentifierMappingsResult;
@@ -703,7 +709,9 @@ export interface WebPayloadMap {
   "history.previewRestoreRequested": HistoryPreviewRestorePayload;
   "history.applyRestoreRequested": HistoryApplyRestorePayload;
   "document.listRequested": DocumentListRequestedPayload;
-  "document.pickRequested": DocumentPickRequestedPayload;
+  "document.importRequested": DocumentImportRequestedPayload;
+  "document.externalDropRequested": DocumentImportRequestedPayload;
+  "document.dragOutRequested": DocumentOpaqueHandlePayload;
   "document.historyRequested": DocumentHandlePayload & {
     readonly limit?: number;
     readonly offset?: number;
@@ -711,7 +719,7 @@ export interface WebPayloadMap {
   "document.openRequested": DocumentHandlePayload;
   "document.previewRequested": DocumentHandlePayload;
   "document.revealRequested": DocumentHandlePayload;
-  "document.relinkRequested": DocumentHandlePayload;
+  "document.relinkRequested": DocumentOpaqueHandlePayload;
   // Table-admin requests.
   "tableAdmin.createRequested": TableAdminCreatePayload;
   "tableAdmin.deleteRequested": TableAdminDeletePayload;
@@ -972,8 +980,12 @@ export interface DocumentListRequestedPayload {
   readonly authority: "workspace" | "cloud";
 }
 
-export interface DocumentPickRequestedPayload {
+export interface DocumentImportRequestedPayload {
   readonly scope: DocumentBridgeScope;
+}
+
+export interface DocumentOpaqueHandlePayload {
+  readonly handle: string;
 }
 
 export interface DocumentHandlePayload {
@@ -1015,4 +1027,14 @@ export interface DocumentHistoryLoadedPayload {
 export interface DocumentActionCompletedPayload {
   readonly entryHandle: string;
   readonly action: "open" | "preview" | "reveal";
+}
+
+export interface DocumentOperationFailedPayload {
+  readonly message: string;
+  readonly code?: string | null;
+}
+
+export interface DocumentWorkspaceChangedPayload {
+  readonly reason: "import" | "relink";
+  readonly affectedCount: number;
 }

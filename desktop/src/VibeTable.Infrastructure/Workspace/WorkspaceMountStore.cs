@@ -18,7 +18,12 @@ public sealed class WorkspaceMountStore
     /// <summary>
     /// One mount entry.
     /// </summary>
-    public sealed record MountEntry(string WorkspaceId, string LocalRoot, string DisplayName, string MountedAt);
+    public sealed record MountEntry(
+        string WorkspaceId,
+        string LocalRoot,
+        string DisplayName,
+        string MountedAt,
+        string? PartitionKey = null);
 
     /// <summary>
     /// The on-disk JSON shape.
@@ -52,17 +57,27 @@ public sealed class WorkspaceMountStore
     /// <summary>
     /// Resolve a workspace UUID to its local root. Returns null if not mounted.
     /// </summary>
-    public string? ResolveRoot(string workspaceId)
+    public string? ResolveRoot(string workspaceId, string? partitionKey = null)
     {
         return ReadAll()
-            .FirstOrDefault(m => m.WorkspaceId == workspaceId)?
+            .FirstOrDefault(m =>
+                m.WorkspaceId == workspaceId
+                && (partitionKey is null
+                    || string.Equals(
+                        m.PartitionKey,
+                        partitionKey,
+                        StringComparison.Ordinal)))?
             .LocalRoot;
     }
 
     /// <summary>
     /// Add or update a mount.
     /// </summary>
-    public void Mount(string workspaceId, string localRoot, string displayName)
+    public void Mount(
+        string workspaceId,
+        string localRoot,
+        string displayName,
+        string? partitionKey = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(localRoot);
@@ -82,7 +97,8 @@ public sealed class WorkspaceMountStore
             workspaceId,
             normalizedRoot,
             displayName,
-            DateTime.UtcNow.ToString("o")));
+            DateTime.UtcNow.ToString("o"),
+            string.IsNullOrWhiteSpace(partitionKey) ? null : partitionKey));
         Write(mounts);
     }
 

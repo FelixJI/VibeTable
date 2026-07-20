@@ -23,6 +23,7 @@ from backend.contracts.document_workspace import (
     ReadDocumentHistoryParams,
     ReadDocumentsParams,
     ReadFolderParams,
+    RegisterDocumentParams,
     RevisionIndexEntry,
 )
 
@@ -156,6 +157,60 @@ async def test_read_documents_returns_global_workspace_documents() -> None:
     assert result.documents[0].document_id == "doc-global"
     assert result.documents[0].workspace_id == "workspace-1"
     assert result.documents[0].link_id is None
+
+
+@pytest.mark.asyncio
+async def test_register_document_sends_metadata_without_local_path() -> None:
+    transport = FakeTransport(
+        responses=[{"data": {"documentId": "doc-1", "status": "created", "linkId": None}}]
+    )
+    service = _make_service(transport)
+    result = await service.register_document(
+        RegisterDocumentParams(
+            workspace_id="workspace-1",
+            workspace_name="Workspace",
+            document_id="doc-1",
+            file_name="预算.xlsx",
+            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            scheme_id="scheme-1",
+            revision_id="revision-1",
+            hash="a" * 64,
+            size=123,
+        )
+    )
+    assert result.status == "created"
+    request = transport.requests[-1]
+    assert request["path"].endswith("/vibetable-workspace-index/register-document")
+    body = request["json_body"]
+    assert body["fileName"] == "预算.xlsx"
+    assert all("path" not in key.lower() for key in body)
+
+
+@pytest.mark.asyncio
+async def test_register_document_rejects_partial_or_undeclared_record_scope() -> None:
+    service = _make_service(FakeTransport())
+    base = {
+        "workspace_id": "workspace-1",
+        "workspace_name": "Workspace",
+        "document_id": "doc-1",
+        "file_name": "a.txt",
+        "scheme_id": "scheme-1",
+        "revision_id": "revision-1",
+        "hash": "b" * 64,
+        "size": 1,
+    }
+    with pytest.raises(Exception, match="supplied together"):
+        await service.register_document(
+            RegisterDocumentParams(**base, item_collection="vibetable_demo")
+        )
+    with pytest.raises(Exception, match="not in capability manifest"):
+        await service.register_document(
+            RegisterDocumentParams(
+                **base,
+                item_collection="directus_users",
+                item_id="item-1",
+            )
+        )
 
 
 @pytest.mark.asyncio

@@ -34,9 +34,14 @@ def load_blueprint(path: Path) -> dict[str, Any]:
     contract/collections guard these tests rely on is reproduced.
     """
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload.get("contract") == "vibetable.directus-blueprint.v1", "unsupported blueprint contract"
-    assert isinstance(payload.get("collections"), dict) and payload["collections"], "no collections"
+    assert payload.get("contract") == "vibetable.directus-blueprint.v1", (
+        "unsupported blueprint contract"
+    )
+    assert isinstance(payload.get("collections"), dict), "collections must be an object"
+    assert payload["collections"], "no collections"
     return payload
+
+
 VT_BLUEPRINT = ROOT / "directus" / "blueprints" / "vibetable-empty.json"
 VT_CAPABILITY = ROOT / "directus" / "capabilities" / "vibetable-empty-capabilities.json"
 
@@ -96,6 +101,8 @@ def test_blueprint_revision_has_expected_fields() -> None:
 def test_blueprint_links_relation_to_document() -> None:
     blueprint = load_blueprint(VT_BLUEPRINT)
     links_fields = blueprint["collections"]["vibetable_document_links"]["fields"]
+    assert links_fields["item_id"]["type"] == "string"
+    assert links_fields["item_id"]["max_length"] == 128
     assert links_fields["document"].get("relation") == "vibetable_documents"
 
 

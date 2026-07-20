@@ -26,5 +26,9 @@ public interface IDocumentWorkspaceRpcGateway
         int offset,
         CancellationToken token);
 
+    Task<RegisterDocumentResult> RegisterDocumentAsync(
+        RegisterDocumentParams request,
+        CancellationToken token);
+
     Task UnlinkAsync(string linkId, CancellationToken token);
 }

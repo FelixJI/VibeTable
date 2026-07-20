@@ -46,6 +46,14 @@ public sealed class JsonRpcDocumentWorkspaceGateway : IDocumentWorkspaceRpcGatew
             new ReadDocumentHistoryParams(documentId, limit, offset),
             token);
 
+    public Task<RegisterDocumentResult> RegisterDocumentAsync(
+        RegisterDocumentParams request,
+        CancellationToken token)
+        => _client.InvokeAsync<RegisterDocumentParams, RegisterDocumentResult>(
+            "workspace.registerDocument",
+            request,
+            token);
+
     public async Task UnlinkAsync(string linkId, CancellationToken token)
     {
         await _client.InvokeAsync<UnlinkDocumentParams, UnlinkDocumentResult>(

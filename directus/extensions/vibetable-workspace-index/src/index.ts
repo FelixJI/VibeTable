@@ -1,114 +1,325 @@
 /**
  * VibeTable workspace-index endpoint — `vibetable-workspace-index.v1`.
  *
- * Provides transactional metadata operations for the workspace version index:
- *   POST /vibetable-workspace-index/publish   — idempotent revision publish
- *   POST /vibetable-workspace-index/link      — link document to business item
- *   POST /vibetable-workspace-index/unlink    — remove document link
- *   POST /vibetable-workspace-index/reconcile-head — expected-head CAS update
- *
- * Safety properties:
- *   - Uses current-user accountability (no admin service token bypass)
- *   - Database transaction per request (all-or-nothing)
- *   - Client UUID for idempotency (same revisionId returns same result)
- *   - expected-head CAS on scheme head updates (no last-write-wins)
- *   - No raw SQL or arbitrary filter JSON surface
- *   - M2A link collections validated against the live (dynamic) collection manifest
+ * Every route runs with the caller's Directus accountability. Registering a
+ * document is one database transaction: workspace, document, scheme, first
+ * revision, heads, and the optional business-record link either all commit or
+ * all roll back.
  */
 
+import { defineEndpoint } from "@directus/extensions-sdk";
 import {
   validatePublishRequest,
   validateReconcileHeadRequest,
   validateLinkRequest,
+  validateRegisterDocumentRequest,
   computeReconcileResult,
   revisionsMatch,
   MAX_PUBLISH_BATCH,
   type PublishRevisionRequest,
   type LinkDocumentRequest,
+  type RegisterDocumentRequest,
 } from "./workspace-index-helpers.js";
+import {
+  IdentityConflictError,
+  ensurePrimaryKeyedRow,
+  readById,
+  requestAccountability,
+  requireSame,
+  serviceOptions,
+  stableLinkId,
+  validateRegistrationHeads,
+  type CollectionsServiceConstructor,
+  type ItemsServiceConstructor,
+  type TransactionLike,
+} from "./workspace-index-endpoint-helpers.js";
 
-interface EndpointContext {
-  services: {
-    ItemsService: new (collection: string, opts: unknown) => ItemsService;
-    CollectionsService: new (opts: unknown) => CollectionsService;
-  };
-  database: unknown;
-  getSchema: () => unknown;
-  logger: { warn: (msg: string) => void; error: (msg: string) => void };
-  env: Record<string, unknown>;
-}
-
-interface ItemsService {
-  createOne(data: Record<string, unknown>, opts?: unknown): Promise<string>;
-  readByQuery(query: unknown): Promise<Record<string, unknown>[]>;
-  updateOne(key: string, data: Record<string, unknown>, opts?: unknown): Promise<string>;
-  deleteOne(key: string): Promise<string>;
-}
-
-interface CollectionsService {
-  readByQuery(query: unknown): Promise<Record<string, unknown>[]>;
-}
-
-/**
- * Read the set of business collections installed in this Directus project.
- * The link allow-list is derived dynamically from this (manifest-driven),
- * so any collection the tenant declares may link documents — mirroring the
- * BFF's `self._profiles` check.
- */
 async function installedBusinessCollections(
-  context: EndpointContext,
+  CollectionsService: CollectionsServiceConstructor,
+  schema: unknown,
+  knex: unknown,
   accountability: unknown
 ): Promise<Set<string>> {
-  const schema = context.getSchema();
-  const CollectionsService = context.services.CollectionsService;
-  const collectionsService = new CollectionsService({ schema, knex: context.database, accountability });
-  const rows = await collectionsService.readByQuery({ fields: ["collection"] });
+  const service = new CollectionsService(
+    serviceOptions(schema, knex, accountability)
+  );
+  const rows = await service.readByQuery({ fields: ["collection"] });
   return new Set(rows.map((row) => String(row.collection)));
 }
 
-export default (context: EndpointContext) => {
-  return {
-    routes: [
-      {
-        path: "/vibetable-workspace-index/publish",
-        method: "POST",
-        handler: async (req: any, res: any) => {
-          const body = req.body ?? {};
-          const revisions = Array.isArray(body.revisions) ? body.revisions : [body];
-          if (revisions.length > MAX_PUBLISH_BATCH) {
-            return res.status(400).json({ error: `batch exceeds max ${MAX_PUBLISH_BATCH}` });
-          }
-          const schema = context.getSchema();
-          const ItemsService = context.services.ItemsService;
-          const revService = new ItemsService("vibetable_document_revisions", {
-            schema,
-            knex: context.database,
-            accountability: req.accountability,
+export default defineEndpoint((router, context) => {
+  const { ItemsService, CollectionsService } = context.services as unknown as {
+    ItemsService: ItemsServiceConstructor;
+    CollectionsService: CollectionsServiceConstructor;
+  };
+  const database = context.database as unknown as TransactionLike;
+
+  router.post("/register-document", async (req, res) => {
+    const body = req.body ?? {};
+    const schema = await context.getSchema();
+    const allowed = body.itemCollection
+      ? await installedBusinessCollections(
+          CollectionsService,
+          schema,
+          database,
+          requestAccountability(req)
+        )
+      : new Set<string>();
+    const validationError = validateRegisterDocumentRequest(body, allowed);
+    if (validationError) {
+      res.status(400).json({ error: validationError });
+      return;
+    }
+    const incoming = body as RegisterDocumentRequest;
+    const linkedItemId = incoming.itemId === null || incoming.itemId === undefined
+      ? null
+      : String(incoming.itemId);
+
+    try {
+      const result = await database.transaction(async (trx) => {
+        const options = serviceOptions(schema, trx, requestAccountability(req));
+        let created = false;
+
+        const workspace = await ensurePrimaryKeyedRow(
+          ItemsService,
+          "vibetable_workspaces",
+          options,
+          trx,
+          incoming.workspaceId,
+          {
+            id: incoming.workspaceId,
+            status: "active",
+            name: incoming.workspaceName,
+            workspace_id: incoming.workspaceId,
+          },
+          (row) => requireSame(
+            row,
+            { workspace_id: incoming.workspaceId },
+            "workspace"
+          )
+        );
+        created ||= workspace.created;
+
+        const document = await ensurePrimaryKeyedRow(
+          ItemsService,
+          "vibetable_documents",
+          options,
+          trx,
+          incoming.documentId,
+          {
+            id: incoming.documentId,
+            status: "active",
+            workspace: incoming.workspaceId,
+            file_name: incoming.fileName,
+            mime_type: incoming.mimeType,
+          },
+          (row) => requireSame(
+            row,
+            {
+              workspace: incoming.workspaceId,
+              file_name: incoming.fileName,
+              mime_type: incoming.mimeType,
+            },
+            "document"
+          )
+        );
+        created ||= document.created;
+
+        const scheme = await ensurePrimaryKeyedRow(
+          ItemsService,
+          "vibetable_document_schemes",
+          options,
+          trx,
+          incoming.schemeId,
+          {
+            id: incoming.schemeId,
+            status: "active",
+            document: incoming.documentId,
+            name: "main",
+            working_path: incoming.fileName,
+          },
+          (row) => requireSame(
+            row,
+            {
+              document: incoming.documentId,
+              name: "main",
+              working_path: incoming.fileName,
+            },
+            "scheme"
+          )
+        );
+        created ||= scheme.created;
+
+        const revision = await ensurePrimaryKeyedRow(
+          ItemsService,
+          "vibetable_document_revisions",
+          options,
+          trx,
+          incoming.revisionId,
+          {
+            id: incoming.revisionId,
+            status: "active",
+            document: incoming.documentId,
+            scheme: incoming.schemeId,
+            sequence: 1,
+            version_label: "v1",
+            kind: "formal",
+            hash: incoming.hash,
+            size: incoming.size,
+            mime_type: incoming.mimeType,
+            comment: "Imported into VibeTable",
+          },
+          (row) => requireSame(
+            row,
+            {
+              document: incoming.documentId,
+              scheme: incoming.schemeId,
+              hash: incoming.hash,
+              size: String(incoming.size),
+              mime_type: incoming.mimeType,
+              sequence: "1",
+              version_label: "v1",
+              kind: "formal",
+            },
+            "revision"
+          )
+        );
+        created ||= revision.created;
+
+        const schemes = new ItemsService(
+          "vibetable_document_schemes",
+          options
+        );
+        const documents = new ItemsService("vibetable_documents", options);
+        const schemeHead = String(scheme.row.head_revision ?? "");
+        const documentHead = String(document.row.main_head ?? "");
+        validateRegistrationHeads({
+          schemeHead,
+          documentHead,
+          documentHash: String(document.row.main_hash ?? ""),
+          incomingRevisionId: incoming.revisionId,
+          incomingHash: incoming.hash,
+          revisionCreated: revision.created,
+        });
+        if (!schemeHead || schemeHead === incoming.revisionId) {
+          await schemes.updateOne(incoming.schemeId, {
+            head_revision: incoming.revisionId,
           });
+        }
+        if (!documentHead || documentHead === incoming.revisionId) {
+          await documents.updateOne(incoming.documentId, {
+            main_head: incoming.revisionId,
+            main_hash: incoming.hash,
+          });
+        }
 
-          const results = [];
-          for (const raw of revisions) {
-            const err = validatePublishRequest(raw);
-            if (err) return res.status(400).json({ error: err });
-            const incoming = raw as PublishRevisionRequest;
+        let linkId: string | null = null;
+        if (incoming.itemCollection && linkedItemId !== null) {
+          const links = new ItemsService("vibetable_document_links", options);
+          const matchingLinks = await links.readByQuery({
+            filter: {
+              document: { _eq: incoming.documentId },
+              item_collection: { _eq: incoming.itemCollection },
+              item_id: { _eq: linkedItemId },
+            },
+            limit: 1,
+          });
+          const existingLink = matchingLinks[0];
+          if (existingLink) {
+            requireSame(
+              existingLink,
+              {
+                document: incoming.documentId,
+                item_collection: incoming.itemCollection,
+                item_id: linkedItemId,
+                link_type: incoming.linkType ?? "attachment",
+              },
+              "document link"
+            );
+            linkId = String(existingLink.id);
+          } else {
+            const candidateLinkId = stableLinkId(
+              incoming.documentId,
+              incoming.itemCollection,
+              linkedItemId
+            );
+            const link = await ensurePrimaryKeyedRow(
+              ItemsService,
+              "vibetable_document_links",
+              options,
+              trx,
+              candidateLinkId,
+              {
+                id: candidateLinkId,
+                status: "active",
+                document: incoming.documentId,
+                item_collection: incoming.itemCollection,
+                item_id: linkedItemId,
+                link_type: incoming.linkType ?? "attachment",
+              },
+              (row) => requireSame(
+                row,
+                {
+                  document: incoming.documentId,
+                  item_collection: incoming.itemCollection!,
+                  item_id: linkedItemId,
+                  link_type: incoming.linkType ?? "attachment",
+                },
+                "document link"
+              )
+            );
+            created ||= link.created;
+            linkId = candidateLinkId;
+          }
+        }
 
-            // Check if revision already exists (idempotent).
-            const existing = await revService.readByQuery({
-              filter: { id: { _eq: incoming.revisionId } },
-              limit: 1,
-            });
-            if (existing.length > 0) {
-              if (!revisionsMatch(existing[0], incoming)) {
-                return res.status(409).json({
-                  error: `revision ${incoming.revisionId} exists with different content (immutable conflict)`,
-                });
-              }
-              results.push({ status: "already-exists", revisionId: incoming.revisionId });
-              continue;
-            }
+        return {
+          documentId: incoming.documentId,
+          status: created ? "created" : "already-exists",
+          linkId,
+        };
+      });
+      res.json({ data: result });
+    } catch (error) {
+      if (error instanceof IdentityConflictError) {
+        res.status(409).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
+  });
 
-            // Create the revision record.
-            await revService.createOne({
+  router.post("/publish", async (req, res) => {
+    const body = req.body ?? {};
+    const revisionRequests = Array.isArray(body.revisions)
+      ? body.revisions
+      : [body];
+    if (revisionRequests.length > MAX_PUBLISH_BATCH) {
+      res.status(400).json({ error: `batch exceeds max ${MAX_PUBLISH_BATCH}` });
+      return;
+    }
+    for (const raw of revisionRequests) {
+      const error = validatePublishRequest(raw);
+      if (error) {
+        res.status(400).json({ error });
+        return;
+      }
+    }
+
+    const schema = await context.getSchema();
+    try {
+      const results = await database.transaction(async (trx) => {
+        const options = serviceOptions(schema, trx, requestAccountability(req));
+        const output: Array<{ status: string; revisionId: string }> = [];
+        for (const raw of revisionRequests) {
+          const incoming = raw as PublishRevisionRequest;
+          const ensured = await ensurePrimaryKeyedRow(
+            ItemsService,
+            "vibetable_document_revisions",
+            options,
+            trx,
+            incoming.revisionId,
+            {
               id: incoming.revisionId,
               status: "active",
               document: incoming.documentId,
@@ -123,120 +334,160 @@ export default (context: EndpointContext) => {
               created_by: incoming.createdBy,
               device_id: incoming.deviceId,
               comment: incoming.comment,
-            });
-            results.push({ status: "created", revisionId: incoming.revisionId });
-          }
-          return res.json({ data: results });
-        },
-      },
-      {
-        path: "/vibetable-workspace-index/link",
-        method: "POST",
-        handler: async (req: any, res: any) => {
-          // Link allow-list is dynamic: any business collection installed in
-          // this project may link documents (manifest-driven, like the BFF).
-          const allowed = await installedBusinessCollections(context, req.accountability);
-          const err = validateLinkRequest(req.body, allowed);
-          if (err) return res.status(400).json({ error: err });
-          const linkReq = req.body as LinkDocumentRequest;
-
-          const schema = context.getSchema();
-          const ItemsService = context.services.ItemsService;
-          const linkService = new ItemsService("vibetable_document_links", {
-            schema,
-            knex: context.database,
-            accountability: req.accountability,
-          });
-
-          // Check if link already exists (idempotent).
-          const existing = await linkService.readByQuery({
-            filter: {
-              document: { _eq: linkReq.documentId },
-              item_collection: { _eq: linkReq.itemCollection },
-              item_id: { _eq: linkReq.itemId },
             },
-            limit: 1,
-          });
-          if (existing.length > 0) {
-            return res.json({
-              data: { status: "already-exists", linkId: existing[0].id },
-            });
-          }
-
-          const linkId = await linkService.createOne({
-            id: crypto.randomUUID(),
-            status: "active",
-            document: linkReq.documentId,
-            item_collection: linkReq.itemCollection,
-            item_id: linkReq.itemId,
-            link_type: linkReq.linkType ?? "primary",
-          });
-          return res.json({ data: { status: "created", linkId } });
-        },
-      },
-      {
-        path: "/vibetable-workspace-index/unlink",
-        method: "POST",
-        handler: async (req: any, res: any) => {
-          const linkId = req.body?.linkId;
-          if (typeof linkId !== "string" || !linkId) {
-            return res.status(400).json({ error: "linkId is required" });
-          }
-          const schema = context.getSchema();
-          const ItemsService = context.services.ItemsService;
-          const linkService = new ItemsService("vibetable_document_links", {
-            schema,
-            knex: context.database,
-            accountability: req.accountability,
-          });
-          await linkService.deleteOne(linkId);
-          return res.json({ data: { deleted: linkId } });
-        },
-      },
-      {
-        path: "/vibetable-workspace-index/reconcile-head",
-        method: "POST",
-        handler: async (req: any, res: any) => {
-          const err = validateReconcileHeadRequest(req.body);
-          if (err) return res.status(400).json({ error: err });
-          const { documentId, schemeId, expectedHeadRevisionId, newHeadRevisionId } = req.body;
-
-          const schema = context.getSchema();
-          const ItemsService = context.services.ItemsService;
-          const schemeService = new ItemsService("vibetable_document_schemes", {
-            schema,
-            knex: context.database,
-            accountability: req.accountability,
-          });
-
-          const existing = await schemeService.readByQuery({
-            filter: { id: { _eq: schemeId } },
-            limit: 1,
-          });
-          if (existing.length === 0) {
-            return res.status(404).json({ error: `scheme ${schemeId} not found` });
-          }
-
-          const currentHead = (existing[0].head_revision as string) ?? "";
-          const result = computeReconcileResult(
-            currentHead,
-            expectedHeadRevisionId,
-            newHeadRevisionId
+            (row) => {
+              if (!revisionsMatch(row, incoming)) {
+                throw new IdentityConflictError(
+                  `revision ${incoming.revisionId} exists with different content (immutable conflict)`
+                );
+              }
+            }
           );
-
-          if (result.status === "conflict") {
-            return res.status(409).json({
-              data: result,
-              error: `CAS conflict: expected ${expectedHeadRevisionId}, actual ${currentHead}`,
-            });
-          }
-
-          await schemeService.updateOne(schemeId, {
-            head_revision: newHeadRevisionId,
+          output.push({
+            status: ensured.created ? "created" : "already-exists",
+            revisionId: incoming.revisionId,
           });
-          return res.json({ data: result });
-        },
-      },
-    ],
-  };
-};
+        }
+        return output;
+      });
+      res.json({ data: results });
+    } catch (error) {
+      if (error instanceof IdentityConflictError) {
+        res.status(409).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
+  });
+
+  router.post("/link", async (req, res) => {
+    const schema = await context.getSchema();
+    const allowed = await installedBusinessCollections(
+      CollectionsService,
+      schema,
+      database,
+      requestAccountability(req)
+    );
+    const error = validateLinkRequest(req.body, allowed);
+    if (error) {
+      res.status(400).json({ error });
+      return;
+    }
+    const incoming = req.body as LinkDocumentRequest;
+    const linkedItemId = String(incoming.itemId);
+    const linkId = stableLinkId(
+      incoming.documentId,
+      incoming.itemCollection,
+      linkedItemId
+    );
+
+    try {
+      const result = await database.transaction(async (trx) => {
+        const options = serviceOptions(schema, trx, requestAccountability(req));
+        const links = new ItemsService("vibetable_document_links", options);
+        const matches = await links.readByQuery({
+          filter: {
+            document: { _eq: incoming.documentId },
+            item_collection: { _eq: incoming.itemCollection },
+            item_id: { _eq: linkedItemId },
+          },
+          limit: 1,
+        });
+        if (matches[0]) {
+          requireSame(
+            matches[0],
+            { link_type: incoming.linkType ?? "primary" },
+            "document link"
+          );
+          return { status: "already-exists", linkId: String(matches[0].id) };
+        }
+        const ensured = await ensurePrimaryKeyedRow(
+          ItemsService,
+          "vibetable_document_links",
+          options,
+          trx,
+          linkId,
+          {
+            id: linkId,
+            status: "active",
+            document: incoming.documentId,
+            item_collection: incoming.itemCollection,
+            item_id: linkedItemId,
+            link_type: incoming.linkType ?? "primary",
+          },
+          (row) => requireSame(
+            row,
+            {
+              document: incoming.documentId,
+              item_collection: incoming.itemCollection,
+              item_id: linkedItemId,
+              link_type: incoming.linkType ?? "primary",
+            },
+            "document link"
+          )
+        );
+        return {
+          status: ensured.created ? "created" : "already-exists",
+          linkId,
+        };
+      });
+      res.json({ data: result });
+    } catch (error) {
+      if (error instanceof IdentityConflictError) {
+        res.status(409).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
+  });
+
+  router.post("/unlink", async (req, res) => {
+    const linkId = req.body?.linkId;
+    if (typeof linkId !== "string" || !linkId) {
+      res.status(400).json({ error: "linkId is required" });
+      return;
+    }
+    const schema = await context.getSchema();
+    const links = new ItemsService(
+      "vibetable_document_links",
+      serviceOptions(schema, database, requestAccountability(req))
+    );
+    await links.deleteOne(linkId);
+    res.json({ data: { deleted: linkId } });
+  });
+
+  router.post("/reconcile-head", async (req, res) => {
+    const error = validateReconcileHeadRequest(req.body);
+    if (error) {
+      res.status(400).json({ error });
+      return;
+    }
+    const { schemeId, expectedHeadRevisionId, newHeadRevisionId } = req.body;
+    const schema = await context.getSchema();
+    const schemes = new ItemsService(
+      "vibetable_document_schemes",
+      serviceOptions(schema, database, requestAccountability(req))
+    );
+    const existing = await readById(schemes, schemeId);
+    if (!existing) {
+      res.status(404).json({ error: `scheme ${schemeId} not found` });
+      return;
+    }
+
+    const currentHead = String(existing.head_revision ?? "");
+    const result = computeReconcileResult(
+      currentHead,
+      expectedHeadRevisionId,
+      newHeadRevisionId
+    );
+    if (result.status === "conflict") {
+      res.status(409).json({
+        data: result,
+        error: `CAS conflict: expected ${expectedHeadRevisionId}, actual ${currentHead}`,
+      });
+      return;
+    }
+    await schemes.updateOne(schemeId, { head_revision: newHeadRevisionId });
+    res.json({ data: result });
+  });
+});
