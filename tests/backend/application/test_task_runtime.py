@@ -90,9 +90,10 @@ async def test_progress_is_monotonic() -> None:
         return {}
 
     runtime.register("test.mono", handler)
-    await runtime.create("test.mono", {})
+    created = await runtime.create("test.mono", {})
     await asyncio.sleep(0.05)
     assert seen == [5]
+    assert runtime.status(created.task_id).progress.done == 5
 
 
 @pytest.mark.asyncio

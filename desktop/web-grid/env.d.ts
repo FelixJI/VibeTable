@@ -10,6 +10,7 @@ declare module "*.vue" {
 declare module "tabulator-tables" {
   export interface TabulatorRowComponent {
     getData(): Record<string, unknown>;
+    getElement?(): HTMLElement;
   }
   export interface TabulatorColumnComponent {
     getField(): string;
@@ -31,6 +32,8 @@ declare module "tabulator-tables" {
     constructor(element: string | HTMLElement, options: TabulatorOptions);
     getColumns(): unknown[];
     getRanges(): TabulatorRangeComponent[];
+    getRows(range?: "active" | "visible" | "selected" | "all"): TabulatorRowComponent[];
+    getSelectedData(): Record<string, unknown>[];
     setData(data: unknown[]): Promise<void>;
     setColumns(columns: unknown[]): void;
     destroy?(): void;

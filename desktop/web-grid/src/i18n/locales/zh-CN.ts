@@ -42,6 +42,7 @@ export const messages: Record<string, string> = {
   "startup.cancel": "取消",
   "startup.hostOwned": "启动状态与凭据保存由桌面宿主管理",
   "nav.files": "文件",
+  "nav.plugins": "插件",
   "files.source": "文件来源",
   "files.authority.workspace": "工作区文档",
   "files.authority.cloud": "云端资源附件",

@@ -110,7 +110,16 @@ class ProgressReporter:
 class TaskRecord:
     """Internal record of one task's state + result."""
 
-    __slots__ = ("created_at", "error", "kind", "progress", "result", "state", "task_id")
+    __slots__ = (
+        "completed",
+        "created_at",
+        "error",
+        "kind",
+        "progress",
+        "result",
+        "state",
+        "task_id",
+    )
 
     def __init__(self, task_id: str, kind: str) -> None:
         self.task_id = task_id
@@ -120,6 +129,7 @@ class TaskRecord:
         self.result: Any = None
         self.error: str | None = None
         self.created_at = time.time()
+        self.completed = asyncio.Event()
 
 
 class TaskRuntime:
@@ -146,6 +156,11 @@ class TaskRuntime:
     def register(self, kind: str, handler: TaskHandler) -> None:
         """Register ``handler`` for task ``kind`` (e.g. ``data.import``)."""
         self._handlers[kind] = handler
+
+    def unregister(self, kind: str) -> bool:
+        """Remove a dynamically registered handler after its last task started."""
+
+        return self._handlers.pop(kind, None) is not None
 
     # ------------------------------------------------------------------
     # Task lifecycle
@@ -182,7 +197,12 @@ class TaskRuntime:
         params: dict[str, Any],
     ) -> None:
         record.state = "running"
-        reporter = ProgressReporter(record.task_id, record.kind, self._sink)
+
+        async def report_sink(status: TaskStatus) -> None:
+            record.progress = status.progress
+            await self._sink(status)
+
+        reporter = ProgressReporter(record.task_id, record.kind, report_sink)
         await self._emit(record)
         # Bind params into the handler via a closure: handlers are registered
         # with a fixed signature, so params are injected through a wrapper.
@@ -203,6 +223,7 @@ class TaskRuntime:
                 record.state = "failed"
                 record.error = str(exc) or exc.__class__.__name__
         finally:
+            record.completed.set()
             await self._emit(record)
             await self._evict_if_needed()
 
@@ -221,6 +242,15 @@ class TaskRuntime:
         record = self._tasks.get(task_id)
         if record is None:
             raise KeyError(f"unknown task {task_id!r}")
+        return self._snapshot(record)
+
+    async def wait(self, task_id: str) -> TaskStatus:
+        """Wait until ``task_id`` reaches its truthful terminal state."""
+
+        record = self._tasks.get(task_id)
+        if record is None:
+            raise KeyError(f"unknown task {task_id!r}")
+        await record.completed.wait()
         return self._snapshot(record)
 
     def abort_unresumable(self, kinds: set[str]) -> int:

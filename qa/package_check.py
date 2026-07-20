@@ -12,6 +12,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.build_next import RepoPaths, render_manifest
+from scripts.extension_manifest import (
+    ExtensionManifestError,
+    list_extensions,
+    package_entry_paths,
+)
 from scripts.versioning import check_versions
 
 
@@ -23,7 +28,6 @@ def _required_files(paths: RepoPaths) -> list[Path]:
         paths.web_grid_dir / "package.json",
         paths.web_grid_dir / "package-lock.json",
     ]
-    # G0.2: every declared extension must have package.json + package-lock.json.
     for ext_dir in paths.directus_extension_dirs:
         files.append(ext_dir / "package.json")
         files.append(ext_dir / "package-lock.json")
@@ -39,16 +43,24 @@ def main() -> int:
         if not path.is_file()
     )
 
-    # G0.2: validate every declared extension's package metadata.
     required_scripts = {"build", "test", "typecheck"}
+    manifest_entries = {entry.name: entry for entry in list_extensions(PROJECT_ROOT)}
     for ext_dir in paths.directus_extension_dirs:
         package_path = ext_dir / "package.json"
         if not package_path.is_file():
             continue
         extension_package = json.loads(package_path.read_text(encoding="utf-8"))
-        extension_metadata = extension_package.get("directus:extension", {})
-        if extension_metadata.get("path") != "dist/index.js":
-            errors.append(f"Directus 扩展 {ext_dir.name} 入口必须是 dist/index.js")
+        try:
+            package_entries = package_entry_paths(ext_dir)
+        except ExtensionManifestError as exc:
+            errors.append(str(exc))
+            package_entries = ()
+        manifest_entry = Path(manifest_entries[ext_dir.name].entry)
+        if package_entries and manifest_entry not in package_entries:
+            errors.append(
+                f"Directus 扩展 {ext_dir.name} 的包入口未包含 manifest 声明的 "
+                f"{manifest_entry.as_posix()}"
+            )
         if not required_scripts.issubset(extension_package.get("scripts", {})):
             errors.append(f"Directus 扩展 {ext_dir.name} 缺少 build/test/typecheck 脚本")
 

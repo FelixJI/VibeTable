@@ -1,0 +1,17 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, "Microsoft YaHei", sans-serif;
+  --surface: #f4f0e8;
+  --ink: #17211c;
+  --accent: #e65a36;
+}
+
+:root[data-theme="dark"] { --surface: #17211c; --ink: #f4f0e8; --accent: #ff8a68; }
+body { margin: 0; color: var(--ink); background: var(--surface); }
+main { display: grid; gap: 1.25rem; padding: 2rem; }
+.eyebrow { color: var(--accent); font: 700 0.72rem/1 monospace; letter-spacing: 0.16em; }
+h1 { margin: 0.35rem 0 0; font-size: clamp(2rem, 8vw, 4.5rem); letter-spacing: -0.06em; }
+#summary { border-block: 1px solid currentColor; padding: 1.25rem 0; font-size: 1.15rem; }
+button { justify-self: start; border: 0; padding: 0.7rem 1.1rem; color: white; background: var(--accent); font: inherit; font-weight: 700; }
+:root[data-density="compact"] main { gap: 0.75rem; padding: 1rem; }
+button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }

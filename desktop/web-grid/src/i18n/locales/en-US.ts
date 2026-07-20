@@ -42,6 +42,7 @@ export const messages: Record<string, string> = {
   "startup.cancel": "Cancel",
   "startup.hostOwned": "Startup state and credential storage are managed by the desktop host",
   "nav.files": "Files",
+  "nav.plugins": "Plugins",
   "files.source": "File source",
   "files.authority.workspace": "Workspace documents",
   "files.authority.cloud": "Cloud attachments",

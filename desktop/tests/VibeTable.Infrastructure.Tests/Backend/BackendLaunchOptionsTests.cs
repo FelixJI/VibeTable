@@ -5,6 +5,7 @@ using VibeTable.Infrastructure.Backend;
 namespace VibeTable.Infrastructure.Tests.Backend;
 
 [TestClass]
+[DoNotParallelize]
 public sealed class BackendLaunchOptionsTests
 {
     [TestMethod]

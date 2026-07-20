@@ -61,4 +61,19 @@ describe("AppToolbar", () => {
     await button.trigger("click");
     expect(wrapper.emitted("insertRow")).toHaveLength(1);
   });
+
+  it("renders host-controlled plugin placement actions and emits only their closed key", async () => {
+    const workspace = useWorkspaceStore();
+    workspace.selectTable("orders");
+    const wrapper = mount(AppToolbar, { props: { pluginActions: [{
+      key: "com.example.reader/read",
+      label: "读取概览",
+      risk: "read",
+      disabled: false,
+    }] } });
+
+    await wrapper.get('[data-testid="plugin-toolbar-com.example.reader/read"]').trigger("click");
+
+    expect(wrapper.emitted("pluginAction")?.[0]).toEqual(["com.example.reader/read"]);
+  });
 });

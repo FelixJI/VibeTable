@@ -85,6 +85,26 @@ public sealed class WebMessageRouter
         "document.revealRequested",
         "document.historyRequested",
         "document.relinkRequested",
+        // Flow-first plugin platform. Each entry is a complete use case; no
+        // generic rpc.invoke bridge is accepted.
+        "plugin.catalog.list",
+        "plugin.audit.list",
+        "plugin.cleanup.listPending",
+        "plugin.install.inspect",
+        "plugin.install.commit",
+        "plugin.externalFlow.listCandidates",
+        "plugin.externalFlow.bind",
+        "plugin.lifecycle.setEnabled",
+        "plugin.lifecycle.upgrade",
+        "plugin.lifecycle.rollback",
+        "plugin.lifecycle.resolveDrift",
+        "plugin.lifecycle.uninstall",
+        "plugin.action.describe",
+        "plugin.action.start",
+        "plugin.interaction.resolve",
+        "plugin.task.cancel",
+        "plugin.task.get",
+        "plugin.surface.event",
         // Directus admin: open the embedded Data Studio in this webview.
         "admin.openRequested",
     };
@@ -121,6 +141,30 @@ public sealed class WebMessageRouter
         "document.actionCompleted",
         "document.operationFailed",
         "document.workspaceChanged",
+        // Versioned plugin domain events and local surface messages.
+        "plugin.catalog.changed",
+        "plugin.task.changed",
+        "plugin.interaction.requested",
+        "plugin.surface.message",
+        // Correlated responses reuse the closed request type and requestId.
+        "plugin.catalog.list",
+        "plugin.audit.list",
+        "plugin.cleanup.listPending",
+        "plugin.install.inspect",
+        "plugin.install.commit",
+        "plugin.externalFlow.listCandidates",
+        "plugin.externalFlow.bind",
+        "plugin.lifecycle.setEnabled",
+        "plugin.lifecycle.upgrade",
+        "plugin.lifecycle.rollback",
+        "plugin.lifecycle.resolveDrift",
+        "plugin.lifecycle.uninstall",
+        "plugin.action.describe",
+        "plugin.action.start",
+        "plugin.interaction.resolve",
+        "plugin.task.cancel",
+        "plugin.task.get",
+        "plugin.surface.event",
     };
 
     private readonly Action<RoutedWebRequest> _dispatch;

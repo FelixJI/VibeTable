@@ -35,7 +35,7 @@ class FakeClient:
     async def server_info(self) -> dict[str, Any]:
         return {
             "project": {"project_name": "VibeTable Test"},
-            "directus": {"version": "12.1.1"},
+            "version": "12.1.1",
         }
 
     async def fields(self, profile: Any) -> list[dict[str, Any]]:

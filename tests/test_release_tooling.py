@@ -174,6 +174,26 @@ def test_extension_manifest_discovers_declared_extensions() -> None:
         assert (ext_dir / "package.json").is_file(), f"extension {entry.name} missing package.json"
 
 
+def test_extension_package_entries_support_single_and_bundle_paths(tmp_path: Path) -> None:
+    from scripts.extension_manifest import package_entry_paths
+
+    endpoint = tmp_path / "endpoint"
+    endpoint.mkdir()
+    (endpoint / "package.json").write_text(
+        json.dumps({"directus:extension": {"path": "dist/index.js"}}),
+        encoding="utf-8",
+    )
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "package.json").write_text(
+        json.dumps({"directus:extension": {"path": {"app": "dist/app.js", "api": "dist/api.js"}}}),
+        encoding="utf-8",
+    )
+
+    assert package_entry_paths(endpoint) == (Path("dist/index.js"),)
+    assert package_entry_paths(bundle) == (Path("dist/app.js"), Path("dist/api.js"))
+
+
 def test_build_paths_include_every_manifest_extension() -> None:
     """RepoPaths must discover one extension dir per manifest entry."""
     paths = build_next.RepoPaths.default(REPO_ROOT)

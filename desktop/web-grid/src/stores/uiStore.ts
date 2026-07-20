@@ -3,7 +3,7 @@ import { ref } from "vue";
 import { getLocale, setLocale, type Locale } from "@/i18n";
 
 export type ThemeMode = "light" | "dark" | "system";
-export type AppView = "home" | "tables" | "files" | "settings";
+export type AppView = "home" | "tables" | "files" | "plugins" | "settings";
 export type StartupPage = "home" | "tables";
 export type DensityMode = "comfortable" | "compact";
 

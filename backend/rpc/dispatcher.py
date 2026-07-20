@@ -77,6 +77,7 @@ CODE_INSIGHTS = -32080
 CODE_FILE_TOOLS = -32090
 CODE_SETTINGS_COMMAND = -32100
 CODE_TABLE_ADMIN = -32110
+CODE_PLUGIN = -32120
 
 #: Maps each typed application error class to a ``(code, message, kind)``
 #: tuple. Order matters only if classes share a base class — they do not here.
@@ -208,6 +209,28 @@ def register_table_admin_errors() -> None:
         )
 
 
+def register_plugin_errors() -> None:
+    """Register stable plugin-domain failures without loading them at startup."""
+
+    from backend.application.flow_binding_manager import FlowBindingError
+    from backend.application.plugin_registry import PluginRegistryError
+    from backend.infrastructure.plugin_package import PluginPackageError
+    from backend.infrastructure.plugin_schema import PluginSchemaError
+
+    for error_type in (
+        PluginRegistryError,
+        FlowBindingError,
+        PluginPackageError,
+        PluginSchemaError,
+    ):
+        if error_type not in _APP_ERROR_MAP:
+            _APP_ERROR_MAP[error_type] = (
+                CODE_PLUGIN,
+                "Plugin error",
+                "plugin_error",
+            )
+
+
 Handler = Callable[..., Any]
 ParamsModel = type[BaseModel]
 
@@ -235,7 +258,11 @@ class RpcDispatcher:
             parameter
             for parameter in inspect.signature(handler).parameters.values()
             if parameter.kind
-            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
         ]
         unpack_params = bool(parameters) and all(
             parameter.name in params_model.model_fields for parameter in parameters

@@ -212,8 +212,10 @@ class IdentifierRegistry:
 
 
 def _entity_kind(value: object) -> IdentifierEntityKind:
-    if value == "collection" or value == "field":
-        return cast(IdentifierEntityKind, value)
+    if value == "collection":
+        return "collection"
+    if value == "field":
+        return "field"
     raise ValueError(f"unsupported identifier entity kind: {value!r}")
 
 

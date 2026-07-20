@@ -63,6 +63,10 @@ public partial class MainWindow : Window
     private readonly TableWorkspaceService _workspace;
     private readonly ITableRpcGateway _workspaceGateway;
     private readonly WorkspaceRequestDispatcher _dispatcher;
+    private readonly PluginSurfaceSessionManager _pluginSurfaces;
+    private readonly PluginWebViewResourceHost _pluginResourceHost;
+    private readonly IPluginPackageSourcePicker _pluginPackagePicker;
+    private readonly PluginRequestDispatcher _pluginDispatcher;
     private readonly WorkspaceMountStore _workspaceMounts;
     private readonly ILocalDocumentFilePicker _documentFilePicker;
     private readonly string _documentWorkspaceSourceScope;
@@ -83,6 +87,7 @@ public partial class MainWindow : Window
     private DirectusSupervisor? _directusSupervisor;
     private readonly TaskCompletionSource<bool>? _directusSessionReady;
     private JsonRpcDirectusGateway? _directusGateway;
+    private JsonRpcPluginGateway? _pluginGateway;
     private DocumentWorkspaceHostService? _documentWorkspace;
     private bool _directusSessionAuthenticated;
     private int _directusWorkspaceOpened;
@@ -94,6 +99,8 @@ public partial class MainWindow : Window
     private string? _pendingLoginEmail;
     private string? _pendingLoginPassword;
     private string? _authenticatedDirectusUserId;
+    private DirectusCurrentUser? _authenticatedDirectusUser;
+    private long _pluginProjectRevision;
     private string? _localDirectusDirectory;
     private bool _localDirectusWasReady;
     private DirectusStartupWindow? _directusStartupWindow;
@@ -155,6 +162,17 @@ public partial class MainWindow : Window
         _router = new WebMessageRouter(OnRoutedWebRequest);
         _backendAdapter = new BackendLifecycleAdapter(_supervisor);
         _webBridge = new WebViewBridge(this, _router);
+        _pluginSurfaces = new PluginSurfaceSessionManager();
+        _pluginResourceHost = new PluginWebViewResourceHost(
+            new PluginResourceHost(),
+            _pluginSurfaces);
+        _pluginPackagePicker = new WindowsPluginPackageSourcePicker();
+        _pluginDispatcher = new PluginRequestDispatcher(
+            _webBridge,
+            _pluginSurfaces,
+            _pluginPackagePicker,
+            _pluginResourceHost,
+            new WindowsPluginFilePicker());
         _workspaceMounts = new WorkspaceMountStore();
         _documentFilePicker = new WindowsLocalDocumentFilePicker();
 
@@ -535,6 +553,9 @@ public partial class MainWindow : Window
         SetDirectusSessionAuthenticated(false, sessionBoundary: true);
         _directusSessionReady?.TrySetResult(false);
         _directusGateway?.Dispose();
+        _pluginDispatcher.Dispose();
+        _pluginGateway?.Dispose();
+        _pluginResourceHost.Dispose();
         _documentWorkspace?.Dispose();
         if (_workspaceGateway is IDisposable disposableGateway)
         {
@@ -1028,6 +1049,8 @@ public partial class MainWindow : Window
             _directusGateway = new JsonRpcDirectusGateway(client);
             _directusGateway.Changed += OnDirectusChanged;
             _dispatcher.SetDirectusGateway(_directusGateway);
+            _pluginGateway = new JsonRpcPluginGateway(client);
+            _pluginDispatcher.SetGateway(_pluginGateway);
             _documentWorkspace = new DocumentWorkspaceHostService(
                 new JsonRpcDocumentWorkspaceGateway(client),
                 _workspaceMounts,
@@ -1249,6 +1272,7 @@ public partial class MainWindow : Window
             // issued to an earlier page before enabling or replaying state to
             // the new renderer.
             _dispatcher.RotateDocumentCapabilityEpoch();
+            _pluginResourceHost.CloseAllSurfaces();
             _router.IsReady = true;
             PostHostStartupStateSnapshot();
             TryWriteShellReadiness();
@@ -1325,6 +1349,12 @@ public partial class MainWindow : Window
             // Navigation/cookie-injection is a UI concern handled in MainWindow
             // (Task 5). Do NOT forward to _dispatcher.
             _ = OpenDirectusAdminAsync(request.RequestId);
+            return;
+        }
+
+        if (request.Type.StartsWith("plugin.", StringComparison.Ordinal))
+        {
+            _pluginDispatcher.Dispatch(request);
             return;
         }
 
@@ -1493,6 +1523,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(user.Id))
             throw new InvalidOperationException("Directus 当前用户缺少稳定标识。");
         _authenticatedDirectusUserId = user.Id;
+        _authenticatedDirectusUser = user;
     }
 
     private static string BuildDirectusSourceScope(
@@ -1956,11 +1987,14 @@ public partial class MainWindow : Window
             await _directusGateway.ReconcileIdentifierMappingsAsync(timeout.Token);
             var list = await _directusGateway.ListCollectionsAsync(timeout.Token);
             var tables = DirectusCollectionFilter.FilterUserTables(list.Collections);
+            string projectRevision = Interlocked.Increment(
+                ref _pluginProjectRevision).ToString();
             _webBridge.PostNotification("database.collectionsChanged", new
             {
                 tables,
                 capabilityHashes = list.CapabilityHashes,
                 displayNames = list.DisplayNames,
+                projectRevision,
             });
         }
         catch (Exception ex)
@@ -2238,6 +2272,7 @@ public partial class MainWindow : Window
         // and realtime setup, so those secondary capabilities cannot leave the
         // renderer stuck on "connecting".
         _directusWorkspaceSnapshot = result;
+        Interlocked.Increment(ref _pluginProjectRevision);
         PostDirectusWorkspaceOpened(result);
         _ = ReconcileAndRefreshCollectionsAsync(reportFailure: false);
 
@@ -2277,6 +2312,11 @@ public partial class MainWindow : Window
             tables = result.Tables,
             views = result.Views,
             displayNames = result.DisplayNames,
+            projectKey = _documentWorkspaceSourceScope,
+            projectRevision = Volatile.Read(ref _pluginProjectRevision).ToString(),
+            currentUser = _authenticatedDirectusUser,
+            hostVersion = typeof(MainWindow).Assembly.GetName().Version?.ToString()
+                ?? "unknown",
         });
 
     private void OnDirectusChanged(DirectusChange change)
@@ -2501,6 +2541,7 @@ public partial class MainWindow : Window
                 WebViewAssetService.AppHostName,
                 folder,
                 CoreWebView2HostResourceAccessKind.DenyCors);
+            _owner._pluginResourceHost.Attach(core);
 
             // 2. App navigation is deliberately limited to the virtual app
             // origin. Directus is trusted only by the separate admin WebView.
@@ -2514,7 +2555,9 @@ public partial class MainWindow : Window
             };
             core.FrameNavigationStarting += (_, args) =>
             {
-                if (!_owner.IsAppOrigin(args.Uri))
+                bool pluginOrigin = Uri.TryCreate(args.Uri, UriKind.Absolute, out var frameUri)
+                    && _owner._pluginResourceHost.IsRegisteredUri(frameUri);
+                if (!pluginOrigin)
                 {
                     args.Cancel = true;
                 }
@@ -2525,6 +2568,21 @@ public partial class MainWindow : Window
             core.NewWindowRequested += (_, args) =>
             {
                 args.Handled = true;
+                if (Uri.TryCreate(
+                        args.OriginalSourceFrameInfo.Source,
+                        UriKind.Absolute,
+                        out var sourceUri)
+                    && PluginWebViewResourceHost.IsPluginUri(sourceUri))
+                {
+                    // A plugin surface cannot escape its iframe through the
+                    // app page or the user's external browser.
+                    return;
+                }
+                if (Uri.TryCreate(args.Uri, UriKind.Absolute, out var requestedUri)
+                    && _owner._pluginResourceHost.IsRegisteredUri(requestedUri))
+                {
+                    return;
+                }
                 switch (WebViewNavigationPolicy.ClassifyAppNewWindow(args.Uri))
                 {
                     case WebViewLinkDisposition.CurrentView:

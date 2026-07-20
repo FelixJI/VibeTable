@@ -1,0 +1,4 @@
+{
+  "action.normalize": "规范化选中文本",
+  "result.summary": "已更新 {updated} 条，跳过 {skipped} 条，冲突 {conflicts} 条"
+}

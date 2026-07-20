@@ -1,0 +1,93 @@
+{
+  "manifest": {
+    "$schema": "vibetable.plugin-manifest.v1",
+    "pluginId": "com.example.summary",
+    "version": "1.2.0",
+    "displayName": { "zh-CN": "数据概览" },
+    "description": { "zh-CN": "只读概览插件" },
+    "compatibility": { "pluginApi": "1.x", "directus": ">=12.1 <13" },
+    "permissions": { "data": [], "files": [], "privateStorage": false },
+    "actions": [
+      {
+        "actionId": "show-summary",
+        "displayName": { "zh-CN": "查看概览" },
+        "description": {},
+        "mode": "flow",
+        "risk": "read",
+        "invocation": "manual",
+        "placements": ["table.toolbar"],
+        "requires": {},
+        "entryFlow": "summary",
+        "workerEntry": null,
+        "formSchema": null,
+        "inputSchema": "schemas/input.json",
+        "outputSchema": "schemas/output.json"
+      }
+    ],
+    "flows": [],
+    "ui": { "customViews": [] }
+  },
+  "result": {
+    "contract": "vibetable.plugin-result.v1",
+    "status": "success",
+    "summary": "读取了 2 条记录",
+    "metrics": [{ "label": "记录", "value": 2 }],
+    "table": null,
+    "artifacts": [],
+    "refresh": { "collections": ["articles"] },
+    "warnings": []
+  },
+  "interaction": {
+    "runId": "run-1",
+    "projectKey": "local:default",
+    "pluginId": "com.example.summary",
+    "actionId": "show-summary",
+    "caller": "user-1",
+    "progress": { "current": 2, "total": 10, "message": "处理中", "cancellable": true },
+    "pendingConfirmation": null,
+    "cancelRequested": false
+  },
+  "task": {
+    "taskId": "task-1",
+    "runId": "run-1",
+    "pluginId": "com.example.summary",
+    "pluginVersion": "1.2.0",
+    "actionId": "show-summary",
+    "projectKey": "local:default",
+    "collection": "articles",
+    "targetCount": 2,
+    "risk": "read",
+    "state": "succeeded",
+    "cancelRequested": false,
+    "result": {
+      "contract": "vibetable.plugin-result.v1",
+      "status": "success",
+      "summary": "读取了 2 条记录",
+      "metrics": [],
+      "table": null,
+      "artifacts": [],
+      "refresh": null,
+      "warnings": []
+    },
+    "error": null
+  },
+  "error": {
+    "contract": "vibetable.plugin-error.v1",
+    "code": "flow_unbound",
+    "message": "入口 Flow 尚未绑定",
+    "recoverability": "rebind",
+    "pluginId": "com.example.summary",
+    "actionId": "show-summary",
+    "runId": null,
+    "details": {},
+    "causeId": "cause-1"
+  },
+  "event": {
+    "contract": "vibetable.plugin-event.v1",
+    "eventType": "plugin.task.changed",
+    "projectKey": "local:default",
+    "entityId": "task-1",
+    "revision": 7,
+    "snapshot": { "taskId": "task-1", "state": "succeeded" }
+  }
+}

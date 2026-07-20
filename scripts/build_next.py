@@ -50,11 +50,11 @@ from pathlib import Path
 
 try:
     from scripts._host_paths import host_assembly_name
-    from scripts.extension_manifest import list_extensions
+    from scripts.extension_manifest import list_extensions, package_entry_paths
     from scripts.versioning import check_versions, read_project_version
 except ModuleNotFoundError:  # direct execution: python scripts/build_next.py
     from _host_paths import host_assembly_name
-    from extension_manifest import list_extensions
+    from extension_manifest import list_extensions, package_entry_paths
     from versioning import check_versions, read_project_version
 
 # ---------------------------------------------------------------------------
@@ -724,11 +724,12 @@ def _verify_stage(
         for ext_source, ext_target in zip(
             stage.directus_extension_dirs, stage.directus_extension_publish_dirs, strict=True
         ):
-            extension_entry = ext_target / "dist" / "index.js"
-            if not extension_entry.is_file():
-                raise BuildError(
-                    f"missing Directus extension entry ({ext_source.name}): {extension_entry}"
-                )
+            for relative_entry in package_entry_paths(ext_target):
+                extension_entry = ext_target / relative_entry
+                if not extension_entry.is_file():
+                    raise BuildError(
+                        f"missing Directus extension entry ({ext_source.name}): {extension_entry}"
+                    )
         directus_root = stage.directus_extensions_publish_dir.parent
         required_resources = (
             directus_root / "blueprints" / "vibetable-empty.json",

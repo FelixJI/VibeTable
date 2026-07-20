@@ -1,5 +1,7 @@
 import { useHostBridge } from "./bridgeContext";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { usePluginStore } from "@/stores/pluginStore";
+import { usePluginService } from "./pluginService";
 import type { CollectionSummary } from "@/stores/workspaceStore";
 import type { CollectionsChangedPayload, DatabaseOpenedPayload } from "@/contracts";
 
@@ -48,16 +50,33 @@ export function useWorkspaceService(): {
 } {
   const bridge = useHostBridge();
   const store = useWorkspaceStore();
+  const pluginStore = usePluginStore();
+  const pluginService = usePluginService();
 
   function init(): void {
     bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
       store.setOpened(toCollections(payload), payload.displayNames ?? {});
+      if (payload.projectKey?.trim()) {
+        pluginStore.setProjectContext(
+          payload.projectKey.trim(),
+          payload.projectRevision?.trim() || "0",
+        );
+      }
+      pluginStore.setHostContext(payload.currentUser, payload.hostVersion);
+      void pluginService.list().catch(() => undefined);
     });
     bridge.on("database.collectionsChanged", (payload) => {
       store.setCollections(
         toCollectionsFromChanged(payload),
         payload.displayNames ?? {},
       );
+      if (payload.projectRevision?.trim()) {
+        pluginStore.setProjectContext(
+          pluginStore.projectKey,
+          payload.projectRevision.trim(),
+        );
+      }
+      void pluginService.list().catch(() => undefined);
     });
   }
 

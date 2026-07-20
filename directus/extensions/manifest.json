@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "description": "Version-controlled Directus extension manifest. Lists every extension that QA, build and release must discover, test and package. The first entry is the bulk-mutation endpoint (B2); G3 adds vibetable-workspace-index. Tools iterate this list rather than hard-coding a single extension name.",
+  "description": "Version-controlled Directus extension manifest. Lists every endpoint and bundle that QA, build and release must discover, test and package. Tools iterate this list rather than hard-coding extension names.",
   "extensions": [
     {
       "name": "vibetable-bulk-mutation",
@@ -21,6 +21,16 @@
       "capability": "vibetable-workspace-index.v1",
       "stage": "G3",
       "description": "Workspace index endpoint: idempotent document registration/import, revision publish, link/unlink, and expected-head CAS reconcile."
+    },
+    {
+      "name": "vibetable-plugin-bridge",
+      "type": "bundle",
+      "source": "src/bridge/index.ts",
+      "entry": "dist/api.js",
+      "directusHost": "^12.1.1",
+      "capability": "vibetable-plugin-bridge.v1",
+      "stage": "Phase C",
+      "description": "Shared confirm/progress operations and authenticated runtime bridge for VibeTable plugin tasks."
     }
   ]
 }

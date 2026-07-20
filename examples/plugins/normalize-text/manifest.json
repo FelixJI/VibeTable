@@ -1,0 +1,52 @@
+{
+  "$schema": "vibetable.plugin-manifest.v1",
+  "pluginId": "com.vibetable.examples.normalize-text",
+  "version": "1.0.0",
+  "displayName": { "zh-CN": "批量文本规范化", "en": "Normalize text" },
+  "description": { "zh-CN": "预览并规范化选中记录中的文本" },
+  "compatibility": {
+    "minHostVersion": "1.0.0",
+    "pluginApi": "1.x",
+    "directus": ">=12.1 <13"
+  },
+  "permissions": {
+    "data": [
+      {
+        "collection": "$active",
+        "operations": ["read", "update"],
+        "fields": ["$configured"]
+      }
+    ],
+    "files": [],
+    "privateStorage": true
+  },
+  "actions": [
+    {
+      "actionId": "normalize-selection",
+      "displayName": { "zh-CN": "规范化选中文本" },
+      "mode": "flow",
+      "risk": "write",
+      "invocation": "manual",
+      "placements": ["table.toolbar", "table.context-menu"],
+      "requires": { "selection": "one-or-more" },
+      "entryFlow": "normalize-text",
+      "formSchema": "schemas/action-form.v1.json",
+      "inputSchema": "schemas/action-input.v1.json",
+      "outputSchema": "schemas/action-output.v1.json"
+    }
+  ],
+  "flows": [
+    {
+      "logicalFlowId": "normalize-text",
+      "ownership": "managed",
+      "trigger": "manual",
+      "risk": "write",
+      "definition": "flows/normalize-text.flow.json",
+      "inputSchema": "schemas/action-input.v1.json",
+      "outputSchema": "schemas/action-output.v1.json",
+      "requiresOperations": ["vibetable.confirm@1", "vibetable.progress@1"],
+      "externalNetwork": { "required": false, "purpose": null }
+    }
+  ],
+  "ui": { "customViews": [] }
+}

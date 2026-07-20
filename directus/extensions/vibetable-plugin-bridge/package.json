@@ -1,0 +1,49 @@
+{
+  "name": "vibetable-plugin-bridge",
+  "version": "1.0.0",
+  "description": "Shared VibeTable confirm/progress operations and authenticated plugin-task bridge.",
+  "private": true,
+  "type": "module",
+  "files": ["dist"],
+  "scripts": {
+    "build": "directus-extension build",
+    "test": "node --test src/__tests__/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "directus:extension": {
+    "type": "bundle",
+    "path": {
+      "app": "dist/app.js",
+      "api": "dist/api.js"
+    },
+    "entries": [
+      {
+        "type": "endpoint",
+        "name": "vibetable-plugin-bridge",
+        "source": "src/bridge/index.ts"
+      },
+      {
+        "type": "operation",
+        "name": "vibetable-confirm",
+        "source": {
+          "app": "src/confirm/app.ts",
+          "api": "src/confirm/api.ts"
+        }
+      },
+      {
+        "type": "operation",
+        "name": "vibetable-progress",
+        "source": {
+          "app": "src/progress/app.ts",
+          "api": "src/progress/api.ts"
+        }
+      }
+    ],
+    "host": "^12.1.1",
+    "hidden": false
+  },
+  "devDependencies": {
+    "@directus/extensions-sdk": "^18.0.1",
+    "typescript": "^5.9.3"
+  }
+}
