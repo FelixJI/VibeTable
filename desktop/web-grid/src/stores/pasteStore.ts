@@ -71,6 +71,15 @@ export const usePasteStore = defineStore("paste", () => {
     phase.value = p.overflow ? "overflow" : "previewing";
   }
 
+  /** Surface a clipboard payload that exceeds the interactive paste limit. */
+  function setOverflow(): void {
+    plan.value = null;
+    result.value = null;
+    acked.value = false;
+    error.value = null;
+    phase.value = "overflow";
+  }
+
   /** Flip the user acknowledgement flag. */
   function toggleAck(): void {
     acked.value = !acked.value;
@@ -115,6 +124,7 @@ export const usePasteStore = defineStore("paste", () => {
     error,
     summaryText,
     setPlan,
+    setOverflow,
     toggleAck,
     beginApply,
     setResult,

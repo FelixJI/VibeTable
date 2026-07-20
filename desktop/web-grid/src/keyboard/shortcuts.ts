@@ -150,8 +150,8 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     action: "deleteRows",
     scope: "grid",
     category: "navigation",
-    descriptionZh: "删除选中行（弹确认）",
-    descriptionEn: "Delete selected rows (confirm)",
+    descriptionZh: "删除选中行（可撤销）",
+    descriptionEn: "Delete selected rows (undoable)",
   },
   {
     id: "f2",

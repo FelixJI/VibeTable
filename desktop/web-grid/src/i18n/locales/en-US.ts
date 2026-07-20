@@ -117,6 +117,7 @@ export const messages: Record<string, string> = {
   "toolbar.noTable": "Select a table",
   "toolbar.refreshShortcut": "Refresh data (Ctrl+R)",
   "toolbar.helpShortcut": "Keyboard shortcuts (?)",
+  "toolbar.insertRow": "Insert row",
 
   "connection.connected": "Directus healthy",
   "connection.connecting": "Connecting",

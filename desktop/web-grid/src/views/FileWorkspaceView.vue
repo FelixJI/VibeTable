@@ -112,7 +112,7 @@ onBeforeUnmount(() => {
           <NIcon :size="15"><Cloud /></NIcon>{{ t("files.authority.cloud") }}
         </button>
       </div>
-      <NInput :value="store.query" clearable size="small" class="file-search" :placeholder="t('files.search')" @update:value="store.setQuery">
+      <NInput :value="store.query" clearable size="small" class="file-search" :input-props="{ 'aria-label': t('files.search') }" :placeholder="t('files.search')" @update:value="store.setQuery">
         <template #prefix><NIcon :size="15"><Search /></NIcon></template>
       </NInput>
       <span v-if="selectedCount" class="selection-count">{{ t("files.selected", { count: selectedCount }) }}</span>

@@ -11,7 +11,8 @@
  * is true), so that branch renders the redirect hint as designed.
  */
 import { computed } from "vue";
-import { NCard, NButton, NSpace, NCheckbox, NTag, NText } from "naive-ui";
+import { NCard, NButton, NSpace, NCheckbox, NIcon, NTag, NText, NTooltip } from "naive-ui";
+import { X } from "lucide-vue-next";
 import { usePasteStore } from "@/stores/pasteStore";
 import { useUiStore } from "@/stores/uiStore";
 import { errorsByRow } from "@/stores/pasteFlowHelpers";
@@ -37,7 +38,16 @@ const hasWarning = computed(() =>
   diagnostics.value.some((g) => g.diagnostics.some((d) => d.severity === "warning")),
 );
 
-const canConfirm = computed(() => paste.phase === "previewing" && paste.acked);
+const hasError = computed(() =>
+  (paste.plan?.summary.errorCount ?? 0) > 0
+  || diagnostics.value.some((g) => g.diagnostics.some((d) => d.severity === "error")),
+);
+
+const canConfirm = computed(() =>
+  paste.phase === "previewing"
+  && !hasError.value
+  && (!hasWarning.value || paste.acked),
+);
 </script>
 
 <template>
@@ -50,7 +60,20 @@ const canConfirm = computed(() => paste.phase === "previewing" && paste.acked);
   >
     <template #header>{{ t(titleKey) }}</template>
     <template #header-extra>
-      <NButton size="tiny" quaternary data-testid="paste-close" @click="emit('cancel')">×</NButton>
+      <NTooltip placement="left" :delay="450">
+        <template #trigger>
+          <NButton
+            size="tiny"
+            quaternary
+            :aria-label="t('paste.cancel')"
+            data-testid="paste-close"
+            @click="emit('cancel')"
+          >
+            <template #icon><NIcon :size="15"><X /></NIcon></template>
+          </NButton>
+        </template>
+        {{ t("paste.cancel") }}
+      </NTooltip>
     </template>
 
     <div class="paste-body">

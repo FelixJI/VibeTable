@@ -103,6 +103,16 @@ watch(
   },
 );
 
+// Paste outcomes arrive asynchronously from the host. Opening the panel here
+// keeps service/store code UI-agnostic while ensuring every non-idle state is
+// visible to the user (preview, overflow, result, or error).
+watch(
+  () => paste.phase,
+  (phase) => {
+    if (phase !== "idle") ui.openPastePanel();
+  },
+);
+
 /**
  * Tabulator instance ref owned by WorkspaceView and shared with GridHost via
  * provide/inject. GridHost injects this ref and forwards it to useTabulator,
@@ -301,10 +311,10 @@ async function onPaste() {
     return;
   }
   const classified = classifyClipboard(parsed);
-  // Oversize clipboard: surface nothing here. The legacy flow redirected to
-  // file-import via a synthetic overflow plan; that path is out of scope for
-  // M5 (deferred to a later task) — silently no-op so the user is not stuck.
-  if ("overflow" in classified) return;
+  if ("overflow" in classified) {
+    paste.setOverflow();
+    return;
+  }
 
   let ctx;
   try {
@@ -371,11 +381,39 @@ function onDelete() {
   mutationService.deleteRows(rows);
 }
 
+/** Ctrl+A: select the full visible data range using Tabulator's range API. */
+function onSelectAll() {
+  const grid = tabulator?.value as unknown as {
+    getRows?: () => Array<{ getCell: (field: string) => unknown }>;
+    getColumns?: () => Array<{ getField: () => string }>;
+    getRanges?: () => Array<{ remove?: () => void }>;
+    addRange?: (start: unknown, end: unknown) => unknown;
+  } | null;
+  const rows = grid?.getRows?.() ?? [];
+  const columns = (grid?.getColumns?.() ?? []).filter((column) => column.getField() !== "rowKey");
+  if (!grid?.addRange || rows.length === 0 || columns.length === 0) return;
+  for (const range of grid.getRanges?.() ?? []) range.remove?.();
+  grid.addRange(
+    rows[0].getCell(columns[0].getField()),
+    rows.at(-1)!.getCell(columns.at(-1)!.getField()),
+  );
+}
+
+/** F2: begin editing the top-left cell in the active range. */
+function onEditCell() {
+  const range = activeRange() as unknown as {
+    getCells?: () => Array<Array<{ edit?: () => void }>>;
+  } | null;
+  range?.getCells?.()[0]?.[0]?.edit?.();
+}
+
 useKeyboard({
   isTableContext: () => ui.activeView === "tables",
   onCopy,
   onPaste,
   onDelete,
+  onSelectAll,
+  onEditCell,
   onRefresh: () => tableService.refresh(),
   onNewTable: () => {
     admin.openCreate();
@@ -422,6 +460,7 @@ useKeyboard({
           <main class="main">
             <AppToolbar
               @refresh="tableService.refresh"
+              @insert-row="mutationService.insertRow({})"
               @open-help="ui.openShortcuts"
             />
             <div v-if="!workspace.currentTable" class="table-empty" data-testid="table-empty">

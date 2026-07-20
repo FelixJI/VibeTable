@@ -48,4 +48,17 @@ describe("AppToolbar", () => {
     const wrapper = mount(AppToolbar);
     expect(wrapper.get('[data-testid="toolbar-more"]').attributes("aria-label")).toBe("更多操作");
   });
+
+  it("wires the icon-based insert-row action and disables it without a table", async () => {
+    const wrapper = mount(AppToolbar);
+    expect(wrapper.get('[data-testid="toolbar-insert-row"]').attributes("disabled")).toBeDefined();
+
+    const workspace = useWorkspaceStore();
+    workspace.selectTable("orders");
+    await wrapper.vm.$nextTick();
+    const button = wrapper.get('[data-testid="toolbar-insert-row"]');
+    expect(button.attributes("aria-label")).toBe("插入新行");
+    await button.trigger("click");
+    expect(wrapper.emitted("insertRow")).toHaveLength(1);
+  });
 });

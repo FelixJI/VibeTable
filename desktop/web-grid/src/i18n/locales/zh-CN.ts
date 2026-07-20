@@ -117,6 +117,7 @@ export const messages: Record<string, string> = {
   "toolbar.noTable": "选择一张数据表",
   "toolbar.refreshShortcut": "刷新数据（Ctrl+R）",
   "toolbar.helpShortcut": "快捷键（?）",
+  "toolbar.insertRow": "插入新行",
 
   "connection.connected": "Directus 正常",
   "connection.connecting": "正在连接",

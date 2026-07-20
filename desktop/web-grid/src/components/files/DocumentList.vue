@@ -39,21 +39,6 @@ function iconFor(entry: DocumentEntry): Component {
   return File;
 }
 
-function formatSize(value?: number): string {
-  if (value === undefined) return "—";
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 ** 2) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
-  return `${(value / 1024 ** 2).toFixed(value < 10 * 1024 ** 2 ? 1 : 0)} MB`;
-}
-
-function formatDate(value?: string): string {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? value
-    : new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
-}
-
 function onSelect(event: MouseEvent, index: number): void {
   emit("select", index, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey });
 }
@@ -103,8 +88,6 @@ function onDragStart(event: DragEvent, entry: DocumentEntry): void {
   <div class="document-list" role="grid" :aria-label="t('files.listLabel')">
     <div class="document-head" role="row">
       <span role="columnheader">{{ t("files.column.name") }}</span>
-      <span role="columnheader">{{ t("files.column.modified") }}</span>
-      <span role="columnheader">{{ t("files.column.size") }}</span>
       <span role="columnheader">{{ t("files.column.version") }}</span>
     </div>
     <button
@@ -136,18 +119,16 @@ function onDragStart(event: DragEvent, entry: DocumentEntry): void {
           </small>
         </span>
       </span>
-      <span role="gridcell">{{ formatDate(entry.modifiedAt) }}</span>
-      <span role="gridcell">{{ formatSize(entry.size) }}</span>
       <span role="gridcell">{{ entry.versionLabel ?? "—" }}</span>
     </button>
   </div>
 </template>
 
 <style scoped>
-.document-list { min-width: 640px; color: var(--vt-fg); }
+.document-list { min-width: 480px; color: var(--vt-fg); }
 .document-head, .document-row {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 142px 90px 86px;
+  grid-template-columns: minmax(260px, 1fr) 100px;
   align-items: center;
 }
 .document-head {

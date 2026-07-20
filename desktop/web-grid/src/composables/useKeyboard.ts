@@ -16,6 +16,8 @@ export interface UseKeyboardOptions {
   onCopy?: () => void;
   onPaste?: () => void;
   onDelete?: () => void;
+  onSelectAll?: () => void;
+  onEditCell?: () => void;
   onRefresh?: () => void;
   onNewTable?: () => void;
   onHelp?: () => void;
@@ -149,6 +151,7 @@ export function useKeyboard(opts: UseKeyboardOptions): void {
     } else if (matchesShortcut(e, "Ctrl+A")) {
       e.preventDefault();
       kb.fire("selectAll");
+      opts.onSelectAll?.();
     } else if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
       kb.fire("deleteRows");
@@ -156,6 +159,7 @@ export function useKeyboard(opts: UseKeyboardOptions): void {
     } else if (e.key === "F2") {
       e.preventDefault();
       kb.fire("editCell");
+      opts.onEditCell?.();
     }
     // Arrow / Tab / Enter are handled by Tabulator directly via its range API.
   }

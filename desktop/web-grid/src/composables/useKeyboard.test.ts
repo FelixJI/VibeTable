@@ -95,6 +95,17 @@ describe("useKeyboard", () => {
     wrapper.unmount();
   });
 
+  it("invokes select-all and edit-cell callbacks", () => {
+    const onSelectAll = vi.fn();
+    const onEditCell = vi.fn();
+    const wrapper = mountKeyboard({ ...noopTabulator, onSelectAll, onEditCell });
+    fireKey("a", { ctrlKey: true });
+    fireKey("F2");
+    expect(onSelectAll).toHaveBeenCalledTimes(1);
+    expect(onEditCell).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
   it("fires undo on Ctrl+Z and redo on Ctrl+Shift+Z", () => {
     const kb = useKeyboardStore();
     const wrapper = mountKeyboard(noopTabulator);
