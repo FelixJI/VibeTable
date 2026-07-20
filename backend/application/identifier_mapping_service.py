@@ -6,7 +6,11 @@ import unicodedata
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, cast
+
+IdentifierEntityKind = Literal["collection", "field"]
+IdentifierOrigin = Literal["vibetable", "directus", "import"]
+IdentifierStatus = Literal["pending", "active", "orphaned", "deleted"]
 
 REGISTRY_COLLECTION = "vibetable_identifier_map"
 SYSTEM_FIELDS = {
@@ -36,15 +40,15 @@ def stable_suffix(value: int, length: int = 16) -> str:
 @dataclass(frozen=True, slots=True)
 class IdentifierMapping:
     id: str
-    entity_kind: str
+    entity_kind: IdentifierEntityKind
     parent_physical_name: str | None
     physical_name: str
     display_name: str
     normalized_name: str
     locale: str = "zh-CN"
     aliases: tuple[str, ...] = ()
-    origin: str = "vibetable"
-    status: str = "pending"
+    origin: IdentifierOrigin = "vibetable"
+    status: IdentifierStatus = "pending"
 
     def item(self) -> dict[str, Any]:
         return {
@@ -68,7 +72,7 @@ class IdentifierRegistry:
         self._transport = transport
         self._id_factory = id_factory
 
-    def allocate_physical(self, kind: str, occupied: Iterable[str] = ()) -> str:
+    def allocate_physical(self, kind: IdentifierEntityKind, occupied: Iterable[str] = ()) -> str:
         prefix = "vt_t_" if kind == "collection" else "f_"
         occupied_set = set(occupied)
         for _ in range(32):
@@ -133,7 +137,7 @@ class IdentifierRegistry:
                 result.append(
                     IdentifierMapping(
                         id=str(row["id"]),
-                        entity_kind=str(row["entity_kind"]),
+                        entity_kind=_entity_kind(row["entity_kind"]),
                         parent_physical_name=_optional_string(row.get("parent_physical_name")),
                         physical_name=str(row["physical_name"]),
                         display_name=str(row["display_name"]),
@@ -147,8 +151,8 @@ class IdentifierRegistry:
                             for item in (row.get("aliases") or [])
                             if isinstance(item, str)
                         ),
-                        origin=str(row.get("origin") or "directus"),
-                        status=str(row.get("status") or "active"),
+                        origin=_origin(row.get("origin") or "directus"),
+                        status=_status(row.get("status") or "active"),
                     )
                 )
             except (KeyError, TypeError, ValueError):
@@ -168,7 +172,7 @@ class IdentifierRegistry:
         )
 
     async def set_status(
-        self, token: str, mappings: Iterable[IdentifierMapping], status: str
+        self, token: str, mappings: Iterable[IdentifierMapping], status: IdentifierStatus
     ) -> None:
         for mapping in mappings:
             await self._transport.request(
@@ -205,6 +209,24 @@ class IdentifierRegistry:
             json_body={"aliases": list(aliases)},
             expected_status=(200, 201),
         )
+
+
+def _entity_kind(value: object) -> IdentifierEntityKind:
+    if value == "collection" or value == "field":
+        return cast(IdentifierEntityKind, value)
+    raise ValueError(f"unsupported identifier entity kind: {value!r}")
+
+
+def _origin(value: object) -> IdentifierOrigin:
+    if value in {"vibetable", "directus", "import"}:
+        return cast(IdentifierOrigin, value)
+    raise ValueError(f"unsupported identifier origin: {value!r}")
+
+
+def _status(value: object) -> IdentifierStatus:
+    if value in {"pending", "active", "orphaned", "deleted"}:
+        return cast(IdentifierStatus, value)
+    raise ValueError(f"unsupported identifier status: {value!r}")
 
 
 def translated_title(meta: Any, fallback: str) -> str:

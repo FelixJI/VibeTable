@@ -187,7 +187,9 @@ def test_plan_diff_identical_snapshots_produce_empty_plan() -> None:
 def test_plan_hash_is_stable() -> None:
     """The same diff always produces the same hash."""
     current = _snapshot({"vibetable_a": [_field("id", "uuid")]})
-    desired = _snapshot({"vibetable_a": [_field("id", "uuid")], "vibetable_b": [_field("id", "uuid")]})
+    desired = _snapshot(
+        {"vibetable_a": [_field("id", "uuid")], "vibetable_b": [_field("id", "uuid")]}
+    )
     plan1 = plan_diff(current, desired)
     plan2 = plan_diff(current, desired)
     assert plan1.plan_hash == plan2.plan_hash
@@ -233,7 +235,9 @@ class FakeTransport:
 async def test_dry_run_writes_nothing() -> None:
     """Dry-run mode must not issue any write requests."""
     current = _snapshot({"vibetable_a": [_field("id", "uuid")]})
-    desired = _snapshot({"vibetable_a": [_field("id", "uuid")], "vibetable_b": [_field("id", "uuid")]})
+    desired = _snapshot(
+        {"vibetable_a": [_field("id", "uuid")], "vibetable_b": [_field("id", "uuid")]}
+    )
     plan = plan_diff(current, desired)
     transport = FakeTransport()
     deployer = SchemaDeployer(transport, admin_token="admin-token")
@@ -252,7 +256,9 @@ async def test_dry_run_writes_nothing() -> None:
 async def test_apply_rejects_plan_drift() -> None:
     """Applying with a wrong plan_hash must raise SchemaDeploymentError."""
     current = _snapshot({"vibetable_a": [_field("id", "uuid")]})
-    desired = _snapshot({"vibetable_a": [_field("id", "uuid")], "vibetable_b": [_field("id", "uuid")]})
+    desired = _snapshot(
+        {"vibetable_a": [_field("id", "uuid")], "vibetable_b": [_field("id", "uuid")]}
+    )
     plan = plan_diff(current, desired)
     transport = FakeTransport()
     deployer = SchemaDeployer(transport, admin_token="admin-token")
@@ -266,7 +272,9 @@ async def test_apply_rejects_plan_drift() -> None:
 @pytest.mark.asyncio
 async def test_apply_skips_rejected_destructive_actions() -> None:
     """Without allow_destructive, rejected actions are skipped, not applied."""
-    current = _snapshot({"vibetable_a": [_field("id", "uuid")], "vibetable_old": [_field("id", "uuid")]})
+    current = _snapshot(
+        {"vibetable_a": [_field("id", "uuid")], "vibetable_old": [_field("id", "uuid")]}
+    )
     desired = _snapshot({"vibetable_a": [_field("id", "uuid")]})
     plan = plan_diff(current, desired)
     transport = FakeTransport(responses=[{"data": _snapshot({})}])  # snapshot response
@@ -286,7 +294,9 @@ async def test_apply_skips_rejected_destructive_actions() -> None:
 async def test_apply_creates_safe_collection() -> None:
     """A safe collection create is applied."""
     current = _snapshot({"vibetable_a": [_field("id", "uuid")]})
-    desired = _snapshot({"vibetable_a": [_field("id", "uuid")], "vibetable_b": [_field("id", "uuid")]})
+    desired = _snapshot(
+        {"vibetable_a": [_field("id", "uuid")], "vibetable_b": [_field("id", "uuid")]}
+    )
     plan = plan_diff(current, desired)
     transport = FakeTransport(responses=[{"data": _snapshot({})}])
     deployer = SchemaDeployer(transport, admin_token="admin-token")
@@ -305,7 +315,9 @@ async def test_apply_creates_safe_collection() -> None:
 async def test_apply_records_pre_apply_snapshot_hash() -> None:
     """Non-dry-run apply records the pre-apply snapshot hash for rollback."""
     current = _snapshot({"vibetable_a": [_field("id", "uuid")]})
-    desired = _snapshot({"vibetable_a": [_field("id", "uuid")], "vibetable_b": [_field("id", "uuid")]})
+    desired = _snapshot(
+        {"vibetable_a": [_field("id", "uuid")], "vibetable_b": [_field("id", "uuid")]}
+    )
     plan = plan_diff(current, desired)
     snap = _snapshot({"vibetable_a": [_field("id", "uuid")]})
     transport = FakeTransport(responses=[{"data": snap}])
