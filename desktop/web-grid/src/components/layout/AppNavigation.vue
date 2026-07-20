@@ -11,6 +11,7 @@ import {
 import type { AppView } from "@/stores/uiStore";
 import { useUiStore } from "@/stores/uiStore";
 import { t } from "@/i18n";
+import brandIconUrl from "@/assets/brand/vibetable.png";
 
 const ui = useUiStore();
 const emit = defineEmits<{
@@ -33,9 +34,7 @@ function navigate(view: AppView) {
 
 <template>
   <nav class="app-navigation" :aria-label="t('nav.application')">
-    <div class="brand-mark" aria-hidden="true">
-      <span></span><span></span><span></span>
-    </div>
+    <img class="brand-mark" :src="brandIconUrl" alt="" aria-hidden="true" />
 
     <div class="nav-group nav-group--primary">
       <NTooltip v-for="item in primary" :key="item.view" placement="right" :delay="450">
@@ -117,26 +116,11 @@ function navigate(view: AppView) {
   background: var(--vt-bg);
 }
 .brand-mark {
-  display: grid;
-  grid-template-columns: repeat(2, 8px);
-  grid-template-rows: repeat(2, 8px);
-  gap: 2px;
   width: 24px;
   height: 24px;
   margin: 1px 0 14px;
-  padding: 3px;
   border-radius: 7px;
-  background: var(--vt-color-primary-500);
-}
-.brand-mark span {
-  border-radius: 2px;
-  background: #fff;
-}
-.brand-mark span:first-child {
-  grid-row: 1 / 3;
-}
-.brand-mark span:nth-child(3) {
-  opacity: 0.68;
+  object-fit: cover;
 }
 .nav-group {
   display: flex;

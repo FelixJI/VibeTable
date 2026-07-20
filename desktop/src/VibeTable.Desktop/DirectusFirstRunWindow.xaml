@@ -1,7 +1,7 @@
 <Window x:Class="VibeTable.Desktop.DirectusFirstRunWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="首次设置 VibeTable" Height="520" Width="500"
+        Title="首次设置 VibeTable" Icon="Assets/Brand/VibeTable.png" Height="520" Width="500"
         ResizeMode="NoResize" WindowStartupLocation="CenterOwner"
         Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
         Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}">
