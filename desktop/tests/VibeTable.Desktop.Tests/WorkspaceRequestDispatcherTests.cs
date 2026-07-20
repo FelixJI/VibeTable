@@ -113,7 +113,7 @@ public sealed class WorkspaceRequestDispatcherTests
         Directory.CreateDirectory(Path.Combine(root, "backend"));
         try
         {
-            File.WriteAllText(Path.Combine(root, "local-directus", "run.py"), "");
+            File.WriteAllText(Path.Combine(root, "local-directus", "package.json"), "{}");
             File.WriteAllText(Path.Combine(root, "backend", "vibetable-backend.exe"), "");
 
             Assert.IsTrue(HostStartupOptions.ShouldAutoStartLocalDirectus(
@@ -149,7 +149,7 @@ public sealed class WorkspaceRequestDispatcherTests
         try
         {
             File.WriteAllText(Path.Combine(repo, "pyproject.toml"), "");
-            File.WriteAllText(Path.Combine(repo, "scripts", "local_directus", "run.py"), "");
+            File.WriteAllText(Path.Combine(repo, "scripts", "local_directus", "package.json"), "{}");
 
             // Bare run: no flags, no URL → the full stack should come up.
             Assert.IsTrue(HostStartupOptions.ShouldAutoStartLocalDirectus(
@@ -181,7 +181,7 @@ public sealed class WorkspaceRequestDispatcherTests
         Directory.CreateDirectory(Path.Combine(root, "backend"));
         try
         {
-            File.WriteAllText(Path.Combine(root, "local-directus", "run.py"), "");
+            File.WriteAllText(Path.Combine(root, "local-directus", "package.json"), "{}");
             File.WriteAllText(Path.Combine(root, "backend", "vibetable-backend.exe"), "");
 
             // Packaged layout that would normally auto-start, but disabled.

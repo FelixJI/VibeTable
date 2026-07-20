@@ -48,6 +48,35 @@ public sealed class BackendLaunchOptionsTests
     }
 
     [TestMethod]
+    public void ResolveForHost_PrefersLauncherPythonInDevelopment()
+    {
+        WithTemporaryDirectory(root =>
+        {
+            File.WriteAllText(Path.Combine(root, "pyproject.toml"), "[project]");
+            Directory.CreateDirectory(Path.Combine(root, "backend"));
+            string python = Path.Combine(root, "tools", "python.exe");
+            Directory.CreateDirectory(Path.GetDirectoryName(python)!);
+            File.WriteAllText(python, string.Empty);
+            string host = Path.Combine(root, "desktop", "bin");
+            Directory.CreateDirectory(host);
+
+            string? original = Environment.GetEnvironmentVariable("VIBETABLE_PYTHON");
+            try
+            {
+                Environment.SetEnvironmentVariable("VIBETABLE_PYTHON", python);
+                var options = BackendLaunchOptions.ResolveForHost(host);
+                Assert.AreEqual(Path.GetFullPath(python), options.Command);
+                Assert.AreEqual("-m backend", options.Arguments);
+                Assert.AreEqual(root, options.WorkingDirectory);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("VIBETABLE_PYTHON", original);
+            }
+        });
+    }
+
+    [TestMethod]
     public void ResolveForHost_FallsBackToUvAtRepositoryRoot()
     {
         WithTemporaryDirectory(root =>

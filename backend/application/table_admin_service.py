@@ -9,8 +9,11 @@ from typing import Any, Protocol
 from backend.adapters.directus.profile import CollectionProfile
 from backend.application.identifier_mapping_service import (
     SYSTEM_FIELDS,
+    IdentifierEntityKind,
     IdentifierMapping,
+    IdentifierOrigin,
     IdentifierRegistry,
+    IdentifierStatus,
     normalize_display_name,
     translated_title,
     translation,
@@ -541,12 +544,12 @@ class TableAdminService:
     def _mapping(
         self,
         *,
-        kind: str,
+        kind: IdentifierEntityKind,
         parent: str | None,
         physical: str,
         display: str,
-        origin: str = "vibetable",
-        status: str = "pending",
+        origin: IdentifierOrigin = "vibetable",
+        status: IdentifierStatus = "pending",
     ) -> IdentifierMapping:
         return IdentifierMapping(
             id=self._registry.new_record_id(),

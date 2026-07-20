@@ -6,12 +6,14 @@ repos:
         entry: python -m ruff format --check
         language: system
         types: [python]
+        exclude: ^runtime/node/node_modules/
 
       - id: ruff-check
         name: Ruff 静态检查
         entry: python -m ruff check
         language: system
         types: [python]
+        exclude: ^runtime/node/node_modules/
 
       - id: version-consistency
         name: VibeTable 跨组件版本一致性

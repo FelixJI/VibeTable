@@ -160,6 +160,9 @@ nul
 
 # .NET and new WebView frontend
 node_modules/
+!runtime/node/node_modules/
+!runtime/node/node_modules/npm/
+!runtime/node/node_modules/npm/**
 desktop/**/bin/
 desktop/**/obj/
 desktop/web-grid/node_modules/

@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { NButton, NIcon } from "naive-ui";
 import { AlertCircle, DatabaseZap, RotateCw, X } from "lucide-vue-next";
+import brandIconUrl from "@/assets/brand/vibetable.png";
 import FirstRunForm from "./FirstRunForm.vue";
 import LoginForm from "./LoginForm.vue";
 import type {
@@ -37,7 +38,7 @@ const subtitle = computed(() => props.detail || t(`startup.${props.phase}.subtit
     <div class="startup-ambient" aria-hidden="true"></div>
     <section class="startup-card">
       <aside class="startup-identity">
-        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <img class="brand-mark" :src="brandIconUrl" alt="" aria-hidden="true" />
         <div>
           <strong>VibeTable</strong>
           <p>{{ t("startup.productLine") }}</p>
@@ -113,10 +114,7 @@ const subtitle = computed(() => props.detail || t(`startup.${props.phase}.subtit
 .startup-ambient { position: absolute; inset: 0; opacity: .42; background-image: linear-gradient(var(--vt-border) 1px, transparent 1px), linear-gradient(90deg, var(--vt-border) 1px, transparent 1px); background-size: 32px 32px; mask-image: radial-gradient(circle at center, #000 0, transparent 68%); }
 .startup-card { position: relative; display: grid; grid-template-columns: 220px minmax(420px, 500px); width: min(720px, 100%); min-height: 468px; overflow: hidden; border: 1px solid var(--vt-border); border-radius: 12px; background: var(--vt-bg); box-shadow: 0 18px 60px rgba(30, 45, 78, .12); animation: startup-enter 240ms var(--vt-ease); }
 .startup-identity { display: flex; flex-direction: column; padding: 28px 24px; color: #fff; background: #2459d3; }
-.brand-mark { display: grid; grid-template-columns: repeat(2, 8px); grid-template-rows: repeat(2, 8px); gap: 2px; width: 28px; height: 28px; margin-bottom: 20px; padding: 5px; border-radius: 8px; background: #fff; }
-.brand-mark span { border-radius: 2px; background: #2459d3; }
-.brand-mark span:first-child { grid-row: 1 / 3; }
-.brand-mark span:nth-child(3) { opacity: .55; }
+.brand-mark { width: 36px; height: 36px; margin-bottom: 20px; border: 2px solid rgba(255,255,255,.72); border-radius: 10px; object-fit: cover; box-shadow: 0 6px 18px rgba(11, 38, 102, .24); }
 .startup-identity strong { font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
 .startup-identity p { margin: 3px 0 0; color: rgba(255,255,255,.72); font-size: var(--vt-font-caption); }
 .startup-identity > small { margin-top: auto; color: rgba(255,255,255,.66); font-size: 11px; line-height: 1.55; }

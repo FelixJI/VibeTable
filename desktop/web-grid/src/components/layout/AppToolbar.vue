@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h } from "vue";
 import { NButton, NDropdown, NIcon, NTooltip } from "naive-ui";
-import { Keyboard, MoreHorizontal, RefreshCw, Table2 } from "lucide-vue-next";
+import { Keyboard, MoreHorizontal, Plus, RefreshCw, Table2 } from "lucide-vue-next";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { collectionLabel } from "./collectionLabel";
 import { t } from "@/i18n";
@@ -10,6 +10,7 @@ const workspace = useWorkspaceStore();
 
 const emit = defineEmits<{
   refresh: [];
+  insertRow: [];
   openHelp: [];
 }>();
 
@@ -46,6 +47,21 @@ function onMore(key: string) {
       <span v-if="workspace.currentTable && currentLabel !== workspace.currentTable">{{ workspace.currentTable }}</span>
     </div>
     <div class="toolbar-actions">
+      <NTooltip placement="bottom" :delay="450">
+        <template #trigger>
+          <NButton
+            size="small"
+            quaternary
+            :disabled="!workspace.currentTable"
+            :aria-label="t('toolbar.insertRow')"
+            data-testid="toolbar-insert-row"
+            @click="emit('insertRow')"
+          >
+            <template #icon><NIcon><Plus /></NIcon></template>
+          </NButton>
+        </template>
+        {{ t("toolbar.insertRow") }}
+      </NTooltip>
       <NDropdown :options="moreOptions" placement="bottom-end" @select="onMore">
         <NTooltip placement="bottom" :delay="450">
           <template #trigger>

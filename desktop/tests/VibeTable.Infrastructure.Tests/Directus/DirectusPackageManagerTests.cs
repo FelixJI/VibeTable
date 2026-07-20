@@ -156,7 +156,7 @@ public sealed class DirectusPackageManagerTests
     {
         WithTemporaryDirectory(dir =>
         {
-            File.WriteAllText(Path.Combine(dir, "package-lock.json"), "{\"name\":\"x\"}");
+            File.WriteAllText(Path.Combine(dir, "package-lock.json"), "not-json");
             string hash = ComputeLockHashFor(dir);
             WriteMarker(dir, new
             {
@@ -199,7 +199,7 @@ public sealed class DirectusPackageManagerTests
     {
         WithTemporaryDirectory(dir =>
         {
-            File.WriteAllText(Path.Combine(dir, "package-lock.json"), "{\"name\":\"x\"}");
+            File.WriteAllText(Path.Combine(dir, "package-lock.json"), "not-json");
             // Stub an existing install so the verify-existing branch is taken.
             Directory.CreateDirectory(Path.Combine(dir, "node_modules", "directus"));
             var progress = new List<DirectusStartupProgress>();
@@ -238,7 +238,7 @@ public sealed class DirectusPackageManagerTests
     {
         WithTemporaryDirectory(dir =>
         {
-            File.WriteAllText(Path.Combine(dir, "package-lock.json"), "{\"name\":\"x\"}");
+            File.WriteAllText(Path.Combine(dir, "package-lock.json"), "not-json");
             var progress = new List<DirectusStartupProgress>();
             var manager = new DirectusPackageManager(npmTimeout: TimeSpan.FromSeconds(5));
 
@@ -273,7 +273,7 @@ public sealed class DirectusPackageManagerTests
     {
         WithTemporaryDirectory(dir =>
         {
-            File.WriteAllText(Path.Combine(dir, "package-lock.json"), "{\"name\":\"x\"}");
+            File.WriteAllText(Path.Combine(dir, "package-lock.json"), "not-json");
             string hash = ComputeLockHashFor(dir);
             WriteMarker(dir, new
             {
@@ -302,7 +302,7 @@ public sealed class DirectusPackageManagerTests
     {
         WithTemporaryDirectory(dir =>
         {
-            File.WriteAllText(Path.Combine(dir, "package-lock.json"), "{\"name\":\"new\"}");
+            File.WriteAllText(Path.Combine(dir, "package-lock.json"), "not-json");
             // Marker claims an old hash that no longer matches.
             WriteMarker(dir, new
             {

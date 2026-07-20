@@ -2416,6 +2416,15 @@ public partial class MainWindow : Window
                 _owner._readinessWriter?.Trace(
                     $"WebViewBridge.LoadAsync: Navigate issued to '{url}'");
                 await navigation.Task.ConfigureAwait(true);
+                if (_owner._readinessWriter is not null)
+                {
+                    string snapshot = await core.ExecuteScriptAsync(
+                        "JSON.stringify({readyState:document.readyState,title:document.title," +
+                        "appHtml:document.getElementById('app')?.innerHTML?.slice(0,500) ?? ''," +
+                        "scripts:[...document.scripts].map(s=>s.src)})");
+                    _owner._readinessWriter.Trace(
+                        $"WebViewBridge.LoadAsync: renderer snapshot={snapshot}");
+                }
             }
             finally
             {
@@ -2526,7 +2535,12 @@ public partial class MainWindow : Window
             // TryGetWebMessageAsString here rejects every object message with
             // a COM exception and silently deadlocks the app.ready handshake.
             string raw = e.WebMessageAsJson;
-            if (sender is not CoreWebView2 core) return;
+            // Some WebView2 runtime builds do not surface the CoreWebView2
+            // instance as the managed event sender. The already-initialized
+            // control is the authoritative source in that case; requiring a
+            // particular COM wrapper silently drops every renderer message.
+            var core = sender as CoreWebView2 ?? _owner.AppWebView.CoreWebView2;
+            if (core is null) return;
             if (!_owner.IsAppOrigin(e.Source))
             {
                 PostReply(core, WebMessageRouter.BuildOperationFailed(
@@ -2544,14 +2558,18 @@ public partial class MainWindow : Window
                     && typeElement.ValueKind == JsonValueKind.String
                         ? typeElement.GetString()
                         : null;
-                var additionalObjects = e.AdditionalObjects;
-                if (additionalObjects.Count > 0)
+                // Access AdditionalObjects only for the one request type that
+                // can legally carry them. Older WebView2 runtimes can throw
+                // while materializing this COM collection for ordinary JSON
+                // messages, which previously prevented app.ready from ever
+                // reaching the router.
+                if (string.Equals(
+                    type,
+                    "document.externalDropRequested",
+                    StringComparison.Ordinal))
                 {
-                    if (!string.Equals(
-                        type,
-                        "document.externalDropRequested",
-                        StringComparison.Ordinal)
-                        || additionalObjects.Count > 100)
+                    var additionalObjects = e.AdditionalObjects;
+                    if (additionalObjects.Count > 100)
                     {
                         _owner.PostDocumentOperationFailure(
                             "拖入文件数据无效。",
@@ -2583,6 +2601,7 @@ public partial class MainWindow : Window
             _owner._activeExternalDropPaths = externalDropPaths;
             try
             {
+                _owner._readinessWriter?.Trace("OnWebMessageReceived: routing message");
                 var reply = _router.Route(raw);
                 if (reply is not null) PostReply(core, reply);
             }

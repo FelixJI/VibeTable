@@ -1,7 +1,7 @@
 <Window x:Class="VibeTable.Desktop.DirectusLoginWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="VibeTable 登录" Height="430" Width="460"
+        Title="VibeTable 登录" Icon="Assets/Brand/VibeTable.png" Height="430" Width="460"
         ResizeMode="NoResize" WindowStartupLocation="CenterOwner"
         Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
         Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}">

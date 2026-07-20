@@ -64,7 +64,14 @@ CHECKS = {
 }
 
 # “全部质量检查”必须保持只读；依赖升级只能由用户显式选择。
-QUALITY_CHECKS = ("version", "package", "format", "lint", "type_check", "coverage")
+QUALITY_CHECKS: tuple[str, ...] = (
+    "version",
+    "package",
+    "format",
+    "lint",
+    "type_check",
+    "coverage",
+)
 
 
 def ensure_reports_dir() -> None:
@@ -434,6 +441,7 @@ def main() -> int:
     args = parser.parse_args()
 
     # 确定要运行的检查项
+    selected: list[str]
     if args.run_all or "all" in args.checks:
         selected = list(QUALITY_CHECKS)
     elif args.checks:

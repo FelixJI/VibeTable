@@ -39,8 +39,16 @@ _SYNTHETIC_DEPS = {
     },
     "fixtures": {},
     "migrationState": {
-        "C2": {"businessSchemaChanged": False, "source": "directus", "schemaVersion": "vibetable-1.0"},
-        "G1": {"businessSchemaChanged": True, "source": "directus", "schemaVersion": "vibetable-1.0"},
+        "C2": {
+            "businessSchemaChanged": False,
+            "source": "directus",
+            "schemaVersion": "vibetable-1.0",
+        },
+        "G1": {
+            "businessSchemaChanged": True,
+            "source": "directus",
+            "schemaVersion": "vibetable-1.0",
+        },
     },
     "stageMetadata": {
         "G1": {

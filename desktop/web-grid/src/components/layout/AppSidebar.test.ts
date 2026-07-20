@@ -78,14 +78,19 @@ describe("AppSidebar", () => {
     expect(wrapper.emitted("select")![0]).toEqual(["users"]);
   });
 
-  it("emits requestDelete with the collection name (and stops propagation)", async () => {
+  it("uses sibling buttons and emits delete without selecting the row", async () => {
     const workspace = useWorkspaceStore();
     workspace.setOpened([{ collection: "users", metadata: {} }]);
     const wrapper = mountSidebar();
     await wrapper.find('[data-testid="sidebar-request-delete"]').trigger("click");
-    // @click.stop on the delete button means the parent row click does NOT fire.
+    expect(wrapper.find("button button").exists()).toBe(false);
     expect(wrapper.emitted("requestDelete")).toBeTruthy();
     expect(wrapper.emitted("requestDelete")![0]).toEqual(["users"]);
     expect(wrapper.emitted("select")).toBeFalsy();
+  });
+
+  it("gives the table search input an accessible name", () => {
+    const wrapper = mountSidebar();
+    expect(wrapper.get('input[aria-label="搜索数据表"]')).toBeTruthy();
   });
 });

@@ -22,6 +22,11 @@
     <InternalsVisibleTo Include="VibeTable.Desktop.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Remove="Assets\Brand\VibeTable.png" />
+    <Resource Include="Assets\Brand\VibeTable.png" />
+  </ItemGroup>
+
   <Target Name="CopyPreviewHostOutput"
           AfterTargets="Build"
           Condition="'$(DesignTimeBuild)' != 'true'">

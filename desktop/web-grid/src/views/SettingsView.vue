@@ -30,6 +30,7 @@ import {
   Upload,
   X,
 } from "lucide-vue-next";
+import brandIconUrl from "@/assets/brand/vibetable.png";
 import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import { useUiStore } from "@/stores/uiStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
@@ -197,6 +198,7 @@ const connectionDetail = computed(() => {
               <div><strong>{{ t("settings.language") }}</strong><small>{{ t("settings.language.hint") }}</small></div>
               <NSelect
                 :value="ui.locale"
+                :aria-label="t('settings.language')"
                 :options="localeOptions"
                 class="setting-control"
                 @update:value="ui.setLanguage($event as Locale)"
@@ -206,6 +208,7 @@ const connectionDetail = computed(() => {
               <div><strong>{{ t("settings.theme") }}</strong><small>{{ t("settings.theme.hint") }}</small></div>
               <NSelect
                 :value="ui.themeMode"
+                :aria-label="t('settings.theme')"
                 :options="themeOptions"
                 class="setting-control"
                 @update:value="ui.setThemeMode($event as ThemeMode)"
@@ -215,6 +218,7 @@ const connectionDetail = computed(() => {
               <div><strong>{{ t("settings.startup") }}</strong><small>{{ t("settings.startup.hint") }}</small></div>
               <NSelect
                 :value="ui.startupPage"
+                :aria-label="t('settings.startup')"
                 :options="startupOptions"
                 class="setting-control"
                 @update:value="ui.setStartupPage($event as StartupPage)"
@@ -222,16 +226,17 @@ const connectionDetail = computed(() => {
             </div>
             <div class="setting-row">
               <div><strong>{{ t("settings.quote") }}</strong><small>{{ t("settings.quote.hint") }}</small></div>
-              <NSwitch :value="ui.showDailyQuote" @update:value="ui.setShowDailyQuote" />
+              <NSwitch :value="ui.showDailyQuote" :aria-label="t('settings.quote')" @update:value="ui.setShowDailyQuote" />
             </div>
             <div class="setting-row">
               <div><strong>{{ t("settings.calendar") }}</strong><small>{{ t("settings.calendar.hint") }}</small></div>
-              <NSwitch :value="ui.showMiniCalendar" @update:value="ui.setShowMiniCalendar" />
+              <NSwitch :value="ui.showMiniCalendar" :aria-label="t('settings.calendar')" @update:value="ui.setShowMiniCalendar" />
             </div>
             <div class="setting-row">
               <div><strong>{{ t("settings.density") }}</strong><small>{{ t("settings.density.hint") }}</small></div>
               <NRadioGroup
                 :value="ui.density"
+                :aria-label="t('settings.density')"
                 size="small"
                 @update:value="ui.setDensity($event as DensityMode)"
               >
@@ -246,7 +251,7 @@ const connectionDetail = computed(() => {
           <header><h1>{{ t("settings.mapping") }}</h1><p>{{ t("settings.mapping.description") }}</p></header>
           <section class="mapping-workbench">
             <div class="mapping-toolbar">
-              <NInput v-model:value="mappingQuery" clearable :placeholder="t('settings.mapping.search')">
+              <NInput v-model:value="mappingQuery" clearable :input-props="{ 'aria-label': t('settings.mapping.search') }" :placeholder="t('settings.mapping.search')">
                 <template #prefix><NIcon :size="15"><Search /></NIcon></template>
               </NInput>
               <NTooltip><template #trigger><NButton quaternary circle :aria-label="t('settings.mapping.reconcile')" :loading="mappings.phase === 'reconciling'" @click="emit('reconcileMappings')"><template #icon><NIcon><RefreshCw /></NIcon></template></NButton></template>{{ t("settings.mapping.reconcile") }}</NTooltip>
@@ -300,15 +305,15 @@ const connectionDetail = computed(() => {
           <section class="setting-card">
             <div class="setting-row">
               <div><strong>{{ t("settings.adminFloating") }}</strong><small>{{ t("settings.adminFloating.hint") }}</small></div>
-              <NSwitch :value="ui.adminFloatingButton" @update:value="ui.setAdminFloatingButton" />
+              <NSwitch :value="ui.adminFloatingButton" :aria-label="t('settings.adminFloating')" @update:value="ui.setAdminFloatingButton" />
             </div>
             <div class="setting-row">
               <div><strong>{{ t("settings.adminConfirm") }}</strong><small>{{ t("settings.adminConfirm.hint") }}</small></div>
-              <NSwitch :value="ui.adminConfirmClose" @update:value="ui.setAdminConfirmClose" />
+              <NSwitch :value="ui.adminConfirmClose" :aria-label="t('settings.adminConfirm')" @update:value="ui.setAdminConfirmClose" />
             </div>
             <div class="setting-row">
               <div><strong>{{ t("settings.adminRelease") }}</strong><small>{{ t("settings.adminRelease.hint") }}</small></div>
-              <NSwitch :value="ui.adminReleaseWhenIdle" @update:value="ui.setAdminReleaseWhenIdle" />
+              <NSwitch :value="ui.adminReleaseWhenIdle" :aria-label="t('settings.adminRelease')" @update:value="ui.setAdminReleaseWhenIdle" />
             </div>
             <button type="button" class="setting-action" @click="emit('openHelp')">
               <span class="action-icon"><NIcon :size="17"><Keyboard /></NIcon></span>
@@ -325,7 +330,7 @@ const connectionDetail = computed(() => {
         <template v-else>
           <header><h1>{{ t("settings.about") }}</h1><p>{{ t("settings.about.description") }}</p></header>
           <section class="about-card">
-            <div class="about-logo"><span></span><span></span><span></span></div>
+            <img class="about-logo" :src="brandIconUrl" alt="" aria-hidden="true" />
             <div><strong>VibeTable</strong><small>{{ t("settings.about.tagline") }}</small></div>
             <span class="desktop-badge">{{ t("settings.about.desktop") }}</span>
           </section>
@@ -449,10 +454,7 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .about-card { display: flex; align-items: center; gap: 14px; padding: 20px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); }
 .about-card > div:nth-child(2) { display: flex; flex: 1; flex-direction: column; }
 .about-card small { color: var(--vt-fg-muted); }
-.about-logo { display: grid; grid-template-columns: repeat(2, 9px); grid-template-rows: repeat(2, 9px); gap: 2px; width: 32px; height: 32px; padding: 6px; border-radius: 8px; background: var(--vt-color-primary-500); }
-.about-logo span { border-radius: 2px; background: #fff; }
-.about-logo span:first-child { grid-row: 1 / 3; }
-.about-logo span:nth-child(3) { opacity: .68; }
+.about-logo { width: 40px; height: 40px; border-radius: 10px; object-fit: cover; box-shadow: 0 5px 16px rgba(36, 89, 211, .2); }
 @media (max-width: 760px) {
   .settings-nav { flex-basis: 52px; padding: 16px 7px; }
   .settings-nav-title { display: none; }

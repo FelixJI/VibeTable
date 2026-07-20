@@ -8,6 +8,7 @@
         xmlns:local="clr-namespace:VibeTable.Desktop"
         mc:Ignorable="d"
         Title="VibeTable"
+        Icon="Assets/Brand/VibeTable.png"
         Height="720" Width="1024"
         Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
         Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"
@@ -59,19 +60,30 @@
                             HorizontalAlignment="Center" Background="#FFFFFF"
                             BorderBrush="#DEE0E3" BorderThickness="1" CornerRadius="6">
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="▣" Foreground="#646A73" FontSize="11" Margin="0,0,6,0"/>
+                            <Viewbox Width="12" Height="12" Margin="0,0,6,0">
+                                <Path Stroke="#646A73" StrokeThickness="1.5" Data="M1,1 H11 V11 H1 Z M1,5 H11 M5,1 V11"/>
+                            </Viewbox>
                             <TextBlock Text="本地管理后台 · Directus" Foreground="#4E5969" FontSize="12"/>
                         </StackPanel>
                     </Border>
 
                     <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
                         <Button Width="30" Height="28" Padding="0" Background="Transparent" BorderThickness="0"
-                                Content="↻" FontSize="17" Foreground="#4E5969"
                                 Click="OnReloadAdminClick" ToolTip="重新载入管理后台"
-                                ToolTipService.InitialShowDelay="450"/>
+                                ToolTipService.InitialShowDelay="450">
+                            <Viewbox Width="16" Height="16">
+                                <Path Stroke="#4E5969" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      Data="M11,3 H15 V7 M15,3 L12.3,5.7 A6,6 0 1 0 13.7,11"/>
+                            </Viewbox>
+                        </Button>
                         <Button Width="30" Height="28" Padding="0" Background="Transparent" BorderThickness="0"
-                                Content="⋯" FontSize="18" Foreground="#4E5969" ToolTip="更多"
+                                ToolTip="更多"
                                 ToolTipService.InitialShowDelay="450" Click="OnAdminMoreClick">
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse Width="3" Height="3" Fill="#4E5969" Margin="1"/>
+                                <Ellipse Width="3" Height="3" Fill="#4E5969" Margin="1"/>
+                                <Ellipse Width="3" Height="3" Fill="#4E5969" Margin="1"/>
+                            </StackPanel>
                             <Button.ContextMenu>
                                 <ContextMenu>
                                     <MenuItem Header="重新载入" Click="OnReloadAdminClick"/>

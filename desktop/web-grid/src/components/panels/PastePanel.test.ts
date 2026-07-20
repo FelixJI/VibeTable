@@ -79,25 +79,45 @@ describe("PastePanel", () => {
     expect(wrapper.find('[data-testid="paste-overflow"]').exists()).toBe(true);
   });
 
-  it("disables the confirm button when acked is false in previewing phase", () => {
+  it("allows a clean preview to be confirmed without an acknowledgement", () => {
     const ui = useUiStore();
     const paste = usePasteStore();
     paste.setPlan(makePlan());
     ui.openPastePanel();
     const wrapper = mountPanel();
     const confirm = wrapper.find('[data-testid="paste-confirm"]');
-    expect(confirm.attributes("disabled")).toBeDefined();
+    expect(confirm.attributes("disabled")).toBeUndefined();
   });
 
-  it("emits confirm when the confirm button is clicked and acked is true", async () => {
+  it("requires acknowledgement when the preview contains a warning", async () => {
     const ui = useUiStore();
     const paste = usePasteStore();
-    paste.setPlan(makePlan());
+    paste.setPlan(makePlan({
+      summary: { updateRows: 1, insertRows: 0, skipRows: 0, errorCount: 0, warningCount: 1 },
+      diagnostics: [{ rowIndex: 0, columnIndex: 0, severity: "warning", code: "check", message: "check" }],
+    }));
+    ui.openPastePanel();
+    const wrapper = mountPanel();
+    expect(wrapper.get('[data-testid="paste-confirm"]').attributes("disabled")).toBeDefined();
+    await wrapper.get('[data-testid="paste-ack"]').trigger("click");
+    await wrapper.find('[data-testid="paste-confirm"]').trigger("click");
+    expect(wrapper.emitted("confirm")).toBeTruthy();
+  });
+
+  it("never allows a preview containing an error to be confirmed", async () => {
+    const ui = useUiStore();
+    const paste = usePasteStore();
+    paste.setPlan(makePlan({
+      summary: { updateRows: 0, insertRows: 0, skipRows: 1, errorCount: 1, warningCount: 1 },
+      diagnostics: [
+        { rowIndex: 0, columnIndex: 0, severity: "warning", code: "check", message: "check" },
+        { rowIndex: 0, columnIndex: 1, severity: "error", code: "invalid", message: "invalid" },
+      ],
+    }));
     paste.toggleAck();
     ui.openPastePanel();
     const wrapper = mountPanel();
-    await wrapper.find('[data-testid="paste-confirm"]').trigger("click");
-    expect(wrapper.emitted("confirm")).toBeTruthy();
+    expect(wrapper.get('[data-testid="paste-confirm"]').attributes("disabled")).toBeDefined();
   });
 
   it("emits cancel when the close button is clicked", async () => {
@@ -106,6 +126,8 @@ describe("PastePanel", () => {
     paste.setPlan(makePlan());
     ui.openPastePanel();
     const wrapper = mountPanel();
+    expect(wrapper.get('[data-testid="paste-close"]').attributes("aria-label")).toBe("取消");
+    expect(wrapper.get('[data-testid="paste-close"]').find("svg").exists()).toBe(true);
     await wrapper.find('[data-testid="paste-close"]').trigger("click");
     expect(wrapper.emitted("cancel")).toBeTruthy();
   });

@@ -99,10 +99,10 @@ public sealed class BackendLaunchOptions
     /// <summary>
     /// Resolves the backend command for the installed or development layout.
     /// Packaged builds use <c>backend/vibetable-backend.exe</c> beside the host;
-    /// development builds use the repository's own <c>.venv</c> interpreter
-    /// and run <c>-m backend</c> from the repository root. If the virtual
-    /// environment is not present, the resolver falls back to <c>uv run</c>
-    /// from that same root.
+    /// development builds first honor the validated interpreter passed by
+    /// <c>scripts/dev.py</c> in <c>VIBETABLE_PYTHON</c>, then use the
+    /// repository's own <c>.venv</c>. If neither is available, the resolver
+    /// falls back to <c>uv run</c> from that same root.
     /// </summary>
     public static BackendLaunchOptions ResolveForHost(string? hostBaseDirectory = null)
     {
@@ -127,6 +127,17 @@ public sealed class BackendLaunchOptions
         if (repositoryRoot is null)
         {
             return new BackendLaunchOptions { WorkingDirectory = baseDirectory };
+        }
+
+        string? launcherPython = System.Environment.GetEnvironmentVariable("VIBETABLE_PYTHON");
+        if (!string.IsNullOrWhiteSpace(launcherPython) && File.Exists(launcherPython))
+        {
+            return new BackendLaunchOptions
+            {
+                Command = Path.GetFullPath(launcherPython),
+                Arguments = "-m backend",
+                WorkingDirectory = repositoryRoot,
+            };
         }
 
         string venvPython = Path.Combine(

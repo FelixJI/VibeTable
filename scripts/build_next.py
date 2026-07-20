@@ -270,6 +270,12 @@ def build_pyinstaller_backend_command(
     ]
     for hidden in BACKEND_HIDDEN_IMPORTS:
         command.extend(["--hidden-import", hidden])
+    # Some runtime packages expose optional type-checking/plugin integrations
+    # that PyInstaller discovers when the build interpreter also has dev tools
+    # installed (notably pydantic -> mypy). Exclude them explicitly so release
+    # contents do not depend on how feature-rich the build environment is.
+    for excluded in sorted(_DEV_PACKAGES_FORBIDDEN_IN_BUNDLE):
+        command.extend(["--exclude-module", excluded])
     # Collect pydantic's data files (py.typed) so the bundle is self-contained.
     command.extend(["--collect-data", "pydantic"])
     # The entrypoint: backend/__main__.py (run as a module via -m in dev).
@@ -661,6 +667,16 @@ def _build_desktop_stage(stage: RepoPaths, skip: bool) -> None:
             shutil.copytree(item, dest)
         else:
             shutil.copy2(item, dest)
+    # Ship the portable Node + npm runtime expected by NodeRuntime. Directus'
+    # own node_modules remain first-launch data under LOCALAPPDATA; only the
+    # small npm client bundled with the official Node distribution lives here.
+    runtime_source = stage.repo_root / "runtime" / "node"
+    runtime_target = stage.publish_root / "runtime" / "node"
+    if not runtime_source.is_dir():
+        raise BuildError(f"portable Node runtime missing: {runtime_source}")
+    if runtime_target.exists():
+        shutil.rmtree(runtime_target)
+    shutil.copytree(runtime_source, runtime_target)
     print(f"[build_next] host staged -> {target}", flush=True)
 
 
@@ -675,6 +691,15 @@ def _verify_stage(
     """Assert every required artifact exists before the atomic swap."""
     if not skip_desktop and not stage.host_exe.is_file():
         raise BuildError(f"missing host exe: {stage.host_exe}")
+    if not skip_desktop:
+        runtime_node = stage.publish_root / "runtime" / "node"
+        required_runtime_files = (
+            runtime_node / "node.exe",
+            runtime_node / "node_modules" / "npm" / "bin" / "npm-cli.js",
+        )
+        for runtime_file in required_runtime_files:
+            if not runtime_file.is_file():
+                raise BuildError(f"missing portable Node runtime file: {runtime_file}")
     if not skip_backend and not (stage.backend_dir / BACKEND_EXE_NAME).is_file():
         raise BuildError(f"missing backend exe: {stage.backend_dir / BACKEND_EXE_NAME}")
     if not skip_backend:
@@ -713,17 +738,22 @@ def _verify_stage(
             if not resource.is_file():
                 raise BuildError(f"missing Directus runtime resource: {resource}")
     if not skip_local_directus:
-        run_py = stage.local_directus_publish_dir / "run.py"
-        if not run_py.is_file():
-            raise BuildError(f"missing local-directus run.py: {run_py}")
+        for shipped_name in _LOCAL_DIRECTUS_SHIPPED_FILES:
+            shipped_file = stage.local_directus_publish_dir / shipped_name
+            if not shipped_file.is_file():
+                raise BuildError(f"missing local-directus source file: {shipped_file}")
+        for retired_name in ("run.py", "install.py"):
+            retired_file = stage.local_directus_publish_dir / retired_name
+            if retired_file.exists():
+                raise BuildError(
+                    f"retired local-directus launcher leaked into layout: {retired_file}"
+                )
         # node_modules must NOT be shipped (it is pulled online at first launch).
         node_modules = stage.local_directus_publish_dir / "node_modules"
         if node_modules.is_dir():
             raise BuildError(
                 f"local-directus must ship source-only: {node_modules} leaked into the layout"
             )
-        if not skip_backend and not (stage.backend_dir / BACKEND_EXE_NAME).is_file():
-            raise BuildError("local-directus packaged runner requires the backend executable")
     if not stage.manifest_path.is_file():
         raise BuildError(f"missing manifest: {stage.manifest_path}")
     # Manifest must round-trip with the pinned versions.
