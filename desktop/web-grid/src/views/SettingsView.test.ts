@@ -108,12 +108,9 @@ describe("SettingsView", () => {
     const navigator = wrapper.findComponent(MonthNavigator);
     await navigator.vm.$emit("update:monthKey", "2025-01");
     expect(wrapper.findComponent(WorkCalendarMonth).props("monthKey")).toBe("2025-01");
-    // 点今日按钮（用 aria-label 定位，避免和箭头按钮混淆）
-    const todayBtn = wrapper
-      .findAll(".calendar-toolbar .n-button")
-      .find((btn) => btn.attributes("aria-label") === "今日");
-    expect(todayBtn, "today button should render").toBeTruthy();
-    await todayBtn!.trigger("click");
+    // 点今日按钮（用 data-testid 定位，与文件中既有约定一致）
+    const todayBtn = wrapper.get('[data-testid="calendar-today"]');
+    await todayBtn.trigger("click");
     const currentMonthKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
     expect(wrapper.findComponent(WorkCalendarMonth).props("monthKey")).toBe(currentMonthKey);
   });

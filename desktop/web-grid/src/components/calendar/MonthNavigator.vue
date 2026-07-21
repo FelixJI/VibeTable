@@ -78,7 +78,6 @@ function commitInput(): void {
         :placeholder="t('settings.workCalendar.jumpPlaceholder')"
         size="small"
         @keyup.enter="commitInput"
-        @blur="commitInput"
       />
     </div>
   </NPopover>

@@ -325,7 +325,7 @@ function setCalendarName(name: string): void {
               </NButton>
               <MonthNavigator :month-key="calendarMonth" :locale="ui.locale" @update:month-key="calendarMonth = $event" />
               <span>{{ t("settings.workCalendar.overrides", { count: workCalendar.overrideCount }) }}</span>
-              <NButton quaternary size="small" :aria-label="t('settings.workCalendar.today')" @click="calendarMonth = formatMonthKey(new Date())">
+              <NButton quaternary size="small" data-testid="calendar-today" :aria-label="t('settings.workCalendar.today')" @click="calendarMonth = formatMonthKey(new Date())">
                 {{ t("settings.workCalendar.today") }}
               </NButton>
               <NButton quaternary circle :aria-label="t('settings.workCalendar.next')" @click="calendarMonth = shiftMonthKey(calendarMonth, 1)">
@@ -522,7 +522,6 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .setting-control { width: 170px; }
 .calendar-workbench { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
 .calendar-toolbar { display: grid; grid-template-columns: 32px auto 1fr auto 32px; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--vt-border); }
-.calendar-toolbar strong { font-weight: 600; }
 .calendar-toolbar > span { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); text-align: right; }
 .calendar-layout { display: grid; grid-template-columns: minmax(360px, 1fr) 230px; gap: 18px; padding: 16px; }
 .calendar-rule-panel { display: flex; flex-direction: column; gap: 8px; padding: 14px; border-left: 1px solid var(--vt-border); }

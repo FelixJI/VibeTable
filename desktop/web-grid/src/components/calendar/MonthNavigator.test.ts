@@ -19,14 +19,12 @@ import { NDatePicker, NInput, NPopover } from "naive-ui";
  *    jump field. We disambiguate by selecting the NInput whose `placeholder`
  *    prop matches our i18n key.
  *
- * 3. The brief suggested `input.vm.$emit("blur")` for the commit path, but
- *    naive-ui's NInput only fires `blur` from a native focus loss on its inner
- *    `<input>` element — `vm.$emit("blur")` does not reach the parent's
- *    `@blur` listener (no `emits: ["blur"]` declaration on NInput). We instead
- *    set the value on the inner `<input>` (`setValue`) and trigger a native
- *    `blur` on it; this is the same path a real browser takes and is the most
- *    faithful jsdom approximation. The component's `@keyup.enter` binding is
- *    unchanged (real browsers use it; jsdom doesn't synthesize it reliably).
+ * 3. Commit path: spec is Enter-to-commit (`@keyup.enter="commitInput"` on the
+ *    NInput). We drive it with `inner.trigger("keyup", { key: "Enter" })` on
+ *    the inner `<input>`; modern @vue/test-utils + jsdom handle the `.enter`
+ *    modifier, and Vue's key modifier matches against the synthetic event's
+ *    `key` value. The blur-commit binding was removed from the component per
+ *    review (it created a UX race with month-grid clicks).
  */
 describe("MonthNavigator", () => {
   beforeEach(() => {
@@ -68,9 +66,8 @@ describe("MonthNavigator", () => {
     const inner = jumpInput!.find("input");
     expect(inner.exists()).toBe(true);
     await inner.setValue("2025-12");
-    // Commit path: real browsers fire blur on focus loss; that's the same
-    // handler as @keyup.enter. jsdom can't drive @keyup.enter reliably.
-    await inner.trigger("blur");
+    // Commit path: spec is Enter-to-commit.
+    await inner.trigger("keyup", { key: "Enter" });
     expect(wrapper.emitted("update:monthKey")).toEqual([["2025-12"]]);
   });
 
@@ -85,7 +82,7 @@ describe("MonthNavigator", () => {
     expect(jumpInput).toBeTruthy();
     const inner = jumpInput!.find("input");
     await inner.setValue("hello");
-    await inner.trigger("blur");
+    await inner.trigger("keyup", { key: "Enter" });
     expect(wrapper.emitted("update:monthKey")).toBeUndefined();
   });
 });
