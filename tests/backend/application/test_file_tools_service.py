@@ -192,7 +192,12 @@ async def test_read_files_rejects_non_file_relation() -> None:
 @pytest.mark.asyncio
 async def test_unlink_sets_relation_null() -> None:
     manifest = _manifest()
-    transport = FakeTransport([{"data": {"id": "1", "document": None}}])
+    transport = FakeTransport(
+        [
+            {"data": [{"field": "document", "meta": {"readonly": False}}]},
+            {"data": {"id": "1", "document": None}},
+        ]
+    )
     service = _service(transport, manifest, "")
     result = await service.unlink_file(
         UnlinkFileParams(

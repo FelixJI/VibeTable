@@ -265,7 +265,8 @@ class PasteService:
                 data={"maxCells": MAX_PASTE_CELLS, "cellCount": total_cells},
             )
         user = await self._auth.current_user()
-        editable_columns, readonly_columns = self._column_layout(profile)
+        directus_readonly = await self._client.readonly_fields(profile, refresh=True)
+        editable_columns, readonly_columns = self._column_layout(profile, directus_readonly)
         anchor_column_index = _anchor_column_index(params.start_cell, editable_columns)
         plan_rows, row_revisions = await self._resolve_plan(
             profile=profile,
@@ -317,6 +318,34 @@ class PasteService:
         user = await self._auth.current_user()
         if stored.user_id != user.id:
             raise PasteError("paste token belongs to another user", code="paste_token_invalid")
+        create_fields = {
+            name for row in stored.rows if row.kind == "insert" for name in row.changes
+        }
+        update_fields = {
+            name for row in stored.rows if row.kind == "update" for name in row.changes
+        }
+        try:
+            # Refresh once for the first operation and reuse that same live
+            # policy snapshot for the other operation kind.
+            if create_fields:
+                await self._client.require_write_fields(
+                    profile,
+                    create_fields,
+                    operation="create",
+                    refresh=True,
+                )
+            if update_fields:
+                await self._client.require_write_fields(
+                    profile,
+                    update_fields,
+                    operation="update",
+                    refresh=not create_fields,
+                )
+        except DirectusSchemaError as exc:
+            raise PasteError(
+                "Directus field policy changed since the plan was prepared",
+                code="schema_mismatch",
+            ) from exc
         result = await self._bulk.apply(
             collection=profile.collection,
             profile=profile,
@@ -338,9 +367,17 @@ class PasteService:
             raise DirectusSchemaError(f"collection {collection!r} is not in capability manifest")
         return profile
 
-    def _column_layout(self, profile: CollectionProfile) -> tuple[list[str], list[str]]:
-        editable = [name for name in profile.update_fields if name in profile.fields]
-        readonly = [name for name in profile.fields if name not in profile.update_fields]
+    def _column_layout(
+        self,
+        profile: CollectionProfile,
+        directus_readonly: set[str],
+    ) -> tuple[list[str], list[str]]:
+        editable = [
+            name
+            for name in profile.update_fields
+            if name in profile.fields and name not in directus_readonly
+        ]
+        readonly = [name for name in profile.fields if name not in editable]
         return editable, readonly
 
     async def _resolve_plan(

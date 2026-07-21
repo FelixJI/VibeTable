@@ -44,6 +44,14 @@ class ColumnSchema(CamelModel):
 
     name: str
     title: str
-    data_type: Literal["text", "integer", "decimal", "boolean", "date"]
+    data_type: Literal[
+        "text",
+        "integer",
+        "decimal",
+        "boolean",
+        "date",
+        "datetime",
+        "time",
+    ]
     editable: bool = False
     nullable: bool = True

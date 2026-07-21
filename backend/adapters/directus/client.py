@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 from backend.adapters.directus.auth import DirectusAuthBroker
@@ -14,6 +14,7 @@ from backend.adapters.directus.errors import (
 )
 from backend.adapters.directus.profile import CollectionProfile
 from backend.adapters.directus.query import DirectusQueryPlan, compile_directus_query
+from backend.adapters.directus.schema import directus_readonly_fields
 from backend.adapters.directus.transport import DirectusTransport
 from backend.contracts.query import TableQuery
 
@@ -24,13 +25,44 @@ class DirectusClient:
     def __init__(self, transport: DirectusTransport, auth: DirectusAuthBroker) -> None:
         self._transport = transport
         self._auth = auth
+        self._readonly_fields: dict[str, set[str]] = {}
 
     async def server_info(self) -> dict[str, Any]:
         return _response_object(await self._transport.request("GET", "/server/info"))
 
     async def fields(self, profile: CollectionProfile) -> list[dict[str, Any]]:
         payload = await self._authorized("GET", f"/fields/{_segment(profile.collection)}")
-        return _response_list(payload)
+        fields = _response_list(payload)
+        self._readonly_fields[profile.collection] = directus_readonly_fields(fields)
+        return fields
+
+    async def readonly_fields(
+        self,
+        profile: CollectionProfile,
+        *,
+        refresh: bool = False,
+    ) -> set[str]:
+        """Return the live Directus write restrictions for a collection."""
+
+        if refresh or profile.collection not in self._readonly_fields:
+            await self.fields(profile)
+        return set(self._readonly_fields[profile.collection])
+
+    async def require_write_fields(
+        self,
+        profile: CollectionProfile,
+        requested: set[str],
+        *,
+        operation: Literal["create", "update"],
+        refresh: bool = False,
+    ) -> None:
+        """Enforce both the profile allowlist and live Directus metadata."""
+
+        profile.require_fields(requested, operation=operation)
+        denied = requested & await self.readonly_fields(profile, refresh=refresh)
+        if denied:
+            names = ", ".join(sorted(denied))
+            raise DirectusSchemaError(f"fields are read-only in Directus: {names}")
 
     async def relations(self, profile: CollectionProfile) -> list[dict[str, Any]]:
         payload = await self._authorized("GET", f"/relations/{_segment(profile.collection)}")
@@ -122,7 +154,15 @@ class DirectusClient:
         *,
         request_id: str | None = None,
     ) -> dict[str, Any]:
-        profile.require_fields(set(values), operation="create")
+        # Validate only caller-supplied fields. The client-generated primary
+        # key is added afterwards and is intentionally not mistaken for a
+        # user write to Studio's readonly ID interface.
+        await self.require_write_fields(
+            profile,
+            set(values),
+            operation="create",
+            refresh=True,
+        )
         body = dict(values)
         item_id = str(body.get(profile.primary_key) or uuid.uuid4())
         body[profile.primary_key] = item_id
@@ -150,7 +190,15 @@ class DirectusClient:
         expected_date_updated: str | None = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
-        profile.require_fields(set(values), operation="update")
+        # Refresh at the mutation boundary: Studio can toggle readonly or a
+        # migration can turn a column into a generated field after the grid's
+        # schema snapshot was cached.
+        await self.require_write_fields(
+            profile,
+            set(values),
+            operation="update",
+            refresh=True,
+        )
         if expected_date_updated is not None:
             if profile.date_updated_field is None:
                 raise DirectusSchemaError("collection has no optimistic concurrency field")

@@ -139,7 +139,11 @@ public sealed class DirectusTableGateway : ITableRpcGateway, IDisposable
     public async Task<TablePage> QueryTablePageAsync(
         string table, int offset, int limit, TableQuery query, CancellationToken token)
     {
-        var schema = await GetSchemaCachedAsync(table, token);
+        // A first-page read is the refresh boundary used by table selection and
+        // Ctrl+R. Directus Studio may have changed the collection schema since
+        // the previous selection, so refresh the cache here. Later pages reuse
+        // that freshly loaded schema to keep one revision across a paged read.
+        var schema = await GetSchemaCachedAsync(table, token, refresh: offset == 0);
         query = query with { Offset = offset, Limit = limit };
         var page = await _directus.ReadAsync(table, query, includeArchived: false, token);
         int total = page.FilteredRows ?? page.TotalRows ?? page.Rows.Count;
@@ -205,9 +209,9 @@ public sealed class DirectusTableGateway : ITableRpcGateway, IDisposable
     public void Dispose() => _directus.Dispose();
 
     private async Task<DirectusSchema> GetSchemaCachedAsync(
-        string collection, CancellationToken token)
+        string collection, CancellationToken token, bool refresh = false)
     {
-        if (_schemas.TryGetValue(collection, out var cached))
+        if (!refresh && _schemas.TryGetValue(collection, out var cached))
         {
             return cached;
         }
@@ -245,16 +249,23 @@ public sealed class DirectusTableGateway : ITableRpcGateway, IDisposable
     }
 
     private static IReadOnlyDictionary<string, object?> EditorFor(ColumnSchema column)
-        => new Dictionary<string, object?>
+    {
+        var editor = new Dictionary<string, object?>
         {
             ["kind"] = column.DataType switch
             {
-                "boolean" => "checkbox",
+                "boolean" => "boolean",
                 "integer" or "float" or "decimal" => "number",
-                "date" or "datetime" => "date",
+                "date" or "datetime" or "time" => "date",
                 _ => "text",
             },
         };
+        if (column.DataType is "date" or "datetime" or "time")
+        {
+            editor["dateType"] = column.DataType;
+        }
+        return editor;
+    }
 
     private static Dictionary<string, object?> ToRow(
         IReadOnlyDictionary<string, JsonElement> source, string primaryKey)

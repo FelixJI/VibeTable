@@ -30,6 +30,45 @@ public sealed class DirectusTableGatewayTests
     }
 
     [TestMethod]
+    public async Task ReadFirstPage_RefreshesSchemaAfterStudioAddsField()
+    {
+        using var directus = new FakeDirectusGateway();
+        var gateway = new DirectusTableGateway(directus, new FakeLocalStateGateway());
+
+        var before = await gateway.ReadTablePageAsync(
+            "vibetable_demo", 0, 100, CancellationToken.None);
+
+        directus.AddFormulaField();
+
+        var after = await gateway.ReadTablePageAsync(
+            "vibetable_demo", 0, 100, CancellationToken.None);
+
+        Assert.AreEqual(2, directus.GetSchemaCalls);
+        CollectionAssert.DoesNotContain(before.Columns.Select(column => column.Name).ToArray(), "total");
+        CollectionAssert.Contains(after.Columns.Select(column => column.Name).ToArray(), "total");
+        Assert.AreEqual("schema-2", after.Revision!.SchemaRevision);
+    }
+
+    [TestMethod]
+    public async Task EditSchema_UsesWebBooleanAndDateTypeDiscriminators()
+    {
+        using var directus = new FakeDirectusGateway();
+        var gateway = new DirectusTableGateway(directus, new FakeLocalStateGateway());
+
+        var schema = await gateway.GetEditSchemaAsync(
+            "vibetable_demo", CancellationToken.None);
+        var columns = schema.Columns.ToDictionary(column => column.Name);
+
+        Assert.AreEqual("boolean", columns["approved"].Editor["kind"]);
+        Assert.AreEqual("date", columns["signed_on"].Editor["kind"]);
+        Assert.AreEqual("date", columns["signed_on"].Editor["dateType"]);
+        Assert.AreEqual("date", columns["occurred_at"].Editor["kind"]);
+        Assert.AreEqual("datetime", columns["occurred_at"].Editor["dateType"]);
+        Assert.AreEqual("date", columns["starts_at"].Editor["kind"]);
+        Assert.AreEqual("time", columns["starts_at"].Editor["dateType"]);
+    }
+
+    [TestMethod]
     public async Task DeleteRows_UsesArchiveInsteadOfPermanentDelete()
     {
         using var directus = new FakeDirectusGateway();
@@ -47,6 +86,8 @@ public sealed class DirectusTableGatewayTests
     {
         public List<string> ArchivedIds { get; } = [];
         public int PermanentDeleteCalls { get; private set; }
+        public int GetSchemaCalls { get; private set; }
+        private bool _hasFormulaField;
         public event Action<DirectusChange>? Changed
         {
             add { }
@@ -60,17 +101,31 @@ public sealed class DirectusTableGatewayTests
                 new Dictionary<string, string> { ["vibetable_demo"] = "项目表" }));
 
         public Task<DirectusSchema> GetSchemaAsync(string collection, CancellationToken token)
-            => Task.FromResult(new DirectusSchema(
+        {
+            GetSchemaCalls++;
+            var columns = new List<ColumnSchema>
+            {
+                new("id", "Id", "string", false, false),
+                new("name", "Name", "string", true, false),
+                new("approved", "Approved", "boolean", true, false),
+                new("signed_on", "Signed On", "date", true, true),
+                new("occurred_at", "Occurred At", "datetime", true, true),
+                new("starts_at", "Starts At", "time", true, true),
+            };
+            if (_hasFormulaField)
+            {
+                columns.Add(new ColumnSchema("total", "Total", "decimal", false, true));
+            }
+            return Task.FromResult(new DirectusSchema(
                 collection,
                 "id",
-                new[]
-                {
-                    new ColumnSchema("id", "Id", "string", false, false),
-                    new ColumnSchema("name", "Name", "string", true, false),
-                },
+                columns,
                 Array.Empty<JsonElement>(),
-                "schema-1",
-                "hash"));
+                _hasFormulaField ? "schema-2" : "schema-1",
+                _hasFormulaField ? "hash-2" : "hash"));
+        }
+
+        public void AddFormulaField() => _hasFormulaField = true;
 
         public Task<DirectusPage> ReadAsync(
             string collection, TableQuery query, bool includeArchived, CancellationToken token)

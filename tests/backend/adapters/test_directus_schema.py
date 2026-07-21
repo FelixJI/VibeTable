@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from backend.adapters.directus import DirectusSchemaError, build_directus_schema
+from backend.adapters.directus.schema import directus_readonly_fields
 
 
 def _fields() -> list[dict]:
@@ -48,9 +49,30 @@ def _fields() -> list[dict]:
         },
         {
             "collection": "contracts",
+            "field": "occurred_at",
+            "type": "dateTime",
+            "meta": {"sort": 6},
+            "schema": {"is_nullable": True, "is_primary_key": False},
+        },
+        {
+            "collection": "contracts",
+            "field": "recorded_at",
+            "type": "timestamp",
+            "meta": {"sort": 7},
+            "schema": {"is_nullable": True, "is_primary_key": False},
+        },
+        {
+            "collection": "contracts",
+            "field": "starts_at",
+            "type": "time",
+            "meta": {"sort": 8},
+            "schema": {"is_nullable": True, "is_primary_key": False},
+        },
+        {
+            "collection": "contracts",
             "field": "internal_note",
             "type": "text",
-            "meta": {"sort": 6},
+            "meta": {"sort": 9},
             "schema": {"is_nullable": True, "is_primary_key": False},
         },
     ]
@@ -63,25 +85,57 @@ def test_builds_permission_pruned_read_only_schema() -> None:
         collection_permissions={
             "read": {
                 "access": "partial",
-                "fields": ["id", "name", "amount", "approved", "signed_on"],
+                "fields": [
+                    "id",
+                    "name",
+                    "amount",
+                    "approved",
+                    "signed_on",
+                    "occurred_at",
+                    "recorded_at",
+                    "starts_at",
+                ],
             }
         },
     )
 
     assert plan.primary_key == "id"
-    assert plan.visible_fields == ["id", "name", "amount", "approved", "signed_on"]
+    assert plan.visible_fields == [
+        "id",
+        "name",
+        "amount",
+        "approved",
+        "signed_on",
+        "occurred_at",
+        "recorded_at",
+        "starts_at",
+    ]
+    assert plan.readonly_fields == ["id"]
     assert [column.data_type for column in plan.columns] == [
         "integer",
         "text",
         "decimal",
         "boolean",
         "date",
+        "datetime",
+        "datetime",
+        "time",
     ]
     assert all(column.editable is False for column in plan.columns)
     assert plan.columns[0].nullable is False
     assert plan.columns[1].nullable is False
     assert plan.columns[1].title == "合同名称"
     assert "internal_note" not in plan.visible_fields
+
+
+def test_readonly_policy_includes_studio_and_generated_fields() -> None:
+    assert directus_readonly_fields(
+        [
+            {"field": "studio_locked", "meta": {"readonly": True}},
+            {"field": "computed", "schema": {"is_generated": True}},
+            {"field": "normal", "meta": {"readonly": False}},
+        ]
+    ) == {"studio_locked", "computed"}
 
 
 def test_schema_revision_is_stable_across_api_field_order() -> None:

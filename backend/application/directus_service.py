@@ -279,8 +279,15 @@ class DirectusService:
             },
         )
         update_fields = set(profile.update_fields)
+        readonly_fields = set(schema.readonly_fields)
         columns = [
-            column.model_copy(update={"editable": column.name in update_fields})
+            column.model_copy(
+                update={
+                    "editable": (
+                        column.name in update_fields and column.name not in readonly_fields
+                    )
+                }
+            )
             for column in schema.columns
         ]
         return DirectusSchemaResult(

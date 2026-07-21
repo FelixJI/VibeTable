@@ -15,7 +15,9 @@ from backend.contracts.table import ColumnSchema
 _INTEGER_TYPES = {"integer", "bigInteger"}
 _DECIMAL_TYPES = {"float", "decimal"}
 _BOOLEAN_TYPES = {"boolean"}
-_DATE_TYPES = {"date", "dateTime", "timestamp", "time"}
+_DATE_TYPES = {"date"}
+_DATETIME_TYPES = {"dateTime", "timestamp"}
+_TIME_TYPES = {"time"}
 
 
 class DirectusSchemaPlan(BaseModel):
@@ -27,6 +29,7 @@ class DirectusSchemaPlan(BaseModel):
     primary_key: str
     columns: list[ColumnSchema]
     visible_fields: list[str]
+    readonly_fields: list[str]
     schema_revision: str
 
 
@@ -48,6 +51,7 @@ def build_directus_schema(
         raise DirectusSchemaError(f"collection {collection!r} is not readable")
 
     allowed = _permission_fields(read_permission.get("fields"))
+    readonly_fields = directus_readonly_fields(fields)
     normalized: list[dict[str, Any]] = []
     primary_keys: list[str] = []
     for raw in fields:
@@ -74,7 +78,7 @@ def build_directus_schema(
                 "data_type": data_type,
                 "nullable": nullable,
                 "primary_key": is_primary_key,
-                "readonly": bool(meta.get("readonly")) or bool(schema.get("is_generated")),
+                "readonly": name in readonly_fields,
                 "sort": sort_value if isinstance(sort_value, int) else 2**31,
             }
         )
@@ -115,8 +119,31 @@ def build_directus_schema(
         primary_key=primary_keys[0],
         columns=columns,
         visible_fields=[item["name"] for item in normalized],
+        readonly_fields=[item["name"] for item in normalized if item["readonly"]],
         schema_revision=hashlib.sha256(encoded).hexdigest(),
     )
+
+
+def directus_readonly_fields(fields: Sequence[Mapping[str, Any]]) -> set[str]:
+    """Return fields Directus explicitly marks as non-user-writable.
+
+    ``meta.readonly`` is the Studio field policy. ``schema.is_generated`` is
+    the database-level equivalent for generated/computed columns. Only the
+    literal JSON boolean ``true`` activates either restriction.
+    """
+
+    readonly: set[str] = set()
+    for raw in fields:
+        name = raw.get("field")
+        if not isinstance(name, str) or not name:
+            continue
+        meta_value = raw.get("meta")
+        schema_value = raw.get("schema")
+        meta: Mapping[str, Any] = meta_value if isinstance(meta_value, Mapping) else {}
+        schema: Mapping[str, Any] = schema_value if isinstance(schema_value, Mapping) else {}
+        if meta.get("readonly") is True or schema.get("is_generated") is True:
+            readonly.add(name)
+    return readonly
 
 
 def _permission_fields(value: Any) -> set[str] | None:
@@ -139,7 +166,7 @@ def _is_nullable(*, schema: Mapping[str, Any], meta: Mapping[str, Any]) -> bool:
 
 def _map_data_type(
     directus_type: str,
-) -> Literal["text", "integer", "decimal", "boolean", "date"]:
+) -> Literal["text", "integer", "decimal", "boolean", "date", "datetime", "time"]:
     if directus_type in _INTEGER_TYPES:
         return "integer"
     if directus_type in _DECIMAL_TYPES:
@@ -148,6 +175,10 @@ def _map_data_type(
         return "boolean"
     if directus_type in _DATE_TYPES:
         return "date"
+    if directus_type in _DATETIME_TYPES:
+        return "datetime"
+    if directus_type in _TIME_TYPES:
+        return "time"
     return "text"
 
 

@@ -13,6 +13,7 @@ Covers the two-phase preview/apply flow against faked Directus pieces:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -113,9 +114,10 @@ def _manifest() -> CapabilityManifest:
                         "number",
                         "title",
                         "amount",
+                        "seed",
                         "date_updated",
                     ],
-                    "create_fields": ["id", "status", "number", "title", "amount"],
+                    "create_fields": ["id", "status", "number", "title", "amount", "seed"],
                     "update_fields": ["status", "number", "title", "amount"],
                     "archive_field": "status",
                     "archive_value": "archived",
@@ -130,6 +132,21 @@ def _manifest() -> CapabilityManifest:
 
 def _profile(manifest: CapabilityManifest) -> CollectionProfile:
     return manifest.by_collection["vibetable_demo"]
+
+
+def _fields_response(*, readonly: set[str] | None = None) -> dict[str, Any]:
+    profile = _profile(_manifest())
+    readonly = readonly or set()
+    return {
+        "data": [
+            {
+                "field": name,
+                "meta": {"readonly": name in readonly},
+                "schema": {"is_generated": False},
+            }
+            for name in profile.fields
+        ]
+    }
 
 
 def _selection(row_keys: list[str]) -> dict[str, Any]:
@@ -196,6 +213,7 @@ async def test_preview_resolves_update_rows_with_expected_revisions() -> None:
     profile = _profile(manifest)
     transport = FakeTransport(
         [
+            _fields_response(),
             {"data": {"id": "1", "number": "A-1", "date_updated": "2026-07-14T00:00:00Z"}},
             {"data": {"id": "2", "number": "A-2", "date_updated": "2026-07-14T00:00:01Z"}},
         ]
@@ -288,12 +306,113 @@ async def test_preview_rejects_unknown_collection() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_apply_rechecks_readonly_metadata_before_bulk_mutation() -> None:
+    manifest = _manifest()
+    transport = FakeTransport(
+        [
+            _fields_response(),
+            {"data": {"id": "1", "number": "A-1", "date_updated": "rev-1"}},
+            _fields_response(readonly={"number"}),
+        ]
+    )
+    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
+    service = PasteService(
+        client=client,
+        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
+        bulk=BulkMutationClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
+        profiles=manifest.by_collection,
+        project="default",
+    )
+
+    async def preview_then_apply_after_studio_policy_change() -> None:
+        plan = await service.preview(
+            _preview_params(row_keys=["1"], anchor_row="1", cells=_cells([["B-1"]]))
+        )
+        await service.apply(
+            ApplyPasteParams(
+                collection="vibetable_demo",
+                token=plan.token.token,
+                idempotency_key="idem-readonly",
+            )
+        )
+
+    with pytest.raises(PasteError) as exc_info:
+        asyncio.run(preview_then_apply_after_studio_policy_change())
+
+    assert exc_info.value.code == "schema_mismatch"
+    assert all(
+        request["path"] != "/vibetable-bulk-mutation/apply" for request in transport.requests
+    )
+
+
+def test_apply_allows_create_only_field_on_insert_row() -> None:
+    manifest = _manifest()
+    transport = FakeTransport(
+        [
+            _fields_response(),
+            _fields_response(),
+            {
+                "data": {
+                    "createdRowKeys": ["created-1"],
+                    "updatedRowKeys": [],
+                    "skippedRowKeys": [],
+                    "conflicts": [],
+                }
+            },
+        ]
+    )
+    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
+    service = PasteService(
+        client=client,
+        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
+        bulk=BulkMutationClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
+        profiles=manifest.by_collection,
+        project="default",
+    )
+    create_only_cell = PasteCell(
+        row_index=0,
+        column_index=0,
+        column="seed",
+        raw_value="seed-1",
+        parsed_value="seed-1",
+    )
+
+    async def preview_and_apply_insert() -> None:
+        plan = await service.preview(
+            _preview_params(
+                row_keys=[],
+                anchor_row=None,
+                cells=[[create_only_cell]],
+            )
+        )
+        assert plan.rows[0].kind == "insert"
+        assert plan.rows[0].changes["seed"]["after"] == "seed-1"
+        result = await service.apply(
+            ApplyPasteParams(
+                collection="vibetable_demo",
+                token=plan.token.token,
+                idempotency_key="idem-create-only",
+            )
+        )
+        assert result.outcome == "committed"
+
+    asyncio.run(preview_and_apply_insert())
+
+    bulk_request = transport.requests[-1]
+    assert bulk_request["path"] == "/vibetable-bulk-mutation/apply"
+    assert bulk_request["json_body"]["operations"] == [
+        {"kind": "create", "values": {"seed": "seed-1"}}
+    ]
+
+
 @pytest.mark.asyncio
 async def test_apply_returns_committed_and_consumes_token() -> None:
     manifest = _manifest()
     transport = FakeTransport(
         [
+            _fields_response(),
             {"data": {"id": "1", "number": "A-1", "date_updated": "rev-1"}},
+            _fields_response(),
             {
                 "data": {
                     "createdRowKeys": [],
@@ -345,7 +464,9 @@ async def test_apply_returns_pending_on_timeout() -> None:
     manifest = _manifest()
     transport = FakeTransport(
         [
+            _fields_response(),
             {"data": {"id": "1", "number": "A-1", "date_updated": "rev-1"}},
+            _fields_response(),
             DirectusTransportError("timeout", status=408, code="REQUEST_TIMEOUT"),
         ]
     )
@@ -379,7 +500,9 @@ async def test_apply_returns_conflict_when_row_revision_changed() -> None:
     manifest = _manifest()
     transport = FakeTransport(
         [
+            _fields_response(),
             {"data": {"id": "1", "number": "A-1", "date_updated": "rev-1"}},
+            _fields_response(),
             DirectusTransportError(
                 "conflict",
                 status=409,
@@ -426,7 +549,12 @@ async def test_apply_returns_conflict_when_row_revision_changed() -> None:
 @pytest.mark.asyncio
 async def test_apply_rejects_token_minted_by_another_user() -> None:
     manifest = _manifest()
-    transport = FakeTransport([{"data": {"id": "1", "number": "A-1", "date_updated": "rev-1"}}])
+    transport = FakeTransport(
+        [
+            _fields_response(),
+            {"data": {"id": "1", "number": "A-1", "date_updated": "rev-1"}},
+        ]
+    )
     client = DirectusClient(transport, FakeDirectusAuth("user-1"))  # type: ignore[arg-type]
     bulk = BulkMutationClient(transport, FakeDirectusAuth("user-1"))  # type: ignore[arg-type]
     service = PasteService(

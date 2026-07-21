@@ -95,6 +95,27 @@ async def test_schema_marks_only_manifest_update_fields_editable() -> None:
     assert result.relations
 
 
+def test_schema_keeps_directus_readonly_update_field_non_editable() -> None:
+    """Directus metadata must further restrict the profile write allowlist."""
+
+    class ReadonlyFieldClient(FakeClient):
+        async def fields(self, profile: Any) -> list[dict[str, Any]]:
+            fields = await super().fields(profile)
+            for field in fields:
+                if field["field"] == "file_name":
+                    field["meta"]["readonly"] = True
+            return fields
+
+    manifest = CapabilityManifest.model_validate_json(MANIFEST.read_text(encoding="utf-8"))
+    service = DirectusService(manifest, FakeAuth(), ReadonlyFieldClient())
+
+    result = asyncio.run(service.schema(DirectusCollectionParams(collection="vibetable_documents")))
+
+    columns = {column.name: column for column in result.columns}
+    # ``file_name`` is in update_fields, but Studio has marked it read-only.
+    assert columns["file_name"].editable is False
+
+
 @pytest.mark.asyncio
 async def test_read_adds_transport_row_key_and_count_metadata() -> None:
     result = await _service().read(

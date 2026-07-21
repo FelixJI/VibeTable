@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
 from backend.adapters.directus.client import DirectusClient
-from backend.adapters.directus.errors import DirectusTransportError
+from backend.adapters.directus.errors import DirectusSchemaError, DirectusTransportError
 from backend.adapters.directus.profile import CollectionProfile, RelationProfile
 from backend.contracts.query import FilterCondition, TableQuery
 
@@ -45,6 +46,20 @@ def _profile() -> CollectionProfile:
     )
 
 
+def _fields_response(*, readonly: set[str] | None = None) -> dict[str, Any]:
+    readonly = readonly or set()
+    return {
+        "data": [
+            {
+                "field": name,
+                "meta": {"readonly": name in readonly},
+                "schema": {"is_generated": False},
+            }
+            for name in _profile().fields
+        ]
+    }
+
+
 @pytest.mark.asyncio
 async def test_read_items_applies_profile_fields_archive_filter_and_user_token() -> None:
     transport = FakeTransport(
@@ -75,6 +90,7 @@ async def test_read_items_applies_profile_fields_archive_filter_and_user_token()
 async def test_create_uses_client_uuid_and_verifies_uncertain_result() -> None:
     transport = FakeTransport(
         [
+            _fields_response(),
             DirectusTransportError("offline", code="SERVICE_UNAVAILABLE"),
             {"data": {"id": "known-id", "number": "A-1"}},
         ]
@@ -88,13 +104,33 @@ async def test_create_uses_client_uuid_and_verifies_uncertain_result() -> None:
     )
 
     assert created["id"] == "known-id"
-    assert transport.requests[0]["headers"] == {"X-Request-ID": "request-1"}
-    assert transport.requests[1]["path"].endswith("/known-id")
+    assert transport.requests[1]["headers"] == {"X-Request-ID": "request-1"}
+    assert transport.requests[2]["path"].endswith("/known-id")
+
+
+def test_create_rejects_directus_readonly_field_before_post() -> None:
+    transport = FakeTransport(
+        [
+            _fields_response(),
+            _fields_response(readonly={"owner"}),
+        ]
+    )
+    client = DirectusClient(transport, FakeAuth())
+
+    async def create_after_studio_policy_change() -> None:
+        await client.fields(_profile())
+        await client.create_item(_profile(), {"number": "A-1", "owner": "user-2"})
+
+    with pytest.raises(DirectusSchemaError, match=r"read-only.*owner"):
+        asyncio.run(create_after_studio_policy_change())
+
+    assert [request["method"] for request in transport.requests] == ["GET", "GET"]
+    assert {request["path"] for request in transport.requests} == {"/fields/contracts"}
 
 
 @pytest.mark.asyncio
 async def test_update_detects_changed_date_updated_before_patch() -> None:
-    transport = FakeTransport([{"data": {"id": "1", "date_updated": "new"}}])
+    transport = FakeTransport([_fields_response(), {"data": {"id": "1", "date_updated": "new"}}])
     client = DirectusClient(transport, FakeAuth())
 
     with pytest.raises(DirectusTransportError) as captured:
@@ -107,18 +143,41 @@ async def test_update_detects_changed_date_updated_before_patch() -> None:
 
     assert captured.value.status == 409
     assert captured.value.code == "EDIT_CONFLICT"
-    assert len(transport.requests) == 1
+    assert [request["method"] for request in transport.requests] == ["GET", "GET"]
+    assert all(request["method"] != "PATCH" for request in transport.requests)
+
+
+def test_update_rejects_directus_readonly_field_before_patch() -> None:
+    transport = FakeTransport(
+        [
+            _fields_response(),
+            _fields_response(readonly={"owner"}),
+        ]
+    )
+    client = DirectusClient(transport, FakeAuth())
+
+    async def update_after_studio_policy_change() -> None:
+        # Prime the cache with an editable schema, then simulate Studio making
+        # the same field read-only before the user commits their edit.
+        await client.fields(_profile())
+        await client.update_item(_profile(), "1", {"owner": "user-2"})
+
+    with pytest.raises(DirectusSchemaError, match=r"read-only.*owner"):
+        asyncio.run(update_after_studio_policy_change())
+
+    assert [request["method"] for request in transport.requests] == ["GET", "GET"]
+    assert {request["path"] for request in transport.requests} == {"/fields/contracts"}
 
 
 @pytest.mark.asyncio
 async def test_delete_archives_unless_profile_allows_permanent_delete() -> None:
-    transport = FakeTransport([{"data": {"id": "1", "status": "archived"}}])
+    transport = FakeTransport([_fields_response(), {"data": {"id": "1", "status": "archived"}}])
     client = DirectusClient(transport, FakeAuth())
 
     await client.delete_item(_profile(), "1")
 
-    assert transport.requests[0]["method"] == "PATCH"
-    assert transport.requests[0]["json_body"] == {"status": "archived"}
+    assert transport.requests[1]["method"] == "PATCH"
+    assert transport.requests[1]["json_body"] == {"status": "archived"}
 
 
 @pytest.mark.asyncio
