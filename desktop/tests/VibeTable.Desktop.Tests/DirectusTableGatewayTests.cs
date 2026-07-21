@@ -172,6 +172,8 @@ public sealed class DirectusTableGatewayTests
         public Task<IdentifierMappingsResult> UpdateIdentifierAliasesAsync(string mappingId, IReadOnlyList<string> aliases, CancellationToken token) => throw new NotSupportedException();
         public Task<IdentifierMappingsResult> ImportIdentifierMappingsAsync(IReadOnlyList<IdentifierMappingImportItem> mappings, CancellationToken token) => throw new NotSupportedException();
         public Task<IdentifierMappingsResult> ReconcileIdentifierMappingsAsync(CancellationToken token) => throw new NotSupportedException();
+        public Task<IdentifierMappingsResult> DeleteIdentifierMappingAsync(string mappingId, CancellationToken token) => throw new NotSupportedException();
+        public Task<IdentifierMappingsResult> PurgeIdentifierMappingsAsync(CancellationToken token) => throw new NotSupportedException();
         public void Dispose() { }
 
         private static DirectusItem EmptyItem(string collection)

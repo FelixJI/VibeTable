@@ -238,6 +238,87 @@ public sealed class TableWorkspaceServiceTests
     }
 
     // -----------------------------------------------------------------------
+    // Known-tables cache refresh (regression for the "create-then-open throws
+    // ArgumentException" bug). The cache MUST be refreshable after the initial
+    // OpenDatabaseAsync so create/delete/reconcile flows keep SelectTableAsync's
+    // membership check in sync with what the sidebar shows.
+    // -----------------------------------------------------------------------
+
+    [TestMethod]
+    public async Task UpdateKnownTables_ReplacesCache_AndAllowsSelectOfNewName()
+    {
+        // Open seeds the cache with "old". A subsequent UpdateKnownTables swaps
+        // the cache to a fresh list, so selecting a name that was NOT in the
+        // open result but IS in the update succeeds.
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] =
+            new DatabaseOpenResult(new[] { "old" }, Array.Empty<string>());
+        gateway.TablePages["fresh"] = BuildPages("fresh", totalRows: 1, pageSize: 500);
+        var service = new TableWorkspaceService(gateway);
+        await service.OpenDatabaseAsync("db");
+
+        // Before the update, "fresh" is unknown.
+        await Assert.ThrowsExactlyAsync<ArgumentException>(
+            async () => await service.SelectTableAsync("fresh"));
+
+        service.UpdateKnownTables(new[] { "fresh" });
+
+        // After the update, "fresh" is known and "old" is not.
+        await service.SelectTableAsync("fresh");
+        await Assert.ThrowsExactlyAsync<ArgumentException>(
+            async () => await service.SelectTableAsync("old"));
+    }
+
+    [TestMethod]
+    public async Task UpdateKnownTables_FiltersSystemTables_Defensively()
+    {
+        // Even if a caller hands in system-prefixed names, they must NOT become
+        // selectable — the sidebar hides directus_*/vibetable_*, so the cache
+        // must too.
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] =
+            new DatabaseOpenResult(Array.Empty<string>(), Array.Empty<string>());
+        var service = new TableWorkspaceService(gateway);
+        await service.OpenDatabaseAsync("db");
+
+        service.UpdateKnownTables(new[] { "real", "directus_users", "vibetable_settings" });
+
+        await service.SelectTableAsync("real"); // user table: OK
+        await Assert.ThrowsExactlyAsync<ArgumentException>(
+            async () => await service.SelectTableAsync("directus_users"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(
+            async () => await service.SelectTableAsync("vibetable_settings"));
+    }
+
+    [TestMethod]
+    public async Task RefreshKnownTablesAsync_FiltersSystemTablesAndUpdatesCache()
+    {
+        // The gateway's ListTablesAsync returns the RAW collection list (incl.
+        // system tables). RefreshKnownTablesAsync must filter through
+        // DirectusCollectionFilter so the cache matches the sidebar exactly.
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] =
+            new DatabaseOpenResult(Array.Empty<string>(), Array.Empty<string>());
+        gateway.ListTablesResult = new TableSummary(
+            new[] { "alpha", "directus_users", "vibetable_settings", "beta" },
+            Array.Empty<string>());
+        gateway.TablePages["alpha"] = BuildPages("alpha", totalRows: 1, pageSize: 500);
+        gateway.TablePages["beta"] = BuildPages("beta", totalRows: 1, pageSize: 500);
+        var service = new TableWorkspaceService(gateway);
+        await service.OpenDatabaseAsync("db");
+
+        await service.RefreshKnownTablesAsync(CancellationToken.None);
+
+        // User tables selectable; system tables rejected.
+        await service.SelectTableAsync("alpha");
+        await service.SelectTableAsync("beta");
+        await Assert.ThrowsExactlyAsync<ArgumentException>(
+            async () => await service.SelectTableAsync("directus_users"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(
+            async () => await service.SelectTableAsync("vibetable_settings"));
+    }
+
+    // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
 

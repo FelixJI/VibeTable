@@ -341,6 +341,184 @@ public sealed class WorkspaceRequestDispatcherTests
         StringAssert.StartsWith(message, "创建表失败：");
         StringAssert.Contains(message, "name already exists");
     }
+
+    // -----------------------------------------------------------------------
+    // Regression: after a create/delete, the C# workspace's known-tables cache
+    // MUST be refreshed so a subsequent table.selected for the new (or
+    // just-removed) name is accepted (or rejected) against the FRESH list.
+    // Previously the cache was only populated by OpenDatabaseAsync, so creating
+    // a table and clicking it in the sidebar threw ArgumentException ("Table
+    // '...' is not one of the names advertised by source discovery").
+    // -----------------------------------------------------------------------
+
+    [TestMethod]
+    public async Task CreateTableRequested_ThenTableSelected_AllowsSelectWithoutFailure()
+    {
+        var directus = new FakeDirectusRpcGateway
+        {
+            // After create, list returns the new table alongside an existing one.
+            ListCollectionsResult = new DirectusCollectionList(
+                new[] { "existing", "vt_t_new8HQS4XPG7DKRR7S9" },
+                new Dictionary<string, string>()),
+        };
+        // The workspace gateway must serve pages for the new table once selected.
+        var tableGateway = new FakeTableRpcGateway();
+        tableGateway.DatabaseOpenResults["db"] =
+            new DatabaseOpenResult(new[] { "existing" }, Array.Empty<string>());
+        tableGateway.TablePages["vt_t_new8HQS4XPG7DKRR7S9"] = new Dictionary<int, TablePage>
+        {
+            [0] = new TablePage(
+                Table: "vt_t_new8HQS4XPG7DKRR7S9",
+                Columns: Array.Empty<ColumnSchema>(),
+                Rows: Array.Empty<Dictionary<string, object?>>(),
+                Offset: 0, Limit: 500, TotalRows: 0, Mode: "client"),
+        };
+        var workspace = new TableWorkspaceService(tableGateway);
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            workspace, new FakeDatabasePicker("db"), sink);
+        dispatcher.SetDirectusGateway(directus);
+
+        // Initial open seeds the cache with only "existing".
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "database.openRequested", "req-open",
+            JsonDocument.Parse("""{}""").RootElement.Clone(), ""));
+        await sink.WaitForAsync("database.opened");
+
+        // Create the new table. The handler re-lists and posts collectionsChanged.
+        var createPayload = JsonDocument.Parse(
+            """{"name":"newtable","fields":[{"key":"name","type":"string"}]}""")
+            .RootElement.Clone();
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "tableAdmin.createRequested", "req-c", createPayload, ""));
+        await sink.WaitForAsync("database.collectionsChanged");
+
+        // Now select the freshly-created table. Before the fix this threw
+        // ArgumentException inside SelectTableAsync and surfaced as
+        // operation.failed on "req-sel".
+        var selectPayload = JsonDocument.Parse(
+            """{"table":"vt_t_new8HQS4XPG7DKRR7S9"}""").RootElement.Clone();
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "table.selected", "req-sel", selectPayload, ""));
+
+        // Give the fire-and-forget dispatch a brief window to produce any
+        // operation.failed. Absence of failure (within the window) is success.
+        var failed = await sink.WaitForFailedAsync(timeoutMs: 400);
+        Assert.IsNull(failed, $"table.selected should not fail after create; got: {failed?.Payload}");
+        // And the workspace gateway should have been asked to read the new table.
+        Assert.IsTrue(tableGateway.ReadTablePageCalls.Any(
+            c => c.Table == "vt_t_new8HQS4XPG7DKRR7S9"));
+    }
+
+    [TestMethod]
+    public async Task DeleteTableRequested_RemovesTableFromKnownTables()
+    {
+        var directus = new FakeDirectusRpcGateway
+        {
+            DeleteTableResult = new DeleteTableResult("old", Deleted: true),
+            // After delete, list returns only the remaining table.
+            ListCollectionsResult = new DirectusCollectionList(
+                new[] { "remaining" }, new Dictionary<string, string>()),
+        };
+        var tableGateway = new FakeTableRpcGateway();
+        tableGateway.DatabaseOpenResults["db"] =
+            new DatabaseOpenResult(new[] { "remaining", "old" }, Array.Empty<string>());
+        var workspace = new TableWorkspaceService(tableGateway);
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            workspace, new FakeDatabasePicker("db"), sink);
+        dispatcher.SetDirectusGateway(directus);
+
+        // Open seeds the cache with BOTH "remaining" and "old".
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "database.openRequested", "req-open",
+            JsonDocument.Parse("""{}""").RootElement.Clone(), ""));
+        await sink.WaitForAsync("database.opened");
+
+        // Delete "old"; the handler re-lists and posts collectionsChanged.
+        var deletePayload = JsonDocument.Parse("""{"collection":"old"}""")
+            .RootElement.Clone();
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "tableAdmin.deleteRequested", "req-d", deletePayload, ""));
+        await sink.WaitForAsync("database.collectionsChanged");
+
+        // Selecting the deleted name must now fail — proves the cache actually
+        // refreshed (not just grew).
+        var selectPayload = JsonDocument.Parse("""{"table":"old"}""")
+            .RootElement.Clone();
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "table.selected", "req-sel", selectPayload, ""));
+
+        var failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        Assert.AreEqual("req-sel", failed!.RequestId);
+    }
+
+    // -----------------------------------------------------------------------
+    // identifierMappings.delete/purge routing into IDirectusRpcGateway.
+    // -----------------------------------------------------------------------
+
+    [TestMethod]
+    public async Task DeleteIdentifierMappingRequested_CallsGatewayAndPostsResult()
+    {
+        var directus = new FakeDirectusRpcGateway();
+        var workspace = new TableWorkspaceService(new FakeTableRpcGateway());
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            workspace, new FakeDatabasePicker("db"), sink);
+        dispatcher.SetDirectusGateway(directus);
+
+        var payload = JsonDocument.Parse("""{"mappingId":"m-1"}""")
+            .RootElement.Clone();
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "identifierMappings.deleteRequested", "req-del", payload, ""));
+
+        var reply = await sink.WaitForAsync("identifierMappings.result");
+        Assert.IsNotNull(reply);
+        Assert.AreEqual("req-del", reply!.RequestId);
+        Assert.AreEqual(1, directus.DeleteIdentifierMappingCalls.Count);
+        Assert.AreEqual("m-1", directus.DeleteIdentifierMappingCalls[0]);
+    }
+
+    [TestMethod]
+    public async Task DeleteIdentifierMappingRequested_MissingMappingId_PostsBadPayload()
+    {
+        var directus = new FakeDirectusRpcGateway();
+        var workspace = new TableWorkspaceService(new FakeTableRpcGateway());
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            workspace, new FakeDatabasePicker("db"), sink);
+        dispatcher.SetDirectusGateway(directus);
+
+        var payload = JsonDocument.Parse("""{}""").RootElement.Clone();
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "identifierMappings.deleteRequested", "req-del", payload, ""));
+
+        var failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        Assert.AreEqual("BAD_PAYLOAD", ((dynamic)failed!.Payload!).code);
+        Assert.AreEqual(0, directus.DeleteIdentifierMappingCalls.Count);
+    }
+
+    [TestMethod]
+    public async Task PurgeIdentifierMappingsRequested_CallsGatewayAndPostsResult()
+    {
+        var directus = new FakeDirectusRpcGateway();
+        var workspace = new TableWorkspaceService(new FakeTableRpcGateway());
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            workspace, new FakeDatabasePicker("db"), sink);
+        dispatcher.SetDirectusGateway(directus);
+
+        var payload = JsonDocument.Parse("""{}""").RootElement.Clone();
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "identifierMappings.purgeRequested", "req-purge", payload, ""));
+
+        var reply = await sink.WaitForAsync("identifierMappings.result");
+        Assert.IsNotNull(reply);
+        Assert.AreEqual("req-purge", reply!.RequestId);
+        Assert.AreEqual(1, directus.PurgeIdentifierMappingsCalls);
+    }
 }
 
 // ---------------------------------------------------------------------------

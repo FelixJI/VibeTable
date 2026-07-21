@@ -115,9 +115,50 @@ public sealed class TableWorkspaceService
         var result = await _gateway.OpenDatabaseAsync(path, CancellationToken.None)
             .ConfigureAwait(true);
         _currentDatabase = path;
-        _knownTables = result.Tables;
-        _knownViews = result.Views;
+        // Filter on the way in so the cache matches the sidebar exactly: the
+        // gateway returns the RAW collection list (incl. directus_* and
+        // vibetable_* system tables), but those are never user-selectable.
+        Volatile.Write(ref _knownTables, FilterUserTables(result.Tables));
+        Volatile.Write(ref _knownViews, result.Views);
         return result;
+    }
+
+    /// <summary>
+    /// Replaces the cached known-tables list with <paramref name="tables"/>. Use
+    /// this from collection-mutation flows (create/delete/reconcile) that have
+    /// ALREADY re-listed collections: it swaps the cache without a second RPC
+    /// round-trip. The list is filtered through
+    /// <see cref="DirectusCollectionFilter.FilterUserTables"/> defensively (a
+    /// future caller handing in system-prefixed names must not accidentally widen
+    /// the selectable set). Views are reset to empty (Directus has no view list).
+    /// </summary>
+    /// <remarks>
+    /// This is the fix for the "create-then-open throws ArgumentException" bug:
+    /// without it, <see cref="SelectTableAsync"/> validated new tables against a
+    /// stale cache populated only by <see cref="OpenDatabaseAsync"/> (once per
+    /// session). Mutation handlers re-listed collections for the web sidebar but
+    /// never refreshed this cache.
+    /// </remarks>
+    public void UpdateKnownTables(IReadOnlyList<string> tables)
+    {
+        var filtered = FilterUserTables(tables);
+        Volatile.Write(ref _knownTables, filtered);
+        Volatile.Write(ref _knownViews, Array.Empty<string>());
+    }
+
+    /// <summary>
+    /// Standalone cache refresh: re-queries the gateway's collection list and
+    /// swaps the known-tables cache. Used by the host's reconcile path (Directus
+    /// Studio edits) which needs to refresh the cache WITHOUT necessarily
+    /// re-posting <c>database.collectionsChanged</c>. On cancellation the cache
+    /// is left untouched.
+    /// </summary>
+    public async Task RefreshKnownTablesAsync(CancellationToken token)
+    {
+        var summary = await _gateway.ListTablesAsync(token).ConfigureAwait(true);
+        var filtered = FilterUserTables(summary.Tables);
+        Volatile.Write(ref _knownTables, filtered);
+        Volatile.Write(ref _knownViews, summary.Views);
     }
 
     /// <summary>
@@ -538,6 +579,16 @@ public sealed class TableWorkspaceService
         }
         return false;
     }
+
+    /// <summary>
+    /// Filters a raw collection list to user tables (drops
+    /// <c>directus_*</c>/<c>vibetable_*</c> system collections) so the cache
+    /// matches the sidebar exactly. Thin wrapper over
+    /// <see cref="DirectusCollectionFilter.FilterUserTables"/> kept inline for
+    /// readability at the call sites.
+    /// </summary>
+    private static IReadOnlyList<string> FilterUserTables(IEnumerable<string> collections)
+        => DirectusCollectionFilter.FilterUserTables(collections);
 }
 
 /// <summary>

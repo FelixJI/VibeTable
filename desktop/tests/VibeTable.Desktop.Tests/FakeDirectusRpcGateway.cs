@@ -63,6 +63,19 @@ internal sealed class FakeDirectusRpcGateway : IDirectusRpcGateway
         => Task.FromResult(IdentifierMappingsResult);
     public Task<IdentifierMappingsResult> ReconcileIdentifierMappingsAsync(CancellationToken token)
         => Task.FromResult(IdentifierMappingsResult);
+    public List<string> DeleteIdentifierMappingCalls { get; } = new();
+    public Task<IdentifierMappingsResult> DeleteIdentifierMappingAsync(
+        string mappingId, CancellationToken token)
+    {
+        DeleteIdentifierMappingCalls.Add(mappingId);
+        return Task.FromResult(IdentifierMappingsResult);
+    }
+    public int PurgeIdentifierMappingsCalls { get; private set; }
+    public Task<IdentifierMappingsResult> PurgeIdentifierMappingsAsync(CancellationToken token)
+    {
+        PurgeIdentifierMappingsCalls++;
+        return Task.FromResult(IdentifierMappingsResult);
+    }
 
     // The rest of the interface is unused by the dispatcher; throw to keep tests honest.
     public event Action<DirectusChange>? Changed { add { } remove { } }

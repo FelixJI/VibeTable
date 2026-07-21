@@ -32,6 +32,9 @@ public interface IDirectusRpcGateway : IDisposable
     Task<IdentifierMappingsResult> ImportIdentifierMappingsAsync(
         IReadOnlyList<IdentifierMappingImportItem> mappings, CancellationToken token);
     Task<IdentifierMappingsResult> ReconcileIdentifierMappingsAsync(CancellationToken token);
+    Task<IdentifierMappingsResult> DeleteIdentifierMappingAsync(
+        string mappingId, CancellationToken token);
+    Task<IdentifierMappingsResult> PurgeIdentifierMappingsAsync(CancellationToken token);
     Task<DirectusSchema> GetSchemaAsync(string collection, CancellationToken token);
     Task<DirectusPage> ReadAsync(
         string collection, TableQuery query, bool includeArchived, CancellationToken token);

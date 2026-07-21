@@ -160,6 +160,12 @@ public sealed class WorkspaceRequestDispatcher
             case "identifierMappings.reconcileRequested":
                 await OnReconcileIdentifierMappingsAsync(request).ConfigureAwait(false);
                 break;
+            case "identifierMappings.deleteRequested":
+                await OnDeleteIdentifierMappingAsync(request).ConfigureAwait(false);
+                break;
+            case "identifierMappings.purgeRequested":
+                await OnPurgeIdentifierMappingsAsync(request).ConfigureAwait(false);
+                break;
             case "document.listRequested":
                 await OnDocumentListRequestedAsync(request).ConfigureAwait(false);
                 break;
@@ -640,6 +646,42 @@ public sealed class WorkspaceRequestDispatcher
         }
     }
 
+    private async Task OnDeleteIdentifierMappingAsync(RoutedWebRequest request)
+    {
+        if (!TryRequireDirectus(request)) return;
+        string? mappingId = TryGetString(request.Payload, "mappingId");
+        if (string.IsNullOrWhiteSpace(mappingId))
+        {
+            _reply.PostOperationFailed(request.RequestId, "映射标识无效。", "BAD_PAYLOAD");
+            return;
+        }
+        try
+        {
+            var result = await _directusGateway!.DeleteIdentifierMappingAsync(
+                mappingId, CancellationToken.None).ConfigureAwait(false);
+            _reply.PostResponse("identifierMappings.result", request.RequestId, result);
+        }
+        catch (Exception ex)
+        {
+            _reply.PostOperationFailed(request.RequestId, ex.Message, "MAPPING_DELETE_FAILED");
+        }
+    }
+
+    private async Task OnPurgeIdentifierMappingsAsync(RoutedWebRequest request)
+    {
+        if (!TryRequireDirectus(request)) return;
+        try
+        {
+            var result = await _directusGateway!.PurgeIdentifierMappingsAsync(
+                CancellationToken.None).ConfigureAwait(false);
+            _reply.PostResponse("identifierMappings.result", request.RequestId, result);
+        }
+        catch (Exception ex)
+        {
+            _reply.PostOperationFailed(request.RequestId, ex.Message, "MAPPING_PURGE_FAILED");
+        }
+    }
+
     private async Task OnDocumentListRequestedAsync(RoutedWebRequest request)
     {
         if (!TryRequireDocuments(request)) return;
@@ -844,13 +886,19 @@ public sealed class WorkspaceRequestDispatcher
 
     /// <summary>
     /// Re-lists collections, filters to user tables, and pushes
-    /// database.collectionsChanged so the sidebar refreshes.
+    /// database.collectionsChanged so the sidebar refreshes. Also refreshes the
+    /// workspace's known-tables cache so a subsequent <c>table.selected</c> for
+    /// the new (or just-removed) collection validates against the FRESH list.
     /// </summary>
     private async Task PostCollectionsChangedAsync()
     {
         var list = await _directusGateway!.ListCollectionsAsync(CancellationToken.None)
             .ConfigureAwait(false);
         var tables = DirectusCollectionFilter.FilterUserTables(list.Collections);
+        // Keep the workspace cache in sync with the sidebar: without this, the
+        // cache populated once at session open would reject a freshly-created
+        // table (or accept a just-deleted one) at the next SelectTableAsync.
+        _workspace.UpdateKnownTables(tables);
         _reply.PostNotification("database.collectionsChanged", new
         {
             tables,

@@ -1987,6 +1987,12 @@ public partial class MainWindow : Window
             await _directusGateway.ReconcileIdentifierMappingsAsync(timeout.Token);
             var list = await _directusGateway.ListCollectionsAsync(timeout.Token);
             var tables = DirectusCollectionFilter.FilterUserTables(list.Collections);
+            // Keep the workspace's known-tables cache in sync with the sidebar.
+            // Directus Studio (closed just before this reconcile) may have
+            // created/deleted collections; without this, SelectTableAsync would
+            // validate against the stale session-open cache and reject a
+            // freshly-created table (or accept a just-deleted one).
+            _workspace.UpdateKnownTables(tables);
             string projectRevision = Interlocked.Increment(
                 ref _pluginProjectRevision).ToString();
             _webBridge.PostNotification("database.collectionsChanged", new

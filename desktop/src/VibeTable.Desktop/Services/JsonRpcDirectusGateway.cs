@@ -27,6 +27,7 @@ public sealed record DeleteTableParams(string Name);
 public sealed record ListIdentifierMappingsParams(string? Search);
 public sealed record UpdateIdentifierAliasesParams(string MappingId, IReadOnlyList<string> Aliases);
 public sealed record ImportIdentifierMappingsParams(IReadOnlyList<IdentifierMappingImportItem> Mappings);
+public sealed record DeleteIdentifierMappingParams(string MappingId);
 
 /// <summary>Directus JSON-RPC adapter over the supervisor-owned local pipe.</summary>
 public sealed class JsonRpcDirectusGateway : IDirectusRpcGateway
@@ -97,6 +98,15 @@ public sealed class JsonRpcDirectusGateway : IDirectusRpcGateway
     public Task<IdentifierMappingsResult> ReconcileIdentifierMappingsAsync(CancellationToken token)
         => InvokeEmptyAsync<IdentifierMappingsResult>(
             "table_admin.reconcileIdentifierMappings", token);
+
+    public Task<IdentifierMappingsResult> DeleteIdentifierMappingAsync(
+        string mappingId, CancellationToken token)
+        => _client.InvokeAsync<DeleteIdentifierMappingParams, IdentifierMappingsResult>(
+            "table_admin.deleteIdentifierMapping", new(mappingId), token);
+
+    public Task<IdentifierMappingsResult> PurgeIdentifierMappingsAsync(CancellationToken token)
+        => InvokeEmptyAsync<IdentifierMappingsResult>(
+            "table_admin.purgeIdentifierMappings", token);
 
     public Task<DirectusSchema> GetSchemaAsync(string collection, CancellationToken token)
         => _client.InvokeAsync<DirectusCollectionParams, DirectusSchema>(

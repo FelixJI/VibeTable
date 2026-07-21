@@ -76,6 +76,8 @@ public sealed class WebMessageRouter
         "identifierMappings.updateAliasesRequested",
         "identifierMappings.importRequested",
         "identifierMappings.reconcileRequested",
+        "identifierMappings.deleteRequested",
+        "identifierMappings.purgeRequested",
         "document.listRequested",
         "document.importRequested",
         "document.externalDropRequested",

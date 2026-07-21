@@ -51,6 +51,13 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
 
     public List<ReadCall> ReadTablePageCalls { get; } = new();
 
+    /// <summary>
+    /// When set, <see cref="ListTablesAsync"/> returns this instead of falling
+    /// back to the first <see cref="DatabaseOpenResults"/> entry. Lets tests
+    /// control the refresh result independently of the open result.
+    /// </summary>
+    public TableSummary? ListTablesResult { get; set; }
+
     private readonly Dictionary<string, Task> _readGates = new(StringComparer.Ordinal);
 
     public void SetReadGate(string table, Task gate)
@@ -73,6 +80,13 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     {
         // table.list reuses the same object catalog as database.open in Phase A.
         // Tests key on the open result; list returns the same tables/views.
+        // When ListTablesResult is set explicitly, prefer it (used by the
+        // known-tables refresh tests, which need to distinguish the list result
+        // from the open result).
+        if (ListTablesResult is not null)
+        {
+            return Task.FromResult(ListTablesResult);
+        }
         foreach (var kv in DatabaseOpenResults)
         {
             return Task.FromResult(new TableSummary(
