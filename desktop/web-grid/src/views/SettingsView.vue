@@ -48,7 +48,8 @@ import type {
 import type { Locale } from "@/i18n";
 import { t } from "@/i18n";
 import WorkCalendarMonth from "@/components/calendar/WorkCalendarMonth.vue";
-import { formatDateKey, formatMonthKey, monthLabel, parseDateKey, shiftMonthKey } from "@/calendar/workCalendar";
+import MonthNavigator from "@/components/calendar/MonthNavigator.vue";
+import { formatDateKey, formatMonthKey, parseDateKey, shiftMonthKey } from "@/calendar/workCalendar";
 import { useWorkCalendarStore } from "@/stores/workCalendarStore";
 import type { WorkCalendarOverrideKind } from "@/calendar/workCalendar";
 
@@ -197,7 +198,6 @@ const selectedCalendarText = computed(() => {
     year: "numeric", month: "long", day: "numeric", weekday: "long",
   }).format(date);
 });
-const calendarMonthText = computed(() => monthLabel(calendarMonth.value, ui.locale));
 
 function selectCalendarDate(date: string): void {
   selectedCalendarDate.value = date;
@@ -323,8 +323,11 @@ function setCalendarName(name: string): void {
               <NButton quaternary circle :aria-label="t('settings.workCalendar.previous')" @click="calendarMonth = shiftMonthKey(calendarMonth, -1)">
                 <template #icon><NIcon><ChevronLeft /></NIcon></template>
               </NButton>
-              <strong>{{ calendarMonthText }}</strong>
+              <MonthNavigator :month-key="calendarMonth" :locale="ui.locale" @update:month-key="calendarMonth = $event" />
               <span>{{ t("settings.workCalendar.overrides", { count: workCalendar.overrideCount }) }}</span>
+              <NButton quaternary size="small" :aria-label="t('settings.workCalendar.today')" @click="calendarMonth = formatMonthKey(new Date())">
+                {{ t("settings.workCalendar.today") }}
+              </NButton>
               <NButton quaternary circle :aria-label="t('settings.workCalendar.next')" @click="calendarMonth = shiftMonthKey(calendarMonth, 1)">
                 <template #icon><NIcon><ChevronRight /></NIcon></template>
               </NButton>
@@ -518,7 +521,7 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .setting-row small, .setting-action small { color: var(--vt-fg-muted); }
 .setting-control { width: 170px; }
 .calendar-workbench { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
-.calendar-toolbar { display: grid; grid-template-columns: 32px auto 1fr 32px; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--vt-border); }
+.calendar-toolbar { display: grid; grid-template-columns: 32px auto 1fr auto 32px; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--vt-border); }
 .calendar-toolbar strong { font-weight: 600; }
 .calendar-toolbar > span { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); text-align: right; }
 .calendar-layout { display: grid; grid-template-columns: minmax(360px, 1fr) 230px; gap: 18px; padding: 16px; }
