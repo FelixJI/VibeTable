@@ -57,6 +57,7 @@ describe("workCalendar", () => {
     expect(parseFlexibleMonthKey("2026.07.05")).toBe("2026-07");
     expect(parseFlexibleMonthKey("2026/7/15")).toBe("2026-07");
     expect(parseFlexibleMonthKey("2026 7 15")).toBe("2026-07");
+    expect(parseFlexibleMonthKey("2026-7.15")).toBe("2026-07");  // 分隔符可混用
     expect(parseFlexibleMonthKey("20260715")).toBe("2026-07");  // 8 位无分隔
   });
 
@@ -64,6 +65,7 @@ describe("workCalendar", () => {
     expect(parseFlexibleMonthKey("2026-2-30")).toBeNull();   // 日不合法（2 月无 30 日）
     expect(parseFlexibleMonthKey("2026-13")).toBeNull();     // 月超界（不能被误拆成 2026-1-3）
     expect(parseFlexibleMonthKey("2026-0")).toBeNull();      // 月为 0
+    expect(parseFlexibleMonthKey("1899-7")).toBeNull();      // 年份低于 1900 下限
     expect(parseFlexibleMonthKey("2026")).toBeNull();        // 只有年
     expect(parseFlexibleMonthKey("hello")).toBeNull();
     expect(parseFlexibleMonthKey("")).toBeNull();
