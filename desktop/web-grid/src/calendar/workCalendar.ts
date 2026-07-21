@@ -125,3 +125,45 @@ export function monthLabel(monthKey: string, locale: string): string {
   const month = parseMonthKey(monthKey) ?? new Date();
   return new Intl.DateTimeFormat(locale, { year: "numeric", month: "long" }).format(month);
 }
+
+// 灵活年月/日期解析：支持 2026-7 / 2026.07 / 2026/7 / 2026 7 / 20267（年月）
+// 与 2026-7-15 / 2026.07.05 / 2026 7 15 / 20260715（完整日期，忽略日）。
+// 返回 "YYYY-MM" 或 null。
+//
+// 正则设计要点（避免歧义）：
+//   - 年月（FLEXIBLE_YM）：分隔符可选，这样 20267（4 位年 + 1 位月）也能解析。
+//   - 完整日期带分隔符（FLEXIBLE_YMD_SEP）：段间必须至少一个 [-./\s] 分隔符，
+//     否则 2026-13 会被错误拆成 2026-1-3。分隔符可混用（2026-7.15 也接受）。
+//   - 完整日期无分隔（FLEXIBLE_YMD_COMPACT）：恰好 8 位数字（YYYYMMDD），月/日
+//     各 2 位，避免与年月歧义。
+const FLEXIBLE_YM = /^\s*(\d{4})[-./\s]?(\d{1,2})\s*$/;
+const FLEXIBLE_YMD_SEP = /^\s*(\d{4})[-./\s](\d{1,2})[-./\s](\d{1,2})\s*$/;
+const FLEXIBLE_YMD_COMPACT = /^\s*(\d{4})(\d{2})(\d{2})\s*$/;
+
+export function parseFlexibleMonthKey(text: string): string | null {
+  const trimmed = text.trim();
+  const ymdSep = FLEXIBLE_YMD_SEP.exec(trimmed);
+  const ymdCompact = FLEXIBLE_YMD_COMPACT.exec(trimmed);
+  const ymd = ymdSep ?? ymdCompact;
+  if (ymd) {
+    const year = Number(ymd[1]);
+    const month = Number(ymd[2]);
+    const day = Number(ymd[3]);
+    const date = new Date(year, month - 1, day);
+    if (
+      date.getFullYear() !== year
+      || date.getMonth() !== month - 1
+      || date.getDate() !== day
+    ) return null;          // 如 2026-2-30 → null
+    return formatMonthKey(date);
+  }
+  const ym = FLEXIBLE_YM.exec(trimmed);
+  if (ym) {
+    const year = Number(ym[1]);
+    const month = Number(ym[2]);
+    if (month < 1 || month > 12) return null;
+    if (year < 1900 || year > 9999) return null;
+    return formatMonthKey(new Date(year, month - 1, 1));
+  }
+  return null;
+}

@@ -3,6 +3,7 @@ import {
   buildMonthDays,
   formatDateKey,
   parseDateKey,
+  parseFlexibleMonthKey,
   resolveWorkCalendarDay,
   sanitizeOverrides,
   shiftMonthKey,
@@ -38,5 +39,34 @@ describe("workCalendar", () => {
       { date: "2026-07-20", kind: "holiday", name: "  纪念日  " },
       { date: "2026-07-20", kind: "workday", name: "补班" },
     ])).toEqual([{ date: "2026-07-20", kind: "workday", name: "补班" }]);
+  });
+
+  it("parses flexible year-month and full-date inputs into month keys", () => {
+    // 年月：分隔符 [-./\s] 任一 + 1-2 位月
+    expect(parseFlexibleMonthKey("2026-7")).toBe("2026-07");
+    expect(parseFlexibleMonthKey("2026-07")).toBe("2026-07");
+    expect(parseFlexibleMonthKey("2026.7")).toBe("2026-07");
+    expect(parseFlexibleMonthKey("2026.07")).toBe("2026-07");
+    expect(parseFlexibleMonthKey("2026/7")).toBe("2026-07");
+    expect(parseFlexibleMonthKey("2026 7")).toBe("2026-07");
+    expect(parseFlexibleMonthKey("20267")).toBe("2026-07");   // 无分隔，4 位年 + 1 位月
+
+    // 完整日期：忽略日，跳到对应月
+    expect(parseFlexibleMonthKey("2026-7-15")).toBe("2026-07");
+    expect(parseFlexibleMonthKey("2026-07-05")).toBe("2026-07");
+    expect(parseFlexibleMonthKey("2026.07.05")).toBe("2026-07");
+    expect(parseFlexibleMonthKey("2026/7/15")).toBe("2026-07");
+    expect(parseFlexibleMonthKey("2026 7 15")).toBe("2026-07");
+    expect(parseFlexibleMonthKey("20260715")).toBe("2026-07");  // 8 位无分隔
+  });
+
+  it("rejects out-of-range or malformed flexible month inputs", () => {
+    expect(parseFlexibleMonthKey("2026-2-30")).toBeNull();   // 日不合法（2 月无 30 日）
+    expect(parseFlexibleMonthKey("2026-13")).toBeNull();     // 月超界（不能被误拆成 2026-1-3）
+    expect(parseFlexibleMonthKey("2026-0")).toBeNull();      // 月为 0
+    expect(parseFlexibleMonthKey("2026")).toBeNull();        // 只有年
+    expect(parseFlexibleMonthKey("hello")).toBeNull();
+    expect(parseFlexibleMonthKey("")).toBeNull();
+    expect(parseFlexibleMonthKey("  2026-7  ")).toBe("2026-07");  // 前后空格容错
   });
 });
