@@ -72,13 +72,17 @@ else return new Date(NaN);                         // 否则判无效
 
 ```ts
 // 年月：2026-7 / 2026.07 / 2026/7 / 2026 7 / 20267
-const FLEXIBLE_YM = /^\s*(\d{4})\s*[-./\s]?(\d{1,2})\s*$/;
-// 完整日期：2026-7-15 / 2026.07.05 / 2026/7/15 / 2026 7 15 / 20260715
-const FLEXIBLE_YMD = /^\s*(\d{4})\s*[-./\s]?(\d{1,2})\s*[-./\s]?(\d{1,2})\s*$/;
+const FLEXIBLE_YM = /^\s*(\d{4})[-./\s]?(\d{1,2})\s*$/;
+// 完整日期带分隔符：2026-7-15 / 2026.07.05 / 2026/7/15 / 2026 7 15（分隔符可混用）
+const FLEXIBLE_YMD_SEP = /^\s*(\d{4})[-./\s](\d{1,2})[-./\s](\d{1,2})\s*$/;
+// 完整日期无分隔：20260715（恰好 8 位）
+const FLEXIBLE_YMD_COMPACT = /^\s*(\d{4})(\d{2})(\d{2})\s*$/;
 
 export function parseFlexibleMonthKey(text: string): string | null {
   const trimmed = text.trim();
-  const ymd = FLEXIBLE_YMD.exec(trimmed);
+  const ymdSep = FLEXIBLE_YMD_SEP.exec(trimmed);
+  const ymdCompact = FLEXIBLE_YMD_COMPACT.exec(trimmed);
+  const ymd = ymdSep ?? ymdCompact;
   if (ymd) {
     const year = Number(ymd[1]);
     const month = Number(ymd[2]);
@@ -102,6 +106,11 @@ export function parseFlexibleMonthKey(text: string): string | null {
   return null;
 }
 ```
+
+**正则设计要点（避免歧义）：**
+- 年月（`FLEXIBLE_YM`）：分隔符可选，这样 `20267`（4 位年 + 1 位月）也能解析。
+- 完整日期带分隔符（`FLEXIBLE_YMD_SEP`）：段间**必须**至少一个 `[-./\s]` 分隔符，否则 `2026-13` 会被错误拆成 `2026-1-3`。分隔符可混用（`2026-7.15` 接受）。
+- 完整日期无分隔（`FLEXIBLE_YMD_COMPACT`）：恰好 8 位数字（`YYYYMMDD`），月/日各 2 位，避免与年月歧义。
 
 **边界用例（测试覆盖）：**
 - 年月：`2026-7` / `2026.07` / `2026/7` / `2026 7` / `20267` → `2026-07`
