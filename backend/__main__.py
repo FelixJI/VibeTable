@@ -342,9 +342,11 @@ def _register_table_admin_methods(dispatcher: RpcDispatcher, service: Any) -> No
     """Register the Phase 4 table_admin methods (runtime create/delete collections)."""
     from backend.contracts.table_admin import (
         CreateTableParams,
+        DeleteIdentifierMappingParams,
         DeleteTableParams,
         ImportIdentifierMappingsParams,
         ListIdentifierMappingsParams,
+        PurgeIdentifierMappingsParams,
         ReconcileIdentifierMappingsParams,
         UpdateIdentifierAliasesParams,
     )
@@ -370,6 +372,16 @@ def _register_table_admin_methods(dispatcher: RpcDispatcher, service: Any) -> No
         "table_admin.reconcileIdentifierMappings",
         service.reconcile_identifier_mappings,
         ReconcileIdentifierMappingsParams,
+    )
+    dispatcher.register(
+        "table_admin.deleteIdentifierMapping",
+        service.delete_identifier_mapping,
+        DeleteIdentifierMappingParams,
+    )
+    dispatcher.register(
+        "table_admin.purgeIdentifierMappings",
+        service.purge_identifier_mappings,
+        PurgeIdentifierMappingsParams,
     )
 
 

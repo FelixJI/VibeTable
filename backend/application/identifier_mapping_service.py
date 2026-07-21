@@ -210,6 +210,20 @@ class IdentifierRegistry:
             expected_status=(200, 201),
         )
 
+    async def delete(self, token: str, mapping: IdentifierMapping) -> None:
+        await self._transport.request(
+            "DELETE",
+            f"/items/{REGISTRY_COLLECTION}/{mapping.id}",
+            access_token=token,
+            expected_status=(200, 204),
+        )
+
+    async def delete_many(
+        self, token: str, mappings: Iterable[IdentifierMapping]
+    ) -> None:
+        for mapping in mappings:
+            await self.delete(token, mapping)
+
 
 def _entity_kind(value: object) -> IdentifierEntityKind:
     if value == "collection":

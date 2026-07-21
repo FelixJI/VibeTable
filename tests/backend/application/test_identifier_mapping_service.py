@@ -10,10 +10,12 @@ from backend.application.identifier_mapping_service import REGISTRY_COLLECTION
 from backend.application.table_admin_service import TableAdminError, TableAdminService
 from backend.contracts.table_admin import (
     CreateTableParams,
+    DeleteIdentifierMappingParams,
     FieldDefinition,
     ImportIdentifierMappingItem,
     ImportIdentifierMappingsParams,
     ListIdentifierMappingsParams,
+    PurgeIdentifierMappingsParams,
     UpdateIdentifierAliasesParams,
 )
 
@@ -52,6 +54,9 @@ class _StatefulTransport:
             mapping_id = path.rsplit("/", 1)[-1]
             self.mappings[mapping_id].update(body)
             return {"data": self.mappings[mapping_id]}
+        if method == "DELETE" and path.startswith(f"/items/{REGISTRY_COLLECTION}/"):
+            self.mappings.pop(path.rsplit("/", 1)[-1], None)
+            return {}
         if method == "GET" and path.startswith("/fields/"):
             collection = path.rsplit("/", 1)[-1]
             return {"data": self.collections[collection].get("fields", [])}
@@ -313,3 +318,89 @@ async def test_mapping_alias_collision_is_rejected_within_same_scope() -> None:
             UpdateIdentifierAliasesParams(mapping_id=orders.id, aliases=["ＫＥＨＵ", "客户"])
         )
     assert error.value.code == "alias_duplicate"
+
+
+@pytest.mark.asyncio
+async def test_delete_identifier_mapping_purges_orphaned_and_deleted_rows() -> None:
+    transport = _StatefulTransport()
+    ids = _ids()
+    service = TableAdminService(
+        transport=transport, auth=_Auth(), profiles={}, id_factory=lambda: next(ids)
+    )
+    await service.create_table(CreateTableParams(name="活动表", fields=[]))
+    await service.create_table(CreateTableParams(name="历史表", fields=[]))
+    mappings = (await service.list_identifier_mappings(ListIdentifierMappingsParams())).mappings
+    active = next(item for item in mappings if item.display_name == "活动表")
+    removable = next(item for item in mappings if item.display_name == "历史表")
+    # Mark one row orphaned (via reconcile after external deletion) and one deleted
+    # directly so both removable statuses are covered.
+    transport.collections.pop(removable.physical_name)
+    await service.reconcile_identifiers()
+    for row in transport.mappings.values():
+        if row["display_name"] == "历史表":
+            row["status"] = "deleted"
+
+    result = await service.delete_identifier_mapping(
+        DeleteIdentifierMappingParams(mapping_id=removable.id)
+    )
+    assert removable.id not in transport.mappings
+    assert any(item.id == active.id and item.status == "active" for item in result.mappings)
+
+    with pytest.raises(TableAdminError) as error:
+        await service.delete_identifier_mapping(
+            DeleteIdentifierMappingParams(mapping_id=active.id)
+        )
+    assert error.value.code == "mapping_not_removable"
+
+    with pytest.raises(TableAdminError) as error:
+        await service.delete_identifier_mapping(
+            DeleteIdentifierMappingParams(mapping_id="00000000-0000-0000-0000-000000000000")
+        )
+    assert error.value.code == "mapping_not_found"
+
+
+@pytest.mark.asyncio
+async def test_delete_identifier_mapping_accepts_explicit_deleted_status() -> None:
+    transport = _StatefulTransport()
+    ids = _ids()
+    service = TableAdminService(
+        transport=transport, auth=_Auth(), profiles={}, id_factory=lambda: next(ids)
+    )
+    await service.create_table(CreateTableParams(name="已删表", fields=[]))
+    mappings = (await service.list_identifier_mappings(ListIdentifierMappingsParams())).mappings
+    target = mappings[0]
+    transport.mappings[target.id]["status"] = "deleted"
+
+    await service.delete_identifier_mapping(DeleteIdentifierMappingParams(mapping_id=target.id))
+    assert target.id not in transport.mappings
+
+
+@pytest.mark.asyncio
+async def test_purge_identifier_mappings_removes_orphaned_and_deleted_only() -> None:
+    transport = _StatefulTransport()
+    ids = _ids()
+    service = TableAdminService(
+        transport=transport, auth=_Auth(), profiles={}, id_factory=lambda: next(ids)
+    )
+    await service.create_table(CreateTableParams(name="保留表", fields=[]))
+    await service.create_table(CreateTableParams(name="孤立表", fields=[]))
+    await service.create_table(CreateTableParams(name="已删表", fields=[]))
+    mappings = (await service.list_identifier_mappings(ListIdentifierMappingsParams())).mappings
+    keep = next(item for item in mappings if item.display_name == "保留表")
+    orphan = next(item for item in mappings if item.display_name == "孤立表")
+    deleted = next(item for item in mappings if item.display_name == "已删表")
+    transport.collections.pop(orphan.physical_name)
+    await service.reconcile_identifiers()
+    transport.mappings[deleted.id]["status"] = "deleted"
+
+    result = await service.purge_identifier_mappings(PurgeIdentifierMappingsParams())
+    remaining_ids = {item.id for item in result.mappings}
+    assert orphan.id not in remaining_ids
+    assert deleted.id not in remaining_ids
+    assert keep.id in remaining_ids
+    assert keep.id not in {orphan.id, deleted.id}
+    assert keep.id in transport.mappings
+
+    # Idempotent: a second purge on an empty removable set does not raise.
+    second = await service.purge_identifier_mappings(PurgeIdentifierMappingsParams())
+    assert [item.id for item in second.mappings] == [keep.id]

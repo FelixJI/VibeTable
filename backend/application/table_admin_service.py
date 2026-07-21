@@ -21,6 +21,7 @@ from backend.application.identifier_mapping_service import (
 from backend.contracts.table_admin import (
     CreateTableParams,
     CreateTableResult,
+    DeleteIdentifierMappingParams,
     DeleteTableParams,
     DeleteTableResult,
     FieldDefinition,
@@ -28,6 +29,7 @@ from backend.contracts.table_admin import (
     IdentifierMappingsResult,
     ImportIdentifierMappingsParams,
     ListIdentifierMappingsParams,
+    PurgeIdentifierMappingsParams,
     ReconcileIdentifierMappingsParams,
     UpdateIdentifierAliasesParams,
 )
@@ -441,6 +443,43 @@ class TableAdminService:
         self, _params: ReconcileIdentifierMappingsParams
     ) -> IdentifierMappingsResult:
         await self.reconcile_identifiers()
+        return await self.list_identifier_mappings(ListIdentifierMappingsParams())
+
+    async def delete_identifier_mapping(
+        self, params: DeleteIdentifierMappingParams
+    ) -> IdentifierMappingsResult:
+        """Permanently remove one registry row.
+
+        Only ``orphaned`` or ``deleted`` mappings are removable — ``active`` /
+        ``pending`` rows stay coupled to the physical Directus collection and
+        must leave through ``delete_table`` instead.
+        """
+        token = await self._auth.access_token()
+        mappings = await self._registry.read_all(token)
+        target = next((item for item in mappings if item.id == params.mapping_id), None)
+        if target is None:
+            raise TableAdminError(
+                "identifier mapping no longer exists", code="mapping_not_found"
+            )
+        if target.status not in {"orphaned", "deleted"}:
+            raise TableAdminError(
+                "only orphaned or deleted mappings can be removed",
+                code="mapping_not_removable",
+            )
+        await self._registry.delete(token, target)
+        return await self.list_identifier_mappings(ListIdentifierMappingsParams())
+
+    async def purge_identifier_mappings(
+        self, _params: PurgeIdentifierMappingsParams
+    ) -> IdentifierMappingsResult:
+        """Permanently remove every ``orphaned`` / ``deleted`` registry row."""
+        token = await self._auth.access_token()
+        mappings = await self._registry.read_all(token)
+        removable = [
+            mapping for mapping in mappings if mapping.status in {"orphaned", "deleted"}
+        ]
+        if removable:
+            await self._registry.delete_many(token, removable)
         return await self.list_identifier_mappings(ListIdentifierMappingsParams())
 
     @staticmethod

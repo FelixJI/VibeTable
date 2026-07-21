@@ -158,9 +158,18 @@ class ReconcileIdentifierMappingsParams(CamelModel):
     pass
 
 
+class DeleteIdentifierMappingParams(CamelModel):
+    mapping_id: str = Field(min_length=1, max_length=64)
+
+
+class PurgeIdentifierMappingsParams(CamelModel):
+    pass
+
+
 __all__ = [
     "CreateTableParams",
     "CreateTableResult",
+    "DeleteIdentifierMappingParams",
     "DeleteTableParams",
     "DeleteTableResult",
     "FieldDefinition",
@@ -170,6 +179,7 @@ __all__ = [
     "ImportIdentifierMappingItem",
     "ImportIdentifierMappingsParams",
     "ListIdentifierMappingsParams",
+    "PurgeIdentifierMappingsParams",
     "ReconcileIdentifierMappingsParams",
     "UpdateIdentifierAliasesParams",
 ]
