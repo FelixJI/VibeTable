@@ -42,4 +42,20 @@ describe("calendarDateEditor", () => {
     apply.click();
     expect(success).toHaveBeenCalledWith("2026-07-20T14:30");
   });
+
+  it("preserves a time-only value without injecting a date", () => {
+    const success = vi.fn();
+    const input = createCalendarDateEditor("time")(
+      { getValue: () => "14:30:00" },
+      (callback) => callback(),
+      success,
+      vi.fn(),
+    ) as HTMLInputElement;
+
+    expect(input.type).toBe("time");
+    expect(input.value).toBe("14:30:00");
+    input.value = "16:45:00";
+    input.dispatchEvent(new Event("change"));
+    expect(success).toHaveBeenCalledWith("16:45:00");
+  });
 });

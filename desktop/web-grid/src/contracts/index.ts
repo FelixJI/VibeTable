@@ -17,7 +17,14 @@
 // Table domain (host/WebView contract)
 // ---------------------------------------------------------------------------
 
-export type ColumnDataType = "text" | "integer" | "decimal" | "boolean" | "date";
+export type ColumnDataType =
+  | "text"
+  | "integer"
+  | "decimal"
+  | "boolean"
+  | "date"
+  | "datetime"
+  | "time";
 
 export interface ColumnSchema {
   /** Programmatic column name; matches the row-dict key. */
@@ -158,7 +165,7 @@ export interface BooleanEditor extends EditorBase {
 
 export interface DateEditor extends EditorBase {
   readonly kind: "date";
-  readonly dateType: "date" | "datetime";
+  readonly dateType: "date" | "datetime" | "time";
   readonly format?: string | null;
   readonly showWeekday?: boolean;
 }
@@ -206,6 +213,8 @@ export interface ColumnEditSchema {
     | "decimal"
     | "boolean"
     | "date"
+    | "datetime"
+    | "time"
     | "single_select"
     | "multi_select";
   readonly editable: boolean;

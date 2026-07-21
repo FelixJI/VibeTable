@@ -154,7 +154,10 @@ function toColumnDef(col: ColumnSchema): GridColumnDefinition {
     case "boolean":
       return { ...def, formatter: "tickCross" };
     case "date":
+    case "datetime":
       return { ...def, formatter: "datetime" };
+    case "time":
+      return { ...def, formatter: "plaintext" };
     case "integer":
     case "text":
     default:

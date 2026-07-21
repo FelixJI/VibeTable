@@ -84,6 +84,37 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
     expect(data[1]!.amount).toBe(0.0);
     expect(data[2]!.amount).toBe(123456.789);
   });
+
+  it("keeps date-family display semantics distinct", () => {
+    const page: TablePage = {
+      ...samplePage(),
+      columns: [
+        { name: "day", title: "Day", dataType: "date", editable: false, nullable: true },
+        {
+          name: "occurred_at",
+          title: "Occurred At",
+          dataType: "datetime",
+          editable: false,
+          nullable: true,
+        },
+        {
+          name: "starts_at",
+          title: "Starts At",
+          dataType: "time",
+          editable: false,
+          nullable: true,
+        },
+      ],
+      rows: [],
+    };
+
+    const columns = buildColumns(page);
+    expect(columns.map((column) => column.formatter)).toEqual([
+      "datetime",
+      "datetime",
+      "plaintext",
+    ]);
+  });
 });
 
 describe("buildOptions (read-only Tabulator options)", () => {

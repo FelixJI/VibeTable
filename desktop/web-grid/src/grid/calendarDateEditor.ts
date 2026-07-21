@@ -41,7 +41,36 @@ function button(label: string, className: string, onClick: () => void): HTMLButt
   return element;
 }
 
-export function createCalendarDateEditor(dateType: "date" | "datetime"): CalendarDateEditor {
+function createTimeEditor(): CalendarDateEditor {
+  return (cell, onRendered, success, cancel) => {
+    const input = document.createElement("input");
+    input.type = "time";
+    input.step = "1";
+    input.className = "work-date-input";
+    input.setAttribute("aria-label", getLocale() === "zh-CN" ? "选择时间" : "Choose time");
+    const match = /^(\d{2}:\d{2}(?::\d{2})?)/.exec(String(cell.getValue() ?? ""));
+    input.value = match?.[1] ?? "";
+    let finished = false;
+    const finish = (value?: string): void => {
+      if (finished) return;
+      finished = true;
+      if (value === undefined) cancel();
+      else success(value);
+    };
+    input.addEventListener("change", () => finish(input.value));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") finish();
+      if (event.key === "Enter") finish(input.value);
+    });
+    onRendered(() => input.focus({ preventScroll: true }));
+    return input;
+  };
+}
+
+export function createCalendarDateEditor(
+  dateType: "date" | "datetime" | "time",
+): CalendarDateEditor {
+  if (dateType === "time") return createTimeEditor();
   return (cell, onRendered, success, cancel) => {
     const locale = getLocale();
     const input = document.createElement("input");
