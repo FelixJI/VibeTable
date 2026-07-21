@@ -280,18 +280,6 @@ function openTable(name: string) {
             <span v-else>{{ t("home.quote.builtin") }}</span>
           </footer>
         </section>
-
-        <section class="health-line" :class="`health-line--${workspace.phase}`">
-          <span class="health-dot"></span>
-          <div>
-            <strong>{{ t("home.health.title") }}</strong>
-            <small v-if="workspace.phase === 'opened'">
-              {{ t("home.health.connected", { count: workspace.collections.length }) }}
-            </small>
-            <small v-else-if="workspace.phase === 'failed'">{{ workspace.lastError || t("connection.failed") }}</small>
-            <small v-else>{{ t(`home.health.${workspace.phase}`) }}</small>
-          </div>
-        </section>
       </aside>
     </div>
   </section>
@@ -442,18 +430,10 @@ h1 {
 .quote-card footer { margin-top: 10px; font-size: 10px; }
 .quote-card footer a, .quote-card footer span { color: var(--vt-fg-muted); text-decoration: none; }
 .quote-card footer a:hover { color: var(--vt-color-primary-500); }
-.health-line { display: flex; gap: 9px; align-items: flex-start; padding: 8px 5px; }
-.health-dot { width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; background: var(--vt-gray-300); }
-.health-line--opened .health-dot { background: var(--vt-color-success); }
-.health-line--failed .health-dot { background: var(--vt-color-danger); }
-.health-line div { display: flex; flex-direction: column; }
-.health-line strong { font-size: var(--vt-font-caption); font-weight: 500; }
-.health-line small { max-width: 240px; overflow: hidden; color: var(--vt-fg-muted); text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 900px) {
   .home-view { padding: 24px; }
   .home-grid { grid-template-columns: 1fr; }
   .home-aside { display: grid; grid-template-columns: 1fr 1fr; }
-  .health-line { grid-column: 1 / 3; }
 }
 @media (max-width: 680px) {
   .home-view { padding: 20px clamp(16px, 4vw, 24px) 28px; }
@@ -463,7 +443,6 @@ h1 {
   .section-heading { align-items: flex-start; gap: 10px; }
   .guide-steps { grid-template-columns: 1fr; }
   .home-aside { grid-template-columns: minmax(0, 1fr); }
-  .health-line { grid-column: 1; }
 }
 @media (max-height: 620px) {
   .home-view { padding-top: 20px; padding-bottom: 24px; }

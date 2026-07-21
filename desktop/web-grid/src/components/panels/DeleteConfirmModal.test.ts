@@ -75,6 +75,26 @@ describe("DeleteConfirmModal", () => {
     expect(ui.deleteModalOpen).toBe(true);
   });
 
+  it("emits cancel when NModal requests close via update:show=false (X button / mask / ESC)", async () => {
+    // Regression guard: the card-preset NModal closes by emitting
+    // `update:show=false`. The component must translate that into its own
+    // `cancel` event so WorkspaceView can run ui.closeDelete() + admin.close()
+    // (otherwise the X button appears dead while the store stays open).
+    // We drive the real DOM close button (aria-label="close") that naive-ui
+    // renders in the card header — the same path the user clicks.
+    const ui = useUiStore();
+    ui.openDelete("orders");
+    const wrapper = mountModal();
+    await flushPromises();
+    const closeBtn = document.body.querySelector<HTMLButtonElement>(
+      '.n-card-header__close[aria-label="close"]',
+    );
+    if (!closeBtn) throw new Error("close button not rendered");
+    await closeBtn.click();
+    await flushPromises();
+    expect(wrapper.emitted("cancel")).toBeTruthy();
+  });
+
   it("shows no target name when deleteTarget is null", async () => {
     const ui = useUiStore();
     // Manually flip the modal open without setting a target (shouldn't normally

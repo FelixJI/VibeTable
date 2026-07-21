@@ -47,4 +47,24 @@ describe("identifierMappingService", () => {
     expect(store.phase).toBe("failed");
     expect(store.error).toBe("别名已被使用");
   });
+
+  it("deletes one mapping through the host bridge", async () => {
+    const request = vi.fn().mockResolvedValue(result);
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useIdentifierMappingService();
+
+    await service.deleteMapping("m1");
+
+    expect(request).toHaveBeenCalledWith("identifierMappings.deleteRequested", { mappingId: "m1" });
+  });
+
+  it("purges removable mappings through the host bridge", async () => {
+    const request = vi.fn().mockResolvedValue(result);
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useIdentifierMappingService();
+
+    await service.purgeMappings();
+
+    expect(request).toHaveBeenCalledWith("identifierMappings.purgeRequested", {});
+  });
 });

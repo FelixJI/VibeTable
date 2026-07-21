@@ -7,9 +7,10 @@ import { useIdentifierMappingStore } from "@/stores/identifierMappingStore";
 import { useWorkCalendarStore } from "@/stores/workCalendarStore";
 import { formatDateKey } from "@/calendar/workCalendar";
 import { useUiStore } from "@/stores/uiStore";
-import { NSelect } from "naive-ui";
+import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import WorkCalendarMonth from "@/components/calendar/WorkCalendarMonth.vue";
 import MonthNavigator from "@/components/calendar/MonthNavigator.vue";
+import { NPopconfirm, NSelect } from "naive-ui";
 
 describe("SettingsView", () => {
   beforeEach(() => {
@@ -22,6 +23,33 @@ describe("SettingsView", () => {
     expect(wrapper.findAll(".settings-nav button")).toHaveLength(6);
     expect(wrapper.text()).toContain("界面语言");
     expect(wrapper.text()).toContain("启动页面");
+  });
+
+  it("aligns the interface density control with the other general settings", () => {
+    const wrapper = mount(SettingsView);
+    const densityRow = wrapper
+      .findAll(".setting-row")
+      .find((row) => row.text().includes("界面密度"));
+    expect(densityRow, "density setting row should render").toBeTruthy();
+    // The radio group must opt into the fixed-width column AND the radio row
+    // layout (flex-direction: row), otherwise `.setting-row > div` forces the
+    // buttons into a vertical stack.
+    const group = densityRow!.find(".setting-control--radio");
+    expect(group.exists()).toBe(true);
+    expect(group.classes()).toContain("n-radio-group");
+  });
+
+  it("keeps the Directus connection pill on a single line in the source row", async () => {
+    const wrapper = mount(SettingsView);
+    await wrapper.get('[data-testid="settings-nav-source"]').trigger("click");
+    // The pill's intrinsic width exceeds the space `space-between` leaves it;
+    // wrapping it in a non-shrinking container keeps its content on one line.
+    const sourceRow = wrapper
+      .findAll(".setting-row")
+      .find((row) => row.text().includes("Directus"));
+    expect(sourceRow, "Directus source row should render").toBeTruthy();
+    expect(sourceRow!.find(".setting-control--pill").exists()).toBe(true);
+    expect(sourceRow!.findComponent(ConnectionPill).exists()).toBe(true);
   });
 
   it("manages manual holidays and adjusted workdays from the shared calendar", async () => {
@@ -51,6 +79,75 @@ describe("SettingsView", () => {
     expect(wrapper.text()).toContain("物理键只读");
     expect(wrapper.find('input[placeholder*="物理键"]').exists()).toBe(true);
     expect(wrapper.emitted("loadMappings")).toHaveLength(1);
+  });
+
+  it("offers row delete only for orphaned/deleted mappings", async () => {
+    const wrapper = mount(SettingsView);
+    await wrapper.get('[data-testid="settings-nav-mapping"]').trigger("click");
+    const store = useIdentifierMappingStore();
+    store.succeed({ mappings: [
+      {
+        id: "m-active", entityKind: "collection", physicalName: "vt_t_01",
+        displayName: "活动表", locale: "zh-CN", aliases: [],
+        origin: "vibetable", status: "active",
+      },
+      {
+        id: "m-orphan", entityKind: "collection", physicalName: "vt_t_gone",
+        displayName: "孤立表", locale: "zh-CN", aliases: [],
+        origin: "vibetable", status: "orphaned",
+      },
+    ] });
+    await wrapper.vm.$nextTick();
+
+    const rows = wrapper.findAll(".mapping-item");
+    // Active row has no delete control; orphaned row exposes one.
+    expect(rows[0].find(".mapping-delete").exists()).toBe(false);
+    expect(rows[1].find(".mapping-delete").exists()).toBe(true);
+
+    // Confirms the per-row popconfirm by emitting its positive-click event —
+    // the same event NPopconfirm fires on user confirmation.
+    await rows[1].findComponent(NPopconfirm).vm.$emit("positive-click");
+    expect(wrapper.emitted("deleteMapping")).toEqual([["m-orphan"]]);
+  });
+
+  it("enables the purge button when removable rows exist and emits on confirm", async () => {
+    const wrapper = mount(SettingsView);
+    await wrapper.get('[data-testid="settings-nav-mapping"]').trigger("click");
+    const store = useIdentifierMappingStore();
+    store.succeed({ mappings: [{
+      id: "m-del", entityKind: "collection", physicalName: "vt_t_gone",
+      displayName: "已删表", locale: "zh-CN", aliases: [],
+      origin: "vibetable", status: "deleted",
+    }] });
+    await wrapper.vm.$nextTick();
+
+    const purgeButton = wrapper
+      .findAll(".mapping-toolbar .n-button")
+      .find((btn) => btn.find(".mapping-delete, [aria-label='一键清理孤立/已删除映射']").exists()
+        || btn.attributes("aria-label") === "一键清理孤立/已删除映射");
+    expect(purgeButton, "purge button should render").toBeTruthy();
+    expect(purgeButton!.attributes("disabled")).toBeUndefined();
+
+    await wrapper.findAllComponents(NPopconfirm)[0].vm.$emit("positive-click");
+    expect(wrapper.emitted("purgeMappings")).toHaveLength(1);
+  });
+
+  it("disables the purge button when every mapping is active", async () => {
+    const wrapper = mount(SettingsView);
+    await wrapper.get('[data-testid="settings-nav-mapping"]').trigger("click");
+    const store = useIdentifierMappingStore();
+    store.succeed({ mappings: [{
+      id: "m-active", entityKind: "collection", physicalName: "vt_t_01",
+      displayName: "活动表", locale: "zh-CN", aliases: [],
+      origin: "vibetable", status: "active",
+    }] });
+    await wrapper.vm.$nextTick();
+
+    const purgeButton = wrapper
+      .findAll(".mapping-toolbar .n-button")
+      .find((btn) => btn.attributes("aria-label") === "一键清理孤立/已删除映射");
+    expect(purgeButton, "purge button should render").toBeTruthy();
+    expect(purgeButton!.attributes("disabled")).toBeDefined();
   });
 
   it("routes advanced schema, shortcuts, and reconnect through real emits", async () => {
@@ -115,7 +212,7 @@ describe("SettingsView", () => {
     expect(wrapper.findComponent(WorkCalendarMonth).props("monthKey")).toBe(currentMonthKey);
   });
 
-  it("renders the overrides count between the navigator and today button", async () => {
+  it("renders the overrides count in the calendar toolbar", async () => {
     const wrapper = mount(SettingsView);
     await wrapper.get('[data-testid="settings-nav-calendar"]').trigger("click");
     const store = useWorkCalendarStore();

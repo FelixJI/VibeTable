@@ -20,6 +20,9 @@ const state = computed(() => {
   <div v-if="state === 'healthy'" class="connection-pill connection-pill--healthy" data-testid="connection-pill">
     <NIcon :size="14"><Cloud /></NIcon>
     <span>{{ t("connection.connected") }}</span>
+    <span class="connection-pill__count">
+      {{ t("connection.connectedCount", { count: workspace.collections.length }) }}
+    </span>
   </div>
   <div v-else-if="state === 'loading'" class="connection-pill" data-testid="connection-pill">
     <NSpin :size="13" />
@@ -65,6 +68,9 @@ const state = computed(() => {
   border-color: rgba(0, 184, 138, 0.25);
   background: rgba(0, 184, 138, 0.07);
 }
+.connection-pill__count { color: var(--vt-fg-muted); }
+.connection-pill__count::before { margin-right: 6px; content: "·"; }
+:root.dark .connection-pill--healthy .connection-pill__count { color: var(--vt-fg-muted); }
 .connection-pill--action {
   height: 26px;
 }

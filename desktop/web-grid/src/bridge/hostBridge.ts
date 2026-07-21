@@ -190,6 +190,8 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "identifierMappings.updateAliasesRequested",
   "identifierMappings.importRequested",
   "identifierMappings.reconcileRequested",
+  "identifierMappings.deleteRequested",
+  "identifierMappings.purgeRequested",
   "plugin.catalog.list",
   "plugin.audit.list",
   "plugin.cleanup.listPending",

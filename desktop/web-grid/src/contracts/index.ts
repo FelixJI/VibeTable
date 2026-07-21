@@ -964,6 +964,8 @@ export type WebMessageType =
   | "identifierMappings.updateAliasesRequested"
   | "identifierMappings.importRequested"
   | "identifierMappings.reconcileRequested"
+  | "identifierMappings.deleteRequested"
+  | "identifierMappings.purgeRequested"
   | "plugin.catalog.list"
   | "plugin.audit.list"
   | "plugin.cleanup.listPending"
@@ -1153,6 +1155,8 @@ export interface WebPayloadMap {
     readonly mappings: readonly IdentifierMappingImportItem[];
   };
   "identifierMappings.reconcileRequested": Record<string, never>;
+  "identifierMappings.deleteRequested": { readonly mappingId: string };
+  "identifierMappings.purgeRequested": Record<string, never>;
   "plugin.catalog.list": { readonly projectKey: string };
   "plugin.audit.list": { readonly projectKey: string; readonly pluginId: string };
   "plugin.cleanup.listPending": { readonly projectKey: string };

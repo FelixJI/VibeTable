@@ -145,6 +145,28 @@ describe("CreateTableModal", () => {
     expect(wrapper.emitted("cancel")).toBeTruthy();
   });
 
+  it("emits cancel when NModal requests close via update:show=false (X button / mask / ESC)", async () => {
+    // Regression guard: the card-preset NModal closes by emitting
+    // `update:show=false`. The component must translate that into its own
+    // `cancel` event so WorkspaceView can run ui.closeCreate() + admin.close()
+    // (otherwise the X button appears dead while the store stays open).
+    // We drive the real DOM close button (aria-label="close") that naive-ui
+    // renders in the card header — the same path the user clicks.
+    const ui = useUiStore();
+    const admin = useTableAdminStore();
+    admin.openCreate();
+    ui.openCreate();
+    const wrapper = mountModal();
+    await flushPromises();
+    const closeBtn = document.body.querySelector<HTMLButtonElement>(
+      '.n-card-header__close[aria-label="close"]',
+    );
+    if (!closeBtn) throw new Error("close button not rendered");
+    await closeBtn.click();
+    await flushPromises();
+    expect(wrapper.emitted("cancel")).toBeTruthy();
+  });
+
   it("renders the field-name input bound to admin.form.fields[i].name", async () => {
     // Sanity check: the component renders field inputs from admin.form.fields;
     // the store is the single source of truth. We confirm by setting the name

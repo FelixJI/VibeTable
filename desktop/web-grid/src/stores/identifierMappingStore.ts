@@ -8,6 +8,8 @@ export type IdentifierMappingPhase =
   | "saving"
   | "importing"
   | "reconciling"
+  | "deleting"
+  | "purging"
   | "failed";
 
 export const useIdentifierMappingStore = defineStore("identifierMappings", () => {

@@ -28,6 +28,7 @@ const emit = defineEmits<{ confirm: []; cancel: [] }>();
     preset="card"
     :title="t('delete.title')"
     style="max-width: 420px"
+    @update:show="(v: boolean) => !v && emit('cancel')"
   >
     <p data-testid="delete-confirm-message">
       {{ t("sidebar.delete.confirm", { name: ui.deleteTarget ?? "" }) }}

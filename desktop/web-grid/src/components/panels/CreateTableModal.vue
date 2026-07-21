@@ -41,6 +41,7 @@ const fieldTypeOptions = TABLE_FIELD_TYPES.map((type) => ({
     preset="card"
     :title="t('createTable.title')"
     style="max-width: 640px"
+    @update:show="(v: boolean) => !v && emit('cancel')"
   >
     <NForm label-placement="top">
       <NFormItem :label="t('createTable.name')">
@@ -67,7 +68,7 @@ const fieldTypeOptions = TABLE_FIELD_TYPES.map((type) => ({
           v-model:value="field.type"
           :options="fieldTypeOptions"
           filterable
-          style="width: 140px"
+          style="width: 100%"
           :data-testid="`create-table-field-type-${idx}`"
         />
         <NButton
@@ -117,7 +118,7 @@ const fieldTypeOptions = TABLE_FIELD_TYPES.map((type) => ({
 <style scoped>
 .field-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(210px, .8fr) auto;
+  grid-template-columns: minmax(160px, 1fr) minmax(220px, .9fr) auto;
   gap: var(--vt-space-2);
   align-items: center;
   margin-bottom: var(--vt-space-2);

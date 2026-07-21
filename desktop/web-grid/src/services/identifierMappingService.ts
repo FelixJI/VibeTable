@@ -10,7 +10,7 @@ export function useIdentifierMappingService() {
   const store = useIdentifierMappingStore();
 
   async function run(
-    phase: "loading" | "saving" | "importing" | "reconciling",
+    phase: "loading" | "saving" | "importing" | "reconciling" | "deleting" | "purging",
     action: () => Promise<unknown>,
   ): Promise<void> {
     store.begin(phase);
@@ -34,5 +34,9 @@ export function useIdentifierMappingService() {
       bridge.request("identifierMappings.importRequested", { mappings })),
     reconcile: () => run("reconciling", () =>
       bridge.request("identifierMappings.reconcileRequested", {})),
+    deleteMapping: (mappingId: string) => run("deleting", () =>
+      bridge.request("identifierMappings.deleteRequested", { mappingId })),
+    purgeMappings: () => run("purging", () =>
+      bridge.request("identifierMappings.purgeRequested", {})),
   };
 }

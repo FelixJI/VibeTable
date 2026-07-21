@@ -5,6 +5,7 @@ import {
   NDynamicTags,
   NIcon,
   NInput,
+  NPopconfirm,
   NRadioButton,
   NRadioGroup,
   NSelect,
@@ -29,6 +30,7 @@ import {
   RefreshCw,
   Search,
   Tags,
+  Trash2,
   Upload,
   X,
 } from "lucide-vue-next";
@@ -68,6 +70,8 @@ const emit = defineEmits<{
   saveMappingAliases: [mappingId: string, aliases: readonly string[]];
   importMappings: [mappings: readonly IdentifierMappingImportItem[]];
   reconcileMappings: [];
+  deleteMapping: [mappingId: string];
+  purgeMappings: [];
 }>();
 const mappingQuery = ref("");
 const editingMappingId = ref<string | null>(null);
@@ -85,6 +89,12 @@ const filteredMappings = computed(() => {
       .some((value) => value.toLocaleLowerCase().includes(needle)),
   );
 });
+
+// Whether ANY row (not just the filtered view) is removable. Purge operates
+// on the whole registry, so it follows the store rather than the filter.
+const hasRemovableMappings = computed(() =>
+  mappings.mappings.some((item) => item.status === "orphaned" || item.status === "deleted"),
+);
 
 watch(current, (section) => {
   if (section === "mapping") emit("loadMappings");
@@ -307,6 +317,7 @@ function setCalendarName(name: string): void {
                 :value="ui.density"
                 :aria-label="t('settings.density')"
                 size="small"
+                class="setting-control setting-control--radio"
                 @update:value="ui.setDensity($event as DensityMode)"
               >
                 <NRadioButton value="comfortable">{{ t("settings.density.comfortable") }}</NRadioButton>
@@ -324,10 +335,10 @@ function setCalendarName(name: string): void {
                 <template #icon><NIcon><ChevronLeft /></NIcon></template>
               </NButton>
               <MonthNavigator :month-key="calendarMonth" :locale="ui.locale" @update:month-key="calendarMonth = $event" />
-              <span>{{ t("settings.workCalendar.overrides", { count: workCalendar.overrideCount }) }}</span>
-              <NButton quaternary size="small" data-testid="calendar-today" :aria-label="t('settings.workCalendar.today')" @click="calendarMonth = formatMonthKey(new Date())">
+              <NButton size="small" class="calendar-today-btn" data-testid="calendar-today" :aria-label="t('settings.workCalendar.today')" @click="calendarMonth = formatMonthKey(new Date())">
                 {{ t("settings.workCalendar.today") }}
               </NButton>
+              <span>{{ t("settings.workCalendar.overrides", { count: workCalendar.overrideCount }) }}</span>
               <NButton quaternary circle :aria-label="t('settings.workCalendar.next')" @click="calendarMonth = shiftMonthKey(calendarMonth, 1)">
                 <template #icon><NIcon><ChevronRight /></NIcon></template>
               </NButton>
@@ -362,6 +373,7 @@ function setCalendarName(name: string): void {
                   :disabled="selectedCalendarRule === 'default'"
                   :placeholder="t('settings.workCalendar.name.placeholder')"
                   maxlength="40"
+                  class="calendar-name-input"
                   @update:value="setCalendarName"
                 />
                 <p>{{ selectedCalendarRule === "default" ? t("settings.workCalendar.defaultHint") : t("settings.workCalendar.saved") }}</p>
@@ -385,6 +397,12 @@ function setCalendarName(name: string): void {
               <NTooltip><template #trigger><NButton quaternary circle :aria-label="t('settings.mapping.reconcile')" :loading="mappings.phase === 'reconciling'" @click="emit('reconcileMappings')"><template #icon><NIcon><RefreshCw /></NIcon></template></NButton></template>{{ t("settings.mapping.reconcile") }}</NTooltip>
               <NTooltip><template #trigger><NButton quaternary circle :aria-label="t('settings.mapping.import')" @click="importInput?.click()"><template #icon><NIcon><Upload /></NIcon></template></NButton></template>{{ t("settings.mapping.import") }}</NTooltip>
               <NTooltip><template #trigger><NButton quaternary circle :aria-label="t('settings.mapping.export')" :disabled="!mappings.mappings.length" @click="exportMappings"><template #icon><NIcon><Download /></NIcon></template></NButton></template>{{ t("settings.mapping.export") }}</NTooltip>
+              <NPopconfirm placement="bottom-end" :positive-text="t('settings.mapping.delete')" :negative-text="t('settings.mapping.cancel')" @positive-click="emit('purgeMappings')">
+                <template #trigger>
+                  <NButton quaternary circle :aria-label="t('settings.mapping.purge')" :disabled="!hasRemovableMappings" :loading="mappings.phase === 'purging'"><template #icon><NIcon><Trash2 /></NIcon></template></NButton>
+                </template>
+                {{ t("settings.mapping.purge.confirm") }}
+              </NPopconfirm>
               <input ref="importInput" class="sr-only" type="file" accept="application/json,.json" @change="onImportFile" />
             </div>
             <p v-if="transferMessage" class="mapping-message">{{ transferMessage }}</p>
@@ -395,7 +413,14 @@ function setCalendarName(name: string): void {
               <article v-for="item in filteredMappings" :key="item.id" class="mapping-item">
                 <div class="mapping-kind" :class="`mapping-kind--${item.entityKind}`"><NIcon :size="15"><Tags /></NIcon></div>
                 <div class="mapping-body">
-                  <div class="mapping-title"><strong>{{ item.displayName }}</strong><NTag size="tiny" :bordered="false">{{ item.entityKind === 'collection' ? t('settings.mapping.table') : t('settings.mapping.field') }}</NTag><NTag v-if="item.status !== 'active'" size="tiny" type="warning">{{ item.status }}</NTag></div>
+                  <div class="mapping-title"><strong>{{ item.displayName }}</strong><NTag size="tiny" :bordered="false">{{ item.entityKind === 'collection' ? t('settings.mapping.table') : t('settings.mapping.field') }}</NTag><NTag v-if="item.status !== 'active'" size="tiny" type="warning">{{ item.status }}</NTag>
+                    <NPopconfirm v-if="item.status === 'orphaned' || item.status === 'deleted'" placement="bottom-end" :positive-text="t('settings.mapping.delete')" :negative-text="t('settings.mapping.cancel')" @positive-click="emit('deleteMapping', item.id)">
+                      <template #trigger>
+                        <NButton class="mapping-delete" quaternary circle size="tiny" :aria-label="t('settings.mapping.delete')" :loading="mappings.phase === 'deleting'"><template #icon><NIcon :size="14"><Trash2 /></NIcon></template></NButton>
+                      </template>
+                      {{ t("settings.mapping.delete.confirm") }}
+                    </NPopconfirm>
+                  </div>
                   <button class="physical-key" type="button" @click="copyPhysicalKey(item.physicalName)"><code>{{ item.physicalName }}</code><NIcon :size="13"><Copy /></NIcon></button>
                   <div v-if="editingMappingId === item.id" class="alias-editor">
                     <NDynamicTags v-model:value="aliasDraft" />
@@ -419,7 +444,7 @@ function setCalendarName(name: string): void {
           <section class="setting-card">
             <div class="setting-row setting-row--tall">
               <div><strong>Directus</strong><small>{{ connectionDetail }}</small></div>
-              <ConnectionPill @reconnect="emit('reconnect')" />
+              <div class="setting-control--pill"><ConnectionPill @reconnect="emit('reconnect')" /></div>
             </div>
             <div class="source-note">
               <NIcon :size="17"><Database /></NIcon>
@@ -520,17 +545,37 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .setting-row strong, .setting-action strong { font-weight: 500; }
 .setting-row small, .setting-action small { color: var(--vt-fg-muted); }
 .setting-control { width: 170px; }
+/* Naive UI renders `.n-radio-group` as `display: inline-block`, so applying
+   `flex` to the buttons does nothing. Turn the group into a flex container so
+   the density radio buttons share the fixed 170px column side-by-side. */
+.setting-control.setting-control--radio { display: flex; flex-direction: row; width: 170px; }
+.setting-control--radio :deep(.n-radio-button) { flex: 1 1 0; }
+/* The connection pill is intrinsically wider than a single line of text; in the
+   tall source row `justify-content: space-between` shrinks it until its content
+   wraps. Pin it to its content width so it stays on one line like the other
+   right-aligned controls. */
+.setting-control--pill { flex: none; }
 .calendar-workbench { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
-.calendar-toolbar { display: grid; grid-template-columns: 32px auto 1fr auto 32px; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--vt-border); }
+.calendar-toolbar { display: grid; grid-template-columns: 32px auto auto 1fr 32px; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--vt-border); }
 .calendar-toolbar > span { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); text-align: right; }
-.calendar-layout { display: grid; grid-template-columns: minmax(360px, 1fr) 230px; gap: 18px; padding: 16px; }
+/* "今日/Today" 文字很短，但 Naive UI 默认按钮水平内边距（~14px×2）让它在
+   工具栏里偏宽、挤占有限空间。收紧到与圆形图标按钮视觉一致。 */
+.calendar-today-btn :deep(.n-button__content) { padding: 0 6px; }
+.calendar-layout { display: grid; grid-template-columns: minmax(360px, 1fr) auto; gap: 18px; padding: 16px; }
+/* 面板宽度由内容驱动（不再固定 230px）：NInput 的固定宽度定下列宽，
+   单选按钮按文字自然宽度排列，标签/备注在列宽内换行。避免固定窄列把
+   控件右边裁切。 */
 .calendar-rule-panel { display: flex; flex-direction: column; gap: 8px; padding: 14px; border-left: 1px solid var(--vt-border); }
 .calendar-rule-panel > span, .calendar-rule-panel > label { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .calendar-rule-panel > strong { margin-bottom: 7px; font-size: 15px; font-weight: 600; line-height: 1.45; }
 .calendar-rule-panel > label { margin-top: 7px; }
 .calendar-rule-panel > p { margin: 8px 0 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); line-height: 1.55; }
-.calendar-rule-options { display: flex; flex-direction: column; gap: 5px; }
-.calendar-rule-options :deep(.n-radio-button) { width: 100%; }
+/* 名称输入框给固定宽度，作为面板列宽的基准（Naive UI 默认 width:100% 在
+   auto 列里会塌缩，所以显式给值）。 */
+.calendar-name-input { width: 200px; }
+/* 单选按钮按文字宽度排成一行（不再竖排拉满），按需换行。 */
+.calendar-rule-options { display: flex; flex-direction: row; flex-wrap: wrap; gap: 5px; }
+.calendar-rule-options :deep(.n-radio-button) { width: auto; }
 .calendar-footer { display: flex; align-items: center; gap: 14px; padding: 10px 14px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); border-top: 1px solid var(--vt-border); background: var(--vt-bg-subtle); }
 .calendar-footer > span { display: inline-flex; align-items: center; gap: 5px; }
 .calendar-footer small { margin-left: auto; }
@@ -548,7 +593,7 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   background: var(--vt-bg-subtle);
 }
 .mapping-workbench { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
-.mapping-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(3, 32px); gap: 6px; padding: 12px; border-bottom: 1px solid var(--vt-border); }
+.mapping-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(4, 32px); gap: 6px; padding: 12px; border-bottom: 1px solid var(--vt-border); }
 .mapping-list { max-height: 520px; overflow: auto; }
 .mapping-item { display: grid; grid-template-columns: 30px 1fr; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--vt-border); }
 .mapping-kind { display: grid; place-items: center; width: 28px; height: 28px; color: var(--vt-color-primary-500); border-radius: 6px; background: var(--vt-color-primary-50); }
@@ -556,6 +601,7 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .mapping-body { min-width: 0; }
 .mapping-title { display: flex; align-items: center; gap: 7px; }
 .mapping-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.mapping-delete { margin-left: auto; color: var(--vt-color-danger-500, #d03050); }
 .physical-key { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; margin: 4px 0 7px; padding: 0; color: var(--vt-fg-muted); border: 0; background: transparent; cursor: pointer; }
 .physical-key code { overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
 .alias-line { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; width: 100%; padding: 0; color: var(--vt-fg-muted); text-align: left; border: 0; background: transparent; cursor: pointer; }
@@ -608,6 +654,8 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   .settings-content { padding: 28px 20px; }
   .calendar-layout { grid-template-columns: 1fr; }
   .calendar-rule-panel { border-top: 1px solid var(--vt-border); border-left: 0; }
+  /* 单列堆叠时输入框恢复满宽。 */
+  .calendar-name-input { width: 100%; }
 }
 @media (max-width: 560px) {
   .settings-content { padding: 24px 14px; }

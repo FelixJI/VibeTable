@@ -623,6 +623,8 @@ useKeyboard({
           @save-mapping-aliases="identifierMappingService.updateAliases"
           @import-mappings="identifierMappingService.importMappings"
           @reconcile-mappings="identifierMappingService.reconcile"
+          @delete-mapping="identifierMappingService.deleteMapping"
+          @purge-mappings="identifierMappingService.purgeMappings"
         />
         <FileWorkspaceView
           v-if="ui.activeView === 'files'"
