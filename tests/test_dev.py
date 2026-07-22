@@ -1,9 +1,24 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from scripts import dev
+
+
+def test_build_only_builds_host_without_launching(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(dev, "_ensure_host_built", lambda: calls.append("build"))
+    monkeypatch.setattr(
+        dev,
+        "_launch_host",
+        lambda *_args, **_kwargs: calls.append("launch"),
+    )
+    monkeypatch.setattr(sys, "argv", ["dev.py", "--build-only"])
+
+    assert dev.main() == 0
+    assert calls == ["build"]
 
 
 def test_ensure_host_built_runs_asset_checks_and_msbuild(monkeypatch, tmp_path: Path) -> None:

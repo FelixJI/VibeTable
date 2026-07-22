@@ -18,6 +18,7 @@ Run::
 
     .venv\\Scripts\\python.exe scripts\\dev.py                        # full stack
     .venv\\Scripts\\python.exe scripts\\dev.py --directus-url http://...   # remote Directus
+    .venv\\Scripts\\python.exe scripts\\dev.py --build-only          # CI/dev gate
 
 Stop everything with Ctrl+C; the host owns teardown of its child processes.
 """
@@ -249,7 +250,18 @@ def main() -> int:
         "Directus (combine with --directus-url for an external service, "
         "or use it to debug the UI alone)",
     )
+    parser.add_argument(
+        "--build-only",
+        action="store_true",
+        help="build all development assets and the WPF host, then exit "
+        "without launching any process",
+    )
     args = parser.parse_args()
+
+    if args.build_only:
+        _ensure_host_built()
+        _info("build-only gate passed; no host process was launched.")
+        return 0
 
     signal.signal(signal.SIGINT, _cleanup)
     signal.signal(signal.SIGTERM, _cleanup)

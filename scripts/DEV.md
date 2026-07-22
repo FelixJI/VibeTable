@@ -7,6 +7,14 @@
 .\.venv\Scripts\python.exe scripts\dev.py
 ```
 
+只验证完整开发构建链路而不启动 WPF、Directus 或 Python 后端：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\dev.py --build-only
+```
+
+该模式由跨栈质量门禁作为 `dev-build` 阶段调用，用来防止源码布局、扩展清单、lockfile 或宿主产物路径变化后，单独构建仍通过但开发启动器已经失配。
+
 `dev.py` 负责宿主自己做不到的构建准备与启动：
 
 1. **构建 Web 与扩展**：Web Grid 或 manifest 中任一 Directus 扩展缺少产物/源码更新时，自动执行依赖安装与构建。
@@ -29,6 +37,7 @@
 |------|------|
 | `--directus-url <url>` | 显式指定外部 Directus 地址，宿主不再起本机 Directus |
 | `--no-directus-auto` | 只启动 WPF 宿主，不让它自动起本机 Directus（配合外部 Directus 或调试 UI） |
+| `--build-only` | 构建 Web、全部 Directus 扩展和 WPF host 后退出，不启动任何进程 |
 
 ## 宿主内建的 Directus 启动（C#，`VibeTable.Infrastructure/Directus/`）
 

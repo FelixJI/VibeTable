@@ -6,8 +6,9 @@ tests/build, Directus extension tests/typecheck/build and the end-to-end smoke.
 
 Design contract (verbatim from the Task 12 brief):
 
-* ``--list`` prints the exact ordered stages: ``python``, ``contracts``,
-  ``dotnet``, ``web-test``, ``web-build``, ``smoke``.
+* ``--list`` prints the exact ordered stages, including ``dev-build`` after
+  the read-only repository checks so a clean checkout exercises the real
+  development-launcher build path before the per-stack test stages.
 * ``--ci`` runs them in order, STOPS on the first failure, and returns that
   stage's non-zero exit code.
 * Each stage uses :func:`subprocess.run` with an ARGUMENT LIST (never
@@ -45,6 +46,7 @@ REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 WEB_GRID_DIR: Path = REPO_ROOT / "desktop" / "web-grid"
 DESKTOP_SLN: Path = REPO_ROOT / "desktop" / "VibeTable.Desktop.sln"
 E2E_SMOKE_TEST: Path = REPO_ROOT / "tests" / "e2e" / "test_next_readonly_smoke.py"
+DEV_LAUNCHER: Path = REPO_ROOT / "scripts" / "dev.py"
 
 # G0.2: Directus extension directories are discovered from the version-controlled
 # manifest (directus/extensions/manifest.json) rather than hard-coded. Each
@@ -74,6 +76,7 @@ def _directus_extension_dirs() -> list[Path]:
 STAGES: tuple[str, ...] = (
     "version",
     "package",
+    "dev-build",
     "python",
     "contracts",
     "dotnet",
@@ -169,6 +172,11 @@ def stage_command(
         return ([sys.executable, "qa/version_check.py"], str(REPO_ROOT))
     if stage == "package":
         return ([sys.executable, "qa/package_check.py"], str(REPO_ROOT))
+    if stage == "dev-build":
+        return (
+            [sys.executable, str(DEV_LAUNCHER), "--build-only"],
+            str(REPO_ROOT),
+        )
     if stage == "python":
         # Backend + RPC tests: framing, dispatcher, server, table service.
         return (
