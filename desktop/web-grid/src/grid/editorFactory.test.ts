@@ -74,6 +74,65 @@ describe("validateLocally", () => {
     const result = validateLocally(singleSelectEditor, rules, "Z", true);
     expect(result.ok).toBe(true);
   });
+
+  it("rejects fractional digits beyond a decimal column's scale", () => {
+    const editor: Editor = { kind: "number", storage: "decimal", scale: 2 };
+    const result = validateLocally(editor, [], "3.14159", true);
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/2 fractional/);
+  });
+
+  it("accepts a decimal value within the column's scale", () => {
+    const editor: Editor = { kind: "number", storage: "decimal", scale: 2 };
+    expect(validateLocally(editor, [], "3.14", true).ok).toBe(true);
+  });
+
+  it("rejects any fractional part for an integer-storage column", () => {
+    const editor: Editor = { kind: "number", storage: "integer" };
+    const result = validateLocally(editor, [], "3.7", true);
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/integer/);
+  });
+
+  it("accepts an integer value for an integer-storage column", () => {
+    const editor: Editor = { kind: "number", storage: "integer" };
+    expect(validateLocally(editor, [], "3", true).ok).toBe(true);
+  });
+
+  it("treats scale 0 as 'no fractional digits'", () => {
+    const editor: Editor = { kind: "number", storage: "decimal", scale: 0 };
+    expect(validateLocally(editor, [], "3", true).ok).toBe(true);
+    expect(validateLocally(editor, [], "3.5", true).ok).toBe(false);
+  });
+
+  it("counts fractional digits on a numeric value, not just strings", () => {
+    const editor: Editor = { kind: "number", storage: "decimal", scale: 2 };
+    expect(validateLocally(editor, [], 3.141, true).ok).toBe(false);
+    expect(validateLocally(editor, [], 3.14, true).ok).toBe(true);
+  });
+
+  it("rejects values exceeding the column precision", () => {
+    const editor: Editor = {
+      kind: "number",
+      storage: "decimal",
+      scale: 2,
+      precision: 4,
+    };
+    // 4 significant digits allowed: 12.34 ok, 123.45 has 5 -> reject.
+    expect(validateLocally(editor, [], "12.34", true).ok).toBe(true);
+    expect(validateLocally(editor, [], "123.45", true).ok).toBe(false);
+  });
+
+  it("ignores precision/scale when not declared (backward-compatible)", () => {
+    // No scale/precision -> the legacy numberEditor must keep old behavior.
+    expect(validateLocally(numberEditor, [], "3.14159", true).ok).toBe(true);
+  });
+
+  it("expands scientific notation before counting fractional digits", () => {
+    const editor: Editor = { kind: "number", storage: "decimal", scale: 2 };
+    // 1e-3 == 0.001 -> 3 fractional digits > 2 -> reject.
+    expect(validateLocally(editor, [], "1e-3", true).ok).toBe(false);
+  });
 });
 
 describe("parseValue", () => {
@@ -113,6 +172,33 @@ describe("tabulatorEditor", () => {
     expect(result.editor).toBe("number");
     expect(result.editorParams?.min).toBe(0);
     expect(result.editorParams?.max).toBe(10);
+  });
+
+  it("derives a step from scale for the decimal spinner", () => {
+    const result = tabulatorEditor({
+      kind: "number",
+      storage: "decimal",
+      scale: 2,
+    });
+    expect(result.editor).toBe("number");
+    expect(result.editorParams?.step).toBeCloseTo(0.01, 10);
+  });
+
+  it("uses step 1 for a zero-scale (integer-like) column", () => {
+    const result = tabulatorEditor({
+      kind: "number",
+      storage: "decimal",
+      scale: 0,
+    });
+    expect(result.editorParams?.step).toBe(1);
+  });
+
+  it("omits step when scale is not declared", () => {
+    const result = tabulatorEditor({
+      kind: "number",
+      storage: "decimal",
+    });
+    expect(result.editorParams?.step).toBeUndefined();
   });
 
   it("returns tickbox for boolean", () => {

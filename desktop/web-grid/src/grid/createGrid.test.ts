@@ -115,6 +115,53 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
       "plaintext",
     ]);
   });
+
+  it("derives decimal display precision from the column's scale", () => {
+    const page: TablePage = {
+      table: "t",
+      columns: [
+        {
+          name: "amount",
+          title: "Amount",
+          dataType: "decimal",
+          editable: false,
+          nullable: true,
+          scale: 2,
+        },
+      ],
+      rows: [],
+      offset: 0,
+      limit: 0,
+      totalRows: 0,
+      mode: "client",
+    };
+    const col = buildColumns(page)[0] as {
+      formatter?: string;
+      formatterParams?: { precision?: number };
+    };
+    expect(col.formatter).toBe("money");
+    expect(col.formatterParams?.precision).toBe(2);
+  });
+
+  it("falls back to 6 decimal places when scale is absent", () => {
+    // Legacy behavior: a decimal column without scale shows up to 6 places so
+    // high-precision values are not truncated on display.
+    const page: TablePage = {
+      table: "t",
+      columns: [
+        { name: "amount", title: "Amount", dataType: "decimal", editable: false, nullable: true },
+      ],
+      rows: [],
+      offset: 0,
+      limit: 0,
+      totalRows: 0,
+      mode: "client",
+    };
+    const col = buildColumns(page)[0] as {
+      formatterParams?: { precision?: number };
+    };
+    expect(col.formatterParams?.precision).toBe(6);
+  });
 });
 
 describe("buildOptions (read-only Tabulator options)", () => {

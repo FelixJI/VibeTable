@@ -32,8 +32,10 @@ from typing import Any
 
 from backend.adapters.directus.auth import DirectusAuthBroker
 from backend.adapters.directus.client import DirectusClient
+from backend.adapters.directus.coerce import validate_number_field
 from backend.adapters.directus.errors import DirectusSchemaError, DirectusTransportError
 from backend.adapters.directus.profile import CollectionProfile
+from backend.adapters.directus.schema import build_directus_schema
 from backend.contracts.paste import (
     ApplyPasteConflict,
     ApplyPasteParams,
@@ -265,15 +267,21 @@ class PasteService:
                 data={"maxCells": MAX_PASTE_CELLS, "cellCount": total_cells},
             )
         user = await self._auth.current_user()
-        directus_readonly = await self._client.readonly_fields(profile, refresh=True)
+        # Fetch the collection's fields ONCE: readonly_fields() caches the
+        # Directus write restrictions as a side effect, and we reuse the same
+        # payload to build the numeric scale/precision map for paste validation.
+        fields_payload = await self._client.fields(profile)
+        directus_readonly = await self._client.readonly_fields(profile, refresh=False)
         editable_columns, readonly_columns = self._column_layout(profile, directus_readonly)
         anchor_column_index = _anchor_column_index(params.start_cell, editable_columns)
+        column_schema = _numeric_column_schema(profile, fields_payload)
         plan_rows, row_revisions = await self._resolve_plan(
             profile=profile,
             params=params,
             editable_columns=editable_columns,
             readonly_columns=readonly_columns,
             anchor_column_index=anchor_column_index,
+            column_schema=column_schema,
         )
         payload_hash = _payload_hash(params.cells)
         expires_at = self._tokens.now + self._tokens.ttl_seconds
@@ -388,6 +396,7 @@ class PasteService:
         editable_columns: list[str],
         readonly_columns: list[str],
         anchor_column_index: int,
+        column_schema: dict[str, tuple[str | None, int | None, int | None]] | None = None,
     ) -> tuple[list[PastePlanRow], dict[str | int, str]]:
         row_keys = _selection_row_keys(params.selection)
         start_row = _selection_anchor_index(row_keys, params.start_cell)
@@ -427,6 +436,7 @@ class PasteService:
                     readonly_columns=readonly_columns,
                     anchor_column_index=anchor_column_index,
                     current_row=current,
+                    column_schema=column_schema,
                 )
                 plan_rows.append(
                     PastePlanRow(
@@ -444,6 +454,7 @@ class PasteService:
                     readonly_columns=readonly_columns,
                     anchor_column_index=anchor_column_index,
                     current_row={},
+                    column_schema=column_schema,
                 )
                 plan_rows.append(
                     PastePlanRow(
@@ -462,6 +473,7 @@ class PasteService:
         readonly_columns: list[str],
         anchor_column_index: int,
         current_row: dict[str, Any],
+        column_schema: dict[str, tuple[str | None, int | None, int | None]] | None = None,
     ) -> tuple[dict[str, dict[str, Any]], list[PasteCellDiagnostic]]:
         changes: dict[str, dict[str, Any]] = {}
         diagnostics: list[PasteCellDiagnostic] = []
@@ -507,6 +519,21 @@ class PasteService:
             after = cell.parsed_value
             if before == after:
                 continue
+            # Numeric scale/precision guard: flag values the DB would silently
+            # truncate. The cell is excluded from the change set so the bulk
+            # write never sees it; the preview surfaces the diagnostic.
+            scale_error = _check_numeric_scale(column, after, column_schema)
+            if scale_error is not None:
+                diagnostics.append(
+                    PasteCellDiagnostic(
+                        row_index=cell.row_index,
+                        column_index=cell.column_index,
+                        severity="error",
+                        code="value_out_of_scale",
+                        message=scale_error,
+                    )
+                )
+                continue
             changes[column] = {"before": before, "after": after}
         return changes, diagnostics
 
@@ -514,6 +541,65 @@ class PasteService:
 # ---------------------------------------------------------------------------
 # Module-level helpers (pure functions, easy to unit test)
 # ---------------------------------------------------------------------------
+
+
+def _numeric_column_schema(
+    profile: CollectionProfile,
+    fields_payload: list[dict[str, Any]],
+) -> dict[str, tuple[str | None, int | None, int | None]]:
+    """Project Directus field metadata to ``{column: (data_type, scale, precision)}``.
+
+    Used by the paste preview to flag values that exceed a column's declared
+    scale/precision before they reach the bulk-write endpoint. Only the numeric
+    metadata is needed, so the columns are projected down to a tuple.
+
+    Best-effort: any failure to build the schema degrades to an empty map so
+    paste still proceeds — the database remains the final authority on column
+    bounds.
+    """
+    try:
+        schema = build_directus_schema(
+            collection=profile.collection,
+            fields=fields_payload,
+            collection_permissions={"read": {"access": "full", "fields": profile.fields}},
+        )
+    except Exception:  # noqa: BLE001 - schema projection is best-effort here
+        return {}
+    return {
+        column.name: (column.data_type, column.scale, column.precision)
+        for column in schema.columns
+    }
+
+
+def _check_numeric_scale(
+    column: str,
+    value: Any,
+    column_schema: dict[str, tuple[str | None, int | None, int | None]] | None,
+) -> str | None:
+    """Return an error message if ``value`` exceeds the column's scale/precision.
+
+    Thin wrapper over :func:`validate_number_field` that converts the raised
+    :class:`DirectusSchemaError` into a diagnostic string (or ``None`` when the
+    value is acceptable / untyped). When ``column_schema`` is missing the column
+    is treated as untyped (no-op), preserving backward compatibility.
+    """
+    if not column_schema:
+        return None
+    meta = column_schema.get(column)
+    if meta is None:
+        return None
+    data_type, scale, precision = meta
+    try:
+        validate_number_field(
+            value,
+            data_type=data_type,
+            scale=scale,
+            precision=precision,
+            field_name=column,
+        )
+    except DirectusSchemaError as exc:
+        return str(exc)
+    return None
 
 
 def _selection_row_keys(selection: Any) -> list[str | int]:

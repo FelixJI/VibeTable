@@ -39,7 +39,8 @@ class ColumnSchema(CamelModel):
     Wire form::
 
         {"name": "amount", "title": "Amount",
-         "dataType": "decimal", "editable": false, "nullable": true}
+         "dataType": "decimal", "editable": false, "nullable": true,
+         "scale": 2, "precision": 10}
     """
 
     name: str
@@ -55,3 +56,9 @@ class ColumnSchema(CamelModel):
     ]
     editable: bool = False
     nullable: bool = True
+    # Numeric precision/scale from Directus (``schema.numeric_precision`` /
+    # ``schema.numeric_scale``). ``None`` for non-numeric fields or when Directus
+    # does not report them. Decimal display precision and write-side scale
+    # validation both key off ``scale``.
+    scale: int | None = None
+    precision: int | None = None

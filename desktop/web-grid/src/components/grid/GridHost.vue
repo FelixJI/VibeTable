@@ -17,13 +17,16 @@ import { inject, ref } from "vue";
 import type { Ref } from "vue";
 import type { TabulatorFull } from "tabulator-tables";
 import { useTabulator } from "@/composables/useTabulator";
-import type { CellEditedHandler } from "@/grid/createGrid";
+import type { CellEditedHandler, CellValidationErrorHandler } from "@/grid/createGrid";
 import { useTableStore } from "@/stores/tableStore";
 import { TABULATOR_INJECTION_KEY } from "./tabulatorInjection";
 import LoadingOverlay from "@/components/feedback/LoadingOverlay.vue";
 import ErrorOverlay from "@/components/feedback/ErrorOverlay.vue";
 
-const props = defineProps<{ onCellEdited?: CellEditedHandler }>();
+const props = defineProps<{
+  onCellEdited?: CellEditedHandler;
+  onValidationError?: CellValidationErrorHandler;
+}>();
 const emit = defineEmits<{
   rowContext: [payload: { rowKey: string | number; x: number; y: number }];
 }>();
@@ -33,6 +36,7 @@ const store = useTableStore();
 const tabulator = inject<Ref<TabulatorFull | null>>(TABULATOR_INJECTION_KEY);
 useTabulator(gridEl, {
   onCellEdited: props.onCellEdited,
+  onValidationError: props.onValidationError,
   tabulator: tabulator ?? undefined,
 });
 

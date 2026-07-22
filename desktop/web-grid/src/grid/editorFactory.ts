@@ -24,6 +24,76 @@ export interface LocalValidation {
 }
 
 /**
+ * Reject numeric input that exceeds the column's declared precision/scale.
+ *
+ * Decimal storage enforces `scale` (max digits after the decimal point) and
+ * `precision` (max significant digits); integer storage rejects any fractional
+ * part. Counting is done on the decimal expansion of the value as a string so
+ * no floating-point rounding is introduced — consistent with the grid's "keep
+ * decimals exact" rule. A finite number has already been confirmed by the
+ * caller; non-finite input is treated as "no precision opinion".
+ *
+ * Scientific notation (e.g. `1.23e2`) is normalized via `Number` then
+ * `String`, which yields the plain-decimal expansion for values within JS
+ * safe range.
+ */
+function checkNumberScale(editor: NumberEditor, value: unknown): LocalValidation {
+  const scale = editor.scale ?? null;
+  const precision = editor.precision ?? null;
+  // No declared constraints -> nothing to check.
+  if (scale === null && precision === null && editor.storage !== "integer") {
+    return { ok: true };
+  }
+
+  // Normalize to a plain-decimal string (no exponent). `Number` → `String`
+  // expands scientific notation; a string that is already plain decimal is
+  // used verbatim. Non-finite values slip through as the raw string, which the
+  // digit regex below simply won't match — treated as unconstrained.
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return { ok: true };
+  }
+  let text = typeof value === "string" ? value.trim() : String(numeric);
+  // If the raw text carries an exponent, expand it so digit counting is exact.
+  if (/e/i.test(text)) {
+    text = String(numeric);
+  }
+  // Strip a leading sign and the decimal point for digit counting.
+  const negative = text.startsWith("-");
+  const unsigned = negative ? text.slice(1) : text.replace(/^\+/, "");
+  const dotIndex = unsigned.indexOf(".");
+  const intPart = dotIndex >= 0 ? unsigned.slice(0, dotIndex) : unsigned;
+  const fracPart = dotIndex >= 0 ? unsigned.slice(dotIndex + 1) : "";
+  // Guard against unexpected shapes (e.g. trailing non-digits): if the parts
+  // are not pure digits we cannot reason about precision, so do not block.
+  if (!/^\d*$/.test(intPart) || !/^\d*$/.test(fracPart)) {
+    return { ok: true };
+  }
+  const fracDigits = fracPart.length;
+  const intDigits = intPart.replace(/^0+/, "").length; // leading zeros aren't significant
+
+  if (editor.storage === "integer" && fracDigits > 0) {
+    return { ok: false, error: "this column is an integer; fractional digits are not allowed" };
+  }
+  if (scale !== null && fracDigits > scale) {
+    return {
+      ok: false,
+      error:
+        scale === 0
+          ? "this column does not allow fractional digits"
+          : `this column allows at most ${scale} fractional digit${scale === 1 ? "" : "s"}`,
+    };
+  }
+  if (precision !== null) {
+    const significant = intDigits + fracDigits;
+    if (significant > precision) {
+      return { ok: false, error: `this column allows at most ${precision} significant digits` };
+    }
+  }
+  return { ok: true };
+}
+
+/**
  * Validate a candidate cell value against the column's rules BEFORE sending it
  * to the host. This gives the user immediate feedback (red cell) without a
  * round-trip; the host's authoritative validation is still the final word.
@@ -60,6 +130,14 @@ export function validateLocally(
           return { ok: false, error: `value must be <= ${max}` };
         }
       }
+    }
+    // Scale/precision guard: reject input that exceeds the column's declared
+    // precision rather than letting the DB silently truncate it. Count digits
+    // on the source string to avoid floating-point rounding artifacts (the grid
+    // keeps decimals exact by never rounding in the data layer).
+    const scaleCheck = checkNumberScale(editor, value);
+    if (!scaleCheck.ok) {
+      return scaleCheck;
     }
   }
 
@@ -126,6 +204,13 @@ export function tabulatorEditor(editor: Editor): {
       }
       if (num.maxValue !== null && num.maxValue !== undefined) {
         params.max = num.maxValue;
+      }
+      // Hint the spinner/stepper to the column's scale so the increment matches
+      // the smallest representable unit (e.g. step 0.01 for a 2-digit money
+      // column). This is a soft hint only; hard enforcement happens in
+      // validateLocally via checkNumberScale.
+      if (num.scale !== null && num.scale !== undefined) {
+        params.step = num.scale <= 0 ? 1 : Number((10 ** -num.scale).toPrecision(15));
       }
       return { editor: "number", editorParams: params };
     }

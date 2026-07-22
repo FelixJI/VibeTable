@@ -288,6 +288,20 @@ function onCellEdited(
   mutationService.updateCell(rowKey, column, oldValue, newValue);
 }
 
+/**
+ * Inline-edit validation-failure handler for GridHost. When local validation
+ * rejects an edit (e.g. too many fractional digits for the column's scale), the
+ * grid has already rolled the cell back; we surface a toast so the rejection is
+ * not silent. The value was never forwarded to the mutation service.
+ */
+function onValidationError(
+  _rowKey: number | string,
+  column: string,
+  error: string,
+) {
+  message.error(`${column}: ${error}`);
+}
+
 /** Sidebar: select a table from the list. */
 function onSelect(name: string) {
   // history.clear() now happens inside tableService.selectTable so EVERY table
@@ -607,6 +621,7 @@ useKeyboard({
             <GridHost
               v-else
               :on-cell-edited="onCellEdited"
+              :on-validation-error="onValidationError"
               @row-context="openPluginContextMenu"
             />
             <div v-if="workspace.currentTable && tableStore.datasetReady" class="table-summary" data-testid="table-summary">
