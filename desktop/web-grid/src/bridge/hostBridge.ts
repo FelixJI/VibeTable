@@ -127,6 +127,9 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   // B2 paste preview + apply outcomes.
   "table.pastePreviewReady",
   "table.pasteApplied",
+  "history.pageLoaded",
+  "history.restorePreviewReady",
+  "history.restoreApplied",
   // Table management: collection lifecycle events.
   "database.collectionsChanged",
   "identifierMappings.result",
@@ -183,6 +186,9 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   // B2 paste preview + apply requests.
   "table.previewPasteRequested",
   "table.applyPasteRequested",
+  "history.queryRequested",
+  "history.previewRestoreRequested",
+  "history.applyRestoreRequested",
   // Table management: create/delete collection requests.
   "tableAdmin.createRequested",
   "tableAdmin.deleteRequested",

@@ -77,8 +77,16 @@ class FakeTransport:
 class FakeClient:
     def __init__(self, item: dict[str, Any]) -> None:
         self._item = item
+        self.updates: list[dict[str, Any]] = []
 
     async def read_item(self, profile: Any, item_id: str) -> dict[str, Any]:
+        return dict(self._item)
+
+    async def update_item(
+        self, profile: Any, item_id: str, values: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
+        self.updates.append(dict(values))
+        self._item.update(values)
         return dict(self._item)
 
 
@@ -192,7 +200,9 @@ async def test_read_change_sets_rejects_collection_without_history() -> None:
 async def test_preview_restore_returns_token_and_changes() -> None:
     current_item = {"title": "Current", "amount": 100.0, "project": "p-001"}
     revision_data = {"data": {"data": {"title": "Target", "amount": 200.0, "project": "p-002"}}}
-    transport = FakeTransport(responses=[revision_data])
+    transport = FakeTransport(
+        responses=[revision_data, {"data": {"id": "p-002", "title": "Project Two"}}]
+    )
     service = _make_service(transport=transport, item=current_item)
     preview = await service.preview_restore(
         PreviewRestoreParams(collection="vibetable_demo", item_id="c-001", target_revision="rev-9")
@@ -293,13 +303,11 @@ async def test_apply_restore_rejects_schema_drift() -> None:
 async def test_apply_restore_succeeds_and_records_new_revision() -> None:
     current_item = {"title": "Current", "amount": 100.0, "project": "p-001"}
     revision_data = {"data": {"data": {"title": "Target", "amount": 200.0}}}
-    # Responses: revision_data for preview, then pre-revert latest, revert POST (empty),
-    # post-revert latest (new id), then refreshed item read.
+    # Responses: revision_data for preview, then latest before/after the field PATCH.
     transport = FakeTransport(
         responses=[
             revision_data,  # preview reads revision
             {"data": [{"id": "rev-9"}]},  # pre-revert latest
-            {"data": {}},  # revert POST response
             {"data": [{"id": "rev-11"}]},  # post-revert latest (new id)
         ]
     )
@@ -327,8 +335,16 @@ class AsyncMockItemClient:
 
     def __init__(self, item: dict[str, Any]) -> None:
         self._item = item
+        self.updates: list[dict[str, Any]] = []
 
     async def read_item(self, profile: Any, item_id: str) -> dict[str, Any]:
+        return dict(self._item)
+
+    async def update_item(
+        self, profile: Any, item_id: str, values: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
+        self.updates.append(dict(values))
+        self._item.update(values)
         return dict(self._item)
 
 

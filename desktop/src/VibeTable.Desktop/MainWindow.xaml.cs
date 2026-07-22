@@ -2880,6 +2880,15 @@ public partial class MainWindow : Window
         public Task<ReadRowsResult> ReadRowsAsync(
             string table, IReadOnlyList<object> rowKeys, CancellationToken token)
             => Gateway.ReadRowsAsync(table, rowKeys, token);
+        public Task<HistoryPage> ReadChangeSetsAsync(
+            ReadChangeSetsParams parameters, CancellationToken token)
+            => Gateway.ReadChangeSetsAsync(parameters, token);
+        public Task<RestorePreview> PreviewRestoreAsync(
+            PreviewRestoreParams parameters, CancellationToken token)
+            => Gateway.PreviewRestoreAsync(parameters, token);
+        public Task<RestoreResult> ApplyRestoreAsync(
+            ApplyRestoreParams parameters, CancellationToken token)
+            => Gateway.ApplyRestoreAsync(parameters, token);
         public Task<TablePage> QueryTablePageAsync(
             string table, int offset, int limit, TableQuery query, CancellationToken token)
             => Gateway.QueryTablePageAsync(table, offset, limit, query, token);

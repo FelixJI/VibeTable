@@ -85,6 +85,24 @@ class RelationFieldChange(HistoryModel):
     display_value: str | None = Field(default=None, max_length=512)
     before_item_id: str | None = Field(default=None, max_length=128)
     after_item_id: str | None = Field(default=None, max_length=128)
+    before_display_value: str | None = Field(default=None, max_length=512)
+    after_display_value: str | None = Field(default=None, max_length=512)
+    target_available: bool = True
+
+
+HistoryScope = Literal["table", "row", "cell", "archived"]
+RestoreScope = Literal["row", "cell", "archived"]
+
+
+class HistoryRecordChange(HistoryModel):
+    """The changes for one record inside an Activity group."""
+
+    revision_id: str = Field(min_length=1, max_length=128)
+    item_id: str = Field(min_length=1, max_length=128)
+    record_label: str | None = Field(default=None, max_length=512)
+    action: str = Field(min_length=1, max_length=32)
+    scalar_changes: list[ScalarFieldChange] = Field(default_factory=list)
+    relation_changes: list[RelationFieldChange] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +124,11 @@ class HistoryChangeSet(HistoryModel):
     action: str = Field(min_length=1, max_length=32)
     timestamp: str = Field(min_length=1, max_length=64)
     actor: HistoryActor = Field(default_factory=HistoryActor)
+    item_id: str | None = Field(default=None, max_length=128)
+    record_label: str | None = Field(default=None, max_length=512)
+    revision_ids: list[str] = Field(default_factory=list, max_length=1000)
+    affected_records: int = Field(default=1, ge=1)
+    record_changes: list[HistoryRecordChange] = Field(default_factory=list)
     scalar_changes: list[ScalarFieldChange] = Field(default_factory=list)
     relation_changes: list[RelationFieldChange] = Field(default_factory=list)
 
@@ -127,20 +150,37 @@ class ReadChangeSetsParams(HistoryModel):
     """
 
     collection: str = Field(min_length=1, max_length=128)
-    item_id: str = Field(min_length=1, max_length=128)
+    scope: HistoryScope = "row"
+    item_id: str | None = Field(default=None, min_length=1, max_length=128)
+    field: str | None = Field(default=None, min_length=1, max_length=128)
+    search: str | None = Field(default=None, max_length=512)
+    date_from: str | None = Field(default=None, max_length=64)
+    date_to: str | None = Field(default=None, max_length=64)
+    actor_id: str | None = Field(default=None, max_length=128)
+    actions: list[str] = Field(default_factory=list, max_length=16)
+    record_id: str | None = Field(default=None, max_length=128)
     limit: int = Field(default=50, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.scope in {"row", "cell"} and not self.item_id:
+            raise ValueError(f"itemId is required for {self.scope} history")
+        if self.scope == "cell" and not self.field:
+            raise ValueError("field is required for cell history")
 
 
 class HistoryPage(HistoryModel):
     """Paged result of ``history.readChangeSets``."""
 
     collection: str = Field(min_length=1, max_length=128)
-    item_id: str = Field(min_length=1, max_length=128)
+    scope: HistoryScope = "row"
+    item_id: str | None = Field(default=None, min_length=1, max_length=128)
+    field: str | None = Field(default=None, min_length=1, max_length=128)
     change_sets: list[HistoryChangeSet] = Field(default_factory=list)
     total: int = Field(default=0, ge=0)
     capability_hash: str = Field(min_length=1)
     schema_revision: str = Field(min_length=1)
+    has_more: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +194,9 @@ RestoreClassification = Literal[
     "derived",
     "sensitive",
     "schema_retired",
+    "permission_denied",
+    "incompatible",
+    "relation_unsafe",
 ]
 
 
@@ -182,6 +225,12 @@ class PreviewRestoreParams(HistoryModel):
     collection: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=128)
     target_revision: str = Field(min_length=1, max_length=128)
+    scope: RestoreScope = "row"
+    field: str | None = Field(default=None, min_length=1, max_length=128)
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.scope == "cell" and not self.field:
+            raise ValueError("field is required for cell restore")
 
 
 class RestorePreview(HistoryModel):
@@ -195,11 +244,15 @@ class RestorePreview(HistoryModel):
     collection: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=128)
     target_revision: str = Field(min_length=1, max_length=128)
+    scope: RestoreScope = "row"
+    field: str | None = Field(default=None, min_length=1, max_length=128)
     current_hash: str = Field(min_length=1)
     schema_revision: str = Field(min_length=1)
     scalar_changes: list[ScalarFieldChange] = Field(default_factory=list)
     relation_changes: list[RelationFieldChange] = Field(default_factory=list)
     diagnostics: list[RestoreDiagnostic] = Field(default_factory=list)
+    can_apply: bool = True
+    restorable_fields: list[str] = Field(default_factory=list)
     token: str = Field(min_length=1, max_length=2048)
     expires_at: str = Field(default="", max_length=64)
 

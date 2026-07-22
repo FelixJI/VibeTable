@@ -357,4 +357,42 @@ describe("HostBridge", () => {
 
     bridge.stop();
   });
+
+  it("whitelists the revision history query and page notification contract", () => {
+    const bridge = createHostBridge({ webview, timeoutMs: 1000 });
+    const loaded = vi.fn();
+    bridge.on("history.pageLoaded", loaded);
+    bridge.start();
+
+    bridge.notify("history.queryRequested", {
+      collection: "orders",
+      scope: "cell",
+      itemId: "42",
+      field: "status",
+      search: "done",
+      limit: 50,
+      offset: 0,
+    });
+    expect(webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: "history.queryRequested",
+      payload: expect.objectContaining({ scope: "cell", itemId: "42", field: "status" }),
+    }));
+
+    webview.emit({
+      type: "history.pageLoaded",
+      payload: {
+        collection: "orders",
+        scope: "cell",
+        itemId: "42",
+        field: "status",
+        changeSets: [],
+        total: 0,
+        hasMore: false,
+        capabilityHash: "cap",
+        schemaRevision: "schema",
+      },
+    });
+    expect(loaded).toHaveBeenCalledTimes(1);
+    bridge.stop();
+  });
 });

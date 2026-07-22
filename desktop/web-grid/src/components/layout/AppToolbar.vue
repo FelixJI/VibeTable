@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h } from "vue";
-import { NButton, NDropdown, NIcon, NTooltip } from "naive-ui";
-import { Keyboard, MoreHorizontal, Plus, RefreshCw, Table2 } from "lucide-vue-next";
+import { NButton, NButtonGroup, NDropdown, NIcon, NTooltip } from "naive-ui";
+import { ChevronDown, History, Keyboard, MoreHorizontal, Plus, RefreshCw, Table2, Trash2 } from "lucide-vue-next";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { collectionLabel } from "./collectionLabel";
 import { t } from "@/i18n";
@@ -14,12 +14,16 @@ const props = withDefaults(defineProps<{
     risk: "read" | "write" | "destructive";
     disabled: boolean;
   }[];
+  historyScopeLabel?: string;
+  historyDisabled?: boolean;
 }>(), { pluginActions: () => [] });
 
 const emit = defineEmits<{
   refresh: [];
   insertRow: [];
   openHelp: [];
+  openHistory: [];
+  openArchivedHistory: [];
   pluginAction: [key: string];
 }>();
 
@@ -41,10 +45,20 @@ const moreOptions = computed(() => [
     icon: () => h(Keyboard),
   },
 ]);
+const historyOptions = computed(() => [{
+  label: t("toolbar.archivedHistory"),
+  key: "archived",
+  icon: () => h(Trash2),
+  disabled: !workspace.currentTable,
+}]);
 
 function onMore(key: string) {
   if (key === "refresh") emit("refresh");
   if (key === "help") emit("openHelp");
+}
+
+function onHistoryMenu(key: string) {
+  if (key === "archived") emit("openArchivedHistory");
 }
 </script>
 
@@ -84,6 +98,35 @@ function onMore(key: string) {
         </template>
         {{ t("toolbar.insertRow") }}
       </NTooltip>
+      <NButtonGroup class="history-control">
+        <NTooltip placement="bottom" :delay="450">
+          <template #trigger>
+            <NButton
+              size="small"
+              quaternary
+              :disabled="!workspace.currentTable || props.historyDisabled"
+              :aria-label="t('toolbar.historyCurrent')"
+              data-testid="toolbar-history"
+              @click="emit('openHistory')"
+            >
+              <template #icon><NIcon><History /></NIcon></template>
+            </NButton>
+          </template>
+          {{ props.historyScopeLabel || t("toolbar.history") }}
+        </NTooltip>
+        <NDropdown :options="historyOptions" placement="bottom-end" @select="onHistoryMenu">
+          <NButton
+            size="small"
+            quaternary
+            class="history-menu-trigger"
+            :disabled="!workspace.currentTable"
+            :aria-label="t('toolbar.archivedHistory')"
+            data-testid="toolbar-history-menu"
+          >
+            <template #icon><NIcon :size="13"><ChevronDown /></NIcon></template>
+          </NButton>
+        </NDropdown>
+      </NButtonGroup>
       <NDropdown :options="moreOptions" placement="bottom-end" @select="onMore">
         <NTooltip placement="bottom" :delay="450">
           <template #trigger>
@@ -118,4 +161,6 @@ function onMore(key: string) {
 .table-heading strong { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .table-heading span { overflow: hidden; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); text-overflow: ellipsis; white-space: nowrap; }
 .toolbar-actions { display: flex; align-items: center; }
+.history-control { margin-left: 2px; }
+.history-menu-trigger { width: 22px; padding: 0 3px; }
 </style>

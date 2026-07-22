@@ -232,6 +232,85 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     }
 
     // -------------------------------------------------------------------
+    // G1 history methods.
+    // -------------------------------------------------------------------
+
+    public List<ReadChangeSetsParams> ReadChangeSetsCalls { get; } = new();
+    public List<PreviewRestoreParams> PreviewRestoreCalls { get; } = new();
+    public List<ApplyRestoreParams> ApplyRestoreCalls { get; } = new();
+    public HistoryPage? NextHistoryPage { get; set; }
+    public RestorePreview? NextRestorePreview { get; set; }
+    public RestoreResult? NextRestoreResult { get; set; }
+    public Exception? NextHistoryException { get; set; }
+
+    public Task<HistoryPage> ReadChangeSetsAsync(
+        ReadChangeSetsParams parameters, CancellationToken token)
+    {
+        ReadChangeSetsCalls.Add(parameters);
+        if (NextHistoryException is not null)
+        {
+            var exception = NextHistoryException;
+            NextHistoryException = null;
+            return Task.FromException<HistoryPage>(exception);
+        }
+        return Task.FromResult(NextHistoryPage ?? new HistoryPage(
+            parameters.Collection,
+            parameters.ItemId,
+            new List<HistoryChangeSet>(),
+            0,
+            "fake-capability",
+            "fake-schema",
+            parameters.Scope,
+            parameters.Field,
+            false));
+    }
+
+    public Task<RestorePreview> PreviewRestoreAsync(
+        PreviewRestoreParams parameters, CancellationToken token)
+    {
+        PreviewRestoreCalls.Add(parameters);
+        if (NextHistoryException is not null)
+        {
+            var exception = NextHistoryException;
+            NextHistoryException = null;
+            return Task.FromException<RestorePreview>(exception);
+        }
+        return Task.FromResult(NextRestorePreview ?? new RestorePreview(
+            parameters.Collection,
+            parameters.ItemId,
+            parameters.TargetRevision,
+            "fake-current",
+            "fake-schema",
+            new List<ScalarFieldChange>(),
+            new List<RelationFieldChange>(),
+            new List<RestoreDiagnostic>(),
+            "fake-restore-token",
+            "2099-01-01T00:00:00Z",
+            parameters.Scope,
+            parameters.Field,
+            true,
+            new List<string>()));
+    }
+
+    public Task<RestoreResult> ApplyRestoreAsync(
+        ApplyRestoreParams parameters, CancellationToken token)
+    {
+        ApplyRestoreCalls.Add(parameters);
+        if (NextHistoryException is not null)
+        {
+            var exception = NextHistoryException;
+            NextHistoryException = null;
+            return Task.FromException<RestoreResult>(exception);
+        }
+        return Task.FromResult(NextRestoreResult ?? new RestoreResult(
+            parameters.Collection,
+            parameters.ItemId,
+            "fake-target",
+            "fake-new-revision",
+            new Dictionary<string, object?>()));
+    }
+
+    // -------------------------------------------------------------------
     // B3 query/state methods (deterministic stubs for workspace/coordinator
     // tests).
     // -------------------------------------------------------------------

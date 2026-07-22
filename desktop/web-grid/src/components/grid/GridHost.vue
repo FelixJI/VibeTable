@@ -18,6 +18,7 @@ import type { Ref } from "vue";
 import type { TabulatorFull } from "tabulator-tables";
 import { useTabulator } from "@/composables/useTabulator";
 import type { CellEditedHandler } from "@/grid/createGrid";
+import { ROW_NUMBER_FIELD } from "@/grid/createGrid";
 import { useTableStore } from "@/stores/tableStore";
 import { TABULATOR_INJECTION_KEY } from "./tabulatorInjection";
 import LoadingOverlay from "@/components/feedback/LoadingOverlay.vue";
@@ -25,7 +26,10 @@ import ErrorOverlay from "@/components/feedback/ErrorOverlay.vue";
 
 const props = defineProps<{ onCellEdited?: CellEditedHandler }>();
 const emit = defineEmits<{
-  rowContext: [payload: { rowKey: string | number; x: number; y: number }];
+  selectionChange: [payload:
+    | { scope: "row" | "cell"; rowKey: string | number; field?: string }
+    | { scope: "multiple" }];
+  rowContext: [payload: { rowKey: string | number; field?: string; x: number; y: number }];
 }>();
 
 const gridEl = ref<HTMLElement | null>(null);
@@ -33,24 +37,83 @@ const store = useTableStore();
 const tabulator = inject<Ref<TabulatorFull | null>>(TABULATOR_INJECTION_KEY);
 useTabulator(gridEl, {
   onCellEdited: props.onCellEdited,
+  onRangeSelectionChanged: ({ rowKeys, fields }) => {
+    const dataFields = fields.filter((field) => field !== ROW_NUMBER_FIELD);
+    if (rowKeys.length * dataFields.length > 1) {
+      emit("selectionChange", { scope: "multiple" });
+    } else if (rowKeys.length === 1 && dataFields.length === 1) {
+      emit("selectionChange", { scope: "cell", rowKey: rowKeys[0]!, field: dataFields[0] });
+    }
+  },
   tabulator: tabulator ?? undefined,
 });
 
+interface LocatedCell {
+  rowKey: string | number;
+  field: string | null;
+  rowElement: HTMLElement | null;
+  cellElement: HTMLElement | null;
+}
+
+function locateCell(target: Node): LocatedCell | null {
+  if (!tabulator?.value) return null;
+  const rows = tabulator.value.getRows("active") as unknown as Array<{
+    getData: () => Record<string, unknown>;
+    getElement?: () => HTMLElement;
+    getCells?: () => Array<{ getField: () => string; getElement?: () => HTMLElement }>;
+  }>;
+  const row = rows.find((candidate) => candidate.getElement?.().contains(target));
+  const rowKey = row?.getData()?.rowKey;
+  if (!row || (typeof rowKey !== "string" && typeof rowKey !== "number")) return null;
+  const cell = row.getCells?.().find((candidate) => candidate.getElement?.().contains(target));
+  return {
+    rowKey,
+    field: cell?.getField() ?? null,
+    rowElement: row.getElement?.() ?? null,
+    cellElement: cell?.getElement?.() ?? null,
+  };
+}
+
+function markSelection(located: LocatedCell): void {
+  gridEl.value?.querySelectorAll(".vt-row-selected, .vt-cell-selected").forEach((element) => {
+    element.classList.remove("vt-row-selected", "vt-cell-selected");
+  });
+  if (located.field === ROW_NUMBER_FIELD) {
+    located.rowElement?.classList.add("vt-row-selected");
+    emit("selectionChange", { scope: "row", rowKey: located.rowKey });
+    return;
+  }
+  if (located.field) {
+    located.cellElement?.classList.add("vt-cell-selected");
+    emit("selectionChange", { scope: "cell", rowKey: located.rowKey, field: located.field });
+  }
+}
+
+function onGridClick(event: MouseEvent): void {
+  const target = event.target;
+  if (!(target instanceof Node)) return;
+  const located = locateCell(target);
+  if (located) markSelection(located);
+}
+
 function onContextMenu(event: MouseEvent): void {
   const target = event.target;
-  if (!(target instanceof Node) || !tabulator?.value) return;
-  const row = tabulator.value.getRows("active").find((candidate) =>
-    candidate.getElement?.().contains(target),
-  );
-  const rowKey = row?.getData()?.rowKey;
-  if (typeof rowKey !== "string" && typeof rowKey !== "number") return;
+  if (!(target instanceof Node)) return;
+  const located = locateCell(target);
+  if (!located) return;
   event.preventDefault();
-  emit("rowContext", { rowKey, x: event.clientX, y: event.clientY });
+  markSelection(located);
+  emit("rowContext", {
+    rowKey: located.rowKey,
+    field: located.field && located.field !== ROW_NUMBER_FIELD ? located.field : undefined,
+    x: event.clientX,
+    y: event.clientY,
+  });
 }
 </script>
 
 <template>
-  <div class="grid-wrapper" @contextmenu="onContextMenu">
+  <div class="grid-wrapper" @click="onGridClick" @contextmenu="onContextMenu">
     <div ref="gridEl" class="grid-host"></div>
     <LoadingOverlay :show="store.loading" />
     <ErrorOverlay :show="!!store.error" :message="store.error ?? ''" />
@@ -69,5 +132,20 @@ function onContextMenu(event: MouseEvent): void {
 .grid-host :deep(.tabulator) {
   font-size: var(--vt-font-body);
   background: var(--vt-bg);
+}
+.grid-host :deep(.tabulator-cell.vt-row-number) {
+  color: var(--vt-fg-muted);
+  font-variant-numeric: tabular-nums;
+  border-right-color: var(--vt-border);
+  background: var(--vt-bg-subtle);
+  cursor: pointer;
+  user-select: none;
+}
+.grid-host :deep(.tabulator-row.vt-row-selected .tabulator-cell) {
+  background: color-mix(in srgb, var(--vt-color-primary-500) 11%, var(--vt-bg));
+}
+.grid-host :deep(.tabulator-cell.vt-cell-selected) {
+  outline: 2px solid var(--vt-color-primary-500);
+  outline-offset: -2px;
 }
 </style>

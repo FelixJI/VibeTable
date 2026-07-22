@@ -38,6 +38,20 @@ async def test_create_table_posts_collection_and_fields():
     assert physical_field in profile.fields
     assert physical_field in profile.create_fields
     assert profile.archive_field == "status"
+    assert profile.allow_revision_history is True
+    assert profile.allow_revision_revert is True
+    assert profile.allow_permanent_delete is False
+    assert "date_updated" not in profile.update_fields
+
+
+def test_reconciled_business_profile_enables_safe_history_without_permanent_delete():
+    profile = TableAdminService._profile_from_existing(
+        "orders", ["id", "status", "title", "date_created", "date_updated"]
+    )
+    assert profile.allow_revision_history is True
+    assert profile.allow_revision_revert is True
+    assert profile.allow_permanent_delete is False
+    assert profile.update_fields == ["status", "title"]
 
 
 @pytest.mark.asyncio

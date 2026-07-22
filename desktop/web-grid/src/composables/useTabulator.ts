@@ -2,7 +2,7 @@ import { onBeforeUnmount, ref, watch, type Ref } from "vue";
 import type { TabulatorFull } from "tabulator-tables";
 
 import { useTableStore } from "@/stores/tableStore";
-import { buildColumns, createGrid } from "@/grid/createGrid";
+import { buildGridColumns, createGrid } from "@/grid/createGrid";
 import type { CellEditedHandler } from "@/grid/createGrid";
 import type { ColumnEditSchema, ColumnSchema, TablePage } from "@/contracts";
 
@@ -70,6 +70,11 @@ export interface UseTabulatorOptions {
    * `mutationService.updateCell`.
    */
   readonly onCellEdited?: CellEditedHandler;
+  /** Reports the latest Tabulator range so multi-cell history can be disabled. */
+  readonly onRangeSelectionChanged?: (selection: {
+    readonly rowKeys: readonly (string | number)[];
+    readonly fields: readonly string[];
+  }) => void;
   /**
    * Optional EXTERNAL ref to populate with the Tabulator instance. When
    * provided (Task M5: WorkspaceView creates the ref, provides it via
@@ -128,6 +133,8 @@ export function useTabulator(
    * parent re-renders with a new function identity).
    */
   let currentOnCellEdited: CellEditedHandler | undefined = options?.onCellEdited;
+  let currentOnRangeSelectionChanged = options?.onRangeSelectionChanged;
+  let rangeChangedHandler: ((range: unknown) => void) | null = null;
 
   /**
    * Snapshot of the row array last handed to Tabulator (either via createGrid
@@ -143,6 +150,12 @@ export function useTabulator(
     () => options?.onCellEdited,
     (cb) => {
       currentOnCellEdited = cb;
+    },
+  );
+  watch(
+    () => options?.onRangeSelectionChanged,
+    (callback) => {
+      currentOnRangeSelectionChanged = callback;
     },
   );
 
@@ -161,6 +174,22 @@ export function useTabulator(
         editSchema: store.editSchema,
         onCellEdited: (rk, col, old, nw) => currentOnCellEdited?.(rk, col, old, nw),
       });
+      const eventGrid = tabulator.value as unknown as {
+        on?: (event: string, handler: (range: unknown) => void) => void;
+      };
+      rangeChangedHandler = (rawRange: unknown) => {
+        const range = rawRange as {
+          getRows?: () => Array<{ getData: () => Record<string, unknown> }>;
+          getColumns?: () => Array<{ getField: () => string }>;
+        };
+        const rowKeys = (range.getRows?.() ?? []).flatMap((row) => {
+          const key = row.getData().rowKey;
+          return typeof key === "string" || typeof key === "number" ? [key] : [];
+        });
+        const fields = (range.getColumns?.() ?? []).map((column) => column.getField());
+        currentOnRangeSelectionChanged?.({ rowKeys, fields });
+      };
+      eventGrid.on?.("rangeChanged", rangeChangedHandler);
       lastColSignature = colSignature(firstPage.columns);
       lastEditSignature = editSchemaSignature(store.editSchema);
       // Record the rows we just seeded so the data watcher can recognize and
@@ -200,7 +229,7 @@ export function useTabulator(
         // so the call stays type-safe without a full TablePage.
         const carrier = { columns: schema } as TablePage;
         tabulator.value.setColumns(
-          buildColumns(carrier, store.editSchema) as unknown[],
+          buildGridColumns(carrier, store.editSchema) as unknown[],
         );
       } catch {
         // setColumns failed (Tabulator version quirk) -> refresh data only.
@@ -226,7 +255,7 @@ export function useTabulator(
       try {
         const carrier = { columns: schema } as TablePage;
         tabulator.value.setColumns(
-          buildColumns(carrier, editSchema) as unknown[],
+          buildGridColumns(carrier, editSchema) as unknown[],
         );
       } catch {
         // setColumns rejected (Tabulator version quirk) -> no-op; the grid
@@ -236,6 +265,10 @@ export function useTabulator(
   );
 
   onBeforeUnmount(() => {
+    if (rangeChangedHandler) {
+      (tabulator.value as unknown as { off?: (event: string, handler: (range: unknown) => void) => void } | null)
+        ?.off?.("rangeChanged", rangeChangedHandler);
+    }
     tabulator.value?.destroy?.();
     tabulator.value = null;
   });

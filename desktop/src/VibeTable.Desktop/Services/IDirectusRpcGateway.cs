@@ -47,6 +47,12 @@ public interface IDirectusRpcGateway : IDisposable
     Task<DirectusItem> ArchiveAsync(string collection, string itemId, CancellationToken token);
     Task<DirectusItem> RestoreAsync(string collection, string itemId, CancellationToken token);
     Task<DirectusItem> DeleteAsync(string collection, string itemId, CancellationToken token);
+    Task<HistoryPage> ReadChangeSetsAsync(
+        ReadChangeSetsParams parameters, CancellationToken token);
+    Task<RestorePreview> PreviewRestoreAsync(
+        PreviewRestoreParams parameters, CancellationToken token);
+    Task<RestoreResult> ApplyRestoreAsync(
+        ApplyRestoreParams parameters, CancellationToken token);
     Task<DirectusSubscription> SubscribeAsync(
         string uid, string collection, IReadOnlyList<string> fields, CancellationToken token);
     Task<DirectusSubscription> UnsubscribeAsync(string uid, CancellationToken token);

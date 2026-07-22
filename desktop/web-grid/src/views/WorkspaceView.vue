@@ -42,6 +42,7 @@ import FileWorkspaceView from "@/views/FileWorkspaceView.vue";
 import PluginCenterView from "@/views/PluginCenterView.vue";
 import PluginActionPanel from "@/components/plugins/PluginActionPanel.vue";
 import PluginSurfaceHost from "@/components/plugins/PluginSurfaceHost.vue";
+import RevisionHistoryDrawer from "@/components/history/RevisionHistoryDrawer.vue";
 import { projectPluginTheme } from "@/components/plugins/pluginTheme";
 import { useDocumentWorkspaceService } from "@/services/documentWorkspaceService";
 import { useHostBridge } from "@/services/bridgeContext";
@@ -54,6 +55,7 @@ import { useTableAdminService } from "@/services/tableAdminService";
 import { useErrorRouter } from "@/services/errorRouter";
 import { useIdentifierMappingService } from "@/services/identifierMappingService";
 import { createPluginCommandContext, usePluginService } from "@/services/pluginService";
+import { useRevisionHistoryService } from "@/services/revisionHistoryService";
 import { useKeyboard } from "@/composables/useKeyboard";
 import { useUiStore } from "@/stores/uiStore";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
@@ -62,6 +64,8 @@ import { useTableStore } from "@/stores/tableStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { usePluginStore } from "@/stores/pluginStore";
+import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
+import { ROW_NUMBER_FIELD } from "@/grid/createGrid";
 import {
   classifyClipboard,
   mapCellsToColumns,
@@ -84,6 +88,7 @@ const tableAdminService = useTableAdminService();
 const errorRouter = useErrorRouter();
 const identifierMappingService = useIdentifierMappingService();
 const pluginService = usePluginService();
+const revisionHistoryService = useRevisionHistoryService();
 const ui = useUiStore();
 const admin = useTableAdminStore();
 const paste = usePasteStore();
@@ -91,6 +96,7 @@ const tableStore = useTableStore();
 const history = useHistoryStore();
 const workspace = useWorkspaceStore();
 const plugins = usePluginStore();
+const revisionHistory = useRevisionHistoryStore();
 
 /**
  * Naive UI message API (requires NMessageProvider, which App.vue wraps around
@@ -118,6 +124,17 @@ watch(
   () => paste.phase,
   (phase) => {
     if (phase !== "idle") ui.openPastePanel();
+  },
+);
+
+watch(
+  () => revisionHistory.appliedSequence,
+  (sequence, previous) => {
+    if (sequence <= previous) return;
+    message.success(t("history.restoreSuccess"));
+    // A server restore is a new revision, never a local Ctrl+Z history entry.
+    tableService.refresh();
+    revisionHistoryService.refresh();
   },
 );
 
@@ -157,7 +174,13 @@ const toolbarPluginActions = computed(() => registeredPluginActions.value
       || action.invocation !== "manual"
       || !workspace.currentTable,
   })));
-const pluginContextMenu = ref({ show: false, x: 0, y: 0, rowKey: null as string | number | null });
+const pluginContextMenu = ref({
+  show: false,
+  x: 0,
+  y: 0,
+  rowKey: null as string | number | null,
+  field: null as string | null,
+});
 const pluginContextOptions = computed(() => registeredPluginActions.value
   .filter(({ action }) => action.placements.includes("table.context-menu"))
   .map(({ key, label, plugin, action }) => ({
@@ -165,6 +188,30 @@ const pluginContextOptions = computed(() => registeredPluginActions.value
     label: `${label} · ${action.risk === "read" ? "只读" : action.risk === "write" ? "写入" : "危险"}`,
     disabled: plugin.status !== "enabled" || action.invocation !== "manual",
   })));
+const gridContextOptions = computed(() => [
+  {
+    label: t("history.context.cell"),
+    key: "history:cell",
+    disabled: !pluginContextMenu.value.field,
+  },
+  { label: t("history.context.row"), key: "history:row" },
+  ...(pluginContextOptions.value.length
+    ? [{ type: "divider", key: "history-divider" }, ...pluginContextOptions.value]
+    : []),
+]);
+const historyScopeLabel = computed(() => {
+  const selected = revisionHistory.selection;
+  if (selected.scope === "multiple") return t("history.scope.multiple");
+  if (selected.scope === "row") return t("history.scope.row", { item: selected.itemId ?? "—" });
+  if (selected.scope === "cell") {
+    return t("history.scope.cell", { item: selected.itemId ?? "—", field: selected.field ?? "—" });
+  }
+  return t("history.scope.table");
+});
+const historyFieldOptions = computed(() => (tableStore.schema ?? []).map((column) => ({
+  label: column.title || column.name,
+  value: column.name,
+})));
 
 function selectedRowKeys(): readonly (string | number)[] {
   return (tabulator.value?.getSelectedData() ?? []).flatMap((row) =>
@@ -203,15 +250,44 @@ async function openRegisteredPluginAction(
   }
 }
 
-function openPluginContextMenu(payload: { rowKey: string | number; x: number; y: number }): void {
-  if (!pluginContextOptions.value.length) return;
-  pluginContextMenu.value = { show: true, ...payload };
+function openPluginContextMenu(payload: { rowKey: string | number; field?: string; x: number; y: number }): void {
+  pluginContextMenu.value = { show: true, ...payload, field: payload.field ?? null };
 }
 
 function selectPluginContextAction(key: string): void {
   const rowKey = pluginContextMenu.value.rowKey;
+  const field = pluginContextMenu.value.field;
   pluginContextMenu.value.show = false;
+  if (rowKey !== null && key === "history:cell" && field) {
+    revisionHistoryService.open({ scope: "cell", itemId: String(rowKey), field });
+    return;
+  }
+  if (rowKey !== null && key === "history:row") {
+    revisionHistoryService.open({ scope: "row", itemId: String(rowKey) });
+    return;
+  }
   if (rowKey !== null) void openRegisteredPluginAction(key, [rowKey]);
+}
+
+function onHistorySelection(payload: {
+  scope: "row" | "cell" | "multiple";
+  rowKey?: string | number;
+  field?: string;
+}): void {
+  if (payload.scope === "multiple") {
+    revisionHistory.setSelection({ scope: "multiple" });
+    return;
+  }
+  if (payload.rowKey === undefined) return;
+  revisionHistory.setSelection(payload.scope === "row"
+    ? { scope: "row", itemId: String(payload.rowKey) }
+    : { scope: "cell", itemId: String(payload.rowKey), field: payload.field });
+}
+
+function openCurrentHistory(): void {
+  const selected = revisionHistory.selection;
+  if (selected.scope === "multiple") return;
+  revisionHistoryService.open({ ...selected, scope: selected.scope });
 }
 
 async function startDescribedPluginAction(
@@ -262,6 +338,7 @@ onMounted(() => {
   tableAdminService.init();
   errorRouter.init();
   pluginService.init();
+  revisionHistoryService.init();
   void pluginService.list().catch(() => undefined);
   // App.vue gates this workspace until host startup/auth is ready. Re-announce
   // app.ready only after all business subscriptions are installed so the host
@@ -293,6 +370,7 @@ function onSelect(name: string) {
   // history.clear() now happens inside tableService.selectTable so EVERY table
   // context reset clears the stack (select + refresh + any future caller).
   tableService.selectTable(name);
+  revisionHistory.reset();
   ui.rememberTable(name);
   ui.navigate("tables");
 }
@@ -523,7 +601,9 @@ function onSelectAll() {
     addRange?: (start: unknown, end: unknown) => unknown;
   } | null;
   const rows = grid?.getRows?.() ?? [];
-  const columns = (grid?.getColumns?.() ?? []).filter((column) => column.getField() !== "rowKey");
+  const columns = (grid?.getColumns?.() ?? []).filter((column) =>
+    column.getField() !== "rowKey" && column.getField() !== ROW_NUMBER_FIELD,
+  );
   if (!grid?.addRange || rows.length === 0 || columns.length === 0) return;
   for (const range of grid.getRanges?.() ?? []) range.remove?.();
   grid.addRange(
@@ -593,9 +673,13 @@ useKeyboard({
           <main class="main">
             <AppToolbar
               :plugin-actions="toolbarPluginActions"
+              :history-scope-label="historyScopeLabel"
+              :history-disabled="revisionHistory.selection.scope === 'multiple'"
               @refresh="tableService.refresh"
               @insert-row="mutationService.insertRow({})"
               @open-help="ui.openShortcuts"
+              @open-history="openCurrentHistory"
+              @open-archived-history="revisionHistoryService.open({ scope: 'archived' })"
               @plugin-action="openRegisteredPluginAction"
             />
             <div v-if="!workspace.currentTable" class="table-empty" data-testid="table-empty">
@@ -607,6 +691,7 @@ useKeyboard({
             <GridHost
               v-else
               :on-cell-edited="onCellEdited"
+              @selection-change="onHistorySelection"
               @row-context="openPluginContextMenu"
             />
             <div v-if="workspace.currentTable && tableStore.datasetReady" class="table-summary" data-testid="table-summary">
@@ -637,13 +722,21 @@ useKeyboard({
     <CreateTableModal @submit="onSubmitCreate" @cancel="onCancelCreate" />
     <DeleteConfirmModal @confirm="onConfirmDelete" @cancel="onCancelDelete" />
     <ShortcutsView />
+    <RevisionHistoryDrawer
+      :field-options="historyFieldOptions"
+      @close="revisionHistoryService.close"
+      @reload="revisionHistoryService.refresh"
+      @load-more="revisionHistoryService.loadMore"
+      @preview="revisionHistoryService.previewRestore"
+      @apply="revisionHistoryService.applyRestore"
+    />
     <NDropdown
       trigger="manual"
       placement="bottom-start"
       :show="pluginContextMenu.show"
       :x="pluginContextMenu.x"
       :y="pluginContextMenu.y"
-      :options="pluginContextOptions"
+      :options="gridContextOptions"
       @select="selectPluginContextAction"
       @clickoutside="pluginContextMenu.show = false"
     />

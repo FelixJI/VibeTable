@@ -42,6 +42,7 @@ def test_fixture_schema_version_is_g1() -> None:
 def test_read_change_sets_params_round_trip() -> None:
     params = ReadChangeSetsParams.model_validate(DATA["readChangeSets"]["params"])
     assert params.collection == "vibetable_demo"
+    assert params.scope == "row"
     assert params.item_id == "c-001"
     assert params.limit == 50
     assert params.offset == 0
@@ -50,6 +51,8 @@ def test_read_change_sets_params_round_trip() -> None:
 def test_read_change_sets_result_round_trip() -> None:
     page = HistoryPage.model_validate(DATA["readChangeSets"]["result"])
     assert page.collection == "vibetable_demo"
+    assert page.scope == "row"
+    assert page.has_more is False
     assert page.item_id == "c-001"
     assert len(page.change_sets) == 2
     assert page.total == 2
@@ -61,6 +64,9 @@ def test_change_set_has_scalar_and_relation_changes() -> None:
     page = HistoryPage.model_validate(DATA["readChangeSets"]["result"])
     cs = page.change_sets[0]
     assert cs.action == "update"
+    assert cs.item_id == "c-001"
+    assert cs.revision_ids == ["rev-10"]
+    assert cs.affected_records == 1
     assert cs.actor.display_name == "Ada Lovelace"
     assert len(cs.scalar_changes) == 2
     assert len(cs.relation_changes) == 1
@@ -73,6 +79,9 @@ def test_change_set_has_scalar_and_relation_changes() -> None:
     assert rc.kind == "m2o"
     assert rc.related_collection == "vibetable_demo"
     assert rc.display_value == "P-002 Alpha Project"
+    assert rc.before_display_value == "P-001 Beta Project"
+    assert rc.after_display_value == "P-002 Alpha Project"
+    assert rc.target_available is True
 
 
 def test_create_action_has_null_before_values() -> None:
@@ -100,6 +109,9 @@ def test_preview_restore_result_round_trip() -> None:
     preview = RestorePreview.model_validate(DATA["previewRestore"]["result"])
     assert preview.current_hash == "current-hash-abc"
     assert preview.schema_revision == "vibetable-1.0"
+    assert preview.scope == "row"
+    assert preview.can_apply is True
+    assert preview.restorable_fields == ["amount", "project", "title"]
     assert len(preview.scalar_changes) == 2
     assert len(preview.relation_changes) == 1
     assert preview.diagnostics == []
@@ -114,6 +126,7 @@ def test_preview_restore_with_diagnostics_round_trip() -> None:
     assert diag.classification == "schema_retired"
     assert diag.severity == "error"
     assert diag.code == "field_deleted"
+    assert preview.can_apply is False
 
 
 # ---------------------------------------------------------------------------

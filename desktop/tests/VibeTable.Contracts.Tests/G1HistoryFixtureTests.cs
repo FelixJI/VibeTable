@@ -55,6 +55,9 @@ public sealed class G1HistoryFixtureTests
         Assert.AreEqual("project", rc.Field);
         Assert.AreEqual("m2o", rc.Kind);
         Assert.AreEqual("vibetable_demo", rc.RelatedCollection);
+        Assert.AreEqual("P-001 Beta Project", rc.BeforeDisplayValue);
+        Assert.AreEqual("P-002 Alpha Project", rc.AfterDisplayValue);
+        Assert.IsTrue(rc.TargetAvailable);
     }
 
     [TestMethod]
@@ -118,6 +121,58 @@ public sealed class G1HistoryFixtureTests
             }
         }
         Assert.IsTrue(hasContentVersions, "content_versions must be in disabledFeatures");
+    }
+
+    [TestMethod]
+    public void ExtendedHistoryContracts_DeserializeScopesGroupsAndRestorePolicy()
+    {
+        const string json = """
+            {
+              "collection":"projects","itemId":null,"scope":"table","field":null,
+              "changeSets":[{
+                "rootRevisionId":"rev-2","activityId":"act-1","action":"update",
+                "timestamp":"2026-07-22T00:00:00Z",
+                "actor":{"userId":"u-1","displayName":"User"},
+                "scalarChanges":[],"relationChanges":[],
+                "itemId":null,"recordLabel":null,
+                "revisionIds":["rev-2","rev-1"],"affectedRecords":2,
+                "recordChanges":[
+                  {"revisionId":"rev-2","itemId":"p-1","recordLabel":"Alpha","action":"update","scalarChanges":[],"relationChanges":[]},
+                  {"revisionId":"rev-1","itemId":"p-2","recordLabel":"Beta","action":"update","scalarChanges":[],"relationChanges":[]}
+                ]
+              }],
+              "total":2,"capabilityHash":"cap","schemaRevision":"schema-1","hasMore":true
+            }
+            """;
+
+        var page = JsonSerializer.Deserialize<HistoryPage>(json, Options);
+
+        Assert.IsNotNull(page);
+        Assert.AreEqual("table", page!.Scope);
+        Assert.IsTrue(page.HasMore);
+        Assert.IsNull(page.ItemId);
+        Assert.AreEqual(2, page.ChangeSets[0].AffectedRecords);
+        Assert.AreEqual("p-2", page.ChangeSets[0].RecordChanges![1].ItemId);
+
+        var parameters = new ReadChangeSetsParams(
+            "projects", "p-1", 50, 0, "cell", "status", "draft",
+            null, null, "u-1", new[] { "update" }, "p-1");
+        using var parameterJson = JsonDocument.Parse(JsonSerializer.Serialize(parameters, Options));
+        Assert.AreEqual("cell", parameterJson.RootElement.GetProperty("scope").GetString());
+        Assert.AreEqual("status", parameterJson.RootElement.GetProperty("field").GetString());
+        Assert.AreEqual("u-1", parameterJson.RootElement.GetProperty("actorId").GetString());
+
+        const string previewJson = """
+            {"collection":"projects","itemId":"p-1","targetRevision":"rev-1",
+             "currentHash":"hash","schemaRevision":"schema-1","scalarChanges":[],
+             "relationChanges":[],"diagnostics":[],"token":"token","expiresAt":"2099-01-01T00:00:00Z",
+             "scope":"cell","field":"status","canApply":true,"restorableFields":["status"]}
+            """;
+        var preview = JsonSerializer.Deserialize<RestorePreview>(previewJson, Options);
+        Assert.IsNotNull(preview);
+        Assert.AreEqual("cell", preview!.Scope);
+        Assert.IsTrue(preview.CanApply);
+        CollectionAssert.AreEqual(new[] { "status" }, preview.RestorableFields!);
     }
 
     private static string ReadFixture(string name)

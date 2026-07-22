@@ -82,11 +82,39 @@ public sealed class DirectusTableGatewayTests
         Assert.AreEqual(0, directus.PermanentDeleteCalls);
     }
 
+    [TestMethod]
+    public async Task HistoryFlow_ForwardsTypedContractsWithoutChangingScope()
+    {
+        using var directus = new FakeDirectusGateway();
+        var gateway = new DirectusTableGateway(directus, new FakeLocalStateGateway());
+
+        var page = await gateway.ReadChangeSetsAsync(
+            new ReadChangeSetsParams("vibetable_demo", "p1", 50, 0, "cell", "name"),
+            CancellationToken.None);
+        var preview = await gateway.PreviewRestoreAsync(
+            new PreviewRestoreParams("vibetable_demo", "p1", "rev-1", "cell", "name"),
+            CancellationToken.None);
+        var result = await gateway.ApplyRestoreAsync(
+            new ApplyRestoreParams("vibetable_demo", "p1", preview.Token),
+            CancellationToken.None);
+
+        Assert.AreEqual("cell", page.Scope);
+        Assert.AreEqual("name", page.Field);
+        Assert.AreEqual("cell", preview.Scope);
+        Assert.AreEqual(1, directus.ReadHistoryCalls);
+        Assert.AreEqual(1, directus.PreviewRestoreCalls);
+        Assert.AreEqual(1, directus.ApplyRestoreCalls);
+        Assert.AreEqual("rev-2", result.NewRevisionId);
+    }
+
     private sealed class FakeDirectusGateway : IDirectusRpcGateway
     {
         public List<string> ArchivedIds { get; } = [];
         public int PermanentDeleteCalls { get; private set; }
         public int GetSchemaCalls { get; private set; }
+        public int ReadHistoryCalls { get; private set; }
+        public int PreviewRestoreCalls { get; private set; }
+        public int ApplyRestoreCalls { get; private set; }
         private bool _hasFormulaField;
         public event Action<DirectusChange>? Changed
         {
@@ -153,6 +181,22 @@ public sealed class DirectusTableGatewayTests
         {
             PermanentDeleteCalls++;
             return Task.FromResult(EmptyItem(collection));
+        }
+
+        public Task<HistoryPage> ReadChangeSetsAsync(ReadChangeSetsParams parameters, CancellationToken token)
+        {
+            ReadHistoryCalls++;
+            return Task.FromResult(new HistoryPage(parameters.Collection, parameters.ItemId, [], 0, "hash", "schema-1", parameters.Scope, parameters.Field));
+        }
+        public Task<RestorePreview> PreviewRestoreAsync(PreviewRestoreParams parameters, CancellationToken token)
+        {
+            PreviewRestoreCalls++;
+            return Task.FromResult(new RestorePreview(parameters.Collection, parameters.ItemId, parameters.TargetRevision, "current", "schema-1", [], [], [], "token", "2099-01-01T00:00:00Z", parameters.Scope, parameters.Field));
+        }
+        public Task<RestoreResult> ApplyRestoreAsync(ApplyRestoreParams parameters, CancellationToken token)
+        {
+            ApplyRestoreCalls++;
+            return Task.FromResult(new RestoreResult(parameters.Collection, parameters.ItemId, "rev-1", "rev-2", new Dictionary<string, object?>()));
         }
 
         public Task<DirectusSessionStatus> LoginAsync(string email, string password, string? otp, CancellationToken token) => throw new NotSupportedException();

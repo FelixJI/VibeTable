@@ -78,6 +78,7 @@ CODE_FILE_TOOLS = -32090
 CODE_SETTINGS_COMMAND = -32100
 CODE_TABLE_ADMIN = -32110
 CODE_PLUGIN = -32120
+CODE_HISTORY = -32130
 
 #: Maps each typed application error class to a ``(code, message, kind)``
 #: tuple. Order matters only if classes share a base class — they do not here.
@@ -229,6 +230,19 @@ def register_plugin_errors() -> None:
                 "Plugin error",
                 "plugin_error",
             )
+
+
+def register_history_errors() -> None:
+    """Register history query/restore failures as stable RPC errors."""
+
+    from backend.application.history_service import HistoryError
+
+    if HistoryError not in _APP_ERROR_MAP:
+        _APP_ERROR_MAP[HistoryError] = (
+            CODE_HISTORY,
+            "History error",
+            "history_error",
+        )
 
 
 Handler = Callable[..., Any]

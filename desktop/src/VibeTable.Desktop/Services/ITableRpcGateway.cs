@@ -80,6 +80,21 @@ public interface ITableRpcGateway
         IReadOnlyList<object> rowKeys,
         CancellationToken token);
 
+    /// <summary>Reads a permission-filtered table, row, cell, or archived history page.</summary>
+    Task<HistoryPage> ReadChangeSetsAsync(
+        ReadChangeSetsParams parameters,
+        CancellationToken token);
+
+    /// <summary>Builds a zero-write row/cell/archived restore preview.</summary>
+    Task<RestorePreview> PreviewRestoreAsync(
+        PreviewRestoreParams parameters,
+        CancellationToken token);
+
+    /// <summary>Applies a previously previewed restore token.</summary>
+    Task<RestoreResult> ApplyRestoreAsync(
+        ApplyRestoreParams parameters,
+        CancellationToken token);
+
     /// <summary>
     /// Queries Directus with the typed table AST. Returns a page
     /// carrying <c>querySnapshot</c>/<c>revision</c>/<c>filteredRows</c> so the

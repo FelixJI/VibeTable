@@ -92,6 +92,9 @@ internal sealed class FakeDirectusRpcGateway : IDirectusRpcGateway
     public Task<DirectusItem> ArchiveAsync(string c, string i, CancellationToken t) => throw new NotImplementedException();
     public Task<DirectusItem> RestoreAsync(string c, string i, CancellationToken t) => throw new NotImplementedException();
     public Task<DirectusItem> DeleteAsync(string c, string i, CancellationToken t) => throw new NotImplementedException();
+    public Task<HistoryPage> ReadChangeSetsAsync(ReadChangeSetsParams p, CancellationToken t) => throw new NotImplementedException();
+    public Task<RestorePreview> PreviewRestoreAsync(PreviewRestoreParams p, CancellationToken t) => throw new NotImplementedException();
+    public Task<RestoreResult> ApplyRestoreAsync(ApplyRestoreParams p, CancellationToken t) => throw new NotImplementedException();
     public Task<DirectusSubscription> SubscribeAsync(string u, string c, IReadOnlyList<string> f, CancellationToken t) => throw new NotImplementedException();
     public Task<DirectusSubscription> UnsubscribeAsync(string u, CancellationToken t) => throw new NotImplementedException();
     public void Dispose() { }

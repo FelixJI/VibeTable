@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { buildColumns, buildOptions } from "./createGrid";
+import { buildColumns, buildOptions, ROW_NUMBER_FIELD } from "./createGrid";
 import type { ColumnEditSchema, TablePage } from "@/contracts";
 
 /** A representative Phase-A page: text/integer/decimal/boolean/date + rowKey. */
@@ -118,6 +118,17 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
 });
 
 describe("buildOptions (read-only Tabulator options)", () => {
+  it("prepends a narrow frozen row-number gutter for explicit row selection", () => {
+    const columns = buildOptions(samplePage()).columns as Array<Record<string, unknown>>;
+    expect(columns[0]).toMatchObject({
+      field: ROW_NUMBER_FIELD,
+      formatter: "rownum",
+      width: 42,
+      frozen: true,
+      headerSort: false,
+    });
+  });
+
   it("enables selectableRange:true", () => {
     const opts = buildOptions(samplePage());
     expect(opts.selectableRange).toBe(true);

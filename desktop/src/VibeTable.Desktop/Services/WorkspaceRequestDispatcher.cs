@@ -142,6 +142,15 @@ public sealed class WorkspaceRequestDispatcher
             case "table.applyPasteRequested":
                 await OnApplyPasteRequestedAsync(request).ConfigureAwait(false);
                 break;
+            case "history.queryRequested":
+                await OnHistoryQueryRequestedAsync(request).ConfigureAwait(false);
+                break;
+            case "history.previewRestoreRequested":
+                await OnHistoryPreviewRestoreRequestedAsync(request).ConfigureAwait(false);
+                break;
+            case "history.applyRestoreRequested":
+                await OnHistoryApplyRestoreRequestedAsync(request).ConfigureAwait(false);
+                break;
             case "tableAdmin.createRequested":
                 await OnCreateTableRequestedAsync(request).ConfigureAwait(false);
                 break;
@@ -458,6 +467,150 @@ public sealed class WorkspaceRequestDispatcher
             _reply.PostOperationFailed(request.RequestId, ex.Message, code: "PASTE_APPLY_FAILED");
         }
     }
+
+    // -------------------------------------------------------------------
+    // G1: permission-filtered history + two-phase safe restore.
+    // -------------------------------------------------------------------
+
+    private async Task OnHistoryQueryRequestedAsync(RoutedWebRequest request)
+    {
+        string? collection = TryGetCollection(request.Payload);
+        string scope = TryGetString(request.Payload, "scope") ?? "table";
+        string? itemId = TryGetScalarString(request.Payload, "itemId");
+        string? field = TryGetString(request.Payload, "field");
+        if (string.IsNullOrWhiteSpace(collection)
+            || !IsHistoryQueryScope(scope)
+            || (scope is "row" or "cell" && string.IsNullOrWhiteSpace(itemId))
+            || (scope == "cell" && string.IsNullOrWhiteSpace(field)))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "history.queryRequested 的表、范围或选择无效。",
+                "BAD_PAYLOAD");
+            return;
+        }
+
+        IReadOnlyList<string>? actions = null;
+        if (TryGetProperty(request.Payload, "actions", out _))
+        {
+            actions = TryGetStringArray(request.Payload, "actions");
+            if (actions is null)
+            {
+                _reply.PostOperationFailed(
+                    request.RequestId,
+                    "history.queryRequested 的 actions 必须是字符串数组。",
+                    "BAD_PAYLOAD");
+                return;
+            }
+        }
+
+        var parameters = new ReadChangeSetsParams(
+            Collection: collection,
+            ItemId: itemId,
+            Limit: Math.Clamp(TryGetInt(request.Payload, "limit", 50), 1, 100),
+            Offset: Math.Max(0, TryGetInt(request.Payload, "offset", 0)),
+            Scope: scope,
+            Field: field,
+            Search: TryGetString(request.Payload, "search"),
+            DateFrom: TryGetString(request.Payload, "dateFrom"),
+            DateTo: TryGetString(request.Payload, "dateTo"),
+            ActorId: TryGetString(request.Payload, "actorId"),
+            Actions: actions ?? Array.Empty<string>(),
+            RecordId: TryGetScalarString(request.Payload, "recordId"));
+        try
+        {
+            var page = await _workspace.Gateway.ReadChangeSetsAsync(
+                parameters, CancellationToken.None).ConfigureAwait(false);
+            _reply.PostResponse("history.pageLoaded", request.RequestId, page);
+        }
+        catch (Exception ex)
+        {
+            PostHistoryFailure(request, ex, "HISTORY_QUERY_FAILED");
+        }
+    }
+
+    private async Task OnHistoryPreviewRestoreRequestedAsync(RoutedWebRequest request)
+    {
+        string? collection = TryGetCollection(request.Payload);
+        string scope = TryGetString(request.Payload, "scope") ?? "row";
+        string? itemId = TryGetScalarString(request.Payload, "itemId");
+        string? targetRevision = TryGetString(request.Payload, "targetRevision");
+        string? field = TryGetString(request.Payload, "field");
+        if (string.IsNullOrWhiteSpace(collection)
+            || !IsRestoreScope(scope)
+            || string.IsNullOrWhiteSpace(itemId)
+            || string.IsNullOrWhiteSpace(targetRevision)
+            || (scope == "cell" && string.IsNullOrWhiteSpace(field)))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "history.previewRestoreRequested 的表、范围或目标修订无效。",
+                "BAD_PAYLOAD");
+            return;
+        }
+
+        try
+        {
+            var preview = await _workspace.Gateway.PreviewRestoreAsync(
+                new PreviewRestoreParams(
+                    collection, itemId, targetRevision, scope, field),
+                CancellationToken.None).ConfigureAwait(false);
+            _reply.PostResponse(
+                "history.restorePreviewReady", request.RequestId, preview);
+        }
+        catch (Exception ex)
+        {
+            PostHistoryFailure(request, ex, "HISTORY_PREVIEW_FAILED");
+        }
+    }
+
+    private async Task OnHistoryApplyRestoreRequestedAsync(RoutedWebRequest request)
+    {
+        string? collection = TryGetCollection(request.Payload);
+        string? itemId = TryGetScalarString(request.Payload, "itemId");
+        string? token = TryGetString(request.Payload, "token");
+        if (string.IsNullOrWhiteSpace(collection)
+            || string.IsNullOrWhiteSpace(itemId)
+            || string.IsNullOrWhiteSpace(token))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "history.applyRestoreRequested 缺少表、记录或预览令牌。",
+                "BAD_PAYLOAD");
+            return;
+        }
+
+        try
+        {
+            var result = await _workspace.Gateway.ApplyRestoreAsync(
+                new ApplyRestoreParams(collection, itemId, token),
+                CancellationToken.None).ConfigureAwait(false);
+            _reply.PostResponse("history.restoreApplied", request.RequestId, result);
+        }
+        catch (Exception ex)
+        {
+            PostHistoryFailure(request, ex, "HISTORY_APPLY_FAILED");
+        }
+    }
+
+    private void PostHistoryFailure(
+        RoutedWebRequest request,
+        Exception exception,
+        string fallbackCode)
+    {
+        Trace.TraceError($"History request failed ({fallbackCode}): {exception}");
+        var failure = HistoryErrorMapper.Map(exception, fallbackCode);
+        _reply.PostOperationFailed(request.RequestId, failure.Message, failure.Code);
+    }
+
+    private static bool IsHistoryQueryScope(string scope)
+        => scope is "table" or "row" or "cell" or "archived";
+
+    private static bool IsRestoreScope(string scope)
+        => scope is "row" or "cell" or "archived";
+
+    private static string? TryGetCollection(JsonElement payload)
+        => TryGetString(payload, "table") ?? TryGetString(payload, "collection");
 
     // -------------------------------------------------------------------
     // Task 8: table admin (create/delete) handlers wired to the Directus

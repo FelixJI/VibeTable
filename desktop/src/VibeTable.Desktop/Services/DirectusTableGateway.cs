@@ -136,6 +136,18 @@ public sealed class DirectusTableGateway : ITableRpcGateway, IDisposable
         return new ReadRowsResult(rows, Revision(schema.SchemaRevision));
     }
 
+    public Task<HistoryPage> ReadChangeSetsAsync(
+        ReadChangeSetsParams parameters, CancellationToken token)
+        => _directus.ReadChangeSetsAsync(parameters, token);
+
+    public Task<RestorePreview> PreviewRestoreAsync(
+        PreviewRestoreParams parameters, CancellationToken token)
+        => _directus.PreviewRestoreAsync(parameters, token);
+
+    public Task<RestoreResult> ApplyRestoreAsync(
+        ApplyRestoreParams parameters, CancellationToken token)
+        => _directus.ApplyRestoreAsync(parameters, token);
+
     public async Task<TablePage> QueryTablePageAsync(
         string table, int offset, int limit, TableQuery query, CancellationToken token)
     {

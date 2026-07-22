@@ -5,13 +5,16 @@
   "readChangeSets": {
     "params": {
       "collection": "vibetable_demo",
+      "scope": "row",
       "itemId": "c-001",
       "limit": 50,
       "offset": 0
     },
     "result": {
       "collection": "vibetable_demo",
+      "scope": "row",
       "itemId": "c-001",
+      "field": null,
       "changeSets": [
         {
           "rootRevisionId": "rev-10",
@@ -19,6 +22,11 @@
           "action": "update",
           "timestamp": "2026-07-15T10:00:00Z",
           "actor": {"userId": "u-1", "displayName": "Ada Lovelace"},
+          "itemId": "c-001",
+          "recordLabel": "New Title",
+          "revisionIds": ["rev-10"],
+          "affectedRecords": 1,
+          "recordChanges": [],
           "scalarChanges": [
             {"field": "title", "before": "Old Title", "after": "New Title"},
             {"field": "amount", "before": 10000.0, "after": 15000.0}
@@ -31,7 +39,10 @@
               "relatedItemId": "p-002",
               "displayValue": "P-002 Alpha Project",
               "beforeItemId": "p-001",
-              "afterItemId": "p-002"
+              "afterItemId": "p-002",
+              "beforeDisplayValue": "P-001 Beta Project",
+              "afterDisplayValue": "P-002 Alpha Project",
+              "targetAvailable": true
             }
           ]
         },
@@ -41,6 +52,11 @@
           "action": "create",
           "timestamp": "2026-07-15T09:00:00Z",
           "actor": {"userId": "u-1", "displayName": "Ada Lovelace"},
+          "itemId": "c-001",
+          "recordLabel": "Old Title",
+          "revisionIds": ["rev-9"],
+          "affectedRecords": 1,
+          "recordChanges": [],
           "scalarChanges": [
             {"field": "title", "before": null, "after": "Old Title"},
             {"field": "amount", "before": null, "after": 10000.0}
@@ -60,19 +76,23 @@
       ],
       "total": 2,
       "capabilityHash": "g1-fixture-capability-hash",
-      "schemaRevision": "vibetable-1.0"
+      "schemaRevision": "vibetable-1.0",
+      "hasMore": false
     }
   },
   "previewRestore": {
     "params": {
       "collection": "vibetable_demo",
       "itemId": "c-001",
-      "targetRevision": "rev-9"
+      "targetRevision": "rev-9",
+      "scope": "row"
     },
     "result": {
       "collection": "vibetable_demo",
       "itemId": "c-001",
       "targetRevision": "rev-9",
+      "scope": "row",
+      "field": null,
       "currentHash": "current-hash-abc",
       "schemaRevision": "vibetable-1.0",
       "scalarChanges": [
@@ -91,6 +111,8 @@
         }
       ],
       "diagnostics": [],
+      "canApply": true,
+      "restorableFields": ["amount", "project", "title"],
       "token": "restore-token-fixture",
       "expiresAt": "2026-07-15T10:05:00Z"
     }
@@ -105,6 +127,8 @@
       "collection": "vibetable_demo",
       "itemId": "c-001",
       "targetRevision": "rev-8",
+      "scope": "row",
+      "field": null,
       "currentHash": "current-hash-abc",
       "schemaRevision": "vibetable-1.0",
       "scalarChanges": [],
@@ -125,6 +149,8 @@
           "message": "Amount value is compatible."
         }
       ],
+      "canApply": false,
+      "restorableFields": [],
       "token": "restore-token-diag-fixture",
       "expiresAt": "2026-07-15T10:05:00Z"
     }

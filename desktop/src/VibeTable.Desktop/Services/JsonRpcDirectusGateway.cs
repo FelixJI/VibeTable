@@ -142,6 +142,23 @@ public sealed class JsonRpcDirectusGateway : IDirectusRpcGateway
         string collection, string itemId, CancellationToken token)
         => InvokeItemAsync("directus.delete", collection, itemId, token);
 
+    public Task<HistoryPage> ReadChangeSetsAsync(
+        ReadChangeSetsParams parameters, CancellationToken token)
+        => _client.InvokeAsync<ReadChangeSetsParams, HistoryPage>(
+            "history.readChangeSets",
+            parameters with { Actions = parameters.Actions ?? Array.Empty<string>() },
+            token);
+
+    public Task<RestorePreview> PreviewRestoreAsync(
+        PreviewRestoreParams parameters, CancellationToken token)
+        => _client.InvokeAsync<PreviewRestoreParams, RestorePreview>(
+            "history.previewRestore", parameters, token);
+
+    public Task<RestoreResult> ApplyRestoreAsync(
+        ApplyRestoreParams parameters, CancellationToken token)
+        => _client.InvokeAsync<ApplyRestoreParams, RestoreResult>(
+            "history.applyRestore", parameters, token);
+
     public Task<DirectusSubscription> SubscribeAsync(
         string uid, string collection, IReadOnlyList<string> fields, CancellationToken token)
         => _client.InvokeAsync<DirectusSubscribeParams, DirectusSubscription>(

@@ -943,8 +943,8 @@ export type WebMessageType =
   // B2 paste preview + apply requests.
   | "table.previewPasteRequested"
   | "table.applyPasteRequested"
-  // G1 full-field history requests.
-  | "history.readRequested"
+  // Revision audit + two-phase safe restore requests.
+  | "history.queryRequested"
   | "history.previewRestoreRequested"
   | "history.applyRestoreRequested"
   // Web-first document workspace requests. Every local action uses an opaque handle.
@@ -1006,8 +1006,8 @@ export type HostMessageType =
   // B2 paste preview + apply outcomes.
   | "table.pastePreviewReady"
   | "table.pasteApplied"
-  // G1 full-field history outcomes.
-  | "history.loaded"
+  // Revision audit + two-phase safe restore outcomes.
+  | "history.pageLoaded"
   | "history.restorePreviewReady"
   | "history.restoreApplied"
   // Web-first document workspace outcomes.
@@ -1073,7 +1073,7 @@ export interface HostPayloadMap {
   "directus.changed": DirectusChangePayload;
   "table.pastePreviewReady": PastePlan;
   "table.pasteApplied": ApplyPasteResult;
-  "history.loaded": HistoryPage;
+  "history.pageLoaded": HistoryPage;
   "history.restorePreviewReady": RestorePreview;
   "history.restoreApplied": RestoreResult;
   "document.listLoaded": DocumentListLoadedPayload;
@@ -1127,8 +1127,8 @@ export interface WebPayloadMap {
   // B2 paste preview + apply requests.
   "table.previewPasteRequested": PreviewPasteRequestedPayload;
   "table.applyPasteRequested": ApplyPasteRequestedPayload;
-  // G1 full-field history requests.
-  "history.readRequested": HistoryReadPayload;
+  // Revision audit + two-phase safe restore requests.
+  "history.queryRequested": HistoryQueryPayload;
   "history.previewRestoreRequested": HistoryPreviewRestorePayload;
   "history.applyRestoreRequested": HistoryApplyRestorePayload;
   "document.listRequested": DocumentListRequestedPayload;
@@ -1324,25 +1324,46 @@ export interface RelationFieldChange {
   readonly displayValue: string | null;
   readonly beforeItemId: string | null;
   readonly afterItemId: string | null;
+  readonly beforeDisplayValue?: string | null;
+  readonly afterDisplayValue?: string | null;
+  readonly targetAvailable?: boolean;
+}
+
+/** One record inside an Activity-grouped change set. */
+export interface HistoryRecordChange {
+  readonly revisionId: string;
+  readonly itemId: string;
+  readonly recordLabel: string | null;
+  readonly action: string;
+  readonly scalarChanges: readonly ScalarFieldChange[];
+  readonly relationChanges: readonly RelationFieldChange[];
 }
 
 /** One logical business change aggregating scalar + relation field changes. */
 export interface HistoryChangeSet {
   readonly rootRevisionId: string;
   readonly activityId: string | null;
+  readonly itemId?: string | null;
+  readonly recordLabel?: string | null;
+  readonly revisionIds?: readonly string[];
+  readonly affectedRecords?: number;
   readonly action: string;
   readonly timestamp: string;
   readonly actor: HistoryActor;
   readonly scalarChanges: readonly ScalarFieldChange[];
   readonly relationChanges: readonly RelationFieldChange[];
+  readonly recordChanges?: readonly HistoryRecordChange[];
 }
 
 /** Paged result of reading ChangeSets. */
 export interface HistoryPage {
   readonly collection: string;
-  readonly itemId: string;
+  readonly scope?: RevisionHistoryScope;
+  readonly itemId?: string | null;
+  readonly field?: string | null;
   readonly changeSets: readonly HistoryChangeSet[];
   readonly total: number;
+  readonly hasMore?: boolean;
   readonly capabilityHash: string;
   readonly schemaRevision: string;
 }
@@ -1350,7 +1371,7 @@ export interface HistoryPage {
 /** A diagnostic for a single field in a restore preview. */
 export interface RestoreDiagnostic {
   readonly field: string;
-  readonly classification: "recoverable" | "readonly_system" | "derived" | "sensitive" | "schema_retired";
+  readonly classification: "recoverable" | "readonly_system" | "derived" | "sensitive" | "schema_retired" | "permission_denied" | "incompatible" | "relation_unsafe";
   readonly severity: "warning" | "error";
   readonly code: string;
   readonly message: string;
@@ -1360,12 +1381,16 @@ export interface RestoreDiagnostic {
 export interface RestorePreview {
   readonly collection: string;
   readonly itemId: string;
+  readonly scope?: Exclude<RevisionHistoryScope, "table">;
+  readonly field?: string | null;
   readonly targetRevision: string;
   readonly currentHash: string;
   readonly schemaRevision: string;
   readonly scalarChanges: readonly ScalarFieldChange[];
   readonly relationChanges: readonly RelationFieldChange[];
   readonly diagnostics: readonly RestoreDiagnostic[];
+  readonly canApply?: boolean;
+  readonly restorableFields?: readonly string[];
   readonly token: string;
   readonly expiresAt: string;
 }
@@ -1379,10 +1404,20 @@ export interface RestoreResult {
   readonly item: Record<string, unknown>;
 }
 
-/** Payload for `history.readRequested`. */
-export interface HistoryReadPayload {
+export type RevisionHistoryScope = "table" | "row" | "cell" | "archived";
+
+/** Payload for `history.queryRequested`. Search is always evaluated by the host. */
+export interface HistoryQueryPayload {
   readonly collection: string;
-  readonly itemId: string;
+  readonly scope: RevisionHistoryScope;
+  readonly itemId?: string;
+  readonly field?: string;
+  readonly search?: string;
+  readonly dateFrom?: string;
+  readonly dateTo?: string;
+  readonly actorId?: string;
+  readonly actions?: readonly string[];
+  readonly recordId?: string;
   readonly limit: number;
   readonly offset: number;
 }
@@ -1391,6 +1426,8 @@ export interface HistoryReadPayload {
 export interface HistoryPreviewRestorePayload {
   readonly collection: string;
   readonly itemId: string;
+  readonly scope: Exclude<RevisionHistoryScope, "table">;
+  readonly field?: string;
   readonly targetRevision: string;
 }
 

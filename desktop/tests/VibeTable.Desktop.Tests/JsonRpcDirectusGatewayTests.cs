@@ -95,6 +95,52 @@ public sealed class JsonRpcDirectusGatewayTests
             transport.LastRequest.GetProperty("params").GetProperty("name").GetString());
     }
 
+    [TestMethod]
+    public async Task HistoryFlow_UsesTypedRpcMethodsAndCamelCasePayloads()
+    {
+        var transport = new AutoRespondTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcDirectusGateway(client);
+
+        var page = await gateway.ReadChangeSetsAsync(
+            new ReadChangeSetsParams(
+                "projects", null, 50, 100, "table", "status", "alpha",
+                "2026-01-01T00:00:00Z", "2026-07-22T00:00:00Z", "u-1",
+                new[] { "update", "archive" }, "p-1"),
+            CancellationToken.None);
+
+        Assert.AreEqual("history.readChangeSets", transport.LastRequest.GetProperty("method").GetString());
+        var readParams = transport.LastRequest.GetProperty("params");
+        Assert.AreEqual("projects", readParams.GetProperty("collection").GetString());
+        Assert.AreEqual("table", readParams.GetProperty("scope").GetString());
+        Assert.AreEqual("alpha", readParams.GetProperty("search").GetString());
+        Assert.AreEqual(2, readParams.GetProperty("actions").GetArrayLength());
+        Assert.AreEqual("table", page.Scope);
+        Assert.IsTrue(page.HasMore);
+        Assert.AreEqual(2, page.ChangeSets[0].AffectedRecords);
+        Assert.AreEqual(2, page.ChangeSets[0].RecordChanges!.Count);
+
+        var preview = await gateway.PreviewRestoreAsync(
+            new PreviewRestoreParams("projects", "p-1", "rev-7", "cell", "status"),
+            CancellationToken.None);
+
+        Assert.AreEqual("history.previewRestore", transport.LastRequest.GetProperty("method").GetString());
+        var previewParams = transport.LastRequest.GetProperty("params");
+        Assert.AreEqual("cell", previewParams.GetProperty("scope").GetString());
+        Assert.AreEqual("status", previewParams.GetProperty("field").GetString());
+        Assert.IsTrue(preview.CanApply);
+        CollectionAssert.AreEqual(new[] { "status" }, preview.RestorableFields!);
+
+        var applied = await gateway.ApplyRestoreAsync(
+            new ApplyRestoreParams("projects", "p-1", preview.Token),
+            CancellationToken.None);
+
+        Assert.AreEqual("history.applyRestore", transport.LastRequest.GetProperty("method").GetString());
+        Assert.AreEqual("restore-token", transport.LastRequest.GetProperty("params").GetProperty("token").GetString());
+        Assert.AreEqual("rev-8", applied.NewRevisionId);
+        Assert.AreEqual("draft", Convert.ToString(applied.Item["status"]));
+    }
+
     private sealed class AutoRespondTransport : IJsonLineTransport
     {
         private readonly Channel<JsonElement?> _incoming = Channel.CreateUnbounded<JsonElement?>();
@@ -115,6 +161,15 @@ public sealed class JsonRpcDirectusGatewayTests
                 "directus.login" => """{"state":"authenticated","expiresAt":1234,"user":{"id":"u1","displayName":"Test User","capabilities":[]}}""",
                 "table_admin.createTable" => """{"collection":"customers","primaryKey":"id","fields":["id","name","age"]}""",
                 "table_admin.deleteTable" => """{"collection":"customers","deleted":true}""",
+                "history.readChangeSets" => """
+                    {"collection":"projects","itemId":null,"scope":"table","field":"status","changeSets":[{"rootRevisionId":"rev-7","activityId":"act-1","action":"update","timestamp":"2026-07-22T00:00:00Z","actor":{"userId":"u-1","displayName":"User"},"scalarChanges":[],"relationChanges":[],"itemId":null,"recordLabel":null,"revisionIds":["rev-7","rev-6"],"affectedRecords":2,"recordChanges":[{"revisionId":"rev-7","itemId":"p-1","recordLabel":"Alpha","action":"update","scalarChanges":[],"relationChanges":[]},{"revisionId":"rev-6","itemId":"p-2","recordLabel":"Beta","action":"update","scalarChanges":[],"relationChanges":[]}]}],"total":2,"capabilityHash":"cap","schemaRevision":"schema-1","hasMore":true}
+                    """,
+                "history.previewRestore" => """
+                    {"collection":"projects","itemId":"p-1","targetRevision":"rev-7","currentHash":"current","schemaRevision":"schema-1","scalarChanges":[{"field":"status","before":"published","after":"draft"}],"relationChanges":[],"diagnostics":[],"token":"restore-token","expiresAt":"2099-01-01T00:00:00Z","scope":"cell","field":"status","canApply":true,"restorableFields":["status"]}
+                    """,
+                "history.applyRestore" => """
+                    {"collection":"projects","itemId":"p-1","restoredToRevision":"rev-7","newRevisionId":"rev-8","item":{"id":"p-1","status":"draft"}}
+                    """,
                 _ => "{}",
             };
             using var response = JsonDocument.Parse(

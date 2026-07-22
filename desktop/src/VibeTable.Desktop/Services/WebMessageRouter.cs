@@ -69,6 +69,10 @@ public sealed class WebMessageRouter
         // B2 paste preview + apply requests.
         "table.previewPasteRequested",
         "table.applyPasteRequested",
+        // G1 history query + two-phase safe restore.
+        "history.queryRequested",
+        "history.previewRestoreRequested",
+        "history.applyRestoreRequested",
         // Table management (web sidebar).
         "tableAdmin.createRequested",
         "tableAdmin.deleteRequested",
@@ -135,6 +139,10 @@ public sealed class WebMessageRouter
         // B2 paste preview + apply outcomes.
         "table.pastePreviewReady",
         "table.pasteApplied",
+        // G1 history query + two-phase safe restore outcomes.
+        "history.pageLoaded",
+        "history.restorePreviewReady",
+        "history.restoreApplied",
         // Table management: host pushes refreshed collection list after create/delete.
         "database.collectionsChanged",
         "identifierMappings.result",

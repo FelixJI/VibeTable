@@ -31,7 +31,24 @@ public sealed record RelationFieldChange(
     [property: JsonPropertyName("relatedItemId")] string? RelatedItemId,
     [property: JsonPropertyName("displayValue")] string? DisplayValue,
     [property: JsonPropertyName("beforeItemId")] string? BeforeItemId,
-    [property: JsonPropertyName("afterItemId")] string? AfterItemId
+    [property: JsonPropertyName("afterItemId")] string? AfterItemId,
+    [property: JsonPropertyName("beforeDisplayValue")] string? BeforeDisplayValue = null,
+    [property: JsonPropertyName("afterDisplayValue")] string? AfterDisplayValue = null,
+    [property: JsonPropertyName("targetAvailable")] bool TargetAvailable = true
+);
+
+/// <summary>
+/// One record inside an activity-level change group. Table history groups all
+/// revisions produced by the same Directus activity while row/cell history
+/// normally contains a single record change.
+/// </summary>
+public sealed record HistoryRecordChange(
+    [property: JsonPropertyName("revisionId")] string RevisionId,
+    [property: JsonPropertyName("itemId")] string ItemId,
+    [property: JsonPropertyName("recordLabel")] string? RecordLabel,
+    [property: JsonPropertyName("action")] string Action,
+    [property: JsonPropertyName("scalarChanges")] List<ScalarFieldChange> ScalarChanges,
+    [property: JsonPropertyName("relationChanges")] List<RelationFieldChange> RelationChanges
 );
 
 // --- ChangeSet ---
@@ -43,25 +60,41 @@ public sealed record HistoryChangeSet(
     [property: JsonPropertyName("timestamp")] string Timestamp,
     [property: JsonPropertyName("actor")] HistoryActor? Actor,
     [property: JsonPropertyName("scalarChanges")] List<ScalarFieldChange> ScalarChanges,
-    [property: JsonPropertyName("relationChanges")] List<RelationFieldChange> RelationChanges
+    [property: JsonPropertyName("relationChanges")] List<RelationFieldChange> RelationChanges,
+    [property: JsonPropertyName("itemId")] string? ItemId = null,
+    [property: JsonPropertyName("recordLabel")] string? RecordLabel = null,
+    [property: JsonPropertyName("revisionIds")] List<string>? RevisionIds = null,
+    [property: JsonPropertyName("affectedRecords")] int AffectedRecords = 1,
+    [property: JsonPropertyName("recordChanges")] List<HistoryRecordChange>? RecordChanges = null
 );
 
 // --- Paging ---
 
 public sealed record ReadChangeSetsParams(
     [property: JsonPropertyName("collection")] string Collection,
-    [property: JsonPropertyName("itemId")] string ItemId,
+    [property: JsonPropertyName("itemId")] string? ItemId,
     [property: JsonPropertyName("limit")] int Limit,
-    [property: JsonPropertyName("offset")] int Offset
+    [property: JsonPropertyName("offset")] int Offset,
+    [property: JsonPropertyName("scope")] string Scope = "row",
+    [property: JsonPropertyName("field")] string? Field = null,
+    [property: JsonPropertyName("search")] string? Search = null,
+    [property: JsonPropertyName("dateFrom")] string? DateFrom = null,
+    [property: JsonPropertyName("dateTo")] string? DateTo = null,
+    [property: JsonPropertyName("actorId")] string? ActorId = null,
+    [property: JsonPropertyName("actions")] IReadOnlyList<string>? Actions = null,
+    [property: JsonPropertyName("recordId")] string? RecordId = null
 );
 
 public sealed record HistoryPage(
     [property: JsonPropertyName("collection")] string Collection,
-    [property: JsonPropertyName("itemId")] string ItemId,
+    [property: JsonPropertyName("itemId")] string? ItemId,
     [property: JsonPropertyName("changeSets")] List<HistoryChangeSet> ChangeSets,
     [property: JsonPropertyName("total")] int Total,
     [property: JsonPropertyName("capabilityHash")] string CapabilityHash,
-    [property: JsonPropertyName("schemaRevision")] string SchemaRevision
+    [property: JsonPropertyName("schemaRevision")] string SchemaRevision,
+    [property: JsonPropertyName("scope")] string Scope = "row",
+    [property: JsonPropertyName("field")] string? Field = null,
+    [property: JsonPropertyName("hasMore")] bool HasMore = false
 );
 
 // --- Safe restore (two-phase) ---
@@ -77,7 +110,9 @@ public sealed record RestoreDiagnostic(
 public sealed record PreviewRestoreParams(
     [property: JsonPropertyName("collection")] string Collection,
     [property: JsonPropertyName("itemId")] string ItemId,
-    [property: JsonPropertyName("targetRevision")] string TargetRevision
+    [property: JsonPropertyName("targetRevision")] string TargetRevision,
+    [property: JsonPropertyName("scope")] string Scope = "row",
+    [property: JsonPropertyName("field")] string? Field = null
 );
 
 public sealed record RestorePreview(
@@ -90,7 +125,11 @@ public sealed record RestorePreview(
     [property: JsonPropertyName("relationChanges")] List<RelationFieldChange> RelationChanges,
     [property: JsonPropertyName("diagnostics")] List<RestoreDiagnostic> Diagnostics,
     [property: JsonPropertyName("token")] string Token,
-    [property: JsonPropertyName("expiresAt")] string ExpiresAt
+    [property: JsonPropertyName("expiresAt")] string ExpiresAt,
+    [property: JsonPropertyName("scope")] string Scope = "row",
+    [property: JsonPropertyName("field")] string? Field = null,
+    [property: JsonPropertyName("canApply")] bool CanApply = true,
+    [property: JsonPropertyName("restorableFields")] List<string>? RestorableFields = null
 );
 
 public sealed record ApplyRestoreParams(

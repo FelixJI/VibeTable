@@ -458,9 +458,7 @@ class TableAdminService:
         mappings = await self._registry.read_all(token)
         target = next((item for item in mappings if item.id == params.mapping_id), None)
         if target is None:
-            raise TableAdminError(
-                "identifier mapping no longer exists", code="mapping_not_found"
-            )
+            raise TableAdminError("identifier mapping no longer exists", code="mapping_not_found")
         if target.status not in {"orphaned", "deleted"}:
             raise TableAdminError(
                 "only orphaned or deleted mappings can be removed",
@@ -475,9 +473,7 @@ class TableAdminService:
         """Permanently remove every ``orphaned`` / ``deleted`` registry row."""
         token = await self._auth.access_token()
         mappings = await self._registry.read_all(token)
-        removable = [
-            mapping for mapping in mappings if mapping.status in {"orphaned", "deleted"}
-        ]
+        removable = [mapping for mapping in mappings if mapping.status in {"orphaned", "deleted"}]
         if removable:
             await self._registry.delete_many(token, removable)
         return await self.list_identifier_mappings(ListIdentifierMappingsParams())
@@ -625,18 +621,24 @@ class TableAdminService:
             collection=name,
             primary_key="id",
             fields=full_fields,
-            create_fields=["id", *_SYSTEM_FIELDS, *declared],
-            update_fields=[*declared, *_SYSTEM_FIELDS],
+            create_fields=["id", "status", "sort", *declared],
+            update_fields=["status", "sort", *declared],
             archive_field="status",
             archive_value="archived",
             restore_value="active",
             date_updated_field="date_updated",
-            allow_permanent_delete=True,
+            allow_permanent_delete=False,
+            allow_revision_history=True,
+            allow_revision_revert=True,
         )
 
     @staticmethod
     def _profile_from_existing(name: str, fields: list[str]) -> CollectionProfile:
-        mutable = [field for field in fields if field not in {"id", "date_created", "user_created"}]
+        mutable = [
+            field
+            for field in fields
+            if field not in {"id", "date_created", "user_created", "date_updated", "user_updated"}
+        ]
         return CollectionProfile(
             collection=name,
             primary_key="id",
@@ -649,7 +651,9 @@ class TableAdminService:
             update_fields=mutable,
             archive_field="status" if "status" in fields else None,
             date_updated_field="date_updated" if "date_updated" in fields else None,
-            allow_permanent_delete=True,
+            allow_permanent_delete=False,
+            allow_revision_history=True,
+            allow_revision_revert=True,
         )
 
     def _build_collection_body(

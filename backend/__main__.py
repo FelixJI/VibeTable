@@ -111,6 +111,7 @@ from backend.rpc.dispatcher import (
     register_collaboration_errors,
     register_directus_errors,
     register_file_tools_errors,
+    register_history_errors,
     register_import_errors,
     register_insights_errors,
     register_paste_errors,
@@ -605,6 +606,7 @@ async def _build_server() -> tuple[RpcServer, Any | None]:
         # G1: full-field history ChangeSets + safe restore.
         history_service = directus_service.history_service
         if history_service is not None:
+            register_history_errors()
             dispatcher.register(
                 "history.readChangeSets",
                 history_service.read_change_sets,

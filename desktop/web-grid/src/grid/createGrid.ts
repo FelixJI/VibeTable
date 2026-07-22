@@ -32,6 +32,8 @@ import type { CalendarDateEditor } from "./calendarDateEditor";
  * Never rendered as a column; present on every row for transport.
  */
 export const ROW_KEY_FIELD = "rowKey";
+/** Synthetic narrow row-number column used for explicit whole-row selection. */
+export const ROW_NUMBER_FIELD = "__vt_row_number";
 
 /** A Tabulator column definition (structural — we only set what we use). */
 export interface GridColumnDefinition {
@@ -65,6 +67,13 @@ export interface GridColumnDefinition {
   readonly editor?: string | CalendarDateEditor;
   /** Tabulator editor params (e.g. `{ min, max }`, `{ values, autocomplete }`). */
   readonly editorParams?: Record<string, unknown>;
+  readonly width?: number;
+  readonly minWidth?: number;
+  readonly frozen?: boolean;
+  readonly headerSort?: boolean;
+  readonly resizable?: boolean;
+  readonly hozAlign?: "left" | "center" | "right";
+  readonly cssClass?: string;
 }
 
 /**
@@ -105,7 +114,7 @@ export function buildColumns(
   const editByName = new Map(
     (editSchema ?? []).map((c) => [c.name, c] as const),
   );
-  return page.columns.map((col) => {
+  const dataColumns = page.columns.map((col) => {
     const def = toColumnDef(col);
     const edit = editByName.get(col.name);
     // multi_select degrades: no host dialog in web-grid (spec §7.3).
@@ -121,6 +130,29 @@ export function buildColumns(
     }
     return { ...def, editable: false };
   });
+  return dataColumns;
+}
+
+/** Add the synthetic row-number gutter used to select exactly one whole row. */
+export function buildGridColumns(
+  page: TablePage,
+  editSchema?: readonly ColumnEditSchema[] | null,
+): GridColumnDefinition[] {
+  const rowNumber: GridColumnDefinition = {
+    field: ROW_NUMBER_FIELD,
+    title: "",
+    editable: false,
+    dataType: "integer",
+    formatter: "rownum",
+    width: 42,
+    minWidth: 42,
+    frozen: true,
+    headerSort: false,
+    resizable: false,
+    hozAlign: "center",
+    cssClass: "vt-row-number",
+  };
+  return [rowNumber, ...buildColumns(page, editSchema)];
 }
 
 function toColumnDef(col: ColumnSchema): GridColumnDefinition {
@@ -211,7 +243,7 @@ export function buildOptions(
   const onCellEdited = opts?.onCellEdited;
 
   const options: TabulatorOptions = {
-    columns: buildColumns(page, opts?.editSchema) as unknown[],
+    columns: buildGridColumns(page, opts?.editSchema) as unknown[],
     data,
     layout: "fitColumns",
     // Read-only Phase A:

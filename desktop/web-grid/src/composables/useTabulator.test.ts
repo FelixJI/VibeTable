@@ -27,6 +27,8 @@ interface MockTabulator {
   setData: ReturnType<typeof vi.fn>;
   setColumns: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
+  on: ReturnType<typeof vi.fn>;
+  off: ReturnType<typeof vi.fn>;
 }
 
 let lastMock: MockTabulator | null = null;
@@ -38,11 +40,13 @@ vi.mock("@/grid/createGrid", () => ({
       setData: vi.fn().mockResolvedValue(undefined),
       setColumns: vi.fn(),
       destroy: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
     };
     lastMock = mock;
     return mock;
   }),
-  buildColumns: vi.fn((page: TablePage) =>
+  buildGridColumns: vi.fn((page: TablePage) =>
     page.columns.map((c) => ({ field: c.name, title: c.title })),
   ),
 }));
@@ -223,7 +227,7 @@ describe("useTabulator", () => {
    * typically arrives via a separate `table.editSchemaLoaded` host event.
    */
   it("rebuilds columns via setColumns when editSchema arrives after init", async () => {
-    const { buildColumns } = await import("@/grid/createGrid");
+    const { buildGridColumns } = await import("@/grid/createGrid");
     const gridEl = ref<HTMLElement | null>(null);
     const table = useTableStore();
 
@@ -257,7 +261,7 @@ describe("useTabulator", () => {
     await flushPromises();
 
     expect(lastMock!.setColumns).toHaveBeenCalledTimes(1);
-    expect(buildColumns).toHaveBeenCalled();
+    expect(buildGridColumns).toHaveBeenCalled();
     wrapper.unmount();
   });
 
@@ -295,6 +299,37 @@ describe("useTabulator", () => {
     // Invoke the captured wrapper — it should forward to our onCellEdited.
     thirdArg.onCellEdited!(7, "name", "old", "new");
     expect(onCellEdited).toHaveBeenCalledWith(7, "name", "old", "new");
+    wrapper.unmount();
+  });
+
+  it("reports Tabulator multi-cell ranges so revision history can be disabled", async () => {
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+    const onRangeSelectionChanged = vi.fn();
+    const Host = defineComponent({
+      setup() {
+        useTabulator(gridEl, { onRangeSelectionChanged });
+        return () => h("div");
+      },
+    });
+    const wrapper = mount(Host);
+    gridEl.value = document.createElement("div");
+    table.beginLoad();
+    table.appendPage(makePage([{ rowKey: 1 }, { rowKey: 2 }], [makeColumn("status")]));
+    await flushPromises();
+
+    const rangeHandler = lastMock!.on.mock.calls.find((call) => call[0] === "rangeChanged")?.[1] as
+      | ((range: unknown) => void)
+      | undefined;
+    expect(rangeHandler).toBeTypeOf("function");
+    rangeHandler!({
+      getRows: () => [
+        { getData: () => ({ rowKey: 1 }) },
+        { getData: () => ({ rowKey: 2 }) },
+      ],
+      getColumns: () => [{ getField: () => "status" }],
+    });
+    expect(onRangeSelectionChanged).toHaveBeenCalledWith({ rowKeys: [1, 2], fields: ["status"] });
     wrapper.unmount();
   });
 

@@ -13,6 +13,7 @@ import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { usePasteStore } from "@/stores/pasteStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useTableStore } from "@/stores/tableStore";
+import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
 import type { PastePlan, PasteSummary } from "@/contracts";
 
 /**
@@ -33,11 +34,16 @@ interface Outbound {
 function makeRecordingBridge(): {
   bridge: HostBridge;
   posted: Outbound[];
+  emit: (message: unknown) => void;
 } {
   const posted: Outbound[] = [];
+  const listeners: Array<(event: { data: unknown }) => void> = [];
   const shim = {
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: (_type: "message", listener: (event: { data: unknown }) => void) => listeners.push(listener),
+    removeEventListener: (_type: "message", listener: (event: { data: unknown }) => void) => {
+      const index = listeners.indexOf(listener);
+      if (index >= 0) listeners.splice(index, 1);
+    },
     postMessage: (msg: unknown) => {
       // The bridge posts a BridgeMessage envelope object (not a string) in
       // unit-test shims (the C# host in production posts via PostWebMessageAsString,
@@ -58,7 +64,11 @@ function makeRecordingBridge(): {
   };
   const bridge = createHostBridge({ webview: shim });
   bridge.start();
-  return { bridge, posted };
+  return {
+    bridge,
+    posted,
+    emit: (message: unknown) => listeners.forEach((listener) => listener({ data: message })),
+  };
 }
 
 /**
@@ -84,7 +94,8 @@ const mockTabulatorRef: {
 
 vi.mock("@/grid/createGrid", () => ({
   createGrid: () => mockTabulatorRef.current,
-  buildColumns: () => [],
+  buildGridColumns: () => [],
+  ROW_NUMBER_FIELD: "__vt_row_number",
 }));
 
 function mountView() {
@@ -144,6 +155,72 @@ describe("WorkspaceView", () => {
     const wrapper = mountView();
     await flushPromises();
     expect(wrapper.find(".workspace").exists()).toBe(true);
+  });
+
+  it("opens whole-table history from the toolbar when there is no row or cell selection", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    useWorkspaceStore().selectTable("orders");
+    mountView();
+    await flushPromises();
+
+    const button = document.body.querySelector('[data-testid="toolbar-history"]') as HTMLElement;
+    expect(button).toBeTruthy();
+    button.click();
+    await flushPromises();
+
+    const request = posted.find((item) => item.type === "history.queryRequested");
+    expect(request?.payload).toMatchObject({ collection: "orders", scope: "table", limit: 50, offset: 0 });
+    expect(useRevisionHistoryStore().panelOpen).toBe(true);
+  });
+
+  it("uses the exact single-cell selection for the toolbar history scope", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    useWorkspaceStore().selectTable("orders");
+    const revisions = useRevisionHistoryStore();
+    revisions.setSelection({ scope: "cell", itemId: "42", field: "status" });
+    mountView();
+    await flushPromises();
+
+    (document.body.querySelector('[data-testid="toolbar-history"]') as HTMLElement).click();
+    await flushPromises();
+
+    const request = posted.find((item) => item.type === "history.queryRequested");
+    expect(request?.payload).toMatchObject({
+      collection: "orders",
+      scope: "cell",
+      itemId: "42",
+      field: "status",
+    });
+  });
+
+  it("refreshes the table and audit timeline after restore without creating a Ctrl+Z entry", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    useWorkspaceStore().selectTable("orders");
+    const undo = useHistoryStore();
+    const revisions = useRevisionHistoryStore();
+    revisions.open({ scope: "row", itemId: "42" });
+    mountView();
+    await flushPromises();
+    posted.length = 0;
+
+    emit({
+      type: "history.restoreApplied",
+      payload: {
+        collection: "orders",
+        itemId: "42",
+        restoredToRevision: "r1",
+        newRevisionId: "r3",
+        item: { id: 42, status: "new" },
+      },
+    });
+    await flushPromises();
+
+    expect(posted.some((item) => item.type === "table.selected")).toBe(true);
+    expect(posted.some((item) => item.type === "history.queryRequested")).toBe(true);
+    expect(undo.canUndo).toBe(false);
   });
 
   it("wires sidebar select -> tableService.selectTable (table.selected posted)", async () => {

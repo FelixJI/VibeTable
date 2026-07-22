@@ -36,8 +36,11 @@ describe("AppToolbar", () => {
     const workspace = useWorkspaceStore();
     workspace.selectTable("orders");
     const wrapper = mount(AppToolbar);
-    const dropdown = wrapper.getComponent(NDropdown);
-    const select = dropdown.props("onSelect") as (key: string) => void;
+    const dropdown = wrapper.findAllComponents(NDropdown).find((candidate) =>
+      (candidate.props("options") as Array<{ key: string }>).some((option) => option.key === "refresh"),
+    );
+    expect(dropdown).toBeTruthy();
+    const select = dropdown!.props("onSelect") as (key: string) => void;
     select("refresh");
     select("help");
     expect(wrapper.emitted("refresh")).toHaveLength(1);
@@ -60,6 +63,31 @@ describe("AppToolbar", () => {
     expect(button.attributes("aria-label")).toBe("插入新行");
     await button.trigger("click");
     expect(wrapper.emitted("insertRow")).toHaveLength(1);
+  });
+
+  it("opens the current history scope and exposes deleted records separately", async () => {
+    const workspace = useWorkspaceStore();
+    workspace.selectTable("orders");
+    const wrapper = mount(AppToolbar, { props: { historyScopeLabel: "记录 42 · status" } });
+
+    await wrapper.get('[data-testid="toolbar-history"]').trigger("click");
+    expect(wrapper.emitted("openHistory")).toHaveLength(1);
+
+    const dropdown = wrapper.findAllComponents(NDropdown).find((candidate) =>
+      (candidate.props("options") as Array<{ key: string }>).some((option) => option.key === "archived"),
+    );
+    expect(dropdown).toBeTruthy();
+    const select = dropdown!.props("onSelect") as (key: string) => void;
+    select("archived");
+    expect(wrapper.emitted("openArchivedHistory")).toHaveLength(1);
+  });
+
+  it("disables only the current-scope history action for a multi-cell selection", () => {
+    const workspace = useWorkspaceStore();
+    workspace.selectTable("orders");
+    const wrapper = mount(AppToolbar, { props: { historyDisabled: true } });
+    expect(wrapper.get('[data-testid="toolbar-history"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-testid="toolbar-history-menu"]').attributes("disabled")).toBeUndefined();
   });
 
   it("renders host-controlled plugin placement actions and emits only their closed key", async () => {
