@@ -71,6 +71,10 @@ def build_directus_schema(
         nullable = _is_nullable(schema=schema, meta=meta)
         data_type = _map_data_type(str(raw.get("type") or schema.get("data_type") or "string"))
         sort_value = meta.get("sort")
+        # Carry numeric precision/scale through for decimal display precision
+        # and write-side scale validation. Non-numeric fields read None.
+        precision = _optional_int(schema.get("numeric_precision"))
+        scale = _optional_int(schema.get("numeric_scale"))
         normalized.append(
             {
                 "name": name,
@@ -79,6 +83,8 @@ def build_directus_schema(
                 "nullable": nullable,
                 "primary_key": is_primary_key,
                 "readonly": name in readonly_fields,
+                "scale": scale,
+                "precision": precision,
                 "sort": sort_value if isinstance(sort_value, int) else 2**31,
             }
         )
@@ -97,6 +103,8 @@ def build_directus_schema(
             data_type=item["data_type"],
             editable=False,
             nullable=item["nullable"],
+            scale=item["scale"],
+            precision=item["precision"],
         )
         for item in normalized
     ]
@@ -162,6 +170,21 @@ def _is_nullable(*, schema: Mapping[str, Any], meta: Mapping[str, Any]) -> bool:
         return False
     nullable = schema.get("is_nullable")
     return bool(nullable) if isinstance(nullable, bool) else True
+
+
+def _optional_int(value: Any) -> int | None:
+    """Coerce a Directus numeric metadata value to ``int | None``.
+
+    Directus reports ``numeric_scale``/``numeric_precision`` as JSON numbers,
+    but malformed payloads (strings, nulls) must degrade to ``None`` rather
+    than surface a decode error.
+    """
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _map_data_type(

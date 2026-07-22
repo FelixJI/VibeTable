@@ -134,16 +134,37 @@ def _profile(manifest: CapabilityManifest) -> CollectionProfile:
     return manifest.by_collection["vibetable_demo"]
 
 
-def _fields_response(*, readonly: set[str] | None = None) -> dict[str, Any]:
+def _fields_response(
+    *,
+    readonly: set[str] | None = None,
+    decimal_scale: int | None = None,
+) -> dict[str, Any]:
     profile = _profile(_manifest())
     readonly = readonly or set()
     return {
         "data": [
-            {
-                "field": name,
-                "meta": {"readonly": name in readonly},
-                "schema": {"is_generated": False},
-            }
+            (
+                {
+                    "field": name,
+                    "type": "decimal",
+                    "meta": {"readonly": name in readonly},
+                    "schema": {
+                        "is_generated": False,
+                        "numeric_precision": 10,
+                        "numeric_scale": decimal_scale,
+                    },
+                }
+                if name == "amount" and decimal_scale is not None
+                else {
+                    "field": name,
+                    "meta": {"readonly": name in readonly},
+                    "schema": {
+                        "is_generated": False,
+                        "is_primary_key": name == profile.primary_key,
+                        "is_nullable": name != profile.primary_key,
+                    },
+                }
+            )
             for name in profile.fields
         ]
     }
@@ -186,6 +207,7 @@ def _preview_params(
     anchor_row: str | None,
     cells: list[list[PasteCell]],
     schema_revision: str | None = None,
+    anchor_column: str = "number",
 ) -> PreviewPasteParams:
     manifest = _manifest()
     profile = _profile(manifest)
@@ -194,7 +216,7 @@ def _preview_params(
             "collection": "vibetable_demo",
             "schemaRevision": schema_revision or profile.capability_hash,
             "selection": _selection(row_keys),
-            "startCell": {"rowKey": anchor_row, "column": "number"},
+            "startCell": {"rowKey": anchor_row, "column": anchor_column},
             "cells": [  # type: ignore[dict-item]
                 [cell.model_dump(by_alias=True) for cell in row] for row in cells
             ],
@@ -651,3 +673,76 @@ def test_token_store_rejects_expired_token() -> None:
     with pytest.raises(PasteError) as exc_info:
         store.resolve(token.token)
     assert exc_info.value.code == "paste_token_expired"
+
+
+@pytest.mark.asyncio
+async def test_preview_flags_value_exceeding_column_scale() -> None:
+    # The `amount` column is a 2-digit decimal; pasting 3.14159 must be flagged
+    # as a diagnostic and excluded from the change set (never reaches the bulk
+    # write, which would otherwise silently truncate it).
+    manifest = _manifest()
+    transport = FakeTransport(
+        [
+            _fields_response(decimal_scale=2),
+            {"data": {"id": "1", "amount": "1.00", "date_updated": "2026-07-14T00:00:00Z"}},
+        ]
+    )
+    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
+    bulk = BulkMutationClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
+    service = PasteService(
+        client=client,
+        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
+        bulk=bulk,
+        profiles=manifest.by_collection,
+        project="default",
+    )
+
+    plan = await service.preview(
+        _preview_params(
+            row_keys=["1"],
+            anchor_row="1",
+            cells=_cells([["3.14159"]], anchor_column="amount"),
+            anchor_column="amount",
+        )
+    )
+
+    row = plan.rows[0]
+    assert row.kind == "update"
+    # The out-of-scale cell is excluded from changes...
+    assert "amount" not in row.changes
+    # ...and surfaces as an error diagnostic.
+    assert any(d.code == "value_out_of_scale" for d in row.diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_preview_accepts_value_within_column_scale() -> None:
+    manifest = _manifest()
+    transport = FakeTransport(
+        [
+            _fields_response(decimal_scale=2),
+            {"data": {"id": "1", "amount": "1.00", "date_updated": "2026-07-14T00:00:00Z"}},
+        ]
+    )
+    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
+    bulk = BulkMutationClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
+    service = PasteService(
+        client=client,
+        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
+        bulk=bulk,
+        profiles=manifest.by_collection,
+        project="default",
+    )
+
+    plan = await service.preview(
+        _preview_params(
+            row_keys=["1"],
+            anchor_row="1",
+            cells=_cells([["3.14"]], anchor_column="amount"),
+            anchor_column="amount",
+        )
+    )
+
+    row = plan.rows[0]
+    assert row.kind == "update"
+    assert row.changes["amount"]["after"] == "3.14"
+    assert not any(d.code == "value_out_of_scale" for d in row.diagnostics)

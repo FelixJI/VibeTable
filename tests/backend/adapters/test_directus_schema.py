@@ -13,7 +13,12 @@ def _fields() -> list[dict]:
             "field": "amount",
             "type": "decimal",
             "meta": {"sort": 3, "required": False},
-            "schema": {"is_nullable": True, "is_primary_key": False},
+            "schema": {
+                "is_nullable": True,
+                "is_primary_key": False,
+                "numeric_precision": 10,
+                "numeric_scale": 2,
+            },
         },
         {
             "collection": "contracts",
@@ -197,3 +202,59 @@ def test_rejects_unreadable_or_unstable_collection(
             fields=fields,
             collection_permissions=permissions,
         )
+
+
+def test_numeric_scale_and_precision_flow_through_to_columns() -> None:
+    permissions = {"read": {"access": "full", "fields": ["*"]}}
+    plan = build_directus_schema(
+        collection="contracts",
+        fields=_fields(),
+        collection_permissions=permissions,
+    )
+    by_name = {column.name: column for column in plan.columns}
+    # The decimal `amount` field carries Directus numeric metadata.
+    assert by_name["amount"].scale == 2
+    assert by_name["amount"].precision == 10
+    # Non-numeric fields report None (no numeric_scale/precision in the payload).
+    assert by_name["name"].scale is None
+    assert by_name["name"].precision is None
+    # Integer fields report their own scale when Directus declares one.
+    assert by_name["id"].scale is None
+
+
+def test_schema_revision_changes_when_only_numeric_scale_changes() -> None:
+    permissions = {"read": {"access": "full", "fields": ["*"]}}
+    first = build_directus_schema(
+        collection="contracts",
+        fields=_fields(),
+        collection_permissions=permissions,
+    )
+    # Mutate ONLY the numeric scale of the decimal field (type unchanged) and
+    # confirm the revision hash changes — scale must be part of the hash input.
+    changed = _fields()
+    for field in changed:
+        if field["field"] == "amount":
+            field["schema"]["numeric_scale"] = 4
+    second = build_directus_schema(
+        collection="contracts",
+        fields=changed,
+        collection_permissions=permissions,
+    )
+    assert first.schema_revision != second.schema_revision
+
+
+def test_malformed_numeric_metadata_degrades_to_none() -> None:
+    # A non-integer numeric_scale must not crash schema build; it degrades to
+    # None rather than surfacing a decode error.
+    permissions = {"read": {"access": "full", "fields": ["*"]}}
+    fields = _fields()
+    for field in fields:
+        if field["field"] == "amount":
+            field["schema"]["numeric_scale"] = "not-a-number"
+    plan = build_directus_schema(
+        collection="contracts",
+        fields=fields,
+        collection_permissions=permissions,
+    )
+    by_name = {column.name: column for column in plan.columns}
+    assert by_name["amount"].scale is None

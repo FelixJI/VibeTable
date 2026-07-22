@@ -3,7 +3,7 @@ import type { TabulatorFull } from "tabulator-tables";
 
 import { useTableStore } from "@/stores/tableStore";
 import { buildGridColumns, createGrid } from "@/grid/createGrid";
-import type { CellEditedHandler } from "@/grid/createGrid";
+import type { CellEditedHandler, CellValidationErrorHandler } from "@/grid/createGrid";
 import type { ColumnEditSchema, ColumnSchema, TablePage } from "@/contracts";
 
 // Lazy CSS import — Tabulator's own stylesheet, bundled by Vite. Importing at
@@ -76,6 +76,12 @@ export interface UseTabulatorOptions {
     readonly fields: readonly string[];
   }) => void;
   /**
+   * Invoked when an inline edit fails local validation (e.g. a value with too
+   * many fractional digits). The grid has already rolled the cell back; the
+   * caller (WorkspaceView) surfaces the error as a toast/banner.
+   */
+  readonly onValidationError?: CellValidationErrorHandler;
+  /**
    * Optional EXTERNAL ref to populate with the Tabulator instance. When
    * provided (Task M5: WorkspaceView creates the ref, provides it via
    * inject, and GridHost forwards it here), useTabulator populates THIS ref
@@ -137,6 +143,14 @@ export function useTabulator(
   let rangeChangedHandler: ((range: unknown) => void) | null = null;
 
   /**
+   * Holder for the latest `onValidationError` callback. Same rationale as
+   * `currentOnCellEdited`: keeps the caller's latest closure alive across
+   * re-renders without re-initializing the grid.
+   */
+  let currentOnValidationError: CellValidationErrorHandler | undefined =
+    options?.onValidationError;
+
+  /**
    * Snapshot of the row array last handed to Tabulator (either via createGrid
    * at init or via setData). Used to skip no-op setData calls and, crucially,
    * to avoid re-pushing the seeded rows on the init flush.
@@ -173,6 +187,7 @@ export function useTabulator(
       tabulator.value = createGrid(el, firstPage, {
         editSchema: store.editSchema,
         onCellEdited: (rk, col, old, nw) => currentOnCellEdited?.(rk, col, old, nw),
+        onValidationError: (rk, col, err) => currentOnValidationError?.(rk, col, err),
       });
       const eventGrid = tabulator.value as unknown as {
         on?: (event: string, handler: (range: unknown) => void) => void;

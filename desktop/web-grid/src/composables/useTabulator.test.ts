@@ -155,13 +155,15 @@ describe("useTabulator", () => {
     await flushPromises();
 
     expect(createGrid).toHaveBeenCalledTimes(1);
-    // createGrid now takes a 3rd options arg { editSchema, onCellEdited } so
-    // editors attach on first paint when the schema has already arrived. Here
-    // no editSchema has been set, so editSchema is null and onCellEdited is
-    // a forwarding wrapper (useTabulator wraps it to avoid stale capture).
+    // createGrid now takes a 3rd options arg { editSchema, onCellEdited,
+    // onValidationError } so editors attach on first paint when the schema has
+    // already arrived. Here no editSchema has been set, so editSchema is null
+    // and the callbacks are forwarding wrappers (useTabulator wraps them to
+    // avoid stale capture).
     expect(createGrid).toHaveBeenCalledWith(gridEl.value, page1, {
       editSchema: null,
       onCellEdited: expect.any(Function),
+      onValidationError: expect.any(Function),
     });
     wrapper.unmount();
   });

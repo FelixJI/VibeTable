@@ -12,6 +12,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from backend.adapters.directus.auth import CurrentUser, DirectusAuthBroker, SessionStatus
 from backend.adapters.directus.client import DirectusClient
+from backend.adapters.directus.coerce import validate_number_field
 from backend.adapters.directus.contracts import DirectusSourceConfig
 from backend.adapters.directus.errors import DirectusSchemaError
 from backend.adapters.directus.profile import CapabilityManifest, CollectionProfile
@@ -369,6 +370,7 @@ class DirectusService:
 
     async def create(self, params: DirectusCreateParams) -> DirectusItemResult:
         profile = self._profile(params.collection)
+        await self._validate_numeric_values(profile, params.values)
         item = await self._client.create_item(
             profile,
             params.values,
@@ -378,6 +380,7 @@ class DirectusService:
 
     async def update(self, params: DirectusUpdateParams) -> DirectusItemResult:
         profile = self._profile(params.collection)
+        await self._validate_numeric_values(profile, params.values)
         item = await self._client.update_item(
             profile,
             params.item_id,
@@ -386,6 +389,38 @@ class DirectusService:
             request_id=params.request_id,
         )
         return DirectusItemResult(collection=profile.collection, item=item)
+
+    async def _validate_numeric_values(
+        self, profile: CollectionProfile, values: dict[str, Any]
+    ) -> None:
+        """Reject numeric writes that exceed a column's scale/precision.
+
+        Backstop for the frontend's local validation: catches values that would
+        otherwise be silently truncated by the database (e.g. 3.14159 into a
+        2-digit decimal column, or via direct API access bypassing the grid).
+        No-op for empty writes or non-numeric columns.
+        """
+        numeric_values = {name: value for name, value in values.items() if value is not None}
+        if not numeric_values:
+            return
+        fields = await self._client.fields(profile)
+        schema = build_directus_schema(
+            collection=profile.collection,
+            fields=fields,
+            collection_permissions={"read": {"access": "full", "fields": profile.fields}},
+        )
+        columns = {column.name: column for column in schema.columns}
+        for name, value in numeric_values.items():
+            column = columns.get(name)
+            if column is None:
+                continue
+            validate_number_field(
+                value,
+                data_type=column.data_type,
+                scale=column.scale,
+                precision=column.precision,
+                field_name=name,
+            )
 
     async def archive(self, params: DirectusItemParams) -> DirectusItemResult:
         profile = self._profile(params.collection)

@@ -37,6 +37,14 @@ export interface ColumnSchema {
   readonly editable: boolean;
   /** Whether the column may hold NULL. */
   readonly nullable: boolean;
+  /**
+   * Numeric scale (digits after the decimal point) from Directus
+   * `numeric_scale`. `null` for non-numeric fields or when Directus does not
+   * report it. Drives decimal display precision and edit-side scale checks.
+   */
+  readonly scale?: number | null;
+  /** Numeric precision (total significant digits) from Directus. */
+  readonly precision?: number | null;
 }
 
 export type TableMode = "client" | "remote";

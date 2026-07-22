@@ -24,7 +24,7 @@
 import { TabulatorFull } from "tabulator-tables";
 import type { TabulatorOptions } from "tabulator-tables";
 import type { ColumnEditSchema, ColumnSchema, TablePage } from "@/contracts";
-import { tabulatorEditor } from "./editorFactory";
+import { tabulatorEditor, validateLocally } from "./editorFactory";
 import type { CalendarDateEditor } from "./calendarDateEditor";
 
 /**
@@ -88,10 +88,23 @@ export type CellEditedHandler = (
   newValue: unknown,
 ) => void;
 
+/**
+ * Reported when an inline edit fails local validation (e.g. a value with too
+ * many fractional digits for the column's scale). The grid has already rolled
+ * the cell back to its pre-edit value; the host surfaces this for UX feedback
+ * (toast/banner) since the change was never forwarded to the mutation service.
+ */
+export type CellValidationErrorHandler = (
+  rowKey: number | string,
+  column: string,
+  error: string,
+) => void;
+
 /** Minimal Tabulator CellComponent surface our wiring relies on. */
 interface TabulatorCellLike {
   getField(): string;
   getValue(): unknown;
+  setValue(value: unknown): void;
   getRow(): { getData(): Record<string, unknown> };
 }
 
@@ -173,12 +186,15 @@ function toColumnDef(col: ColumnSchema): GridColumnDefinition {
   switch (col.dataType) {
     case "decimal":
       // Show numeric value with a thousands separator but DO NOT round or
-      // re-store. Tabulator's "money" formatter reads-only.
+      // re-store. Tabulator's "money" formatter reads-only. Precision follows
+      // the column's declared scale when Directus reports one (e.g. 2 for a
+      // money column), falling back to 6 so high-precision values are not
+      // truncated on display.
       return {
         ...def,
         formatter: "money",
         formatterParams: {
-          precision: 6, // do not truncate; show full precision
+          precision: col.scale ?? 6,
           thousand: ",",
           symbol: "",
         },
@@ -234,6 +250,7 @@ export function buildOptions(
   opts?: {
     editSchema?: readonly ColumnEditSchema[] | null;
     onCellEdited?: CellEditedHandler;
+    onValidationError?: CellValidationErrorHandler;
   },
 ): TabulatorOptions {
   // Defensive copy of rows so external mutation cannot leak back into the
@@ -241,6 +258,13 @@ export function buildOptions(
   const data = page.rows.map((row) => ({ ...row }));
 
   const onCellEdited = opts?.onCellEdited;
+  const onValidationError = opts?.onValidationError;
+  // Column editor lookup so cellEdited can validate against the column's
+  // scale/precision before forwarding to the mutation service. Built once here
+  // and shared with buildColumns above.
+  const editByName = new Map(
+    (opts?.editSchema ?? []).map((c) => [c.name, c] as const),
+  );
 
   const options: TabulatorOptions = {
     columns: buildGridColumns(page, opts?.editSchema) as unknown[],
@@ -275,7 +299,27 @@ export function buildOptions(
             const key = `${rowKey}:${field}`;
             const oldValue = editingOldValues.get(key);
             editingOldValues.delete(key);
-            onCellEdited(rowKey, field, oldValue, cell.getValue());
+            const newValue = cell.getValue();
+
+            // Validate locally BEFORE forwarding. This blocks edits that the DB
+            // would silently truncate (e.g. 3.14159 into a 2-digit decimal
+            // column) and rolls the cell back to its pre-edit value. The host's
+            // authoritative validation still runs server-side as a backstop.
+            const editCol = editByName.get(field);
+            if (editCol) {
+              const result = validateLocally(
+                editCol.editor,
+                editCol.validation,
+                newValue,
+                editCol.nullable,
+              );
+              if (!result.ok) {
+                cell.setValue(oldValue);
+                onValidationError?.(rowKey, field, result.error ?? "invalid value");
+                return;
+              }
+            }
+            onCellEdited(rowKey, field, oldValue, newValue);
           },
         }
       : {}),
@@ -298,6 +342,7 @@ export function createGrid(
   opts?: {
     editSchema?: readonly ColumnEditSchema[] | null;
     onCellEdited?: CellEditedHandler;
+    onValidationError?: CellValidationErrorHandler;
   },
 ): TabulatorFull {
   const options = buildOptions(page, opts);

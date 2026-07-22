@@ -276,6 +276,16 @@ public sealed class DirectusTableGateway : ITableRpcGateway, IDisposable
         {
             editor["dateType"] = column.DataType;
         }
+        if (column.DataType is "integer" or "float" or "decimal")
+        {
+            // Carry Directus numeric precision/scale so the web layer can drive
+            // decimal display precision and block edits that exceed the column's
+            // scale (preventing silent DB truncation). Integer columns report
+            // scale=null upstream; treat them as integer storage.
+            editor["storage"] = column.DataType == "integer" ? "integer" : "decimal";
+            editor["scale"] = column.Scale;
+            editor["precision"] = column.Precision;
+        }
         return editor;
     }
 
