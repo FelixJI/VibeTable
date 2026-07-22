@@ -166,6 +166,7 @@ export const messages: Record<string, string> = {
   "history.null": "Null",
   "history.unavailableValue": "Unavailable",
   "history.restore": "Restore this version",
+  "history.defaultArchivedVersion": "Default · pre-delete version",
   "history.restorePreview": "Restore preview",
   "history.restorePreviewHint": "Current → target values are shown below. Nothing is written before confirmation.",
   "history.restoreLoading": "Building a safe restore preview…",

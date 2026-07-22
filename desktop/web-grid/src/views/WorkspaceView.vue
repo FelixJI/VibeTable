@@ -7,9 +7,7 @@
  * CreateTableModal, DeleteConfirmModal) are PURE PRESENTATION: they read from
  * stores and emit user intent. WorkspaceView is the container that:
  *
- *   1. Calls `service.init()` on mount for every service so the inbound host
- *      events get wired to their stores (each service's `init()` subscribes to
- *      exactly the events it owns).
+ *   1. Initializes event-driven services before announcing `app.ready`.
  *   2. Translates each component emit into the corresponding outbound service
  *      call (select -> tableService.selectTable, newTable -> open create modal
  *      + admin.openCreate, etc.).
@@ -338,7 +336,6 @@ onMounted(() => {
   tableAdminService.init();
   errorRouter.init();
   pluginService.init();
-  revisionHistoryService.init();
   void pluginService.list().catch(() => undefined);
   // App.vue gates this workspace until host startup/auth is ready. Re-announce
   // app.ready only after all business subscriptions are installed so the host
@@ -346,7 +343,10 @@ onMounted(() => {
   hostBridge.notify("app.ready", {});
 });
 
-onBeforeUnmount(() => pluginService.dispose());
+onBeforeUnmount(() => {
+  revisionHistoryService.invalidate();
+  pluginService.dispose();
+});
 
 /**
  * Inline cell-edit handler for GridHost. Tabulator fires cellEdited AFTER the
@@ -370,6 +370,7 @@ function onSelect(name: string) {
   // history.clear() now happens inside tableService.selectTable so EVERY table
   // context reset clears the stack (select + refresh + any future caller).
   tableService.selectTable(name);
+  revisionHistoryService.invalidate();
   revisionHistory.reset();
   ui.rememberTable(name);
   ui.navigate("tables");

@@ -136,6 +136,34 @@ describe("RevisionHistoryDrawer", () => {
     expect(wrapper.text()).not.toContain("secret-user-id");
   });
 
+  it("marks the backend-identified pre-delete revision as the archived default", async () => {
+    const store = useRevisionHistoryStore();
+    store.open({ scope: "archived" });
+    const older = {
+      ...page.changeSets[0]!,
+      rootRevisionId: "r1",
+      activityId: "activity-older",
+      timestamp: "2026-07-21T08:00:00Z",
+      recordChanges: [{
+        ...page.changeSets[0]!.recordChanges![0]!,
+        revisionId: "r1",
+      }],
+    };
+    store.receivePage({
+      ...page,
+      scope: "archived",
+      changeSets: [page.changeSets[0]!, older],
+      archivedDefaultRevisionIds: { "42": "r1" },
+      hasMore: false,
+    });
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="history-default-r2"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="history-default-r1"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("默认 · 删除前版本");
+  });
+
   it("shows empty, unavailable, and retryable error states", async () => {
     const store = useRevisionHistoryStore();
     store.open({ scope: "table" });

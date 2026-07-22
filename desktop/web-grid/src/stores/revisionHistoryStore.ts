@@ -67,6 +67,7 @@ export const useRevisionHistoryStore = defineStore("revisionHistory", () => {
   const limit = 50;
   const capabilityHash = ref("");
   const schemaRevision = ref("");
+  const archivedDefaultRevisionIds = ref<Readonly<Record<string, string>>>({});
   const lastError = ref<string | null>(null);
   const lastErrorCode = ref<string | null>(null);
 
@@ -139,6 +140,9 @@ export const useRevisionHistoryStore = defineStore("revisionHistory", () => {
     hasMore.value = page.hasMore ?? changeSets.value.length < page.total;
     capabilityHash.value = page.capabilityHash;
     schemaRevision.value = page.schemaRevision;
+    archivedDefaultRevisionIds.value = append
+      ? { ...archivedDefaultRevisionIds.value, ...(page.archivedDefaultRevisionIds ?? {}) }
+      : page.archivedDefaultRevisionIds ?? {};
     phase.value = changeSets.value.length ? "ready" : "empty";
     lastError.value = null;
     lastErrorCode.value = null;
@@ -216,6 +220,7 @@ export const useRevisionHistoryStore = defineStore("revisionHistory", () => {
     offset.value = 0;
     capabilityHash.value = "";
     schemaRevision.value = "";
+    archivedDefaultRevisionIds.value = {};
     lastError.value = null;
     lastErrorCode.value = null;
     lastApplied.value = null;
@@ -238,6 +243,7 @@ export const useRevisionHistoryStore = defineStore("revisionHistory", () => {
     limit,
     capabilityHash,
     schemaRevision,
+    archivedDefaultRevisionIds,
     lastError,
     lastErrorCode,
     restorePhase,

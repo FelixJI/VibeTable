@@ -1366,6 +1366,7 @@ export interface HistoryPage {
   readonly hasMore?: boolean;
   readonly capabilityHash: string;
   readonly schemaRevision: string;
+  readonly archivedDefaultRevisionIds?: Readonly<Record<string, string>>;
 }
 
 /** A diagnostic for a single field in a restore preview. */

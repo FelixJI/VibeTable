@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import Sequence
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -18,6 +20,8 @@ from backend.adapters.directus.schema import directus_readonly_fields
 from backend.adapters.directus.transport import DirectusTransport
 from backend.contracts.query import TableQuery
 
+_HISTORY_RESTORE_CONTRACT = "vibetable-history-restore.v1"
+
 
 class DirectusClient:
     """Calls Directus with the current user's token and profile allowlists."""
@@ -26,6 +30,7 @@ class DirectusClient:
         self._transport = transport
         self._auth = auth
         self._readonly_fields: dict[str, set[str]] = {}
+        self._mutation_lock = asyncio.Lock()
 
     async def server_info(self) -> dict[str, Any]:
         return _response_object(await self._transport.request("GET", "/server/info"))
@@ -139,11 +144,17 @@ class DirectusClient:
         )
         return _response_list(payload), _response_meta(payload), plan
 
-    async def read_item(self, profile: CollectionProfile, item_id: str) -> dict[str, Any]:
+    async def read_item(
+        self,
+        profile: CollectionProfile,
+        item_id: str,
+        *,
+        fields: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
         payload = await self._authorized(
             "GET",
             f"/items/{_segment(profile.collection)}/{_segment(item_id)}",
-            query={"fields": profile.fields},
+            query={"fields": list(fields) if fields is not None else profile.fields},
         )
         return _response_object(payload)
 
@@ -190,6 +201,83 @@ class DirectusClient:
         expected_date_updated: str | None = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
+        async with self._mutation_lock:
+            return await self._update_item_locked(
+                profile,
+                item_id,
+                values,
+                expected_date_updated=expected_date_updated,
+                request_id=request_id,
+            )
+
+    async def update_item_if_unchanged(
+        self,
+        profile: CollectionProfile,
+        item_id: str,
+        values: dict[str, Any],
+        *,
+        expected_values: dict[str, Any],
+        read_fields: set[str] | None = None,
+        request_id: str | None = None,
+        operation: str | None = None,
+        authorization_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Conditionally update one item with a server-side field-level CAS."""
+
+        async with self._mutation_lock:
+            await self.require_write_fields(
+                profile,
+                set(values),
+                operation="update",
+                refresh=True,
+            )
+            if operation == "restore":
+                if authorization_token is None:
+                    raise DirectusSchemaError("restore requires an authorization token")
+                payload = await self._authorized(
+                    "POST",
+                    "/vibetable-bulk-mutation/restore",
+                    json_body={
+                        "contract": _HISTORY_RESTORE_CONTRACT,
+                        "authorizationToken": authorization_token,
+                    },
+                    headers={"Idempotency-Key": request_id or str(uuid.uuid4())},
+                )
+                return _response_object(payload)
+            conditions: list[dict[str, Any]] = [{profile.primary_key: {"_eq": item_id}}]
+            for field, expected in expected_values.items():
+                operator = {"_null": True} if expected is None else {"_eq": expected}
+                conditions.append({field: operator})
+            payload = await self._authorized(
+                "PATCH",
+                f"/items/{_segment(profile.collection)}",
+                query={
+                    "fields": sorted(read_fields) if read_fields is not None else profile.fields
+                },
+                json_body={
+                    "query": {"filter": {"_and": conditions}, "limit": 1},
+                    "data": values,
+                },
+                headers=_mutation_headers(request_id),
+            )
+            updated = _response_list(payload)
+            if len(updated) != 1:
+                raise DirectusTransportError(
+                    "Item was changed by another user",
+                    status=409,
+                    code="EDIT_CONFLICT",
+                )
+            return updated[0]
+
+    async def _update_item_locked(
+        self,
+        profile: CollectionProfile,
+        item_id: str,
+        values: dict[str, Any],
+        *,
+        expected_date_updated: str | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
         # Refresh at the mutation boundary: Studio can toggle readonly or a
         # migration can turn a column into a generated field after the grid's
         # schema snapshot was cached.
@@ -214,7 +302,7 @@ class DirectusClient:
             f"/items/{_segment(profile.collection)}/{_segment(item_id)}",
             query={"fields": profile.fields},
             json_body=values,
-            headers={"X-Request-ID": request_id or str(uuid.uuid4())},
+            headers=_mutation_headers(request_id),
         )
         return _response_object(payload)
 
@@ -253,6 +341,10 @@ class DirectusClient:
 
 def _segment(value: str) -> str:
     return quote(value, safe="")
+
+
+def _mutation_headers(request_id: str | None) -> dict[str, str]:
+    return {"X-Request-ID": request_id or str(uuid.uuid4())}
 
 
 def _response_object(payload: Any) -> dict[str, Any]:

@@ -19,12 +19,15 @@ public sealed class DirectusEnvMaterializerTests
         WithTemporaryDirectory(dir =>
         {
             File.WriteAllText(Path.Combine(dir, ".env.template"),
-                "KEY=__GENERATE__\nSECRET=__GENERATE__\nPORT=8055\nADMIN_EMAIL=admin@example.com\n");
+                "KEY=__GENERATE__\nSECRET=__GENERATE__\n"
+                + "VIBETABLE_HISTORY_PROOF_SECRET=__GENERATE__\n"
+                + "PORT=8055\nADMIN_EMAIL=admin@example.com\n");
 
             var env = DirectusEnvMaterializer.Materialize(dir);
 
             Assert.AreNotEqual("__GENERATE__", env["KEY"]);
             Assert.AreNotEqual("__GENERATE__", env["SECRET"]);
+            Assert.AreNotEqual("__GENERATE__", env["VIBETABLE_HISTORY_PROOF_SECRET"]);
             Assert.IsTrue(env["KEY"].Length >= 32, "generated secret should be substantial");
             StringAssert.StartsWith(File.ReadAllText(Path.Combine(dir, ".env")), "# Auto-materialized");
         });
@@ -36,15 +39,19 @@ public sealed class DirectusEnvMaterializerTests
         WithTemporaryDirectory(dir =>
         {
             File.WriteAllText(Path.Combine(dir, ".env.template"),
-                "KEY=__GENERATE__\nPORT=8055\nADMIN_EMAIL=admin@example.com\n");
+                "KEY=__GENERATE__\nVIBETABLE_HISTORY_PROOF_SECRET=__GENERATE__\n"
+                + "PORT=8055\nADMIN_EMAIL=admin@example.com\n");
 
             var first = DirectusEnvMaterializer.Materialize(dir);
             string firstKey = first["KEY"];
+            string firstProofSecret = first["VIBETABLE_HISTORY_PROOF_SECRET"];
 
             // Second run should reuse the already-generated KEY, not rotate it.
             var second = DirectusEnvMaterializer.Materialize(dir);
 
             Assert.AreEqual(firstKey, second["KEY"], "secret must not rotate on re-run");
+            Assert.AreEqual(firstProofSecret, second["VIBETABLE_HISTORY_PROOF_SECRET"],
+                "restore proof secret must not rotate on re-run");
         });
     }
 

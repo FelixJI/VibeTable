@@ -87,6 +87,16 @@ async def test_read_items_applies_profile_fields_archive_filter_and_user_token()
 
 
 @pytest.mark.asyncio
+async def test_read_item_accepts_a_live_permission_cropped_field_set() -> None:
+    transport = FakeTransport([{"data": {"id": "1", "number": "A-1"}}])
+    client = DirectusClient(transport, FakeAuth())
+
+    await client.read_item(_profile(), "1", fields=["id", "number"])
+
+    assert transport.requests[0]["query"]["fields"] == ["id", "number"]
+
+
+@pytest.mark.asyncio
 async def test_create_uses_client_uuid_and_verifies_uncertain_result() -> None:
     transport = FakeTransport(
         [
@@ -145,6 +155,55 @@ async def test_update_detects_changed_date_updated_before_patch() -> None:
     assert captured.value.code == "EDIT_CONFLICT"
     assert [request["method"] for request in transport.requests] == ["GET", "GET"]
     assert all(request["method"] != "PATCH" for request in transport.requests)
+
+
+@pytest.mark.asyncio
+async def test_conditional_update_compares_only_selected_fields_before_patch() -> None:
+    transport = FakeTransport(
+        [
+            _fields_response(),
+            {"data": {"id": "1", "number": "A-2", "status": "changed-elsewhere"}},
+        ]
+    )
+    client = DirectusClient(transport, FakeAuth())
+
+    updated = await client.update_item_if_unchanged(
+        _profile(),
+        "1",
+        {"number": "A-2"},
+        expected_values={"number": "A-1"},
+        request_id="restore-1",
+        operation="restore",
+        authorization_token="authorization-42",
+    )
+
+    assert updated["number"] == "A-2"
+    assert transport.requests[-1]["method"] == "POST"
+    assert transport.requests[-1]["path"] == "/vibetable-bulk-mutation/restore"
+    assert transport.requests[-1]["headers"] == {
+        "Idempotency-Key": "restore-1",
+    }
+    assert transport.requests[-1]["json_body"] == {
+        "contract": "vibetable-history-restore.v1",
+        "authorizationToken": "authorization-42",
+    }
+
+
+@pytest.mark.asyncio
+async def test_conditional_update_rejects_changed_selected_field_without_patch() -> None:
+    transport = FakeTransport([_fields_response(), {"data": []}])
+    client = DirectusClient(transport, FakeAuth())
+
+    with pytest.raises(DirectusTransportError) as captured:
+        await client.update_item_if_unchanged(
+            _profile(),
+            "1",
+            {"number": "A-2"},
+            expected_values={"number": "A-1"},
+        )
+
+    assert captured.value.code == "EDIT_CONFLICT"
+    assert transport.requests[-1]["method"] == "PATCH"
 
 
 def test_update_rejects_directus_readonly_field_before_patch() -> None:

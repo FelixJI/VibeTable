@@ -544,6 +544,7 @@ def build_directus_service_from_environment(
             profiles=service._profiles,
             transport=transport,
             schema_revision=manifest.schema_version,
+            proof_secret=os.environ.get("VIBETABLE_HISTORY_PROOF_SECRET"),
         )
         service.document_workspace_service = DocumentWorkspaceService(
             auth=auth,

@@ -166,6 +166,7 @@ export const messages: Record<string, string> = {
   "history.null": "空值",
   "history.unavailableValue": "不可用",
   "history.restore": "恢复到此版本",
+  "history.defaultArchivedVersion": "默认 · 删除前版本",
   "history.restorePreview": "恢复预览",
   "history.restorePreviewHint": "以下为当前值 → 目标版本值。确认后才会写回。",
   "history.restoreLoading": "正在生成安全恢复预览…",

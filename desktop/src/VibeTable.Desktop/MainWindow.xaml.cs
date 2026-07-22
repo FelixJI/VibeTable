@@ -254,6 +254,9 @@ public partial class MainWindow : Window
                     "Directus 已就绪，正在启动 VibeTable 后端。");
                 Environment.SetEnvironmentVariable("VIBETABLE_DIRECTUS_URL", url);
                 Environment.SetEnvironmentVariable("VIBETABLE_DIRECTUS_PROJECT", "default");
+                Environment.SetEnvironmentVariable(
+                    "VIBETABLE_HISTORY_PROOF_SECRET",
+                    _directusSupervisor?.HistoryProofSecret);
                 string packagedManifest = Path.Combine(
                     AppContext.BaseDirectory,
                     "directus",

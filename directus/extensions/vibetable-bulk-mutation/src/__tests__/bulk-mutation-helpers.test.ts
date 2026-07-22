@@ -8,6 +8,7 @@
  */
 
 import assert from "node:assert";
+import { createHmac } from "node:crypto";
 import { test } from "node:test";
 
 import {
@@ -15,9 +16,18 @@ import {
   CONTRACT,
   IdempotencyCache,
   MAX_OPERATIONS,
+  RESTORE_CONTRACT,
+  RESTORE_PROOF_CONTRACT,
+  RestoreAuthorizationCache,
+  RestoreProofReplayCache,
   mapError,
+  validateHistoryMarkersRequest,
+  validateRestoreApplyRequest,
+  validateRestoreRequest,
   validateRequest,
+  verifyRestoreProof,
   type BulkRequest,
+  type RestoreRequest,
 } from "../bulk-mutation-helpers.ts";
 
 function validBody(overrides: Partial<BulkRequest> = {}): BulkRequest {
@@ -34,6 +44,128 @@ function validBody(overrides: Partial<BulkRequest> = {}): BulkRequest {
 test("validateRequest accepts a well-formed request", () => {
   const result = validateRequest(validBody(), "idem-1");
   assert.equal(result.ok, true);
+});
+
+test("validateRestoreRequest accepts the narrow single-record CAS contract", () => {
+  const body: RestoreRequest = {
+    contract: RESTORE_CONTRACT,
+    collection: "orders",
+    itemId: "1",
+    targetRevision: "42",
+    scope: "cell",
+    field: "title",
+    schemaRevision: "schema-1",
+    values: { title: "Earlier" },
+    expectedValues: { title: "Current" },
+  };
+  assert.equal(validateRestoreRequest(body).ok, true);
+  assert.equal(validateRestoreRequest({ ...body, values: {} }).ok, false);
+  assert.equal(
+    validateRestoreRequest({ ...body, values: { title: "Earlier", amount: 1 } }).ok,
+    false,
+  );
+  assert.equal(
+    validateRestoreApplyRequest(
+      { contract: RESTORE_CONTRACT, authorizationToken: "token" },
+      "restore-1",
+    ).ok,
+    true,
+  );
+});
+
+test("RestoreAuthorizationCache binds user and consumes a token once", () => {
+  let now = 1000;
+  const cache = new RestoreAuthorizationCache(2, () => now);
+  const request: RestoreRequest = {
+    contract: RESTORE_CONTRACT,
+    collection: "orders",
+    itemId: "1",
+    targetRevision: "42",
+    scope: "row",
+    schemaRevision: "schema-1",
+    values: { title: "Earlier" },
+    expectedValues: { title: "Current" },
+  };
+  const authorization = cache.authorize(request, "user-1", 100);
+  assert.equal(cache.consume(authorization.token, "other-user"), undefined);
+  assert.equal(cache.consume(authorization.token, "user-1")?.targetRevision, "42");
+  const second = cache.authorize(request, "user-1", 100);
+  now = 1001;
+  assert.equal(cache.consume(second.token, "user-1")?.targetRevision, "42");
+  assert.equal(cache.consume(second.token, "user-1"), undefined);
+});
+
+test("RestoreAuthorizationCache applies its quota per user", () => {
+  const cache = new RestoreAuthorizationCache(1, () => 1000);
+  const request: RestoreRequest = {
+    contract: RESTORE_CONTRACT,
+    collection: "orders",
+    itemId: "1",
+    targetRevision: "42",
+    scope: "row",
+    schemaRevision: "schema-1",
+    values: { title: "Earlier" },
+    expectedValues: { title: "Current" },
+  };
+  const firstUser = cache.authorize(request, "user-1");
+  cache.authorize(request, "user-2");
+  cache.authorize(request, "user-2");
+  assert.equal(cache.consume(firstUser.token, "user-1")?.itemId, "1");
+});
+
+test("verifyRestoreProof authenticates and consumes a signed preview once", () => {
+  const secret = "test-history-proof-secret";
+  const request: RestoreRequest = {
+    contract: RESTORE_CONTRACT,
+    collection: "orders",
+    itemId: "1",
+    targetRevision: "42",
+    scope: "cell",
+    field: "title",
+    schemaRevision: "schema-1",
+    values: { title: "Earlier" },
+    expectedValues: { title: "Current" },
+  };
+  const issuedAt = 1000;
+  const nonce = "unique-preview-nonce-1";
+  const subject = "a".repeat(64);
+  const payload = Buffer.from(JSON.stringify(request), "utf8").toString("base64url");
+  const signature = createHmac("sha256", secret)
+    .update(`${issuedAt}\n${nonce}\n${subject}\n${payload}`, "utf8")
+    .digest("hex");
+  const proof = {
+    contract: RESTORE_PROOF_CONTRACT,
+    issuedAt,
+    nonce,
+    payload,
+    subject,
+    signature,
+  };
+  const replayCache = new RestoreProofReplayCache(2, () => issuedAt);
+  const verified = verifyRestoreProof(proof, secret, replayCache, subject, issuedAt);
+  assert.equal(verified.ok, true);
+  assert.equal(verified.ok && verified.request.field, "title");
+  assert.equal(verifyRestoreProof(proof, secret, replayCache, subject, issuedAt).ok, false);
+  assert.equal(
+    verifyRestoreProof(
+      { ...proof, nonce: "another-preview-nonce" },
+      secret,
+      replayCache,
+      subject,
+      issuedAt,
+    ).ok,
+    false,
+  );
+  assert.equal(
+    verifyRestoreProof(proof, secret, new RestoreProofReplayCache(), "b".repeat(64), issuedAt)
+      .ok,
+    false,
+  );
+});
+
+test("validateHistoryMarkersRequest bounds private marker lookups", () => {
+  assert.equal(validateHistoryMarkersRequest({ activityIds: [1, "2"] }).ok, true);
+  assert.equal(validateHistoryMarkersRequest({ activityIds: Array(501).fill(1) }).ok, false);
 });
 
 test("validateRequest rejects a missing body", () => {

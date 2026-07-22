@@ -196,7 +196,7 @@ describe("WorkspaceView", () => {
   });
 
   it("refreshes the table and audit timeline after restore without creating a Ctrl+Z entry", async () => {
-    const { bridge, posted, emit } = makeRecordingBridge();
+    const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     useWorkspaceStore().selectTable("orders");
     const undo = useHistoryStore();
@@ -206,15 +206,15 @@ describe("WorkspaceView", () => {
     await flushPromises();
     posted.length = 0;
 
-    emit({
-      type: "history.restoreApplied",
-      payload: {
-        collection: "orders",
-        itemId: "42",
-        restoredToRevision: "r1",
-        newRevisionId: "r3",
-        item: { id: 42, status: "new" },
-      },
+    // Correlated restore responses are consumed by the service, which commits
+    // the validated result to the store. Exercise the container reaction from
+    // that boundary instead of simulating an obsolete broadcast response.
+    revisions.completeRestore({
+      collection: "orders",
+      itemId: "42",
+      restoredToRevision: "r1",
+      newRevisionId: "r3",
+      item: { id: 42, status: "new" },
     });
     await flushPromises();
 

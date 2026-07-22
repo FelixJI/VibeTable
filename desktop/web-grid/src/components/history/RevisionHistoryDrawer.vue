@@ -83,10 +83,20 @@ const actionOptions = computed(() => [
   { label: t("history.action.restore"), value: "restore" },
 ]);
 const fieldSelectOptions = computed(() => [...props.fieldOptions]);
-const expandedByDefault = computed(() => store.changeSets[0]
-  ? [changeSetKey(store.changeSets[0], 0)]
-  : []);
+const expandedByDefault = computed(() => {
+  if (store.scope === "archived") {
+    const defaults = new Set(Object.values(store.archivedDefaultRevisionIds));
+    const index = store.changeSets.findIndex((changeSet) =>
+      recordsFor(changeSet).some((record) => defaults.has(record.revisionId)));
+    if (index >= 0) return [changeSetKey(store.changeSets[index]!, index)];
+  }
+  return store.changeSets[0] ? [changeSetKey(store.changeSets[0], 0)] : [];
+});
 const previewOpen = computed(() => store.restorePhase !== "idle");
+const archivedDefaultRevisionIds = computed(() => {
+  if (store.scope !== "archived") return new Set<string>();
+  return new Set(Object.values(store.archivedDefaultRevisionIds));
+});
 const restoreFailureText = computed(() => {
   if (store.restoreErrorCode === "restore_conflict" || store.restoreErrorCode === "schema_drift") {
     return t("history.restoreConflict");
@@ -224,6 +234,10 @@ function requestPreview(record: HistoryRecordChange): void {
     revisionId: record.revisionId,
     field: store.scope === "cell" ? store.field : null,
   });
+}
+
+function isDefaultArchivedTarget(record: HistoryRecordChange): boolean {
+  return archivedDefaultRevisionIds.value.has(record.revisionId);
 }
 
 function closeDrawer(): void {
@@ -395,22 +409,31 @@ function closeDrawer(): void {
             <div class="record-list">
               <section v-for="record in recordsFor(changeSet)" :key="record.revisionId" class="record-change">
                 <header>
-                  <div>
+                  <div class="record-identity">
                     <strong>{{ record.recordLabel || record.itemId || t('history.unknownRecord') }}</strong>
                     <span>{{ t('history.revision', { id: record.revisionId }) }}</span>
                   </div>
-                  <NButton
-                    v-if="store.scope !== 'table' || record.itemId"
-                    size="tiny"
-                    tertiary
-                    type="primary"
-                    :disabled="!record.itemId"
-                    :data-testid="`history-preview-${record.revisionId}`"
-                    @click.stop="requestPreview(record)"
-                  >
-                    <template #icon><NIcon><RotateCcw /></NIcon></template>
-                    {{ t('history.restore') }}
-                  </NButton>
+                  <div class="record-actions">
+                    <NTag
+                      v-if="isDefaultArchivedTarget(record)"
+                      size="small"
+                      :bordered="false"
+                      type="success"
+                      :data-testid="`history-default-${record.revisionId}`"
+                    >{{ t('history.defaultArchivedVersion') }}</NTag>
+                    <NButton
+                      v-if="store.scope !== 'table' || record.itemId"
+                      size="tiny"
+                      tertiary
+                      type="primary"
+                      :disabled="!record.itemId"
+                      :data-testid="`history-preview-${record.revisionId}`"
+                      @click.stop="requestPreview(record)"
+                    >
+                      <template #icon><NIcon><RotateCcw /></NIcon></template>
+                      {{ t('history.restore') }}
+                    </NButton>
+                  </div>
                 </header>
                 <div class="diff-table">
                   <div v-for="change in record.scalarChanges" :key="`s-${change.field}`" class="diff-row">
@@ -543,9 +566,10 @@ function closeDrawer(): void {
 .record-list { display: flex; flex-direction: column; gap: 8px; }
 .record-change { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-md); background: var(--vt-bg-subtle); }
 .record-change > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 38px; padding: 5px 8px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg-elevated); }
-.record-change > header > div { display: flex; min-width: 0; flex-direction: column; }
+.record-change > header > .record-identity { display: flex; min-width: 0; flex-direction: column; }
 .record-change > header strong { overflow: hidden; font-size: var(--vt-font-caption); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .record-change > header span { color: var(--vt-fg-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.record-actions { display: flex; align-items: center; gap: 5px; }
 .diff-table, .preview-diffs { display: flex; flex-direction: column; }
 .diff-row { display: grid; grid-template-columns: minmax(68px, .65fr) minmax(0, 1fr) 15px minmax(0, 1fr); align-items: center; min-height: 33px; gap: 5px; padding: 5px 8px; border-bottom: 1px solid var(--vt-border); }
 .diff-row:last-child { border-bottom: 0; }

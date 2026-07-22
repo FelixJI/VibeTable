@@ -1,34 +1,15 @@
 import type {
+  HistoryPage,
   HistoryApplyRestorePayload,
   HistoryPreviewRestorePayload,
   HistoryQueryPayload,
-  OperationFailedPayload,
+  RestorePreview,
+  RestoreResult,
 } from "@/contracts";
+import { BridgeOperationError } from "@/bridge/hostBridge";
 import { useRevisionHistoryStore, type OpenRevisionHistorySelection } from "@/stores/revisionHistoryStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useHostBridge } from "./bridgeContext";
-
-const HISTORY_FAILURE_CODES = new Set([
-  "history_not_allowed",
-  "history_field_unreadable",
-  "archive_not_supported",
-  "restore_not_allowed",
-  "restore_token_unknown",
-  "restore_token_expired",
-  "restore_scope_mismatch",
-  "restore_conflict",
-  "schema_drift",
-  "restore_no_fields",
-  "target_revision_invalid",
-  "relation_target_unavailable",
-  "revision_not_created",
-  "history_cancelled",
-  "history_backend_unavailable",
-  "history_query_failed",
-  "history_preview_failed",
-  "history_apply_failed",
-  "history_operation_failed",
-]);
 
 export interface RestoreTarget {
   readonly itemId: string;
@@ -38,7 +19,7 @@ export interface RestoreTarget {
 
 /** Typed adapter for persistent server revision history (never the undo store). */
 export function useRevisionHistoryService(): {
-  init: () => void;
+  invalidate: () => void;
   open: (selection: OpenRevisionHistorySelection | { scope: "archived" }) => void;
   close: () => void;
   refresh: () => void;
@@ -49,52 +30,46 @@ export function useRevisionHistoryService(): {
   const bridge = useHostBridge();
   const store = useRevisionHistoryStore();
   const workspace = useWorkspaceStore();
-  let initialized = false;
+  let queryGeneration = 0;
+  let previewGeneration = 0;
+  let applyGeneration = 0;
 
-  function init(): void {
-    if (initialized) return;
-    initialized = true;
-    bridge.on("history.pageLoaded", (payload) => {
-      const append = store.phase === "loadingMore";
-      store.receivePage(payload, append);
-    });
-    bridge.on("history.restorePreviewReady", (payload) => {
-      store.receivePreview(payload);
-    });
-    bridge.on("history.restoreApplied", (payload) => {
-      store.completeRestore(payload);
-    });
-    bridge.on("operation.failed", (payload) => routeFailure(payload));
+  function invalidate(): void {
+    queryGeneration += 1;
+    previewGeneration += 1;
+    applyGeneration += 1;
   }
 
-  function routeFailure(payload: OperationFailedPayload): void {
-    const code = payload.code ?? null;
-    if (code && !HISTORY_FAILURE_CODES.has(code)) return;
-    if (store.restorePhase !== "idle") {
-      store.failRestore(payload.message, code);
-      return;
+  function failure(error: unknown): { message: string; code: string | null } {
+    if (error instanceof BridgeOperationError) {
+      return { message: error.message, code: error.code ?? null };
     }
-    if (store.phase === "loading" || store.phase === "loadingMore") {
-      store.failLoad(payload.message, code);
-    }
+    return {
+      message: error instanceof Error ? error.message : String(error),
+      code: null,
+    };
   }
 
   function open(selection: OpenRevisionHistorySelection | { scope: "archived" }): void {
+    previewGeneration += 1;
+    applyGeneration += 1;
     store.open(selection);
-    query(false);
+    void query(false);
   }
 
   function close(): void {
+    invalidate();
     store.close();
   }
 
-  function query(append: boolean): void {
+  async function query(append: boolean): Promise<void> {
     const collection = workspace.currentTable;
     if (!collection) {
       store.failLoad("请先选择一张数据表");
       return;
     }
     store.beginLoad(append);
+    const generation = ++queryGeneration;
     const filters = store.query;
     const payload: HistoryQueryPayload = {
       collection,
@@ -110,16 +85,24 @@ export function useRevisionHistoryService(): {
       limit: store.limit,
       offset: append ? store.offset : 0,
     };
-    bridge.notify("history.queryRequested", payload);
+    try {
+      const page = await bridge.request("history.queryRequested", payload) as HistoryPage;
+      if (generation !== queryGeneration || workspace.currentTable !== collection) return;
+      store.receivePage(page, append);
+    } catch (error) {
+      if (generation !== queryGeneration || workspace.currentTable !== collection) return;
+      const mapped = failure(error);
+      store.failLoad(mapped.message, mapped.code);
+    }
   }
 
   function refresh(): void {
-    query(false);
+    void query(false);
   }
 
   function loadMore(): void {
     if (!store.hasMore || store.phase === "loading" || store.phase === "loadingMore") return;
-    query(true);
+    void query(true);
   }
 
   function previewRestore(target: RestoreTarget): void {
@@ -130,6 +113,7 @@ export function useRevisionHistoryService(): {
       : store.scope === "archived" ? "archived" : "row";
     const field = restoreScope === "cell" ? target.field ?? store.field : undefined;
     store.beginPreview({ ...target, field });
+    const generation = ++previewGeneration;
     const payload: HistoryPreviewRestorePayload = {
       collection,
       itemId: target.itemId,
@@ -137,7 +121,16 @@ export function useRevisionHistoryService(): {
       field: field ?? undefined,
       targetRevision: target.revisionId,
     };
-    bridge.notify("history.previewRestoreRequested", payload);
+    void bridge.request("history.previewRestoreRequested", payload)
+      .then((preview) => {
+        if (generation !== previewGeneration || workspace.currentTable !== collection) return;
+        store.receivePreview(preview as RestorePreview);
+      })
+      .catch((error: unknown) => {
+        if (generation !== previewGeneration || workspace.currentTable !== collection) return;
+        const mapped = failure(error);
+        store.failRestore(mapped.message, mapped.code);
+      });
   }
 
   function applyRestore(): void {
@@ -146,9 +139,19 @@ export function useRevisionHistoryService(): {
     const token = store.preview?.token;
     if (!collection || !itemId || !token || !store.canApply) return;
     store.beginApply();
+    const generation = ++applyGeneration;
     const payload: HistoryApplyRestorePayload = { collection, itemId, token };
-    bridge.notify("history.applyRestoreRequested", payload);
+    void bridge.request("history.applyRestoreRequested", payload)
+      .then((result) => {
+        if (generation !== applyGeneration || workspace.currentTable !== collection) return;
+        store.completeRestore(result as RestoreResult);
+      })
+      .catch((error: unknown) => {
+        if (generation !== applyGeneration || workspace.currentTable !== collection) return;
+        const mapped = failure(error);
+        store.failRestore(mapped.message, mapped.code);
+      });
   }
 
-  return { init, open, close, refresh, loadMore, previewRestore, applyRestore };
+  return { invalidate, open, close, refresh, loadMore, previewRestore, applyRestore };
 }

@@ -20,6 +20,7 @@ function setupBridge() {
   };
   const bridge = createHostBridge({ webview, timeoutMs: 1_000 });
   bridge.start();
+  activeBridges.push(bridge);
   return {
     bridge,
     posted,
@@ -27,9 +28,24 @@ function setupBridge() {
   };
 }
 
+const activeBridges: ReturnType<typeof createHostBridge>[] = [];
+
+function replyToLast(
+  harness: ReturnType<typeof setupBridge>,
+  type: string,
+  payload: unknown,
+): void {
+  const requestId = harness.posted.at(-1)?.requestId;
+  expect(typeof requestId).toBe("string");
+  harness.emit({ type, requestId, payload });
+}
+
 describe("revisionHistoryService", () => {
   beforeEach(() => setActivePinia(createPinia()));
-  afterEach(() => setHostBridgeForTesting(null));
+  afterEach(() => {
+    for (const bridge of activeBridges.splice(0)) bridge.stop();
+    setHostBridgeForTesting(null);
+  });
 
   it("opens the selected cell scope and posts a server-side filtered query", () => {
     const harness = setupBridge();
@@ -39,12 +55,12 @@ describe("revisionHistoryService", () => {
     const store = useRevisionHistoryStore();
     store.updateQuery({ search: "客户 A", actions: ["update"], actorId: "u1" });
     const service = useRevisionHistoryService();
-    service.init();
 
     service.open({ scope: "cell", itemId: "42", field: "status" });
 
     expect(harness.posted.at(-1)).toMatchObject({
       type: "history.queryRequested",
+      requestId: expect.any(String),
       payload: {
         collection: "orders",
         scope: "cell",
@@ -60,13 +76,12 @@ describe("revisionHistoryService", () => {
     expect(store.phase).toBe("loading");
   });
 
-  it("receives a page and requests the next offset without replacing prior entries", () => {
+  it("receives a page and requests the next offset without replacing prior entries", async () => {
     const harness = setupBridge();
     setHostBridgeForTesting(harness.bridge);
     useWorkspaceStore().selectTable("orders");
     const store = useRevisionHistoryStore();
     const service = useRevisionHistoryService();
-    service.init();
     service.open({ scope: "table" });
     const payload: HistoryPage = {
       collection: "orders",
@@ -86,8 +101,8 @@ describe("revisionHistoryService", () => {
       capabilityHash: "cap",
       schemaRevision: "schema",
     };
-    harness.emit({ type: "history.pageLoaded", payload });
-    expect(store.changeSets).toHaveLength(1);
+    replyToLast(harness, "history.pageLoaded", payload);
+    await vi.waitFor(() => expect(store.changeSets).toHaveLength(1));
 
     service.loadMore();
     expect(harness.posted.at(-1)).toMatchObject({
@@ -96,13 +111,12 @@ describe("revisionHistoryService", () => {
     });
   });
 
-  it("runs preview then apply with the short-lived token", () => {
+  it("runs preview then apply with the short-lived token", async () => {
     const harness = setupBridge();
     setHostBridgeForTesting(harness.bridge);
     useWorkspaceStore().selectTable("orders");
     const store = useRevisionHistoryStore();
     const service = useRevisionHistoryService();
-    service.init();
     service.open({ scope: "cell", itemId: "42", field: "status" });
     service.previewRestore({ itemId: "42", revisionId: "r1", field: "status" });
     expect(harness.posted.at(-1)).toMatchObject({
@@ -125,7 +139,8 @@ describe("revisionHistoryService", () => {
       token: "token-1",
       expiresAt: "2026-07-22T09:00:00Z",
     };
-    harness.emit({ type: "history.restorePreviewReady", payload: preview });
+    replyToLast(harness, "history.restorePreviewReady", preview);
+    await vi.waitFor(() => expect(store.restorePhase).toBe("ready"));
     service.applyRestore();
     expect(harness.posted.at(-1)).toMatchObject({
       type: "history.applyRestoreRequested",
@@ -134,21 +149,20 @@ describe("revisionHistoryService", () => {
     expect(store.restorePhase).toBe("applying");
   });
 
-  it("surfaces capability and optimistic-lock failures in distinct states", () => {
+  it("surfaces capability and optimistic-lock failures in distinct states", async () => {
     const harness = setupBridge();
     setHostBridgeForTesting(harness.bridge);
     useWorkspaceStore().selectTable("orders");
     const store = useRevisionHistoryStore();
     const service = useRevisionHistoryService();
-    service.init();
     service.open({ scope: "table" });
-    harness.emit({ type: "operation.failed", payload: { message: "disabled", code: "history_not_allowed" } });
-    expect(store.phase).toBe("unavailable");
+    replyToLast(harness, "operation.failed", { message: "disabled", code: "history_not_allowed" });
+    await vi.waitFor(() => expect(store.phase).toBe("unavailable"));
 
     service.open({ scope: "row", itemId: "42" });
     service.previewRestore({ itemId: "42", revisionId: "r1" });
-    harness.emit({ type: "operation.failed", payload: { message: "changed", code: "restore_conflict" } });
-    expect(store.restorePhase).toBe("failed");
+    replyToLast(harness, "operation.failed", { message: "changed", code: "restore_conflict" });
+    await vi.waitFor(() => expect(store.restorePhase).toBe("failed"));
     expect(store.restoreErrorCode).toBe("restore_conflict");
   });
 
@@ -158,12 +172,83 @@ describe("revisionHistoryService", () => {
     useWorkspaceStore().selectTable("orders");
     const store = useRevisionHistoryStore();
     const service = useRevisionHistoryService();
-    service.init();
     store.hasMore = true;
     store.phase = "loadingMore";
     const before = harness.posted.length;
     service.loadMore();
     expect(harness.posted).toHaveLength(before);
-    expect(vi.isMockFunction(harness.bridge.notify)).toBe(false);
+    expect(vi.isMockFunction(harness.bridge.request)).toBe(false);
+  });
+
+  it("ignores an older query response after a newer refresh completes", async () => {
+    const harness = setupBridge();
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const store = useRevisionHistoryStore();
+    const service = useRevisionHistoryService();
+    service.open({ scope: "table" });
+    const oldRequestId = harness.posted.at(-1)?.requestId;
+    service.refresh();
+    const newRequestId = harness.posted.at(-1)?.requestId;
+    const freshPage: HistoryPage = {
+      collection: "orders",
+      scope: "table",
+      changeSets: [],
+      total: 0,
+      hasMore: false,
+      capabilityHash: "fresh",
+      schemaRevision: "schema",
+    };
+    harness.emit({ type: "history.pageLoaded", requestId: newRequestId, payload: freshPage });
+    await vi.waitFor(() => expect(store.capabilityHash).toBe("fresh"));
+    harness.emit({
+      type: "history.pageLoaded",
+      requestId: oldRequestId,
+      payload: { ...freshPage, capabilityHash: "stale" },
+    });
+    await Promise.resolve();
+    expect(store.capabilityHash).toBe("fresh");
+  });
+
+  it("ignores a response after invalidation even when the same table is reselected", async () => {
+    const harness = setupBridge();
+    setHostBridgeForTesting(harness.bridge);
+    const workspace = useWorkspaceStore();
+    workspace.selectTable("orders");
+    const store = useRevisionHistoryStore();
+    const service = useRevisionHistoryService();
+    service.open({ scope: "table" });
+    const requestId = harness.posted.at(-1)?.requestId;
+
+    service.invalidate();
+    workspace.selectTable("orders");
+    store.reset();
+    harness.emit({
+      type: "history.pageLoaded",
+      requestId,
+      payload: {
+        collection: "orders",
+        changeSets: [],
+        total: 0,
+        capabilityHash: "stale",
+        schemaRevision: "schema",
+      },
+    });
+    await Promise.resolve();
+
+    expect(store.phase).toBe("idle");
+    expect(store.capabilityHash).toBe("");
+  });
+
+  it("settles the store for an unknown correlated error code", async () => {
+    const harness = setupBridge();
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const store = useRevisionHistoryStore();
+    useRevisionHistoryService().open({ scope: "table" });
+
+    replyToLast(harness, "operation.failed", { message: "unexpected", code: "future_code" });
+    await vi.waitFor(() => expect(store.phase).toBe("failed"));
+    expect(store.lastErrorCode).toBe("future_code");
   });
 });

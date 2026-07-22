@@ -141,7 +141,8 @@ public sealed class G1HistoryFixtureTests
                   {"revisionId":"rev-1","itemId":"p-2","recordLabel":"Beta","action":"update","scalarChanges":[],"relationChanges":[]}
                 ]
               }],
-              "total":2,"capabilityHash":"cap","schemaRevision":"schema-1","hasMore":true
+              "total":2,"capabilityHash":"cap","schemaRevision":"schema-1","hasMore":true,
+              "archivedDefaultRevisionIds":{"p-1":"rev-1"}
             }
             """;
 
@@ -153,6 +154,7 @@ public sealed class G1HistoryFixtureTests
         Assert.IsNull(page.ItemId);
         Assert.AreEqual(2, page.ChangeSets[0].AffectedRecords);
         Assert.AreEqual("p-2", page.ChangeSets[0].RecordChanges![1].ItemId);
+        Assert.AreEqual("rev-1", page.ArchivedDefaultRevisionIds!["p-1"]);
 
         var parameters = new ReadChangeSetsParams(
             "projects", "p-1", 50, 0, "cell", "status", "draft",

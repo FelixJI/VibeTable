@@ -19,6 +19,7 @@ Design notes (implementation plan §6.3):
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -154,8 +155,8 @@ class ReadChangeSetsParams(HistoryModel):
     item_id: str | None = Field(default=None, min_length=1, max_length=128)
     field: str | None = Field(default=None, min_length=1, max_length=128)
     search: str | None = Field(default=None, max_length=512)
-    date_from: str | None = Field(default=None, max_length=64)
-    date_to: str | None = Field(default=None, max_length=64)
+    date_from: datetime | None = None
+    date_to: datetime | None = None
     actor_id: str | None = Field(default=None, max_length=128)
     actions: list[str] = Field(default_factory=list, max_length=16)
     record_id: str | None = Field(default=None, max_length=128)
@@ -181,6 +182,7 @@ class HistoryPage(HistoryModel):
     capability_hash: str = Field(min_length=1)
     schema_revision: str = Field(min_length=1)
     has_more: bool = False
+    archived_default_revision_ids: dict[str, str] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

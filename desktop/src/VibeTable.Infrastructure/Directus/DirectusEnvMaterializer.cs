@@ -38,7 +38,13 @@ public static class DirectusEnvMaterializer
     public const int DefaultPort = 49152;
 
     private const string GeneratePlaceholder = "__GENERATE__";
-    private static readonly string[] GeneratedKeys = { "KEY", "SECRET", "ADMIN_PASSWORD" };
+    private static readonly string[] GeneratedKeys =
+    {
+        "KEY",
+        "SECRET",
+        "ADMIN_PASSWORD",
+        "VIBETABLE_HISTORY_PROOF_SECRET",
+    };
 
     /// <summary>
     /// Probe range for port-conflict evasion. Exposed for tests so the

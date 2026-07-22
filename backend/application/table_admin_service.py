@@ -5,6 +5,7 @@ import unicodedata
 import uuid
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
+from urllib.parse import quote
 
 from backend.adapters.directus.profile import CollectionProfile
 from backend.application.identifier_mapping_service import (
@@ -224,7 +225,15 @@ class TableAdminService:
             "GET",
             "/collections",
             access_token=token,
-            query={"limit": -1, "fields": ["collection", "meta.translations", "meta.hidden"]},
+            query={
+                "limit": -1,
+                "fields": [
+                    "collection",
+                    "meta.translations",
+                    "meta.hidden",
+                    "meta.accountability",
+                ],
+            },
         )
         raw_collections = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(raw_collections, list):
@@ -265,6 +274,13 @@ class TableAdminService:
             ):
                 continue
             present.add(collection)
+            if not isinstance(raw_meta, Mapping) or raw_meta.get("accountability") != "all":
+                await self._transport.request(
+                    "PATCH",
+                    f"/collections/{quote(collection, safe='')}",
+                    access_token=token,
+                    json_body={"meta": {"accountability": "all"}},
+                )
             mapped = collection_maps.get(collection)
             display = mapped.display_name if mapped else translated_title(raw_meta, collection)
             if mapped is None:

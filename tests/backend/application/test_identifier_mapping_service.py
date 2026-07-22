@@ -60,6 +60,11 @@ class _StatefulTransport:
         if method == "GET" and path.startswith("/fields/"):
             collection = path.rsplit("/", 1)[-1]
             return {"data": self.collections[collection].get("fields", [])}
+        if method == "PATCH" and path.startswith("/collections/"):
+            collection = path.rsplit("/", 1)[-1]
+            assert isinstance(body, dict)
+            self.collections[collection].setdefault("meta", {}).update(body.get("meta", {}))
+            return {"data": self.collections[collection]}
         if method == "DELETE" and path.startswith("/collections/"):
             self.collections.pop(path.rsplit("/", 1)[-1], None)
             return {}
@@ -172,6 +177,7 @@ async def test_reconcile_adopts_external_collection_and_field_translation() -> N
 
     assert labels == {"legacy_orders": "历史订单"}
     assert "legacy_orders" in profiles
+    assert transport.collections["legacy_orders"]["meta"]["accountability"] == "all"
     adopted = list(transport.mappings.values())
     assert {
         (item["entity_kind"], item["physical_name"], item["display_name"]) for item in adopted
@@ -347,9 +353,7 @@ async def test_delete_identifier_mapping_purges_orphaned_and_deleted_rows() -> N
     assert any(item.id == active.id and item.status == "active" for item in result.mappings)
 
     with pytest.raises(TableAdminError) as error:
-        await service.delete_identifier_mapping(
-            DeleteIdentifierMappingParams(mapping_id=active.id)
-        )
+        await service.delete_identifier_mapping(DeleteIdentifierMappingParams(mapping_id=active.id))
     assert error.value.code == "mapping_not_removable"
 
     with pytest.raises(TableAdminError) as error:

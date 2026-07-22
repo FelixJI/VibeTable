@@ -57,6 +57,7 @@ public sealed class DirectusSupervisor : IAsyncDisposable
     private Task? _stdoutTask;
     private Task? _stderrTask;
     private string? _baseUrl;
+    private string? _historyProofSecret;
     private string? _nodeExe;
     private (DirectusSchemaBootstrapper Bootstrapper, IDictionary<string, string> Env)? _pendingSchemaApply;
 
@@ -93,6 +94,12 @@ public sealed class DirectusSupervisor : IAsyncDisposable
     /// MUST use the same host string this URL reports.
     /// </summary>
     public string? BaseUrl => _baseUrl;
+
+    /// <summary>
+    /// Session-local proof key shared with the Python backend. It is never
+    /// logged or persisted outside Directus' already-protected local .env.
+    /// </summary>
+    public string? HistoryProofSecret => _historyProofSecret;
 
     /// <summary>Raised whenever the Directus lifecycle state changes.</summary>
     public event Action<object?, DirectusState>? StateChanged;
@@ -153,6 +160,12 @@ public sealed class DirectusSupervisor : IAsyncDisposable
             _options.Environment.TryGetValue("VIBETABLE_DIRECTUS_BOOTSTRAP_PASSWORD", out bsPassword);
             var env = DirectusEnvMaterializer.Materialize(
                 _options.LocalDirectusDirectory, bsEmail, bsPassword, alreadyBootstrapped);
+            _historyProofSecret = env.GetValueOrDefault("VIBETABLE_HISTORY_PROOF_SECRET");
+            if (string.IsNullOrWhiteSpace(_historyProofSecret))
+            {
+                throw new InvalidOperationException(
+                    "Local Directus restore proof secret is unavailable.");
+            }
             // 2. Resolve a free port + persist it into .env.
             // PORT default + parse fallback must track DirectusEnvMaterializer.DefaultPort
             // (not the legacy well-known 8055) so a template that loses its PORT line

@@ -8,7 +8,11 @@
  * deployment environment.
  */
 
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+
 export const CONTRACT = "vibetable-bulk-mutation.v1";
+export const RESTORE_CONTRACT = "vibetable-history-restore.v1";
+export const RESTORE_PROOF_CONTRACT = "vibetable-history-preview-proof.v1";
 export const MAX_OPERATIONS = 10_000;
 const MAX_IDEMPOTENCY_ENTRIES = 1024;
 
@@ -40,9 +44,45 @@ export interface BulkResult {
   conflicts: ConflictRow[];
 }
 
+export interface RestoreRequest {
+  contract: string;
+  collection: string;
+  itemId: string;
+  targetRevision: string;
+  scope: "row" | "cell" | "archived";
+  field?: string | null;
+  schemaRevision: string;
+  values: Record<string, unknown>;
+  expectedValues: Record<string, unknown>;
+}
+
+export interface RestoreApplyRequest {
+  contract: string;
+  authorizationToken: string;
+}
+
+export interface RestoreProofRequest {
+  contract: string;
+  issuedAt: number;
+  nonce: string;
+  payload: string;
+  subject: string;
+  signature: string;
+}
+
+export interface HistoryMarkersRequest {
+  activityIds: Array<string | number>;
+}
+
 export interface CachedResult {
   status: number;
   body: unknown;
+}
+
+interface RestoreAuthorization {
+  request: RestoreRequest;
+  user: string;
+  expiresAt: number;
 }
 
 /**
@@ -94,6 +134,225 @@ export function validateRequest(
     if (!op.values || typeof op.values !== "object") {
       return { ok: false, error: "operation values must be an object" };
     }
+  }
+  return { ok: true };
+}
+
+/** Validate the narrow, server-marked single-record restore contract. */
+export function validateRestoreRequest(
+  body: RestoreRequest | undefined,
+): { ok: true } | { ok: false; error: string } {
+  if (!body || typeof body !== "object") {
+    return { ok: false, error: "request body is required" };
+  }
+  if (body.contract !== RESTORE_CONTRACT) {
+    return { ok: false, error: `unsupported contract '${body.contract}'` };
+  }
+  if (!body.collection || !body.itemId || !body.targetRevision || !body.schemaRevision) {
+    return {
+      ok: false,
+      error: "collection, itemId, targetRevision and schemaRevision are required",
+    };
+  }
+  if (!["row", "cell", "archived"].includes(body.scope)) {
+    return { ok: false, error: "scope is invalid" };
+  }
+  if (body.scope === "cell" && !body.field) {
+    return { ok: false, error: "field is required for cell scope" };
+  }
+  if (!body.values || typeof body.values !== "object" || Array.isArray(body.values)) {
+    return { ok: false, error: "values must be an object" };
+  }
+  if (Object.keys(body.values).length === 0 || Object.keys(body.values).length > 100) {
+    return { ok: false, error: "values must contain between 1 and 100 fields" };
+  }
+  if (
+    body.scope === "cell" &&
+    (Object.keys(body.values).length !== 1 || !body.field || !(body.field in body.values))
+  ) {
+    return { ok: false, error: "cell restore values must contain only the selected field" };
+  }
+  if (
+    !body.expectedValues ||
+    typeof body.expectedValues !== "object" ||
+    Array.isArray(body.expectedValues)
+  ) {
+    return { ok: false, error: "expectedValues must be an object" };
+  }
+  if (
+    Object.keys(body.expectedValues).length === 0 ||
+    Object.keys(body.values).some((field) => !(field in body.expectedValues))
+  ) {
+    return { ok: false, error: "expectedValues must cover every restored field" };
+  }
+  return { ok: true };
+}
+
+export function validateRestoreApplyRequest(
+  body: RestoreApplyRequest | undefined,
+  idempotencyKey: string | undefined,
+): { ok: true } | { ok: false; error: string } {
+  if (!body || body.contract !== RESTORE_CONTRACT || !body.authorizationToken) {
+    return { ok: false, error: "a valid restore authorization token is required" };
+  }
+  if (!idempotencyKey) {
+    return { ok: false, error: "Idempotency-Key header is required" };
+  }
+  return { ok: true };
+}
+
+export class RestoreAuthorizationCache {
+  private readonly entries = new Map<string, RestoreAuthorization>();
+  private readonly userTokens = new Map<string, Map<string, true>>();
+  private readonly perUserBound: number;
+  private readonly totalBound: number;
+  private readonly now: () => number;
+
+  constructor(
+    perUserBound = 32,
+    now: () => number = Date.now,
+    totalBound = MAX_IDEMPOTENCY_ENTRIES * 32,
+  ) {
+    this.perUserBound = perUserBound;
+    this.totalBound = totalBound;
+    this.now = now;
+  }
+
+  authorize(request: RestoreRequest, user: string, ttlMs = 5 * 60_000): {
+    token: string;
+    expiresAt: string;
+  } {
+    this.pruneExpired();
+    const tokens = this.userTokens.get(user) ?? new Map<string, true>();
+    while (tokens.size >= this.perUserBound) {
+      const oldest = tokens.keys().next();
+      if (oldest.done) break;
+      tokens.delete(oldest.value);
+      this.entries.delete(oldest.value);
+    }
+    if (this.entries.size >= this.totalBound) {
+      throw new Error("restore authorization capacity is exhausted");
+    }
+    const token = randomUUID();
+    const expiresAt = this.now() + ttlMs;
+    this.entries.set(token, { request, user, expiresAt });
+    tokens.set(token, true);
+    this.userTokens.set(user, tokens);
+    return { token, expiresAt: new Date(expiresAt).toISOString() };
+  }
+
+  consume(token: string, user: string): RestoreRequest | undefined {
+    const authorization = this.entries.get(token);
+    if (!authorization || authorization.user !== user) return undefined;
+    this.entries.delete(token);
+    const tokens = this.userTokens.get(authorization.user);
+    tokens?.delete(token);
+    if (tokens?.size === 0) this.userTokens.delete(authorization.user);
+    if (this.now() >= authorization.expiresAt) return undefined;
+    return authorization.request;
+  }
+
+  private pruneExpired(): void {
+    const now = this.now();
+    for (const [token, authorization] of this.entries) {
+      if (now < authorization.expiresAt) continue;
+      this.entries.delete(token);
+      const tokens = this.userTokens.get(authorization.user);
+      tokens?.delete(token);
+      if (tokens?.size === 0) this.userTokens.delete(authorization.user);
+    }
+  }
+}
+
+export class RestoreProofReplayCache {
+  private readonly nonces = new Map<string, number>();
+  private readonly bound: number;
+  private readonly now: () => number;
+
+  constructor(bound = MAX_IDEMPOTENCY_ENTRIES, now: () => number = Date.now) {
+    this.bound = bound;
+    this.now = now;
+  }
+
+  consume(nonce: string, expiresAt: number): boolean {
+    const now = this.now();
+    for (const [storedNonce, storedExpiry] of this.nonces) {
+      if (now >= storedExpiry) this.nonces.delete(storedNonce);
+    }
+    if (this.nonces.has(nonce) || this.nonces.size >= this.bound) return false;
+    this.nonces.set(nonce, expiresAt);
+    return true;
+  }
+}
+
+export function verifyRestoreProof(
+  body: RestoreProofRequest | undefined,
+  secret: string | undefined,
+  replayCache: RestoreProofReplayCache,
+  expectedSubject: string,
+  now = Date.now(),
+): { ok: true; request: RestoreRequest } | { ok: false; error: string } {
+  if (!secret) return { ok: false, error: "restore proof secret is unavailable" };
+  if (
+    !body ||
+    body.contract !== RESTORE_PROOF_CONTRACT ||
+    !Number.isSafeInteger(body.issuedAt) ||
+    typeof body.nonce !== "string" ||
+    body.nonce.length < 16 ||
+    body.nonce.length > 128 ||
+    typeof body.payload !== "string" ||
+    body.payload.length === 0 ||
+    body.payload.length > 2_000_000 ||
+    typeof body.subject !== "string" ||
+    !/^[0-9a-f]{64}$/i.test(body.subject) ||
+    typeof body.signature !== "string" ||
+    !/^[0-9a-f]{64}$/i.test(body.signature)
+  ) {
+    return { ok: false, error: "restore preview proof is malformed" };
+  }
+  const expiresAt = body.issuedAt + 60_000;
+  if (body.issuedAt > now + 10_000 || now >= expiresAt) {
+    return { ok: false, error: "restore preview proof is expired" };
+  }
+  const subject = Buffer.from(body.subject, "hex");
+  const expectedSubjectBytes = Buffer.from(expectedSubject, "hex");
+  if (
+    subject.length !== expectedSubjectBytes.length ||
+    !timingSafeEqual(subject, expectedSubjectBytes)
+  ) {
+    return { ok: false, error: "restore preview proof belongs to another session" };
+  }
+  const material = `${body.issuedAt}\n${body.nonce}\n${body.subject}\n${body.payload}`;
+  const expected = createHmac("sha256", secret).update(material, "utf8").digest();
+  const supplied = Buffer.from(body.signature, "hex");
+  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+    return { ok: false, error: "restore preview proof is invalid" };
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(Buffer.from(body.payload, "base64url").toString("utf8"));
+  } catch {
+    return { ok: false, error: "restore preview proof payload is invalid" };
+  }
+  const validation = validateRestoreRequest(decoded as RestoreRequest | undefined);
+  if (!validation.ok) return validation;
+  if (!replayCache.consume(body.nonce, expiresAt)) {
+    return { ok: false, error: "restore preview proof was already used" };
+  }
+  return { ok: true, request: decoded as RestoreRequest };
+}
+
+export function validateHistoryMarkersRequest(
+  body: HistoryMarkersRequest | undefined,
+): { ok: true } | { ok: false; error: string } {
+  if (!body || !Array.isArray(body.activityIds)) {
+    return { ok: false, error: "activityIds must be an array" };
+  }
+  if (body.activityIds.length > 500) {
+    return { ok: false, error: "activityIds cannot exceed 500 entries" };
+  }
+  if (body.activityIds.some((value) => !String(value))) {
+    return { ok: false, error: "activityIds cannot contain empty values" };
   }
   return { ok: true };
 }

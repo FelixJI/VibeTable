@@ -69,6 +69,28 @@ class FakeTransport:
 
     async def request(self, method: str, path: str, **kwargs: Any) -> Any:
         self.requests.append({"method": method, "path": path, **kwargs})
+        if path == "/collections/vibetable_demo":
+            return {"data": {"collection": "vibetable_demo", "meta": {"accountability": "all"}}}
+        if path == "/vibetable-bulk-mutation/history-markers":
+            return {"data": {}}
+        if path == "/vibetable-bulk-mutation/restore/authorize":
+            return {
+                "data": {
+                    "authorizationToken": "directus-restore-authorization",
+                    "expiresAt": "2026-07-22T00:05:00Z",
+                }
+            }
+        if path == "/permissions/me":
+            return {
+                "data": {
+                    "vibetable_demo": {
+                        "read": {"access": "full", "fields": ["*"]},
+                        "update": {"access": "full", "fields": ["*"]},
+                    }
+                }
+            }
+        if path.startswith("/permissions/me/"):
+            return {"data": {"update": {"access": True}}}
         if self.responses:
             return self.responses.pop(0)
         return {"data": [], "meta": {"filter_count": 0, "total_count": 0}}
@@ -79,7 +101,7 @@ class FakeClient:
         self._item = item
         self.updates: list[dict[str, Any]] = []
 
-    async def read_item(self, profile: Any, item_id: str) -> dict[str, Any]:
+    async def read_item(self, profile: Any, item_id: str, **kwargs: Any) -> dict[str, Any]:
         return dict(self._item)
 
     async def update_item(
@@ -112,6 +134,7 @@ def _make_service(
         profiles=manifest.by_collection,
         transport=transport,
         schema_revision=schema_revision,
+        proof_secret="test-history-proof-secret",
         clock=clock or time.time,
     )
 
@@ -201,7 +224,11 @@ async def test_preview_restore_returns_token_and_changes() -> None:
     current_item = {"title": "Current", "amount": 100.0, "project": "p-001"}
     revision_data = {"data": {"data": {"title": "Target", "amount": 200.0, "project": "p-002"}}}
     transport = FakeTransport(
-        responses=[revision_data, {"data": {"id": "p-002", "title": "Project Two"}}]
+        responses=[
+            revision_data,
+            {"data": {"id": "p-001", "title": "Project One"}},
+            {"data": {"id": "p-002", "title": "Project Two"}},
+        ]
     )
     service = _make_service(transport=transport, item=current_item)
     preview = await service.preview_restore(
@@ -211,6 +238,8 @@ async def test_preview_restore_returns_token_and_changes() -> None:
     assert preview.schema_revision == "vibetable-1.0"
     assert len(preview.scalar_changes) == 2  # title + amount
     assert len(preview.relation_changes) == 1  # project
+    assert preview.relation_changes[0].before_display_value == "p-001"
+    assert preview.relation_changes[0].after_display_value == "p-002"
     assert preview.diagnostics == []
 
 
@@ -337,7 +366,7 @@ class AsyncMockItemClient:
         self._item = item
         self.updates: list[dict[str, Any]] = []
 
-    async def read_item(self, profile: Any, item_id: str) -> dict[str, Any]:
+    async def read_item(self, profile: Any, item_id: str, **kwargs: Any) -> dict[str, Any]:
         return dict(self._item)
 
     async def update_item(

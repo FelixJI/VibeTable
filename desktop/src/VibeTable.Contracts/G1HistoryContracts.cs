@@ -94,7 +94,8 @@ public sealed record HistoryPage(
     [property: JsonPropertyName("schemaRevision")] string SchemaRevision,
     [property: JsonPropertyName("scope")] string Scope = "row",
     [property: JsonPropertyName("field")] string? Field = null,
-    [property: JsonPropertyName("hasMore")] bool HasMore = false
+    [property: JsonPropertyName("hasMore")] bool HasMore = false,
+    [property: JsonPropertyName("archivedDefaultRevisionIds")] IReadOnlyDictionary<string, string>? ArchivedDefaultRevisionIds = null
 );
 
 // --- Safe restore (two-phase) ---
