@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
+using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
 
@@ -127,6 +128,12 @@ public sealed class WorkspaceRequestDispatcher
 
     private async Task DispatchAsync(RoutedWebRequest request)
     {
+        if (RelationLookupRpcRegistry.Contains(request.Type))
+        {
+            await OnRelationLookupRequestAsync(request).ConfigureAwait(false);
+            return;
+        }
+
         switch (request.Type)
         {
             case "app.ready":
@@ -1158,6 +1165,68 @@ public sealed class WorkspaceRequestDispatcher
         }
         public bool TryMarkCancellationReply()
             => Interlocked.Exchange(ref _cancellationReplyPosted, 1) == 0;
+    }
+
+    // Directus relation + realtime Lookup. This is a closed dispatch table:
+    // no renderer-provided method name can reach JsonRpcClient.
+    // -------------------------------------------------------------------
+
+    private async Task OnRelationLookupRequestAsync(RoutedWebRequest request)
+    {
+        if (!RelationLookupRpcRegistry.TryGet(request.Type, out var endpoint))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                $"Unhandled relation/Lookup request '{request.Type}'.",
+                "UNKNOWN_TYPE");
+            return;
+        }
+
+        if (!TryRequireDirectus(request)) return;
+        if (!endpoint.IsValidPayload(request.Payload))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                $"{request.Type} has an invalid payload.",
+                "BAD_PAYLOAD");
+            return;
+        }
+
+        try
+        {
+            JsonElement result = await endpoint.InvokeAsync(
+                _directusGateway!,
+                request.Payload,
+                CancellationToken.None).ConfigureAwait(false);
+            _reply.PostResponse(request.Type, request.RequestId, result);
+        }
+        catch (JsonException ex)
+        {
+            _reply.PostOperationFailed(request.RequestId, ex.Message, "BAD_PAYLOAD");
+        }
+        catch (RpcRemoteException ex) when (ex.Code == -32602)
+        {
+            // Canonical Pydantic validation happens in Python. Normalize its
+            // JSON-RPC invalid-params response at the WebView boundary.
+            _reply.PostOperationFailed(request.RequestId, ex.Message, "BAD_PAYLOAD");
+        }
+        catch (RpcRemoteException ex) when (ex.Code == -32030)
+        {
+            // The gateway can exist before a usable Python-owned Directus
+            // session does. Never expose session/token details to the page.
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "Directus session is not authenticated.",
+                "NOT_AUTHENTICATED");
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Relation/Lookup request failed ({request.Type}): {ex}");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                ex.Message,
+                "RELATION_LOOKUP_FAILED");
+        }
     }
 
     private async Task OnDocumentListRequestedAsync(RoutedWebRequest request)

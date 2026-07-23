@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -150,9 +151,10 @@ public sealed class DirectusSchemaBootstrapperTests
         JsonArray perms = DirectusSchemaBootstrapper.BuildPermissionPayloads(
             "policy-1", managerGrants, collections);
 
-        // The mapping collection is admin-only. Seven managed collections plus
-        // the two explicitly approved Directus dashboard collections yield 36 grants.
-        Assert.AreEqual(36, perms.Count);
+        int expected = new[] { "create", "read", "update", "delete" }
+            .Sum(action => ((JsonArray)managerGrants[action]!).Count);
+        Assert.AreEqual(expected, perms.Count,
+            "permission payload count must follow the blueprint grants");
         var first = (JsonObject)perms[0]!;
         Assert.AreEqual("policy-1", first["policy"]!.GetValue<string>());
         // fields must be exactly ["*"] so unlicensed Directus 12 does not reject
@@ -224,6 +226,11 @@ public sealed class DirectusSchemaBootstrapperTests
         Directory.CreateDirectory(runtime);
         try
         {
+            // A pre-digest marker from VibeTable 1.0 must trigger an
+            // idempotent reconciliation instead of hiding new collections.
+            File.WriteAllText(
+                Path.Combine(runtime, ".schema-applied"),
+                "http://localhost:8055");
             var handler = new ResumeSchemaHandler();
             await using var bootstrapper = new DirectusSchemaBootstrapper(handler);
 
@@ -262,6 +269,35 @@ public sealed class DirectusSchemaBootstrapperTests
         }
     }
 
+    [TestMethod]
+    public async Task ApplySchemaIfFirstBootAsync_SkipsMatchingBlueprintDigest()
+    {
+        string runtime = Path.Combine(Path.GetTempPath(), "vibetable-schema-current-" + Guid.NewGuid());
+        Directory.CreateDirectory(runtime);
+        try
+        {
+            const string baseUrl = "http://localhost:8055";
+            string digest = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(BlueprintPath)));
+            File.WriteAllText(Path.Combine(runtime, ".schema-applied"), $"{baseUrl}|{digest}");
+            var handler = new ResumeSchemaHandler();
+            await using var bootstrapper = new DirectusSchemaBootstrapper(handler);
+
+            await bootstrapper.ApplySchemaIfFirstBootAsync(
+                baseUrl,
+                "admin@vibetable.app",
+                "password",
+                BlueprintPath,
+                runtime,
+                CancellationToken.None);
+
+            Assert.AreEqual(0, handler.Count(HttpMethod.Post, "/auth/login"));
+        }
+        finally
+        {
+            Directory.Delete(runtime, recursive: true);
+        }
+    }
+
     private sealed class ResumeSchemaHandler : HttpMessageHandler
     {
         private static readonly string[] Collections =
@@ -272,6 +308,8 @@ public sealed class DirectusSchemaBootstrapperTests
             "vibetable_document_schemes",
             "vibetable_document_revisions",
             "vibetable_document_links",
+            "vibetable_lookup_definitions",
+            "vibetable_schema_operations",
             "vibetable_identifier_map",
         };
 

@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import csv
 from collections.abc import Awaitable, Callable
+from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from backend.adapters.directus.auth import DirectusAuthBroker
 from backend.adapters.directus.client import DirectusClient
@@ -48,6 +50,43 @@ class ExportError(Exception):
         return {"code": self.code}
 
 
+@dataclass(frozen=True)
+class AuthoritativeLookupColumn:
+    lookup_id: str
+    field_key: str
+
+
+@dataclass(frozen=True)
+class AuthoritativeLookupExportPage:
+    """One full-dataset page returned by the Lookup query data plane."""
+
+    rows: list[dict[str, Any]]
+    columns: list[AuthoritativeLookupColumn]
+    filtered_rows: int
+    lookup_revision: str
+
+
+class AuthoritativeLookupExportProvider(Protocol):
+    """Adapter over the authoritative Lookup query endpoint.
+
+    Implementations must execute the supplied full query under the current
+    Directus accountability. They must not derive Lookup cells from rows already
+    loaded in the Web grid.
+    """
+
+    async def query_page(
+        self,
+        *,
+        collection: str,
+        fields: list[str],
+        lookup_ids: list[str],
+        lookup_revision: str,
+        query: dict[str, Any],
+        offset: int,
+        limit: int,
+    ) -> AuthoritativeLookupExportPage: ...
+
+
 class ExportService:
     """C1 query-based export + template generation."""
 
@@ -58,11 +97,13 @@ class ExportService:
         auth: DirectusAuthBroker,
         profiles: dict[str, CollectionProfile],
         resolve_path: Callable[..., str],
+        lookup_provider: AuthoritativeLookupExportProvider | None = None,
     ) -> None:
         self._client = client
         self._auth = auth
         self._profiles = profiles
         self._resolve_path = resolve_path
+        self._lookup_provider = lookup_provider
 
     async def export(
         self,
@@ -77,7 +118,6 @@ class ExportService:
             purpose="export_target",
             direction="write",
         )
-        query = TableQuery.model_validate(params.query)
         output_columns = list(profile.fields)
         if params.include_relations:
             for relation in profile.relations:
@@ -87,14 +127,31 @@ class ExportService:
                         output_columns.append(col)
         rows_written = 0
         fmt = params.format
-        if fmt == "csv":
-            rows_written = await self._export_csv(
-                path, profile, query, output_columns, progress, cancelled
+        if params.lookup_ids:
+            if self._lookup_provider is None:
+                raise ExportError(
+                    "authoritative Lookup export is not configured",
+                    code="lookup_export_provider_missing",
+                )
+            assert params.lookup_revision is not None
+            rows_written = await self._export_with_lookups(
+                path,
+                profile,
+                params,
+                output_columns,
+                progress,
+                cancelled,
             )
         else:
-            rows_written = await self._export_xlsx(
-                path, profile, query, output_columns, progress, cancelled
-            )
+            query = TableQuery.model_validate(params.query)
+            if fmt == "csv":
+                rows_written = await self._export_csv(
+                    path, profile, query, output_columns, progress, cancelled
+                )
+            else:
+                rows_written = await self._export_xlsx(
+                    path, profile, query, output_columns, progress, cancelled
+                )
         return ExportResult(
             collection=params.collection,
             format=fmt,
@@ -149,6 +206,93 @@ class ExportService:
     # ------------------------------------------------------------------
     # Paging + streaming
     # ------------------------------------------------------------------
+
+    async def _export_with_lookups(
+        self,
+        path: str,
+        profile: CollectionProfile,
+        params: ExportParams,
+        base_columns: list[str],
+        progress: Callable[[int, int, str], Awaitable[None]] | None,
+        cancelled: Callable[[], bool] | None,
+    ) -> int:
+        assert self._lookup_provider is not None
+        assert params.lookup_revision is not None
+        offset = 0
+        written = 0
+        first = await self._lookup_provider.query_page(
+            collection=profile.collection,
+            fields=base_columns,
+            lookup_ids=params.lookup_ids,
+            lookup_revision=params.lookup_revision,
+            query=params.query,
+            offset=0,
+            limit=EXPORT_PAGE_SIZE,
+        )
+        requested = set(params.lookup_ids)
+        returned = {column.lookup_id for column in first.columns}
+        if returned != requested:
+            raise ExportError(
+                "authoritative Lookup response did not describe every requested Lookup",
+                code="lookup_export_columns_mismatch",
+            )
+        if first.lookup_revision != params.lookup_revision:
+            raise ExportError(
+                "Lookup definitions changed before export",
+                code="lookup_revision_mismatch",
+            )
+        lookup_columns = [column.field_key for column in first.columns]
+        if len(lookup_columns) != len(set(lookup_columns)):
+            raise ExportError(
+                "authoritative Lookup response contains duplicate field keys",
+                code="lookup_export_columns_invalid",
+            )
+        columns = [*base_columns, *[col for col in lookup_columns if col not in base_columns]]
+        page = first
+
+        with ExitStack() as resources:
+            if params.format == "csv":
+                sink = resources.enter_context(open(path, "w", encoding="utf-8-sig", newline=""))
+                writer: Any = csv.writer(sink)
+                writer.writerow(columns)
+                workbook = None
+            else:
+                from openpyxl import Workbook
+
+                workbook = Workbook(write_only=True)
+                resources.callback(workbook.close)
+                writer = workbook.create_sheet(title=profile.collection[:31])
+                writer.append(columns)
+            while True:
+                for row in page.rows:
+                    rendered = [_render_cell(row, column) for column in columns]
+                    if params.format == "csv":
+                        writer.writerow(rendered)
+                    else:
+                        writer.append(rendered)
+                    written += 1
+                if progress:
+                    await progress(written, page.filtered_rows, f"exported {written} rows")
+                if len(page.rows) < EXPORT_PAGE_SIZE or (cancelled and cancelled()):
+                    break
+                offset += EXPORT_PAGE_SIZE
+                page = await self._lookup_provider.query_page(
+                    collection=profile.collection,
+                    fields=base_columns,
+                    lookup_ids=params.lookup_ids,
+                    lookup_revision=params.lookup_revision,
+                    query=params.query,
+                    offset=offset,
+                    limit=EXPORT_PAGE_SIZE,
+                )
+                if page.lookup_revision != params.lookup_revision:
+                    raise ExportError(
+                        "Lookup definitions changed during export",
+                        code="lookup_revision_mismatch",
+                    )
+            if workbook is not None:
+                workbook.save(path)
+        return written
 
     async def _export_csv(
         self,
@@ -251,4 +395,11 @@ def _safe_int(value: Any) -> int | None:
     return value if isinstance(value, int) else None
 
 
-__all__ = ["EXPORT_PAGE_SIZE", "ExportError", "ExportService"]
+__all__ = [
+    "EXPORT_PAGE_SIZE",
+    "AuthoritativeLookupColumn",
+    "AuthoritativeLookupExportPage",
+    "AuthoritativeLookupExportProvider",
+    "ExportError",
+    "ExportService",
+]

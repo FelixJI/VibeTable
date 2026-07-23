@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
@@ -75,6 +76,33 @@ internal sealed class FakeDirectusRpcGateway : IDirectusRpcGateway
     {
         PurgeIdentifierMappingsCalls++;
         return Task.FromResult(IdentifierMappingsResult);
+    }
+
+    public List<(string Method, JsonElement Parameters)> RelationLookupCalls { get; } = new();
+    public Exception? RelationLookupException { get; set; }
+    public JsonElement RelationLookupResult { get; set; }
+        = JsonDocument.Parse("""{"ok":true}""").RootElement.Clone();
+
+    public Task<JsonElement> DescribeSchemaAsync(JsonElement p, CancellationToken t) => RelationLookup("schema.describe", p);
+    public Task<JsonElement> SearchRelationTargetsAsync(JsonElement p, CancellationToken t) => RelationLookup("relation.searchTargets", p);
+    public Task<JsonElement> UpdateSingleRelationAsync(JsonElement p, CancellationToken t) => RelationLookup("relation.updateSingle", p);
+    public Task<JsonElement> PreviewRelationDeltaAsync(JsonElement p, CancellationToken t) => RelationLookup("relation.previewDelta", p);
+    public Task<JsonElement> ApplyRelationDeltaAsync(JsonElement p, CancellationToken t) => RelationLookup("relation.applyDelta", p);
+    public Task<JsonElement> ListLookupsAsync(JsonElement p, CancellationToken t) => RelationLookup("lookup.list", p);
+    public Task<JsonElement> ValidateLookupAsync(JsonElement p, CancellationToken t) => RelationLookup("lookup.validate", p);
+    public Task<JsonElement> CreateLookupAsync(JsonElement p, CancellationToken t) => RelationLookup("lookup.create", p);
+    public Task<JsonElement> UpdateLookupAsync(JsonElement p, CancellationToken t) => RelationLookup("lookup.update", p);
+    public Task<JsonElement> DeleteLookupAsync(JsonElement p, CancellationToken t) => RelationLookup("lookup.delete", p);
+    public Task<JsonElement> PreviewLookupAsync(JsonElement p, CancellationToken t) => RelationLookup("lookup.preview", p);
+    public Task<JsonElement> QueryLookupsAsync(JsonElement p, CancellationToken t) => RelationLookup("lookup.query", p);
+    public Task<JsonElement> PreviewRelationChangeAsync(JsonElement p, CancellationToken t) => RelationLookup("table_admin.previewRelationChange", p);
+    public Task<JsonElement> ApplyRelationChangeAsync(JsonElement p, CancellationToken t) => RelationLookup("table_admin.applyRelationChange", p);
+
+    private Task<JsonElement> RelationLookup(string method, JsonElement parameters)
+    {
+        RelationLookupCalls.Add((method, parameters.Clone()));
+        if (RelationLookupException is not null) throw RelationLookupException;
+        return Task.FromResult(RelationLookupResult.Clone());
     }
 
     // The rest of the interface is unused by the dispatcher; throw to keep tests honest.

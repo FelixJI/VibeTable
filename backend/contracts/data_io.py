@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -61,14 +61,26 @@ class ImportColumnMapping(CamelModel):
     """An explicit user mapping from a source column to a collection field.
 
     ``source_column`` is the header in the file; ``target_field`` is the
-    collection field name. ``relation_lookup`` (optional) declares that the
-    source values should be resolved against a relation's display fields before
-    writing the primary key.
+    collection field name. Relation columns never guess a display field: callers
+    must provide both the stable Directus ``relation_id`` and a ``match_field``
+    whose uniqueness has been established from the live schema.
+
+    ``relation_lookup`` is retained solely for wire compatibility with early C1
+    clients. Setting it without the explicit relation metadata is rejected by
+    the import service.
     """
 
     source_column: str = Field(min_length=1, max_length=128)
     target_field: str = Field(min_length=1, max_length=128)
     relation_lookup: bool = False
+    relation_id: str | None = Field(default=None, min_length=1, max_length=128)
+    match_field: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_relation_mapping_pair(self) -> ImportColumnMapping:
+        if (self.relation_id is None) != (self.match_field is None):
+            raise ValueError("relationId and matchField must be provided together")
+        return self
 
 
 class PreviewImportParams(CamelModel):
@@ -91,6 +103,26 @@ class PreviewImportParams(CamelModel):
     mode: ImportMode = "create_only"
     upsert_key: str | None = Field(default=None, max_length=128)
     column_mapping: list[ImportColumnMapping] = Field(default_factory=list, max_length=256)
+    create_if_missing: bool = False
+
+
+ImportRelationResolutionState = Literal["matched", "create"]
+
+
+class ImportRelationResolution(CamelModel):
+    """Previewed relation resolution retained for atomic apply.
+
+    ``create`` is only emitted when the explicit, default-off advanced option
+    ``create_if_missing`` is enabled. Preview itself performs no
+    creation.
+    """
+
+    target_field: str = Field(min_length=1, max_length=128)
+    relation_id: str = Field(min_length=1, max_length=128)
+    match_field: str = Field(min_length=1, max_length=128)
+    source_value: Any
+    state: ImportRelationResolutionState
+    matched_primary_key: Any = None
 
 
 class ImportCellDiagnostic(CamelModel):
@@ -119,6 +151,7 @@ class ImportPlanRow(CamelModel):
     source_row: int = Field(ge=1)
     values: dict[str, Any] = Field(default_factory=dict)
     diagnostics: list[ImportCellDiagnostic] = Field(default_factory=list)
+    relation_resolutions: list[ImportRelationResolution] = Field(default_factory=list)
 
 
 class ImportSummary(CamelModel):
@@ -235,6 +268,16 @@ class ExportParams(CamelModel):
     query: dict[str, Any] = Field(default_factory=dict)
     format: ExportFormat = "csv"
     include_relations: bool = False
+    lookup_ids: list[str] = Field(default_factory=list, max_length=256)
+    lookup_revision: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def require_lookup_revision(self) -> ExportParams:
+        if self.lookup_ids and self.lookup_revision is None:
+            raise ValueError("lookupRevision is required when lookupIds are requested")
+        if len(self.lookup_ids) != len(set(self.lookup_ids)):
+            raise ValueError("lookupIds must be unique")
+        return self
 
 
 class ExportResult(CamelModel):
@@ -300,6 +343,8 @@ __all__ = [
     "ImportPlan",
     "ImportPlanRow",
     "ImportPreviewToken",
+    "ImportRelationResolution",
+    "ImportRelationResolutionState",
     "ImportSummary",
     "PreviewImportParams",
     "TemplateResult",

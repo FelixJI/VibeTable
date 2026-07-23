@@ -17,7 +17,9 @@ from backend.contracts.directus import (
     DirectusSubscribeParams,
     DirectusUnsubscribeParams,
 )
+from backend.contracts.lookup import LookupDefinition, LookupListResult
 from backend.contracts.query import TableQuery
+from backend.contracts.relation_admin import SchemaDescribeParams
 
 ROOT = Path(__file__).resolve().parents[3]
 MANIFEST = ROOT / "directus" / "capabilities" / "vibetable-empty-capabilities.json"
@@ -54,6 +56,37 @@ class FakeClient:
 
     async def relations(self, profile: Any) -> list[dict[str, Any]]:
         return [{"meta": {"many_field": relation.field}} for relation in profile.relations]
+
+    async def schema_fields(self) -> list[dict[str, Any]]:
+        manifest = CapabilityManifest.model_validate_json(MANIFEST.read_text(encoding="utf-8"))
+        return [
+            {
+                "collection": profile.collection,
+                "field": field,
+                "type": "uuid" if field == profile.primary_key else "string",
+                "meta": {"sort": index, "readonly": field in {"id", "date_updated"}},
+                "schema": {
+                    "is_primary_key": field == profile.primary_key,
+                    "is_nullable": field != profile.primary_key,
+                },
+            }
+            for profile in manifest.collections
+            for index, field in enumerate(profile.fields)
+        ]
+
+    async def schema_relations(self) -> list[dict[str, Any]]:
+        return []
+
+    async def permission_snapshot(self) -> Any:
+        return []
+
+    async def relation_lookup_capabilities(self) -> dict[str, Any]:
+        return {
+            "relation_read_v1": True,
+            "relation_edit_v1": True,
+            "lookup_query_v1": True,
+            "reason": None,
+        }
 
     async def read_items(
         self, profile: Any, query: TableQuery, *, include_archived: bool
@@ -95,14 +128,202 @@ async def test_schema_marks_only_manifest_update_fields_editable() -> None:
     assert result.relations
 
 
+@pytest.mark.asyncio
+async def test_describe_schema_separates_live_revisions_and_adopts_relations() -> None:
+    manifest = CapabilityManifest.model_validate(
+        {
+            "schema_version": "test-1",
+            "directus_compatibility": ">=12 <13",
+            "collections": [
+                {
+                    "collection": "orders",
+                    "fields": ["id", "contract"],
+                    "create_fields": ["id", "contract"],
+                    "update_fields": ["contract"],
+                    "archive_field": None,
+                    "date_updated_field": None,
+                }
+            ],
+        }
+    )
+
+    class LiveClient(FakeClient):
+        async def schema_fields(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "collection": "orders",
+                    "field": "id",
+                    "type": "uuid",
+                    "meta": {},
+                    "schema": {"is_primary_key": True, "is_nullable": False},
+                },
+                {
+                    "collection": "orders",
+                    "field": "contract",
+                    "type": "uuid",
+                    "meta": {"special": ["m2o"]},
+                    "schema": {"is_primary_key": False, "is_nullable": True},
+                },
+                {
+                    "collection": "contracts",
+                    "field": "id",
+                    "type": "uuid",
+                    "meta": {},
+                    "schema": {"is_primary_key": True, "is_nullable": False},
+                },
+            ]
+
+        async def schema_relations(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "collection": "orders",
+                    "field": "contract",
+                    "related_collection": "contracts",
+                    "meta": {
+                        "id": 7,
+                        "many_collection": "orders",
+                        "many_field": "contract",
+                        "one_collection": "contracts",
+                    },
+                    "schema": {"on_delete": "SET NULL"},
+                }
+            ]
+
+        async def permission_snapshot(self) -> Any:
+            return [{"collection": "orders", "action": "read", "fields": ["*"]}]
+
+    service = DirectusService(manifest, FakeAuth(), LiveClient())
+    described = await service.describe_schema(
+        SchemaDescribeParams(
+            collection="orders",
+            request_generation=3,
+            accepts=[
+                "vibetable.relation-capabilities.v1",
+                "vibetable.lookup-query.v1",
+            ],
+        )
+    )
+    snapshot = described.schema_snapshot
+
+    assert described.request_generation == 3
+    assert described.capabilities.lookup_query_v1 is True
+    assert snapshot.capability_hash == manifest.collections[0].capability_hash
+    assert snapshot.schema_revision != snapshot.permission_revision
+    assert snapshot.lookup_revision
+    assert snapshot.normalized_relations[0].relation_id == "directus:7:m2o"
+    assert snapshot.normalized_relations[0].field_ref == "orders.contract"
+    assert {column.name: column.editable for column in snapshot.columns} == {
+        "contract": True,
+        "id": False,
+    }
+    columns = {column.name: column for column in snapshot.columns}
+    assert columns["contract"].field_id == "orders.contract"
+    assert columns["contract"].kind == "relation"
+    assert columns["contract"].relation_id == "directus:7:m2o"
+
+
+@pytest.mark.asyncio
+async def test_directus_schema_carries_relation_and_lookup_columns() -> None:
+    manifest = CapabilityManifest.model_validate(
+        {
+            "schema_version": "test-1",
+            "directus_compatibility": ">=12 <13",
+            "collections": [
+                {
+                    "collection": "orders",
+                    "fields": ["id", "contract"],
+                    "create_fields": ["id", "contract"],
+                    "update_fields": ["contract"],
+                    "archive_field": None,
+                    "date_updated_field": None,
+                }
+            ],
+        }
+    )
+
+    class LiveClient(FakeClient):
+        async def schema_fields(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "collection": "orders",
+                    "field": "id",
+                    "type": "uuid",
+                    "meta": {},
+                    "schema": {"is_primary_key": True, "is_nullable": False},
+                },
+                {
+                    "collection": "orders",
+                    "field": "contract",
+                    "type": "uuid",
+                    "meta": {"special": ["m2o"]},
+                    "schema": {"is_primary_key": False, "is_nullable": True},
+                },
+                {
+                    "collection": "contracts",
+                    "field": "id",
+                    "type": "uuid",
+                    "meta": {},
+                    "schema": {"is_primary_key": True, "is_nullable": False},
+                },
+            ]
+
+        async def schema_relations(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "collection": "orders",
+                    "field": "contract",
+                    "related_collection": "contracts",
+                    "meta": {
+                        "id": 7,
+                        "many_collection": "orders",
+                        "many_field": "contract",
+                        "one_collection": "contracts",
+                    },
+                    "schema": {"on_delete": "SET NULL"},
+                }
+            ]
+
+    definition = LookupDefinition.model_validate(
+        {
+            "lookupId": "orders.contract_price",
+            "collection": "orders",
+            "fieldKey": "contract_price",
+            "displayName": "Contract price",
+            "path": [{"relationId": "directus:7:m2o"}],
+            "source": {"kind": "target_field", "fieldRef": "price"},
+            "outputType": "decimal",
+            "outputScale": 2,
+        }
+    )
+
+    class Lookups:
+        async def list(self, _params: Any) -> LookupListResult:
+            return LookupListResult(
+                collection="orders", definitions=[definition], lookup_revision="lookup-1"
+            )
+
+    service = DirectusService(manifest, FakeAuth(), LiveClient())
+    service.lookup_service = Lookups()  # type: ignore[assignment]
+
+    result = await service.schema(DirectusCollectionParams(collection="orders"))
+    columns = {column.name: column for column in result.columns}
+
+    assert columns["contract"].kind == "relation"
+    assert columns["contract"].relation_id == "directus:7:m2o"
+    assert columns["contract_price"].field_id == "orders.contract_price"
+    assert columns["contract_price"].kind == "lookup"
+    assert columns["contract_price"].lookup_id == "orders.contract_price"
+    assert columns["contract_price"].editable is False
+
+
 def test_schema_keeps_directus_readonly_update_field_non_editable() -> None:
     """Directus metadata must further restrict the profile write allowlist."""
 
     class ReadonlyFieldClient(FakeClient):
-        async def fields(self, profile: Any) -> list[dict[str, Any]]:
-            fields = await super().fields(profile)
+        async def schema_fields(self) -> list[dict[str, Any]]:
+            fields = await super().schema_fields()
             for field in fields:
-                if field["field"] == "file_name":
+                if field["collection"] == "vibetable_documents" and field["field"] == "file_name":
                     field["meta"]["readonly"] = True
             return fields
 

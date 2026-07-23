@@ -14,7 +14,12 @@ import pytest
 from backend.adapters.directus.auth import CurrentUser, DirectusAuthBroker
 from backend.adapters.directus.client import DirectusClient
 from backend.adapters.directus.profile import CapabilityManifest
-from backend.application.export_service import ExportService
+from backend.application.export_service import (
+    AuthoritativeLookupColumn,
+    AuthoritativeLookupExportPage,
+    ExportError,
+    ExportService,
+)
 from backend.contracts.data_io import ExportParams
 
 
@@ -85,6 +90,38 @@ def _service(transport: FakeTransport, manifest: CapabilityManifest, path: str) 
         auth=FakeDirectusAuth(),  # type: ignore[arg-type]
         profiles=manifest.by_collection,
         resolve_path=lambda _g, *, purpose, direction: path,
+    )
+
+
+class FakeLookupExportProvider:
+    def __init__(self, pages: list[list[dict[str, Any]]], *, revision: str = "lookup-r1") -> None:
+        self.pages = list(pages)
+        self.revision = revision
+        self.calls: list[dict[str, Any]] = []
+
+    async def query_page(self, **kwargs: Any) -> AuthoritativeLookupExportPage:
+        self.calls.append(kwargs)
+        rows = self.pages.pop(0) if self.pages else []
+        return AuthoritativeLookupExportPage(
+            rows=rows,
+            columns=[AuthoritativeLookupColumn("contract_price", "contract_price")],
+            filtered_rows=sum(len(page) for page in self.pages) + len(rows),
+            lookup_revision=self.revision,
+        )
+
+
+def _lookup_service(
+    transport: FakeTransport,
+    manifest: CapabilityManifest,
+    path: str,
+    provider: Any,
+) -> ExportService:
+    return ExportService(
+        client=DirectusClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
+        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
+        profiles=manifest.by_collection,
+        resolve_path=lambda _g, *, purpose, direction: path,
+        lookup_provider=provider,
     )
 
 
@@ -198,3 +235,87 @@ async def test_generate_template_writes_headers_and_notes(tmp_path: Any) -> None
     header = rows[0]
     assert "number" in header
     assert "title" in header
+
+
+@pytest.mark.asyncio
+async def test_lookup_export_requires_authoritative_provider_without_page_fallback(
+    tmp_path: Any,
+) -> None:
+    manifest = _manifest()
+    transport = FakeTransport([[{"id": "current-page", "contract_price": 1}]])
+    path = tmp_path / "lookups.csv"
+    service = _service(transport, manifest, str(path))
+
+    with pytest.raises(ExportError) as caught:
+        await service.export(
+            ExportParams(
+                grant_id="g1",
+                collection="vibetable_demo",
+                lookup_ids=["contract_price"],
+                lookup_revision="lookup-r1",
+            )
+        )
+
+    assert caught.value.code == "lookup_export_provider_missing"
+    assert transport.requests == []
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_lookup_export_streams_authoritative_full_dataset_and_revision(tmp_path: Any) -> None:
+    from backend.application.export_service import EXPORT_PAGE_SIZE
+
+    manifest = _manifest()
+    first = [
+        {"id": str(index), "number": f"A-{index}", "contract_price": index * 10}
+        for index in range(EXPORT_PAGE_SIZE)
+    ]
+    second = [{"id": "last", "number": "A-last", "contract_price": 999}]
+    provider = FakeLookupExportProvider([first, second])
+    transport = FakeTransport([])
+    path = tmp_path / "lookups.csv"
+    service = _lookup_service(transport, manifest, str(path), provider)
+
+    result = await service.export(
+        ExportParams(
+            grant_id="g1",
+            collection="vibetable_demo",
+            query={"filters": [], "sorts": [{"field": "contract_price", "direction": "desc"}]},
+            lookup_ids=["contract_price"],
+            lookup_revision="lookup-r1",
+        )
+    )
+
+    assert result.rows_written == EXPORT_PAGE_SIZE + 1
+    assert [call["offset"] for call in provider.calls] == [0, EXPORT_PAGE_SIZE]
+    assert all(call["lookup_revision"] == "lookup-r1" for call in provider.calls)
+    assert provider.calls[0]["query"]["sorts"][0]["field"] == "contract_price"
+    assert transport.requests == []
+    with open(path, encoding="utf-8-sig") as fh:
+        reader = csv.reader(fh)
+        header = next(reader)
+        rows = list(reader)
+    assert "contract_price" in header
+    assert len(rows) == EXPORT_PAGE_SIZE + 1
+    assert rows[-1][header.index("contract_price")] == "999"
+
+
+@pytest.mark.asyncio
+async def test_lookup_export_rejects_revision_drift(tmp_path: Any) -> None:
+    manifest = _manifest()
+    provider = FakeLookupExportProvider([], revision="lookup-r2")
+    path = tmp_path / "lookups.csv"
+    service = _lookup_service(FakeTransport([]), manifest, str(path), provider)
+
+    with pytest.raises(ExportError) as caught:
+        await service.export(
+            ExportParams(
+                grant_id="g1",
+                collection="vibetable_demo",
+                lookup_ids=["contract_price"],
+                lookup_revision="lookup-r1",
+            )
+        )
+
+    assert caught.value.code == "lookup_revision_mismatch"
+    assert not path.exists()

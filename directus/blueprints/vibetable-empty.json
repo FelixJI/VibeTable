@@ -105,6 +105,39 @@
         "link_type": {"type": "string", "required": true, "max_length": 64, "default": "primary", "choices": ["primary", "reference", "attachment"]}
       }
     },
+    "vibetable_lookup_definitions": {
+      "accountability": "all",
+      "archive_field": "status",
+      "archive_value": "deleted",
+      "unarchive_value": "active",
+      "versioning": false,
+      "hidden": true,
+      "fields": {
+        "id": {"type": "uuid", "primary_key": true},
+        "status": {"type": "string", "required": true, "default": "active", "choices": ["active", "deleted"]},
+        "collection": {"type": "string", "required": true, "max_length": 128},
+        "lookup_id": {"type": "string", "required": true, "unique": true, "max_length": 128},
+        "field_key": {"type": "string", "required": true, "max_length": 128},
+        "definition": {"type": "json", "required": true},
+        "revision": {"type": "integer", "required": true, "default": 1}
+      }
+    },
+    "vibetable_schema_operations": {
+      "accountability": "all",
+      "archive_field": "status",
+      "archive_value": "failed",
+      "unarchive_value": "applying",
+      "versioning": false,
+      "hidden": true,
+      "fields": {
+        "id": {"type": "uuid", "primary_key": true},
+        "status": {"type": "string", "required": true, "default": "applying", "choices": ["applying", "complete", "failed"]},
+        "operation_id": {"type": "string", "required": true, "unique": true, "max_length": 128},
+        "plan_id": {"type": "string", "required": true, "max_length": 128},
+        "plan": {"type": "json", "required": true},
+        "applied_steps": {"type": "json", "required": true}
+      }
+    },
     "vibetable_identifier_map": {
       "accountability": "all",
       "archive_field": "status",
@@ -143,9 +176,9 @@
     }
   },
   "policies": {
-    "viewer": {"create": [], "read": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels"], "update": [], "delete": []},
-    "editor": {"create": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels"], "read": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels"], "update": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels"], "delete": ["directus_panels"]},
-    "manager": {"create": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels"], "read": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels"], "update": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels"], "delete": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels"]}
+    "viewer": {"create": [], "read": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels", "vibetable_lookup_definitions"], "update": [], "delete": []},
+    "editor": {"create": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels", "vibetable_lookup_definitions"], "read": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels", "vibetable_lookup_definitions"], "update": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels", "vibetable_lookup_definitions"], "delete": ["directus_panels"]},
+    "manager": {"create": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels", "vibetable_lookup_definitions", "vibetable_schema_operations"], "read": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels", "vibetable_lookup_definitions", "vibetable_schema_operations"], "update": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels", "vibetable_lookup_definitions", "vibetable_schema_operations"], "delete": ["vibetable_workspaces", "vibetable_workspace_folders", "vibetable_documents", "vibetable_document_schemes", "vibetable_document_revisions", "vibetable_document_links", "vibetable_dashboard_configs", "directus_dashboards", "directus_panels"]}
   },
   "disabled": ["shares", "translations", "external_sso", "share_email_flow"]
 }

@@ -192,6 +192,15 @@ public sealed class WebMessageRouter
         "plugin.surface.event",
     };
 
+    static WebMessageRouter()
+    {
+        // Correlated relation/Lookup responses reuse the closed request type.
+        // The endpoint names are registered once together with their payload
+        // validator and typed gateway binding.
+        WebRequestWhitelist.UnionWith(RelationLookupRpcRegistry.RequestTypes);
+        HostNotificationWhitelist.UnionWith(RelationLookupRpcRegistry.RequestTypes);
+    }
+
     private readonly Action<RoutedWebRequest> _dispatch;
 
     /// <summary>

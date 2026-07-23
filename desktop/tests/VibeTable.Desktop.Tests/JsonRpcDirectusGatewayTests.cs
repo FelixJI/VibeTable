@@ -141,11 +141,61 @@ public sealed class JsonRpcDirectusGatewayTests
         Assert.AreEqual("draft", Convert.ToString(applied.Item["status"]));
     }
 
+    [TestMethod]
+    public async Task RelationLookupFlow_UsesOnlyClosedRpcMethods_AndForwardsOpaquePayload()
+    {
+        var transport = new AutoRespondTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcDirectusGateway(client);
+        JsonElement payload = JsonDocument.Parse(
+            """{"collection":"contracts","marker":"safe"}""").RootElement.Clone();
+
+        await gateway.DescribeSchemaAsync(payload, CancellationToken.None);
+        await gateway.SearchRelationTargetsAsync(payload, CancellationToken.None);
+        await gateway.UpdateSingleRelationAsync(payload, CancellationToken.None);
+        await gateway.PreviewRelationDeltaAsync(payload, CancellationToken.None);
+        await gateway.ApplyRelationDeltaAsync(payload, CancellationToken.None);
+        await gateway.ListLookupsAsync(payload, CancellationToken.None);
+        await gateway.ValidateLookupAsync(payload, CancellationToken.None);
+        await gateway.CreateLookupAsync(payload, CancellationToken.None);
+        await gateway.UpdateLookupAsync(payload, CancellationToken.None);
+        await gateway.DeleteLookupAsync(payload, CancellationToken.None);
+        await gateway.PreviewLookupAsync(payload, CancellationToken.None);
+        await gateway.QueryLookupsAsync(payload, CancellationToken.None);
+        await gateway.PreviewRelationChangeAsync(payload, CancellationToken.None);
+        await gateway.ApplyRelationChangeAsync(payload, CancellationToken.None);
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "schema.describe",
+                "relation.searchTargets",
+                "relation.updateSingle",
+                "relation.previewDelta",
+                "relation.applyDelta",
+                "lookup.list",
+                "lookup.validate",
+                "lookup.create",
+                "lookup.update",
+                "lookup.delete",
+                "lookup.preview",
+                "lookup.query",
+                "table_admin.previewRelationChange",
+                "table_admin.applyRelationChange",
+            },
+            transport.Requests.Select(request => request.GetProperty("method").GetString()).ToArray());
+        Assert.IsTrue(transport.Requests.All(request =>
+            request.GetProperty("params").GetProperty("marker").GetString() == "safe"));
+        Assert.IsFalse(transport.SerializedRequests.Contains("rpc.invoke", StringComparison.Ordinal));
+    }
+
     private sealed class AutoRespondTransport : IJsonLineTransport
     {
         private readonly Channel<JsonElement?> _incoming = Channel.CreateUnbounded<JsonElement?>();
 
         public JsonElement LastRequest { get; private set; }
+        public List<JsonElement> Requests { get; } = new();
+        public string SerializedRequests { get; private set; } = string.Empty;
 
         public Task<JsonElement?> ReadAsync(CancellationToken cancellationToken)
             => _incoming.Reader.ReadAsync(cancellationToken).AsTask();
@@ -154,6 +204,8 @@ public sealed class JsonRpcDirectusGatewayTests
         {
             using var request = JsonDocument.Parse(line);
             LastRequest = request.RootElement.Clone();
+            Requests.Add(LastRequest);
+            SerializedRequests += line;
             string id = LastRequest.GetProperty("id").GetString()!;
             string method = LastRequest.GetProperty("method").GetString()!;
             string result = method switch

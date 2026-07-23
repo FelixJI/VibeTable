@@ -94,6 +94,33 @@ public sealed class TableContractsFixtureTests
         Assert.AreEqual("client", page.Mode);
     }
 
+    [TestMethod]
+    public void ColumnSchema_DeserializesAndRoundTripsRelationLookupMetadata()
+    {
+        const string json = """
+            {"table":"orders","columns":[
+              {"name":"contract","title":"Contract","dataType":"text","editable":true,"nullable":true,
+               "fieldId":"orders.contract","kind":"relation","relationId":"directus:7:m2o"},
+              {"name":"contract_price","title":"Contract price","dataType":"decimal","editable":false,"nullable":true,
+               "scale":2,"fieldId":"orders.contract_price","kind":"lookup","lookupId":"orders.contract_price"}
+            ],"rows":[],"offset":0,"limit":100,"totalRows":0,"mode":"client"}
+            """;
+
+        var page = JsonSerializer.Deserialize<TablePage>(json, Options);
+
+        Assert.IsNotNull(page);
+        Assert.AreEqual("orders.contract", page!.Columns[0].FieldId);
+        Assert.AreEqual("relation", page.Columns[0].Kind);
+        Assert.AreEqual("directus:7:m2o", page.Columns[0].RelationId);
+        Assert.AreEqual("lookup", page.Columns[1].Kind);
+        Assert.AreEqual("orders.contract_price", page.Columns[1].LookupId);
+        Assert.IsFalse(page.Columns[1].Editable);
+
+        var roundTripped = JsonSerializer.Serialize(page, Options);
+        StringAssert.Contains(roundTripped, "\"relationId\":\"directus:7:m2o\"");
+        StringAssert.Contains(roundTripped, "\"lookupId\":\"orders.contract_price\"");
+    }
+
     private static string ReadFixture(string name)
     {
         var path = Path.Combine(AppContext.BaseDirectory, "fixtures", name);

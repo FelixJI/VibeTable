@@ -89,6 +89,26 @@ import {
 
 export { BulkConflictError, CONTRACT, RESTORE_CONTRACT } from "./bulk-mutation-helpers.js";
 export { DASHBOARD_DRAFT_CONTRACT } from "./dashboard-draft-helpers.js";
+import {
+  applyRelationDeltaInTransaction,
+  mapRelationDeltaError,
+  RELATION_DELTA_CONTRACT,
+  validateRelationDelta,
+  type RelationDeltaRequest,
+  type RelationDeltaResult,
+} from "./relation-delta.js";
+import {
+  applyRelationImportInTransaction,
+  mapRelationImportError,
+  RELATION_IMPORT_CONTRACT,
+  validateRelationImport,
+  type RelationImportRequest,
+  type RelationImportResult,
+} from "./relation-import.js";
+import { RelationExecutionCache } from "./relation-execution-cache.js";
+
+export { RELATION_DELTA_CONTRACT } from "./relation-delta.js";
+export { RELATION_IMPORT_CONTRACT } from "./relation-import.js";
 
 const HISTORY_MARKER_TABLE = "vibetable_history_markers";
 const RESTORE_EXECUTION_LIMIT = 1024;
@@ -100,12 +120,25 @@ type RestoreExecutionEntry = {
   cached?: { status: number; body: unknown };
   inFlight?: Promise<RestoreOutcome>;
 };
+type RelationImportOutcome = {
+  status: number;
+  body: unknown;
+  cacheable: boolean;
+  result?: RelationImportResult;
+};
+type RelationImportExecutionEntry = {
+  fingerprint: string;
+  cached?: RelationImportOutcome;
+  inFlight?: Promise<RelationImportOutcome>;
+};
 
 export default defineEndpoint((router, context) => {
   const { services, getSchema, database } = context;
   const { ItemsService } = services;
   const cache = new IdempotencyCache();
   const dashboardDraftCache = new DashboardIdempotencyCache();
+  const relationExecutions = new RelationExecutionCache<RelationDeltaResult>();
+  const relationImportExecutions = new Map<string, RelationImportExecutionEntry>();
   const restoreAuthorizations = new RestoreAuthorizationCache();
   const restoreProofs = new RestoreProofReplayCache();
   const restoreExecutions = new Map<string, RestoreExecutionEntry>();
@@ -113,6 +146,23 @@ export default defineEndpoint((router, context) => {
     typeof context.env.VIBETABLE_HISTORY_PROOF_SECRET === "string"
       ? context.env.VIBETABLE_HISTORY_PROOF_SECRET
       : undefined;
+
+  router.get("/capabilities", (req, res) => {
+    const accountability = (
+      req as typeof req & { accountability?: Accountability }
+    ).accountability;
+    if (!accountability?.user) {
+      res.status(401).json({ errors: [{ message: "authentication is required" }] });
+      return;
+    }
+    res.status(200).json({
+      data: {
+        contract: CONTRACT,
+        relationDelta: RELATION_DELTA_CONTRACT,
+        relationImport: RELATION_IMPORT_CONTRACT,
+      },
+    });
+  });
 
   router.get("/dashboard/:id", async (req, res) => {
     const accountability = (
@@ -313,6 +363,168 @@ export default defineEndpoint((router, context) => {
     } catch (error) {
       const outcome = mapDashboardDraftError(error);
       res.status(outcome.status).json(outcome.body);
+    }
+  });
+
+  router.post("/relation-delta", async (req, res) => {
+    const body = req.body as RelationDeltaRequest | undefined;
+    const headerKey = req.get("Idempotency-Key") as string | undefined;
+    const validation = validateRelationDelta(body, headerKey);
+    if (!validation.ok) {
+      res.status(400).json({ errors: [{ message: validation.error }] });
+      return;
+    }
+    const accountability = (
+      req as typeof req & { accountability?: Accountability }
+    ).accountability;
+    const user = String(accountability?.user ?? "");
+    if (!accountability || !user) {
+      res.status(401).json({ errors: [{ message: "authentication is required" }] });
+      return;
+    }
+    const request = body as RelationDeltaRequest;
+    const cacheKey = `${user}:${request.idempotencyKey}`;
+    const fingerprint = createHash("sha256")
+      .update(JSON.stringify(request), "utf8")
+      .digest("hex");
+    let entry = relationExecutions.get(cacheKey);
+    if (entry && entry.fingerprint !== fingerprint) {
+      res.status(409).json({
+        errors: [{
+          message: "Idempotency-Key was already used for another relation delta",
+          extensions: { code: "IDEMPOTENCY_KEY_MISMATCH" },
+        }],
+      });
+      return;
+    }
+    if (!entry) {
+      entry = { fingerprint };
+      if (!relationExecutions.set(cacheKey, entry)) {
+        res.status(503).json({
+          errors: [{
+            message: "relation delta capacity is temporarily exhausted",
+            extensions: { code: "RELATION_DELTA_CAPACITY" },
+          }],
+        });
+        return;
+      }
+    }
+    if (entry.result) {
+      res.status(200).json({ data: entry.result });
+      return;
+    }
+    let execution = entry.inFlight;
+    if (!execution) {
+      execution = (async () => {
+        const schema = await getSchema();
+        return applyRelationDeltaInTransaction(
+          ItemsService,
+          schema,
+          database,
+          accountability,
+          request,
+        );
+      })();
+      entry.inFlight = execution;
+    }
+    try {
+      const result = await execution;
+      entry.result = result;
+      res.status(200).json({ data: result });
+    } catch (error) {
+      relationExecutions.delete(cacheKey);
+      const outcome = mapRelationDeltaError(error) ?? mapError(error);
+      res.status(outcome.status).json(outcome.body);
+    } finally {
+      if (entry.inFlight === execution) entry.inFlight = undefined;
+    }
+  });
+
+  router.post("/relation-import", async (req, res) => {
+    const accountability = (
+      req as typeof req & { accountability?: Accountability }
+    ).accountability;
+    const user = String(accountability?.user ?? "");
+    if (!accountability || !user) {
+      res.status(401).json({ errors: [{ message: "authentication is required" }] });
+      return;
+    }
+    const body = req.body as RelationImportRequest | undefined;
+    const headerKey = req.get("Idempotency-Key") as string | undefined;
+    const validation = validateRelationImport(body, headerKey);
+    if (!validation.ok) {
+      res.status(400).json({
+        errors: [{ message: validation.error, extensions: { code: "RELATION_IMPORT_INVALID" } }],
+      });
+      return;
+    }
+    const request = body as RelationImportRequest;
+    const cacheKey = `${user}:${request.idempotencyKey}`;
+    const fingerprint = createHash("sha256")
+      .update(JSON.stringify(request), "utf8")
+      .digest("hex");
+    let entry = relationImportExecutions.get(cacheKey);
+    if (entry && entry.fingerprint !== fingerprint) {
+      res.status(409).json({
+        errors: [{
+          message: "Idempotency-Key was already used for another relation import",
+          extensions: { code: "IDEMPOTENCY_KEY_MISMATCH" },
+        }],
+      });
+      return;
+    }
+    if (!entry) {
+      if (relationImportExecutions.size >= RESTORE_EXECUTION_LIMIT) {
+        const evictable = Array.from(relationImportExecutions).find(
+          ([, candidate]) => candidate.inFlight === undefined,
+        );
+        if (evictable) relationImportExecutions.delete(evictable[0]);
+      }
+      if (relationImportExecutions.size >= RESTORE_EXECUTION_LIMIT) {
+        res.status(503).json({
+          errors: [{
+            message: "relation import capacity is temporarily exhausted",
+            extensions: { code: "RELATION_IMPORT_CAPACITY" },
+          }],
+        });
+        return;
+      }
+      entry = { fingerprint };
+      relationImportExecutions.set(cacheKey, entry);
+    }
+    if (entry.cached) {
+      res.status(entry.cached.status).json(entry.cached.body);
+      return;
+    }
+    let execution = entry.inFlight;
+    if (!execution) {
+      execution = (async (): Promise<RelationImportOutcome> => {
+        try {
+          const schema = await getSchema();
+          const result = await applyRelationImportInTransaction(
+            ItemsService,
+            schema,
+            database,
+            accountability,
+            request,
+          );
+          return { status: 200, body: { data: result }, cacheable: true, result };
+        } catch (error) {
+          return mapRelationImportError(error);
+        }
+      })();
+      entry.inFlight = execution;
+    }
+    try {
+      const outcome = await execution;
+      if (outcome.cacheable) {
+        entry.cached = outcome;
+      } else if (relationImportExecutions.get(cacheKey) === entry) {
+        relationImportExecutions.delete(cacheKey);
+      }
+      res.status(outcome.status).json(outcome.body);
+    } finally {
+      if (entry.inFlight === execution) entry.inFlight = undefined;
     }
   });
 

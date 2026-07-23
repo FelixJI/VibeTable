@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { buildColumns, buildOptions, ROW_NUMBER_FIELD } from "./createGrid";
+import { buildColumns, buildOptions, ROW_KEY_FIELD, ROW_NUMBER_FIELD } from "./createGrid";
 import type { ColumnEditSchema, TablePage } from "@/contracts";
 
 /** A representative Phase-A page: text/integer/decimal/boolean/date + rowKey. */
@@ -179,6 +179,19 @@ describe("buildOptions (read-only Tabulator options)", () => {
   it("enables selectableRange:true", () => {
     const opts = buildOptions(samplePage());
     expect(opts.selectableRange).toBe(true);
+  });
+
+  it("uses the transport row key as the stable Tabulator index", () => {
+    expect(buildOptions(samplePage()).index).toBe(ROW_KEY_FIELD);
+  });
+
+  it("keeps remote header interactions enabled and delegates sort/filter to the server", () => {
+    const opts = buildOptions({ ...samplePage(), mode: "remote" });
+    expect(opts.headerSort).not.toBe(false);
+    expect(opts.sortMode).toBe("remote");
+    expect(opts.filterMode).toBe("remote");
+    const columns = opts.columns as Array<Record<string, unknown>>;
+    expect(columns.find((column) => column.field !== ROW_NUMBER_FIELD)?.headerFilter).toBe("input");
   });
 
   it("disables clipboard paste (Phase A is read-only)", () => {

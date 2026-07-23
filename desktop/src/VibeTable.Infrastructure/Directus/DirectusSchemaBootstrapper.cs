@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -31,8 +32,8 @@ namespace VibeTable.Infrastructure.Directus;
 /// <c>.bootstrapped</c> exists.</item>
 /// <item><see cref="ApplySchemaIfFirstBootAsync"/>: logs in as admin, then POSTs
 /// collections, relations, policies, roles and permissions built from the
-/// VibeTable blueprint. Skipped only when <c>.schema-applied</c> records the
-/// current blueprint schema version.</item>
+/// VibeTable blueprint. Skipped when <c>.schema-applied</c> matches the current
+/// blueprint digest; schema additions are therefore reconciled on upgrade.</item>
 /// </list>
 /// <para>
 /// <b>Payload fidelity.</b> The collection/field/relation/permission payloads
@@ -141,17 +142,21 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
         string blueprintPath, string localDirectusDir, CancellationToken cancellationToken)
     {
         string marker = Path.Combine(localDirectusDir, ".schema-applied");
-        JsonNode blueprint = LoadBlueprint(blueprintPath);
+        byte[] blueprintBytes = await File.ReadAllBytesAsync(
+            blueprintPath, cancellationToken).ConfigureAwait(false);
+        JsonNode blueprint = JsonNode.Parse(blueprintBytes)
+            ?? throw new InvalidOperationException("Directus blueprint is empty.");
         string schemaVersion = blueprint["schema_version"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Directus blueprint has no schema_version.");
-        if (File.Exists(marker))
+        string blueprintDigest = Convert.ToHexString(SHA256.HashData(blueprintBytes));
+        string markerValue = $"{baseUrl}|{blueprintDigest}";
+        if (File.Exists(marker)
+            && string.Equals(
+                await File.ReadAllTextAsync(marker, cancellationToken).ConfigureAwait(false),
+                markerValue,
+                StringComparison.Ordinal))
         {
-            string markerContents = await File.ReadAllTextAsync(marker, cancellationToken)
-                .ConfigureAwait(false);
-            if (IsSchemaMarkerCurrent(markerContents, schemaVersion))
-            {
-                return;
-            }
+            return;
         }
 
         string token = await AdminLoginAsync(baseUrl, adminEmail, adminPassword, cancellationToken).ConfigureAwait(false);
@@ -276,9 +281,7 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
         }
 
         await File.WriteAllTextAsync(
-            marker,
-            BuildSchemaMarker(schemaVersion),
-            cancellationToken).ConfigureAwait(false);
+            marker, markerValue, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()

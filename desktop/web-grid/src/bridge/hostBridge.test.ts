@@ -443,4 +443,33 @@ describe("HostBridge", () => {
     });
     bridge.stop();
   });
+
+  it("whitelists relation schema lifecycle and Lookup management requests", () => {
+    const bridge = createHostBridge({ webview, timeoutMs: 1000 });
+    bridge.start();
+
+    bridge.notify("table_admin.previewRelationChange", {
+      collection: "orders",
+      action: "delete",
+      relationId: "orders.contract",
+      expectedSchemaRevision: "schema-1",
+    });
+    bridge.notify("table_admin.applyRelationChange", {
+      planId: "plan-1",
+      operationId: "op-1",
+      expectedSchemaRevision: "schema-1",
+      cascadeLookupIds: [],
+    });
+    bridge.notify("lookup.list", { collection: "orders" });
+
+    expect(webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: "table_admin.previewRelationChange",
+    }));
+    expect(webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: "table_admin.applyRelationChange",
+      payload: expect.objectContaining({ cascadeLookupIds: [] }),
+    }));
+    expect(webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "lookup.list" }));
+    bridge.stop();
+  });
 });

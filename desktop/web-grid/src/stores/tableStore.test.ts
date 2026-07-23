@@ -243,4 +243,48 @@ describe("tableStore mutation extensions", () => {
     expect(s.editSchema).toBeNull();
     expect(s.revision).toBeNull();
   });
+
+  it("merges authoritative Lookup rows by fieldId and adopts server order", () => {
+    const s = useTableStore();
+    s.setDatasetReady({
+      ...makeDatasetReady([
+        { rowKey: "o1", amount: "10.00", contractPrice: null },
+        { rowKey: "o2", amount: "20.00", contractPrice: null },
+      ], [
+        { ...makeColumn("amount"), fieldId: "orders.amount" },
+        { ...makeColumn("contractPrice"), fieldId: "orders.contract_price", kind: "lookup", lookupId: "orders.contract_price" },
+      ], 2),
+      table: "orders",
+    });
+    s.applyLookupQueryResult({
+      contract: "vibetable.lookup-query.v1",
+      collection: "orders",
+      requestGeneration: 1,
+      schemaRevision: "s",
+      permissionRevision: "p",
+      lookupRevision: "l",
+      columns: [],
+      rows: [
+        { rowKey: "o2", "orders.contract_price": "99.00" },
+        { rowKey: "o1", "orders.contract_price": "11.00" },
+      ],
+      groups: [{
+        path: [{ fieldRef: "customer", key: "Acme" }],
+        key: "Acme",
+        count: 2,
+        aggregates: { total: "110.00" },
+        childCursor: "cursor-1",
+      }], offset: 0, limit: 2, filteredRows: 2, totalRows: 2,
+    });
+    expect(s.allRows.map((row) => row.rowKey)).toEqual(["o2", "o1"]);
+    expect(s.allRows.map((row) => row.contractPrice)).toEqual(["99.00", "11.00"]);
+    expect(s.allRows[0]?.amount).toBe("20.00");
+    expect(s.lookupGroups).toEqual([{
+      path: [{ fieldRef: "customer", key: "Acme" }],
+      key: "Acme",
+      count: 2,
+      aggregates: { total: "110.00" },
+      childCursor: "cursor-1",
+    }]);
+  });
 });

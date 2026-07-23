@@ -84,6 +84,48 @@ Temporary panel
 client IDs are rewritten only in managed `globalFilters[].targetPanels` and
 `interactions[].sourcePanelId/targetPanelIds` reference paths.
 
+## Relation delta safety
+
+`POST /vibetable-bulk-mutation/relation-delta` requires a canonical SHA-256
+`schemaProof` for the exact physical relation plan. Before opening the write
+transaction, the endpoint recomputes that proof from Directus `getSchema()` and
+fails with `EDIT_CONFLICT` if a source/target PK, FK, junction field, M2A
+allow-list, or relation has drifted. Source `date_updated` mismatches use the
+same sanitized 409 response. Completed idempotency results are retained in a
+bounded TTL/LRU cache; in-flight mutations are never evicted.
+
+## Relation-aware import
+
+`POST /vibetable-bulk-mutation/relation-import` accepts the private
+`vibetable-relation-import.v1` execution plan compiled and validated by the
+Python data plane. The request names every source/target collection and field,
+provides field, unique-field, and relation allow-lists in `schemaProof`, and
+contains only exact relation resolutions (`matched` or `create`). No display or
+match field is inferred by the extension.
+
+The endpoint revalidates fields and relations against the live Directus schema
+and verifies every claimed unique field through the database schema inspector, resolves
+each relation through a permission-aware `ItemsService` exact query, and then
+creates or upserts the source rows. A `create` resolution repeats the exact
+lookup inside the transaction: zero matches creates the target, one reuses the
+concurrent target, and more than one fails closed. Target creation uses a
+savepoint so a concurrent unique-key winner can be re-read without poisoning
+the outer transaction. Target creation and all
+source writes share one transaction, so any error rolls the whole import back.
+
+The capability is advertised by the authenticated capabilities endpoint:
+
+```json
+{
+  "data": {
+    "relationImport": "vibetable-relation-import.v1"
+  }
+}
+```
+
+Idempotency entries are isolated by the current Directus user. Reusing a key
+with another payload returns `IDEMPOTENCY_KEY_MISMATCH`.
+
 ## Safety properties
 
 - **Never bypasses permissions.** Runs under `accountability` for the requesting
@@ -111,7 +153,7 @@ npm run build      # produces dist/index.js (a bundled ESM module)
 
 Copy the built `dist/index.js` into the target Directus instance's
 `extensions/vibetable-bulk-mutation/` directory and restart Directus. The endpoint
-registers at `POST /vibetable-bulk-mutation/apply`.
+registers the `/apply`, `/relation-delta`, and `/relation-import` routes.
 
 ## Verification status
 
@@ -120,7 +162,9 @@ registers at `POST /vibetable-bulk-mutation/apply`.
   build all pass locally.
 - Unit tests for the pure validation, conflict mapping, dashboard reference
   rewriting, fingerprinted idempotency, restart recovery, and panel bounds live
-  in `src/__tests__/` and run without a Directus runtime (28 passing tests).
+  in `src/__tests__/` and run without a Directus runtime. Relation tests in the
+  same directory cover validation, transaction binding, exact matching, create
+  races, ambiguity handling, rollback, and sanitized errors.
 - `npm audit --omit=dev` reports zero production vulnerabilities. Remaining
   audit notices are confined to the SDK development/build graph and are not
   copied into the bundled extension output.

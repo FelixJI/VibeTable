@@ -56,7 +56,7 @@ def validate_number_field(
     # their repr. Unparseable input is the database's problem, not ours.
     try:
         decimal = _to_decimal(value)
-    except _Unparseable:
+    except _UnparseableError:
         return
     if decimal is None or not decimal.is_finite():
         return
@@ -86,8 +86,7 @@ def validate_number_field(
         hint = (
             "this column does not allow fractional digits"
             if scale == 0
-            else f"this column allows at most {scale} fractional digit"
-            f"{'s' if scale != 1 else ''}"
+            else f"this column allows at most {scale} fractional digit{'s' if scale != 1 else ''}"
         )
         raise DirectusSchemaError(f"field {field_name!r}: {hint}")
 
@@ -97,12 +96,11 @@ def validate_number_field(
         digits = len(decimal.as_tuple().digits)
         if digits > precision:
             raise DirectusSchemaError(
-                f"field {field_name!r}: this column allows at most "
-                f"{precision} significant digits"
+                f"field {field_name!r}: this column allows at most {precision} significant digits"
             )
 
 
-class _Unparseable(Exception):
+class _UnparseableError(Exception):
     """Internal sentinel: the value is not a number we can reason about."""
 
 
@@ -127,5 +125,5 @@ def _to_decimal(value: Any) -> Decimal | None:
         try:
             return Decimal(text)
         except InvalidOperation as exc:
-            raise _Unparseable from exc
-    raise _Unparseable
+            raise _UnparseableError from exc
+    raise _UnparseableError

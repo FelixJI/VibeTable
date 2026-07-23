@@ -563,11 +563,10 @@ def _numeric_column_schema(
             fields=fields_payload,
             collection_permissions={"read": {"access": "full", "fields": profile.fields}},
         )
-    except Exception:  # noqa: BLE001 - schema projection is best-effort here
+    except Exception:  # schema projection is intentionally best-effort here
         return {}
     return {
-        column.name: (column.data_type, column.scale, column.precision)
-        for column in schema.columns
+        column.name: (column.data_type, column.scale, column.precision) for column in schema.columns
     }
 
 

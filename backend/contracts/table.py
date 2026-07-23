@@ -45,6 +45,10 @@ class ColumnSchema(CamelModel):
 
     name: str
     title: str
+    field_id: str | None = None
+    kind: Literal["scalar", "relation", "lookup"] = "scalar"
+    relation_id: str | None = None
+    lookup_id: str | None = None
     data_type: Literal[
         "text",
         "integer",
@@ -53,6 +57,7 @@ class ColumnSchema(CamelModel):
         "date",
         "datetime",
         "time",
+        "json",
     ]
     editable: bool = False
     nullable: bool = True

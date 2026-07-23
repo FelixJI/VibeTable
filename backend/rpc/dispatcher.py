@@ -79,6 +79,8 @@ CODE_SETTINGS_COMMAND = -32100
 CODE_TABLE_ADMIN = -32110
 CODE_PLUGIN = -32120
 CODE_HISTORY = -32130
+CODE_LOOKUP = -32140
+CODE_RELATION = -32141
 
 #: Maps each typed application error class to a ``(code, message, kind)``
 #: tuple. Order matters only if classes share a base class — they do not here.
@@ -207,6 +209,33 @@ def register_table_admin_errors() -> None:
             CODE_TABLE_ADMIN,
             "Table admin error",
             "table_admin_error",
+        )
+
+
+def register_lookup_errors() -> None:
+    """Register stable Lookup metadata/execution failures."""
+    from backend.application.lookup_service import LookupServiceError
+
+    if LookupServiceError not in _APP_ERROR_MAP:
+        _APP_ERROR_MAP[LookupServiceError] = (
+            CODE_LOOKUP,
+            "Lookup error",
+            "lookup_error",
+        )
+
+
+def register_relation_errors() -> None:
+    """Register relation search/edit failures."""
+    from backend.application.relation_data_service import RelationDataError
+    from backend.application.relation_schema_service import RelationSchemaError
+
+    for error_type in (RelationDataError, RelationSchemaError):
+        if error_type in _APP_ERROR_MAP:
+            continue
+        _APP_ERROR_MAP[error_type] = (
+            CODE_RELATION,
+            "Relation error",
+            "relation_error",
         )
 
 
