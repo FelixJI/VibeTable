@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from scripts import dev
 
@@ -69,6 +72,43 @@ def test_node_project_build_installs_dependencies_only_when_needed(
     calls.clear()
     dev._ensure_node_dependencies(project)
     assert calls == []
+
+
+def test_run_build_eperm_failure_explains_locked_node_modules(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """An EPERM during ``npm ci`` must point at a process holding node_modules.
+
+    Windows raises EPERM when ``npm ci`` tries to unlink a native binary (e.g.
+    the @rolldown binding) that a still-running vite/node process has loaded.
+    The raw npm error blames antivirus or permissions; the real cause is almost
+    always a leftover dev server. The build error must surface that hint so the
+    next person hits it doesn't re-trace the whole stack.
+    """
+
+    def _npm_ci_eperm(_command, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=[dev.NPM, "ci"],
+            returncode=-4048,
+            stdout="",
+            stderr=(
+                "npm error code EPERM\nnpm error syscall unlink\n"
+                "npm error path ...\\node_modules\\@rolldown\\.binding-win32-x64-msvc-P4K6Wv0J\\"
+                "rolldown-binding.win32-x64-msvc.node\n"
+                "npm error errno -4048\n"
+            ),
+        )
+
+    monkeypatch.setattr(dev.subprocess, "run", _npm_ci_eperm)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        dev._run_build("web-grid dependencies", [dev.NPM, "ci"], tmp_path)
+
+    message = str(exc_info.value)
+    assert "EPERM" in message
+    assert "node_modules" in message.lower()
+    # Actionable hint, not just the npm-blames-AV text:
+    assert "still running" in message.lower() or "vite" in message.lower()
 
 
 def test_launch_host_uses_explicit_routing_and_preserves_proxy_settings(

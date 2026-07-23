@@ -108,10 +108,38 @@ def _run_build(label: str, command: list[str], cwd: Path, *, timeout: int = 600)
         timeout=timeout,
     )
     if proc.returncode != 0:
+        stderr = proc.stderr or ""
+        hint = _npm_eperm_hint(stderr, cwd)
         raise RuntimeError(
             f"{label} build failed (exit {proc.returncode}):\n"
-            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            f"stdout:\n{proc.stdout}\nstderr:\n{stderr}{hint}"
         )
+
+
+def _npm_eperm_hint(stderr: str, cwd: Path) -> str:
+    """Append an actionable hint when ``npm ci`` hits a Windows EPERM unlink.
+
+    ``npm ci`` wipes ``node_modules`` before reinstalling. On Windows a native
+    binary that a still-running process has loaded (most often the @rolldown
+    binding loaded by a leftover ``vite`` dev server, or an AV scan) cannot be
+    unlinked, so npm dies with ``EPERM`` / ``errno -4048``. npm's own message
+    blames permissions or antivirus; the recurring real-world cause is a
+    dev server left running from a previous session. Surface that so the next
+    person does not have to re-trace the whole stack.
+    """
+    blob = stderr.lower()
+    is_eperm = "eperm" in blob or "-4048" in blob
+    touches_node_modules = "unlink" in blob and "node_modules" in blob
+    if not (is_eperm and touches_node_modules):
+        return ""
+    return (
+        "\n\nHint: npm ci failed to delete a file under node_modules. On Windows "
+        "this is almost always a process still holding a native binary open — "
+        "commonly a `vite`/`node` dev server left running from a previous "
+        "session (check `tasklist | findstr node`) or an antivirus scan. Stop "
+        "the process holding the lock, or run "
+        f"`Remove-Item -Recurse -Force {cwd / 'node_modules'}` and retry."
+    )
 
 
 def _ensure_node_dependencies(project: Path) -> None:
