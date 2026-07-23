@@ -95,6 +95,7 @@ function plan(): LookupQueryPlan {
     collection: "orders",
     primaryKey: "id",
     revisions: { schema: "s1", permission: "p1", lookup: "l1" },
+    definitionRevisions: {},
     baseFields: [{ ref: "order.number", field: "number", outputType: { kind: "string" } }],
     lookups: [
       {
@@ -167,6 +168,13 @@ describe("permission-aware frontier executor", () => {
     assert.equal(result.rows[0]!.cells["lookup.contract-price"], "10.25");
     assert.equal(result.rows[0]!.cells["lookup.line-total"], "5.25");
     assert.equal(result.rows[0]!.cells["lookup.tag-quantities"], "3.50");
+    assert.deepEqual(result.rows[0]!.provenance["lookup.contract-price"], [
+      { collection: "contracts", itemId: 10, value: "10.25" },
+    ]);
+    assert.deepEqual(result.rows[0]!.provenance["lookup.line-total"], [
+      { collection: "lines", itemId: 101, value: "2.25" },
+      { collection: "lines", itemId: 102, value: "3.00" },
+    ]);
     assert.deepEqual(result.rows[0]!.cells["lookup.linked-labels"], [
       { collection: "notes", itemId: "n1", value: "first" },
       { collection: "assets", itemId: "a1", value: "contract.pdf" },
@@ -239,6 +247,7 @@ describe("permission-aware frontier executor", () => {
         collection: "large_orders",
         primaryKey: "id",
         revisions: { schema: "s-large", permission: "p-large", lookup: "l-large" },
+        definitionRevisions: {},
         baseFields: [],
         lookups: [{
           lookupId: "copied-value",
@@ -261,6 +270,9 @@ describe("permission-aware frontier executor", () => {
       assert.equal(result.total, 25_000);
       assert.equal(result.rows.length, 10_000);
       assert.equal(result.rows.at(-1)?.cells["lookup.copied-value"], "value-10000");
+      assert.deepEqual(result.rows.at(-1)?.provenance["lookup.copied-value"], [
+        { collection: "large_orders", itemId: 10_000, value: "value-10000" },
+      ]);
     } finally {
       delete database.large_orders;
     }

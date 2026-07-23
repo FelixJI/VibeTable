@@ -50,13 +50,16 @@ describe("relation / Lookup grid renderers", () => {
       getValue: () => ({
         state: "ok",
         value: "99.00",
-        provenance: [{ collection: "contracts", itemId: "c1", value: "99.00" }],
+        provenance: [
+          { collection: "contracts", itemId: "c1", value: "99.00" },
+          { collection: "contracts", itemId: "c2", value: "101.00" },
+        ],
       }),
     });
-    const button = node.querySelector<HTMLButtonElement>(".vt-lookup-source");
-    expect(button?.title).toContain("contracts");
-    button?.click();
-    expect(navigated).toEqual([{ collection: "contracts", itemId: "c1" }]);
+    const buttons = node.querySelectorAll<HTMLButtonElement>(".vt-lookup-source");
+    expect(buttons).toHaveLength(2);
+    buttons[1]?.click();
+    expect(navigated).toEqual([{ collection: "contracts", itemId: "c2" }]);
   });
 
   it("preserves optimistic junction revisions while normalizing relation values", () => {

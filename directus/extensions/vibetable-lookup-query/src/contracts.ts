@@ -135,6 +135,8 @@ export interface LookupQueryPlan {
     permission: string;
     lookup: string;
   };
+  /** Persisted definitions observed while the private plan was compiled. */
+  definitionRevisions: Readonly<Record<string, number>>;
   baseFields: readonly BaseField[];
   lookups: readonly LookupDefinition[];
   filter?: FilterNode;
@@ -149,6 +151,13 @@ export interface LookupQueryPlan {
 export interface MaterializedRow {
   primaryKey: unknown;
   cells: Record<string, unknown>;
+  provenance: Record<string, readonly LookupValueProvenance[]>;
+}
+
+export interface LookupValueProvenance {
+  collection: string;
+  itemId: unknown;
+  value: unknown;
 }
 
 export interface GroupPathPart {

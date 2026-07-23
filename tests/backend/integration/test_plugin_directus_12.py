@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import csv
+import hashlib
 import os
 import sqlite3
 import uuid
@@ -404,6 +405,7 @@ async def test_directus_12_native_relations_and_lookup_extension() -> None:
             "order_files",
             "order_translations",
             "languages",
+            "large_orders",
         )
     }
     created: list[str] = []
@@ -596,6 +598,21 @@ async def test_directus_12_native_relations_and_lookup_extension() -> None:
                     "meta": {"required": True},
                     "schema": {"is_primary_key": True, "is_nullable": False},
                 }
+            ],
+        )
+        await create_collection(
+            names["large_orders"],
+            [uuid_field(), scalar_field("sequence", "integer", nullable=False, unique=True)],
+        )
+        await create_collection(
+            "vibetable_lookup_definitions",
+            [
+                uuid_field(),
+                scalar_field("collection", "string", nullable=False),
+                scalar_field("lookup_id", "string", nullable=False, unique=True),
+                scalar_field("status", "string", nullable=False),
+                scalar_field("revision", "integer", nullable=False),
+                scalar_field("definition", "json", nullable=False),
             ],
         )
 
@@ -832,7 +849,12 @@ async def test_directus_12_native_relations_and_lookup_extension() -> None:
             "generation": "directus-12.1.1-integration",
             "collection": names["orders"],
             "primaryKey": "id",
-            "revisions": {"schema": "s1", "permission": "p1", "lookup": "l1"},
+            "revisions": {
+                "schema": "s1",
+                "permission": "p1",
+                "lookup": hashlib.sha256(b"[]").hexdigest(),
+            },
+            "definitionRevisions": {},
             "baseFields": [
                 {"ref": "order.number", "field": "number", "outputType": {"kind": "string"}}
             ],
@@ -935,6 +957,22 @@ async def test_directus_12_native_relations_and_lookup_extension() -> None:
             ],
             "page": {"offset": 0, "limit": 10},
         }
+        for candidate_lookup in plan["lookups"]:
+            try:
+                await transport.request(
+                    "POST",
+                    "/vibetable-lookup-query/validate",
+                    access_token=token,
+                    json_body={
+                        **plan,
+                        "lookups": [candidate_lookup],
+                        "groupBy": [],
+                        "groupAggregates": [],
+                    },
+                )
+            except DirectusTransportError as error:
+                pytest.fail(f"live schema rejected {candidate_lookup['lookupId']}: {error}")
+
         validation = await transport.request(
             "POST",
             "/vibetable-lookup-query/validate",
@@ -967,10 +1005,58 @@ async def test_directus_12_native_relations_and_lookup_extension() -> None:
             {"collection": names["notes"], "itemId": note_id, "value": "first"},
             {"collection": names["assets"], "itemId": asset_id, "value": "contract.pdf"},
         ]
+        assert materialized["provenance"]["lookup.contract-price"] == [
+            {"collection": names["contracts"], "itemId": contract_id, "value": "10.25"}
+        ]
+        line_provenance = materialized["provenance"]["lookup.line-total"]
+        assert [source["collection"] for source in line_provenance] == [names["lines"]] * 3
+        assert sorted(source["value"] for source in line_provenance) == ["2.25", "3.00", "4.00"]
+        assert all(source["itemId"] for source in line_provenance)
         assert len(data["groups"]) == 2
         b_group = next(group for group in data["groups"] if group["key"] == "B")
         assert b_group["count"] == 1
         assert b_group["aggregateCells"]["group.line-total"] == "9.25"
+
+        # Exercise the deployed Directus 12.1.1 + SQLite ItemsService path at
+        # the endpoint's documented 25k root-item ceiling.  Direct SQLite
+        # seeding keeps the lifecycle test fast; all reads still flow through
+        # the authenticated extension and Directus services.
+        with sqlite3.connect(_integration_sqlite_path()) as database:
+            database.executemany(
+                f'INSERT INTO "{names["large_orders"]}" (id, sequence) VALUES (?, ?)',
+                ((str(uuid.uuid4()), index) for index in range(25_000)),
+            )
+        large_plan = {
+            "contract": "vibetable-lookup-query.v1",
+            "generation": "directus-12.1.1-25k-integration",
+            "collection": names["large_orders"],
+            "primaryKey": "id",
+            "revisions": {
+                "schema": "s1",
+                "permission": "p1",
+                "lookup": hashlib.sha256(b"[]").hexdigest(),
+            },
+            "definitionRevisions": {},
+            "baseFields": [
+                {"ref": "large.sequence", "field": "sequence", "outputType": {"kind": "integer"}}
+            ],
+            "lookups": [],
+            "sort": [{"fieldRef": "large.sequence", "direction": "asc"}],
+            "groupBy": [],
+            "groupAggregates": [],
+            "page": {"offset": 0, "limit": 10},
+        }
+        large_response = await transport.request(
+            "POST",
+            "/vibetable-lookup-query/query",
+            access_token=token,
+            json_body=large_plan,
+        )
+        assert large_response["data"]["rootTotal"] == 25_000
+        assert large_response["data"]["total"] == 25_000
+        assert [row["cells"]["large.sequence"] for row in large_response["data"]["rows"]] == list(
+            range(10)
+        )
 
         import_key = f"import-{suffix}"
         relation_import = await transport.request(

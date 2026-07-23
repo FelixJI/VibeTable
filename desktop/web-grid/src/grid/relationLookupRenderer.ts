@@ -72,17 +72,24 @@ export function lookupFormatter(
     root.append(element("span", display === "" ? "vt-cell-empty" : "vt-lookup-text", display || "—"));
     if (value.provenance.length > 0) {
       root.title = `${value.provenance.length} 个来源记录`;
-      const source = value.provenance[0]!;
-      const button = document.createElement("button");
-      button.className = "vt-lookup-source";
-      button.textContent = "来源";
-      button.type = "button";
-      button.title = `打开 ${source.collection} · ${source.itemId}`;
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        onSourceRequested?.(source);
-      });
-      root.append(button);
+      for (const source of value.provenance.slice(0, 3)) {
+        const button = document.createElement("button");
+        button.className = "vt-lookup-source";
+        button.textContent = `${source.collection} · ${source.itemId}`;
+        button.type = "button";
+        button.title = `打开 ${source.collection} · ${source.itemId}`;
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          onSourceRequested?.(source);
+        });
+        root.append(button);
+      }
+      if (value.provenance.length > 3) {
+        const remainder = document.createElement("span");
+        remainder.className = "vt-lookup-source-more";
+        remainder.textContent = `+${value.provenance.length - 3}`;
+        root.append(remainder);
+      }
     }
     return root;
   };

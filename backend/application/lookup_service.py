@@ -159,6 +159,7 @@ class LookupService:
                 )
             except LookupCompileError as exc:
                 raise LookupServiceError(str(exc), code="lookup_plan_invalid") from exc
+            _attach_persisted_definition_proof(plan, known)
             token = await self._auth.access_token()
             payload = await self._transport.request(
                 "POST",
@@ -372,6 +373,7 @@ class LookupService:
             )
         except LookupCompileError as exc:
             raise LookupServiceError(str(exc), code="lookup_plan_invalid") from exc
+        _attach_persisted_definition_proof(plan, persisted)
         token = await self._auth.access_token()
         cache_key = _query_cache_key(plan, token)
         now = time.monotonic()
@@ -568,6 +570,21 @@ def _lookup_revision(definitions: list[LookupDefinition]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _attach_persisted_definition_proof(
+    plan: dict[str, Any], persisted: list[LookupDefinition]
+) -> None:
+    compiled_ids = {
+        item.get("lookupId")
+        for item in plan.get("lookups", [])
+        if isinstance(item, dict) and isinstance(item.get("lookupId"), str)
+    }
+    plan["definitionRevisions"] = {
+        definition.lookup_id: definition.revision
+        for definition in persisted
+        if definition.lookup_id in compiled_ids
+    }
+
+
 def _dependent_first(definitions: dict[str, LookupDefinition]) -> list[str]:
     remaining = set(definitions)
     output: list[str] = []
@@ -673,7 +690,36 @@ def _translate_query_result(
     for row in raw_rows:
         if not isinstance(row, dict) or not isinstance(row.get("cells"), dict):
             raise LookupServiceError("Directus Lookup extension returned an invalid row")
-        rows.append({"rowKey": row.get("primaryKey"), **row["cells"]})
+        raw_provenance = row.get("provenance", {})
+        if not isinstance(raw_provenance, dict):
+            raise LookupServiceError("Directus Lookup extension returned invalid provenance")
+        translated_cells: dict[str, Any] = {}
+        for ref, value in row["cells"].items():
+            if ref not in definitions_by_ref:
+                translated_cells[ref] = value
+                continue
+            sources = raw_provenance.get(ref, [])
+            if not isinstance(sources, list) or any(
+                not isinstance(source, dict)
+                or not isinstance(source.get("collection"), str)
+                or not isinstance(source.get("itemId"), (str, int))
+                or isinstance(source.get("itemId"), bool)
+                for source in sources
+            ):
+                raise LookupServiceError("Directus Lookup extension returned invalid provenance")
+            translated_cells[ref] = {
+                "state": "ok",
+                "value": value,
+                "provenance": [
+                    {
+                        "collection": source["collection"],
+                        "itemId": str(source["itemId"]),
+                        "value": source.get("value"),
+                    }
+                    for source in sources
+                ],
+            }
+        rows.append({"rowKey": row.get("primaryKey"), **translated_cells})
     groups = []
     for group in raw_groups:
         if not isinstance(group, dict):

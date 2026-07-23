@@ -167,9 +167,12 @@ try {
     [
       "-m",
       "pytest",
+      "-p",
+      "no:cacheprovider",
       "tests/backend/integration/test_plugin_directus_12.py",
       "-q",
-      "--no-cov",
+      "-o",
+      "addopts=",
       "--tb=short",
       "-k",
       "native_relations_and_lookup_extension",

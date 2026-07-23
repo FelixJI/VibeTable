@@ -170,6 +170,9 @@ def compile_lookup_plan(
             "permission": params.permission_revision,
             "lookup": params.lookup_revision,
         },
+        "definitionRevisions": {
+            definition.lookup_id: definition.revision for definition in needed.values()
+        },
         "baseFields": base_fields,
         "lookups": compiled,
         "filter": filter_node,

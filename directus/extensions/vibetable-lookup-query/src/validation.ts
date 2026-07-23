@@ -278,6 +278,13 @@ export function validatePlan(value: unknown): asserts value is LookupQueryPlan {
   for (const key of ["schema", "permission", "lookup"] as const) {
     if (typeof value.revisions[key] !== "string" || value.revisions[key].length === 0 || value.revisions[key].length > 256) invalid(`revisions.${key} is required`, `revisions.${key}`);
   }
+  object(value.definitionRevisions, "definitionRevisions");
+  for (const [lookupId, revision] of Object.entries(value.definitionRevisions)) {
+    validateStableId(lookupId, `definitionRevisions.${lookupId}`);
+    if (!Number.isSafeInteger(revision) || Number(revision) < 1) {
+      invalid(`definitionRevisions.${lookupId} must be a positive integer`, `definitionRevisions.${lookupId}`);
+    }
+  }
   const baseFields = value.baseFields;
   if (!Array.isArray(baseFields) || baseFields.length > 128) invalid("baseFields must contain at most 128 fields", "baseFields");
   const refs = new Set<string>();
@@ -302,6 +309,12 @@ export function validatePlan(value: unknown): asserts value is LookupQueryPlan {
     if (lookup.expose !== false) refs.add(lookup.ref);
   });
   validateDependencyDag(lookups as LookupDefinition[]);
+  const compiledLookupIds = new Set((lookups as LookupDefinition[]).map((lookup) => lookup.lookupId));
+  for (const lookupId of Object.keys(value.definitionRevisions)) {
+    if (!compiledLookupIds.has(lookupId)) {
+      invalid(`definitionRevisions.${lookupId} does not belong to the compiled plan`, `definitionRevisions.${lookupId}`);
+    }
+  }
   const byLookupId = new Map((lookups as LookupDefinition[]).map((lookup) => [lookup.lookupId, lookup]));
   for (const lookup of lookups as LookupDefinition[]) {
     if (lookup.source.kind !== "lookup") continue;
@@ -483,7 +496,12 @@ export function validatePlanAgainstSchema(plan: LookupQueryPlan, schema: unknown
       const junction = step.junction!;
       requireLiveField(collections, junction.collection, junction.sourceField);
       requireLiveField(collections, junction.collection, junction.targetField);
-      requireLiveRelation(relations, junction.collection, junction.sourceField, step.fromCollection);
+      const junctionSourceRelation = requireLiveRelation(
+        relations,
+        junction.collection,
+        junction.sourceField,
+        step.fromCollection,
+      );
 
       if (step.kind === "m2m") {
         const target = step.toCollection!;
@@ -495,7 +513,10 @@ export function validatePlanAgainstSchema(plan: LookupQueryPlan, schema: unknown
       }
 
       requireLiveField(collections, junction.collection, junction.collectionField!);
-      const polymorphic = requireLiveRelation(relations, junction.collection, junction.targetField, null);
+      // Directus stores M2A metadata on the junction's relation back to the
+      // source collection; targetField is a scalar polymorphic key and does
+      // not have a second physical relation row.
+      const polymorphic = junctionSourceRelation;
       const liveAllowed = [...(polymorphic.meta?.one_allowed_collections ?? [])].sort();
       const requestedAllowed = [...(step.targetCollections ?? [])].sort();
       if (

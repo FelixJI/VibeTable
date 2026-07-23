@@ -353,6 +353,7 @@ export function buildOptions(
   const options: TabulatorOptions = {
     columns: buildGridColumns(page, opts?.editSchema, opts?.relationLookup) as unknown[],
     data,
+    index: ROW_KEY_FIELD,
     layout: "fitColumns",
     // Read-only Phase A:
     selectableRange: true, // highlight ranges; copy via host later

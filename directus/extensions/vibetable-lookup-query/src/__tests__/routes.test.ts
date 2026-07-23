@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { createHash } from "node:crypto";
 
 import { CONTRACT, type LookupQueryPlan } from "../contracts.ts";
 import { registerLookupRoutes } from "../routes.ts";
@@ -28,7 +29,12 @@ function minimalPlan(): LookupQueryPlan {
     generation: 1,
     collection: "orders",
     primaryKey: "id",
-    revisions: { schema: "s", permission: "p", lookup: "l" },
+    revisions: {
+      schema: "s",
+      permission: "p",
+      lookup: createHash("sha256").update("[]", "utf8").digest("hex"),
+    },
+    definitionRevisions: {},
     baseFields: [],
     lookups: [],
     page: { offset: 0, limit: 10 },
@@ -149,5 +155,64 @@ describe("lookup endpoint routes", () => {
       (response.body as any).errors[0].extensions.code,
       "VIBETABLE_LOOKUP_SCHEMA_INVALID",
     );
+  });
+
+  it("rejects a persisted Lookup dependency that changed after compilation", async () => {
+    const routes = new Map<string, Handler>();
+    let definitionReads = 0;
+    class DefinitionItemsService {
+      private readonly collection: string;
+      public constructor(collection: string, _options: Record<string, unknown>) {
+        this.collection = collection;
+      }
+      public async readByQuery(query: Record<string, unknown>) {
+        if (this.collection !== "vibetable_lookup_definitions") return [];
+        definitionReads += 1;
+        assert.ok((query.fields as string[]).includes("definition"));
+        return [{
+          collection: "orders",
+          definition: { lookupId: "copy-id" },
+          lookup_id: "copy-id",
+          revision: 2,
+        }];
+      }
+    }
+    registerLookupRoutes(
+      testRouter(routes),
+      {
+        services: { ItemsService: DefinitionItemsService },
+        database: {},
+        getSchema: async () => liveSchema(),
+      },
+    );
+    const body: LookupQueryPlan = {
+      ...minimalPlan(),
+      revisions: {
+        ...minimalPlan().revisions,
+        lookup: createHash("sha256")
+          .update('[{"lookupId":"copy-id"}]', "utf8")
+          .digest("hex"),
+      },
+      definitionRevisions: { "copy-id": 1 },
+      lookups: [{
+        lookupId: "copy-id",
+        ref: "lookup.copy-id",
+        path: [],
+        source: { kind: "field", field: "id" },
+        aggregate: "scalar",
+        outputType: { kind: "string" },
+      }],
+    };
+    const response = responseRecorder();
+    await routes.get("POST /query")!(
+      { accountability: { user: "alice" }, body },
+      response,
+    );
+    assert.equal(response.statusCode, 409);
+    assert.equal(
+      (response.body as any).errors[0].extensions.code,
+      "VIBETABLE_LOOKUP_SCHEMA_INVALID",
+    );
+    assert.equal(definitionReads, 1);
   });
 });

@@ -349,6 +349,15 @@ async def test_query_compiles_private_plan_and_translates_authoritative_result(
                         {
                             "primaryKey": "order-1",
                             "cells": {"orders.contract_price": "1250.50"},
+                            "provenance": {
+                                "orders.contract_price": [
+                                    {
+                                        "collection": "contracts",
+                                        "itemId": "contract-1",
+                                        "value": "1250.50",
+                                    }
+                                ]
+                            },
                         }
                     ],
                     "groups": [],
@@ -446,8 +455,24 @@ async def test_query_compiles_private_plan_and_translates_authoritative_result(
 
     assert transport.plan is not None
     assert transport.plan["contract"] == "vibetable-lookup-query.v1"
+    assert transport.plan["definitionRevisions"] == {"contract_price": 1}
     assert transport.plan["lookups"][0]["aggregate"] == "scalar"
-    assert result.rows == [{"rowKey": "order-1", "orders.contract_price": "1250.50"}]
+    assert result.rows == [
+        {
+            "rowKey": "order-1",
+            "orders.contract_price": {
+                "state": "ok",
+                "value": "1250.50",
+                "provenance": [
+                    {
+                        "collection": "contracts",
+                        "itemId": "contract-1",
+                        "value": "1250.50",
+                    }
+                ],
+            },
+        }
+    ]
     assert (result.filtered_rows, result.total_rows) == (2, 3)
     assert transport.query_count == 1
 

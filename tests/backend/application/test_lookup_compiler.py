@@ -119,6 +119,7 @@ def test_compiles_stable_m2o_lookup_to_physical_plan() -> None:
     )
 
     assert plan["contract"] == "vibetable-lookup-query.v1"
+    assert plan["definitionRevisions"] == {"contract-price": 1}
     assert plan["baseFields"] == [
         {
             "ref": "orders.amount",

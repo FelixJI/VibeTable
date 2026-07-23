@@ -19,7 +19,7 @@
  * idempotency key; we read those from the paste + workspace stores here so the
  * PastePanel component stays free of service knowledge.
  */
-import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
 import { useMessage } from "naive-ui";
 import { NButton, NDropdown, NIcon } from "naive-ui";
 import { FilePlus2 } from "lucide-vue-next";
@@ -160,6 +160,10 @@ const fieldManager = ref<{
 });
 let relationSearchGeneration = 0;
 let lookupDatasetGeneration = 0;
+const lookupSourceNavigation = ref<{
+  source: LookupValueProvenance;
+  queryRequested: boolean;
+} | null>(null);
 const interactiveGridQuery = ref<{
   filters: readonly FilterCondition[];
   sorts: readonly SortCondition[];
@@ -247,9 +251,9 @@ function onGridViewQueryChanged(query: {
 }
 
 function navigateLookupSource(source: LookupValueProvenance): void {
+  lookupSourceNavigation.value = { source, queryRequested: false };
   tableService.selectTable(source.collection);
   ui.navigate("tables");
-  message.info(`已打开来源表 ${source.collection}，记录 ${source.itemId}`);
 }
 
 function openFieldManager(): void {
@@ -421,6 +425,68 @@ watch(
  */
 const tabulator = ref<TabulatorFull | null>(null);
 provide(TABULATOR_INJECTION_KEY, tabulator);
+
+watch(
+  [
+    () => workspace.currentTable,
+    () => relationLookup.schema?.collection,
+    () => relationLookup.schema?.primaryKey,
+  ],
+  ([collection, schemaCollection, primaryKey]) => {
+    const navigation = lookupSourceNavigation.value;
+    if (
+      !navigation
+      || navigation.queryRequested
+      || collection !== navigation.source.collection
+      || schemaCollection !== navigation.source.collection
+      || !primaryKey
+    ) return;
+    navigation.queryRequested = true;
+    hostBridge.notify("table.queryRequested", {
+      table: navigation.source.collection,
+      query: {
+        filters: [{ field: primaryKey, operator: "eq", value: navigation.source.itemId }],
+        sorts: [],
+        offset: 0,
+        limit: 1,
+      },
+    });
+  },
+);
+
+watch(
+  [() => tableStore.allRows, () => tabulator.value],
+  async ([rows, grid]) => {
+    const navigation = lookupSourceNavigation.value;
+    if (!navigation?.queryRequested || !grid) return;
+    const matchingRow = rows.find(
+      (row) => String(row.rowKey) === navigation.source.itemId,
+    );
+    if (!matchingRow) return;
+    const rowKey = matchingRow.rowKey as string | number;
+    await nextTick();
+    try {
+      const navigationGrid = grid as unknown as {
+        scrollToRow: (key: string | number, position: "center", ifVisible: boolean) => Promise<void>;
+        getRow: (key: string | number) => {
+          select: () => void;
+          getElement: () => HTMLElement;
+        } | false;
+      };
+      await navigationGrid.scrollToRow(rowKey, "center", true);
+      const row = navigationGrid.getRow(rowKey);
+      if (row) {
+        row.select();
+        row.getElement().classList.add("vt-row-selected");
+      }
+      message.success(`已定位来源记录 ${navigation.source.collection} · ${navigation.source.itemId}`);
+      lookupSourceNavigation.value = null;
+    } catch {
+      message.warning(`已筛选来源记录 ${navigation.source.collection} · ${navigation.source.itemId}`);
+      lookupSourceNavigation.value = null;
+    }
+  },
+);
 
 const pluginTheme = computed(() => projectPluginTheme({
   themeMode: ui.themeMode,

@@ -5,6 +5,7 @@ import type {
   LookupDefinition,
   LookupQueryPlan,
   LookupQueryResponse,
+  LookupValueProvenance,
   MaterializedRow,
   OutputType,
   QueryBudget,
@@ -375,13 +376,18 @@ function terminalValues(lookup: LookupDefinition, nodes: readonly FrontierNode[]
   return [];
 }
 
+interface EvaluatedLookup {
+  value: unknown;
+  provenance: readonly LookupValueProvenance[];
+}
+
 async function executeDefinition(
   context: ExecutionContext,
   plan: LookupQueryPlan,
   byId: ReadonlyMap<string, LookupDefinition>,
   lookup: LookupDefinition,
   startRows: readonly ItemRow[],
-): Promise<Map<string, unknown>> {
+): Promise<Map<string, EvaluatedLookup>> {
   const startCollection = definitionCollection(lookup, plan);
   const startPrimaryKey = definitionPrimaryKey(lookup, plan);
   let frontier = new Map<string, FrontierNode[]>();
@@ -405,7 +411,7 @@ async function executeDefinition(
     context.budget.time();
   }
 
-  let dependentValues: Map<string, unknown> | undefined;
+  let dependentValues: Map<string, EvaluatedLookup> | undefined;
   let dependency: LookupDefinition | undefined;
   if (lookup.source.kind === "lookup" && lookup.aggregate !== "count") {
     dependency = byId.get(lookup.source.lookupId)!;
@@ -423,7 +429,7 @@ async function executeDefinition(
     dependentValues = await executeDefinition(context, plan, byId, dependency, [...uniqueTargets.values()]);
   }
 
-  const result = new Map<string, unknown>();
+  const result = new Map<string, EvaluatedLookup>();
   for (const row of startRows) {
     const key = canonicalKey(row[startPrimaryKey]);
     const nodes = frontier.get(key) ?? [];
@@ -431,20 +437,32 @@ async function executeDefinition(
       ? nodes.map((node): LookupValue => ({
           value: lookup.aggregate === "count"
             ? null
-            : dependentValues!.get(canonicalKey(node.record[definitionPrimaryKey(dependency!, plan)])) ?? null,
+            : dependentValues!.get(canonicalKey(node.record[definitionPrimaryKey(dependency!, plan)]))?.value ?? null,
           collection: node.collection,
           itemId: node.itemId,
         }))
       : terminalValues(lookup, nodes);
-    result.set(
-      key,
-      aggregateValues(
+    result.set(key, {
+      value: aggregateValues(
         values,
         lookup.aggregate,
         lookup.outputType,
         lookup.path.at(-1)?.kind === "m2a",
       ),
-    );
+      provenance: values.flatMap((input) =>
+        typeof input.collection === "string"
+        && input.itemId !== null
+        && input.itemId !== undefined
+          ? [{
+              collection: input.collection,
+              itemId: input.itemId,
+              value: lookup.aggregate === "count" || lookup.aggregate === "count_non_null"
+                ? input.value
+                : normalizeScalar(input.value, lookup.outputType),
+            }]
+          : [],
+      ),
+    });
   }
   return result;
 }
@@ -555,6 +573,7 @@ export async function executeQuery(
     rows.set(key, {
       primaryKey,
       cells: Object.fromEntries(plan.baseFields.map((field) => [field.ref, normalizeScalar(root[field.field], field.outputType)])),
+      provenance: {},
     });
   }
 
@@ -562,7 +581,11 @@ export async function executeQuery(
   const exposedLookups = plan.lookups.filter((lookup) => lookup.expose !== false);
   for (const lookup of exposedLookups) {
     const values = await executeDefinition(context, plan, byId, lookup, roots);
-    for (const [key, value] of values) rows.get(key)!.cells[lookup.ref] = value;
+    for (const [key, evaluated] of values) {
+      const row = rows.get(key)!;
+      row.cells[lookup.ref] = evaluated.value;
+      row.provenance[lookup.ref] = evaluated.provenance;
+    }
   }
 
   const outputTypes = new Map<string, OutputType>([

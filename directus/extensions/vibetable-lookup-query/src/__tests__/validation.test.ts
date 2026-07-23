@@ -38,6 +38,7 @@ function plan(overrides: Partial<LookupQueryPlan> = {}): LookupQueryPlan {
     collection: "orders",
     primaryKey: "id",
     revisions: { schema: "schema-1", permission: "permission-1", lookup: "lookup-1" },
+    definitionRevisions: {},
     baseFields: [{ ref: "order.number", field: "number", outputType: { kind: "string" } }],
     lookups: [{
       lookupId: "lookup-total",
@@ -225,5 +226,40 @@ describe("strict lookup plan validation", () => {
         error instanceof LookupQueryError
         && error.code === "VIBETABLE_LOOKUP_SCHEMA_INVALID",
     );
+  });
+
+  it("binds M2A allow-list metadata from the junction relation back to the source", () => {
+    const input = plan({
+      lookups: [{
+        lookupId: "linked-labels",
+        ref: "lookup.linked-labels",
+        path: [relation("m2a")],
+        source: { kind: "m2a", fields: { notes: "title", assets: "filename" } },
+        aggregate: "list",
+        outputType: { kind: "string" },
+      }],
+    });
+    const schema = {
+      collections: {
+        orders: { primary: "id", fields: { id: {}, number: {} } },
+        orders_targets: {
+          primary: "id",
+          fields: { id: {}, order_id: {}, target_id: {}, target_collection: {} },
+        },
+        notes: { primary: "id", fields: { id: {}, title: {} } },
+        assets: { primary: "asset_id", fields: { asset_id: {}, filename: {} } },
+      },
+      relations: [{
+        collection: "orders_targets",
+        field: "order_id",
+        related_collection: "orders",
+        meta: {
+          one_collection_field: "target_collection",
+          one_allowed_collections: ["notes", "assets"],
+        },
+      }],
+    };
+    validatePlan(input);
+    assert.doesNotThrow(() => validatePlanAgainstSchema(input, schema));
   });
 });
