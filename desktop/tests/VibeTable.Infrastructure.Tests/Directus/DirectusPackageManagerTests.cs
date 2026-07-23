@@ -166,10 +166,11 @@ public sealed class DirectusPackageManagerTests
             });
             var progress = new List<DirectusStartupProgress>();
             var manager = new DirectusPackageManager(npmTimeout: TimeSpan.FromSeconds(5));
+            string failingNode = CreateFailingPortableNode(dir);
 
             Assert.Throws<InvalidOperationException>(() =>
                 manager.EnsureInstalledAsync(
-                        BundledNodePath(),
+                        failingNode,
                         dir,
                         CancellationToken.None,
                         progress.Add,
@@ -204,13 +205,14 @@ public sealed class DirectusPackageManagerTests
             Directory.CreateDirectory(Path.Combine(dir, "node_modules", "directus"));
             var progress = new List<DirectusStartupProgress>();
             var manager = new DirectusPackageManager(npmTimeout: TimeSpan.FromSeconds(5));
+            string failingNode = CreateFailingPortableNode(dir);
 
             // The stub install will fail verification (no real contents) and fall
             // through to npm ci, which also fails in the unit fixture. We expect a
             // throw, but BEFORE throwing, RecheckingPackages must have been emitted.
             Assert.Throws<InvalidOperationException>(() =>
                 manager.EnsureInstalledAsync(
-                        BundledNodePath(),
+                        failingNode,
                         dir,
                         CancellationToken.None,
                         progress.Add,
@@ -241,10 +243,11 @@ public sealed class DirectusPackageManagerTests
             File.WriteAllText(Path.Combine(dir, "package-lock.json"), "not-json");
             var progress = new List<DirectusStartupProgress>();
             var manager = new DirectusPackageManager(npmTimeout: TimeSpan.FromSeconds(5));
+            string failingNode = CreateFailingPortableNode(dir);
 
             Assert.Throws<InvalidOperationException>(() =>
                 manager.EnsureInstalledAsync(
-                        BundledNodePath(),
+                        failingNode,
                         dir,
                         CancellationToken.None,
                         progress.Add,
@@ -283,10 +286,11 @@ public sealed class DirectusPackageManagerTests
             });
 
             var manager = new DirectusPackageManager(npmTimeout: TimeSpan.FromSeconds(5));
+            string failingNode = CreateFailingPortableNode(dir);
             // Expired marker -> install is attempted -> npm ci fails (no real
             // package set up) -> throws. Asserting throw proves it did NOT skip.
             Assert.Throws<InvalidOperationException>(() =>
-                manager.EnsureInstalledAsync(BundledNodePath(), dir, CancellationToken.None)
+                manager.EnsureInstalledAsync(failingNode, dir, CancellationToken.None)
                     .GetAwaiter().GetResult());
         });
         await Task.CompletedTask;
@@ -312,8 +316,9 @@ public sealed class DirectusPackageManagerTests
             });
 
             var manager = new DirectusPackageManager(npmTimeout: TimeSpan.FromSeconds(5));
+            string failingNode = CreateFailingPortableNode(dir);
             Assert.Throws<InvalidOperationException>(() =>
-                manager.EnsureInstalledAsync(BundledNodePath(), dir, CancellationToken.None)
+                manager.EnsureInstalledAsync(failingNode, dir, CancellationToken.None)
                     .GetAwaiter().GetResult());
         });
         await Task.CompletedTask;
@@ -353,6 +358,25 @@ public sealed class DirectusPackageManagerTests
             sb.Append(b.ToString("x2"));
         }
         return sb.ToString();
+    }
+
+    private static string CreateFailingPortableNode(string dir)
+    {
+        string portableDir = Path.Combine(dir, "portable-node");
+        string npmCli = Path.Combine(
+            portableDir,
+            "node_modules",
+            "npm",
+            "bin",
+            "npm-cli.js");
+        Directory.CreateDirectory(Path.GetDirectoryName(npmCli)!);
+        File.WriteAllText(
+            npmCli,
+            "console.error('intentional npm fixture failure'); process.exit(1);");
+
+        string nodeExe = Path.Combine(portableDir, "node.exe");
+        File.Copy(BundledNodePath(), nodeExe);
+        return nodeExe;
     }
 
     private static void WriteMarker(string dir, object payload)

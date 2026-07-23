@@ -206,12 +206,20 @@ def stage_command(
         )
     if stage == "dotnet":
         return (
-            [_dotnet_path(), "test", str(DESKTOP_SLN), "--configuration", "Release"],
+            [
+                _dotnet_path(),
+                "test",
+                str(DESKTOP_SLN),
+                "--configuration",
+                "Release",
+                "/p:CollectCoverage=true",
+                "/p:CoverletOutputFormat=cobertura",
+            ],
             str(REPO_ROOT),
         )
     if stage == "web-test":
         return (
-            [_resolve_executable("npm"), "test"],
+            [_resolve_executable("npm"), "run", "test:coverage"],
             str(WEB_GRID_DIR),
         )
     if stage == "web-build":
@@ -223,7 +231,10 @@ def stage_command(
         ext_dirs = _directus_extension_dirs()
         ext_dir = directus_extension_dir or ext_dirs[0]
         if stage == "directus-test":
-            return ([_resolve_executable("npm"), "test"], str(ext_dir))
+            return (
+                [_resolve_executable("npm"), "run", "test:coverage"],
+                str(ext_dir),
+            )
         if stage == "directus-typecheck":
             return (
                 [_resolve_executable("npm"), "run", "typecheck"],

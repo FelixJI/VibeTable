@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from backend.state import local_state_store
 from backend.state.local_state_store import LocalStateStore
 
 
@@ -156,8 +157,46 @@ def test_store_is_thread_safe(tmp_path: Path) -> None:
     t2.start()
     t1.join()
     t2.join()
-    # Exactly one first-save succeeds (revision None); the other either wins
-    # the race and also succeeds with revision None on an empty table (both
-    # see no existing row) OR conflicts. Either way no corruption.
     assert len(results) == 2
+    assert sorted(conflict for _, conflict in results) == [False, True]
+    payload, revision = store.get_grid_state(database_id="db1", table="t")
+    assert payload is not None
+    assert payload["w"] in {"w1", "w2"}
+    assert revision
     store.close()
+
+
+def test_default_path_and_singleton_reset_are_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    expected = tmp_path / "VibeTable" / "state" / "vibetable-state.db"
+    assert local_state_store.default_state_db_path() == expected
+    assert expected.parent.is_dir()
+
+    first = local_state_store.reset_local_state_store_for_tests(tmp_path / "first.db")
+    assert local_state_store.get_local_state_store() is first
+    second = local_state_store.reset_local_state_store_for_tests(tmp_path / "second.db")
+    assert second is not first
+    assert local_state_store.get_local_state_store() is second
+    second.close()
+    monkeypatch.setattr(local_state_store, "_SINGLETON", None)
+
+
+def test_default_path_falls_back_to_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    assert local_state_store.default_state_db_path() == (
+        tmp_path / ".vibetable" / "state" / "vibetable-state.db"
+    )
+
+
+def test_get_singleton_initializes_default_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(local_state_store, "_SINGLETON", None)
+    singleton = local_state_store.get_local_state_store()
+    assert singleton is local_state_store.get_local_state_store()
+    singleton.close()
+    monkeypatch.setattr(local_state_store, "_SINGLETON", None)
