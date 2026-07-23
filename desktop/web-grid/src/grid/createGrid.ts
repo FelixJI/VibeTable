@@ -23,9 +23,16 @@
 
 import { TabulatorFull } from "tabulator-tables";
 import type { TabulatorOptions } from "tabulator-tables";
-import type { ColumnEditSchema, ColumnSchema, TablePage } from "@/contracts";
+import type {
+  ColumnEditSchema,
+  ColumnSchema,
+  LookupDefinition,
+  NormalizedRelationDescriptor,
+  TablePage,
+} from "@/contracts";
 import { tabulatorEditor, validateLocally } from "./editorFactory";
 import type { CalendarDateEditor } from "./calendarDateEditor";
+import { lookupFormatter, relationFormatter } from "./relationLookupRenderer";
 
 /**
  * The hidden `rowKey` field name in the host/WebView contract.
@@ -55,7 +62,8 @@ export interface GridColumnDefinition {
     | "money"
     | "tickCross"
     | "datetime"
-    | "rownum";
+    | "rownum"
+    | ((cell: { getValue(): unknown }) => HTMLElement);
   readonly formatterParams?: Record<string, unknown>;
   /** Whether NULL is allowed (display hint). */
   readonly nullable?: boolean;
@@ -71,9 +79,25 @@ export interface GridColumnDefinition {
   readonly minWidth?: number;
   readonly frozen?: boolean;
   readonly headerSort?: boolean;
+  readonly headerFilter?: boolean | string;
   readonly resizable?: boolean;
   readonly hozAlign?: "left" | "center" | "right";
   readonly cssClass?: string;
+  readonly cellDblClick?: (event: MouseEvent, cell: TabulatorCellLike) => void;
+}
+
+export interface RelationLookupGridContext {
+  readonly relations: ReadonlyMap<string, NormalizedRelationDescriptor>;
+  readonly lookups: ReadonlyMap<string, LookupDefinition>;
+  readonly relationEditAvailable: boolean;
+  readonly lookupQueryAvailable: boolean;
+  readonly lookupUnavailableReason?: string | null;
+  readonly onRelationEditRequested?: (
+    rowKey: string | number,
+    column: string,
+    descriptor: NormalizedRelationDescriptor,
+    value: unknown,
+  ) => void;
 }
 
 /**
@@ -123,12 +147,35 @@ interface TabulatorCellLike {
 export function buildColumns(
   page: TablePage,
   editSchema?: readonly ColumnEditSchema[] | null,
+  relationLookup?: RelationLookupGridContext | null,
 ): GridColumnDefinition[] {
   const editByName = new Map(
     (editSchema ?? []).map((c) => [c.name, c] as const),
   );
   const dataColumns = page.columns.map((col) => {
-    const def = toColumnDef(col);
+    const def = toColumnDef(col, relationLookup);
+    if (col.kind === "lookup") return { ...def, editable: false };
+    if (col.kind === "relation") {
+      const relation = col.relationId ? relationLookup?.relations.get(col.relationId) : undefined;
+      const editable = !!(
+        relation
+        && relation.state === "valid"
+        && col.editable
+        && relationLookup?.relationEditAvailable
+        && relationLookup.onRelationEditRequested
+      );
+      return {
+        ...def,
+        editable: false,
+        ...(editable ? {
+          cssClass: "vt-relation-cell vt-relation-cell--editable",
+          cellDblClick: (_event: MouseEvent, cell: TabulatorCellLike) => {
+            const rowKey = cell.getRow().getData()[ROW_KEY_FIELD] as string | number;
+            relationLookup.onRelationEditRequested?.(rowKey, col.name, relation, cell.getValue());
+          },
+        } : { cssClass: "vt-relation-cell" }),
+      };
+    }
     const edit = editByName.get(col.name);
     // multi_select degrades: no host dialog in web-grid (spec §7.3).
     const editable = !!edit?.editable && edit.editor.kind !== "multi_select";
@@ -150,6 +197,7 @@ export function buildColumns(
 export function buildGridColumns(
   page: TablePage,
   editSchema?: readonly ColumnEditSchema[] | null,
+  relationLookup?: RelationLookupGridContext | null,
 ): GridColumnDefinition[] {
   const rowNumber: GridColumnDefinition = {
     field: ROW_NUMBER_FIELD,
@@ -165,10 +213,13 @@ export function buildGridColumns(
     hozAlign: "center",
     cssClass: "vt-row-number",
   };
-  return [rowNumber, ...buildColumns(page, editSchema)];
+  return [rowNumber, ...buildColumns(page, editSchema, relationLookup)];
 }
 
-function toColumnDef(col: ColumnSchema): GridColumnDefinition {
+function toColumnDef(
+  col: ColumnSchema,
+  relationLookup?: RelationLookupGridContext | null,
+): GridColumnDefinition {
   // Phase A forces read-only REGARDLESS of what the backend advertises. The
   // backend already sets editable:false, but we defend in depth: a future
   // "editable" column from a misconfigured backend must not become editable
@@ -178,8 +229,37 @@ function toColumnDef(col: ColumnSchema): GridColumnDefinition {
     title: col.title,
     editable: false,
     dataType: col.dataType,
+    headerFilter: "input",
     ...(col.nullable !== undefined ? { nullable: col.nullable } : {}),
   };
+
+  if (col.kind === "relation") {
+    const relation = col.relationId ? relationLookup?.relations.get(col.relationId) : undefined;
+    return {
+      ...def,
+      formatter: relation
+        ? relationFormatter(relation)
+        : () => {
+            const node = document.createElement("span");
+            node.className = "vt-lookup-state vt-lookup-state--invalid";
+            node.textContent = "关系无效";
+            return node;
+          },
+    };
+  }
+  if (col.kind === "lookup") {
+    const lookup = col.lookupId ? relationLookup?.lookups.get(col.lookupId) : undefined;
+    return {
+      ...def,
+      editable: false,
+      formatter: lookupFormatter(
+        lookup,
+        !!relationLookup?.lookupQueryAvailable,
+        relationLookup?.lookupUnavailableReason,
+      ),
+      cssClass: "vt-lookup-cell",
+    };
+  }
 
   // Light display hints per data type. Formatters are display-only and MUST
   // NOT mutate the underlying cell value (decimals preserved exactly).
@@ -251,6 +331,7 @@ export function buildOptions(
     editSchema?: readonly ColumnEditSchema[] | null;
     onCellEdited?: CellEditedHandler;
     onValidationError?: CellValidationErrorHandler;
+    relationLookup?: RelationLookupGridContext | null;
   },
 ): TabulatorOptions {
   // Defensive copy of rows so external mutation cannot leak back into the
@@ -267,7 +348,7 @@ export function buildOptions(
   );
 
   const options: TabulatorOptions = {
-    columns: buildGridColumns(page, opts?.editSchema) as unknown[],
+    columns: buildGridColumns(page, opts?.editSchema, opts?.relationLookup) as unknown[],
     data,
     layout: "fitColumns",
     // Read-only Phase A:
@@ -277,8 +358,10 @@ export function buildOptions(
     clipboardPasteAction: undefined,
     // Defensive: no edit module interactions.
     editEventQueue: undefined,
-    // Header sort off by default for remote-mode pages (Phase A).
-    ...(page.mode === "remote" ? { headerSort: false } : {}),
+    // In remote mode Tabulator records the user's sort/filter AST but does not
+    // reorder the currently loaded page. useTabulator forwards the events to
+    // the host/Lookup authoritative full-dataset query pipeline.
+    ...(page.mode === "remote" ? { sortMode: "remote", filterMode: "remote" } : {}),
     // Task M3: editable grid wiring. Only registered when the caller cares
     // about edits (keeps the read-only Phase-A options object clean).
     ...(onCellEdited
@@ -343,6 +426,7 @@ export function createGrid(
     editSchema?: readonly ColumnEditSchema[] | null;
     onCellEdited?: CellEditedHandler;
     onValidationError?: CellValidationErrorHandler;
+    relationLookup?: RelationLookupGridContext | null;
   },
 ): TabulatorFull {
   const options = buildOptions(page, opts);

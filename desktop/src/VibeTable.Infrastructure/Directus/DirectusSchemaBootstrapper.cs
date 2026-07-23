@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -31,7 +32,8 @@ namespace VibeTable.Infrastructure.Directus;
 /// <c>.bootstrapped</c> exists.</item>
 /// <item><see cref="ApplySchemaIfFirstBootAsync"/>: logs in as admin, then POSTs
 /// collections, relations, policies, roles and permissions built from the
-/// VibeTable blueprint. Skipped once <c>.schema-applied</c> exists.</item>
+/// VibeTable blueprint. Skipped when <c>.schema-applied</c> matches the current
+/// blueprint digest; schema additions are therefore reconciled on upgrade.</item>
 /// </list>
 /// <para>
 /// <b>Payload fidelity.</b> The collection/field/relation/permission payloads
@@ -138,7 +140,15 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
         string blueprintPath, string localDirectusDir, CancellationToken cancellationToken)
     {
         string marker = Path.Combine(localDirectusDir, ".schema-applied");
-        if (File.Exists(marker))
+        byte[] blueprintBytes = await File.ReadAllBytesAsync(
+            blueprintPath, cancellationToken).ConfigureAwait(false);
+        string blueprintDigest = Convert.ToHexString(SHA256.HashData(blueprintBytes));
+        string markerValue = $"{baseUrl}|{blueprintDigest}";
+        if (File.Exists(marker)
+            && string.Equals(
+                await File.ReadAllTextAsync(marker, cancellationToken).ConfigureAwait(false),
+                markerValue,
+                StringComparison.Ordinal))
         {
             return;
         }
@@ -266,7 +276,8 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
             }
         }
 
-        await File.WriteAllTextAsync(marker, baseUrl, cancellationToken).ConfigureAwait(false);
+        await File.WriteAllTextAsync(
+            marker, markerValue, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()

@@ -195,7 +195,7 @@ class FileToolsService:
     async def read_files(self, params: ReadFilesParams) -> FilesResult:
         profile = self._profile(params.collection)
         relation = next((r for r in profile.relations if r.field == params.relation_field), None)
-        if relation is None or relation.kind != "file":
+        if relation is None or relation.preset not in {"file", "files"}:
             raise FileToolsError(
                 f"{params.relation_field!r} is not a declared file relation",
                 code="not_a_file_relation",

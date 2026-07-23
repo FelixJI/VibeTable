@@ -75,6 +75,70 @@ class DirectusClient:
         allowed = {relation.field for relation in profile.relations}
         return [relation for relation in relations if _relation_field(relation) in allowed]
 
+    async def schema_fields(self) -> list[dict[str, Any]]:
+        """Read the live, permission-filtered field catalog for discovery."""
+        return _response_list(await self._authorized("GET", "/fields"))
+
+    async def schema_relations(self) -> list[dict[str, Any]]:
+        """Read all visible Directus relations without manifest filtering."""
+        return _response_list(await self._authorized("GET", "/relations"))
+
+    async def permission_snapshot(self) -> Any:
+        """Return the current user's live permission projection for revisioning."""
+        payload = await self._authorized("GET", "/permissions/me")
+        if not isinstance(payload, dict) or "data" not in payload:
+            raise DirectusTransportError("Directus returned invalid current-user permissions")
+        return payload["data"]
+
+    async def relation_lookup_capabilities(self) -> dict[str, Any]:
+        """Negotiate optional first-party endpoints without partial fallback."""
+        reason: str | None = None
+        relation_edit = False
+        relation_import = False
+        lookup_query = False
+        probes = [
+            (
+                "/vibetable-bulk-mutation/capabilities",
+                "vibetable-relation-delta.v1",
+                "relationDelta",
+            ),
+            (
+                "/vibetable-lookup-query/capabilities",
+                "vibetable-lookup-query.v1",
+                "contract",
+            ),
+        ]
+        for index, (path, expected, field) in enumerate(probes):
+            try:
+                payload = await self._authorized("GET", path)
+            except DirectusTransportError as exc:
+                if exc.status in {401, 403}:
+                    reason = "permission_denied"
+                elif reason is None:
+                    reason = "extension_missing"
+                continue
+            data = payload.get("data") if isinstance(payload, dict) else None
+            matched = isinstance(data, dict) and data.get(field) == expected
+            if index == 0:
+                relation_edit = matched
+                relation_import = (
+                    isinstance(data, dict)
+                    and data.get("relationImport") == "vibetable-relation-import.v1"
+                )
+            else:
+                lookup_query = matched
+            if not matched and reason is None:
+                reason = "incompatible"
+        if relation_edit and lookup_query:
+            reason = None
+        return {
+            "relation_read_v1": True,
+            "relation_edit_v1": relation_edit,
+            "relation_import_v1": relation_import,
+            "lookup_query_v1": lookup_query,
+            "reason": reason,
+        }
+
     async def read_items(
         self,
         profile: CollectionProfile,

@@ -1,0 +1,381 @@
+/**
+ * Directus relation + realtime Lookup wire contracts.
+ *
+ * Keep these names aligned with backend/contracts/{relation_admin,lookup}.py.
+ * In particular, `m2a` is always lower-case on the wire.
+ */
+import type { ColumnSchema, FilterCondition, SortCondition } from "./index";
+
+export type RelationKind = "m2o" | "o2m" | "m2m" | "m2a";
+export type RelationPreset = "standard" | "file" | "files" | "translations";
+export type RelationState = "valid" | "readonly" | "invalid";
+export type RelationDeletePolicy = "nullify" | "restrict" | "cascade";
+
+export interface JunctionProfile {
+  readonly collection: string;
+  readonly sourceField: string;
+  readonly targetField: string;
+  readonly collectionField?: string | null;
+  readonly sortField?: string | null;
+  readonly contextFields: readonly string[];
+}
+
+export interface RelationDiagnostic {
+  readonly code: string;
+  readonly message: string;
+  readonly severity: "warning" | "error";
+}
+
+export interface NormalizedRelationDescriptor {
+  readonly relationId: string;
+  readonly fieldRef: string;
+  readonly sourceCollection: string;
+  readonly kind: RelationKind;
+  readonly relatedCollection?: string | null;
+  readonly allowedCollections: readonly string[];
+  readonly manyField?: string | null;
+  readonly oneField?: string | null;
+  readonly junction?: JunctionProfile | null;
+  readonly unique: boolean;
+  readonly nullable: boolean;
+  readonly onDelete: RelationDeletePolicy;
+  readonly preset?: RelationPreset;
+  readonly selfRelation: boolean;
+  readonly managed: boolean;
+  readonly state: RelationState;
+  /** Explicit Directus template. Never inferred by the renderer. */
+  readonly displayTemplate?: string | null;
+  readonly diagnostics: readonly RelationDiagnostic[];
+}
+
+export interface JunctionContextFieldConfig {
+  readonly field: string;
+  readonly type: "string" | "text" | "integer" | "bigInteger" | "decimal" | "float"
+    | "boolean" | "date" | "dateTime" | "time" | "json" | "uuid";
+  readonly nullable: boolean;
+  readonly defaultValue?: unknown;
+}
+
+interface RelationCommonConfig {
+  readonly fieldKey: string;
+  readonly fieldDisplayName: string;
+  readonly nullable: boolean;
+  readonly onDelete: RelationDeletePolicy;
+  readonly preset: RelationPreset;
+  /** Explicit Directus display template. Empty means no template; never inferred. */
+  readonly displayTemplate?: string | null;
+}
+
+export type RelationChangeConfig =
+  | (RelationCommonConfig & { readonly kind: "m2o"; readonly relatedCollection: string; readonly unique: boolean })
+  | (RelationCommonConfig & { readonly kind: "o2m"; readonly relatedCollection: string; readonly relatedManyField: string })
+  | (RelationCommonConfig & {
+    readonly kind: "m2m";
+    readonly relatedCollection: string;
+    readonly junction: JunctionProfile;
+    readonly junctionContextFields: readonly JunctionContextFieldConfig[];
+  })
+  | (RelationCommonConfig & {
+    readonly kind: "m2a";
+    readonly allowedCollections: readonly string[];
+    readonly junction: JunctionProfile;
+    readonly junctionContextFields: readonly JunctionContextFieldConfig[];
+  });
+
+export interface PreviewRelationChangeParams {
+  readonly collection: string;
+  readonly action: "create" | "update" | "delete";
+  readonly relationId?: string | null;
+  readonly config?: RelationChangeConfig | null;
+  readonly expectedSchemaRevision: string;
+}
+
+export interface SchemaChangeStep {
+  readonly resource: "collection" | "field" | "relation" | "constraint" | "lookup";
+  readonly action: "create" | "update" | "delete";
+  readonly key: string;
+  readonly destructive: boolean;
+}
+
+export interface RelationChangePlan {
+  readonly planId: string;
+  readonly collection: string;
+  readonly expectedSchemaRevision: string;
+  readonly action: "create" | "update" | "delete";
+  readonly relationId?: string | null;
+  readonly steps: readonly SchemaChangeStep[];
+  readonly affectedLookupIds: readonly string[];
+  readonly diagnostics: readonly RelationDiagnostic[];
+  readonly canApply: boolean;
+}
+
+export interface ApplyRelationChangeParams {
+  readonly planId: string;
+  readonly operationId: string;
+  readonly expectedSchemaRevision: string;
+  /** Explicit opt-in only. UI never fills this automatically. */
+  readonly cascadeLookupIds: readonly string[];
+}
+
+export interface RelationChangeResult {
+  readonly relation?: NormalizedRelationDescriptor | null;
+  readonly deleted: boolean;
+  readonly schemaRevision: string;
+  readonly appliedSteps: readonly SchemaChangeStep[];
+}
+
+export interface RelationTargetRef {
+  readonly collection: string;
+  readonly itemId: string;
+  readonly label: string;
+  readonly junctionId?: string | null;
+  readonly junctionRevision?: string | null;
+  readonly junctionValues: Readonly<Record<string, unknown>>;
+}
+
+export interface RelationSearchParams {
+  readonly relationId: string;
+  readonly query?: string;
+  readonly collection?: string | null;
+  readonly offset?: number;
+  readonly limit?: number;
+}
+
+export interface RelationSearchResult {
+  readonly items: readonly RelationTargetRef[];
+  readonly total: number;
+}
+
+export interface RelationDelta {
+  readonly relationId: string;
+  readonly sourceItemId: string;
+  readonly expectedSchemaRevision: string;
+  readonly expectedDateUpdated?: string | null;
+  readonly adds: ReadonlyArray<{ readonly target: RelationTargetRef }>;
+  readonly updates: ReadonlyArray<{
+    readonly junctionId: string;
+    readonly values: Readonly<Record<string, unknown>>;
+    readonly expectedRevision?: string | null;
+  }>;
+  readonly removes: ReadonlyArray<{
+    readonly target: RelationTargetRef;
+    readonly expectedRevision?: string | null;
+  }>;
+  readonly idempotencyKey: string;
+}
+
+export interface RelationDeltaResult {
+  readonly outcome: "committed" | "conflict";
+  readonly current: readonly RelationTargetRef[];
+  readonly schemaRevision: string;
+  readonly requestId: string;
+}
+
+/** Result of an immediate M2O/O2O update; unlike a staged delta, current is scalar. */
+export interface RelationSingleUpdateResult {
+  readonly outcome: "committed" | "conflict";
+  readonly current: RelationTargetRef | null;
+  readonly schemaRevision: string;
+  readonly requestId: string;
+}
+
+export type LookupAggregation =
+  | "single" | "values" | "distinct_values" | "related_count"
+  | "non_null_count" | "sum" | "average" | "min" | "max";
+export type LookupOutputType =
+  | "text" | "integer" | "decimal" | "boolean" | "date"
+  | "datetime" | "time" | "json";
+export type LookupState = "valid" | "restricted" | "invalid";
+export type LookupCellState = "ok" | "restricted" | "invalid" | "too_expensive";
+
+export interface LookupPathStep {
+  readonly relationId: string;
+  readonly m2aCollection?: string | null;
+}
+
+export type LookupSource =
+  | { readonly kind: "target_field"; readonly fieldRef: string }
+  | { readonly kind: "junction_field"; readonly fieldRef: string }
+  | { readonly kind: "lookup"; readonly lookupId: string };
+
+export interface LookupDiagnostic {
+  readonly code: string;
+  readonly message: string;
+  readonly pathIndex?: number | null;
+}
+
+export interface LookupDefinition {
+  readonly lookupId: string;
+  readonly collection: string;
+  readonly fieldKey: string;
+  readonly displayName: string;
+  readonly path: readonly LookupPathStep[];
+  readonly source: LookupSource;
+  readonly m2aFieldMapping: ReadonlyArray<{
+    readonly collection: string;
+    readonly fieldRef: string;
+  }>;
+  readonly aggregation: LookupAggregation;
+  readonly outputType: LookupOutputType;
+  readonly outputScale?: number | null;
+  readonly revision: number;
+  readonly state: LookupState;
+  readonly diagnostics: readonly LookupDiagnostic[];
+  readonly dependencies: readonly string[];
+}
+
+export interface LookupValueProvenance {
+  readonly collection: string;
+  readonly itemId: string;
+  readonly value: unknown;
+}
+
+export interface LookupCellValue {
+  readonly state: LookupCellState;
+  readonly value: unknown;
+  readonly provenance: readonly LookupValueProvenance[];
+  readonly diagnostic?: LookupDiagnostic | null;
+}
+
+export interface LookupGroup {
+  readonly fieldRef: string;
+  readonly direction?: "asc" | "desc";
+}
+
+export interface LookupQueryParams {
+  readonly contract: "vibetable.lookup-query.v1";
+  readonly collection: string;
+  readonly fieldRefs: readonly string[];
+  readonly query: {
+    readonly filters: readonly FilterCondition[];
+    readonly sorts: readonly SortCondition[];
+    readonly groups: readonly LookupGroup[];
+    readonly offset: number;
+    readonly limit: number;
+  };
+  readonly requestGeneration: number;
+  readonly schemaRevision: string;
+  readonly permissionRevision: string;
+  readonly lookupRevision: string;
+}
+
+export interface LookupColumnResult {
+  readonly fieldRef: string;
+  readonly title: string;
+  readonly outputType: LookupOutputType;
+  readonly nullable: boolean;
+  readonly scale?: number | null;
+  readonly state: LookupState;
+}
+
+export interface LookupQueryResult {
+  readonly contract: "vibetable.lookup-query.v1";
+  readonly collection: string;
+  readonly requestGeneration: number;
+  readonly schemaRevision: string;
+  readonly permissionRevision: string;
+  readonly lookupRevision: string;
+  readonly columns: readonly LookupColumnResult[];
+  readonly rows: ReadonlyArray<Record<string, unknown>>;
+  readonly groups: ReadonlyArray<{
+    readonly path: readonly unknown[];
+    readonly key: unknown;
+    readonly count: number;
+    readonly aggregates: Readonly<Record<string, unknown>>;
+    readonly childCursor?: string | null;
+  }>;
+  readonly offset: number;
+  readonly limit: number;
+  readonly filteredRows: number;
+  readonly totalRows: number;
+}
+
+export interface SchemaSnapshot {
+  readonly collection: string;
+  readonly primaryKey: string;
+  readonly columns: readonly ColumnSchema[];
+  readonly normalizedRelations: readonly NormalizedRelationDescriptor[];
+  readonly schemaRevision: string;
+  readonly permissionRevision: string;
+  readonly capabilityHash: string;
+  readonly lookupRevision: string;
+}
+
+export interface RelationLookupCapabilities {
+  readonly contract: "vibetable.relation-capabilities.v1";
+  readonly relationReadV1: boolean;
+  readonly relationEditV1: boolean;
+  readonly lookupQueryV1: boolean;
+  readonly reason?: "extension_missing" | "incompatible" | "permission_denied" | null;
+}
+
+export interface SchemaDescribeParams {
+  readonly collection: string;
+  readonly requestGeneration: number;
+  readonly accepts: readonly ["vibetable.relation-capabilities.v1", "vibetable.lookup-query.v1"];
+}
+
+export interface SchemaDescribeResult {
+  readonly contract: "vibetable.schema-describe.v1";
+  readonly collection: string;
+  readonly requestGeneration: number;
+  readonly schema: SchemaSnapshot;
+  readonly capabilities: RelationLookupCapabilities;
+}
+
+export interface LookupListResult {
+  readonly collection: string;
+  readonly definitions: readonly LookupDefinition[];
+  readonly lookupRevision: string;
+}
+
+export interface LookupValidateParams {
+  readonly definition: LookupDefinition;
+  readonly existing: readonly LookupDefinition[];
+}
+export interface LookupValidationResult {
+  readonly definition: LookupDefinition;
+  readonly valid: boolean;
+  readonly diagnostics: readonly LookupDiagnostic[];
+  readonly lookupRevision: string;
+}
+export interface LookupCreateParams {
+  readonly definition: LookupDefinition;
+  readonly requestId: string;
+}
+export interface LookupUpdateParams extends LookupCreateParams {
+  readonly expectedRevision: number;
+}
+export interface LookupDeleteParams {
+  readonly collection: string;
+  readonly lookupId: string;
+  readonly expectedRevision: number;
+  readonly requestId: string;
+}
+export interface LookupMutationResult {
+  readonly collection: string;
+  readonly lookupId: string;
+  readonly definition?: LookupDefinition | null;
+  readonly deleted: boolean;
+  readonly lookupRevision: string;
+}
+
+export interface LookupPreviewParams extends LookupQueryParams {
+  readonly definitions: readonly LookupDefinition[];
+}
+
+export interface RelationUpdateSingleParams {
+  readonly relationId: string;
+  readonly sourceItemId: string;
+  readonly target: RelationTargetRef | null;
+  readonly expectedSchemaRevision: string;
+  readonly expectedDateUpdated?: string | null;
+  readonly idempotencyKey: string;
+}
+
+export interface RelationDeltaPreview {
+  readonly delta: RelationDelta;
+  readonly current: readonly RelationTargetRef[];
+  readonly diagnostics: readonly RelationDiagnostic[];
+  readonly canApply: boolean;
+}

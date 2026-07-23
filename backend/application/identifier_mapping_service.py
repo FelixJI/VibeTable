@@ -6,7 +6,7 @@ import unicodedata
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 IdentifierEntityKind = Literal["collection", "field"]
 IdentifierOrigin = Literal["vibetable", "directus", "import"]
@@ -218,9 +218,7 @@ class IdentifierRegistry:
             expected_status=(200, 204),
         )
 
-    async def delete_many(
-        self, token: str, mappings: Iterable[IdentifierMapping]
-    ) -> None:
+    async def delete_many(self, token: str, mappings: Iterable[IdentifierMapping]) -> None:
         for mapping in mappings:
             await self.delete(token, mapping)
 
@@ -234,14 +232,24 @@ def _entity_kind(value: object) -> IdentifierEntityKind:
 
 
 def _origin(value: object) -> IdentifierOrigin:
-    if value in {"vibetable", "directus", "import"}:
-        return cast(IdentifierOrigin, value)
+    if value == "vibetable":
+        return "vibetable"
+    if value == "directus":
+        return "directus"
+    if value == "import":
+        return "import"
     raise ValueError(f"unsupported identifier origin: {value!r}")
 
 
 def _status(value: object) -> IdentifierStatus:
-    if value in {"pending", "active", "orphaned", "deleted"}:
-        return cast(IdentifierStatus, value)
+    if value == "pending":
+        return "pending"
+    if value == "active":
+        return "active"
+    if value == "orphaned":
+        return "orphaned"
+    if value == "deleted":
+        return "deleted"
     raise ValueError(f"unsupported identifier status: {value!r}")
 
 

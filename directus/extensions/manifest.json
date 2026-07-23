@@ -31,6 +31,16 @@
       "capability": "vibetable-plugin-bridge.v1",
       "stage": "Phase C",
       "description": "Shared confirm/progress operations and authenticated runtime bridge for VibeTable plugin tasks."
+    },
+    {
+      "name": "vibetable-lookup-query",
+      "type": "endpoint",
+      "source": "src/index.ts",
+      "entry": "dist/index.js",
+      "directusHost": "^12.1.1",
+      "capability": "vibetable-lookup-query.v1",
+      "stage": "Lookup Phase 5",
+      "description": "Permission-aware frontier-batched execution of strongly typed virtual Lookup fields over complete datasets."
     }
   ]
 }

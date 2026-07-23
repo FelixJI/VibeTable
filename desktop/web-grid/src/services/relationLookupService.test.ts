@@ -1,0 +1,256 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
+import type { HostBridge } from "@/bridge/hostBridge";
+import { setHostBridgeForTesting } from "./bridgeContext";
+import { useRelationLookupService } from "./relationLookupService";
+import { useRelationLookupStore } from "@/stores/relationLookupStore";
+import type { DirectusChangePayload, LookupDefinition, SchemaSnapshot } from "@/contracts";
+
+describe("relationLookupService", () => {
+  const request = vi.fn();
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    request.mockReset();
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+  });
+
+  it("does not issue lookup.query when authoritative capability is absent", async () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("orders");
+    store.acceptContext(generation, {
+      collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [],
+      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+    }, [], {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: false, reason: "extension_missing",
+    });
+    const service = useRelationLookupService();
+    await expect(service.queryLookups({
+      collection: "orders", fieldRefs: ["orders.price"],
+      query: { filters: [], sorts: [], groups: [], offset: 0, limit: 100 },
+    })).rejects.toThrow("Lookup 扩展未安装");
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("builds add/update/remove from a staged multi relation", () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("articles");
+    store.acceptContext(generation, {
+      collection: "articles", primaryKey: "id", columns: [], normalizedRelations: [],
+      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+    }, [], {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+    });
+    const removed = { collection: "tags", itemId: "1", label: "old", junctionId: "j1", junctionRevision: "a".repeat(64), junctionValues: {} };
+    const updated = { collection: "tags", itemId: "2", label: "same", junctionId: "j2", junctionRevision: "b".repeat(64), junctionValues: { note: "a" } };
+    const added = { collection: "tags", itemId: "3", label: "new", junctionValues: {} };
+    store.openDraft("articles.tags", "a1", [removed, updated]);
+    store.toggleDraftTarget(removed);
+    store.toggleDraftTarget(added);
+    store.patchDraftJunction(updated, { note: "b" });
+    const delta = useRelationLookupService().buildDraftDelta();
+    expect(delta.adds.map((item) => item.target.itemId)).toEqual(["3"]);
+    expect(delta.removes.map((item) => item.target.itemId)).toEqual(["1"]);
+    expect(delta.removes[0]?.expectedRevision).toBe("a".repeat(64));
+    expect(delta.updates).toEqual([{
+      junctionId: "j2",
+      values: { note: "b" },
+      expectedRevision: "b".repeat(64),
+    }]);
+  });
+
+  it("hydrates a multi-relation draft from the authoritative backend preview", async () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("articles");
+    store.acceptContext(generation, {
+      collection: "articles", primaryKey: "id", columns: [], normalizedRelations: [],
+      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+    }, [], {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+    });
+    const current = [{
+      collection: "tags", itemId: "t1", label: "Tag 1", junctionId: "j1",
+      junctionRevision: "a".repeat(64), junctionValues: { weight: 2 },
+    }];
+    request.mockResolvedValue({
+      delta: {}, relationId: "articles.tags", sourceItemId: "a1",
+      adds: 0, updates: 0, removes: 0, current, canApply: true,
+      schemaRevision: "s", diagnostics: [],
+    });
+
+    await useRelationLookupService().loadDraft("articles.tags", "a1");
+
+    expect(store.draft?.original).toEqual(current);
+    expect(request).toHaveBeenCalledWith("relation.previewDelta", expect.objectContaining({
+      relationId: "articles.tags", sourceItemId: "a1", adds: [], updates: [], removes: [],
+    }));
+  });
+
+  it("uses the frozen table_admin two-phase relation RPCs without adding cascade targets", async () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("orders");
+    store.acceptContext(generation, {
+      collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [],
+      schemaRevision: "schema-1", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+    }, [], {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+    });
+    request
+      .mockResolvedValueOnce({ planId: "plan-1", canApply: true, affectedLookupIds: ["order.price"], steps: [] })
+      .mockResolvedValueOnce({ deleted: true, schemaRevision: "schema-2", appliedSteps: [] });
+    const service = useRelationLookupService();
+
+    await service.previewRelationChange({
+      collection: "orders", action: "delete", relationId: "orders.contract",
+      expectedSchemaRevision: "schema-1",
+    });
+    await service.applyRelationChange({
+      planId: "plan-1", operationId: "op-1", expectedSchemaRevision: "schema-1",
+      cascadeLookupIds: [],
+    });
+
+    expect(request).toHaveBeenNthCalledWith(1, "table_admin.previewRelationChange", expect.objectContaining({ action: "delete" }));
+    expect(request).toHaveBeenNthCalledWith(2, "table_admin.applyRelationChange", expect.objectContaining({ cascadeLookupIds: [] }));
+  });
+
+  it("validates and mutates Lookups with explicit definitions", async () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("orders");
+    store.acceptContext(generation, {
+      collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [],
+      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+    }, [], {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+    });
+    const definition = {
+      lookupId: "orders.contract_price", collection: "orders", fieldKey: "contract_price",
+      displayName: "合同价格", path: [{ relationId: "orders.contract", m2aCollection: null }],
+      source: { kind: "target_field" as const, fieldRef: "contracts.price" }, m2aFieldMapping: [],
+      aggregation: "single" as const, outputType: "decimal" as const, outputScale: 2,
+      revision: 1, state: "valid" as const, diagnostics: [], dependencies: [],
+    };
+    request.mockResolvedValue({ definition, valid: true, diagnostics: [], lookupRevision: "l" });
+    const service = useRelationLookupService();
+
+    await service.validateLookup(definition);
+    await service.createLookup(definition);
+
+    expect(request).toHaveBeenNthCalledWith(1, "lookup.validate", { definition, existing: [] });
+    expect(request).toHaveBeenNthCalledWith(2, "lookup.create", expect.objectContaining({ definition }));
+  });
+
+  it("loads Lookup candidates from a path target collection", async () => {
+    request.mockResolvedValue({ collection: "contracts", definitions: [], lookupRevision: "target-l" });
+    const result = await useRelationLookupService().listCollectionLookups("contracts");
+    expect(request).toHaveBeenCalledWith("lookup.list", { collection: "contracts" });
+    expect(result.lookupRevision).toBe("target-l");
+  });
+
+  it("returns the scalar current target from relation.updateSingle", async () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("orders");
+    store.acceptContext(generation, {
+      collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [],
+      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+    }, [], {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+    });
+    const target = {
+      collection: "contracts", itemId: "contract-7", label: "CT-0007", junctionValues: {},
+    };
+    request.mockResolvedValue({
+      outcome: "committed", current: target, schemaRevision: "s", requestId: "update-1",
+    });
+
+    const result = await useRelationLookupService().updateSingle("orders.contract", "order-1", target);
+
+    expect(result.current).toEqual(target);
+    expect(Array.isArray(result.current)).toBe(false);
+    expect(request).toHaveBeenCalledWith("relation.updateSingle", expect.objectContaining({
+      relationId: "orders.contract", sourceItemId: "order-1", target,
+    }));
+  });
+
+  it("invalidates an active deep Lookup for a change beyond the first-hop schema", async () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("orders");
+    const snapshot: SchemaSnapshot = {
+      collection: "orders", primaryKey: "id", columns: [],
+      normalizedRelations: [{
+        relationId: "orders.contract", fieldRef: "contract", sourceCollection: "orders", kind: "m2o",
+        relatedCollection: "contracts", allowedCollections: [], unique: false, nullable: true,
+        onDelete: "nullify", preset: "standard", selfRelation: false, managed: true, state: "valid",
+        diagnostics: [],
+      }],
+      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+    };
+    const deepLookup: LookupDefinition = {
+      lookupId: "orders.country_currency", collection: "orders", fieldKey: "country_currency",
+      displayName: "Country currency",
+      path: [
+        { relationId: "orders.contract" },
+        { relationId: "contracts.customer" },
+        { relationId: "customers.country" },
+      ],
+      source: { kind: "target_field", fieldRef: "countries.currency" },
+      m2aFieldMapping: [], aggregation: "single", outputType: "text", revision: 1,
+      state: "valid", diagnostics: [], dependencies: [],
+    };
+    store.acceptContext(generation, snapshot, [deepLookup], {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+    });
+    let changed: ((change: DirectusChangePayload) => void) | undefined;
+    const invalidated = vi.fn();
+    request.mockImplementation(async (method: string, payload: unknown) => {
+      if (method === "schema.describe") {
+        return {
+          contract: "vibetable.schema-describe.v1",
+          collection: "orders",
+          requestGeneration: (payload as { requestGeneration: number }).requestGeneration,
+          schema: snapshot,
+          capabilities: {
+            contract: "vibetable.relation-capabilities.v1",
+            relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+          },
+        };
+      }
+      if (method === "lookup.list") {
+        return { collection: "orders", definitions: [deepLookup], lookupRevision: "l" };
+      }
+      throw new Error(`unexpected request: ${method}`);
+    });
+    setHostBridgeForTesting({
+      request,
+      on: vi.fn((_type, handler) => {
+        changed = handler as (change: DirectusChangePayload) => void;
+        return vi.fn();
+      }),
+    } as unknown as HostBridge);
+    const service = useRelationLookupService();
+    service.init(invalidated);
+
+    changed?.({
+      uid: "country-change", collection: "countries", event: "update", data: ["country-1"],
+      invalidateQuery: true,
+    });
+    // loadContext clears the visible definitions while it renegotiates. A
+    // second deeper event in that window must still invalidate the table.
+    changed?.({
+      uid: "currency-change", collection: "currencies", event: "update", data: ["currency-1"],
+      invalidateQuery: true,
+    });
+
+    expect(invalidated).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith(
+      "schema.describe",
+      expect.objectContaining({ collection: "orders" }),
+    ));
+    service.dispose();
+  });
+});

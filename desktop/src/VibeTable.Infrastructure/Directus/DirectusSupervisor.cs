@@ -180,8 +180,8 @@ public sealed class DirectusSupervisor : IAsyncDisposable
                 DirectusEnvMaterializer.WriteEnv(
                     Path.Combine(_options.LocalDirectusDirectory, ".env"), env);
             }
-            // 3. Stage the bulk-mutation extension so Directus loads it.
-            DeployExtension();
+            // 3. Stage every manifest-declared extension so Directus loads it.
+            DeployExtensions();
             // 4. Bootstrap the DB + seed the VibeTable schema (idempotent).
             ReportProgress(
                 alreadyInitialized
@@ -356,66 +356,15 @@ public sealed class DirectusSupervisor : IAsyncDisposable
     }
 
     /// <summary>
-    /// Stages each built first-party endpoint into the local Directus
+    /// Stages each built first-party extension into the local Directus
     /// extensions directory so the runtime exposes the same capabilities as
     /// the repository extension manifest.
     /// </summary>
-    private void DeployExtension()
+    private void DeployExtensions()
     {
-        foreach (string extensionName in new[]
-        {
-            "vibetable-bulk-mutation",
-            "vibetable-workspace-index",
-        })
-        {
-            DeployBuiltExtension(extensionName);
-        }
-    }
-
-    private void DeployBuiltExtension(string extensionName)
-    {
-        string extensionRoot = Path.Combine(
-            _options.ResourceRoot, "directus", "extensions", extensionName);
-        string source = Path.Combine(extensionRoot, "dist", "index.js");
-        string pkg = Path.Combine(extensionRoot, "package.json");
-        if (!File.Exists(source))
-        {
-            if (string.Equals(
-                    extensionName,
-                    "vibetable-workspace-index",
-                    StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    "Required Directus extension vibetable-workspace-index is not built. "
-                    + "Build first-party Directus extensions before starting VibeTable.");
-            }
-            // Bulk mutation remains optional for the read-only table fallback.
-            return;
-        }
-        string targetDir = Path.Combine(_options.LocalDirectusDirectory, "extensions",
-            extensionName);
-        Directory.CreateDirectory(targetDir);
-        try { File.Copy(pkg, Path.Combine(targetDir, "package.json"), overwrite: true); }
-        catch { /* best-effort */ }
-        string distTarget = Path.Combine(targetDir, "dist");
-        if (Directory.Exists(distTarget))
-        {
-            Directory.Delete(distTarget, recursive: true);
-        }
-        CopyDirectory(Path.GetDirectoryName(source)!, distTarget);
-    }
-
-    private static void CopyDirectory(string source, string target)
-    {
-        Directory.CreateDirectory(target);
-        foreach (string file in Directory.GetFiles(source))
-        {
-            File.Copy(file, Path.Combine(target, Path.GetFileName(file)), overwrite: true);
-        }
-        foreach (string dir in Directory.GetDirectories(source))
-        {
-            CopyDirectory(dir, Path.Combine(target, Path.GetFileName(dir)));
-        }
+        DirectusExtensionDeployer.Deploy(
+            _options.ResourceRoot,
+            _options.LocalDirectusDirectory);
     }
 
     /// <summary>

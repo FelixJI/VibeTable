@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "directus start",
-    "start:dev": "directus start --watch"
+    "start:dev": "directus start --watch",
+    "test:relation-lookup": "node run-relation-lookup-integration.mjs"
   },
   "dependencies": {
     "directus": "^12.1.1"

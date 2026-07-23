@@ -158,7 +158,9 @@ def test_accepts_float_int_decimal_and_string_inputs() -> None:
     # (which would itself introduce rounding).
     validate_number_field(3.14, data_type="decimal", scale=2, precision=10, field_name="a")
     validate_number_field(3, data_type="decimal", scale=2, precision=10, field_name="a")
-    validate_number_field(Decimal("3.14"), data_type="decimal", scale=2, precision=10, field_name="a")
+    validate_number_field(
+        Decimal("3.14"), data_type="decimal", scale=2, precision=10, field_name="a"
+    )
     validate_number_field("3.14", data_type="decimal", scale=2, precision=10, field_name="a")
 
 

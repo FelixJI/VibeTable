@@ -5,6 +5,8 @@ import { defineComponent, h } from "vue";
 import { NMessageProvider } from "naive-ui";
 
 import WorkspaceView from "./WorkspaceView.vue";
+import GridHost from "@/components/grid/GridHost.vue";
+import RelationEditorPanel from "@/components/grid/RelationEditorPanel.vue";
 import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { useUiStore } from "@/stores/uiStore";
@@ -14,7 +16,12 @@ import { usePasteStore } from "@/stores/pasteStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
-import type { PastePlan, PasteSummary } from "@/contracts";
+import type {
+  NormalizedRelationDescriptor,
+  PastePlan,
+  PasteSummary,
+  RelationTargetRef,
+} from "@/contracts";
 
 /**
  * WorkspaceView integration tests. WorkspaceView is the CONTAINER that wires
@@ -155,6 +162,132 @@ describe("WorkspaceView", () => {
     const wrapper = mountView();
     await flushPromises();
     expect(wrapper.find(".workspace").exists()).toBe(true);
+  });
+
+  it("opens relation and Lookup field management from the table toolbar", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }, { collection: "contracts" }]);
+    workspace.selectTable("orders");
+    mountView();
+    await flushPromises();
+
+    const trigger = document.body.querySelector('[data-testid="toolbar-field-manager"]') as HTMLElement;
+    expect(trigger).toBeTruthy();
+    trigger.click();
+    await flushPromises();
+
+    expect(document.body.textContent).toContain("关系与 Lookup 字段");
+    expect(document.body.textContent).toContain("orders · schema");
+  });
+
+  it("applies relation.updateSingle current as one target object", async () => {
+    const descriptor: NormalizedRelationDescriptor = {
+      relationId: "orders.contract", fieldRef: "contract", sourceCollection: "orders", kind: "m2o",
+      relatedCollection: "contracts", allowedCollections: [], unique: false, nullable: true,
+      onDelete: "nullify", preset: "standard", selfRelation: false, managed: true, state: "valid",
+      diagnostics: [],
+    };
+    const target: RelationTargetRef = {
+      collection: "contracts", itemId: "contract-7", label: "CT-0007", junctionValues: {},
+    };
+    const request = vi.fn(async (method: string, payload: unknown) => {
+      if (method === "schema.describe") {
+        return {
+          contract: "vibetable.schema-describe.v1",
+          collection: "orders",
+          requestGeneration: (payload as { requestGeneration: number }).requestGeneration,
+          schema: {
+            collection: "orders", primaryKey: "id",
+            columns: [{
+              name: "contract", title: "Contract", fieldId: "orders.contract", kind: "relation",
+              relationId: "orders.contract", dataType: "text", editable: true, nullable: true,
+            }],
+            normalizedRelations: [descriptor], schemaRevision: "schema-1",
+            permissionRevision: "permission-1", capabilityHash: "capability-1", lookupRevision: "lookup-1",
+          },
+          capabilities: {
+            contract: "vibetable.relation-capabilities.v1",
+            relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+          },
+        };
+      }
+      if (method === "lookup.list") {
+        return { collection: "orders", definitions: [], lookupRevision: "lookup-1" };
+      }
+      if (method === "relation.searchTargets") return { items: [target], total: 1 };
+      if (method === "relation.updateSingle") {
+        return { outcome: "committed", current: target, schemaRevision: "schema-1", requestId: "update-1" };
+      }
+      throw new Error(`unexpected request: ${method}`);
+    });
+    setHostBridgeForTesting({
+      request,
+      on: vi.fn(() => vi.fn()),
+      notify: vi.fn(),
+      notifyWithAdditionalObjects: vi.fn(() => false),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as HostBridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }]);
+    workspace.selectTable("orders");
+    const table = useTableStore();
+    table.appendPage({
+      table: "orders",
+      columns: [{
+        name: "contract", title: "Contract", fieldId: "orders.contract", kind: "relation",
+        relationId: "orders.contract", dataType: "text", editable: true, nullable: true,
+      }],
+      rows: [{ rowKey: "order-1", contract: null }], offset: 0, limit: 1, totalRows: 1, mode: "remote",
+    });
+    const wrapper = mountView();
+    await flushPromises();
+
+    wrapper.findComponent(GridHost).vm.$emit("relationEdit", {
+      rowKey: "order-1", field: "contract", descriptor, value: null,
+    });
+    await flushPromises();
+    const editor = wrapper.findComponent(RelationEditorPanel);
+    expect(editor.exists()).toBe(true);
+    editor.vm.$emit("select", target);
+    await flushPromises();
+
+    expect(table.allRows[0]?.contract).toEqual(target);
+    expect(Array.isArray(table.allRows[0]?.contract)).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("routes grid sort/filter/group intent to the standard full-dataset table query", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }]);
+    workspace.selectTable("orders");
+    const wrapper = mountView();
+    await flushPromises();
+    posted.length = 0;
+
+    wrapper.findComponent(GridHost).vm.$emit("viewQueryChange", {
+      filters: [{ field: "status", operator: "eq", value: "signed", logic: "AND" }],
+      sorts: [{ field: "contract_price", direction: "desc", nullsLast: true }],
+      groups: [{ fieldRef: "customer", direction: "asc" }],
+    });
+    await flushPromises();
+
+    expect(posted).toContainEqual({
+      type: "table.queryRequested",
+      payload: {
+        table: "orders",
+        query: {
+          filters: [{ field: "status", operator: "eq", value: "signed", logic: "AND" }],
+          sorts: [{ field: "contract_price", direction: "desc", nullsLast: true }],
+          offset: 0,
+          limit: 500,
+        },
+      },
+    });
   });
 
   it("opens whole-table history from the toolbar when there is no row or cell selection", async () => {

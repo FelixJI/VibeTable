@@ -15,6 +15,8 @@ WORKSPACE_COLLECTIONS = {
     "vibetable_document_schemes",
     "vibetable_document_revisions",
     "vibetable_document_links",
+    "vibetable_lookup_definitions",
+    "vibetable_schema_operations",
     "vibetable_identifier_map",
 }
 

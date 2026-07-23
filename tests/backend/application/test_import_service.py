@@ -18,6 +18,8 @@ from backend.adapters.directus.errors import DirectusTransportError
 from backend.adapters.directus.profile import CapabilityManifest, CollectionProfile
 from backend.application.import_service import (
     ImportService,
+    RelationImportBatchResult,
+    RelationImportTarget,
     SourceFile,
     auto_map_columns,
     clean_currency,
@@ -94,6 +96,61 @@ def _manifest() -> CapabilityManifest:
     )
 
 
+def _relation_manifest() -> CapabilityManifest:
+    raw = _manifest().model_dump(mode="json")
+    collection = raw["collections"][0]
+    collection["fields"].append("contract")
+    collection["create_fields"].append("contract")
+    collection["update_fields"].append("contract")
+    collection["relations"] = [
+        {
+            "relation_id": "rel_contract",
+            "field": "contract",
+            "kind": "m2o",
+            "related_collection": "contracts",
+            "display_fields": ["number"],
+        }
+    ]
+    return CapabilityManifest.model_validate(raw)
+
+
+class FakeRelationProvider:
+    def __init__(self, matches: dict[str, list[Any]]) -> None:
+        self.matches = matches
+        self.inspected: list[tuple[str, str]] = []
+        self.applied: list[dict[str, Any]] = []
+
+    async def inspect_mapping(
+        self,
+        *,
+        collection: str,
+        target_field: str,
+        relation_id: str,
+        match_field: str,
+    ) -> RelationImportTarget:
+        self.inspected.append((relation_id, match_field))
+        if match_field == "title":
+            raise ValueError("match field is not unique")
+        return RelationImportTarget(
+            relation_id=relation_id,
+            target_field=target_field,
+            target_collection="contracts",
+            target_primary_key="id",
+            match_field=match_field,
+        )
+
+    async def find_exact(self, target: RelationImportTarget, value: Any) -> list[Any]:
+        return self.matches.get(str(value), [])
+
+    async def apply_chunk(self, **kwargs: Any) -> RelationImportBatchResult:
+        self.applied.append(kwargs)
+        return RelationImportBatchResult(
+            created_row_keys=["source-1"],
+            updated_row_keys=[],
+            request_id="relation-import-1",
+        )
+
+
 def _profile(manifest: CapabilityManifest) -> CollectionProfile:
     return manifest.by_collection["vibetable_demo"]
 
@@ -110,6 +167,7 @@ def _service(
     transport: FakeTransport,
     manifest: CapabilityManifest,
     path_for_grant: str,
+    relation_provider: Any = None,
 ) -> ImportService:
     return ImportService(
         client=DirectusClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
@@ -118,6 +176,7 @@ def _service(
         profiles=manifest.by_collection,
         resolve_path=lambda _grant, *, purpose, direction: path_for_grant,
         consume_grant=lambda _grant: None,
+        relation_provider=relation_provider,
     )
 
 
@@ -403,3 +462,141 @@ async def test_apply_rejects_consumed_token(tmp_path: Any) -> None:
                 grant_id="grant-1", collection="vibetable_demo", token=plan.token.token
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_relation_column_requires_explicit_relation_id_and_match_field(tmp_path: Any) -> None:
+    path = tmp_path / "contracts.csv"
+    _write_csv(str(path), ["contract"], [["C-001"]])
+    manifest = _relation_manifest()
+    service = _service(FakeTransport([]), manifest, str(path), FakeRelationProvider({}))
+
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1",
+            collection="vibetable_demo",
+            schema_revision=_profile(manifest).capability_hash,
+        )
+    )
+
+    assert plan.summary.error_rows == 1
+    assert plan.rows[0].diagnostics[0].code == "relation_mapping_required"
+
+
+@pytest.mark.asyncio
+async def test_relation_preview_uses_exact_unique_match_and_diagnoses_zero_and_many(
+    tmp_path: Any,
+) -> None:
+    path = tmp_path / "contracts.csv"
+    _write_csv(str(path), ["合同号"], [["C-001"], ["missing"], ["duplicate"]])
+    manifest = _relation_manifest()
+    provider = FakeRelationProvider(
+        {"C-001": ["contract-1"], "duplicate": ["contract-2", "contract-3"]}
+    )
+    service = _service(FakeTransport([]), manifest, str(path), provider)
+
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1",
+            collection="vibetable_demo",
+            schema_revision=_profile(manifest).capability_hash,
+            column_mapping=[
+                ImportColumnMapping(
+                    source_column="合同号",
+                    target_field="contract",
+                    relation_id="rel_contract",
+                    match_field="number",
+                )
+            ],
+        )
+    )
+
+    assert provider.inspected == [("rel_contract", "number")]
+    assert plan.rows[0].values["contract"] == "contract-1"
+    assert plan.rows[0].relation_resolutions[0].state == "matched"
+    assert plan.rows[1].diagnostics[0].code == "relation_match_not_found"
+    assert plan.rows[2].diagnostics[0].code == "relation_match_ambiguous"
+
+
+@pytest.mark.asyncio
+async def test_create_if_missing_is_default_off_preview_only_and_atomic_on_apply(
+    tmp_path: Any,
+) -> None:
+    path = tmp_path / "contracts.csv"
+    _write_csv(str(path), ["合同号"], [["NEW-001"]])
+    manifest = _relation_manifest()
+    provider = FakeRelationProvider({})
+    service = _service(FakeTransport([]), manifest, str(path), provider)
+    mapping = [
+        ImportColumnMapping(
+            source_column="合同号",
+            target_field="contract",
+            relation_id="rel_contract",
+            match_field="number",
+        )
+    ]
+
+    blocked = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1",
+            collection="vibetable_demo",
+            schema_revision=_profile(manifest).capability_hash,
+            column_mapping=mapping,
+        )
+    )
+    assert blocked.rows[0].diagnostics[0].code == "relation_match_not_found"
+    assert provider.applied == []
+
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1",
+            collection="vibetable_demo",
+            schema_revision=_profile(manifest).capability_hash,
+            column_mapping=mapping,
+            create_if_missing=True,
+        )
+    )
+    assert plan.summary.error_count == 0
+    assert plan.rows[0].relation_resolutions[0].state == "create"
+    assert "contract" not in plan.rows[0].values
+    assert provider.applied == []  # preview performs no target write
+
+    result = await service.apply(
+        ApplyImportParams(
+            grant_id="grant-1",
+            collection="vibetable_demo",
+            token=plan.token.token,
+            idempotency_prefix="import-contracts",
+        )
+    )
+    assert result.created_count == 1
+    assert len(provider.applied) == 1
+    assert provider.applied[0]["idempotency_key"] == "import-contracts-0"
+    assert provider.applied[0]["rows"][0].relation_resolutions[0].state == "create"
+
+
+@pytest.mark.asyncio
+async def test_relation_match_field_must_be_live_schema_proven_unique(tmp_path: Any) -> None:
+    path = tmp_path / "contracts.csv"
+    _write_csv(str(path), ["合同"], [["Alpha"]])
+    manifest = _relation_manifest()
+    service = _service(FakeTransport([]), manifest, str(path), FakeRelationProvider({}))
+
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1",
+            collection="vibetable_demo",
+            schema_revision=_profile(manifest).capability_hash,
+            column_mapping=[
+                ImportColumnMapping(
+                    source_column="合同",
+                    target_field="contract",
+                    relation_id="rel_contract",
+                    match_field="title",
+                )
+            ],
+        )
+    )
+
+    assert plan.summary.error_rows == 1
+    assert plan.rows[0].diagnostics[0].code == "relation_mapping_invalid"

@@ -5,7 +5,8 @@ namespace VibeTable.Contracts;
 /// <summary>
 /// One column's read-side schema. Mirrors
 /// <c>backend.contracts.table.ColumnSchema</c> (camelCase wire form):
-/// <c>{"name","title","dataType","editable","nullable","scale","precision"}</c>.
+/// <c>{"name","title","dataType","editable","nullable","scale","precision",</c>
+/// <c>"fieldId","kind","relationId","lookupId"}</c>.
 /// </summary>
 public sealed record ColumnSchema(
     string Name,
@@ -14,7 +15,11 @@ public sealed record ColumnSchema(
     bool Editable,
     bool Nullable,
     int? Scale = null,
-    int? Precision = null);
+    int? Precision = null,
+    string? FieldId = null,
+    string Kind = "scalar",
+    string? RelationId = null,
+    string? LookupId = null);
 
 /// <summary>
 /// Result of opening the configured logical source through the table gateway:

@@ -29,6 +29,8 @@ interface MockTabulator {
   destroy: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
+  getSorters: ReturnType<typeof vi.fn>;
+  getHeaderFilters: ReturnType<typeof vi.fn>;
 }
 
 let lastMock: MockTabulator | null = null;
@@ -42,6 +44,8 @@ vi.mock("@/grid/createGrid", () => ({
       destroy: vi.fn(),
       on: vi.fn(),
       off: vi.fn(),
+      getSorters: vi.fn().mockReturnValue([]),
+      getHeaderFilters: vi.fn().mockReturnValue([]),
     };
     lastMock = mock;
     return mock;
@@ -164,6 +168,14 @@ describe("useTabulator", () => {
       editSchema: null,
       onCellEdited: expect.any(Function),
       onValidationError: expect.any(Function),
+      relationLookup: {
+        relations: new Map(),
+        lookups: new Map(),
+        relationEditAvailable: false,
+        lookupQueryAvailable: false,
+        lookupUnavailableReason: null,
+        onRelationEditRequested: undefined,
+      },
     });
     wrapper.unmount();
   });
@@ -332,6 +344,40 @@ describe("useTabulator", () => {
       getColumns: () => [{ getField: () => "status" }],
     });
     expect(onRangeSelectionChanged).toHaveBeenCalledWith({ rowKeys: [1, 2], fields: ["status"] });
+    wrapper.unmount();
+  });
+
+  it("forwards user sort/filter/group events as a full-dataset query AST", async () => {
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+    const onViewQueryChanged = vi.fn();
+    const Host = defineComponent({
+      setup() {
+        useTabulator(gridEl, { onViewQueryChanged });
+        return () => h("div");
+      },
+    });
+    const wrapper = mount(Host);
+    gridEl.value = document.createElement("div");
+    table.beginLoad();
+    table.appendPage(makePage([{ rowKey: 1 }], [makeColumn("price")], { mode: "remote", totalRows: 50_000 }));
+    await flushPromises();
+
+    lastMock!.getSorters.mockReturnValue([{ field: "price", dir: "desc" }]);
+    lastMock!.getHeaderFilters.mockReturnValue([{ field: "status", value: "signed" }]);
+    const sorted = lastMock!.on.mock.calls.find((call) => call[0] === "dataSorted")?.[1] as () => void;
+    sorted();
+    expect(onViewQueryChanged).toHaveBeenLastCalledWith({
+      filters: [{ field: "status", operator: "eq", value: "signed", logic: "AND" }],
+      sorts: [{ field: "price", direction: "desc", nullsLast: true }],
+      groups: [],
+    });
+
+    const grouped = lastMock!.on.mock.calls.find((call) => call[0] === "dataGrouped")?.[1] as (groups: unknown[]) => void;
+    grouped([{ getField: () => "customer", getSubGroups: () => [] }]);
+    expect(onViewQueryChanged).toHaveBeenLastCalledWith(expect.objectContaining({
+      groups: [{ fieldRef: "customer", direction: "asc" }],
+    }));
     wrapper.unmount();
   });
 

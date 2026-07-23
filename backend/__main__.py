@@ -77,6 +77,15 @@ from backend.contracts.history import (
 from backend.contracts.history import (
     ReadChangeSetsParams,
 )
+from backend.contracts.lookup import (
+    LookupCollectionParams,
+    LookupCreateParams,
+    LookupDeleteParams,
+    LookupPreviewParams,
+    LookupQueryParams,
+    LookupUpdateParams,
+    LookupValidateParams,
+)
 from backend.contracts.paste import ApplyPasteParams, PreviewPasteParams
 from backend.contracts.plugin import PluginEventEnvelope
 from backend.contracts.plugin_rpc import (
@@ -98,6 +107,14 @@ from backend.contracts.plugin_rpc import (
     UpgradePluginParams,
 )
 from backend.contracts.relation import RelationProjectionParams
+from backend.contracts.relation_admin import (
+    ApplyRelationChangeParams,
+    PreviewRelationChangeParams,
+    RelationDelta,
+    RelationSearchParams,
+    RelationSingleUpdateParams,
+    SchemaDescribeParams,
+)
 from backend.contracts.system import HandshakeParams
 from backend.contracts.task import (
     CreateTaskParams,
@@ -114,9 +131,11 @@ from backend.rpc.dispatcher import (
     register_history_errors,
     register_import_errors,
     register_insights_errors,
+    register_lookup_errors,
     register_paste_errors,
     register_path_grant_errors,
     register_plugin_errors,
+    register_relation_errors,
     register_settings_command_errors,
     register_table_admin_errors,
 )
@@ -486,12 +505,55 @@ async def _build_server() -> tuple[RpcServer, Any | None]:
             "directus.collections", directus_service.list_collections, DirectusEmptyParams
         )
         dispatcher.register("directus.schema", directus_service.schema, DirectusCollectionParams)
+        dispatcher.register(
+            "schema.describe", directus_service.describe_schema, SchemaDescribeParams
+        )
         dispatcher.register("directus.read", directus_service.read, DirectusReadParams)
         dispatcher.register("directus.create", directus_service.create, DirectusCreateParams)
         dispatcher.register("directus.update", directus_service.update, DirectusUpdateParams)
         dispatcher.register("directus.archive", directus_service.archive, DirectusItemParams)
         dispatcher.register("directus.restore", directus_service.restore, DirectusItemParams)
         dispatcher.register("directus.delete", directus_service.delete, DirectusItemParams)
+        lookup_service = directus_service.lookup_service
+        if lookup_service is not None:
+            register_lookup_errors()
+            dispatcher.register("lookup.list", lookup_service.list, LookupCollectionParams)
+            dispatcher.register("lookup.validate", lookup_service.validate, LookupValidateParams)
+            dispatcher.register("lookup.create", lookup_service.create, LookupCreateParams)
+            dispatcher.register("lookup.update", lookup_service.update, LookupUpdateParams)
+            dispatcher.register("lookup.delete", lookup_service.delete, LookupDeleteParams)
+            dispatcher.register("lookup.preview", lookup_service.preview, LookupPreviewParams)
+            dispatcher.register("lookup.query", lookup_service.query, LookupQueryParams)
+        relation_service = directus_service.relation_service
+        if relation_service is not None:
+            register_relation_errors()
+            dispatcher.register(
+                "relation.searchTargets",
+                relation_service.search_targets,
+                RelationSearchParams,
+            )
+            dispatcher.register(
+                "relation.updateSingle",
+                relation_service.update_single,
+                RelationSingleUpdateParams,
+            )
+            dispatcher.register(
+                "relation.previewDelta", relation_service.preview_delta, RelationDelta
+            )
+            dispatcher.register("relation.applyDelta", relation_service.apply_delta, RelationDelta)
+        relation_schema_service = directus_service.relation_schema_service
+        if relation_schema_service is not None:
+            register_relation_errors()
+            dispatcher.register(
+                "table_admin.previewRelationChange",
+                relation_schema_service.preview,
+                PreviewRelationChangeParams,
+            )
+            dispatcher.register(
+                "table_admin.applyRelationChange",
+                relation_schema_service.apply,
+                ApplyRelationChangeParams,
+            )
         dispatcher.register(
             "directus.subscribe", directus_service.subscribe, DirectusSubscribeParams
         )

@@ -7,6 +7,7 @@ import type {
   DeleteRowsResult,
   InsertRowResult,
   MutationRevision,
+  LookupQueryResult,
   TablePage,
   UpdateCellResult,
 } from "@/contracts";
@@ -199,6 +200,56 @@ export const useTableStore = defineStore("table", () => {
     return out;
   }
 
+  /** Apply a committed relation value without routing it through scalar editing. */
+  function applyRelationValue(
+    rowKey: string | number,
+    field: string,
+    value: unknown,
+  ): void {
+    for (const page of pages.value) {
+      const row = (page.rows as Record<string, unknown>[]).find((item) => item.rowKey === rowKey);
+      if (row) row[field] = value;
+    }
+  }
+
+  /**
+   * Merge authoritative Lookup-query rows into the grid in server order.
+   * Existing scalar values are retained only when the query projection omits
+   * them; Lookup values are never derived from the visible page.
+   */
+  function applyLookupQueryResult(result: LookupQueryResult): void {
+    const currentPage = pages.value[0];
+    const currentSchema = schema.value;
+    if (!currentPage || !currentSchema) return;
+    const previous = new Map(allRows.value.map((row) => [String(row.rowKey), row]));
+    const fieldNames = new Map(currentSchema.flatMap((column) => [
+      [column.fieldId ?? column.name, column.name] as const,
+      [column.name, column.name] as const,
+    ]));
+    const rows = result.rows.map((wireRow) => {
+      const rowKey = wireRow.rowKey;
+      const row: Record<string, unknown> = {
+        ...(previous.get(String(rowKey)) ?? {}),
+        rowKey,
+      };
+      for (const [wireField, value] of Object.entries(wireRow)) {
+        if (wireField === "rowKey") continue;
+        const field = fieldNames.get(wireField);
+        if (field) row[field] = value;
+      }
+      return row;
+    });
+    pages.value = [{
+      ...currentPage,
+      rows,
+      offset: result.offset,
+      limit: result.limit,
+      totalRows: result.totalRows,
+      filteredRows: result.filteredRows,
+    }];
+    rowCount.value = result.totalRows;
+  }
+
   return {
     loading,
     datasetReady,
@@ -219,5 +270,7 @@ export const useTableStore = defineStore("table", () => {
     applyInsert,
     applyDelete,
     snapshotRows,
+    applyRelationValue,
+    applyLookupQueryResult,
   };
 });

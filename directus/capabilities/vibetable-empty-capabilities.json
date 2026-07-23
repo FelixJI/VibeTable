@@ -79,6 +79,26 @@
       "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false, "hidden": true
     },
     {
+      "collection": "vibetable_lookup_definitions",
+      "primary_key": "id",
+      "fields": ["id", "status", "collection", "lookup_id", "field_key", "definition", "revision", "sort", "date_created", "user_created", "date_updated", "user_updated"],
+      "relations": [],
+      "create_fields": ["id", "status", "collection", "lookup_id", "field_key", "definition", "revision", "sort"],
+      "update_fields": ["status", "field_key", "definition", "revision", "sort"],
+      "archive_field": "status", "archive_value": "deleted", "restore_value": "active", "date_updated_field": "date_updated",
+      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false, "hidden": true
+    },
+    {
+      "collection": "vibetable_schema_operations",
+      "primary_key": "id",
+      "fields": ["id", "status", "operation_id", "plan_id", "plan", "applied_steps", "sort", "date_created", "user_created", "date_updated", "user_updated"],
+      "relations": [],
+      "create_fields": ["id", "status", "operation_id", "plan_id", "plan", "applied_steps", "sort"],
+      "update_fields": ["status", "applied_steps", "sort"],
+      "archive_field": "status", "archive_value": "failed", "restore_value": "applying", "date_updated_field": "date_updated",
+      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false, "hidden": true
+    },
+    {
       "collection": "vibetable_identifier_map",
       "primary_key": "id",
       "fields": ["id", "status", "entity_kind", "parent_physical_name", "physical_name", "display_name", "normalized_name", "locale", "aliases", "origin", "sort", "date_created", "user_created", "date_updated", "user_updated"],

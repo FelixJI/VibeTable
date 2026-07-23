@@ -1,3 +1,29 @@
+import type {
+  ApplyRelationChangeParams,
+  LookupCreateParams,
+  LookupDeleteParams,
+  LookupListResult,
+  LookupMutationResult,
+  LookupPreviewParams,
+  LookupQueryParams,
+  LookupQueryResult,
+  LookupUpdateParams,
+  LookupValidateParams,
+  LookupValidationResult,
+  RelationDelta,
+  RelationDeltaPreview,
+  RelationDeltaResult,
+  PreviewRelationChangeParams,
+  RelationChangePlan,
+  RelationChangeResult,
+  RelationSearchParams,
+  RelationSearchResult,
+  RelationSingleUpdateResult,
+  RelationUpdateSingleParams,
+  SchemaDescribeParams,
+  SchemaDescribeResult,
+} from "./relationsLookup";
+
 /**
  * Wire contracts shared between the web grid (TypeScript) and the .NET host.
  *
@@ -24,13 +50,19 @@ export type ColumnDataType =
   | "boolean"
   | "date"
   | "datetime"
-  | "time";
+  | "time"
+  | "json";
 
 export interface ColumnSchema {
   /** Programmatic column name; matches the row-dict key. */
   readonly name: string;
   /** Human-readable column heading. */
   readonly title: string;
+  /** Stable logical field id; physical names remain an implementation detail. */
+  readonly fieldId?: string | null;
+  readonly kind?: "scalar" | "relation" | "lookup";
+  readonly relationId?: string | null;
+  readonly lookupId?: string | null;
   /** Grid renderer type hint. */
   readonly dataType: ColumnDataType;
   /** Whether the current Directus capability schema permits editing. */
@@ -46,6 +78,8 @@ export interface ColumnSchema {
   /** Numeric precision (total significant digits) from Directus. */
   readonly precision?: number | null;
 }
+
+export * from "./relationsLookup";
 
 export type TableMode = "client" | "remote";
 
@@ -945,6 +979,20 @@ export type WebMessageType =
   | "table.updateCellRequested"
   | "table.insertRowRequested"
   | "table.deleteRowsRequested"
+  | "schema.describe"
+  | "relation.searchTargets"
+  | "relation.updateSingle"
+  | "relation.previewDelta"
+  | "relation.applyDelta"
+  | "table_admin.previewRelationChange"
+  | "table_admin.applyRelationChange"
+  | "lookup.list"
+  | "lookup.validate"
+  | "lookup.create"
+  | "lookup.update"
+  | "lookup.delete"
+  | "lookup.preview"
+  | "lookup.query"
   // B3 query + state requests.
   | "table.queryRequested"
   | "gridState.saveRequested"
@@ -1011,6 +1059,20 @@ export type HostMessageType =
   | "table.rowsInserted"
   | "table.rowsDeleted"
   | "directus.changed"
+  | "schema.describe"
+  | "relation.searchTargets"
+  | "relation.updateSingle"
+  | "relation.previewDelta"
+  | "relation.applyDelta"
+  | "table_admin.previewRelationChange"
+  | "table_admin.applyRelationChange"
+  | "lookup.list"
+  | "lookup.validate"
+  | "lookup.create"
+  | "lookup.update"
+  | "lookup.delete"
+  | "lookup.preview"
+  | "lookup.query"
   // B2 paste preview + apply outcomes.
   | "table.pastePreviewReady"
   | "table.pasteApplied"
@@ -1079,6 +1141,20 @@ export interface HostPayloadMap {
   "table.rowsInserted": InsertRowResult;
   "table.rowsDeleted": DeleteRowsResult;
   "directus.changed": DirectusChangePayload;
+  "schema.describe": SchemaDescribeResult;
+  "relation.searchTargets": RelationSearchResult;
+  "relation.updateSingle": RelationSingleUpdateResult;
+  "relation.previewDelta": RelationDeltaPreview;
+  "relation.applyDelta": RelationDeltaResult;
+  "table_admin.previewRelationChange": RelationChangePlan;
+  "table_admin.applyRelationChange": RelationChangeResult;
+  "lookup.list": LookupListResult;
+  "lookup.validate": LookupValidationResult;
+  "lookup.create": LookupMutationResult;
+  "lookup.update": LookupMutationResult;
+  "lookup.delete": LookupMutationResult;
+  "lookup.preview": LookupQueryResult;
+  "lookup.query": LookupQueryResult;
   "table.pastePreviewReady": PastePlan;
   "table.pasteApplied": ApplyPasteResult;
   "history.pageLoaded": HistoryPage;
@@ -1129,6 +1205,20 @@ export interface WebPayloadMap {
   "table.updateCellRequested": UpdateCellRequestedPayload;
   "table.insertRowRequested": InsertRowRequestedPayload;
   "table.deleteRowsRequested": DeleteRowsRequestedPayload;
+  "schema.describe": SchemaDescribeParams;
+  "relation.searchTargets": RelationSearchParams;
+  "relation.updateSingle": RelationUpdateSingleParams;
+  "relation.previewDelta": RelationDelta;
+  "relation.applyDelta": RelationDelta;
+  "table_admin.previewRelationChange": PreviewRelationChangeParams;
+  "table_admin.applyRelationChange": ApplyRelationChangeParams;
+  "lookup.list": { readonly collection: string };
+  "lookup.validate": LookupValidateParams;
+  "lookup.create": LookupCreateParams;
+  "lookup.update": LookupUpdateParams;
+  "lookup.delete": LookupDeleteParams;
+  "lookup.preview": LookupPreviewParams;
+  "lookup.query": LookupQueryParams;
   // B3 query + state requests.
   "table.queryRequested": TableQueryRequestedPayload;
   "gridState.saveRequested": GridStateSaveRequestedPayload;

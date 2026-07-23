@@ -168,6 +168,50 @@ public sealed class JsonRpcDirectusGateway : IDirectusRpcGateway
         => _client.InvokeAsync<DirectusUnsubscribeParams, DirectusSubscription>(
             "directus.unsubscribe", new(uid), token);
 
+    public Task<JsonElement> DescribeSchemaAsync(JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("schema.describe", parameters, token);
+
+    public Task<JsonElement> SearchRelationTargetsAsync(JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("relation.searchTargets", parameters, token);
+
+    public Task<JsonElement> UpdateSingleRelationAsync(JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("relation.updateSingle", parameters, token);
+
+    public Task<JsonElement> PreviewRelationDeltaAsync(JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("relation.previewDelta", parameters, token);
+
+    public Task<JsonElement> ApplyRelationDeltaAsync(JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("relation.applyDelta", parameters, token);
+
+    public Task<JsonElement> ListLookupsAsync(JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("lookup.list", parameters, token);
+
+    public Task<JsonElement> ValidateLookupAsync(JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("lookup.validate", parameters, token);
+
+    public Task<JsonElement> CreateLookupAsync(JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("lookup.create", parameters, token);
+
+    public Task<JsonElement> UpdateLookupAsync(JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("lookup.update", parameters, token);
+
+    public Task<JsonElement> DeleteLookupAsync(JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("lookup.delete", parameters, token);
+
+    public Task<JsonElement> PreviewLookupAsync(JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("lookup.preview", parameters, token);
+
+    public Task<JsonElement> QueryLookupsAsync(JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("lookup.query", parameters, token);
+
+    public Task<JsonElement> PreviewRelationChangeAsync(
+        JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("table_admin.previewRelationChange", parameters, token);
+
+    public Task<JsonElement> ApplyRelationChangeAsync(
+        JsonElement parameters, CancellationToken token)
+        => InvokeOpaqueAsync("table_admin.applyRelationChange", parameters, token);
+
     public void Dispose()
     {
         if (_disposed)
@@ -185,6 +229,16 @@ public sealed class JsonRpcDirectusGateway : IDirectusRpcGateway
         string method, string collection, string itemId, CancellationToken token)
         => _client.InvokeAsync<DirectusItemParams, DirectusItem>(
             method, new(collection, itemId), token);
+
+    private Task<JsonElement> InvokeOpaqueAsync(
+        string method, JsonElement parameters, CancellationToken token)
+    {
+        if (parameters.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException("Relation/Lookup RPC parameters must be a JSON object.");
+        }
+        return _client.InvokeAsync<JsonElement, JsonElement>(method, parameters, token);
+    }
 
     private void OnNotificationReceived(string method, JsonElement parameters)
     {

@@ -18,6 +18,8 @@ import type { Ref } from "vue";
 import type { TabulatorFull } from "tabulator-tables";
 import { useTabulator } from "@/composables/useTabulator";
 import type { CellEditedHandler, CellValidationErrorHandler } from "@/grid/createGrid";
+import type { NormalizedRelationDescriptor } from "@/contracts";
+import type { FilterCondition, LookupGroup, SortCondition } from "@/contracts";
 import { ROW_NUMBER_FIELD } from "@/grid/createGrid";
 import { useTableStore } from "@/stores/tableStore";
 import { TABULATOR_INJECTION_KEY } from "./tabulatorInjection";
@@ -33,6 +35,17 @@ const emit = defineEmits<{
     | { scope: "row" | "cell"; rowKey: string | number; field?: string }
     | { scope: "multiple" }];
   rowContext: [payload: { rowKey: string | number; field?: string; x: number; y: number }];
+  relationEdit: [payload: {
+    rowKey: string | number;
+    field: string;
+    descriptor: NormalizedRelationDescriptor;
+    value: unknown;
+  }];
+  viewQueryChange: [query: {
+    readonly filters: readonly FilterCondition[];
+    readonly sorts: readonly SortCondition[];
+    readonly groups: readonly LookupGroup[];
+  }];
 }>();
 
 const gridEl = ref<HTMLElement | null>(null);
@@ -49,6 +62,10 @@ useTabulator(gridEl, {
     }
   },
   onValidationError: props.onValidationError,
+  onRelationEditRequested: (rowKey, field, descriptor, value) => {
+    emit("relationEdit", { rowKey, field, descriptor, value });
+  },
+  onViewQueryChanged: (query) => emit("viewQueryChange", query),
   tabulator: tabulator ?? undefined,
 });
 
@@ -151,5 +168,57 @@ function onContextMenu(event: MouseEvent): void {
 .grid-host :deep(.tabulator-cell.vt-cell-selected) {
   outline: 2px solid var(--vt-color-primary-500);
   outline-offset: -2px;
+}
+.grid-host :deep(.vt-relation-value),
+.grid-host :deep(.vt-lookup-value) {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.grid-host :deep(.vt-relation-token) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 160px;
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--vt-color-primary-500) 24%, var(--vt-border));
+  border-radius: 999px;
+  color: var(--vt-fg);
+  background: color-mix(in srgb, var(--vt-color-primary-500) 7%, var(--vt-bg));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.grid-host :deep(.vt-relation-collection) {
+  padding-right: 4px;
+  border-right: 1px solid var(--vt-border);
+  color: var(--vt-color-primary-600);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.grid-host :deep(.vt-relation-more),
+.grid-host :deep(.vt-cell-empty),
+.grid-host :deep(.vt-lookup-mark) { color: var(--vt-fg-muted); }
+.grid-host :deep(.vt-lookup-state) {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: var(--vt-radius-sm);
+  color: var(--vt-fg-secondary);
+  background: var(--vt-bg-sunken);
+  font-size: var(--vt-font-caption);
+  white-space: nowrap;
+}
+.grid-host :deep(.vt-lookup-state--restricted) { color: var(--vt-color-warning); }
+.grid-host :deep(.vt-lookup-state--invalid),
+.grid-host :deep(.vt-lookup-state--too_expensive) { color: var(--vt-color-danger); }
+.grid-host :deep(.vt-relation-cell--editable) { cursor: pointer; }
+.grid-host :deep(.vt-relation-cell--editable:hover) {
+  background: color-mix(in srgb, var(--vt-color-primary-500) 7%, var(--vt-bg));
 }
 </style>

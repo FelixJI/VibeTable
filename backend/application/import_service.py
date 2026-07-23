@@ -27,9 +27,10 @@ import hashlib
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from backend.adapters.directus.auth import DirectusAuthBroker
 from backend.adapters.directus.client import DirectusClient
@@ -44,6 +45,7 @@ from backend.contracts.data_io import (
     ImportPlan,
     ImportPlanRow,
     ImportPreviewToken,
+    ImportRelationResolution,
     ImportSummary,
     PreviewImportParams,
 )
@@ -97,6 +99,58 @@ class ImportFlowError(Exception):
         if self.data:
             exposed.update(self.data)
         return exposed
+
+
+@dataclass(frozen=True)
+class RelationImportTarget:
+    """Live-schema proof for one explicit relation import mapping."""
+
+    relation_id: str
+    target_field: str
+    target_collection: str
+    target_primary_key: str
+    match_field: str
+
+
+@dataclass(frozen=True)
+class RelationImportBatchResult:
+    """Server-confirmed result of one atomic relation-aware import chunk."""
+
+    created_row_keys: list[str]
+    updated_row_keys: list[str]
+    request_id: str = ""
+
+
+class RelationImportProvider(Protocol):
+    """Permission-scoped adapter for relation resolution and atomic apply.
+
+    The implementation is expected to use the current user's Directus
+    accountability. ``inspect_mapping`` must reject non-PK/non-unique match
+    fields. ``apply_chunk`` owns one transaction containing any requested target
+    creation and the source-row mutation, and deduplicates by ``idempotency_key``.
+    """
+
+    async def inspect_mapping(
+        self,
+        *,
+        collection: str,
+        target_field: str,
+        relation_id: str,
+        match_field: str,
+    ) -> RelationImportTarget: ...
+
+    async def find_exact(self, target: RelationImportTarget, value: Any) -> list[Any]: ...
+
+    async def apply_chunk(
+        self,
+        *,
+        collection: str,
+        profile: CollectionProfile,
+        rows: list[ImportPlanRow],
+        mode: str,
+        upsert_key: str | None,
+        idempotency_key: str,
+    ) -> RelationImportBatchResult: ...
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +406,7 @@ class ImportService:
         profiles: dict[str, CollectionProfile],
         resolve_path: Callable[..., str],
         consume_grant: Callable[[str], None],
+        relation_provider: RelationImportProvider | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._client = client
@@ -360,6 +415,7 @@ class ImportService:
         self._profiles = profiles
         self._resolve_path = resolve_path
         self._consume_grant = consume_grant
+        self._relation_provider = relation_provider
         self._clock = clock
         self._plans: dict[str, _StoredImportPlan] = {}
 
@@ -383,6 +439,51 @@ class ImportService:
         header, rows, source_hash = source.read_header_and_rows()
         mapping, unmatched = auto_map_columns(header, profile, params.column_mapping)
         relations = {r.field: r for r in profile.relations}
+        explicit_by_source = {item.source_column.strip(): item for item in params.column_mapping}
+        relation_targets: dict[int, RelationImportTarget] = {}
+        relation_mapping_errors: dict[int, tuple[str, str]] = {}
+        for col_index, field in mapping.items():
+            relation = relations.get(field)
+            explicit = explicit_by_source.get(header[col_index].strip())
+            if relation is None:
+                if explicit and (
+                    explicit.relation_id or explicit.match_field or explicit.relation_lookup
+                ):
+                    relation_mapping_errors[col_index] = (
+                        "relation_mapping_not_relation",
+                        f"field {field!r} is not a relation",
+                    )
+                continue
+            if explicit is None or explicit.relation_id is None or explicit.match_field is None:
+                relation_mapping_errors[col_index] = (
+                    "relation_mapping_required",
+                    "relation columns require explicit relationId and matchField",
+                )
+                continue
+            if relation.relation_id is not None and relation.relation_id != explicit.relation_id:
+                relation_mapping_errors[col_index] = (
+                    "relation_id_mismatch",
+                    "relationId does not identify the mapped target field",
+                )
+                continue
+            if self._relation_provider is None:
+                relation_mapping_errors[col_index] = (
+                    "relation_provider_unavailable",
+                    "relation import resolution is not configured",
+                )
+                continue
+            try:
+                relation_targets[col_index] = await self._relation_provider.inspect_mapping(
+                    collection=params.collection,
+                    target_field=field,
+                    relation_id=explicit.relation_id,
+                    match_field=explicit.match_field,
+                )
+            except Exception as exc:
+                relation_mapping_errors[col_index] = (
+                    getattr(exc, "code", "relation_mapping_invalid"),
+                    str(exc),
+                )
         plan_rows: list[ImportPlanRow] = []
         error_count = 0
         warning_count = 0
@@ -392,8 +493,90 @@ class ImportService:
             source_row = row_offset + 2  # 1-based + header
             values: dict[str, Any] = {}
             diagnostics: list[ImportCellDiagnostic] = []
+            relation_resolutions: list[ImportRelationResolution] = []
             for col_index, field in mapping.items():
                 raw = raw_row[col_index] if col_index < len(raw_row) else None
+                relation = relations.get(field)
+                mapping_error = relation_mapping_errors.get(col_index)
+                if mapping_error is not None and raw is not None and raw != "":
+                    diagnostics.append(
+                        ImportCellDiagnostic(
+                            row=source_row,
+                            column=col_index + 1,
+                            severity="error",
+                            code=mapping_error[0],
+                            message=mapping_error[1],
+                            original_value=str(raw),
+                        )
+                    )
+                    continue
+                if relation is not None:
+                    if raw is None or raw == "":
+                        continue
+                    target = relation_targets[col_index]
+                    assert self._relation_provider is not None
+                    try:
+                        matches = await self._relation_provider.find_exact(target, raw)
+                    except Exception as exc:
+                        diagnostics.append(
+                            ImportCellDiagnostic(
+                                row=source_row,
+                                column=col_index + 1,
+                                severity="error",
+                                code=getattr(exc, "code", "relation_lookup_failed"),
+                                message=str(exc),
+                                original_value=str(raw),
+                            )
+                        )
+                        continue
+                    if len(matches) == 1:
+                        values[field] = matches[0]
+                        relation_resolutions.append(
+                            ImportRelationResolution(
+                                target_field=field,
+                                relation_id=target.relation_id,
+                                match_field=target.match_field,
+                                source_value=raw,
+                                state="matched",
+                                matched_primary_key=matches[0],
+                            )
+                        )
+                    elif len(matches) > 1:
+                        diagnostics.append(
+                            ImportCellDiagnostic(
+                                row=source_row,
+                                column=col_index + 1,
+                                severity="error",
+                                code="relation_match_ambiguous",
+                                message=(
+                                    f"exact match returned {len(matches)} target records; "
+                                    "matchField must resolve to one record"
+                                ),
+                                original_value=str(raw),
+                            )
+                        )
+                    elif params.create_if_missing:
+                        relation_resolutions.append(
+                            ImportRelationResolution(
+                                target_field=field,
+                                relation_id=target.relation_id,
+                                match_field=target.match_field,
+                                source_value=raw,
+                                state="create",
+                            )
+                        )
+                    else:
+                        diagnostics.append(
+                            ImportCellDiagnostic(
+                                row=source_row,
+                                column=col_index + 1,
+                                severity="error",
+                                code="relation_match_not_found",
+                                message="exact match returned no target record",
+                                original_value=str(raw),
+                            )
+                        )
+                    continue
                 ok, normalized, error = self._normalize(field, raw, profile, relations)
                 if not ok and error:
                     diagnostics.append(
@@ -421,6 +604,7 @@ class ImportService:
                     source_row=source_row,
                     values=values,
                     diagnostics=diagnostics,
+                    relation_resolutions=relation_resolutions,
                 )
             )
         summary = ImportSummary(
@@ -496,13 +680,34 @@ class ImportService:
             row_revisions: dict[str | int, str] = {}
             idempotency_key = f"{prefix}-{chunk_index}"
             try:
-                result = await self._bulk.apply(
-                    collection=params.collection,
-                    profile=profile,
-                    rows=bulk_rows,
-                    row_revisions=row_revisions,
-                    idempotency_key=idempotency_key,
-                )
+                if any(row.relation_resolutions for row in chunk_rows):
+                    if self._relation_provider is None:
+                        raise ImportFlowError(
+                            "relation import apply is not configured",
+                            code="relation_provider_unavailable",
+                        )
+                    relation_result = await self._relation_provider.apply_chunk(
+                        collection=params.collection,
+                        profile=profile,
+                        rows=chunk_rows,
+                        mode=stored.mode,
+                        upsert_key=stored.upsert_key,
+                        idempotency_key=idempotency_key,
+                    )
+                    created_keys = relation_result.created_row_keys
+                    updated_keys = relation_result.updated_row_keys
+                    request_id = relation_result.request_id
+                else:
+                    result = await self._bulk.apply(
+                        collection=params.collection,
+                        profile=profile,
+                        rows=bulk_rows,
+                        row_revisions=row_revisions,
+                        idempotency_key=idempotency_key,
+                    )
+                    created_keys = [str(key) for key in result.created_row_keys]
+                    updated_keys = [str(key) for key in result.updated_row_keys]
+                    request_id = result.request_id
             except Exception as exc:
                 failed.extend(r.source_row for r in chunk_rows)
                 if progress:
@@ -510,18 +715,19 @@ class ImportService:
                         start + len(chunk_rows), total, f"chunk {chunk_index} failed: {exc}"
                     )
                 continue
-            request_ids.append(result.request_id)
+            if request_id:
+                request_ids.append(request_id)
             chunks.append(
                 ImportChunkResult(
                     chunk_index=chunk_index,
-                    created_row_keys=[str(key) for key in result.created_row_keys],
-                    updated_row_keys=[str(key) for key in result.updated_row_keys],
+                    created_row_keys=created_keys,
+                    updated_row_keys=updated_keys,
                     failed_rows=[],
                     idempotency_key=idempotency_key,
                 )
             )
-            created += len(result.created_row_keys)
-            updated += len(result.updated_row_keys)
+            created += len(created_keys)
+            updated += len(updated_keys)
             if progress:
                 await progress(start + len(chunk_rows), total, f"chunk {chunk_index} committed")
         if not failed:
@@ -614,6 +820,9 @@ __all__ = [
     "IMPORT_TOKEN_TTL_SECONDS",
     "ImportFlowError",
     "ImportService",
+    "RelationImportBatchResult",
+    "RelationImportProvider",
+    "RelationImportTarget",
     "SourceFile",
     "auto_map_columns",
     "clean_currency",

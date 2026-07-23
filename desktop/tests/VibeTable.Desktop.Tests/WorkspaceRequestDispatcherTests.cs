@@ -519,6 +519,166 @@ public sealed class WorkspaceRequestDispatcherTests
         Assert.AreEqual("req-purge", reply!.RequestId);
         Assert.AreEqual(1, directus.PurgeIdentifierMappingsCalls);
     }
+
+    [TestMethod]
+    public async Task RelationLookupRequests_UseClosedGatewayMethods_AndEchoCorrelation()
+    {
+        var directus = new FakeDirectusRpcGateway();
+        var workspace = new TableWorkspaceService(new FakeTableRpcGateway());
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            workspace, new FakeDatabasePicker("db"), sink);
+        dispatcher.SetDirectusGateway(directus);
+
+        var cases = new (string Type, string Payload)[]
+        {
+            ("schema.describe", """{"collection":"contracts","requestGeneration":1,"accepts":["vibetable.relation-capabilities.v1","vibetable.lookup-query.v1"]}"""),
+            ("relation.searchTargets", """{"relationId":"rel-1"}"""),
+            ("relation.updateSingle", """{"relationId":"rel-1","sourceItemId":"1","target":null,"expectedSchemaRevision":"s1","idempotencyKey":"i1"}"""),
+            ("relation.previewDelta", """{"relationId":"rel-1","sourceItemId":"1","expectedSchemaRevision":"s1","adds":[],"updates":[],"removes":[],"idempotencyKey":"i2"}"""),
+            ("relation.applyDelta", """{"relationId":"rel-1","sourceItemId":"1","expectedSchemaRevision":"s1","adds":[],"updates":[],"removes":[],"idempotencyKey":"i3"}"""),
+            ("lookup.list", """{"collection":"contracts"}"""),
+            ("lookup.validate", """{"definition":{},"existing":[]}"""),
+            ("lookup.create", """{"definition":{},"requestId":"i4"}"""),
+            ("lookup.update", """{"definition":{},"expectedRevision":1,"requestId":"i5"}"""),
+            ("lookup.delete", """{"collection":"contracts","lookupId":"l1","expectedRevision":1,"requestId":"i6"}"""),
+            ("lookup.preview", LookupQueryPayload(includeDefinitions: true)),
+            ("lookup.query", LookupQueryPayload(includeDefinitions: false)),
+            ("table_admin.previewRelationChange", """{"collection":"contracts","action":"create","config":{},"expectedSchemaRevision":"s1"}"""),
+            ("table_admin.applyRelationChange", """{"planId":"plan-1","operationId":"operation-1","expectedSchemaRevision":"s1","cascadeLookupIds":[]}"""),
+        };
+
+        CollectionAssert.AreEquivalent(
+            RelationLookupRpcRegistry.RequestTypes.ToArray(),
+            cases.Select(item => item.Type).ToArray(),
+            "Every registered endpoint must have an explicit dispatcher/gateway test case.");
+
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var item = cases[index];
+            string requestId = $"request-{index}";
+            dispatcher.Dispatch(new RoutedWebRequest(
+                item.Type,
+                requestId,
+                JsonDocument.Parse(item.Payload).RootElement.Clone(),
+                ""));
+
+            var reply = await sink.WaitForAsync(item.Type);
+            Assert.IsNotNull(reply, item.Type);
+            Assert.AreEqual(requestId, reply!.RequestId, item.Type);
+        }
+
+        CollectionAssert.AreEqual(
+            cases.Select(item => item.Type).ToArray(),
+            directus.RelationLookupCalls.Select(call => call.Method).ToArray());
+    }
+
+    [TestMethod]
+    public async Task RelationLookupRequest_WithoutAuthenticatedGateway_IsStableFailure()
+    {
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            new TableWorkspaceService(new FakeTableRpcGateway()),
+            new FakeDatabasePicker("db"),
+            sink);
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "lookup.list",
+            "request-auth",
+            JsonDocument.Parse("""{"collection":"contracts"}""").RootElement.Clone(),
+            ""));
+
+        var failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        Assert.AreEqual("request-auth", failed!.RequestId);
+        Assert.AreEqual("NOT_AUTHENTICATED", ((dynamic)failed.Payload!).code);
+    }
+
+    [TestMethod]
+    public async Task RelationLookupRequest_InvalidPayload_IsRejectedBeforeRpc()
+    {
+        var directus = new FakeDirectusRpcGateway();
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            new TableWorkspaceService(new FakeTableRpcGateway()),
+            new FakeDatabasePicker("db"),
+            sink);
+        dispatcher.SetDirectusGateway(directus);
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "relation.updateSingle",
+            "request-bad",
+            JsonDocument.Parse("""{"relationId":42}""").RootElement.Clone(),
+            ""));
+
+        var failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        Assert.AreEqual("request-bad", failed!.RequestId);
+        Assert.AreEqual("BAD_PAYLOAD", ((dynamic)failed.Payload!).code);
+        Assert.AreEqual(0, directus.RelationLookupCalls.Count);
+    }
+
+    [TestMethod]
+    public async Task RelationLookupRequest_JsonDeserializationFailure_IsStableBadPayload()
+    {
+        var directus = new FakeDirectusRpcGateway
+        {
+            RelationLookupException = new JsonException("invalid relation payload"),
+        };
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            new TableWorkspaceService(new FakeTableRpcGateway()),
+            new FakeDatabasePicker("db"),
+            sink);
+        dispatcher.SetDirectusGateway(directus);
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "lookup.list",
+            "request-json",
+            JsonDocument.Parse("""{"collection":"contracts"}""").RootElement.Clone(),
+            ""));
+
+        var failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        Assert.AreEqual("request-json", failed!.RequestId);
+        Assert.AreEqual("BAD_PAYLOAD", ((dynamic)failed.Payload!).code);
+        Assert.AreEqual(1, directus.RelationLookupCalls.Count);
+    }
+
+    [TestMethod]
+    public async Task PreviewRelationChange_InvalidAction_IsRejectedBeforeRpc()
+    {
+        var directus = new FakeDirectusRpcGateway();
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            new TableWorkspaceService(new FakeTableRpcGateway()),
+            new FakeDatabasePicker("db"),
+            sink);
+        dispatcher.SetDirectusGateway(directus);
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "table_admin.previewRelationChange",
+            "request-action",
+            JsonDocument.Parse(
+                """{"collection":"contracts","action":"replace","expectedSchemaRevision":"s1"}""")
+                .RootElement.Clone(),
+            ""));
+
+        var failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        Assert.AreEqual("request-action", failed!.RequestId);
+        Assert.AreEqual("BAD_PAYLOAD", ((dynamic)failed.Payload!).code);
+        Assert.AreEqual(0, directus.RelationLookupCalls.Count);
+    }
+
+    private static string LookupQueryPayload(bool includeDefinitions)
+    {
+        string definitions = includeDefinitions ? ",\"definitions\":[]" : string.Empty;
+        return "{\"contract\":\"vibetable.lookup-query.v1\",\"collection\":\"contracts\","
+            + "\"fieldRefs\":[],\"query\":{},\"requestGeneration\":1,"
+            + "\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\","
+            + "\"lookupRevision\":\"l1\"" + definitions + "}";
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -416,4 +416,30 @@ public sealed class WebMessageRouterTests
         Assert.IsNotNull(genericReply);
         Assert.AreEqual("UNKNOWN_TYPE", genericReply!.Payload!.Code);
     }
+
+    [TestMethod]
+    public void WhitelistsAcceptOnlyClosedRelationLookupUseCasesAndCorrelatedResponses()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+        var requestTypes = RelationLookupRpcRegistry.RequestTypes;
+
+        foreach (string type in requestTypes)
+        {
+            var reply = router.Route(JsonSerializer.Serialize(new
+            {
+                type,
+                requestId = $"request-{type}",
+                payload = new { },
+            }));
+            Assert.IsNull(reply, type);
+            Assert.IsTrue(router.IsHostNotificationAllowed(type), type);
+        }
+
+        Assert.AreEqual(requestTypes.Count, dispatched.Count);
+        var generic = router.Route(
+            """{"type":"rpc.invoke","requestId":"generic","payload":{"method":"lookup.query"}}""");
+        Assert.IsNotNull(generic);
+        Assert.AreEqual("UNKNOWN_TYPE", generic!.Payload!.Code);
+    }
 }

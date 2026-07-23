@@ -1,0 +1,117 @@
+{
+  "contract": "table.relations-lookups.fixtures.v1",
+  "schemaSnapshot": {
+    "collection": "orders",
+    "primaryKey": "id",
+    "columns": [
+      {
+        "name": "amount",
+        "title": "Amount",
+        "fieldId": "orders.amount",
+        "kind": "scalar",
+        "relationId": null,
+        "lookupId": null,
+        "dataType": "decimal",
+        "editable": true,
+        "nullable": false,
+        "scale": 2,
+        "precision": 10
+      }
+    ],
+    "normalizedRelations": [
+      {
+        "relationId": "orders.contract",
+        "fieldRef": "contract",
+        "sourceCollection": "orders",
+        "kind": "m2o",
+        "relatedCollection": "contracts",
+        "allowedCollections": [],
+        "junction": null,
+        "unique": false,
+        "nullable": true,
+        "onDelete": "nullify",
+        "preset": "standard",
+        "selfRelation": false,
+        "managed": true,
+        "state": "valid",
+        "displayTemplate": "{{number}}",
+        "diagnostics": []
+      }
+    ],
+    "schemaRevision": "schema-1",
+    "permissionRevision": "permission-1",
+    "capabilityHash": "capability-1",
+    "lookupRevision": "lookup-1"
+  },
+  "lookupDefinition": {
+    "lookupId": "orders.contract_price",
+    "collection": "orders",
+    "fieldKey": "contract_price",
+    "displayName": "Contract price",
+    "path": [{"relationId": "orders.contract", "m2aCollection": null}],
+    "source": {"kind": "target_field", "fieldRef": "price"},
+    "m2aFieldMapping": [],
+    "aggregation": "single",
+    "outputType": "decimal",
+    "outputScale": 2,
+    "revision": 1,
+    "state": "valid",
+    "diagnostics": [],
+    "dependencies": []
+  },
+  "singleUpdateResult": {
+    "outcome": "committed",
+    "current": {
+      "collection": "contracts",
+      "itemId": "contract-7",
+      "label": "CT-0007",
+      "junctionId": null,
+      "junctionRevision": null,
+      "junctionValues": {}
+    },
+    "schemaRevision": "schema-1",
+    "requestId": "single-update-1"
+  },
+  "query": {
+    "params": {
+      "contract": "vibetable.lookup-query.v1",
+      "collection": "orders",
+      "fieldRefs": ["orders.amount", "orders.contract_price"],
+      "query": {
+        "filters": [],
+        "sorts": [{"field": "orders.contract_price", "direction": "desc", "nullsLast": true}],
+        "groups": [],
+        "offset": 0,
+        "limit": 100
+      },
+      "requestGeneration": 7,
+      "schemaRevision": "schema-1",
+      "permissionRevision": "permission-1",
+      "lookupRevision": "lookup-1"
+    },
+    "result": {
+      "contract": "vibetable.lookup-query.v1",
+      "collection": "orders",
+      "requestGeneration": 7,
+      "schemaRevision": "schema-1",
+      "permissionRevision": "permission-1",
+      "lookupRevision": "lookup-1",
+      "columns": [
+        {
+          "fieldRef": "orders.contract_price",
+          "title": "Contract price",
+          "outputType": "decimal",
+          "nullable": true,
+          "scale": 2,
+          "state": "valid"
+        }
+      ],
+      "rows": [{"rowKey": "order-1", "orders.contract_price": "1250.50"}],
+      "groups": [],
+      "offset": 0,
+      "limit": 100,
+      "filteredRows": 1,
+      "totalRows": 1
+    }
+  }
+}

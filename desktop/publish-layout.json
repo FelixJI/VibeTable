@@ -8,7 +8,8 @@
     "directusExtensions": [
       { "name": "vibetable-bulk-mutation", "version": "1.0.0" },
       { "name": "vibetable-workspace-index", "version": "1.0.0" },
-      { "name": "vibetable-plugin-bridge", "version": "1.0.0" }
+      { "name": "vibetable-plugin-bridge", "version": "1.0.0" },
+      { "name": "vibetable-lookup-query", "version": "1.0.0" }
     ],
     "localDirectus": { "version": "1.0.0" }
   },
@@ -21,7 +22,8 @@
     "directusExtensions": [
       "directus/extensions/vibetable-bulk-mutation",
       "directus/extensions/vibetable-workspace-index",
-      "directus/extensions/vibetable-plugin-bridge"
+      "directus/extensions/vibetable-plugin-bridge",
+      "directus/extensions/vibetable-lookup-query"
     ],
     "localDirectus": "local-directus"
   }

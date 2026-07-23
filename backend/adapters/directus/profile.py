@@ -5,27 +5,130 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Literal
+from collections.abc import Mapping
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
 
+RelationKind = Literal["m2o", "o2m", "m2m", "m2a"]
+RelationPreset = Literal["standard", "file", "files", "translations"]
+RelationState = Literal["valid", "readonly", "invalid"]
+RelationDeletePolicy = Literal["nullify", "restrict", "cascade"]
 
-class RelationProfile(BaseModel):
+
+class JunctionProfile(BaseModel):
+    """Physical junction shape for M2M/M2A relations."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    field: str
-    kind: Literal["m2o", "o2m", "m2m", "file"]
-    related_collection: str
-    display_fields: list[str] = Field(default_factory=list, max_length=8)
+    collection: str
+    source_field: str
+    target_field: str
+    collection_field: str | None = None
+    sort_field: str | None = None
+    context_fields: list[str] = Field(default_factory=list, max_length=64)
 
-    @field_validator("field", "related_collection")
+    @field_validator(
+        "collection",
+        "source_field",
+        "target_field",
+        "collection_field",
+        "sort_field",
+    )
     @classmethod
-    def validate_identifier(cls, value: str) -> str:
-        if not _IDENTIFIER.fullmatch(value):
+    def validate_optional_identifier(cls, value: str | None) -> str | None:
+        if value is not None and not _IDENTIFIER.fullmatch(value):
             raise ValueError("Directus identifier is invalid")
         return value
+
+    @field_validator("context_fields")
+    @classmethod
+    def validate_context_fields(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("junction context fields must be unique")
+        if any(not _IDENTIFIER.fullmatch(value) for value in values):
+            raise ValueError("Directus identifier is invalid")
+        return values
+
+
+class RelationProfile(BaseModel):
+    """Normalized relation capability.
+
+    The accepted input remains backwards compatible with v1 manifests where
+    ``kind='file'`` was treated as a cardinality.  It is normalized to an M2O
+    relation with the ``file`` preset before validation.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    relation_id: str | None = None
+    field: str
+    kind: RelationKind
+    related_collection: str | None = None
+    allowed_collections: list[str] = Field(default_factory=list, max_length=64)
+    many_field: str | None = None
+    one_field: str | None = None
+    junction: JunctionProfile | None = None
+    unique: bool = False
+    nullable: bool = True
+    on_delete: RelationDeletePolicy = "nullify"
+    preset: RelationPreset = "standard"
+    display_template: str | None = Field(default=None, max_length=512)
+    display_fields: list[str] = Field(default_factory=list, max_length=8)
+    state: RelationState = "valid"
+    diagnostics: list[str] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_file_kind(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and value.get("kind") == "file":
+            normalized = dict(value)
+            normalized["kind"] = "m2o"
+            normalized.setdefault("preset", "file")
+            return normalized
+        return value
+
+    @field_validator(
+        "relation_id",
+        "field",
+        "related_collection",
+        "many_field",
+        "one_field",
+    )
+    @classmethod
+    def validate_identifier(cls, value: str | None) -> str | None:
+        if value is not None and not _IDENTIFIER.fullmatch(value):
+            raise ValueError("Directus identifier is invalid")
+        return value
+
+    @field_validator("allowed_collections", "display_fields")
+    @classmethod
+    def validate_identifier_list(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("Directus relation identifiers must be unique")
+        if any(not _IDENTIFIER.fullmatch(value) for value in values):
+            raise ValueError("Directus identifier is invalid")
+        return values
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> RelationProfile:
+        if self.kind == "m2a":
+            if self.junction is None or self.junction.collection_field is None:
+                raise ValueError("m2a relations require a polymorphic junction")
+            if not self.allowed_collections:
+                raise ValueError("m2a relations require allowed collections")
+        elif self.related_collection is None:
+            raise ValueError(f"{self.kind} relations require a related collection")
+        # Legacy collection profiles described M2M fields without physical
+        # junction metadata. Keep accepting them for history/file projection;
+        # authoritative schema discovery validates the live junction shape.
+        if self.unique and self.kind != "m2o":
+            raise ValueError("only m2o relations can enforce one-to-one uniqueness")
+        if not self.nullable and self.on_delete == "nullify":
+            raise ValueError("required relations cannot use nullify on delete")
+        return self
 
 
 class CollectionProfile(BaseModel):
@@ -116,3 +219,15 @@ class CapabilityManifest(BaseModel):
     @property
     def by_collection(self) -> dict[str, CollectionProfile]:
         return {profile.collection: profile for profile in self.collections}
+
+
+__all__ = [
+    "CapabilityManifest",
+    "CollectionProfile",
+    "JunctionProfile",
+    "RelationDeletePolicy",
+    "RelationKind",
+    "RelationPreset",
+    "RelationProfile",
+    "RelationState",
+]

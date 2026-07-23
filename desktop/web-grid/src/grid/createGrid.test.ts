@@ -181,6 +181,15 @@ describe("buildOptions (read-only Tabulator options)", () => {
     expect(opts.selectableRange).toBe(true);
   });
 
+  it("keeps remote header interactions enabled and delegates sort/filter to the server", () => {
+    const opts = buildOptions({ ...samplePage(), mode: "remote" });
+    expect(opts.headerSort).not.toBe(false);
+    expect(opts.sortMode).toBe("remote");
+    expect(opts.filterMode).toBe("remote");
+    const columns = opts.columns as Array<Record<string, unknown>>;
+    expect(columns.find((column) => column.field !== ROW_NUMBER_FIELD)?.headerFilter).toBe("input");
+  });
+
   it("disables clipboard paste (Phase A is read-only)", () => {
     const opts = buildOptions(samplePage());
     // Paste must be off. Either clipboard is fully disabled, or explicitly

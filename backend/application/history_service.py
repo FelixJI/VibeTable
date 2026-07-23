@@ -1013,6 +1013,8 @@ class HistoryService:
     async def _resolve_relation_target(
         self, relation: RelationProfile, target_value: Any, token: str
     ) -> tuple[bool, str | None]:
+        if relation.related_collection is None:
+            return False, None
         fields = relation.display_fields or ["id"]
         try:
             payload = await self._transport.request(

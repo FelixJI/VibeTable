@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
@@ -56,6 +57,24 @@ public interface IDirectusRpcGateway : IDisposable
     Task<DirectusSubscription> SubscribeAsync(
         string uid, string collection, IReadOnlyList<string> fields, CancellationToken token);
     Task<DirectusSubscription> UnsubscribeAsync(string uid, CancellationToken token);
+
+    // Closed relation/Lookup RPC surface. JsonElement is deliberate here: the
+    // Python broker owns the canonical Pydantic contracts and final validation,
+    // while this interface prevents an arbitrary renderer-supplied method name.
+    Task<JsonElement> DescribeSchemaAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> SearchRelationTargetsAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> UpdateSingleRelationAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> PreviewRelationDeltaAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> ApplyRelationDeltaAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> ListLookupsAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> ValidateLookupAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> CreateLookupAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> UpdateLookupAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> DeleteLookupAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> PreviewLookupAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> QueryLookupsAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> PreviewRelationChangeAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> ApplyRelationChangeAsync(JsonElement parameters, CancellationToken token);
 }
 
 /// <summary>A single field definition for a new table (column key + data type).</summary>

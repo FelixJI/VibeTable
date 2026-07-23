@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -22,6 +24,7 @@ from backend.adapters.directus.realtime import (
     SubscriptionSpec,
     WebsocketsConnector,
 )
+from backend.adapters.directus.relation_schema import normalize_directus_relations
 from backend.adapters.directus.schema import build_directus_schema
 from backend.adapters.directus.secrets import DpapiFileSecretStore
 from backend.adapters.directus.transport import StdlibDirectusTransport
@@ -33,6 +36,7 @@ from backend.application.flow_binding_manager import FlowBindingManager
 from backend.application.history_service import HistoryService
 from backend.application.import_service import ImportService
 from backend.application.insights_service import InsightsService
+from backend.application.lookup_service import LookupService
 from backend.application.paste_service import (
     BulkMutationClient,
     PasteService,
@@ -42,6 +46,12 @@ from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_interaction_broker import PluginInteractionBroker
 from backend.application.plugin_platform_service import PluginPlatformService
 from backend.application.plugin_registry import PluginRegistry
+from backend.application.relation_data_service import RelationDataService
+from backend.application.relation_io_adapters import (
+    DirectusRelationImportProvider,
+    LookupExportProvider,
+)
+from backend.application.relation_schema_service import RelationSchemaService
 from backend.application.settings_command_service import SettingsCommandService
 from backend.application.table_admin_service import TableAdminService
 from backend.contracts.directus import (
@@ -61,11 +71,20 @@ from backend.contracts.directus import (
     DirectusUnsubscribeParams,
     DirectusUpdateParams,
 )
+from backend.contracts.lookup import LookupCollectionParams, LookupDefinition
 from backend.contracts.relation import (
     RelationColumn,
     RelationProjectionParams,
     RelationProjectionResult,
 )
+from backend.contracts.relation_admin import (
+    NormalizedRelationDescriptor,
+    RelationLookupCapabilities,
+    SchemaDescribeParams,
+    SchemaDescribeResult,
+    SchemaSnapshot,
+)
+from backend.contracts.table import ColumnSchema
 from backend.infrastructure.directus_flow import DirectusFlowAdapter
 from backend.infrastructure.directus_interaction import DirectusInteractionAdapter
 from backend.infrastructure.plugin_file_capability import HostFileCapabilityAdapter
@@ -103,6 +122,10 @@ class DirectusService:
         self._export_service: ExportService | None = None
         self._collaboration_service: CollaborationService | None = None
         self._insights_service: InsightsService | None = None
+        self._lookup_service: LookupService | None = None
+        self._relation_service: RelationDataService | None = None
+        self._relation_schema_service: RelationSchemaService | None = None
+        self._schema_snapshots: dict[str, SchemaSnapshot] = {}
         self._file_tools_service: FileToolsService | None = None
         self._settings_command_service: SettingsCommandService | None = None
         self._history_service: HistoryService | None = None
@@ -177,6 +200,30 @@ class DirectusService:
     @insights_service.setter
     def insights_service(self, value: InsightsService | None) -> None:
         self._insights_service = value
+
+    @property
+    def lookup_service(self) -> LookupService | None:
+        return self._lookup_service
+
+    @lookup_service.setter
+    def lookup_service(self, value: LookupService | None) -> None:
+        self._lookup_service = value
+
+    @property
+    def relation_service(self) -> RelationDataService | None:
+        return self._relation_service
+
+    @relation_service.setter
+    def relation_service(self, value: RelationDataService | None) -> None:
+        self._relation_service = value
+
+    @property
+    def relation_schema_service(self) -> RelationSchemaService | None:
+        return self._relation_schema_service
+
+    @relation_schema_service.setter
+    def relation_schema_service(self, value: RelationSchemaService | None) -> None:
+        self._relation_schema_service = value
 
     @property
     def file_tools_service(self) -> FileToolsService | None:
@@ -271,34 +318,135 @@ class DirectusService:
 
     async def schema(self, params: DirectusCollectionParams) -> DirectusSchemaResult:
         profile = self._profile(params.collection)
-        fields = await self._client.fields(profile)
-        schema = build_directus_schema(
-            collection=profile.collection,
-            fields=fields,
-            collection_permissions={
-                "read": {"access": "full", "fields": profile.fields},
-            },
+        snapshot, raw_relations = await asyncio.gather(
+            self._build_schema_snapshot(profile.collection),
+            self._client.relations(profile),
         )
-        update_fields = set(profile.update_fields)
-        readonly_fields = set(schema.readonly_fields)
-        columns = [
-            column.model_copy(
-                update={
-                    "editable": (
-                        column.name in update_fields and column.name not in readonly_fields
-                    )
-                }
-            )
-            for column in schema.columns
-        ]
+        result_revision = _canonical_revision(
+            {
+                "schema": snapshot.schema_revision,
+                "lookup": snapshot.lookup_revision,
+            }
+        )
         return DirectusSchemaResult(
             collection=profile.collection,
-            primary_key=schema.primary_key,
-            columns=columns,
-            relations=await self._client.relations(profile),
-            schema_revision=schema.schema_revision,
+            primary_key=snapshot.primary_key,
+            columns=snapshot.columns,
+            relations=raw_relations,
+            schema_revision=result_revision,
             capability_hash=profile.capability_hash,
         )
+
+    async def describe_schema(self, params: SchemaDescribeParams) -> SchemaDescribeResult:
+        """Negotiate relation/Lookup capabilities and return a live schema."""
+        requested = set(params.accepts)
+        supported = {
+            "vibetable.relation-capabilities.v1",
+            "vibetable.lookup-query.v1",
+        }
+        if requested - supported:
+            raise DirectusSchemaError("schema.describe requested an unsupported contract")
+        snapshot, raw_capabilities = await asyncio.gather(
+            self._build_schema_snapshot(params.collection),
+            self._client.relation_lookup_capabilities(),
+        )
+        return SchemaDescribeResult(
+            collection=params.collection,
+            request_generation=params.request_generation,
+            schema=snapshot,
+            capabilities=RelationLookupCapabilities.model_validate(raw_capabilities),
+        )
+
+    async def _build_schema_snapshot(self, collection: str) -> SchemaSnapshot:
+        """Build a normalized schema with four independent revisions."""
+        profile = self._profile(collection)
+        fields, relations, permissions = await asyncio.gather(
+            self._client.schema_fields(),
+            self._client.schema_relations(),
+            self._client.permission_snapshot(),
+        )
+        collection_fields = [
+            field for field in fields if field.get("collection") == profile.collection
+        ]
+        base = build_directus_schema(
+            collection=profile.collection,
+            fields=collection_fields,
+            collection_permissions={"read": {"access": "full", "fields": profile.fields}},
+        )
+        discovery = normalize_directus_relations(fields=fields, relations=relations)
+        normalized = [
+            relation
+            for relation in discovery.relations
+            if relation.source_collection == profile.collection
+        ]
+        relation_payload = [
+            relation.model_dump(mode="json", by_alias=True) for relation in normalized
+        ]
+        schema_revision = _canonical_revision(
+            {"base": base.schema_revision, "relations": relation_payload}
+        )
+        permission_revision = _canonical_revision(permissions)
+        lookup_revision = _canonical_revision([])
+        lookup_definitions: list[LookupDefinition] = []
+        if self._lookup_service is not None:
+            lookup_result = await self._lookup_service.list(
+                LookupCollectionParams(collection=profile.collection)
+            )
+            lookup_revision = lookup_result.lookup_revision
+            lookup_definitions = lookup_result.definitions
+        readonly = set(base.readonly_fields)
+        update_fields = set(profile.update_fields)
+        snapshot = SchemaSnapshot(
+            collection=profile.collection,
+            primary_key=base.primary_key,
+            columns=[
+                *_decorate_physical_columns(
+                    collection=profile.collection,
+                    columns=base.columns,
+                    relations=normalized,
+                    update_fields=update_fields,
+                    readonly_fields=readonly,
+                ),
+                *_lookup_columns(lookup_definitions),
+            ],
+            normalized_relations=normalized,
+            schema_revision=schema_revision,
+            permission_revision=permission_revision,
+            capability_hash=profile.capability_hash,
+            lookup_revision=lookup_revision,
+        )
+        self._schema_snapshots[profile.collection] = snapshot
+        return snapshot
+
+    async def resolve_relation(self, relation_id: str) -> tuple[SchemaSnapshot, Any]:
+        """Resolve a stable relation id and refresh its owning live schema."""
+        owner: str | None = None
+        for collection, snapshot in self._schema_snapshots.items():
+            if any(item.relation_id == relation_id for item in snapshot.normalized_relations):
+                owner = collection
+                break
+        if owner is None and "." in relation_id:
+            candidate = relation_id.split(".", 1)[0]
+            if candidate in self._profiles:
+                owner = candidate
+        if owner is None:
+            # Stable Directus meta ids do not encode the collection. Discover
+            # visible profiles until the owner is located; fail closed if not.
+            for collection in self._profiles:
+                snapshot = await self._build_schema_snapshot(collection)
+                if any(item.relation_id == relation_id for item in snapshot.normalized_relations):
+                    owner = collection
+                    break
+        if owner is None:
+            raise DirectusSchemaError(f"relation {relation_id!r} is not visible")
+        snapshot = await self._build_schema_snapshot(owner)
+        relation = next(
+            (item for item in snapshot.normalized_relations if item.relation_id == relation_id),
+            None,
+        )
+        if relation is None:
+            raise DirectusSchemaError("relation schema changed")
+        return snapshot, relation
 
     async def read(self, params: DirectusReadParams) -> DirectusPageResult:
         profile = self._profile(params.collection)
@@ -343,6 +491,10 @@ class DirectusService:
         relation_columns: list[RelationColumn] = []
         for field in params.relations:
             relation = declared[field]
+            if relation.related_collection is None:
+                raise DirectusSchemaError(
+                    f"relation {relation.field!r} has no declared related collection"
+                )
             for display in relation.display_fields[: params.max_depth * 4]:
                 deep = f"{relation.field}.{display}"
                 if deep not in fields:
@@ -508,6 +660,10 @@ class DirectusService:
         self._realtime_stop = None
 
     async def _emit_change(self, event: DirectusChangeEvent) -> None:
+        if self._lookup_service is not None:
+            self._lookup_service.invalidate_collection(event.collection)
+        if event.collection in {"directus_fields", "directus_relations", "directus_permissions"}:
+            self._schema_snapshots.clear()
         sink = self._notification_sink
         if sink is not None:
             await sink(event)
@@ -544,6 +700,28 @@ def build_directus_service_from_environment(
     )
     client = DirectusClient(transport, auth)
     service = DirectusService(manifest, auth, client, realtime)
+    service.lookup_service = LookupService(
+        transport=transport,
+        auth=auth,
+        project=project,
+        client=client,
+    )
+    service.lookup_service.set_schema_provider(service._build_schema_snapshot)
+    service.relation_schema_service = RelationSchemaService(
+        client=client,
+        transport=transport,
+        auth=auth,
+        schema_provider=service._build_schema_snapshot,
+        lookup_provider=service.lookup_service.all_definitions,
+        lookup_cascade=service.lookup_service.cascade_delete,
+    )
+    service.relation_service = RelationDataService(
+        client=client,
+        auth=auth,
+        transport=transport,
+        profiles=service._profiles,
+        resolve_relation=service.resolve_relation,
+    )
     service.paste_service = PasteService(
         client=client,
         auth=auth,
@@ -560,12 +738,22 @@ def build_directus_service_from_environment(
             profiles=service._profiles,
             resolve_path=task_service.resolve_path,
             consume_grant=task_service.consume_grant,
+            relation_provider=DirectusRelationImportProvider(
+                client=client,
+                transport=transport,
+                auth=auth,
+                resolve_relation=service.resolve_relation,
+            ),
         )
         service.export_service = ExportService(
             client=client,
             auth=auth,
             profiles=service._profiles,
             resolve_path=task_service.resolve_path,
+            lookup_provider=LookupExportProvider(
+                lookup_service=service.lookup_service,
+                schema_provider=service._build_schema_snapshot,
+            ),
         )
         service.collaboration_service = CollaborationService(
             client=client,
@@ -659,6 +847,69 @@ def build_directus_service_from_environment(
             local_files=host_files,
         )
     return service
+
+
+def _canonical_revision(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _decorate_physical_columns(
+    *,
+    collection: str,
+    columns: list[ColumnSchema],
+    relations: list[NormalizedRelationDescriptor],
+    update_fields: set[str],
+    readonly_fields: set[str],
+) -> list[ColumnSchema]:
+    """Attach stable physical/relation identities to grid columns."""
+
+    relation_ids: dict[str, str] = {}
+    prefix = f"{collection}."
+    for relation in relations:
+        if relation.source_collection != collection:
+            continue
+        field = relation.field_ref
+        if field.startswith(prefix):
+            field = field[len(prefix) :]
+        if "." not in field:
+            relation_ids[field] = relation.relation_id
+    return [
+        column.model_copy(
+            update={
+                "field_id": f"{collection}.{column.name}",
+                "kind": "relation" if column.name in relation_ids else "scalar",
+                "relation_id": relation_ids.get(column.name),
+                "lookup_id": None,
+                "editable": (column.name in update_fields and column.name not in readonly_fields),
+            }
+        )
+        for column in columns
+    ]
+
+
+def _lookup_columns(definitions: list[LookupDefinition]) -> list[ColumnSchema]:
+    """Project saved Lookup definitions as readonly grid columns."""
+
+    return [
+        ColumnSchema(
+            name=definition.field_key,
+            title=definition.display_name,
+            field_id=f"{definition.collection}.{definition.field_key}",
+            kind="lookup",
+            lookup_id=definition.lookup_id,
+            data_type=definition.output_type,
+            editable=False,
+            nullable=True,
+            scale=definition.output_scale,
+        )
+        for definition in sorted(definitions, key=lambda item: item.field_key)
+    ]
 
 
 def _optional_int(value: Any) -> int | None:

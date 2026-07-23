@@ -27,6 +27,12 @@ public sealed class DirectusTableGatewayTests
         Assert.IsNotNull(page.QuerySnapshot);
         Assert.AreEqual("schema-1", page.QuerySnapshot!.SchemaRevision);
         Assert.AreEqual("vibetable_demo", page.QuerySnapshot.Table);
+        var columns = page.Columns.ToDictionary(column => column.Name);
+        Assert.AreEqual("vibetable_demo.project", columns["project"].FieldId);
+        Assert.AreEqual("relation", columns["project"].Kind);
+        Assert.AreEqual("directus:7:m2o", columns["project"].RelationId);
+        Assert.AreEqual("lookup", columns["contract_price"].Kind);
+        Assert.AreEqual("lookup:contract-price", columns["contract_price"].LookupId);
     }
 
     [TestMethod]
@@ -139,6 +145,12 @@ public sealed class DirectusTableGatewayTests
                 new("signed_on", "Signed On", "date", true, true),
                 new("occurred_at", "Occurred At", "datetime", true, true),
                 new("starts_at", "Starts At", "time", true, true),
+                new("project", "Project", "text", true, true,
+                    FieldId: "vibetable_demo.project", Kind: "relation",
+                    RelationId: "directus:7:m2o"),
+                new("contract_price", "Contract price", "decimal", false, true,
+                    Scale: 2, FieldId: "vibetable_demo.contract_price", Kind: "lookup",
+                    LookupId: "lookup:contract-price"),
             };
             if (_hasFormulaField)
             {
@@ -218,6 +230,20 @@ public sealed class DirectusTableGatewayTests
         public Task<IdentifierMappingsResult> ReconcileIdentifierMappingsAsync(CancellationToken token) => throw new NotSupportedException();
         public Task<IdentifierMappingsResult> DeleteIdentifierMappingAsync(string mappingId, CancellationToken token) => throw new NotSupportedException();
         public Task<IdentifierMappingsResult> PurgeIdentifierMappingsAsync(CancellationToken token) => throw new NotSupportedException();
+        public Task<JsonElement> DescribeSchemaAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
+        public Task<JsonElement> SearchRelationTargetsAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
+        public Task<JsonElement> UpdateSingleRelationAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
+        public Task<JsonElement> PreviewRelationDeltaAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
+        public Task<JsonElement> ApplyRelationDeltaAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
+        public Task<JsonElement> ListLookupsAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
+        public Task<JsonElement> ValidateLookupAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
+        public Task<JsonElement> CreateLookupAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
+        public Task<JsonElement> UpdateLookupAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
+        public Task<JsonElement> DeleteLookupAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
+        public Task<JsonElement> PreviewLookupAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
+        public Task<JsonElement> QueryLookupsAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
+        public Task<JsonElement> PreviewRelationChangeAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
+        public Task<JsonElement> ApplyRelationChangeAsync(JsonElement p, CancellationToken t) => throw new NotSupportedException();
         public void Dispose() { }
 
         private static DirectusItem EmptyItem(string collection)
