@@ -18,13 +18,14 @@ import type { Ref } from "vue";
 import type { TabulatorFull } from "tabulator-tables";
 import { useTabulator } from "@/composables/useTabulator";
 import type { CellEditedHandler, CellValidationErrorHandler } from "@/grid/createGrid";
-import type { NormalizedRelationDescriptor } from "@/contracts";
+import type { LookupValueProvenance, NormalizedRelationDescriptor } from "@/contracts";
 import type { FilterCondition, LookupGroup, SortCondition } from "@/contracts";
 import { ROW_NUMBER_FIELD } from "@/grid/createGrid";
 import { useTableStore } from "@/stores/tableStore";
 import { TABULATOR_INJECTION_KEY } from "./tabulatorInjection";
 import LoadingOverlay from "@/components/feedback/LoadingOverlay.vue";
 import ErrorOverlay from "@/components/feedback/ErrorOverlay.vue";
+import LookupGroupPanel from "@/components/grid/LookupGroupPanel.vue";
 
 const props = defineProps<{
   onCellEdited?: CellEditedHandler;
@@ -41,6 +42,7 @@ const emit = defineEmits<{
     descriptor: NormalizedRelationDescriptor;
     value: unknown;
   }];
+  lookupSource: [source: LookupValueProvenance];
   viewQueryChange: [query: {
     readonly filters: readonly FilterCondition[];
     readonly sorts: readonly SortCondition[];
@@ -65,6 +67,7 @@ useTabulator(gridEl, {
   onRelationEditRequested: (rowKey, field, descriptor, value) => {
     emit("relationEdit", { rowKey, field, descriptor, value });
   },
+  onLookupSourceRequested: (source) => emit("lookupSource", source),
   onViewQueryChanged: (query) => emit("viewQueryChange", query),
   tabulator: tabulator ?? undefined,
 });
@@ -135,6 +138,7 @@ function onContextMenu(event: MouseEvent): void {
 
 <template>
   <div class="grid-wrapper" @click="onGridClick" @contextmenu="onContextMenu">
+    <LookupGroupPanel />
     <div ref="gridEl" class="grid-host"></div>
     <LoadingOverlay :show="store.loading" />
     <ErrorOverlay :show="!!store.error" :message="store.error ?? ''" />
@@ -144,11 +148,14 @@ function onContextMenu(event: MouseEvent): void {
 <style scoped>
 .grid-wrapper {
   position: relative;
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
 }
 .grid-host {
-  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .grid-host :deep(.tabulator) {
   font-size: var(--vt-font-body);
@@ -217,6 +224,16 @@ function onContextMenu(event: MouseEvent): void {
 .grid-host :deep(.vt-lookup-state--restricted) { color: var(--vt-color-warning); }
 .grid-host :deep(.vt-lookup-state--invalid),
 .grid-host :deep(.vt-lookup-state--too_expensive) { color: var(--vt-color-danger); }
+.grid-host :deep(.vt-lookup-source) {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid var(--vt-border);
+  border-radius: var(--vt-radius-sm);
+  color: var(--vt-color-primary-600);
+  background: var(--vt-bg);
+  font: inherit;
+  cursor: pointer;
+}
 .grid-host :deep(.vt-relation-cell--editable) { cursor: pointer; }
 .grid-host :deep(.vt-relation-cell--editable:hover) {
   background: color-mix(in srgb, var(--vt-color-primary-500) 7%, var(--vt-bg));

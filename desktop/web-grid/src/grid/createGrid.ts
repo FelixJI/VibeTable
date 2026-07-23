@@ -27,6 +27,7 @@ import type {
   ColumnEditSchema,
   ColumnSchema,
   LookupDefinition,
+  LookupValueProvenance,
   NormalizedRelationDescriptor,
   TablePage,
 } from "@/contracts";
@@ -98,6 +99,7 @@ export interface RelationLookupGridContext {
     descriptor: NormalizedRelationDescriptor,
     value: unknown,
   ) => void;
+  readonly onLookupSourceRequested?: (source: LookupValueProvenance) => void;
 }
 
 /**
@@ -256,6 +258,7 @@ function toColumnDef(
         lookup,
         !!relationLookup?.lookupQueryAvailable,
         relationLookup?.lookupUnavailableReason,
+        relationLookup?.onLookupSourceRequested,
       ),
       cssClass: "vt-lookup-cell",
     };

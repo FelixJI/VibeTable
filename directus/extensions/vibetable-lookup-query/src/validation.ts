@@ -7,6 +7,26 @@ const SYSTEM_COLLECTIONS = new Set(["directus_files", "directus_users"]);
 const NUMERIC = new Set(["integer", "decimal"]);
 const ORDERABLE = new Set(["string", "integer", "decimal", "date", "time", "datetime", "uuid"]);
 
+type LiveSchemaCollection = {
+  primary?: string;
+  fields?: Record<string, unknown> | readonly string[];
+};
+
+type LiveSchemaRelation = {
+  collection?: string;
+  field?: string;
+  related_collection?: string | null;
+  meta?: {
+    one_collection_field?: string | null;
+    one_allowed_collections?: readonly string[] | null;
+  } | null;
+};
+
+type LiveSchemaOverview = {
+  collections?: Record<string, LiveSchemaCollection>;
+  relations?: readonly LiveSchemaRelation[];
+};
+
 function invalid(message: string, path?: string): never {
   throw new LookupQueryError(
     "VIBETABLE_LOOKUP_PLAN_INVALID",
@@ -21,6 +41,10 @@ function unsupported(message: string, path?: string): never {
     message,
     path ? { path } : undefined,
   );
+}
+
+function schemaInvalid(message: string, details?: Readonly<Record<string, unknown>>): never {
+  throw new LookupQueryError("VIBETABLE_LOOKUP_SCHEMA_INVALID", message, details);
 }
 
 function object(value: unknown, path: string): asserts value is Record<string, unknown> {
@@ -340,6 +364,163 @@ export function validatePlan(value: unknown): asserts value is LookupQueryPlan {
     const allowed = new Set(["maxRootItems", "maxIntermediateItems", "maxServiceCalls", "maxMilliseconds", "maxResponseBytes"]);
     for (const [key, hint] of Object.entries(value.budgetHint)) {
       if (!allowed.has(key) || !Number.isSafeInteger(hint) || Number(hint) < 1) invalid(`budgetHint.${key} must be a positive integer`, `budgetHint.${key}`);
+    }
+  }
+}
+
+function liveFieldExists(collection: LiveSchemaCollection | undefined, field: string): boolean {
+  if (!collection) return false;
+  if (Array.isArray(collection.fields)) return collection.fields.includes(field);
+  return Boolean(collection.fields && field in collection.fields);
+}
+
+function requireLiveCollection(
+  collections: Readonly<Record<string, LiveSchemaCollection>>,
+  collection: string,
+): LiveSchemaCollection {
+  const live = collections[collection];
+  if (!live) schemaInvalid("the lookup plan references a missing collection", { collection });
+  return live;
+}
+
+function requireLiveField(
+  collections: Readonly<Record<string, LiveSchemaCollection>>,
+  collection: string,
+  field: string,
+): void {
+  if (!liveFieldExists(requireLiveCollection(collections, collection), field)) {
+    schemaInvalid("the lookup plan references a missing field", { collection, field });
+  }
+}
+
+function requirePrimaryKey(
+  collections: Readonly<Record<string, LiveSchemaCollection>>,
+  collection: string,
+  primaryKey: string,
+): void {
+  const live = requireLiveCollection(collections, collection);
+  if (live.primary !== primaryKey || !liveFieldExists(live, primaryKey)) {
+    schemaInvalid("the lookup plan primary key no longer matches the live schema", {
+      collection,
+      field: primaryKey,
+    });
+  }
+}
+
+function requireLiveRelation(
+  relations: readonly LiveSchemaRelation[],
+  collection: string,
+  field: string,
+  relatedCollection: string | null,
+): LiveSchemaRelation {
+  const relation = relations.find((candidate) =>
+    candidate.collection === collection
+    && candidate.field === field
+    && candidate.related_collection === relatedCollection
+  );
+  if (!relation) {
+    schemaInvalid("the lookup relation path no longer matches the live schema", {
+      collection,
+      field,
+      relatedCollection,
+    });
+  }
+  return relation;
+}
+
+/**
+ * Bind a syntactically valid private execution plan to Directus' current
+ * physical schema. The Python compiler remains responsible for stable IDs and
+ * permission-filtered definitions; the endpoint independently proves every
+ * collection, field, primary key and relation edge immediately before a read.
+ */
+export function validatePlanAgainstSchema(plan: LookupQueryPlan, schema: unknown): void {
+  const overview = schema as LiveSchemaOverview;
+  if (!overview?.collections) schemaInvalid("the live Directus schema is unavailable");
+  const collections = overview.collections;
+  const relations = overview.relations ?? [];
+
+  requirePrimaryKey(collections, plan.collection, plan.primaryKey);
+  for (const field of plan.baseFields) requireLiveField(collections, plan.collection, field.field);
+
+  for (const lookup of plan.lookups) {
+    let currentCollection = lookup.collection ?? plan.collection;
+    requirePrimaryKey(
+      collections,
+      currentCollection,
+      lookup.primaryKey ?? (currentCollection === plan.collection
+        ? plan.primaryKey
+        : requireLiveCollection(collections, currentCollection).primary ?? ""),
+    );
+
+    for (const step of lookup.path) {
+      if (step.fromCollection !== currentCollection) {
+        schemaInvalid("the lookup relation path is discontinuous", {
+          relationId: step.relationId,
+          collection: step.fromCollection,
+        });
+      }
+      requireLiveField(collections, step.fromCollection, step.sourceField);
+
+      if (step.kind === "m2o") {
+        const target = step.toCollection!;
+        requireLiveField(collections, target, step.targetField!);
+        requirePrimaryKey(collections, target, step.destinationPrimaryKey ?? step.targetField!);
+        requireLiveRelation(relations, step.fromCollection, step.sourceField, target);
+        currentCollection = target;
+        continue;
+      }
+
+      if (step.kind === "o2m") {
+        const target = step.toCollection!;
+        requireLiveField(collections, target, step.targetField!);
+        requirePrimaryKey(collections, target, step.destinationPrimaryKey!);
+        requireLiveRelation(relations, target, step.targetField!, step.fromCollection);
+        currentCollection = target;
+        continue;
+      }
+
+      const junction = step.junction!;
+      requireLiveField(collections, junction.collection, junction.sourceField);
+      requireLiveField(collections, junction.collection, junction.targetField);
+      requireLiveRelation(relations, junction.collection, junction.sourceField, step.fromCollection);
+
+      if (step.kind === "m2m") {
+        const target = step.toCollection!;
+        requireLiveField(collections, target, step.targetField!);
+        requirePrimaryKey(collections, target, step.destinationPrimaryKey ?? step.targetField!);
+        requireLiveRelation(relations, junction.collection, junction.targetField, target);
+        currentCollection = target;
+        continue;
+      }
+
+      requireLiveField(collections, junction.collection, junction.collectionField!);
+      const polymorphic = requireLiveRelation(relations, junction.collection, junction.targetField, null);
+      const liveAllowed = [...(polymorphic.meta?.one_allowed_collections ?? [])].sort();
+      const requestedAllowed = [...(step.targetCollections ?? [])].sort();
+      if (
+        polymorphic.meta?.one_collection_field !== junction.collectionField
+        || JSON.stringify(liveAllowed) !== JSON.stringify(requestedAllowed)
+      ) {
+        schemaInvalid("the M2A relation allow-list no longer matches the live schema", {
+          relationId: step.relationId,
+        });
+      }
+      for (const target of requestedAllowed) {
+        requirePrimaryKey(collections, target, step.targetPrimaryKeys![target]!);
+      }
+      if (step.toCollection) currentCollection = step.toCollection;
+    }
+
+    if (lookup.source.kind === "field") {
+      requireLiveField(collections, currentCollection, lookup.source.field);
+    } else if (lookup.source.kind === "junction") {
+      const sourceStep = lookup.path[lookup.source.step]!;
+      requireLiveField(collections, sourceStep.junction!.collection, lookup.source.field);
+    } else if (lookup.source.kind === "m2a") {
+      for (const [collection, field] of Object.entries(lookup.source.fields)) {
+        requireLiveField(collections, collection, field);
+      }
     }
   }
 }

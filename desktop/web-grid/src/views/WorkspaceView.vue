@@ -83,6 +83,7 @@ import type {
   LookupValidationResult,
   FilterCondition,
   LookupGroup,
+  LookupValueProvenance,
   SortCondition,
   PasteCellPayload,
   PreviewPasteRequestedPayload,
@@ -243,6 +244,12 @@ function onGridViewQueryChanged(query: {
     query: { filters: query.filters, sorts: query.sorts, offset: 0, limit: 500 },
   });
   void refreshAuthoritativeLookupRows();
+}
+
+function navigateLookupSource(source: LookupValueProvenance): void {
+  tableService.selectTable(source.collection);
+  ui.navigate("tables");
+  message.info(`已打开来源表 ${source.collection}，记录 ${source.itemId}`);
 }
 
 function openFieldManager(): void {
@@ -1128,6 +1135,7 @@ useKeyboard({
               :on-validation-error="onValidationError"
               @row-context="openPluginContextMenu"
               @relation-edit="openRelationEditor"
+              @lookup-source="navigateLookupSource"
               @view-query-change="onGridViewQueryChanged"
             />
             <div v-if="workspace.currentTable && tableStore.datasetReady" class="table-summary" data-testid="table-summary">

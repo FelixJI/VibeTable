@@ -2,7 +2,7 @@ import type { LookupQueryPlan } from "./contracts.ts";
 import { CONTRACT } from "./contracts.ts";
 import { errorResponse, LookupQueryError } from "./errors.ts";
 import { DEPLOYMENT_BUDGET, executeQuery, type ItemsServiceConstructor } from "./executor.ts";
-import { dependencyOrder, validatePlan } from "./validation.ts";
+import { dependencyOrder, validatePlan, validatePlanAgainstSchema } from "./validation.ts";
 
 interface RequestLike {
   body?: unknown;
@@ -56,6 +56,8 @@ export function registerLookupRoutes(router: RouterLike, context: EndpointContex
       accountability(request);
       validatePlan(request.body);
       const plan = request.body as LookupQueryPlan;
+      const schema = await context.getSchema();
+      validatePlanAgainstSchema(plan, schema);
       response.json({
         data: {
           contract: CONTRACT,
@@ -80,6 +82,7 @@ export function registerLookupRoutes(router: RouterLike, context: EndpointContex
       validatePlan(request.body);
       const plan = request.body as LookupQueryPlan;
       const schema = await context.getSchema();
+      validatePlanAgainstSchema(plan, schema);
       const result = await executeQuery(
         plan,
         context.services.ItemsService,

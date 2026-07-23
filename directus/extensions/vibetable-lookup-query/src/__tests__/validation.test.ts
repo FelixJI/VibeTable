@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import { CONTRACT, type LookupQueryPlan, type RelationStep } from "../contracts.ts";
 import { LookupQueryError } from "../errors.ts";
-import { dependencyOrder, validatePlan } from "../validation.ts";
+import { dependencyOrder, validatePlan, validatePlanAgainstSchema } from "../validation.ts";
 
 function relation(kind: RelationStep["kind"], overrides: Partial<RelationStep> = {}): RelationStep {
   return {
@@ -49,6 +49,16 @@ function plan(overrides: Partial<LookupQueryPlan> = {}): LookupQueryPlan {
     }],
     page: { offset: 0, limit: 100 },
     ...overrides,
+  };
+}
+
+function liveSchema() {
+  return {
+    collections: {
+      orders: { primary: "id", fields: { id: {}, number: {} } },
+      lines: { primary: "id", fields: { id: {}, order_id: {}, amount: {} } },
+    },
+    relations: [{ collection: "lines", field: "order_id", related_collection: "orders" }],
   };
 }
 
@@ -184,5 +194,36 @@ describe("strict lookup plan validation", () => {
   it("accepts a 10,000-row page while response budgets remain authoritative", () => {
     assert.doesNotThrow(() => validatePlan(plan({ page: { offset: 0, limit: 10_000 } })));
     assert.throws(() => validatePlan(plan({ page: { offset: 0, limit: 10_001 } })), /10000/);
+  });
+
+  it("binds every field and relation edge to the live Directus schema", () => {
+    const input = plan();
+    validatePlan(input);
+    assert.doesNotThrow(() => validatePlanAgainstSchema(input, liveSchema()));
+
+    const drifted = liveSchema();
+    drifted.relations[0]!.field = "customer_id";
+    assert.throws(
+      () => validatePlanAgainstSchema(input, drifted),
+      (error: unknown) =>
+        error instanceof LookupQueryError
+        && error.code === "VIBETABLE_LOOKUP_SCHEMA_INVALID",
+    );
+  });
+
+  it("rejects forged source fields even when the identifiers are syntactically valid", () => {
+    const input = plan({
+      lookups: [{
+        ...plan().lookups[0]!,
+        source: { kind: "field", field: "private_amount" },
+      }],
+    });
+    validatePlan(input);
+    assert.throws(
+      () => validatePlanAgainstSchema(input, liveSchema()),
+      (error: unknown) =>
+        error instanceof LookupQueryError
+        && error.code === "VIBETABLE_LOOKUP_SCHEMA_INVALID",
+    );
   });
 });

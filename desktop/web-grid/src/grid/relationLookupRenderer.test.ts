@@ -42,6 +42,23 @@ describe("relation / Lookup grid renderers", () => {
     expect(node.textContent).not.toContain("99");
   });
 
+  it("offers a source-navigation action for authoritative provenance", () => {
+    const navigated: Array<{ collection: string; itemId: string }> = [];
+    const node = lookupFormatter(lookup, true, null, (source) => {
+      navigated.push({ collection: source.collection, itemId: source.itemId });
+    })({
+      getValue: () => ({
+        state: "ok",
+        value: "99.00",
+        provenance: [{ collection: "contracts", itemId: "c1", value: "99.00" }],
+      }),
+    });
+    const button = node.querySelector<HTMLButtonElement>(".vt-lookup-source");
+    expect(button?.title).toContain("contracts");
+    button?.click();
+    expect(navigated).toEqual([{ collection: "contracts", itemId: "c1" }]);
+  });
+
   it("preserves optimistic junction revisions while normalizing relation values", () => {
     const revision = "b".repeat(64);
     expect(normalizeTargets({

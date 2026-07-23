@@ -268,10 +268,23 @@ describe("tableStore mutation extensions", () => {
         { rowKey: "o2", "orders.contract_price": "99.00" },
         { rowKey: "o1", "orders.contract_price": "11.00" },
       ],
-      groups: [], offset: 0, limit: 2, filteredRows: 2, totalRows: 2,
+      groups: [{
+        path: [{ fieldRef: "customer", key: "Acme" }],
+        key: "Acme",
+        count: 2,
+        aggregates: { total: "110.00" },
+        childCursor: "cursor-1",
+      }], offset: 0, limit: 2, filteredRows: 2, totalRows: 2,
     });
     expect(s.allRows.map((row) => row.rowKey)).toEqual(["o2", "o1"]);
     expect(s.allRows.map((row) => row.contractPrice)).toEqual(["99.00", "11.00"]);
     expect(s.allRows[0]?.amount).toBe("20.00");
+    expect(s.lookupGroups).toEqual([{
+      path: [{ fieldRef: "customer", key: "Acme" }],
+      key: "Acme",
+      count: 2,
+      aggregates: { total: "110.00" },
+      childCursor: "cursor-1",
+    }]);
   });
 });

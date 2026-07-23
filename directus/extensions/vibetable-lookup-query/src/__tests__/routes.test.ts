@@ -35,6 +35,13 @@ function minimalPlan(): LookupQueryPlan {
   };
 }
 
+function liveSchema() {
+  return {
+    collections: { orders: { primary: "id", fields: { id: {} } } },
+    relations: [],
+  };
+}
+
 describe("lookup endpoint routes", () => {
   it("registers validate and query and rejects unauthenticated callers", async () => {
     const routes = new Map<string, Handler>();
@@ -43,7 +50,7 @@ describe("lookup endpoint routes", () => {
       {
         services: { ItemsService: class { public async readByQuery() { return []; } } as never },
         database: {},
-        getSchema: async () => ({}),
+        getSchema: async () => liveSchema(),
       },
     );
     assert.deepEqual([...routes.keys()], ["GET /capabilities", "POST /validate", "POST /query"]);
@@ -60,7 +67,7 @@ describe("lookup endpoint routes", () => {
       {
         services: { ItemsService: class { public async readByQuery() { return []; } } as never },
         database: {},
-        getSchema: async () => ({}),
+        getSchema: async () => liveSchema(),
       },
     );
     const valid = responseRecorder();
@@ -87,7 +94,7 @@ describe("lookup endpoint routes", () => {
       {
         services: { ItemsService: EmptyItemsService },
         database: { marker: "database" },
-        getSchema: async () => { schemaReads += 1; return { marker: "schema" }; },
+        getSchema: async () => { schemaReads += 1; return liveSchema(); },
       },
     );
     const response = responseRecorder();
@@ -117,5 +124,30 @@ describe("lookup endpoint routes", () => {
     await routes.get("GET /capabilities")!({}, anonymous);
     assert.equal(anonymous.statusCode, 401);
     assert.equal((anonymous.body as any).errors[0].extensions.code, "VIBETABLE_ACCOUNTABILITY_REQUIRED");
+  });
+
+  it("fails closed when the plan no longer matches the live schema", async () => {
+    const routes = new Map<string, Handler>();
+    registerLookupRoutes(
+      testRouter(routes),
+      {
+        services: { ItemsService: class { public async readByQuery() { return []; } } as never },
+        database: {},
+        getSchema: async () => ({
+          collections: { orders: { primary: "uuid", fields: { uuid: {} } } },
+          relations: [],
+        }),
+      },
+    );
+    const response = responseRecorder();
+    await routes.get("POST /query")!(
+      { accountability: { user: "alice" }, body: minimalPlan() },
+      response,
+    );
+    assert.equal(response.statusCode, 409);
+    assert.equal(
+      (response.body as any).errors[0].extensions.code,
+      "VIBETABLE_LOOKUP_SCHEMA_INVALID",
+    );
   });
 });

@@ -48,6 +48,8 @@ export const useTableStore = defineStore("table", () => {
   const editSchema = ref<readonly ColumnEditSchema[] | null>(null);
   /** Current mutation revision (databaseSessionId/schemaRevision/dataRevision). */
   const revision = ref<MutationRevision | null>(null);
+  /** Authoritative group nodes returned by the server-side Lookup executor. */
+  const lookupGroups = ref<LookupQueryResult["groups"]>([]);
 
   /** All accumulated rows across pages, flattened in order. */
   const allRows = computed<ReadonlyArray<Record<string, unknown>>>(() =>
@@ -62,6 +64,7 @@ export const useTableStore = defineStore("table", () => {
     schema.value = null;
     rowCount.value = 0;
     error.value = null;
+    lookupGroups.value = [];
   }
 
   /**
@@ -116,6 +119,7 @@ export const useTableStore = defineStore("table", () => {
     error.value = null;
     editSchema.value = null;
     revision.value = null;
+    lookupGroups.value = [];
   }
 
   /**
@@ -248,6 +252,7 @@ export const useTableStore = defineStore("table", () => {
       filteredRows: result.filteredRows,
     }];
     rowCount.value = result.totalRows;
+    lookupGroups.value = result.groups;
   }
 
   return {
@@ -259,6 +264,7 @@ export const useTableStore = defineStore("table", () => {
     error,
     editSchema,
     revision,
+    lookupGroups,
     allRows,
     beginLoad,
     appendPage,

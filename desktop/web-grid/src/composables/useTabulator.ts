@@ -4,7 +4,7 @@ import type { TabulatorFull } from "tabulator-tables";
 import { useTableStore } from "@/stores/tableStore";
 import { buildGridColumns, createGrid } from "@/grid/createGrid";
 import type { CellEditedHandler, CellValidationErrorHandler, RelationLookupGridContext } from "@/grid/createGrid";
-import type { ColumnEditSchema, ColumnSchema, NormalizedRelationDescriptor, TablePage } from "@/contracts";
+import type { ColumnEditSchema, ColumnSchema, LookupValueProvenance, NormalizedRelationDescriptor, TablePage } from "@/contracts";
 import type { FilterCondition, LookupGroup, SortCondition } from "@/contracts";
 import { buildQuery } from "@/grid/queryAdapter";
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
@@ -90,6 +90,7 @@ export interface UseTabulatorOptions {
     descriptor: NormalizedRelationDescriptor,
     value: unknown,
   ) => void;
+  readonly onLookupSourceRequested?: (source: LookupValueProvenance) => void;
   /** User sort/filter/group intent; always executed against the full dataset. */
   readonly onViewQueryChanged?: (query: {
     readonly filters: readonly FilterCondition[];
@@ -156,6 +157,7 @@ export function useTabulator(
     lookupQueryAvailable: !!relationLookupStore.capabilities?.lookupQueryV1,
     lookupUnavailableReason: relationLookupStore.lookupUnavailableReason,
     onRelationEditRequested: options?.onRelationEditRequested,
+    onLookupSourceRequested: options?.onLookupSourceRequested,
   });
 
   /**

@@ -227,6 +227,45 @@ describe("permission-aware frontier executor", () => {
     );
   });
 
+  it("processes the 25k root budget without silently truncating Lookup results", async () => {
+    database.large_orders = Array.from({ length: 25_000 }, (_, index) => ({
+      id: index + 1,
+      value: `value-${index + 1}`,
+    }));
+    try {
+      const input: LookupQueryPlan = {
+        contract: CONTRACT,
+        generation: "large-dataset",
+        collection: "large_orders",
+        primaryKey: "id",
+        revisions: { schema: "s-large", permission: "p-large", lookup: "l-large" },
+        baseFields: [],
+        lookups: [{
+          lookupId: "copied-value",
+          ref: "lookup.copied-value",
+          path: [],
+          source: { kind: "field", field: "value" },
+          aggregate: "scalar",
+          outputType: { kind: "string" },
+        }],
+        page: { offset: 0, limit: 10_000 },
+      };
+      validatePlan(input);
+      const result = await executeQuery(
+        input,
+        MemoryItemsService,
+        { accountability: { user: "load-test" } },
+        { ...DEPLOYMENT_BUDGET, maxMilliseconds: 60_000 },
+      );
+      assert.equal(result.rootTotal, 25_000);
+      assert.equal(result.total, 25_000);
+      assert.equal(result.rows.length, 10_000);
+      assert.equal(result.rows.at(-1)?.cells["lookup.copied-value"], "value-10000");
+    } finally {
+      delete database.large_orders;
+    }
+  });
+
   it("maps field permission failures to an explicit restricted error", async () => {
     class RestrictedItemsService extends MemoryItemsService {
       private readonly restrictedCollection: string;

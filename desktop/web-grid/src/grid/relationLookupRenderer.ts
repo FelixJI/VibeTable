@@ -1,6 +1,7 @@
 import type {
   LookupCellValue,
   LookupDefinition,
+  LookupValueProvenance,
   NormalizedRelationDescriptor,
   RelationTargetRef,
 } from "@/contracts";
@@ -37,6 +38,7 @@ export function lookupFormatter(
   definition: LookupDefinition | undefined,
   lookupQueryAvailable: boolean,
   unavailableReason?: string | null,
+  onSourceRequested?: (source: LookupValueProvenance) => void,
 ) {
   return (cell: { getValue(): unknown }): HTMLElement => {
     const root = element("div", "vt-lookup-value");
@@ -68,7 +70,20 @@ export function lookupFormatter(
     }
     const display = formatLookupValue(value.value);
     root.append(element("span", display === "" ? "vt-cell-empty" : "vt-lookup-text", display || "—"));
-    if (value.provenance.length > 0) root.title = `${value.provenance.length} 个来源记录`;
+    if (value.provenance.length > 0) {
+      root.title = `${value.provenance.length} 个来源记录`;
+      const source = value.provenance[0]!;
+      const button = document.createElement("button");
+      button.className = "vt-lookup-source";
+      button.textContent = "来源";
+      button.type = "button";
+      button.title = `打开 ${source.collection} · ${source.itemId}`;
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        onSourceRequested?.(source);
+      });
+      root.append(button);
+    }
     return root;
   };
 }
