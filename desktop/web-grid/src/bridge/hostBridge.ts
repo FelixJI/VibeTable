@@ -133,6 +133,12 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   // Table management: collection lifecycle events.
   "database.collectionsChanged",
   "identifierMappings.result",
+  "dashboard.listLoaded",
+  "dashboard.loaded",
+  "dashboard.manifestLoaded",
+  "dashboard.queryLoaded",
+  "dashboard.saved",
+  "dashboard.deleted",
   "document.listLoaded",
   "document.historyLoaded",
   "document.actionCompleted",
@@ -198,6 +204,13 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "identifierMappings.reconcileRequested",
   "identifierMappings.deleteRequested",
   "identifierMappings.purgeRequested",
+  "dashboard.listRequested",
+  "dashboard.readRequested",
+  "dashboard.manifestRequested",
+  "dashboard.queryRequested",
+  "dashboard.saveRequested",
+  "dashboard.deleteRequested",
+  "dashboard.cancelRequested",
   "plugin.catalog.list",
   "plugin.audit.list",
   "plugin.cleanup.listPending",
@@ -254,6 +267,11 @@ export interface HostBridge {
     type: K,
     payload: WebPayloadMap[K],
   ): Promise<unknown>;
+  /** Begin a correlated request and expose its envelope id for typed cancellation. */
+  requestWithHandle<K extends WebMessageType>(
+    type: K,
+    payload: WebPayloadMap[K],
+  ): { readonly requestId: string; readonly promise: Promise<unknown> };
   /** Outbound fire-and-forget notification (no requestId). */
   notify<K extends WebMessageType>(
     type: K,
@@ -475,9 +493,16 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     type: K,
     payload: WebPayloadMap[K],
   ): Promise<unknown> {
+    return requestWithHandle(type, payload).promise;
+  }
+
+  function requestWithHandle<K extends WebMessageType>(
+    type: K,
+    payload: WebPayloadMap[K],
+  ): { readonly requestId: string; readonly promise: Promise<unknown> } {
     const requestId = generateRequestId();
     const env: BridgeMessage = { type, requestId, payload };
-    return new Promise<unknown>((resolve, reject) => {
+    const promise = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (pending.delete(requestId)) {
           reject(new BridgeTimeoutError(type, requestId, timeoutMs));
@@ -492,6 +517,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
         reject(err);
       }
     });
+    return { requestId, promise };
   }
 
   function notify<K extends WebMessageType>(
@@ -541,7 +567,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     };
   }
 
-  return { start, stop, request, notify, notifyWithAdditionalObjects, on };
+  return { start, stop, request, requestWithHandle, notify, notifyWithAdditionalObjects, on };
 }
 
 // ---------------------------------------------------------------------------

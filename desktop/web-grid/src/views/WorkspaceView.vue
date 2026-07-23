@@ -19,7 +19,7 @@
  * idempotency key; we read those from the paste + workspace stores here so the
  * PastePanel component stays free of service knowledge.
  */
-import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
 import { useMessage } from "naive-ui";
 import { NButton, NDropdown, NIcon } from "naive-ui";
 import { FilePlus2 } from "lucide-vue-next";
@@ -54,8 +54,9 @@ import { useErrorRouter } from "@/services/errorRouter";
 import { useIdentifierMappingService } from "@/services/identifierMappingService";
 import { createPluginCommandContext, usePluginService } from "@/services/pluginService";
 import { useRevisionHistoryService } from "@/services/revisionHistoryService";
+import { provideDashboardService, useDashboardService } from "@/services/dashboardService";
 import { useKeyboard } from "@/composables/useKeyboard";
-import { useUiStore } from "@/stores/uiStore";
+import { useUiStore, type AppView } from "@/stores/uiStore";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { usePasteStore } from "@/stores/pasteStore";
 import { useTableStore } from "@/stores/tableStore";
@@ -63,6 +64,7 @@ import { useHistoryStore } from "@/stores/historyStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { usePluginStore } from "@/stores/pluginStore";
 import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
+import { useDashboardDraftStore, useDashboardStore } from "@/stores/dashboardStore";
 import { ROW_NUMBER_FIELD } from "@/grid/createGrid";
 import {
   classifyClipboard,
@@ -70,6 +72,7 @@ import {
   parseClipboard,
 } from "@/grid/clipboardParser";
 import { resolvePasteContext } from "@/grid/pasteContext";
+import { canLeaveDashboardDraft } from "@/dashboard/navigationGuard";
 import type {
   PasteCellPayload,
   PreviewPasteRequestedPayload,
@@ -87,6 +90,8 @@ const errorRouter = useErrorRouter();
 const identifierMappingService = useIdentifierMappingService();
 const pluginService = usePluginService();
 const revisionHistoryService = useRevisionHistoryService();
+const dashboardService = useDashboardService();
+provideDashboardService(dashboardService);
 const ui = useUiStore();
 const admin = useTableAdminStore();
 const paste = usePasteStore();
@@ -95,6 +100,41 @@ const history = useHistoryStore();
 const workspace = useWorkspaceStore();
 const plugins = usePluginStore();
 const revisionHistory = useRevisionHistoryStore();
+const dashboards = useDashboardStore();
+const dashboardDraft = useDashboardDraftStore();
+const DashboardWorkspaceView = defineAsyncComponent(() => import("@/views/DashboardWorkspaceView.vue"));
+
+watch(() => dashboards.featureEnabled, (enabled) => {
+  if (!enabled && ui.activeView === "dashboard") {
+    dashboardDraft.stop();
+    ui.navigate("home");
+  }
+});
+
+function confirmDashboardNavigation(): boolean {
+  return canLeaveDashboardDraft(
+    dashboardDraft.dirty,
+    () => window.confirm(t("dashboard.confirm.discard")),
+  );
+}
+
+function onNavigate(view: AppView): void {
+  if (view === ui.activeView || !confirmDashboardNavigation()) return;
+  dashboardDraft.stop();
+  ui.navigate(view);
+}
+
+function openDatabaseWithGuard(): void {
+  if (!confirmDashboardNavigation()) return;
+  dashboardDraft.stop();
+  workspaceService.openDatabase();
+}
+
+function onBeforeUnload(event: BeforeUnloadEvent): void {
+  if (!dashboardDraft.dirty) return;
+  event.preventDefault();
+  event.returnValue = "";
+}
 
 /**
  * Naive UI message API (requires NMessageProvider, which App.vue wraps around
@@ -336,6 +376,8 @@ onMounted(() => {
   tableAdminService.init();
   errorRouter.init();
   pluginService.init();
+  dashboardService.init();
+  window.addEventListener("beforeunload", onBeforeUnload);
   void pluginService.list().catch(() => undefined);
   // App.vue gates this workspace until host startup/auth is ready. Re-announce
   // app.ready only after all business subscriptions are installed so the host
@@ -346,6 +388,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   revisionHistoryService.invalidate();
   pluginService.dispose();
+  dashboardService.dispose();
+  window.removeEventListener("beforeunload", onBeforeUnload);
 });
 
 /**
@@ -410,6 +454,7 @@ const pageTitle = computed(() => {
   if (ui.activeView === "settings") return t("nav.settings");
   if (ui.activeView === "files") return t("nav.files");
   if (ui.activeView === "plugins") return t("nav.plugins");
+  if (ui.activeView === "dashboard") return t("nav.dashboard");
   return t("nav.tables");
 });
 
@@ -660,6 +705,7 @@ useKeyboard({
 <template>
   <div class="workspace">
     <AppNavigation
+      @navigate="onNavigate"
       @open-admin="onOpenAdmin"
       @open-help="ui.openShortcuts"
     />
@@ -670,7 +716,7 @@ useKeyboard({
           <i></i>
           <strong>{{ pageTitle }}</strong>
         </div>
-        <ConnectionPill @reconnect="workspaceService.openDatabase" />
+        <ConnectionPill @reconnect="openDatabaseWithGuard" />
       </header>
       <div class="view-stack">
         <HomeView
@@ -715,9 +761,10 @@ useKeyboard({
             </div>
           </main>
         </div>
+        <DashboardWorkspaceView v-if="ui.activeView === 'dashboard' && dashboards.featureEnabled" />
         <SettingsView
           v-show="ui.activeView === 'settings'"
-          @reconnect="workspaceService.openDatabase"
+          @reconnect="openDatabaseWithGuard"
           @open-help="ui.openShortcuts"
           @open-admin="onOpenAdmin"
           @load-mappings="identifierMappingService.load()"

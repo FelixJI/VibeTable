@@ -70,6 +70,7 @@ public partial class MainWindow : Window
     private readonly WorkspaceMountStore _workspaceMounts;
     private readonly ILocalDocumentFilePicker _documentFilePicker;
     private readonly string _documentWorkspaceSourceScope;
+    private readonly DashboardFeatureOptions _dashboardFeatures;
     private readonly bool _directusEnabled;
     private readonly bool _directusAuto;
     private readonly DirectusLoginStore? _loginStore;
@@ -87,6 +88,7 @@ public partial class MainWindow : Window
     private DirectusSupervisor? _directusSupervisor;
     private readonly TaskCompletionSource<bool>? _directusSessionReady;
     private JsonRpcDirectusGateway? _directusGateway;
+    private JsonRpcDashboardGateway? _dashboardGateway;
     private JsonRpcPluginGateway? _pluginGateway;
     private DocumentWorkspaceHostService? _documentWorkspace;
     private bool _directusSessionAuthenticated;
@@ -135,6 +137,7 @@ public partial class MainWindow : Window
         // report used by the real WPF/WebView2/backend smoke test.
         var startupOptions = HostStartupOptions.Current();
         _shellSmokeMode = startupOptions.TestMode;
+        _dashboardFeatures = DashboardFeatureOptions.FromEnvironment();
         string? configuredDirectusUrl =
             Environment.GetEnvironmentVariable("VIBETABLE_DIRECTUS_URL");
         _directusAuto = HostStartupOptions.ShouldAutoStartLocalDirectus(
@@ -201,7 +204,7 @@ public partial class MainWindow : Window
             : null;
 
         _dispatcher = new WorkspaceRequestDispatcher(
-            _workspace, picker, _webBridge, _coordinator);
+            _workspace, picker, _webBridge, _coordinator, _dashboardFeatures);
 
         _viewModel = new MainWindowViewModel(_backendAdapter, _webBridge);
         _supervisor.LogReceived += OnBackendLogReceived;
@@ -1052,6 +1055,10 @@ public partial class MainWindow : Window
             _directusGateway = new JsonRpcDirectusGateway(client);
             _directusGateway.Changed += OnDirectusChanged;
             _dispatcher.SetDirectusGateway(_directusGateway);
+            _dashboardGateway = new JsonRpcDashboardGateway(client);
+            _dispatcher.SetDashboardGateway(
+                _dashboardGateway,
+                _sessionCts?.Token ?? CancellationToken.None);
             _pluginGateway = new JsonRpcPluginGateway(client);
             _pluginDispatcher.SetGateway(_pluginGateway);
             _documentWorkspace = new DocumentWorkspaceHostService(
@@ -2326,6 +2333,7 @@ public partial class MainWindow : Window
             currentUser = _authenticatedDirectusUser,
             hostVersion = typeof(MainWindow).Assembly.GetName().Version?.ToString()
                 ?? "unknown",
+            features = new HostFeatureFlags(_dashboardFeatures.Enabled),
         });
 
     private void OnDirectusChanged(DirectusChange change)
@@ -2769,6 +2777,9 @@ public partial class MainWindow : Window
                     $"PostNotification: DROPPED out-of-whitelist notification type='{type}'");
                 return;
             }
+            string json = JsonSerializer.Serialize(
+                new { type, payload },
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
             _owner.Dispatcher.Invoke(() =>
             {
                 var core = _owner.AppWebView.CoreWebView2;
@@ -2778,14 +2789,6 @@ public partial class MainWindow : Window
                     // will re-request as needed (e.g. re-selecting a table).
                     return;
                 }
-                var envelope = new
-                {
-                    type,
-                    payload,
-                };
-                string json = JsonSerializer.Serialize(
-                    envelope,
-                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
                 core.PostWebMessageAsString(json);
             });
         }
@@ -2797,13 +2800,16 @@ public partial class MainWindow : Window
             {
                 return;
             }
+            // Dashboard query responses can contain up to 100k points. Build
+            // the JSON on the caller's worker thread; only the WebView call
+            // itself is marshalled to WPF's UI dispatcher.
+            string json = JsonSerializer.Serialize(
+                new { type, requestId, payload },
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
             _owner.Dispatcher.Invoke(() =>
             {
                 var core = _owner.AppWebView.CoreWebView2;
                 if (core is null) return;
-                string json = JsonSerializer.Serialize(
-                    new { type, requestId, payload },
-                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
                 core.PostWebMessageAsString(json);
             });
         }

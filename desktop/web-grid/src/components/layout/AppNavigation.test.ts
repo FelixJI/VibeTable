@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import AppNavigation from "./AppNavigation.vue";
-import { useUiStore } from "@/stores/uiStore";
+import { useDashboardStore } from "@/stores/dashboardStore";
 
 describe("AppNavigation", () => {
   beforeEach(() => {
@@ -10,18 +10,15 @@ describe("AppNavigation", () => {
     setActivePinia(createPinia());
   });
 
-  it("navigates between Home, Tables, Files, Plugins, and Settings", async () => {
-    const ui = useUiStore();
+  it("emits navigation intent so the workspace can guard dirty drafts", async () => {
     const wrapper = mount(AppNavigation);
-    expect(ui.activeView).toBe("home");
     await wrapper.get('[data-testid="nav-tables"]').trigger("click");
-    expect(ui.activeView).toBe("tables");
     await wrapper.get('[data-testid="nav-files"]').trigger("click");
-    expect(ui.activeView).toBe("files");
     await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
-    expect(ui.activeView).toBe("plugins");
     await wrapper.get('[data-testid="nav-settings"]').trigger("click");
-    expect(ui.activeView).toBe("settings");
+    expect(wrapper.emitted("navigate")?.map((args) => args[0])).toEqual([
+      "tables", "files", "plugins", "settings",
+    ]);
   });
 
   it("emits Directus and help actions without pretending they are routes", async () => {
@@ -37,5 +34,17 @@ describe("AppNavigation", () => {
     for (const button of wrapper.findAll("button")) {
       expect(button.attributes("aria-label")).toBeTruthy();
     }
+  });
+
+  it("keeps dashboards hidden until the host feature gate is enabled", async () => {
+    const dashboards = useDashboardStore();
+    const wrapper = mount(AppNavigation);
+    expect(wrapper.find('[data-testid="nav-dashboard"]').exists()).toBe(false);
+    dashboards.setFeatureEnabled(true);
+    await wrapper.vm.$nextTick();
+    const button = wrapper.get('[data-testid="nav-dashboard"]');
+    expect(button.attributes("aria-label")).toBe("仪表盘");
+    await button.trigger("click");
+    expect(wrapper.emitted("navigate")?.at(-1)).toEqual(["dashboard"]);
   });
 });

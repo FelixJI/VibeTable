@@ -66,8 +66,29 @@ import {
   type RestoreProofRequest,
   type RestoreRequest,
 } from "./bulk-mutation-helpers.js";
+import {
+  DashboardIdempotencyCache,
+  DashboardPanelSnapshotLimitError,
+  DIRECTUS_STANDARD_PANEL_TYPES,
+  assertDashboardPanelSnapshotWithinLimit,
+  computeDashboardDraftFingerprint,
+  computeDashboardConfigHash,
+  computeDashboardRevision,
+  dashboardClientPanelIds,
+  dashboardDeletionTargets,
+  isDashboardUuid,
+  matchesCommittedDashboardDraft,
+  projectedDashboardPanelCount,
+  rewriteDashboardConfigPanelIds,
+  stableDashboardUuid,
+  validateDashboardDraftRequest,
+  type DashboardDraftRequest,
+  type DashboardPanelDraft,
+  type DashboardRevisionSnapshot,
+} from "./dashboard-draft-helpers.js";
 
 export { BulkConflictError, CONTRACT, RESTORE_CONTRACT } from "./bulk-mutation-helpers.js";
+export { DASHBOARD_DRAFT_CONTRACT } from "./dashboard-draft-helpers.js";
 
 const HISTORY_MARKER_TABLE = "vibetable_history_markers";
 const RESTORE_EXECUTION_LIMIT = 1024;
@@ -84,6 +105,7 @@ export default defineEndpoint((router, context) => {
   const { services, getSchema, database } = context;
   const { ItemsService } = services;
   const cache = new IdempotencyCache();
+  const dashboardDraftCache = new DashboardIdempotencyCache();
   const restoreAuthorizations = new RestoreAuthorizationCache();
   const restoreProofs = new RestoreProofReplayCache();
   const restoreExecutions = new Map<string, RestoreExecutionEntry>();
@@ -91,6 +113,89 @@ export default defineEndpoint((router, context) => {
     typeof context.env.VIBETABLE_HISTORY_PROOF_SECRET === "string"
       ? context.env.VIBETABLE_HISTORY_PROOF_SECRET
       : undefined;
+
+  router.get("/dashboard/:id", async (req, res) => {
+    const accountability = (
+      req as typeof req & { accountability?: Accountability }
+    ).accountability;
+    if (!accountability?.user) {
+      res.status(401).json({
+        errors: [{ message: "authentication is required", extensions: { code: "UNAUTHORIZED" } }],
+      });
+      return;
+    }
+    const schema = await getSchema();
+    if (!("vibetable_dashboard_configs" in schema.collections)) {
+      res.status(503).json({
+        errors: [{
+          message: "dashboard configuration schema is not installed",
+          extensions: { code: "DASHBOARD_SCHEMA_UNAVAILABLE" },
+        }],
+      });
+      return;
+    }
+    try {
+      const snapshot = await readDashboardDraftSnapshot(
+        ItemsService,
+        schema,
+        database,
+        accountability,
+        String(req.params.id),
+      );
+      if (!snapshot) {
+        res.status(404).json({
+          errors: [{ message: "dashboard not found", extensions: { code: "NOT_FOUND" } }],
+        });
+        return;
+      }
+      res.status(200).json({ data: dashboardDraftResult(snapshot) });
+    } catch (error) {
+      const outcome = mapDashboardDraftError(error);
+      res.status(outcome.status).json(outcome.body);
+    }
+  });
+
+  router.delete("/dashboard/:id", async (req, res) => {
+    const accountability = (
+      req as typeof req & { accountability?: Accountability }
+    ).accountability;
+    if (!accountability?.user) {
+      res.status(401).json({
+        errors: [{ message: "authentication is required", extensions: { code: "UNAUTHORIZED" } }],
+      });
+      return;
+    }
+    const dashboardId = String(req.params.id);
+    if (!isDashboardUuid(dashboardId)) {
+      res.status(400).json({
+        errors: [{ message: "dashboard id must be a UUID", extensions: { code: "INVALID_PAYLOAD" } }],
+      });
+      return;
+    }
+    const schema = await getSchema();
+    if (!("vibetable_dashboard_configs" in schema.collections)) {
+      res.status(503).json({
+        errors: [{
+          message: "dashboard configuration schema is not installed",
+          extensions: { code: "DASHBOARD_SCHEMA_UNAVAILABLE" },
+        }],
+      });
+      return;
+    }
+    try {
+      const data = await deleteDashboardInTransaction(
+        ItemsService,
+        schema,
+        database,
+        accountability,
+        dashboardId,
+      );
+      res.status(200).json({ data });
+    } catch (error) {
+      const outcome = mapDashboardDraftError(error);
+      res.status(outcome.status).json(outcome.body);
+    }
+  });
 
   router.post("/apply", async (req, res) => {
     const body = req.body as BulkRequest | undefined;
@@ -143,6 +248,70 @@ export default defineEndpoint((router, context) => {
       if (idempotencyKey && outcome.cacheable) {
         cache.set(idempotencyKey, { status: outcome.status, body: outcome.body });
       }
+      res.status(outcome.status).json(outcome.body);
+    }
+  });
+
+  router.post("/dashboard/apply", async (req, res) => {
+    const idempotencyKey =
+      (req.get("Idempotency-Key") as string | undefined) ?? req.body?.idempotencyKey;
+    const validation = validateDashboardDraftRequest(req.body, idempotencyKey);
+    if (!validation.ok) {
+      res.status(400).json({
+        errors: [{ message: validation.error, extensions: { code: "INVALID_PAYLOAD" } }],
+      });
+      return;
+    }
+    const accountability = (
+      req as typeof req & { accountability?: Accountability }
+    ).accountability;
+    const user = String(accountability?.user ?? "");
+    if (!accountability || !user) {
+      res.status(401).json({
+        errors: [{ message: "authentication is required", extensions: { code: "UNAUTHORIZED" } }],
+      });
+      return;
+    }
+    const request = validation.request;
+    const cacheKey = `${user}:${request.idempotencyKey}`;
+    const fingerprint = computeDashboardDraftFingerprint(request);
+    const cached = dashboardDraftCache.lookup(cacheKey, fingerprint);
+    if (cached.kind === "conflict") {
+      res.status(409).json({
+        errors: [{
+          message: "Idempotency-Key was already used for a different dashboard request",
+          extensions: { code: "IDEMPOTENCY_KEY_REUSED" },
+        }],
+      });
+      return;
+    }
+    if (cached.kind === "hit") {
+      res.status(cached.result.status).json(cached.result.body);
+      return;
+    }
+    const schema = await getSchema();
+    if (!("vibetable_dashboard_configs" in schema.collections)) {
+      res.status(503).json({
+        errors: [{
+          message: "dashboard configuration schema is not installed",
+          extensions: { code: "DASHBOARD_SCHEMA_UNAVAILABLE" },
+        }],
+      });
+      return;
+    }
+    try {
+      const data = await applyDashboardDraftInTransaction(
+        ItemsService,
+        schema,
+        database,
+        accountability,
+        request,
+      );
+      const body = { data };
+      dashboardDraftCache.set(cacheKey, fingerprint, { status: 200, body });
+      res.status(200).json(body);
+    } catch (error) {
+      const outcome = mapDashboardDraftError(error);
       res.status(outcome.status).json(outcome.body);
     }
   });
@@ -615,6 +784,328 @@ async function ensureHistoryMarkerTable(database: any): Promise<void> {
     });
   }
   await historyMarkerInitialization;
+}
+
+class DashboardDraftConflictError extends Error {
+  constructor(readonly currentRevision: string | null) {
+    super("dashboard changed since the draft was loaded");
+  }
+}
+
+class DashboardDraftRequestError extends Error {}
+class DashboardNotFoundError extends Error {}
+
+type DashboardAtomicResult = {
+  dashboard: Record<string, unknown>;
+  config: Record<string, unknown>;
+  revision: string;
+  clientPanelIds: Record<string, string>;
+};
+
+async function applyDashboardDraftInTransaction(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ItemsService: any,
+  schema: unknown,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  knex: any,
+  accountability: Accountability,
+  request: DashboardDraftRequest,
+): Promise<DashboardAtomicResult> {
+  return await knex.transaction(async (trx: any) => {
+    const dashboardId = request.dashboardId ?? stableDashboardUuid(request.idempotencyKey);
+    await trx("directus_dashboards").where({ id: dashboardId }).forUpdate();
+    await trx("vibetable_dashboard_configs").where({ dashboard: dashboardId }).forUpdate();
+
+    const current = await readDashboardDraftSnapshot(
+      ItemsService,
+      schema,
+      trx,
+      accountability,
+      dashboardId,
+    );
+    const currentRevision = current ? computeDashboardRevision(current) : null;
+    const clientPanelIds = dashboardClientPanelIds(request);
+    if (current && matchesCommittedDashboardDraft(current, request)) {
+      return {
+        ...dashboardDraftResult(current),
+        clientPanelIds,
+      };
+    }
+    if (currentRevision !== request.expectedRevision) {
+      throw new DashboardDraftConflictError(currentRevision);
+    }
+
+    const options = { schema, knex: trx, accountability };
+    const dashboards = new ItemsService("directus_dashboards", options);
+    const panels = new ItemsService("directus_panels", options);
+    const configs = new ItemsService("vibetable_dashboard_configs", options);
+    const dashboardValues = {
+      id: dashboardId,
+      name: request.dashboard.name.trim(),
+      note: request.dashboard.note ?? null,
+      icon: request.dashboard.icon ?? "dashboard",
+      color: request.dashboard.color ?? null,
+    };
+    if (current) {
+      const { id: _id, ...updates } = dashboardValues;
+      await dashboards.updateOne(dashboardId, updates);
+    } else {
+      await dashboards.createOne(dashboardValues);
+    }
+
+    const existingPanels = new Map(
+      (current?.panels ?? []).map((panel) => [String(panel.id), panel]),
+    );
+    const submittedExisting = new Set(
+      request.panels
+        .map((panel) => panel.panelId)
+        .filter((id): id is string => typeof id === "string"),
+    );
+    for (const id of request.deletedPanelIds) {
+      if (!existingPanels.has(id)) {
+        throw new Error("deleted panel does not belong to the dashboard");
+      }
+    }
+    for (const panel of request.panels) {
+      if (panel.panelId && !existingPanels.has(panel.panelId)) {
+        throw new Error("submitted panel does not belong to the dashboard");
+      }
+      if (!panel.panelId && !DIRECTUS_STANDARD_PANEL_TYPES.has(panel.type)) {
+        throw new Error("new panels must use a supported Directus panel type");
+      }
+    }
+    const finalPanelCount = projectedDashboardPanelCount(
+      new Set(existingPanels.keys()),
+      request.deletedPanelIds,
+      request.panels,
+    );
+    if (finalPanelCount > 100) {
+      throw new DashboardDraftRequestError("a dashboard cannot contain more than 100 panels");
+    }
+
+    for (const panel of request.panels) {
+      const panelId = clientPanelIds[panel.clientId];
+      if (!panelId) throw new Error("panel id mapping could not be resolved");
+      const values = panelValues(dashboardId, panelId, panel);
+      if (panel.panelId) {
+        const { id: _id, ...updates } = values;
+        await panels.updateOne(panelId, updates);
+      } else {
+        await panels.createOne(values);
+      }
+    }
+    for (const panelId of request.deletedPanelIds) {
+      await panels.deleteOne(panelId);
+    }
+    // Whole-draft semantics: an existing panel omitted from both the submitted
+    // set and explicit deletion list is preserved. This protects unknown/read-
+    // only Directus panels from accidental deletion by older clients.
+    void submittedExisting;
+
+    const existingConfig = current?.config;
+    const configVersion = Number(existingConfig?.config_version ?? 0) + 1;
+    const rewrittenConfig = rewriteDashboardConfigPanelIds(request.config, clientPanelIds);
+    const configValues = {
+      id: String(existingConfig?.id ?? dashboardId),
+      status: "active",
+      dashboard: dashboardId,
+      config_version: configVersion,
+      config: rewrittenConfig,
+      content_hash: computeDashboardConfigHash(rewrittenConfig),
+    };
+    if (existingConfig) {
+      const { id: _id, dashboard: _dashboard, ...updates } = configValues;
+      await configs.updateOne(String(existingConfig.id), updates);
+    } else {
+      await configs.createOne(configValues);
+    }
+
+    const committed = await readDashboardDraftSnapshot(
+      ItemsService,
+      schema,
+      trx,
+      accountability,
+      dashboardId,
+    );
+    if (!committed) throw new Error("committed dashboard could not be read");
+    return {
+      ...dashboardDraftResult(committed),
+      clientPanelIds,
+    };
+  });
+}
+
+async function deleteDashboardInTransaction(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ItemsService: any,
+  schema: unknown,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  knex: any,
+  accountability: Accountability,
+  dashboardId: string,
+): Promise<{ deleted: string }> {
+  return await knex.transaction(async (trx: any) => {
+    await trx("directus_dashboards").where({ id: dashboardId }).forUpdate();
+    await trx("directus_panels").where({ dashboard: dashboardId }).forUpdate();
+    await trx("vibetable_dashboard_configs").where({ dashboard: dashboardId }).forUpdate();
+    const current = await readDashboardDraftSnapshot(
+      ItemsService,
+      schema,
+      trx,
+      accountability,
+      dashboardId,
+    );
+    if (!current) throw new DashboardNotFoundError("dashboard not found");
+    const targets = dashboardDeletionTargets(current, dashboardId);
+
+    const options = { schema, knex: trx, accountability };
+    const panels = new ItemsService("directus_panels", options);
+    const configs = new ItemsService("vibetable_dashboard_configs", options);
+    const dashboards = new ItemsService("directus_dashboards", options);
+    for (const panelId of targets.panelIds) {
+      await panels.deleteOne(panelId);
+    }
+    if (targets.configId !== null) {
+      await configs.deleteOne(targets.configId);
+    }
+    await dashboards.deleteOne(targets.dashboardId);
+    return { deleted: targets.dashboardId };
+  });
+}
+
+async function readDashboardDraftSnapshot(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ItemsService: any,
+  schema: unknown,
+  knex: unknown,
+  accountability: Accountability,
+  dashboardId: string,
+): Promise<DashboardRevisionSnapshot | null> {
+  const options = { schema, knex, accountability };
+  const dashboards = new ItemsService("directus_dashboards", options);
+  const dashboardRows = await dashboards.readByQuery({
+    fields: ["id", "name", "note", "icon", "color"],
+    filter: { id: { _eq: dashboardId } },
+    limit: 1,
+  }) as Array<Record<string, unknown>>;
+  if (!dashboardRows[0]) return null;
+
+  const panels = new ItemsService("directus_panels", options);
+  const panelRows = await panels.readByQuery({
+    fields: [
+      "id", "dashboard", "name", "note", "icon", "color", "type", "show_header",
+      "position_x", "position_y", "width", "height", "options",
+    ],
+    filter: { dashboard: { _eq: dashboardId } },
+    limit: 101,
+  }) as Array<Record<string, unknown>>;
+  assertDashboardPanelSnapshotWithinLimit(panelRows);
+  const configs = new ItemsService("vibetable_dashboard_configs", options);
+  const configRows = await configs.readByQuery({
+    fields: ["id", "status", "dashboard", "config_version", "config", "content_hash"],
+    filter: { dashboard: { _eq: dashboardId } },
+    limit: 1,
+  }) as Array<Record<string, unknown>>;
+  return {
+    dashboard: dashboardRows[0],
+    panels: panelRows,
+    config: configRows[0] ?? null,
+  };
+}
+
+function dashboardDraftResult(snapshot: DashboardRevisionSnapshot): Omit<DashboardAtomicResult, "clientPanelIds"> {
+  const configRow = snapshot.config;
+  const config = isObject(configRow?.config) ? configRow.config : {};
+  return {
+    dashboard: {
+      ...snapshot.dashboard,
+      panels: snapshot.panels,
+    },
+    config,
+    revision: computeDashboardRevision(snapshot),
+  };
+}
+
+function panelValues(
+  dashboardId: string,
+  panelId: string,
+  panel: DashboardPanelDraft,
+): Record<string, unknown> {
+  return {
+    id: panelId,
+    dashboard: dashboardId,
+    name: panel.name,
+    note: panel.note ?? null,
+    icon: panel.icon ?? null,
+    color: panel.color ?? null,
+    type: panel.type,
+    show_header: panel.showHeader ?? true,
+    position_x: panel.position.x,
+    position_y: panel.position.y,
+    width: panel.position.width,
+    height: panel.position.height,
+    options: panel.options,
+  };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mapDashboardDraftError(error: unknown): { status: number; body: unknown } {
+  if (error instanceof DashboardNotFoundError) {
+    return {
+      status: 404,
+      body: { errors: [{ message: "dashboard not found", extensions: { code: "NOT_FOUND" } }] },
+    };
+  }
+  if (error instanceof DashboardPanelSnapshotLimitError) {
+    return {
+      status: 409,
+      body: {
+        errors: [{
+          message: error.message,
+          extensions: { code: "DASHBOARD_PANEL_LIMIT_EXCEEDED", count: error.count },
+        }],
+      },
+    };
+  }
+  if (error instanceof DashboardDraftConflictError) {
+    return {
+      status: 409,
+      body: {
+        errors: [{
+          message: "dashboard changed since the draft was loaded",
+          extensions: {
+            code: "DASHBOARD_EDIT_CONFLICT",
+            currentRevision: error.currentRevision,
+          },
+        }],
+      },
+    };
+  }
+  if (error instanceof DashboardDraftRequestError) {
+    return {
+      status: 400,
+      body: {
+        errors: [{ message: error.message, extensions: { code: "DASHBOARD_PANEL_LIMIT_EXCEEDED" } }],
+      },
+    };
+  }
+  const directus = isObject(error) ? error : {};
+  const code = typeof directus.code === "string" ? directus.code : "DASHBOARD_SAVE_FAILED";
+  const status = typeof directus.status === "number" && directus.status >= 400 && directus.status < 600
+    ? directus.status
+    : code === "FORBIDDEN" ? 403 : 500;
+  return {
+    status,
+    body: {
+      errors: [{
+        message: status === 403 ? "dashboard write is not permitted" : "dashboard draft save failed",
+        extensions: { code },
+      }],
+    },
+  };
 }
 
 /**

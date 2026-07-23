@@ -395,4 +395,52 @@ describe("HostBridge", () => {
     expect(loaded).toHaveBeenCalledTimes(1);
     bridge.stop();
   });
+
+  it("correlates native dashboard requests and posts dashboard cancellation", async () => {
+    let counter = 0;
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => `dashboard-${++counter}`,
+    });
+    bridge.start();
+
+    const list = bridge.request("dashboard.listRequested", {});
+    expect(webview.postMessage).toHaveBeenLastCalledWith({
+      type: "dashboard.listRequested",
+      requestId: "dashboard-1",
+      payload: {},
+    });
+    webview.emit({
+      type: "dashboard.listLoaded",
+      requestId: "dashboard-1",
+      payload: { dashboards: [] },
+    });
+    await expect(list).resolves.toEqual({ dashboards: [] });
+
+    const query = bridge.requestWithHandle("dashboard.queryRequested", {
+      panelType: "metric",
+      query: {
+        kind: "aggregate",
+        collection: "orders",
+        measures: [{ key: "total", op: "sum", field: "amount" }],
+      },
+    });
+    expect(query.requestId).toBe("dashboard-2");
+    webview.emit({
+      type: "dashboard.queryLoaded",
+      requestId: "dashboard-2",
+      payload: { rows: [{ total: 42 }], truncated: false, maxPoints: 100_000 },
+    });
+    await expect(query.promise).resolves.toEqual({
+      rows: [{ total: 42 }], truncated: false, maxPoints: 100_000,
+    });
+
+    bridge.notify("dashboard.cancelRequested", { targetRequestId: "dashboard-2" });
+    expect(webview.postMessage).toHaveBeenLastCalledWith({
+      type: "dashboard.cancelRequested",
+      payload: { targetRequestId: "dashboard-2" },
+    });
+    bridge.stop();
+  });
 });

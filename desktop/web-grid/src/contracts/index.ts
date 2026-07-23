@@ -104,6 +104,7 @@ export interface DatasetReadyPayload extends TablePage {
 
 /** Result payload for `database.opened`. */
 export interface DatabaseOpenedPayload {
+  readonly [key: string]: unknown;
   readonly tables: readonly string[];
   readonly views: readonly string[];
   /** Stable host-normalized Directus identity used for project-local plugin state. */
@@ -115,6 +116,13 @@ export interface DatabaseOpenedPayload {
   readonly hostVersion?: string;
   /** Physical collection -> user-facing label. Optional for old hosts. */
   readonly displayNames?: Readonly<Record<string, string>>;
+  /** Runtime host gates. Missing means unsupported/disabled on older hosts. */
+  readonly features?: HostFeatureFlags;
+}
+
+export interface HostFeatureFlags {
+  readonly [key: string]: unknown;
+  readonly dashboards: boolean;
 }
 
 /** Payload produced by the web layer for `database.openRequested`. */
@@ -570,6 +578,185 @@ export interface CollectionsChangedPayload {
   readonly projectRevision?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Native dashboard bridge contracts
+// ---------------------------------------------------------------------------
+
+export type DashboardPanelType =
+  | "label" | "metric" | "metric-list" | "list" | "time-series"
+  | "bar" | "line" | "donut" | "pie" | "custom";
+
+export interface DashboardPanelPositionPayload {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface DashboardMeasurePayload {
+  readonly key: string;
+  readonly op: "count" | "countDistinct" | "sum" | "avg" | "min" | "max";
+  readonly field?: string | null;
+}
+
+export interface DashboardTimeBucketPayload {
+  readonly field: string;
+  readonly unit: "minute" | "hour" | "day" | "week" | "month" | "quarter" | "year";
+  readonly timezone?: string;
+}
+
+export interface DashboardRecordQueryPayload {
+  readonly kind: "records";
+  readonly collection: string;
+  readonly fields: readonly string[];
+  readonly filters?: readonly FilterCondition[];
+  readonly sorts?: readonly SortCondition[];
+  readonly limit?: number;
+}
+
+export interface DashboardAggregateQueryPayload {
+  readonly kind: "aggregate";
+  readonly collection: string;
+  readonly dimensions?: readonly string[];
+  readonly measures: readonly DashboardMeasurePayload[];
+  readonly filters?: readonly FilterCondition[];
+  readonly timeBucket?: DashboardTimeBucketPayload | null;
+  readonly limit?: number;
+  readonly topN?: number | null;
+}
+
+export type DashboardPanelQueryPayload =
+  | DashboardRecordQueryPayload
+  | DashboardAggregateQueryPayload;
+
+export interface DashboardFilterVariablePayload {
+  readonly key: string;
+  readonly label: string;
+  readonly type: "date-range" | "enum" | "user" | "relation" | "number-range";
+  readonly defaultValue?: unknown;
+  readonly allowedFields: readonly string[];
+  readonly targetPanels: readonly string[];
+  /** Explicit target-panel to collection field mapping. */
+  readonly fieldBindings?: Readonly<Record<string, string>>;
+}
+
+export interface DashboardInteractionPayload {
+  readonly sourcePanelId: string;
+  readonly sourceField?: string | null;
+  readonly targetPanelIds: readonly string[];
+  readonly targetField: string;
+}
+
+export interface DashboardManagedConfigPayload {
+  readonly configVersion?: number;
+  readonly globalFilters?: readonly DashboardFilterVariablePayload[];
+  readonly interactions?: readonly DashboardInteractionPayload[];
+  readonly refreshInterval?: 0 | 30 | 60 | 300 | 900;
+}
+
+export interface DashboardPanelEntryPayload {
+  readonly id: string;
+  readonly dashboardId: string;
+  readonly name: string;
+  readonly note?: string | null;
+  readonly icon?: string | null;
+  readonly color?: string | null;
+  readonly showHeader: boolean;
+  readonly type: string;
+  readonly position: DashboardPanelPositionPayload;
+  readonly options: Readonly<Record<string, unknown>>;
+  readonly query: Readonly<Record<string, unknown>>;
+}
+
+export interface DashboardEntryPayload {
+  readonly id: string;
+  readonly name: string;
+  readonly note: string;
+  readonly icon?: string | null;
+  readonly color?: string | null;
+  readonly panels: readonly DashboardPanelEntryPayload[];
+}
+
+export interface DashboardQueryLimitsPayload {
+  readonly maxConcurrentRequests: number;
+  readonly maxSeriesPoints: number;
+  readonly maxPanelPoints: number;
+  readonly maxCategoryPoints: number;
+  readonly defaultTopN: number;
+  readonly maxPieSlices: number;
+  readonly maxListRows: number;
+}
+
+export interface DashboardWorkspacePayload {
+  readonly dashboard: DashboardEntryPayload;
+  readonly config: DashboardManagedConfigPayload;
+  readonly revision: string;
+  readonly atomicSaveEndpoint: string;
+  readonly queryLimits: DashboardQueryLimitsPayload;
+}
+
+export interface DashboardPanelDraftPayload {
+  readonly clientId: string;
+  readonly panelId?: string | null;
+  readonly name: string;
+  readonly note?: string | null;
+  readonly icon?: string | null;
+  readonly color?: string | null;
+  /** Omitted drafts inherit the backend's default visible header. */
+  readonly showHeader?: boolean;
+  readonly type: DashboardPanelType;
+  readonly position: DashboardPanelPositionPayload;
+  readonly options: Readonly<Record<string, unknown>>;
+  readonly query?: DashboardPanelQueryPayload | null;
+}
+
+export interface DashboardSaveRequestedPayload {
+  readonly dashboardId?: string | null;
+  readonly expectedRevision?: string | null;
+  readonly idempotencyKey: string;
+  readonly name: string;
+  readonly note: string;
+  readonly icon?: string | null;
+  readonly color?: string | null;
+  readonly panels: readonly DashboardPanelDraftPayload[];
+  readonly deletedPanelIds: readonly string[];
+  readonly config: DashboardManagedConfigPayload;
+}
+
+export interface DashboardQueryRequestedPayload {
+  readonly panelType: DashboardPanelType;
+  readonly query: DashboardPanelQueryPayload;
+  readonly requestId?: string | null;
+}
+
+export interface DashboardQueryResultPayload {
+  readonly rows: readonly Readonly<Record<string, unknown>>[];
+  readonly truncated: boolean;
+  readonly maxPoints: number;
+}
+
+export interface DashboardManifestEntryPayload {
+  readonly type: DashboardPanelType;
+  readonly minSize: DashboardPanelPositionPayload;
+  readonly optionsSchema: Readonly<Record<string, unknown>>;
+  readonly rendererVersion: string;
+}
+
+export interface DashboardManifestLoadedPayload {
+  readonly manifest: {
+    readonly manifestVersion: string;
+    readonly directusCompatibility: string;
+    readonly panels: readonly DashboardManifestEntryPayload[];
+  };
+  readonly queryLimits: DashboardQueryLimitsPayload;
+}
+
+export interface DashboardSaveResultPayload {
+  readonly workspace: DashboardWorkspacePayload;
+  readonly clientPanelIds: Readonly<Record<string, string>>;
+  readonly atomic: true;
+}
+
 export interface IdentifierMappingEntry {
   readonly id: string;
   readonly entityKind: "collection" | "field";
@@ -974,6 +1161,13 @@ export type WebMessageType =
   | "identifierMappings.reconcileRequested"
   | "identifierMappings.deleteRequested"
   | "identifierMappings.purgeRequested"
+  | "dashboard.listRequested"
+  | "dashboard.readRequested"
+  | "dashboard.manifestRequested"
+  | "dashboard.queryRequested"
+  | "dashboard.saveRequested"
+  | "dashboard.deleteRequested"
+  | "dashboard.cancelRequested"
   | "plugin.catalog.list"
   | "plugin.audit.list"
   | "plugin.cleanup.listPending"
@@ -1027,6 +1221,12 @@ export type HostMessageType =
   // Collections-changed notifications.
   | "database.collectionsChanged"
   | "identifierMappings.result"
+  | "dashboard.listLoaded"
+  | "dashboard.loaded"
+  | "dashboard.manifestLoaded"
+  | "dashboard.queryLoaded"
+  | "dashboard.saved"
+  | "dashboard.deleted"
   | "plugin.catalog.changed"
   | "plugin.task.changed"
   | "plugin.interaction.requested"
@@ -1052,6 +1252,7 @@ export type HostMessageType =
   | "plugin.surface.event";
 
 export interface DirectusChangePayload {
+  readonly [key: string]: unknown;
   readonly uid: string;
   readonly collection: string;
   readonly event: "create" | "update" | "delete";
@@ -1092,6 +1293,12 @@ export interface HostPayloadMap {
   // Collections-changed notifications.
   "database.collectionsChanged": CollectionsChangedPayload;
   "identifierMappings.result": IdentifierMappingsResult;
+  "dashboard.listLoaded": { readonly dashboards: readonly DashboardEntryPayload[] };
+  "dashboard.loaded": DashboardWorkspacePayload;
+  "dashboard.manifestLoaded": DashboardManifestLoadedPayload;
+  "dashboard.queryLoaded": DashboardQueryResultPayload;
+  "dashboard.saved": DashboardSaveResultPayload;
+  "dashboard.deleted": { readonly deleted: string };
   "plugin.catalog.changed": PluginEventEnvelope;
   "plugin.task.changed": PluginEventEnvelope;
   "plugin.interaction.requested": PluginEventEnvelope;
@@ -1163,6 +1370,13 @@ export interface WebPayloadMap {
     readonly mappings: readonly IdentifierMappingImportItem[];
   };
   "identifierMappings.reconcileRequested": Record<string, never>;
+  "dashboard.listRequested": Record<string, never>;
+  "dashboard.readRequested": { readonly dashboardId: string };
+  "dashboard.manifestRequested": Record<string, never>;
+  "dashboard.queryRequested": DashboardQueryRequestedPayload;
+  "dashboard.saveRequested": DashboardSaveRequestedPayload;
+  "dashboard.deleteRequested": { readonly dashboardId: string };
+  "dashboard.cancelRequested": { readonly targetRequestId: string };
   "identifierMappings.deleteRequested": { readonly mappingId: string };
   "identifierMappings.purgeRequested": Record<string, never>;
   "plugin.catalog.list": { readonly projectKey: string };

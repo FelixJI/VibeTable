@@ -55,4 +55,6 @@ python scripts/build_next.py   # 输出到 dist/VibeTable.Next/
 
 ## License
 
-MIT
+Copyright (c) 2026 Felix Ji. 本项目基于 [MIT License](LICENSE) 发布。
+
+仓库中捆绑或引用的第三方组件仍遵循其各自的许可证；相关许可证文件随对应组件保留。

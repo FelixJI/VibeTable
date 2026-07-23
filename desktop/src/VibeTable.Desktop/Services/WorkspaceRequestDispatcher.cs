@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -47,19 +48,29 @@ public sealed class WorkspaceRequestDispatcher
     private readonly IDatabasePicker _picker;
     private readonly IWebReplySink _reply;
     private readonly GridStateCoordinator? _coordinator;
+    private readonly DashboardFeatureOptions _dashboardFeatures;
+    private readonly TimeSpan _dashboardRequestTimeout;
+    private readonly ConcurrentDictionary<string, DashboardRequestState> _dashboardRequests = new();
+    private readonly SemaphoreSlim _dashboardQueryGate = new(6, 6);
     private IDirectusRpcGateway? _directusGateway;
+    private IDashboardRpcGateway? _dashboardGateway;
+    private CancellationToken _dashboardSessionToken;
     private DocumentWorkspaceHostService? _documents;
 
     public WorkspaceRequestDispatcher(
         TableWorkspaceService workspace,
         IDatabasePicker picker,
         IWebReplySink reply,
-        GridStateCoordinator? coordinator = null)
+        GridStateCoordinator? coordinator = null,
+        DashboardFeatureOptions? dashboardFeatures = null,
+        TimeSpan? dashboardRequestTimeout = null)
     {
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         _picker = picker ?? throw new ArgumentNullException(nameof(picker));
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _coordinator = coordinator;
+        _dashboardFeatures = dashboardFeatures ?? DashboardFeatureOptions.Disabled;
+        _dashboardRequestTimeout = dashboardRequestTimeout ?? TimeSpan.FromSeconds(60);
     }
 
     /// <summary>
@@ -69,6 +80,14 @@ public sealed class WorkspaceRequestDispatcher
     /// </summary>
     public void SetDirectusGateway(IDirectusRpcGateway gateway)
         => _directusGateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
+
+    public void SetDashboardGateway(
+        IDashboardRpcGateway gateway,
+        CancellationToken sessionToken = default)
+    {
+        _dashboardGateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
+        _dashboardSessionToken = sessionToken;
+    }
 
     public void SetDocumentWorkspace(DocumentWorkspaceHostService documents)
         => _documents = documents ?? throw new ArgumentNullException(nameof(documents));
@@ -175,6 +194,27 @@ public sealed class WorkspaceRequestDispatcher
             case "identifierMappings.purgeRequested":
                 await OnPurgeIdentifierMappingsAsync(request).ConfigureAwait(false);
                 break;
+            case "dashboard.listRequested":
+                await OnDashboardListRequestedAsync(request).ConfigureAwait(false);
+                break;
+            case "dashboard.readRequested":
+                await OnDashboardReadRequestedAsync(request).ConfigureAwait(false);
+                break;
+            case "dashboard.manifestRequested":
+                await OnDashboardManifestRequestedAsync(request).ConfigureAwait(false);
+                break;
+            case "dashboard.queryRequested":
+                await OnDashboardQueryRequestedAsync(request).ConfigureAwait(false);
+                break;
+            case "dashboard.saveRequested":
+                await OnDashboardSaveRequestedAsync(request).ConfigureAwait(false);
+                break;
+            case "dashboard.deleteRequested":
+                await OnDashboardDeleteRequestedAsync(request).ConfigureAwait(false);
+                break;
+            case "dashboard.cancelRequested":
+                OnDashboardCancelRequested(request);
+                break;
             case "document.listRequested":
                 await OnDocumentListRequestedAsync(request).ConfigureAwait(false);
                 break;
@@ -227,6 +267,7 @@ public sealed class WorkspaceRequestDispatcher
                 tables = Array.Empty<string>(),
                 views = Array.Empty<string>(),
                 displayNames = new Dictionary<string, string>(),
+                features = new HostFeatureFlags(_dashboardFeatures.Enabled),
             });
             return;
         }
@@ -237,6 +278,7 @@ public sealed class WorkspaceRequestDispatcher
             tables = result.Tables,
             views = result.Views,
             displayNames = result.DisplayNames,
+            features = new HostFeatureFlags(_dashboardFeatures.Enabled),
         });
     }
 
@@ -833,6 +875,289 @@ public sealed class WorkspaceRequestDispatcher
         {
             _reply.PostOperationFailed(request.RequestId, ex.Message, "MAPPING_PURGE_FAILED");
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Native dashboard bridge. Every operation is correlated, bounded and
+    // feature-gated; no generic JSON-RPC method name crosses the WebView.
+    // -------------------------------------------------------------------
+
+    private Task OnDashboardListRequestedAsync(RoutedWebRequest request)
+        => RunDashboardRequestAsync(
+            request,
+            "dashboard.listLoaded",
+            isQuery: false,
+            (gateway, token) => gateway.ListDashboardsAsync(token));
+
+    private async Task OnDashboardReadRequestedAsync(RoutedWebRequest request)
+    {
+        if (!TryRequireDashboardFeature(request)) return;
+        string? dashboardId = TryGetString(request.Payload, "dashboardId");
+        if (string.IsNullOrWhiteSpace(dashboardId))
+        {
+            PostDashboardPayloadFailure(request, "缺少仪表盘标识。");
+            return;
+        }
+        await RunDashboardRequestAsync(
+            request,
+            "dashboard.loaded",
+            isQuery: false,
+            (gateway, token) => gateway.ReadDashboardWorkspaceAsync(dashboardId, token))
+            .ConfigureAwait(false);
+    }
+
+    private Task OnDashboardManifestRequestedAsync(RoutedWebRequest request)
+        => RunDashboardRequestAsync(
+            request,
+            "dashboard.manifestLoaded",
+            isQuery: false,
+            LoadDashboardManifestAsync);
+
+    private async Task OnDashboardQueryRequestedAsync(RoutedWebRequest request)
+    {
+        if (!TryRequireDashboardFeature(request)) return;
+        if (!TryDeserializeDashboardPayload<ExecuteDashboardQueryParams>(
+                request.Payload, out var parameters)
+            || parameters is null
+            || string.IsNullOrWhiteSpace(parameters.PanelType)
+            || parameters.Query is null)
+        {
+            PostDashboardPayloadFailure(request, "仪表盘查询参数无效。");
+            return;
+        }
+        parameters = parameters with { RequestId = request.RequestId };
+        await RunDashboardRequestAsync(
+            request,
+            "dashboard.queryLoaded",
+            isQuery: true,
+            (gateway, token) => gateway.ExecuteDashboardQueryAsync(parameters, token))
+            .ConfigureAwait(false);
+    }
+
+    private async Task OnDashboardSaveRequestedAsync(RoutedWebRequest request)
+    {
+        if (!TryRequireDashboardFeature(request)) return;
+        if (!TryDeserializeDashboardPayload<SaveDashboardDraftParams>(
+                request.Payload, out var parameters)
+            || parameters is null
+            || string.IsNullOrWhiteSpace(parameters.Name)
+            || string.IsNullOrWhiteSpace(parameters.IdempotencyKey))
+        {
+            PostDashboardPayloadFailure(request, "仪表盘草稿参数无效。");
+            return;
+        }
+        await RunDashboardRequestAsync(
+            request,
+            "dashboard.saved",
+            isQuery: false,
+            (gateway, token) => gateway.SaveDashboardDraftAsync(parameters, token))
+            .ConfigureAwait(false);
+    }
+
+    private async Task OnDashboardDeleteRequestedAsync(RoutedWebRequest request)
+    {
+        if (!TryRequireDashboardFeature(request)) return;
+        string? dashboardId = TryGetString(request.Payload, "dashboardId");
+        if (string.IsNullOrWhiteSpace(dashboardId))
+        {
+            PostDashboardPayloadFailure(request, "缺少仪表盘标识。");
+            return;
+        }
+        await RunDashboardRequestAsync(
+            request,
+            "dashboard.deleted",
+            isQuery: false,
+            (gateway, token) => gateway.DeleteDashboardAsync(dashboardId, token))
+            .ConfigureAwait(false);
+    }
+
+    private void OnDashboardCancelRequested(RoutedWebRequest request)
+    {
+        if (!TryRequireDashboardFeature(request)) return;
+        string? targetRequestId = TryGetString(request.Payload, "targetRequestId");
+        if (string.IsNullOrWhiteSpace(targetRequestId))
+        {
+            PostDashboardPayloadFailure(request, "缺少待取消的请求标识。");
+            return;
+        }
+        if (_dashboardRequests.TryGetValue(targetRequestId, out var state))
+        {
+            state.MarkCancelledByRenderer();
+            if (state.TryMarkCancellationReply())
+            {
+                _reply.PostOperationFailed(
+                    targetRequestId,
+                    "仪表盘请求已取消。",
+                    "DASHBOARD_CANCELLED");
+            }
+            state.TryCancel();
+        }
+    }
+
+    private async Task RunDashboardRequestAsync<TResult>(
+        RoutedWebRequest request,
+        string responseType,
+        bool isQuery,
+        Func<IDashboardRpcGateway, CancellationToken, Task<TResult>> operation)
+    {
+        if (!TryRequireDashboardFeature(request)) return;
+        if (_dashboardGateway is null)
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "仪表盘服务尚未连接。",
+                "NOT_AUTHENTICATED");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(request.RequestId))
+        {
+            PostDashboardPayloadFailure(request, "仪表盘请求必须携带 requestId。");
+            return;
+        }
+
+        using var cancellation = _dashboardSessionToken.CanBeCanceled
+            ? CancellationTokenSource.CreateLinkedTokenSource(_dashboardSessionToken)
+            : new CancellationTokenSource();
+        cancellation.CancelAfter(_dashboardRequestTimeout);
+        var state = new DashboardRequestState(cancellation);
+        if (!_dashboardRequests.TryAdd(request.RequestId, state))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "仪表盘请求标识重复。",
+                "DASHBOARD_DUPLICATE_REQUEST");
+            return;
+        }
+
+        bool queryLease = false;
+        try
+        {
+            if (isQuery)
+            {
+                await _dashboardQueryGate.WaitAsync(cancellation.Token).ConfigureAwait(false);
+                queryLease = true;
+            }
+            TResult result = await operation(_dashboardGateway, cancellation.Token)
+                .ConfigureAwait(false);
+            if (!cancellation.IsCancellationRequested
+                && _dashboardRequests.TryGetValue(request.RequestId, out var current)
+                && ReferenceEquals(current, state))
+            {
+                _reply.PostResponse(responseType, request.RequestId, result);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            bool timeout = !state.CancelledByRenderer
+                && !_dashboardSessionToken.IsCancellationRequested;
+            if (state.TryMarkCancellationReply())
+            {
+                _reply.PostOperationFailed(
+                    request.RequestId,
+                    timeout ? "仪表盘请求超时。" : "仪表盘请求已取消。",
+                    timeout ? "DASHBOARD_TIMEOUT" : "DASHBOARD_CANCELLED");
+            }
+        }
+        catch (Exception exception)
+        {
+            // A backend implementation may complete with a non-cancellation
+            // exception after its token has already been cancelled. Preserve
+            // the original cancel/timeout semantics and suppress duplicate
+            // late failures in that case.
+            if (cancellation.IsCancellationRequested)
+            {
+                bool timeout = !state.CancelledByRenderer
+                    && !_dashboardSessionToken.IsCancellationRequested;
+                if (state.TryMarkCancellationReply())
+                {
+                    _reply.PostOperationFailed(
+                        request.RequestId,
+                        timeout ? "仪表盘请求超时。" : "仪表盘请求已取消。",
+                        timeout ? "DASHBOARD_TIMEOUT" : "DASHBOARD_CANCELLED");
+                }
+                return;
+            }
+            Trace.TraceError($"Dashboard request failed: {exception}");
+            var failure = DashboardErrorMapper.Map(exception);
+            _reply.PostOperationFailed(request.RequestId, failure.Message, failure.Code);
+        }
+        finally
+        {
+            if (queryLease) _dashboardQueryGate.Release();
+            _dashboardRequests.TryRemove(request.RequestId, out _);
+        }
+    }
+
+    private static async Task<DashboardManifestBundle> LoadDashboardManifestAsync(
+        IDashboardRpcGateway gateway,
+        CancellationToken token)
+    {
+        Task<PanelManifestResult> manifest = gateway.GetPanelManifestAsync(token);
+        Task<DashboardQueryLimits> limits = gateway.GetDashboardQueryLimitsAsync(token);
+        await Task.WhenAll(manifest, limits).ConfigureAwait(false);
+        return new DashboardManifestBundle(
+            await manifest.ConfigureAwait(false),
+            await limits.ConfigureAwait(false));
+    }
+
+    private bool TryRequireDashboardFeature(RoutedWebRequest request)
+    {
+        if (_dashboardFeatures.Enabled) return true;
+        _reply.PostOperationFailed(
+            request.RequestId,
+            "仪表盘功能尚未启用。",
+            "DASHBOARD_DISABLED");
+        return false;
+    }
+
+    private void PostDashboardPayloadFailure(RoutedWebRequest request, string message)
+        => _reply.PostOperationFailed(request.RequestId, message, "BAD_PAYLOAD");
+
+    private static bool TryDeserializeDashboardPayload<T>(
+        JsonElement payload,
+        out T? value)
+    {
+        try
+        {
+            if (payload.ValueKind != JsonValueKind.Object)
+            {
+                value = default;
+                return false;
+            }
+            value = payload.Deserialize<T>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            return value is not null;
+        }
+        catch (JsonException)
+        {
+            value = default;
+            return false;
+        }
+        catch (NotSupportedException)
+        {
+            value = default;
+            return false;
+        }
+    }
+
+    private sealed class DashboardRequestState
+    {
+        private int _cancelledByRenderer;
+        private int _cancellationReplyPosted;
+
+        public DashboardRequestState(CancellationTokenSource cancellation)
+            => Cancellation = cancellation;
+
+        public CancellationTokenSource Cancellation { get; }
+        public bool CancelledByRenderer => Volatile.Read(ref _cancelledByRenderer) != 0;
+        public void MarkCancelledByRenderer()
+            => Interlocked.Exchange(ref _cancelledByRenderer, 1);
+        public void TryCancel()
+        {
+            try { Cancellation.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
+        public bool TryMarkCancellationReply()
+            => Interlocked.Exchange(ref _cancellationReplyPosted, 1) == 0;
     }
 
     private async Task OnDocumentListRequestedAsync(RoutedWebRequest request)

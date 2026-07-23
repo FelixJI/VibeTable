@@ -1,11 +1,11 @@
-"""Tests for the VibeTable Directus schema and capability files (vibetable-1.0).
+"""Tests for the VibeTable Directus schema and capability files.
 
 Validates the Phase-3 generalization gate for the document-workspace
 subsystem. After the business blueprints were removed and the
 ``vibetable-empty`` blueprint/capability were introduced, this module
 replaces the former G3-specific assertions and now validates:
 
-1. schema_version is vibetable-1.0
+1. schema_version is the current versioned blueprint
 2. the six workspace-index collections exist (workspaces, folders,
    documents, schemes, revisions, links)
 3. NO legacy business collections (projects/contracts/tasks) remain
@@ -69,7 +69,7 @@ LEGACY_BUSINESS_COLLECTIONS = {
 
 def test_blueprint_schema_version() -> None:
     blueprint = load_blueprint(VT_BLUEPRINT)
-    assert blueprint["schema_version"] == "vibetable-1.0"
+    assert blueprint["schema_version"] == "vibetable-1.2"
 
 
 def test_blueprint_has_workspace_collections() -> None:
@@ -108,7 +108,22 @@ def test_blueprint_links_relation_to_document() -> None:
 
 def test_capability_loads_and_validates() -> None:
     manifest = CapabilityManifest.model_validate_json(VT_CAPABILITY.read_text(encoding="utf-8"))
-    assert manifest.schema_version == "vibetable-1.0"
+    assert manifest.schema_version == "vibetable-1.2"
+
+
+def test_dashboard_config_is_hidden_managed_metadata_without_version_restore() -> None:
+    blueprint = load_blueprint(VT_BLUEPRINT)
+    definition = blueprint["collections"]["vibetable_dashboard_configs"]
+    assert definition["hidden"] is True
+    assert definition["versioning"] is False
+    assert {"dashboard", "config_version", "config", "content_hash"} <= set(definition["fields"])
+
+    manifest = CapabilityManifest.model_validate_json(VT_CAPABILITY.read_text(encoding="utf-8"))
+    profile = manifest.by_collection["vibetable_dashboard_configs"]
+    assert profile.hidden is True
+    assert profile.allow_versions is False
+    assert profile.allow_revision_revert is False
+    assert profile.allow_dashboards is False
 
 
 def test_capability_has_workspace_collections() -> None:

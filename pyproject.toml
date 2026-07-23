@@ -2,6 +2,7 @@
 name = "VibeTable"
 version = "1.0.0"
 description = "VibeTable — 通用建表与文件管理桌面工具"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "openpyxl>=3.1.5",

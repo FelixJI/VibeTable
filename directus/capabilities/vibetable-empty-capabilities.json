@@ -1,6 +1,6 @@
 {
   "contract": "directus.project.v1",
-  "schema_version": "vibetable-1.0",
+  "schema_version": "vibetable-1.2",
   "directus_compatibility": ">=12 <13",
   "disabled_features": ["shares", "translations", "external_sso", "share_email_flow"],
   "collections": [
@@ -87,6 +87,16 @@
       "update_fields": ["status", "display_name", "normalized_name", "locale", "aliases", "sort"],
       "archive_field": "status", "archive_value": "deleted", "restore_value": "active", "date_updated_field": "date_updated",
       "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": true, "allow_revision_revert": false, "allow_dashboards": false, "hidden": true
+    },
+    {
+      "collection": "vibetable_dashboard_configs",
+      "primary_key": "id",
+      "fields": ["id", "status", "dashboard", "config_version", "config", "content_hash", "sort", "date_created", "user_created", "date_updated", "user_updated"],
+      "relations": [],
+      "create_fields": ["id", "status", "dashboard", "config_version", "config", "content_hash", "sort"],
+      "update_fields": ["status", "config_version", "config", "content_hash", "sort"],
+      "archive_field": "status", "archive_value": "archived", "restore_value": "active", "date_updated_field": "date_updated",
+      "allow_permanent_delete": false, "allow_versions": false, "allow_revision_history": false, "allow_revision_revert": false, "allow_dashboards": false, "hidden": true
     }
   ]
 }

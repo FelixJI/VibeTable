@@ -31,7 +31,8 @@ namespace VibeTable.Infrastructure.Directus;
 /// <c>.bootstrapped</c> exists.</item>
 /// <item><see cref="ApplySchemaIfFirstBootAsync"/>: logs in as admin, then POSTs
 /// collections, relations, policies, roles and permissions built from the
-/// VibeTable blueprint. Skipped once <c>.schema-applied</c> exists.</item>
+/// VibeTable blueprint. Skipped only when <c>.schema-applied</c> records the
+/// current blueprint schema version.</item>
 /// </list>
 /// <para>
 /// <b>Payload fidelity.</b> The collection/field/relation/permission payloads
@@ -47,6 +48,8 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
     private const string BlueprintContract = "vibetable.directus-blueprint.v1";
     private static readonly string[] SystemFieldOrder =
         { "status", "sort", "date_created", "user_created", "date_updated", "user_updated" };
+    private static readonly HashSet<string> DashboardSystemCollections = new(StringComparer.Ordinal)
+        { "directus_dashboards", "directus_panels" };
 
     private readonly HttpClient _http;
     private readonly TimeSpan _cliTimeout;
@@ -125,8 +128,8 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
 
     /// <summary>
     /// Seeds VibeTable collections/relations/policies. Idempotent: a no-op once
-    /// <c>.schema-applied</c> exists, and safely resumes resource-by-resource
-    /// when an earlier first-run attempt stopped before writing the marker.
+    /// <c>.schema-applied</c> records the current blueprint version, and safely
+    /// reconciles missing resources when upgrading an older installation.
     /// </summary>
     /// <param name="baseUrl">Directus base URL (e.g. http://localhost:8055).</param>
     /// <param name="adminEmail">Admin email (from .env ADMIN_EMAIL).</param>
@@ -138,12 +141,19 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
         string blueprintPath, string localDirectusDir, CancellationToken cancellationToken)
     {
         string marker = Path.Combine(localDirectusDir, ".schema-applied");
+        JsonNode blueprint = LoadBlueprint(blueprintPath);
+        string schemaVersion = blueprint["schema_version"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Directus blueprint has no schema_version.");
         if (File.Exists(marker))
         {
-            return;
+            string markerContents = await File.ReadAllTextAsync(marker, cancellationToken)
+                .ConfigureAwait(false);
+            if (IsSchemaMarkerCurrent(markerContents, schemaVersion))
+            {
+                return;
+            }
         }
 
-        JsonNode blueprint = LoadBlueprint(blueprintPath);
         string token = await AdminLoginAsync(baseUrl, adminEmail, adminPassword, cancellationToken).ConfigureAwait(false);
 
         // Create only missing resources. Directus creates a collection and its
@@ -209,7 +219,6 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
                 var grants = (JsonObject)policyEntry.Value!;
                 string displayName = "VibeTable " + TitleCase(policyName);
                 string contract = blueprint["contract"]?.GetValue<string>() ?? BlueprintContract;
-                string schemaVersion = blueprint["schema_version"]?.GetValue<string>() ?? "vibetable";
 
                 string policyId;
                 if (existingPolicies.TryGetValue(displayName, out string? foundPolicyId))
@@ -266,7 +275,10 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
             }
         }
 
-        await File.WriteAllTextAsync(marker, baseUrl, cancellationToken).ConfigureAwait(false);
+        await File.WriteAllTextAsync(
+            marker,
+            BuildSchemaMarker(schemaVersion),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
@@ -372,7 +384,14 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
             foreach (var collectionNode in allowed)
             {
                 string collection = collectionNode!.GetValue<string>();
-                if (!collections.ContainsKey(collection))
+                // Policy grants normally target only collections managed by the
+                // blueprint. Dashboards and panels are Directus core collections,
+                // so they must not be created by the bootstrapper, but ordinary
+                // VibeTable roles still need explicit API permissions for the
+                // native dashboard feature. Keep this exception deliberately
+                // closed instead of accepting arbitrary directus_* collections.
+                if (!collections.ContainsKey(collection)
+                    && !DashboardSystemCollections.Contains(collection))
                 {
                     continue;
                 }
@@ -690,6 +709,32 @@ public sealed class DirectusSchemaBootstrapper : IAsyncDisposable
             throw new InvalidOperationException("unsupported Directus blueprint contract");
         }
         return root;
+    }
+
+    internal static string BuildSchemaMarker(string schemaVersion) => new JsonObject
+    {
+        ["contract"] = BlueprintContract,
+        ["schema_version"] = schemaVersion,
+    }.ToJsonString();
+
+    internal static bool IsSchemaMarkerCurrent(string markerContents, string schemaVersion)
+    {
+        if (string.Equals(markerContents.Trim(), schemaVersion, StringComparison.Ordinal))
+        {
+            return true;
+        }
+        try
+        {
+            JsonObject? marker = JsonNode.Parse(markerContents) as JsonObject;
+            return marker?["contract"]?.GetValue<string>() == BlueprintContract
+                && marker["schema_version"]?.GetValue<string>() == schemaVersion;
+        }
+        catch (JsonException)
+        {
+            // Legacy markers stored the Directus base URL. Treat any invalid or
+            // older marker as stale so the idempotent resource reconciliation runs.
+            return false;
+        }
     }
 
     private static string ResolveDirectusCli(string localDirectusDir)

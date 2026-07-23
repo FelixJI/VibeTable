@@ -210,10 +210,13 @@ def _register_insights_methods(dispatcher: RpcDispatcher, service: Any) -> None:
     """
     from backend.contracts.presets_versions_dashboards import (
         DashboardIdParams,
+        DashboardWorkspaceParams,
         DeletePresetParams,
+        ExecuteDashboardQueryParams,
         ListDashboardsParams,
         ListPresetsParams,
         PanelIdParams,
+        SaveDashboardDraftParams,
         SaveDashboardParams,
         SavePanelParams,
         SavePresetParams,
@@ -235,6 +238,33 @@ def _register_insights_methods(dispatcher: RpcDispatcher, service: Any) -> None:
     dispatcher.register(
         "directus.panelManifest",
         lambda _params=None: service.panel_manifest(),
+        DirectusEmptyParams,
+    )
+    # Dashboard v2: coherent snapshots, typed data queries and a server-side
+    # atomic draft endpoint seam. The legacy CRUD surface above remains active.
+    dispatcher.register(
+        "directus.readDashboardWorkspace",
+        service.read_dashboard_workspace,
+        DashboardWorkspaceParams,
+    )
+    dispatcher.register(
+        "directus.saveDashboardDraft",
+        service.save_dashboard_draft,
+        SaveDashboardDraftParams,
+    )
+    dispatcher.register(
+        "directus.deleteDashboardWorkspace",
+        service.delete_dashboard_workspace,
+        DashboardWorkspaceParams,
+    )
+    dispatcher.register(
+        "directus.executeDashboardQuery",
+        service.execute_dashboard_query,
+        ExecuteDashboardQueryParams,
+    )
+    dispatcher.register(
+        "directus.dashboardQueryLimits",
+        service.dashboard_query_limits,
         DirectusEmptyParams,
     )
 

@@ -83,6 +83,35 @@ public sealed class DirectusSchemaBootstrapperTests
     }
 
     [TestMethod]
+    public void DashboardConfig_IsHiddenAndCarriesConflictMetadataWithoutVersionHistory()
+    {
+        JsonNode blueprint = DirectusSchemaBootstrapper.LoadBlueprint(BlueprintPath);
+        var definition = (JsonObject)blueprint["collections"]!["vibetable_dashboard_configs"]!;
+        JsonObject payload = DirectusSchemaBootstrapper.BuildCollectionPayload(
+            "vibetable_dashboard_configs", definition);
+
+        Assert.AreEqual("vibetable-1.2", blueprint["schema_version"]!.GetValue<string>());
+        Assert.IsTrue(payload["meta"]!["hidden"]!.GetValue<bool>());
+        Assert.IsFalse(payload["meta"]!["versioning"]!.GetValue<bool>());
+        var names = ((JsonArray)payload["fields"]!).Select(field =>
+            field!["field"]!.GetValue<string>()).ToList();
+        CollectionAssert.Contains(names, "dashboard");
+        CollectionAssert.Contains(names, "config_version");
+        CollectionAssert.Contains(names, "config");
+        CollectionAssert.Contains(names, "content_hash");
+    }
+
+    [TestMethod]
+    public void SchemaMarker_IsVersionAwareAndTreatsLegacyMarkerAsStale()
+    {
+        Assert.IsFalse(DirectusSchemaBootstrapper.IsSchemaMarkerCurrent(
+            "http://localhost:8055", "vibetable-1.1"));
+        string marker = DirectusSchemaBootstrapper.BuildSchemaMarker("vibetable-1.1");
+        Assert.IsTrue(DirectusSchemaBootstrapper.IsSchemaMarkerCurrent(marker, "vibetable-1.1"));
+        Assert.IsFalse(DirectusSchemaBootstrapper.IsSchemaMarkerCurrent(marker, "vibetable-1.2"));
+    }
+
+    [TestMethod]
     public void FieldPayload_MarksPrimaryKeyAndRequired()
     {
         var def = new JsonObject
@@ -121,9 +150,9 @@ public sealed class DirectusSchemaBootstrapperTests
         JsonArray perms = DirectusSchemaBootstrapper.BuildPermissionPayloads(
             "policy-1", managerGrants, collections);
 
-        // The mapping collection is admin-only and intentionally absent from
-        // manager grants, so the six workspace collections still yield 24.
-        Assert.AreEqual(24, perms.Count);
+        // The mapping collection is admin-only. Seven managed collections plus
+        // the two explicitly approved Directus dashboard collections yield 36 grants.
+        Assert.AreEqual(36, perms.Count);
         var first = (JsonObject)perms[0]!;
         Assert.AreEqual("policy-1", first["policy"]!.GetValue<string>());
         // fields must be exactly ["*"] so unlicensed Directus 12 does not reject
@@ -136,6 +165,26 @@ public sealed class DirectusSchemaBootstrapperTests
             "validation must be omitted (hasCustomRule trigger)");
         Assert.IsFalse(first.ContainsKey("presets"),
             "presets must be omitted (hasCustomRule trigger)");
+    }
+
+    [TestMethod]
+    public void BuildPermissionPayloads_AllowsOnlyDashboardCoreSystemCollections()
+    {
+        var grants = new JsonObject
+        {
+            ["read"] = new JsonArray(
+                "directus_dashboards", "directus_panels", "directus_users", "unknown_table"),
+        };
+        var collections = new JsonObject();
+
+        JsonArray permissions = DirectusSchemaBootstrapper.BuildPermissionPayloads(
+            "policy-1", grants, collections);
+        var names = permissions
+            .Select(item => item!["collection"]!.GetValue<string>())
+            .ToList();
+
+        CollectionAssert.AreEquivalent(
+            new[] { "directus_dashboards", "directus_panels" }, names);
     }
 
     [TestMethod]
@@ -187,14 +236,25 @@ public sealed class DirectusSchemaBootstrapperTests
                 CancellationToken.None);
 
             Assert.IsTrue(File.Exists(Path.Combine(runtime, ".schema-applied")));
-            Assert.AreEqual(0, handler.Count(HttpMethod.Post, "/collections"),
-                "collections left by the interrupted attempt must be reused");
+            Assert.AreEqual(1, handler.Count(HttpMethod.Post, "/collections"),
+                "the new dashboard config collection must reconcile onto a 1.0 installation");
             Assert.AreEqual(2, handler.Count(HttpMethod.Post, "/policies"),
                 "the existing Viewer policy must be reused while Editor and Manager are created");
             Assert.AreEqual(3, handler.Count(HttpMethod.Post, "/roles"));
             Assert.AreEqual(3, handler.Count(HttpMethod.Post, "/access"));
             Assert.AreEqual(3, handler.Count(HttpMethod.Post, "/permissions"));
             Assert.IsTrue(handler.BodiesFor(HttpMethod.Post, "/roles").All(body => !body.ContainsKey("policies")));
+
+            int requestCount = handler.RequestCount;
+            await bootstrapper.ApplySchemaIfFirstBootAsync(
+                "http://localhost:8055",
+                "admin@vibetable.app",
+                "password",
+                BlueprintPath,
+                runtime,
+                CancellationToken.None);
+            Assert.AreEqual(requestCount, handler.RequestCount,
+                "a current schema marker must make the second apply a no-op");
         }
         finally
         {
@@ -219,6 +279,8 @@ public sealed class DirectusSchemaBootstrapperTests
 
         public int Count(HttpMethod method, string path) =>
             _requests.Count(item => item.Method == method && item.Path == path);
+
+        public int RequestCount => _requests.Count;
 
         public IEnumerable<JsonObject> BodiesFor(HttpMethod method, string path) =>
             _requests.Where(item => item.Method == method && item.Path == path)
@@ -283,6 +345,13 @@ public sealed class DirectusSchemaBootstrapperTests
                 return new JsonObject
                 {
                     ["data"] = new JsonObject { ["id"] = path[1..^1] + "-" + name.Replace(' ', '-').ToLowerInvariant() }
+                };
+            }
+            if (method == HttpMethod.Post && path == "/collections")
+            {
+                return new JsonObject
+                {
+                    ["data"] = new JsonObject { ["collection"] = body!["collection"]!.GetValue<string>() }
                 };
             }
             if (method == HttpMethod.Post && path is "/relations" or "/access")

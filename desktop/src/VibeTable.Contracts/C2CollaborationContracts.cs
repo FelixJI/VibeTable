@@ -162,6 +162,10 @@ public static class PanelTypes
     public const string MetricList = "metric-list";
     public const string List = "list";
     public const string TimeSeries = "time-series";
+    public const string Bar = "bar";
+    public const string Line = "line";
+    public const string Donut = "donut";
+    public const string Pie = "pie";
     public const string Custom = "custom";
 }
 
@@ -174,9 +178,19 @@ public sealed record PanelEntry(
     string Type,
     PanelPosition Position,
     IReadOnlyDictionary<string, object?> Options,
-    IReadOnlyDictionary<string, object?> Query);
+    IReadOnlyDictionary<string, object?> Query,
+    string Note = "",
+    string? Icon = null,
+    string? Color = null,
+    bool ShowHeader = true);
 
-public sealed record DashboardEntry(string Id, string Name, string Note, IReadOnlyList<PanelEntry> Panels);
+public sealed record DashboardEntry(
+    string Id,
+    string Name,
+    string Note,
+    IReadOnlyList<PanelEntry> Panels,
+    string? Icon = null,
+    string? Color = null);
 
 public sealed record ListDashboardsParams;
 
@@ -225,7 +239,8 @@ public sealed record DashboardFilterVariable(
     string Type,
     object? DefaultValue,
     IReadOnlyList<string> AllowedFields,
-    IReadOnlyList<string> TargetPanels);
+    IReadOnlyList<string> TargetPanels,
+    IReadOnlyDictionary<string, string>? FieldBindings = null);
 
 public sealed record DashboardFilterState(IReadOnlyDictionary<string, object?> Values);
 

@@ -1,35 +1,39 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { NButton, NIcon, NTooltip } from "naive-ui";
 import {
   HelpCircle,
   Database,
   Files,
   Home,
+  LayoutDashboard,
   Blocks,
   Settings,
   Table2,
 } from "lucide-vue-next";
 import type { AppView } from "@/stores/uiStore";
 import { useUiStore } from "@/stores/uiStore";
+import { useDashboardStore } from "@/stores/dashboardStore";
 import { t } from "@/i18n";
 import brandIconUrl from "@/assets/brand/vibetable.png";
 
 const ui = useUiStore();
+const dashboards = useDashboardStore();
 const emit = defineEmits<{
   navigate: [view: AppView];
   openAdmin: [];
   openHelp: [];
 }>();
 
-const primary = [
+const primary = computed(() => [
   { view: "home" as const, icon: Home, label: "nav.home" },
   { view: "tables" as const, icon: Table2, label: "nav.tables" },
+  ...(dashboards.featureEnabled ? [{ view: "dashboard" as const, icon: LayoutDashboard, label: "nav.dashboard" }] : []),
   { view: "files" as const, icon: Files, label: "nav.files" },
   { view: "plugins" as const, icon: Blocks, label: "nav.plugins" },
-];
+]);
 
 function navigate(view: AppView) {
-  ui.navigate(view);
   emit("navigate", view);
 }
 </script>

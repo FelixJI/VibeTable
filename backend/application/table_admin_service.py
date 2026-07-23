@@ -646,6 +646,7 @@ class TableAdminService:
             allow_permanent_delete=False,
             allow_revision_history=True,
             allow_revision_revert=True,
+            allow_dashboards=True,
         )
 
     @staticmethod
@@ -670,6 +671,7 @@ class TableAdminService:
             allow_permanent_delete=False,
             allow_revision_history=True,
             allow_revision_revert=True,
+            allow_dashboards=True,
         )
 
     def _build_collection_body(

@@ -82,6 +82,15 @@ public sealed class WebMessageRouter
         "identifierMappings.reconcileRequested",
         "identifierMappings.deleteRequested",
         "identifierMappings.purgeRequested",
+        // Native dashboards. Each entry maps to one typed use case; there is
+        // deliberately no generic directus/rpc invocation message.
+        "dashboard.listRequested",
+        "dashboard.readRequested",
+        "dashboard.manifestRequested",
+        "dashboard.queryRequested",
+        "dashboard.saveRequested",
+        "dashboard.deleteRequested",
+        "dashboard.cancelRequested",
         "document.listRequested",
         "document.importRequested",
         "document.externalDropRequested",
@@ -146,6 +155,12 @@ public sealed class WebMessageRouter
         // Table management: host pushes refreshed collection list after create/delete.
         "database.collectionsChanged",
         "identifierMappings.result",
+        "dashboard.listLoaded",
+        "dashboard.loaded",
+        "dashboard.manifestLoaded",
+        "dashboard.queryLoaded",
+        "dashboard.saved",
+        "dashboard.deleted",
         "document.listLoaded",
         "document.historyLoaded",
         "document.actionCompleted",

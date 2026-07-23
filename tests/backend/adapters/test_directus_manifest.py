@@ -16,6 +16,7 @@ WORKSPACE_COLLECTIONS = {
     "vibetable_document_revisions",
     "vibetable_document_links",
     "vibetable_identifier_map",
+    "vibetable_dashboard_configs",
 }
 
 
@@ -23,7 +24,7 @@ def test_empty_capability_manifest_is_valid_and_has_workspace_collections() -> N
     path = ROOT / "directus" / "capabilities" / "vibetable-empty-capabilities.json"
     manifest = CapabilityManifest.model_validate_json(path.read_text(encoding="utf-8"))
 
-    assert manifest.schema_version == "vibetable-1.0"
+    assert manifest.schema_version == "vibetable-1.2"
     assert set(manifest.by_collection) == WORKSPACE_COLLECTIONS
     assert len(manifest.by_collection) == len(manifest.collections)
     assert "shares" in manifest.disabled_features

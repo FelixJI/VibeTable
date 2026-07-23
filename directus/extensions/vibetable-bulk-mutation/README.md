@@ -64,6 +64,26 @@ Content-Type: application/json
 
 The client must re-preview after a conflict; it must never overwrite.
 
+### Dashboard draft routes
+
+The same extension owns the native dashboard transaction boundary:
+
+- `GET /vibetable-bulk-mutation/dashboard/:id` reads the dashboard, at most 100
+  panels, and its managed VibeTable config under the caller's accountability.
+- `POST /vibetable-bulk-mutation/dashboard/apply` atomically creates or updates
+  the Directus dashboard, panels, and managed config using optimistic revision
+  checks and a UUID `Idempotency-Key`.
+- `DELETE /vibetable-bulk-mutation/dashboard/:id` atomically removes panels,
+  managed config, and dashboard in that order under the caller's delete rights.
+
+Dashboard idempotency entries include a canonical request fingerprint, so the
+same key cannot be reused for different content. New dashboards and panels use
+deterministic UUIDs; after a process restart, the exact state of an already-
+committed create or edit is recognized without accepting divergent stale edits.
+Temporary panel
+client IDs are rewritten only in managed `globalFilters[].targetPanels` and
+`interactions[].sourcePanelId/targetPanelIds` reference paths.
+
 ## Safety properties
 
 - **Never bypasses permissions.** Runs under `accountability` for the requesting
@@ -98,8 +118,9 @@ registers at `POST /vibetable-bulk-mutation/apply`.
 - Source compiles against `@directus/extensions-sdk` 18.0.1 and the dependency
   graph is locked by `package-lock.json`; test, strict typecheck and production
   build all pass locally.
-- Unit tests for the pure validation + conflict-mapping logic live in
-  `src/__tests__/` and run without a Directus runtime (12 passing tests).
+- Unit tests for the pure validation, conflict mapping, dashboard reference
+  rewriting, fingerprinted idempotency, restart recovery, and panel bounds live
+  in `src/__tests__/` and run without a Directus runtime (28 passing tests).
 - `npm audit --omit=dev` reports zero production vulnerabilities. Remaining
   audit notices are confined to the SDK development/build graph and are not
   copied into the bundled extension output.

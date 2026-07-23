@@ -34,6 +34,8 @@ export default defineConfig({
             if (id.includes("/naive-ui/")) return "naive";
             if (id.includes("/tabulator-tables/")) return "tabulator";
             if (id.includes("/lucide-vue-next/")) return "icons";
+            if (id.includes("/echarts/") || id.includes("/zrender/")) return "charts";
+            if (id.includes("/gridstack/")) return "dashboard-layout";
           }
           return undefined;
         },
@@ -44,5 +46,6 @@ export default defineConfig({
     environment: "jsdom",
     globals: false,
     include: ["src/**/*.test.ts"],
+    setupFiles: ["src/test/setup.ts"],
   },
 });
