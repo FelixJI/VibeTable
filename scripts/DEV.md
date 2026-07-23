@@ -103,3 +103,12 @@ VibeTable 单机安装包：捆绑 Node 与 npm 客户端（`runtime/node/`）+ 
 `npm ci` 拉取 Directus 12，全部写入 `%LOCALAPPDATA%\VibeTable\directus`
 （`.npm-cache`/`.npm-prefix`/`node_modules` 都在该目录内），**不污染用户全局 Node/npm/PATH**。
 详见 `scripts/local_directus/README.md`。
+
+## Windows 上按需重装 Node 依赖
+
+`dev.py` 仅在 `node_modules` 缺失或 `package-lock.json` 比安装标记更新时执行
+`npm ci`。进入该分支后，脚本会通过 `Get-CimInstance Win32_Process` 查找
+`node.exe` 命令行中包含当前 Web/扩展项目目录的进程，打印 PID 与命令行并终止它们，
+避免 Vite 等进程加载原生模块后导致 `npm ci` 报 `EPERM`。命令行不含当前项目目录的
+其他项目、VS Code 和 Electron 进程不在匹配范围内；如果同一项目正由另一个终端运行
+HMR，该 HMR 进程会被终止。

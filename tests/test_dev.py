@@ -55,15 +55,24 @@ def test_node_project_build_installs_dependencies_only_when_needed(
     project = tmp_path / "web"
     project.mkdir()
     (project / "package-lock.json").write_text("{}", encoding="utf-8")
-    calls: list[list[str]] = []
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        dev,
+        "_stop_node_processes_for_project",
+        lambda target: calls.append(("stop", target)),
+        raising=False,
+    )
     monkeypatch.setattr(
         dev,
         "_run_build",
-        lambda _label, command, _cwd, **_: calls.append(command),
+        lambda _label, command, _cwd, **_: calls.append(("run", command)),
     )
 
     dev._ensure_node_dependencies(project)
-    assert calls == [[dev.NPM, "ci"]]
+    assert calls == [
+        ("stop", project),
+        ("run", [dev.NPM, "ci"]),
+    ]
 
     marker = project / "node_modules" / ".package-lock.json"
     marker.parent.mkdir()
@@ -74,9 +83,70 @@ def test_node_project_build_installs_dependencies_only_when_needed(
     assert calls == []
 
 
-def test_run_build_eperm_failure_explains_locked_node_modules(
+def test_stop_node_processes_uses_scoped_cim_query_and_logs_matches(
     monkeypatch, tmp_path: Path
 ) -> None:
+    project = tmp_path / "desktop" / "web-grid"
+    project.mkdir(parents=True)
+    captured: dict[str, object] = {}
+    messages: list[str] = []
+
+    def _run(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout=(
+                '[{"ProcessId":321,"CommandLine":'
+                '"node.exe C:\\\\repo\\\\desktop\\\\web-grid\\\\node_modules\\\\vite\\\\bin\\\\vite.js",'
+                '"Stopped":true,"Error":null}]'
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(dev.sys, "platform", "win32")
+    monkeypatch.setattr(dev.subprocess, "run", _run)
+    monkeypatch.setattr(dev, "_info", messages.append)
+
+    dev._stop_node_processes_for_project(project)
+
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert "Get-CimInstance Win32_Process" in command[-1]
+    assert "Name = 'node.exe'" in command[-1]
+    assert "RegexOptions]::IgnoreCase" in command[-1]
+    assert "Stop-Process" in command[-1]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["VIBETABLE_NODE_PROJECT_PATH"] == str(project.resolve())
+    assert any("PID 321" in message and "vite" in message for message in messages)
+
+
+def test_stop_node_processes_warns_and_allows_npm_ci_after_scan_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr(dev.sys, "platform", "win32")
+    monkeypatch.setattr(
+        dev.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            args=command,
+            returncode=1,
+            stdout="",
+            stderr="Get-CimInstance: Access denied",
+        ),
+    )
+    monkeypatch.setattr(dev, "_info", messages.append)
+
+    dev._stop_node_processes_for_project(tmp_path)
+
+    assert any("warning" in message.lower() for message in messages)
+    assert any("Access denied" in message for message in messages)
+
+
+def test_run_build_eperm_failure_explains_locked_node_modules(monkeypatch, tmp_path: Path) -> None:
     """An EPERM during ``npm ci`` must point at a process holding node_modules.
 
     Windows raises EPERM when ``npm ci`` tries to unlink a native binary (e.g.

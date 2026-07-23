@@ -26,6 +26,7 @@ Stop everything with Ctrl+C; the host owns teardown of its child processes.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import signal
@@ -70,6 +71,47 @@ def _resolve_npm() -> str:
 
 
 NPM = _resolve_npm()
+
+_WINDOWS_NODE_CLEANUP_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$projectPath = [System.IO.Path]::GetFullPath($env:VIBETABLE_NODE_PROJECT_PATH)
+$projectPattern = [regex]::Escape($projectPath.TrimEnd('\', '/')) +
+    '(?:[\\/]|(?=["''\s]|$))'
+$matches = @(
+    Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" |
+        Where-Object {
+            $_.CommandLine -and
+            [regex]::IsMatch(
+                $_.CommandLine.Replace('/', '\'),
+                $projectPattern,
+                [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+            )
+        }
+)
+$results = @(
+    foreach ($process in $matches) {
+        try {
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+            [PSCustomObject]@{
+                ProcessId = [int]$process.ProcessId
+                CommandLine = [string]$process.CommandLine
+                Stopped = $true
+                Error = $null
+            }
+        }
+        catch {
+            [PSCustomObject]@{
+                ProcessId = [int]$process.ProcessId
+                CommandLine = [string]$process.CommandLine
+                Stopped = $false
+                Error = [string]$_.Exception.Message
+            }
+        }
+    }
+)
+ConvertTo-Json -InputObject $results -Compress
+"""
 
 
 def _info(msg: str) -> None:
@@ -142,10 +184,80 @@ def _npm_eperm_hint(stderr: str, cwd: Path) -> str:
     )
 
 
+def _single_line(value: object) -> str:
+    return " ".join(str(value).split())
+
+
+def _stop_node_processes_for_project(project: Path) -> None:
+    """Stop Windows Node processes whose command line belongs to ``project``.
+
+    ``npm ci`` replaces ``node_modules`` and cannot unlink loaded native
+    modules on Windows. Querying only ``node.exe`` processes whose normalized
+    command line contains this project's directory prefix avoids touching
+    Node-based applications and other repositories.
+
+    The cleanup is best-effort: npm remains the source of truth if CIM is
+    unavailable or a process cannot be terminated.
+    """
+    if sys.platform != "win32":
+        return
+
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe") or "powershell.exe"
+    env = os.environ.copy()
+    env["VIBETABLE_NODE_PROJECT_PATH"] = str(project.resolve())
+    try:
+        proc = subprocess.run(
+            [
+                powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                _WINDOWS_NODE_CLEANUP_SCRIPT,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=10,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _info(f"warning: could not scan Node processes for {project.name}: {_single_line(exc)}")
+        return
+
+    if proc.returncode != 0:
+        details = _single_line(proc.stderr or proc.stdout or "PowerShell exited without details")
+        _info(f"warning: could not scan Node processes for {project.name}: {details}")
+        return
+
+    try:
+        results = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        _info(f"warning: could not read Node process scan for {project.name}: {_single_line(exc)}")
+        return
+    if not isinstance(results, list):
+        _info(f"warning: unexpected Node process scan result for {project.name}")
+        return
+
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        pid = result.get("ProcessId", "unknown")
+        command_line = _single_line(result.get("CommandLine") or "<command line unavailable>")
+        if result.get("Stopped"):
+            _info(f"stopped project Node process before npm ci: PID {pid}; {command_line}")
+        else:
+            error = _single_line(result.get("Error") or "unknown error")
+            _info(f"warning: could not stop project Node process PID {pid}: {error}")
+
+
 def _ensure_node_dependencies(project: Path) -> None:
     lockfile = project / "package-lock.json"
     install_marker = project / "node_modules" / ".package-lock.json"
     if not (project / "node_modules").is_dir() or _is_stale(install_marker, [lockfile]):
+        _stop_node_processes_for_project(project)
         _run_build(f"{project.name} dependencies", [NPM, "ci"], project)
 
 
