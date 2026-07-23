@@ -7,6 +7,7 @@
   "scripts": {
     "build": "directus-extension build",
     "test": "node --test src/__tests__/*.test.ts",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=src/**/*.ts --test-coverage-exclude=src/__tests__/** --test-coverage-lines=80 --test-coverage-branches=65 --test-coverage-functions=75 src/__tests__/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "directus:extension": {

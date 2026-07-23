@@ -252,6 +252,20 @@ class FileToolsService:
     async def delete_file(self, params: DeleteFileParams) -> dict[str, Any]:
         """Permanently delete a Directus file (checks references first)."""
         token = await self._auth.access_token()
+        try:
+            referenced_by = await self._find_file_reference(params.file_id, access_token=token)
+        except FileToolsError:
+            raise
+        except Exception as exc:
+            raise FileToolsError(
+                "file reference check failed; refusing permanent deletion",
+                code="file_reference_check_failed",
+            ) from exc
+        if referenced_by is not None:
+            raise FileToolsError(
+                f"file is still referenced by {referenced_by}",
+                code="file_in_use",
+            )
         await self._transport.request(
             "DELETE",
             f"/files/{params.file_id}",
@@ -259,6 +273,45 @@ class FileToolsService:
             expected_status=(204,),
         )
         return {"deleted": params.file_id}
+
+    async def _find_file_reference(self, file_id: str, *, access_token: str) -> str | None:
+        """Return the first manifest-declared business reference to ``file_id``.
+
+        A malformed response is treated as an unavailable reference check so
+        permanent deletion fails closed rather than risking an orphaned row.
+        """
+        for profile in self._profiles.values():
+            for relation in profile.relations:
+                if relation.preset not in {"file", "files"}:
+                    continue
+                file_filter: dict[str, Any]
+                if relation.preset == "files":
+                    if relation.junction is None:
+                        raise FileToolsError(
+                            "multi-file relation has no verified junction metadata",
+                            code="file_reference_check_failed",
+                        )
+                    file_filter = {relation.junction.target_field: {"_eq": file_id}}
+                else:
+                    file_filter = {"_eq": file_id}
+                payload = await self._transport.request(
+                    "GET",
+                    f"/items/{profile.collection}",
+                    access_token=access_token,
+                    query={
+                        "filter": {relation.field: file_filter},
+                        "fields": [profile.primary_key],
+                        "limit": 1,
+                    },
+                )
+                if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+                    raise FileToolsError(
+                        "Directus returned an invalid file reference response",
+                        code="file_reference_check_failed",
+                    )
+                if payload["data"]:
+                    return f"{profile.collection}.{relation.field}"
+        return None
 
     async def preset_preview(self, params: PresetPreviewParams) -> PresetPreviewResult:
         if params.preset_key not in APPROVED_ASSET_PRESETS:

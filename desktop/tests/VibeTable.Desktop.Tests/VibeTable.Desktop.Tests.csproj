@@ -12,7 +12,22 @@
     -->
   </PropertyGroup>
 
+  <!-- WPF windows and the WebView host are composition-heavy. Ratchet their
+       current executable line coverage without counting transitive libraries,
+       which have dedicated test projects and gates below. -->
+  <PropertyGroup Condition="'$(CollectCoverage)' == 'true'">
+    <Include>[VibeTable.Desktop]*,[VibeTable.PreviewHost]*</Include>
+    <SkipAutoProps>true</SkipAutoProps>
+    <Threshold>45</Threshold>
+    <ThresholdType>line</ThresholdType>
+    <ThresholdStat>total</ThresholdStat>
+  </PropertyGroup>
+
   <ItemGroup>
+    <PackageReference Include="coverlet.msbuild" Version="6.0.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="MSTest.TestAdapter" Version="4.2.3" />
     <PackageReference Include="MSTest.TestFramework" Version="4.2.3" />

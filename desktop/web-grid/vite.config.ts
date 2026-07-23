@@ -47,5 +47,28 @@ export default defineConfig({
     globals: false,
     include: ["src/**/*.test.ts"],
     setupFiles: ["src/test/setup.ts"],
+    coverage: {
+      provider: "v8",
+      reportsDirectory: "coverage",
+      reporter: ["text", "json-summary", "lcov"],
+      include: ["src/**/*.{ts,vue}"],
+      exclude: [
+        "src/**/*.test.ts",
+        "src/**/*.d.ts",
+        "src/test/**",
+        "src/main.ts",
+      ],
+      thresholds: {
+        // Application logic is already above the repository-wide 85% line
+        // target. Vue SFCs are tracked separately so the large, currently
+        // presentation-heavy view layer cannot make the logic gate meaningless.
+        "src/**/*.ts": {
+          lines: 85,
+        },
+        "src/**/*.vue": {
+          lines: 55,
+        },
+      },
+    },
   },
 });

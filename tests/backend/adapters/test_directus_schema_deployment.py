@@ -23,6 +23,7 @@ from backend.adapters.directus.schema_deployment import (
 from backend.contracts.schema_deployment import (
     ApplyOptions,
     DestructiveClassification,
+    SchemaAction,
     SchemaActionKind,
     SchemaActionType,
     SchemaDeploymentError,
@@ -333,3 +334,147 @@ async def test_apply_records_pre_apply_snapshot_hash() -> None:
 def test_deployer_requires_admin_token() -> None:
     with pytest.raises(ValueError, match="admin token"):
         SchemaDeployer(FakeTransport(), admin_token="")
+
+
+def test_plan_diff_rejects_malformed_snapshot_without_writes() -> None:
+    with pytest.raises(SchemaDeploymentError, match="collections"):
+        plan_diff({}, _snapshot({}))
+    plan = plan_diff(
+        {"collections": [None, {"collection": "", "fields": "invalid"}]},
+        _snapshot({}),
+    )
+    assert plan.actions == []
+
+
+@pytest.mark.asyncio
+async def test_destructive_apply_requires_reason_before_delete() -> None:
+    plan = plan_diff(
+        _snapshot({"obsolete": [_field("id", "uuid")]}),
+        _snapshot({}),
+    )
+    transport = FakeTransport(responses=[{"data": _snapshot({})}])
+    result = await SchemaDeployer(transport, "admin-token").apply(
+        plan,
+        ApplyOptions(
+            plan_hash=plan.plan_hash,
+            dry_run=False,
+            allow_destructive=True,
+        ),
+    )
+    assert result.applied == []
+    assert result.skipped == plan.actions
+    assert "documented reason" in result.errors[0]
+    assert [request["method"] for request in transport.requests] == ["GET"]
+
+
+@pytest.mark.asyncio
+async def test_documented_collection_drop_is_applied() -> None:
+    plan = plan_diff(
+        _snapshot({"obsolete": [_field("id", "uuid")]}),
+        _snapshot({}),
+    )
+    transport = FakeTransport(responses=[{"data": _snapshot({})}, {"data": {}}])
+    result = await SchemaDeployer(transport, "admin-token").apply(
+        plan,
+        ApplyOptions(
+            plan_hash=plan.plan_hash,
+            dry_run=False,
+            allow_destructive=True,
+            destructive_reason="approved backup and migration ticket",
+        ),
+    )
+    assert result.applied == plan.actions
+    assert transport.requests[-1]["method"] == "DELETE"
+    assert transport.requests[-1]["path"] == "/collections/obsolete"
+
+
+@pytest.mark.asyncio
+async def test_action_failure_is_reported_without_marking_applied() -> None:
+    action = SchemaAction(
+        kind=SchemaActionKind.FIELD,
+        action=SchemaActionType.CREATE,
+        target="items.new_field",
+        detail="new safe field",
+        classification=DestructiveClassification.SAFE,
+    )
+    plan = plan_diff(_snapshot({}), _snapshot({})).model_copy(
+        update={"actions": [action], "summary": {"safe": 1, "rejected": 0, "total": 1}}
+    )
+    plan = plan.model_copy(update={"plan_hash": plan.plan_hash})
+
+    class FailingTransport(FakeTransport):
+        async def request(self, method: str, path: str, **kwargs: Any) -> Any:
+            if method == "POST":
+                raise RuntimeError("injected schema write failure")
+            return await super().request(method, path, **kwargs)
+
+    transport = FailingTransport(responses=[{"data": _snapshot({})}])
+    result = await SchemaDeployer(transport, "admin-token").apply(
+        plan,
+        ApplyOptions(plan_hash=plan.plan_hash, dry_run=False),
+    )
+    assert result.applied == []
+    assert result.skipped == [action]
+    assert "injected schema write failure" in result.errors[0]
+
+
+def test_snapshot_normalization_ignores_malformed_fields() -> None:
+    current = {
+        "collections": [
+            {
+                "collection": "items",
+                "fields": [
+                    None,
+                    {"field": "", "type": "string"},
+                    {"field": "legacy", "type": "string"},
+                ],
+            }
+        ]
+    }
+    desired = {
+        "collections": [
+            {
+                "collection": "items",
+                "fields": [
+                    {"field": "legacy", "type": "text"},
+                ],
+            }
+        ]
+    }
+    plan = plan_diff(current, desired)
+    assert len(plan.actions) == 1
+    assert plan.actions[0].classification == DestructiveClassification.SAFE
+    assert (
+        plan_diff(
+            {"collections": [{"collection": "items", "fields": "invalid"}]},
+            {"collections": [{"collection": "items", "fields": "invalid"}]},
+        ).actions
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_snapshot_rejects_invalid_directus_payload() -> None:
+    deployer = SchemaDeployer(FakeTransport(responses=[{"data": []}]), "admin-token")
+    with pytest.raises(Exception, match="invalid schema snapshot"):
+        await deployer.snapshot()
+
+
+@pytest.mark.asyncio
+async def test_documented_field_drop_uses_exact_field_endpoint() -> None:
+    plan = plan_diff(
+        _snapshot({"items": [_field("id", "uuid"), _field("obsolete")]}),
+        _snapshot({"items": [_field("id", "uuid")]}),
+    )
+    transport = FakeTransport(responses=[{"data": _snapshot({})}, {"data": {}}])
+    result = await SchemaDeployer(transport, "admin-token").apply(
+        plan,
+        ApplyOptions(
+            plan_hash=plan.plan_hash,
+            dry_run=False,
+            allow_destructive=True,
+            destructive_reason="approved backup",
+        ),
+    )
+    assert result.applied == plan.actions
+    assert transport.requests[-1]["path"] == "/fields/items/obsolete"

@@ -8,6 +8,7 @@ flow against a faked bulk-mutation client.
 from __future__ import annotations
 
 import csv
+from datetime import date, datetime
 from typing import Any
 
 import pytest
@@ -17,6 +18,7 @@ from backend.adapters.directus.client import DirectusClient
 from backend.adapters.directus.errors import DirectusTransportError
 from backend.adapters.directus.profile import CapabilityManifest, CollectionProfile
 from backend.application.import_service import (
+    ImportFlowError,
     ImportService,
     RelationImportBatchResult,
     RelationImportTarget,
@@ -201,6 +203,23 @@ def test_parse_date_excel_serial() -> None:
     assert ok
     assert value is not None
     assert value.startswith("2026-")
+    assert parse_date(46281, date_type="datetime")[1].startswith("2026-")
+
+
+def test_parse_date_typed_values_and_datetime_mode() -> None:
+    assert parse_date(date(2026, 7, 23)) == (True, "2026-07-23", None)
+    assert parse_date(datetime(2026, 7, 23, 9, 30), date_type="date") == (
+        True,
+        "2026-07-23",
+        None,
+    )
+    assert parse_date(datetime(2026, 7, 23, 9, 30), date_type="datetime") == (
+        True,
+        "2026-07-23 09:30:00",
+        None,
+    )
+    assert parse_date("2026-07-23 09:30:00", date_type="datetime")[0] is True
+    assert parse_date(float("inf"))[0] is False
 
 
 def test_clean_currency_strips_symbols() -> None:
@@ -215,6 +234,30 @@ def test_parse_number_integer_and_decimal() -> None:
     ok, _value, error = parse_number("abc")
     assert not ok
     assert error
+
+
+def test_numeric_and_choice_edges() -> None:
+    assert parse_number(None) == (True, None, None)
+    assert parse_number(12.8, integer=True) == (True, 12, None)
+    assert clean_currency(None) == ""
+    ok, value, error = validate_choice("missing", [str(index) for index in range(12)])
+    assert ok is False
+    assert value is None
+    assert error is not None
+    assert "12 total" in error
+
+
+def test_import_error_exposes_only_structured_rpc_data() -> None:
+    error = ImportFlowError(
+        "row failed",
+        code="import_row_failed",
+        data={"row": 7, "internal": "redacted-by-caller"},
+    )
+    assert error.rpc_error_data == {
+        "code": "import_row_failed",
+        "row": 7,
+        "internal": "redacted-by-caller",
+    }
 
 
 def test_validate_choice_strict() -> None:
@@ -246,6 +289,78 @@ def test_source_file_rejects_unsupported_format(tmp_path: Any) -> None:
     path.write_text("x")
     with pytest.raises(Exception, match="unsupported"):
         SourceFile(str(path)).read_header_and_rows()
+
+
+def test_source_file_reads_xlsx_named_sheet_with_row_limit(tmp_path: Any) -> None:
+    from openpyxl import Workbook
+
+    path = tmp_path / "contracts.xlsx"
+    workbook = Workbook()
+    active = workbook.active
+    assert active is not None
+    active.title = "ignored"
+    selected = workbook.create_sheet("contracts")
+    selected.append(["number", "title"])
+    selected.append(["A-1", "Alpha"])
+    selected.append(["A-2", "Beta"])
+    workbook.save(path)
+    workbook.close()
+
+    header, rows, source_hash = SourceFile(str(path)).read_header_and_rows(
+        max_rows=1,
+        sheet="contracts",
+    )
+    assert header == ["number", "title"]
+    assert rows == [["A-1", "Alpha"]]
+    assert len(source_hash) == 64
+
+
+def test_source_file_empty_xlsx_is_safe(tmp_path: Any) -> None:
+    from openpyxl import Workbook
+
+    path = tmp_path / "empty.xlsx"
+    workbook = Workbook()
+    workbook.save(path)
+    workbook.close()
+    assert SourceFile(str(path)).read_header_and_rows()[:2] == ([], [])
+
+
+def test_source_file_empty_csv_is_safe(tmp_path: Any) -> None:
+    path = tmp_path / "empty.csv"
+    path.write_text("", encoding="utf-8")
+    assert SourceFile(str(path)).read_header_and_rows()[:2] == ([], [])
+
+
+def test_source_file_csv_row_limit_stops_before_extra_data(tmp_path: Any) -> None:
+    path = tmp_path / "limited.csv"
+    _write_csv(str(path), ["number"], [["A-1"], ["A-2"]])
+    assert SourceFile(str(path)).read_header_and_rows(max_rows=1)[1] == [["A-1"]]
+
+
+def test_service_normalizes_relation_and_scalar_fields() -> None:
+    manifest = _relation_manifest()
+    service = _service(FakeTransport([]), manifest, "")
+    profile = _profile(manifest)
+    relations = {relation.field: relation for relation in profile.relations}
+
+    assert service._normalize("contract", "", profile, relations) == (True, None, None)
+    assert service._normalize("contract", "  c-1  ", profile, relations) == (
+        True,
+        "c-1",
+        None,
+    )
+    assert service._normalize("signed_on", "2026-07-23", profile, relations)[1] == "2026-07-23"
+    assert service._normalize("amount", "￥12.50", profile, relations)[1] == 12.5
+    assert service._normalize("sort", "7", profile, relations)[1] == 7
+    assert service._normalize("title", None, profile, relations) == (True, None, None)
+    assert service._normalize("title", 7.0, profile, relations) == (True, "7", None)
+    assert service._normalize("title", "  safe  ", profile, relations) == (
+        True,
+        "safe",
+        None,
+    )
+    with pytest.raises(Exception, match="not in capability manifest"):
+        service._profile("missing")
 
 
 # ---------------------------------------------------------------------------
