@@ -34,6 +34,7 @@ import type {
 import { tabulatorEditor, validateLocally } from "./editorFactory";
 import type { CalendarDateEditor } from "./calendarDateEditor";
 import { lookupFormatter, relationFormatter } from "./relationLookupRenderer";
+import { t } from "@/i18n";
 
 /**
  * The hidden `rowKey` field name in the host/WebView contract.
@@ -42,6 +43,33 @@ import { lookupFormatter, relationFormatter } from "./relationLookupRenderer";
 export const ROW_KEY_FIELD = "rowKey";
 /** Synthetic narrow row-number column used for explicit whole-row selection. */
 export const ROW_NUMBER_FIELD = "__vt_row_number";
+
+/**
+ * Preserve a readable scan width for each product field family. Tabulator's
+ * `fitColumns` layout respects these floors and exposes horizontal scrolling
+ * once the combined minimum width exceeds the viewport.
+ */
+function columnMinWidth(column: ColumnSchema): number {
+  if (column.kind === "attachment") return 190;
+  if (column.kind === "relation" || column.kind === "lookup") return 170;
+  switch (column.dataType) {
+    case "boolean":
+      return 100;
+    case "integer":
+    case "decimal":
+    case "time":
+      return 120;
+    case "date":
+      return 132;
+    case "datetime":
+      return 180;
+    case "json":
+      return 190;
+    case "text":
+    default:
+      return 160;
+  }
+}
 
 /** A Tabulator column definition (structural — we only set what we use). */
 export interface GridColumnDefinition {
@@ -64,7 +92,7 @@ export interface GridColumnDefinition {
     | "tickCross"
     | "datetime"
     | "rownum"
-    | ((cell: { getValue(): unknown }) => HTMLElement);
+    | GridCellFormatter;
   readonly formatterParams?: Record<string, unknown>;
   /** Whether NULL is allowed (display hint). */
   readonly nullable?: boolean;
@@ -81,6 +109,9 @@ export interface GridColumnDefinition {
   readonly frozen?: boolean;
   readonly headerSort?: boolean;
   readonly headerFilter?: boolean | string;
+  readonly headerFilterPlaceholder?: string;
+  readonly headerFilterParams?: Record<string, unknown>;
+  readonly headerFilterFunc?: (headerValue: unknown, rowValue: unknown) => boolean;
   readonly resizable?: boolean;
   readonly hozAlign?: "left" | "center" | "right";
   readonly cssClass?: string;
@@ -100,6 +131,10 @@ export interface RelationLookupGridContext {
     value: unknown,
   ) => void;
   readonly onLookupSourceRequested?: (source: LookupValueProvenance) => void;
+  readonly onAttachmentOpenRequested?: (
+    rowKey: string | number,
+    column: ColumnSchema,
+  ) => void;
 }
 
 /**
@@ -112,6 +147,7 @@ export type CellEditedHandler = (
   column: string,
   oldValue: unknown,
   newValue: unknown,
+  expectedDigest: string | null,
 ) => void;
 
 /**
@@ -132,6 +168,33 @@ interface TabulatorCellLike {
   getValue(): unknown;
   setValue(value: unknown): void;
   getRow(): { getData(): Record<string, unknown> };
+  getElement?(): HTMLElement;
+}
+
+type GridCellFormatter = (
+  cell: TabulatorCellLike,
+  formatterParams?: Record<string, unknown>,
+  onRendered?: (callback: () => void) => void,
+) => HTMLElement;
+
+function interactiveFormatter(
+  formatter: (cell: { getValue(): unknown }) => HTMLElement,
+  label: string,
+): GridCellFormatter {
+  return (cell, _formatterParams, onRendered) => {
+    const configureCell = () => {
+      const element = cell.getElement?.();
+      if (!element) return;
+      element.tabIndex = 0;
+      element.classList.add("vt-structured-cell");
+      element.setAttribute("aria-label", label);
+      element.setAttribute("aria-haspopup", "dialog");
+      element.setAttribute("aria-keyshortcuts", "Enter Space Shift+F10");
+    };
+    if (onRendered) onRendered(configureCell);
+    else configureCell();
+    return formatter(cell);
+  };
 }
 
 /**
@@ -141,10 +204,10 @@ interface TabulatorCellLike {
  * test exercises this directly.
  *
  * When `editSchema` is provided, each column whose matching `ColumnEditSchema`
- * entry is `editable:true` AND whose `editor.kind !== "multi_select"` gets a
- * Tabulator editor attached. multi_select columns degrade to read-only
- * (web-grid ships no host dialog for them); columns absent from `editSchema`
- * or flagged `editable:false` stay read-only.
+ * entry is `editable:true` gets a Tabulator editor attached. JSON uses the
+ * structured modal owned by WorkspaceView and therefore stays read-only in
+ * Tabulator itself; columns absent from `editSchema` or flagged
+ * `editable:false` stay read-only.
  */
 export function buildColumns(
   page: TablePage,
@@ -156,6 +219,11 @@ export function buildColumns(
   );
   const dataColumns = page.columns.map((col) => {
     const def = toColumnDef(col, relationLookup);
+    // Managed attachments are edited exclusively through the native File
+    // boundary in WorkspaceView.  The host edit schema describes their
+    // underlying storage as text, but that must never replace the attachment
+    // formatter/double-click action with Tabulator's scalar text editor.
+    if (col.kind === "attachment") return { ...def, editable: false };
     if (col.kind === "lookup") return { ...def, editable: false };
     if (col.kind === "relation") {
       const relation = col.relationId ? relationLookup?.relations.get(col.relationId) : undefined;
@@ -171,6 +239,10 @@ export function buildColumns(
         editable: false,
         ...(editable ? {
           cssClass: "vt-relation-cell vt-relation-cell--editable",
+          formatter: interactiveFormatter(
+            def.formatter as (cell: { getValue(): unknown }) => HTMLElement,
+            t("grid.cell.editRelation", { column: col.title }),
+          ),
           cellDblClick: (_event: MouseEvent, cell: TabulatorCellLike) => {
             const rowKey = cell.getRow().getData()[ROW_KEY_FIELD] as string | number;
             relationLookup.onRelationEditRequested?.(rowKey, col.name, relation, cell.getValue());
@@ -179,8 +251,23 @@ export function buildColumns(
       };
     }
     const edit = editByName.get(col.name);
-    // multi_select degrades: no host dialog in web-grid (spec §7.3).
-    const editable = !!edit?.editable && edit.editor.kind !== "multi_select";
+    if (col.dataType === "json") {
+      const editable = !!edit?.editable;
+      return {
+        ...def,
+        editable: false,
+        ...(editable
+          ? {
+              cssClass: "vt-json-cell vt-structured-cell",
+              formatter: interactiveFormatter(
+                def.formatter as (cell: { getValue(): unknown }) => HTMLElement,
+                t("grid.cell.editJson", { column: col.title }),
+              ),
+            }
+          : {}),
+      };
+    }
+    const editable = !!edit?.editable && edit.editor.kind !== "json";
     if (editable && edit) {
       const ed = tabulatorEditor(edit.editor);
       return {
@@ -218,6 +305,20 @@ export function buildGridColumns(
   return [rowNumber, ...buildColumns(page, editSchema, relationLookup)];
 }
 
+/**
+ * Convert product column definitions to the exact Tabulator surface.
+ * Product-only metadata must never cross this boundary: Tabulator logs a
+ * warning for every unknown key and obscures real renderer diagnostics.
+ */
+export function buildTabulatorColumns(
+  page: TablePage,
+  editSchema?: readonly ColumnEditSchema[] | null,
+  relationLookup?: RelationLookupGridContext | null,
+): Array<Omit<GridColumnDefinition, "dataType" | "nullable">> {
+  return buildGridColumns(page, editSchema, relationLookup)
+    .map(({ dataType: _dataType, nullable: _nullable, ...column }) => column);
+}
+
 function toColumnDef(
   col: ColumnSchema,
   relationLookup?: RelationLookupGridContext | null,
@@ -231,10 +332,44 @@ function toColumnDef(
     title: col.title,
     editable: false,
     dataType: col.dataType,
+    minWidth: columnMinWidth(col),
     headerFilter: "input",
+    headerFilterPlaceholder: t("grid.filter.placeholder"),
+    headerFilterParams: {
+      elementAttributes: {
+        "aria-label": t("grid.filter.ariaLabel", { column: col.title }),
+      },
+    },
     ...(col.nullable !== undefined ? { nullable: col.nullable } : {}),
   };
 
+  if (col.kind === "attachment") {
+    const actionable = !!(
+      col.attachmentPolicy
+      && relationLookup?.onAttachmentOpenRequested
+    );
+    return {
+      ...def,
+      editable: false,
+      formatter: actionable
+        ? interactiveFormatter(
+            attachmentFormatter,
+            t("grid.cell.openAttachment", { column: col.title }),
+          )
+        : attachmentFormatter,
+      cssClass: actionable
+        ? "vt-attachment-cell vt-structured-cell"
+        : "vt-attachment-cell",
+      ...(actionable
+        ? {
+            cellDblClick: (_event: MouseEvent, cell: TabulatorCellLike) => {
+              const rowKey = cell.getRow().getData()[ROW_KEY_FIELD] as string | number;
+              relationLookup.onAttachmentOpenRequested?.(rowKey, col);
+            },
+          }
+        : {}),
+    };
+  }
   if (col.kind === "relation") {
     const relation = col.relationId ? relationLookup?.relations.get(col.relationId) : undefined;
     return {
@@ -244,7 +379,7 @@ function toColumnDef(
         : () => {
             const node = document.createElement("span");
             node.className = "vt-lookup-state vt-lookup-state--invalid";
-            node.textContent = "关系无效";
+            node.textContent = t("grid.relation.invalid");
             return node;
           },
     };
@@ -270,7 +405,7 @@ function toColumnDef(
     case "decimal":
       // Show numeric value with a thousands separator but DO NOT round or
       // re-store. Tabulator's "money" formatter reads-only. Precision follows
-      // the column's declared scale when Directus reports one (e.g. 2 for a
+      // the column's declared scale when the product schema reports one (e.g. 2 for a
       // money column), falling back to 6 so high-precision values are not
       // truncated on display.
       return {
@@ -286,14 +421,147 @@ function toColumnDef(
       return { ...def, formatter: "tickCross" };
     case "date":
     case "datetime":
-      return { ...def, formatter: "datetime" };
+      return { ...def, formatter: temporalValueFormatter };
     case "time":
       return { ...def, formatter: "plaintext" };
+    case "json":
+      return {
+        ...def,
+        formatter: jsonValueFormatter,
+        headerFilterFunc: jsonHeaderFilter,
+        cssClass: "vt-json-cell",
+      };
     case "integer":
     case "text":
     default:
       return { ...def, formatter: "plaintext" };
   }
+}
+
+/**
+ * Match structured values by their provider-neutral JSON representation.
+ *
+ * Tabulator's default text filter coerces objects to `[object Object]`, which
+ * makes nested values impossible to find. Serialization is read-only and
+ * guarded so malformed/cyclic host values cannot break grid filtering.
+ */
+export function jsonHeaderFilter(headerValue: unknown, rowValue: unknown): boolean {
+  const needle = String(headerValue ?? "").trim().toLocaleLowerCase();
+  if (!needle) return true;
+  try {
+    const serialized = JSON.stringify(rowValue);
+    return typeof serialized === "string"
+      && serialized.toLocaleLowerCase().includes(needle);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Render structured values as a compact, safe summary.
+ *
+ * `textContent` is used exclusively: user-provided JSON can never become HTML.
+ * The raw value stays untouched so double-click editing continues to receive
+ * the original object/array instead of a display string.
+ */
+export function jsonValueFormatter(cell: { getValue(): unknown }): HTMLElement {
+  const value = cell.getValue();
+  const element = document.createElement("span");
+  element.className = "vt-json-value";
+
+  if (value == null) {
+    element.classList.add("vt-cell-empty");
+    element.textContent = "—";
+    element.title = t("grid.json.empty");
+    return element;
+  }
+
+  if (Array.isArray(value)) {
+    element.textContent = `[…] · ${t("grid.json.items", { count: value.length })}`;
+  } else if (typeof value === "object") {
+    element.textContent = `{…} · ${t("grid.json.keys", { count: Object.keys(value).length })}`;
+  } else {
+    element.textContent = String(value);
+  }
+
+  try {
+    const serialized = JSON.stringify(value);
+    element.title = serialized.length > 2000
+      ? `${serialized.slice(0, 1999)}…`
+      : serialized;
+  } catch {
+    element.title = String(value);
+  }
+  return element;
+}
+
+/**
+ * Render date/date-time values without Tabulator's optional Luxon dependency.
+ *
+ * The formatter deliberately preserves the provider's timezone and precision
+ * instead of round-tripping through `Date`, which could silently shift values
+ * into the workstation timezone. It only normalizes the ISO `T` separator for
+ * compact table readability and never changes the underlying cell value.
+ */
+export function temporalValueFormatter(
+  cell: { getValue(): unknown },
+): HTMLElement {
+  const value = cell.getValue();
+  const element = document.createElement("span");
+  element.className = "vt-temporal-value";
+  if (value == null || value === "") {
+    element.classList.add("vt-cell-empty");
+    element.textContent = "—";
+    return element;
+  }
+  const raw = String(value);
+  element.textContent = raw.replace(
+    /^(\d{4}-\d{2}-\d{2})T(?=\d{2}:\d{2})/u,
+    "$1 ",
+  );
+  element.title = raw;
+  return element;
+}
+
+function attachmentFormatter(cell: { getValue(): unknown }): HTMLElement {
+  const value = cell.getValue();
+  const entries = Array.isArray(value)
+    ? value
+    : value == null || value === ""
+      ? []
+      : [value];
+  const labels = entries.map((entry) => {
+    if (typeof entry === "string") return entry;
+    if (entry && typeof entry === "object") {
+      const ref = entry as {
+        readonly originalName?: unknown;
+        readonly storedName?: unknown;
+      };
+      if (typeof ref.originalName === "string") return ref.originalName;
+      if (typeof ref.storedName === "string") return ref.storedName;
+    }
+    return t("grid.attachment.fallbackName");
+  });
+  const element = document.createElement("span");
+  element.className = "vt-attachment-summary";
+  const icon = document.createElement("span");
+  icon.className = labels.length
+    ? "vt-attachment-summary__icon vt-attachment-summary__icon--existing"
+    : "vt-attachment-summary__icon vt-attachment-summary__icon--add";
+  icon.setAttribute("aria-hidden", "true");
+  const label = document.createElement("span");
+  label.className = "vt-attachment-summary__label";
+  label.textContent = labels.length
+    ? t("grid.attachment.summary", {
+        count: labels.length,
+        names: labels.join(t("grid.listSeparator")),
+      })
+    : t("grid.attachment.add");
+  element.append(icon, label);
+  element.title = labels.length
+    ? `${labels.join("\n")}\n${t("grid.attachment.openHint")}`
+    : t("grid.attachment.openHint");
+  return element;
 }
 
 /**
@@ -310,6 +578,62 @@ function toColumnDef(
  * the number of in-flight edits (typically one).
  */
 const editingOldValues = new Map<string, unknown>();
+const editingExpectedDigests = new Map<string, string | null>();
+
+export function buildEditEventHandlers(
+  editSchema: readonly ColumnEditSchema[] | null | undefined,
+  onCellEdited?: CellEditedHandler,
+  onValidationError?: CellValidationErrorHandler,
+): {
+  cellEditing: (cell: TabulatorCellLike) => void;
+  cellEdited: (cell: TabulatorCellLike) => void;
+} | null {
+  if (!onCellEdited) return null;
+  const editByName = new Map(
+    (editSchema ?? []).map((column) => [column.name, column] as const),
+  );
+  return {
+    cellEditing: (cell) => {
+      const row = cell.getRow().getData();
+      const rowKey = row[ROW_KEY_FIELD] as number | string;
+      const key = `${rowKey}:${cell.getField()}`;
+      const digest = row.__vibetableDigest;
+      editingOldValues.set(key, cell.getValue());
+      editingExpectedDigests.set(
+        key,
+        typeof digest === "string" && /^sha256:[0-9a-f]{64}$/u.test(digest)
+          ? digest
+          : null,
+      );
+    },
+    cellEdited: (cell) => {
+      const row = cell.getRow().getData();
+      const rowKey = row[ROW_KEY_FIELD] as number | string;
+      const field = cell.getField();
+      const key = `${rowKey}:${field}`;
+      const oldValue = editingOldValues.get(key);
+      const expectedDigest = editingExpectedDigests.get(key) ?? null;
+      editingOldValues.delete(key);
+      editingExpectedDigests.delete(key);
+      const newValue = cell.getValue();
+      const editCol = editByName.get(field);
+      if (editCol) {
+        const result = validateLocally(
+          editCol.editor,
+          editCol.validation,
+          newValue,
+          editCol.nullable,
+        );
+        if (!result.ok) {
+          cell.setValue(oldValue);
+          onValidationError?.(rowKey, field, result.error ?? "invalid value");
+          return;
+        }
+      }
+      onCellEdited(rowKey, field, oldValue, newValue, expectedDigest);
+    },
+  };
+}
 
 /**
  * Build Tabulator options for a grid that is read-only unless `onCellEdited`
@@ -340,23 +664,39 @@ export function buildOptions(
   // Defensive copy of rows so external mutation cannot leak back into the
   // caller's TablePage. Values (incl. decimals) are NOT transformed.
   const data = page.rows.map((row) => ({ ...row }));
-
-  const onCellEdited = opts?.onCellEdited;
-  const onValidationError = opts?.onValidationError;
-  // Column editor lookup so cellEdited can validate against the column's
-  // scale/precision before forwarding to the mutation service. Built once here
-  // and shared with buildColumns above.
-  const editByName = new Map(
-    (opts?.editSchema ?? []).map((c) => [c.name, c] as const),
+  // `dataType` and `nullable` are VibeTable metadata used while constructing
+  // editors/formatters; they are not Tabulator column options. Passing them to
+  // Tabulator produces runtime warnings for every refresh, so strip them at
+  // the library boundary after the product-specific column has been built.
+  const columns = buildTabulatorColumns(
+    page,
+    opts?.editSchema,
+    opts?.relationLookup,
   );
 
   const options: TabulatorOptions = {
-    columns: buildGridColumns(page, opts?.editSchema, opts?.relationLookup) as unknown[],
+    columns: columns as unknown[],
     data,
     index: ROW_KEY_FIELD,
     layout: "fitColumns",
+    placeholder: t("grid.empty"),
+    // Keep menus/edit popups inside the grid so scoped light/dark product
+    // theming applies instead of falling back to document.body defaults.
+    popupContainer: true,
+    // Range selection consumes the default focus interaction. Keep editing
+    // explicit and deterministic: a deliberate double click opens the editor.
+    editTriggerEvent: "dblclick",
     // Read-only Phase A:
     selectableRange: true, // highlight ranges; copy via host later
+    // Avoid synthetic focus while Tabulator is constructing replacement cells
+    // during setColumns. Deliberate pointer/keyboard range interaction still
+    // focuses its target, while table loads and locale rebuilds no longer
+    // create a DOM Selection against a not-yet-attached cell.
+    selectableRangeAutoFocus: false,
+    // Treat the first synthetic row-number column as the official range row
+    // header. This enables whole-row selection and makes the single frozen
+    // column a supported Tabulator configuration.
+    selectableRangeRows: true,
     clipboard: false, // paste disabled (Phase B2)
     // Explicitly do NOT register a paste action.
     clipboardPasteAction: undefined,
@@ -366,50 +706,6 @@ export function buildOptions(
     // reorder the currently loaded page. useTabulator forwards the events to
     // the host/Lookup authoritative full-dataset query pipeline.
     ...(page.mode === "remote" ? { sortMode: "remote", filterMode: "remote" } : {}),
-    // Task M3: editable grid wiring. Only registered when the caller cares
-    // about edits (keeps the read-only Phase-A options object clean).
-    ...(onCellEdited
-      ? {
-          // cellEditing fires BEFORE Tabulator commits the new value, so the
-          // cell still holds the OLD value. Cache it for cellEdited.
-          cellEditing: (cell: TabulatorCellLike) => {
-            const row = cell.getRow().getData();
-            const rowKey = row[ROW_KEY_FIELD] as number | string;
-            editingOldValues.set(`${rowKey}:${cell.getField()}`, cell.getValue());
-          },
-          // cellEdited fires AFTER the value is committed; oldValue is gone
-          // from the cell, so retrieve it from the cache built in cellEditing.
-          cellEdited: (cell: TabulatorCellLike) => {
-            const row = cell.getRow().getData();
-            const rowKey = row[ROW_KEY_FIELD] as number | string;
-            const field = cell.getField();
-            const key = `${rowKey}:${field}`;
-            const oldValue = editingOldValues.get(key);
-            editingOldValues.delete(key);
-            const newValue = cell.getValue();
-
-            // Validate locally BEFORE forwarding. This blocks edits that the DB
-            // would silently truncate (e.g. 3.14159 into a 2-digit decimal
-            // column) and rolls the cell back to its pre-edit value. The host's
-            // authoritative validation still runs server-side as a backstop.
-            const editCol = editByName.get(field);
-            if (editCol) {
-              const result = validateLocally(
-                editCol.editor,
-                editCol.validation,
-                newValue,
-                editCol.nullable,
-              );
-              if (!result.ok) {
-                cell.setValue(oldValue);
-                onValidationError?.(rowKey, field, result.error ?? "invalid value");
-                return;
-              }
-            }
-            onCellEdited(rowKey, field, oldValue, newValue);
-          },
-        }
-      : {}),
   };
 
   // Strip the undefined keys so the object is clean for assertion & wire.
@@ -436,7 +732,20 @@ export function createGrid(
   const options = buildOptions(page, opts);
   // Cast: our minimal ambient TabulatorOptions is intentionally permissive;
   // Tabulator's real options object is far larger than Phase A needs.
-  return new TabulatorFull(element, options);
+  const grid = new TabulatorFull(element, options);
+  const editHandlers = buildEditEventHandlers(
+    opts?.editSchema,
+    opts?.onCellEdited,
+    opts?.onValidationError,
+  );
+  if (editHandlers) {
+    const eventGrid = grid as unknown as {
+      on(event: string, handler: (cell: TabulatorCellLike) => void): void;
+    };
+    eventGrid.on("cellEditing", editHandlers.cellEditing);
+    eventGrid.on("cellEdited", editHandlers.cellEdited);
+  }
+  return grid;
 }
 
 // ---------------------------------------------------------------------------

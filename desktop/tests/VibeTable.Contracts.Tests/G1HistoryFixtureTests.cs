@@ -44,6 +44,7 @@ public sealed class G1HistoryFixtureTests
         Assert.IsNotNull(page);
         var cs = page!.ChangeSets[0];
         Assert.AreEqual("update", cs.Action);
+        Assert.AreEqual("change-set-10", cs.ChangeSetId);
         Assert.AreEqual("Ada Lovelace", cs.Actor?.DisplayName);
         Assert.AreEqual(2, cs.ScalarChanges.Count);
         Assert.AreEqual(1, cs.RelationChanges.Count);
@@ -130,7 +131,7 @@ public sealed class G1HistoryFixtureTests
             {
               "collection":"projects","itemId":null,"scope":"table","field":null,
               "changeSets":[{
-                "rootRevisionId":"rev-2","activityId":"act-1","action":"update",
+                "rootRevisionId":"rev-2","changeSetId":"change-set-2","activityId":"act-1","action":"update",
                 "timestamp":"2026-07-22T00:00:00Z",
                 "actor":{"userId":"u-1","displayName":"User"},
                 "scalarChanges":[],"relationChanges":[],

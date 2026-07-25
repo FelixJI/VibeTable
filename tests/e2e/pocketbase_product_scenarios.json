@@ -1,0 +1,62 @@
+[
+  {
+    "id": "01-offline-first-start",
+    "title": "干净数据目录离线首次启动",
+    "requirement": "真实发布包在独立数据目录启动，WPF、Python、PocketBase、WebView2 与 renderer 全部就绪；renderer 不直接外联，VibeTable 自有进程仅使用 loopback。WebView2 Runtime 后台流量单独留证但不作为产品外联。"
+  },
+  {
+    "id": "02-all-field-schema",
+    "title": "全部字段家族与约束建表",
+    "requirement": "通过建表 UI 创建 scalar、relation、lookup、formula、attachment、system 六个字段家族并落地约束。"
+  },
+  {
+    "id": "03-schema-errors",
+    "title": "前端与服务端 schema 错误路径一致",
+    "requirement": "前端阻止无效 schema 提交；直接走同一封闭 bridge 请求时，服务端返回相同字段路径。"
+  },
+  {
+    "id": "04-json-round-trip",
+    "title": "JSON 编辑、筛选、粘贴、导入与导出不变",
+    "requirement": "JSON 值经结构化编辑、剪贴板粘贴、host picker 导入和导出后，与权威查询做规范化深比较并保持完全一致。"
+  },
+  {
+    "id": "05-formula-lifecycle",
+    "title": "公式预览、保存、依赖更新与循环错误",
+    "requirement": "公式 UI 实时预览，保存后依赖变化触发重算，循环依赖显示字段级错误。"
+  },
+  {
+    "id": "06-relation-fanout",
+    "title": "关系更新触发跨记录公式重算",
+    "requirement": "通过关系编辑 UI 更新目标记录后，所有依赖记录的公式值在界面上更新。"
+  },
+  {
+    "id": "07-attachment-history",
+    "title": "附件全生命周期与历史恢复",
+    "requirement": "通过 host picker 上传和替换附件，验证实际预览产物字节长度与 SHA-256，并从历史恢复旧版本。"
+  },
+  {
+    "id": "08-stale-conflict",
+    "title": "两次过期编辑显示明确冲突",
+    "requirement": "两个基于同一旧版本的编辑中，后提交者看到可操作的显式冲突，且不会静默覆盖。"
+  },
+  {
+    "id": "09-atomic-import-scale",
+    "title": "粘贴或导入中途失败无半提交",
+    "requirement": "1,000 行单事务导入在中途故障后，业务记录、审计、幂等键和 outbox 均严格为零。"
+  },
+  {
+    "id": "10-sse-reconnect",
+    "title": "SSE 断线重连且不重复应用",
+    "requirement": "真实 sidecar 断开再恢复后 UI 自动追赶，事件只应用一次。"
+  },
+  {
+    "id": "11-plugin-mutation",
+    "title": "插件 mutation plan 与越权拒绝",
+    "requirement": "插件操作先显示 mutation plan；授权变更成功，未授权字段或能力被拒绝并写入审计。"
+  },
+  {
+    "id": "12-backup-consistency",
+    "title": "备份恢复后的全量一致性",
+    "requirement": "从产品入口备份并恢复后，记录、公式、附件内容/摘要及规范化审计快照精确一致。"
+  }
+]

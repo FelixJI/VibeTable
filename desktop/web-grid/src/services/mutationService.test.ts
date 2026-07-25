@@ -63,8 +63,31 @@ describe("mutationService", () => {
       column: "name",
       oldValue: "old",
       newValue: "new",
+      expectedDigest: null,
       schemaRevision: "sr1",
     });
+  });
+
+  it("updateCell preserves the digest captured when editing began", () => {
+    const { bridge } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const spy = vi.spyOn(bridge, "notify");
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    const digest = `sha256:${"b".repeat(64)}`;
+    ws.selectTable("users");
+    table.setEditSchema([], {
+      databaseSessionId: "s",
+      schemaRevision: "sr1",
+      dataRevision: 1,
+    });
+
+    useMutationService().updateCell(5, "name", "old", "new", digest);
+
+    expect(spy).toHaveBeenCalledWith(
+      "table.updateCellRequested",
+      expect.objectContaining({ expectedDigest: digest }),
+    );
   });
 
   it("on editCommitted, applies edit + pushes undoable history entry", () => {
@@ -93,6 +116,39 @@ describe("mutationService", () => {
     });
     expect(table.allRows[0]?.name).toBe("new");
     expect(history.canUndo).toBe(true);
+  });
+
+  it("rolls back a rejected edit locally without entering table error state", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    table.beginLoad();
+    table.appendPage({
+      table: "u",
+      columns: [],
+      rows: [{ rowKey: 1, name: "optimistic" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    const onRejected = vi.fn();
+    const svc = useMutationService();
+    svc.init(onRejected);
+    svc.updateCell(1, "name", "before", "optimistic");
+
+    emit("table.editRejected", {
+      kind: "edit_conflict",
+      message: "The row changed before the edit could be applied.",
+      currentRow: { rowKey: 1, name: "authoritative" },
+      conflictingRowKeys: [1],
+    });
+
+    expect(table.error).toBeNull();
+    expect(table.allRows[0]?.name).toBe("authoritative");
+    expect(onRejected).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "edit_conflict" }),
+    );
   });
 
   it("on rowsDeleted, applies delete + pushes history with cached snapshot", async () => {
@@ -130,10 +186,24 @@ describe("mutationService", () => {
     });
     expect(table.allRows).toHaveLength(1);
     expect(history.canUndo).toBe(true);
-    // undo re-inserts the deleted row (via insertRowRequested notify).
+    vi.spyOn(bridge, "notify").mockImplementation((type) => {
+      if (type === "table.insertRowRequested") {
+        queueMicrotask(() => {
+          emit("table.rowsInserted", {
+            rowKey: 2,
+            row: { rowKey: 2, name: "b" },
+            revision: {
+              databaseSessionId: "s",
+              schemaRevision: "sr",
+              dataRevision: 3,
+            },
+          });
+        });
+      }
+    });
+    // Undo does not complete until the host confirms the inserted row.
     await history.undo();
-    // The undo handler issues a notify; it does NOT directly mutate the store.
-    // After undo, the history entry has moved to the redo stack.
+    expect(table.allRows).toHaveLength(2);
     expect(history.canRedo).toBe(true);
   });
 
@@ -277,6 +347,23 @@ describe("mutationService", () => {
       revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
     });
     const beforeUndo = history.undoStackSize;
+    vi.spyOn(bridge, "notify").mockImplementation((type) => {
+      if (type === "table.updateCellRequested") {
+        queueMicrotask(() => {
+          emit("table.editCommitted", {
+            rowKey: 1,
+            column: "name",
+            storedValue: "old",
+            currentRow: { rowKey: 1, name: "old" },
+            revision: {
+              databaseSessionId: "s",
+              schemaRevision: "sr",
+              dataRevision: 3,
+            },
+          });
+        });
+      }
+    });
     await svc.performUndo();
     expect(history.undoStackSize).toBe(beforeUndo - 1);
     expect(history.canRedo).toBe(true);
@@ -396,12 +483,11 @@ describe("mutationService", () => {
     });
 
     await svc.performUndo();
-    // Note: history.undo() popped the entry but the undo closure's notify
-    // was stubbed; entry is now on the redo stack. The host then fails.
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(history.lastError).toBe("host rejected undo");
+    expect(history.undoStackSize).toBe(1);
+    expect(history.canRedo).toBe(false);
 
-    // operation.failed cleared the suppress guard. The NEXT user edit must
-    // be recorded normally (not silently swallowed).
+    // The failed entry remains retryable, and the next user edit is recorded.
     emit("table.editCommitted", {
       rowKey: 1,
       column: "name",
@@ -413,7 +499,7 @@ describe("mutationService", () => {
         dataRevision: 4,
       },
     });
-    expect(history.undoStackSize).toBe(1);
+    expect(history.undoStackSize).toBe(2);
     expect(table.allRows[0]?.name).toBe("user-typed");
   });
 
@@ -448,6 +534,22 @@ describe("mutationService", () => {
     setHostBridgeForTesting(bridge);
     const ws = useWorkspaceStore();
     ws.selectTable("u");
+    const table = useTableStore();
+    const digestA = `sha256:${"a".repeat(64)}`;
+    const digestB = `sha256:${"b".repeat(64)}`;
+    table.beginLoad();
+    table.appendPage({
+      table: "u",
+      columns: [],
+      rows: [
+        { rowKey: 10, __vibetableDigest: digestA },
+        { rowKey: 11, __vibetableDigest: digestB },
+      ],
+      offset: 0,
+      limit: 2,
+      totalRows: 2,
+      mode: "client",
+    });
     const spy = vi.spyOn(bridge, "notify");
     const history = useHistoryStore();
     const svc = useMutationService();
@@ -462,6 +564,20 @@ describe("mutationService", () => {
       requestId: "rq-1",
     });
     spy.mockClear();
+    spy.mockImplementation((type) => {
+      if (type === "table.deleteRowsRequested") {
+        queueMicrotask(() => {
+          emit("table.rowsDeleted", {
+            deletedRowKeys: [10, 11],
+            revision: {
+              databaseSessionId: "s",
+              schemaRevision: "",
+              dataRevision: 2,
+            },
+          });
+        });
+      }
+    });
     await history.undo();
     const del = spy.mock.calls.find((c) => c[0] === "table.deleteRowsRequested");
     expect(del).toBeTruthy();
@@ -469,9 +585,10 @@ describe("mutationService", () => {
       rows: { rowKey: number; expectedDigest: string }[];
     };
     expect(payload.rows).toEqual([
-      { rowKey: 10, expectedDigest: "" },
-      { rowKey: 11, expectedDigest: "" },
+      { rowKey: 10, expectedDigest: digestA },
+      { rowKey: 11, expectedDigest: digestB },
     ]);
+    expect(history.canRedo).toBe(false);
   });
 
   it("pasteApplied with no created rows pushes nothing", () => {

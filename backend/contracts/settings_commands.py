@@ -1,12 +1,8 @@
-"""D2 settings, Directus Flows, typed local commands and shortcuts contracts.
+"""Settings, typed local commands and shortcuts contracts.
 
 * **Settings** (D2.1): classified into device-local, user-local, shared-business
   and secret. Device-local (window position, theme, recent files) stays in local
-  state with version migration. Shared-business (holidays, calendars) lives in a
-  permission-protected Directus collection. Secrets use Windows secure storage.
-* **Flows** (D2.2): VibeTable only invokes approved manual/webhook Flow entry points;
-  async Flow results arrive via Notifications, not by reading Flow internal
-  tables. No desktop DB backup/archive.
+  state with version migration. Shared-business values use internal metadata.
 * **Local commands** (D2.3): a static catalog of typed, whitelisted commands
   (id, version, param schema, risk level). No arbitrary code/DSL/dynamic import.
 * **Shortcuts** (D2.4): reference versioned built-in commands or approved
@@ -54,7 +50,7 @@ class ThemeTokens(CamelModel):
 class DeviceSettings(CamelModel):
     """Device-local settings (window position, theme, recent files).
 
-    Stored in local state with a version tag for migration. Never in Directus.
+    Stored in local state with a version tag for migration.
     """
 
     schema_version: int = Field(default=1, ge=1)
@@ -64,7 +60,7 @@ class DeviceSettings(CamelModel):
 
 
 class SharedSettingsEntry(CamelModel):
-    """One shared-business setting (holiday, calendar rule) from Directus."""
+    """One shared-business setting (holiday or calendar rule)."""
 
     key: str = Field(min_length=1, max_length=128)
     value: Any = None
@@ -94,60 +90,6 @@ class SaveDeviceSettingsParams(CamelModel):
     """Parameters for ``settings.saveDevice``."""
 
     settings: DeviceSettings
-
-
-# ---------------------------------------------------------------------------
-# Directus Flows (D2.2)
-# ---------------------------------------------------------------------------
-
-
-class InvokeFlowParams(CamelModel):
-    """Parameters for ``flow.invoke`` (approved manual/webhook entry only).
-
-    Wire form::
-
-        {"flowId": "flow-1", "correlationId": "uuid", "payload": {...}}
-
-    The flow must be in the approved manifest; VibeTable passes the user session or a
-    restricted app identity + correlation id + schema-validated payload.
-    """
-
-    flow_id: str = Field(min_length=1, max_length=128)
-    correlation_id: str = Field(default="", max_length=128)
-    payload: dict[str, Any] = Field(default_factory=dict)
-
-
-class FlowInvocationResult(CamelModel):
-    """Result of ``flow.invoke``.
-
-    Synchronous flows return the server response directly; async flows return
-    ``async_acknowledged=true`` and the result arrives via a Notification.
-    """
-
-    flow_id: str = Field(min_length=1, max_length=128)
-    correlation_id: str = Field(default="", max_length=128)
-    async_acknowledged: bool = False
-    response: dict[str, Any] = Field(default_factory=dict)
-    error: str | None = Field(default=None, max_length=1024)
-
-
-class ListApprovedFlowsParams(CamelModel):
-    """Parameters for ``flow.listApproved`` (the approved manual/webhook list)."""
-
-
-class ApprovedFlowEntry(CamelModel):
-    """One approved Flow the desktop may invoke."""
-
-    flow_id: str = Field(min_length=1, max_length=128)
-    name: str = Field(default="", max_length=256)
-    trigger: Literal["manual", "webhook"] = "manual"
-    payload_schema: dict[str, Any] = Field(default_factory=dict)
-
-
-class ApprovedFlowsResult(CamelModel):
-    """Result of ``flow.listApproved``."""
-
-    flows: list[ApprovedFlowEntry] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -267,19 +209,14 @@ class LaunchActionResult(CamelModel):
 
 
 __all__ = [
-    "ApprovedFlowEntry",
-    "ApprovedFlowsResult",
     "CamelModel",
     "CommandResult",
     "CommandRisk",
     "CommandsResult",
     "DeleteShortcutParams",
     "DeviceSettings",
-    "FlowInvocationResult",
-    "InvokeFlowParams",
     "LaunchActionParams",
     "LaunchActionResult",
-    "ListApprovedFlowsParams",
     "ListCommandsParams",
     "ListShortcutsParams",
     "LocalCommandCatalogEntry",

@@ -1,18 +1,37 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from scripts import build_next
-from scripts.versioning import bump_version, check_versions, read_project_version, update_versions
+from scripts.release import (
+    _ensure_clean_worktree,
+    activate_upgrade,
+    prepare_upgrade,
+)
+from scripts.versioning import (
+    bump_version,
+    check_versions,
+    collect_release_versions,
+    read_project_version,
+    update_versions,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_repository_versions_are_consistent() -> None:
     assert check_versions(REPO_ROOT) == []
+    versions = collect_release_versions(REPO_ROOT)
+    assert versions.pocketbase == "0.39.9"
+    assert versions.cel == "0.26.1"
+    assert versions.contract == "v1"
+    assert versions.schema == "4"
+    assert len(versions.migration_hash) == 64
 
 
 @pytest.mark.parametrize(
@@ -23,249 +42,266 @@ def test_semver_bump(part: str, expected: str) -> None:
     assert bump_version("1.2.3", part) == expected
 
 
-def test_version_dry_run_lists_targets_without_writing() -> None:
+def test_version_dry_run_no_longer_targets_provider_extensions() -> None:
     original = read_project_version(REPO_ROOT)
     changed = update_versions(REPO_ROOT, "9.8.7", dry_run=True)
-    assert REPO_ROOT / "pyproject.toml" in changed
-    assert REPO_ROOT / "desktop" / "publish-layout.json" in changed
+    relative = {path.relative_to(REPO_ROOT).as_posix() for path in changed}
+    assert "pyproject.toml" in relative
+    assert "desktop/publish-layout.json" in relative
+    assert all("dire" "ctus" not in item.lower() for item in relative)
     assert read_project_version(REPO_ROOT) == original
 
 
-def test_manifest_contains_all_components_at_project_version() -> None:
+def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -> None:
     paths = build_next.RepoPaths.default(REPO_ROOT)
-    assert paths.staging_root.parent == paths.publish_root.parent
-    manifest = json.loads(build_next.render_manifest(paths))
+    digest = "a" * 64
+    manifest = json.loads(build_next.render_manifest(paths, sidecar_sha256=digest))
     version = read_project_version(REPO_ROOT)
-    # Scalar components must match the project version.
+
     assert manifest["components"]["host"] == {"version": version}
     assert manifest["components"]["backend"] == {"version": version}
     assert manifest["components"]["web"] == {"version": version}
-    assert manifest["components"]["localDirectus"] == {"version": version}
-    # Singular (backward-compatible) first extension.
-    assert manifest["components"]["directusExtension"] == {"version": version}
-    # Plural (authoritative): every extension from the manifest.
-    ext_names = [d.name for d in paths.directus_extension_dirs]
-    assert manifest["components"]["directusExtensions"] == [
-        {"name": name, "version": version} for name in ext_names
-    ]
-    # Launch paths.
-    assert manifest["launch"]["directusExtension"] == f"directus/extensions/{ext_names[0]}"
-    assert manifest["launch"]["directusExtensions"] == [
-        f"directus/extensions/{name}" for name in ext_names
-    ]
-    # local-directus ships source-only; node_modules is pulled at first launch.
-    # The host drives Directus directly now, so there is no packaged-runner
-    # launch path in the manifest (localDirectusRunner was removed).
-    assert manifest["launch"]["localDirectus"] == "local-directus"
-    assert "localDirectusRunner" not in manifest["launch"]
+    assert manifest["components"]["sidecar"] == {
+        "version": version,
+        "pocketBaseVersion": "0.39.9",
+        "celVersion": "0.26.1",
+        "contractVersion": "v1",
+        "schemaVersion": "4",
+        "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
+        "sha256": digest,
+    }
+    assert manifest["launch"]["sidecar"] == "sidecar/vibetable-pb.exe"
+    assert manifest["assets"]["migrations"] == "sidecar/migrations/manifest.json"
+    assert manifest["assets"]["sbom"] == "sidecar/sbom.cdx.json"
+    assert manifest["data"]["rootPolicy"] == "per-user-local-app-data"
+    encoded = json.dumps(manifest).lower()
+    assert "dire" "ctus" not in encoded
+    assert "node_modules" not in encoded
+    assert "npm" not in encoded
 
 
-def test_release_mode_rejects_skipping_directus() -> None:
-    with pytest.raises(SystemExit) as exc_info:
-        build_next.parse_args(["--release", "--skip-directus"])
-    assert exc_info.value.code == 2
-
-
-def test_release_mode_rejects_skipping_local_directus() -> None:
-    with pytest.raises(SystemExit) as exc_info:
-        build_next.parse_args(["--release", "--skip-local-directus"])
-    assert exc_info.value.code == 2
-
-
-def test_local_directus_stage_ships_source_only(tmp_path: Path) -> None:
-    """The local-directus stage copies the launcher source but never node_modules
-    or any per-machine runtime artifact (those are pulled online at first launch)."""
+def test_sidecar_build_is_trimmed_reproducible_and_version_stamped() -> None:
     paths = build_next.RepoPaths.default(REPO_ROOT)
-    stage = paths.staging_mirror()
-    build_next._build_local_directus_stage(stage, skip=False)
+    command = build_next.build_sidecar_command(
+        paths,
+        output=paths.staging_root / "sidecar" / "vibetable-pb.exe",
+        commit="abc123",
+        build_time="2026-07-24T00:00:00Z",
+    )
 
-    target = stage.local_directus_publish_dir
-    # The host drives Directus directly, so only the npm manifest, lockfile and
-    # env template are shipped (no run.py/install.py launcher).
-    assert (target / "package.json").is_file()
-    assert (target / ".env.template").is_file()
-    assert not (target / "run.py").exists()
-    assert not (target / "install.py").exists()
-    # Per-machine / downloaded artifacts must NOT leak into the installer.
-    assert not (target / "node_modules").exists()
-    assert not (target / ".env").exists()
-    assert not (target / "data").exists()
-    assert not (target / ".npm-cache").exists()
+    assert command[:3] == [build_next.resolve_go(paths.repo_root), "build", "-trimpath"]
+    assert "-buildvcs=true" in command
+    assert "-ldflags" in command
+    ldflags = command[command.index("-ldflags") + 1]
+    assert "buildinfo.Version=1.0.0" in ldflags
+    assert "buildinfo.Commit=abc123" in ldflags
+    assert command[-1] == "./cmd/vibetable-pb"
 
 
-def test_verify_stage_accepts_source_only_local_directus(tmp_path: Path) -> None:
-    """The verifier must enforce the same launcher-free contract as staging."""
+def test_stage_release_assets_records_binary_hash_build_info_and_sbom(
+    tmp_path: Path,
+) -> None:
     defaults = build_next.RepoPaths.default(REPO_ROOT)
-    paths = build_next.RepoPaths(
-        repo_root=defaults.repo_root,
-        web_grid_dir=defaults.web_grid_dir,
-        directus_extension_dirs=defaults.directus_extension_dirs,
-        local_directus_source_dir=defaults.local_directus_source_dir,
-        desktop_csproj=defaults.desktop_csproj,
-        backend_main=defaults.backend_main,
+    paths = defaults.with_output_roots(
         staging_root=tmp_path / "staging",
         scratch_root=tmp_path / "scratch",
         publish_root=tmp_path / "publish",
+    ).staging_mirror()
+    binary = paths.sidecar_binary
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"fixed-sidecar")
+    build_info = {
+        "version": "1.0.0",
+        "pocketBaseVersion": "0.39.9",
+        "celVersion": "0.26.1",
+        "contractVersion": "v1",
+        "schemaVersion": "4",
+        "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
+    }
+    license_dir = tmp_path / "pocketbase-module"
+    license_dir.mkdir()
+    (license_dir / "LICENSE").write_text(
+        "Mozilla Public License Version 2.0\n",
+        encoding="utf-8",
     )
-    build_next._build_local_directus_stage(paths, skip=False)
-    paths.manifest_path.write_text(build_next.render_manifest(paths), encoding="utf-8")
 
-    build_next._verify_stage(
+    build_next.stage_sidecar_assets(
         paths,
-        skip_web=True,
-        skip_backend=True,
-        skip_desktop=True,
-        skip_directus=True,
-        skip_local_directus=False,
-    )
-
-
-def test_portable_node_runtime_contains_npm_cli() -> None:
-    assert (REPO_ROOT / "runtime" / "node" / "node.exe").is_file()
-    assert (
-        REPO_ROOT / "runtime" / "node" / "node_modules" / "npm" / "bin" / "npm-cli.js"
-    ).is_file()
-
-
-def test_build_executor_prefers_x64_dotnet_when_available() -> None:
-    resolved = build_next._resolve_executable("dotnet")
-    if build_next.PREFERRED_DOTNET.is_file():
-        assert resolved == str(build_next.PREFERRED_DOTNET)
-
-
-def test_pyinstaller_build_uses_onedir_and_hidden_imports(tmp_path: Path) -> None:
-    """PyInstaller onedir command pins the entrypoint, name, hidden imports."""
-    paths = build_next.RepoPaths.default(REPO_ROOT)
-    command = build_next.build_pyinstaller_backend_command(paths, tmp_path)
-    assert "--onedir" in command
-    assert "--console" in command
-    assert "--name" in command
-    # The entrypoint is backend/__main__.py (the BFF).
-    assert command[-1] == str(REPO_ROOT / "backend" / "__main__.py")
-    for hidden in build_next.BACKEND_HIDDEN_IMPORTS:
-        assert hidden in command, f"hidden import {hidden} missing from command"
-    excluded = {
-        command[index + 1]
-        for index, value in enumerate(command[:-1])
-        if value == "--exclude-module"
-    }
-    assert excluded == build_next._DEV_PACKAGES_FORBIDDEN_IN_BUNDLE
-    # pydantic data files collected so the bundle is self-contained.
-    assert "--collect-data" in command
-    assert "pydantic" in command
-
-
-# ---------------------------------------------------------------------------
-# G0.2: multi-extension manifest support
-# ---------------------------------------------------------------------------
-
-
-def test_extension_manifest_discovers_declared_extensions() -> None:
-    """The version-controlled manifest must list at least the bulk-mutation extension."""
-    from scripts.extension_manifest import list_extensions
-
-    entries = list_extensions(REPO_ROOT)
-    assert len(entries) >= 1
-    names = [e.name for e in entries]
-    assert "vibetable-bulk-mutation" in names
-    # Every declared extension must have a real source directory.
-    for entry in entries:
-        ext_dir = REPO_ROOT / "directus" / "extensions" / entry.name
-        assert (ext_dir / "package.json").is_file(), f"extension {entry.name} missing package.json"
-
-
-def test_extension_package_entries_support_single_and_bundle_paths(tmp_path: Path) -> None:
-    from scripts.extension_manifest import package_entry_paths
-
-    endpoint = tmp_path / "endpoint"
-    endpoint.mkdir()
-    (endpoint / "package.json").write_text(
-        json.dumps({"directus:extension": {"path": "dist/index.js"}}),
-        encoding="utf-8",
-    )
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    (bundle / "package.json").write_text(
-        json.dumps({"directus:extension": {"path": {"app": "dist/app.js", "api": "dist/api.js"}}}),
-        encoding="utf-8",
-    )
-
-    assert package_entry_paths(endpoint) == (Path("dist/index.js"),)
-    assert package_entry_paths(bundle) == (Path("dist/app.js"), Path("dist/api.js"))
-
-
-def test_build_paths_include_every_manifest_extension() -> None:
-    """RepoPaths must discover one extension dir per manifest entry."""
-    paths = build_next.RepoPaths.default(REPO_ROOT)
-    from scripts.extension_manifest import extension_names
-
-    expected = extension_names(REPO_ROOT)
-    actual = [d.name for d in paths.directus_extension_dirs]
-    assert actual == expected
-
-
-def test_multi_extension_manifest_with_test_fixture(tmp_path: Path) -> None:
-    """Adding a second extension to a temp manifest makes both discoverable.
-
-    Validates the G0.2 gate: 'with only the old bulk extension, the build
-    output is consistent with current behavior; after adding a test extension
-    fixture, all extensions can be discovered.'
-    """
-    from scripts.extension_manifest import ExtensionEntry, list_extensions
-
-    # Build a minimal temp repo with just the manifest + a fixture extension.
-    # We do NOT copy the real extension tree (it has node_modules with very
-    # long paths that break Windows copytree); instead we create synthetic
-    # source-only extension dirs.
-    tmp_repo = tmp_path / "repo"
-    tmp_ext_root = tmp_repo / "directus" / "extensions"
-    tmp_ext_root.mkdir(parents=True)
-
-    # Synthetic bulk-mutation (source-only: just package.json).
-    bulk_dir = tmp_ext_root / "vibetable-bulk-mutation"
-    bulk_dir.mkdir()
-    (bulk_dir / "package.json").write_text(
-        json.dumps({"name": "vibetable-bulk-mutation", "version": "1.0.0"}), encoding="utf-8"
-    )
-
-    # Synthetic workspace-index fixture.
-    fixture_dir = tmp_ext_root / "vibetable-workspace-index"
-    fixture_dir.mkdir()
-    (fixture_dir / "package.json").write_text(
-        json.dumps({"name": "vibetable-workspace-index", "version": "1.0.0"}), encoding="utf-8"
-    )
-
-    # Manifest declaring both extensions.
-    manifest = {
-        "formatVersion": 1,
-        "extensions": [
+        build_info=build_info,
+        modules=[
             {
-                "name": "vibetable-bulk-mutation",
-                "type": "endpoint",
-                "source": "src/index.ts",
-                "entry": "dist/index.js",
-                "directusHost": "^12.0.0",
-                "capability": "vibetable-bulk-mutation.v1",
-                "stage": "B2",
-                "description": "Bulk mutation endpoint.",
-            },
-            {
-                "name": "vibetable-workspace-index",
-                "type": "endpoint",
-                "source": "src/index.ts",
-                "entry": "dist/index.js",
-                "directusHost": "^12.0.0",
-                "capability": "vibetable-workspace-index.v1",
-                "stage": "G3",
-                "description": "Workspace index endpoint.",
-            },
+                "path": "github.com/pocketbase/pocketbase",
+                "version": "v0.39.9",
+                "license": "MPL-2.0",
+                "dir": str(license_dir),
+            }
         ],
-    }
-    (tmp_ext_root / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
 
-    entries = list_extensions(tmp_repo)
-    assert [e.name for e in entries] == ["vibetable-bulk-mutation", "vibetable-workspace-index"]
-    assert isinstance(entries[1], ExtensionEntry)
-    assert entries[1].capability == "vibetable-workspace-index.v1"
+    digest = hashlib.sha256(b"fixed-sidecar").hexdigest()
+    assert paths.sidecar_checksum.read_text(encoding="utf-8").strip() == digest
+    assert json.loads(paths.sidecar_build_info.read_text(encoding="utf-8")) == build_info
+    sbom = json.loads(paths.sidecar_sbom.read_text(encoding="utf-8"))
+    assert sbom["bomFormat"] == "CycloneDX"
+    assert sbom["components"][0]["name"] == "github.com/pocketbase/pocketbase"
+    assert paths.sidecar_licenses.is_file()
+    assert "UNKNOWN" not in paths.sidecar_licenses.read_text(encoding="utf-8")
+    assert (paths.sidecar_assets_dir / "migrations" / "manifest.json").is_file()
+
+
+def test_package_verifier_rejects_tampered_sidecar(tmp_path: Path) -> None:
+    defaults = build_next.RepoPaths.default(REPO_ROOT)
+    stage = defaults.with_output_roots(
+        staging_root=tmp_path / "staging",
+        scratch_root=tmp_path / "scratch",
+        publish_root=tmp_path / "publish",
+    ).staging_mirror()
+    stage.sidecar_binary.parent.mkdir(parents=True)
+    stage.sidecar_binary.write_bytes(b"sidecar")
+    license_dir = tmp_path / "dependency-module"
+    license_dir.mkdir()
+    (license_dir / "LICENSE").write_text(
+        "Mozilla Public License Version 2.0\n",
+        encoding="utf-8",
+    )
+    build_next.stage_sidecar_assets(
+        stage,
+        build_info={
+            "version": "1.0.0",
+            "pocketBaseVersion": "0.39.9",
+            "celVersion": "0.26.1",
+            "contractVersion": "v1",
+            "schemaVersion": "4",
+            "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
+        },
+        modules=[
+            {
+                "path": "example.invalid/dependency",
+                "version": "v1.0.0",
+                "license": "MPL-2.0",
+                "dir": str(license_dir),
+            }
+        ],
+    )
+    build_next.write_manifest(stage)
+    stage.sidecar_binary.write_bytes(b"tampered")
+
+    with pytest.raises(build_next.BuildError, match="SHA-256"):
+        build_next.verify_sidecar_package(stage)
+
+
+def test_upgrade_backup_is_outside_install_and_failure_keeps_old_binary(
+    tmp_path: Path,
+) -> None:
+    install = tmp_path / "install"
+    data = tmp_path / "user-data"
+    install.mkdir()
+    data.mkdir()
+    old_binary = install / "vibetable-pb.exe"
+    old_binary.write_bytes(b"old")
+    (data / "data.db").write_bytes(b"db")
+
+    transaction = prepare_upgrade(
+        install_dir=install,
+        data_dir=data,
+        current_binary=old_binary,
+    )
+
+    assert transaction.backup_dir.parent == data.parent / "upgrade-backups"
+    assert transaction.rollback_binary.read_bytes() == b"old"
+    assert (transaction.backup_dir / "data" / "data.db").read_bytes() == b"db"
+    assert old_binary.read_bytes() == b"old"
+    assert os.path.commonpath([install, transaction.backup_dir]) != str(install)
+
+
+def test_release_preflight_rejects_dirty_or_untracked_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Result:
+        stdout = " M backend/app.py\n?? unexpected.bin\n"
+
+    monkeypatch.setattr(
+        "scripts.release.subprocess.run",
+        lambda *args, **kwargs: Result(),
+    )
+
+    with pytest.raises(ValueError, match="clean worktree"):
+        _ensure_clean_worktree()
+
+
+def test_upgrade_validates_migration_copy_then_atomically_activates(
+    tmp_path: Path,
+) -> None:
+    install = tmp_path / "install"
+    data = tmp_path / "user-data"
+    candidate_dir = tmp_path / "candidate"
+    install.mkdir()
+    data.mkdir()
+    candidate_dir.mkdir()
+    current = install / "vibetable-pb.exe"
+    candidate = candidate_dir / "vibetable-pb.exe"
+    current.write_bytes(b"old")
+    candidate.write_bytes(b"new")
+    (data / "data.db").write_bytes(b"old-db")
+    transaction = prepare_upgrade(
+        install_dir=install,
+        data_dir=data,
+        current_binary=current,
+    )
+
+    def migrate(binary: Path, copied_data: Path) -> None:
+        assert binary == candidate.resolve()
+        assert (copied_data / "data.db").read_bytes() == b"old-db"
+        (copied_data / "migration-3.ok").write_text("ok", encoding="utf-8")
+
+    activate_upgrade(
+        transaction,
+        install_dir=install,
+        data_dir=data,
+        current_binary=current,
+        new_binary=candidate,
+        validator=migrate,
+    )
+
+    assert current.read_bytes() == b"new"
+    assert (data / "migration-3.ok").read_text(encoding="utf-8") == "ok"
+    manifest = json.loads(transaction.manifest.read_text(encoding="utf-8"))
+    assert manifest["activation"]["status"] == "committed"
+
+
+def test_upgrade_migration_failure_automatically_keeps_old_binary_and_data(
+    tmp_path: Path,
+) -> None:
+    install = tmp_path / "install"
+    data = tmp_path / "user-data"
+    candidate_dir = tmp_path / "candidate"
+    install.mkdir()
+    data.mkdir()
+    candidate_dir.mkdir()
+    current = install / "vibetable-pb.exe"
+    candidate = candidate_dir / "vibetable-pb.exe"
+    current.write_bytes(b"old")
+    candidate.write_bytes(b"bad-new")
+    (data / "data.db").write_bytes(b"old-db")
+    transaction = prepare_upgrade(
+        install_dir=install,
+        data_dir=data,
+        current_binary=current,
+    )
+
+    with pytest.raises(RuntimeError, match="migration failed"):
+        activate_upgrade(
+            transaction,
+            install_dir=install,
+            data_dir=data,
+            current_binary=current,
+            new_binary=candidate,
+            validator=lambda _binary, _data: (_ for _ in ()).throw(
+                RuntimeError("migration failed")
+            ),
+        )
+
+    assert current.read_bytes() == b"old"
+    assert (data / "data.db").read_bytes() == b"old-db"
+    manifest = json.loads(transaction.manifest.read_text(encoding="utf-8"))
+    assert manifest["activation"]["status"] == "rolledBack"

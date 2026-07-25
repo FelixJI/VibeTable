@@ -46,8 +46,8 @@ class HistoryModel(BaseModel):
 class HistoryActor(HistoryModel):
     """The user who triggered a ChangeSet.
 
-    ``display_name`` is a safe, readable name; ``user_id`` is the Directus
-    user id (or None for system actions).
+    ``display_name`` is a safe, readable name; ``user_id`` is the product
+    session actor id (or None for system actions).
     """
 
     user_id: str | None = Field(default=None, max_length=128)
@@ -63,7 +63,7 @@ class ScalarFieldChange(HistoryModel):
     """A scalar field change (text, number, date, boolean, enum, JSON).
 
     ``before`` / ``after`` are the values as seen in adjacent snapshots, not
-    just Directus's single-sided delta.
+    just a storage-specific single-sided delta.
     """
 
     field: str = Field(min_length=1, max_length=128)
@@ -116,11 +116,12 @@ class HistoryChangeSet(HistoryModel):
     relation child revisions.
 
     ``root_revision_id`` / ``activity_id`` / ``action`` / ``timestamp`` come
-    from the root Directus Activity/Revision. ``changes`` is the full set of
+    from the root product revision. ``changes`` is the full set of
     scalar + relation field changes, cropped to readable fields.
     """
 
     root_revision_id: str = Field(min_length=1, max_length=128)
+    change_set_id: str = Field(default="", max_length=128)
     activity_id: str | None = Field(default=None, max_length=128)
     action: str = Field(min_length=1, max_length=32)
     timestamp: str = Field(min_length=1, max_length=64)

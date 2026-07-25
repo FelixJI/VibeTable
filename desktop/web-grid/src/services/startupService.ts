@@ -1,15 +1,9 @@
-import type {
-  FirstRunSubmittedPayload,
-  LoginSubmittedPayload,
-  StartupStatePayload,
-} from "@/contracts";
+import type { StartupStatePayload } from "@/contracts";
 import { useHostBridge } from "./bridgeContext";
 import { useStartupStore } from "@/stores/startupStore";
 
 export interface StartupService {
   init(): void;
-  submitFirstRun(payload: FirstRunSubmittedPayload): void;
-  submitLogin(payload: LoginSubmittedPayload): void;
   retry(): void;
   cancel(): void;
 }
@@ -29,8 +23,6 @@ export function useStartupService(): StartupService {
 
   return {
     init,
-    submitFirstRun: (payload) => bridge.notify("host.firstRunSubmitted", payload),
-    submitLogin: (payload) => bridge.notify("host.loginSubmitted", payload),
     retry: () => bridge.notify("host.startupRetryRequested", {}),
     cancel: () => bridge.notify("host.startupCancelRequested", {}),
   };

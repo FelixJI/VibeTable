@@ -1,20 +1,21 @@
-"""C1 Directus-aware import service: file reading, normalization, preview, apply.
+"""File import service: normalization, preview and atomic apply.
 
 Reuses the date/currency/enum normalization algorithms from the legacy
 :mod:`core.data.import_validator` (extracted here as pure functions, decoupled
-from Qt/SQLite), but drives them from a Directus :class:`CollectionProfile`
+from Qt/SQLite), but drives them from a product :class:`CollectionProfile`
 instead of the SQLite field-mapping service.
 
-Flow
+Process
 ----
 * :meth:`preview` reads the granted file (streaming for large workbooks),
   auto-maps or applies the explicit column mapping, normalizes each cell against
   the collection's create-field allow-list + relations, and returns an
   :class:`ImportPlan` bound to the source hash + capability hash via a
   single-use token.
-* :meth:`apply` chunks the planned rows and reuses the B2 bulk-mutation
-  endpoint for each chunk (idempotency key per chunk). Large imports run as a
-  task with per-chunk progress; cancellation stops un-submitted chunks.
+* :meth:`apply` submits every valid planned row in one frozen mutation request.
+  ``chunkSize`` remains a host compatibility hint only: it never creates
+  independent commits. Cancellation is checked before submission; a rejected
+  request therefore leaves zero rows committed.
 
 The Qt/controller ``confirm_cb`` callback is gone: preview is zero-write and
 returns the full plan; the host shows it and the user confirms via apply.
@@ -22,8 +23,11 @@ returns the full plan; the host shows it and the user confirms via apply.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import hashlib
+import json
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -32,10 +36,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from backend.adapters.directus.auth import DirectusAuthBroker
-from backend.adapters.directus.client import DirectusClient
-from backend.adapters.directus.profile import CollectionProfile, RelationProfile
-from backend.application.paste_service import BulkMutationClient
+from backend.application.paste_service import PasteMutationPort
 from backend.contracts.data_io import (
     ApplyImportParams,
     ApplyImportResult,
@@ -49,12 +50,13 @@ from backend.contracts.data_io import (
     ImportSummary,
     PreviewImportParams,
 )
+from backend.contracts.data_profile import CollectionProfile, RelationProfile
 from backend.contracts.paste import PastePlanRow
 
 #: How long an import preview token remains valid (seconds).
 IMPORT_TOKEN_TTL_SECONDS: float = 10 * 60.0
 
-#: Default chunk size for apply (rows per bulk-mutation request).
+#: Compatibility default retained by the public contract. Apply is atomic.
 DEFAULT_CHUNK_SIZE: int = 500
 
 #: Currency symbols stripped before numeric parsing (mirrors the legacy cleaner).
@@ -86,7 +88,7 @@ DEFAULT_DATETIME_INPUT_FORMATS = [
 
 
 class ImportFlowError(Exception):
-    """An import-flow error carrying an RPC-friendly ``code``."""
+    """An import error carrying an RPC-friendly ``code``."""
 
     def __init__(self, message: str, *, code: str, data: dict[str, Any] | None = None) -> None:
         super().__init__(message)
@@ -124,8 +126,8 @@ class RelationImportBatchResult:
 class RelationImportProvider(Protocol):
     """Permission-scoped adapter for relation resolution and atomic apply.
 
-    The implementation is expected to use the current user's Directus
-    accountability. ``inspect_mapping`` must reject non-PK/non-unique match
+    The implementation uses the current product session. ``inspect_mapping``
+    must reject non-PK/non-unique match
     fields. ``apply_chunk`` owns one transaction containing any requested target
     creation and the source-row mutation, and deduplicates by ``idempotency_key``.
     """
@@ -232,6 +234,24 @@ def validate_choice(value: Any, options: list[str]) -> tuple[bool, str | None, s
     if len(options) > 10:
         hint += f" ... ({len(options)} total)"
     return False, None, f"value {value!r} not in options: [{hint}]"
+
+
+def _select_options(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    for constraint in value:
+        if not isinstance(constraint, dict) or constraint.get("kind") != "enum":
+            continue
+        options = constraint.get("options")
+        if not isinstance(options, list):
+            return []
+        result: list[str] = []
+        for option in options:
+            raw = option.get("value") if isinstance(option, dict) else option
+            if isinstance(raw, str):
+                result.append(raw)
+        return result
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +384,7 @@ class _StoredImportPlan:
         "collection",
         "consumed",
         "expires_at",
+        "idempotency_prefix",
         "mode",
         "rows",
         "schema_revision",
@@ -392,17 +413,18 @@ class _StoredImportPlan:
         self.upsert_key = upsert_key
         self.expires_at = expires_at
         self.consumed = False
+        self.idempotency_prefix: str | None = None
 
 
 class ImportService:
-    """C1 import preview + apply over the B4 Directus data plane."""
+    """Import preview and atomic apply over product-owned ports."""
 
     def __init__(
         self,
         *,
-        client: DirectusClient,
-        auth: DirectusAuthBroker,
-        bulk: BulkMutationClient,
+        client: Any,
+        auth: Any,
+        bulk: PasteMutationPort,
         profiles: dict[str, CollectionProfile],
         resolve_path: Callable[..., str],
         consume_grant: Callable[[str], None],
@@ -418,6 +440,7 @@ class ImportService:
         self._relation_provider = relation_provider
         self._clock = clock
         self._plans: dict[str, _StoredImportPlan] = {}
+        self._apply_lock = asyncio.Lock()
 
     async def preview(self, params: PreviewImportParams) -> ImportPlan:
         profile = self._profile(params.collection)
@@ -555,16 +578,6 @@ class ImportService:
                                 original_value=str(raw),
                             )
                         )
-                    elif params.create_if_missing:
-                        relation_resolutions.append(
-                            ImportRelationResolution(
-                                target_field=field,
-                                relation_id=target.relation_id,
-                                match_field=target.match_field,
-                                source_value=raw,
-                                state="create",
-                            )
-                        )
                     else:
                         diagnostics.append(
                             ImportCellDiagnostic(
@@ -642,6 +655,20 @@ class ImportService:
         progress: Callable[[int, int, str], Awaitable[None]] | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> ApplyImportResult:
+        async with self._apply_lock:
+            return await self._apply_serialized(
+                params,
+                progress=progress,
+                cancelled=cancelled,
+            )
+
+    async def _apply_serialized(
+        self,
+        params: ApplyImportParams,
+        *,
+        progress: Callable[[int, int, str], Awaitable[None]] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> ApplyImportResult:
         profile = self._profile(params.collection)
         stored = self._plans.get(params.token)
         if stored is None:
@@ -655,91 +682,112 @@ class ImportService:
         valid_rows = [
             r for r in stored.rows if not any(d.severity == "error" for d in r.diagnostics)
         ]
-        chunk_size = params.chunk_size or DEFAULT_CHUNK_SIZE
-        prefix = params.idempotency_prefix or f"imp-{uuid.uuid4().hex[:8]}"
-        created = 0
-        updated = 0
-        failed: list[int] = []
-        chunks: list[ImportChunkResult] = []
-        request_ids: list[str] = []
         total = len(valid_rows)
-        for chunk_index, start in enumerate(range(0, total, chunk_size)):
-            if cancelled and cancelled():
-                break
-            chunk_rows = valid_rows[start : start + chunk_size]
-            bulk_rows = [
-                PastePlanRow(
-                    kind="update" if stored.mode == "upsert" and stored.upsert_key else "insert",
-                    changes={
-                        field: {"before": None, "after": value}
-                        for field, value in row.values.items()
-                    },
-                )
-                for row in chunk_rows
-            ]
-            row_revisions: dict[str | int, str] = {}
-            idempotency_key = f"{prefix}-{chunk_index}"
-            try:
-                if any(row.relation_resolutions for row in chunk_rows):
-                    if self._relation_provider is None:
-                        raise ImportFlowError(
-                            "relation import apply is not configured",
-                            code="relation_provider_unavailable",
-                        )
-                    relation_result = await self._relation_provider.apply_chunk(
-                        collection=params.collection,
-                        profile=profile,
-                        rows=chunk_rows,
-                        mode=stored.mode,
-                        upsert_key=stored.upsert_key,
-                        idempotency_key=idempotency_key,
+        if cancelled and cancelled():
+            raise asyncio.CancelledError
+        requested_prefix = params.idempotency_prefix or (
+            "imp-" + hashlib.sha256(params.token.encode("utf-8")).hexdigest()[:16]
+        )
+        if stored.idempotency_prefix is None:
+            stored.idempotency_prefix = requested_prefix
+        elif stored.idempotency_prefix != requested_prefix:
+            raise ImportFlowError(
+                "import token is bound to a different idempotency prefix",
+                code="import_idempotency_mismatch",
+            )
+        prefix = stored.idempotency_prefix
+        idempotency_key = f"{prefix}-0"
+        bulk_rows = [
+            PastePlanRow(
+                kind="insert",
+                changes={
+                    field: {"before": None, "after": value}
+                    for field, value in row.values.items()
+                },
+            )
+            for row in valid_rows
+        ]
+        requires_cross_table = stored.mode == "upsert" or any(
+            resolution.state == "create"
+            for row in valid_rows
+            for resolution in row.relation_resolutions
+        )
+        try:
+            if requires_cross_table:
+                if self._relation_provider is None:
+                    raise ImportFlowError(
+                        "atomic relation/upsert import is not configured",
+                        code="relation_provider_unavailable",
                     )
-                    created_keys = relation_result.created_row_keys
-                    updated_keys = relation_result.updated_row_keys
-                    request_id = relation_result.request_id
-                else:
-                    result = await self._bulk.apply(
-                        collection=params.collection,
-                        profile=profile,
-                        rows=bulk_rows,
-                        row_revisions=row_revisions,
-                        idempotency_key=idempotency_key,
-                    )
-                    created_keys = [str(key) for key in result.created_row_keys]
-                    updated_keys = [str(key) for key in result.updated_row_keys]
-                    request_id = result.request_id
-            except Exception as exc:
-                failed.extend(r.source_row for r in chunk_rows)
-                if progress:
-                    await progress(
-                        start + len(chunk_rows), total, f"chunk {chunk_index} failed: {exc}"
-                    )
-                continue
-            if request_id:
-                request_ids.append(request_id)
-            chunks.append(
-                ImportChunkResult(
-                    chunk_index=chunk_index,
-                    created_row_keys=created_keys,
-                    updated_row_keys=updated_keys,
-                    failed_rows=[],
+                relation_result = await self._relation_provider.apply_chunk(
+                    collection=params.collection,
+                    profile=profile,
+                    rows=valid_rows,
+                    mode=stored.mode,
+                    upsert_key=stored.upsert_key,
                     idempotency_key=idempotency_key,
                 )
-            )
-            created += len(created_keys)
-            updated += len(updated_keys)
+                created_keys = relation_result.created_row_keys
+                updated_keys = relation_result.updated_row_keys
+                request_id = relation_result.request_id
+            else:
+                result = await self._bulk.apply(
+                    collection=params.collection,
+                    profile=profile,
+                    rows=bulk_rows,
+                    row_revisions={},
+                    idempotency_key=idempotency_key,
+                    schema_revision=stored.schema_revision,
+                )
+                if result.outcome == "pending":
+                    raise ImportFlowError(
+                        "import outcome is pending; retry with the same token",
+                        code="import_pending",
+                    )
+                if result.outcome != "committed":
+                    raise ImportFlowError(
+                        "import conflicted; preview again",
+                        code="import_conflict",
+                    )
+                created_keys = [str(key) for key in result.created_row_keys]
+                updated_keys = [str(key) for key in result.updated_row_keys]
+                request_id = result.request_id
+        except Exception as exc:
             if progress:
-                await progress(start + len(chunk_rows), total, f"chunk {chunk_index} committed")
-        if not failed:
-            stored.consumed = True
-            self._consume_grant(params.grant_id)
+                safe_code = getattr(exc, "code", exc.__class__.__name__)
+                safe_parts = [f"atomic import failed [{safe_code}]"]
+                cause = exc.__cause__
+                safe_path = getattr(cause, "path", None)
+                if isinstance(safe_path, str) and safe_path:
+                    safe_parts.append(f"at {safe_path}")
+                    safe_message = str(cause)
+                    if safe_message:
+                        safe_parts.append(safe_message)
+                await progress(total, total, ": ".join(safe_parts))
+            return ApplyImportResult(
+                collection=params.collection,
+                created_count=0,
+                updated_count=0,
+                failed_rows=[row.source_row for row in valid_rows],
+            )
+        chunk = ImportChunkResult(
+            chunk_index=0,
+            created_row_keys=created_keys,
+            updated_row_keys=updated_keys,
+            failed_rows=[],
+            idempotency_key=idempotency_key,
+        )
+        if progress:
+            await progress(total, total, "atomic import committed")
+        stored.consumed = True
+        self._consume_grant(params.grant_id)
         return ApplyImportResult(
             collection=params.collection,
-            created_count=created,
-            updated_count=updated,
-            failed_rows=failed,
-            chunks=chunks,
-            directus_request_ids=request_ids,
+            created_count=len(created_keys),
+            updated_count=len(updated_keys),
+            failed_rows=[],
+            chunks=[chunk],
+            request_ids=[request_id] if request_id else [],
         )
 
     # ------------------------------------------------------------------
@@ -747,11 +795,12 @@ class ImportService:
     # ------------------------------------------------------------------
 
     def _profile(self, collection: str) -> CollectionProfile:
-        from backend.adapters.directus.errors import DirectusSchemaError
-
         profile = self._profiles.get(collection)
         if profile is None:
-            raise DirectusSchemaError(f"collection {collection!r} is not in capability manifest")
+            raise ImportFlowError(
+                f"collection {collection!r} is not in the product schema",
+                code="schema_unknown",
+            )
         return profile
 
     def _normalize(
@@ -769,19 +818,67 @@ class ImportService:
             if raw is None or raw == "":
                 return True, None, None
             return True, str(raw).strip(), None
-        # Map the field to a Directus-ish type guess from the profile fields.
-        # (The capability manifest carries field names but not rich types; the
-        # B4 schema endpoint provides ColumnSchema for finer typing. For the
-        # first cut we infer from the field name conventions.)
-        lowered = field.lower()
-        if "date" in lowered:
-            ok, value, error = parse_date(raw)
-            return ok, value, error
-        if "amount" in lowered or "price" in lowered or "total" in lowered:
-            return parse_number(raw)
-        if lowered in ("sort",) or lowered.endswith("_count"):
+        descriptor = profile.field_schemas.get(field, {})
+        data_type = descriptor.get("dataType")
+        if data_type in {"date", "dateTime", "autoDate"}:
+            return parse_date(
+                raw,
+                date_type="date" if data_type == "date" else "datetime",
+            )
+        if data_type == "integer":
             return parse_number(raw, integer=True)
-        # Default: text.
+        if data_type in {"float", "decimal", "number"}:
+            return parse_number(raw)
+        if data_type == "boolean":
+            if raw is None or raw == "":
+                return True, None, None
+            if isinstance(raw, bool):
+                return True, raw, None
+            normalized = str(raw).strip().lower()
+            if normalized in {"true", "1", "yes", "y", "是"}:
+                return True, True, None
+            if normalized in {"false", "0", "no", "n", "否"}:
+                return True, False, None
+            return False, None, f"invalid boolean value: {raw!r}"
+        if data_type in {"json", "geoJson", "list"}:
+            if raw is None or raw == "":
+                return True, None, None
+            if isinstance(raw, (dict, list, int, float, bool)):
+                return True, raw, None
+            try:
+                return True, json.loads(str(raw)), None
+            except (json.JSONDecodeError, TypeError):
+                return False, None, f"invalid JSON value: {raw!r}"
+        if data_type in {"select", "multiSelect"}:
+            options = _select_options(descriptor.get("constraints"))
+            if data_type == "select":
+                return validate_choice(raw, options)
+            if raw is None or raw == "":
+                return True, [], None
+            values: Any = raw
+            if isinstance(raw, str):
+                try:
+                    decoded = json.loads(raw)
+                    values = decoded if isinstance(decoded, list) else raw.split(",")
+                except json.JSONDecodeError:
+                    values = raw.split(",")
+            if not isinstance(values, list):
+                return False, None, f"invalid multi-select value: {raw!r}"
+            normalized_values = [str(value).strip() for value in values]
+            invalid = [value for value in normalized_values if value not in options]
+            if invalid:
+                return False, None, f"values are not in select options: {invalid!r}"
+            return True, normalized_values, None
+        if data_type == "time":
+            if raw is None or raw == "":
+                return True, None, None
+            value = str(raw).strip()
+            if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?", value):
+                return True, value, None
+            return False, None, f"invalid time value: {raw!r}"
+        # String-like fields keep their textual wire representation. The
+        # MutationKernel remains authoritative for length/pattern/URL/email
+        # constraints and returns stable field paths on rejection.
         if raw is None or raw == "":
             return True, None, None
         if isinstance(raw, float) and raw.is_integer():

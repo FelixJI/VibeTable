@@ -8,10 +8,8 @@ from pathlib import Path
 import pytest
 
 from backend.contracts.settings_commands import (
-    ApprovedFlowsResult,
     CommandsResult,
     DeviceSettings,
-    FlowInvocationResult,
     LaunchActionResult,
     SharedSettingsResult,
     ShortcutEntry,
@@ -40,19 +38,6 @@ def test_shared_settings_round_trip() -> None:
     result = SharedSettingsResult.model_validate(fixture["sharedSettings"]["result"])
     assert len(result.settings) == 1
     assert result.fresh is True
-
-
-def test_approved_flows_round_trip() -> None:
-    fixture = _load("table-d2-settings-contracts.json")
-    result = ApprovedFlowsResult.model_validate(fixture["flows"]["approved"])
-    assert result.flows[0].flow_id == "vibetable-notify-owner"
-
-
-def test_flow_invocation_round_trip() -> None:
-    fixture = _load("table-d2-settings-contracts.json")
-    result = FlowInvocationResult.model_validate(fixture["flows"]["invocation"]["result"])
-    assert result.async_acknowledged is False
-    assert result.response.get("ok") is True
 
 
 def test_command_catalog_round_trip() -> None:

@@ -12,7 +12,7 @@ namespace VibeTable.Desktop.Services;
 /// </summary>
 /// <remarks>
 /// The production implementation maps the established workspace contract to
-/// Directus collections. The workspace stays a thin orchestrator for paging,
+/// Product collections. The workspace stays a thin orchestrator for paging,
 /// cancellation, mutation, query state, and stale-result suppression.
 /// </remarks>
 public interface ITableRpcGateway
@@ -38,12 +38,12 @@ public interface ITableRpcGateway
         CancellationToken token);
 
     /// <summary>
-    /// Reads the editable schema for a Directus collection.
+    /// Reads the editable schema for a product collection.
     /// </summary>
     Task<EditSchemaResult> GetEditSchemaAsync(string table, CancellationToken token);
 
     /// <summary>
-    /// Updates one Directus item field with the expected-value conflict guard.
+    /// Updates one product item field with the expected-value conflict guard.
     /// </summary>
     Task<UpdateCellResult> UpdateCellAsync(
         string table,
@@ -52,10 +52,11 @@ public interface ITableRpcGateway
         object? oldValue,
         object? newValue,
         string schemaRevision,
-        CancellationToken token);
+        CancellationToken token,
+        string? expectedDigest = null);
 
     /// <summary>
-    /// Creates one item in the Directus collection.
+    /// Creates one item in the product collection.
     /// </summary>
     Task<InsertRowResult> InsertRowAsync(
         string table,
@@ -64,7 +65,7 @@ public interface ITableRpcGateway
         CancellationToken token);
 
     /// <summary>
-    /// Deletes Directus items after validating their expected digests.
+    /// Deletes product items after validating their expected digests.
     /// </summary>
     Task<DeleteRowsResult> DeleteRowsAsync(
         string table,
@@ -73,7 +74,7 @@ public interface ITableRpcGateway
         CancellationToken token);
 
     /// <summary>
-    /// Re-reads explicit Directus items for conflict refresh.
+    /// Re-reads explicit product items for conflict refresh.
     /// </summary>
     Task<ReadRowsResult> ReadRowsAsync(
         string table,
@@ -96,7 +97,7 @@ public interface ITableRpcGateway
         CancellationToken token);
 
     /// <summary>
-    /// Queries Directus with the typed table AST. Returns a page
+    /// Queries the product data service with the typed table AST. Returns a page
     /// carrying <c>querySnapshot</c>/<c>revision</c>/<c>filteredRows</c> so the
     /// host can bind selection state to a stable snapshot.
     /// </summary>
@@ -108,7 +109,7 @@ public interface ITableRpcGateway
         CancellationToken token);
 
     /// <summary>
-    /// Validates a carried query snapshot against the current Directus view
+    /// Validates a carried query snapshot against the current product view
     /// and returns the invalidation reason when it is stale.
     /// </summary>
     Task<SnapshotValidation> ValidateSnapshotAsync(
@@ -152,7 +153,7 @@ public interface ITableRpcGateway
 
     /// <summary>
     /// B2 Task 3: calls <c>table.applyPaste</c>. Validates the preview token and
-    /// delegates the atomic batch to the Directus bulk-mutation endpoint. Returns
+    /// delegates the atomic batch to the product bulk-mutation endpoint. Returns
     /// a server-confirmed result (committed/conflict/pending).
     /// </summary>
     Task<ApplyPasteResult> ApplyPasteAsync(

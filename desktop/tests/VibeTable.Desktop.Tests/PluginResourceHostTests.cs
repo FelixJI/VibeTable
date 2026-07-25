@@ -23,6 +23,19 @@ public sealed class PluginResourceHostTests
     }
 
     [TestMethod]
+    public void PackageRevisionAcceptsContractSha256Digest()
+    {
+        var revision = PluginPackageRevision.Create(
+            @"C:\plugins\clean",
+            $"sha256:{PackageHash}");
+
+        Assert.AreEqual(PackageHash, revision.PackageHash);
+        Assert.AreEqual(
+            "0123456789abcdef0123456789abcdef.0123456789abcdef0123456789abcdef.plugins.vibetable.local",
+            revision.VirtualHostName);
+    }
+
+    [TestMethod]
     public void NormalizeResourcePathRejectsTraversalAbsoluteAndDoubleEncoding()
     {
         Assert.AreEqual("ui/index.html", PluginResourceHost.NormalizePackagePath("ui/index.html"));

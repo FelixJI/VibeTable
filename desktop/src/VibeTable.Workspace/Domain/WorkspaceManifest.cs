@@ -2,7 +2,7 @@ namespace VibeTable.Workspace.Domain;
 
 /// <summary>
 /// Root manifest for a workspace, stored at <c>.backup/workspace.json</c>.
-/// The workspace UUID is locally authoritative; Directus only mirrors it.
+/// The workspace UUID and document lifecycle are locally authoritative.
 /// </summary>
 public sealed record WorkspaceManifest(
     int FormatVersion,

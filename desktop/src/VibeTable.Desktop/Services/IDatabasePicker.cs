@@ -8,7 +8,7 @@ namespace VibeTable.Desktop.Services;
 /// <remarks>
 /// <para>
 /// The renderer cannot supply a local path or endpoint. Production binds this
-/// interface to the configured Directus source identifier.
+/// interface to the configured product source identifier.
 /// </para>
 /// <para>
 /// Keeping resolution behind an interface makes the WebView boundary

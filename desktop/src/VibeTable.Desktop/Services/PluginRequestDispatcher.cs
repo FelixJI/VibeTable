@@ -94,20 +94,12 @@ public sealed class PluginRequestDispatcher : IDisposable
                     Read<PluginInspectInstallParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.commit" => await CommitInstallAsync(
                     Read<PluginCommitInstallParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.externalFlow.listCandidates" =>
-                    await _gateway.ListExternalFlowCandidatesAsync(
-                        Read<PluginListExternalFlowCandidatesParams>(request.Payload), token)
-                        .ConfigureAwait(false),
-                "plugin.externalFlow.bind" => await _gateway.BindExternalFlowAsync(
-                    Read<PluginBindExternalFlowParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.lifecycle.setEnabled" => ProjectSnapshot(await _gateway.SetEnabledAsync(
                     Read<PluginSetEnabledParams>(request.Payload), token).ConfigureAwait(false)),
                 "plugin.lifecycle.upgrade" => ProjectSnapshot(await _gateway.UpgradeAsync(
                     Read<PluginUpgradeParams>(request.Payload), token).ConfigureAwait(false)),
                 "plugin.lifecycle.rollback" => ProjectSnapshot(await _gateway.RollbackAsync(
                     Read<PluginRollbackParams>(request.Payload), token).ConfigureAwait(false)),
-                "plugin.lifecycle.resolveDrift" => ProjectSnapshot(await _gateway.ResolveDriftAsync(
-                    Read<PluginResolveDriftParams>(request.Payload), token).ConfigureAwait(false)),
                 "plugin.lifecycle.uninstall" => await UninstallAsync(
                     Read<PluginUninstallParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.action.describe" => await _gateway.DescribeActionAsync(

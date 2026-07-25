@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import Field
 
@@ -29,15 +29,6 @@ class PluginIdentityParams(PluginContract):
     plugin_id: str
 
 
-class ExternalFlowCandidatesParams(PluginIdentityParams):
-    logical_flow_id: str
-
-
-class BindExternalFlowParams(ExternalFlowCandidatesParams):
-    directus_flow_uuid: str
-    accepts_unknown_side_effects: bool = False
-
-
 class SetPluginEnabledParams(PluginIdentityParams):
     enabled: bool
 
@@ -49,11 +40,6 @@ class UpgradePluginParams(PluginIdentityParams):
 
 class RollbackPluginParams(PluginIdentityParams):
     pass
-
-
-class ResolvePluginDriftParams(PluginIdentityParams):
-    logical_flow_id: str
-    strategy: Literal["restore", "detach"]
 
 
 class UninstallPluginParams(PluginIdentityParams):
@@ -85,15 +71,12 @@ class PluginTaskParams(PluginContract):
 
 
 __all__ = [
-    "BindExternalFlowParams",
     "CommitInstallParams",
     "DescribePluginActionParams",
-    "ExternalFlowCandidatesParams",
     "InspectInstallParams",
     "PluginIdentityParams",
     "PluginProjectParams",
     "PluginTaskParams",
-    "ResolvePluginDriftParams",
     "ResolvePluginFileParams",
     "ResolvePluginInteractionParams",
     "RollbackPluginParams",

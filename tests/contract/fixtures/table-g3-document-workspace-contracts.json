@@ -39,11 +39,18 @@
           "hash": "abcdef1234567890",
           "size": 12345,
           "mimeType": "application/octet-stream",
+          "createdAt": "2026-07-15T10:00:00Z",
           "createdBy": "user-001",
           "deviceId": "device-001",
           "comment": "initial publish"
         }
       ],
+      "headAdvance": {
+        "documentId": "doc-001",
+        "schemeId": "scheme-main",
+        "expectedHeadRevisionId": null,
+        "newHeadRevisionId": "rev-010"
+      },
       "idempotencyKey": "idem-001"
     },
     "result": {

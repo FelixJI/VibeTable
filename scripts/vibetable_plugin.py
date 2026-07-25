@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -53,23 +54,12 @@ def _command_validate(args: argparse.Namespace) -> int:
 
 def _permission_report(manifest: dict[str, Any]) -> dict[str, Any]:
     permissions = manifest["permissions"]
-    flows = manifest.get("flows", [])
     return {
         "pluginId": manifest["pluginId"],
         "data": permissions.get("data", []),
         "files": permissions.get("files", []),
         "privateStorage": permissions.get("privateStorage", False),
-        "externalNetwork": [
-            {
-                "flow": flow["logicalFlowId"],
-                "purpose": flow.get("externalNetwork", {}).get("purpose"),
-            }
-            for flow in flows
-            if flow.get("externalNetwork", {}).get("required")
-        ],
-        "automaticTriggers": [
-            flow["logicalFlowId"] for flow in flows if flow.get("trigger", "manual") != "manual"
-        ],
+        "network": permissions.get("network", {"domains": [], "methods": ["GET"]}),
         "risks": sorted(
             {action["risk"] for action in manifest.get("actions", [])},
             key=("read", "write", "destructive").index,
@@ -91,10 +81,9 @@ def _command_inspect_permissions(args: argparse.Namespace) -> int:
         print(f"数据: {declaration['collection']} [{operations}] 字段 [{fields}]")
     print(f"文件能力: {', '.join(report['files']) or '无'}")
     print(f"私有存储: {'是' if report['privateStorage'] else '否'}")
-    for network in report["externalNetwork"]:
-        print(f"外部网络 Flow: {network['flow']} — {network['purpose']}")
-    for trigger in report["automaticTriggers"]:
-        print(f"自动触发器: {trigger}")
+    network = report["network"]
+    print(f"网络域名: {', '.join(network.get('domains', [])) or '无'}")
+    print(f"网络方法: {', '.join(network.get('methods', [])) or '无'}")
     return 0
 
 
@@ -120,7 +109,6 @@ def _command_init(args: argparse.Namespace) -> int:
         raise PluginPackageError("destination_not_empty", f"destination is not empty: {root}")
     root.mkdir(parents=True, exist_ok=True)
     action_id = "run"
-    mode = "flow" if args.with_flow else "local"
     manifest: dict[str, Any] = {
         "$schema": "vibetable.plugin-manifest.v1",
         "pluginId": args.plugin_id,
@@ -130,41 +118,28 @@ def _command_init(args: argparse.Namespace) -> int:
         "compatibility": {
             "minHostVersion": "1.0.0",
             "pluginApi": "1.x",
-            "directus": ">=12.1 <13",
         },
-        "permissions": {"data": [], "files": [], "privateStorage": False},
+        "permissions": {
+            "data": [],
+            "files": [],
+            "privateStorage": False,
+            "network": {"domains": [], "methods": ["GET"]},
+        },
         "actions": [
             {
                 "actionId": action_id,
                 "displayName": {"zh-CN": "运行"},
-                "mode": mode,
+                "mode": "local",
                 "risk": "read",
                 "invocation": "manual",
                 "placements": ["table.toolbar"],
                 "inputSchema": "schemas/action-input.v1.json",
                 "outputSchema": "schemas/action-output.v1.json",
-                **({"entryFlow": action_id} if args.with_flow else {}),
-                **({"workerEntry": "dist/workers/action.js"} if not args.with_flow else {}),
+                "workerEntry": "dist/workers/action.js",
             }
         ],
-        "flows": [],
         "ui": {"customViews": []},
     }
-    if args.with_flow:
-        manifest["flows"] = [
-            {
-                "logicalFlowId": action_id,
-                "ownership": "managed",
-                "trigger": "manual",
-                "risk": "read",
-                "definition": "flows/run.flow.json",
-                "inputSchema": "schemas/action-input.v1.json",
-                "outputSchema": "schemas/action-output.v1.json",
-                "requiresOperations": [],
-                "externalNetwork": {"required": False, "purpose": None},
-            }
-        ]
-        _write_text(root / "flows" / "run.flow.json", '{"operations":[]}\n')
     _write_text(root / "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     schema = '{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object"}\n'
     _write_text(root / "schemas" / "action-input.v1.json", schema)
@@ -232,11 +207,16 @@ esbuild.build({
 """
 
 
-def _find_esbuild() -> Path | None:
-    candidates = [
-        REPO_ROOT / "scripts" / "local_directus" / "node_modules" / "esbuild" / "lib" / "main.js",
-        REPO_ROOT / "runtime" / "node" / "node_modules" / "esbuild" / "lib" / "main.js",
-    ]
+def _find_esbuild(source: Path) -> Path | None:
+    """Find an explicitly restored developer dependency.
+
+    A plugin may restore esbuild in its own directory, or a developer can
+    point at an audited offline copy.
+    """
+    configured = os.environ.get("VIBETABLE_ESBUILD_JS")
+    candidates = [source / "node_modules" / "esbuild" / "lib" / "main.js"]
+    if configured:
+        candidates.append(Path(configured).resolve())
     return next((path for path in candidates if path.is_file()), None)
 
 
@@ -251,12 +231,12 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> int:
     if not entries:
         return 0
     node = _find_node()
-    bundler = _find_esbuild()
+    bundler = _find_esbuild(source)
     sdk_entry = REPO_ROOT / "sdk" / "plugin" / "src" / "index.ts"
     if node is None or bundler is None or not sdk_entry.is_file():
         raise PluginPackageError(
             "bundler_missing",
-            "Node.js, the bundled esbuild runtime and Plugin SDK are required to build Workers",
+            "Node.js, a plugin-local esbuild dependency and Plugin SDK are required to build Workers",
         )
     for entry in entries:
         destination = source / entry
@@ -364,7 +344,6 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--plugin-id", required=True)
     init.add_argument("--display-name", required=True)
     init.add_argument("--description")
-    init.add_argument("--with-flow", action="store_true")
     init.set_defaults(handler=_command_init)
 
     for name, handler, help_text in (

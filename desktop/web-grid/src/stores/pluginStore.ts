@@ -1,7 +1,6 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 import type {
-  PluginFlowBindingSnapshot,
   PluginInstallPlan,
   PluginCommandContext,
   PluginInteractionSnapshot,
@@ -22,7 +21,6 @@ export const usePluginStore = defineStore("plugins", () => {
   const hostVersion = ref("unknown");
   const catalogRevision = ref(-1);
   const pluginById = ref<Record<string, PluginSnapshot>>({});
-  const bindingByKey = ref<Record<string, PluginFlowBindingSnapshot>>({});
   const taskById = ref<Record<string, PluginTaskViewSnapshot>>({});
   const taskRevisionById = ref<Record<string, number>>({});
   const interactionRevisionByRun = ref<Record<string, number>>({});
@@ -53,7 +51,6 @@ export const usePluginStore = defineStore("plugins", () => {
   function setProjectContext(key: string, revision: string): void {
     if (projectKey.value !== key) {
       pluginById.value = {};
-      bindingByKey.value = {};
       taskById.value = {};
       taskRevisionById.value = {};
       interactionRevisionByRun.value = {};
@@ -104,22 +101,7 @@ export const usePluginStore = defineStore("plugins", () => {
     const next = { ...pluginById.value };
     delete next[pluginId];
     pluginById.value = next;
-    for (const key of Object.keys(bindingByKey.value)) {
-      if (key.startsWith(`${pluginId}:`)) delete bindingByKey.value[key];
-    }
     if (selectedPluginId.value === pluginId) selectedPluginId.value = plugins.value[0]?.pluginId ?? null;
-  }
-
-  function applyBinding(snapshot: PluginFlowBindingSnapshot): void {
-    if (snapshot.projectKey !== projectKey.value) return;
-    const key = `${snapshot.pluginId}:${snapshot.logicalFlowId}`;
-    const current = bindingByKey.value[key];
-    if (current && snapshot.revision <= current.revision) return;
-    bindingByKey.value = { ...bindingByKey.value, [key]: snapshot };
-  }
-
-  function bindingFor(pluginId: string, logicalFlowId: string): PluginFlowBindingSnapshot | null {
-    return bindingByKey.value[`${pluginId}:${logicalFlowId}`] ?? null;
   }
 
   function applyTask(snapshot: PluginTaskSnapshot, eventRevision?: number): PluginTaskViewSnapshot {
@@ -260,8 +242,6 @@ export const usePluginStore = defineStore("plugins", () => {
     replaceCatalog,
     applyPlugin,
     removePlugin,
-    applyBinding,
-    bindingFor,
     applyTask,
     applyInteraction,
     clearConfirmation,

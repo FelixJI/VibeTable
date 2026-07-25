@@ -41,7 +41,7 @@ public sealed class DocumentWorkspaceDispatcherTests
             var sink = new FakeWebReplySink();
             var dispatcher = new WorkspaceRequestDispatcher(
                 new TableWorkspaceService(new FakeTableRpcGateway()),
-                new FakeDatabasePicker("directus://configured"),
+                new FakeDatabasePicker("local://configured"),
                 sink);
             dispatcher.SetDocumentWorkspace(documents);
 
@@ -221,7 +221,7 @@ public sealed class DocumentWorkspaceDispatcherTests
     {
         var dispatcher = new WorkspaceRequestDispatcher(
             new TableWorkspaceService(new FakeTableRpcGateway()),
-            new FakeDatabasePicker("directus://configured"),
+            new FakeDatabasePicker("local://configured"),
             sink);
         dispatcher.SetDocumentWorkspace(documents);
         return dispatcher;

@@ -63,7 +63,7 @@ def test_create_table_params_preserves_legacy_wire_keys() -> None:
         "binary",
     ],
 )
-def test_field_definition_accepts_all_standalone_directus_types(field_type: str) -> None:
+def test_field_definition_accepts_all_standalone_product_types(field_type: str) -> None:
     assert FieldDefinition(key="字段", type=field_type).type == field_type  # type: ignore[arg-type]
 
 

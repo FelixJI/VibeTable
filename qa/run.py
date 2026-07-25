@@ -29,7 +29,7 @@ CHECKS = {
     "version": {
         "name": "版本一致性",
         "script": "version_check.py",
-        "description": "检查 Python、WPF、Web、Directus 与发布清单版本",
+        "description": "检查 Python、WPF、Web、sidecar 与发布清单版本",
     },
     "package": {
         "name": "打包契约",

@@ -1,4 +1,4 @@
-"""Host-facing interaction broker independent of Directus endpoint paths."""
+"""Host-facing interaction broker independent of storage endpoint paths."""
 
 from __future__ import annotations
 

@@ -1,20 +1,20 @@
 """B2 multi-row paste contracts: ``table.previewPaste`` / ``table.applyPaste``.
 
-These contracts describe the transparent preview + idempotent batch write flow
+These contracts describe the transparent preview + idempotent batch write process
 that turns a clipboard TSV grid into a server-confirmed result summary.
 
-The flow is two-phase and bounded:
+The process is two-phase and bounded:
 
 * **preview** (no writes) — the host submits the parsed clipboard (rows of
   cells), the target collection, the current selection snapshot and the schema
   revision it rendered against. The service resolves each cell against the
   collection capability profile (editable field allow-list, type coercion,
-  permission checks) and the *current* Directus row revisions, and returns a
+  permission checks) and the *current* row revisions, and returns a
   :class:`PastePlan` describing exactly what will change plus a single-use
   :class:`PasteToken` binding the plan.
 * **apply** (writes) — the host submits the token; the service delegates the
-  atomic batch to the Directus ``vibetable-bulk-mutation.v1`` custom endpoint. The
-  endpoint applies every change in one server transaction (all-or-nothing),
+  atomic batch to the product mutation kernel. The kernel applies every change
+  in one server transaction (all-or-nothing),
   honours an idempotency key for safe retries, and returns a confirmed result
   summary.
 

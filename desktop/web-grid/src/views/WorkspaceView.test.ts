@@ -2,11 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { defineComponent, h } from "vue";
-import { NMessageProvider } from "naive-ui";
+import { NDropdown, NMessageProvider } from "naive-ui";
 
 import WorkspaceView from "./WorkspaceView.vue";
 import GridHost from "@/components/grid/GridHost.vue";
 import RelationEditorPanel from "@/components/grid/RelationEditorPanel.vue";
+import AppToolbar from "@/components/layout/AppToolbar.vue";
 import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { useUiStore } from "@/stores/uiStore";
@@ -16,6 +17,7 @@ import { usePasteStore } from "@/stores/pasteStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
+import { setLocale } from "@/i18n";
 import type {
   NormalizedRelationDescriptor,
   PastePlan,
@@ -36,6 +38,7 @@ import type {
 interface Outbound {
   type: string;
   payload: unknown;
+  requestId?: string;
 }
 
 function makeRecordingBridge(): {
@@ -57,16 +60,16 @@ function makeRecordingBridge(): {
       // which would arrive as JSON at the host side; here we capture pre-string form).
       if (typeof msg === "string") {
         try {
-          const parsed = JSON.parse(msg) as { type: string; payload?: unknown };
-          posted.push({ type: parsed.type, payload: parsed.payload });
+          const parsed = JSON.parse(msg) as { type: string; payload?: unknown; requestId?: string };
+          posted.push({ type: parsed.type, payload: parsed.payload, requestId: parsed.requestId });
           return;
         } catch {
           posted.push({ type: msg, payload: undefined });
           return;
         }
       }
-      const env = msg as { type?: string; payload?: unknown };
-      posted.push({ type: env.type ?? "(unknown)", payload: env.payload });
+      const env = msg as { type?: string; payload?: unknown; requestId?: string };
+      posted.push({ type: env.type ?? "(unknown)", payload: env.payload, requestId: env.requestId });
     },
   };
   const bridge = createHostBridge({ webview: shim });
@@ -101,7 +104,7 @@ const mockTabulatorRef: {
 
 vi.mock("@/grid/createGrid", () => ({
   createGrid: () => mockTabulatorRef.current,
-  buildGridColumns: () => [],
+  buildTabulatorColumns: () => [],
   ROW_NUMBER_FIELD: "__vt_row_number",
 }));
 
@@ -143,6 +146,7 @@ function makePlan(token = "tok-xyz"): PastePlan {
 describe("WorkspaceView", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
+    setLocale("zh-CN");
     setActivePinia(createPinia());
     // Reset the mocked Tabulator instance between tests (in particular,
     // restore getRanges to "no selection" so shortcut tests start clean).
@@ -154,7 +158,10 @@ describe("WorkspaceView", () => {
     };
   });
 
-  afterEach(() => setHostBridgeForTesting(null));
+  afterEach(() => {
+    setHostBridgeForTesting(null);
+    vi.restoreAllMocks();
+  });
 
   it("mounts and calls service.init() for every service without errors", async () => {
     const { bridge } = makeRecordingBridge();
@@ -162,6 +169,243 @@ describe("WorkspaceView", () => {
     const wrapper = mountView();
     await flushPromises();
     expect(wrapper.find(".workspace").exists()).toBe(true);
+  });
+
+  it("shows a localized non-blocking recovery path for stale edits", async () => {
+    const { bridge, emit, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }]);
+    workspace.selectTable("orders");
+    const wrapper = mountView();
+    await flushPromises();
+
+    emit({
+      type: "table.editRejected",
+      payload: {
+        kind: "edit_conflict",
+        message: "The row changed before the edit could be applied.",
+        conflictingRowKeys: ["row-1"],
+      },
+    });
+    await flushPromises();
+
+    const notice = wrapper.get('[data-testid="edit-rejection-notice"]');
+    expect(notice.text()).toContain("数据已在其他位置更新");
+    expect(notice.text()).not.toContain("The row changed");
+    expect(useTableStore().error).toBeNull();
+    expect(wrapper.find('[data-testid="table-error-overlay"]').exists()).toBe(false);
+
+    const refreshCount = posted.filter((item) => item.type === "table.selected").length;
+    await wrapper.get('[data-testid="edit-rejection-reload"]').trigger("click");
+    expect(
+      posted.filter((item) => item.type === "table.selected"),
+    ).toHaveLength(refreshCount + 1);
+    expect(wrapper.find('[data-testid="edit-rejection-notice"]').exists()).toBe(false);
+  });
+
+  it("shows authoritative formula backfill progress from task.changed", async () => {
+    const { bridge, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }]);
+    workspace.selectTable("orders");
+    const wrapper = mountView();
+    await flushPromises();
+
+    emit({
+      type: "task.changed",
+      payload: {
+        contractVersion: "1.0",
+        topic: "task.changed",
+        eventId: "backfill-42",
+        sequence: 42,
+        occurredAt: "2026-07-24T08:30:00Z",
+        taskId: "formula-orders",
+        taskType: "formulaBackfill",
+        state: "running",
+        progress: 0.64,
+        cursor: "6400",
+        error: null,
+      },
+    });
+    await flushPromises();
+
+    const status = wrapper.get('[data-testid="realtime-task-progress"]');
+    expect(status.text()).toContain("64%");
+    expect(status.get('[role="progressbar"]').attributes("aria-valuenow")).toBe("64");
+  });
+
+  it("does not label unrelated background tasks as formula backfills", async () => {
+    const { bridge, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }]);
+    workspace.selectTable("orders");
+    const wrapper = mountView();
+    await flushPromises();
+
+    emit({
+      type: "task.changed",
+      payload: {
+        contractVersion: "1.0",
+        topic: "task.changed",
+        eventId: "export-7",
+        sequence: 7,
+        occurredAt: "2026-07-24T08:30:00Z",
+        taskId: "export-orders",
+        taskType: "export",
+        state: "running",
+        progress: 0.3,
+        cursor: "3000",
+        error: null,
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="realtime-task-progress"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("旧值将在重算完成后刷新");
+  });
+
+  it("closes the controlled grid context menu when Esc requests show=false", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }]);
+    workspace.selectTable("orders");
+    const wrapper = mountView();
+    await flushPromises();
+
+    wrapper.findComponent(GridHost).vm.$emit("rowContext", {
+      rowKey: "row-1",
+      field: "status",
+      x: 20,
+      y: 30,
+    });
+    await flushPromises();
+    const dropdown = wrapper.findAllComponents(NDropdown)
+      .find((candidate) => candidate.props("trigger") === "manual")!;
+    expect(dropdown.props("show")).toBe(true);
+
+    dropdown.vm.$emit("update:show", false);
+    await flushPromises();
+    expect(dropdown.props("show")).toBe(false);
+  });
+
+  it("runs export through the renderer-host task bridge", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }]);
+    workspace.selectTable("orders");
+    const wrapper = mountView();
+    await flushPromises();
+    posted.length = 0;
+
+    wrapper.findComponent(AppToolbar).vm.$emit("exportData");
+    await flushPromises();
+    const grantRequest = posted.at(-1)!;
+    expect(grantRequest.type).toBe("data.exportTargetRequested");
+    emit({
+      type: "data.exportTargetRequested",
+      requestId: grantRequest.requestId,
+      payload: { grantId: "grant-export", displayName: "orders-export.csv" },
+    });
+    await flushPromises();
+
+    const taskRequest = posted.at(-1)!;
+    expect(taskRequest.type).toBe("task.create");
+    emit({
+      type: "task.create",
+      requestId: taskRequest.requestId,
+      payload: {
+        taskId: "task-export",
+        kind: "data.export",
+        state: "succeeded",
+        progress: 1,
+        message: "done",
+        result: {
+          grantId: "grant-export",
+          rowsWritten: 3,
+          outputDisplayName: "orders-export.csv",
+          format: "csv",
+          lookupRevision: null,
+        },
+        error: null,
+      },
+    });
+    await flushPromises();
+
+    expect(posted.map((item) => item.type)).toEqual([
+      "data.exportTargetRequested",
+      "task.create",
+    ]);
+    expect(document.body.textContent).toContain("已导出 3 行至 orders-export.csv。");
+  });
+
+  it("runs a validated import and refreshes the active table", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const workspace = useWorkspaceStore();
+    const table = useTableStore();
+    workspace.setOpened([{ collection: "orders" }]);
+    workspace.selectTable("orders");
+    table.revision = {
+      databaseSessionId: "session-1",
+      schemaRevision: "schema-1",
+      dataRevision: 1,
+    };
+    const wrapper = mountView();
+    await flushPromises();
+    posted.length = 0;
+
+    wrapper.findComponent(AppToolbar).vm.$emit("importData");
+    await flushPromises();
+    let request = posted.at(-1)!;
+    emit({
+      type: request.type,
+      requestId: request.requestId,
+      payload: { grantId: "grant-import", displayName: "orders.csv" },
+    });
+    await flushPromises();
+
+    request = posted.at(-1)!;
+    expect(request.type).toBe("data.previewImport");
+    emit({
+      type: request.type,
+      requestId: request.requestId,
+      payload: {
+        token: { token: "import-token", expiresAt: 9999999999, consumed: false },
+        summary: { validRows: 2, errorRows: 0, warningRows: 0, totalRows: 2 },
+        rows: [],
+        diagnostics: [],
+      },
+    });
+    await flushPromises();
+
+    request = posted.at(-1)!;
+    expect(request.type).toBe("task.create");
+    emit({
+      type: request.type,
+      requestId: request.requestId,
+      payload: {
+        taskId: "task-import",
+        kind: "data.import",
+        state: "succeeded",
+        progress: 1,
+        message: "done",
+        result: { createdCount: 2, updatedCount: 0, skippedCount: 0 },
+        error: null,
+      },
+    });
+    await flushPromises();
+
+    expect(posted.map((item) => item.type)).toEqual(expect.arrayContaining([
+      "data.importSourceRequested",
+      "data.previewImport",
+      "task.create",
+    ]));
   });
 
   it("opens relation and Lookup field management from the table toolbar", async () => {
@@ -374,6 +618,31 @@ describe("WorkspaceView", () => {
     expect(posted.some((p) => p.type === "table.selected")).toBe(true);
   });
 
+  it("wires the compact toolbar switcher through the same table selection service", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([
+      { collection: "orders" },
+      { collection: "users" },
+    ]);
+    workspace.selectTable("orders");
+
+    const wrapper = mountView();
+    await flushPromises();
+    posted.length = 0;
+
+    wrapper.findComponent(AppToolbar).vm.$emit("selectTable", "users");
+    await flushPromises();
+
+    expect(workspace.currentTable).toBe("users");
+    expect(posted).toContainEqual({
+      type: "table.selected",
+      payload: { table: "users" },
+      requestId: undefined,
+    });
+  });
+
   it("wires sidebar newTable -> admin.openCreate + ui.openCreate", async () => {
     const { bridge } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
@@ -390,6 +659,64 @@ describe("WorkspaceView", () => {
 
     expect(admin.phase).toBe("creating");
     expect(ui.createModalOpen).toBe(true);
+  });
+
+  it("routes the zero-row CTA through the existing insert-row mutation", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const table = useTableStore();
+    workspace.setOpened([{ collection: "orders", metadata: {} }]);
+    workspace.selectTable("orders");
+    table.setEditSchema([{
+      name: "name",
+      storageName: "name",
+      dataType: "text",
+      editable: true,
+      nullable: true,
+      primaryKey: false,
+      editor: { kind: "text" },
+      validation: [],
+    }], {
+      databaseSessionId: "session-1",
+      schemaRevision: "schema-1",
+      dataRevision: 1,
+    });
+    table.setDatasetReady({
+      table: "orders",
+      columns: [{
+        name: "name",
+        title: "Name",
+        dataType: "text",
+        editable: true,
+        nullable: true,
+      }],
+      rows: [],
+      offset: 0,
+      limit: 100,
+      totalRows: 0,
+      loadedRows: 0,
+      mode: "client",
+      revision: {
+        databaseSessionId: "session-1",
+        schemaRevision: "schema-1",
+        dataRevision: 1,
+      },
+    });
+
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get('[data-testid="grid-add-first-row"]').trigger("click");
+
+    expect(posted).toContainEqual({
+      type: "table.insertRowRequested",
+      payload: {
+        table: "orders",
+        values: {},
+        schemaRevision: "schema-1",
+      },
+      requestId: undefined,
+    });
   });
 
   it("wires sidebar requestDelete -> ui.openDelete(name)", async () => {
@@ -418,7 +745,7 @@ describe("WorkspaceView", () => {
     mountView();
     await flushPromises();
 
-    const adminBtn = document.body.querySelector('[data-testid="nav-directus"]');
+    const adminBtn = document.body.querySelector('[data-testid="nav-admin"]');
     expect(adminBtn).toBeTruthy();
     (adminBtn as HTMLElement).click();
     await flushPromises();
@@ -519,6 +846,8 @@ describe("WorkspaceView", () => {
   }
 
   it("Delete shortcut with an active range posts table.deleteRowsRequested (no confirm dialog)", async () => {
+    const digestA = `sha256:${"a".repeat(64)}`;
+    const digestB = `sha256:${"b".repeat(64)}`;
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
@@ -532,7 +861,10 @@ describe("WorkspaceView", () => {
     tableStore.appendPage({
       table: "users",
       columns: [{ name: "name", title: "Name", dataType: "text", editable: true, nullable: true }],
-      rows: [{ rowKey: 7, name: "a" }, { rowKey: 11, name: "b" }],
+      rows: [
+        { rowKey: 7, name: "a", __vibetableDigest: digestA },
+        { rowKey: 11, name: "b", __vibetableDigest: digestB },
+      ],
       offset: 0,
       limit: 2,
       totalRows: 2,
@@ -541,7 +873,7 @@ describe("WorkspaceView", () => {
 
     // Stage an active Tabulator range with two selected rows. mutationService
     // uses ws.currentTable as the `table` field; the bridge call should carry
-    // the rowKeys with stringified expectedDigest (per M5 contract).
+    // the rowKeys with QueryPort-issued authoritative digests.
     mockTabulatorRef.current = {
       setData: vi.fn().mockResolvedValue(undefined),
       setColumns: vi.fn(),
@@ -549,8 +881,8 @@ describe("WorkspaceView", () => {
       getRanges: () => [
         {
           getRows: () => [
-            { getData: () => ({ rowKey: 7, name: "a" }) },
-            { getData: () => ({ rowKey: 11, name: "b" }) },
+            { getData: () => ({ rowKey: 7, name: "a", __vibetableDigest: digestA }) },
+            { getData: () => ({ rowKey: 11, name: "b", __vibetableDigest: digestB }) },
           ],
           getColumns: () => [{ getField: () => "name" }],
         },
@@ -572,8 +904,8 @@ describe("WorkspaceView", () => {
     };
     expect(payload.table).toBe("users");
     expect(payload.rows).toEqual([
-      { rowKey: 7, expectedDigest: "7" },
-      { rowKey: 11, expectedDigest: "11" },
+      { rowKey: 7, expectedDigest: digestA },
+      { rowKey: 11, expectedDigest: digestB },
     ]);
   });
 
@@ -742,5 +1074,54 @@ describe("WorkspaceView", () => {
     await flushPromises();
 
     expect(history.canUndo).toBe(false);
+  });
+
+  it("gives structured editors dialog semantics and restores keyboard focus", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const ui = useUiStore();
+    workspace.setOpened([{ collection: "items" }]);
+    workspace.selectTable("items");
+    ui.navigate("tables");
+    const trigger = document.createElement("button");
+    trigger.textContent = "Open JSON";
+    document.body.append(trigger);
+    trigger.focus();
+
+    const wrapper = mountView();
+    await flushPromises();
+    trigger.focus();
+    wrapper.findComponent(GridHost).vm.$emit("jsonEdit", {
+      rowKey: "row-1",
+      column: {
+        name: "metadata",
+        title: "Metadata",
+        dataType: "json",
+        editable: true,
+        nullable: true,
+      },
+      value: { approved: true },
+    });
+    await flushPromises();
+
+    const dialog = document.body.querySelector<HTMLElement>(
+      '[data-testid="json-editor-modal"]',
+    );
+    expect(dialog?.getAttribute("role")).toBe("dialog");
+    expect(dialog?.getAttribute("aria-modal")).toBe("true");
+    expect(dialog?.getAttribute("aria-labelledby")).toBe("json-editor-title");
+
+    document.body.querySelector<HTMLElement>(
+      '[data-testid="json-editor-close"]',
+    )?.click();
+    await flushPromises();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(
+      document.body.querySelector<HTMLElement>(
+        '[data-testid="json-editor-modal"]',
+      )?.style.display,
+    ).toBe("none");
+    expect(document.activeElement).toBe(trigger);
   });
 });

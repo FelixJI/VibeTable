@@ -5,8 +5,8 @@ namespace VibeTable.Workspace.Storage;
 
 /// <summary>
 /// Locally authoritative document/folder catalog stored under a workspace's
-/// hidden <c>.backup</c> directory. Directus mirrors these identities but is
-/// never used to authorize a local file path.
+/// hidden <c>.backup</c> directory. Metadata projections are never used to
+/// authorize a local file path.
 /// </summary>
 public sealed partial class DocumentCatalogStore
 {
@@ -105,6 +105,12 @@ public sealed partial class DocumentCatalogStore
     }
 
     private static string SafeId(string value, string paramName)
+    {
+        ValidateId(value, paramName);
+        return value;
+    }
+
+    internal static string ValidateIdentifier(string value, string paramName)
     {
         ValidateId(value, paramName);
         return value;

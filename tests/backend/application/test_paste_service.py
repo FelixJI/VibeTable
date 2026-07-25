@@ -1,203 +1,156 @@
-"""B2 paste service tests.
-
-Covers the two-phase preview/apply flow against faked Directus pieces:
-
-* preview resolves cells onto the selection's row keys, classifies
-  update/insert/skip, attaches localized diagnostics and mints a single-use
-  token bound to the user/collection/schema/payload.
-* apply validates the token, delegates to the bulk endpoint, and maps the
-  outcome to committed/conflict/pending.
-* The 10k cell hard cap rejects oversize pastes with a clear overflow error.
-* Token replay after consumption and across users is rejected.
-"""
+"""Product-port tests for the two-phase paste service."""
 
 from __future__ import annotations
 
-import asyncio
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
-from backend.adapters.directus.auth import CurrentUser, DirectusAuthBroker, SessionStatus
-from backend.adapters.directus.client import DirectusClient
-from backend.adapters.directus.errors import DirectusSchemaError, DirectusTransportError
-from backend.adapters.directus.profile import CapabilityManifest, CollectionProfile
 from backend.application.paste_service import (
     MAX_PASTE_CELLS,
-    BulkMutationClient,
     PasteError,
     PasteService,
     PasteTokenStore,
+    _StoredPlan,
 )
+from backend.contracts.data_profile import CollectionProfile
 from backend.contracts.paste import (
     ApplyPasteParams,
+    ApplyPasteResult,
     PasteCell,
     PreviewPasteParams,
 )
 
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
+
+@dataclass
+class ProductActor:
+    id: str
 
 
-class FakeAuth:
-    """Auth broker stub returning a fixed user + access token."""
-
+class FakeProductAuth:
     def __init__(self, user_id: str = "user-1") -> None:
-        self._user = CurrentUser(
-            id=user_id,
-            display_name="Tester",
-            avatar_file_id=None,
-            role_id="role-1",
-            capabilities=["vibetable_demo.read", "vibetable_demo.update"],
-        )
+        self.actor = ProductActor(user_id)
 
-    async def access_token(self) -> str:
-        return "access-token"
-
-    async def current_user(self) -> CurrentUser:
-        return self._user
-
-    def status(self) -> SessionStatus:  # pragma: no cover - not used by paste
-        return SessionStatus(state="authenticated", user=self._user)
+    async def current_user(self) -> ProductActor:
+        return self.actor
 
 
-class FakeTransport:
-    """Records requests and replays a queue of canned responses."""
+class FakeProductReadPort:
+    def __init__(
+        self,
+        *,
+        rows: dict[str, dict[str, Any]] | None = None,
+        readonly: set[str] | None = None,
+        live_readonly: set[str] | None = None,
+        decimal_scale: int | None = None,
+        field_types: dict[str, str] | None = None,
+    ) -> None:
+        self.rows = rows or {}
+        self.readonly = readonly or set()
+        self.live_readonly = live_readonly
+        self.decimal_scale = decimal_scale
+        self.field_types = field_types or {}
+        self.write_checks: list[tuple[set[str], str, bool]] = []
 
-    def __init__(self, responses: list[Any]) -> None:
-        self.responses = list(responses)
-        self.requests: list[dict[str, Any]] = []
-
-    async def request(self, method: str, path: str, **kwargs: Any) -> Any:
-        self.requests.append({"method": method, "path": path, **kwargs})
-        if not self.responses:
-            raise AssertionError(f"unexpected {method} {path}")
-        response = self.responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
-
-
-class FakeDirectusAuth(DirectusAuthBroker):
-    """Auth broker subclass that bypasses the network for tests."""
-
-    def __init__(self, user_id: str = "user-1") -> None:
-        # The real broker needs config/transport/secrets; tests never call the
-        # network methods, so we skip super().__init__ and stub the surface.
-        self._user = CurrentUser(
-            id=user_id,
-            display_name="Tester",
-            role_id="role-1",
-        )
-
-    async def access_token(self) -> str:
-        return "access-token"
-
-    async def current_user(self) -> CurrentUser:
-        return self._user
-
-
-def _manifest() -> CapabilityManifest:
-    return CapabilityManifest.model_validate(
-        {
-            "contract": "directus.project.v1",
-            "schema_version": "vibetable-1.0",
-            "directus_compatibility": ">=12 <13",
-            "collections": [
-                {
-                    "collection": "vibetable_demo",
-                    "primary_key": "id",
-                    "fields": [
-                        "id",
-                        "status",
-                        "number",
-                        "title",
-                        "amount",
-                        "seed",
-                        "date_updated",
-                    ],
-                    "create_fields": ["id", "status", "number", "title", "amount", "seed"],
-                    "update_fields": ["status", "number", "title", "amount"],
-                    "archive_field": "status",
-                    "archive_value": "archived",
-                    "restore_value": "active",
-                    "date_updated_field": "date_updated",
-                    "allow_permanent_delete": False,
+    async def fields(self, profile: CollectionProfile) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for name in profile.fields:
+            schema: dict[str, Any] = {}
+            if name in self.field_types:
+                schema["data_type"] = self.field_types[name]
+            if name == "amount" and self.decimal_scale is not None:
+                schema = {
+                    "data_type": "decimal",
+                    "numeric_precision": 10,
+                    "numeric_scale": self.decimal_scale,
                 }
-            ],
-        }
+            result.append({"field": name, "schema": schema})
+        return result
+
+    async def readonly_fields(
+        self,
+        profile: CollectionProfile,
+        *,
+        refresh: bool,
+    ) -> set[str]:
+        del profile
+        if refresh and self.live_readonly is not None:
+            return set(self.live_readonly)
+        return set(self.readonly)
+
+    async def require_write_fields(
+        self,
+        profile: CollectionProfile,
+        fields: set[str],
+        *,
+        operation: str,
+        refresh: bool,
+    ) -> None:
+        self.write_checks.append((set(fields), operation, refresh))
+        readonly = await self.readonly_fields(profile, refresh=refresh)
+        if fields & readonly:
+            raise ValueError("field became read-only")
+        profile.require_fields(
+            fields,
+            operation="create" if operation == "create" else "update",
+        )
+
+    async def read_item(
+        self,
+        profile: CollectionProfile,
+        item_id: str,
+    ) -> dict[str, Any]:
+        del profile
+        return dict(self.rows[item_id])
+
+
+class FakeProductMutationPort:
+    def __init__(self, result: ApplyPasteResult | None = None) -> None:
+        self.result = result or ApplyPasteResult(
+            collection="vibetable_demo",
+            outcome="committed",
+            updated_row_keys=["1"],
+            request_id="request-1",
+        )
+        self.calls: list[dict[str, Any]] = []
+
+    async def apply(self, **kwargs: Any) -> ApplyPasteResult:
+        self.calls.append(kwargs)
+        return self.result
+
+
+def _profile() -> CollectionProfile:
+    return CollectionProfile(
+        collection="vibetable_demo",
+        schema_revision="schema-1",
+        fields=[
+            "id",
+            "status",
+            "number",
+            "title",
+            "amount",
+            "seed",
+            "payload",
+            "date_updated",
+        ],
+        create_fields=["id", "status", "number", "title", "amount", "seed", "payload"],
+        update_fields=["status", "number", "title", "amount", "payload"],
     )
 
 
-def _profile(manifest: CapabilityManifest) -> CollectionProfile:
-    return manifest.by_collection["vibetable_demo"]
-
-
-def _fields_response(
-    *,
-    readonly: set[str] | None = None,
-    decimal_scale: int | None = None,
-) -> dict[str, Any]:
-    profile = _profile(_manifest())
-    readonly = readonly or set()
-    return {
-        "data": [
-            (
-                {
-                    "field": name,
-                    "type": "decimal",
-                    "meta": {"readonly": name in readonly},
-                    "schema": {
-                        "is_generated": False,
-                        "numeric_precision": 10,
-                        "numeric_scale": decimal_scale,
-                    },
-                }
-                if name == "amount" and decimal_scale is not None
-                else {
-                    "field": name,
-                    "meta": {"readonly": name in readonly},
-                    "schema": {
-                        "is_generated": False,
-                        "is_primary_key": name == profile.primary_key,
-                        "is_nullable": name != profile.primary_key,
-                    },
-                }
-            )
-            for name in profile.fields
-        ]
-    }
-
-
-def _selection(row_keys: list[str]) -> dict[str, Any]:
-    return {
-        "querySnapshot": {
-            "snapshotId": "snap-1",
-            "digest": "digest-1",
-            "databaseId": "db-1",
-            "table": "vibetable_demo",
-            "schemaRevision": "schema-1",
-            "dataRevision": 1,
-            "normalizedQuery": {},
-        },
-        "dataRevision": 1,
-        "rowKeys": row_keys,
-    }
-
-
-def _cells(rows: list[list[str]], anchor_column: str = "number") -> list[list[PasteCell]]:
+def _cells(rows: list[list[str]]) -> list[list[PasteCell]]:
     return [
         [
             PasteCell(
-                row_index=row_idx,
-                column_index=col_idx,
-                raw_value=raw,
-                parsed_value=raw,
+                row_index=row_index,
+                column_index=column_index,
+                raw_value=value,
+                parsed_value=value,
             )
-            for col_idx, raw in enumerate(row)
+            for column_index, value in enumerate(row)
         ]
-        for row_idx, row in enumerate(rows)
+        for row_index, row in enumerate(rows)
     ]
 
 
@@ -206,49 +159,45 @@ def _preview_params(
     row_keys: list[str],
     anchor_row: str | None,
     cells: list[list[PasteCell]],
-    schema_revision: str | None = None,
     anchor_column: str = "number",
 ) -> PreviewPasteParams:
-    manifest = _manifest()
-    profile = _profile(manifest)
-    return PreviewPasteParams.model_validate(
-        {
-            "collection": "vibetable_demo",
-            "schemaRevision": schema_revision or profile.capability_hash,
-            "selection": _selection(row_keys),
-            "startCell": {"rowKey": anchor_row, "column": anchor_column},
-            "cells": [  # type: ignore[dict-item]
-                [cell.model_dump(by_alias=True) for cell in row] for row in cells
-            ],
-        }
+    return PreviewPasteParams(
+        collection="vibetable_demo",
+        schema_revision="schema-1",
+        selection={"rowKeys": row_keys},
+        start_cell={"rowKey": anchor_row, "column": anchor_column},
+        cells=cells,
     )
 
 
-# ---------------------------------------------------------------------------
-# Preview
-# ---------------------------------------------------------------------------
+def _service(
+    *,
+    read: FakeProductReadPort | None = None,
+    auth: FakeProductAuth | None = None,
+    mutation: FakeProductMutationPort | None = None,
+) -> tuple[PasteService, FakeProductReadPort, FakeProductAuth, FakeProductMutationPort]:
+    read = read or FakeProductReadPort()
+    auth = auth or FakeProductAuth()
+    mutation = mutation or FakeProductMutationPort()
+    service = PasteService(
+        client=read,
+        auth=auth,
+        bulk=mutation,
+        profiles={"vibetable_demo": _profile()},
+        project="default",
+    )
+    return service, read, auth, mutation
 
 
 @pytest.mark.asyncio
-async def test_preview_resolves_update_rows_with_expected_revisions() -> None:
-    manifest = _manifest()
-    profile = _profile(manifest)
-    transport = FakeTransport(
-        [
-            _fields_response(),
-            {"data": {"id": "1", "number": "A-1", "date_updated": "2026-07-14T00:00:00Z"}},
-            {"data": {"id": "2", "number": "A-2", "date_updated": "2026-07-14T00:00:01Z"}},
-        ]
+async def test_preview_resolves_product_rows_and_digest_guards() -> None:
+    read = FakeProductReadPort(
+        rows={
+            "1": {"id": "1", "number": "A-1", "__vibetableDigest": "sha256:digest-1"},
+            "2": {"id": "2", "number": "A-2", "__vibetableDigest": "sha256:digest-2"},
+        }
     )
-    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    bulk = BulkMutationClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    service = PasteService(
-        client=client,
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        bulk=bulk,
-        profiles=manifest.by_collection,
-        project="default",
-    )
+    service, _, _, _ = _service(read=read)
 
     plan = await service.preview(
         _preview_params(
@@ -258,202 +207,68 @@ async def test_preview_resolves_update_rows_with_expected_revisions() -> None:
         )
     )
 
-    assert plan.collection == "vibetable_demo"
-    assert plan.capability_hash == profile.capability_hash
     assert plan.summary.update_rows == 2
-    assert plan.summary.insert_rows == 0
-    assert plan.rows[0].target_row_key == "1"
-    assert plan.rows[0].expected_date_updated == "2026-07-14T00:00:00Z"
-    assert plan.rows[0].changes["number"]["after"] == "B-1"
-    assert plan.token.token
+    assert [row.target_row_key for row in plan.rows] == ["1", "2"]
+    assert plan.rows[0].expected_date_updated == "sha256:digest-1"
+    assert plan.rows[0].changes["number"] == {"before": "A-1", "after": "B-1"}
 
 
 @pytest.mark.asyncio
-async def test_preview_rejects_oversize_clipboard_with_overflow_error() -> None:
-    manifest = _manifest()
-    transport = FakeTransport([])
-    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    bulk = BulkMutationClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    service = PasteService(
-        client=client,
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        bulk=bulk,
-        profiles=manifest.by_collection,
-        project="default",
+async def test_preview_rejects_unknown_product_table_and_oversize_clipboard() -> None:
+    service, _, _, _ = _service()
+    unknown = PreviewPasteParams(
+        collection="unknown",
+        schema_revision="schema-1",
+        selection={"rowKeys": []},
+        start_cell={"rowKey": None, "column": "number"},
+        cells=_cells([["x"]]),
     )
-    # Build a clipboard exactly one cell over the limit.
-    rows = [["x"] * 100 for _ in range(MAX_PASTE_CELLS // 100 + 1)]
+    with pytest.raises(PasteError, match="product schema") as unknown_error:
+        await service.preview(unknown)
+    assert unknown_error.value.code == "schema_unknown"
 
-    with pytest.raises(PasteError) as exc_info:
+    oversize = _cells([["x"] * 100 for _ in range(MAX_PASTE_CELLS // 100 + 1)])
+    with pytest.raises(PasteError) as overflow:
         await service.preview(
-            _preview_params(
-                row_keys=["1"],
-                anchor_row="1",
-                cells=_cells(rows),
-            )
+            _preview_params(row_keys=[], anchor_row=None, cells=oversize)
         )
-    assert exc_info.value.code == "paste_overflow"
-    assert exc_info.value.data == {"maxCells": MAX_PASTE_CELLS, "cellCount": 10100}
+    assert overflow.value.code == "paste_overflow"
+    assert overflow.value.data == {
+        "maxCells": MAX_PASTE_CELLS,
+        "cellCount": 10100,
+    }
 
 
 @pytest.mark.asyncio
-async def test_preview_rejects_unknown_collection() -> None:
-    manifest = _manifest()
-    transport = FakeTransport([])
-    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    bulk = BulkMutationClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    service = PasteService(
-        client=client,
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        bulk=bulk,
-        profiles=manifest.by_collection,
-        project="default",
+async def test_apply_rechecks_product_write_policy_before_mutation() -> None:
+    read = FakeProductReadPort(
+        rows={"1": {"id": "1", "number": "A-1", "__vibetableDigest": "sha256:old"}},
+        live_readonly={"number"},
+    )
+    service, _, _, mutation = _service(read=read)
+    plan = await service.preview(
+        _preview_params(row_keys=["1"], anchor_row="1", cells=_cells([["B-1"]]))
     )
 
-    params = PreviewPasteParams.model_validate(
-        {
-            "collection": "vibetable_unknown",
-            "schemaRevision": "any",
-            "selection": _selection([]),
-            "startCell": {"rowKey": None, "column": "number"},
-            "cells": [[{"rowIndex": 0, "columnIndex": 0, "rawValue": "x"}]],
-        }
-    )
-    with pytest.raises(DirectusSchemaError):
-        await service.preview(params)
-
-
-# ---------------------------------------------------------------------------
-# Apply
-# ---------------------------------------------------------------------------
-
-
-def test_apply_rechecks_readonly_metadata_before_bulk_mutation() -> None:
-    manifest = _manifest()
-    transport = FakeTransport(
-        [
-            _fields_response(),
-            {"data": {"id": "1", "number": "A-1", "date_updated": "rev-1"}},
-            _fields_response(readonly={"number"}),
-        ]
-    )
-    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    service = PasteService(
-        client=client,
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        bulk=BulkMutationClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
-        profiles=manifest.by_collection,
-        project="default",
-    )
-
-    async def preview_then_apply_after_studio_policy_change() -> None:
-        plan = await service.preview(
-            _preview_params(row_keys=["1"], anchor_row="1", cells=_cells([["B-1"]]))
-        )
+    with pytest.raises(PasteError) as error:
         await service.apply(
             ApplyPasteParams(
                 collection="vibetable_demo",
                 token=plan.token.token,
-                idempotency_key="idem-readonly",
+                idempotency_key="idem-policy",
             )
         )
 
-    with pytest.raises(PasteError) as exc_info:
-        asyncio.run(preview_then_apply_after_studio_policy_change())
-
-    assert exc_info.value.code == "schema_mismatch"
-    assert all(
-        request["path"] != "/vibetable-bulk-mutation/apply" for request in transport.requests
-    )
-
-
-def test_apply_allows_create_only_field_on_insert_row() -> None:
-    manifest = _manifest()
-    transport = FakeTransport(
-        [
-            _fields_response(),
-            _fields_response(),
-            {
-                "data": {
-                    "createdRowKeys": ["created-1"],
-                    "updatedRowKeys": [],
-                    "skippedRowKeys": [],
-                    "conflicts": [],
-                }
-            },
-        ]
-    )
-    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    service = PasteService(
-        client=client,
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        bulk=BulkMutationClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
-        profiles=manifest.by_collection,
-        project="default",
-    )
-    create_only_cell = PasteCell(
-        row_index=0,
-        column_index=0,
-        column="seed",
-        raw_value="seed-1",
-        parsed_value="seed-1",
-    )
-
-    async def preview_and_apply_insert() -> None:
-        plan = await service.preview(
-            _preview_params(
-                row_keys=[],
-                anchor_row=None,
-                cells=[[create_only_cell]],
-            )
-        )
-        assert plan.rows[0].kind == "insert"
-        assert plan.rows[0].changes["seed"]["after"] == "seed-1"
-        result = await service.apply(
-            ApplyPasteParams(
-                collection="vibetable_demo",
-                token=plan.token.token,
-                idempotency_key="idem-create-only",
-            )
-        )
-        assert result.outcome == "committed"
-
-    asyncio.run(preview_and_apply_insert())
-
-    bulk_request = transport.requests[-1]
-    assert bulk_request["path"] == "/vibetable-bulk-mutation/apply"
-    assert bulk_request["json_body"]["operations"] == [
-        {"kind": "create", "values": {"seed": "seed-1"}}
-    ]
+    assert error.value.code == "schema_mismatch"
+    assert mutation.calls == []
 
 
 @pytest.mark.asyncio
-async def test_apply_returns_committed_and_consumes_token() -> None:
-    manifest = _manifest()
-    transport = FakeTransport(
-        [
-            _fields_response(),
-            {"data": {"id": "1", "number": "A-1", "date_updated": "rev-1"}},
-            _fields_response(),
-            {
-                "data": {
-                    "createdRowKeys": [],
-                    "updatedRowKeys": ["1"],
-                    "skippedRowKeys": [],
-                    "conflicts": [],
-                }
-            },
-        ]
+async def test_apply_committed_is_single_use_and_forwards_schema_revision() -> None:
+    read = FakeProductReadPort(
+        rows={"1": {"id": "1", "number": "A-1", "__vibetableDigest": "sha256:old"}}
     )
-    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    bulk = BulkMutationClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    service = PasteService(
-        client=client,
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        bulk=bulk,
-        profiles=manifest.by_collection,
-        project="default",
-    )
+    service, _, _, mutation = _service(read=read)
     plan = await service.preview(
         _preview_params(row_keys=["1"], anchor_row="1", cells=_cells([["B-1"]]))
     )
@@ -467,10 +282,9 @@ async def test_apply_returns_committed_and_consumes_token() -> None:
     )
 
     assert result.outcome == "committed"
-    assert result.updated_row_keys == ["1"]
-    assert transport.requests[-1]["path"] == "/vibetable-bulk-mutation/apply"
-    # Second apply with the same token must fail (consumed).
-    with pytest.raises(PasteError) as exc_info:
+    assert mutation.calls[0]["schema_revision"] == "schema-1"
+    assert mutation.calls[0]["row_revisions"] == {"1": "sha256:old"}
+    with pytest.raises(PasteError) as replay:
         await service.apply(
             ApplyPasteParams(
                 collection="vibetable_demo",
@@ -478,271 +292,147 @@ async def test_apply_returns_committed_and_consumes_token() -> None:
                 idempotency_key="idem-1",
             )
         )
-    assert exc_info.value.code == "paste_token_consumed"
+    assert replay.value.code == "paste_token_consumed"
 
 
 @pytest.mark.asyncio
-async def test_apply_returns_pending_on_timeout() -> None:
-    manifest = _manifest()
-    transport = FakeTransport(
-        [
-            _fields_response(),
-            {"data": {"id": "1", "number": "A-1", "date_updated": "rev-1"}},
-            _fields_response(),
-            DirectusTransportError("timeout", status=408, code="REQUEST_TIMEOUT"),
-        ]
+async def test_pending_plan_reuses_only_the_original_idempotency_key() -> None:
+    read = FakeProductReadPort(
+        rows={"1": {"id": "1", "number": "A-1", "__vibetableDigest": "sha256:old"}}
     )
-    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    bulk = BulkMutationClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    service = PasteService(
-        client=client,
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        bulk=bulk,
-        profiles=manifest.by_collection,
-        project="default",
-    )
-    plan = await service.preview(
-        _preview_params(row_keys=["1"], anchor_row="1", cells=_cells([["B-1"]]))
-    )
-
-    result = await service.apply(
-        ApplyPasteParams(
+    mutation = FakeProductMutationPort(
+        ApplyPasteResult(
             collection="vibetable_demo",
-            token=plan.token.token,
-            idempotency_key="idem-1",
+            outcome="pending",
+            request_id="idem-pending",
         )
     )
-
-    assert result.outcome == "pending"
-    assert result.request_id == "idem-1"
-
-
-@pytest.mark.asyncio
-async def test_apply_returns_conflict_when_row_revision_changed() -> None:
-    manifest = _manifest()
-    transport = FakeTransport(
-        [
-            _fields_response(),
-            {"data": {"id": "1", "number": "A-1", "date_updated": "rev-1"}},
-            _fields_response(),
-            DirectusTransportError(
-                "conflict",
-                status=409,
-                code="EDIT_CONFLICT",
-                field_errors={
-                    "conflicts": [
-                        {
-                            "primaryKey": "1",
-                            "currentValue": {"id": "1", "number": "A-2"},
-                            "expectedDateUpdated": "rev-1",
-                        }
-                    ]
-                },
-            ),
-        ]
-    )
-    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    bulk = BulkMutationClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    service = PasteService(
-        client=client,
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        bulk=bulk,
-        profiles=manifest.by_collection,
-        project="default",
-    )
+    service, _, _, _ = _service(read=read, mutation=mutation)
     plan = await service.preview(
         _preview_params(row_keys=["1"], anchor_row="1", cells=_cells([["B-1"]]))
     )
-
-    result = await service.apply(
-        ApplyPasteParams(
-            collection="vibetable_demo",
-            token=plan.token.token,
-            idempotency_key="idem-1",
-        )
+    params = ApplyPasteParams(
+        collection="vibetable_demo",
+        token=plan.token.token,
+        idempotency_key="idem-pending",
     )
 
-    assert result.outcome == "conflict"
-    assert len(result.conflicts) == 1
-    assert result.conflicts[0].row_key == "1"
-    assert result.conflicts[0].current_value["number"] == "A-2"
+    first = await service.apply(params)
+    second = await service.apply(params)
+    assert first.outcome == second.outcome == "pending"
+    assert len(mutation.calls) == 2
+
+    with pytest.raises(PasteError) as mismatch:
+        await service.apply(params.model_copy(update={"idempotency_key": "other"}))
+    assert mismatch.value.code == "paste_idempotency_mismatch"
 
 
 @pytest.mark.asyncio
-async def test_apply_rejects_token_minted_by_another_user() -> None:
-    manifest = _manifest()
-    transport = FakeTransport(
-        [
-            _fields_response(),
-            {"data": {"id": "1", "number": "A-1", "date_updated": "rev-1"}},
-        ]
+async def test_token_is_bound_to_product_actor() -> None:
+    auth = FakeProductAuth("user-1")
+    read = FakeProductReadPort(
+        rows={"1": {"id": "1", "number": "A-1", "__vibetableDigest": "sha256:old"}}
     )
-    client = DirectusClient(transport, FakeDirectusAuth("user-1"))  # type: ignore[arg-type]
-    bulk = BulkMutationClient(transport, FakeDirectusAuth("user-1"))  # type: ignore[arg-type]
-    service = PasteService(
-        client=client,
-        auth=FakeDirectusAuth("user-1"),  # type: ignore[arg-type]
-        bulk=bulk,
-        profiles=manifest.by_collection,
-        project="default",
-    )
+    service, _, _, mutation = _service(read=read, auth=auth)
     plan = await service.preview(
         _preview_params(row_keys=["1"], anchor_row="1", cells=_cells([["B-1"]]))
     )
+    auth.actor = ProductActor("user-2")
 
-    # A different auth returns a different user id at apply time.
-    service._auth = FakeDirectusAuth("user-2")  # type: ignore[assignment, arg-type]
-    with pytest.raises(PasteError) as exc_info:
+    with pytest.raises(PasteError) as error:
         await service.apply(
             ApplyPasteParams(
                 collection="vibetable_demo",
                 token=plan.token.token,
-                idempotency_key="idem-1",
+                idempotency_key="idem-actor",
             )
         )
-    assert exc_info.value.code == "paste_token_invalid"
+    assert error.value.code == "paste_token_invalid"
+    assert mutation.calls == []
 
 
-@pytest.mark.asyncio
-async def test_apply_rejects_tampered_token() -> None:
-    manifest = _manifest()
-    transport = FakeTransport([])
-    service = PasteService(
-        client=DirectusClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        bulk=BulkMutationClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
-        profiles=manifest.by_collection,
-        project="default",
-    )
-
-    with pytest.raises(PasteError) as exc_info:
-        await service.apply(
-            ApplyPasteParams(
-                collection="vibetable_demo",
-                token="bogus.0000000000000000000000000000000000000000000000000000000000000000",
-                idempotency_key="idem-1",
-            )
-        )
-    assert exc_info.value.code == "paste_token_invalid"
-
-
-# ---------------------------------------------------------------------------
-# Token store
-# ---------------------------------------------------------------------------
-
-
-def test_token_store_rejects_tampered_tag() -> None:
-    store = PasteTokenStore()
-    from backend.application.paste_service import _StoredPlan
-
-    plan = _StoredPlan(
-        user_id="u",
-        project="p",
-        collection="c",
-        schema_revision="s",
-        capability_hash="h",
-        payload_hash="ph",
-        rows=[],
-        row_revisions={},
-        expires_at=10**12,
-    )
-    token = store.mint(plan)
-    parts = token.token.split(".")
-    tampered = f"{parts[0]}.{'a' * 64}"
-    with pytest.raises(PasteError) as exc_info:
-        store.resolve(tampered)
-    assert exc_info.value.code == "paste_token_invalid"
-
-
-def test_token_store_rejects_expired_token() -> None:
-    from backend.application.paste_service import _StoredPlan
-
+def test_token_store_rejects_tampering_and_expiry() -> None:
     store = PasteTokenStore(clock=lambda: 100.0, ttl_seconds=0.0)
-    plan = _StoredPlan(
-        user_id="u",
-        project="p",
-        collection="c",
-        schema_revision="s",
-        capability_hash="h",
-        payload_hash="ph",
+    stored = _StoredPlan(
+        user_id="user",
+        project="project",
+        collection="table",
+        schema_revision="schema",
+        capability_hash="schema",
+        payload_hash="payload",
         rows=[],
         row_revisions={},
         expires_at=100.0,
     )
-    token = store.mint(plan)
-    with pytest.raises(PasteError) as exc_info:
+    token = store.mint(stored)
+    with pytest.raises(PasteError) as expired:
         store.resolve(token.token)
-    assert exc_info.value.code == "paste_token_expired"
+    assert expired.value.code == "paste_token_expired"
+
+    raw, _, _ = token.token.rpartition(".")
+    with pytest.raises(PasteError) as tampered:
+        store.resolve(f"{raw}.{'0' * 64}")
+    assert tampered.value.code == "paste_token_invalid"
 
 
 @pytest.mark.asyncio
-async def test_preview_flags_value_exceeding_column_scale() -> None:
-    # The `amount` column is a 2-digit decimal; pasting 3.14159 must be flagged
-    # as a diagnostic and excluded from the change set (never reaches the bulk
-    # write, which would otherwise silently truncate it).
-    manifest = _manifest()
-    transport = FakeTransport(
-        [
-            _fields_response(decimal_scale=2),
-            {"data": {"id": "1", "amount": "1.00", "date_updated": "2026-07-14T00:00:00Z"}},
-        ]
+async def test_preview_rejects_decimal_beyond_product_field_scale() -> None:
+    read = FakeProductReadPort(
+        rows={"1": {"id": "1", "amount": "1.00", "__vibetableDigest": "sha256:old"}},
+        decimal_scale=2,
     )
-    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    bulk = BulkMutationClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    service = PasteService(
-        client=client,
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        bulk=bulk,
-        profiles=manifest.by_collection,
-        project="default",
-    )
+    service, _, _, _ = _service(read=read)
 
     plan = await service.preview(
         _preview_params(
             row_keys=["1"],
             anchor_row="1",
-            cells=_cells([["3.14159"]], anchor_column="amount"),
             anchor_column="amount",
+            cells=_cells([["3.14159"]]),
         )
     )
 
-    row = plan.rows[0]
-    assert row.kind == "update"
-    # The out-of-scale cell is excluded from changes...
-    assert "amount" not in row.changes
-    # ...and surfaces as an error diagnostic.
-    assert any(d.code == "value_out_of_scale" for d in row.diagnostics)
+    assert plan.summary.error_count == 1
+    assert plan.rows[0].diagnostics[0].code == "value_out_of_scale"
+    assert "amount" not in plan.rows[0].changes
 
 
 @pytest.mark.asyncio
-async def test_preview_accepts_value_within_column_scale() -> None:
-    manifest = _manifest()
-    transport = FakeTransport(
-        [
-            _fields_response(decimal_scale=2),
-            {"data": {"id": "1", "amount": "1.00", "date_updated": "2026-07-14T00:00:00Z"}},
-        ]
+async def test_preview_coerces_json_text_to_typed_value_and_rejects_invalid_json() -> None:
+    read = FakeProductReadPort(
+        rows={
+            "1": {
+                "id": "1",
+                "payload": {"before": True},
+                "__vibetableDigest": "sha256:old",
+            }
+        },
+        field_types={"payload": "json"},
     )
-    client = DirectusClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    bulk = BulkMutationClient(transport, FakeDirectusAuth())  # type: ignore[arg-type]
-    service = PasteService(
-        client=client,
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        bulk=bulk,
-        profiles=manifest.by_collection,
-        project="default",
-    )
+    service, _, _, _ = _service(read=read)
 
-    plan = await service.preview(
+    valid = await service.preview(
         _preview_params(
             row_keys=["1"],
             anchor_row="1",
-            cells=_cells([["3.14"]], anchor_column="amount"),
-            anchor_column="amount",
+            anchor_column="payload",
+            cells=_cells([['{"nested":{"value":8},"items":[4,5]}']]),
         )
     )
+    assert valid.summary.error_count == 0
+    assert valid.rows[0].changes["payload"]["after"] == {
+        "nested": {"value": 8},
+        "items": [4, 5],
+    }
 
-    row = plan.rows[0]
-    assert row.kind == "update"
-    assert row.changes["amount"]["after"] == "3.14"
-    assert not any(d.code == "value_out_of_scale" for d in row.diagnostics)
+    invalid = await service.preview(
+        _preview_params(
+            row_keys=["1"],
+            anchor_row="1",
+            anchor_column="payload",
+            cells=_cells([["{not-json}"]]),
+        )
+    )
+    assert invalid.summary.error_count == 1
+    assert invalid.rows[0].diagnostics[0].code == "invalid_json"
+    assert "payload" not in invalid.rows[0].changes

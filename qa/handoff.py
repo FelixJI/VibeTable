@@ -1,80 +1,10 @@
 #!/usr/bin/env python3
-"""VibeTable WPF stage handoff recorder and verifier (Task 12).
+"""Record and verify PocketBase migration handoffs.
 
-Implements the stage handoff system: every migration stage (A, B1, B3, ...)
-records a ``docs/handoffs/<stage>.json`` manifest after its gate passes, and
-each successor stage MUST verify that manifest against the working tree
-before it may begin.
-
-Handoff document schema
------------------------
-Each ``docs/handoffs/<stage>.json`` contains::
-
-    {
-      "stage": "A",
-      "recordedAt": "<ISO 8601 local time>",
-      "commit": "<git SHA of HEAD at record time>",
-      "protocolVersion": "1.0",
-      "capabilities": ["rpc.request.v1", ...],   # verbatim from dependencies
-      "fixtures": {
-        "<repo-relative path>": "<SHA-256 of the file bytes>",
-        ...
-      },
-      "migrationState": {"businessSchemaChanged": false},
-      "gateSummary": {
-        "stages": ["python", "contracts", ...],
-        "results": [
-          {"stage": "python", "returncode": 0, "elapsed": 1.23, "skipped": false},
-          ...
-        ],
-        "gatePassed": true,
-        "smokeNoted": "smoke stage skipped; end-to-end evidence incomplete" | null,
-        "summarySha256": "<SHA-256 of the canonical JSON of `results`>"
-      }
-    }
-
-Protocol v2 optional fields (G0+ stages only)
----------------------------------------------
-The G0-G5 workspace/full-field-history stages extend the document with
-optional fields that are **absent** from legacy A-E3 handoffs. Old handoffs
-must remain readable and verifiable under v1 semantics; only G-stage
-documents carry the extra fields::
-
-    "stageMetadata": {                         # already present for B4+ stages
-      "supersedes": [                          # declares capability replacement
-        {"stage": "C2", "capability": "directus.versions.v1",
-         "replacement": "directus.full-field-history.v1", "notes": "..."},
-        ...
-      ],
-      "featureFlags": {"fullFieldHistory": false, ...},
-      ...
-    },
-    "schemaSnapshotSha256": "<sha256>",         # Directus schema snapshot hash
-    "extensionHashes": {                        # per-extension content hash
-      "vibetable-bulk-mutation": "<sha256>",
-      "vibetable-workspace-index": "<sha256>",
-      ...
-    }
-
-``supersedes`` and ``featureFlags`` come from ``stageMetadata``; the
-recorder copies them into the document so a verifier can check capability
-replacement consistency without re-reading the manifest.
-``schemaSnapshotSha256`` and ``extensionHashes`` are recorded when a
-G-stage deploy produces a schema snapshot or extension build.
-
-Commands
---------
-* ``record <stage>``: writes ``docs/handoffs/<stage>.json`` from the working
-  tree's current git commit, the dependency manifest's capability list, the
-  SHA-256 of each declared fixture file, and a re-run of the Phase A gate
-  (only when recording stage ``A``; later stages run their own gate). The
-  smoke stage must execute; a skip is recorded as incomplete evidence and
-  fails the handoff.
-* ``verify <stage>``: validates the PREVIOUS stage's handoff document against
-  the working tree — the document exists, its commit matches HEAD (or HEAD is
-  a descendant when work has advanced), every declared capability and fixture
-  still resolves, and the fixture SHA-256 still matches the on-disk bytes.
-  Returns non-zero on any missing/mismatched evidence.
+Each handoff freezes four independently reviewable artifact groups:
+the sidecar implementation identity, public product schema, ordered migration
+manifest, and product capability declaration.  Hashes are derived from the
+repository files declared in ``qa/handoff_dependencies.json``.
 """
 
 from __future__ import annotations
@@ -84,376 +14,412 @@ import hashlib
 import json
 import subprocess
 import sys
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
-# ---------------------------------------------------------------------------
-# Repository layout
-# ---------------------------------------------------------------------------
-
-REPO_ROOT: Path = Path(__file__).resolve().parent.parent
-QA_DIR: Path = REPO_ROOT / "qa"
-HANDOFFS_DIR: Path = REPO_ROOT / "docs" / "handoffs"
-DEPENDENCIES_PATH: Path = QA_DIR / "handoff_dependencies.json"
-GATE_SUMMARY_PATH: Path = REPO_ROOT / ".qa-next-summary.json"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+QA_DIR = REPO_ROOT / "qa"
+HANDOFFS_DIR = REPO_ROOT / "docs" / "handoffs"
+DEPENDENCIES_PATH = QA_DIR / "handoff_dependencies.json"
+GATE_SUMMARY_PATH = REPO_ROOT / ".qa-next-summary.json"
+DEFAULT_GATE_MAX_AGE = timedelta(hours=24)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def load_dependencies() -> dict[str, Any]:
+    value = json.loads(DEPENDENCIES_PATH.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("handoff dependency manifest must be an object")
+    return value
 
 
-def load_dependencies() -> dict:
-    """Load and return the handoff dependency manifest."""
-    return json.loads(DEPENDENCIES_PATH.read_text(encoding="utf-8"))
-
-
-def previous_stage(stage: str, deps: dict) -> str | None:
-    """Return the stage that ``stage`` depends on (its predecessor in the
-    approved sequence), or ``None`` for the first stage."""
-    seq = deps["sequence"]
-    if stage not in seq:
+def previous_stage(stage: str, deps: dict[str, Any]) -> str | None:
+    sequence = deps["sequence"]
+    if stage not in sequence:
         raise ValueError(
-            f"stage {stage!r} is not in the approved sequence (known: {', '.join(seq)})"
+            f"stage {stage!r} is not in the approved sequence "
+            f"(known: {', '.join(sequence)})"
         )
-    idx = seq.index(stage)
-    return seq[idx - 1] if idx > 0 else None
+    index = sequence.index(stage)
+    return sequence[index - 1] if index else None
 
 
 def git_head_sha(repo_root: Path = REPO_ROOT) -> str:
-    """Return the SHA-256 of the current HEAD commit (full 40-char hex)."""
-    proc = subprocess.run(
+    process = subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        cwd=str(repo_root),
+        cwd=repo_root,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         check=False,
+        timeout=30,
     )
-    if proc.returncode != 0:
-        raise RuntimeError("git rev-parse HEAD failed: " + (proc.stderr or proc.stdout))
-    return proc.stdout.strip()
+    if process.returncode:
+        raise RuntimeError("git rev-parse HEAD failed: " + (process.stderr or process.stdout))
+    return process.stdout.strip()
 
 
-def git_is_ancestor(maybe_ancestor: str, descendant: str, repo_root: Path = REPO_ROOT) -> bool:
-    """True when ``maybe_ancestor`` is HEAD or an ancestor of ``descendant``.
-
-    Used by :func:`verify_stage` so a handoff recorded at commit X still
-    verifies cleanly once more commits have landed on top (X is now an
-    ancestor of HEAD). The recorded commit is allowed to be exactly HEAD too.
-    """
+def git_is_ancestor(
+    maybe_ancestor: str,
+    descendant: str,
+    repo_root: Path = REPO_ROOT,
+) -> bool:
     if maybe_ancestor == descendant:
         return True
-    proc = subprocess.run(
+    process = subprocess.run(
         ["git", "merge-base", "--is-ancestor", maybe_ancestor, descendant],
-        cwd=str(repo_root),
+        cwd=repo_root,
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
-    return proc.returncode == 0
+    return process.returncode == 0
 
 
 def sha256_of_file(path: Path) -> str:
-    """Return the hex SHA-256 of ``path`` with CRLF normalized to LF.
-
-    Contract fixtures are committed with LF line endings, but Windows
-    checkouts with ``core.autocrlf=true`` materialize them as CRLF. Hashing
-    the raw bytes would then disagree with the recorded digest even though
-    the logical content is identical, which would falsely fail the handoff
-    preflight. Normalizing to LF before hashing keeps the recorded digests
-    stable across Windows, macOS and Linux contributors.
-    """
-    h = hashlib.sha256()
-    h.update(path.read_bytes().replace(b"\r\n", b"\n"))
-    return h.hexdigest()
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def canonical_json_sha256(payload: object) -> str:
-    """SHA-256 of the canonical (sorted-key, compact) JSON encoding of ``payload``."""
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
-# ---------------------------------------------------------------------------
-# Gate summary
-# ---------------------------------------------------------------------------
+def release_source_hash(
+    deps: dict[str, Any],
+    *,
+    repo_root: Path | None = None,
+) -> str:
+    """Hash all release and gate source inputs, including untracked files."""
 
-
-def capture_gate_summary() -> dict:
-    """Run the Phase A gate (``qa/next.py --ci``) and capture its summary.
-
-    Used when recording the ``A`` handoff so the document carries an
-    evidence hash of the exact per-stage results. A skipped smoke stage is
-    recorded in ``smokeNoted`` and fails the handoff because no end-to-end
-    Windows/WebView2 evidence was produced.
-    """
-    # Import lazily so unit tests that monkeypatch this module do not also
-    # have to import next.py at module load.
-    sys.path.insert(0, str(QA_DIR))
-    sys.modules.pop("next", None)
-    import next as next_module
-
-    results: list[next_module.StageResult] = []
-    for stage in next_module.STAGES:
-        result = next_module.run_stage(stage)
-        results.append(result)
-        if next_module.is_stage_failure(result):
-            break
-
-    payload_results = []
-    smoke_noted = None
-    gate_passed = True
-    for r in results:
-        skipped = next_module.is_stage_skipped(r)
-        failed = next_module.is_stage_failure(r)
-        if failed:
-            gate_passed = False
-        if skipped:
-            smoke_noted = "smoke stage skipped; end-to-end evidence incomplete"
-        payload_results.append(
-            {
-                "stage": r.stage,
-                "returncode": r.returncode,
-                "elapsed": round(r.elapsed, 4),
-                "skipped": skipped,
-            }
-        )
-    summary = {
-        "stages": list(next_module.STAGES),
-        "results": payload_results,
-        "gatePassed": gate_passed,
-        "smokeNoted": smoke_noted,
-        "summarySha256": canonical_json_sha256(payload_results),
+    repo_root = REPO_ROOT if repo_root is None else repo_root
+    raw_inputs = deps.get("releaseIdentityInputs")
+    raw_excluded = deps.get("releaseIdentityExcludedDirectories")
+    raw_extensions = deps.get("releaseIdentityExtensions")
+    if not isinstance(raw_inputs, list) or not raw_inputs:
+        raise ValueError("releaseIdentityInputs must contain paths")
+    if not isinstance(raw_excluded, list) or not all(
+        isinstance(item, str) and item for item in raw_excluded
+    ):
+        raise ValueError("releaseIdentityExcludedDirectories must contain names")
+    if not isinstance(raw_extensions, list) or not all(
+        isinstance(item, str) and item.startswith(".") for item in raw_extensions
+    ):
+        raise ValueError("releaseIdentityExtensions must contain file extensions")
+    excluded = {item.casefold() for item in raw_excluded}
+    extensions = {item.casefold() for item in raw_extensions}
+    files: set[Path] = set()
+    for raw_path in raw_inputs:
+        if not isinstance(raw_path, str) or not raw_path:
+            raise ValueError("releaseIdentityInputs contains an invalid path")
+        path = repo_root / raw_path
+        if path.is_file():
+            candidates = (path,)
+        elif path.is_dir():
+            candidates = (item for item in path.rglob("*") if item.is_file())
+        else:
+            raise FileNotFoundError(f"release identity input {raw_path!r} is missing")
+        for candidate in candidates:
+            relative = candidate.relative_to(repo_root)
+            if any(part.casefold() in excluded for part in relative.parts):
+                continue
+            if candidate.suffix.casefold() not in extensions:
+                continue
+            files.add(candidate)
+    if not files:
+        raise ValueError("release identity resolved to zero source files")
+    identities = {
+        path.relative_to(repo_root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(files)
     }
-    return summary
+    return canonical_json_sha256(identities)
 
 
-# ---------------------------------------------------------------------------
-# Record
-# ---------------------------------------------------------------------------
+def artifact_hashes(
+    deps: dict[str, Any],
+    *,
+    repo_root: Path | None = None,
+) -> dict[str, str]:
+    """Hash every declared artifact group, failing on missing files."""
+
+    repo_root = REPO_ROOT if repo_root is None else repo_root
+    result: dict[str, str] = {}
+    groups = deps.get("artifactFiles")
+    if not isinstance(groups, dict) or not groups:
+        raise ValueError("artifactFiles must declare at least one artifact group")
+    required = {"sidecar", "schema", "migrations", "capabilities"}
+    if set(groups) != required:
+        raise ValueError(
+            "artifactFiles groups must be exactly: "
+            + ", ".join(sorted(required))
+        )
+    patterns = deps.get("artifactPatterns", {})
+    if not isinstance(patterns, dict) or not set(patterns).issubset(groups):
+        raise ValueError("artifactPatterns must contain only declared artifact groups")
+    for group, raw_paths in groups.items():
+        if not isinstance(raw_paths, list) or not raw_paths:
+            raise ValueError(f"artifact group {group!r} must contain files")
+        file_hashes: dict[str, str] = {}
+        for raw_path in raw_paths:
+            if not isinstance(raw_path, str) or not raw_path:
+                raise ValueError(f"artifact group {group!r} contains an invalid path")
+            path = repo_root / raw_path
+            if not path.is_file():
+                raise FileNotFoundError(f"artifact {raw_path!r} is missing")
+            file_hashes[raw_path.replace("\\", "/")] = sha256_of_file(path)
+        raw_patterns = patterns.get(group, [])
+        if not isinstance(raw_patterns, list):
+            raise ValueError(f"artifact patterns for {group!r} must be a list")
+        for raw_pattern in raw_patterns:
+            if not isinstance(raw_pattern, str) or not raw_pattern:
+                raise ValueError(f"artifact group {group!r} contains an invalid pattern")
+            matches = sorted(path for path in repo_root.glob(raw_pattern) if path.is_file())
+            if not matches:
+                raise FileNotFoundError(
+                    f"artifact pattern {raw_pattern!r} did not match any files"
+                )
+            for path in matches:
+                relative = path.relative_to(repo_root).as_posix()
+                file_hashes[relative] = sha256_of_file(path)
+        result[group] = canonical_json_sha256(file_hashes)
+    return result
+
+
+def _gate_summary() -> dict[str, Any] | None:
+    if not GATE_SUMMARY_PATH.is_file():
+        return None
+    try:
+        value = json.loads(GATE_SUMMARY_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _parse_utc(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def validate_gate_summary(
+    summary: object,
+    *,
+    commit: str,
+    hashes: dict[str, str],
+    source_hash: str | None = None,
+    max_age: timedelta = DEFAULT_GATE_MAX_AGE,
+    now: datetime | None = None,
+    required_stages: list[str] | None = None,
+) -> tuple[bool, str]:
+    """Validate a release CI summary against the exact handoff identity."""
+
+    if not isinstance(summary, dict):
+        return False, "release gate summary is missing or unreadable"
+    if summary.get("ok") is not True or summary.get("releaseEligible") is not True:
+        return False, "release gate summary is not a successful full CI run"
+    if summary.get("commit") != commit:
+        return False, "release gate summary is not bound to the current commit"
+    if summary.get("artifactHashes") != hashes:
+        return False, "release gate summary artifact hashes do not match current artifacts"
+    if source_hash is not None and summary.get("sourceHash") != source_hash:
+        return False, "release gate summary source hash does not match current sources"
+    generated_at = _parse_utc(summary.get("generatedAt"))
+    if generated_at is None:
+        return False, "release gate summary timestamp is missing or invalid"
+    current = (now or datetime.now(UTC)).astimezone(UTC)
+    age = current - generated_at
+    if age < -timedelta(minutes=5):
+        return False, "release gate summary timestamp is in the future"
+    if age > max_age:
+        return False, "release gate summary is stale"
+    results = summary.get("results")
+    if not isinstance(results, list) or not results:
+        return False, "release gate summary contains no stage results"
+    if any(
+        not isinstance(result, dict) or result.get("returncode") != 0
+        for result in results
+    ):
+        return False, "release gate summary contains a failed or malformed stage"
+    if required_stages is not None:
+        observed_stages = [result.get("stage") for result in results]
+        if observed_stages != required_stages:
+            return False, "release gate summary does not contain the exact CI stage sequence"
+    return True, "release gate summary verified"
 
 
 def record_stage(stage: str, *, run_gate: bool = True) -> int:
-    """Write ``docs/handoffs/<stage>.json`` from the working tree.
+    """Write one handoff document for the current repository state."""
 
-    For stage ``A`` the gate is re-run to capture evidence. For later stages
-    the caller is expected to have run their own gate; we reuse the most
-    recent gate summary if present, otherwise leave the field empty.
-
-    Exits 0 on success, non-zero on error.
-    """
     deps = load_dependencies()
     if stage not in deps["sequence"]:
-        print(
-            f"error: stage {stage!r} is not in the approved sequence",
-            file=sys.stderr,
-        )
+        print(f"error: unknown stage {stage!r}", file=sys.stderr)
         return 2
-
-    head = git_head_sha()
-    protocol = deps["protocolVersion"]
-    capabilities = deps["capabilities"].get(stage, [])
-    fixture_paths = [REPO_ROOT / p for p in deps.get("fixtures", {}).get(stage, [])]
-    missing = [str(p) for p in fixture_paths if not p.is_file()]
-    if missing:
-        print(
-            "error: declared fixtures are missing from the working tree: " + ", ".join(missing),
-            file=sys.stderr,
-        )
+    try:
+        hashes = artifact_hashes(deps)
+        source_hash = release_source_hash(deps)
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 3
-
-    fixtures = {
-        str(p.relative_to(REPO_ROOT)).replace("\\", "/"): sha256_of_file(p) for p in fixture_paths
-    }
-    migration_state = deps.get("migrationState", {}).get(stage, {"businessSchemaChanged": False})
-
-    gate_summary: dict | None = None
-    if run_gate and stage == "A":
-        gate_summary = capture_gate_summary()
-    elif GATE_SUMMARY_PATH.is_file():
-        try:
-            gate_summary = json.loads(GATE_SUMMARY_PATH.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            gate_summary = None
-
+    fixtures: dict[str, str] = {}
+    for relative in deps.get("fixtures", {}).get(stage, []):
+        path = REPO_ROOT / relative
+        if not path.is_file():
+            print(f"error: fixture {relative!r} is missing", file=sys.stderr)
+            return 3
+        fixtures[relative] = sha256_of_file(path)
+    commit = git_head_sha()
+    gate_summary = _gate_summary() if run_gate else None
+    release_eligible = False
+    if run_gate:
+        max_age = timedelta(
+            seconds=int(
+                deps.get(
+                    "gateSummaryMaxAgeSeconds",
+                    int(DEFAULT_GATE_MAX_AGE.total_seconds()),
+                )
+            )
+        )
+        valid, reason = validate_gate_summary(
+            gate_summary,
+            commit=commit,
+            hashes=hashes,
+            source_hash=source_hash,
+            max_age=max_age,
+            required_stages=deps.get("requiredGateStages"),
+        )
+        if not valid:
+            print(f"error: {reason}", file=sys.stderr)
+            return 4
+        release_eligible = True
     document = {
         "stage": stage,
-        "recordedAt": datetime.now().isoformat(),
-        "commit": head,
-        "protocolVersion": protocol,
-        "capabilities": capabilities,
+        "recordedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "commit": commit,
+        "protocolVersion": deps["protocolVersion"],
+        "capabilities": deps["capabilities"].get(stage, []),
+        "artifactHashes": hashes,
+        "sourceHash": source_hash,
         "fixtures": fixtures,
-        "migrationState": migration_state,
+        "releaseEligible": release_eligible,
         "gateSummary": gate_summary,
     }
-    metadata = deps.get("stageMetadata", {}).get(stage)
-    if metadata is not None:
-        document["stageMetadata"] = metadata
-        # Protocol v2: surface capability-replacement declarations at the
-        # document top level so a verifier does not need to re-read the
-        # manifest to discover what this stage supersedes.
-        supersedes = metadata.get("supersedes")
-        if supersedes:
-            document["supersedes"] = supersedes
-
     HANDOFFS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = HANDOFFS_DIR / f"{stage}.json"
-    out_path.write_text(
-        json.dumps(document, indent=2, ensure_ascii=False) + "\n",
+    output = HANDOFFS_DIR / f"{stage}.json"
+    output.write_text(
+        json.dumps(document, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    try:
-        rel_display = str(out_path.relative_to(REPO_ROOT))
-    except ValueError:
-        rel_display = str(out_path)
-    print(f"recorded {stage} handoff -> {rel_display}")
-    print(f"  commit: {head}")
-    print(f"  protocol: {protocol}")
-    print(f"  capabilities: {len(capabilities)}")
-    print(f"  fixtures: {len(fixtures)}")
-    if gate_summary is not None:
-        print(f"  gate: passed={gate_summary['gatePassed']} smoke={gate_summary['smokeNoted']}")
+    print(f"recorded {stage} handoff -> {output.relative_to(REPO_ROOT)}")
+    for group, digest in hashes.items():
+        print(f"  {group}: {digest}")
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Verify
-# ---------------------------------------------------------------------------
-
-
 def verify_stage(stage: str) -> tuple[bool, str]:
-    """Validate the PREVIOUS stage's handoff document against the tree.
+    """Verify the predecessor handoff against current artifacts."""
 
-    Returns ``(ok, reason)``. ``ok`` is True only when every check passes.
-    """
     deps = load_dependencies()
-    prev = previous_stage(stage, deps)
-    if prev is None:
-        # First stage has no predecessor; nothing to verify.
+    predecessor = previous_stage(stage, deps)
+    if predecessor is None:
         return True, f"stage {stage!r} has no predecessor"
-    prev_doc_path = HANDOFFS_DIR / f"{prev}.json"
-    if not prev_doc_path.is_file():
-        return False, (
-            f"predecessor {prev!r} handoff document is missing: "
-            f"{prev_doc_path.relative_to(REPO_ROOT)}"
-        )
+    path = HANDOFFS_DIR / f"{predecessor}.json"
+    if not path.is_file():
+        return False, f"predecessor {predecessor!r} handoff is missing"
     try:
-        doc = json.loads(prev_doc_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        return False, f"predecessor {prev!r} handoff document is unreadable: {exc}"
-
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"predecessor {predecessor!r} handoff is unreadable: {exc}"
+    if document.get("protocolVersion") != deps["protocolVersion"]:
+        return False, "handoff protocol version mismatch"
+    if document.get("releaseEligible") is not True:
+        return False, "predecessor handoff is marked non-release-eligible"
+    commit = document.get("commit")
     head = git_head_sha()
-    recorded_commit = doc.get("commit", "")
-    if not recorded_commit:
-        return False, f"predecessor {prev!r} handoff is missing the 'commit' field"
-    # The recorded commit must be HEAD or an ancestor of HEAD (so further
-    # commits on top still verify). If neither, the tree has diverged.
-    if not git_is_ancestor(recorded_commit, head):
-        return False, (
-            f"predecessor {prev!r} was recorded at {recorded_commit[:8]} but "
-            f"HEAD ({head[:8]}) is not a descendant — tree has diverged"
-        )
-
-    # Protocol version must match the dependency manifest.
-    expected_protocol = deps["protocolVersion"]
-    if doc.get("protocolVersion") != expected_protocol:
-        return False, (
-            f"predecessor {prev!r} protocolVersion={doc.get('protocolVersion')!r} "
-            f"!= manifest {expected_protocol!r}"
-        )
-
-    # Capabilities declared for the predecessor in the manifest must all be
-    # present in the recorded document.
-    required_caps = deps["capabilities"].get(prev, [])
-    recorded_caps = set(doc.get("capabilities", []))
-    missing_caps = [c for c in required_caps if c not in recorded_caps]
-    if missing_caps:
-        return False, (
-            f"predecessor {prev!r} handoff is missing capabilities: " + ", ".join(missing_caps)
-        )
-
-    # Every declared fixture must still exist and match its recorded SHA-256.
-    for rel, recorded_sha in (doc.get("fixtures") or {}).items():
-        fixture_path = REPO_ROOT / rel
-        if not fixture_path.is_file():
-            return False, f"fixture {rel!r} (declared by {prev!r}) is missing"
-        actual_sha = sha256_of_file(fixture_path)
-        if actual_sha != recorded_sha:
-            return False, (
-                f"fixture {rel!r} (declared by {prev!r}) SHA-256 mismatch: "
-                f"recorded {recorded_sha[:12]}... != actual {actual_sha[:12]}..."
+    if not isinstance(commit, str) or not commit:
+        return False, "handoff commit is missing"
+    if not git_is_ancestor(commit, head):
+        return False, f"handoff commit {commit[:8]} is not an ancestor of {head[:8]}"
+    required = set(deps["capabilities"].get(predecessor, []))
+    recorded = set(document.get("capabilities") or [])
+    if missing := sorted(required - recorded):
+        return False, "handoff capabilities are missing: " + ", ".join(missing)
+    try:
+        expected_hashes = artifact_hashes(deps)
+        expected_source_hash = release_source_hash(deps)
+    except (ValueError, FileNotFoundError) as exc:
+        return False, str(exc)
+    if document.get("artifactHashes") != expected_hashes:
+        return False, "sidecar/schema/migration/capability hashes changed"
+    if document.get("sourceHash") != expected_source_hash:
+        return False, "release or gate source inputs changed"
+    expected_fixture_keys = set(deps.get("fixtures", {}).get(predecessor, []))
+    fixtures = document.get("fixtures")
+    if not isinstance(fixtures, dict) or set(fixtures) != expected_fixture_keys:
+        return False, "handoff fixture keys do not exactly match the dependency manifest"
+    for relative, recorded_hash in fixtures.items():
+        fixture = REPO_ROOT / relative
+        if not fixture.is_file() or sha256_of_file(fixture) != recorded_hash:
+            return False, f"fixture {relative!r} is missing or changed"
+    max_age = timedelta(
+        seconds=int(
+            deps.get(
+                "gateSummaryMaxAgeSeconds",
+                int(DEFAULT_GATE_MAX_AGE.total_seconds()),
             )
-
-    # Migration state must be present and unchanged.
-    expected_migration = deps.get("migrationState", {}).get(prev, {"businessSchemaChanged": False})
-    if doc.get("migrationState") != expected_migration:
-        return False, (
-            f"predecessor {prev!r} migrationState={doc.get('migrationState')!r} "
-            f"!= manifest {expected_migration!r}"
         )
-
-    # Protocol v2: when the predecessor declares ``supersedes``, every
-    # superseded capability must still be resolvable as a capability of the
-    # stage it claims to supersede. This catches stale declarations where
-    # the superseded capability was removed from the manifest.
-    for entry in doc.get("supersedes") or []:
-        target_stage = entry.get("stage", "")
-        target_cap = entry.get("capability", "")
-        stage_caps = deps.get("capabilities", {}).get(target_stage, [])
-        if target_cap and target_cap not in stage_caps:
-            return False, (
-                f"predecessor {prev!r} declares supersede of {target_cap!r} "
-                f"(stage {target_stage!r}) but that capability is no longer "
-                f"declared in the manifest"
-            )
-
-    return True, f"predecessor {prev!r} handoff verified at commit {head[:8]}"
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+    )
+    valid, reason = validate_gate_summary(
+        document.get("gateSummary"),
+        commit=commit,
+        hashes=expected_hashes,
+        source_hash=expected_source_hash,
+        max_age=max_age,
+        required_stages=deps.get("requiredGateStages"),
+    )
+    if not valid:
+        return False, reason
+    return True, f"predecessor {predecessor!r} handoff verified at {head[:8]}"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="handoff.py",
-        description="Record and verify VibeTable WPF migration stage handoffs.",
+        description="Record and verify PocketBase product migration handoffs.",
     )
-    sub = parser.add_subparsers(dest="command", required=True)
-    record = sub.add_parser("record", help="Write docs/handoffs/<stage>.json.")
-    record.add_argument("stage", help="The stage to record (e.g. A, B1, ...).")
-    record.add_argument(
-        "--no-gate",
-        action="store_true",
-        help="Do not re-run the Phase A gate when recording stage A "
-        "(use the most recent captured summary, if any).",
-    )
-    sub.add_parser("list", help="Print the approved stage sequence.")
-    verify = sub.add_parser("verify", help="Verify the previous stage's handoff.")
-    verify.add_argument("stage", help="The stage whose predecessor to verify.")
+    commands = parser.add_subparsers(dest="command", required=True)
+    record = commands.add_parser("record")
+    record.add_argument("stage")
+    record.add_argument("--no-gate", action="store_true")
+    verify = commands.add_parser("verify")
+    verify.add_argument("stage")
+    commands.add_parser("list")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_arg_parser()
-    args = parser.parse_args(argv)
+    args = build_arg_parser().parse_args(argv)
     if args.command == "record":
         return record_stage(args.stage, run_gate=not args.no_gate)
     if args.command == "verify":
         ok, reason = verify_stage(args.stage)
-        prefix = "OK  " if ok else "FAIL"
-        print(f"{prefix}: {reason}")
+        print(("OK: " if ok else "FAIL: ") + reason)
         return 0 if ok else 1
-    if args.command == "list":
-        deps = load_dependencies()
-        for s in deps["sequence"]:
-            print(s)
-        return 0
-    parser.error("no command")  # unreachable: subparsers required
-    return 2
+    for stage in load_dependencies()["sequence"]:
+        print(stage)
+    return 0
 
 
 if __name__ == "__main__":

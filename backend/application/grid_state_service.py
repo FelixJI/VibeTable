@@ -5,9 +5,9 @@ state, revision})`` are the RPC methods. The service:
 
 * loads/saves through :class:`~backend.state.local_state_store.LocalStateStore`
   (the local user-state SQLite at ``%LOCALAPPDATA%/VibeTable/state/vibetable-state.db``);
-* keeps device-local presentation state separate from Directus business data;
-* leaves schema reconciliation to the Directus-aware host, which owns the
-  current capability manifest.
+* keeps device-local presentation state separate from product business data;
+* leaves schema reconciliation to the host, which owns the current normalized
+  schema revision.
 
 The service is a process-wide singleton (mirrors the other B3 services).
 """
@@ -34,7 +34,7 @@ class GridStateService:
 
         Returns an empty default state with a fresh revision when no state has
         been saved yet. Saved column state is returned as-is; the host applies
-        the current Directus schema and defaults.
+        the current normalized schema and defaults.
         """
         payload, revision = self._store.get_grid_state(
             database_id=params.database_id, table=params.table

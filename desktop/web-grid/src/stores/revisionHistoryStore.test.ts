@@ -5,6 +5,7 @@ import type { HistoryChangeSet, HistoryPage, RestorePreview } from "@/contracts"
 
 const changeSet = (revision: string): HistoryChangeSet => ({
   rootRevisionId: revision,
+  changeSetId: `change-${revision}`,
   activityId: `activity-${revision}`,
   itemId: "42",
   recordLabel: "客户 A",

@@ -3,18 +3,9 @@ using System.IO;
 
 namespace VibeTable.Infrastructure;
 
-/// <summary>
-/// Shared path-resolution helpers for locating the repository root and the
-/// local-Directus runtime directory. Internal so both the backend and Directus
-/// launch options resolve consistently without duplicating the walk-up logic.
-/// </summary>
+/// <summary>Product-only install, executable, data, and backup paths.</summary>
 internal static class LaunchPaths
 {
-    /// <summary>
-    /// Walks up at most 12 levels from <paramref name="startDirectory"/>
-    /// looking for a directory containing both <c>pyproject.toml</c> and
-    /// <c>backend/</c> — the repo-root marker pair. Returns null if not found.
-    /// </summary>
     public static string? FindRepositoryRoot(string startDirectory)
     {
         var directory = new DirectoryInfo(startDirectory);
@@ -30,16 +21,13 @@ internal static class LaunchPaths
         return null;
     }
 
-    /// <summary>
-    /// Resolves the local-Directus directory for the running host.
-    /// Packaged-first (<c>&lt;baseDir&gt;/local-directus/</c>), then dev
-    /// (<c>&lt;repoRoot&gt;/scripts/local_directus/</c>). Returns null if
-    /// neither exists (the host must then refuse <c>--directus-auto</c>).
-    /// </summary>
-    public static string? ResolveLocalDirectusDirectory(string baseDirectory)
+    /// <summary>Resolve the bundled sidecar first, then a dev/QA build.</summary>
+    public static string? ResolveSidecarBinary(string baseDirectory)
     {
-        string packaged = Path.GetFullPath(Path.Combine(baseDirectory, "local-directus"));
-        if (Directory.Exists(packaged))
+        string name = OperatingSystem.IsWindows() ? "vibetable-pb.exe" : "vibetable-pb";
+        string packaged = Path.GetFullPath(
+            Path.Combine(baseDirectory, "sidecar", name));
+        if (File.Exists(packaged))
         {
             return packaged;
         }
@@ -49,8 +37,36 @@ internal static class LaunchPaths
         {
             return null;
         }
-
-        string dev = Path.Combine(repoRoot, "scripts", "local_directus");
-        return Directory.Exists(dev) ? dev : null;
+        string dev = Path.Combine(repoRoot, "build", "dev", name);
+        if (File.Exists(dev))
+        {
+            return dev;
+        }
+        string qa = Path.Combine(repoRoot, "build", "qa", name);
+        return File.Exists(qa) ? qa : null;
     }
+
+    public static string ResolveDataRoot(string localAppData) =>
+        Path.GetFullPath(Path.Combine(localAppData, "VibeTable", "data"));
+
+    public static string ResolveBackupRoot(string localAppData) =>
+        Path.GetFullPath(Path.Combine(localAppData, "VibeTable", "backups"));
+
+    public static void EnsureInstallAndDataAreSeparated(
+        string installDirectory,
+        string dataDirectory)
+    {
+        string install = WithSeparator(Path.GetFullPath(installDirectory));
+        string data = WithSeparator(Path.GetFullPath(dataDirectory));
+        if (install.StartsWith(data, StringComparison.OrdinalIgnoreCase)
+            || data.StartsWith(install, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "The VibeTable install and user-data directories must be separate.");
+        }
+    }
+
+    private static string WithSeparator(string path) =>
+        path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+        + Path.DirectorySeparatorChar;
 }

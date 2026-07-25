@@ -140,9 +140,9 @@ public sealed class JsonRpcClientTests
         transport.EnqueueError(
             "1",
             -32031,
-            "Directus API error",
+            "Data service API error",
             JsonDocument.Parse(
-                "{\"kind\":\"directus_api\",\"message\":\"字段查询格式无效\"}")
+                "{\"kind\":\"data_service_api\",\"message\":\"字段查询格式无效\"}")
                 .RootElement.Clone());
 
         RpcRemoteException? caught = null;

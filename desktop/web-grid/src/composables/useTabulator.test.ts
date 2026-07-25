@@ -5,11 +5,16 @@ import { mount, flushPromises } from "@vue/test-utils";
 
 import { useTabulator } from "./useTabulator";
 import { useTableStore } from "@/stores/tableStore";
+import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import type {
   ColumnSchema,
   DatasetReadyPayload,
+  NormalizedRelationDescriptor,
+  RelationLookupCapabilities,
+  SchemaSnapshot,
   TablePage,
 } from "@/contracts";
+import { setLocale } from "@/i18n";
 
 /**
  * useTabulator drives a real Tabulator via `createGrid`. Tabulator needs a
@@ -31,6 +36,7 @@ interface MockTabulator {
   off: ReturnType<typeof vi.fn>;
   getSorters: ReturnType<typeof vi.fn>;
   getHeaderFilters: ReturnType<typeof vi.fn>;
+  getRanges: ReturnType<typeof vi.fn>;
 }
 
 let lastMock: MockTabulator | null = null;
@@ -46,11 +52,12 @@ vi.mock("@/grid/createGrid", () => ({
       off: vi.fn(),
       getSorters: vi.fn().mockReturnValue([]),
       getHeaderFilters: vi.fn().mockReturnValue([]),
+      getRanges: vi.fn().mockReturnValue([]),
     };
     lastMock = mock;
     return mock;
   }),
-  buildGridColumns: vi.fn((page: TablePage) =>
+  buildTabulatorColumns: vi.fn((page: TablePage) =>
     page.columns.map((c) => ({ field: c.name, title: c.title })),
   ),
 }));
@@ -98,6 +105,55 @@ function makeDatasetReady(
   };
 }
 
+const relationCapabilities: RelationLookupCapabilities = {
+  contract: "vibetable.relation-capabilities.v1",
+  relationReadV1: true,
+  relationEditV1: true,
+  lookupQueryV1: true,
+};
+
+function relationDescriptor(
+  collection: string,
+  field: string,
+): NormalizedRelationDescriptor {
+  return {
+    relationId: `${collection}.${field}`,
+    fieldRef: field,
+    sourceCollection: collection,
+    kind: "m2o",
+    relatedCollection: "targets",
+    allowedCollections: ["targets"],
+    junction: null,
+    unique: true,
+    nullable: true,
+    onDelete: "nullify",
+    preset: "standard",
+    selfRelation: false,
+    managed: true,
+    state: "valid",
+    displayTemplate: null,
+    diagnostics: [],
+  };
+}
+
+function relationSchema(
+  collection: string,
+  relation: NormalizedRelationDescriptor,
+): SchemaSnapshot {
+  return {
+    collection,
+    primaryKey: "id",
+    columns: [],
+    normalizedRelations: [relation],
+    // Deliberately identical across collections: the regression is that a
+    // revision-only signature previously skipped the second column rebuild.
+    schemaRevision: "schema_0001",
+    permissionRevision: "schema_0001",
+    capabilityHash: "same-capability",
+    lookupRevision: "same-lookup",
+  };
+}
+
 /**
  * Mount a host component that exposes a `gridEl` ref to useTabulator. The
  * template renders the div immediately so the ref is populated on mount.
@@ -114,6 +170,7 @@ function mountHost(gridEl: Ref<HTMLElement | null>) {
 
 describe("useTabulator", () => {
   beforeEach(() => {
+    setLocale("zh-CN");
     setActivePinia(createPinia());
     lastMock = null;
     vi.clearAllMocks();
@@ -216,6 +273,43 @@ describe("useTabulator", () => {
     wrapper.unmount();
   });
 
+  it("defers dataset replacement until an active cell editor finishes", async () => {
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+    const wrapper = mountHost(gridEl);
+    gridEl.value = document.createElement("div");
+
+    table.beginLoad();
+    table.appendPage(makePage([{ id: 1, name: "draft" }], [makeColumn("id")]));
+    await flushPromises();
+
+    const editing = lastMock!.on.mock.calls.find((call) => call[0] === "cellEditing")?.[1] as
+      | (() => void)
+      | undefined;
+    const edited = lastMock!.on.mock.calls.find((call) => call[0] === "cellEdited")?.[1] as
+      | (() => void)
+      | undefined;
+    expect(editing).toBeTypeOf("function");
+    expect(edited).toBeTypeOf("function");
+    lastMock!.setColumns.mockClear();
+
+    editing!();
+    table.beginLoad();
+    table.setDatasetReady(
+      makeDatasetReady([{ id: 1, name: "server refresh" }], [makeColumn("id")]),
+    );
+    await flushPromises();
+    expect(lastMock!.setData).not.toHaveBeenCalled();
+    expect(lastMock!.setColumns).not.toHaveBeenCalled();
+
+    edited!();
+    await flushPromises();
+    expect(lastMock!.setData).toHaveBeenCalledOnce();
+    expect(lastMock!.setColumns).toHaveBeenCalledOnce();
+    expect(lastMock!.setData).toHaveBeenCalledWith([{ id: 1, name: "server refresh" }]);
+    wrapper.unmount();
+  });
+
   it("destroys the tabulator instance on unmount", async () => {
     const gridEl = ref<HTMLElement | null>(null);
     const table = useTableStore();
@@ -241,7 +335,7 @@ describe("useTabulator", () => {
    * typically arrives via a separate `table.editSchemaLoaded` host event.
    */
   it("rebuilds columns via setColumns when editSchema arrives after init", async () => {
-    const { buildGridColumns } = await import("@/grid/createGrid");
+    const { buildTabulatorColumns } = await import("@/grid/createGrid");
     const gridEl = ref<HTMLElement | null>(null);
     const table = useTableStore();
 
@@ -275,7 +369,134 @@ describe("useTabulator", () => {
     await flushPromises();
 
     expect(lastMock!.setColumns).toHaveBeenCalledTimes(1);
-    expect(buildGridColumns).toHaveBeenCalled();
+    expect(buildTabulatorColumns).toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("rebinds identical columns and edit schema after a table refresh generation", async () => {
+    const { buildTabulatorColumns } = await import("@/grid/createGrid");
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+    const wrapper = mountHost(gridEl);
+    gridEl.value = document.createElement("div");
+    const columns = [makeColumn("id")];
+    const editableSchema = [{
+      name: "id",
+      storageName: "id",
+      dataType: "integer" as const,
+      editable: true,
+      nullable: false,
+      primaryKey: false,
+      editor: { kind: "number" as const, storage: "integer" as const },
+      validation: [],
+    }];
+
+    table.beginLoad();
+    table.appendPage(makePage([{ id: 1 }], columns));
+    table.setEditSchema(
+      editableSchema,
+      { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 1 },
+    );
+    await flushPromises();
+    lastMock!.setColumns.mockClear();
+    vi.mocked(buildTabulatorColumns).mockClear();
+
+    // A formula/realtime refresh can return byte-for-byte identical schema.
+    // The new generation must still rebind editors after the store reset.
+    table.reset();
+    table.beginLoad();
+    table.appendPage(makePage([{ id: 1 }], columns));
+    table.setEditSchema(
+      editableSchema,
+      { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
+    );
+    await flushPromises();
+
+    expect(lastMock!.setColumns).toHaveBeenCalled();
+    expect(vi.mocked(buildTabulatorColumns).mock.calls.some(
+      (call) => Array.isArray(call[1]) && call[1][0]?.editable === true,
+    )).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("rebuilds localized column chrome when the locale changes", async () => {
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+    const wrapper = mountHost(gridEl);
+    gridEl.value = document.createElement("div");
+    const placeholder = document.createElement("div");
+    placeholder.className = "tabulator-placeholder-contents";
+    placeholder.textContent = "暂无记录，使用“+”添加第一行";
+    gridEl.value.append(placeholder);
+    const focusedCell = document.createElement("button");
+    focusedCell.textContent = "selected";
+    gridEl.value.append(focusedCell);
+    document.body.append(gridEl.value);
+    focusedCell.focus();
+    const range = document.createRange();
+    range.selectNodeContents(focusedCell);
+    window.getSelection()?.addRange(range);
+    table.beginLoad();
+    table.appendPage(makePage([], [makeColumn("id")]));
+    await flushPromises();
+    lastMock!.setColumns.mockClear();
+    const removeRange = vi.fn();
+    lastMock!.getRanges.mockReturnValue([{ remove: removeRange }]);
+    lastMock!.setColumns.mockImplementation(() => {
+      expect(removeRange).toHaveBeenCalledOnce();
+      expect(document.activeElement).not.toBe(focusedCell);
+      expect(window.getSelection()?.rangeCount).toBe(0);
+    });
+
+    setLocale("en-US");
+    await flushPromises();
+
+    expect(lastMock!.setColumns).toHaveBeenCalledTimes(1);
+    expect(placeholder.textContent).toBe("No records yet — use + to add the first row");
+    wrapper.unmount();
+    gridEl.value.remove();
+  });
+
+  it("rebuilds relation columns when collection and relation IDs change at equal revisions", async () => {
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+    const relations = useRelationLookupStore();
+    const wrapper = mountHost(gridEl);
+    gridEl.value = document.createElement("div");
+    table.beginLoad();
+    table.appendPage(makePage(
+      [{ rowKey: "1" }],
+      [{
+        ...makeColumn("relation"),
+        kind: "relation",
+        relationId: "orders.customer",
+      }],
+    ));
+    await flushPromises();
+
+    const ordersRelation = relationDescriptor("orders", "customer");
+    const ordersGeneration = relations.beginContext("orders");
+    relations.acceptContext(
+      ordersGeneration,
+      relationSchema("orders", ordersRelation),
+      [],
+      relationCapabilities,
+    );
+    await flushPromises();
+    expect(lastMock!.setColumns).toHaveBeenCalledTimes(1);
+    lastMock!.setColumns.mockClear();
+
+    const articlesRelation = relationDescriptor("articles", "author");
+    const articlesGeneration = relations.beginContext("articles");
+    relations.acceptContext(
+      articlesGeneration,
+      relationSchema("articles", articlesRelation),
+      [],
+      relationCapabilities,
+    );
+    await flushPromises();
+
+    expect(lastMock!.setColumns).toHaveBeenCalledTimes(1);
     wrapper.unmount();
   });
 
@@ -308,11 +529,26 @@ describe("useTabulator", () => {
     expect(createGrid).toHaveBeenCalledTimes(1);
     const thirdArg = (createGrid as unknown as {
       mock: { calls: unknown[][] };
-    }).mock.calls[0]![2] as { onCellEdited?: (a: number, b: string, c: unknown, d: unknown) => void };
+    }).mock.calls[0]![2] as {
+      onCellEdited?: (
+        a: number,
+        b: string,
+        c: unknown,
+        d: unknown,
+        digest: string | null,
+      ) => void;
+    };
     expect(typeof thirdArg.onCellEdited).toBe("function");
     // Invoke the captured wrapper — it should forward to our onCellEdited.
-    thirdArg.onCellEdited!(7, "name", "old", "new");
-    expect(onCellEdited).toHaveBeenCalledWith(7, "name", "old", "new");
+    const digest = `sha256:${"a".repeat(64)}`;
+    thirdArg.onCellEdited!(7, "name", "old", "new", digest);
+    expect(onCellEdited).toHaveBeenCalledWith(
+      7,
+      "name",
+      "old",
+      "new",
+      digest,
+    );
     wrapper.unmount();
   });
 

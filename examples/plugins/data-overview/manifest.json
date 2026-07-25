@@ -6,15 +6,15 @@
   "description": { "zh-CN": "通过分页能力读取聚合和样本数据" },
   "compatibility": {
     "minHostVersion": "1.0.0",
-    "pluginApi": "1.x",
-    "directus": ">=12.1 <13"
+    "pluginApi": "1.x"
   },
   "permissions": {
     "data": [
       { "collection": "$active", "operations": ["read"], "fields": ["$configured"] }
     ],
     "files": ["pickWrite"],
-    "privateStorage": true
+    "privateStorage": true,
+    "network": { "domains": [], "methods": ["GET"] }
   },
   "actions": [
     {
@@ -29,7 +29,6 @@
       "outputSchema": "schemas/action-output.v1.json"
     }
   ],
-  "flows": [],
   "ui": {
     "customViews": [
       {

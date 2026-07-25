@@ -209,20 +209,30 @@ describe("tabulatorEditor", () => {
     expect(typeof tabulatorEditor({ kind: "date", dateType: "date" }).editor).toBe("function");
   });
 
-  it("returns select for single-select with a blank option", () => {
+  it("uses Tabulator 6's list editor for single-select values", () => {
     const result = tabulatorEditor({
       kind: "single_select",
       options: ["A", "B"],
     });
-    expect(result.editor).toBe("select");
+    expect(result.editor).toBe("list");
     expect(result.editorParams?.values).toEqual(["", "A", "B"]);
+    expect(result.editorParams).toMatchObject({
+      autocomplete: true,
+      freetext: false,
+      clearable: true,
+    });
   });
 
-  it("returns a custom marker for multi-select", () => {
+  it("returns Tabulator's real non-autocomplete multi-select list editor", () => {
     const result = tabulatorEditor({
       kind: "multi_select",
       options: ["A"],
     });
-    expect(result.editor).toBe("vibetable_multi_select");
+    expect(result.editor).toBe("list");
+    expect(result.editorParams).toMatchObject({
+      values: ["A"],
+      multiselect: true,
+      autocomplete: false,
+    });
   });
 });

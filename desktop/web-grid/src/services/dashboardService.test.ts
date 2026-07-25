@@ -35,7 +35,7 @@ function replyManifest(h: ReturnType<typeof harness>, panelTypes = ["label", "me
   reply(h, "dashboard.manifestRequested", "dashboard.manifestLoaded", {
     manifest: {
       manifestVersion: "dashboard-panel-manifest.v1",
-      directusCompatibility: "11",
+      queryContract: "product-query-port.v1",
       panels: panelTypes.map((type) => ({
         type,
         minSize: { x: 0, y: 0, width: 1, height: 1 },
@@ -51,7 +51,7 @@ function replyManifest(h: ReturnType<typeof harness>, panelTypes = ["label", "me
 }
 
 const panel = {
-  id: "p1", dashboardId: "d1", name: "Revenue", type: "bar-chart",
+  id: "p1", dashboardId: "d1", name: "Revenue", type: "bar",
   position: { x: 0, y: 0, width: 6, height: 4 }, options: {},
   query: { kind: "aggregate", collection: "orders", dimensions: ["status"], measures: [{ key: "value", op: "sum", field: "amount" }], limit: 100 },
 };
@@ -108,7 +108,7 @@ describe("dashboardService", () => {
     const h = harness(); setHostBridgeForTesting(h.bridge);
     const store = useDashboardStore();
     store.receiveWorkspace({
-      dashboard: { id: "d1", name: "Vendor", note: "", panels: [panel, { ...panel, id: "custom", type: "vendor-heatmap", options: { _vibetable: { directusType: "vendor-heatmap" } }, query: {} }] },
+      dashboard: { id: "d1", name: "Vendor", note: "", panels: [panel, { ...panel, id: "custom", type: "vendor-heatmap", options: { _vibetable: { productType: "vendor-heatmap" } }, query: {} }] },
       config: {
         globalFilters: [{ key: "status", label: "Status", type: "enum", allowedFields: ["status"], targetPanels: ["p1"], fieldBindings: { p1: "status" } }],
         interactions: [{ sourcePanelId: "p1", targetPanelIds: ["p1"], targetField: "status" }],

@@ -1,10 +1,10 @@
 """B3 selection-domain contracts: the query/selection snapshots that B3 produces
 and B2 (multi-row paste) and E1 (plugin commands) consume.
 
-A :class:`QuerySnapshot` is a stable digest of the Directus source identity,
+A :class:`QuerySnapshot` is a stable digest of the product source identity,
 collection, normalized query and schema/data revisions. It lets the host carry
 a reference to "the view of the data I rendered" without holding the entire
-collection, and lets the Directus-aware gateway reject stale paste operations.
+collection, and lets the table gateway reject stale paste operations.
 
 A :class:`SelectionSnapshot` adds the ordered ``rowKeys`` the host currently has
 selected, in the deterministic query order. B2 uses it to locate rows that are
@@ -74,8 +74,8 @@ class QuerySnapshot(CamelModel):
       query results and passes back to preview/apply.
     * ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;
       the host MAY compare digests to detect change cheaply.
-    * ``database_id`` identifies the configured logical source (``directus`` in
-      the production gateway; the field name remains stable on the wire).
+    * ``database_id`` identifies the configured logical product source; the
+      field name remains stable on the wire.
     * ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.
     * ``data_revision`` is the gateway's source revision marker.
     * ``normalized_query`` is the canonical form of the query AST (sorted keys)

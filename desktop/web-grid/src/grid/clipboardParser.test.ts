@@ -50,6 +50,12 @@ describe("parseClipboard", () => {
     expect(parsed.cells[0].map((c) => c.rawValue)).toEqual(["a\tb", 'c"d']);
   });
 
+  it("preserves quotes inside an unquoted JSON value", () => {
+    const json = '{"nested":{"value":8},"items":[4,5],"enabled":false}';
+    const parsed = parseClipboard(json);
+    expect(parsed.cells[0][0]?.rawValue).toBe(json);
+  });
+
   it("reports UTF-8 byte length", () => {
     const parsed = parseClipboard("é\t日");
     // é = U+00E9 = 2 UTF-8 bytes, \t = 1 byte, 日 = U+65E5 = 3 bytes.

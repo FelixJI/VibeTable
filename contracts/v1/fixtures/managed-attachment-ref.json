@@ -1,0 +1,19 @@
+{
+  "contractVersion": "1.0",
+  "tableId": "tbl_order_lines",
+  "recordId": "rec_001",
+  "fieldId": "fld_receipts",
+  "storedName": "receipt_c71f2a.pdf",
+  "originalName": "七月收据.pdf",
+  "mimeType": "application/pdf",
+  "size": 24576,
+  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "downloadCapability": "filecap_01HZX",
+  "thumbnails": [
+    {
+      "variant": "320x240",
+      "downloadCapability": "filecap_thumb_01HZX"
+    }
+  ]
+}
+

@@ -43,7 +43,7 @@ function asSafeError(value: unknown): PluginSafeError {
   const error = value as Partial<PluginSafeError>;
   expect(error.contract).toBe("vibetable.plugin-error.v1");
   expect(typeof error.code).toBe("string");
-  expect(["retry", "rebind", "reconfigure", "reinstall", "none"]).toContain(error.recoverability);
+  expect(["retry", "reconfigure", "reinstall", "none"]).toContain(error.recoverability);
   return value as PluginSafeError;
 }
 
@@ -52,7 +52,7 @@ describe("plugin-platform-v1 shared fixture", () => {
     expect(asResult(fixture.result).summary).toBe("读取了 2 条记录");
     expect(asInteraction(fixture.interaction).runId).toBe("run-1");
     expect(asTask(fixture.task).state).toBe("succeeded");
-    expect(asSafeError(fixture.error).code).toBe("flow_unbound");
+    expect(asSafeError(fixture.error).code).toBe("worker_unavailable");
   });
 
   it("uses a fixed event contract and positive revision", () => {

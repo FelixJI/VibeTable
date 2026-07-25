@@ -40,18 +40,26 @@ public sealed class AtomicJsonStore
             Directory.CreateDirectory(dir);
 
         var json = JsonSerializer.Serialize(value, _options);
-        var tempPath = path + ".tmp";
+        var tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
 
-        File.WriteAllText(tempPath, json, new UTF8Encoding(false));
-
-        if (File.Exists(path))
+        try
         {
-            // Atomic replace on the same volume.
-            File.Replace(tempPath, path, destinationBackupFileName: null);
+            File.WriteAllText(tempPath, json, new UTF8Encoding(false));
+
+            if (File.Exists(path))
+            {
+                // Atomic replace on the same volume.
+                File.Replace(tempPath, path, destinationBackupFileName: null);
+            }
+            else
+            {
+                File.Move(tempPath, path);
+            }
         }
-        else
+        finally
         {
-            File.Move(tempPath, path);
+            if (File.Exists(tempPath))
+                File.Delete(tempPath);
         }
     }
 

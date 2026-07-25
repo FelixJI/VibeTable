@@ -6,7 +6,7 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
 
-  <!-- Infrastructure includes real process/Directus lifecycle boundaries.
+  <!-- Infrastructure includes real process/sidecar lifecycle boundaries.
        Start at the measured baseline and ratchet upward as those seams are
        made more injectable. -->
   <PropertyGroup Condition="'$(CollectCoverage)' == 'true'">

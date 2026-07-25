@@ -185,8 +185,13 @@ function parseRow(line: string, rowIndex: number): ParsedCell[] {
       } else {
         current += char;
       }
-    } else if (char === '"') {
+    } else if (char === '"' && current.length === 0) {
       inQuotes = true;
+    } else if (char === '"') {
+      // A quote only starts RFC-style field quoting at the beginning of the
+      // field. Quotes inside an unquoted value (notably JSON object keys) are
+      // ordinary data and must survive the paste round-trip.
+      current += char;
     } else if (char === "\t") {
       cells.push(makeCell(rowIndex, columnIndex, current));
       columnIndex += 1;

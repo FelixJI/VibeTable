@@ -4,6 +4,7 @@ import { NButton, NEmpty, NInput, NModal, NSelect, NSpin } from "naive-ui";
 import { Check, Link2, Search, X } from "lucide-vue-next";
 import type { NormalizedRelationDescriptor, RelationTargetRef } from "@/contracts";
 import { targetKey } from "@/stores/relationLookupStore";
+import { t } from "@/i18n";
 
 const props = defineProps<{
   show: boolean;
@@ -31,8 +32,13 @@ const multi = computed(() => props.descriptor?.kind !== "m2o");
 const selectedKeys = computed(() => new Set(props.selected.map(targetKey)));
 const title = computed(() => {
   const descriptor = props.descriptor;
-  if (!descriptor) return "编辑关系";
-  const labels = { m2o: "多对一", o2m: "一对多", m2m: "多对多", m2a: "多态关系" };
+  if (!descriptor) return t("relationEditor.title");
+  const labels = {
+    m2o: t("relationEditor.kind.m2o"),
+    o2m: t("relationEditor.kind.o2m"),
+    m2m: t("relationEditor.kind.m2m"),
+    m2a: t("relationEditor.kind.m2a"),
+  };
   return `${labels[descriptor.kind]} · ${descriptor.fieldRef}`;
 });
 const collectionOptions = computed(() => (props.descriptor?.allowedCollections ?? []).map((value) => ({
@@ -52,27 +58,32 @@ function onQuery(value: string): void {
     :title="title"
     class="relation-editor"
     :mask-closable="false"
-    @close="emit('close')"
+    :auto-focus="true"
+    :trap-focus="true"
+    :close-on-esc="true"
+    @update:show="value => { if (!value) emit('close') }"
   >
     <div v-if="descriptor" class="relation-editor__body">
       <div class="relation-editor__meta">
         <span class="relation-editor__kind">{{ descriptor.preset }}</span>
-        <span>{{ multi ? "选择后统一应用" : "选择后立即保存" }}</span>
-        <span v-if="descriptor.selfRelation">自关联</span>
+        <span>{{ multi ? t("relationEditor.applyTogether") : t("relationEditor.saveImmediately") }}</span>
+        <span v-if="descriptor.selfRelation">{{ t("relationEditor.selfRelation") }}</span>
       </div>
 
       <NSelect
         v-if="descriptor.kind === 'm2a'"
         :value="m2aCollection"
         :options="collectionOptions"
-        placeholder="先选择目标集合"
+        :placeholder="t('relationEditor.collectionPlaceholder')"
+        :aria-label="t('relationEditor.collectionLabel')"
         @update:value="(value) => emit('collectionChange', value)"
       />
 
       <NInput
         :value="query"
         clearable
-        placeholder="搜索目标记录（标签由已配置的显示模板提供）"
+        :placeholder="t('relationEditor.searchPlaceholder')"
+        :input-props="{ 'aria-label': t('relationEditor.searchLabel') }"
         @update:value="onQuery"
       >
         <template #prefix><Search :size="14" /></template>
@@ -97,7 +108,7 @@ function onQuery(value: string): void {
           <NButton
             quaternary
             size="tiny"
-            aria-label="移除关系"
+            :aria-label="t('relationEditor.remove')"
             @click="multi ? emit('select', target) : emit('clear')"
           >
             <X :size="13" />
@@ -113,6 +124,7 @@ function onQuery(value: string): void {
             type="button"
             class="relation-editor__candidate"
             :class="{ 'relation-editor__candidate--selected': selectedKeys.has(targetKey(target)) }"
+            :aria-pressed="selectedKeys.has(targetKey(target))"
             @click="emit('select', target)"
           >
             <Link2 :size="14" />
@@ -122,19 +134,25 @@ function onQuery(value: string): void {
             </span>
             <Check v-if="selectedKeys.has(targetKey(target))" :size="14" />
           </button>
-          <NEmpty v-if="!loading && candidates.length === 0" description="没有匹配记录" size="small" />
+          <NEmpty
+            v-if="!loading && candidates.length === 0"
+            :description="t('relationEditor.empty')"
+            size="small"
+          />
         </div>
       </NSpin>
 
-      <p v-if="error" class="relation-editor__error">{{ error }}</p>
+      <p v-if="error" class="relation-editor__error" role="alert">{{ error }}</p>
     </div>
     <template #footer>
       <div class="relation-editor__footer">
-        <NButton v-if="descriptor?.nullable && !multi" quaternary @click="emit('clear')">清空</NButton>
+        <NButton v-if="descriptor?.nullable && !multi" quaternary @click="emit('clear')">
+          {{ t("relationEditor.clear") }}
+        </NButton>
         <span class="relation-editor__spacer"></span>
-        <NButton @click="emit('close')">取消</NButton>
+        <NButton @click="emit('close')">{{ t("relationEditor.cancel") }}</NButton>
         <NButton v-if="multi" type="primary" :loading="applying" @click="emit('apply')">
-          应用 {{ selected.length }} 项
+          {{ t("relationEditor.apply", { count: selected.length }) }}
         </NButton>
       </div>
     </template>
@@ -150,7 +168,7 @@ function onQuery(value: string): void {
 }
 .relation-editor__kind {
   padding: 1px 7px; border-radius: 999px;
-  color: var(--vt-color-primary-600); background: var(--vt-color-primary-50);
+  color: var(--vt-fg-accent-strong); background: var(--vt-color-primary-50);
   font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
 }
 .relation-editor__selected { display: grid; gap: 6px; }
@@ -162,7 +180,7 @@ function onQuery(value: string): void {
 }
 .relation-editor__token { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .relation-editor__token b, .relation-editor__candidate b {
-  margin-right: 6px; color: var(--vt-color-primary-600); font-size: 10px; text-transform: uppercase;
+  margin-right: 6px; color: var(--vt-fg-accent-strong); font-size: 10px; text-transform: uppercase;
 }
 .relation-editor__junction { display: flex; gap: 5px; min-width: 0; }
 .relation-editor__results {

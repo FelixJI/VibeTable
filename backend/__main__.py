@@ -1,51 +1,51 @@
-"""Stdio entrypoint: ``python -m backend``.
-
-Boots the JSON-RPC server over the process stdin/stdout. Diagnostics and
-logging go to **stderr**; stdout carries only framed JSON-RPC responses and
-notifications (the protocol stream the host process reads).
-
-Usage (host side)::
-
-    echo '{"jsonrpc":"2.0",...}' | python -m backend
-
-Transport note
---------------
-On Windows, ``asyncio.get_event_loop().connect_read_pipe(...)`` registers the
-stdin handle with the IOCP completion port. When stdin is a redirected pipe
-(as it is for any host process spawning us via ``subprocess``/``CreateProcess``
-with pipe redirection), that registration fails with ``WinError 6`` ("the
-handle is invalid"). To stay portable across Windows-redirected-pipe and
-POSIX, we feed an ``asyncio.StreamReader`` (with the requested
-``MAX_FRAME_BYTES + 1`` read limit) from a daemon thread that performs
-blocking ``readline`` calls on ``sys.stdin.buffer``. This preserves the brief's
-async framing contract while sidestepping the IOCP limitation. The write side
-is a plain ``AsyncWriter`` adapter over ``sys.stdout.buffer``.
-"""
+"""PocketBase-only stdio JSON-RPC composition root."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
+import os
 import sys
 import threading
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
-from backend.application.directus_service import build_directus_service_from_environment
+from backend.adapters.pocketbase.backup import PocketBaseBackupService
+from backend.adapters.pocketbase.client import PocketBaseClient
+from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
+from backend.adapters.pocketbase.internal_metadata import PocketBaseInternalMetadataPort
+from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
+from backend.adapters.pocketbase.realtime import (
+    PocketBaseRealtimeSupervisor,
+    ProductEvent,
+    StdlibSSEConnector,
+)
+from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
+from backend.application.document_workspace_service import DocumentWorkspaceService
 from backend.application.grid_state_service import GridStateService
+from backend.application.identifier_mapping_service import (
+    IdentifierManagementService,
+    IdentifierRegistry,
+)
+from backend.application.insights_service import InsightsService
+from backend.application.plugin_execution_runtime import PluginExecutionRuntime
+from backend.application.plugin_platform_service import PluginPlatformService
+from backend.application.plugin_registry import PluginRegistry
+from backend.application.product_data_service import (
+    PRODUCT_PARAM_MODELS,
+    PocketBaseProductDataService,
+    ProductParams,
+)
+from backend.application.settings_command_service import SettingsCommandService
 from backend.application.system_service import SystemService
 from backend.application.task_service import build_task_service
-from backend.contracts.collaboration import (
-    ApplyRevertParams,
-    CreateCommentParams,
-    DeleteCommentParams,
-    NotificationIdParams,
-    PreviewRevertParams,
-    ReadActivityParams,
-    ReadCommentsParams,
-    ReadNotificationsParams,
-    SearchMentionsParams,
-    UpdateCommentParams,
+from backend.contracts.backup import (
+    CreateBackupParams,
+    ListBackupsParams,
+    RestoreBackupParams,
 )
 from backend.contracts.data_io import (
     ApplyImportParams,
@@ -53,51 +53,25 @@ from backend.contracts.data_io import (
     GenerateTemplateParams,
     PreviewImportParams,
 )
-from backend.contracts.directus import (
-    DirectusCollectionParams,
-    DirectusCreateParams,
-    DirectusEmptyParams,
-    DirectusItemParams,
-    DirectusLoginParams,
-    DirectusReadParams,
-    DirectusSubscribeParams,
-    DirectusUnsubscribeParams,
-    DirectusUpdateParams,
+from backend.contracts.document_workspace import (
+    LinkDocumentParams,
+    PublishIndexBatchParams,
+    ReadDocumentHistoryParams,
+    ReadDocumentsParams,
+    ReadFolderParams,
+    RegisterDocumentParams,
+    UnlinkDocumentParams,
 )
-from backend.contracts.grid_state import (
-    GridStateGetParams,
-    GridStateSaveParams,
-)
-from backend.contracts.history import (
-    ApplyRestoreParams as HistoryApplyRestoreParams,
-)
-from backend.contracts.history import (
-    PreviewRestoreParams as HistoryPreviewRestoreParams,
-)
-from backend.contracts.history import (
-    ReadChangeSetsParams,
-)
-from backend.contracts.lookup import (
-    LookupCollectionParams,
-    LookupCreateParams,
-    LookupDeleteParams,
-    LookupPreviewParams,
-    LookupQueryParams,
-    LookupUpdateParams,
-    LookupValidateParams,
-)
+from backend.contracts.grid_state import GridStateGetParams, GridStateSaveParams
 from backend.contracts.paste import ApplyPasteParams, PreviewPasteParams
 from backend.contracts.plugin import PluginEventEnvelope
 from backend.contracts.plugin_rpc import (
-    BindExternalFlowParams,
     CommitInstallParams,
     DescribePluginActionParams,
-    ExternalFlowCandidatesParams,
     InspectInstallParams,
     PluginIdentityParams,
     PluginProjectParams,
     PluginTaskParams,
-    ResolvePluginDriftParams,
     ResolvePluginFileParams,
     ResolvePluginInteractionParams,
     RollbackPluginParams,
@@ -106,59 +80,69 @@ from backend.contracts.plugin_rpc import (
     UninstallPluginParams,
     UpgradePluginParams,
 )
-from backend.contracts.relation import RelationProjectionParams
-from backend.contracts.relation_admin import (
-    ApplyRelationChangeParams,
-    PreviewRelationChangeParams,
-    RelationDelta,
-    RelationSearchParams,
-    RelationSingleUpdateParams,
-    SchemaDescribeParams,
+from backend.contracts.presets_versions_dashboards import (
+    CreateVersionParams,
+    DashboardWorkspaceParams,
+    DeletePresetParams,
+    DeleteVersionParams,
+    ExecuteDashboardQueryParams,
+    ListDashboardsParams,
+    ListPresetsParams,
+    ListVersionsParams,
+    PromoteVersionParams,
+    SaveDashboardDraftParams,
+    SavePresetParams,
+    SaveVersionParams,
+    VersionIdParams,
+)
+from backend.contracts.settings_commands import (
+    DeleteShortcutParams,
+    LaunchActionParams,
+    ListCommandsParams,
+    ListShortcutsParams,
+    ReadSharedSettingsParams,
+    RunCommandParams,
+    SaveDeviceSettingsParams,
+    SaveShortcutParams,
 )
 from backend.contracts.system import HandshakeParams
+from backend.contracts.table_admin import (
+    ListIdentifierMappingsParams,
+    ReconcileIdentifierMappingsParams,
+    UpdateIdentifierAliasesParams,
+)
 from backend.contracts.task import (
     CreateTaskParams,
+    HostExportTargetParams,
+    HostImportSourceParams,
     RequestExportTargetGrantParams,
     RequestImportSourceGrantParams,
     ResolveGrantParams,
     TaskIdParams,
 )
+from backend.infrastructure.plugin_file_capability import HostFileCapabilityAdapter
+from backend.infrastructure.plugin_interaction import HostConfirmationAdapter
+from backend.infrastructure.plugin_store import PluginProjectStore
+from backend.infrastructure.plugin_worker import NodePluginWorkerAdapter
 from backend.rpc.dispatcher import (
     RpcDispatcher,
-    register_collaboration_errors,
-    register_directus_errors,
-    register_file_tools_errors,
-    register_history_errors,
+    register_export_errors,
+    register_identifier_errors,
     register_import_errors,
     register_insights_errors,
-    register_lookup_errors,
     register_paste_errors,
     register_path_grant_errors,
     register_plugin_errors,
-    register_relation_errors,
     register_settings_command_errors,
-    register_table_admin_errors,
 )
-from backend.rpc.framing import MAX_FRAME_BYTES, AsyncWriter
+from backend.rpc.framing import MAX_FRAME_BYTES
 from backend.rpc.server import RpcServer
 
-#: Read limit lets ``readuntil`` accept a frame whose encoded size is exactly
-#: ``MAX_FRAME_BYTES`` (the trailing newline pushes it one byte over).
 _READ_LIMIT = MAX_FRAME_BYTES + 1
-
 logger = logging.getLogger("backend")
 
 
 class StdoutAsyncWriter:
-    """Adapter that lets the framing layer treat ``sys.stdout.buffer`` as an
-    ``AsyncWriter``.
-
-    ``sys.stdout.buffer`` is a synchronous blocking stream; there is no
-    backpressure to ``drain``, so ``drain`` is a no-op coroutine. ``flush``
-    is called eagerly so a host process reading line-by-line sees each frame
-    promptly even if Python's stdout is block-buffered.
-    """
-
     def __init__(self, stream: Any) -> None:
         self._stream = stream
 
@@ -171,20 +155,12 @@ class StdoutAsyncWriter:
 
 
 def _configure_logging() -> None:
-    """Route all diagnostics to stderr; never to stdout."""
     logging.basicConfig(
         stream=sys.stderr,
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         force=True,
     )
-
-    # Legacy services obtain loggers through shared.helpers.AppLogger, which
-    # installs its own handler on the named ``app`` logger and points that
-    # handler at stdout. ``basicConfig(force=True)`` only replaces handlers on
-    # the root logger, so the first database INFO line otherwise corrupts the
-    # JSON-RPC stdout stream. In the backend process, remove the legacy handler
-    # and let the ``app.*`` hierarchy propagate to the stderr-only root.
     app_logger = logging.getLogger("app")
     app_logger.handlers.clear()
     app_logger.propagate = True
@@ -195,124 +171,244 @@ def _feed_stdin_to_reader(
     stdin: Any,
     loop: asyncio.AbstractEventLoop,
 ) -> None:
-    """Daemon-thread loop: blocking-read lines from ``stdin.buffer`` and push
-    them into the asyncio ``reader``.
-
-    Each line is pushed verbatim (including the trailing ``\\n``) so the
-    framing layer's ``readuntil(b"\\n")`` sees the same bytes it would on a
-    real pipe transport. On EOF the loop pushes EOF into the reader and exits.
-    """
     try:
-        while True:
-            line = stdin.readline()
-            if not line:
-                break
+        while line := stdin.readline():
             loop.call_soon_threadsafe(reader.feed_data, line)
     except Exception:
-        # The reader is gone (loop closed) or stdin raised; either way, stop.
         return
     finally:
         with contextlib.suppress(RuntimeError):
-            # Loop already closed during shutdown — nothing more to do.
             loop.call_soon_threadsafe(reader.feed_eof)
 
 
-def _register_insights_methods(dispatcher: RpcDispatcher, service: Any) -> None:
-    """Register the C2 insights methods (Presets/Dashboards).
-
-    G1.4: Content Versions RPCs (listVersions/createVersion/saveVersion/
-    compareVersion/promoteVersion/deleteVersion) are removed from the runtime
-    surface. The DTO classes remain in ``presets_versions_dashboards.py`` for
-    backward-compatible contract deserialization, but they are no longer
-    registered as active RPCs. The G1 capability declares
-    ``content_versions`` as disabled.
-    """
-    from backend.contracts.presets_versions_dashboards import (
-        DashboardIdParams,
-        DashboardWorkspaceParams,
-        DeletePresetParams,
-        ExecuteDashboardQueryParams,
-        ListDashboardsParams,
-        ListPresetsParams,
-        PanelIdParams,
-        SaveDashboardDraftParams,
-        SaveDashboardParams,
-        SavePanelParams,
-        SavePresetParams,
-    )
-
-    # Presets (Task 4).
-    dispatcher.register("directus.listPresets", service.list_presets, ListPresetsParams)
-    dispatcher.register("directus.savePreset", service.save_preset, SavePresetParams)
-    dispatcher.register("directus.deletePreset", service.delete_preset, DeletePresetParams)
-    # G1.4: Content Versions (Task 5) RPCs removed — superseded by
-    # history.readChangeSets / history.previewRestore / history.applyRestore.
-    # Dashboards / Panels (Tasks 6-7).
-    dispatcher.register("directus.listDashboards", service.list_dashboards, ListDashboardsParams)
-    dispatcher.register("directus.readDashboard", service.read_dashboard, DashboardIdParams)
-    dispatcher.register("directus.saveDashboard", service.save_dashboard, SaveDashboardParams)
-    dispatcher.register("directus.deleteDashboard", service.delete_dashboard, DashboardIdParams)
-    dispatcher.register("directus.savePanel", service.save_panel, SavePanelParams)
-    dispatcher.register("directus.deletePanel", service.delete_panel, PanelIdParams)
-    dispatcher.register(
-        "directus.panelManifest",
-        lambda _params=None: service.panel_manifest(),
-        DirectusEmptyParams,
-    )
-    # Dashboard v2: coherent snapshots, typed data queries and a server-side
-    # atomic draft endpoint seam. The legacy CRUD surface above remains active.
-    dispatcher.register(
-        "directus.readDashboardWorkspace",
-        service.read_dashboard_workspace,
-        DashboardWorkspaceParams,
-    )
-    dispatcher.register(
-        "directus.saveDashboardDraft",
-        service.save_dashboard_draft,
-        SaveDashboardDraftParams,
-    )
-    dispatcher.register(
-        "directus.deleteDashboardWorkspace",
-        service.delete_dashboard_workspace,
-        DashboardWorkspaceParams,
-    )
-    dispatcher.register(
-        "directus.executeDashboardQuery",
-        service.execute_dashboard_query,
-        ExecuteDashboardQueryParams,
-    )
-    dispatcher.register(
-        "directus.dashboardQueryLimits",
-        service.dashboard_query_limits,
-        DirectusEmptyParams,
+def _product_runtime() -> tuple[
+    PocketBaseProductDataService | None,
+    PocketBaseClient | None,
+    PocketBaseConfig | None,
+]:
+    base_url = os.environ.get("VIBETABLE_SIDECAR_URL")
+    session_secret = os.environ.get("VIBETABLE_SIDECAR_SESSION_SECRET")
+    if not base_url or not session_secret:
+        return None, None, None
+    config = PocketBaseConfig(base_url=base_url, session_secret=session_secret)
+    transport = StdlibPocketBaseTransport(config)
+    client = PocketBaseClient(transport=transport, session_secret=session_secret)
+    return (
+        PocketBaseProductDataService(
+            client=client,
+            transport=transport,
+            session_secret=session_secret,
+        ),
+        client,
+        config,
     )
 
 
-def _register_plugin_methods(dispatcher: RpcDispatcher, service: Any) -> None:
-    """Register the closed plugin use-case surface; never a generic invoke."""
+def _build_document_workspace_service(
+    client: PocketBaseClient | None,
+) -> DocumentWorkspaceService:
+    """Wire workspace record links to the authenticated product data authority."""
 
+    if client is None:
+        return DocumentWorkspaceService(collection_catalog={})
+
+    async def load_collection_catalog() -> dict[str, dict[str, Any]]:
+        payload = await client.list_tables()
+        raw_tables = payload.get("tables")
+        if not isinstance(raw_tables, list):
+            raise ValueError("PocketBase returned an invalid workspace collection catalog")
+
+        collection_catalog: dict[str, dict[str, Any]] = {}
+        for table in raw_tables:
+            if not isinstance(table, dict):
+                raise ValueError("PocketBase returned an invalid workspace collection catalog")
+            table_id = table.get("tableId")
+            if not isinstance(table_id, str) or not table_id or table_id != table_id.strip():
+                raise ValueError("PocketBase returned an invalid workspace collection id")
+            if table_id in collection_catalog:
+                raise ValueError("PocketBase returned a duplicate workspace collection id")
+            collection_catalog[table_id] = table
+        return collection_catalog
+
+    async def record_exists(collection: str, item_id: str) -> bool:
+        rows = await client.read_rows(table_id=collection, row_ids=[item_id])
+        # A single authoritative primary-key lookup must resolve to exactly one
+        # active product row. Empty, duplicate, archived, or malformed results
+        # all fail closed.
+        return len(rows) == 1
+
+    return DocumentWorkspaceService(
+        collection_catalog={},
+        collection_catalog_loader=load_collection_catalog,
+        record_exists=record_exists,
+    )
+
+
+def _build_pocketbase_product_service() -> PocketBaseProductDataService | None:
+    return _product_runtime()[0]
+
+
+def _register_pocketbase_product_methods(
+    dispatcher: RpcDispatcher,
+    service: PocketBaseProductDataService,
+) -> None:
+    from backend.rpc.dispatcher import register_pocketbase_product_errors
+
+    register_pocketbase_product_errors()
+    methods = {
+        "schema.validate": service.validate_schema,
+        "schema.apply": service.apply_schema,
+        "schema.delete": service.delete_schema,
+        "schema.list": service.list_tables,
+        "schema.getTable": service.get_table_schema,
+        "schema.describe": service.describe_schema,
+        "query.page": service.query_page,
+        "query.readRows": service.read_rows,
+        "query.validateSnapshot": service.validate_snapshot,
+        "mutation.preview": service.preview_mutation,
+        "mutation.apply": service.apply_mutation,
+        "formula.validate": service.validate_formula,
+        "formula.preview": service.preview_formula,
+        "file.list": service.list_attachment_refs,
+        "file.token": service.create_file_token,
+        "file.applyHostChange": service.apply_host_attachment_change,
+        "file.saveHostFile": service.save_attachment_to_host,
+        "history.read": service.read_history,
+        "history.previewRestore": service.preview_history_restore,
+        "history.applyRestore": service.apply_history_restore,
+        "events.reconcile": service.reconcile,
+        "relation.searchTargets": service.search_relation_targets,
+        "relation.updateSingle": service.update_single_relation,
+        "relation.previewDelta": service.preview_relation_delta,
+        "relation.applyDelta": service.apply_relation_delta,
+        "table_admin.previewRelationChange": service.preview_relation_change,
+        "table_admin.applyRelationChange": service.apply_relation_change,
+        "lookup.list": service.list_lookups,
+        "lookup.validate": service.validate_lookup,
+        "lookup.create": service.create_lookup,
+        "lookup.update": service.update_lookup,
+        "lookup.delete": service.delete_lookup,
+        "lookup.preview": service.preview_lookup,
+        "lookup.query": service.query_lookups,
+    }
+    for method, handler in methods.items():
+        dispatcher.register(method, handler, PRODUCT_PARAM_MODELS[method])
+
+
+def _register_backup_methods(
+    dispatcher: RpcDispatcher,
+    service: PocketBaseBackupService,
+) -> None:
+    """Register the three fixed backup product operations."""
+    from backend.rpc.dispatcher import register_pocketbase_product_errors
+
+    register_pocketbase_product_errors()
+    dispatcher.register("backup.list", service.list_backups, ListBackupsParams)
+    dispatcher.register("backup.create", service.create_backup, CreateBackupParams)
+    dispatcher.register("backup.restore", service.restore_backup, RestoreBackupParams)
+
+
+def _configure_pocketbase_data_io(
+    dispatcher: RpcDispatcher,
+    *,
+    client: PocketBaseClient,
+    task_service: Any,
+) -> ProductDataIoRuntime:
+    """Register the product-only paste/import/export vertical slice."""
+
+    register_paste_errors()
+    register_import_errors()
+    register_export_errors()
+    runtime = ProductDataIoRuntime(client=client, task_service=task_service)
+    runtime.register_tasks()
+    dispatcher.register("table.previewPaste", runtime.preview_paste, PreviewPasteParams)
+    dispatcher.register("table.applyPaste", runtime.apply_paste, ApplyPasteParams)
+    dispatcher.register("data.previewImport", runtime.preview_import, PreviewImportParams)
+    dispatcher.register("data.applyImport", runtime.apply_import, ApplyImportParams)
+    dispatcher.register("data.export", runtime.export, ExportParams)
+    dispatcher.register(
+        "data.generateTemplate",
+        runtime.generate_template,
+        GenerateTemplateParams,
+    )
+    return runtime
+
+
+def _register_document_workspace_methods(
+    dispatcher: RpcDispatcher,
+    service: DocumentWorkspaceService,
+) -> None:
+    dispatcher.register("workspace.readFolder", service.read_folder, ReadFolderParams)
+    dispatcher.register("workspace.readDocuments", service.read_documents, ReadDocumentsParams)
+    dispatcher.register(
+        "workspace.registerDocument",
+        service.register_document,
+        RegisterDocumentParams,
+    )
+    dispatcher.register(
+        "workspace.publishIndexBatch",
+        service.publish_index_batch,
+        PublishIndexBatchParams,
+    )
+    dispatcher.register("workspace.linkDocument", service.link_document, LinkDocumentParams)
+    dispatcher.register("workspace.unlinkDocument", service.unlink_document, UnlinkDocumentParams)
+    dispatcher.register(
+        "workspace.readDocumentHistory",
+        service.read_document_history,
+        ReadDocumentHistoryParams,
+    )
+
+
+def _register_settings_methods(
+    dispatcher: RpcDispatcher,
+    service: SettingsCommandService,
+) -> None:
+    register_settings_command_errors()
+    dispatcher.register(
+        "settings.readDevice",
+        lambda _params=None: service.read_device(),
+        ListCommandsParams,
+    )
+    dispatcher.register("settings.saveDevice", service.save_device, SaveDeviceSettingsParams)
+    dispatcher.register("settings.readShared", service.read_shared, ReadSharedSettingsParams)
+    dispatcher.register(
+        "command.list",
+        lambda _params=None: service.list_commands(),
+        ListCommandsParams,
+    )
+    dispatcher.register("command.run", service.run_command, RunCommandParams)
+    dispatcher.register(
+        "shortcut.list",
+        lambda _params=None: service.list_shortcuts(),
+        ListShortcutsParams,
+    )
+    dispatcher.register("shortcut.save", service.save_shortcut, SaveShortcutParams)
+    dispatcher.register("shortcut.delete", service.delete_shortcut, DeleteShortcutParams)
+    dispatcher.register("shortcut.launch", service.launch_action, LaunchActionParams)
+
+
+def _register_plugin_methods(
+    dispatcher: RpcDispatcher,
+    service: PluginPlatformService,
+) -> None:
+    register_plugin_errors()
     dispatcher.register("plugin.listCatalog", service.list_catalog, PluginProjectParams)
     dispatcher.register("plugin.listAudit", service.list_audit, PluginIdentityParams)
     dispatcher.register(
-        "plugin.listPendingCleanup", service.list_pending_cleanup, PluginProjectParams
+        "plugin.listPendingCleanup",
+        service.list_pending_cleanup,
+        PluginProjectParams,
     )
     dispatcher.register("plugin.inspectInstall", service.inspect_install, InspectInstallParams)
     dispatcher.register("plugin.commitInstall", service.commit_install, CommitInstallParams)
-    dispatcher.register(
-        "plugin.listExternalFlowCandidates",
-        service.list_external_flow_candidates,
-        ExternalFlowCandidatesParams,
-    )
-    dispatcher.register(
-        "plugin.bindExternalFlow", service.bind_external_flow, BindExternalFlowParams
-    )
     dispatcher.register("plugin.setEnabled", service.set_enabled, SetPluginEnabledParams)
     dispatcher.register("plugin.upgrade", service.upgrade, UpgradePluginParams)
     dispatcher.register("plugin.rollback", service.rollback, RollbackPluginParams)
-    dispatcher.register("plugin.resolveDrift", service.resolve_drift, ResolvePluginDriftParams)
     dispatcher.register("plugin.uninstall", service.uninstall, UninstallPluginParams)
     dispatcher.register(
-        "plugin.describeAction", service.describe_action, DescribePluginActionParams
+        "plugin.describeAction",
+        service.describe_action,
+        DescribePluginActionParams,
     )
     dispatcher.register("plugin.startAction", service.start_action, StartPluginActionParams)
     dispatcher.register(
@@ -325,181 +421,166 @@ def _register_plugin_methods(dispatcher: RpcDispatcher, service: Any) -> None:
     dispatcher.register("plugin.getTask", service.get_task, PluginTaskParams)
 
 
-def _register_file_tools_methods(dispatcher: RpcDispatcher, service: Any) -> None:
-    """Register the D1 file-tools methods (Files/journal)."""
-    from backend.contracts.file_tools import (
-        DeleteFileParams,
-        JournalIdParams,
-        ListJournalParams,
-        PresetPreviewParams,
-        ReadFilesParams,
-        ResolveJournalParams,
-        UnlinkFileParams,
-        UploadFileParams,
-    )
+class _RealtimeRuntime:
+    def __init__(self, task: asyncio.Task[None], stop: asyncio.Event) -> None:
+        self._task = task
+        self._stop = stop
 
-    # Directus Files workspace (Task 3).
-    dispatcher.register("directus.readFiles", service.read_files, ReadFilesParams)
-    dispatcher.register("directus.uploadFile", service.upload_file, UploadFileParams)
-    dispatcher.register("directus.unlinkFile", service.unlink_file, UnlinkFileParams)
-    dispatcher.register("directus.deleteFile", service.delete_file, DeleteFileParams)
-    dispatcher.register("directus.presetPreview", service.preset_preview, PresetPreviewParams)
-    # Operation journal (Task 2).
-    dispatcher.register("file.listJournal", service.list_journal, ListJournalParams)
-    dispatcher.register("file.resolveJournal", service.resolve_journal, ResolveJournalParams)
-    dispatcher.register("file.discardJournal", service.discard_journal, JournalIdParams)
+    async def close(self) -> None:
+        self._stop.set()
+        self._task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
 
 
-def _register_settings_command_methods(dispatcher: RpcDispatcher, service: Any) -> None:
-    """Register the D2 settings/flows/commands/shortcuts methods."""
-    from backend.contracts.settings_commands import (
-        DeleteShortcutParams,
-        InvokeFlowParams,
-        LaunchActionParams,
-        ListApprovedFlowsParams,
-        ListCommandsParams,
-        ListShortcutsParams,
-        ReadSharedSettingsParams,
-        RunCommandParams,
-        SaveDeviceSettingsParams,
-        SaveShortcutParams,
+def _start_realtime(
+    server: RpcServer,
+    config: PocketBaseConfig | None,
+    client: PocketBaseClient | None,
+) -> _RealtimeRuntime | None:
+    if config is None or client is None:
+        return None
+    stop = asyncio.Event()
+    latest_by_table: dict[str, dict[str, Any]] = {}
+    emitted: set[str] = set()
+
+    async def reconcile_cursor_gap() -> None:
+        for table_id, previous in tuple(latest_by_table.items()):
+            result = await client.reconcile_realtime(
+                table_id=table_id,
+                schema_revision=str(previous["schemaRevision"]),
+                data_revision=str(previous["dataRevision"]),
+            )
+            action = result["action"]
+            if action == "none":
+                continue
+            identity = (
+                f"{table_id}\0{result['currentSchemaRevision']}"
+                f"\0{result['currentDataRevision']}\0{action}"
+            )
+            event_id = "evt_reconcile_" + hashlib.sha256(identity.encode()).hexdigest()[:24]
+            if event_id in emitted:
+                continue
+            emitted.add(event_id)
+            await server.notify(
+                "data.changed",
+                {
+                    "contractVersion": "1.0",
+                    "topic": "data.changed",
+                    "eventId": event_id,
+                    "sequence": int(previous["sequence"]) + 1,
+                    "occurredAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                    "schemaRevision": result["currentSchemaRevision"],
+                    "dataRevision": result["currentDataRevision"],
+                    "changeSetId": None,
+                    "tableId": table_id,
+                    "recordIds": [],
+                    "operation": "schema" if action == "reload-schema" else "update",
+                },
+            )
+
+    supervisor = PocketBaseRealtimeSupervisor(
+        StdlibSSEConnector(config),
+        reconcile_cursor_gap=reconcile_cursor_gap,
     )
 
-    # Settings (D2.1).
-    dispatcher.register(
-        "settings.readDevice", lambda _p=None: service.read_device(), DirectusEmptyParams
-    )
-    dispatcher.register("settings.saveDevice", service.save_device, SaveDeviceSettingsParams)
-    dispatcher.register("settings.readShared", service.read_shared, ReadSharedSettingsParams)
-    # Flows (D2.2).
-    dispatcher.register(
-        "flow.listApproved", lambda _p=None: service.list_approved_flows(), ListApprovedFlowsParams
-    )
-    dispatcher.register("flow.invoke", service.invoke_flow, InvokeFlowParams)
-    # Commands (D2.3).
-    dispatcher.register("command.list", lambda _p=None: service.list_commands(), ListCommandsParams)
-    dispatcher.register("command.run", service.run_command, RunCommandParams)
-    # Shortcuts (D2.4).
-    dispatcher.register(
-        "shortcut.list", lambda _p=None: service.list_shortcuts(), ListShortcutsParams
-    )
-    dispatcher.register("shortcut.save", service.save_shortcut, SaveShortcutParams)
-    dispatcher.register("shortcut.delete", service.delete_shortcut, DeleteShortcutParams)
-    dispatcher.register("shortcut.launch", service.launch_action, LaunchActionParams)
+    async def emit(event: ProductEvent) -> None:
+        if event.topic == "data.changed":
+            table_id = event.payload.get("tableId")
+            if isinstance(table_id, str) and table_id:
+                latest_by_table[table_id] = event.payload
+        await server.notify(event.topic, event.payload)
+
+    task = asyncio.create_task(supervisor.run(emit, stop), name="product-realtime")
+    return _RealtimeRuntime(task, stop)
 
 
-def _register_table_admin_methods(dispatcher: RpcDispatcher, service: Any) -> None:
-    """Register the Phase 4 table_admin methods (runtime create/delete collections)."""
-    from backend.contracts.table_admin import (
-        CreateTableParams,
-        DeleteIdentifierMappingParams,
-        DeleteTableParams,
-        ImportIdentifierMappingsParams,
-        ListIdentifierMappingsParams,
-        PurgeIdentifierMappingsParams,
-        ReconcileIdentifierMappingsParams,
-        UpdateIdentifierAliasesParams,
-    )
+async def _build_server() -> tuple[
+    RpcServer,
+    DocumentWorkspaceService,
+    PluginPlatformService | None,
+    _RealtimeRuntime | None,
+]:
+    server_ref: RpcServer | None = None
 
-    dispatcher.register("table_admin.createTable", service.create_table, CreateTableParams)
-    dispatcher.register("table_admin.deleteTable", service.delete_table, DeleteTableParams)
-    dispatcher.register(
-        "table_admin.listIdentifierMappings",
-        service.list_identifier_mappings,
-        ListIdentifierMappingsParams,
-    )
-    dispatcher.register(
-        "table_admin.updateIdentifierAliases",
-        service.update_identifier_aliases,
-        UpdateIdentifierAliasesParams,
-    )
-    dispatcher.register(
-        "table_admin.importIdentifierMappings",
-        service.import_identifier_mappings,
-        ImportIdentifierMappingsParams,
-    )
-    dispatcher.register(
-        "table_admin.reconcileIdentifierMappings",
-        service.reconcile_identifier_mappings,
-        ReconcileIdentifierMappingsParams,
-    )
-    dispatcher.register(
-        "table_admin.deleteIdentifierMapping",
-        service.delete_identifier_mapping,
-        DeleteIdentifierMappingParams,
-    )
-    dispatcher.register(
-        "table_admin.purgeIdentifierMappings",
-        service.purge_identifier_mappings,
-        PurgeIdentifierMappingsParams,
-    )
+    task_sequence = 0
 
+    async def notify_task_status(status: Any) -> None:
+        nonlocal task_sequence
+        if server_ref is not None:
+            raw = (
+                status.model_dump(mode="json", by_alias=True)
+                if hasattr(status, "model_dump")
+                else dict(status)
+            )
+            task_sequence += 1
+            state = {
+                "queued": "pending",
+                "running": "running",
+                "succeeded": "succeeded",
+                "failed": "failed",
+                "cancelled": "cancelled",
+                "aborted": "failed",
+            }.get(str(raw.get("state")), "failed")
+            progress = raw.get("progress")
+            done = progress.get("done", 0) if isinstance(progress, dict) else 0
+            total = progress.get("total", 0) if isinstance(progress, dict) else 0
+            ratio = min(1.0, done / total) if isinstance(total, int) and total > 0 else 0.0
+            task_id = str(raw.get("taskId", "unknown"))
+            kind = str(raw.get("kind", "data.import"))
+            task_type = {
+                "data.import": "import",
+                "data.export": "export",
+            }.get(kind, "reconcile")
+            identity = f"{task_id}\0{state}\0{done}\0{total}".encode()
+            error_message = raw.get("error")
+            await server_ref.notify(
+                "task.changed",
+                {
+                    "contractVersion": "1.0",
+                    "topic": "task.changed",
+                    "eventId": f"evt_task_{hashlib.sha256(identity).hexdigest()[:24]}",
+                    "sequence": task_sequence,
+                    "occurredAt": datetime.now(UTC).isoformat(),
+                    "taskId": task_id,
+                    "taskType": task_type,
+                    "state": state,
+                    "progress": ratio,
+                    "cursor": None,
+                    "error": (
+                        {
+                            "contractVersion": "1.0",
+                            "code": "task.failed",
+                            "path": None,
+                            "message": str(error_message),
+                            "details": {},
+                            "retryable": False,
+                        }
+                        if error_message
+                        else None
+                    ),
+                },
+            )
 
-async def _build_server() -> tuple[RpcServer, Any | None]:
     loop = asyncio.get_running_loop()
     reader = asyncio.StreamReader(limit=_READ_LIMIT, loop=loop)
-    # Feed the reader from a daemon thread instead of connect_read_pipe: see
-    # the module docstring for the Windows IOCP rationale.
-    feeder = threading.Thread(
+    threading.Thread(
         target=_feed_stdin_to_reader,
         args=(reader, sys.stdin.buffer, loop),
         name="rpc-stdin-feeder",
         daemon=True,
-    )
-    feeder.start()
-
-    writer: AsyncWriter = StdoutAsyncWriter(sys.stdout.buffer)
-
+    ).start()
     dispatcher = RpcDispatcher()
-    system_service = SystemService(lambda: dispatcher.registered_methods)
-    dispatcher.register("system.handshake", system_service.handshake, HandshakeParams)
+    dispatcher.register(
+        "system.handshake",
+        SystemService(lambda: dispatcher.registered_methods).handshake,
+        HandshakeParams,
+    )
+    grid = GridStateService()
+    dispatcher.register("gridState.get", grid.get, GridStateGetParams)
+    dispatcher.register("gridState.save", grid.save, GridStateSaveParams)
 
-    # F stage: the legacy SQLite business path (database.open, table.list/read,
-    # table.getEditSchema, table.updateCell/insertRow/deleteRows/readRows,
-    # table.validateSnapshot) has been removed. Business reads/writes now go
-    # through the Directus data plane (directus.read/create/update/...).
-
-    # B3 Task 3: durable per-table grid state (local user-state DB).
-    grid_state_service = GridStateService()
-    dispatcher.register("gridState.get", grid_state_service.get, GridStateGetParams)
-    dispatcher.register("gridState.save", grid_state_service.save, GridStateSaveParams)
-
-    # C1: task runtime + session path grants (generic infrastructure; the file
-    # picker runs in WPF and registers grants host-side).
     register_path_grant_errors()
-    server_ref: RpcServer | None = None
-    directus_service: Any | None = None
-    plugin_task_revisions: dict[str, int] = {}
-
-    async def notify_task_status(status: Any) -> None:
-        if server_ref is not None:
-            await server_ref.notify("task.status", status)
-        if not str(getattr(status, "kind", "")).startswith("plugin.action."):
-            return
-        plugin_service = directus_service.plugin_service if directus_service is not None else None
-        if server_ref is None or plugin_service is None:
-            return
-        try:
-            snapshot = plugin_service.get_task(task_id=status.task_id)
-        except KeyError:
-            # The TaskRuntime can emit its first running status just before the
-            # plugin runtime has attached the run metadata. startAction already
-            # returns that initial snapshot; subsequent progress/terminal
-            # notifications are projected here.
-            return
-        revision = plugin_task_revisions.get(status.task_id, 0) + 1
-        plugin_task_revisions[status.task_id] = revision
-        await server_ref.notify(
-            "plugin.taskChanged",
-            PluginEventEnvelope(
-                event_type="plugin.task.changed",
-                project_key=snapshot.project_key,
-                entity_id=status.task_id,
-                revision=revision,
-                snapshot=snapshot.model_dump(mode="json", by_alias=True),
-            ),
-        )
-
     task_service = build_task_service(notification_sink=notify_task_status)
     dispatcher.register("task.create", task_service.create_task, CreateTaskParams)
     dispatcher.register("task.cancel", task_service.cancel_task, TaskIdParams)
@@ -514,311 +595,194 @@ async def _build_server() -> tuple[RpcServer, Any | None]:
         task_service.register_export_target,
         RequestExportTargetGrantParams,
     )
+    dispatcher.register(
+        "path.registerImportSource",
+        task_service.register_host_import_source,
+        HostImportSourceParams,
+    )
+    dispatcher.register(
+        "path.registerExportTarget",
+        task_service.register_host_export_target,
+        HostExportTargetParams,
+    )
     dispatcher.register("path.resolveGrant", task_service.resolve_grant, ResolveGrantParams)
 
-    # B4: Directus-first methods are enabled only when a non-secret project URL
-    # is configured. Tokens remain entirely inside the Python broker.
-    directus_service = build_directus_service_from_environment(task_service=task_service)
-    if directus_service is not None:
-        register_directus_errors()
-        dispatcher.register("directus.login", directus_service.login, DirectusLoginParams)
-        dispatcher.register("directus.refresh", directus_service.refresh, DirectusEmptyParams)
-        dispatcher.register("directus.logout", directus_service.logout, DirectusEmptyParams)
-        dispatcher.register("directus.status", directus_service.status, DirectusEmptyParams)
-        dispatcher.register(
-            "directus.serverInfo", directus_service.server_info, DirectusEmptyParams
-        )
-        dispatcher.register(
-            "directus.currentUser", directus_service.current_user, DirectusEmptyParams
-        )
-        dispatcher.register(
-            "directus.collections", directus_service.list_collections, DirectusEmptyParams
-        )
-        dispatcher.register("directus.schema", directus_service.schema, DirectusCollectionParams)
-        dispatcher.register(
-            "schema.describe", directus_service.describe_schema, SchemaDescribeParams
-        )
-        dispatcher.register("directus.read", directus_service.read, DirectusReadParams)
-        dispatcher.register("directus.create", directus_service.create, DirectusCreateParams)
-        dispatcher.register("directus.update", directus_service.update, DirectusUpdateParams)
-        dispatcher.register("directus.archive", directus_service.archive, DirectusItemParams)
-        dispatcher.register("directus.restore", directus_service.restore, DirectusItemParams)
-        dispatcher.register("directus.delete", directus_service.delete, DirectusItemParams)
-        lookup_service = directus_service.lookup_service
-        if lookup_service is not None:
-            register_lookup_errors()
-            dispatcher.register("lookup.list", lookup_service.list, LookupCollectionParams)
-            dispatcher.register("lookup.validate", lookup_service.validate, LookupValidateParams)
-            dispatcher.register("lookup.create", lookup_service.create, LookupCreateParams)
-            dispatcher.register("lookup.update", lookup_service.update, LookupUpdateParams)
-            dispatcher.register("lookup.delete", lookup_service.delete, LookupDeleteParams)
-            dispatcher.register("lookup.preview", lookup_service.preview, LookupPreviewParams)
-            dispatcher.register("lookup.query", lookup_service.query, LookupQueryParams)
-        relation_service = directus_service.relation_service
-        if relation_service is not None:
-            register_relation_errors()
-            dispatcher.register(
-                "relation.searchTargets",
-                relation_service.search_targets,
-                RelationSearchParams,
-            )
-            dispatcher.register(
-                "relation.updateSingle",
-                relation_service.update_single,
-                RelationSingleUpdateParams,
-            )
-            dispatcher.register(
-                "relation.previewDelta", relation_service.preview_delta, RelationDelta
-            )
-            dispatcher.register("relation.applyDelta", relation_service.apply_delta, RelationDelta)
-        relation_schema_service = directus_service.relation_schema_service
-        if relation_schema_service is not None:
-            register_relation_errors()
-            dispatcher.register(
-                "table_admin.previewRelationChange",
-                relation_schema_service.preview,
-                PreviewRelationChangeParams,
-            )
-            dispatcher.register(
-                "table_admin.applyRelationChange",
-                relation_schema_service.apply,
-                ApplyRelationChangeParams,
-            )
-        dispatcher.register(
-            "directus.subscribe", directus_service.subscribe, DirectusSubscribeParams
-        )
-        dispatcher.register(
-            "directus.unsubscribe", directus_service.unsubscribe, DirectusUnsubscribeParams
-        )
-        # B2: multi-row paste (transparent preview + atomic batch write).
-        paste_service = directus_service.paste_service
-        if paste_service is not None:
-            register_paste_errors()
-            dispatcher.register("table.previewPaste", paste_service.preview, PreviewPasteParams)
-            dispatcher.register("table.applyPaste", paste_service.apply, ApplyPasteParams)
-        # C1: Directus-aware import (preview + chunked apply).
-        import_service = directus_service.import_service
-        if import_service is not None:
-            register_import_errors()
-            dispatcher.register("data.previewImport", import_service.preview, PreviewImportParams)
-            dispatcher.register("data.applyImport", import_service.apply, ApplyImportParams)
-        # C1: query-based export + template generation.
-        export_service = directus_service.export_service
-        if export_service is not None:
-            dispatcher.register("data.export", export_service.export, ExportParams)
-            dispatcher.register(
-                "data.generateTemplate",
-                export_service.generate_template,
-                GenerateTemplateParams,
-            )
-        # C1 Task 5: relation workspace (declared relations only, no generic join).
-        dispatcher.register(
-            "data.relationProjection",
-            directus_service.relation_projection,
-            RelationProjectionParams,
-        )
-        # C2 Tasks 1-3: Activity/Revisions/Revert, Comments, Notifications.
-        collaboration_service = directus_service.collaboration_service
-        if collaboration_service is not None:
-            register_collaboration_errors()
-            dispatcher.register(
-                "directus.readActivity",
-                collaboration_service.read_activity,
-                ReadActivityParams,
-            )
-            dispatcher.register(
-                "directus.previewRevert",
-                collaboration_service.preview_revert,
-                PreviewRevertParams,
-            )
-            dispatcher.register(
-                "directus.applyRevert",
-                collaboration_service.apply_revert,
-                ApplyRevertParams,
-            )
-            dispatcher.register(
-                "directus.readComments",
-                collaboration_service.read_comments,
-                ReadCommentsParams,
-            )
-            dispatcher.register(
-                "directus.createComment",
-                collaboration_service.create_comment,
-                CreateCommentParams,
-            )
-            dispatcher.register(
-                "directus.updateComment",
-                collaboration_service.update_comment,
-                UpdateCommentParams,
-            )
-            dispatcher.register(
-                "directus.deleteComment",
-                collaboration_service.delete_comment,
-                DeleteCommentParams,
-            )
-            dispatcher.register(
-                "directus.searchMentions",
-                collaboration_service.search_mentions,
-                SearchMentionsParams,
-            )
-            dispatcher.register(
-                "directus.readNotifications",
-                collaboration_service.read_notifications,
-                ReadNotificationsParams,
-            )
-            dispatcher.register(
-                "directus.archiveNotification",
-                collaboration_service.archive_notification,
-                NotificationIdParams,
-            )
-            dispatcher.register(
-                "directus.deleteNotification",
-                collaboration_service.delete_notification,
-                NotificationIdParams,
-            )
-        # C2 Tasks 4-7: Presets, Content Versions, Dashboards/Panels, filter.
-        insights_service = directus_service.insights_service
-        if insights_service is not None:
-            register_insights_errors()
-            _register_insights_methods(dispatcher, insights_service)
-        # D1: file tools (Directus Files, operation journal, content replace).
-        file_tools_service = directus_service.file_tools_service
-        if file_tools_service is not None:
-            register_file_tools_errors()
-            _register_file_tools_methods(dispatcher, file_tools_service)
-        # D2: settings, Flows, commands, shortcuts.
-        settings_command_service = directus_service.settings_command_service
-        if settings_command_service is not None:
-            register_settings_command_errors()
-            _register_settings_command_methods(dispatcher, settings_command_service)
-        plugin_service = directus_service.plugin_service
-        if plugin_service is not None:
-            register_plugin_errors()
-            _register_plugin_methods(dispatcher, plugin_service)
-        # G1: full-field history ChangeSets + safe restore.
-        history_service = directus_service.history_service
-        if history_service is not None:
-            register_history_errors()
-            dispatcher.register(
-                "history.readChangeSets",
-                history_service.read_change_sets,
-                ReadChangeSetsParams,
-            )
-            dispatcher.register(
-                "history.previewRestore",
-                history_service.preview_restore,
-                HistoryPreviewRestoreParams,
-            )
-            dispatcher.register(
-                "history.applyRestore",
-                history_service.apply_restore,
-                HistoryApplyRestoreParams,
-            )
-        # G3: document workspace metadata RPC.
-        document_workspace_service = directus_service.document_workspace_service
-        if document_workspace_service is not None:
-            from backend.contracts.document_workspace import (
-                LinkDocumentParams,
-                PublishIndexBatchParams,
-                ReadDocumentHistoryParams,
-                ReadDocumentsParams,
-                ReadFolderParams,
-                RegisterDocumentParams,
-                UnlinkDocumentParams,
-            )
+    product_service, client, config = _product_runtime()
+    workspace = _build_document_workspace_service(client)
+    _register_document_workspace_methods(dispatcher, workspace)
 
-            dispatcher.register(
-                "workspace.readFolder",
-                document_workspace_service.read_folder,
-                ReadFolderParams,
+    plugin_service: PluginPlatformService | None = None
+    if product_service is not None and client is not None:
+        _register_pocketbase_product_methods(dispatcher, product_service)
+        _register_backup_methods(dispatcher, PocketBaseBackupService(client))
+        data_io = _configure_pocketbase_data_io(
+            dispatcher,
+            client=client,
+            task_service=task_service,
+        )
+        metadata = PocketBaseInternalMetadataPort(client=client, schema_revisions={})
+        state_root = Path(
+            os.environ.get(
+                "VIBETABLE_STATE_DIR",
+                str(Path.home() / ".vibetable"),
             )
-            dispatcher.register(
-                "workspace.readDocuments",
-                document_workspace_service.read_documents,
-                ReadDocumentsParams,
+        )
+        async def execute_export_command(
+            raw_params: dict[str, Any],
+            grant_id: str,
+        ) -> dict[str, Any]:
+            params = ExportParams.model_validate(
+                {**raw_params, "grantId": grant_id}
             )
-            dispatcher.register(
-                "workspace.registerDocument",
-                document_workspace_service.register_document,
-                RegisterDocumentParams,
-            )
-            dispatcher.register(
-                "workspace.publishIndexBatch",
-                document_workspace_service.publish_index_batch,
-                PublishIndexBatchParams,
-            )
-            dispatcher.register(
-                "workspace.linkDocument",
-                document_workspace_service.link_document,
-                LinkDocumentParams,
-            )
-            dispatcher.register(
-                "workspace.unlinkDocument",
-                document_workspace_service.unlink_document,
-                UnlinkDocumentParams,
-            )
-            dispatcher.register(
-                "workspace.readDocumentHistory",
-                document_workspace_service.read_document_history,
-                ReadDocumentHistoryParams,
-            )
-        # Phase 4: runtime table admin (create/delete Directus collections).
-        register_table_admin_errors()
-        table_admin_service = directus_service.table_admin_service
-        if table_admin_service is not None:
-            _register_table_admin_methods(dispatcher, table_admin_service)
-    server = RpcServer(reader, writer, dispatcher)
+            result = await data_io.export(params)
+            return result.model_dump(by_alias=True, mode="json")
+
+        settings = SettingsCommandService(
+            metadata_port=metadata,
+            device_state_path=state_root / "device-settings.json",
+            grant_authority=task_service.grants,
+            command_executors={"export.query": execute_export_command},
+        )
+        _register_settings_methods(dispatcher, settings)
+        insights = InsightsService(metadata_port=metadata, query_port=client)
+        register_insights_errors()
+
+        # Insights is intentionally exposed under product-owned method names.
+        async def read_dashboard_workspace(
+            params: DashboardWorkspaceParams,
+        ) -> Any:
+            return await insights.read_dashboard_workspace(params.dashboard_id)
+
+        dispatcher.register(
+            "insights.listDashboards",
+            insights.list_dashboards,
+            ListDashboardsParams,
+        )
+        dispatcher.register(
+            "insights.readDashboardWorkspace",
+            read_dashboard_workspace,
+            DashboardWorkspaceParams,
+        )
+        dispatcher.register(
+            "insights.saveDashboardDraft",
+            insights.save_dashboard_draft,
+            SaveDashboardDraftParams,
+        )
+        dispatcher.register(
+            "insights.deleteDashboardWorkspace",
+            insights.delete_dashboard_workspace,
+            DashboardWorkspaceParams,
+        )
+        dispatcher.register(
+            "insights.executeDashboardQuery",
+            insights.execute_dashboard_query,
+            ExecuteDashboardQueryParams,
+        )
+        dispatcher.register(
+            "insights.dashboardQueryLimits",
+            insights.dashboard_query_limits,
+            ProductParams,
+        )
+        dispatcher.register(
+            "insights.panelManifest",
+            insights.panel_manifest,
+            ProductParams,
+        )
+        dispatcher.register("preset.list", insights.list_presets, ListPresetsParams)
+        dispatcher.register("preset.save", insights.save_preset, SavePresetParams)
+        dispatcher.register("preset.delete", insights.delete_preset, DeletePresetParams)
+        dispatcher.register("version.list", insights.list_versions, ListVersionsParams)
+        dispatcher.register("version.create", insights.create_version, CreateVersionParams)
+        dispatcher.register("version.save", insights.save_version, SaveVersionParams)
+        dispatcher.register("version.compare", insights.compare_version, VersionIdParams)
+        dispatcher.register("version.promote", insights.promote_version, PromoteVersionParams)
+        dispatcher.register("version.delete", insights.delete_version, DeleteVersionParams)
+        identifier = IdentifierRegistry(metadata)
+        identifier_service = IdentifierManagementService(
+            registry=identifier,
+            schema_port=client,
+        )
+        register_identifier_errors()
+        dispatcher.register(
+            "identifier.list",
+            identifier_service.list,
+            ListIdentifierMappingsParams,
+        )
+        dispatcher.register(
+            "identifier.updateAliases",
+            identifier_service.update_aliases,
+            UpdateIdentifierAliasesParams,
+        )
+        dispatcher.register(
+            "identifier.reconcile",
+            identifier_service.reconcile,
+            ReconcileIdentifierMappingsParams,
+        )
+
+        store = PluginProjectStore(state_root / "plugins.db")
+        registry = PluginRegistry(store=store)
+        confirmation = HostConfirmationAdapter()
+        file_capability = HostFileCapabilityAdapter(task_service=task_service)
+        worker = NodePluginWorkerAdapter(
+            store=store,
+            profiles={},
+            client=client,
+            file_adapter=file_capability,
+        )
+        mutation = PocketBasePluginMutationAdapter(
+            client=client,
+            schema_revisions={},
+            writable_fields={},
+        )
+        runtime = PluginExecutionRuntime(
+            registry=registry,
+            worker_adapter=worker,
+            confirmation_adapter=confirmation,
+            mutation_adapter=mutation,
+        )
+        plugin_service = PluginPlatformService(
+            registry=registry,
+            runtime=runtime,
+            store=store,
+            confirmation_adapter=confirmation,
+            file_adapter=file_capability,
+        )
+        _register_plugin_methods(dispatcher, plugin_service)
+
+    server = RpcServer(reader, StdoutAsyncWriter(sys.stdout.buffer), dispatcher)
     server_ref = server
-    if directus_service is not None:
-        directus_service.set_notification_sink(
-            lambda event: server.notify("directus.changed", event)
-        )
+    if plugin_service is not None:
 
-        async def notify_plugin_event(event: Any) -> None:
-            event_type = getattr(event, "event_type", None)
-            if not isinstance(event_type, str):
-                return
+        async def notify_plugin(event: PluginEventEnvelope) -> None:
             method = {
                 "plugin.catalog.changed": "plugin.catalogChanged",
                 "plugin.task.changed": "plugin.taskChanged",
                 "plugin.interaction.requested": "plugin.interactionRequested",
-            }.get(event_type)
+                "plugin.file.requested": "plugin.fileRequested",
+            }.get(event.event_type)
             if method is not None:
                 await server.notify(method, event)
 
-        directus_service.set_plugin_notification_sink(notify_plugin_event)
-        directus_service.set_plugin_file_notification_sink(
-            lambda event: server.notify("plugin.fileRequested", event)
-        )
-    return server, directus_service
+        plugin_service.set_notification_sink(notify_plugin)
+    return server, workspace, plugin_service, _start_realtime(server, config, client)
 
 
 async def _main() -> None:
     _configure_logging()
-    logger.info("rpc server starting (protocol=%s)", "1.0")
-    directus_service: Any | None = None
+    workspace: DocumentWorkspaceService | None = None
+    plugin_service: PluginPlatformService | None = None
+    realtime: _RealtimeRuntime | None = None
     try:
-        server, directus_service = await _build_server()
+        server, workspace, plugin_service, realtime = await _build_server()
         await server.serve()
     finally:
-        if directus_service is not None:
-            await directus_service.close()
-        # F stage: the aiosqlite loop-connection cleanup has been removed (no
-        # business SQLite path remains). Directus cleanup is handled above.
-
-
-def main() -> None:
-    # The host now drives the local Directus runtime directly (DirectusSupervisor
-    # + DirectusPackageManager + DirectusSchemaBootstrapper in C#), so the BFF no
-    # longer has a --local-directus-runner sub-mode. The packaged backend is a
-    # pure JSON-RPC BFF.
-    if sys.platform == "win32":
-        # ProactorEventLoop is the default on Windows since 3.8 and is what we
-        # want for asyncio.run; set the policy explicitly so a host process
-        # that overrides the policy does not change our behavior.
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    asyncio.run(_main())
+        if realtime is not None:
+            await realtime.close()
+        if plugin_service is not None:
+            await plugin_service.close()
+        if workspace is not None:
+            workspace.close()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(_main())

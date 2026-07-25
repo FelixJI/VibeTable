@@ -52,8 +52,6 @@ public sealed class WebMessageRouter
     private static readonly HashSet<string> WebRequestWhitelist = new(StringComparer.Ordinal)
     {
         "app.ready",
-        "host.firstRunSubmitted",
-        "host.loginSubmitted",
         "host.startupRetryRequested",
         "host.startupCancelRequested",
         "database.openRequested",
@@ -69,6 +67,9 @@ public sealed class WebMessageRouter
         // B2 paste preview + apply requests.
         "table.previewPasteRequested",
         "table.applyPasteRequested",
+        "data.importSourceRequested",
+        "data.exportTargetRequested",
+        "dailyQuote.fetch",
         // G1 history query + two-phase safe restore.
         "history.queryRequested",
         "history.previewRestoreRequested",
@@ -78,12 +79,9 @@ public sealed class WebMessageRouter
         "tableAdmin.deleteRequested",
         "identifierMappings.listRequested",
         "identifierMappings.updateAliasesRequested",
-        "identifierMappings.importRequested",
         "identifierMappings.reconcileRequested",
-        "identifierMappings.deleteRequested",
-        "identifierMappings.purgeRequested",
         // Native dashboards. Each entry maps to one typed use case; there is
-        // deliberately no generic directus/rpc invocation message.
+        // deliberately no generic provider/rpc invocation message.
         "dashboard.listRequested",
         "dashboard.readRequested",
         "dashboard.manifestRequested",
@@ -100,19 +98,23 @@ public sealed class WebMessageRouter
         "document.revealRequested",
         "document.historyRequested",
         "document.relinkRequested",
-        // Flow-first plugin platform. Each entry is a complete use case; no
+        // Native-file attachment actions. File paths arrive only as WebView2
+        // AdditionalObjects and are never accepted in renderer JSON.
+        "file.uploadRequested",
+        "file.replaceRequested",
+        "file.removeRequested",
+        "file.previewRequested",
+        "file.downloadRequested",
+        // Local-worker plugin platform. Each entry is a complete use case; no
         // generic rpc.invoke bridge is accepted.
         "plugin.catalog.list",
         "plugin.audit.list",
         "plugin.cleanup.listPending",
         "plugin.install.inspect",
         "plugin.install.commit",
-        "plugin.externalFlow.listCandidates",
-        "plugin.externalFlow.bind",
         "plugin.lifecycle.setEnabled",
         "plugin.lifecycle.upgrade",
         "plugin.lifecycle.rollback",
-        "plugin.lifecycle.resolveDrift",
         "plugin.lifecycle.uninstall",
         "plugin.action.describe",
         "plugin.action.start",
@@ -120,7 +122,7 @@ public sealed class WebMessageRouter
         "plugin.task.cancel",
         "plugin.task.get",
         "plugin.surface.event",
-        // Directus admin: open the embedded Data Studio in this webview.
+        // Open the embedded data administration surface in this webview.
         "admin.openRequested",
     };
 
@@ -143,11 +145,15 @@ public sealed class WebMessageRouter
         "table.editRejected",
         "table.rowsInserted",
         "table.rowsDeleted",
-        // B4 permission-filtered Directus Realtime invalidation.
-        "directus.changed",
+        // Provider-neutral, permission-filtered realtime invalidation.
+        "data.changed",
+        "task.changed",
         // B2 paste preview + apply outcomes.
         "table.pastePreviewReady",
         "table.pasteApplied",
+        "data.importSourceRequested",
+        "data.exportTargetRequested",
+        "dailyQuote.fetch",
         // G1 history query + two-phase safe restore outcomes.
         "history.pageLoaded",
         "history.restorePreviewReady",
@@ -166,6 +172,10 @@ public sealed class WebMessageRouter
         "document.actionCompleted",
         "document.operationFailed",
         "document.workspaceChanged",
+        // Correlated native attachment action acknowledgements.
+        "file.uploadRequested",
+        "file.replaceRequested",
+        "file.removeRequested",
         // Versioned plugin domain events and local surface messages.
         "plugin.catalog.changed",
         "plugin.task.changed",
@@ -177,12 +187,9 @@ public sealed class WebMessageRouter
         "plugin.cleanup.listPending",
         "plugin.install.inspect",
         "plugin.install.commit",
-        "plugin.externalFlow.listCandidates",
-        "plugin.externalFlow.bind",
         "plugin.lifecycle.setEnabled",
         "plugin.lifecycle.upgrade",
         "plugin.lifecycle.rollback",
-        "plugin.lifecycle.resolveDrift",
         "plugin.lifecycle.uninstall",
         "plugin.action.describe",
         "plugin.action.start",
@@ -194,6 +201,8 @@ public sealed class WebMessageRouter
 
     static WebMessageRouter()
     {
+        WebRequestWhitelist.UnionWith(ProductDataRpcRegistry.RequestTypes);
+        HostNotificationWhitelist.UnionWith(ProductDataRpcRegistry.RequestTypes);
         // Correlated relation/Lookup responses reuse the closed request type.
         // The endpoint names are registered once together with their payload
         // validator and typed gateway binding.
@@ -293,13 +302,7 @@ public sealed class WebMessageRouter
                 ? payloadEl.Clone()
                 : default;
 
-            // Startup submissions may contain a password. The parsed payload
-            // is needed only for immediate host handling; never retain the raw
-            // JSON copy on the routed request.
-            string retainedRaw = type is "host.firstRunSubmitted" or "host.loginSubmitted"
-                ? string.Empty
-                : raw;
-            _dispatch(new RoutedWebRequest(type, requestId, payload, retainedRaw));
+            _dispatch(new RoutedWebRequest(type, requestId, payload, raw));
             return null;
         }
     }

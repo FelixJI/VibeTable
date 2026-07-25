@@ -26,18 +26,12 @@ public interface IPluginRpcGateway : IDisposable
         PluginInspectInstallParams request, CancellationToken token);
     Task<PluginRuntimeSnapshot> CommitInstallAsync(
         PluginCommitInstallParams request, CancellationToken token);
-    Task<PluginRuntimeExternalFlowCandidate[]> ListExternalFlowCandidatesAsync(
-        PluginListExternalFlowCandidatesParams request, CancellationToken token);
-    Task<PluginRuntimeFlowBindingSnapshot> BindExternalFlowAsync(
-        PluginBindExternalFlowParams request, CancellationToken token);
     Task<PluginRuntimeSnapshot> SetEnabledAsync(
         PluginSetEnabledParams request, CancellationToken token);
     Task<PluginRuntimeSnapshot> UpgradeAsync(
         PluginUpgradeParams request, CancellationToken token);
     Task<PluginRuntimeSnapshot> RollbackAsync(
         PluginRollbackParams request, CancellationToken token);
-    Task<PluginRuntimeSnapshot> ResolveDriftAsync(
-        PluginResolveDriftParams request, CancellationToken token);
     Task<PluginRuntimeUninstallResult> UninstallAsync(
         PluginUninstallParams request, CancellationToken token);
     Task<PluginRuntimeActionAvailability> DescribeActionAsync(

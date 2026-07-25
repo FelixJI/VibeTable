@@ -69,7 +69,9 @@ function loadQuoteSource(): DailyQuoteSource {
   if (stored === "hitokoto" || stored === "jinrishici" || stored === "quotable" || stored === "builtin") {
     return stored;
   }
-  return getLocale() === "en-US" ? "quotable" : "hitokoto";
+  // A fresh/offline-first workspace must not contact a third-party service
+  // before the user explicitly opts into an online quote source.
+  return "builtin";
 }
 
 function loadQuoteStyle(source: DailyQuoteSource): DailyQuoteStyle {

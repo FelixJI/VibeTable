@@ -168,7 +168,351 @@ public sealed class DocumentWorkspaceHostServiceTests
     }
 
     [TestMethod]
-    public async Task DirectusPathMetadata_CannotRedirectLocalCapability()
+    public async Task ListAsync_PublishesReachableLocalRevisionsAfterIndexedHead()
+    {
+        using var fixture = new DocumentFixture();
+        var json = new AtomicJsonStore();
+        new RevisionStore(fixture.BackupRoot, json).Write(new RevisionManifest(
+            RevisionManifest.CurrentFormatVersion,
+            "rev-2",
+            "doc-1",
+            "scheme-1",
+            ParentRevisionId: "rev-1",
+            SourceRevisionId: null,
+            RestoredFromRevisionId: null,
+            Sequence: 2,
+            VersionLabel: "V2",
+            Kind: RevisionKind.Formal,
+            ContentHash: "b".PadLeft(64, 'b'),
+            Size: 9,
+            MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            WorkingRelativePath: "contracts/report.docx",
+            CreatedAt: "2026-07-20T12:00:00Z",
+            CreatedBy: "local-user",
+            DeviceId: "device-1",
+            Comment: "version two"));
+        new RefStore(fixture.BackupRoot, json).UpdateHead(
+            "doc-1",
+            "scheme-1",
+            "rev-1",
+            "rev-2",
+            "2026-07-20T12:00:00Z");
+
+        await fixture.Service.ListAsync("orders", "42", CancellationToken.None);
+
+        var request = fixture.Gateway.PublishRequests.Single();
+        Assert.AreEqual(1, request.Revisions.Count);
+        Assert.AreEqual("rev-2", request.Revisions[0].RevisionId);
+        Assert.AreEqual("rev-1", request.Revisions[0].ParentRevisionId);
+        Assert.AreEqual("formal", request.Revisions[0].Kind);
+        Assert.AreEqual("2026-07-20T12:00:00Z", request.Revisions[0].CreatedAt);
+        Assert.IsNotNull(request.HeadAdvance);
+        Assert.AreEqual("rev-1", request.HeadAdvance.ExpectedHeadRevisionId);
+        Assert.AreEqual("rev-2", request.HeadAdvance.NewHeadRevisionId);
+        Assert.IsTrue(request.IdempotencyKey.StartsWith(
+            "workspace-",
+            StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ListAsync_PublishFailureKeepsDurableOutboxForRetry()
+    {
+        using var fixture = new DocumentFixture();
+        var json = new AtomicJsonStore();
+        var revision = new RevisionManifest(
+            RevisionManifest.CurrentFormatVersion,
+            "rev-2",
+            "doc-1",
+            "scheme-1",
+            ParentRevisionId: "rev-1",
+            SourceRevisionId: null,
+            RestoredFromRevisionId: null,
+            Sequence: 2,
+            VersionLabel: "V2",
+            Kind: RevisionKind.Formal,
+            ContentHash: new string('c', 64),
+            Size: 9,
+            MimeType: "application/octet-stream",
+            WorkingRelativePath: "contracts/report.docx",
+            CreatedAt: "2026-07-20T12:00:00Z",
+            CreatedBy: null,
+            DeviceId: null,
+            Comment: null);
+        new RevisionStore(fixture.BackupRoot, json).Write(revision);
+        new RefStore(fixture.BackupRoot, json).UpdateHead(
+            "doc-1",
+            "scheme-1",
+            "rev-1",
+            "rev-2",
+            "2026-07-20T12:00:00Z");
+        var outbox = new RevisionPublishOutboxStore(fixture.BackupRoot, json);
+        outbox.Enqueue(revision);
+        fixture.Gateway.PublishException = new IOException("offline");
+
+        var payload = await fixture.Service.ListAsync(
+            "orders",
+            "42",
+            CancellationToken.None);
+
+        Assert.AreEqual(1, payload.Entries.Count);
+        Assert.AreEqual(1, outbox.ListByDocument("doc-1").Count);
+
+        fixture.Gateway.PublishException = null;
+        await fixture.Service.ListAsync("orders", "42", CancellationToken.None);
+        Assert.AreEqual(0, outbox.ListByDocument("doc-1").Count);
+    }
+
+    [TestMethod]
+    public async Task ListAsync_PublishesOutboxOnlyRevisionWithoutAdvancingHead()
+    {
+        using var fixture = new DocumentFixture();
+        var json = new AtomicJsonStore();
+        var orphan = new RevisionManifest(
+            RevisionManifest.CurrentFormatVersion,
+            "orphan-rev-2",
+            "doc-1",
+            "scheme-1",
+            ParentRevisionId: "rev-1",
+            SourceRevisionId: null,
+            RestoredFromRevisionId: null,
+            Sequence: 2,
+            VersionLabel: "conflict/V2",
+            Kind: RevisionKind.Formal,
+            ContentHash: new string('d', 64),
+            Size: 9,
+            MimeType: "application/octet-stream",
+            WorkingRelativePath: "contracts/report.docx",
+            CreatedAt: "2026-07-20T12:30:00Z",
+            CreatedBy: null,
+            DeviceId: null,
+            Comment: "preserved fork");
+        new RevisionStore(fixture.BackupRoot, json).Write(orphan);
+        var outbox = new RevisionPublishOutboxStore(fixture.BackupRoot, json);
+        outbox.Enqueue(orphan);
+
+        await fixture.Service.ListAsync("orders", "42", CancellationToken.None);
+
+        var request = fixture.Gateway.PublishRequests.Single();
+        Assert.AreEqual("orphan-rev-2", request.Revisions.Single().RevisionId);
+        Assert.IsNull(request.HeadAdvance);
+        Assert.AreEqual(0, outbox.ListByDocument("doc-1").Count);
+    }
+
+    [TestMethod]
+    public async Task ListAsync_ChunksMoreThanOneHundredRevisionsAndAdvancesHeadOnce()
+    {
+        using var fixture = new DocumentFixture();
+        var json = new AtomicJsonStore();
+        var revisions = new RevisionStore(fixture.BackupRoot, json);
+        var outbox = new RevisionPublishOutboxStore(fixture.BackupRoot, json);
+        string parent = "rev-1";
+        for (int sequence = 2; sequence <= 102; sequence++)
+        {
+            string revisionId = $"rev-{sequence}";
+            var revision = new RevisionManifest(
+                RevisionManifest.CurrentFormatVersion,
+                revisionId,
+                "doc-1",
+                "scheme-1",
+                ParentRevisionId: parent,
+                SourceRevisionId: null,
+                RestoredFromRevisionId: null,
+                Sequence: sequence,
+                VersionLabel: $"V{sequence}",
+                Kind: RevisionKind.Formal,
+                ContentHash: sequence.ToString("x64"),
+                Size: sequence,
+                MimeType: "application/octet-stream",
+                WorkingRelativePath: "contracts/report.docx",
+                CreatedAt: $"2026-07-20T12:{sequence % 60:00}:00Z",
+                CreatedBy: null,
+                DeviceId: null,
+                Comment: null);
+            revisions.Write(revision);
+            outbox.Enqueue(revision);
+            parent = revisionId;
+        }
+        new RefStore(fixture.BackupRoot, json).UpdateHead(
+            "doc-1",
+            "scheme-1",
+            "rev-1",
+            "rev-102",
+            "2026-07-20T13:00:00Z");
+
+        await fixture.Service.ListAsync("orders", "42", CancellationToken.None);
+
+        Assert.AreEqual(2, fixture.Gateway.PublishRequests.Count);
+        Assert.AreEqual(100, fixture.Gateway.PublishRequests[0].Revisions.Count);
+        Assert.IsNull(fixture.Gateway.PublishRequests[0].HeadAdvance);
+        Assert.AreEqual(1, fixture.Gateway.PublishRequests[1].Revisions.Count);
+        Assert.IsNotNull(fixture.Gateway.PublishRequests[1].HeadAdvance);
+        Assert.AreEqual(
+            "rev-102",
+            fixture.Gateway.PublishRequests[1].HeadAdvance!.NewHeadRevisionId);
+        Assert.AreEqual(0, outbox.ListByDocument("doc-1").Count);
+    }
+
+    [TestMethod]
+    public async Task ListAsync_EmptyPublishReceiptKeepsDurableOutbox()
+    {
+        using var fixture = new DocumentFixture();
+        var json = new AtomicJsonStore();
+        var revision = CreatePendingRevision(
+            fixture,
+            json,
+            "rev-2",
+            "rev-1",
+            2);
+        var outbox = new RevisionPublishOutboxStore(fixture.BackupRoot, json);
+        outbox.Enqueue(revision);
+        fixture.Gateway.PublishResponder = (_, _) =>
+            new PublishIndexBatchResult([], []);
+
+        await fixture.Service.ListAsync("orders", "42", CancellationToken.None);
+
+        Assert.AreEqual(1, outbox.ListByDocument("doc-1").Count);
+    }
+
+    [TestMethod]
+    public async Task ListAsync_DuplicatePublishReceiptKeepsDurableOutbox()
+    {
+        using var fixture = new DocumentFixture();
+        var json = new AtomicJsonStore();
+        var revision = CreatePendingRevision(
+            fixture,
+            json,
+            "rev-2",
+            "rev-1",
+            2);
+        var outbox = new RevisionPublishOutboxStore(fixture.BackupRoot, json);
+        outbox.Enqueue(revision);
+        fixture.Gateway.PublishResponder = (_, _) =>
+            new PublishIndexBatchResult(
+                [
+                    new PublishResult("rev-2", "created"),
+                    new PublishResult("rev-2", "unchanged"),
+                ],
+                []);
+
+        await fixture.Service.ListAsync("orders", "42", CancellationToken.None);
+
+        Assert.AreEqual(1, outbox.ListByDocument("doc-1").Count);
+    }
+
+    [TestMethod]
+    public async Task ListAsync_ImmutableConflictIsDurablyIsolatedAndNotRetried()
+    {
+        using var fixture = new DocumentFixture();
+        var json = new AtomicJsonStore();
+        var created = CreatePendingRevision(
+            fixture,
+            json,
+            "outbox-created",
+            "rev-1",
+            2);
+        var conflicted = CreatePendingRevision(
+            fixture,
+            json,
+            "outbox-conflict",
+            "rev-1",
+            2);
+        var outbox = new RevisionPublishOutboxStore(fixture.BackupRoot, json);
+        outbox.Enqueue(created);
+        outbox.Enqueue(conflicted);
+        fixture.Gateway.PublishResponder = (request, _) =>
+            new PublishIndexBatchResult(
+                request.Revisions.Select(revision =>
+                    new PublishResult(
+                        revision.RevisionId,
+                        revision.RevisionId == conflicted.RevisionId
+                            ? "conflict"
+                            : "created"))
+                    .ToList(),
+                [conflicted.RevisionId]);
+
+        await fixture.Service.ListAsync("orders", "42", CancellationToken.None);
+        int requestCountAfterConflict = fixture.Gateway.PublishRequests.Count;
+        await fixture.Service.ListAsync("orders", "42", CancellationToken.None);
+
+        Assert.AreEqual(0, outbox.ListByDocument("doc-1").Count);
+        var issues = outbox.ListConflictedByDocument("doc-1");
+        Assert.AreEqual(1, issues.Count);
+        Assert.AreEqual(conflicted.RevisionId, issues[0].Revision.RevisionId);
+        Assert.AreEqual("conflicted", issues[0].Status);
+        Assert.AreEqual(requestCountAfterConflict, fixture.Gateway.PublishRequests.Count);
+    }
+
+    [TestMethod]
+    public async Task ListAsync_SecondBatchFailureRetriesWithSameIdempotencyKeys()
+    {
+        using var fixture = new DocumentFixture();
+        var json = new AtomicJsonStore();
+        var outbox = new RevisionPublishOutboxStore(fixture.BackupRoot, json);
+        string parent = "rev-1";
+        for (int sequence = 2; sequence <= 102; sequence++)
+        {
+            var revision = CreatePendingRevision(
+                fixture,
+                json,
+                $"rev-{sequence}",
+                parent,
+                sequence);
+            outbox.Enqueue(revision);
+            parent = revision.RevisionId;
+        }
+        new RefStore(fixture.BackupRoot, json).UpdateHead(
+            "doc-1",
+            "scheme-1",
+            "rev-1",
+            "rev-102",
+            "2026-07-20T13:00:00Z");
+        fixture.Gateway.PublishFailure = (_, call) =>
+            call == 2 ? new IOException("second batch offline") : null;
+
+        await fixture.Service.ListAsync("orders", "42", CancellationToken.None);
+        Assert.AreEqual(2, fixture.Gateway.PublishRequests.Count);
+        Assert.AreEqual(1, outbox.ListByDocument("doc-1").Count);
+
+        await fixture.Service.ListAsync("orders", "42", CancellationToken.None);
+
+        Assert.AreEqual(4, fixture.Gateway.PublishRequests.Count);
+        Assert.AreEqual(
+            fixture.Gateway.PublishRequests[0].IdempotencyKey,
+            fixture.Gateway.PublishRequests[2].IdempotencyKey);
+        Assert.AreEqual(
+            fixture.Gateway.PublishRequests[1].IdempotencyKey,
+            fixture.Gateway.PublishRequests[3].IdempotencyKey);
+        Assert.AreEqual(0, outbox.ListByDocument("doc-1").Count);
+    }
+
+    [TestMethod]
+    public async Task ListAsync_ResponseLostRetriesWithSameIdempotencyKey()
+    {
+        using var fixture = new DocumentFixture();
+        var json = new AtomicJsonStore();
+        var revision = CreatePendingRevision(
+            fixture,
+            json,
+            "rev-2",
+            "rev-1",
+            2);
+        var outbox = new RevisionPublishOutboxStore(fixture.BackupRoot, json);
+        outbox.Enqueue(revision);
+        fixture.Gateway.PublishFailure = (_, call) =>
+            call == 1 ? new IOException("response lost") : null;
+
+        await fixture.Service.ListAsync("orders", "42", CancellationToken.None);
+        await fixture.Service.ListAsync("orders", "42", CancellationToken.None);
+
+        Assert.AreEqual(2, fixture.Gateway.PublishRequests.Count);
+        Assert.AreEqual(
+            fixture.Gateway.PublishRequests[0].IdempotencyKey,
+            fixture.Gateway.PublishRequests[1].IdempotencyKey);
+        Assert.AreEqual(0, outbox.ListByDocument("doc-1").Count);
+    }
+
+    [TestMethod]
+    public async Task ProjectedPathMetadata_CannotRedirectLocalCapability()
     {
         using var fixture = new DocumentFixture(remoteFolder: ".backup/objects");
         var payload = await fixture.Service.ListAsync(
@@ -719,6 +1063,36 @@ public sealed class DocumentWorkspaceHostServiceTests
             }
         }
     }
+
+    private static RevisionManifest CreatePendingRevision(
+        DocumentFixture fixture,
+        AtomicJsonStore json,
+        string revisionId,
+        string parentRevisionId,
+        int sequence)
+    {
+        var revision = new RevisionManifest(
+            RevisionManifest.CurrentFormatVersion,
+            revisionId,
+            "doc-1",
+            "scheme-1",
+            parentRevisionId,
+            SourceRevisionId: null,
+            RestoredFromRevisionId: null,
+            Sequence: sequence,
+            VersionLabel: $"V{sequence}",
+            Kind: RevisionKind.Formal,
+            ContentHash: sequence.ToString("x64"),
+            Size: sequence,
+            MimeType: "application/octet-stream",
+            WorkingRelativePath: "contracts/report.docx",
+            CreatedAt: $"2026-07-20T12:{sequence % 60:00}:00Z",
+            CreatedBy: null,
+            DeviceId: null,
+            Comment: null);
+        new RevisionStore(fixture.BackupRoot, json).Write(revision);
+        return revision;
+    }
 }
 
 internal sealed class FakeDocumentGateway : IDocumentWorkspaceRpcGateway
@@ -726,7 +1100,11 @@ internal sealed class FakeDocumentGateway : IDocumentWorkspaceRpcGateway
     private readonly DocumentSummary _document;
 
     public List<RegisterDocumentParams> RegisterRequests { get; } = [];
+    public List<PublishIndexBatchParams> PublishRequests { get; } = [];
     public Exception? RegisterException { get; set; }
+    public Exception? PublishException { get; set; }
+    public Func<PublishIndexBatchParams, int, Exception?>? PublishFailure { get; set; }
+    public Func<PublishIndexBatchParams, int, PublishIndexBatchResult>? PublishResponder { get; set; }
 
     public FakeDocumentGateway(
         string? linkId = "link-1",
@@ -775,6 +1153,25 @@ internal sealed class FakeDocumentGateway : IDocumentWorkspaceRpcGateway
             request.DocumentId,
             "created",
             request.ItemCollection is null ? null : "link-imported"));
+    }
+
+    public Task<PublishIndexBatchResult> PublishIndexBatchAsync(
+        PublishIndexBatchParams request,
+        CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        PublishRequests.Add(request);
+        if (PublishException is not null) throw PublishException;
+        int call = PublishRequests.Count;
+        Exception? failure = PublishFailure?.Invoke(request, call);
+        if (failure is not null) throw failure;
+        if (PublishResponder is not null)
+            return Task.FromResult(PublishResponder(request, call));
+        return Task.FromResult(new PublishIndexBatchResult(
+            request.Revisions
+                .Select(revision => new PublishResult(revision.RevisionId, "created"))
+                .ToList(),
+            []));
     }
 
     public Task UnlinkAsync(string linkId, CancellationToken token)

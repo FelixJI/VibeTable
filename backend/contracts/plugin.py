@@ -1,4 +1,4 @@
-"""Versioned contracts for the Flow-first plugin platform."""
+"""Versioned contracts for local-worker plugins."""
 
 from __future__ import annotations
 
@@ -14,8 +14,6 @@ def _camel(value: str) -> str:
 
 
 class PluginContract(BaseModel):
-    """Strict camel-case wire model shared by plugin use-case boundaries."""
-
     model_config = ConfigDict(
         alias_generator=_camel,
         populate_by_name=True,
@@ -25,39 +23,28 @@ class PluginContract(BaseModel):
 
 PluginSourceType = Literal["package", "local-folder"]
 PluginStatus = Literal["disabled", "enabled", "error"]
-FlowOwnership = Literal["managed", "external"]
-FlowTrigger = Literal["manual", "webhook", "schedule", "event"]
 PluginRisk = Literal["read", "write", "destructive"]
-FlowHealth = Literal["healthy", "missing", "incompatible", "drifted"]
-InteractionDecision = Literal["approved", "rejected"]
-PluginMode = Literal["flow", "local", "hybrid"]
+PluginMode = Literal["local"]
 PluginInvocation = Literal["manual", "webhook"]
+InteractionDecision = Literal["approved", "rejected"]
 
 
 class PluginAction(PluginContract):
     action_id: str = Field(min_length=1, max_length=128)
     display_name: dict[str, str] = Field(default_factory=dict)
     description: dict[str, str] = Field(default_factory=dict)
-    mode: PluginMode
+    mode: PluginMode = "local"
     risk: PluginRisk
     invocation: PluginInvocation = "manual"
     placements: list[str] = Field(default_factory=list)
     requires: dict[str, Any] = Field(default_factory=dict)
-    entry_flow: str | None = None
-    worker_entry: str | None = None
+    worker_entry: str = Field(min_length=1)
     form_schema: str | None = None
     input_schema: str | None = None
     output_schema: str | None = None
 
 
 class PluginManifest(PluginContract):
-    """Installed manifest snapshot.
-
-    Rich action/Flow fields are introduced through subsequent vertical slices;
-    the identity fields are already strict because they define the project-level
-    single-instance key.
-    """
-
     schema_id: Literal["vibetable.plugin-manifest.v1"] = Field(
         default="vibetable.plugin-manifest.v1", alias="$schema"
     )
@@ -68,27 +55,10 @@ class PluginManifest(PluginContract):
     compatibility: dict[str, Any] = Field(default_factory=dict)
     permissions: dict[str, Any] = Field(default_factory=dict)
     actions: list[PluginAction] = Field(default_factory=list)
-    flows: list[dict[str, Any]] = Field(default_factory=list)
     ui: dict[str, Any] = Field(default_factory=dict)
 
 
-class FlowRequirement(PluginContract):
-    """Logical Flow requirement declared by a package manifest."""
-
-    logical_flow_id: str = Field(min_length=1, max_length=128)
-    ownership: FlowOwnership
-    trigger: FlowTrigger
-    risk: PluginRisk
-    contract_version: str = Field(min_length=1, max_length=64)
-    requires_operations: list[str] = Field(default_factory=list)
-    input_schema: dict[str, Any] = Field(default_factory=dict)
-    output_schema: dict[str, Any] = Field(default_factory=dict)
-    definition: dict[str, Any] | None = None
-
-
 class InstallPlan(PluginContract):
-    """Immutable installation preview approved by the host."""
-
     plan_id: str = Field(min_length=1, max_length=128)
     project_key: str = Field(min_length=1, max_length=2048)
     project_revision: str = Field(min_length=1, max_length=128)
@@ -96,13 +66,10 @@ class InstallPlan(PluginContract):
     source_location: str = Field(min_length=1, max_length=4096)
     package_hash: str = Field(min_length=1, max_length=128)
     manifest: PluginManifest
-    flow_requirements: list[FlowRequirement] = Field(default_factory=list)
     schemas: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class PluginSnapshot(PluginContract):
-    """Current project-local plugin instance returned by the Registry."""
-
     project_key: str
     plugin_id: str
     version: str
@@ -112,8 +79,6 @@ class PluginSnapshot(PluginContract):
     development_source_location: str | None = None
     source_changed: bool = False
     manifest: PluginManifest
-    flow_requirements: list[FlowRequirement] = Field(default_factory=list)
-    flow_bindings: list[FlowBindingSnapshot] = Field(default_factory=list)
     schemas: dict[str, dict[str, Any]] = Field(default_factory=dict)
     status: PluginStatus
     disabled_reason: str | None = None
@@ -122,63 +87,21 @@ class PluginSnapshot(PluginContract):
 
 
 class PluginPackageRevision(PluginContract):
-    """One locally retained, immutable package revision."""
-
     project_key: str
     plugin_id: str
     version: str
     package_hash: str
     local_path: str
     manifest: PluginManifest
-    flow_bindings: list[FlowBindingSnapshot] = Field(default_factory=list)
     state: Literal["current", "rollback", "retired"]
 
 
 class PluginPrivateSetting(PluginContract):
-    """Plugin-private value with optimistic concurrency metadata."""
-
     project_key: str
     plugin_id: str
     setting_key: str
     value: Any
     revision: int = Field(ge=1)
-
-
-class ExternalFlowAttestation(PluginContract):
-    """User acknowledgement for facts Directus metadata cannot prove."""
-
-    accepts_unknown_side_effects: bool = False
-
-
-class FlowBindingSnapshot(PluginContract):
-    """Project mapping from package logical Flow id to Directus UUID."""
-
-    project_key: str
-    plugin_id: str
-    logical_flow_id: str
-    ownership: FlowOwnership
-    directus_flow_uuid: str
-    rollback_flow_uuid: str | None = None
-    rollback_contract_version: str | None = None
-    rollback_definition_hash: str | None = None
-    trigger_type: FlowTrigger
-    contract_version: str
-    installed_definition_hash: str | None = None
-    observed_definition_hash: str
-    revision: int = Field(ge=1)
-    health: FlowHealth
-    drift_status: Literal["clean", "drifted", "not-applicable"]
-    last_error: str | None = None
-
-
-class ExternalFlowCandidate(PluginContract):
-    directus_flow_uuid: str
-    name: str
-    trigger_type: FlowTrigger
-    status: Literal["active", "inactive"]
-    operation_keys: list[str] = Field(default_factory=list)
-    compatible: bool
-    reasons: list[str] = Field(default_factory=list)
 
 
 class ConfirmationPreview(PluginContract):
@@ -289,7 +212,7 @@ class PluginSafeError(PluginContract):
     contract: Literal["vibetable.plugin-error.v1"] = "vibetable.plugin-error.v1"
     code: str
     message: str
-    recoverability: Literal["retry", "rebind", "reconfigure", "reinstall", "none"]
+    recoverability: Literal["retry", "reconfigure", "reinstall", "none"]
     plugin_id: str | None = None
     action_id: str | None = None
     run_id: str | None = None
@@ -350,12 +273,7 @@ class PluginAuditEvent(PluginContract):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
-class FlowRemovalReport(PluginContract):
-    managed_flows_removed: int = 0
-    external_flows_unbound: int = 0
-
-
-class UninstallResult(FlowRemovalReport):
+class UninstallResult(PluginContract):
     uninstalled: bool
     private_settings_retained: bool
     cleanup_pending: bool = False
@@ -366,14 +284,6 @@ __all__ = [
     "CancelFlag",
     "CommandContext",
     "ConfirmationPreview",
-    "ExternalFlowAttestation",
-    "ExternalFlowCandidate",
-    "FlowBindingSnapshot",
-    "FlowHealth",
-    "FlowOwnership",
-    "FlowRemovalReport",
-    "FlowRequirement",
-    "FlowTrigger",
     "InstallPlan",
     "InteractionDecision",
     "InteractionResolveResult",

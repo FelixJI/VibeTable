@@ -31,29 +31,29 @@ describe("validateTableName", () => {
 describe("validateFields", () => {
   it("skips rows whose key is blank", () => {
     const result = validateFields([
-      { key: "  ", type: "string" },
-      { key: "name", type: "string" },
+      { key: "  ", type: "shortText" },
+      { key: "name", type: "shortText" },
     ]);
     expect(result.errors).toEqual([]);
-    expect(result.fields).toEqual([{ key: "name", type: "string" }]);
+    expect(result.fields).toEqual([{ key: "name", type: "shortText" }]);
   });
 
   it("rejects a control character and returns no fields for it", () => {
-    const result = validateFields([{ key: "bad\nname", type: "string" }]);
+    const result = validateFields([{ key: "bad\nname", type: "shortText" }]);
     expect(result.errors.length).toBe(1);
     expect(result.fields).toEqual([]);
   });
 
   it("trims keys", () => {
-    const result = validateFields([{ key: "  name  ", type: "string" }]);
-    expect(result.fields).toEqual([{ key: "name", type: "string" }]);
+    const result = validateFields([{ key: "  name  ", type: "shortText" }]);
+    expect(result.fields).toEqual([{ key: "name", type: "shortText" }]);
   });
 
   it("accepts Chinese, punctuation and digit-first field names", () => {
     const result = validateFields([
-      { key: "联系电话（备用）", type: "string" },
+      { key: "联系电话（备用）", type: "shortText" },
       { key: "1月金额", type: "decimal" },
-      { key: "备注/说明", type: "text" },
+      { key: "备注/说明", type: "longText" },
     ]);
     expect(result.errors).toEqual([]);
     expect(result.fields).toHaveLength(3);
@@ -61,32 +61,22 @@ describe("validateFields", () => {
 
   it("rejects NFKC/case-insensitive duplicates", () => {
     const result = validateFields([
-      { key: "Ａ", type: "string" },
-      { key: "a", type: "string" },
+      { key: "Ａ", type: "shortText" },
+      { key: "a", type: "shortText" },
     ]);
     expect(result.errors).toContain("同一张表内的字段名称不能重复。");
   });
 });
 
 describe("TABLE_FIELD_TYPES / TABLE_NAME_PATTERN", () => {
-  it("exposes all standalone Directus storage field types", () => {
+  it("exposes every normalized product data type", () => {
     expect(TABLE_FIELD_TYPES).toEqual([
-      "string",
-      "text",
-      "integer",
-      "bigInteger",
-      "float",
-      "decimal",
-      "boolean",
-      "date",
-      "dateTime",
-      "timestamp",
-      "time",
-      "json",
-      "csv",
-      "uuid",
-      "hash",
-      "binary",
+      "shortText", "longText", "richText", "boolean",
+      "integer", "float", "decimal",
+      "date", "dateTime", "autoDate", "time",
+      "email", "url", "uuid", "select", "multiSelect",
+      "json", "geoPoint", "geoJson", "file",
+      "relation", "lookup", "formula", "list", "hash", "secret",
     ]);
   });
 

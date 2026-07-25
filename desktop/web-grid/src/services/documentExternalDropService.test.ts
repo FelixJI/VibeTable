@@ -32,6 +32,7 @@ describe("document external drop transport", () => {
     const [envelope, objects] = postMessageWithAdditionalObjects.mock.calls[0]!;
     expect(envelope).toEqual({
       type: "document.externalDropRequested",
+      nativeObjects: true,
       payload: { scope: { kind: "global" } },
     });
     expect(JSON.stringify(envelope)).not.toMatch(/confidential|xlsx|private contents|path|base64/i);

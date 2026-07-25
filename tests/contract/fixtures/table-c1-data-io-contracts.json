@@ -75,7 +75,7 @@
       "chunks": [
         {"chunkIndex": 0, "createdRowKeys": ["c1", "c2"], "updatedRowKeys": [], "failedRows": [], "idempotencyKey": "imp-uuid-1-0"}
       ],
-      "directusRequestIds": ["imp-uuid-1-0"]
+      "requestIds": ["imp-uuid-1-0"]
     }
   },
   "export": {

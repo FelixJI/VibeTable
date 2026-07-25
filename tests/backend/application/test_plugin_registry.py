@@ -1,256 +1,156 @@
+"""Local-worker plugin registry tests without provider coupling."""
+
 from __future__ import annotations
 
 import pytest
 
-from backend.application.flow_binding_manager import FlowBindingManager
 from backend.application.plugin_registry import PluginRegistry, PluginRegistryError
 from backend.contracts.plugin import (
-    ExternalFlowAttestation,
-    FlowRequirement,
     InstallPlan,
     PluginManifest,
     PluginPrivateSetting,
 )
-from backend.infrastructure.directus_flow import (
-    DirectusFlowDefinition,
-    InMemoryDirectusFlowAdapter,
-)
 from backend.infrastructure.plugin_store import InMemoryPluginStore
+
+
+def _manifest(*, version: str = "1.0.0") -> PluginManifest:
+    return PluginManifest.model_validate(
+        {
+            "$schema": "vibetable.plugin-manifest.v1",
+            "pluginId": "com.example.summary",
+            "version": version,
+            "displayName": {"en": "Summary"},
+            "compatibility": {
+                "minHostVersion": "1.0.0",
+                "pluginApi": "1.x",
+            },
+            "permissions": {
+                "data": [],
+                "files": [],
+                "privateStorage": True,
+            },
+            "actions": [
+                {
+                    "actionId": "summarize",
+                    "displayName": {"en": "Summarize"},
+                    "mode": "local",
+                    "risk": "read",
+                    "workerEntry": "dist/worker.js",
+                }
+            ],
+        }
+    )
 
 
 def _plan(*, version: str = "1.0.0") -> InstallPlan:
     return InstallPlan(
         plan_id=f"plan-{version}",
         project_key="local:default",
-        project_revision="project-r1",
+        project_revision="project-1",
         source_type="package",
-        source_location="normalize.vtplugin",
+        source_location=f"summary-{version}.vtplugin",
         package_hash=f"sha256:{version}",
-        manifest=PluginManifest(
-            plugin_id="com.example.normalize-text",
-            version=version,
-            display_name={"zh-CN": "批量文本规范化"},
-        ),
+        manifest=_manifest(version=version),
     )
 
 
 @pytest.mark.asyncio
-async def test_install_keeps_one_current_plugin_instance_per_project() -> None:
-    registry = PluginRegistry(store=InMemoryPluginStore())
+async def test_install_keeps_one_current_local_plugin_per_project() -> None:
+    store = InMemoryPluginStore()
+    registry = PluginRegistry(store=store)
 
     installed = await registry.install(_plan())
 
-    assert installed.project_key == "local:default"
-    assert installed.plugin_id == "com.example.normalize-text"
-    assert installed.version == "1.0.0"
-    assert installed.status == "enabled"
-
-    with pytest.raises(PluginRegistryError) as error:
-        await registry.install(_plan(version="2.0.0"))
-
-    assert error.value.code == "plugin_already_installed"
-
-
-@pytest.mark.asyncio
-async def test_plugin_is_disabled_as_a_whole_until_every_required_flow_is_bound() -> None:
-    store = InMemoryPluginStore()
-    directus = InMemoryDirectusFlowAdapter(
-        flows=[
-            DirectusFlowDefinition(
-                flow_uuid="02b83af8-d220-4719-9b56-5f01490866a7",
-                trigger="manual",
-                status="active",
-                operation_keys=(),
-                definition={},
-            )
-        ]
-    )
-    bindings = FlowBindingManager(store=store, directus=directus)
-    registry = PluginRegistry(store=store, bindings=bindings)
-    requirement = FlowRequirement(
-        logical_flow_id="summary",
-        ownership="external",
-        trigger="manual",
-        risk="read",
-        contract_version="1.0",
-    )
-    plan = _plan().model_copy(update={"flow_requirements": [requirement]})
-
-    installed = await registry.install(plan)
-
     assert installed.status == "disabled"
-    assert installed.disabled_reason == "flow_unbound:summary"
+    assert installed.disabled_reason == "disabled_by_user"
+    assert installed.revision == 1
+    assert registry.list("local:default") == [installed]
+    with pytest.raises(PluginRegistryError) as duplicate:
+        await registry.install(_plan())
+    assert duplicate.value.code == "plugin_already_installed"
 
-    await bindings.bind_external(
-        project_key=plan.project_key,
-        plugin_id=plan.manifest.plugin_id,
-        requirement=requirement,
-        directus_uuid="02b83af8-d220-4719-9b56-5f01490866a7",
-        attestation=ExternalFlowAttestation(),
-    )
+
+@pytest.mark.asyncio
+async def test_enable_disable_and_upgrade_preserve_local_identity() -> None:
+    store = InMemoryPluginStore()
+    registry = PluginRegistry(store=store)
+    await registry.install(_plan())
+
     enabled = await registry.set_enabled(
-        project_key=plan.project_key,
-        plugin_id=plan.manifest.plugin_id,
-        enabled=True,
+        "local:default",
+        "com.example.summary",
+        True,
     )
-
     assert enabled.status == "enabled"
-    assert enabled.disabled_reason is None
+    assert enabled.revision == 2
+
+    upgraded = await registry.commit_upgrade(_plan(version="2.0.0"))
+    assert upgraded.version == "2.0.0"
+    assert upgraded.package_hash == "sha256:2.0.0"
+    assert upgraded.status == "enabled"
+    assert upgraded.revision == 3
+
+    disabled = await registry.set_enabled(
+        "local:default",
+        "com.example.summary",
+        False,
+    )
+    assert disabled.status == "disabled"
+    assert disabled.disabled_reason == "disabled_by_user"
 
 
 @pytest.mark.asyncio
-async def test_plugin_snapshot_reports_every_blocking_flow_reason() -> None:
-    store = InMemoryPluginStore()
-    registry = PluginRegistry(store=store)
-    requirements = [
-        FlowRequirement(
-            logical_flow_id=logical_id,
-            ownership="external",
-            trigger="manual",
-            risk="read",
-            contract_version="1.0",
-        )
-        for logical_id in ("summary", "export")
-    ]
-
-    installed = await registry.install(
-        _plan().model_copy(update={"flow_requirements": requirements})
-    )
-
-    assert installed.disabled_reason == "flow_unbound:summary"
-    assert installed.blocking_reasons == [
-        "flow_unbound:summary",
-        "flow_unbound:export",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_uninstall_only_unbinds_external_flow_and_retains_audit() -> None:
-    store = InMemoryPluginStore()
-    flow_uuid = "8e630ae0-ea59-4921-aafd-a7b5b5488787"
-    directus = InMemoryDirectusFlowAdapter(
-        flows=[
-            DirectusFlowDefinition(
-                flow_uuid=flow_uuid,
-                trigger="manual",
-                status="active",
-                operation_keys=(),
-                definition={"name": "User-owned"},
-            )
-        ]
-    )
-    bindings = FlowBindingManager(store=store, directus=directus)
-    registry = PluginRegistry(store=store, bindings=bindings)
-    requirement = FlowRequirement(
-        logical_flow_id="summary",
-        ownership="external",
-        trigger="manual",
-        risk="read",
-        contract_version="1.0",
-    )
-    plan = _plan().model_copy(update={"flow_requirements": [requirement]})
-    await registry.install(plan)
-    await bindings.bind_external(
-        project_key=plan.project_key,
-        plugin_id=plan.manifest.plugin_id,
-        requirement=requirement,
-        directus_uuid=flow_uuid,
-        attestation=ExternalFlowAttestation(),
-    )
-    mutations_before = list(directus.mutation_log)
-
-    result = await registry.uninstall(
-        project_key=plan.project_key,
-        plugin_id=plan.manifest.plugin_id,
-        cleanup_private_settings=False,
-    )
-
-    assert result.uninstalled is True
-    assert result.external_flows_unbound == 1
-    assert result.managed_flows_removed == 0
-    assert registry.get(plan.project_key, plan.manifest.plugin_id) is None
-    assert directus.mutation_log == mutations_before
-    assert await directus.read_flow(flow_uuid) is not None
-    audit = store.list_audit(plan.project_key, plan.manifest.plugin_id)
-    assert audit[-1].event_type == "uninstall"
-
-
-@pytest.mark.asyncio
-async def test_uninstall_can_explicitly_delete_private_settings() -> None:
-    store = InMemoryPluginStore()
-    registry = PluginRegistry(store=store)
-    plan = _plan()
-    await registry.install(plan)
-    store.save_private_setting(
-        PluginPrivateSetting(
-            project_key=plan.project_key,
-            plugin_id=plan.manifest.plugin_id,
-            setting_key="mode",
-            value="compact",
+async def test_uninstall_retains_or_removes_private_settings_explicitly() -> None:
+    for cleanup in (False, True):
+        store = InMemoryPluginStore()
+        registry = PluginRegistry(store=store)
+        await registry.install(_plan())
+        setting = PluginPrivateSetting(
+            project_key="local:default",
+            plugin_id="com.example.summary",
+            setting_key="columns",
+            value=["title"],
             revision=1,
         )
-    )
+        store.save_private_setting(setting, expected_revision=None)
 
-    result = await registry.uninstall(
-        project_key=plan.project_key,
-        plugin_id=plan.manifest.plugin_id,
-        cleanup_private_settings=True,
-    )
+        result = await registry.uninstall(
+            "local:default",
+            "com.example.summary",
+            cleanup_private_settings=cleanup,
+        )
 
-    assert result.private_settings_retained is False
-    assert store.get_private_setting(plan.project_key, plan.manifest.plugin_id, "mode") is None
+        assert result.uninstalled
+        assert result.private_settings_retained is (not cleanup)
+        assert store.get_installation(
+            "local:default",
+            "com.example.summary",
+        ) is None
+        expected = None if cleanup else setting
+        assert store.get_private_setting(
+            "local:default",
+            "com.example.summary",
+            "columns",
+        ) == expected
+        assert [
+            event.event_type
+            for event in store.list_audit(
+                "local:default",
+                "com.example.summary",
+            )
+        ] == ["install", "uninstall"]
 
 
 @pytest.mark.asyncio
-async def test_uninstall_is_locally_final_and_retains_cleanup_record_when_directus_is_offline() -> (
-    None
-):
-    store = InMemoryPluginStore()
-    directus = InMemoryDirectusFlowAdapter()
-    bindings = FlowBindingManager(store=store, directus=directus)
-    registry = PluginRegistry(store=store, bindings=bindings)
-    requirement = FlowRequirement(
-        logical_flow_id="managed",
-        ownership="managed",
-        trigger="manual",
-        risk="read",
-        contract_version="1.0",
-        definition={"operations": []},
-    )
-    plan = _plan().model_copy(update={"flow_requirements": [requirement]})
-    await bindings.provision_managed(
-        project_key=plan.project_key,
-        plugin_id=plan.manifest.plugin_id,
-        requirement=requirement,
-    )
-    await registry.install(plan)
-    directus.fail_on.add("delete")
+async def test_missing_plugin_operations_fail_with_stable_product_code() -> None:
+    registry = PluginRegistry(store=InMemoryPluginStore())
 
-    result = await registry.uninstall(
-        project_key=plan.project_key,
-        plugin_id=plan.manifest.plugin_id,
-        cleanup_private_settings=False,
-    )
+    with pytest.raises(PluginRegistryError) as error:
+        await registry.set_enabled(
+            "local:default",
+            "com.example.missing",
+            True,
+        )
 
-    assert result.uninstalled is True
-    assert result.cleanup_pending is True
-    assert registry.get(plan.project_key, plan.manifest.plugin_id) is None
-    assert bindings.resolve(plan.project_key, plan.manifest.plugin_id, "managed") is not None
-    assert store.list_audit(plan.project_key, plan.manifest.plugin_id)[-1].outcome == (
-        "pending-cleanup"
-    )
-
-    directus.fail_on.remove("delete")
-    retry = await registry.uninstall(
-        project_key=plan.project_key,
-        plugin_id=plan.manifest.plugin_id,
-        cleanup_private_settings=False,
-    )
-
-    assert retry.uninstalled is False
-    assert retry.cleanup_pending is False
-    assert retry.managed_flows_removed == 1
-    assert bindings.resolve(plan.project_key, plan.manifest.plugin_id, "managed") is None
-    retry_audit = store.list_audit(plan.project_key, plan.manifest.plugin_id)[-1]
-    assert retry_audit.event_type == "uninstall-cleanup-retry"
-    assert retry_audit.outcome == "succeeded"
+    assert error.value.code == "plugin_not_found"
+    assert error.value.rpc_error_data == {"code": "plugin_not_found"}

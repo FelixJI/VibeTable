@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import { NSelect } from "naive-ui";
 
 import CreateTableModal from "./CreateTableModal.vue";
 import { useUiStore } from "@/stores/uiStore";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
+import { setLocale } from "@/i18n";
 
 /**
  * CreateTableModal is pure-presentation. The store (`tableAdminStore`) owns the
@@ -39,6 +41,7 @@ describe("CreateTableModal", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
     setActivePinia(createPinia());
+    setLocale("zh-CN");
   });
 
   it("does not render the modal body when createModalOpen is false", async () => {
@@ -183,6 +186,61 @@ describe("CreateTableModal", () => {
     expect(admin.form.fields[0].name).toBe("price");
   });
 
+  it("preserves an entered field name when the field type changes", async () => {
+    const ui = useUiStore();
+    const admin = useTableAdminStore();
+    admin.openCreate();
+    ui.openCreate();
+    const wrapper = mountModal();
+    await flushPromises();
+
+    const nameInput = bodyEl("create-table-field-name-0").querySelector("input");
+    if (!nameInput) throw new Error("field-name input not rendered");
+    nameInput.value = "author";
+    nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPromises();
+
+    const originalClientId = admin.form.fields[0]!.clientId;
+    admin.updateField(0, {
+      defaultText: '"draft"',
+      minLength: 3,
+      nullable: false,
+      unique: true,
+    });
+    wrapper.findAllComponents(NSelect)[0]!.vm.$emit("update:value", "relation");
+    await flushPromises();
+
+    expect(admin.form.fields[0]).toMatchObject({
+      clientId: originalClientId,
+      name: "author",
+      type: "relation",
+      defaultText: "",
+      minLength: null,
+      nullable: true,
+      unique: false,
+    });
+    expect(nameInput.value).toBe("author");
+  });
+
+  it("updates field type labels immediately when the locale changes", async () => {
+    const ui = useUiStore();
+    const admin = useTableAdminStore();
+    admin.openCreate();
+    ui.openCreate();
+    const wrapper = mountModal();
+    await flushPromises();
+    const select = wrapper.findAllComponents(NSelect)[0]!;
+    expect(select.props("options")).toContainEqual(
+      expect.objectContaining({ value: "formula", label: "公式" }),
+    );
+
+    setLocale("en-US");
+    await flushPromises();
+    expect(select.props("options")).toContainEqual(
+      expect.objectContaining({ value: "formula", label: "Formula" }),
+    );
+  });
+
   it("explains that physical identifiers are generated and stable", async () => {
     const ui = useUiStore();
     const admin = useTableAdminStore();
@@ -192,8 +250,8 @@ describe("CreateTableModal", () => {
     await flushPromises();
     expect(bodyEl("physical-name-hint").textContent).toContain("自动生成");
     expect(bodyEl("physical-name-hint").textContent).toContain("保持不变");
-    expect(bodyEl("field-type-hint").textContent).toContain("Directus");
-    expect(bodyEl("field-type-hint").textContent).toContain("关系与别名字段");
+    expect(bodyEl("field-type-hint").textContent).toContain("产品字段");
+    expect(bodyEl("field-type-hint").textContent).toContain("服务端校验");
   });
 
   it("renders a create failure and keeps the valid form retryable", async () => {
@@ -209,5 +267,93 @@ describe("CreateTableModal", () => {
 
     expect(bodyEl("create-table-error").textContent).toContain("名称已经存在");
     expect(bodyEl("create-table-submit").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("renders decimal precision constraints and an exact field-path error", async () => {
+    const ui = useUiStore();
+    const admin = useTableAdminStore();
+    admin.openCreate();
+    admin.form.name = "订单";
+    admin.updateField(0, { name: "金额", type: "decimal", precision: 8, scale: 10 });
+    admin.fail("小数位数不能大于总精度。", "fields[0].constraints.scale");
+    ui.openCreate();
+    mountModal();
+    await flushPromises();
+
+    expect(bodyEl("field-precision-0")).toBeTruthy();
+    expect(bodyEl("field-scale-0")).toBeTruthy();
+    expect(bodyEl("field-error-0").textContent).toContain("fields[0].constraints.scale");
+  });
+
+  it("renders JSON, formula, relation, lookup and attachment configuration by type", async () => {
+    const ui = useUiStore();
+    const admin = useTableAdminStore();
+    admin.openCreate();
+    admin.updateField(0, { name: "metadata", type: "json" });
+    admin.addField("formula");
+    admin.updateField(1, { name: "total" });
+    admin.addField("relation");
+    admin.updateField(2, { name: "customer" });
+    admin.addField("lookup");
+    admin.updateField(3, { name: "customer_name" });
+    admin.addField("file");
+    admin.updateField(4, { name: "receipt" });
+    ui.openCreate();
+    mountModal();
+    await flushPromises();
+
+    expect(bodyEl("field-json-schema-0")).toBeTruthy();
+    expect(bodyEl("field-formula-source-1")).toBeTruthy();
+    expect(bodyEl("field-relation-target-2")).toBeTruthy();
+    expect(bodyEl("field-lookup-relation-3")).toBeTruthy();
+    expect(bodyEl("field-attachment-max-files-4")).toBeTruthy();
+    expect(bodyEl("field-attachment-thumbnails-4")).toBeTruthy();
+  });
+
+  it("lets the user configure a unique composite index through visible controls", async () => {
+    const ui = useUiStore();
+    const admin = useTableAdminStore();
+    admin.openCreate();
+    admin.form.name = "订单";
+    admin.updateField(0, { name: "status" });
+    admin.addField("dateTime");
+    admin.updateField(1, { name: "created_at" });
+    ui.openCreate();
+    const wrapper = mountModal();
+    await flushPromises();
+
+    await bodyEl("create-table-add-index").click();
+    await flushPromises();
+    expect(bodyFieldRowCount()).toBe(2);
+    expect(admin.form.indexes).toHaveLength(1);
+    expect(admin.localIndexErrors).toContainEqual(
+      expect.objectContaining({ path: "indexes[0].fieldIds" }),
+    );
+    expect(document.body.querySelectorAll('[data-testid="create-table-index-error-0"]'))
+      .toHaveLength(2);
+
+    const nameInput = bodyEl("create-table-index-name-0").querySelector("input");
+    if (!nameInput) throw new Error("index-name input not rendered");
+    nameInput.value = "uidx_status_created";
+    nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+    const indexFields = wrapper.findAllComponents(NSelect).find((component) =>
+      component.attributes()["data-testid"] === "create-table-index-fields-0");
+    const indexType = wrapper.findAllComponents(NSelect).find((component) =>
+      component.attributes()["data-testid"] === "create-table-index-type-0");
+    if (!indexFields || !indexType) throw new Error("index controls not rendered");
+    indexFields.vm.$emit("update:value", admin.form.fields.map((field) => field.clientId));
+    indexType.vm.$emit("update:value", "unique");
+    await flushPromises();
+
+    expect(admin.form.indexes[0]).toMatchObject({
+      name: "uidx_status_created",
+      fieldClientIds: [
+        admin.form.fields[0]!.clientId,
+        admin.form.fields[1]!.clientId,
+      ],
+      unique: true,
+    });
+    expect(admin.canSubmit).toBe(true);
   });
 });

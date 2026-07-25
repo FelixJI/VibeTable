@@ -137,7 +137,11 @@ export function useRevisionHistoryService(): {
     const collection = workspace.currentTable;
     const itemId = store.previewItemId;
     const token = store.preview?.token;
-    if (!collection || !itemId || !token || !store.canApply) return;
+    if (!store.canApply) return;
+    if (!collection || !itemId || !token) {
+      store.failRestore("恢复上下文已失效，请重新打开历史记录后再试。", "restore_context_invalid");
+      return;
+    }
     store.beginApply();
     const generation = ++applyGeneration;
     const payload: HistoryApplyRestorePayload = { collection, itemId, token };

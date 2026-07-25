@@ -10,7 +10,7 @@ function series(option: ReturnType<typeof buildDashboardChartOption>): Array<Rec
 describe("dashboard chart option adapter", () => {
   it("renders every stable measure key as a separate categorical line series", () => {
     const panel = parseWirePanel({
-      id: "p", dashboardId: "d", name: "Compare", type: "line-chart",
+      id: "p", dashboardId: "d", name: "Compare", type: "line",
       position: { x: 0, y: 0, width: 8, height: 4 }, options: {},
       query: { kind: "aggregate", collection: "orders", dimensions: ["status"], measures: [{ key: "revenue", op: "sum", field: "amount" }, { key: "orders", op: "count", field: null }] },
     });
@@ -47,7 +47,7 @@ describe("dashboard chart option adapter", () => {
 
   it("uses only stable query measure keys and keeps numeric dimensions as selections", () => {
     const panel = parseWirePanel({
-      id: "p", dashboardId: "d", name: "By year", type: "bar-chart",
+      id: "p", dashboardId: "d", name: "By year", type: "bar",
       position: { x: 0, y: 0, width: 8, height: 4 }, options: {},
       query: { kind: "aggregate", collection: "orders", dimensions: ["year"], measures: [{ key: "revenue", op: "sum", field: "amount" }] },
     });

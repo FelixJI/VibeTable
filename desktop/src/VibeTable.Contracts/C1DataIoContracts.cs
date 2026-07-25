@@ -126,7 +126,7 @@ public sealed record ApplyImportResult(
     int UpdatedCount,
     IReadOnlyList<int> FailedRows,
     IReadOnlyList<ImportChunkResult> Chunks,
-    IReadOnlyList<string> DirectusRequestIds);
+    IReadOnlyList<string> RequestIds);
 
 // --- Export ---
 
@@ -151,7 +151,7 @@ public sealed record ExportResult(
     string CapabilityHash,
     string OutputDisplayName);
 
-public sealed record GenerateTemplateParams(string Collection, string Format);
+public sealed record GenerateTemplateParams(string Collection, string GrantId, string Format);
 
 public sealed record TemplateResult(string Collection, string GrantId, string DisplayName);
 

@@ -30,10 +30,6 @@ public sealed class JsonRpcPluginGatewayTests
         await gateway.ListCatalogAsync(new("project-1"), CancellationToken.None);
         await gateway.InspectInstallAsync(new("project-1", "revision-1", "source-1"), CancellationToken.None);
         await gateway.CommitInstallAsync(new("plan-1", "revision-1"), CancellationToken.None);
-        await gateway.ListExternalFlowCandidatesAsync(
-            new("project-1", "com.acme.clean", "clean"), CancellationToken.None);
-        await gateway.BindExternalFlowAsync(
-            new("project-1", "com.acme.clean", "clean", "flow-1", false), CancellationToken.None);
         await gateway.SetEnabledAsync(new("project-1", "com.acme.clean", false), CancellationToken.None);
         await gateway.UpgradeAsync(
             new("project-1", "com.acme.clean", "upgrade-1", "revision-2"), CancellationToken.None);
@@ -60,8 +56,6 @@ public sealed class JsonRpcPluginGatewayTests
                 "plugin.listCatalog",
                 "plugin.inspectInstall",
                 "plugin.commitInstall",
-                "plugin.listExternalFlowCandidates",
-                "plugin.bindExternalFlow",
                 "plugin.setEnabled",
                 "plugin.upgrade",
                 "plugin.rollback",
@@ -80,17 +74,17 @@ public sealed class JsonRpcPluginGatewayTests
             transport.Requests[1].GetProperty("params").GetProperty("sourceLocation").GetString());
         Assert.AreEqual(
             "project-1",
-            transport.Requests[10].GetProperty("params").GetProperty("context")
+            transport.Requests[8].GetProperty("params").GetProperty("context")
                 .GetProperty("projectKey").GetString());
         Assert.IsTrue(
-            transport.Requests[10].GetProperty("params").GetProperty("input")
+            transport.Requests[8].GetProperty("params").GetProperty("input")
                 .GetProperty("trim").GetBoolean());
         Assert.AreEqual(
             "rejected",
-            transport.Requests[11].GetProperty("params").GetProperty("decision").GetString());
+            transport.Requests[9].GetProperty("params").GetProperty("decision").GetString());
         Assert.AreEqual(
             @"C:\trusted\output.txt",
-            transport.Requests[12].GetProperty("params").GetProperty("selectedPath").GetString());
+            transport.Requests[10].GetProperty("params").GetProperty("selectedPath").GetString());
     }
 
     private sealed class AutoRespondTransport : IJsonLineTransport
@@ -117,19 +111,16 @@ public sealed class JsonRpcPluginGatewayTests
             {
                 "plugin.listCatalog" => "[]",
                 "plugin.inspectInstall" =>
-                    """{"planId":"p","projectKey":"project","projectRevision":"1","sourceType":"package","sourceLocation":"package.vtplugin","packageHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","manifest":{"$schema":"vibetable.plugin-manifest.v1","pluginId":"x.test","version":"1","displayName":{},"description":{},"compatibility":{},"permissions":{},"actions":[],"flows":[],"ui":{}},"flowRequirements":[],"schemas":{}}""",
-                "plugin.listExternalFlowCandidates" => "[]",
-                "plugin.bindExternalFlow" =>
-                    """{"projectKey":"project","pluginId":"x.test","logicalFlowId":"flow","ownership":"external","directusFlowUuid":"f","rollbackFlowUuid":null,"rollbackContractVersion":null,"rollbackDefinitionHash":null,"triggerType":"manual","contractVersion":"1","installedDefinitionHash":null,"observedDefinitionHash":"hash","revision":1,"health":"healthy","driftStatus":"not-applicable","lastError":null}""",
+                    """{"planId":"p","projectKey":"project","projectRevision":"1","sourceType":"package","sourceLocation":"package.vtplugin","packageHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","manifest":{"$schema":"vibetable.plugin-manifest.v1","pluginId":"x.test","version":"1","displayName":{},"description":{},"compatibility":{},"permissions":{},"actions":[],"ui":{}},"schemas":{}}""",
                 "plugin.uninstall" =>
-                    """{"managedFlowsRemoved":0,"externalFlowsUnbound":1,"uninstalled":true,"privateSettingsRetained":true}""",
+                    """{"uninstalled":true,"privateSettingsRetained":true}""",
                 "plugin.describeAction" => """{"available":true,"reasons":[]}""",
                 "plugin.startAction" or "plugin.cancelTask" or "plugin.getTask" =>
                     """{"taskId":"t","runId":"r","pluginId":"x","pluginVersion":"1.0.0","actionId":"a","projectKey":"p","collection":null,"targetCount":0,"risk":"read","state":"queued","cancelRequested":false,"result":null,"error":null}""",
                 "plugin.resolveInteraction" => """{"status":"resolved","decision":"rejected"}""",
                 "plugin.resolveFile" => "true",
                 _ =>
-                    """{"projectKey":"project","pluginId":"x.test","version":"1","packageHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sourceType":"package","sourceLocation":"package.vtplugin","manifest":{"$schema":"vibetable.plugin-manifest.v1","pluginId":"x.test","version":"1","displayName":{},"description":{},"compatibility":{},"permissions":{},"actions":[],"flows":[],"ui":{}},"flowRequirements":[],"schemas":{},"status":"enabled","disabledReason":null,"revision":1}""",
+                    """{"projectKey":"project","pluginId":"x.test","version":"1","packageHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sourceType":"package","sourceLocation":"package.vtplugin","manifest":{"$schema":"vibetable.plugin-manifest.v1","pluginId":"x.test","version":"1","displayName":{},"description":{},"compatibility":{},"permissions":{},"actions":[],"ui":{}},"schemas":{},"status":"enabled","disabledReason":null,"revision":1}""",
             };
             using var response = JsonDocument.Parse(
                 $$"""{"jsonrpc":"2.0","id":"{{id}}","result":{{result}}}""");

@@ -1,7 +1,9 @@
+"""Security-boundary tests for the provider-neutral local plugin Worker."""
+
 from __future__ import annotations
 
+import asyncio
 import base64
-import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,21 +11,25 @@ from typing import Any
 
 import pytest
 
-from backend.adapters.directus.profile import CollectionProfile
-from backend.contracts.plugin import MutationPlan, PluginPrivateSetting
+from backend.contracts.data_profile import CollectionProfile
+from backend.contracts.plugin import PluginPrivateSetting
 from backend.infrastructure.plugin_worker import (
-    DirectusBulkMutationAdapter,
     NodePluginWorkerAdapter,
     PluginWorkerError,
 )
 
 
-class _Store:
+class FakePluginStore:
     def __init__(self, package: Path, *, permissions: dict[str, Any]) -> None:
         manifest = SimpleNamespace(
             plugin_id="com.example.safe-worker",
             permissions=permissions,
-            actions=[SimpleNamespace(action_id="safe-action", worker_entry="dist/worker.js")],
+            actions=[
+                SimpleNamespace(
+                    action_id="safe-action",
+                    worker_entry="dist/worker.js",
+                )
+            ],
         )
         self.installation = SimpleNamespace(
             plugin_id=manifest.plugin_id,
@@ -39,9 +45,6 @@ class _Store:
         )
         self.settings: dict[tuple[str, str, str], PluginPrivateSetting] = {}
 
-    def list_installations(self, project_key: str) -> list[Any]:
-        return [self.installation] if project_key == "project-a" else []
-
     def get_installation(self, project_key: str, plugin_id: str) -> Any | None:
         if (project_key, plugin_id) == (
             "project-a",
@@ -50,12 +53,22 @@ class _Store:
             return self.installation
         return None
 
-    def list_package_revisions(self, project_key: str, plugin_id: str) -> list[Any]:
-        assert (project_key, plugin_id) == ("project-a", "com.example.safe-worker")
+    def list_package_revisions(
+        self,
+        project_key: str,
+        plugin_id: str,
+    ) -> list[Any]:
+        assert (project_key, plugin_id) == (
+            "project-a",
+            "com.example.safe-worker",
+        )
         return [self.revision]
 
     def get_private_setting(
-        self, project_key: str, plugin_id: str, setting_key: str
+        self,
+        project_key: str,
+        plugin_id: str,
+        setting_key: str,
     ) -> PluginPrivateSetting | None:
         return self.settings.get((project_key, plugin_id, setting_key))
 
@@ -63,7 +76,7 @@ class _Store:
         self,
         setting: PluginPrivateSetting,
         *,
-        expected_revision: int | None = None,
+        expected_revision: int | None,
     ) -> PluginPrivateSetting:
         key = (setting.project_key, setting.plugin_id, setting.setting_key)
         current = self.settings.get(key)
@@ -72,68 +85,112 @@ class _Store:
         return setting
 
 
-class _Client:
+class FakeProductReadClient:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, Any, list[str]]] = []
 
     async def read_items_with_fields(
-        self, profile: Any, query: Any, fields: list[str]
+        self,
+        profile: Any,
+        query: Any,
+        fields: list[str],
     ) -> tuple[list[dict[str, Any]], dict[str, Any], object]:
         self.calls.append((profile, query, fields))
         return ([{"id": "1", "title": "safe"}], {}, object())
 
 
-class _Auth:
-    async def access_token(self) -> str:
-        return "secret-token"
-
-
-class _Transport:
+class DynamicSchemaClient(FakeProductReadClient):
     def __init__(self) -> None:
-        self.requests: list[dict[str, Any]] = []
+        super().__init__()
+        self.revision = 6
 
-    async def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        self.requests.append({"method": method, "path": path, **kwargs})
-        return {
-            "data": {
-                "createdRowKeys": ["1"],
-                "updatedRowKeys": ["2"],
-                "skippedRowKeys": [],
-                "conflicts": [],
+    async def describe_table(self, table_id: str) -> dict[str, Any]:
+        assert table_id == "articles"
+        self.revision += 1
+        fields = [
+            {
+                "fieldId": "fld_title",
+                "physicalName": "title",
+                "kind": "text",
+                "dataType": "text",
+                "nullable": True,
+                "constraints": [],
             }
+        ]
+        if self.revision >= 8:
+            fields.append(
+                {
+                    "fieldId": "fld_note",
+                    "physicalName": "note",
+                    "kind": "text",
+                    "dataType": "text",
+                    "nullable": True,
+                    "constraints": [],
+                }
+            )
+        return {
+            "tableId": "articles",
+            "schemaRevision": f"schema-{self.revision}",
+            "fields": fields,
         }
 
 
-class _FileAdapter:
+class HangingSchemaClient(FakeProductReadClient):
+    async def describe_table(self, table_id: str) -> dict[str, Any]:
+        assert table_id == "articles"
+        await asyncio.Future()
+        raise AssertionError("unreachable")
+
+
+class FakeFileAdapter:
     available = True
 
     def __init__(self) -> None:
         self.written: bytes | None = None
 
-    async def pick_read(self, execution: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+    async def pick_read(
+        self,
+        execution: dict[str, Any],
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
         assert execution["runId"] == "run-1"
         assert options == {"mediaTypes": ["text/plain"]}
-        return {"grantId": "read-1", "displayName": "input.txt", "mediaType": "text/plain"}
+        return {
+            "grantId": "read-1",
+            "displayName": "input.txt",
+            "mediaType": "text/plain",
+        }
 
     async def pick_write(
-        self, execution: dict[str, Any], options: dict[str, Any]
+        self,
+        execution: dict[str, Any],
+        options: dict[str, Any],
     ) -> dict[str, Any]:
         assert execution["runId"] == "run-1"
         assert options["suggestedName"] == "output.txt"
         return {"grantId": "write-1", "displayName": "output.txt"}
 
-    def read(self, execution: dict[str, Any], grant_id: str) -> dict[str, str]:
+    def read(
+        self,
+        execution: dict[str, Any],
+        grant_id: str,
+    ) -> dict[str, str]:
         assert execution["runId"] == "run-1"
         assert grant_id == "read-1"
         return {"base64": base64.b64encode(b"hello").decode("ascii")}
 
-    def write(self, execution: dict[str, Any], grant_id: str, encoded: str) -> None:
+    def write(
+        self,
+        execution: dict[str, Any],
+        grant_id: str,
+        encoded: str,
+    ) -> None:
         assert execution["runId"] == "run-1"
         assert grant_id == "write-1"
         self.written = base64.b64decode(encoded)
 
 
-class _Reporter:
+class FakeReporter:
     def __init__(self) -> None:
         self.updates: list[dict[str, Any]] = []
 
@@ -156,7 +213,7 @@ def _context() -> dict[str, Any]:
         "collection": "articles",
         "selectedKeys": [],
         "querySnapshot": None,
-        "locale": "zh-CN",
+        "locale": "en",
         "theme": "light",
         "density": "comfortable",
         "user": {},
@@ -175,12 +232,69 @@ def _execution() -> dict[str, Any]:
     }
 
 
-@pytest.mark.asyncio
-async def test_node_worker_exposes_only_scoped_read_context_and_private_storage(
-    tmp_path: Path,
-) -> None:
+def _require_node() -> None:
     if shutil.which("node") is None:
         pytest.skip("Node.js is not installed")
+
+
+@pytest.mark.asyncio
+async def test_dynamic_worker_profile_refreshes_after_schema_change() -> None:
+    client = DynamicSchemaClient()
+    adapter = NodePluginWorkerAdapter(
+        store=SimpleNamespace(),
+        profiles={},
+        client=client,
+    )
+
+    first = await adapter._profile("articles")
+    second = await adapter._profile("articles")
+
+    assert first.schema_revision == "schema-7"
+    assert first.update_fields == ["title"]
+    assert second.schema_revision == "schema-8"
+    assert second.update_fields == ["title", "note"]
+
+
+@pytest.mark.asyncio
+async def test_dynamic_worker_profile_reuses_matching_context_revision() -> None:
+    client = DynamicSchemaClient()
+    adapter = NodePluginWorkerAdapter(
+        store=SimpleNamespace(),
+        profiles={},
+        client=client,
+    )
+
+    first = await adapter._profile(
+        "articles",
+        expected_schema_revision="schema-7",
+    )
+    second = await adapter._profile(
+        "articles",
+        expected_schema_revision="schema-7",
+    )
+
+    assert first is second
+    assert client.revision == 7
+
+
+@pytest.mark.asyncio
+async def test_dynamic_worker_profile_refresh_is_time_bounded() -> None:
+    adapter = NodePluginWorkerAdapter(
+        store=SimpleNamespace(),
+        profiles={},
+        client=HangingSchemaClient(),
+        timeout_seconds=0.01,
+    )
+
+    with pytest.raises(PluginWorkerError, match="schema validation timed out"):
+        await adapter._profile("articles")
+
+
+@pytest.mark.asyncio
+async def test_worker_exposes_only_scoped_product_read_and_private_storage(
+    tmp_path: Path,
+) -> None:
+    _require_node()
     package = _package(
         tmp_path,
         """
@@ -204,7 +318,7 @@ async def test_node_worker_exposes_only_scoped_read_context_and_private_storage(
         }
         """,
     )
-    store = _Store(
+    store = FakePluginStore(
         package,
         permissions={
             "data": [
@@ -217,14 +331,15 @@ async def test_node_worker_exposes_only_scoped_read_context_and_private_storage(
             "privateStorage": True,
         },
     )
-    client = _Client()
+    client = FakeProductReadClient()
     adapter = NodePluginWorkerAdapter(
         store=store,
         profiles={
             "articles": CollectionProfile(
                 collection="articles",
-                fields=["id", "title", "date_updated"],
+                fields=["id", "title"],
                 archive_field=None,
+                date_updated_field=None,
             )
         },
         client=client,
@@ -242,15 +357,20 @@ async def test_node_worker_exposes_only_scoped_read_context_and_private_storage(
     assert result["metrics"] == [{"label": "rows", "value": 1}]
     assert client.calls[0][1].limit == 25
     assert client.calls[0][2] == ["title"]
-    setting = store.get_private_setting("project-a", "com.example.safe-worker", "preference")
+    setting = store.get_private_setting(
+        "project-a",
+        "com.example.safe-worker",
+        "preference",
+    )
     assert setting is not None
     assert setting.value == "compact"
 
 
 @pytest.mark.asyncio
-async def test_node_worker_rejects_node_globals_and_undeclared_data(tmp_path: Path) -> None:
-    if shutil.which("node") is None:
-        pytest.skip("Node.js is not installed")
+async def test_worker_rejects_node_globals_and_undeclared_product_data(
+    tmp_path: Path,
+) -> None:
+    _require_node()
     package = _package(
         tmp_path,
         """
@@ -267,7 +387,7 @@ async def test_node_worker_rejects_node_globals_and_undeclared_data(tmp_path: Pa
         """,
     )
     adapter = NodePluginWorkerAdapter(
-        store=_Store(
+        store=FakePluginStore(
             package,
             permissions={
                 "data": [
@@ -283,29 +403,35 @@ async def test_node_worker_rejects_node_globals_and_undeclared_data(tmp_path: Pa
         profiles={
             "articles": CollectionProfile(
                 collection="articles",
-                fields=["id", "title", "date_updated"],
+                fields=["id", "title"],
                 archive_field=None,
+                date_updated_field=None,
             ),
             "secrets": CollectionProfile(
                 collection="secrets",
-                fields=["id", "password", "date_updated"],
+                fields=["id", "password"],
                 archive_field=None,
+                date_updated_field=None,
             ),
         },
-        client=_Client(),
+        client=FakeProductReadClient(),
         timeout_seconds=3,
     )
 
     with pytest.raises(PluginWorkerError, match="not declared"):
-        await adapter.run("dist/worker.js", _context(), {}, execution=_execution())
+        await adapter.run(
+            "dist/worker.js",
+            _context(),
+            {},
+            execution=_execution(),
+        )
 
 
 @pytest.mark.asyncio
-async def test_node_worker_supports_declared_file_and_structured_ui_capabilities(
+async def test_worker_supports_declared_file_and_structured_ui_capabilities(
     tmp_path: Path,
 ) -> None:
-    if shutil.which("node") is None:
-        pytest.skip("Node.js is not installed")
+    _require_node()
     package = _package(
         tmp_path,
         """
@@ -317,7 +443,9 @@ async def test_node_worker_supports_declared_file_and_structured_ui_capabilities
             mediaType: "text/plain",
           });
           await target.write(content);
-          const progress = await capabilities.ui.reportProgress({ current: 1, total: 1, message: "saved" });
+          const progress = await capabilities.ui.reportProgress({
+            current: 1, total: 1, message: "saved"
+          });
           if (!progress.cancelRequested) throw new Error("cancellation was not projected");
           const result = {
             contract: "vibetable.plugin-result.v1",
@@ -330,8 +458,8 @@ async def test_node_worker_supports_declared_file_and_structured_ui_capabilities
         }
         """,
     )
-    file_adapter = _FileAdapter()
-    reporter = _Reporter()
+    file_adapter = FakeFileAdapter()
+    reporter = FakeReporter()
     execution = {
         **_execution(),
         "runId": "run-1",
@@ -339,7 +467,7 @@ async def test_node_worker_supports_declared_file_and_structured_ui_capabilities
         "_hostCancel": SimpleNamespace(cancelled=True),
     }
     adapter = NodePluginWorkerAdapter(
-        store=_Store(
+        store=FakePluginStore(
             package,
             permissions={
                 "data": [],
@@ -348,12 +476,17 @@ async def test_node_worker_supports_declared_file_and_structured_ui_capabilities
             },
         ),
         profiles={},
-        client=_Client(),
+        client=FakeProductReadClient(),
         file_adapter=file_adapter,
         timeout_seconds=3,
     )
 
-    result = await adapter.run("dist/worker.js", _context(), {}, execution=execution)
+    result = await adapter.run(
+        "dist/worker.js",
+        _context(),
+        {},
+        execution=execution,
+    )
 
     assert result["summary"] == "copied 5"
     assert file_adapter.written == b"hello"
@@ -361,9 +494,8 @@ async def test_node_worker_supports_declared_file_and_structured_ui_capabilities
 
 
 @pytest.mark.asyncio
-async def test_node_worker_blocks_function_constructor_escape(tmp_path: Path) -> None:
-    if shutil.which("node") is None:
-        pytest.skip("Node.js is not installed")
+async def test_worker_blocks_function_constructor_escape(tmp_path: Path) -> None:
+    _require_node()
     package = _package(
         tmp_path,
         """
@@ -383,102 +515,47 @@ async def test_node_worker_blocks_function_constructor_escape(tmp_path: Path) ->
         """,
     )
     adapter = NodePluginWorkerAdapter(
-        store=_Store(package, permissions={"data": [], "privateStorage": False}),
+        store=FakePluginStore(
+            package,
+            permissions={"data": [], "privateStorage": False},
+        ),
         profiles={},
-        client=_Client(),
+        client=FakeProductReadClient(),
         timeout_seconds=3,
     )
 
-    result = await adapter.run("dist/worker.js", _context(), {}, execution=_execution())
+    result = await adapter.run(
+        "dist/worker.js",
+        _context(),
+        {},
+        execution=_execution(),
+    )
 
     assert result["status"] == "success"
     assert result["summary"] == "closed"
 
 
 @pytest.mark.asyncio
-async def test_node_worker_times_out_and_terminates_infinite_code(tmp_path: Path) -> None:
-    if shutil.which("node") is None:
-        pytest.skip("Node.js is not installed")
+async def test_worker_times_out_and_terminates_infinite_code(tmp_path: Path) -> None:
+    _require_node()
     package = _package(
         tmp_path,
         "export async function run() { while (true) {} }",
     )
     adapter = NodePluginWorkerAdapter(
-        store=_Store(package, permissions={"data": [], "privateStorage": False}),
+        store=FakePluginStore(
+            package,
+            permissions={"data": [], "privateStorage": False},
+        ),
         profiles={},
-        client=_Client(),
+        client=FakeProductReadClient(),
         timeout_seconds=0.2,
     )
 
     with pytest.raises(PluginWorkerError, match="timed out"):
-        await adapter.run("dist/worker.js", _context(), {}, execution=_execution())
-
-
-@pytest.mark.asyncio
-async def test_directus_bulk_adapter_maps_plan_without_exposing_token() -> None:
-    transport = _Transport()
-    profile = CollectionProfile(
-        collection="articles",
-        fields=["id", "title", "date_updated"],
-        create_fields=["title"],
-        update_fields=["title"],
-        archive_field=None,
-    )
-    adapter = DirectusBulkMutationAdapter(
-        transport=transport,
-        auth=_Auth(),  # type: ignore[arg-type]
-        profiles={"articles": profile},
-    )
-    plan = MutationPlan.model_validate(
-        {
-            "contract": "vibetable.mutation-plan.v1",
-            "collection": "articles",
-            "operations": [
-                {"kind": "create", "values": {"title": "one"}},
-                {
-                    "kind": "update",
-                    "primaryKey": "2",
-                    "expectedDateUpdated": "rev-1",
-                    "values": {"title": "two"},
-                },
-            ],
-            "preview": {"affectedCount": 2},
-            "idempotencyKey": "plugin-run-1",
-        }
-    )
-
-    result = await adapter.apply(plan)
-
-    request = transport.requests[0]
-    assert request["path"] == "/vibetable-bulk-mutation/apply"
-    assert request["headers"] == {"Idempotency-Key": "plugin-run-1"}
-    assert request["json_body"]["operations"][1]["expectedDateUpdated"] == "rev-1"
-    assert "secret-token" not in json.dumps(request["json_body"])
-    assert result["contract"] == "vibetable.plugin-result.v1"
-    assert result["refresh"] == {"collections": ["articles"]}
-
-
-@pytest.mark.asyncio
-async def test_directus_bulk_adapter_rejects_fields_outside_profile() -> None:
-    adapter = DirectusBulkMutationAdapter(
-        transport=_Transport(),
-        auth=_Auth(),  # type: ignore[arg-type]
-        profiles={
-            "articles": CollectionProfile(
-                collection="articles",
-                fields=["id", "title", "date_updated"],
-                create_fields=["title"],
-                archive_field=None,
-            )
-        },
-    )
-    plan = MutationPlan.model_validate(
-        {
-            "collection": "articles",
-            "operations": [{"kind": "create", "values": {"admin": True}}],
-            "preview": {"affectedCount": 1},
-        }
-    )
-
-    with pytest.raises(ValueError, match="not allowed"):
-        await adapter.apply(plan)
+        await adapter.run(
+            "dist/worker.js",
+            _context(),
+            {},
+            execution=_execution(),
+        )

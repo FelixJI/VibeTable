@@ -111,7 +111,7 @@ const aggregationOptions = [
   "single", "values", "distinct_values", "related_count", "non_null_count",
   "sum", "average", "min", "max",
 ].map((value) => ({ label: value, value }));
-const outputOptions = ["text", "integer", "decimal", "boolean", "date", "datetime", "time", "json"]
+const outputOptions = ["text", "integer", "boolean", "date", "datetime", "time", "json"]
   .map((value) => ({ label: value, value }));
 
 const selectedRelation = computed(() => props.schema?.normalizedRelations.find(
@@ -123,8 +123,8 @@ const relationValidation = computed(() => {
     if (!relationForm.fieldDisplayName.trim()) return "必须填写显示名称";
     if (relationForm.kind === "m2a" && relationForm.allowedCollections.length === 0) return "M2A 至少选择一个目标集合";
     if (relationForm.kind !== "m2a" && !relationForm.relatedCollection) return "必须显式选择目标集合";
-    if (relationForm.preset === "file" && (relationForm.kind !== "m2o" || relationForm.relatedCollection !== "directus_files")) return "file 预设必须是指向 directus_files 的 M2O";
-    if (relationForm.preset === "files" && (relationForm.kind !== "m2m" || relationForm.relatedCollection !== "directus_files")) return "files 预设必须是指向 directus_files 的 M2M";
+    if (relationForm.preset === "file" && (relationForm.kind !== "m2o" || relationForm.relatedCollection !== "_managed_attachments")) return "file 预设必须是指向 _managed_attachments 的 M2O";
+    if (relationForm.preset === "files" && (relationForm.kind !== "m2m" || relationForm.relatedCollection !== "_managed_attachments")) return "files 预设必须是指向 _managed_attachments 的 M2M";
     if (relationForm.preset === "translations" && relationForm.kind !== "o2m") return "translations 预设仅支持 O2M";
     if (relationForm.kind === "o2m" && !relationForm.relatedManyField.trim()) return "O2M 必须填写目标集合的 many field";
     if (["m2m", "m2a"].includes(relationForm.kind)
@@ -154,7 +154,7 @@ watch(selectedRelation, (relation) => {
 
 function fillRelation(relation: NormalizedRelationDescriptor): void {
   relationForm.fieldKey = relation.fieldRef.includes(".") ? relation.fieldRef.split(".").at(-1) ?? relation.fieldRef : relation.fieldRef;
-  // The normalized descriptor does not carry the Directus display label.
+  // The normalized descriptor does not carry a provider-specific display label.
   // Leave it blank so an update requires an explicit value instead of guessing.
   relationForm.fieldDisplayName = "";
   relationForm.kind = relation.kind;

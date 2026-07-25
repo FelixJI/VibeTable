@@ -1,0 +1,30 @@
+{
+  "formatVersion": 1,
+  "schemaVersion": 4,
+  "migrations": [
+    {
+      "id": 2026072401,
+      "name": "bootstrap",
+      "source": "2026072401_bootstrap.go",
+      "sha256": "a8b99b09aa8ca210cb9d08d5af27d07c9470874fc28192a1c1a6dcffa399e9c8"
+    },
+    {
+      "id": 2026072402,
+      "name": "internal_collections",
+      "source": "2026072402_internal_collections.go",
+      "sha256": "d5f19dc86c416134bd41e7ba43a0bdf359cfe3ee89fdd36ef94440d4050f2d08"
+    },
+    {
+      "id": 2026072403,
+      "name": "internal_metadata_channel",
+      "source": "2026072403_internal_metadata_channel.go",
+      "sha256": "a1cfd35365cad2aba864ff2aa038f666b2ddd80c41b29a29bc7aceb7c04a30b8"
+    },
+    {
+      "id": 2026072404,
+      "name": "realtime_outbox_retention",
+      "source": "2026072404_realtime_outbox_retention.go",
+      "sha256": "66fd5dc13a70c97ed794e52a8b460255512cf62bb1cb4fc88421e9885f1c7ce8"
+    }
+  ]
+}

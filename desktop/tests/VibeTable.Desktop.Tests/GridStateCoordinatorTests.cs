@@ -75,6 +75,31 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
+    public async Task RequestQuery_EmitsAuthoritativeDatasetReplacement()
+    {
+        var gateway = new FakeTableRpcGateway();
+        gateway.QueryTablePageResults["contracts"] = SamplePage("contracts", 1, "server");
+        TableNotification? captured = null;
+        var coordinator = NewCoordinator(gateway, notification => captured = notification);
+
+        coordinator.RequestQuery(
+            "contracts",
+            new TableQuery(
+                Filters: new[]
+                {
+                    new FilterCondition("payload", FilterOperators.Contains, "8"),
+                }));
+        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+
+        Assert.IsNotNull(captured);
+        Assert.AreEqual(
+            "table.datasetReady",
+            captured!.Type,
+            "a completed remote query must replace, not append to, the renderer dataset");
+        Assert.AreEqual(1, captured.Page?.TotalRows);
+    }
+
+    [TestMethod]
     public async Task RequestQuery_Cancels_SupersededRead()
     {
         var gateway = new FakeTableRpcGateway();

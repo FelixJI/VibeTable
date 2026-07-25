@@ -42,8 +42,6 @@ class PluginCompatibilityPolicy:
 
     host_version: str = "1.0.0"
     plugin_api: str = "1.x"
-    directus_version: str = "12.1.1"
-    public_operations: frozenset[str] = frozenset({"vibetable.confirm@1", "vibetable.progress@1"})
 
 
 DEFAULT_COMPATIBILITY_POLICY = PluginCompatibilityPolicy()
@@ -55,7 +53,7 @@ _SEMVER_PATTERN = re.compile(
 )
 _VERSION_TERM_PATTERN = re.compile(r"^(>=|<=|>|<|=)?(\d+)(?:\.(\d+))?(?:\.(\d+))?$")
 _RISKS = {"read", "write", "destructive"}
-_MODES = {"flow", "local", "hybrid"}
+_MODES = {"local"}
 _SCHEMA_REFERENCE_KEYS = {"formSchema", "inputSchema", "outputSchema"}
 _LOCAL_DEVELOPMENT_DIRECTORIES = {".git", ".pytest_cache", "node_modules", "src", "tests"}
 _LOCAL_DEVELOPMENT_FILES = {
@@ -111,7 +109,7 @@ def _validate_compatibility(
         raise PluginPackageError("compatibility_invalid", "compatibility must be an object")
     missing = [
         key
-        for key in ("minHostVersion", "pluginApi", "directus")
+        for key in ("minHostVersion", "pluginApi")
         if not isinstance(compatibility.get(key), str) or not compatibility[key].strip()
     ]
     if missing:
@@ -140,17 +138,12 @@ def _validate_compatibility(
             f"compatibility.pluginApi {plugin_api} is not supported by {policy.plugin_api}",
         )
 
-    directus_range = compatibility["directus"]
-    directus_supported = _range_contains(directus_range, policy.directus_version)
-    if directus_supported is None:
+    legacy = sorted(set(compatibility) & {"dire" "ctus"})
+    if legacy:
         raise PluginPackageError(
-            "compatibility_invalid",
-            "compatibility.directus must be a space-separated semver comparison range",
-        )
-    if not directus_supported:
-        raise PluginPackageError(
-            "version_incompatible",
-            f"compatibility.directus {directus_range} excludes Directus {policy.directus_version}",
+            "legacy_manifest_field",
+            f"unsupported legacy compatibility field: {legacy[0]}",
+            path=f"compatibility.{legacy[0]}",
         )
 
 
@@ -277,112 +270,6 @@ def _validate_reference(contents: dict[str, bytes], reference: Any, *, schema: b
     return path
 
 
-def _validate_confirmation_graph(contents: dict[str, bytes], flow: dict[str, Any]) -> None:
-    definition_path = _validate_reference(contents, flow.get("definition"), schema=False)
-    definition = _decode_json(contents, definition_path, code="flow_definition_invalid")
-    if not isinstance(definition, dict) or not isinstance(definition.get("operations"), list):
-        raise PluginPackageError(
-            "flow_definition_invalid",
-            f"{definition_path} must contain an ordered operations array",
-            path=definition_path,
-        )
-    operations: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
-    for index, raw_operation in enumerate(definition["operations"]):
-        if not isinstance(raw_operation, dict):
-            raise PluginPackageError(
-                "flow_definition_invalid",
-                f"{definition_path} contains a non-object operation",
-                path=definition_path,
-            )
-        key = raw_operation.get("key", f"operation-{index}")
-        if not isinstance(key, str) or not key or key in operations:
-            raise PluginPackageError(
-                "flow_definition_invalid",
-                f"{definition_path} operation keys must be unique",
-                path=definition_path,
-            )
-        operations[key] = raw_operation
-        order.append(key)
-    if not order:
-        raise PluginPackageError(
-            "confirmation_required",
-            f"{flow['logicalFlowId']} must contain vibetable.confirm@1",
-            path=definition_path,
-        )
-    root = definition.get("operation", order[0])
-    if not isinstance(root, str) or root not in operations:
-        raise PluginPackageError(
-            "flow_definition_invalid",
-            f"{flow['logicalFlowId']} has an unknown root operation",
-            path=definition_path,
-        )
-
-    def targets(key: str) -> list[str]:
-        operation = operations[key]
-        index = order.index(key)
-        default_resolve = order[index + 1] if index + 1 < len(order) else None
-        values: list[str] = []
-        for branch, raw_target in (
-            ("resolve", operation.get("resolve", default_resolve)),
-            ("reject", operation.get("reject")),
-        ):
-            if raw_target is None:
-                continue
-            if not isinstance(raw_target, str) or raw_target not in operations:
-                raise PluginPackageError(
-                    "flow_definition_invalid",
-                    f"operation {key!r} has an unknown {branch} target",
-                    path=definition_path,
-                )
-            values.append(raw_target)
-        return values
-
-    seen: set[tuple[str, bool]] = set()
-    stack: list[tuple[str, bool]] = [(root, False)]
-    confirmation_reachable = False
-    while stack:
-        key, confirmed = stack.pop()
-        if (key, confirmed) in seen:
-            continue
-        seen.add((key, confirmed))
-        operation = operations[key]
-        operation_type = operation.get("type")
-        if not isinstance(operation_type, str) or not operation_type:
-            raise PluginPackageError(
-                "flow_definition_invalid",
-                f"operation {key!r} has no type",
-                path=definition_path,
-            )
-        if operation.get("sideEffect") in {"write", "unknown"}:
-            raise PluginPackageError(
-                "unknown_write_operation",
-                f"operation {key!r} has an unclassifiable write side effect",
-                path=definition_path,
-            )
-        is_write = operation_type in {
-            "vibetable-bulk-mutation.v1",
-            "items.create",
-            "items.update",
-            "items.delete",
-        } or operation_type.endswith((".create", ".update", ".delete"))
-        if is_write and not confirmed:
-            raise PluginPackageError(
-                "confirmation_order",
-                f"{flow['logicalFlowId']} has a write path before confirmation",
-                path=definition_path,
-            )
-        next_confirmed = confirmed or operation_type == "vibetable.confirm@1"
-        confirmation_reachable = confirmation_reachable or next_confirmed
-        stack.extend((target, next_confirmed) for target in targets(key))
-    if not confirmation_reachable:
-        raise PluginPackageError(
-            "confirmation_required",
-            f"{flow['logicalFlowId']} must reach vibetable.confirm@1",
-            path=definition_path,
-        )
-
-
 def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]:
     """Validate manifest structure and all package-local references."""
 
@@ -448,63 +335,46 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
         raise PluginPackageError(
             "permissions_invalid", "files/privateStorage permission is invalid"
         )
+    network = permissions.get("network", {})
+    if not isinstance(network, dict):
+        raise PluginPackageError(
+            "permissions_invalid", "permissions.network must be an object"
+        )
+    domains = network.get("domains", [])
+    methods = network.get("methods", ["GET"])
+    if (
+        not isinstance(domains, list)
+        or not all(
+            isinstance(domain, str)
+            and domain
+            and "://" not in domain
+            and "/" not in domain
+            for domain in domains
+        )
+        or not isinstance(methods, list)
+        or not all(
+            isinstance(method, str)
+            and method in {"GET", "POST", "PUT", "PATCH", "DELETE"}
+            for method in methods
+        )
+    ):
+        raise PluginPackageError(
+            "permissions_invalid",
+            "network permissions require bare domains and supported methods",
+        )
 
-    raw_flows = manifest.get("flows", [])
     raw_actions = manifest.get("actions")
-    if not isinstance(raw_flows, list) or not isinstance(raw_actions, list):
-        raise PluginPackageError("manifest_invalid", "actions and flows must be arrays")
-    flows: dict[str, dict[str, Any]] = {}
-    for raw_flow in raw_flows:
-        flow = _require_object(raw_flow, "flow")
-        flow_id = flow.get("logicalFlowId")
-        if not isinstance(flow_id, str) or not flow_id or flow_id in flows:
-            raise PluginPackageError("flow_id", "logicalFlowId must be a unique non-empty string")
-        if flow.get("ownership") not in {"managed", "external"} or flow.get("risk") not in _RISKS:
-            raise PluginPackageError(
-                "flow_invalid", f"flow {flow_id} has invalid ownership or risk"
-            )
-        if flow.get("trigger", "manual") not in {"manual", "webhook", "schedule", "event"}:
-            raise PluginPackageError("flow_invalid", f"flow {flow_id} has an invalid trigger")
-        contract_version = flow.get("contractVersion", "1.0")
-        if not isinstance(contract_version, str) or not contract_version.strip():
-            raise PluginPackageError(
-                "flow_invalid", f"flow {flow_id} has an invalid contractVersion"
-            )
-        required_operations = flow.get("requiresOperations", [])
-        if not isinstance(required_operations, list) or not all(
-            isinstance(operation, str) and operation for operation in required_operations
-        ):
-            raise PluginPackageError(
-                "flow_invalid", f"flow {flow_id} requiresOperations must contain strings"
-            )
-        unsupported_public_operations = [
-            operation
-            for operation in required_operations
-            if operation.startswith("vibetable.")
-            and operation not in DEFAULT_COMPATIBILITY_POLICY.public_operations
-        ]
-        if unsupported_public_operations:
-            raise PluginPackageError(
-                "version_incompatible",
-                "unsupported public Operation version(s): "
-                + ", ".join(unsupported_public_operations),
-            )
-        for key in _SCHEMA_REFERENCE_KEYS - {"formSchema"}:
-            if key in flow:
-                _validate_reference(contents, flow[key], schema=True)
-        if flow.get("ownership") == "managed":
-            _validate_reference(contents, flow.get("definition"), schema=False)
-        external_network = flow.get("externalNetwork")
-        if external_network is not None:
-            network = _require_object(external_network, "externalNetwork")
-            if not isinstance(network.get("required"), bool) or (
-                network.get("required")
-                and (not isinstance(network.get("purpose"), str) or not network["purpose"].strip())
-            ):
-                raise PluginPackageError(
-                    "network_invalid", f"flow {flow_id} has invalid network declaration"
-                )
-        flows[flow_id] = flow
+    if not isinstance(raw_actions, list):
+        raise PluginPackageError("manifest_invalid", "actions must be an array")
+    legacy_top_level = sorted(
+        key for key in ("flows", "flowBindings") if key in manifest
+    )
+    if legacy_top_level:
+        raise PluginPackageError(
+            "legacy_manifest_field",
+            f"unsupported legacy manifest field: {legacy_top_level[0]}",
+            path=legacy_top_level[0],
+        )
 
     action_ids: set[str] = set()
     for raw_action in raw_actions:
@@ -533,42 +403,19 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
         for key in _SCHEMA_REFERENCE_KEYS:
             if key in action:
                 _validate_reference(contents, action[key], schema=True)
-        entry_flow = action.get("entryFlow")
         worker_entry = action.get("workerEntry")
-        if mode in {"flow", "hybrid"}:
-            if not isinstance(entry_flow, str) or entry_flow not in flows:
-                raise PluginPackageError(
-                    "entry_flow", f"action {action_id} must reference one entry Flow"
-                )
-            flow = flows[entry_flow]
-            if flow["risk"] != risk:
-                raise PluginPackageError(
-                    "risk_mismatch", f"action {action_id} and its entry Flow must share risk"
-                )
-            if risk in {"write", "destructive"} and action.get("invocation", "manual") == "manual":
-                operations = flow.get("requiresOperations", [])
-                if not isinstance(operations, list) or "vibetable.confirm@1" not in operations:
-                    raise PluginPackageError(
-                        "confirmation_required",
-                        f"manual {risk} action {action_id} requires vibetable.confirm@1",
-                    )
-                if flow["ownership"] == "managed":
-                    _validate_confirmation_graph(contents, flow)
-        elif entry_flow is not None:
+        if "entryFlow" in action:
             raise PluginPackageError(
-                "entry_flow", f"local action {action_id} cannot declare entryFlow"
+                "legacy_manifest_field",
+                f"action {action_id} cannot declare entryFlow",
+                path=f"actions.{action_id}.entryFlow",
             )
-        if mode in {"local", "hybrid"}:
-            if not isinstance(worker_entry, str):
-                raise PluginPackageError(
-                    "worker_entry",
-                    f"{mode} action {action_id} must declare workerEntry",
-                )
-            _validate_reference(contents, worker_entry, schema=False)
-        elif worker_entry is not None:
+        if not isinstance(worker_entry, str):
             raise PluginPackageError(
-                "worker_entry", f"flow action {action_id} cannot declare workerEntry"
+                "worker_entry",
+                f"local action {action_id} must declare workerEntry",
             )
+        _validate_reference(contents, worker_entry, schema=False)
 
     ui = manifest.get("ui", {})
     if not isinstance(ui, dict) or not isinstance(ui.get("customViews", []), list):

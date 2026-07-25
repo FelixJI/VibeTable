@@ -6,14 +6,14 @@ cooperative cancellation, and template generation.
 
 from __future__ import annotations
 
+import asyncio
 import csv
+import json
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
-from backend.adapters.directus.auth import CurrentUser, DirectusAuthBroker
-from backend.adapters.directus.client import DirectusClient
-from backend.adapters.directus.profile import CapabilityManifest
 from backend.application.export_service import (
     AuthoritativeLookupColumn,
     AuthoritativeLookupExportPage,
@@ -21,74 +21,74 @@ from backend.application.export_service import (
     ExportService,
 )
 from backend.contracts.data_io import ExportParams
+from backend.contracts.data_profile import CollectionProfile
 
 
-class FakeDirectusAuth(DirectusAuthBroker):
-    def __init__(self) -> None:
-        self._user = CurrentUser(id="user-1", display_name="Tester", role_id="role-1")
+@dataclass
+class FakePage:
+    rows: list[dict[str, Any]]
+    filtered_rows: int
+    total_rows: int
 
-    async def access_token(self) -> str:
-        return "access"
 
-
-class FakeTransport:
+class FakeQueryPort:
     def __init__(
         self, pages: list[list[dict[str, Any]]], meta: dict[str, Any] | None = None
     ) -> None:
         self._pages = list(pages)
         self._meta = meta or {"filter_count": sum(len(p) for p in pages)}
-        self.requests: list[dict[str, Any]] = []
+        self.calls: list[dict[str, Any]] = []
 
-    async def request(self, method: str, path: str, **kwargs: Any) -> Any:
-        self.requests.append({"method": method, "path": path, **kwargs})
+    async def query_page(self, *, table_id: str, query: dict[str, Any]) -> FakePage:
+        self.calls.append({"table_id": table_id, "query": query})
         rows = self._pages.pop(0) if self._pages else []
-        return {"data": rows, "meta": self._meta}
+        total = self._meta.get("filter_count", self._meta.get("total_count", len(rows)))
+        return FakePage(rows=rows, filtered_rows=total, total_rows=total)
 
 
-def _manifest() -> CapabilityManifest:
-    return CapabilityManifest.model_validate(
+def _manifest() -> dict[str, CollectionProfile]:
+    profile = CollectionProfile.model_validate(
         {
-            "contract": "directus.project.v1",
-            "schema_version": "vibetable-1.0",
-            "directus_compatibility": ">=12 <13",
-            "collections": [
+            "collection": "vibetable_demo",
+            "primary_key": "id",
+            "fields": [
+                "id",
+                "status",
+                "number",
+                "title",
+                "amount",
+                "owner",
+                "payload",
+                "attachments",
+                "date_updated",
+            ],
+            "create_fields": ["number", "title", "amount", "owner"],
+            "update_fields": ["number", "title", "amount"],
+            "archive_field": "status",
+            "archive_value": "archived",
+            "restore_value": "active",
+            "date_updated_field": "date_updated",
+            "relations": [
                 {
-                    "collection": "vibetable_demo",
-                    "primary_key": "id",
-                    "fields": [
-                        "id",
-                        "status",
-                        "number",
-                        "title",
-                        "amount",
-                        "owner",
-                        "date_updated",
-                    ],
-                    "create_fields": ["number", "title", "amount", "owner"],
-                    "update_fields": ["number", "title", "amount"],
-                    "archive_field": "status",
-                    "archive_value": "archived",
-                    "restore_value": "active",
-                    "date_updated_field": "date_updated",
-                    "relations": [
-                        {
-                            "field": "owner",
-                            "kind": "m2o",
-                            "related_collection": "directus_users",
-                            "display_fields": ["first_name", "last_name"],
-                        }
-                    ],
+                    "field": "owner",
+                    "kind": "m2o",
+                    "related_collection": "users",
+                    "display_fields": ["first_name", "last_name"],
                 }
             ],
         }
     )
+    return {profile.collection: profile}
 
 
-def _service(transport: FakeTransport, manifest: CapabilityManifest, path: str) -> ExportService:
+def _service(
+    query_port: FakeQueryPort,
+    profiles: dict[str, CollectionProfile],
+    path: str,
+) -> ExportService:
     return ExportService(
-        client=DirectusClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        profiles=manifest.by_collection,
+        query_port=query_port,
+        profiles=profiles,
         resolve_path=lambda _g, *, purpose, direction: path,
     )
 
@@ -111,15 +111,14 @@ class FakeLookupExportProvider:
 
 
 def _lookup_service(
-    transport: FakeTransport,
-    manifest: CapabilityManifest,
+    query_port: FakeQueryPort,
+    profiles: dict[str, CollectionProfile],
     path: str,
     provider: Any,
 ) -> ExportService:
     return ExportService(
-        client=DirectusClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        profiles=manifest.by_collection,
+        query_port=query_port,
+        profiles=profiles,
         resolve_path=lambda _g, *, purpose, direction: path,
         lookup_provider=provider,
     )
@@ -133,7 +132,7 @@ async def test_export_csv_streams_all_pages(tmp_path: Any) -> None:
     # Page 1 is full (EXPORT_PAGE_SIZE rows); page 2 is partial (triggers stop).
     page1 = [{"id": str(i), "number": f"A-{i}"} for i in range(EXPORT_PAGE_SIZE)]
     page2 = [{"id": "998", "number": "A-998"}]
-    transport = FakeTransport([page1, page2])
+    transport = FakeQueryPort([page1, page2])
     path = tmp_path / "out.csv"
     service = _service(transport, manifest, str(path))
     result = await service.export(
@@ -153,7 +152,7 @@ async def test_export_csv_streams_all_pages(tmp_path: Any) -> None:
 async def test_export_csv_with_relations_adds_display_columns(tmp_path: Any) -> None:
     manifest = _manifest()
     page1 = [{"id": "1", "number": "A-1", "owner": {"first_name": "Ada", "last_name": "Lovelace"}}]
-    transport = FakeTransport([page1])
+    transport = FakeQueryPort([page1])
     path = tmp_path / "out.csv"
     service = _service(transport, manifest, str(path))
     result = await service.export(
@@ -179,7 +178,7 @@ async def test_export_csv_with_relations_adds_display_columns(tmp_path: Any) -> 
 async def test_export_xlsx_writes_rows(tmp_path: Any) -> None:
     manifest = _manifest()
     page1 = [{"id": "1", "number": "A-1"}]
-    transport = FakeTransport([page1])
+    transport = FakeQueryPort([page1])
     path = tmp_path / "out.xlsx"
     service = _service(transport, manifest, str(path))
     result = await service.export(
@@ -200,8 +199,9 @@ async def test_export_cancellation_stops_at_page_boundary(tmp_path: Any) -> None
     manifest = _manifest()
     page1 = [{"id": "1", "number": "A-1"}, {"id": "2", "number": "A-2"}]
     page2 = [{"id": "3", "number": "A-3"}, {"id": "4", "number": "A-4"}]
-    transport = FakeTransport([page1, page2])
+    transport = FakeQueryPort([page1, page2])
     path = tmp_path / "out.csv"
+    path.write_text("previous complete export", encoding="utf-8")
     service = _service(transport, manifest, str(path))
     # Cancel after the first page.
     call_count = [0]
@@ -210,18 +210,19 @@ async def test_export_cancellation_stops_at_page_boundary(tmp_path: Any) -> None
         call_count[0] += 1
         return call_count[0] > 1
 
-    result = await service.export(
-        ExportParams(grant_id="g1", collection="vibetable_demo", query={}, format="csv"),
-        cancelled=is_cancelled,
-    )
-    # The first page (2 rows) was written before cancellation took effect.
-    assert result.rows_written <= 4
+    with pytest.raises(asyncio.CancelledError):
+        await service.export(
+            ExportParams(grant_id="g1", collection="vibetable_demo", query={}, format="csv"),
+            cancelled=is_cancelled,
+        )
+    assert path.read_text(encoding="utf-8") == "previous complete export"
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 @pytest.mark.asyncio
 async def test_generate_template_writes_headers_and_notes(tmp_path: Any) -> None:
     manifest = _manifest()
-    transport = FakeTransport([])
+    transport = FakeQueryPort([])
     path = tmp_path / "template.xlsx"
     service = _service(transport, manifest, str(path))
     result = await service.generate_template("vibetable_demo", "g1")
@@ -242,7 +243,7 @@ async def test_lookup_export_requires_authoritative_provider_without_page_fallba
     tmp_path: Any,
 ) -> None:
     manifest = _manifest()
-    transport = FakeTransport([[{"id": "current-page", "contract_price": 1}]])
+    transport = FakeQueryPort([[{"id": "current-page", "contract_price": 1}]])
     path = tmp_path / "lookups.csv"
     service = _service(transport, manifest, str(path))
 
@@ -257,7 +258,7 @@ async def test_lookup_export_requires_authoritative_provider_without_page_fallba
         )
 
     assert caught.value.code == "lookup_export_provider_missing"
-    assert transport.requests == []
+    assert transport.calls == []
     assert not path.exists()
 
 
@@ -272,7 +273,7 @@ async def test_lookup_export_streams_authoritative_full_dataset_and_revision(tmp
     ]
     second = [{"id": "last", "number": "A-last", "contract_price": 999}]
     provider = FakeLookupExportProvider([first, second])
-    transport = FakeTransport([])
+    transport = FakeQueryPort([])
     path = tmp_path / "lookups.csv"
     service = _lookup_service(transport, manifest, str(path), provider)
 
@@ -290,7 +291,7 @@ async def test_lookup_export_streams_authoritative_full_dataset_and_revision(tmp
     assert [call["offset"] for call in provider.calls] == [0, EXPORT_PAGE_SIZE]
     assert all(call["lookup_revision"] == "lookup-r1" for call in provider.calls)
     assert provider.calls[0]["query"]["sorts"][0]["field"] == "contract_price"
-    assert transport.requests == []
+    assert transport.calls == []
     with open(path, encoding="utf-8-sig") as fh:
         reader = csv.reader(fh)
         header = next(reader)
@@ -305,7 +306,7 @@ async def test_lookup_export_rejects_revision_drift(tmp_path: Any) -> None:
     manifest = _manifest()
     provider = FakeLookupExportProvider([], revision="lookup-r2")
     path = tmp_path / "lookups.csv"
-    service = _lookup_service(FakeTransport([]), manifest, str(path), provider)
+    service = _lookup_service(FakeQueryPort([]), manifest, str(path), provider)
 
     with pytest.raises(ExportError) as caught:
         await service.export(
@@ -319,3 +320,35 @@ async def test_lookup_export_rejects_revision_drift(tmp_path: Any) -> None:
 
     assert caught.value.code == "lookup_revision_mismatch"
     assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_export_renders_json_and_attachment_manifest_without_binary_data(tmp_path: Any) -> None:
+    manifest = _manifest()
+    page = [
+        {
+            "id": "1",
+            "payload": {"nested": [1, True, None], "label": "原样"},
+            "attachments": [
+                {
+                    "storedName": "report_abc.pdf",
+                    "originalName": "报告.pdf",
+                    "size": 42,
+                    "contentType": "application/pdf",
+                }
+            ],
+        }
+    ]
+    path = tmp_path / "manifest.csv"
+    service = _service(FakeQueryPort([page]), manifest, str(path))
+
+    await service.export(
+        ExportParams(grant_id="g1", collection="vibetable_demo", query={}, format="csv")
+    )
+
+    with open(path, encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        row = next(reader)
+    assert json.loads(row["payload"]) == page[0]["payload"]
+    assert json.loads(row["attachments"]) == page[0]["attachments"]
+    assert "bytes" not in row["attachments"].lower()

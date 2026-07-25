@@ -2,12 +2,13 @@ using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
 using VibeTable.Infrastructure.Rpc;
+using VibeTable.Workspace.Domain;
 
 namespace VibeTable.Desktop.Services;
 
 /// <summary>
-/// JSON-RPC adapter for document index metadata. The Python broker talks to
-/// Directus with the current user token; this adapter never receives that token.
+/// JSON-RPC adapter for provider-neutral document index metadata. Local paths
+/// and file content never cross this boundary.
 /// </summary>
 public sealed class JsonRpcDocumentWorkspaceGateway : IDocumentWorkspaceRpcGateway
 {
@@ -49,10 +50,39 @@ public sealed class JsonRpcDocumentWorkspaceGateway : IDocumentWorkspaceRpcGatew
     public Task<RegisterDocumentResult> RegisterDocumentAsync(
         RegisterDocumentParams request,
         CancellationToken token)
-        => _client.InvokeAsync<RegisterDocumentParams, RegisterDocumentResult>(
+    {
+        request = request with
+        {
+            CreatedAt = UtcRfc3339Timestamp.Canonicalize(
+                request.CreatedAt,
+                nameof(request.CreatedAt)),
+        };
+        return _client.InvokeAsync<RegisterDocumentParams, RegisterDocumentResult>(
             "workspace.registerDocument",
             request,
             token);
+    }
+
+    public Task<PublishIndexBatchResult> PublishIndexBatchAsync(
+        PublishIndexBatchParams request,
+        CancellationToken token)
+    {
+        request = request with
+        {
+            Revisions = request.Revisions
+                .Select(revision => revision with
+                {
+                    CreatedAt = UtcRfc3339Timestamp.Canonicalize(
+                        revision.CreatedAt,
+                        nameof(revision.CreatedAt)),
+                })
+                .ToList(),
+        };
+        return _client.InvokeAsync<PublishIndexBatchParams, PublishIndexBatchResult>(
+            "workspace.publishIndexBatch",
+            request,
+            token);
+    }
 
     public async Task UnlinkAsync(string linkId, CancellationToken token)
     {

@@ -16,7 +16,7 @@ Lifecycle
 
 Local side effects (writing an export file, streaming a workbook) are NOT
 replayed on restart — the runtime marks them ``aborted``. Remote mutations
-(Directus writes) rely on their idempotency key for result verification, so a
+(business writes) rely on their idempotency key for result verification, so a
 crash mid-import is resolved by re-checking the idempotency key, not by
 replaying the task.
 
@@ -27,6 +27,8 @@ LRU cap so a long-lived session does not accumulate stale entries.
 from __future__ import annotations
 
 import asyncio
+import copy
+import inspect
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -39,10 +41,7 @@ MAX_COMPLETED_TASKS: int = 64
 
 #: The handler signature: receives the task id, a progress reporter and a
 #: cancellation token, returns the typed result payload.
-TaskHandler = Callable[
-    [str, "ProgressReporter", "CancellationToken"],
-    Awaitable[Any],
-]
+TaskHandler = Callable[..., Awaitable[Any]]
 
 #: The callback the runtime invokes to emit a ``task.progress``/``task.status``
 #: notification to the host. The runtime never assumes a specific transport.
@@ -142,6 +141,7 @@ class TaskRuntime:
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._handlers: dict[str, TaskHandler] = {}
+        self._handlers_accept_params: dict[str, bool] = {}
         self._tasks: dict[str, TaskRecord] = {}
         self._tokens: dict[str, CancellationToken] = {}
         self._async_tasks: set[asyncio.Task[Any]] = set()
@@ -156,10 +156,12 @@ class TaskRuntime:
     def register(self, kind: str, handler: TaskHandler) -> None:
         """Register ``handler`` for task ``kind`` (e.g. ``data.import``)."""
         self._handlers[kind] = handler
+        self._handlers_accept_params[kind] = len(inspect.signature(handler).parameters) >= 4
 
     def unregister(self, kind: str) -> bool:
         """Remove a dynamically registered handler after its last task started."""
 
+        self._handlers_accept_params.pop(kind, None)
         return self._handlers.pop(kind, None) is not None
 
     # ------------------------------------------------------------------
@@ -184,7 +186,15 @@ class TaskRuntime:
             self._tokens[task_id] = token
         # Start immediately (single-slot; the runtime is single-process). Hold
         # a strong reference so the task is not garbage-collected mid-run.
-        task = asyncio.create_task(self._run(record, token, handler, params))
+        task = asyncio.create_task(
+            self._run(
+                record,
+                token,
+                handler,
+                copy.deepcopy(params),
+                accepts_params=self._handlers_accept_params[kind],
+            )
+        )
         self._async_tasks.add(task)
         task.add_done_callback(self._async_tasks.discard)
         return self._snapshot(record)
@@ -195,6 +205,8 @@ class TaskRuntime:
         token: CancellationToken,
         handler: TaskHandler,
         params: dict[str, Any],
+        *,
+        accepts_params: bool,
     ) -> None:
         record.state = "running"
 
@@ -207,12 +219,15 @@ class TaskRuntime:
         # Bind params into the handler via a closure: handlers are registered
         # with a fixed signature, so params are injected through a wrapper.
         try:
-            result = await handler(record.task_id, reporter, token)
-            if token.cancelled:
-                record.state = "cancelled"
+            if accepts_params:
+                result = await handler(record.task_id, reporter, token, dict(params))
             else:
-                record.state = "succeeded"
-                record.result = result
+                result = await handler(record.task_id, reporter, token)
+            # A handler that returns has crossed its commit point. Cancellation
+            # arriving after an atomic side effect committed is "too late" and
+            # must not hide the successful result from the caller.
+            record.state = "succeeded"
+            record.result = result
         except asyncio.CancelledError:
             record.state = "cancelled"
             raise

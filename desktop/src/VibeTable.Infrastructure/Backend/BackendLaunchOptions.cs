@@ -120,6 +120,10 @@ public sealed class BackendLaunchOptions
                 Command = packagedBackend,
                 Arguments = string.Empty,
                 WorkingDirectory = Path.GetDirectoryName(packagedBackend),
+                // A one-folder PyInstaller backend performs antivirus and
+                // DLL-loader work on its first launch. Keep the dev timeout
+                // strict while allowing a cold installed start to finish.
+                StartupTimeout = TimeSpan.FromSeconds(30),
             };
         }
 

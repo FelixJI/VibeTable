@@ -5,7 +5,7 @@ defineProps<{ show: boolean; message: string }>();
 </script>
 
 <template>
-  <div v-if="show" class="overlay overlay--error">
+  <div v-if="show" class="overlay overlay--error" data-testid="table-error-overlay" role="alert">
     <NResult status="error" :description="message" />
   </div>
 </template>
@@ -20,6 +20,8 @@ defineProps<{ show: boolean; message: string }>();
   z-index: 10;
 }
 .overlay--error {
-  background: rgba(254, 226, 226, 0.9);
+  color: var(--vt-color-danger-600);
+  background: color-mix(in srgb, var(--vt-color-danger-500) 8%, var(--vt-bg) 92%);
+  backdrop-filter: blur(2px);
 }
 </style>

@@ -61,7 +61,12 @@ const collections = computed(() => {
         class="table-row"
         :class="{ 'table-item--active': col.collection === workspace.currentTable }"
       >
-        <button type="button" class="table-select" @click="emit('select', col.collection)">
+        <button
+          type="button"
+          class="table-select"
+          :aria-current="col.collection === workspace.currentTable ? 'page' : undefined"
+          @click="emit('select', col.collection)"
+        >
           <span class="table-icon"><NIcon :size="15"><Table2 /></NIcon></span>
           <span class="table-copy">
             <span class="table-name" data-testid="sidebar-table-name">{{ collectionLabel(col, displayNames) }}</span>

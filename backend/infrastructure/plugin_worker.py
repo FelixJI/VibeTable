@@ -14,10 +14,10 @@ import json
 import os
 import re
 import shutil
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from backend.contracts.data_profile import collection_profile_from_definition
 from backend.contracts.plugin import (
     ConfirmationPreview,
     MutationPlan,
@@ -69,6 +69,7 @@ class NodePluginWorkerAdapter:
     ) -> None:
         self._store = store
         self._profiles = profiles
+        self._dynamic_profiles = not profiles
         self._client = client
         if timeout_seconds <= 0:
             raise ValueError("Worker timeout must be positive")
@@ -114,20 +115,6 @@ class NodePluginWorkerAdapter:
     ) -> dict[str, Any]:
         return await self._invoke("run", worker_entry, context, input_payload, execution=execution)
 
-    async def present(
-        self,
-        worker_entry: str,
-        flow_result: dict[str, Any],
-        *,
-        execution: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        context = execution.get("context") if isinstance(execution, dict) else None
-        if not isinstance(context, dict):
-            raise PluginWorkerError("hybrid Worker execution context is unavailable")
-        return await self._invoke(
-            "present", worker_entry, context, flow_result, execution=execution
-        )
-
     async def _invoke(
         self,
         method: str,
@@ -159,7 +146,7 @@ class NodePluginWorkerAdapter:
         if not isinstance(result, dict):
             raise PluginWorkerError("plugin Worker result must be a JSON object")
         if result.get("contract") == "vibetable.mutation-plan.v1":
-            self._validate_mutation_plan(resolved, context, result)
+            await self._validate_mutation_plan(resolved, context, result)
         return result
 
     async def _run_process(
@@ -347,9 +334,7 @@ class NodePluginWorkerAdapter:
         grant = self._read_grant(resolved.permissions, context, collection)
         if grant is None:
             raise PluginWorkerError(f"collection {collection!r} was not declared for read")
-        profile = self._profiles.get(collection)
-        if profile is None:
-            raise PluginWorkerError(f"collection {collection!r} is outside the Directus profile")
+        profile = await self._profile(collection)
         requested_fields = request.get("fields")
         if not isinstance(requested_fields, list) or not all(
             isinstance(field, str) for field in requested_fields
@@ -380,11 +365,24 @@ class NodePluginWorkerAdapter:
             raise PluginWorkerError("data.read cursor is invalid")
         if offset < 0:
             raise PluginWorkerError("data.read cursor is invalid")
-        items, _meta, _plan = await self._client.read_items_with_fields(
-            profile,
-            TableQuery(offset=offset, limit=page_size),
-            fields,
-        )
+        legacy_read = getattr(self._client, "read_items_with_fields", None)
+        if callable(legacy_read):
+            items, _meta, _plan = await legacy_read(
+                profile,
+                TableQuery(offset=offset, limit=page_size),
+                fields,
+            )
+        else:
+            page = await self._client.query_page(
+                table_id=profile.collection,
+                query=TableQuery(offset=offset, limit=page_size).model_dump(
+                    by_alias=True, mode="json"
+                ),
+            )
+            items = [
+                {field: row.get(field) for field in fields}
+                for row in page.rows
+            ]
         value = {
             "items": items,
             "nextCursor": str(offset + len(items)) if len(items) == page_size else None,
@@ -418,7 +416,7 @@ class NodePluginWorkerAdapter:
         )
         return None
 
-    def _validate_mutation_plan(
+    async def _validate_mutation_plan(
         self,
         resolved: _ResolvedWorker,
         context: dict[str, Any],
@@ -428,9 +426,17 @@ class NodePluginWorkerAdapter:
             plan = MutationPlan.model_validate(raw)
         except ValueError as exc:
             raise PluginWorkerError("plugin returned an invalid mutation plan") from exc
-        profile = self._profiles.get(plan.collection)
-        if profile is None:
-            raise PluginWorkerError("mutation collection is outside the Directus profile")
+        query_snapshot = context.get("querySnapshot")
+        expected_schema_revision = (
+            query_snapshot.get("schemaRevision")
+            if isinstance(query_snapshot, dict)
+            and isinstance(query_snapshot.get("schemaRevision"), str)
+            else None
+        )
+        profile = await self._profile(
+            plan.collection,
+            expected_schema_revision=expected_schema_revision,
+        )
         if plan.preview.affected_count != len(plan.operations):
             raise PluginWorkerError("mutation preview affectedCount must match the operation count")
         grant = self._write_grant(resolved.permissions, context, plan.collection)
@@ -447,6 +453,36 @@ class NodePluginWorkerAdapter:
                     f"mutation fields were not declared: {', '.join(sorted(denied))}"
                 )
             profile.require_fields(set(operation.values), operation=operation.kind)
+
+    async def _profile(
+        self,
+        collection: str,
+        *,
+        expected_schema_revision: str | None = None,
+    ) -> Any:
+        profile = self._profiles.get(collection)
+        if profile is not None and (
+            not self._dynamic_profiles
+            or (
+                expected_schema_revision is not None
+                and profile.schema_revision == expected_schema_revision
+            )
+        ):
+            return profile
+        try:
+            async with asyncio.timeout(self._timeout):
+                definition = await self._client.describe_table(collection)
+            profile = collection_profile_from_definition(definition)
+        except TimeoutError as exc:
+            raise PluginWorkerError(
+                f"collection {collection!r} schema validation timed out"
+            ) from exc
+        except Exception as exc:
+            raise PluginWorkerError(
+                f"collection {collection!r} is outside the product schema"
+            ) from exc
+        self._profiles[collection] = profile
+        return profile
 
     def _resolve(
         self,
@@ -609,76 +645,10 @@ class NodePluginWorkerAdapter:
         return environment
 
 
-class DirectusBulkMutationAdapter:
-    """Apply a host-approved mutation plan through the Directus extension."""
-
-    def __init__(self, *, transport: Any, auth: Any, profiles: dict[str, Any]) -> None:
-        self._transport = transport
-        self._auth = auth
-        self._profiles = profiles
-
-    async def apply(self, plan: MutationPlan) -> dict[str, Any]:
-        profile = self._profiles.get(plan.collection)
-        if profile is None:
-            raise ValueError("mutation collection is outside the Directus profile")
-        if not plan.operations:
-            raise ValueError("mutation plan must contain at least one operation")
-        for operation in plan.operations:
-            profile.require_fields(set(operation.values), operation=operation.kind)
-            if operation.kind == "update" and operation.primary_key is None:
-                raise ValueError("update mutation requires primaryKey")
-        idempotency_key = plan.idempotency_key or f"plugin-{uuid.uuid4().hex}"
-        body = plan.model_dump(mode="json", by_alias=True, exclude={"preview"})
-        body["contract"] = "vibetable-bulk-mutation.v1"
-        body["primaryKey"] = profile.primary_key
-        body["idempotencyKey"] = idempotency_key
-        for operation in body["operations"]:
-            if operation.get("primaryKey") is not None:
-                operation["primaryKey"] = str(operation["primaryKey"])
-        token = await self._auth.access_token()
-        response = await self._transport.request(
-            "POST",
-            "/vibetable-bulk-mutation/apply",
-            access_token=token,
-            json_body=body,
-            headers={"Idempotency-Key": idempotency_key},
-        )
-        data = response.get("data", response) if isinstance(response, dict) else None
-        if not isinstance(data, dict):
-            raise ValueError("bulk mutation endpoint returned an invalid response")
-        conflicts = data.get("conflicts", [])
-        conflict_count = len(conflicts) if isinstance(conflicts, list) else 0
-        created = data.get("createdRowKeys", [])
-        updated = data.get("updatedRowKeys", [])
-        skipped_rows = data.get("skippedRowKeys", [])
-        applied = (len(created) if isinstance(created, list) else 0) + (
-            len(updated) if isinstance(updated, list) else 0
-        )
-        skipped = len(skipped_rows) if isinstance(skipped_rows, list) else 0
-        return {
-            "contract": "vibetable.plugin-result.v1",
-            "status": "warning" if conflict_count else "success",
-            "summary": (
-                f"Applied {applied} mutation operations"
-                if not conflict_count
-                else f"Applied {applied} operations with {conflict_count} conflicts"
-            ),
-            "metrics": [
-                {"label": "applied", "value": applied},
-                {"label": "skipped", "value": skipped},
-                {"label": "conflicts", "value": conflict_count},
-            ],
-            "table": {"data": data},
-            "refresh": {"collections": [plan.collection]},
-            "warnings": ["edit_conflicts"] if conflict_count else [],
-        }
-
-
 @dataclass
 class InMemoryPluginWorkerAdapter:
     prepare_results: dict[str, dict[str, Any]] = field(default_factory=dict)
     run_results: dict[str, dict[str, Any]] = field(default_factory=dict)
-    present_results: dict[str, dict[str, Any]] = field(default_factory=dict)
     trace: list[str] | None = None
     executions: list[dict[str, Any]] = field(default_factory=list)
 
@@ -716,20 +686,6 @@ class InMemoryPluginWorkerAdapter:
             self.trace.append("worker.run")
         return self.run_results[worker_entry]
 
-    async def present(
-        self,
-        worker_entry: str,
-        flow_result: dict[str, Any],
-        *,
-        execution: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        del flow_result
-        if execution is not None:
-            self.executions.append(execution)
-        if self.trace is not None:
-            self.trace.append("worker.present")
-        return self.present_results[worker_entry]
-
 
 @dataclass
 class InMemoryHostConfirmationAdapter:
@@ -765,7 +721,6 @@ class InMemoryBulkMutationAdapter:
 
 
 __all__ = [
-    "DirectusBulkMutationAdapter",
     "InMemoryBulkMutationAdapter",
     "InMemoryHostConfirmationAdapter",
     "InMemoryPluginWorkerAdapter",

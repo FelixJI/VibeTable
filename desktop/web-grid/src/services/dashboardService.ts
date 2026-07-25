@@ -60,10 +60,10 @@ export function useDashboardService() {
       }
       else store.reset();
     }));
-    unsubscribe.push(bridge.on("directus.changed", (payload) => {
+    unsubscribe.push(bridge.on("data.changed", (payload) => {
       if (!store.current || document.hidden) return;
-      const collection = String((payload as Readonly<Record<string, unknown>>).collection ?? "");
-      if (collection === "directus_dashboards" || collection === "directus_panels" ||
+      const collection = payload.tableId;
+      if (collection === "vibetable_dashboards" || collection === "vibetable_panels" ||
           collection === "vibetable_dashboard_configs" || dependsOnCollection(collection)) {
         store.markAllStale();
         if (realtimeTimer !== null) window.clearTimeout(realtimeTimer);

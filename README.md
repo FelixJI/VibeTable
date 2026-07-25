@@ -1,14 +1,14 @@
 # VibeTable
 
-通用建表与文件管理桌面工具。基于 Directus 12 数据层，支持自由创建/删除数据表，配合完整的文档工作区（版本管理、内容比对、发布链接）。
+离线优先的通用建表与文件管理桌面工具。内置固定版本的 PocketBase sidecar，支持自由创建/删除数据表，并提供完整的文档工作区（版本管理、内容比对、发布链接）。
 
 ## 特性
 
-- **自由建表**：动态发现 Directus 集合，应用内 UI 创建/删除表与字段
+- **自由建表**：动态发现本地数据表，应用内 UI 创建/删除表与字段
 - **表格交互**：查询、筛选、排序、批量粘贴、CSV/Excel 导入导出
 - **文件管理**：文件上传/预览/恢复、git-like 本地内容存储、OpenXML 文档比对
 - **文档工作区**：文档版本、发布、链接到任意业务表、修订历史
-- **实时同步**：Directus WebSocket 实时更新
+- **实时同步**：本地 sidecar SSE 实时更新、断线续传与去重
 - **离线友好**：设备本地网格状态、修订历史、安全恢复
 
 ## 技术栈
@@ -16,7 +16,7 @@
 - **桌面宿主**：.NET 10 WPF + WebView2
 - **后端 BFF**：Python 3.11+（JSON-RPC over stdio）
 - **前端表格**：TypeScript + Vite + Tabulator
-- **数据层**：Directus 12（PostgreSQL）
+- **数据层**：内置 PocketBase sidecar（SQLite + CEL）
 
 ## 开发环境
 
@@ -25,7 +25,7 @@
 - .NET 10 SDK
 - Node.js 24.18（见 `.nvmrc`）
 - WebView2 Runtime
-- Directus ≥12 且 <13
+- Go 工具链仅用于从源码开发 sidecar；发布包运行时不需要 Go、Node 或网络下载
 
 ## 验证命令
 

@@ -5,9 +5,12 @@ import { setHostBridgeForTesting } from "./bridgeContext";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useTableAdminService } from "./tableAdminService";
+import { createSchemaEnumOptionDraft } from "./schemaFieldDraft";
+import { vi } from "vitest";
 import type {
   CollectionsChangedPayload,
   DatabaseOpenedPayload,
+  SchemaChangePayload,
 } from "@/contracts";
 
 /**
@@ -165,5 +168,145 @@ describe("tableAdminService", () => {
     expect(admin.collections[0]?.collection).toBe("vt_t_users");
     expect(admin.collections[0]?.metadata?.capabilityHash).toBe("abc");
     expect(admin.collections[0]?.displayName).toBe("用户");
+  });
+
+  it("validates then applies a normalized product schema without provider fields", async () => {
+    const request = vi.fn(async (type: string, payload: unknown) => {
+      if (type === "schema.validate") return payload;
+      if (type === "schema.apply") return (payload as { definition: unknown }).definition;
+      throw new Error(`unexpected ${type}`);
+    });
+    setHostBridgeForTesting({
+      request,
+      on: vi.fn(() => vi.fn()),
+    } as unknown as HostBridge);
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    admin.openCreate();
+    ui.openCreate();
+    admin.form.name = "订单";
+    const pending = createSchemaEnumOptionDraft();
+    Object.assign(pending, { valueText: "pending", displayName: "待处理" });
+    const completed = createSchemaEnumOptionDraft();
+    Object.assign(completed, { valueText: "done", displayName: "已完成" });
+    admin.updateField(0, {
+      name: "status",
+      type: "select",
+      enumOptions: [pending, completed],
+      required: true,
+    });
+    admin.addField("json");
+    admin.updateField(1, { name: "元数据", jsonSchemaText: '{"type":"object"}' });
+    admin.addField("formula");
+    admin.updateField(2, { name: "总额", formulaSource: "quantity * unit_price" });
+    admin.addField("dateTime");
+    admin.updateField(3, { name: "created_at" });
+    admin.addField("file");
+    admin.updateField(4, {
+      name: "photos",
+      allowedMimeTypesText: "image/png, image/jpeg",
+      thumbnailVariantsText: "320x240, 640x480",
+    });
+    admin.addField("multiSelect");
+    const urgent = createSchemaEnumOptionDraft();
+    Object.assign(urgent, { valueText: "1", displayName: "紧急" });
+    const external = createSchemaEnumOptionDraft();
+    Object.assign(external, { valueText: "external", displayName: "外部" });
+    const reviewed = createSchemaEnumOptionDraft();
+    Object.assign(reviewed, { valueText: "true", displayName: "已复核" });
+    admin.updateField(5, {
+      name: "labels",
+      enumOptions: [urgent, external, reviewed],
+      enumMinSelected: 1,
+      enumMaxSelected: 2,
+    });
+    admin.addIndex();
+    Object.assign(admin.form.indexes[0]!, {
+      name: "idx_status",
+      fieldClientIds: [admin.form.fields[0]!.clientId],
+    });
+    admin.addIndex();
+    Object.assign(admin.form.indexes[1]!, {
+      name: "uidx_status_created",
+      fieldClientIds: [
+        admin.form.fields[0]!.clientId,
+        admin.form.fields[3]!.clientId,
+      ],
+      unique: true,
+    });
+
+    await useTableAdminService().createTable();
+
+    expect(request.mock.calls.map(([type]) => type)).toEqual(["schema.validate", "schema.apply"]);
+    const validatedDefinition = (
+      request.mock.calls[0]?.[1] as SchemaChangePayload
+    ).definition;
+    expect(validatedDefinition.indexes).toEqual([
+      { name: "idx_status", fieldIds: ["fld_status"], unique: false },
+      {
+        name: "uidx_status_created",
+        fieldIds: ["fld_status", "fld_created_at"],
+        unique: true,
+      },
+    ]);
+    expect(validatedDefinition.fields[4]?.attachmentPolicy?.thumbnailVariants)
+      .toEqual(["320x240", "640x480"]);
+    expect(validatedDefinition.fields[0]?.constraints).toContainEqual({
+      kind: "enum",
+      multiple: false,
+      minSelected: 1,
+      maxSelected: 1,
+      options: [
+        { value: "pending", displayName: "待处理" },
+        { value: "done", displayName: "已完成" },
+      ],
+    });
+    expect(validatedDefinition.fields[5]?.constraints).toContainEqual({
+      kind: "enum",
+      multiple: true,
+      minSelected: 1,
+      maxSelected: 2,
+      options: [
+        { value: 1, displayName: "紧急" },
+        { value: "external", displayName: "外部" },
+        { value: true, displayName: "已复核" },
+      ],
+    });
+    expect((request.mock.calls[1]?.[1] as SchemaChangePayload).definition)
+      .toEqual(validatedDefinition);
+    const serialized = JSON.stringify(request.mock.calls[0]?.[1]);
+    expect(serialized).toContain('"dataType":"json"');
+    expect(serialized).toContain('"language":"cel-v1"');
+    expect(serialized).not.toMatch(
+      new RegExp(`${"dire" + "ctus"}|pocketbase|sessionSecret|accessToken`, "i"),
+    );
+    expect(admin.phase).toBe("idle");
+    expect(ui.createModalOpen).toBe(false);
+  });
+
+  it("keeps the form open and locates an authoritative schema error by path", async () => {
+    setHostBridgeForTesting({
+      request: vi.fn(async () => ({
+        error: {
+          code: "schema.field.invalid_constraint",
+          path: "fields[0].constraints.scale",
+          message: "scale 不能大于 precision",
+        },
+      })),
+      on: vi.fn(() => vi.fn()),
+    } as unknown as HostBridge);
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    admin.openCreate();
+    ui.openCreate();
+    admin.form.name = "订单";
+    admin.updateField(0, { name: "金额", type: "decimal", precision: 8, scale: 2 });
+
+    await useTableAdminService().createTable();
+
+    expect(admin.phase).toBe("failed");
+    expect(admin.serverFieldErrors["fields[0].constraints.scale"])
+      .toContain("scale 不能大于 precision");
+    expect(ui.createModalOpen).toBe(true);
   });
 });

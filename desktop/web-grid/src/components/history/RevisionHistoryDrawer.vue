@@ -248,9 +248,10 @@ function closeDrawer(): void {
 <template>
   <NDrawer
     :show="store.panelOpen"
-    :width="468"
+    width="min(calc(100vw - 24px), clamp(360px, 34vw, 420px))"
     placement="right"
     :show-mask="false"
+    :mask-closable="false"
     :trap-focus="false"
     :class="['revision-history-drawer', `density-${ui.density}`]"
     @update:show="(show) => { if (!show) closeDrawer(); }"
@@ -387,22 +388,34 @@ function closeDrawer(): void {
             class="timeline-entry"
           >
             <template #header>
-              <div class="entry-header">
+              <div
+                class="entry-header"
+                :data-testid="`history-entry-${changeSet.rootRevisionId}`"
+              >
                 <span class="timeline-dot" :class="`is-${actionType(changeSet.action)}`"></span>
                 <div class="entry-title">
                   <span>
                     <NTag size="small" :bordered="false" :type="actionType(changeSet.action)">{{ actionLabel(changeSet.action) }}</NTag>
                     <strong>{{ changeSet.recordLabel || recordsFor(changeSet)[0]?.recordLabel || t('history.unknownRecord') }}</strong>
                   </span>
-                  <small>
-                    <NIcon :size="12"><Clock3 /></NIcon>{{ formatTimestamp(changeSet.timestamp) }}
+                  <small :data-testid="`history-entry-meta-${changeSet.rootRevisionId}`">
+                    <span class="meta-item">
+                      <NIcon :size="12"><Clock3 /></NIcon>
+                      {{ formatTimestamp(changeSet.timestamp) }}
+                    </span>
                     <i></i>
-                    <NIcon :size="12"><UserRound /></NIcon>{{ changeSet.actor.displayName || t('history.unknownActor') }}
+                    <span class="meta-item">
+                      <NIcon :size="12"><UserRound /></NIcon>
+                      {{ changeSet.actor.displayName || t('history.unknownActor') }}
+                    </span>
+                    <template v-if="(changeSet.affectedRecords || recordsFor(changeSet).length) > 1">
+                      <i></i>
+                      <span class="affected-count">
+                        {{ t('history.affectedRecords', { count: changeSet.affectedRecords || recordsFor(changeSet).length }) }}
+                      </span>
+                    </template>
                   </small>
                 </div>
-                <span v-if="(changeSet.affectedRecords || recordsFor(changeSet).length) > 1" class="affected-count">
-                  {{ t('history.affectedRecords', { count: changeSet.affectedRecords || recordsFor(changeSet).length }) }}
-                </span>
               </div>
             </template>
 
@@ -472,7 +485,7 @@ function closeDrawer(): void {
     preset="card"
     :title="t('history.restorePreview')"
     :style="{ width: 'min(580px, calc(100vw - 32px))' }"
-    :mask-closable="store.restorePhase !== 'applying'"
+    :mask-closable="false"
     class="restore-preview-modal"
     @update:show="(show) => { if (!show && store.restorePhase !== 'applying') store.clearPreview(); }"
   >
@@ -518,7 +531,7 @@ function closeDrawer(): void {
           :loading="store.restorePhase === 'applying'"
           :disabled="!store.canApply"
           data-testid="restore-confirm"
-          @click="emit('apply')"
+          @click.stop="emit('apply')"
         >
           <template #icon><NIcon><ArchiveRestore /></NIcon></template>
           {{ store.restorePhase === 'applying' ? t('history.restoreApplying') : t('history.restoreConfirm') }}
@@ -560,9 +573,10 @@ function closeDrawer(): void {
 .entry-title { display: flex; flex: 1 1 auto; min-width: 0; flex-direction: column; gap: 3px; }
 .entry-title > span { display: flex; align-items: center; min-width: 0; gap: 7px; }
 .entry-title strong { overflow: hidden; font-size: var(--vt-font-body); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.entry-title small { display: flex; align-items: center; gap: 4px; color: var(--vt-fg-muted); font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums; }
-.entry-title small i { width: 1px; height: 10px; margin: 0 2px; background: var(--vt-border); }
-.affected-count { flex: 0 0 auto; color: var(--vt-fg-muted); font-size: 11px; }
+.entry-title small { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--vt-fg-muted); font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums; line-height: 16px; }
+.entry-title small i { width: 1px; height: 10px; flex: 0 0 1px; margin: 0 2px; background: var(--vt-border); }
+.meta-item { display: inline-flex; min-width: 0; align-items: center; gap: 3px; }
+.affected-count { color: var(--vt-fg-muted); font-size: 11px; white-space: nowrap; }
 .record-list { display: flex; flex-direction: column; gap: 8px; }
 .record-change { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-md); background: var(--vt-bg-subtle); }
 .record-change > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 38px; padding: 5px 8px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg-elevated); }
@@ -586,6 +600,34 @@ function closeDrawer(): void {
 .diagnostics code { color: var(--vt-fg); font-family: Consolas, "SFMono-Regular", monospace; }
 .expiry { display: block; margin-top: 10px; color: var(--vt-fg-muted); font-variant-numeric: tabular-nums; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+@media (max-width: 420px) {
+  .filter-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .filter-grid > :deep(*) {
+    grid-column: 1 / -1;
+  }
+  .tool-meta {
+    align-items: flex-start;
+  }
+  .entry-title small {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1px;
+  }
+  .entry-title small i {
+    display: none;
+  }
+  .meta-item,
+  .affected-count {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .meta-item :deep(.n-icon) {
+    display: none;
+  }
+}
 </style>
 
 <style>

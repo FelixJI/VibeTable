@@ -34,6 +34,18 @@ public enum MutationErrorKind
 }
 
 /// <summary>
+/// Raised by a local table gateway when its preflight old-value/digest guard
+/// detects a stale row before the RPC mutation is sent.
+/// </summary>
+public sealed class TableEditConflictException : Exception
+{
+    public TableEditConflictException(string message)
+        : base(message)
+    {
+    }
+}
+
+/// <summary>
 /// Maps <see cref="RpcRemoteException"/> (and transport exceptions) to typed
 /// <see cref="MutationError"/> values. Keeps the
 /// <see cref="TableWorkspaceService"/> free of JSON-parsing details.
@@ -45,6 +57,18 @@ public static class MutationErrorMapper
 
     /// <summary>JSON-RPC error code: mutation validation failure.</summary>
     public const int CodeMutationValidation = -32011;
+
+    public static string ToWireKind(MutationErrorKind kind)
+        => kind switch
+        {
+            MutationErrorKind.EditConflict => "edit_conflict",
+            MutationErrorKind.Validation => "mutation_validation",
+            MutationErrorKind.SchemaMismatch => "schema_mismatch",
+            MutationErrorKind.NotWritable => "not_writable",
+            MutationErrorKind.BackendUnavailable => "backend_unavailable",
+            MutationErrorKind.Cancelled => "cancelled",
+            _ => "unknown",
+        };
 
     /// <summary>
     /// Map an exception thrown by a mutation gateway call to a typed error.
@@ -66,6 +90,13 @@ public static class MutationErrorMapper
         {
             return new MutationError(
                 MutationErrorKind.BackendUnavailable, backendGone.Message);
+        }
+
+        if (exception is TableEditConflictException conflict)
+        {
+            return new MutationError(
+                MutationErrorKind.EditConflict,
+                conflict.Message);
         }
 
         if (exception is RpcRemoteException remote)

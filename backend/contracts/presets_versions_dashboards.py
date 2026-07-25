@@ -1,13 +1,13 @@
 """C2 Presets, Content Versions, and Insights Dashboards/Panels contracts.
 
 * **Presets** (Task 4) map shared business views (filter/sort/search/visible
-  fields/layout) to Directus presets. Device-local details (window position,
+  fields/layout) to product presets. Device-local details (window position,
   pixel widths, scroll) stay in the B3 local Grid State, referencing the preset
   id/version.
 * **Content Versions** (Task 5) are unpublished working copies of an item on
   version-enabled collections (distinct from Revisions, which are audit
   history).
-* **Dashboards/Panels** (Task 6-7) implement the full Directus Insights designer
+* **Dashboards/Panels** (Task 6-7) implement the product Insights designer
   with a locked built-in panel manifest, interactive filters and drilldown.
 """
 
@@ -57,7 +57,7 @@ class PresetView(CamelModel):
 
 
 class PresetEntry(CamelModel):
-    """One Directus preset (personal bookmark or shared system/role preset)."""
+    """One product preset (personal bookmark or shared system/role preset)."""
 
     id: str = Field(min_length=1, max_length=128)
     collection: str = Field(min_length=1, max_length=128)
@@ -65,34 +65,40 @@ class PresetEntry(CamelModel):
     scope: PresetScope = "personal"
     view: PresetView = Field(default_factory=PresetView)
     user_id: str | None = Field(default=None, max_length=128)
+    revision: str = Field(default="", max_length=128)
+    change_set_id: str | None = Field(default=None, max_length=128)
+    emitted_events: list[str] = Field(default_factory=list)
 
 
 class ListPresetsParams(CamelModel):
-    """Parameters for ``directus.listPresets``."""
+    """Parameters for listing presets."""
 
     collection: str = Field(min_length=1, max_length=128)
 
 
 class PresetsResult(CamelModel):
-    """Result of ``directus.listPresets``."""
+    """Result of listing presets."""
 
     collection: str = Field(min_length=1, max_length=128)
     presets: list[PresetEntry] = Field(default_factory=list)
 
 
 class SavePresetParams(CamelModel):
-    """Parameters for ``directus.savePreset`` (create or update)."""
+    """Parameters for saving a preset."""
 
     collection: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=256)
     view: PresetView
     preset_id: str | None = Field(default=None, max_length=128)
+    operation_id: str = Field(min_length=1, max_length=128)
 
 
 class DeletePresetParams(CamelModel):
-    """Parameters for ``directus.deletePreset`` (shared presets need permission)."""
+    """Parameters for deleting a preset (shared presets need permission)."""
 
     preset_id: str = Field(min_length=1, max_length=128)
+    expected_revision: str = Field(min_length=1, max_length=128)
+    operation_id: str = Field(min_length=1, max_length=128)
 
 
 # ---------------------------------------------------------------------------
@@ -108,17 +114,20 @@ class ContentVersionEntry(CamelModel):
     name: str = Field(default="", max_length=256)
     outdated: bool = False
     main_hash: str = Field(default="", max_length=128)
+    revision: str = Field(default="", max_length=128)
+    change_set_id: str | None = Field(default=None, max_length=128)
+    emitted_events: list[str] = Field(default_factory=list)
 
 
 class ListVersionsParams(CamelModel):
-    """Parameters for ``directus.listVersions``."""
+    """Parameters for listing versions."""
 
     collection: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=128)
 
 
 class VersionsResult(CamelModel):
-    """Result of ``directus.listVersions``."""
+    """Result of listing versions."""
 
     collection: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=128)
@@ -126,26 +135,39 @@ class VersionsResult(CamelModel):
 
 
 class CreateVersionParams(CamelModel):
-    """Parameters for ``directus.createVersion``."""
+    """Parameters for creating a version."""
 
     collection: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=128)
     key: str = Field(default="", max_length=128)
     name: str = Field(default="", max_length=256)
+    operation_id: str = Field(min_length=1, max_length=128)
 
 
 class VersionIdParams(CamelModel):
-    """Parameters for ``directus.readVersion`` / ``.deleteVersion``."""
+    """Parameters for reading or deleting a version."""
 
     collection: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=128)
     version_id: str = Field(min_length=1, max_length=128)
+    # ``version.compare`` and ``version.delete`` intentionally share this
+    # registered model. Reads may omit the id; the closed desktop bridge
+    # requires it for the destructive delete command.
+    operation_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class SaveVersionParams(VersionIdParams):
-    """Parameters for ``directus.saveVersion`` (writes to the working copy)."""
+    """Parameters for saving a version working copy."""
 
     values: dict[str, Any] = Field(default_factory=dict)
+    operation_id: str = Field(min_length=1, max_length=128)
+
+
+class DeleteVersionParams(VersionIdParams):
+    """Destructive version removal with optimistic concurrency and replay."""
+
+    expected_revision: str = Field(min_length=1, max_length=128)
+    operation_id: str = Field(min_length=1, max_length=128)
 
 
 class VersionCompareResult(CamelModel):
@@ -160,12 +182,13 @@ class VersionCompareResult(CamelModel):
 
 
 class PromoteVersionParams(CamelModel):
-    """Parameters for ``directus.promoteVersion`` (publish working copy to main)."""
+    """Parameters for promoting a version working copy."""
 
     collection: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=128)
     version_id: str = Field(min_length=1, max_length=128)
     main_hash: str = Field(min_length=1)
+    operation_id: str = Field(min_length=1, max_length=128)
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +253,7 @@ class DashboardTimeBucket(CamelModel):
 
 
 class DashboardRecordQuery(CamelModel):
-    """Structured list-panel query; raw Directus filter JSON is not accepted."""
+    """Structured list-panel query; raw storage filter JSON is not accepted."""
 
     kind: Literal["records"] = "records"
     collection: str = Field(min_length=1, max_length=128)
@@ -279,7 +302,7 @@ class DashboardQueryLimits(CamelModel):
 
 
 class CompiledDashboardQuery(CamelModel):
-    """Validated Directus query params plus bounded result metadata."""
+    """Validated product query params plus bounded result metadata."""
 
     params: dict[str, Any]
     referenced_fields: list[str] = Field(default_factory=list)
@@ -317,23 +340,23 @@ class DashboardEntry(CamelModel):
 
 
 class ListDashboardsParams(CamelModel):
-    """Parameters for ``directus.listDashboards``."""
+    """Parameters for listing dashboards."""
 
 
 class DashboardsResult(CamelModel):
-    """Result of ``directus.listDashboards``."""
+    """Result of listing dashboards."""
 
     dashboards: list[DashboardEntry] = Field(default_factory=list)
 
 
 class DashboardIdParams(CamelModel):
-    """Parameters for ``directus.readDashboard`` / ``.deleteDashboard``."""
+    """Parameters for reading or deleting a dashboard."""
 
     dashboard_id: str = Field(min_length=1, max_length=128)
 
 
 class SaveDashboardParams(CamelModel):
-    """Parameters for ``directus.saveDashboard`` (create or update)."""
+    """Parameters for saving a dashboard."""
 
     name: str = Field(min_length=1, max_length=256)
     note: str = Field(default="", max_length=2048)
@@ -341,7 +364,7 @@ class SaveDashboardParams(CamelModel):
 
 
 class SavePanelParams(CamelModel):
-    """Parameters for ``directus.savePanel`` (create, update, or batch reposition)."""
+    """Parameters for saving or repositioning a panel."""
 
     dashboard_id: str = Field(min_length=1, max_length=128)
     name: str = Field(default="", max_length=256)
@@ -355,7 +378,7 @@ class SavePanelParams(CamelModel):
 
 
 class PanelIdParams(CamelModel):
-    """Parameters for ``directus.deletePanel``."""
+    """Parameters for deleting a panel."""
 
     dashboard_id: str = Field(min_length=1, max_length=128)
     panel_id: str = Field(min_length=1, max_length=128)
@@ -364,7 +387,7 @@ class PanelIdParams(CamelModel):
 class PanelManifestEntry(CamelModel):
     """One entry in the locked built-in panel manifest.
 
-    The manifest pins the Directus host version's built-in panel types so the
+    The manifest pins the host's built-in panel types so the
     renderer only executes known, audited panel types. Custom/unknown panels
     are NOT executed (safe fallback).
     """
@@ -376,10 +399,10 @@ class PanelManifestEntry(CamelModel):
 
 
 class PanelManifestResult(CamelModel):
-    """Result of ``directus.panelManifest`` (the locked built-in panel list)."""
+    """Locked built-in panel list."""
 
     manifest_version: str = Field(min_length=1, max_length=64)
-    directus_compatibility: str = Field(default="", max_length=64)
+    query_contract: str = Field(default="", max_length=64)
     panels: list[PanelManifestEntry] = Field(default_factory=list)
 
 
@@ -413,7 +436,7 @@ class DashboardFilterState(CamelModel):
     """The current values of all dashboard filter variables.
 
     Global filters merge with each panel's own filter via explicit ``_and``; the
-    user never injects raw Directus filter JSON.
+    user never injects raw storage filter JSON.
     """
 
     values: dict[str, Any] = Field(default_factory=dict)
@@ -429,7 +452,7 @@ class DashboardInteraction(CamelModel):
 
 
 class DashboardManagedConfig(CamelModel):
-    """VibeTable-only metadata stored beside Directus dashboard core data."""
+    """Product metadata stored beside dashboard core data."""
 
     config_version: int = Field(default=1, ge=1)
     global_filters: list[DashboardFilterVariable] = Field(default_factory=list, max_length=32)

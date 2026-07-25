@@ -33,15 +33,15 @@ describe("startupService", () => {
     expect(useStartupStore().detail).toBe("done");
   });
 
-  it("sends credentials with fire-and-forget notify envelopes", () => {
+  it("sends only readiness retry and cancel actions as fire-and-forget envelopes", () => {
     const { bridge, posted } = makeBridge();
     setHostBridgeForTesting(bridge);
     const service = useStartupService();
-    service.submitLogin({ email: "a@example.com", password: "secret", otp: "123456", rememberPassword: false, autoLogin: false });
     service.retry();
+    service.cancel();
     expect(posted).toEqual([
-      { type: "host.loginSubmitted", payload: { email: "a@example.com", password: "secret", otp: "123456", rememberPassword: false, autoLogin: false } },
       { type: "host.startupRetryRequested", payload: {} },
+      { type: "host.startupCancelRequested", payload: {} },
     ]);
     expect(posted.every((message) => !(message as { requestId?: string }).requestId)).toBe(true);
   });

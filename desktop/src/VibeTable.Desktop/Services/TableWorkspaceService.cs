@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
@@ -7,7 +8,7 @@ using VibeTable.Contracts;
 namespace VibeTable.Desktop.Services;
 
 /// <summary>
-/// Host paging limits for Directus-backed collection views.
+/// Host paging limits for product collection views.
 /// </summary>
 public static class TableWorkspaceLimits
 {
@@ -19,7 +20,7 @@ public static class TableWorkspaceLimits
     public const int ClientRowBudget = 25_000;
 
     /// <summary>
-    /// Hard cap on a single Directus collection page. The workspace service
+    /// Hard cap on a single product collection page. The workspace service
     /// always requests pages of this size and never exceeds it.
     /// </summary>
     public const int MaxPageLimit = 500;
@@ -27,7 +28,7 @@ public static class TableWorkspaceLimits
 
 /// <summary>
 /// Orchestrates collection discovery, paging, and host notifications over the
-/// Directus-backed workspace gateway.
+/// product workspace gateway.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -116,8 +117,8 @@ public sealed class TableWorkspaceService
             .ConfigureAwait(true);
         _currentDatabase = path;
         // Filter on the way in so the cache matches the sidebar exactly: the
-        // gateway returns the RAW collection list (incl. directus_* and
-        // vibetable_* system tables), but those are never user-selectable.
+        // The gateway returns the raw collection list, including vibetable_*
+        // product metadata tables, but those are never user-selectable.
         Volatile.Write(ref _knownTables, FilterUserTables(result.Tables));
         Volatile.Write(ref _knownViews, result.Views);
         return result;
@@ -128,9 +129,9 @@ public sealed class TableWorkspaceService
     /// this from collection-mutation flows (create/delete/reconcile) that have
     /// ALREADY re-listed collections: it swaps the cache without a second RPC
     /// round-trip. The list is filtered through
-    /// <see cref="DirectusCollectionFilter.FilterUserTables"/> defensively (a
-    /// future caller handing in system-prefixed names must not accidentally widen
-    /// the selectable set). Views are reset to empty (Directus has no view list).
+    /// <see cref="FilterUserTables"/> defensively so product metadata names
+    /// cannot accidentally widen the selectable set. Views are reset because
+    /// normalized schema mutations currently expose base tables only.
     /// </summary>
     /// <remarks>
     /// This is the fix for the "create-then-open throws ArgumentException" bug:
@@ -148,10 +149,10 @@ public sealed class TableWorkspaceService
 
     /// <summary>
     /// Standalone cache refresh: re-queries the gateway's collection list and
-    /// swaps the known-tables cache. Used by the host's reconcile path (Directus
-    /// Studio edits) which needs to refresh the cache WITHOUT necessarily
-    /// re-posting <c>database.collectionsChanged</c>. On cancellation the cache
-    /// is left untouched.
+    /// swaps the known-tables cache. Used after normalized schema changes when
+    /// the cache needs refreshing without necessarily re-posting
+    /// <c>database.collectionsChanged</c>. On cancellation the cache is left
+    /// untouched.
     /// </summary>
     public async Task RefreshKnownTablesAsync(CancellationToken token)
     {
@@ -188,7 +189,7 @@ public sealed class TableWorkspaceService
         {
             throw new ArgumentException(
                 $"Table '{table}' is not one of the names advertised by " +
-                $"source discovery for the current Directus connection.",
+                $"source discovery for the current local data source.",
                 nameof(table));
         }
 
@@ -227,7 +228,7 @@ public sealed class TableWorkspaceService
         {
             throw new ArgumentException(
                 $"Table '{table}' is not one of the names advertised by " +
-                $"source discovery for the current Directus connection.",
+                $"source discovery for the current local data source.",
                 nameof(table));
         }
         int safeLimit = Math.Clamp(limit, 1, TableWorkspaceLimits.MaxPageLimit);
@@ -430,7 +431,8 @@ public sealed class TableWorkspaceService
         string column,
         object? oldValue,
         object? newValue,
-        string schemaRevision)
+        string schemaRevision,
+        string? expectedDigest = null)
     {
         if (string.IsNullOrEmpty(table))
         {
@@ -441,7 +443,7 @@ public sealed class TableWorkspaceService
         {
             var result = await _gateway.UpdateCellAsync(
                 table, rowKey, column, oldValue, newValue, schemaRevision,
-                CancellationToken.None).ConfigureAwait(false);
+                CancellationToken.None, expectedDigest).ConfigureAwait(false);
             if (IsStale(generation))
             {
                 // The user switched tables: do NOT apply the commit anywhere.
@@ -581,14 +583,17 @@ public sealed class TableWorkspaceService
     }
 
     /// <summary>
-    /// Filters a raw collection list to user tables (drops
-    /// <c>directus_*</c>/<c>vibetable_*</c> system collections) so the cache
-    /// matches the sidebar exactly. Thin wrapper over
-    /// <see cref="DirectusCollectionFilter.FilterUserTables"/> kept inline for
-    /// readability at the call sites.
+    /// Filters a raw collection list to user tables. Product table discovery
+    /// is already closed over normalized user tables.
+    /// Keep a final defensive filter for internal VibeTable namespaces in case
+    /// a future catalog adapter is misconfigured.
     /// </summary>
     private static IReadOnlyList<string> FilterUserTables(IEnumerable<string> collections)
-        => DirectusCollectionFilter.FilterUserTables(collections);
+        => collections
+            .Where(name => !string.IsNullOrWhiteSpace(name)
+                && !name.StartsWith("vibetable_", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
 }
 
 /// <summary>

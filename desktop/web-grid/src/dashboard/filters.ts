@@ -94,23 +94,12 @@ export function mergePanelFilters(
   return { and: clauses };
 }
 
-export function toDirectusFilter(expression: FilterExpression | null): Record<string, unknown> {
-  if (!expression) return {};
+export function toProductFilters(expression: FilterExpression | null): readonly FilterPredicate[] {
+  if (!expression) return [];
   if ("and" in expression) {
-    return { _and: expression.and.map((item) => toDirectusFilter(item)) };
+    return expression.and.flatMap((item) => toProductFilters(item));
   }
-  if (expression.operator === "is_null") {
-    return { [expression.field]: { _null: true } };
-  }
-  if (expression.operator === "is_not_null") {
-    return { [expression.field]: { _nnull: true } };
-  }
-  const directusOperator = `_${expression.operator}`;
-  return {
-    [expression.field]: {
-      [directusOperator]: expression.value,
-    },
-  };
+  return [{ ...expression }];
 }
 
 function operatorForVariable(type: DashboardFilterType, value: unknown): FilterOperator {

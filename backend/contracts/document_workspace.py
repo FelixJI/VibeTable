@@ -1,9 +1,9 @@
-"""G3 document workspace contracts: workspace metadata RPC.
+"""G3 document workspace contracts: provider-neutral metadata RPC.
 
-The BFF handles metadata only — it never accepts local absolute paths or
-binary payloads. The C# publisher reads from ``.backup/outbox/{eventId}.json``
-and posts to the vibetable-workspace-index extension; the BFF writes a receipt
-and deletes the outbox event on success.
+The broker handles metadata only — it never accepts local absolute paths or
+binary payloads. The native workspace owns files, immutable revisions, restore,
+and its durable registration outbox. Successful metadata receipts allow the
+native host to retire the corresponding outbox entry.
 
 RPCs:
 * ``workspace.readFolder`` — list folders/documents in a workspace folder
@@ -15,8 +15,36 @@ RPCs:
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+import re
+from datetime import datetime
+from typing import Annotated, Any
+
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from pydantic.alias_generators import to_camel
+
+_RFC3339_UTC = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)$"
+)
+
+
+def _canonical_rfc3339_utc(value: Any) -> str:
+    if not isinstance(value, str) or _RFC3339_UTC.fullmatch(value) is None:
+        raise ValueError("createdAt must be an RFC 3339 UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("createdAt must be an RFC 3339 UTC timestamp") from exc
+    canonical = parsed.strftime("%Y-%m-%dT%H:%M:%S")
+    if parsed.microsecond:
+        canonical += f".{parsed.microsecond:06d}".rstrip("0")
+    return canonical + "Z"
+
+
+CreatedAt = Annotated[
+    str,
+    BeforeValidator(_canonical_rfc3339_utc),
+    Field(min_length=1, max_length=64),
+]
 
 
 def _camel_config() -> ConfigDict:
@@ -87,6 +115,7 @@ class RegisterDocumentParams(WorkspaceModel):
     revision_id: str = Field(min_length=1, max_length=128)
     hash: str = Field(min_length=8, max_length=64)
     size: int = Field(default=0, ge=0)
+    created_at: CreatedAt
     item_collection: str | None = Field(default=None, max_length=128)
     item_id: str | None = Field(default=None, max_length=128)
     link_type: str = Field(default="attachment", max_length=64)
@@ -114,13 +143,22 @@ class RevisionIndexEntry(WorkspaceModel):
     hash: str = Field(min_length=8, max_length=64)
     size: int = Field(default=0, ge=0)
     mime_type: str = Field(default="", max_length=128)
+    created_at: CreatedAt
     created_by: str | None = Field(default=None, max_length=128)
     device_id: str | None = Field(default=None, max_length=128)
     comment: str | None = Field(default=None)
 
 
+class PublishHeadAdvance(WorkspaceModel):
+    document_id: str = Field(min_length=1, max_length=128)
+    scheme_id: str = Field(min_length=1, max_length=128)
+    expected_head_revision_id: str | None = Field(default=None, max_length=128)
+    new_head_revision_id: str = Field(min_length=1, max_length=128)
+
+
 class PublishIndexBatchParams(WorkspaceModel):
     revisions: list[RevisionIndexEntry] = Field(min_length=1, max_length=100)
+    head_advance: PublishHeadAdvance | None = None
     idempotency_key: str = Field(min_length=1, max_length=128)
 
 

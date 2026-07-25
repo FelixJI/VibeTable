@@ -2,12 +2,13 @@ import { onBeforeUnmount, ref, watch, type Ref } from "vue";
 import type { TabulatorFull } from "tabulator-tables";
 
 import { useTableStore } from "@/stores/tableStore";
-import { buildGridColumns, createGrid } from "@/grid/createGrid";
+import { buildTabulatorColumns, createGrid } from "@/grid/createGrid";
 import type { CellEditedHandler, CellValidationErrorHandler, RelationLookupGridContext } from "@/grid/createGrid";
 import type { ColumnEditSchema, ColumnSchema, LookupValueProvenance, NormalizedRelationDescriptor, TablePage } from "@/contracts";
 import type { FilterCondition, LookupGroup, SortCondition } from "@/contracts";
 import { buildQuery } from "@/grid/queryAdapter";
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
+import { currentLocale, t } from "@/i18n";
 
 // Lazy CSS import — Tabulator's own stylesheet, bundled by Vite. Importing at
 // module load guarantees the styles are present before the grid mounts.
@@ -91,6 +92,10 @@ export interface UseTabulatorOptions {
     value: unknown,
   ) => void;
   readonly onLookupSourceRequested?: (source: LookupValueProvenance) => void;
+  readonly onAttachmentOpenRequested?: (
+    rowKey: string | number,
+    column: ColumnSchema,
+  ) => void;
   /** User sort/filter/group intent; always executed against the full dataset. */
   readonly onViewQueryChanged?: (query: {
     readonly filters: readonly FilterCondition[];
@@ -146,7 +151,9 @@ export function useTabulator(
   // ref with the keyboard shortcuts via provide/inject). Otherwise create a
   // fresh internal ref (historical behavior).
   const tabulator = options?.tabulator ?? ref<TabulatorFull | null>(null);
+  const dataApplying = ref(false);
   let lastColSignature: string | null = null;
+  let lastSchemaGeneration = -1;
   let lastEditSignature = editSchemaSignature(store.editSchema);
   let lastRelationSignature = "";
 
@@ -158,6 +165,7 @@ export function useTabulator(
     lookupUnavailableReason: relationLookupStore.lookupUnavailableReason,
     onRelationEditRequested: options?.onRelationEditRequested,
     onLookupSourceRequested: options?.onLookupSourceRequested,
+    onAttachmentOpenRequested: options?.onAttachmentOpenRequested,
   });
 
   /**
@@ -171,6 +179,12 @@ export function useTabulator(
   let rangeChangedHandler: ((range: unknown) => void) | null = null;
   let viewQueryHandler: (() => void) | null = null;
   let groupChangedHandler: ((groups: unknown) => void) | null = null;
+  let cellEditingHandler: (() => void) | null = null;
+  let cellEditFinishedHandler: (() => void) | null = null;
+  let editing = false;
+  let queuedColumnRefresh = false;
+  let queuedRows: ReadonlyArray<Record<string, unknown>> | null = null;
+  let applyingRows: Promise<void> | null = null;
   let activeGroups: LookupGroup[] = [];
   let lastViewQuerySignature = "";
 
@@ -198,6 +212,25 @@ export function useTabulator(
       currentOnCellEdited = cb;
     },
   );
+
+  // Column titles come from the schema, but filter placeholders, structured
+  // cell labels and empty-state copy are localized at construction time.
+  // Rebuild in place so an already-open table switches language immediately.
+  watch(currentLocale, () => {
+    if (!tabulator.value) return;
+    if (editing) {
+      queuedColumnRefresh = true;
+      return;
+    }
+    const schema = store.schema ?? store.pages[0]?.columns;
+    if (!schema) return;
+    const carrier = { columns: schema } as TablePage;
+    retireDomSelectionBeforeColumnRefresh();
+    tabulator.value.setColumns(
+      buildTabulatorColumns(carrier, store.editSchema, relationContext()) as unknown[],
+    );
+    refreshLocalizedPlaceholder(tabulator.value, gridEl.value);
+  });
   watch(
     () => options?.onRangeSelectionChanged,
     (callback) => {
@@ -218,7 +251,8 @@ export function useTabulator(
       if (!firstPage) return;
       tabulator.value = createGrid(el, firstPage, {
         editSchema: store.editSchema,
-        onCellEdited: (rk, col, old, nw) => currentOnCellEdited?.(rk, col, old, nw),
+        onCellEdited: (rk, col, old, nw, digest) =>
+          currentOnCellEdited?.(rk, col, old, nw, digest),
         onValidationError: (rk, col, err) => currentOnValidationError?.(rk, col, err),
         relationLookup: relationContext(),
       });
@@ -248,8 +282,20 @@ export function useTabulator(
       eventGrid.on?.("dataSorted", viewQueryHandler);
       eventGrid.on?.("dataFiltered", viewQueryHandler);
       eventGrid.on?.("dataGrouped", groupChangedHandler);
+      cellEditingHandler = () => {
+        editing = true;
+      };
+      cellEditFinishedHandler = () => {
+        editing = false;
+        refreshQueuedColumns();
+        void drainQueuedRows();
+      };
+      eventGrid.on?.("cellEditing", cellEditingHandler);
+      eventGrid.on?.("cellEdited", cellEditFinishedHandler);
+      eventGrid.on?.("cellEditCancelled", cellEditFinishedHandler);
       lastColSignature = colSignature(firstPage.columns);
       lastEditSignature = editSchemaSignature(store.editSchema);
+      lastSchemaGeneration = store.loadGeneration;
       lastRelationSignature = relationSignature();
       // Record the rows we just seeded so the data watcher can recognize and
       // skip them (createGrid embedded these in its `data` option).
@@ -266,9 +312,8 @@ export function useTabulator(
     (rows) => {
       if (!tabulator.value) return;
       if (sameRows(rows, lastSeededRows)) return;
-      lastSeededRows = rows;
-      // Flatten the readonly row array into a plain array for Tabulator.
-      void tabulator.value.setData([...rows]);
+      queuedRows = rows;
+      void drainQueuedRows();
     },
     { deep: false },
   );
@@ -277,19 +322,25 @@ export function useTabulator(
   // place. Rare, so a sync setColumns is acceptable; if Tabulator's real
   // runtime rejects it (version quirk), fall back to a data refresh.
   watch(
-    () => store.schema,
-    (schema) => {
+    [() => store.schema, () => store.loadGeneration],
+    ([schema, generation]) => {
       if (!tabulator.value || !schema) return;
       const sig = colSignature(schema);
-      if (sig === lastColSignature) return;
+      if (sig === lastColSignature && generation === lastSchemaGeneration) return;
+      if (editing) {
+        queuedColumnRefresh = true;
+        return;
+      }
       lastColSignature = sig;
+      lastSchemaGeneration = generation;
       try {
         // buildColumns reads only `page.columns`; construct a minimal carrier
         // so the call stays type-safe without a full TablePage.
         const carrier = { columns: schema } as TablePage;
         tabulator.value.setColumns(
-          buildGridColumns(carrier, store.editSchema, relationContext()) as unknown[],
+          buildTabulatorColumns(carrier, store.editSchema, relationContext()) as unknown[],
         );
+        lastEditSignature = editSchemaSignature(store.editSchema);
       } catch {
         // setColumns failed (Tabulator version quirk) -> refresh data only.
         void tabulator.value.setData([...store.allRows]);
@@ -308,14 +359,18 @@ export function useTabulator(
       if (!tabulator.value) return;
       const sig = editSchemaSignature(editSchema);
       if (sig === lastEditSignature) return;
-      lastEditSignature = sig;
       const schema = store.schema ?? store.pages[0]?.columns;
       if (!schema) return;
+      if (editing) {
+        queuedColumnRefresh = true;
+        return;
+      }
       try {
         const carrier = { columns: schema } as TablePage;
         tabulator.value.setColumns(
-          buildGridColumns(carrier, editSchema, relationContext()) as unknown[],
+          buildTabulatorColumns(carrier, editSchema, relationContext()) as unknown[],
         );
+        lastEditSignature = sig;
       } catch {
         // setColumns rejected (Tabulator version quirk) -> no-op; the grid
         // stays read-only until the next schema change forces a rebuild.
@@ -325,9 +380,18 @@ export function useTabulator(
 
   watch(
     [
+      () => relationLookupStore.schema?.collection,
       () => relationLookupStore.schema?.schemaRevision,
       () => relationLookupStore.schema?.permissionRevision,
       () => relationLookupStore.schema?.lookupRevision,
+      () => relationLookupStore.schema?.normalizedRelations
+        .map((relation) => relation.relationId)
+        .sort()
+        .join("|"),
+      () => relationLookupStore.lookups
+        .map((lookup) => lookup.lookupId)
+        .sort()
+        .join("|"),
       () => relationLookupStore.capabilities?.relationEditV1,
       () => relationLookupStore.capabilities?.lookupQueryV1,
     ],
@@ -335,12 +399,16 @@ export function useTabulator(
       if (!tabulator.value) return;
       const signature = relationSignature();
       if (signature === lastRelationSignature) return;
-      lastRelationSignature = signature;
       const schema = store.schema ?? store.pages[0]?.columns;
       if (!schema) return;
+      if (editing) {
+        queuedColumnRefresh = true;
+        return;
+      }
+      lastRelationSignature = signature;
       const carrier = { columns: schema } as TablePage;
       tabulator.value.setColumns(
-        buildGridColumns(carrier, store.editSchema, relationContext()) as unknown[],
+        buildTabulatorColumns(carrier, store.editSchema, relationContext()) as unknown[],
       );
     },
   );
@@ -358,18 +426,90 @@ export function useTabulator(
       eventGrid?.off?.("dataFiltered", viewQueryHandler);
     }
     if (groupChangedHandler) eventGrid?.off?.("dataGrouped", groupChangedHandler);
+    if (cellEditingHandler) eventGrid?.off?.("cellEditing", cellEditingHandler);
+    if (cellEditFinishedHandler) {
+      eventGrid?.off?.("cellEdited", cellEditFinishedHandler);
+      eventGrid?.off?.("cellEditCancelled", cellEditFinishedHandler);
+    }
     tabulator.value?.destroy?.();
     tabulator.value = null;
   });
 
-  return { tabulator };
+  return { tabulator, dataApplying };
+
+  async function drainQueuedRows(): Promise<void> {
+    if (editing || applyingRows || !tabulator.value || !queuedRows) return;
+    const grid = tabulator.value;
+    applyingRows = (async () => {
+      dataApplying.value = true;
+      try {
+        while (!editing && queuedRows && tabulator.value === grid) {
+          const rows = queuedRows;
+          queuedRows = null;
+          lastSeededRows = rows;
+          await Promise.resolve(grid.setData([...rows]));
+        }
+      } finally {
+        dataApplying.value = false;
+        applyingRows = null;
+      }
+      if (!editing && queuedRows) await drainQueuedRows();
+    })();
+    await applyingRows;
+  }
+
+  function refreshQueuedColumns(): void {
+    if (!queuedColumnRefresh || editing || !tabulator.value) return;
+    queuedColumnRefresh = false;
+    const schema = store.schema ?? store.pages[0]?.columns;
+    if (!schema) return;
+    try {
+      const carrier = { columns: schema } as TablePage;
+      tabulator.value.setColumns(
+        buildTabulatorColumns(
+          carrier,
+          store.editSchema,
+          relationContext(),
+        ) as unknown[],
+      );
+      lastColSignature = colSignature(schema);
+      lastSchemaGeneration = store.loadGeneration;
+      lastEditSignature = editSchemaSignature(store.editSchema);
+      lastRelationSignature = relationSignature();
+      refreshLocalizedPlaceholder(tabulator.value, gridEl.value);
+    } catch {
+      void tabulator.value.setData([...store.allRows]);
+    }
+  }
+
+  function retireDomSelectionBeforeColumnRefresh(): void {
+    const ranges = (tabulator.value as unknown as {
+      getRanges?: () => Array<{ remove?: () => void }>;
+    } | null)?.getRanges?.() ?? [];
+    for (const range of ranges) range.remove?.();
+    const host = gridEl.value;
+    if (!host) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && host.contains(active)) active.blur();
+    const selection = window.getSelection();
+    if (selection?.rangeCount) selection.removeAllRanges();
+  }
 
   function relationSignature(): string {
     const current = relationLookupStore.schema;
     return [
+      current?.collection ?? "",
       current?.schemaRevision ?? "",
       current?.permissionRevision ?? "",
       current?.lookupRevision ?? "",
+      (current?.normalizedRelations ?? [])
+        .map((relation) => relation.relationId)
+        .sort()
+        .join(","),
+      relationLookupStore.lookups
+        .map((lookup) => lookup.lookupId)
+        .sort()
+        .join(","),
       relationLookupStore.capabilities?.relationEditV1 ? "e1" : "e0",
       relationLookupStore.capabilities?.lookupQueryV1 ? "l1" : "l0",
     ].join(":");
@@ -382,6 +522,7 @@ export function useTabulator(
     const query = buildQuery({
       sorters: grid.getSorters?.() ?? [],
       headerFilters: grid.getHeaderFilters?.() ?? [],
+      columns: store.schema ?? [],
       offset: 0,
       limit: 10_000,
     });
@@ -395,6 +536,19 @@ export function useTabulator(
     lastViewQuerySignature = signature;
     options?.onViewQueryChanged?.(view);
   }
+}
+
+function refreshLocalizedPlaceholder(
+  grid: TabulatorFull,
+  host: HTMLElement | null,
+): void {
+  const copy = t("grid.empty");
+  const runtime = grid as unknown as {
+    options?: Record<string, unknown>;
+  };
+  if (runtime.options) runtime.options.placeholder = copy;
+  const contents = host?.querySelector<HTMLElement>(".tabulator-placeholder-contents");
+  if (contents) contents.textContent = copy;
 }
 
 function collectGroupFields(raw: unknown): LookupGroup[] {

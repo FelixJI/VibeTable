@@ -233,7 +233,11 @@ public sealed class GridStateCoordinator
             {
                 _notify(new TableNotification
                 {
-                    Type = "table.pageLoaded",
+                    // A debounced query is a complete, authoritative result
+                    // page.  Emitting pageLoaded would append it to the
+                    // previously loaded dataset in the renderer, leaving rows
+                    // that no longer match the active filter visible.
+                    Type = "table.datasetReady",
                     Page = page,
                     LoadedRows = page.Rows.Count,
                 });

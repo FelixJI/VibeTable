@@ -22,6 +22,8 @@ from backend.application.path_grant import PathGrantError, SessionPathGrantStore
 from backend.application.task_runtime import TaskRuntime
 from backend.contracts.task import (
     CreateTaskParams,
+    HostExportTargetParams,
+    HostImportSourceParams,
     RequestExportTargetGrantParams,
     RequestImportSourceGrantParams,
     ResolveGrantParams,
@@ -66,6 +68,26 @@ class TaskService:
             "export-target registration is host-only; the renderer must request "
             "the picker via the WPF bridge",
             code="grant_host_only",
+        )
+
+    async def register_host_import_source(
+        self, params: HostImportSourceParams
+    ) -> SessionPathGrant:
+        return self._grants.issue(
+            purpose="import_source",
+            direction="read",
+            path=params.path,
+            size_bytes=params.size_bytes,
+            mime_type=params.mime_type,
+        )
+
+    async def register_host_export_target(
+        self, params: HostExportTargetParams
+    ) -> SessionPathGrant:
+        return self._grants.issue(
+            purpose="export_target",
+            direction="write",
+            path=params.path,
         )
 
     def issue_import_source(self, path: str, *, size_bytes: int | None = None) -> SessionPathGrant:

@@ -3,38 +3,66 @@
     "$schema": "vibetable.plugin-manifest.v1",
     "pluginId": "com.example.summary",
     "version": "1.2.0",
-    "displayName": { "zh-CN": "数据概览" },
-    "description": { "zh-CN": "只读概览插件" },
-    "compatibility": { "pluginApi": "1.x", "directus": ">=12.1 <13" },
-    "permissions": { "data": [], "files": [], "privateStorage": false },
+    "displayName": {
+      "zh-CN": "数据概览"
+    },
+    "description": {
+      "zh-CN": "只读概览插件"
+    },
+    "compatibility": {
+      "minHostVersion": "1.0.0",
+      "pluginApi": "1.x"
+    },
+    "permissions": {
+      "data": [],
+      "files": [],
+      "privateStorage": false,
+      "network": {
+        "domains": [],
+        "methods": []
+      }
+    },
     "actions": [
       {
         "actionId": "show-summary",
-        "displayName": { "zh-CN": "查看概览" },
+        "displayName": {
+          "zh-CN": "查看概览"
+        },
         "description": {},
-        "mode": "flow",
+        "mode": "local",
         "risk": "read",
         "invocation": "manual",
-        "placements": ["table.toolbar"],
+        "placements": [
+          "table.toolbar"
+        ],
         "requires": {},
-        "entryFlow": "summary",
-        "workerEntry": null,
+        "workerEntry": "dist/workers/summary.js",
         "formSchema": null,
         "inputSchema": "schemas/input.json",
         "outputSchema": "schemas/output.json"
       }
     ],
-    "flows": [],
-    "ui": { "customViews": [] }
+    "ui": {
+      "customViews": []
+    }
   },
   "result": {
     "contract": "vibetable.plugin-result.v1",
     "status": "success",
     "summary": "读取了 2 条记录",
-    "metrics": [{ "label": "记录", "value": 2 }],
+    "metrics": [
+      {
+        "label": "记录",
+        "value": 2
+      }
+    ],
     "table": null,
     "artifacts": [],
-    "refresh": { "collections": ["articles"] },
+    "refresh": {
+      "collections": [
+        "articles"
+      ]
+    },
     "warnings": []
   },
   "interaction": {
@@ -43,7 +71,12 @@
     "pluginId": "com.example.summary",
     "actionId": "show-summary",
     "caller": "user-1",
-    "progress": { "current": 2, "total": 10, "message": "处理中", "cancellable": true },
+    "progress": {
+      "current": 2,
+      "total": 10,
+      "message": "处理中",
+      "cancellable": true
+    },
     "pendingConfirmation": null,
     "cancelRequested": false
   },
@@ -73,9 +106,9 @@
   },
   "error": {
     "contract": "vibetable.plugin-error.v1",
-    "code": "flow_unbound",
-    "message": "入口 Flow 尚未绑定",
-    "recoverability": "rebind",
+    "code": "worker_unavailable",
+    "message": "本地 Worker 不可用",
+    "recoverability": "reconfigure",
     "pluginId": "com.example.summary",
     "actionId": "show-summary",
     "runId": null,
@@ -88,6 +121,9 @@
     "projectKey": "local:default",
     "entityId": "task-1",
     "revision": 7,
-    "snapshot": { "taskId": "task-1", "state": "succeeded" }
+    "snapshot": {
+      "taskId": "task-1",
+      "state": "succeeded"
+    }
   }
 }

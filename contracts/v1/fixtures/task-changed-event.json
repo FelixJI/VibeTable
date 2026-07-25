@@ -1,0 +1,14 @@
+{
+  "contractVersion": "1.0",
+  "topic": "task.changed",
+  "eventId": "evt_task_0021",
+  "sequence": 21,
+  "occurredAt": "2026-07-24T08:31:00Z",
+  "taskId": "job_formula_01HZX",
+  "taskType": "formulaBackfill",
+  "state": "running",
+  "progress": 0.625,
+  "cursor": "row:6250",
+  "error": null
+}
+

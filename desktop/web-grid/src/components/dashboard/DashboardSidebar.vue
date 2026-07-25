@@ -43,7 +43,7 @@ const filtered = computed(() => {
 .sidebar-list { overflow:auto; padding:0 7px 10px; }
 .dashboard-row { display:flex; align-items:center; gap:9px; width:100%; min-height:42px; padding:5px 9px; border:0; border-radius:var(--vt-radius-md); color:var(--vt-fg-muted); background:transparent; text-align:left; cursor:pointer; }
 .dashboard-row:hover { background:var(--vt-bg-sunken); color:var(--vt-fg); }
-.dashboard-row--active { color:var(--vt-color-primary-600); background:var(--vt-color-primary-50); }
+.dashboard-row--active { color:var(--vt-fg-accent); background:var(--vt-color-primary-50); }
 .dashboard-row span { display:flex; min-width:0; flex:1; flex-direction:column; }
 .dashboard-row strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:600; }
 .dashboard-row small { margin-top:2px; font-size:10px; color:var(--vt-fg-subtle); }

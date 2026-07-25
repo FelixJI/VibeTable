@@ -24,7 +24,7 @@ public sealed record DashboardTimeBucket(
 
 /// <summary>
 /// Discriminated dashboard query root. Only the two declared structured query
-/// shapes can cross the desktop bridge; raw Directus query JSON is not exposed.
+/// shapes can cross the desktop bridge; raw provider query JSON is not exposed.
 /// </summary>
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "kind")]
 [JsonDerivedType(typeof(DashboardRecordQuery), "records")]
@@ -109,6 +109,9 @@ public sealed record SaveDashboardDraftParams(
     string? Color = null);
 
 public sealed record DashboardWorkspaceParams(string DashboardId);
+
+/// <summary>Empty parameter object for product-owned insights operations.</summary>
+public sealed record InsightsEmptyParams;
 
 public sealed record DeleteDashboardResult(string Deleted);
 

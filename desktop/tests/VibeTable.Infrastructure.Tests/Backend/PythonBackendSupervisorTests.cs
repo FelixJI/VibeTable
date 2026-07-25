@@ -306,8 +306,19 @@ public sealed class PythonBackendSupervisorTests
         // previous tests already cover terminal states; this guards against a
         // regression where the event is never wired up.
         var transitions = new List<BackendState>();
+        using var stoppedObserved = new ManualResetEventSlim();
         await using var supervisor = new PythonBackendSupervisor(FakeOptions());
-        supervisor.StateChanged += (_, state) => transitions.Add(state);
+        supervisor.StateChanged += (_, state) =>
+        {
+            lock (transitions)
+            {
+                transitions.Add(state);
+            }
+            if (state == BackendState.Stopped)
+            {
+                stoppedObserved.Set();
+            }
+        };
 
         try
         {
@@ -320,10 +331,16 @@ public sealed class PythonBackendSupervisorTests
             throw;
         }
 
-        CollectionAssert.Contains(transitions, BackendState.Starting);
-        CollectionAssert.Contains(transitions, BackendState.Ready);
-        CollectionAssert.Contains(transitions, BackendState.Stopping);
-        CollectionAssert.Contains(transitions, BackendState.Stopped);
+        Assert.IsTrue(
+            stoppedObserved.Wait(TimeSpan.FromSeconds(5)),
+            "The asynchronous Stopped notification was not observed.");
+        lock (transitions)
+        {
+            CollectionAssert.Contains(transitions, BackendState.Starting);
+            CollectionAssert.Contains(transitions, BackendState.Ready);
+            CollectionAssert.Contains(transitions, BackendState.Stopping);
+            CollectionAssert.Contains(transitions, BackendState.Stopped);
+        }
     }
 
     [TestMethod]
@@ -368,6 +385,8 @@ public sealed class PythonBackendSupervisorTests
                 {
                     "gridState.get",
                     "gridState.save",
+                    "path.registerExportTarget",
+                    "path.registerImportSource",
                     "path.requestExportTarget",
                     "path.requestImportSource",
                     "path.resolveGrant",
@@ -375,6 +394,13 @@ public sealed class PythonBackendSupervisorTests
                     "task.cancel",
                     "task.create",
                     "task.status",
+                    "workspace.linkDocument",
+                    "workspace.publishIndexBatch",
+                    "workspace.readDocumentHistory",
+                    "workspace.readDocuments",
+                    "workspace.readFolder",
+                    "workspace.registerDocument",
+                    "workspace.unlinkDocument",
                 },
                 result.Capabilities);
         }

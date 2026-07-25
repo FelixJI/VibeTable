@@ -105,7 +105,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     private string _detailMessage = string.Empty;
 
     /// <summary>
-    /// The most recent backend / Directus progress line, shown in the bottom
+    /// The most recent backend progress line, shown in the bottom
     /// status bar while the system is starting or busy. Cleared by the host
     /// (MainWindow code-behind) when the WebView reaches Ready. The ViewModel
     /// itself does not clear it on state transitions — it has no notion of
@@ -145,7 +145,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     /// <summary>
     /// The native surface is only an initial WebView2/runtime guard and a
-    /// fatal-error fallback. Normal Directus/bootstrap/auth progress belongs
+    /// fatal-error fallback. Normal bootstrap/auth progress belongs
     /// to the web renderer once its first navigation succeeds.
     /// </summary>
     public bool IsHostFallbackVisible => !_shellLoaded || State == StartupState.Faulted;
@@ -170,6 +170,8 @@ public sealed class MainWindowViewModel : ViewModelBase
     /// </summary>
     public ICommand RetryCommand { get; }
 
+    internal Exception? LastStartupError { get; private set; }
+
     /// <summary>
     /// Begins the startup sequence. Transitions
     /// <c>StartingBackend -&gt; LoadingWeb</c> once the backend is ready, then
@@ -185,6 +187,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     /// </remarks>
     public async Task StartAsync()
     {
+        LastStartupError = null;
         // Retry re-enters StartingBackend from Faulted; the legal-transition
         // guard in TransitionTo enforces this.
         TransitionTo(StartupState.StartingBackend);
@@ -255,6 +258,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private void FaultFromStart(Exception ex)
     {
+        LastStartupError = ex;
         // StartingBackend -> Faulted. Unconditional: StartAsync's caller has
         // already decided this is fatal.
         TransitionTo(StartupState.Faulted);

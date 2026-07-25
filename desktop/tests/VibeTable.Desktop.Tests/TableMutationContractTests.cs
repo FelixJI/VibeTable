@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using VibeTable.Contracts;
+using VibeTable.Desktop.Services;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -12,6 +13,31 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class TableMutationContractTests
 {
+    [TestMethod]
+    [DataRow(MutationErrorKind.EditConflict, "edit_conflict")]
+    [DataRow(MutationErrorKind.Validation, "mutation_validation")]
+    [DataRow(MutationErrorKind.SchemaMismatch, "schema_mismatch")]
+    [DataRow(MutationErrorKind.NotWritable, "not_writable")]
+    [DataRow(MutationErrorKind.BackendUnavailable, "backend_unavailable")]
+    [DataRow(MutationErrorKind.Cancelled, "cancelled")]
+    [DataRow(MutationErrorKind.Unknown, "unknown")]
+    public void MutationErrorKindsUseFrozenRendererWireNames(
+        MutationErrorKind kind,
+        string expected)
+    {
+        Assert.AreEqual(expected, MutationErrorMapper.ToWireKind(kind));
+    }
+
+    [TestMethod]
+    public void LocalPreflightConflictMapsToRendererConflictKind()
+    {
+        MutationError error = MutationErrorMapper.Map(
+            new TableEditConflictException("row changed"));
+
+        Assert.AreEqual(MutationErrorKind.EditConflict, error.Kind);
+        Assert.AreEqual("edit_conflict", MutationErrorMapper.ToWireKind(error.Kind));
+    }
+
     private static readonly JsonSerializerOptions Web =
         new(JsonSerializerDefaults.Web);
 

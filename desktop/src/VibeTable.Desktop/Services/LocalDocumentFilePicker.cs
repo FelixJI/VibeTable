@@ -2,7 +2,7 @@ namespace VibeTable.Desktop.Services;
 
 /// <summary>
 /// Native-only file selection boundary. Implementations may show a Windows
-/// picker; renderer and Directus payloads never provide the selected path.
+/// picker; renderer and data-service payloads never provide the selected path.
 /// </summary>
 public interface ILocalDocumentFilePicker
 {

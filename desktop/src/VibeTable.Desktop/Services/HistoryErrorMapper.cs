@@ -29,10 +29,26 @@ public static class HistoryErrorMapper
     public static Failure MapBackendCode(string? code, string fallbackCode)
         => code switch
         {
-            "history_not_allowed" =>
+            "history_not_allowed" or "history.not_allowed" =>
                 new("history_not_allowed", "当前数据表不支持历史查询。"),
-            "history_field_unreadable" =>
+            "history_field_unreadable" or "history.field_unreadable" =>
                 new("history_field_unreadable", "当前字段不可读取，无法查看或恢复其历史。"),
+            "history.request_invalid" or "restore.request_invalid"
+                or "restore.scope_invalid" =>
+                new("history_request_invalid", "历史请求无效，请刷新后重试。"),
+            "history.table_not_found" =>
+                new("history_table_not_found", "数据表不存在或已被删除。"),
+            "history.field_not_found" =>
+                new("history_field_not_found", "历史字段不存在或结构已变化。"),
+            "history.resource_limit" or "restore.resource_limit" =>
+                new("history_resource_limit", "历史操作超出安全限制，请缩小范围。"),
+            "history.storage_failed" or "history.internal_failed"
+                or "restore.token_failed" =>
+                new("history_backend_unavailable", "历史服务暂不可用，请稍后重试。"),
+            "history.storage_corrupt" =>
+                new("history_storage_corrupt", "历史数据损坏，无法安全读取。"),
+            "restore.capacity_exhausted" =>
+                new("history_capacity_exhausted", "历史服务繁忙，请稍后重试。"),
             "archive_not_supported" =>
                 new("archive_not_supported", "当前数据表未配置软归档字段。"),
             "restore_not_allowed" =>
@@ -55,6 +71,12 @@ public static class HistoryErrorMapper
                 new("relation_target_unavailable", "关联目标不可用，无法安全恢复。"),
             "revision_not_created" =>
                 new("revision_not_created", "恢复未生成新的修订记录。"),
+            "restore_attachment_missing" =>
+                new("restore_attachment_missing", "历史附件已缺失，无法恢复。"),
+            "restore_attachment_corrupt" =>
+                new("restore_attachment_corrupt", "历史附件损坏，无法恢复。"),
+            "restore_validation_failed" =>
+                new("restore_validation_failed", "历史版本未通过当前结构校验。"),
             _ => Fallback(fallbackCode),
         };
 

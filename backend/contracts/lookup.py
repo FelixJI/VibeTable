@@ -35,7 +35,7 @@ LookupState = Literal["valid", "restricted", "invalid"]
 
 class LookupPathStep(CamelModel):
     relation_id: str = Field(min_length=1, max_length=128)
-    # ``to_camel`` would spell the acronym as m2A; keep the public Directus
+    # ``to_camel`` would spell the acronym as m2A; keep the public product
     # terminology stable across Python, TypeScript and C# instead.
     m2a_collection: str | None = Field(
         default=None,

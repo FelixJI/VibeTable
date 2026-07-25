@@ -9,7 +9,7 @@
  *      used during component setup/onMounted has an active instance.
  *   4. `app.mount("#app")` — synchronously mounts the tree. App subscribes to
  *      host startup state before the bridge handshake; WorkspaceView remains
- *      gated until authentication is ready.
+ *      gated until the local runtime is ready.
  *   5. `bridge.start()` + `bridge.notify("app.ready", {})` — tell the .NET
  *      host the renderer can receive startup state. WorkspaceView sends a
  *      second app.ready after its business subscriptions mount so cached

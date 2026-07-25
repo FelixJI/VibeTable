@@ -6,7 +6,7 @@ import { resolvePasteContext } from "./pasteContext";
 const SNAPSHOT: QuerySnapshot = {
   snapshotId: "snapshot-1",
   digest: "digest-1",
-  databaseId: "directus",
+  databaseId: "local",
   table: "vibetable_projects",
   schemaRevision: "schema-1",
   dataRevision: 7,
@@ -14,7 +14,7 @@ const SNAPSHOT: QuerySnapshot = {
 };
 
 const REVISION: MutationRevision = {
-  databaseSessionId: "directus",
+  databaseSessionId: "local",
   schemaRevision: "schema-1",
   dataRevision: 7,
 };
@@ -51,7 +51,7 @@ describe("resolvePasteContext", () => {
     expect(context.selection.querySnapshot).toBe(SNAPSHOT);
   });
 
-  it("rejects paste before Directus snapshot metadata is ready", () => {
+  it("rejects paste before product snapshot metadata is ready", () => {
     expect(() => resolvePasteContext({
       grid: grid(["p1"], ["name"]),
       columns: COLUMNS,

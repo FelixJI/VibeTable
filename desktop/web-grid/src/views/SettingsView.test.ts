@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { mount } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import SettingsView from "./SettingsView.vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
@@ -10,19 +10,124 @@ import { useUiStore } from "@/stores/uiStore";
 import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import WorkCalendarMonth from "@/components/calendar/WorkCalendarMonth.vue";
 import MonthNavigator from "@/components/calendar/MonthNavigator.vue";
-import { NPopconfirm, NSelect } from "naive-ui";
+import { NModal, NSelect } from "naive-ui";
+import type { HostBridge } from "@/bridge/hostBridge";
+import { setHostBridgeForTesting } from "@/services/bridgeContext";
 
 describe("SettingsView", () => {
+  const backupRequest = vi.fn();
+
   beforeEach(() => {
     localStorage.clear();
     setActivePinia(createPinia());
+    backupRequest.mockReset();
+    backupRequest.mockImplementation(async (type: string) => {
+      if (type === "backup.list") {
+        return {
+          backups: [{
+            name: "manual_20260724_101500.zip",
+            size: 8192,
+            modified: "2026-07-24T10:15:00Z",
+            sha256: "a".repeat(64),
+          }],
+        };
+      }
+      if (type === "backup.create") {
+        return {
+          backup: {
+            name: "manual_20260724_101501.zip",
+            size: 9000,
+            modified: "2026-07-24T10:15:01Z",
+            sha256: "b".repeat(64),
+          },
+          integrityValid: true,
+        };
+      }
+      return { status: "restarting" };
+    });
+    setHostBridgeForTesting({
+      request: backupRequest,
+    } as unknown as HostBridge);
   });
 
-  it("organizes discoverable settings into six sections", () => {
+  afterEach(() => setHostBridgeForTesting(null));
+
+  it("organizes discoverable settings into seven sections", () => {
     const wrapper = mount(SettingsView);
-    expect(wrapper.findAll(".settings-nav button")).toHaveLength(6);
+    expect(wrapper.findAll(".settings-nav button")).toHaveLength(7);
     expect(wrapper.text()).toContain("界面语言");
     expect(wrapper.text()).toContain("启动页面");
+  });
+
+  it("lists and creates integrity-checked local backups", async () => {
+    const wrapper = mount(SettingsView);
+    await wrapper.get('[data-testid="settings-nav-backup"]').trigger("click");
+    await flushPromises();
+
+    expect(backupRequest).toHaveBeenCalledWith("backup.list", {});
+    expect(wrapper.text()).toContain("manual_20260724_101500.zip");
+
+    await wrapper.get('[data-testid="backup-create"]').trigger("click");
+    await flushPromises();
+    expect(backupRequest).toHaveBeenCalledWith(
+      "backup.create",
+      expect.objectContaining({ name: expect.stringMatching(/^manual_\d{8}_\d{6}\.zip$/) }),
+    );
+    expect(wrapper.get('[data-testid="backup-status"]').text()).toContain("备份");
+  });
+
+  it("requires explicit confirmation before starting a two-phase restore", async () => {
+    const wrapper = mount(SettingsView, { attachTo: document.body });
+    await wrapper.get('[data-testid="settings-nav-backup"]').trigger("click");
+    await flushPromises();
+
+    const restoreButton = wrapper.get(
+      '[data-testid="backup-restore-manual_20260724_101500.zip"]',
+    );
+    (restoreButton.element as HTMLElement).focus();
+    await restoreButton.trigger("click");
+    expect(backupRequest).not.toHaveBeenCalledWith(
+      "backup.restore",
+      expect.anything(),
+    );
+    const modal = wrapper.findComponent(NModal);
+    expect(modal.props("trapFocus")).toBe(true);
+    expect(modal.props("maskClosable")).toBe(false);
+    expect(
+      document.body.querySelector('[data-testid="backup-restore-confirmation"]')
+        ?.getAttribute("role"),
+    ).toBe("dialog");
+
+    document.body.querySelector<HTMLElement>('[data-testid="backup-restore-confirm"]')
+      ?.click();
+    await flushPromises();
+    expect(backupRequest).toHaveBeenCalledWith("backup.restore", {
+      name: "manual_20260724_101500.zip",
+      confirmed: true,
+    });
+    expect(wrapper.get('[data-testid="backup-status"]').text()).toContain("重启");
+    wrapper.unmount();
+  });
+
+  it("closes restore confirmation on Esc intent and returns focus to its trigger", async () => {
+    const wrapper = mount(SettingsView, { attachTo: document.body });
+    await wrapper.get('[data-testid="settings-nav-backup"]').trigger("click");
+    await flushPromises();
+    const restoreButton = wrapper.get(
+      '[data-testid="backup-restore-manual_20260724_101500.zip"]',
+    );
+    await restoreButton.trigger("click");
+
+    wrapper.findComponent(NModal).vm.$emit("update:show", false);
+    await flushPromises();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(document.activeElement).toBe(restoreButton.element);
+    expect(backupRequest).not.toHaveBeenCalledWith(
+      "backup.restore",
+      expect.anything(),
+    );
+    wrapper.unmount();
   });
 
   it("aligns the interface density control with the other general settings", () => {
@@ -39,17 +144,18 @@ describe("SettingsView", () => {
     expect(group.classes()).toContain("n-radio-group");
   });
 
-  it("keeps the Directus connection pill on a single line in the source row", async () => {
+  it("keeps the data-service connection pill on a single line in the source row", async () => {
     const wrapper = mount(SettingsView);
     await wrapper.get('[data-testid="settings-nav-source"]').trigger("click");
     // The pill's intrinsic width exceeds the space `space-between` leaves it;
     // wrapping it in a non-shrinking container keeps its content on one line.
     const sourceRow = wrapper
       .findAll(".setting-row")
-      .find((row) => row.text().includes("Directus"));
-    expect(sourceRow, "Directus source row should render").toBeTruthy();
+      .find((row) => row.text().includes("本地数据服务"));
+    expect(sourceRow, "data-service source row should render").toBeTruthy();
     expect(sourceRow!.find(".setting-control--pill").exists()).toBe(true);
     expect(sourceRow!.findComponent(ConnectionPill).exists()).toBe(true);
+    expect(wrapper.find('[data-testid="preset-version-panel"]').exists()).toBe(true);
   });
 
   it("manages manual holidays and adjusted workdays from the shared calendar", async () => {
@@ -81,75 +187,6 @@ describe("SettingsView", () => {
     expect(wrapper.emitted("loadMappings")).toHaveLength(1);
   });
 
-  it("offers row delete only for orphaned/deleted mappings", async () => {
-    const wrapper = mount(SettingsView);
-    await wrapper.get('[data-testid="settings-nav-mapping"]').trigger("click");
-    const store = useIdentifierMappingStore();
-    store.succeed({ mappings: [
-      {
-        id: "m-active", entityKind: "collection", physicalName: "vt_t_01",
-        displayName: "活动表", locale: "zh-CN", aliases: [],
-        origin: "vibetable", status: "active",
-      },
-      {
-        id: "m-orphan", entityKind: "collection", physicalName: "vt_t_gone",
-        displayName: "孤立表", locale: "zh-CN", aliases: [],
-        origin: "vibetable", status: "orphaned",
-      },
-    ] });
-    await wrapper.vm.$nextTick();
-
-    const rows = wrapper.findAll(".mapping-item");
-    // Active row has no delete control; orphaned row exposes one.
-    expect(rows[0].find(".mapping-delete").exists()).toBe(false);
-    expect(rows[1].find(".mapping-delete").exists()).toBe(true);
-
-    // Confirms the per-row popconfirm by emitting its positive-click event —
-    // the same event NPopconfirm fires on user confirmation.
-    await rows[1].findComponent(NPopconfirm).vm.$emit("positive-click");
-    expect(wrapper.emitted("deleteMapping")).toEqual([["m-orphan"]]);
-  });
-
-  it("enables the purge button when removable rows exist and emits on confirm", async () => {
-    const wrapper = mount(SettingsView);
-    await wrapper.get('[data-testid="settings-nav-mapping"]').trigger("click");
-    const store = useIdentifierMappingStore();
-    store.succeed({ mappings: [{
-      id: "m-del", entityKind: "collection", physicalName: "vt_t_gone",
-      displayName: "已删表", locale: "zh-CN", aliases: [],
-      origin: "vibetable", status: "deleted",
-    }] });
-    await wrapper.vm.$nextTick();
-
-    const purgeButton = wrapper
-      .findAll(".mapping-toolbar .n-button")
-      .find((btn) => btn.find(".mapping-delete, [aria-label='一键清理孤立/已删除映射']").exists()
-        || btn.attributes("aria-label") === "一键清理孤立/已删除映射");
-    expect(purgeButton, "purge button should render").toBeTruthy();
-    expect(purgeButton!.attributes("disabled")).toBeUndefined();
-
-    await wrapper.findAllComponents(NPopconfirm)[0].vm.$emit("positive-click");
-    expect(wrapper.emitted("purgeMappings")).toHaveLength(1);
-  });
-
-  it("disables the purge button when every mapping is active", async () => {
-    const wrapper = mount(SettingsView);
-    await wrapper.get('[data-testid="settings-nav-mapping"]').trigger("click");
-    const store = useIdentifierMappingStore();
-    store.succeed({ mappings: [{
-      id: "m-active", entityKind: "collection", physicalName: "vt_t_01",
-      displayName: "活动表", locale: "zh-CN", aliases: [],
-      origin: "vibetable", status: "active",
-    }] });
-    await wrapper.vm.$nextTick();
-
-    const purgeButton = wrapper
-      .findAll(".mapping-toolbar .n-button")
-      .find((btn) => btn.attributes("aria-label") === "一键清理孤立/已删除映射");
-    expect(purgeButton, "purge button should render").toBeTruthy();
-    expect(purgeButton!.attributes("disabled")).toBeDefined();
-  });
-
   it("routes advanced schema, shortcuts, and reconnect through real emits", async () => {
     const wrapper = mount(SettingsView);
     await wrapper.get('[data-testid="settings-nav-mapping"]').trigger("click");
@@ -178,6 +215,8 @@ describe("SettingsView", () => {
     const ui = useUiStore();
     expect(ui.dailyQuoteSource).toBe("jinrishici");
     expect(ui.dailyQuoteStyle).toBe("poetry");
+    expect(wrapper.get('[data-testid="quote-network-disclosure"]').text())
+      .toContain("第三方");
     const style = wrapper.findAllComponents(NSelect).find((select) => {
       const options = select.props("options") as Array<{ value: string }>;
       return options.length === 1 && options[0]?.value === "poetry";

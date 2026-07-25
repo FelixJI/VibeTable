@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { createHostBridge } from "@/bridge/hostBridge";
-import type { PluginSnapshot } from "@/contracts";
+import type { PluginSnapshot, PluginTaskSnapshot } from "@/contracts";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { createPluginCommandContext, usePluginService } from "./pluginService";
 import { usePluginStore } from "@/stores/pluginStore";
@@ -23,12 +23,11 @@ const snapshot: PluginSnapshot = {
       actionId: "normalize",
       displayName: { "zh-CN": "规范化" },
       description: {}, mode: "local", risk: "write", invocation: "manual",
-      placements: ["table.toolbar"], requires: {}, entryFlow: null, workerEntry: "dist/worker.js",
+      placements: ["table.toolbar"], requires: {}, workerEntry: "dist/worker.js",
       formSchema: null, inputSchema: "schemas/input.json", outputSchema: null,
     }],
-    flows: [], ui: {},
+    ui: {},
   },
-  flowRequirements: [],
   schemas: { "schemas/input.json": { type: "object", properties: { trim: { type: "boolean" } } } },
   status: "enabled",
   disabledReason: null,
@@ -43,7 +42,7 @@ describe("pluginService canonical wire", () => {
     const querySnapshot = {
       snapshotId: "snapshot-1",
       digest: "digest-1",
-      databaseId: "directus",
+      databaseId: "local",
       table: "orders",
       schemaRevision: "schema-r1",
       dataRevision: 4,
@@ -51,7 +50,7 @@ describe("pluginService canonical wire", () => {
     };
 
     const context = createPluginCommandContext({
-      projectKey: "remote:https://directus.example.test",
+      projectKey: "local:workspace-a",
       collection: "orders",
       selectedKeys: [1, 2],
       querySnapshot,
@@ -129,7 +128,6 @@ describe("pluginService canonical wire", () => {
       sourceLocation: "host-managed",
       packageHash: "sha256:abc",
       manifest: snapshot.manifest,
-      flowRequirements: snapshot.flowRequirements,
       schemas: snapshot.schemas,
     };
     const bridge = createHostBridge({
@@ -164,7 +162,7 @@ describe("pluginService canonical wire", () => {
     });
   });
 
-  it("uses canonical install, binding, action and uninstall use-case payloads", async () => {
+  it("uses canonical install, action and uninstall use-case payloads", async () => {
     const posted: Array<{ type: string; requestId?: string; payload?: unknown }> = [];
     let listener: ((event: { data: unknown }) => void) | undefined;
     let sequence = 0;
@@ -176,22 +174,13 @@ describe("pluginService canonical wire", () => {
       sourceLocation: "C:/plugins/clean.vtplugin",
       packageHash: "sha256:abc",
       manifest: snapshot.manifest,
-      flowRequirements: snapshot.flowRequirements,
       schemas: snapshot.schemas,
     };
     const responses: Record<string, unknown> = {
       "plugin.install.inspect": plan,
-      "plugin.externalFlow.bind": {
-        projectKey: "local:default", pluginId: "com.acme.clean", logicalFlowId: "clean",
-        ownership: "external", directusFlowUuid: "flow-1", rollbackFlowUuid: null,
-        rollbackContractVersion: null, rollbackDefinitionHash: null, triggerType: "manual",
-        contractVersion: "1", installedDefinitionHash: null, observedDefinitionHash: "hash",
-        revision: 1, health: "healthy", driftStatus: "not-applicable", lastError: null,
-      },
       "plugin.action.describe": { available: true, reasons: [] },
       "plugin.lifecycle.uninstall": {
-        managedFlowsRemoved: 0, externalFlowsUnbound: 1, uninstalled: true,
-        privateSettingsRetained: false, cleanupPending: false,
+        uninstalled: true, privateSettingsRetained: false, cleanupPending: false,
       },
     };
     const bridge = createHostBridge({
@@ -218,10 +207,6 @@ describe("pluginService canonical wire", () => {
     const service = usePluginService();
 
     await service.inspectInstall("C:/plugins/clean.vtplugin");
-    await service.bindExternalFlow({
-      pluginId: "com.acme.clean", logicalFlowId: "clean", directusFlowUuid: "flow-1",
-      acceptsUnknownSideEffects: true,
-    });
     const context = createPluginCommandContext({
       projectKey: "local:default", locale: "zh-CN", theme: "light", density: "compact",
     });
@@ -232,10 +217,6 @@ describe("pluginService canonical wire", () => {
       { type: "plugin.install.inspect", payload: {
         projectKey: "local:default", projectRevision: "r1", sourceLocation: "C:/plugins/clean.vtplugin",
       } },
-      { type: "plugin.externalFlow.bind", payload: {
-        projectKey: "local:default", pluginId: "com.acme.clean", logicalFlowId: "clean",
-        directusFlowUuid: "flow-1", acceptsUnknownSideEffects: true,
-      } },
       { type: "plugin.action.describe", payload: {
         projectKey: "local:default", pluginId: "com.acme.clean", actionId: "normalize", context,
       } },
@@ -243,5 +224,137 @@ describe("pluginService canonical wire", () => {
         projectKey: "local:default", pluginId: "com.acme.clean", cleanupPrivateSettings: true,
       } },
     ]);
+  });
+
+  it("polls task truth after resolving a fast interaction race", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let requestSequence = 0;
+    let taskReads = 0;
+    const running: PluginTaskSnapshot = {
+      taskId: "task-fast",
+      runId: "run-fast",
+      pluginId: "com.acme.clean",
+      pluginVersion: "1.2.0",
+      actionId: "normalize",
+      projectKey: "local:default",
+      collection: "orders",
+      targetCount: 1,
+      risk: "write",
+      state: "running",
+      cancelRequested: false,
+      result: null,
+      error: null,
+    };
+    const bridge = createHostBridge({
+      generateRequestId: () => `poll-${++requestSequence}`,
+      webview: {
+        postMessage: (message) => {
+          const request = message as { type: string; requestId: string };
+          let payload: unknown = {};
+          if (request.type === "plugin.task.get") {
+            taskReads += 1;
+            payload = taskReads === 1
+              ? running
+              : { ...running, state: "succeeded" };
+          }
+          queueMicrotask(() => listener?.({
+            data: { type: request.type, requestId: request.requestId, payload },
+          }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+    const task = {
+      ...store.applyTask(running),
+      confirmation: {
+        runId: "run-fast",
+        interactionId: "confirm-fast",
+        pluginId: "com.acme.clean",
+        actionId: "normalize",
+        title: "Confirm",
+        summary: "one row",
+        risk: "write" as const,
+        targetCount: 1,
+        sample: [],
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    };
+
+    const resolved = await usePluginService().resolveInteraction(task, "approved");
+
+    expect(taskReads).toBe(2);
+    expect(resolved.state).toBe("succeeded");
+    expect(store.activeTask?.state).toBe("succeeded");
+  });
+
+  it("reconciles a terminal task when its change notification is missed", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let requestSequence = 0;
+    let taskReads = 0;
+    const running: PluginTaskSnapshot = {
+      taskId: "task-missed-terminal",
+      runId: "run-missed-terminal",
+      pluginId: "com.acme.clean",
+      pluginVersion: "1.2.0",
+      actionId: "normalize",
+      projectKey: "local:default",
+      collection: "orders",
+      targetCount: 1,
+      risk: "write",
+      state: "running",
+      cancelRequested: false,
+      result: null,
+      error: null,
+    };
+    const bridge = createHostBridge({
+      generateRequestId: () => `reconcile-${++requestSequence}`,
+      webview: {
+        postMessage: (message) => {
+          const request = message as { type: string; requestId: string };
+          let payload: unknown = {};
+          if (request.type === "plugin.action.start") payload = running;
+          if (request.type === "plugin.task.get") {
+            taskReads += 1;
+            payload = {
+              ...running,
+              state: "failed",
+              error: {
+                contract: "vibetable.plugin-error.v1",
+                code: "plugin_action_failed",
+                message: "field was not declared",
+                recoverability: "reconfigure",
+              },
+            };
+          }
+          queueMicrotask(() => listener?.({
+            data: { type: request.type, requestId: request.requestId, payload },
+          }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const service = usePluginService();
+    const context = createPluginCommandContext({
+      projectKey: "local:default",
+      collection: "orders",
+      locale: "zh-CN",
+      theme: "light",
+      density: "compact",
+    });
+
+    await service.startAction("com.acme.clean", "normalize", {}, context);
+
+    await vi.waitFor(() => {
+      expect(usePluginStore().activeTask?.state).toBe("failed");
+    });
+    expect(taskReads).toBeGreaterThanOrEqual(1);
+    service.dispose();
   });
 });

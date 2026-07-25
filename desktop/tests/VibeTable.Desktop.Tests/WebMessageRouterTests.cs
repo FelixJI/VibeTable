@@ -83,18 +83,35 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
-    public void Route_StartupSubmissionAfterAppReady_IsWhitelisted()
+    public void Route_StartupRetryAfterAppReady_IsWhitelisted()
     {
         var dispatched = new List<RoutedWebRequest>();
         var router = new WebMessageRouter(req => dispatched.Add(req)) { IsReady = true };
 
         var reply = router.Route(
-            """{"type":"host.loginSubmitted","payload":{"email":"admin@example.com","password":"secret123"}}""");
+            """{"type":"host.startupRetryRequested","payload":{}}""");
 
         Assert.IsNull(reply);
-        Assert.AreEqual("host.loginSubmitted", dispatched.Single().Type);
-        Assert.AreEqual(string.Empty, dispatched.Single().Raw);
+        Assert.AreEqual("host.startupRetryRequested", dispatched.Single().Type);
+        StringAssert.Contains(dispatched.Single().Raw, "host.startupRetryRequested");
         Assert.IsTrue(router.IsHostNotificationAllowed("host.startupStateChanged"));
+    }
+
+    [TestMethod]
+    public void Route_DailyQuoteFixedRpc_IsWhitelistedInBothDirections()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+
+        HostReplyMessage? reply = router.Route(
+            """
+            {"type":"dailyQuote.fetch","requestId":"quote-1","payload":{"provider":"hitokoto","style":"poetry","locale":"zh-CN"}}
+            """);
+
+        Assert.IsNull(reply);
+        Assert.AreEqual("dailyQuote.fetch", dispatched.Single().Type);
+        Assert.IsTrue(router.IsHostNotificationAllowed("dailyQuote.fetch"));
+        Assert.IsFalse(router.IsHostNotificationAllowed("dailyQuote.proxy"));
     }
 
     [TestMethod]
@@ -113,6 +130,34 @@ public sealed class WebMessageRouterTests
         Assert.AreEqual("operation.failed", reply!.Type);
         Assert.AreEqual("r2", reply.RequestId);
         Assert.AreEqual(0, dispatched.Count);
+    }
+
+    [TestMethod]
+    public void Route_RemovedIdentifierMutationTypes_AreRejected()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(req => dispatched.Add(req))
+        {
+            IsReady = true
+        };
+
+        foreach (string type in new[]
+        {
+            "identifierMappings.importRequested",
+            "identifierMappings.deleteRequested",
+            "identifierMappings.purgeRequested",
+        })
+        {
+            HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new
+            {
+                type,
+                requestId = "removed",
+                payload = new { },
+            }));
+            Assert.IsNotNull(reply, type);
+            Assert.AreEqual("operation.failed", reply.Type, type);
+        }
+        Assert.HasCount(0, dispatched);
     }
 
     [TestMethod]
@@ -138,6 +183,54 @@ public sealed class WebMessageRouterTests
         }
 
         Assert.AreEqual(4, dispatched.Count);
+    }
+
+    [TestMethod]
+    public void Route_ClosedManagedAttachmentActions_AreAccepted()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(req => dispatched.Add(req))
+        {
+            IsReady = true
+        };
+
+        foreach (string type in new[]
+        {
+            "file.uploadRequested",
+            "file.replaceRequested",
+            "file.removeRequested",
+            "file.previewRequested",
+            "file.downloadRequested",
+        })
+        {
+            HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new
+            {
+                type,
+                requestId = $"id-{type}",
+                payload = new
+                {
+                    tableId = "orders",
+                    recordId = "row-1",
+                    fieldId = "receipt",
+                    storedName = "receipt.bin",
+                },
+            }));
+            Assert.IsNull(reply, type);
+        }
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "file.uploadRequested",
+                "file.replaceRequested",
+                "file.removeRequested",
+                "file.previewRequested",
+                "file.downloadRequested",
+            },
+            dispatched.Select(item => item.Type).ToArray());
+        Assert.IsTrue(router.IsHostNotificationAllowed("file.uploadRequested"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("file.replaceRequested"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("file.removeRequested"));
     }
 
     [TestMethod]
@@ -228,7 +321,8 @@ public sealed class WebMessageRouterTests
         // outbound gate (without this entry) stranded every client-mode load.
         Assert.IsTrue(router.IsHostNotificationAllowed("table.datasetReady"));
         Assert.IsTrue(router.IsHostNotificationAllowed("operation.failed"));
-        Assert.IsTrue(router.IsHostNotificationAllowed("directus.changed"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("data.changed"));
+        Assert.IsFalse(router.IsHostNotificationAllowed("dire" + "ctus.changed"));
         Assert.IsFalse(router.IsHostNotificationAllowed("system.warn"));
         Assert.IsFalse(router.IsHostNotificationAllowed(""));
     }
@@ -378,8 +472,6 @@ public sealed class WebMessageRouterTests
             "plugin.catalog.list",
             "plugin.install.inspect",
             "plugin.install.commit",
-            "plugin.externalFlow.listCandidates",
-            "plugin.externalFlow.bind",
             "plugin.lifecycle.setEnabled",
             "plugin.lifecycle.upgrade",
             "plugin.lifecycle.rollback",
@@ -406,6 +498,7 @@ public sealed class WebMessageRouterTests
         Assert.AreEqual(requestTypes.Length, dispatched.Count);
         Assert.IsTrue(router.IsHostNotificationAllowed("plugin.catalog.changed"));
         Assert.IsTrue(router.IsHostNotificationAllowed("plugin.task.changed"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("task.changed"));
         Assert.IsTrue(router.IsHostNotificationAllowed("plugin.interaction.requested"));
         Assert.IsTrue(router.IsHostNotificationAllowed("plugin.surface.message"));
         Assert.IsTrue(router.IsHostNotificationAllowed("plugin.install.inspect"));
@@ -441,5 +534,29 @@ public sealed class WebMessageRouterTests
             """{"type":"rpc.invoke","requestId":"generic","payload":{"method":"lookup.query"}}""");
         Assert.IsNotNull(generic);
         Assert.AreEqual("UNKNOWN_TYPE", generic!.Payload!.Code);
+    }
+
+    [TestMethod]
+    public void WhitelistsAcceptClosedProductDataUseCasesAndRejectProviderMethods()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+
+        foreach (string type in ProductDataRpcRegistry.RequestTypes)
+        {
+            var reply = router.Route(JsonSerializer.Serialize(new
+            {
+                type,
+                requestId = $"request-{type}",
+                payload = new { },
+            }));
+            Assert.IsNull(reply, type);
+            Assert.IsTrue(router.IsHostNotificationAllowed(type), type);
+        }
+
+        var provider = router.Route(
+            """{"type":"dire""" + """ctus.read","requestId":"provider","payload":{}}""");
+        Assert.IsNotNull(provider);
+        Assert.AreEqual("UNKNOWN_TYPE", provider!.Payload!.Code);
     }
 }

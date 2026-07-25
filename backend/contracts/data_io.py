@@ -1,10 +1,10 @@
 """C1 data import/export contracts.
 
-These contracts describe the Directus-aware import (preview + apply) and export
-flows that turn Excel/CSV files into Directus collection rows and back, with
-schema-driven column mapping, relation lookup, and chunked atomic writes.
+These contracts describe product import (preview + apply) and export
+processes that turn Excel/CSV files into table rows and back, with
+schema-driven column mapping, relation lookup, and one atomic write.
 
-Import flow (two-phase, like B2 paste):
+Import process (two-phase, like B2 paste):
 
 * **preview** (zero writes) — the host submits a path grant (file the WPF picker
   chose), the target collection, the schema revision it rendered against, and an
@@ -13,10 +13,10 @@ Import flow (two-phase, like B2 paste):
   profile (date/currency/enum/relation), and returns an :class:`ImportPlan`
   describing exactly what will be created plus a single-use token.
 * **apply** (writes) — the host submits the token + an import mode (create-only
-  or upsert-by-approved-key). Small batches reuse the B2 bulk-mutation endpoint;
-  large batches run as a chunked import task with per-chunk idempotency keys.
+  or upsert-by-approved-key). Every accepted row is submitted in one frozen
+  MutationKernel request with one idempotency key.
 
-Export flow:
+Export process:
 
 * **export** — the host submits a path grant (export target) + a query. The
   service streams the full result set (not just the current page) to CSV/XLSX,
@@ -62,7 +62,7 @@ class ImportColumnMapping(CamelModel):
 
     ``source_column`` is the header in the file; ``target_field`` is the
     collection field name. Relation columns never guess a display field: callers
-    must provide both the stable Directus ``relation_id`` and a ``match_field``
+    must provide both the stable product ``relation_id`` and a ``match_field``
     whose uniqueness has been established from the live schema.
 
     ``relation_lookup`` is retained solely for wire compatibility with early C1
@@ -103,18 +103,17 @@ class PreviewImportParams(CamelModel):
     mode: ImportMode = "create_only"
     upsert_key: str | None = Field(default=None, max_length=128)
     column_mapping: list[ImportColumnMapping] = Field(default_factory=list, max_length=256)
-    create_if_missing: bool = False
 
 
-ImportRelationResolutionState = Literal["matched", "create"]
+ImportRelationResolutionState = Literal["matched"]
 
 
 class ImportRelationResolution(CamelModel):
-    """Previewed relation resolution retained for atomic apply.
+    """Previewed exact-match relation resolution retained for atomic apply.
 
-    ``create`` is only emitted when the explicit, default-off advanced option
-    ``create_if_missing`` is enabled. Preview itself performs no
-    creation.
+    The first PocketBase release deliberately supports linking existing target
+    records only. Creating records in another table is a separate product
+    mutation and is not advertised by the import contract.
     """
 
     target_field: str = Field(min_length=1, max_length=128)
@@ -201,9 +200,9 @@ class ApplyImportParams(CamelModel):
         {"grantId": "grant-1", "collection": "...", "token": "...",
          "mode": "create_only", "chunkSize": 500, "idempotencyPrefix": "imp-uuid"}
 
-    ``chunk_size`` controls the batch boundary (small chunks reuse the B2
-    endpoint; the runtime reports per-chunk progress). ``idempotency_prefix``
-    namespaces the per-chunk idempotency keys so retries are deduped.
+    ``chunk_size`` is retained as a wire-compatibility/progress hint and never
+    creates independent commits. ``idempotency_prefix`` binds the single
+    atomic request so retries are deduplicated.
     """
 
     grant_id: str = Field(min_length=1, max_length=128)
@@ -227,10 +226,9 @@ class ImportChunkResult(CamelModel):
 class ApplyImportResult(CamelModel):
     """Final result of ``data.applyImport``.
 
-    ``committed`` counts are server-confirmed across all chunks. ``failed_rows``
-    lists source row numbers that could not be written (the user can download an
-    error CSV). The apply is chunked, NOT whole-file atomic; the UI shows the
-    committed count and the chunk boundary.
+    ``committed`` counts are server-confirmed for the single whole-file
+    transaction. ``failed_rows`` lists source row numbers rejected before or
+    during that transaction; a failed apply commits zero rows.
     """
 
     collection: str = Field(min_length=1, max_length=128)
@@ -238,7 +236,7 @@ class ApplyImportResult(CamelModel):
     updated_count: int = Field(ge=0)
     failed_rows: list[int] = Field(default_factory=list)
     chunks: list[ImportChunkResult] = Field(default_factory=list)
-    directus_request_ids: list[str] = Field(default_factory=list)
+    request_ids: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -308,10 +306,11 @@ class GenerateTemplateParams(CamelModel):
         {"collection": "vibetable_demo", "format": "xlsx"}
 
     Produces a download-ready template with column names, required hints, enum
-    options and relation notes derived from the current Directus schema.
+    options and relation notes derived from the current product schema.
     """
 
     collection: str = Field(min_length=1, max_length=128)
+    grant_id: str = Field(min_length=1, max_length=128)
     format: ExportFormat = "xlsx"
 
 

@@ -41,11 +41,37 @@ public sealed class RefStore
     }
 
     /// <summary>
+    /// Lists the current scheme heads for a document in stable scheme order.
+    /// </summary>
+    public IReadOnlyList<RefManifest> ListByDocument(string documentId)
+    {
+        string directory = Path.Combine(
+            _refsRoot,
+            DocumentCatalogStore.ValidateIdentifier(documentId, nameof(documentId)));
+        if (!Directory.Exists(directory))
+            return [];
+
+        return Directory.GetFiles(directory, "*.json")
+            .Select(_json.Read<RefManifest>)
+            .Where(reference => reference is not null)
+            .Select(reference => reference!)
+            .Where(reference =>
+                reference.FormatVersion == RefManifest.CurrentFormatVersion
+                && string.Equals(
+                    reference.DocumentId,
+                    documentId,
+                    StringComparison.Ordinal))
+            .OrderBy(reference => reference.SchemeId, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    /// <summary>
     /// Initialize a new ref (only if it does not exist yet).
     /// </summary>
     public void Initialize(RefManifest refManifest)
     {
         var path = GetPath(refManifest.DocumentId, refManifest.SchemeId);
+        using var exclusive = AcquireExclusiveLock(path);
         if (File.Exists(path))
             throw new InvalidOperationException(
                 $"ref for {refManifest.DocumentId}/{refManifest.SchemeId} already exists; use UpdateHead");
@@ -68,7 +94,9 @@ public sealed class RefStore
         string updatedAt
     )
     {
-        var current = Read(documentId, schemeId);
+        var path = GetPath(documentId, schemeId);
+        using var exclusive = AcquireExclusiveLock(path);
+        var current = _json.Read<RefManifest>(path);
         if (current is null)
             throw new InvalidOperationException(
                 $"ref for {documentId}/{schemeId} does not exist; use Initialize first");
@@ -85,8 +113,32 @@ public sealed class RefStore
             HeadRevisionId = newHeadRevisionId,
             UpdatedAt = updatedAt,
         };
-        _json.Write(GetPath(documentId, schemeId), updated);
+        _json.Write(path, updated);
         return updated;
+    }
+
+    private static FileStream AcquireExclusiveLock(string refPath)
+    {
+        string lockPath = refPath + ".lock";
+        Directory.CreateDirectory(Path.GetDirectoryName(lockPath)!);
+        DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+        while (true)
+        {
+            try
+            {
+                return new FileStream(
+                    lockPath,
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    bufferSize: 1,
+                    FileOptions.WriteThrough);
+            }
+            catch (IOException) when (DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(10);
+            }
+        }
     }
 }
 

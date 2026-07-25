@@ -1,5 +1,6 @@
 using System.IO;
 using VibeTable.Workspace.Domain;
+using VibeTable.Workspace.Reconciliation;
 using VibeTable.Workspace.Storage;
 
 namespace VibeTable.Workspace.Services;
@@ -24,6 +25,7 @@ public sealed class WorkspaceVersionService
     private readonly RevisionStore _revisions;
     private readonly RefStore _refs;
     private readonly AtomicJsonStore _json;
+    private readonly RevisionPublishOutboxStore _publishOutbox;
 
     public WorkspaceVersionService(
         string backupRoot,
@@ -39,6 +41,7 @@ public sealed class WorkspaceVersionService
         _revisions = revisions;
         _refs = refs;
         _json = json;
+        _publishOutbox = new RevisionPublishOutboxStore(backupRoot, json);
     }
 
     /// <summary>
@@ -78,7 +81,7 @@ public sealed class WorkspaceVersionService
     /// 4. ObjectCommitted — atomically move/copy to objects/{hash}.blob.
     /// 5. RevisionCommitted — write immutable Revision JSON.
     /// 6. RefCASCommitted — expected-head CAS update of Ref.
-    /// 7. PublishPending — return for the publisher to push to Directus.
+    /// 7. PublishPending — return for the metadata publisher/outbox.
     /// </summary>
     public CommitOutcome CommitFormal(
         string workingFilePath,
@@ -97,6 +100,14 @@ public sealed class WorkspaceVersionService
     {
         // Validate the relative path.
         WorkspacePathGuard.ValidateRelativePath(workingRelativePath);
+        createdAt = UtcRfc3339Timestamp.Canonicalize(
+            createdAt,
+            nameof(createdAt));
+        ValidateRevisionParent(
+            documentId,
+            schemeId,
+            parentRevisionId,
+            sequence);
 
         // Stage 1: StableRead.
         if (!File.Exists(workingFilePath))
@@ -178,14 +189,28 @@ public sealed class WorkspaceVersionService
             _refs.UpdateHead(documentId, schemeId, expectedHead, revisionId, createdAt);
             refUpdated = true;
             stage = CommitStage.RefCasCommitted;
+            _publishOutbox.Enqueue(revision);
+            stage = CommitStage.PublishPending;
         }
         catch (RefCasConflictException ex)
         {
             // CAS conflict — preserve the revision, do not overwrite the ref.
-            // The caller/scanner handles conflict resolution.
+            // The revision still belongs in the durable metadata publication
+            // stream even though it must never advance the main ref.
             refUpdated = false;
             conflictMessage = ex.Message;
-            stage = CommitStage.RevisionCommitted;
+            new RefConflictResolver(
+                _backupRoot,
+                _revisions,
+                _refs,
+                _json)
+                .ResolveConflict(
+                    documentId,
+                    schemeId,
+                    revisionId,
+                    createdAt);
+            _publishOutbox.Enqueue(revision);
+            stage = CommitStage.PublishPending;
         }
 
         return new CommitOutcome(stage, hash, size, revisionId, refUpdated, conflictMessage);
@@ -203,6 +228,7 @@ public sealed class WorkspaceVersionService
         Directory.CreateDirectory(Path.Combine(_backupRoot, "refs"));
         Directory.CreateDirectory(Path.Combine(_backupRoot, "documents"));
         Directory.CreateDirectory(Path.Combine(_backupRoot, "folders"));
+        Directory.CreateDirectory(Path.Combine(_backupRoot, "outbox", "revisions"));
 
         var workspacePath = Path.Combine(_backupRoot, "workspace.json");
         _json.Write(workspacePath, manifest);
@@ -220,5 +246,50 @@ public sealed class WorkspaceVersionService
     {
         try { if (File.Exists(path)) File.Delete(path); }
         catch { /* best effort during cleanup */ }
+    }
+
+    private void ValidateRevisionParent(
+        string documentId,
+        string schemeId,
+        string? parentRevisionId,
+        int sequence)
+    {
+        if (parentRevisionId is null)
+        {
+            if (sequence != 1)
+                throw new InvalidOperationException(
+                    "a root revision must have sequence 1");
+            return;
+        }
+
+        var parent = _revisions.Read(documentId, parentRevisionId)
+            ?? throw new InvalidOperationException(
+                $"parent revision {parentRevisionId} not found in document {documentId}");
+        if (!string.Equals(parent.DocumentId, documentId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "parent revision must belong to the same document and scheme");
+        }
+        if (!string.Equals(parent.SchemeId, schemeId, StringComparison.Ordinal))
+        {
+            // A newly-created scheme initially points at its source revision.
+            // Its first local revision is the only valid cross-scheme edge.
+            var targetRef = _refs.Read(documentId, schemeId);
+            bool isBranchRoot = sequence == 1
+                && _revisions.ListByScheme(documentId, schemeId).Count == 0
+                && string.Equals(
+                    targetRef?.HeadRevisionId,
+                    parentRevisionId,
+                    StringComparison.Ordinal);
+            if (!isBranchRoot)
+            {
+                throw new InvalidOperationException(
+                    "parent revision must belong to the same document and scheme");
+            }
+            return;
+        }
+        if (sequence != parent.Sequence + 1)
+            throw new InvalidOperationException(
+                "revision sequence must immediately follow its parent");
     }
 }

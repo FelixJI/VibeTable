@@ -8,7 +8,11 @@ let singleton: HostBridge | null = null;
 
 export function useHostBridge(): HostBridge {
   if (!singleton) {
-    singleton = createHostBridge();
+    // Native file hashing, backup restore, and plugin package verification can
+    // legitimately exceed the bridge's unit-test-oriented 10 second default
+    // on a cold Windows/antivirus path. Keep production requests bounded while
+    // allowing those host-owned operations to complete.
+    singleton = createHostBridge({ timeoutMs: 30_000 });
   }
   return singleton;
 }

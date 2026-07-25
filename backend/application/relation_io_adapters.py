@@ -1,12 +1,11 @@
-"""Live-schema adapters for relation-aware imports and authoritative exports."""
+"""Product adapters for relation-aware imports and Lookup exports."""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any, Protocol
-from urllib.parse import quote
+from collections.abc import Mapping
+from typing import Any, Literal, Protocol
 
-from backend.adapters.directus.profile import CollectionProfile
+from backend.adapters.pocketbase.client import QueryPageResult
 from backend.application.export_service import (
     AuthoritativeLookupColumn,
     AuthoritativeLookupExportPage,
@@ -15,17 +14,10 @@ from backend.application.import_service import (
     RelationImportBatchResult,
     RelationImportTarget,
 )
-from backend.application.lookup_service import LookupService
+from backend.application.paste_service import PasteMutationPort
 from backend.contracts.data_io import ImportPlanRow
-from backend.contracts.lookup import (
-    LookupCollectionParams,
-    LookupQuery,
-    LookupQueryParams,
-)
-from backend.contracts.relation_admin import (
-    NormalizedRelationDescriptor,
-    SchemaSnapshot,
-)
+from backend.contracts.data_profile import CollectionProfile
+from backend.contracts.paste import PastePlanRow
 
 
 class RelationIoError(Exception):
@@ -34,48 +26,30 @@ class RelationIoError(Exception):
         self.code = code
 
 
-class _RelationImportClient(Protocol):
-    async def schema_fields(self) -> list[dict[str, Any]]: ...
+class _RelationClient(Protocol):
+    async def describe_relations(self, table_id: str) -> dict[str, Any]: ...
 
-    async def relation_lookup_capabilities(self) -> dict[str, Any]: ...
+    async def describe_table(self, table_id: str) -> dict[str, Any]: ...
 
-
-class _RelationImportTransport(Protocol):
-    async def request(
+    async def query_page(
         self,
-        method: str,
-        path: str,
         *,
-        query: Mapping[str, Any] | None = ...,
-        json_body: Any | None = ...,
-        access_token: str | None = ...,
-        headers: Mapping[str, str] | None = ...,
-        expected_status: Sequence[int] = ...,
-    ) -> Any: ...
+        table_id: str,
+        query: dict[str, Any],
+    ) -> QueryPageResult: ...
 
 
-class _TokenProvider(Protocol):
-    async def access_token(self) -> str: ...
-
-
-class DirectusRelationImportProvider:
-    """Resolve explicit unique matches and delegate atomic apply to Directus."""
+class PocketBaseRelationImportProvider:
+    """Resolve exact relation matches through normalized product APIs."""
 
     def __init__(
         self,
         *,
-        client: _RelationImportClient,
-        transport: _RelationImportTransport,
-        auth: _TokenProvider,
-        resolve_relation: Callable[
-            [str], Awaitable[tuple[SchemaSnapshot, NormalizedRelationDescriptor]]
-        ],
+        client: _RelationClient,
+        bulk: PasteMutationPort,
     ) -> None:
         self._client = client
-        self._transport = transport
-        self._auth = auth
-        self._resolve_relation = resolve_relation
-        self._proofs: dict[tuple[str, str], tuple[RelationImportTarget, str]] = {}
+        self._bulk = bulk
 
     async def inspect_mapping(
         self,
@@ -85,72 +59,98 @@ class DirectusRelationImportProvider:
         relation_id: str,
         match_field: str,
     ) -> RelationImportTarget:
-        snapshot, relation = await self._resolve_relation(relation_id)
-        if snapshot.collection != collection or relation.source_collection != collection:
+        catalog = await self._client.describe_relations(collection)
+        raw_relations = catalog.get("relations")
+        if not isinstance(raw_relations, list):
             raise RelationIoError(
-                "relation does not belong to the import collection",
-                code="relation_id_mismatch",
+                "relation catalog is invalid",
+                code="relation_target_schema_invalid",
             )
-        if relation.kind != "m2o" or relation.related_collection is None:
-            raise RelationIoError(
-                "relation import currently requires a single-valued M2O/O2O field",
-                code="relation_import_kind_unsupported",
-            )
-        if relation.many_field != target_field:
+        relation = next(
+            (
+                raw
+                for raw in raw_relations
+                if isinstance(raw, dict) and raw.get("relationId") == relation_id
+            ),
+            None,
+        )
+        if (
+            relation is None
+            or relation.get("sourceTableId") != collection
+            or relation.get("physicalName") != target_field
+        ):
             raise RelationIoError(
                 "relation does not identify the mapped target field",
                 code="relation_id_mismatch",
             )
-        fields = await self._client.schema_fields()
-        target_pk = _primary_key(fields, relation.related_collection)
-        raw_match = next(
+        if relation.get("cardinality") not in {"one", "m2o", "o2o"}:
+            raise RelationIoError(
+                "relation import requires a single-valued relation",
+                code="relation_import_kind_unsupported",
+            )
+        target_table = relation.get("targetTableId")
+        if not isinstance(target_table, str) or not target_table:
+            raise RelationIoError(
+                "relation target table is invalid",
+                code="relation_target_schema_invalid",
+            )
+        schema = await self._client.describe_table(target_table)
+        raw_fields = schema.get("fields")
+        if not isinstance(raw_fields, list):
+            raise RelationIoError(
+                "relation target schema is invalid",
+                code="relation_target_schema_invalid",
+            )
+        field = next(
             (
-                item
-                for item in fields
-                if item.get("collection") == relation.related_collection
-                and item.get("field") == match_field
+                raw
+                for raw in raw_fields
+                if isinstance(raw, dict)
+                and match_field in {raw.get("fieldId"), raw.get("physicalName")}
             ),
             None,
         )
-        schema = raw_match.get("schema") if isinstance(raw_match, dict) else None
-        if not isinstance(schema, dict) or not (
-            schema.get("is_primary_key") is True or schema.get("is_unique") is True
-        ):
+        constraints = field.get("constraints") if isinstance(field, dict) else None
+        unique = isinstance(constraints, list) and any(
+            isinstance(item, dict)
+            and item.get("kind") == "unique"
+            and item.get("value") is True
+            for item in constraints
+        )
+        physical_match = field.get("physicalName") if isinstance(field, dict) else None
+        if not unique or not isinstance(physical_match, str):
             raise RelationIoError(
-                "matchField must be a visible primary-key or unique field",
+                "matchField must be a visible unique field",
                 code="relation_match_field_not_unique",
             )
-        target = RelationImportTarget(
+        return RelationImportTarget(
             relation_id=relation_id,
             target_field=target_field,
-            target_collection=relation.related_collection,
-            target_primary_key=target_pk,
-            match_field=match_field,
+            target_collection=target_table,
+            target_primary_key="id",
+            match_field=physical_match,
         )
-        self._proofs[(relation_id, match_field)] = (target, snapshot.schema_revision)
-        return target
 
     async def find_exact(self, target: RelationImportTarget, value: Any) -> list[Any]:
-        token = await self._auth.access_token()
-        payload = await self._transport.request(
-            "GET",
-            f"/items/{quote(target.target_collection, safe='')}",
-            access_token=token,
+        page = await self._client.query_page(
+            table_id=target.target_collection,
             query={
-                "filter": {target.match_field: {"_eq": value}},
-                "fields": [target.target_primary_key],
+                "filters": [
+                    {
+                        "field": target.match_field,
+                        "operator": "eq",
+                        "value": value,
+                        "logic": "AND",
+                    }
+                ],
+                "sorts": [],
+                "offset": 0,
                 "limit": 2,
             },
         )
-        rows = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
-            raise RelationIoError(
-                "Directus returned an invalid relation match response",
-                code="relation_lookup_failed",
-            )
         return [
             row[target.target_primary_key]
-            for row in rows
+            for row in page.rows
             if row.get(target.target_primary_key) is not None
         ]
 
@@ -164,156 +164,98 @@ class DirectusRelationImportProvider:
         upsert_key: str | None,
         idempotency_key: str,
     ) -> RelationImportBatchResult:
-        capabilities = await self._client.relation_lookup_capabilities()
-        if capabilities.get("relation_import_v1") is not True:
-            raise RelationIoError(
-                "Directus relation import extension is unavailable",
-                code="relation_import_extension_missing",
-            )
-        compiled_rows: list[dict[str, Any]] = []
-        proofs: dict[tuple[str, str], RelationImportTarget] = {}
-        verified_relations: set[tuple[str, str]] = set()
+        planned: list[PastePlanRow] = []
+        row_revisions: dict[str | int, str] = {}
         for row in rows:
-            resolutions: list[dict[str, Any]] = []
+            values = dict(row.values)
             for resolution in row.relation_resolutions:
-                stored = self._proofs.get((resolution.relation_id, resolution.match_field))
-                if stored is None:
+                values[resolution.target_field] = resolution.matched_primary_key
+            kind: Literal["update", "insert", "skip"] = "insert"
+            target_row_key: str | int | None = None
+            if mode == "upsert":
+                if not upsert_key or values.get(upsert_key) is None:
                     raise RelationIoError(
-                        "relation import proof expired; preview again",
-                        code="relation_import_proof_missing",
+                        "upsert key is missing from an import row",
+                        code="import_upsert_key_missing",
                     )
-                target, schema_revision = stored
-                proof_key = (target.relation_id, target.match_field)
-                if proof_key not in verified_relations:
-                    live_snapshot, live_relation = await self._resolve_relation(target.relation_id)
-                    if (
-                        live_snapshot.schema_revision != schema_revision
-                        or live_snapshot.collection != collection
-                        or live_relation.kind != "m2o"
-                        or live_relation.source_collection != collection
-                        or live_relation.related_collection != target.target_collection
-                        or live_relation.many_field != target.target_field
-                    ):
-                        raise RelationIoError(
-                            "relation import proof expired; preview again",
-                            code="relation_import_proof_expired",
-                        )
-                    verified_relations.add(proof_key)
-                proofs[(target.relation_id, target.match_field)] = target
-                resolutions.append(
-                    {
-                        "targetField": target.target_field,
-                        "relationId": resolution.relation_id,
-                        "targetCollection": target.target_collection,
-                        "targetPrimaryKey": target.target_primary_key,
-                        "matchField": resolution.match_field,
-                        "sourceValue": resolution.source_value,
-                        "state": resolution.state,
-                        "matchedPrimaryKey": resolution.matched_primary_key,
-                    }
-                )
-            compiled_rows.append(
-                {
-                    "values": {
-                        field: value
-                        for field, value in row.values.items()
-                        if field not in {item["targetField"] for item in resolutions}
+                page = await self._client.query_page(
+                    table_id=collection,
+                    query={
+                        "filters": [
+                            {
+                                "field": upsert_key,
+                                "operator": "eq",
+                                "value": values[upsert_key],
+                                "logic": "AND",
+                            }
+                        ],
+                        "sorts": [],
+                        "offset": 0,
+                        "limit": 2,
                     },
-                    "relations": resolutions,
-                }
+                )
+                if len(page.rows) > 1:
+                    raise RelationIoError(
+                        "upsert key matched more than one row",
+                        code="import_upsert_key_not_unique",
+                    )
+                if page.rows:
+                    target_row_key = str(page.rows[0]["id"])
+                    kind = "update"
+                    guard = page.rows[0].get("__vibetableRevision")
+                    if isinstance(guard, str) and guard:
+                        row_revisions[target_row_key] = guard
+            planned.append(
+                PastePlanRow(
+                    kind=kind,
+                    target_row_key=target_row_key,
+                    changes={
+                        field: {"before": None, "after": value}
+                        for field, value in values.items()
+                    },
+                )
             )
-        live_fields = await self._client.schema_fields()
-        source_fields = {
-            str(item.get("field"))
-            for item in live_fields
-            if item.get("collection") == collection and isinstance(item.get("field"), str)
-        }
-        source_unique = {
-            str(item.get("field"))
-            for item in live_fields
-            if item.get("collection") == collection
-            and isinstance(item.get("field"), str)
-            and isinstance(item.get("schema"), dict)
-            and (
-                item["schema"].get("is_primary_key") is True
-                or item["schema"].get("is_unique") is True
-            )
-        }
-        if mode == "upsert" and (upsert_key is None or upsert_key not in source_unique):
-            raise RelationIoError(
-                "upsertKey must be a visible primary-key or unique field",
-                code="import_upsert_key_not_unique",
-            )
-        proof_fields: dict[str, list[str]] = {
-            collection: sorted(
-                {
-                    profile.primary_key,
-                    *(field for row in compiled_rows for field in row["values"]),
-                    *(target.target_field for target in proofs.values()),
-                    *([upsert_key] if upsert_key else []),
-                }
-                & source_fields
-            )
-        }
-        proof_unique: dict[str, list[str]] = {
-            collection: sorted(source_unique & set(proof_fields[collection]))
-        }
-        for target in proofs.values():
-            proof_fields.setdefault(target.target_collection, [])
-            proof_fields[target.target_collection] = sorted(
-                set(proof_fields[target.target_collection])
-                | {target.target_primary_key, target.match_field}
-            )
-            proof_unique.setdefault(target.target_collection, [])
-            proof_unique[target.target_collection] = sorted(
-                set(proof_unique[target.target_collection]) | {target.match_field}
-            )
-        token = await self._auth.access_token()
-        payload = await self._transport.request(
-            "POST",
-            "/vibetable-bulk-mutation/relation-import",
-            access_token=token,
-            headers={"Idempotency-Key": idempotency_key},
-            json_body={
-                "contract": "vibetable-relation-import.v1",
-                "idempotencyKey": idempotency_key,
-                "sourceCollection": collection,
-                "sourcePrimaryKey": profile.primary_key,
-                "mode": "upsert" if mode == "upsert" else "create",
-                **({"upsertKey": upsert_key} if upsert_key else {}),
-                "schemaProof": {
-                    "collections": sorted(proof_fields),
-                    "fields": proof_fields,
-                    "uniqueFields": proof_unique,
-                    "relationIds": sorted({target.relation_id for target in proofs.values()}),
-                },
-                "rows": compiled_rows,
-            },
+        result = await self._bulk.apply(
+            collection=collection,
+            profile=profile,
+            rows=planned,
+            row_revisions=row_revisions,
+            idempotency_key=idempotency_key,
+            schema_revision=profile.schema_revision,
         )
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, dict) or data.get("outcome") != "committed":
+        if result.outcome != "committed":
             raise RelationIoError(
-                "relation import extension returned an invalid response",
-                code="relation_import_extension_invalid",
+                "relation-aware import did not commit",
+                code=(
+                    "import_pending"
+                    if result.outcome == "pending"
+                    else "import_conflict"
+                ),
             )
         return RelationImportBatchResult(
-            created_row_keys=[str(item) for item in data.get("createdSourceRowKeys", [])],
-            updated_row_keys=[str(item) for item in data.get("updatedSourceRowKeys", [])],
-            request_id=str(data.get("requestId") or idempotency_key),
+            created_row_keys=[str(key) for key in result.created_row_keys],
+            updated_row_keys=[str(key) for key in result.updated_row_keys],
+            request_id=result.request_id,
         )
 
 
-class LookupExportProvider:
-    """Adapt LookupService.query to the streaming export provider protocol."""
+class _LookupClient(Protocol):
+    async def describe_lookups(self, table_id: str) -> dict[str, Any]: ...
 
-    def __init__(
+    async def query_lookups(
         self,
         *,
-        lookup_service: LookupService,
-        schema_provider: Callable[[str], Awaitable[SchemaSnapshot]],
-    ) -> None:
-        self._lookup_service = lookup_service
-        self._schema_provider = schema_provider
+        table_id: str,
+        schema_revision: str,
+        query: Mapping[str, Any],
+    ) -> QueryPageResult: ...
+
+
+class PocketBaseLookupExportProvider:
+    """Authoritative Lookup export over product routes."""
+
+    def __init__(self, *, client: _LookupClient) -> None:
+        self._client = client
 
     async def query_page(
         self,
@@ -326,64 +268,56 @@ class LookupExportProvider:
         offset: int,
         limit: int,
     ) -> AuthoritativeLookupExportPage:
-        snapshot = await self._schema_provider(collection)
-        if snapshot.lookup_revision != lookup_revision:
+        del fields
+        catalog = await self._client.describe_lookups(collection)
+        schema_revision = catalog.get("schemaRevision")
+        raw_lookups = catalog.get("lookups")
+        if schema_revision != lookup_revision:
             raise RelationIoError(
                 "Lookup definitions changed before export",
                 code="lookup_revision_mismatch",
             )
-        normalized_query = LookupQuery.model_validate({**query, "offset": offset, "limit": limit})
-        result = await self._lookup_service.query(
-            LookupQueryParams(
-                collection=collection,
-                field_refs=[*fields, *lookup_ids],
-                query=normalized_query,
-                request_generation=offset // max(limit, 1),
-                schema_revision=snapshot.schema_revision,
-                permission_revision=snapshot.permission_revision,
-                lookup_revision=lookup_revision,
+        if not isinstance(raw_lookups, list):
+            raise RelationIoError(
+                "Lookup catalog is invalid",
+                code="lookup_export_columns_invalid",
             )
-        )
-        listed = await self._lookup_service.list(LookupCollectionParams(collection=collection))
-        definitions = {item.lookup_id: item for item in listed.definitions}
+        by_id = {
+            raw["lookupId"]: raw["physicalName"]
+            for raw in raw_lookups
+            if isinstance(raw, dict)
+            and isinstance(raw.get("lookupId"), str)
+            and isinstance(raw.get("physicalName"), str)
+        }
+        if any(lookup_id not in by_id for lookup_id in lookup_ids):
+            raise RelationIoError(
+                "Lookup catalog does not contain every requested Lookup",
+                code="lookup_export_columns_mismatch",
+            )
         columns = [
-            AuthoritativeLookupColumn(
-                lookup_id=lookup_id,
-                field_key=definitions[lookup_id].field_key,
-            )
+            AuthoritativeLookupColumn(lookup_id, by_id[lookup_id])
             for lookup_id in lookup_ids
-            if lookup_id in definitions
         ]
-        rows: list[dict[str, Any]] = []
-        key_map = {column.lookup_id: column.field_key for column in columns}
-        for raw in result.rows:
-            row = dict(raw)
-            for lookup_id, field_key in key_map.items():
-                if lookup_id in row:
-                    row[field_key] = row.pop(lookup_id)
-            rows.append(row)
+        if len({column.field_key for column in columns}) != len(columns):
+            raise RelationIoError(
+                "Lookup catalog contains duplicate export fields",
+                code="lookup_export_columns_invalid",
+            )
+        page = await self._client.query_lookups(
+            table_id=collection,
+            schema_revision=str(schema_revision),
+            query={**query, "offset": offset, "limit": limit},
+        )
         return AuthoritativeLookupExportPage(
-            rows=rows,
+            rows=page.rows,
             columns=columns,
-            filtered_rows=result.filtered_rows,
-            lookup_revision=result.lookup_revision,
+            filtered_rows=page.filtered_rows,
+            lookup_revision=str(schema_revision),
         )
 
 
-def _primary_key(fields: list[dict[str, Any]], collection: str) -> str:
-    matches = [
-        item.get("field")
-        for item in fields
-        if item.get("collection") == collection
-        and isinstance(item.get("schema"), dict)
-        and item["schema"].get("is_primary_key") is True
-    ]
-    if len(matches) != 1 or not isinstance(matches[0], str):
-        raise RelationIoError(
-            "target collection has no unambiguous visible primary key",
-            code="relation_target_schema_invalid",
-        )
-    return matches[0]
-
-
-__all__ = ["DirectusRelationImportProvider", "LookupExportProvider", "RelationIoError"]
+__all__ = [
+    "PocketBaseLookupExportProvider",
+    "PocketBaseRelationImportProvider",
+    "RelationIoError",
+]

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { NButton, NIcon, NInput } from "naive-ui";
-import { Cloud, FilePlus2, Files, RefreshCw, Search } from "lucide-vue-next";
+import { FilePlus2, Files, RefreshCw, Search } from "lucide-vue-next";
 import DocumentList from "@/components/files/DocumentList.vue";
 import DocumentContextMenu from "@/components/files/DocumentContextMenu.vue";
 import DocumentInspector from "@/components/files/DocumentInspector.vue";
@@ -24,13 +24,9 @@ const selectedCount = computed(() => store.selectedHandles.length);
 const currentRevisions = computed(() => store.primaryHandle ? store.revisions[store.primaryHandle] ?? [] : []);
 
 function requestList(): void {
+  store.setAuthorityFilter("workspace");
   store.beginLoad();
-  service.list(props.scope, store.authorityFilter);
-}
-
-function setAuthority(authority: "workspace" | "cloud"): void {
-  store.setAuthorityFilter(authority);
-  requestList();
+  service.list(props.scope, "workspace");
 }
 
 function select(index: number, options: { toggle: boolean; range: boolean }): void {
@@ -104,14 +100,6 @@ onBeforeUnmount(() => {
     @drop="onExternalDrop"
   >
     <header class="file-toolbar">
-      <div class="authority-switch" role="tablist" :aria-label="t('files.source')">
-        <button :class="{ active: store.authorityFilter === 'workspace' }" role="tab" :aria-selected="store.authorityFilter === 'workspace'" @click="setAuthority('workspace')">
-          <NIcon :size="15"><Files /></NIcon>{{ t("files.authority.workspace") }}
-        </button>
-        <button disabled role="tab" aria-disabled="true" aria-selected="false" :title="t('files.cloud.notReady')">
-          <NIcon :size="15"><Cloud /></NIcon>{{ t("files.authority.cloud") }}
-        </button>
-      </div>
       <NInput :value="store.query" clearable size="small" class="file-search" :input-props="{ 'aria-label': t('files.search') }" :placeholder="t('files.search')" @update:value="store.setQuery">
         <template #prefix><NIcon :size="15"><Search /></NIcon></template>
       </NInput>
@@ -144,7 +132,7 @@ onBeforeUnmount(() => {
           <span><NIcon :size="22"><Files /></NIcon></span>
           <strong>{{ store.query ? t("files.search.empty") : t("files.empty") }}</strong>
           <p>{{ store.query ? t("files.search.emptyHint") : t("files.emptyHint") }}</p>
-          <NButton v-if="!store.query && store.authorityFilter === 'workspace'" size="small" type="primary" @click="service.importFiles(scope)">{{ t("files.import") }}</NButton>
+          <NButton v-if="!store.query" size="small" type="primary" @click="service.importFiles(scope)">{{ t("files.import") }}</NButton>
         </div>
         <DocumentList
           v-else
@@ -177,14 +165,11 @@ onBeforeUnmount(() => {
 <style scoped>
 .file-workspace { display: flex; flex-direction: column; height: 100%; min-width: 0; background: var(--vt-bg); }
 .file-toolbar { display: flex; flex: 0 0 46px; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg); }
-.authority-switch { display: flex; gap: 2px; padding: 3px; border-radius: var(--vt-radius-md); background: var(--vt-bg-sunken); }
-.authority-switch button { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px; color: var(--vt-fg-muted); border: 0; border-radius: var(--vt-radius-sm); background: transparent; cursor: pointer; }
-.authority-switch button.active { color: var(--vt-fg); background: var(--vt-bg); box-shadow: var(--vt-shadow-1); }
 .file-search { width: min(280px, 30vw); margin-left: 4px; }
 .selection-count { margin-left: auto; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .file-body { position: relative; display: flex; flex: 1; min-height: 0; }
-.drop-feedback { min-height: 32px; padding: 6px 12px; color: var(--vt-color-primary-600); font-size: var(--vt-font-caption); border-bottom: 1px solid var(--vt-color-primary-100); background: var(--vt-color-primary-50); }
-.external-drop-zone { position: absolute; z-index: 80; inset: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--vt-color-primary-600); border: 2px dashed var(--vt-color-primary-200); border-radius: 12px; background: color-mix(in srgb, var(--vt-color-primary-50) 92%, var(--vt-bg)); box-shadow: inset 0 0 0 1px rgba(255,255,255,.7); pointer-events: none; }
+.drop-feedback { min-height: 32px; padding: 6px 12px; color: var(--vt-fg-accent); font-size: var(--vt-font-caption); border-bottom: 1px solid var(--vt-color-primary-100); background: var(--vt-color-primary-50); }
+.external-drop-zone { position: absolute; z-index: 80; inset: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--vt-fg-accent); border: 2px dashed var(--vt-color-primary-200); border-radius: 12px; background: color-mix(in srgb, var(--vt-color-primary-50) 92%, var(--vt-bg)); box-shadow: inset 0 0 0 1px rgba(255,255,255,.7); pointer-events: none; }
 .external-drop-zone span { display: grid; place-items: center; width: 48px; height: 48px; margin-bottom: 10px; border-radius: 50%; background: var(--vt-bg); box-shadow: var(--vt-shadow-1); }
 .external-drop-zone strong { font-size: var(--vt-font-label); font-weight: 600; }
 .external-drop-zone p { margin: 4px 0 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }

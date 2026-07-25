@@ -1,6 +1,9 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
@@ -11,7 +14,7 @@ using VibeTable.Workspace.Storage;
 namespace VibeTable.Desktop.Services;
 
 /// <summary>
-/// Joins Directus document metadata with the machine-local workspace mount.
+/// Joins provider-neutral document metadata with the machine-local workspace mount.
 /// It returns opaque handles only; absolute paths remain inside the host.
 /// </summary>
 public sealed class DocumentWorkspaceHostService : IDisposable
@@ -77,6 +80,7 @@ public sealed class DocumentWorkspaceHostService : IDisposable
     private readonly string? _partitionKey;
     private readonly Func<string?>? _partitionKeyProvider;
     private readonly SemaphoreSlim _fileMutationGate = new(1, 1);
+    private readonly SemaphoreSlim _publishGate = new(1, 1);
 
     public DocumentWorkspaceHostService(
         IDocumentWorkspaceRpcGateway gateway,
@@ -106,6 +110,12 @@ public sealed class DocumentWorkspaceHostService : IDisposable
         await RetryPendingRegistrationsAsync(token).ConfigureAwait(false);
         var result = await _gateway.ReadFolderAsync(collection, itemId, token)
             .ConfigureAwait(false);
+        if (await PublishChangedLocalHeadsAsync(result.Documents, token)
+            .ConfigureAwait(false))
+        {
+            result = await _gateway.ReadFolderAsync(collection, itemId, token)
+                .ConfigureAwait(false);
+        }
         var entries = new List<DocumentEntryPayload>(result.Documents.Count);
 
         foreach (var document in result.Documents)
@@ -121,6 +131,12 @@ public sealed class DocumentWorkspaceHostService : IDisposable
         await RetryPendingRegistrationsAsync(token).ConfigureAwait(false);
         var result = await _gateway.ReadDocumentsAsync(500, 0, token)
             .ConfigureAwait(false);
+        if (await PublishChangedLocalHeadsAsync(result.Documents, token)
+            .ConfigureAwait(false))
+        {
+            result = await _gateway.ReadDocumentsAsync(500, 0, token)
+                .ConfigureAwait(false);
+        }
         var entries = new List<DocumentEntryPayload>(result.Documents.Count);
         foreach (var document in result.Documents)
         {
@@ -136,6 +152,11 @@ public sealed class DocumentWorkspaceHostService : IDisposable
         CancellationToken token)
     {
         var descriptor = _capabilities.Resolve(entryHandle, "history");
+        await TryPublishDocumentRevisionsAsync(
+            descriptor.WorkspaceId,
+            descriptor.DocumentId,
+            descriptor.CurrentRevisionId,
+            token).ConfigureAwait(false);
         var result = await _gateway.ReadHistoryAsync(
             descriptor.DocumentId,
             Math.Clamp(limit, 1, 100),
@@ -219,7 +240,7 @@ public sealed class DocumentWorkspaceHostService : IDisposable
     /// Copies a native-picker-selected regular file into a locally authoritative
     /// managed workspace and commits its document manifest only after the copy
     /// has been atomically moved into place. No source or destination path is
-    /// accepted from the renderer or Directus.
+    /// accepted from the renderer or metadata index.
     /// </summary>
     public async Task<DocumentImportResult?> ImportFromPickerAsync(
         DocumentImportRequest request,
@@ -242,7 +263,7 @@ public sealed class DocumentWorkspaceHostService : IDisposable
     /// <summary>
     /// Imports a path obtained through a native-only boundary such as
     /// CoreWebView2File.AdditionalObjects. This method must never be exposed to
-    /// renderer JSON or Directus metadata.
+    /// renderer JSON or metadata-index results.
     /// </summary>
     internal async Task<DocumentImportResult> ImportFromHostPathAsync(
         DocumentImportRequest request,
@@ -340,6 +361,7 @@ public sealed class DocumentWorkspaceHostService : IDisposable
                         revisionId,
                         objectCommit.ContentHash,
                         objectCommit.Size,
+                        createdAt,
                         request.ItemCollection,
                         request.ItemId,
                         request.LinkType);
@@ -626,6 +648,294 @@ public sealed class DocumentWorkspaceHostService : IDisposable
         RevokeAll();
         _preview.Dispose();
         _fileMutationGate.Dispose();
+        _publishGate.Dispose();
+    }
+
+    private async Task<bool> PublishChangedLocalHeadsAsync(
+        IEnumerable<DocumentSummary> documents,
+        CancellationToken token)
+    {
+        bool published = false;
+        foreach (var document in documents)
+        {
+            published = await TryPublishDocumentRevisionsAsync(
+                document.WorkspaceId,
+                document.DocumentId,
+                document.MainHead,
+                token).ConfigureAwait(false) || published;
+        }
+        return published;
+    }
+
+    private async Task<bool> TryPublishDocumentRevisionsAsync(
+        string workspaceId,
+        string documentId,
+        string? indexedHead,
+        CancellationToken token)
+    {
+        try
+        {
+            return await PublishDocumentRevisionsAsync(
+                workspaceId,
+                documentId,
+                indexedHead,
+                token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Publishing is an eventually-consistent metadata projection.
+            // Never make the locally authoritative document unavailable when
+            // the projection is temporarily stale or incomplete.
+            TraceFileFailure("revision-publish", ex);
+            return false;
+        }
+    }
+
+    private async Task<bool> PublishDocumentRevisionsAsync(
+        string workspaceId,
+        string documentId,
+        string? indexedHead,
+        CancellationToken token)
+    {
+        string? root = _mounts.ResolveRoot(workspaceId, CurrentPartitionKey());
+        if (string.IsNullOrWhiteSpace(root))
+            return false;
+
+        await _publishGate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            var context = RequireManagedWorkspace(workspaceId);
+            var json = new AtomicJsonStore();
+            var revisionStore = new RevisionStore(context.BackupRoot, json);
+            var publishOutbox = new RevisionPublishOutboxStore(
+                context.BackupRoot,
+                json);
+            var conflictedRevisionIds = publishOutbox
+                .ListConflictedByDocument(documentId)
+                .Select(issue => issue.Revision.RevisionId)
+                .ToHashSet(StringComparer.Ordinal);
+            var references = new RefStore(context.BackupRoot, json)
+                .ListByDocument(documentId);
+            if (references.Count == 0)
+                return false;
+
+            var allRevisions = revisionStore.ListByDocument(documentId)
+                .ToDictionary(revision => revision.RevisionId, StringComparer.Ordinal);
+            var pending = new Dictionary<string, RevisionManifest>(StringComparer.Ordinal);
+            foreach (var queued in publishOutbox.ListByDocument(documentId))
+            {
+                if (!allRevisions.TryGetValue(queued.RevisionId, out var stored)
+                    || !Equals(stored, queued))
+                {
+                    throw new DocumentFileOperationException(
+                        "本地发布队列与版本清单不一致。",
+                        "DOCUMENT_REVISION_OUTBOX_INVALID");
+                }
+                pending[stored.RevisionId] = stored;
+            }
+
+            var mainReferences = references
+                .Where(reference => string.Equals(
+                    reference.SchemeName,
+                    "main",
+                    StringComparison.Ordinal))
+                .ToArray();
+            if (mainReferences.Length != 1)
+            {
+                throw new DocumentFileOperationException(
+                    "本地工作区必须且只能有一个 main 版本引用。",
+                    "DOCUMENT_MAIN_REF_INVALID");
+            }
+            RefManifest mainReference = mainReferences[0];
+            string? cursor = mainReference.HeadRevisionId;
+            bool reachedIndexedHead = string.IsNullOrWhiteSpace(indexedHead);
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            while (!string.IsNullOrWhiteSpace(cursor))
+            {
+                if (string.Equals(cursor, indexedHead, StringComparison.Ordinal))
+                {
+                    reachedIndexedHead = true;
+                    break;
+                }
+                if (conflictedRevisionIds.Contains(cursor))
+                    return false;
+                if (!visited.Add(cursor)
+                    || !allRevisions.TryGetValue(cursor, out var revision)
+                    || !string.Equals(
+                        revision.SchemeId,
+                        mainReference.SchemeId,
+                        StringComparison.Ordinal))
+                {
+                    throw new DocumentFileOperationException(
+                        "本地版本链无效，无法发布工作区索引。",
+                        "DOCUMENT_REVISION_CHAIN_INVALID");
+                }
+                pending[revision.RevisionId] = revision;
+                cursor = revision.ParentRevisionId;
+            }
+            if (!reachedIndexedHead)
+            {
+                throw new DocumentFileOperationException(
+                    "本地 main 版本不是已发布版本的后代。",
+                    "DOCUMENT_REVISION_DIVERGED");
+            }
+            if (pending.Count == 0)
+                return false;
+
+            var entries = pending.Values
+                .OrderBy(revision => revision.Sequence)
+                .ThenBy(revision => revision.RevisionId, StringComparer.Ordinal)
+                .Select(revision => new RevisionIndexEntry(
+                    revision.RevisionId,
+                    revision.DocumentId,
+                    revision.SchemeId,
+                    revision.ParentRevisionId,
+                    revision.Sequence,
+                    revision.VersionLabel,
+                    revision.Kind.ToString().ToLowerInvariant(),
+                    revision.ContentHash,
+                    revision.Size,
+                    revision.MimeType,
+                    UtcRfc3339Timestamp.Canonicalize(
+                        revision.CreatedAt,
+                        nameof(revision.CreatedAt)),
+                    revision.CreatedBy,
+                    revision.DeviceId,
+                    revision.Comment))
+                .ToArray();
+
+            var batches = entries.Chunk(100).ToArray();
+            bool shouldAdvanceHead = !string.Equals(
+                mainReference.HeadRevisionId,
+                indexedHead,
+                StringComparison.Ordinal);
+            for (int batchIndex = 0; batchIndex < batches.Length; batchIndex++)
+            {
+                var revisions = batches[batchIndex].ToList();
+                PublishHeadAdvance? headAdvance =
+                    shouldAdvanceHead && batchIndex == batches.Length - 1
+                        ? new PublishHeadAdvance(
+                            documentId,
+                            mainReference.SchemeId,
+                            indexedHead,
+                            mainReference.HeadRevisionId)
+                        : null;
+                string canonical = JsonSerializer.Serialize(new
+                {
+                    revisions,
+                    headAdvance,
+                });
+                string digest = Convert.ToHexString(
+                    SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
+                    .ToLowerInvariant();
+                var result = await _gateway.PublishIndexBatchAsync(
+                    new PublishIndexBatchParams(
+                        revisions,
+                        headAdvance,
+                        $"workspace-{digest}"),
+                    token).ConfigureAwait(false);
+                var resultsByRevision = ValidatePublishReceipt(
+                    revisions,
+                    result);
+                if (result.Conflicts.Count != 0)
+                {
+                    foreach (var revision in revisions)
+                    {
+                        PublishResult receipt =
+                            resultsByRevision[revision.RevisionId];
+                        if (string.Equals(
+                            receipt.Status,
+                            "conflict",
+                            StringComparison.Ordinal))
+                        {
+                            publishOutbox.MarkConflicted(
+                                allRevisions[revision.RevisionId],
+                                "revision_immutable_conflict",
+                                "The remote revision ID has different immutable metadata.",
+                                UtcRfc3339Timestamp.Canonicalize(
+                                    DateTimeOffset.UtcNow.ToString("O"),
+                                    "updatedAt"));
+                        }
+                        else
+                        {
+                            publishOutbox.Complete(
+                                revision.DocumentId,
+                                revision.RevisionId);
+                        }
+                    }
+                    return false;
+                }
+                foreach (var revision in revisions)
+                {
+                    publishOutbox.Complete(
+                        revision.DocumentId,
+                        revision.RevisionId);
+                }
+            }
+            return true;
+        }
+        finally
+        {
+            _publishGate.Release();
+        }
+    }
+
+    private static IReadOnlyDictionary<string, PublishResult> ValidatePublishReceipt(
+        IReadOnlyList<RevisionIndexEntry> requested,
+        PublishIndexBatchResult receipt)
+    {
+        if (receipt.Results is null || receipt.Conflicts is null)
+            throw InvalidReceipt();
+
+        var requestedIds = requested
+            .Select(revision => revision.RevisionId)
+            .ToHashSet(StringComparer.Ordinal);
+        if (requestedIds.Count != requested.Count
+            || receipt.Results.Count != requested.Count)
+        {
+            throw InvalidReceipt();
+        }
+
+        var results = new Dictionary<string, PublishResult>(StringComparer.Ordinal);
+        foreach (PublishResult result in receipt.Results)
+        {
+            if (!requestedIds.Contains(result.RevisionId)
+                || !results.TryAdd(result.RevisionId, result))
+            {
+                throw InvalidReceipt();
+            }
+        }
+
+        var conflicts = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string conflict in receipt.Conflicts)
+        {
+            if (!requestedIds.Contains(conflict) || !conflicts.Add(conflict))
+                throw InvalidReceipt();
+        }
+
+        foreach (PublishResult result in results.Values)
+        {
+            bool isConflict = string.Equals(
+                result.Status,
+                "conflict",
+                StringComparison.Ordinal);
+            bool isSuccess = result.Status is "created" or "unchanged";
+            if ((!isConflict && !isSuccess)
+                || isConflict != conflicts.Contains(result.RevisionId))
+            {
+                throw InvalidReceipt();
+            }
+        }
+        return results;
+
+        static DocumentFileOperationException InvalidReceipt()
+            => new(
+                "The revision publish receipt is incomplete or inconsistent.",
+                "DOCUMENT_REVISION_RECEIPT_INVALID");
     }
 
     private async Task RetryPendingRegistrationsAsync(CancellationToken token)
