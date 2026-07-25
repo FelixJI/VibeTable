@@ -112,9 +112,7 @@ class PocketBaseRelationImportProvider:
         )
         constraints = field.get("constraints") if isinstance(field, dict) else None
         unique = isinstance(constraints, list) and any(
-            isinstance(item, dict)
-            and item.get("kind") == "unique"
-            and item.get("value") is True
+            isinstance(item, dict) and item.get("kind") == "unique" and item.get("value") is True
             for item in constraints
         )
         physical_match = field.get("physicalName") if isinstance(field, dict) else None
@@ -210,8 +208,7 @@ class PocketBaseRelationImportProvider:
                     kind=kind,
                     target_row_key=target_row_key,
                     changes={
-                        field: {"before": None, "after": value}
-                        for field, value in values.items()
+                        field: {"before": None, "after": value} for field, value in values.items()
                     },
                 )
             )
@@ -226,11 +223,7 @@ class PocketBaseRelationImportProvider:
         if result.outcome != "committed":
             raise RelationIoError(
                 "relation-aware import did not commit",
-                code=(
-                    "import_pending"
-                    if result.outcome == "pending"
-                    else "import_conflict"
-                ),
+                code=("import_pending" if result.outcome == "pending" else "import_conflict"),
             )
         return RelationImportBatchResult(
             created_row_keys=[str(key) for key in result.created_row_keys],
@@ -295,8 +288,7 @@ class PocketBaseLookupExportProvider:
                 code="lookup_export_columns_mismatch",
             )
         columns = [
-            AuthoritativeLookupColumn(lookup_id, by_id[lookup_id])
-            for lookup_id in lookup_ids
+            AuthoritativeLookupColumn(lookup_id, by_id[lookup_id]) for lookup_id in lookup_ids
         ]
         if len({column.field_key for column in columns}) != len(columns):
             raise RelationIoError(

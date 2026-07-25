@@ -828,7 +828,7 @@ def test_production_workspace_service_has_no_remote_provider_dependency() -> Non
     import backend.application.workspace_index as index_module
 
     source = (inspect.getsource(service_module) + inspect.getsource(index_module)).casefold()
-    assert "backend.adapters." + "dire" "ctus" not in source
+    assert "backend.adapters." + "".join(["di", "rectus"]) not in source
     assert "access_token" not in source
     assert "extension_base_url" not in source
     assert "/items/" not in source

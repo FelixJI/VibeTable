@@ -176,9 +176,7 @@ async def test_relation_import_requires_unique_product_field_and_exact_query() -
 
 @pytest.mark.asyncio
 async def test_relation_import_rejects_wrong_stable_relation_identity() -> None:
-    provider = PocketBaseRelationImportProvider(
-        client=FakeProductClient(), bulk=FakeBulk()
-    )
+    provider = PocketBaseRelationImportProvider(client=FakeProductClient(), bulk=FakeBulk())
 
     with pytest.raises(RelationIoError) as error:
         await provider.inspect_mapping(
@@ -194,9 +192,7 @@ async def test_relation_import_rejects_wrong_stable_relation_identity() -> None:
 @pytest.mark.asyncio
 async def test_relation_apply_submits_one_atomic_source_table_batch() -> None:
     bulk = FakeBulk()
-    provider = PocketBaseRelationImportProvider(
-        client=FakeProductClient(), bulk=bulk
-    )
+    provider = PocketBaseRelationImportProvider(client=FakeProductClient(), bulk=bulk)
     result = await provider.apply_chunk(
         collection="orders",
         profile=CollectionProfile(

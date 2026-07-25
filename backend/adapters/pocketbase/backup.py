@@ -60,9 +60,7 @@ class PocketBaseBackupService:
         return BackupListResult.model_validate(await self._client.list_backups())
 
     async def create_backup(self, params: CreateBackupParams) -> BackupCreateResult:
-        response = _CreateResponse.model_validate(
-            await self._client.create_backup(params.name)
-        )
+        response = _CreateResponse.model_validate(await self._client.create_backup(params.name))
         if not response.integrity.valid:
             raise ValueError("PocketBase returned an invalid backup integrity result")
         return BackupCreateResult(
@@ -73,9 +71,7 @@ class PocketBaseBackupService:
     async def restore_backup(self, params: RestoreBackupParams) -> BackupRestoreResult:
         # `confirmed` is a product-boundary acknowledgement. The fixed sidecar
         # endpoint accepts only the validated archive name.
-        return BackupRestoreResult.model_validate(
-            await self._client.restore_backup(params.name)
-        )
+        return BackupRestoreResult.model_validate(await self._client.restore_backup(params.name))
 
 
 __all__ = ["BackupClient", "PocketBaseBackupService"]

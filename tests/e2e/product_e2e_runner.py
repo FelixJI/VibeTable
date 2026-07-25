@@ -15,8 +15,8 @@ import json
 import os
 import re
 import shutil
-import sqlite3
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -120,9 +120,7 @@ def _source_files(base: Path, patterns: Sequence[str]) -> list[Path]:
 
 
 def package_freshness(package_root: Path) -> dict[str, Any]:
-    layout = json.loads(
-        (package_root / "publish-layout.json").read_text(encoding="utf-8")
-    )
+    layout = json.loads((package_root / "publish-layout.json").read_text(encoding="utf-8"))
     launch = layout["launch"]
     host_artifact = package_root / "VibeTable.Desktop.dll"
     if not host_artifact.is_file():
@@ -176,9 +174,7 @@ def package_freshness(package_root: Path) -> dict[str, Any]:
         newest = _latest(sources)
         artifact_time = artifact.stat().st_mtime if artifact.is_file() else None
         fresh = (
-            artifact_time is not None
-            and newest is not None
-            and artifact_time + 1.0 >= newest[0]
+            artifact_time is not None and newest is not None and artifact_time + 1.0 >= newest[0]
         )
         results.append(
             {
@@ -278,9 +274,7 @@ def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def _wait_for_readiness(
-    readiness_dir: Path, process: subprocess.Popen[bytes]
-) -> dict[str, Any]:
+def _wait_for_readiness(readiness_dir: Path, process: subprocess.Popen[bytes]) -> dict[str, Any]:
     path = readiness_dir / "vibetable-readiness.json"
     deadline = time.monotonic() + CDP_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
@@ -288,9 +282,7 @@ def _wait_for_readiness(
         if report is not None:
             return report
         if process.poll() is not None:
-            raise RuntimeError(
-                f"WPF host exited with code {process.returncode} before readiness"
-            )
+            raise RuntimeError(f"WPF host exited with code {process.returncode} before readiness")
         time.sleep(0.1)
     raise TimeoutError("WPF host did not emit vibetable-readiness.json")
 
@@ -340,9 +332,7 @@ def _windows_processes() -> list[tuple[int, int, str]]:
     entry.dwSize = ctypes.sizeof(entry)
     result: list[tuple[int, int, str]] = []
     try:
-        more = ctypes.windll.kernel32.Process32FirstW(
-            snapshot, ctypes.byref(entry)
-        )
+        more = ctypes.windll.kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
         while more:
             result.append(
                 (
@@ -351,9 +341,7 @@ def _windows_processes() -> list[tuple[int, int, str]]:
                     str(entry.szExeFile),
                 )
             )
-            more = ctypes.windll.kernel32.Process32NextW(
-                snapshot, ctypes.byref(entry)
-            )
+            more = ctypes.windll.kernel32.Process32NextW(snapshot, ctypes.byref(entry))
     finally:
         ctypes.windll.kernel32.CloseHandle(snapshot)
     return result
@@ -438,19 +426,14 @@ def _record_process_network(
 ) -> None:
     try:
         descendants = _descendants(host_pid)
-        names = {host_pid: "VibeTable.Next.exe"} | {
-            pid: name for pid, name in descendants
-        }
+        names = {host_pid: "VibeTable.Next.exe", **dict(descendants)}
         observed = evidence.setdefault("observations", {})
         for row in _netstat_tcp_rows():
             pid = int(row["pid"])
             if pid not in names:
                 continue
             item = row | {"processName": names[pid]}
-            key = "|".join(
-                str(item[field])
-                for field in ("pid", "local", "remote", "state")
-            )
+            key = "|".join(str(item[field]) for field in ("pid", "local", "remote", "state"))
             observed[key] = item
         evidence["samples"] = int(evidence.get("samples", 0)) + 1
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -472,10 +455,7 @@ def _process_network_report(evidence: dict[str, Any], *, status: str) -> dict[st
     )
     unexpected = []
     for item in observations:
-        if (
-            item["state"] == "LISTENING"
-            or _is_unspecified_endpoint(str(item["remote"]))
-        ):
+        if item["state"] == "LISTENING" or _is_unspecified_endpoint(str(item["remote"])):
             if not _is_loopback_endpoint(str(item["local"])):
                 unexpected.append(item | {"reason": "non_loopback_listener"})
         elif not _is_loopback_endpoint(str(item["remote"])):
@@ -539,12 +519,8 @@ def _handle_storage_proof(
                 raise RuntimeError(f"table definition not found: {table_id}")
             physical_name = row[0]
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", physical_name):
-                raise RuntimeError(
-                    f"table definition has unsafe physical name: {physical_name!r}"
-                )
-            records = connection.execute(
-                f'SELECT COUNT(*) FROM "{physical_name}"'
-            ).fetchone()[0]
+                raise RuntimeError(f"table definition has unsafe physical name: {physical_name!r}")
+            records = connection.execute(f'SELECT COUNT(*) FROM "{physical_name}"').fetchone()[0]
             audit = connection.execute(
                 "SELECT COUNT(*) FROM vibetable_audit_events WHERE table_id = ?",
                 (table_id,),
@@ -733,7 +709,7 @@ def run_scenario(
     import_source = controls_dir / "import-source.csv"
     import_source.write_text(
         (
-            'payload\n'
+            "payload\n"
             '"{""items"":[1,{""code"":""A""}],'
             '""nested"":{""label"":""import"",""value"":9},'
             '""enabled"":true}"\n'
@@ -749,9 +725,7 @@ def run_scenario(
         str(export_target.resolve()) + "\n",
         encoding="utf-8",
     )
-    plugin_fixture = (
-        ROOT / "tests" / "fixtures" / "plugins" / "mutation-boundary"
-    )
+    plugin_fixture = ROOT / "tests" / "fixtures" / "plugins" / "mutation-boundary"
     (controls_dir / "plugin-source.txt").write_text(
         str(plugin_fixture.resolve()) + "\n",
         encoding="utf-8",
@@ -772,9 +746,7 @@ def run_scenario(
         str(attachment_replacement.resolve()) + "\n",
         encoding="utf-8",
     )
-    layout = json.loads(
-        (package_root / "publish-layout.json").read_text(encoding="utf-8")
-    )
+    layout = json.loads((package_root / "publish-layout.json").read_text(encoding="utf-8"))
     host = (package_root / layout["launch"]["host"]).resolve()
     port = _reserve_port()
     environment = os.environ.copy()
@@ -839,29 +811,25 @@ def run_scenario(
             )
             _wait_for_cdp(port, process, process_network)
             node_command = [
-                    node,
-                    str(NODE_RUNNER),
-                    "--cdp-url",
-                    f"http://127.0.0.1:{port}",
-                    "--scenario",
-                    scenario.id,
-                    "--evidence-dir",
-                    str(scenario_dir),
-                    "--controls-dir",
-                    str(controls_dir),
-                ]
+                node,
+                str(NODE_RUNNER),
+                "--cdp-url",
+                f"http://127.0.0.1:{port}",
+                "--scenario",
+                scenario.id,
+                "--evidence-dir",
+                str(scenario_dir),
+                "--controls-dir",
+                str(controls_dir),
+            ]
             node_returncode, node_stdout, node_stderr = _run_node_runner(
                 node_command,
                 scenario_dir=scenario_dir,
                 host_process=process,
                 process_network=process_network,
             )
-            (scenario_dir / "runner-stdout.log").write_text(
-                node_stdout, encoding="utf-8"
-            )
-            (scenario_dir / "runner-stderr.log").write_text(
-                node_stderr, encoding="utf-8"
-            )
+            (scenario_dir / "runner-stdout.log").write_text(node_stdout, encoding="utf-8")
+            (scenario_dir / "runner-stderr.log").write_text(node_stderr, encoding="utf-8")
             readiness = _wait_for_readiness(readiness_dir, process)
             result_path = scenario_dir / f"{scenario.id}-result.json"
             result = _read_json(result_path) or _failure_result(
@@ -869,9 +837,7 @@ def run_scenario(
                 code="RUNNER_RESULT_MISSING",
                 message="Playwright runner did not write a structured result",
             )
-            process_network_report = _read_json(
-                scenario_dir / "process-network-observations.json"
-            )
+            process_network_report = _read_json(scenario_dir / "process-network-observations.json")
             result.update(
                 {
                     "title": scenario.title,
@@ -889,18 +855,11 @@ def run_scenario(
                     "code": "HOST_NOT_READY",
                     "message": str(readiness.get("error") or readiness),
                 }
-            elif (
-                scenario.id == "01-offline-first-start"
-                and (
-                    process_network_report is None
-                    or process_network_report.get("status") != "completed"
-                    or process_network_report.get("samples", 0) < 1
-                    or bool(
-                        process_network_report.get(
-                            "unexpectedProductNonLoopback"
-                        )
-                    )
-                )
+            elif scenario.id == "01-offline-first-start" and (
+                process_network_report is None
+                or process_network_report.get("status") != "completed"
+                or process_network_report.get("samples", 0) < 1
+                or bool(process_network_report.get("unexpectedProductNonLoopback"))
             ):
                 result["status"] = "failed"
                 result["error"] = {
@@ -1066,8 +1025,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if item["status"] != "passed":
             error = item.get("error", {})
             print(
-                f"  - {item['scenario']}: {error.get('code', 'FAILED')} "
-                f"{error.get('message', '')}"
+                f"  - {item['scenario']}: {error.get('code', 'FAILED')} {error.get('message', '')}"
             )
     return code
 

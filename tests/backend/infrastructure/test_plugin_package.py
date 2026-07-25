@@ -76,9 +76,7 @@ def test_inspect_local_package_returns_normalized_files_and_hash(tmp_path: Path)
         "schemas/input.json",
         "schemas/output.json",
     ]
-    expected = hashlib.sha256(
-        b"export default async function run() {}"
-    ).hexdigest()
+    expected = hashlib.sha256(b"export default async function run() {}").hexdigest()
     assert inspected.files[0].sha256 == expected
     assert inspected.package_hash.startswith("sha256:")
 
@@ -119,9 +117,10 @@ def test_pack_is_deterministic_and_archive_integrity_is_verified(tmp_path: Path)
     assert first_hash == second_hash == inspect_plugin_package(first).package_hash
     with zipfile.ZipFile(first) as archive:
         integrity = json.loads(archive.read("integrity.json"))
-    assert integrity["files"]["manifest.json"] == hashlib.sha256(
-        (plugin / "manifest.json").read_bytes()
-    ).hexdigest()
+    assert (
+        integrity["files"]["manifest.json"]
+        == hashlib.sha256((plugin / "manifest.json").read_bytes()).hexdigest()
+    )
 
 
 def test_local_pack_excludes_development_inputs(tmp_path: Path) -> None:
@@ -140,10 +139,7 @@ def test_local_pack_excludes_development_inputs(tmp_path: Path) -> None:
     inspected = inspect_plugin_package(plugin)
     pack_plugin(plugin, package)
 
-    assert all(
-        not item.path.startswith(("src/", "node_modules/"))
-        for item in inspected.files
-    )
+    assert all(not item.path.startswith(("src/", "node_modules/")) for item in inspected.files)
     with zipfile.ZipFile(package) as archive:
         assert "src/worker.ts" not in archive.namelist()
         assert "node_modules/dependency/index.js" not in archive.namelist()

@@ -70,9 +70,7 @@ class FakeQueryPort:
                 {
                     "rootRevisionId": "revision-root-1",
                     "changeSetId": "change-1",
-                    "recordChanges": [
-                        {"itemId": item_id, "revisionId": "revision-1"}
-                    ],
+                    "recordChanges": [{"itemId": item_id, "revisionId": "revision-1"}],
                 }
             ]
         }
@@ -92,9 +90,7 @@ class FakeQueryPort:
         )
         return {
             "currentHash": "sha256:current",
-            "scalarChanges": [
-                {"field": "name", "before": "Current", "after": "Named version"}
-            ],
+            "scalarChanges": [{"field": "name", "before": "Current", "after": "Named version"}],
             "relationChanges": [],
             "token": "restore-token",
             "canApply": True,
@@ -132,9 +128,7 @@ async def test_presets_use_logical_internal_metadata_namespace() -> None:
     result = await service.list_presets("orders")
 
     assert result.presets[0].id == "p1"
-    assert metadata.calls == [
-        ("list", {"namespace": "presets", "scope": "orders", "keys": None})
-    ]
+    assert metadata.calls == [("list", {"namespace": "presets", "scope": "orders", "keys": None})]
 
 
 @pytest.mark.asyncio
@@ -166,9 +160,7 @@ async def test_content_version_is_named_audit_snapshot_and_promotes_via_restore(
     query_port = FakeQueryPort()
     service = InsightsService(metadata_port=metadata, query_port=query_port)
 
-    created = await service.create_version(
-        "orders", "row-1", "release", "Release", "version-op-1"
-    )
+    created = await service.create_version("orders", "row-1", "release", "Release", "version-op-1")
 
     operation, payload = metadata.calls[-1]
     assert operation == "upsert"
@@ -260,9 +252,7 @@ async def test_record_dashboard_query_uses_typed_query_port() -> None:
     assert table_id == "orders"
     assert wire_query == {
         "keyword": None,
-        "filters": [
-            {"field": "name", "operator": "contains", "value": "Ada", "logic": "AND"}
-        ],
+        "filters": [{"field": "name", "operator": "contains", "value": "Ada", "logic": "AND"}],
         "sorts": [{"field": "name", "direction": "asc", "nullsLast": True}],
         "offset": 0,
         "limit": 20,

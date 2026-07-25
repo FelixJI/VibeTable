@@ -96,9 +96,7 @@ async def test_create_projects_integrity_without_exposing_attachment_details() -
         PocketBaseClient(transport=transport, session_secret="t" * 64)
     )
 
-    result = await service.create_backup(
-        CreateBackupParams(name="manual_20260724_101500.zip")
-    )
+    result = await service.create_backup(CreateBackupParams(name="manual_20260724_101500.zip"))
 
     assert result.backup.name == "manual_20260724_101500.zip"
     assert result.integrity_valid is True

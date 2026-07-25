@@ -57,9 +57,7 @@ class DocumentWorkspaceService:
         index_path: Path | None = None,
         allowed_collections: Collection[str] | None = None,
         collection_catalog: Mapping[str, Any] | None = None,
-        collection_catalog_loader: (
-            Callable[[], Awaitable[Mapping[str, Any]]] | None
-        ) = None,
+        collection_catalog_loader: (Callable[[], Awaitable[Mapping[str, Any]]] | None) = None,
         record_exists: Callable[[str, str], Awaitable[bool]] | None = None,
         **composition_compatibility: Any,
     ) -> None:
@@ -128,7 +126,10 @@ class DocumentWorkspaceService:
         self._index.close()
 
     async def _require_collection(self, collection: str) -> None:
-        if collection not in self._collection_catalog and self._collection_catalog_loader is not None:
+        if (
+            collection not in self._collection_catalog
+            and self._collection_catalog_loader is not None
+        ):
             try:
                 catalog = await self._collection_catalog_loader()
             except DocumentWorkspaceError:

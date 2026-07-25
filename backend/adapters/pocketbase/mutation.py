@@ -193,8 +193,7 @@ def _single_row_guard(
     value = revisions.get(row.target_row_key)
     return (
         value
-        if isinstance(value, str)
-        and (value.startswith("row_") or value.startswith("sha256:"))
+        if isinstance(value, str) and (value.startswith("row_") or value.startswith("sha256:"))
         else None
     )
 

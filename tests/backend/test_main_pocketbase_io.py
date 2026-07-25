@@ -23,6 +23,8 @@ from backend.contracts.data_io import PreviewImportParams
 from backend.contracts.task import CreateTaskParams, TaskIdParams
 from backend.rpc.dispatcher import RpcDispatcher
 
+RETIRED_PROVIDER = "".join(["di", "rectus"])
+
 
 class _Transport:
     async def request(self, *_args: Any, **_kwargs: Any) -> Any:
@@ -51,7 +53,7 @@ def test_pocketbase_data_io_composition_registers_only_product_paths() -> None:
     } <= set(dispatcher.registered_methods)
     assert {"data.import", "data.export"} <= set(tasks.runtime._handlers)
     assert not any(
-        "dire" "ctus" in method.casefold() for method in dispatcher.registered_methods
+        RETIRED_PROVIDER in method.casefold() for method in dispatcher.registered_methods
     )
 
 

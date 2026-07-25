@@ -627,13 +627,12 @@ async def _build_server() -> tuple[
                 str(Path.home() / ".vibetable"),
             )
         )
+
         async def execute_export_command(
             raw_params: dict[str, Any],
             grant_id: str,
         ) -> dict[str, Any]:
-            params = ExportParams.model_validate(
-                {**raw_params, "grantId": grant_id}
-            )
+            params = ExportParams.model_validate({**raw_params, "grantId": grant_id})
             result = await data_io.export(params)
             return result.model_dump(by_alias=True, mode="json")
 

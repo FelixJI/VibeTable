@@ -70,9 +70,7 @@ class TaskService:
             code="grant_host_only",
         )
 
-    async def register_host_import_source(
-        self, params: HostImportSourceParams
-    ) -> SessionPathGrant:
+    async def register_host_import_source(self, params: HostImportSourceParams) -> SessionPathGrant:
         return self._grants.issue(
             purpose="import_source",
             direction="read",
@@ -81,9 +79,7 @@ class TaskService:
             mime_type=params.mime_type,
         )
 
-    async def register_host_export_target(
-        self, params: HostExportTargetParams
-    ) -> SessionPathGrant:
+    async def register_host_export_target(self, params: HostExportTargetParams) -> SessionPathGrant:
         return self._grants.issue(
             purpose="export_target",
             direction="write",

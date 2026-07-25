@@ -24,7 +24,7 @@ _ROW_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SCHEMA_REVISION = re.compile(r"^schema_([0-9]+)$")
 _FORBIDDEN_KEYS = {
     "accessToken",
-    "dire" "ctusToken",
+    "legacyToken",
     "password",
     "pocketBaseToken",
     "refreshToken",
@@ -984,8 +984,7 @@ class PocketBaseProductDataService:
                 indexes = [
                     index
                     for index, field in enumerate(fields)
-                    if isinstance(field, dict)
-                    and field.get("fieldId") == current_field_id
+                    if isinstance(field, dict) and field.get("fieldId") == current_field_id
                 ]
                 if len(indexes) != 1:
                     raise ValueError("relation field was not found")
@@ -1088,16 +1087,12 @@ class PocketBaseProductDataService:
             if not isinstance(fields, list):
                 raise ValueError("relation change plan is invalid")
             lookup_field_ids = {
-                _lookup_field_id(str(plan["collection"]), lookup_id)
-                for lookup_id in affected
+                _lookup_field_id(str(plan["collection"]), lookup_id) for lookup_id in affected
             }
             proposed["fields"] = [
                 field
                 for field in fields
-                if not (
-                    isinstance(field, dict)
-                    and field.get("fieldId") in lookup_field_ids
-                )
+                if not (isinstance(field, dict) and field.get("fieldId") in lookup_field_ids)
             ]
         applied = await self._post(
             "/api/vibetable/v1/schema/apply",
@@ -1123,8 +1118,7 @@ class PocketBaseProductDataService:
                 (
                     item
                     for item in relations
-                    if isinstance(item, dict)
-                    and item.get("relationId") == plan["relationId"]
+                    if isinstance(item, dict) and item.get("relationId") == plan["relationId"]
                 ),
                 None,
             )
@@ -1190,12 +1184,8 @@ class PocketBaseProductDataService:
             junction = _object(config, "junction")
             junction_table_id = _text(junction, "collection")
             junction_schema = await self._client.describe_table(junction_table_id)
-            junction_source = _schema_field_id(
-                junction_schema, _text(junction, "sourceField")
-            )
-            junction_target = _schema_field_id(
-                junction_schema, _text(junction, "targetField")
-            )
+            junction_source = _schema_field_id(junction_schema, _text(junction, "sourceField"))
+            junction_target = _schema_field_id(junction_schema, _text(junction, "targetField"))
             mode = "m2a" if kind == "m2a" else "junction"
             if kind == "m2a":
                 junction_discriminator = _schema_field_id(
@@ -1346,9 +1336,7 @@ class PocketBaseProductDataService:
             "/api/vibetable/v1/schema/validate",
             {
                 "definition": proposed,
-                "expectedRevision": _schema_revision_number(
-                    _text(schema, "schemaRevision")
-                ),
+                "expectedRevision": _schema_revision_number(_text(schema, "schemaRevision")),
             },
         )
         result = _clone_json(renderer)
@@ -1418,15 +1406,11 @@ class PocketBaseProductDataService:
             "/api/vibetable/v1/schema/apply",
             {
                 "definition": proposed,
-                "expectedRevision": _schema_revision_number(
-                    _text(schema, "schemaRevision")
-                ),
+                "expectedRevision": _schema_revision_number(_text(schema, "schemaRevision")),
                 "operationId": _text(raw, "requestId"),
             },
         )
-        listed = await self.list_lookups(
-            ProductParams.model_validate({"collection": table_id})
-        )
+        listed = await self.list_lookups(ProductParams.model_validate({"collection": table_id}))
         return {
             "collection": table_id,
             "lookupId": lookup_id,
@@ -1447,9 +1431,7 @@ class PocketBaseProductDataService:
         if not isinstance(fields, list):
             raise ValueError("PocketBase returned an invalid field catalog")
         fields = [
-            item
-            for item in fields
-            if not (isinstance(item, dict) and item.get("kind") == "lookup")
+            item for item in fields if not (isinstance(item, dict) and item.get("kind") == "lookup")
         ]
         field_ids: list[str] = []
         rendered_by_field: dict[str, dict[str, Any]] = {}
@@ -1517,21 +1499,13 @@ class PocketBaseProductDataService:
             "/api/vibetable/v1/schema/apply",
             {
                 "definition": proposed,
-                "expectedRevision": _schema_revision_number(
-                    _text(schema, "schemaRevision")
-                ),
+                "expectedRevision": _schema_revision_number(_text(schema, "schemaRevision")),
                 "operationId": operation_id or _stable_hash(renderer),
             },
         )
-        listed = await self.list_lookups(
-            ProductParams.model_validate({"collection": table_id})
-        )
+        listed = await self.list_lookups(ProductParams.model_validate({"collection": table_id}))
         definition = next(
-            (
-                item
-                for item in listed["definitions"]
-                if item.get("lookupId") == lookup_id
-            ),
+            (item for item in listed["definitions"] if item.get("lookupId") == lookup_id),
             None,
         )
         if not isinstance(definition, dict):
@@ -1572,9 +1546,7 @@ class PocketBaseProductDataService:
             relation_field = _schema_field(current_schema, relation_field_id)
             raw_relation = relation_field.get("relation")
             if not isinstance(raw_relation, dict):
-                raise ValueError(
-                    f"Lookup path step {index} does not reference a relation field"
-                )
+                raise ValueError(f"Lookup path step {index} does not reference a relation field")
             relation = raw_relation
             mode = relation.get("mode") or (
                 "junction" if relation.get("junctionTableId") else "direct"
@@ -1592,21 +1564,15 @@ class PocketBaseProductDataService:
                 ):
                     raise ValueError("m2a relation allowlist is invalid")
                 if m2a_collection is None and index < len(path) - 1:
-                    raise ValueError(
-                        "intermediate m2a Lookup steps must select m2aCollection"
-                    )
+                    raise ValueError("intermediate m2a Lookup steps must select m2aCollection")
                 if m2a_collection is not None:
                     if m2a_collection not in allowed:
-                        raise ValueError(
-                            "m2aCollection is not allowed by the relation"
-                        )
+                        raise ValueError("m2aCollection is not allowed by the relation")
                     target_table_id = m2a_collection
                 else:
                     terminal_polymorphic = True
             elif m2a_collection is not None:
-                raise ValueError(
-                    "m2aCollection is only valid for m2a relations"
-                )
+                raise ValueError("m2aCollection is only valid for m2a relations")
             normalized_step = {"relationFieldId": relation_field_id}
             if m2a_collection is not None:
                 normalized_step["m2aCollection"] = m2a_collection
@@ -1623,9 +1589,7 @@ class PocketBaseProductDataService:
             if not isinstance(junction_table_id, str) or not junction_table_id:
                 raise ValueError("junction Lookup requires a junction relation")
             junction_schema = await self._client.describe_table(junction_table_id)
-            junction_field_id = _schema_field_id(
-                junction_schema, _text(source, "fieldRef")
-            )
+            junction_field_id = _schema_field_id(junction_schema, _text(source, "fieldRef"))
             target_field_id = junction_field_id
         elif mode == "m2a" and terminal_polymorphic:
             mappings = _array(renderer, "m2aFieldMapping")
@@ -1644,9 +1608,7 @@ class PocketBaseProductDataService:
             target_field_id = target_field_ids[default_target]
         elif source_kind in {"target_field", "lookup"}:
             reference = (
-                _text(source, "lookupId")
-                if source_kind == "lookup"
-                else _text(source, "fieldRef")
+                _text(source, "lookupId") if source_kind == "lookup" else _text(source, "fieldRef")
             )
             target_field_id = _schema_field_id(current_schema, reference)
         else:
@@ -1673,9 +1635,7 @@ class PocketBaseProductDataService:
             scale = renderer.get("outputScale")
             if isinstance(scale, bool) or not isinstance(scale, int) or not 0 <= scale <= 18:
                 raise ValueError("decimal Lookup requires outputScale between 0 and 18")
-            constraints.append(
-                {"kind": "precisionScale", "precision": 38, "scale": scale}
-            )
+            constraints.append({"kind": "precisionScale", "precision": 38, "scale": scale})
         return {
             "fieldId": field_id,
             "physicalName": _text(renderer, "fieldKey"),
@@ -2000,9 +1960,7 @@ def _renderer_columns(definition: dict[str, Any]) -> list[dict[str, Any]]:
         elif product_data_type == "lookup":
             storage_type = field.get("storageType")
             product_data_type = (
-                storage_type
-                if isinstance(storage_type, str) and storage_type
-                else "text"
+                storage_type if isinstance(storage_type, str) and storage_type else "text"
             )
         data_type = _renderer_data_type(product_data_type)
         precision, scale = _precision_scale(field.get("constraints"))
@@ -2063,10 +2021,7 @@ def _schema_field_id(schema: dict[str, Any], reference: str) -> str:
         field
         for field in fields
         if isinstance(field, dict)
-        and (
-            field.get("fieldId") in {reference, suffix}
-            or field.get("physicalName") == reference
-        )
+        and (field.get("fieldId") in {reference, suffix} or field.get("physicalName") == reference)
     ]
     if len(matches) != 1:
         raise ValueError(f"schema field reference {reference!r} is ambiguous or missing")
@@ -2278,10 +2233,7 @@ def _renderer_lookup(value: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("PocketBase returned an invalid junction Lookup field")
     target_field_ids = value.get("targetFieldIds", {})
     if not isinstance(target_field_ids, dict) or not all(
-        isinstance(table, str)
-        and table
-        and isinstance(field, str)
-        and field
+        isinstance(table, str) and table and isinstance(field, str) and field
         for table, field in target_field_ids.items()
     ):
         raise ValueError("PocketBase returned invalid m2a Lookup mappings")

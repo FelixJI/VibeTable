@@ -31,8 +31,7 @@ PUBLISH_ROOT = REPO_ROOT / "dist" / "VibeTable.Next"
 SIDECAR_NAME = "vibetable-pb.exe" if os.name == "nt" else "vibetable-pb"
 SESSION_HEADER = "X-VibeTable-Session"
 PNG_1X1 = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
-    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
 
 
@@ -173,9 +172,7 @@ class Sidecar:
         try:
             ready = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise AssertionError(
-                self._diagnostics(f"invalid readiness line: {line!r}")
-            ) from exc
+            raise AssertionError(self._diagnostics(f"invalid readiness line: {line!r}")) from exc
         assert ready["contract"] == "vibetable.sidecar.ready.v1"
         assert ready["event"] == "sidecar.ready"
         self.address = ready["address"]
@@ -353,8 +350,7 @@ def _read_sse_event(
                             payload.get("topic") == "data.changed"
                             and expected_record_id in payload.get("recordIds", [])
                             and payload.get("operation") == "update"
-                            and payload.get("dataRevision")
-                            == expected_data_revision
+                            and payload.get("dataRevision") == expected_data_revision
                         ):
                             result.put(payload)
                             return
@@ -396,9 +392,7 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
                 ),
             ],
         )
-        orders = _apply_schema(
-            sidecar, orders_base, 0, "create-orders"
-        )
+        orders = _apply_schema(sidecar, orders_base, 0, "create-orders")
         order_id = "matrixorder0001"
         _apply(
             sidecar,
@@ -483,9 +477,7 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
         orders_base["indexes"] = [
             {"name": "idx_matrix_orders_title", "fieldIds": ["title_id"], "unique": False}
         ]
-        orders = _apply_schema(
-            sidecar, orders_base, 1, "alter-orders"
-        )
+        orders = _apply_schema(sidecar, orders_base, 1, "alter-orders")
         assert orders["schemaRevision"] == "schema_0002"
         coverage["schema-create-alter-index"] = "passed"
 
@@ -577,9 +569,7 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
 
         ready = threading.Event()
         sse_result: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
-        current_data_revision = _page(sidecar, "matrix_orders")[
-            "querySnapshot"
-        ]["dataRevision"]
+        current_data_revision = _page(sidecar, "matrix_orders")["querySnapshot"]["dataRevision"]
         expected_data_revision = f"data_{current_data_revision + 1:04d}"
         sse_thread = threading.Thread(
             target=_read_sse_event,
@@ -620,9 +610,7 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
                 }
             ],
         )
-        sidecar.multipart_mutation(
-            upload, "image-one", "pixel.png", PNG_1X1
-        )
+        sidecar.multipart_mutation(upload, "image-one", "pixel.png", PNG_1X1)
         query = urllib.parse.urlencode(
             {
                 "tableId": "matrix_orders",
@@ -630,29 +618,23 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
                 "fieldId": "images_id",
             }
         )
-        refs = sidecar.request(
-            "GET", f"/api/vibetable/v1/attachments/refs?{query}"
-        ).json()["attachments"]
+        refs = sidecar.request("GET", f"/api/vibetable/v1/attachments/refs?{query}").json()[
+            "attachments"
+        ]
         assert len(refs) == 1
         assert refs[0]["originalName"] == "pixel.png"
         assert refs[0]["thumbnails"][0]["variant"] == "64x64"
         download = sidecar.request(
             "GET",
             "/api/vibetable/v1/attachments/download?"
-            + urllib.parse.urlencode(
-                {"capability": refs[0]["downloadCapability"]}
-            ),
+            + urllib.parse.urlencode({"capability": refs[0]["downloadCapability"]}),
         )
         assert download.body == PNG_1X1
         thumb = sidecar.request(
             "GET",
             "/api/vibetable/v1/attachments/download?"
             + urllib.parse.urlencode(
-                {
-                    "capability": refs[0]["thumbnails"][0][
-                        "downloadCapability"
-                    ]
-                }
+                {"capability": refs[0]["thumbnails"][0]["downloadCapability"]}
             ),
         )
         assert thumb.body.startswith(b"\x89PNG")
@@ -682,9 +664,9 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
             ],
         )
         assert (
-            sidecar.request(
-                "GET", f"/api/vibetable/v1/attachments/refs?{query}"
-            ).json()["attachments"]
+            sidecar.request("GET", f"/api/vibetable/v1/attachments/refs?{query}").json()[
+                "attachments"
+            ]
             == []
         )
         coverage["file-upload-download-delete-thumb-protected"] = "passed"
@@ -704,8 +686,7 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
             change["rootRevisionId"]
             for change in history["changeSets"]
             if any(
-                field.get("field") == "title"
-                and field.get("after") == "updated"
+                field.get("field") == "title" and field.get("after") == "updated"
                 for field in change["scalarChanges"]
             )
         ]
@@ -830,9 +811,7 @@ def main(argv: list[str] | None = None) -> int:
         package_root = args.package_root.resolve()
     data_dir = args.data_dir
     if data_dir is None:
-        data_dir = REPO_ROOT / "build" / "qa" / (
-            "packaged-sidecar-matrix-" + uuid.uuid4().hex
-        )
+        data_dir = REPO_ROOT / "build" / "qa" / ("packaged-sidecar-matrix-" + uuid.uuid4().hex)
     assert not data_dir.exists(), f"matrix requires a fresh data directory: {data_dir}"
     data_dir.mkdir(parents=True)
     binary = package_root / "sidecar" / SIDECAR_NAME

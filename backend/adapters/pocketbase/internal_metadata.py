@@ -74,9 +74,7 @@ class PocketBaseInternalMetadataPort:
         if keys:
             wanted = set(keys)
             items = [
-                item
-                for item in items
-                if item.get("id") in wanted or item.get("key") in wanted
+                item for item in items if item.get("id") in wanted or item.get("key") in wanted
             ]
         return sorted(
             items,
@@ -99,9 +97,7 @@ class PocketBaseInternalMetadataPort:
         if revision is None:
             revision = str(current.get("revision", "")) if current else ""
         payload = {
-            key: value
-            for key, value in (current or {}).items()
-            if key not in {"id", "revision"}
+            key: value for key, value in (current or {}).items() if key not in {"id", "revision"}
         }
         payload.update(_freeze(values))
         response = await self._client.upsert_internal_metadata(
@@ -160,9 +156,7 @@ class PocketBaseInternalMetadataPort:
             (item for item in dashboards if item.get("id") == dashboard_id),
             None,
         )
-        current_panels = [
-            item for item in panels if item.get("dashboardId") == dashboard_id
-        ]
+        current_panels = [item for item in panels if item.get("dashboardId") == dashboard_id]
         expected_workspace = frozen.get("expectedRevision")
         if current_dashboard is None:
             if expected_workspace is not None:
@@ -177,9 +171,7 @@ class PocketBaseInternalMetadataPort:
             if expected_workspace != current_workspace["revision"]:
                 raise ValueError("dashboard revision does not match")
 
-        current_panel_by_id = {
-            str(item["id"]): item for item in current_panels if item.get("id")
-        }
+        current_panel_by_id = {str(item["id"]): item for item in current_panels if item.get("id")}
         panel_mutations: list[dict[str, Any]] = []
         desired_panels: list[dict[str, Any]] = []
         client_panel_ids: dict[str, str] = {}
@@ -199,9 +191,7 @@ class PocketBaseInternalMetadataPort:
                 {
                     "logicalId": panel_id,
                     "payload": panel,
-                    "expectedRevision": (
-                        str(current.get("revision", "")) if current else ""
-                    ),
+                    "expectedRevision": (str(current.get("revision", "")) if current else ""),
                 }
             )
             desired_panels.append(panel)
@@ -245,9 +235,7 @@ class PocketBaseInternalMetadataPort:
                     "logicalId": dashboard_id,
                     "payload": dashboard_payload,
                     "expectedRevision": (
-                        str(current_dashboard.get("revision", ""))
-                        if current_dashboard
-                        else ""
+                        str(current_dashboard.get("revision", "")) if current_dashboard else ""
                     ),
                 },
                 "panels": panel_mutations,
@@ -332,9 +320,7 @@ def _panel_payload(
         "color": source.get("color"),
         "showHeader": source.get("showHeader") is not False,
         "type": source.get("type", "metric"),
-        "position": source.get(
-            "position", {"x": 0, "y": 0, "width": 4, "height": 4}
-        ),
+        "position": source.get("position", {"x": 0, "y": 0, "width": 4, "height": 4}),
         "options": source.get("options", {}),
         "query": query if isinstance(query, dict) else {},
     }

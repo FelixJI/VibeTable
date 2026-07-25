@@ -80,7 +80,11 @@ def prepare_upgrade(
     backup.mkdir()
     source_data = data
     if source_data.is_dir():
-        shutil.copytree(source_data, backup / "data")
+        shutil.copytree(
+            source_data,
+            backup / "data",
+            ignore=_ignore_transient_pocketbase_files,
+        )
     rollback = backup / "previous" / binary.name
     rollback.parent.mkdir()
     shutil.copy2(binary, rollback)
@@ -114,13 +118,12 @@ def prepare_upgrade(
 
 def verify_upgrade_backup(transaction: UpgradeTransaction) -> None:
     manifest = json.loads(transaction.manifest.read_text(encoding="utf-8"))
-    if manifest["backupDataSha256"] != _tree_hash(
-        transaction.backup_dir / "data"
-    ):
+    if manifest["backupDataSha256"] != _tree_hash(transaction.backup_dir / "data"):
         raise ValueError("upgrade backup data hash mismatch")
-    if manifest["binarySha256"] != hashlib.sha256(
-        transaction.rollback_binary.read_bytes()
-    ).hexdigest():
+    if (
+        manifest["binarySha256"]
+        != hashlib.sha256(transaction.rollback_binary.read_bytes()).hexdigest()
+    ):
         raise ValueError("upgrade rollback binary hash mismatch")
 
 
@@ -192,7 +195,11 @@ def _replace_tree(source: Path, destination: Path) -> None:
     staged = destination.parent / f".{destination.name}.new-{uuid.uuid4().hex}"
     previous = destination.parent / f".{destination.name}.old-{uuid.uuid4().hex}"
     if source.is_dir():
-        shutil.copytree(source, staged)
+        shutil.copytree(
+            source,
+            staged,
+            ignore=_ignore_transient_pocketbase_files,
+        )
     else:
         staged.mkdir()
     moved_previous = False
@@ -251,7 +258,11 @@ def activate_upgrade(
         shutil.rmtree(migration_root)
     source_data = transaction.backup_dir / "data"
     if source_data.is_dir():
-        shutil.copytree(source_data, migrated_data)
+        shutil.copytree(
+            source_data,
+            migrated_data,
+            ignore=_ignore_transient_pocketbase_files,
+        )
     else:
         migrated_data.mkdir(parents=True)
 
@@ -379,9 +390,7 @@ def main(argv: list[str] | None = None) -> int:
         ).returncode
     if args.prepare_upgrade or args.activate_upgrade:
         if not (args.install_dir and args.data_dir and args.current_binary):
-            parser.error(
-                "upgrade requires --install-dir, --data-dir and --current-binary"
-            )
+            parser.error("upgrade requires --install-dir, --data-dir and --current-binary")
         transaction = prepare_upgrade(
             install_dir=args.install_dir,
             data_dir=args.data_dir,
@@ -449,3 +458,7 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _ignore_transient_pocketbase_files(_, names: list[str]) -> set[str]:
+    return {name for name in names if name.casefold().startswith("auxiliary.db-shm")}

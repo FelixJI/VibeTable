@@ -74,9 +74,7 @@ def test_repository_dependency_manifest_has_all_product_hash_groups() -> None:
         ".toml",
         ".ts",
     } <= set(deps["releaseIdentityExtensions"])
-    assert {"coverage", "dist", "node_modules"} <= set(
-        deps["releaseIdentityExcludedDirectories"]
-    )
+    assert {"coverage", "dist", "node_modules"} <= set(deps["releaseIdentityExcludedDirectories"])
     for relative in (
         "desktop/web-grid/index.html",
         "desktop/web-grid/env.d.ts",
@@ -91,7 +89,7 @@ def test_repository_dependency_manifest_has_all_product_hash_groups() -> None:
     ):
         assert (handoff.REPO_ROOT / relative).is_file()
     encoded = json.dumps(deps).lower()
-    assert "dire" "ctus" not in encoded
+    assert "".join(["di", "rectus"]) not in encoded
     assert "flow" not in encoded
 
 
@@ -102,10 +100,7 @@ def test_handoff_migration_hash_group_matches_declared_manifest_sources() -> Non
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     expected = {"sidecar/migrations/manifest.json"}
-    expected.update(
-        f"sidecar/migrations/{entry['source']}"
-        for entry in manifest["migrations"]
-    )
+    expected.update(f"sidecar/migrations/{entry['source']}" for entry in manifest["migrations"])
     assert migration_files == expected
 
 
@@ -184,9 +179,7 @@ def test_gate_summary_must_be_successful_fresh_and_identity_bound() -> None:
         "artifactHashes": hashes,
         "results": [{"stage": "ci", "returncode": 0}],
     }
-    assert handoff.validate_gate_summary(
-        valid, commit=commit, hashes=hashes, now=now
-    )[0]
+    assert handoff.validate_gate_summary(valid, commit=commit, hashes=hashes, now=now)[0]
 
     for patch, expected in (
         ({"ok": False}, "successful"),
@@ -198,9 +191,7 @@ def test_gate_summary_must_be_successful_fresh_and_identity_bound() -> None:
         ),
     ):
         candidate = valid | patch
-        ok, reason = handoff.validate_gate_summary(
-            candidate, commit=commit, hashes=hashes, now=now
-        )
+        ok, reason = handoff.validate_gate_summary(candidate, commit=commit, hashes=hashes, now=now)
         assert ok is False
         assert expected in reason
 
@@ -436,9 +427,7 @@ def test_web_release_identity_ignores_only_declared_generated_directories(
     source = tmp_path / "desktop" / "web-grid" / "src" / "main.ts"
     source.parent.mkdir(parents=True)
     source.write_text("export const source = true;\n", encoding="utf-8")
-    generated = (
-        tmp_path / "desktop" / "web-grid" / generated_dir / "generated.js"
-    )
+    generated = tmp_path / "desktop" / "web-grid" / generated_dir / "generated.js"
     generated.parent.mkdir(parents=True)
     generated.write_text("first\n", encoding="utf-8")
 

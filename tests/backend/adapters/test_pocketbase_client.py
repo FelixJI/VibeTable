@@ -26,12 +26,12 @@ class FakeTransport:
         expected_status: tuple[int, ...] = (200,),
     ) -> Any:
         request = {
-                "method": method,
-                "path": path,
-                "json_body": json_body,
-                "headers": headers,
-                "expected_status": expected_status,
-            }
+            "method": method,
+            "path": path,
+            "json_body": json_body,
+            "headers": headers,
+            "expected_status": expected_status,
+        }
         if query is not None:
             request["query"] = query
         self.requests.append(request)

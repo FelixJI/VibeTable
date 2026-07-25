@@ -93,10 +93,13 @@ def test_project_store_persists_installation_and_revision_guard(tmp_path: Path) 
     store.close()
 
     reopened = PluginProjectStore(path)
-    assert reopened.get_installation(
-        "local:default",
-        "com.example.summary",
-    ) == _snapshot()
+    assert (
+        reopened.get_installation(
+            "local:default",
+            "com.example.summary",
+        )
+        == _snapshot()
+    )
     with pytest.raises(PluginStoreConflictError):
         reopened.save_installation(
             _snapshot(revision=2, status="disabled"),
@@ -123,11 +126,14 @@ def test_project_store_persists_revisions_settings_and_audit(tmp_path: Path) -> 
         "local:default",
         "com.example.summary",
     ) == [package]
-    assert reopened.get_private_setting(
-        "local:default",
-        "com.example.summary",
-        "columns",
-    ) == setting
+    assert (
+        reopened.get_private_setting(
+            "local:default",
+            "com.example.summary",
+            "columns",
+        )
+        == setting
+    )
     assert reopened.list_project_audit("local:default") == [event]
     reopened.close()
 
@@ -155,10 +161,13 @@ def test_project_store_delete_operations_are_exact_and_idempotent(
         "com.example.summary",
         "sha256:1.0.0",
     )
-    assert store.delete_package_revisions(
-        "local:default",
-        "com.example.summary",
-    ) == 1
+    assert (
+        store.delete_package_revisions(
+            "local:default",
+            "com.example.summary",
+        )
+        == 1
+    )
     assert store.delete_installation("local:default", "com.example.summary")
     assert not store.delete_installation("local:default", "com.example.summary")
     store.close()
@@ -182,10 +191,13 @@ def test_private_settings_use_optimistic_revision_guard(tmp_path: Path) -> None:
             updated.model_copy(update={"revision": 3}),
             expected_revision=1,
         )
-    assert store.delete_private_settings(
-        "local:default",
-        "com.example.summary",
-    ) == 1
+    assert (
+        store.delete_private_settings(
+            "local:default",
+            "com.example.summary",
+        )
+        == 1
+    )
     store.close()
 
 

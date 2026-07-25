@@ -141,9 +141,7 @@ async def test_nested_model_results_are_json_frame_serializable() -> None:
     )
 
     assert response is not None
-    assert response["result"] == [
-        {"eventId": "event-1", "startedAt": "2026-07-24T17:17:02Z"}
-    ]
+    assert response["result"] == [{"eventId": "event-1", "startedAt": "2026-07-24T17:17:02Z"}]
     json.dumps(response)
 
 

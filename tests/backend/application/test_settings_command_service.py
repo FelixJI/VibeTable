@@ -30,9 +30,7 @@ class FakeMetadataPort:
         scope: str | None = None,
         keys: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        self.requests.append(
-            {"namespace": namespace, "scope": scope, "keys": list(keys or [])}
-        )
+        self.requests.append({"namespace": namespace, "scope": scope, "keys": list(keys or [])})
         if not self.responses:
             raise AssertionError("unexpected metadata read")
         response = self.responses.pop(0)

@@ -211,9 +211,7 @@ class PluginPlatformService:
         return snapshot
 
     async def rollback(self, *, project_key: str, plugin_id: str) -> PluginSnapshot:
-        revisions = list(
-            self._store.list_package_revisions(project_key, plugin_id)
-        )
+        revisions = list(self._store.list_package_revisions(project_key, plugin_id))
         current_revision = next(
             (item for item in revisions if item.state == "current"),
             None,
@@ -230,8 +228,7 @@ class PluginPlatformService:
         inspected = inspect_plugin_package(rollback_path)
         if (
             inspected.package_hash != rollback_revision.package_hash
-            or PluginManifest.model_validate(inspected.manifest)
-            != rollback_revision.manifest
+            or PluginManifest.model_validate(inspected.manifest) != rollback_revision.manifest
         ):
             raise ValueError("plugin rollback package failed integrity verification")
         previous_installation = self._registry.get(project_key, plugin_id)

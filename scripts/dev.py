@@ -22,9 +22,7 @@ SIDECAR_DIR = ROOT / "sidecar"
 HOST_PROJECT = ROOT / "desktop" / "src" / "VibeTable.Desktop"
 BUILD_DIR = ROOT / "build" / "dev"
 HOST_BINARY = host_bin_exe(ROOT, config="Release", host_project=HOST_PROJECT)
-SIDECAR_BINARY = BUILD_DIR / (
-    "vibetable-pb.exe" if os.name == "nt" else "vibetable-pb"
-)
+SIDECAR_BINARY = BUILD_DIR / ("vibetable-pb.exe" if os.name == "nt" else "vibetable-pb")
 PROCESSES: list[subprocess.Popen[str]] = []
 UNSAFE_INHERITED_RUNTIME_VARIABLES = {
     "VIBETABLE_E2E_WEBVIEW2_USER_DATA_ROOT",
@@ -113,8 +111,7 @@ def _cleanup(*_args: object) -> None:
 def launch(data_dir: Path) -> int:
     if not HOST_BINARY.is_file():
         raise FileNotFoundError(
-            f"desktop host is missing: {HOST_BINARY}; "
-            "run without --no-host-build first"
+            f"desktop host is missing: {HOST_BINARY}; run without --no-host-build first"
         )
 
     environment = os.environ.copy()

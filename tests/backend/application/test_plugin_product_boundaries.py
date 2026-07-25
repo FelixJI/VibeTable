@@ -119,9 +119,7 @@ async def test_mutation_plan_cannot_escape_context_collection() -> None:
             "dist/write.js": {
                 "contract": "vibetable.mutation-plan.v1",
                 "collection": "other_table",
-                "operations": [
-                    {"kind": "update", "primaryKey": "1", "values": {}}
-                ],
+                "operations": [{"kind": "update", "primaryKey": "1", "values": {}}],
                 "preview": {"affectedCount": 1},
             }
         }

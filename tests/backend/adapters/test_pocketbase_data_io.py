@@ -42,9 +42,7 @@ def _definition(*, revision: str = "schema_7", readonly: bool = False) -> dict[s
                 "kind": "scalar",
                 "dataType": "decimal",
                 "nullable": True,
-                "constraints": [
-                    {"kind": "precisionScale", "precision": 12, "scale": 2}
-                ],
+                "constraints": [{"kind": "precisionScale", "precision": 12, "scale": 2}],
                 "readOnly": False,
             },
             {

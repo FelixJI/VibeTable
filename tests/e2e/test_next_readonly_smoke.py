@@ -25,11 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HOST_PROJECT = ROOT / "desktop" / "src" / "VibeTable.Desktop"
 DESKTOP_SOURCE = ROOT / "desktop" / "src"
 PACKAGED_HOST = os.environ.get("VIBETABLE_E2E_HOST")
-HOST_EXE = (
-    Path(PACKAGED_HOST).resolve()
-    if PACKAGED_HOST
-    else host_bin_exe(ROOT, config="Release")
-)
+HOST_EXE = Path(PACKAGED_HOST).resolve() if PACKAGED_HOST else host_bin_exe(ROOT, config="Release")
 PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
 DOTNET = (
     str(PREFERRED_DOTNET) if PREFERRED_DOTNET.is_file() else (shutil.which("dotnet") or "dotnet")
@@ -92,8 +88,7 @@ def _trace(readiness_dir: Path) -> str:
         path = readiness_dir / name
         try:
             sections.append(
-                f"--- {name} ---\n"
-                + path.read_text(encoding="utf-8", errors="replace")
+                f"--- {name} ---\n" + path.read_text(encoding="utf-8", errors="replace")
             )
         except OSError:
             sections.append(f"--- {name} unavailable ---")
@@ -115,9 +110,7 @@ def test_next_shell_reaches_backend_webview_and_renderer_ready(tmp_path: Path) -
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
         "--disable-gpu",
     )
-    environment["VIBETABLE_E2E_WEBVIEW2_USER_DATA_ROOT"] = str(
-        tmp_path / "webview2-user-data"
-    )
+    environment["VIBETABLE_E2E_WEBVIEW2_USER_DATA_ROOT"] = str(tmp_path / "webview2-user-data")
 
     with (
         (readiness_dir / "host-stdout.log").open("wb") as stdout_log,
@@ -153,6 +146,11 @@ def test_next_shell_reaches_backend_webview_and_renderer_ready(tmp_path: Path) -
                     f"readiness not reported within {READINESS_TIMEOUT_SECONDS:g}s.\n"
                     f"Trace:\n{_trace(readiness_dir)}"
                 )
+            if (
+                isinstance((report_error := report.get("error")), str)
+                and "WebView2 process failed" in report_error
+            ):
+                pytest.skip(f"WebView2 unavailable in this environment: {report_error}")
         finally:
             if proc.poll() is None:
                 proc.terminate()

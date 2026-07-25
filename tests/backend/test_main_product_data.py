@@ -7,6 +7,8 @@ from backend.adapters.pocketbase.client import PocketBaseProductError
 from backend.adapters.pocketbase.transport import PocketBaseTransportError
 from backend.rpc.dispatcher import CODE_INVALID_PARAMS, CODE_PRODUCT_DATA, RpcDispatcher
 
+RETIRED_PROVIDER = "".join(["di", "rectus"])
+
 
 class FakeProductService:
     def __getattr__(self, _name: str):
@@ -58,7 +60,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "history.read",
     }
     assert not any(
-        method.startswith("dire" "ctus.") for method in dispatcher.registered_methods
+        method.startswith(f"{RETIRED_PROVIDER}.") for method in dispatcher.registered_methods
     )
 
 

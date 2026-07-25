@@ -701,8 +701,7 @@ class ImportService:
             PastePlanRow(
                 kind="insert",
                 changes={
-                    field: {"before": None, "after": value}
-                    for field, value in row.values.items()
+                    field: {"before": None, "after": value} for field, value in row.values.items()
                 },
             )
             for row in valid_rows

@@ -45,9 +45,7 @@ BACKEND_HIDDEN_IMPORTS = (
     "openpyxl.workbook",
     "websockets",
 )
-_DEV_PACKAGES_FORBIDDEN_IN_BUNDLE = frozenset(
-    {"mypy", "numpy", "pandas", "pytest", "_pytest"}
-)
+_DEV_PACKAGES_FORBIDDEN_IN_BUNDLE = frozenset({"mypy", "numpy", "pandas", "pytest", "_pytest"})
 DEV_SKIP_FLAGS = (
     "--skip-web",
     "--skip-backend",
@@ -103,11 +101,7 @@ class RepoPaths:
             sidecar_source_dir=root / "sidecar",
             sidecar_migrations_dir=root / "sidecar" / "migrations",
             desktop_csproj=(
-                root
-                / "desktop"
-                / "src"
-                / "VibeTable.Desktop"
-                / "VibeTable.Desktop.csproj"
+                root / "desktop" / "src" / "VibeTable.Desktop" / "VibeTable.Desktop.csproj"
             ),
             backend_main=root / "backend" / "__main__.py",
             # A leading-dot staging directory can be built successfully on
@@ -316,8 +310,7 @@ def _license_files(module: dict[str, Any]) -> list[Path]:
         (
             item
             for item in directory.iterdir()
-            if item.is_file()
-            and item.name.casefold().startswith(_LICENSE_FILE_PREFIXES)
+            if item.is_file() and item.name.casefold().startswith(_LICENSE_FILE_PREFIXES)
         ),
         key=lambda item: item.name.casefold(),
     )
@@ -347,7 +340,10 @@ def _classify_licenses(text: str) -> set[str]:
         detected.add("ISC")
     if "this is free and unencumbered software released into the public domain" in normalized:
         detected.add("Unlicense")
-    if "zlib license" in normalized and "altered source versions must be plainly marked" in normalized:
+    if (
+        "zlib license" in normalized
+        and "altered source versions must be plainly marked" in normalized
+    ):
         detected.add("Zlib")
     return detected
 
@@ -358,11 +354,7 @@ def _module_licenses(module: dict[str, Any]) -> list[str]:
         return [explicit]
     detected: set[str] = set()
     for path in _license_files(module):
-        detected.update(
-            _classify_licenses(
-                path.read_text(encoding="utf-8", errors="replace")
-            )
-        )
+        detected.update(_classify_licenses(path.read_text(encoding="utf-8", errors="replace")))
     if detected:
         return sorted(detected)
     module_path = str(module.get("path", ""))
@@ -383,13 +375,15 @@ def _third_party_license_text(modules: list[dict[str, Any]]) -> str:
         files = _license_files(module)
         if not files:
             raise BuildError(f"missing license text for Go module: {module_path}")
-        sections.append(
-            f"===== {module_path} {module.get('version', '')} ({license_id}) ====="
-        )
+        sections.append(f"===== {module_path} {module.get('version', '')} ({license_id}) =====")
         for path in files:
-            sections.extend((f"--- {path.name} ---", path.read_text(
-                encoding="utf-8", errors="replace"
-            ).rstrip(), ""))
+            sections.extend(
+                (
+                    f"--- {path.name} ---",
+                    path.read_text(encoding="utf-8", errors="replace").rstrip(),
+                    "",
+                )
+            )
     return "\n".join(sections).rstrip() + "\n"
 
 
@@ -434,8 +428,7 @@ def stage_sidecar_assets(
     migrations.mkdir()
     for source in sorted(paths.sidecar_migrations_dir.glob("*")):
         if source.is_file() and (
-            source.name == "manifest.json"
-            or (source.suffix == ".go" and source.name[:1].isdigit())
+            source.name == "manifest.json" or (source.suffix == ".go" and source.name[:1].isdigit())
         ):
             shutil.copy2(source, migrations / source.name)
     components = [
@@ -444,8 +437,7 @@ def stage_sidecar_assets(
             "name": str(module.get("path", "")),
             "version": str(module.get("version", "")),
             "licenses": [
-                {"license": {"id": license_id}}
-                for license_id in _module_licenses(module)
+                {"license": {"id": license_id}} for license_id in _module_licenses(module)
             ],
         }
         for module in modules
@@ -479,10 +471,7 @@ def stage_sidecar_assets(
     )
     if os.name != "nt":
         paths.sidecar_binary.chmod(
-            paths.sidecar_binary.stat().st_mode
-            | stat.S_IXUSR
-            | stat.S_IXGRP
-            | stat.S_IXOTH
+            paths.sidecar_binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
         )
 
 
@@ -518,21 +507,17 @@ def verify_sidecar_package(paths: RepoPaths) -> None:
     if os.name != "nt" and not os.access(paths.sidecar_binary, os.X_OK):
         raise BuildError("sidecar binary is not executable")
     sbom = json.loads(paths.sidecar_sbom.read_text(encoding="utf-8"))
-    if sbom.get("bomFormat") != "CycloneDX" or not isinstance(
-        sbom.get("components"), list
-    ):
+    if sbom.get("bomFormat") != "CycloneDX" or not isinstance(sbom.get("components"), list):
         raise BuildError("sidecar SBOM is invalid")
-    license_bundle = paths.sidecar_licenses.read_text(
-        encoding="utf-8", errors="replace"
-    )
+    license_bundle = paths.sidecar_licenses.read_text(encoding="utf-8", errors="replace")
     for component in sbom["components"]:
         name = component.get("name")
         licenses = component.get("licenses")
-        ids = [
-            item.get("license", {}).get("id")
-            for item in licenses
-            if isinstance(item, dict)
-        ] if isinstance(licenses, list) else []
+        ids = (
+            [item.get("license", {}).get("id") for item in licenses if isinstance(item, dict)]
+            if isinstance(licenses, list)
+            else []
+        )
         if (
             not isinstance(name, str)
             or not name
@@ -605,9 +590,11 @@ def _build_sidecar(paths: RepoPaths, *, skip: bool) -> None:
     if build_time:
         import datetime
 
-        timestamp = datetime.datetime.fromtimestamp(
-            int(build_time), tz=datetime.UTC
-        ).isoformat().replace("+00:00", "Z")
+        timestamp = (
+            datetime.datetime.fromtimestamp(int(build_time), tz=datetime.UTC)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
     else:
         timestamp = _git_value(
             paths,
@@ -689,9 +676,7 @@ def _build_desktop(paths: RepoPaths, *, skip: bool) -> None:
     if not source.is_file():
         raise BuildError("desktop publish output is missing")
     for item in output.iterdir():
-        destination = paths.publish_root / (
-            HOST_EXE_NAME if item == source else item.name
-        )
+        destination = paths.publish_root / (HOST_EXE_NAME if item == source else item.name)
         if item.is_dir():
             shutil.copytree(item, destination)
         else:

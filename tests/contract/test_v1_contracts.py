@@ -60,9 +60,7 @@ def _json_type_matches(value: Any, expected: str) -> bool:
         return isinstance(value, int) and not isinstance(value, bool)
     if expected == "number":
         return (
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and math.isfinite(value)
+            isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
         )
     if expected == "string":
         return isinstance(value, str)
@@ -163,9 +161,7 @@ def _validate(instance: Any, schema: Any, root: dict[str, Any], path: str = "$")
         required = set(schema.get("required", []))
         missing = required - instance.keys()
         if missing:
-            raise SchemaMismatchError(
-                f"{path}: missing required properties {sorted(missing)}"
-            )
+            raise SchemaMismatchError(f"{path}: missing required properties {sorted(missing)}")
         properties = schema.get("properties", {})
         for key, value in instance.items():
             if key in properties:
@@ -243,16 +239,12 @@ def test_view_definition_is_a_typed_source_projection_without_raw_sql() -> None:
 
 def test_field_and_constraint_discriminators_are_frozen_and_covered() -> None:
     schema = _load(SCHEMA_PATH)
-    declared_field_kinds = set(
-        schema["$defs"]["FieldDefinition"]["properties"]["kind"]["enum"]
-    )
+    declared_field_kinds = set(schema["$defs"]["FieldDefinition"]["properties"]["kind"]["enum"])
     declared_constraint_kinds = _const_kinds(schema, "FieldConstraint")
     table = _load(FIXTURES / "table-definition.json")
     covered_field_kinds = {field["kind"] for field in table["fields"]}
     covered_constraint_kinds = {
-        constraint["kind"]
-        for field in table["fields"]
-        for constraint in field["constraints"]
+        constraint["kind"] for field in table["fields"] for constraint in field["constraints"]
     }
 
     assert declared_field_kinds == FIELD_KINDS == covered_field_kinds
@@ -283,12 +275,8 @@ def test_mutation_and_event_required_wire_fields_are_frozen() -> None:
         "emittedEvents",
         "warnings",
     } <= mutation_receipt
-    assert schema["$defs"]["DataChangedEvent"]["properties"]["topic"]["const"] == (
-        "data.changed"
-    )
-    assert schema["$defs"]["TaskChangedEvent"]["properties"]["topic"]["const"] == (
-        "task.changed"
-    )
+    assert schema["$defs"]["DataChangedEvent"]["properties"]["topic"]["const"] == ("data.changed")
+    assert schema["$defs"]["TaskChangedEvent"]["properties"]["topic"]["const"] == ("task.changed")
 
 
 def test_wire_schema_does_not_leak_storage_provider_names() -> None:
@@ -296,7 +284,8 @@ def test_wire_schema_does_not_leak_storage_provider_names() -> None:
     fixture_text = "\n".join(
         path.read_text(encoding="utf-8").lower() for path in FIXTURES.glob("*.json")
     )
-    forbidden = ("dire" "ctus", "pocketbase")
+    retired_provider = "".join(["di", "rectus"])
+    forbidden = (retired_provider, "pocketbase")
     assert all(name not in schema_text for name in forbidden)
     assert all(name not in fixture_text for name in forbidden)
 
@@ -346,11 +335,7 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
         assert case["resultModel"] == result_spec.model_name
         assert case["resultSchema"] == expected_schema
         assert case["success"]["result"] == expected_result
-        schema_root = (
-            case["resultSchema"]
-            if "$defs" in case["resultSchema"]
-            else schema
-        )
+        schema_root = case["resultSchema"] if "$defs" in case["resultSchema"] else schema
         _validate(
             case["success"]["result"],
             case["resultSchema"],
@@ -375,12 +360,8 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
             PluginEventEnvelope.model_validate(event)
         else:
             assert event["topic"] == case["topic"]
-    assert catalog["eventCases"][0]["event"] == _load(
-        FIXTURES / "data-changed-event.json"
-    )
-    assert catalog["eventCases"][-1]["event"] == _load(
-        FIXTURES / "task-changed-event.json"
-    )
+    assert catalog["eventCases"][0]["event"] == _load(FIXTURES / "data-changed-event.json")
+    assert catalog["eventCases"][-1]["event"] == _load(FIXTURES / "task-changed-event.json")
 
 
 def test_rpc_response_goldens_pin_high_risk_method_specific_shapes() -> None:

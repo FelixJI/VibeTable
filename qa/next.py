@@ -27,15 +27,11 @@ SIDECAR_DIR = REPO_ROOT / "sidecar"
 WEB_GRID_DIR = REPO_ROOT / "desktop" / "web-grid"
 DESKTOP_SLN = REPO_ROOT / "desktop" / "VibeTable.Desktop.sln"
 DEV_LAUNCHER = REPO_ROOT / "scripts" / "dev.py"
-SIDECAR_MATRIX = (
-    REPO_ROOT / "tests" / "integration" / "packaged_sidecar_matrix.py"
-)
+SIDECAR_MATRIX = REPO_ROOT / "tests" / "integration" / "packaged_sidecar_matrix.py"
 FAULT_INJECTION = REPO_ROOT / "qa" / "fault_injection.py"
 GO_FORMAT_CHECK = REPO_ROOT / "qa" / "go_format_check.py"
 E2E_SMOKE = REPO_ROOT / "tests" / "e2e" / "test_next_readonly_smoke.py"
-UPGRADE_SMOKE = (
-    REPO_ROOT / "tests" / "integration" / "test_upgrade_activation_smoke.py"
-)
+UPGRADE_SMOKE = REPO_ROOT / "tests" / "integration" / "test_upgrade_activation_smoke.py"
 
 STAGES = (
     "version",
@@ -75,13 +71,7 @@ RACE_LONG_TESTS = frozenset(
 )
 TIMEOUT_RETURNCODE = 124
 WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS = 3
-QA_RUN_TEMP_DIR = (
-    REPO_ROOT
-    / "build"
-    / "qa"
-    / "tmp"
-    / f"run-{os.getpid()}-{time.time_ns()}"
-)
+QA_RUN_TEMP_DIR = REPO_ROOT / "build" / "qa" / "tmp" / f"run-{os.getpid()}-{time.time_ns()}"
 
 
 @dataclass
@@ -107,12 +97,7 @@ def _resolve(name: str) -> str:
     if name == "gcc" and os.name == "nt":
         for candidate in (
             REPO_ROOT / ".tools" / "w64devkit" / "bin" / "gcc.exe",
-            REPO_ROOT
-            / ".tools"
-            / "w64devkit"
-            / "w64devkit"
-            / "bin"
-            / "gcc.exe",
+            REPO_ROOT / ".tools" / "w64devkit" / "w64devkit" / "bin" / "gcc.exe",
         ):
             if candidate.is_file():
                 return str(candidate)
@@ -146,8 +131,8 @@ def stage_command(stage: str) -> tuple[list[str], str]:
             "all non-integration packages, then integration tests in isolated batches",
         ], str(SIDECAR_DIR)
     if stage == "go-build":
-        output = REPO_ROOT / "build" / "qa" / (
-            "vibetable-pb.exe" if os.name == "nt" else "vibetable-pb"
+        output = (
+            REPO_ROOT / "build" / "qa" / ("vibetable-pb.exe" if os.name == "nt" else "vibetable-pb")
         )
         return [
             go,
@@ -178,9 +163,7 @@ def stage_command(stage: str) -> tuple[list[str], str]:
             "no:cacheprovider",
         ], str(REPO_ROOT)
     if stage == "dev-build":
-        return [sys.executable, str(DEV_LAUNCHER), "--build-only"], str(
-            REPO_ROOT
-        )
+        return [sys.executable, str(DEV_LAUNCHER), "--build-only"], str(REPO_ROOT)
     if stage == "python":
         return [
             sys.executable,
@@ -284,9 +267,7 @@ def _stage_environment(stage: str, command: list[str]) -> dict[str, str]:
         environment["COMPILER_PATH"] = compiler_dir
         environment["PATH"] = compiler_dir + os.pathsep + environment.get("PATH", "")
     if stage == "go-build":
-        Path(command[command.index("-o") + 1]).parent.mkdir(
-            parents=True, exist_ok=True
-        )
+        Path(command[command.index("-o") + 1]).parent.mkdir(parents=True, exist_ok=True)
     return environment
 
 
@@ -420,12 +401,8 @@ def _run_go_race(
         discovered_names.extend((package, name) for name in names)
     if not discovered_names:
         return 1, "\n".join(output), "race discovery found zero named Go tests"
-    regular = [
-        item for item in discovered_names if item[1] not in RACE_LONG_TESTS
-    ]
-    long_running = [
-        item for item in discovered_names if item[1] in RACE_LONG_TESTS
-    ]
+    regular = [item for item in discovered_names if item[1] not in RACE_LONG_TESTS]
+    long_running = [item for item in discovered_names if item[1] in RACE_LONG_TESTS]
     for package, name in (*regular, *long_running):
         is_long = name in RACE_LONG_TESTS
         go_timeout = RACE_LONG_TEST_TIMEOUT if is_long else "5m"
@@ -442,11 +419,7 @@ def _run_go_race(
                     "-run",
                     f"^{re.escape(name)}$",
                 ],
-                (
-                    RACE_LONG_COMMAND_TIMEOUT_SECONDS
-                    if is_long
-                    else RACE_COMMAND_TIMEOUT_SECONDS
-                ),
+                (RACE_LONG_COMMAND_TIMEOUT_SECONDS if is_long else RACE_COMMAND_TIMEOUT_SECONDS),
             )
         )
     for command, timeout in commands:
@@ -498,9 +471,7 @@ def _is_windows_tempdir_cleanup_flake(output: str) -> bool:
     if "The directory is not empty" not in output:
         return False
     diagnostics = re.findall(r"^\s+([^:\r\n]+\.go):\d+:", output, flags=re.MULTILINE)
-    return bool(diagnostics) and all(
-        Path(source).name == "testing.go" for source in diagnostics
-    )
+    return bool(diagnostics) and all(Path(source).name == "testing.go" for source in diagnostics)
 
 
 def run_stage(stage: str) -> StageResult:

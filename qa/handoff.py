@@ -37,8 +37,7 @@ def previous_stage(stage: str, deps: dict[str, Any]) -> str | None:
     sequence = deps["sequence"]
     if stage not in sequence:
         raise ValueError(
-            f"stage {stage!r} is not in the approved sequence "
-            f"(known: {', '.join(sequence)})"
+            f"stage {stage!r} is not in the approved sequence (known: {', '.join(sequence)})"
         )
     index = sequence.index(stage)
     return sequence[index - 1] if index else None
@@ -156,10 +155,7 @@ def artifact_hashes(
         raise ValueError("artifactFiles must declare at least one artifact group")
     required = {"sidecar", "schema", "migrations", "capabilities"}
     if set(groups) != required:
-        raise ValueError(
-            "artifactFiles groups must be exactly: "
-            + ", ".join(sorted(required))
-        )
+        raise ValueError("artifactFiles groups must be exactly: " + ", ".join(sorted(required)))
     patterns = deps.get("artifactPatterns", {})
     if not isinstance(patterns, dict) or not set(patterns).issubset(groups):
         raise ValueError("artifactPatterns must contain only declared artifact groups")
@@ -182,9 +178,7 @@ def artifact_hashes(
                 raise ValueError(f"artifact group {group!r} contains an invalid pattern")
             matches = sorted(path for path in repo_root.glob(raw_pattern) if path.is_file())
             if not matches:
-                raise FileNotFoundError(
-                    f"artifact pattern {raw_pattern!r} did not match any files"
-                )
+                raise FileNotFoundError(f"artifact pattern {raw_pattern!r} did not match any files")
             for path in matches:
                 relative = path.relative_to(repo_root).as_posix()
                 file_hashes[relative] = sha256_of_file(path)
@@ -248,10 +242,7 @@ def validate_gate_summary(
     results = summary.get("results")
     if not isinstance(results, list) or not results:
         return False, "release gate summary contains no stage results"
-    if any(
-        not isinstance(result, dict) or result.get("returncode") != 0
-        for result in results
-    ):
+    if any(not isinstance(result, dict) or result.get("returncode") != 0 for result in results):
         return False, "release gate summary contains a failed or malformed stage"
     if required_stages is not None:
         observed_stages = [result.get("stage") for result in results]

@@ -40,9 +40,7 @@ async def test_registers_three_closed_backup_methods_and_serializes_aliases() ->
     dispatcher = RpcDispatcher()
     _register_backup_methods(dispatcher, FakeBackupService())
 
-    assert {"backup.list", "backup.create", "backup.restore"} <= set(
-        dispatcher.registered_methods
-    )
+    assert {"backup.list", "backup.create", "backup.restore"} <= set(dispatcher.registered_methods)
     response = await dispatcher.dispatch(
         {
             "jsonrpc": "2.0",

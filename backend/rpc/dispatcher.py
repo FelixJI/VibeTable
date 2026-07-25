@@ -245,12 +245,11 @@ class RpcDispatcher:
                 inspect.Parameter.KEYWORD_ONLY,
             )
         ]
-        receives_model = (
-            len(parameters) == 1
-            and parameters[0].name in {"params", "_params"}
-        )
-        unpack_params = bool(parameters) and not receives_model and all(
-            parameter.name in params_model.model_fields for parameter in parameters
+        receives_model = len(parameters) == 1 and parameters[0].name in {"params", "_params"}
+        unpack_params = (
+            bool(parameters)
+            and not receives_model
+            and all(parameter.name in params_model.model_fields for parameter in parameters)
         )
         self._handlers[method] = (handler, params_model, unpack_params)
 

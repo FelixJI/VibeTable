@@ -211,9 +211,7 @@ async def test_schema_delete_uses_fixed_route_and_revision_guard() -> None:
     service, transport = _service([{"deleted": True, "tableId": "orders"}])
 
     result = await service.delete_schema(
-        ProductParams.model_validate(
-            {"tableId": "orders", "expectedRevision": "schema_0002"}
-        )
+        ProductParams.model_validate({"tableId": "orders", "expectedRevision": "schema_0002"})
     )
 
     assert result == {"deleted": True, "tableId": "orders"}
@@ -886,9 +884,7 @@ async def test_multihop_lookup_validation_persists_and_round_trips_path() -> Non
     validated = await service.validate_lookup(
         ProductParams.model_validate({"definition": definition, "existing": []})
     )
-    listed = await service.list_lookups(
-        ProductParams.model_validate({"collection": "orders"})
-    )
+    listed = await service.list_lookups(ProductParams.model_validate({"collection": "orders"}))
 
     sent_lookup = transport.requests[3]["json_body"]["definition"]["fields"][-1]["lookup"]
     assert sent_lookup["relationFieldId"] == "customer_id"

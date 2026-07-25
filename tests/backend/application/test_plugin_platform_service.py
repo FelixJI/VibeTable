@@ -225,10 +225,13 @@ async def test_commit_rejects_source_changed_after_inspection(tmp_path: Path) ->
         )
 
     assert store.list_installations("local:default") == []
-    assert store.list_package_revisions(
-        "local:default",
-        "com.example.reader",
-    ) == []
+    assert (
+        store.list_package_revisions(
+            "local:default",
+            "com.example.reader",
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio
@@ -373,9 +376,7 @@ async def test_upgrade_retains_previous_package_and_rollback_restores_it(
 
     assert upgraded.version == "2.0.0"
     assert rolled_back.version == "1.0.0"
-    revisions = store.list_package_revisions(
-        "local:default", "com.example.reader"
-    )
+    revisions = store.list_package_revisions("local:default", "com.example.reader")
     assert {item.version: item.state for item in revisions} == {
         "1.0.0": "current",
         "2.0.0": "rollback",

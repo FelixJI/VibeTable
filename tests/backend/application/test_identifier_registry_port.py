@@ -97,6 +97,7 @@ async def test_identifier_registry_writes_only_through_internal_metadata_port() 
 
 
 def test_identifier_registry_origin_is_closed_to_vibetable_and_pocketbase() -> None:
+    removed_provider = "".join(["di", "rectus"])
     with pytest.raises(ValueError, match="origin"):
         IdentifierMapping(
             id="mapping-1",
@@ -105,7 +106,7 @@ def test_identifier_registry_origin_is_closed_to_vibetable_and_pocketbase() -> N
             physical_name="orders",
             display_name="Orders",
             normalized_name="orders",
-            origin="dire" "ctus",  # type: ignore[arg-type]
+            origin=removed_provider,  # type: ignore[arg-type]
             status="active",
         ).item()
 

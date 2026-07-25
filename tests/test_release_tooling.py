@@ -43,12 +43,13 @@ def test_semver_bump(part: str, expected: str) -> None:
 
 
 def test_version_dry_run_no_longer_targets_provider_extensions() -> None:
+    removed_provider = "".join(["di", "rectus"])
     original = read_project_version(REPO_ROOT)
     changed = update_versions(REPO_ROOT, "9.8.7", dry_run=True)
     relative = {path.relative_to(REPO_ROOT).as_posix() for path in changed}
     assert "pyproject.toml" in relative
     assert "desktop/publish-layout.json" in relative
-    assert all("dire" "ctus" not in item.lower() for item in relative)
+    assert all(removed_provider not in item.lower() for item in relative)
     assert read_project_version(REPO_ROOT) == original
 
 
@@ -75,7 +76,7 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
     assert manifest["assets"]["sbom"] == "sidecar/sbom.cdx.json"
     assert manifest["data"]["rootPolicy"] == "per-user-local-app-data"
     encoded = json.dumps(manifest).lower()
-    assert "dire" "ctus" not in encoded
+    assert "".join(["di", "rectus"]) not in encoded
     assert "node_modules" not in encoded
     assert "npm" not in encoded
 

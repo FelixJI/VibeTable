@@ -114,9 +114,7 @@ class IdentifierRegistry:
         prefix = "vt_t_" if kind == "collection" else "f_"
         occupied_set = set(occupied)
         for _ in range(32):
-            candidate = prefix + stable_suffix(
-                self._id_factory().int & ((1 << 80) - 1)
-            )
+            candidate = prefix + stable_suffix(self._id_factory().int & ((1 << 80) - 1))
             if candidate not in occupied_set:
                 return candidate
         raise RuntimeError("could not allocate a unique physical identifier")
@@ -135,20 +133,14 @@ class IdentifierRegistry:
                     IdentifierMapping(
                         id=_required_text(row, "id"),
                         entity_kind=_entity_kind(row.get("entityKind")),
-                        parent_physical_name=_optional_text(
-                            row.get("parentPhysicalName")
-                        ),
+                        parent_physical_name=_optional_text(row.get("parentPhysicalName")),
                         physical_name=_required_text(row, "physicalName"),
                         display_name=display_name,
-                        normalized_name=_optional_text(
-                            row.get("normalizedName")
-                        )
+                        normalized_name=_optional_text(row.get("normalizedName"))
                         or normalize_display_name(display_name),
                         locale=_optional_text(row.get("locale")) or "zh-CN",
                         aliases=tuple(
-                            value
-                            for value in aliases
-                            if isinstance(value, str) and value
+                            value for value in aliases if isinstance(value, str) and value
                         )
                         if isinstance(aliases, list)
                         else (),
@@ -323,11 +315,7 @@ class IdentifierManagementService:
             if not isinstance(item, Mapping):
                 continue
             table_id = item.get("tableId")
-            if (
-                not isinstance(table_id, str)
-                or not table_id
-                or table_id.startswith("vibetable_")
-            ):
+            if not isinstance(table_id, str) or not table_id or table_id.startswith("vibetable_"):
                 continue
             definition = await self._schema.describe_table(table_id)
             table_display = _optional_text(definition.get("displayName")) or table_id
@@ -434,8 +422,7 @@ class IdentifierManagementService:
                     and (
                         item.normalized_name == normalized
                         or any(
-                            normalize_display_name(alias) == normalized
-                            for alias in item.aliases
+                            normalize_display_name(alias) == normalized for alias in item.aliases
                         )
                     )
                 ),

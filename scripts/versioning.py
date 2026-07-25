@@ -24,11 +24,7 @@ class VersionSnapshot:
 
     @property
     def mismatches(self) -> dict[str, str]:
-        return {
-            name: value
-            for name, value in self.actual.items()
-            if value != self.expected
-        }
+        return {name: value for name, value in self.actual.items() if value != self.expected}
 
 
 @dataclass(frozen=True)
@@ -70,9 +66,9 @@ def _extract(pattern: str, text: str, label: str) -> str:
 
 
 def collect_release_versions(repo_root: Path) -> ReleaseVersions:
-    buildinfo = (
-        repo_root / "sidecar" / "internal" / "buildinfo" / "info.go"
-    ).read_text(encoding="utf-8")
+    buildinfo = (repo_root / "sidecar" / "internal" / "buildinfo" / "info.go").read_text(
+        encoding="utf-8"
+    )
     migration_manifest = repo_root / "sidecar" / "migrations" / "manifest.json"
     return ReleaseVersions(
         app=read_project_version(repo_root),
@@ -106,9 +102,7 @@ def collect_versions(repo_root: Path) -> VersionSnapshot:
     web_lock = _json(repo_root / "desktop" / "web-grid" / "package-lock.json")
     layout = _json(repo_root / "desktop" / "publish-layout.json")
     components = layout.get("components", {})
-    backend = (repo_root / "backend" / "contracts" / "system.py").read_text(
-        encoding="utf-8"
-    )
+    backend = (repo_root / "backend" / "contracts" / "system.py").read_text(encoding="utf-8")
     supervisor = (
         repo_root
         / "desktop"
@@ -117,15 +111,11 @@ def collect_versions(repo_root: Path) -> VersionSnapshot:
         / "Backend"
         / "PythonBackendSupervisor.cs"
     ).read_text(encoding="utf-8")
-    props = (repo_root / "desktop" / "Directory.Build.props").read_text(
-        encoding="utf-8"
-    )
+    props = (repo_root / "desktop" / "Directory.Build.props").read_text(encoding="utf-8")
     actual = {
         "web/package.json": str(web_package.get("version", "")),
         "web/package-lock.json": str(web_lock.get("version", "")),
-        "web/package-lock root": str(
-            web_lock.get("packages", {}).get("", {}).get("version", "")
-        ),
+        "web/package-lock root": str(web_lock.get("packages", {}).get("", {}).get("version", "")),
         "layout host": str(components.get("host", {}).get("version", "")),
         "layout backend": str(components.get("backend", {}).get("version", "")),
         "layout web": str(components.get("web", {}).get("version", "")),
@@ -158,9 +148,7 @@ def check_versions(repo_root: Path) -> list[str]:
 
 
 def bump_version(current: str, part: str) -> str:
-    major, minor, patch = (
-        int(value) for value in validate_version(current).split(".")
-    )
+    major, minor, patch = (int(value) for value in validate_version(current).split("."))
     if part == "major":
         return f"{major + 1}.0.0"
     if part == "minor":
@@ -274,9 +262,7 @@ def update_versions(
 ) -> list[Path]:
     changes = _updated_contents(repo_root.resolve(), version)
     changed = [
-        path
-        for path, content in changes.items()
-        if path.read_text(encoding="utf-8") != content
+        path for path, content in changes.items() if path.read_text(encoding="utf-8") != content
     ]
     if dry_run:
         return changed

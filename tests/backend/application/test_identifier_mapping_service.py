@@ -38,6 +38,7 @@ def test_allocated_identifiers_are_ascii_and_stable_for_fixed_uuid() -> None:
 
 
 def test_mapping_rejects_removed_provider_origin() -> None:
+    removed_provider = "".join(["di", "rectus"])
     mapping = IdentifierMapping(
         id="m1",
         entity_kind="collection",
@@ -45,7 +46,7 @@ def test_mapping_rejects_removed_provider_origin() -> None:
         physical_name="vt_t_1",
         display_name="Orders",
         normalized_name="orders",
-        origin="dire" "ctus",  # type: ignore[arg-type]
+        origin=removed_provider,  # type: ignore[arg-type]
     )
 
     with pytest.raises(ValueError, match="origin"):

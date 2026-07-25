@@ -34,9 +34,7 @@ class FakeResponse:
 
 
 def transport() -> StdlibPocketBaseTransport:
-    return StdlibPocketBaseTransport(
-        PocketBaseConfig("http://127.0.0.1:8090", SECRET, 2.5)
-    )
+    return StdlibPocketBaseTransport(PocketBaseConfig("http://127.0.0.1:8090", SECRET, 2.5))
 
 
 @pytest.mark.parametrize(
@@ -115,9 +113,7 @@ def test_request_sync_decodes_valid_responses(
 
 
 @pytest.mark.parametrize("body", [b"{", b"\xff"])
-def test_request_sync_rejects_invalid_json(
-    monkeypatch: pytest.MonkeyPatch, body: bytes
-) -> None:
+def test_request_sync_rejects_invalid_json(monkeypatch: pytest.MonkeyPatch, body: bytes) -> None:
     monkeypatch.setattr(subject, "urlopen", lambda *_args, **_kwargs: FakeResponse(body))
     with pytest.raises(PocketBaseTransportError) as caught:
         transport()._request_sync("GET", "/x", {}, None, {}, (200,))
@@ -133,7 +129,9 @@ def test_request_sync_rejects_size_and_status(
         transport()._request_sync("GET", "/x", {}, None, {}, (200,))
     assert size.value.code == "sidecar.response_too_large"
 
-    monkeypatch.setattr(subject, "urlopen", lambda *_args, **_kwargs: FakeResponse(b"{}", status=201))
+    monkeypatch.setattr(
+        subject, "urlopen", lambda *_args, **_kwargs: FakeResponse(b"{}", status=201)
+    )
     with pytest.raises(PocketBaseTransportError) as status:
         transport()._request_sync("GET", "/x", {}, None, {}, (200,))
     assert status.value.code == "sidecar.unexpected_status"
@@ -148,7 +146,9 @@ def test_request_sync_maps_structured_http_error(
 ) -> None:
     payload = b'{"code":"row.conflict","message":"changed","retryable":true}'
     monkeypatch.setattr(
-        subject, "urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(_http_error(409, payload))
+        subject,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(_http_error(409, payload)),
     )
     with pytest.raises(PocketBaseProductError) as caught:
         transport()._request_sync("GET", "/x", {}, None, {}, (200,))
@@ -220,27 +220,19 @@ def test_multipart_rejects_handle_and_invalid_file(tmp_path: Path) -> None:
     source = tmp_path / "source.txt"
     source.write_text("x", encoding="utf-8")
     with pytest.raises(PocketBaseTransportError) as handle:
-        transport()._request_multipart_sync(
-            "/x", {}, (("bad handle", str(source)),), {}, (200,)
-        )
+        transport()._request_multipart_sync("/x", {}, (("bad handle", str(source)),), {}, (200,))
     assert handle.value.code == "attachment.host_files_invalid"
     with pytest.raises(PocketBaseTransportError) as path:
-        transport()._request_multipart_sync(
-            "/x", {}, (("good", "relative.txt"),), {}, (200,)
-        )
+        transport()._request_multipart_sync("/x", {}, (("good", "relative.txt"),), {}, (200,))
     assert path.value.code == "attachment.host_file_invalid"
 
 
-def test_multipart_rejects_oversized_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_multipart_rejects_oversized_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     source = tmp_path / "large.bin"
     source.write_bytes(b"12345")
     monkeypatch.setattr(subject, "_MAX_MULTIPART_BYTES", 4)
     with pytest.raises(PocketBaseTransportError) as caught:
-        transport()._request_multipart_sync(
-            "/x", {}, (("good", str(source)),), {}, (200,)
-        )
+        transport()._request_multipart_sync("/x", {}, (("good", str(source)),), {}, (200,))
     assert caught.value.code == "attachment.host_files_too_large"
 
 
@@ -256,9 +248,7 @@ def test_request_bytes_success_and_failure_mapping(
 
 
 @pytest.mark.asyncio
-async def test_download_writes_atomically(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+async def test_download_writes_atomically(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     target = tmp_path / "download.bin"
     captured = {}
 
@@ -291,7 +281,9 @@ def test_download_rejects_limits_targets_status_and_size(
         transport()._download_to_file_sync("/x", {}, "relative", {}, (200,), 2)
     assert target_error.value.code == "attachment.host_target_invalid"
 
-    monkeypatch.setattr(subject, "urlopen", lambda *_args, **_kwargs: FakeResponse(b"x", status=201))
+    monkeypatch.setattr(
+        subject, "urlopen", lambda *_args, **_kwargs: FakeResponse(b"x", status=201)
+    )
     with pytest.raises(PocketBaseTransportError) as status:
         transport()._download_to_file_sync("/x", {}, str(target), {}, (200,), 2)
     assert status.value.code == "sidecar.unexpected_status"
@@ -304,9 +296,7 @@ def test_download_rejects_limits_targets_status_and_size(
     assert not list(tmp_path.glob("*.part"))
 
 
-def test_download_maps_http_and_io_errors(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_download_maps_http_and_io_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     target = tmp_path / "out.bin"
     monkeypatch.setattr(
         subject,

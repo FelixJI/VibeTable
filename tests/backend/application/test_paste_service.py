@@ -229,9 +229,7 @@ async def test_preview_rejects_unknown_product_table_and_oversize_clipboard() ->
 
     oversize = _cells([["x"] * 100 for _ in range(MAX_PASTE_CELLS // 100 + 1)])
     with pytest.raises(PasteError) as overflow:
-        await service.preview(
-            _preview_params(row_keys=[], anchor_row=None, cells=oversize)
-        )
+        await service.preview(_preview_params(row_keys=[], anchor_row=None, cells=oversize))
     assert overflow.value.code == "paste_overflow"
     assert overflow.value.data == {
         "maxCells": MAX_PASTE_CELLS,

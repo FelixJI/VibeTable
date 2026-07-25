@@ -137,9 +137,7 @@ class ExportService:
                     if col not in output_columns:
                         output_columns.append(col)
         target = Path(path)
-        temporary = target.with_name(
-            f".{target.name}.vibetable-{uuid.uuid4().hex}.tmp"
-        )
+        temporary = target.with_name(f".{target.name}.vibetable-{uuid.uuid4().hex}.tmp")
         rows_written = 0
         fmt = params.format
         try:

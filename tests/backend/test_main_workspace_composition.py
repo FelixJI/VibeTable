@@ -43,11 +43,7 @@ class _ProductTransport:
             assert json_body["operation"] == "readRows"
             assert json_body["tableId"] == "orders"
             return {
-                "rows": [
-                    {"id": row_id}
-                    for row_id in json_body["rowIds"]
-                    if row_id == "order-1"
-                ]
+                "rows": [{"id": row_id} for row_id in json_body["rowIds"] if row_id == "order-1"]
             }
         raise AssertionError(f"unexpected product request: {method} {path}")
 

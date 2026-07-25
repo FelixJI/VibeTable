@@ -131,9 +131,7 @@ class TestFLegacyRemoval:
         assert not [path for path in legacy_paths if path.exists()]
 
     def test_desktop_has_no_legacy_sqlite_runtime_path(self):
-        composition = (
-            ROOT / "desktop" / "src" / "VibeTable.Desktop" / "MainWindow.Product.cs"
-        )
+        composition = ROOT / "desktop" / "src" / "VibeTable.Desktop" / "MainWindow.Product.cs"
         source = composition.read_text(encoding="utf-8")
         forbidden = (
             "LazySupervisorGateway",
@@ -146,7 +144,7 @@ class TestFLegacyRemoval:
         ).exists()
 
     def test_removed_provider_runtime_paths_are_physically_absent(self):
-        retired = "dire" "ctus"
+        retired = "".join(["di", "rectus"])
         removed = (
             ROOT / "backend" / "adapters" / retired,
             ROOT / retired,
@@ -161,7 +159,7 @@ class TestFLegacyRemoval:
         assert not [path.relative_to(ROOT) for path in removed if path.exists()]
 
     def test_backend_has_no_removed_provider_imports(self):
-        retired = "dire" "ctus"
+        retired = "".join(["di", "rectus"])
         violations = _scan_imports(
             "backend",
             [
@@ -173,12 +171,10 @@ class TestFLegacyRemoval:
                 r"backend\.application\.collaboration_service(\.|$)",
             ],
         )
-        assert not violations, "backend imports removed provider modules:\n" + "\n".join(
-            violations
-        )
+        assert not violations, "backend imports removed provider modules:\n" + "\n".join(violations)
 
     def test_removed_provider_name_is_confined_to_research_archive(self):
-        retired = "dire" "ctus"
+        retired = "".join(["di", "rectus"])
         allowed_roots = (
             ROOT / "docs" / "research",
             ROOT / "docs" / "adr",
@@ -222,12 +218,9 @@ class TestFLegacyRemoval:
             ".yaml",
             ".yml",
         }
+
         def is_ignored(part: str) -> bool:
-            return (
-                part in ignored_parts
-                or part.startswith(".e2e-")
-                or part.startswith(".codex-")
-            )
+            return part in ignored_parts or part.startswith(".e2e-") or part.startswith(".codex-")
 
         allowed_resolved = tuple(root.resolve() for root in allowed_roots)
         violations: list[str] = []
@@ -239,15 +232,12 @@ class TestFLegacyRemoval:
             directory_path = Path(directory)
             resolved_directory = directory_path.resolve()
             if any(
-                resolved_directory == allowed
-                or allowed in resolved_directory.parents
+                resolved_directory == allowed or allowed in resolved_directory.parents
                 for allowed in allowed_resolved
             ):
                 child_dirs.clear()
                 continue
-            child_dirs[:] = [
-                child for child in child_dirs if not is_ignored(child)
-            ]
+            child_dirs[:] = [child for child in child_dirs if not is_ignored(child)]
             for file_name in file_names:
                 if is_ignored(file_name):
                     continue

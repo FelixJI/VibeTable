@@ -61,9 +61,9 @@ class InMemoryPluginStore:
         self,
         revision: PluginPackageRevision,
     ) -> PluginPackageRevision:
-        self._revisions[
-            (revision.project_key, revision.plugin_id, revision.package_hash)
-        ] = revision
+        self._revisions[(revision.project_key, revision.plugin_id, revision.package_hash)] = (
+            revision
+        )
         return revision
 
     def list_package_revisions(
@@ -86,9 +86,7 @@ class InMemoryPluginStore:
         return self._revisions.pop((project_key, plugin_id, package_hash), None) is not None
 
     def delete_package_revisions(self, project_key: str, plugin_id: str) -> int:
-        keys = [
-            key for key in self._revisions if key[:2] == (project_key, plugin_id)
-        ]
+        keys = [key for key in self._revisions if key[:2] == (project_key, plugin_id)]
         for key in keys:
             del self._revisions[key]
         return len(keys)
@@ -121,9 +119,7 @@ class InMemoryPluginStore:
         return self._settings.get((project_key, plugin_id, setting_key))
 
     def delete_private_settings(self, project_key: str, plugin_id: str) -> int:
-        keys = [
-            key for key in self._settings if key[:2] == (project_key, plugin_id)
-        ]
+        keys = [key for key in self._settings if key[:2] == (project_key, plugin_id)]
         for key in keys:
             del self._settings[key]
         return len(keys)

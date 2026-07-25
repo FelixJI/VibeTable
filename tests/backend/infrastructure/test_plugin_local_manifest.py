@@ -71,10 +71,10 @@ def test_accepts_local_worker_with_mutation_and_network_capabilities() -> None:
                 "compatibility": {
                     "minHostVersion": "1.0.0",
                     "pluginApi": "1.x",
-                    "dire" "ctus": ">=12 <13",
+                    "".join(["di", "rectus"]): ">=12 <13",
                 }
             },
-            "compatibility." + "dire" "ctus",
+            "compatibility." + "".join(["di", "rectus"]),
         ),
     ],
 )

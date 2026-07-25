@@ -12,9 +12,7 @@ def test_manifest_has_exactly_twelve_unique_product_scenarios() -> None:
     scenarios = runner.load_scenarios()
 
     assert len(scenarios) == 12
-    assert [item.id[:2] for item in scenarios] == [
-        f"{index:02d}" for index in range(1, 13)
-    ]
+    assert [item.id[:2] for item in scenarios] == [f"{index:02d}" for index in range(1, 13)]
     assert all(item.title and item.requirement for item in scenarios)
     by_id = {item.id: item.requirement for item in scenarios}
     assert "规范化深比较" in by_id["04-json-round-trip"]
@@ -71,9 +69,9 @@ def test_aggregate_reports_failures_without_skips(tmp_path: Path) -> None:
         "skipped": 0,
     }
     assert report["status"] == "failed"
-    assert json.loads(output.read_text(encoding="utf-8"))["transport"][
-        "browserLaunchAllowed"
-    ] is False
+    assert (
+        json.loads(output.read_text(encoding="utf-8"))["transport"]["browserLaunchAllowed"] is False
+    )
 
 
 def test_node_runner_only_attaches_to_existing_webview2() -> None:
@@ -105,14 +103,8 @@ def test_invalid_formula_assertion_matches_structured_schema_validation_contract
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
 
     assert 'response.type === "schema.validate"' in source
-    assert (
-        'response.payload?.error?.code === "schema.field.invalid_formula"'
-        in source
-    )
-    assert (
-        'response.payload?.error?.path === "fields[0].formula.source"'
-        in source
-    )
+    assert 'response.payload?.error?.code === "schema.field.invalid_formula"' in source
+    assert 'response.payload?.error?.path === "fields[0].formula.source"' in source
 
 
 def test_atomic_import_fault_waits_for_transactional_barrier() -> None:
@@ -131,9 +123,9 @@ def test_atomic_import_fault_waits_for_transactional_barrier() -> None:
 
 def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    scenario = source[source.index("async function scenario04"):source.index(
-        "async function scenario05"
-    )]
+    scenario = source[
+        source.index("async function scenario04") : source.index("async function scenario05")
+    ]
 
     assert 'jsonCell.press("Enter")' in scenario
     assert 'page.keyboard.press("Escape")' in scenario
@@ -147,12 +139,10 @@ def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -
 
 def test_attachment_preview_and_backup_audit_are_exact_evidence() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    attachment = source[source.index("async function scenario07"):source.index(
-        "async function scenario08"
-    )]
-    backup = source[source.index("async function scenario12"):source.index(
-        "const scenarios"
-    )]
+    attachment = source[
+        source.index("async function scenario07") : source.index("async function scenario08")
+    ]
+    backup = source[source.index("async function scenario12") : source.index("const scenarios")]
 
     assert "waitForPreviewArtifact(" in attachment
     assert "attachment-preview-verified.txt" in attachment
@@ -242,21 +232,19 @@ def test_process_network_report_rejects_listener_and_remote_non_loopback() -> No
         "non_loopback_listener",
         "non_loopback_remote",
     }
-    assert [
-        item["processName"]
-        for item in report["unexpectedProductNonLoopback"]
-    ] == ["VibeTable.Next.exe"]
-    assert [
-        item["processName"]
-        for item in report["webViewRuntimeBackgroundNetwork"]
-    ] == ["msedgewebview2.exe"]
+    assert [item["processName"] for item in report["unexpectedProductNonLoopback"]] == [
+        "VibeTable.Next.exe"
+    ]
+    assert [item["processName"] for item in report["webViewRuntimeBackgroundNetwork"]] == [
+        "msedgewebview2.exe"
+    ]
 
 
 def test_schema_scenario_reads_back_constraints_from_authoritative_definition() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    scenario = source[source.index("async function scenario02"):source.index(
-        "async function rawBridgeRequest"
-    )]
+    scenario = source[
+        source.index("async function scenario02") : source.index("async function rawBridgeRequest")
+    ]
 
     assert '"schema.getTable"' in scenario
     assert 'findConstraint("quantity", "range")' in scenario
@@ -282,9 +270,9 @@ def test_schema_scenario_reads_back_constraints_from_authoritative_definition() 
 
 def test_schema_scenario_waits_for_submit_completion_without_a_fixed_delay() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    scenario = source[source.index("async function scenario02"):source.index(
-        "async function rawBridgeRequest"
-    )]
+    scenario = source[
+        source.index("async function scenario02") : source.index("async function rawBridgeRequest")
+    ]
 
     assert "waitForCreateTableSubmission(page, submit)" in scenario
     assert "waitForTimeout(1_000)" not in scenario
@@ -295,9 +283,9 @@ def test_schema_scenario_waits_for_submit_completion_without_a_fixed_delay() -> 
 
 def test_realtime_scenario_refreshes_the_active_table_without_reselection() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    scenario = source[source.index("async function scenario10"):source.index(
-        "async function scenario11"
-    )]
+    scenario = source[
+        source.index("async function scenario10") : source.index("async function scenario11")
+    ]
 
     assert "waitForTableRecovery" not in scenario
     assert "waitForActiveTableBackend" in scenario

@@ -323,7 +323,9 @@ async def test_lookup_export_rejects_revision_drift(tmp_path: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_export_renders_json_and_attachment_manifest_without_binary_data(tmp_path: Any) -> None:
+async def test_export_renders_json_and_attachment_manifest_without_binary_data(
+    tmp_path: Any,
+) -> None:
     manifest = _manifest()
     page = [
         {

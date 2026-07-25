@@ -310,21 +310,15 @@ class SqliteWorkspaceIndex:
                 index_table,
                 expected_unique,
                 expected_index_columns,
-            ) in (
-                _EXPECTED_INDEXES.items()
-            ):
-                index_rows = self._conn.execute(
-                    f'PRAGMA index_list("{index_table}")'
-                ).fetchall()
+            ) in _EXPECTED_INDEXES.items():
+                index_rows = self._conn.execute(f'PRAGMA index_list("{index_table}")').fetchall()
                 index = next(
                     (row for row in index_rows if row["name"] == index_name),
                     None,
                 )
                 index_columns = tuple(
                     (str(row["name"]), int(row["desc"]))
-                    for row in self._conn.execute(
-                        f'PRAGMA index_xinfo("{index_name}")'
-                    ).fetchall()
+                    for row in self._conn.execute(f'PRAGMA index_xinfo("{index_name}")').fetchall()
                     if int(row["key"]) == 1
                 )
                 if (
@@ -347,9 +341,7 @@ class SqliteWorkspaceIndex:
                             f'PRAGMA index_info("{row["name"]}")'
                         ).fetchall()
                     )
-                    for row in self._conn.execute(
-                        f'PRAGMA index_list("{table}")'
-                    ).fetchall()
+                    for row in self._conn.execute(f'PRAGMA index_list("{table}")').fetchall()
                     if str(row["origin"]) == "u" and int(row["unique"]) == 1
                 }
                 if actual_constraints != expected_constraints:

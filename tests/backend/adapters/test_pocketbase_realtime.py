@@ -100,9 +100,7 @@ async def test_session_rejects_mismatched_event_identity() -> None:
 
 @pytest.mark.asyncio
 async def test_session_keeps_durable_cursor_separate_from_product_event_id() -> None:
-    session = PocketBaseRealtimeSession(
-        FakeConnection(_durable_event(42, "evt-product"))
-    )
+    session = PocketBaseRealtimeSession(FakeConnection(_durable_event(42, "evt-product")))
 
     event = await session.receive()
 
@@ -143,9 +141,7 @@ async def test_supervisor_reconnects_with_durable_rowid_cursor() -> None:
     connector = FakeConnector(
         [
             FakeConnection(_durable_event(41, "evt-1")),
-            FakeConnection(
-                _durable_event(41, "evt-1") + _durable_event(42, "evt-2", 2)
-            ),
+            FakeConnection(_durable_event(41, "evt-1") + _durable_event(42, "evt-2", 2)),
         ]
     )
     emitted: list[str] = []

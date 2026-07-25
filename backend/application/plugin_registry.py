@@ -192,7 +192,9 @@ class PluginRegistry:
 
     @staticmethod
     def _validate_plan(plan: InstallPlan) -> None:
-        if any(action.mode != "local" or not action.worker_entry for action in plan.manifest.actions):
+        if any(
+            action.mode != "local" or not action.worker_entry for action in plan.manifest.actions
+        ):
             raise PluginRegistryError(
                 "only local-worker actions are supported",
                 code="plugin_manifest_legacy",

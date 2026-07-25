@@ -28,8 +28,7 @@ class PocketBasePluginMutationAdapter:
         self._client = client
         self._schema_revisions = dict(schema_revisions)
         self._writable_fields = {
-            table_id: frozenset(fields)
-            for table_id, fields in writable_fields.items()
+            table_id: frozenset(fields) for table_id, fields in writable_fields.items()
         }
         self._dynamic_schema = not schema_revisions and not writable_fields
 
@@ -42,9 +41,7 @@ class PocketBasePluginMutationAdapter:
             definition = await self._client.describe_table(plan.collection)
             profile = collection_profile_from_definition(definition)
             schema_revision = profile.schema_revision
-            allowed = frozenset(profile.create_fields) | frozenset(
-                profile.update_fields
-            )
+            allowed = frozenset(profile.create_fields) | frozenset(profile.update_fields)
             if schema_revision is None:
                 raise ValueError("plugin mutation collection is not granted")
             self._schema_revisions[plan.collection] = schema_revision

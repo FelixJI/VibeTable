@@ -83,9 +83,7 @@ def test_valid_nested_schema_and_json_cover_all_constraints() -> None:
         ({"pattern": "["}, "invalid pattern"),
     ],
 )
-def test_schema_document_rejects_malformed_keywords(
-    schema: dict, message: str
-) -> None:
+def test_schema_document_rejects_malformed_keywords(schema: dict, message: str) -> None:
     with pytest.raises(PluginSchemaError, match=message):
         validate_plugin_schema_document(schema, label="config")
 
@@ -159,9 +157,7 @@ def test_json_validation_rejects_excessive_value_depth() -> None:
         ("x", "future", False),
     ],
 )
-def test_matches_type_is_closed(
-    value: object, declared: str, expected: bool
-) -> None:
+def test_matches_type_is_closed(value: object, declared: str, expected: bool) -> None:
     assert _matches_type(value, declared) is expected
 
 

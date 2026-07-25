@@ -20,6 +20,7 @@ def test_console_output_is_safe_on_legacy_windows_code_pages() -> None:
 
 
 def test_ci_gate_runs_go_and_real_sidecar_before_desktop_stacks() -> None:
+    removed_provider = "".join(["di", "rectus"])
     assert next_gate.STAGES[:8] == (
         "version",
         "package",
@@ -30,10 +31,10 @@ def test_ci_gate_runs_go_and_real_sidecar_before_desktop_stacks() -> None:
         "go-build",
         "sidecar-smoke",
     )
-    assert all("dire" "ctus" not in stage for stage in next_gate.STAGES)
-    assert tuple(
-        next_gate.handoff_gate.load_dependencies()["requiredGateStages"]
-    ) == next_gate.STAGES
+    assert all(removed_provider not in stage for stage in next_gate.STAGES)
+    assert (
+        tuple(next_gate.handoff_gate.load_dependencies()["requiredGateStages"]) == next_gate.STAGES
+    )
 
 
 def test_go_commands_target_sidecar_module() -> None:
@@ -194,10 +195,7 @@ def test_race_stage_isolates_named_tests_in_every_package(
     assert code == 0
     race_commands = [command for command in observed if "-race" in command]
     assert len(race_commands) == 4
-    assert {
-        (command[command.index("-run") + 1], command[-3])
-        for command in race_commands
-    } == {
+    assert {(command[command.index("-run") + 1], command[-3]) for command in race_commands} == {
         ("^TestMigrationOne$", "example/migrations"),
         ("^TestMigrationTwo$", "example/migrations"),
         ("^TestIntegrationOne$", "example/tests/integration"),
@@ -215,9 +213,7 @@ def test_windows_tempdir_cleanup_retry_never_matches_data_race(
         "The directory is not empty.\n"
     )
     assert next_gate._is_windows_tempdir_cleanup_flake(cleanup)
-    assert not next_gate._is_windows_tempdir_cleanup_flake(
-        cleanup + "\nWARNING: DATA RACE\n"
-    )
+    assert not next_gate._is_windows_tempdir_cleanup_flake(cleanup + "\nWARNING: DATA RACE\n")
     assert not next_gate._is_windows_tempdir_cleanup_flake(
         cleanup + "\n    product_test.go:42: assertion failed\n"
     )
@@ -394,9 +390,7 @@ def test_full_ci_report_rejects_source_change_while_gate_is_running(
 
 
 def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
-    assert next_gate.STAGES.index("fault-injection") < next_gate.STAGES.index(
-        "product-e2e"
-    )
+    assert next_gate.STAGES.index("fault-injection") < next_gate.STAGES.index("product-e2e")
     command, cwd = next_gate.stage_command("fault-injection")
     assert command == [next_gate.sys.executable, str(next_gate.FAULT_INJECTION)]
     assert "--component-only" not in command
@@ -423,11 +417,7 @@ def test_dotnet_gate_keeps_project_coverage_ratchets_enabled() -> None:
     }
     for project_name, threshold in expected_thresholds.items():
         project = (
-            next_gate.REPO_ROOT
-            / "desktop"
-            / "tests"
-            / project_name
-            / f"{project_name}.csproj"
+            next_gate.REPO_ROOT / "desktop" / "tests" / project_name / f"{project_name}.csproj"
         )
         properties = {
             child.tag: child.text

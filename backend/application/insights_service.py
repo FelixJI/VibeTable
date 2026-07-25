@@ -121,9 +121,7 @@ class InternalMetadataPort(Protocol):
 class InsightsQueryPort(Protocol):
     async def query_page(self, *, table_id: str, query: dict[str, Any]) -> Any: ...
 
-    async def aggregate(
-        self, *, table_id: str, query: dict[str, Any]
-    ) -> list[dict[str, Any]]: ...
+    async def aggregate(self, *, table_id: str, query: dict[str, Any]) -> list[dict[str, Any]]: ...
 
     async def read_history(
         self, *, collection: str, item_id: str, limit: int = 50
@@ -163,9 +161,7 @@ class InsightsService:
     ) -> None:
         self._metadata = metadata_port
         self._query = query_port
-        self._query_slots = asyncio.Semaphore(
-            DASHBOARD_QUERY_LIMITS.max_concurrent_requests
-        )
+        self._query_slots = asyncio.Semaphore(DASHBOARD_QUERY_LIMITS.max_concurrent_requests)
 
     async def list_presets(self, collection: str) -> PresetsResult:
         rows = await self._metadata.list_metadata("presets", scope=collection)
@@ -250,12 +246,8 @@ class InsightsService:
     ) -> ContentVersionEntry:
         if not operation_id:
             raise InsightsError("operationId is required", code="operation_id_required")
-        record_id = str(
-            uuid.uuid5(uuid.NAMESPACE_URL, f"vibetable:version:{operation_id}")
-        )
-        change_set_id, revision_id = await self._latest_audit_revision(
-            collection, item_id
-        )
+        record_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"vibetable:version:{operation_id}"))
+        change_set_id, revision_id = await self._latest_audit_revision(collection, item_id)
         preview = await self._query.preview_history_restore(
             collection=collection,
             item_id=item_id,
@@ -301,9 +293,7 @@ class InsightsService:
                 "content versions point to audit snapshots and do not accept arbitrary values",
                 code="version_values_not_allowed",
             )
-        change_set_id, revision_id = await self._latest_audit_revision(
-            collection, item_id
-        )
+        change_set_id, revision_id = await self._latest_audit_revision(collection, item_id)
         preview = await self._query.preview_history_restore(
             collection=collection,
             item_id=item_id,
@@ -472,9 +462,7 @@ class InsightsService:
             )
         root_revision_id = change_set.get("rootRevisionId")
         revision_id = (
-            root_revision_id
-            if isinstance(root_revision_id, str) and root_revision_id
-            else ""
+            root_revision_id if isinstance(root_revision_id, str) and root_revision_id else ""
         )
         record_changes = change_set.get("recordChanges")
         if isinstance(record_changes, list):
@@ -494,9 +482,7 @@ class InsightsService:
             self._metadata.list_metadata("dashboards"),
             self._metadata.list_metadata("panels"),
         )
-        return DashboardsResult(
-            dashboards=[_dashboard(row, panels) for row in dashboards]
-        )
+        return DashboardsResult(dashboards=[_dashboard(row, panels) for row in dashboards])
 
     async def read_dashboard(self, dashboard_id: str) -> DashboardEntry:
         result = await self.list_dashboards()
@@ -505,13 +491,9 @@ class InsightsService:
                 return dashboard
         raise InsightsError("dashboard was not found", code="dashboard_not_found")
 
-    async def read_dashboard_workspace(
-        self, dashboard_id: str
-    ) -> DashboardWorkspaceResult:
+    async def read_dashboard_workspace(self, dashboard_id: str) -> DashboardWorkspaceResult:
         dashboard = await self.read_dashboard(dashboard_id)
-        rows = await self._metadata.list_metadata(
-            "dashboards", keys=[dashboard_id]
-        )
+        rows = await self._metadata.list_metadata("dashboards", keys=[dashboard_id])
         config_raw = rows[0].get("config") if rows else {}
         config = DashboardManagedConfig.model_validate(config_raw or {})
         revision = _revision(
@@ -549,18 +531,14 @@ class InsightsService:
             client_panel_ids=result.get("clientPanelIds", {}),
         )
 
-    async def delete_dashboard_workspace(
-        self, params: DashboardWorkspaceParams
-    ) -> dict[str, str]:
+    async def delete_dashboard_workspace(self, params: DashboardWorkspaceParams) -> dict[str, str]:
         await self.delete_dashboard(params.dashboard_id)
         return {"deleted": params.dashboard_id}
 
     async def execute_dashboard_query(
         self, params: ExecuteDashboardQueryParams
     ) -> DashboardQueryResult:
-        if params.panel_type == "custom" or not self.is_known_panel_type(
-            params.panel_type
-        ):
+        if params.panel_type == "custom" or not self.is_known_panel_type(params.panel_type):
             raise InsightsError(
                 "panel type cannot execute queries",
                 code="dashboard_panel_type_unknown",
@@ -587,9 +565,7 @@ class InsightsService:
                     },
                 )
                 rows = list(getattr(page, "rows", []))
-                limit = min(
-                    params.query.limit, DASHBOARD_QUERY_LIMITS.max_list_rows
-                )
+                limit = min(params.query.limit, DASHBOARD_QUERY_LIMITS.max_list_rows)
                 return DashboardQueryResult(
                     rows=rows[:limit],
                     truncated=len(rows) > limit,
@@ -597,16 +573,11 @@ class InsightsService:
                 )
             query = params.query
             aggregate: dict[str, Any] = {
-                "filters": [
-                    item.model_dump(by_alias=True, mode="json")
-                    for item in query.filters
-                ],
+                "filters": [item.model_dump(by_alias=True, mode="json") for item in query.filters],
                 "groupBy": list(query.dimensions),
                 "metrics": [
                     {
-                        "function": (
-                            "count" if measure.op == "countDistinct" else measure.op
-                        ),
+                        "function": ("count" if measure.op == "countDistinct" else measure.op),
                         "field": measure.field or "",
                         "alias": measure.key,
                     }
@@ -617,9 +588,7 @@ class InsightsService:
                     DASHBOARD_QUERY_LIMITS.max_panel_points,
                 ),
             }
-            rows = await self._query.aggregate(
-                table_id=query.collection, query=aggregate
-            )
+            rows = await self._query.aggregate(table_id=query.collection, query=aggregate)
             limit = aggregate["limit"]
             return DashboardQueryResult(
                 rows=rows[:limit],
@@ -681,9 +650,7 @@ class InsightsService:
             query=query,
         )
 
-    async def delete_panel(
-        self, dashboard_id: str, panel_id: str
-    ) -> dict[str, Any]:
+    async def delete_panel(self, dashboard_id: str, panel_id: str) -> dict[str, Any]:
         del dashboard_id
         await self._delete("panels", panel_id, label="panel")
         return {"deleted": panel_id}
@@ -740,14 +707,8 @@ def compile_dashboard_query(
             "tableId": query.collection,
             "query": {
                 "keyword": None,
-                "filters": [
-                    item.model_dump(by_alias=True, mode="json")
-                    for item in query.filters
-                ],
-                "sorts": [
-                    item.model_dump(by_alias=True, mode="json")
-                    for item in query.sorts
-                ],
+                "filters": [item.model_dump(by_alias=True, mode="json") for item in query.filters],
+                "sorts": [item.model_dump(by_alias=True, mode="json") for item in query.sorts],
                 "offset": 0,
                 "limit": query.limit,
             },
@@ -763,16 +724,11 @@ def compile_dashboard_query(
         "operation": "aggregate",
         "tableId": query.collection,
         "aggregate": {
-            "filters": [
-                item.model_dump(by_alias=True, mode="json")
-                for item in query.filters
-            ],
+            "filters": [item.model_dump(by_alias=True, mode="json") for item in query.filters],
             "groupBy": list(query.dimensions),
             "metrics": [
                 {
-                    "function": "count"
-                    if item.op == "countDistinct"
-                    else item.op,
+                    "function": "count" if item.op == "countDistinct" else item.op,
                     "field": item.field or "",
                     "alias": item.key,
                 }
@@ -821,15 +777,11 @@ def merge_global_filter(
         allowed = getattr(variable, "allowed_fields", [])
         if allowed and field not in allowed:
             continue
-        merged.append(
-            {"field": field, "operator": "eq", "value": value, "logic": "AND"}
-        )
+        merged.append({"field": field, "operator": "eq", "value": value, "logic": "AND"})
     return merged
 
 
-def resolve_selection_targets(
-    selection: PanelSelection, panels: list[PanelEntry]
-) -> list[str]:
+def resolve_selection_targets(selection: PanelSelection, panels: list[PanelEntry]) -> list[str]:
     known = {panel.id for panel in panels}
     return [
         panel_id
@@ -845,9 +797,7 @@ def normalize_panel_type(
     return panel_type, _freeze(options)
 
 
-def parse_panel_type(
-    panel_type: str, options: dict[str, Any]
-) -> tuple[PanelType, dict[str, Any]]:
+def parse_panel_type(panel_type: str, options: dict[str, Any]) -> tuple[PanelType, dict[str, Any]]:
     """Parse a panel type, falling back safely for unknown renderers."""
     known = {entry.type for entry in BUILT_IN_PANEL_MANIFEST}
     return (
@@ -885,9 +835,7 @@ def _version(row: Mapping[str, Any]) -> ContentVersionEntry:
     )
 
 
-def _dashboard(
-    row: Mapping[str, Any], panel_rows: list[dict[str, Any]]
-) -> DashboardEntry:
+def _dashboard(row: Mapping[str, Any], panel_rows: list[dict[str, Any]]) -> DashboardEntry:
     dashboard_id = _text(row.get("id"))
     panels = [
         _panel(item, dashboard_id)
@@ -920,9 +868,7 @@ def _panel(row: Mapping[str, Any], dashboard_id: str) -> PanelEntry:
         show_header=row.get("showHeader") is not False,
         type=panel_type if panel_type in known else "custom",
         position=PanelPosition.model_validate(
-            position
-            if isinstance(position, dict)
-            else {"x": 0, "y": 0, "width": 4, "height": 4}
+            position if isinstance(position, dict) else {"x": 0, "y": 0, "width": 4, "height": 4}
         ),
         options=dict(options) if isinstance(options, dict) else {},
         query=dict(query) if isinstance(query, dict) else {},
@@ -961,9 +907,7 @@ def _optional_text(value: Any) -> str | None:
 
 
 def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, list) or not all(
-        isinstance(item, str) and item for item in value
-    ):
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         return []
     return list(value)
 

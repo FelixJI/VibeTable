@@ -26,10 +26,7 @@ def source_files() -> list[Path]:
         relative = path.relative_to(SIDECAR)
         if any(part.startswith(".") for part in relative.parts):
             continue
-        if any(
-            part in {"vendor", "node_modules", "build", "dist"}
-            for part in relative.parts
-        ):
+        if any(part in {"vendor", "node_modules", "build", "dist"} for part in relative.parts):
             continue
         files.append(path)
     return sorted(files)

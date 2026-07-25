@@ -61,9 +61,7 @@ class _ProductClient:
             "deleted": True,
         }
 
-    async def commit_dashboard_metadata(
-        self, request: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def commit_dashboard_metadata(self, request: dict[str, Any]) -> dict[str, Any]:
         self.dashboard_commits.append(request)
         return {"status": "applied"}
 

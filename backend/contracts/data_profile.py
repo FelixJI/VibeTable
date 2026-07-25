@@ -270,11 +270,7 @@ def collection_profile_from_definition(
                     RelationProfile(
                         relation_id=field_id,
                         field=name,
-                        kind=(
-                            "m2m"
-                            if relation.get("cardinality") == "many"
-                            else "m2o"
-                        ),
+                        kind=("m2m" if relation.get("cardinality") == "many" else "m2o"),
                         related_collection=target,
                         nullable=nullable,
                         on_delete=delete_policy,

@@ -255,7 +255,10 @@ def _validate_envelope(payload: Mapping[str, Any], event_id: str, topic: str) ->
         required_text = ("schemaRevision", "dataRevision", "tableId")
         record_ids = payload.get("recordIds")
         if (
-            any(not isinstance(payload.get(name), str) or not payload[name] for name in required_text)
+            any(
+                not isinstance(payload.get(name), str) or not payload[name]
+                for name in required_text
+            )
             or not isinstance(record_ids, list)
             or not all(isinstance(value, str) and value for value in record_ids)
             or payload.get("operation") not in _OPERATIONS

@@ -122,16 +122,22 @@ async def test_uninstall_retains_or_removes_private_settings_explicitly() -> Non
 
         assert result.uninstalled
         assert result.private_settings_retained is (not cleanup)
-        assert store.get_installation(
-            "local:default",
-            "com.example.summary",
-        ) is None
+        assert (
+            store.get_installation(
+                "local:default",
+                "com.example.summary",
+            )
+            is None
+        )
         expected = None if cleanup else setting
-        assert store.get_private_setting(
-            "local:default",
-            "com.example.summary",
-            "columns",
-        ) == expected
+        assert (
+            store.get_private_setting(
+                "local:default",
+                "com.example.summary",
+                "columns",
+            )
+            == expected
+        )
         assert [
             event.event_type
             for event in store.list_audit(

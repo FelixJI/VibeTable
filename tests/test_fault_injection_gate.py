@@ -94,12 +94,7 @@ def test_product_gate_requires_exact_passed_scenario_report(
         _command: list[str],
         _cwd: Path,
     ) -> tuple[subprocess.CompletedProcess[str], float]:
-        report = (
-            tmp_path
-            / "real-product"
-            / "run"
-            / "product-e2e-report.json"
-        )
+        report = tmp_path / "real-product" / "run" / "product-e2e-report.json"
         report.parent.mkdir(parents=True)
         report.write_text(
             json.dumps(

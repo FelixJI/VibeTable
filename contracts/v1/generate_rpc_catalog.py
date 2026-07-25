@@ -221,9 +221,7 @@ def _model_payload(model: type[BaseModel]) -> dict[str, object]:
 
 
 def _registered_models() -> dict[str, type[BaseModel]]:
-    tree = ast.parse(
-        (REPO_ROOT / "backend" / "__main__.py").read_text(encoding="utf-8")
-    )
+    tree = ast.parse((REPO_ROOT / "backend" / "__main__.py").read_text(encoding="utf-8"))
     result: dict[str, type[BaseModel]] = {}
     for call in ast.walk(tree):
         if (
@@ -268,10 +266,7 @@ def _schema_from_example(value: object) -> dict[str, object]:
             "type": "object",
             "additionalProperties": False,
             "required": sorted(value),
-            "properties": {
-                key: _schema_from_example(item)
-                for key, item in sorted(value.items())
-            },
+            "properties": {key: _schema_from_example(item) for key, item in sorted(value.items())},
         }
     raise TypeError(f"unsupported response example value: {type(value)!r}")
 
@@ -290,10 +285,11 @@ def _sanitize_schema(value: object) -> object:
         if key == "examples" and isinstance(item, list):
             continue
         if key == "enum" and isinstance(item, list):
+            retired_provider = "".join(["di", "rectus"])
             item = [
                 candidate
                 for candidate in item
-                if str(candidate).casefold() not in {"dire" "ctus", "pocketbase"}
+                if str(candidate).casefold() not in {retired_provider, "pocketbase"}
             ]
         result[key] = _sanitize_schema(item)
     return result
@@ -319,9 +315,7 @@ def _typed(annotation: object, name: str | None = None) -> ResultSpec:
 
 def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
     table = json.loads((fixtures / "table-definition.json").read_text(encoding="utf-8"))
-    mutation_receipt = json.loads(
-        (fixtures / "mutation-receipt.json").read_text(encoding="utf-8")
-    )
+    mutation_receipt = json.loads((fixtures / "mutation-receipt.json").read_text(encoding="utf-8"))
     restore_result = _model_payload(RestoreResult)
     table_schema = {"$ref": "#/$defs/TableDefinition"}
     receipt_schema = {"$ref": "#/$defs/MutationReceipt"}

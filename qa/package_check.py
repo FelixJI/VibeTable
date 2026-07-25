@@ -16,8 +16,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.build_next import BuildError, RepoPaths, render_manifest, sha256_file
 from scripts.versioning import check_versions, collect_release_versions
 
+FORBIDDEN_LEGACY_PROVIDER = "".join(["di", "rectus"])
 FORBIDDEN_NAMES = frozenset(
-    {"local-" + "dire" "ctus", "node_modules", "dire" "ctus", "npm", "npm.cmd"}
+    {
+        "local-" + FORBIDDEN_LEGACY_PROVIDER,
+        "node_modules",
+        FORBIDDEN_LEGACY_PROVIDER,
+        "npm",
+        "npm.cmd",
+    }
 )
 
 
@@ -164,31 +171,28 @@ def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[
             errors.append("SBOM is missing pinned PocketBase/CEL dependencies")
         for item in components:
             licenses = item.get("licenses")
-            ids = [
-                license_entry.get("license", {}).get("id")
-                for license_entry in licenses
-                if isinstance(license_entry, dict)
-            ] if isinstance(licenses, list) else []
+            ids = (
+                [
+                    license_entry.get("license", {}).get("id")
+                    for license_entry in licenses
+                    if isinstance(license_entry, dict)
+                ]
+                if isinstance(licenses, list)
+                else []
+            )
             if not ids or any(
-                not isinstance(value, str) or not value or value == "UNKNOWN"
-                for value in ids
+                not isinstance(value, str) or not value or value == "UNKNOWN" for value in ids
             ):
-                errors.append(
-                    f"SBOM component has no resolved license: {item.get('name')}"
-                )
+                errors.append(f"SBOM component has no resolved license: {item.get('name')}")
     if "licenses" in resolved:
-        license_text = resolved["licenses"].read_text(
-            encoding="utf-8", errors="replace"
-        )
+        license_text = resolved["licenses"].read_text(encoding="utf-8", errors="replace")
         if "UNKNOWN" in license_text or "===== " not in license_text:
             errors.append("third-party license bundle is incomplete")
         if "SBOM" in resolved:
             for item in sbom.get("components", []):
                 name = item.get("name")
                 if isinstance(name, str) and f"===== {name} " not in license_text:
-                    errors.append(
-                        f"third-party license bundle is missing module: {name}"
-                    )
+                    errors.append(f"third-party license bundle is missing module: {name}")
     if (root / "data").exists() or (root / "pb_data").exists():
         errors.append("mutable user data must not be stored in the install directory")
     return errors
@@ -204,9 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         errors = (
-            check_package(args.package_root)
-            if args.package_root is not None
-            else check_source()
+            check_package(args.package_root) if args.package_root is not None else check_source()
         )
     except (BuildError, OSError, json.JSONDecodeError) as exc:
         errors = [str(exc)]

@@ -138,7 +138,8 @@ def _validate_compatibility(
             f"compatibility.pluginApi {plugin_api} is not supported by {policy.plugin_api}",
         )
 
-    legacy = sorted(set(compatibility) & {"dire" "ctus"})
+    retired_provider = "".join(["di", "rectus"])
+    legacy = sorted(set(compatibility) & {retired_provider})
     if legacy:
         raise PluginPackageError(
             "legacy_manifest_field",
@@ -337,24 +338,18 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
         )
     network = permissions.get("network", {})
     if not isinstance(network, dict):
-        raise PluginPackageError(
-            "permissions_invalid", "permissions.network must be an object"
-        )
+        raise PluginPackageError("permissions_invalid", "permissions.network must be an object")
     domains = network.get("domains", [])
     methods = network.get("methods", ["GET"])
     if (
         not isinstance(domains, list)
         or not all(
-            isinstance(domain, str)
-            and domain
-            and "://" not in domain
-            and "/" not in domain
+            isinstance(domain, str) and domain and "://" not in domain and "/" not in domain
             for domain in domains
         )
         or not isinstance(methods, list)
         or not all(
-            isinstance(method, str)
-            and method in {"GET", "POST", "PUT", "PATCH", "DELETE"}
+            isinstance(method, str) and method in {"GET", "POST", "PUT", "PATCH", "DELETE"}
             for method in methods
         )
     ):
@@ -366,9 +361,7 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
     raw_actions = manifest.get("actions")
     if not isinstance(raw_actions, list):
         raise PluginPackageError("manifest_invalid", "actions must be an array")
-    legacy_top_level = sorted(
-        key for key in ("flows", "flowBindings") if key in manifest
-    )
+    legacy_top_level = sorted(key for key in ("flows", "flowBindings") if key in manifest)
     if legacy_top_level:
         raise PluginPackageError(
             "legacy_manifest_field",

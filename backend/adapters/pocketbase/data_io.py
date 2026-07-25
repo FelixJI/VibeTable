@@ -108,9 +108,7 @@ class PocketBasePasteReadPort:
         current = collection_profile_from_definition(definition)
         if current.capability_hash != profile.capability_hash:
             raise PasteError("schema changed", code="schema_mismatch")
-        allowed = set(
-            current.create_fields if operation == "create" else current.update_fields
-        )
+        allowed = set(current.create_fields if operation == "create" else current.update_fields)
         denied = fields - allowed
         if denied:
             raise PasteError(

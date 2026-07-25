@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -214,11 +215,7 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
             {"downloadCapability": "opaque", "contractVersion": "1.0"},
             {"status": "applied"},
             {"items": [{"tableId": "customers", "recordId": "c-1", "label": "Ada"}], "total": 1},
-            {
-                "current": [
-                    {"tableId": "customers", "recordId": "c-1", "label": "Ada"}
-                ]
-            },
+            {"current": [{"tableId": "customers", "recordId": "c-1", "label": "Ada"}]},
         ]
     )
 
@@ -232,20 +229,14 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
     )
     assert queried["rows"] == [{"id": "row-1"}]
     assert queried["snapshot"] == {"digest": "snapshot"}
+    assert (await service.preview_mutation(ProductParams.model_validate({"operations": []})))[
+        "canApply"
+    ] is True
+    assert (await service.apply_mutation(ProductParams.model_validate({"operations": []})))[
+        "status"
+    ] == "applied"
     assert (
-        await service.preview_mutation(
-            ProductParams.model_validate({"operations": []})
-        )
-    )["canApply"] is True
-    assert (
-        await service.apply_mutation(
-            ProductParams.model_validate({"operations": []})
-        )
-    )["status"] == "applied"
-    assert (
-        await service.validate_formula(
-            ProductParams.model_validate({"source": "price * quantity"})
-        )
+        await service.validate_formula(ProductParams.model_validate({"source": "price * quantity"}))
     )["valid"] is True
     await service.create_file_token(
         ProductParams.model_validate(
@@ -307,9 +298,7 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
 async def test_route_validation_rejects_bad_rows_attachments_files_and_history() -> None:
     service, transport = service_with([])
     with pytest.raises(ValueError, match="rowIds"):
-        await service.read_rows(
-            ProductParams.model_validate({"tableId": "orders", "rowIds": [""]})
-        )
+        await service.read_rows(ProductParams.model_validate({"tableId": "orders", "rowIds": [""]}))
     with pytest.raises(ValueError, match="does not accept"):
         await service.list_tables(ProductParams.model_validate({"unexpected": 1}))
     with pytest.raises(ValueError, match="variant must be a string"):
@@ -373,9 +362,7 @@ async def test_route_validation_rejects_bad_rows_attachments_files_and_history()
         )
     with pytest.raises(ValueError, match="collection"):
         await service.search_relation_targets(
-            ProductParams.model_validate(
-                {"relationId": "orders.customer", "collection": ""}
-            )
+            ProductParams.model_validate({"relationId": "orders.customer", "collection": ""})
         )
     assert transport.requests == []
 
@@ -440,9 +427,7 @@ async def test_lookup_create_update_delete_lifecycle_uses_normalized_schema() ->
     )
     assert created["definition"]["lookupId"] == "orders.customer_name"
 
-    updated_definition = lookup_renderer(
-        revision=2, aggregation="distinct_values"
-    )
+    updated_definition = lookup_renderer(revision=2, aggregation="distinct_values")
     updated = await service.update_lookup(
         ProductParams.model_validate(
             {
@@ -472,9 +457,10 @@ async def test_lookup_create_update_delete_lifecycle_uses_normalized_schema() ->
     ]
     assert len(apply_requests) == 3
     assert apply_requests[0]["json_body"]["definition"]["fields"][-1]["kind"] == "lookup"
-    assert apply_requests[1]["json_body"]["definition"]["fields"][-1]["lookup"][
-        "aggregate"
-    ] == "distinct"
+    assert (
+        apply_requests[1]["json_body"]["definition"]["fields"][-1]["lookup"]["aggregate"]
+        == "distinct"
+    )
 
 
 @pytest.mark.asyncio
@@ -576,9 +562,7 @@ async def test_lookup_normalization_supports_junction_and_terminal_m2a_sources()
     )
     customers = table_schema("customers", [scalar_field()])
     vendors = table_schema("vendors", [scalar_field()])
-    service, transport = service_with(
-        [customers, junction_schema, customers, vendors]
-    )
+    service, transport = service_with([customers, junction_schema, customers, vendors])
 
     junction = await service._normalized_lookup_field(
         {
@@ -615,9 +599,7 @@ async def test_lookup_normalization_supports_junction_and_terminal_m2a_sources()
         "customers": "name",
         "vendors": "name",
     }
-    assert polymorphic["constraints"] == [
-        {"kind": "precisionScale", "precision": 38, "scale": 4}
-    ]
+    assert polymorphic["constraints"] == [{"kind": "precisionScale", "precision": 38, "scale": 4}]
     assert transport.responses == []
 
 
@@ -669,9 +651,7 @@ async def test_single_relation_update_translates_current_and_desired_targets() -
     assert mutation["adds"] == [
         {"tableId": "customers", "recordId": "c-new", "label": "New customer"}
     ]
-    assert mutation["removes"] == [
-        {"tableId": "customers", "recordId": "c-old", "label": "c-old"}
-    ]
+    assert mutation["removes"] == [{"tableId": "customers", "recordId": "c-old", "label": "c-old"}]
     assert mutation["actor"]["id"] == "local-user"
     assert transport.responses == []
 
@@ -742,15 +722,11 @@ async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths
             },
         ]
     )
-    assert (
-        await service.get_table_schema(
-            ProductParams.model_validate({"tableId": "orders"})
-        )
-    )["tableId"] == "orders"
+    assert (await service.get_table_schema(ProductParams.model_validate({"tableId": "orders"})))[
+        "tableId"
+    ] == "orders"
     await service.validate_snapshot(
-        ProductParams.model_validate(
-            {"snapshot": {"digest": "x"}, "currentQuery": {"limit": 10}}
-        )
+        ProductParams.model_validate({"snapshot": {"digest": "x"}, "currentQuery": {"limit": 10}})
     )
     assert transport.requests[1]["json_body"]["currentQuery"] == {"limit": 10}
 
@@ -772,7 +748,7 @@ async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths
                 }
             )
         )
-    with pytest.raises(ValueError, match="query.groups"):
+    with pytest.raises(ValueError, match=r"query\.groups"):
         await service.query_lookups(
             ProductParams.model_validate(
                 {
@@ -816,25 +792,25 @@ def test_lookup_helpers_validate_grouping_rendering_and_precision() -> None:
         _group_lookup_rows([], [{"fieldRef": "kind", "direction": "sideways"}])
 
     assert _precision_scale([]) == (None, None)
-    assert _precision_scale(
-        [{"kind": "precisionScale", "precision": 18, "scale": 2}]
-    ) == (18, 2)
+    assert _precision_scale([{"kind": "precisionScale", "precision": 18, "scale": 2}]) == (18, 2)
     with pytest.raises(ValueError, match="field constraints"):
         _precision_scale(None)
     with pytest.raises(ValueError, match="precision constraints"):
-        _precision_scale(
-            [{"kind": "precisionScale", "precision": True, "scale": 2}]
-        )
+        _precision_scale([{"kind": "precisionScale", "precision": True, "scale": 2}])
 
     descriptor = lookup_descriptor()
     assert _renderer_lookup(descriptor)["aggregation"] == "single"
-    for invalid in (
-        {**descriptor, "aggregate": "median"},
-        {**descriptor, "outputStorage": "bytes"},
-        {**descriptor, "path": []},
-        {**descriptor, "path": ["bad"]},
-        {**descriptor, "junctionFieldId": ""},
-        {**descriptor, "targetFieldIds": {"customers": ""}},
-    ):
-        with pytest.raises(ValueError):
+    cases = (
+        ({**descriptor, "aggregate": "median"}, "invalid Lookup aggregate"),
+        ({**descriptor, "outputStorage": "bytes"}, "PocketBase returned an unknown data type"),
+        ({**descriptor, "path": []}, "invalid Lookup path"),
+        ({**descriptor, "path": ["bad"]}, "invalid Lookup path"),
+        ({**descriptor, "junctionFieldId": ""}, "invalid junction Lookup field"),
+        (
+            {**descriptor, "targetFieldIds": {"customers": ""}},
+            "invalid m2a Lookup mappings",
+        ),
+    )
+    for invalid, expected in cases:
+        with pytest.raises(ValueError, match=re.escape(expected)):
             _renderer_lookup(invalid)

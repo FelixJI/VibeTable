@@ -58,9 +58,7 @@ def test_compile_aggregate_query_emits_product_metrics() -> None:
         DashboardAggregateQuery(
             collection="orders",
             dimensions=["region"],
-            measures=[
-                DashboardMeasure(key="total", op="sum", field="amount")
-            ],
+            measures=[DashboardMeasure(key="total", op="sum", field="amount")],
         ),
         panel_type="bar",
     )
@@ -71,9 +69,7 @@ def test_compile_aggregate_query_emits_product_metrics() -> None:
         "aggregate": {
             "filters": [],
             "groupBy": ["region"],
-            "metrics": [
-                {"function": "sum", "field": "amount", "alias": "total"}
-            ],
+            "metrics": [{"function": "sum", "field": "amount", "alias": "total"}],
             "limit": 100,
         },
     }

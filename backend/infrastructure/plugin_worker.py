@@ -379,10 +379,7 @@ class NodePluginWorkerAdapter:
                     by_alias=True, mode="json"
                 ),
             )
-            items = [
-                {field: row.get(field) for field in fields}
-                for row in page.rows
-            ]
+            items = [{field: row.get(field) for field in fields} for row in page.rows]
         value = {
             "items": items,
             "nextCursor": str(offset + len(items)) if len(items) == page_size else None,
