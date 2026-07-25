@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { createHostBridge } from "@/bridge/hostBridge";
 import type { PluginSnapshot } from "@/contracts";
@@ -26,35 +26,22 @@ const blockedPlugin: PluginSnapshot = {
       actionId: "normalize",
       displayName: { "zh-CN": "规范化" },
       description: {},
-      mode: "flow",
+      mode: "local",
       risk: "write",
       invocation: "manual",
       placements: ["table.toolbar"],
       requires: {},
-      entryFlow: "clean",
-      workerEntry: null,
+      workerEntry: "dist/worker.js",
       formSchema: null,
       inputSchema: null,
       outputSchema: null,
     }],
-    flows: [],
     ui: {},
   },
-  flowRequirements: [{
-    logicalFlowId: "clean",
-    ownership: "external",
-    trigger: "manual",
-    risk: "write",
-    contractVersion: "1",
-    requiresOperations: [],
-    inputSchema: {},
-    outputSchema: {},
-    definition: null,
-  }],
   schemas: {},
   status: "disabled",
-  disabledReason: "外部 Flow 未绑定；契约版本不兼容",
-  blockingReasons: ["外部 Flow 未绑定", "契约版本不兼容"],
+  disabledReason: "本地 worker 不可用；契约版本不兼容",
+  blockingReasons: ["本地 worker 不可用", "契约版本不兼容"],
   revision: 7,
 };
 
@@ -65,12 +52,11 @@ describe("PluginCenterView", () => {
   });
   afterEach(() => setHostBridgeForTesting(null));
 
-  it("projects canonical manifest blockers, permissions and external Flow ownership", () => {
+  it("projects canonical manifest blockers and permissions", () => {
     setHostBridgeForTesting(createHostBridge({ webview: { postMessage: () => undefined, addEventListener: () => undefined, removeEventListener: () => undefined } }));
     const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
-    expect(wrapper.text()).toContain("外部 Flow 未绑定");
+    expect(wrapper.text()).toContain("本地 worker 不可用");
     expect(wrapper.text()).toContain("契约版本不兼容");
-    expect(wrapper.text()).toContain("外部 Flow 由用户维护");
     expect(wrapper.text()).toContain("data:customers:write");
     expect(wrapper.text()).toContain("2 个阻断原因");
   });
@@ -124,7 +110,6 @@ describe("PluginCenterView", () => {
                 sourceLocation: "host-managed",
                 packageHash: "sha256:new",
                 manifest: { ...blockedPlugin.manifest, version: "1.3.0" },
-                flowRequirements: blockedPlugin.flowRequirements,
                 schemas: {},
               }
             : { ...blockedPlugin, version: "1.3.0", packageHash: "sha256:new", revision: 8 };
@@ -159,6 +144,209 @@ describe("PluginCenterView", () => {
       type: "plugin.lifecycle.upgrade",
       payload: { pluginId: "com.acme.clean", planId: "plan-upgrade" },
     });
+  });
+
+  it("enables a new plugin after the user approves its permissions and install", async () => {
+    const posted: unknown[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const newPlugin: PluginSnapshot = {
+      ...blockedPlugin,
+      pluginId: "com.acme.approved",
+      manifest: { ...blockedPlugin.manifest, pluginId: "com.acme.approved" },
+      status: "disabled",
+      disabledReason: "disabled_by_user",
+      blockingReasons: [],
+      revision: 1,
+    };
+    const plan = {
+      planId: "plan-approved",
+      projectKey: "local:default",
+      projectRevision: "0",
+      sourceType: "local-folder" as const,
+      sourceLocation: "host-managed",
+      packageHash: "sha256:approved",
+      manifest: newPlugin.manifest,
+      schemas: {},
+    };
+    const bridge = createHostBridge({
+      generateRequestId: () => `install-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          posted.push(message);
+          const request = message as { type: string; requestId: string };
+          const payload = request.type === "plugin.install.inspect"
+            ? plan
+            : request.type === "plugin.install.commit"
+              ? newPlugin
+              : { ...newPlugin, status: "enabled", disabledReason: null, revision: 2 };
+          queueMicrotask(() => listener?.({ data: {
+            type: request.type,
+            requestId: request.requestId,
+            payload,
+          } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+
+    await wrapper.get('[data-testid="plugin-install-folder"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-testid="plugin-install-commit"]').trigger("click");
+    await flushPromises();
+
+    expect(posted).toMatchObject([
+      {
+        type: "plugin.install.inspect",
+        payload: { sourceLocation: "host-picker:folder" },
+      },
+      {
+        type: "plugin.install.commit",
+        payload: { planId: "plan-approved" },
+      },
+      {
+        type: "plugin.lifecycle.setEnabled",
+        payload: {
+          projectKey: "local:default",
+          pluginId: "com.acme.approved",
+          enabled: true,
+        },
+      },
+    ]);
+    expect(
+      usePluginStore().plugins.find((item) => item.pluginId === "com.acme.approved")?.status,
+    ).toBe("enabled");
+  });
+
+  it("clears a consumed install plan when the convenience enable fails", async () => {
+    const posted: unknown[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const installed: PluginSnapshot = {
+      ...blockedPlugin,
+      pluginId: "com.acme.enable-fails",
+      manifest: {
+        ...blockedPlugin.manifest,
+        pluginId: "com.acme.enable-fails",
+      },
+      status: "disabled",
+      disabledReason: "disabled_by_user",
+      blockingReasons: [],
+      revision: 1,
+    };
+    const plan = {
+      planId: "plan-enable-fails",
+      projectKey: "local:default",
+      projectRevision: "0",
+      sourceType: "package" as const,
+      sourceLocation: "host-managed",
+      packageHash: "sha256:enable-fails",
+      manifest: installed.manifest,
+      schemas: {},
+    };
+    const bridge = createHostBridge({
+      generateRequestId: () => `enable-fails-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          posted.push(message);
+          const request = message as { type: string; requestId: string };
+          queueMicrotask(() => listener?.({ data: request.type === "plugin.install.commit"
+            ? {
+                type: request.type,
+                requestId: request.requestId,
+                payload: installed,
+              }
+            : {
+                type: "operation.failed",
+                requestId: request.requestId,
+                payload: { code: "PLUGIN_ENABLE_FAILED", message: "enable failed" },
+              } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    usePluginStore().setInstallPlan(plan);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+
+    await wrapper.get('[data-testid="plugin-install-commit"]').trigger("click");
+    await flushPromises();
+
+    expect(posted).toMatchObject([
+      { type: "plugin.install.commit", payload: { planId: plan.planId } },
+      {
+        type: "plugin.lifecycle.setEnabled",
+        payload: { pluginId: installed.pluginId, enabled: true },
+      },
+    ]);
+    expect(usePluginStore().installPlan).toBeNull();
+    expect(wrapper.find('[data-testid="plugin-install-plan"]').exists()).toBe(false);
+    expect(
+      usePluginStore().plugins.find((item) => item.pluginId === installed.pluginId),
+    ).toMatchObject({ status: "disabled", disabledReason: "disabled_by_user" });
+  });
+
+  it("keeps a newly installed plugin disabled when the host reports blockers", async () => {
+    const posted: unknown[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const plan = {
+      planId: "plan-blocked",
+      projectKey: "local:default",
+      projectRevision: "0",
+      sourceType: "package" as const,
+      sourceLocation: "host-managed",
+      packageHash: "sha256:blocked",
+      manifest: { ...blockedPlugin.manifest, pluginId: "com.acme.blocked-install" },
+      schemas: {},
+    };
+    const installed = {
+      ...blockedPlugin,
+      pluginId: "com.acme.blocked-install",
+      manifest: plan.manifest,
+      revision: 1,
+    };
+    const bridge = createHostBridge({
+      generateRequestId: () => `blocked-install-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          posted.push(message);
+          const request = message as { type: string; requestId: string };
+          queueMicrotask(() => listener?.({ data: {
+            type: request.type,
+            requestId: request.requestId,
+            payload: request.type === "plugin.install.inspect" ? plan : installed,
+          } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+
+    await wrapper.get('[data-testid="plugin-install-package"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-testid="plugin-install-commit"]').trigger("click");
+    await flushPromises();
+
+    expect(posted).toHaveLength(2);
+    expect(posted).toMatchObject([
+      { type: "plugin.install.inspect" },
+      { type: "plugin.install.commit" },
+    ]);
+    expect(
+      usePluginStore().plugins.find(
+        (item) => item.pluginId === "com.acme.blocked-install",
+      )?.status,
+    ).toBe("disabled");
   });
 
   it("shows a reload prompt when the retained local development source changes", () => {

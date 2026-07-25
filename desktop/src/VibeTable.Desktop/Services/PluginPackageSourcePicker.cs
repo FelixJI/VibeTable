@@ -122,6 +122,50 @@ public sealed class WindowsPluginPackageSourcePicker : IPluginPackageSourcePicke
     }
 }
 
+/// <summary>
+/// Fixed file-protocol picker used only by the explicit desktop test mode.
+/// It reads one path from <c>plugin-source.txt</c>; it does not execute or
+/// interpret any control-file content.
+/// </summary>
+public sealed class TestModePluginPackageSourcePicker : IPluginPackageSourcePicker
+{
+    private readonly string _controlsDirectory;
+
+    public TestModePluginPackageSourcePicker(string controlsDirectory)
+    {
+        _controlsDirectory = Path.GetFullPath(
+            controlsDirectory
+            ?? throw new ArgumentNullException(nameof(controlsDirectory)));
+    }
+
+    public Task<string?> PickAsync(
+        PluginPackagePickKind kind,
+        CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        string control = Path.Combine(_controlsDirectory, "plugin-source.txt");
+        if (!File.Exists(control))
+        {
+            throw new InvalidOperationException(
+                "Missing test-mode control file: plugin-source.txt");
+        }
+        string selected = Path.GetFullPath(File.ReadAllText(control).Trim());
+        bool exists = kind switch
+        {
+            PluginPackagePickKind.Folder => Directory.Exists(selected),
+            PluginPackagePickKind.Package => File.Exists(selected),
+            _ => Directory.Exists(selected) || File.Exists(selected),
+        };
+        if (!exists)
+        {
+            throw new FileNotFoundException(
+                "The test-mode plugin source does not exist.",
+                selected);
+        }
+        return Task.FromResult<string?>(selected);
+    }
+}
+
 /// <summary>Native file boundary used only for an active, declared plugin capability.</summary>
 public sealed class WindowsPluginFilePicker : IPluginFilePicker
 {

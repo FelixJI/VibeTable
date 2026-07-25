@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import {
   NButton,
+  NAlert,
   NDynamicTags,
   NIcon,
   NInput,
-  NPopconfirm,
+  NModal,
   NRadioButton,
   NRadioGroup,
   NSelect,
@@ -15,6 +16,7 @@ import {
 } from "naive-ui";
 import {
   Braces,
+  ArchiveRestore,
   CalendarDays,
   Check,
   ChevronLeft,
@@ -30,8 +32,6 @@ import {
   RefreshCw,
   Search,
   Tags,
-  Trash2,
-  Upload,
   X,
 } from "lucide-vue-next";
 import brandIconUrl from "@/assets/brand/vibetable.png";
@@ -39,7 +39,6 @@ import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import { QUOTE_STYLES_BY_SOURCE, useUiStore } from "@/stores/uiStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useIdentifierMappingStore } from "@/stores/identifierMappingStore";
-import type { IdentifierMappingImportItem } from "@/contracts";
 import type {
   DailyQuoteSource,
   DailyQuoteStyle,
@@ -51,11 +50,14 @@ import type { Locale } from "@/i18n";
 import { t } from "@/i18n";
 import WorkCalendarMonth from "@/components/calendar/WorkCalendarMonth.vue";
 import MonthNavigator from "@/components/calendar/MonthNavigator.vue";
+import PresetVersionPanel from "@/components/settings/PresetVersionPanel.vue";
 import { formatDateKey, formatMonthKey, parseDateKey, shiftMonthKey } from "@/calendar/workCalendar";
 import { useWorkCalendarStore } from "@/stores/workCalendarStore";
 import type { WorkCalendarOverrideKind } from "@/calendar/workCalendar";
+import type { BackupEntry } from "@/contracts/backupContracts";
+import { useBackupService } from "@/services/backupService";
 
-type Section = "general" | "calendar" | "mapping" | "source" | "interaction" | "about";
+type Section = "general" | "calendar" | "mapping" | "source" | "backup" | "interaction" | "about";
 
 const ui = useUiStore();
 const workspace = useWorkspaceStore();
@@ -68,18 +70,37 @@ const emit = defineEmits<{
   openAdmin: [];
   loadMappings: [];
   saveMappingAliases: [mappingId: string, aliases: readonly string[]];
-  importMappings: [mappings: readonly IdentifierMappingImportItem[]];
   reconcileMappings: [];
-  deleteMapping: [mappingId: string];
-  purgeMappings: [];
 }>();
 const mappingQuery = ref("");
 const editingMappingId = ref<string | null>(null);
 const aliasDraft = ref<string[]>([]);
-const importInput = ref<HTMLInputElement | null>(null);
 const transferMessage = ref<string | null>(null);
 const calendarMonth = ref(formatMonthKey(new Date()));
 const selectedCalendarDate = ref(formatDateKey(new Date()));
+const backupService = useBackupService();
+const backups = ref<readonly BackupEntry[]>([]);
+const backupPhase = ref<"idle" | "loading" | "creating" | "restoring">("idle");
+const backupError = ref<string | null>(null);
+const backupStatus = ref<string | null>(null);
+const restoreTarget = ref<BackupEntry | null>(null);
+const restoreTrigger = ref<HTMLElement | null>(null);
+
+function openRestoreConfirmation(backup: BackupEntry, event: MouseEvent): void {
+  restoreTrigger.value = event.currentTarget instanceof HTMLElement
+    ? event.currentTarget
+    : null;
+  restoreTarget.value = backup;
+}
+
+function closeRestoreConfirmation(): void {
+  restoreTarget.value = null;
+  const trigger = restoreTrigger.value;
+  restoreTrigger.value = null;
+  void nextTick(() => {
+    window.setTimeout(() => trigger?.focus(), 0);
+  });
+}
 
 const filteredMappings = computed(() => {
   const needle = mappingQuery.value.trim().toLocaleLowerCase();
@@ -90,15 +111,75 @@ const filteredMappings = computed(() => {
   );
 });
 
-// Whether ANY row (not just the filtered view) is removable. Purge operates
-// on the whole registry, so it follows the store rather than the filter.
-const hasRemovableMappings = computed(() =>
-  mappings.mappings.some((item) => item.status === "orphaned" || item.status === "deleted"),
-);
-
 watch(current, (section) => {
   if (section === "mapping") emit("loadMappings");
+  if (section === "backup") void loadBackups();
 });
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : t("settings.backup.failed");
+}
+
+async function loadBackups(): Promise<void> {
+  backupPhase.value = "loading";
+  backupError.value = null;
+  try {
+    backups.value = (await backupService.listBackups()).backups;
+  } catch (error) {
+    backupError.value = errorMessage(error);
+  } finally {
+    backupPhase.value = "idle";
+  }
+}
+
+async function createBackup(): Promise<void> {
+  backupPhase.value = "creating";
+  backupError.value = null;
+  backupStatus.value = t("settings.backup.creating");
+  try {
+    const result = await backupService.createBackup();
+    backups.value = [
+      result.backup,
+      ...backups.value.filter((item) => item.name !== result.backup.name),
+    ];
+    backupStatus.value = t("settings.backup.created", { name: result.backup.name });
+  } catch (error) {
+    backupStatus.value = null;
+    backupError.value = errorMessage(error);
+  } finally {
+    backupPhase.value = "idle";
+  }
+}
+
+async function confirmRestore(): Promise<void> {
+  const target = restoreTarget.value;
+  if (!target) return;
+  restoreTarget.value = null;
+  backupPhase.value = "restoring";
+  backupError.value = null;
+  backupStatus.value = t("settings.backup.restoring");
+  try {
+    await backupService.restoreBackup(target.name, true);
+    backupStatus.value = t("settings.backup.restarting");
+  } catch (error) {
+    backupStatus.value = null;
+    backupError.value = errorMessage(error);
+    backupPhase.value = "idle";
+  }
+}
+
+function formatBackupSize(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatBackupDate(value: string): string {
+  return new Intl.DateTimeFormat(ui.locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
 
 function beginAliasEdit(mappingId: string, aliases: readonly string[]): void {
   editingMappingId.value = mappingId;
@@ -144,30 +225,12 @@ function exportMappings(): void {
   transferMessage.value = t("settings.mapping.exported");
 }
 
-async function onImportFile(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = "";
-  if (!file) return;
-  if (file.size > 4 * 1024 * 1024) {
-    transferMessage.value = t("settings.mapping.fileTooLarge");
-    return;
-  }
-  try {
-    const parsed = JSON.parse(await file.text()) as { mappings?: unknown };
-    if (!Array.isArray(parsed.mappings)) throw new Error("missing mappings");
-    emit("importMappings", parsed.mappings as readonly IdentifierMappingImportItem[]);
-    transferMessage.value = t("settings.mapping.importing");
-  } catch {
-    transferMessage.value = t("settings.mapping.invalidFile");
-  }
-}
-
 const sections = [
   { key: "general" as const, icon: Palette, label: "settings.general" },
   { key: "calendar" as const, icon: CalendarDays, label: "settings.workCalendar" },
   { key: "mapping" as const, icon: Braces, label: "settings.mapping" },
   { key: "source" as const, icon: Database, label: "settings.source" },
+  { key: "backup" as const, icon: ArchiveRestore, label: "settings.backup" },
   { key: "interaction" as const, icon: SlidersHorizontal, label: "settings.interaction" },
   { key: "about" as const, icon: Info, label: "settings.about" },
 ];
@@ -236,6 +299,7 @@ function setCalendarName(name: string): void {
         :key="section.key"
         type="button"
         :class="{ active: current === section.key }"
+        :aria-current="current === section.key ? 'page' : undefined"
         :data-testid="`settings-nav-${section.key}`"
         @click="current = section.key"
       >
@@ -256,6 +320,7 @@ function setCalendarName(name: string): void {
                 :aria-label="t('settings.language')"
                 :options="localeOptions"
                 class="setting-control"
+                data-testid="language-select"
                 @update:value="ui.setLanguage($event as Locale)"
               />
             </div>
@@ -266,6 +331,7 @@ function setCalendarName(name: string): void {
                 :aria-label="t('settings.theme')"
                 :options="themeOptions"
                 class="setting-control"
+                data-testid="theme-select"
                 @update:value="ui.setThemeMode($event as ThemeMode)"
               />
             </div>
@@ -295,6 +361,13 @@ function setCalendarName(name: string): void {
                 @update:value="ui.setDailyQuoteSource($event as DailyQuoteSource)"
               />
             </div>
+            <p
+              v-if="ui.showDailyQuote && ui.dailyQuoteSource !== 'builtin'"
+              class="setting-network-disclosure"
+              data-testid="quote-network-disclosure"
+            >
+              {{ t("settings.quote.networkDisclosure") }}
+            </p>
             <div class="setting-row setting-row--nested">
               <div><strong>{{ t("settings.quote.style") }}</strong><small>{{ t("settings.quote.style.hint") }}</small></div>
               <NSelect
@@ -395,15 +468,7 @@ function setCalendarName(name: string): void {
                 <template #prefix><NIcon :size="15"><Search /></NIcon></template>
               </NInput>
               <NTooltip><template #trigger><NButton quaternary circle :aria-label="t('settings.mapping.reconcile')" :loading="mappings.phase === 'reconciling'" @click="emit('reconcileMappings')"><template #icon><NIcon><RefreshCw /></NIcon></template></NButton></template>{{ t("settings.mapping.reconcile") }}</NTooltip>
-              <NTooltip><template #trigger><NButton quaternary circle :aria-label="t('settings.mapping.import')" @click="importInput?.click()"><template #icon><NIcon><Upload /></NIcon></template></NButton></template>{{ t("settings.mapping.import") }}</NTooltip>
               <NTooltip><template #trigger><NButton quaternary circle :aria-label="t('settings.mapping.export')" :disabled="!mappings.mappings.length" @click="exportMappings"><template #icon><NIcon><Download /></NIcon></template></NButton></template>{{ t("settings.mapping.export") }}</NTooltip>
-              <NPopconfirm placement="bottom-end" :positive-text="t('settings.mapping.delete')" :negative-text="t('settings.mapping.cancel')" @positive-click="emit('purgeMappings')">
-                <template #trigger>
-                  <NButton quaternary circle :aria-label="t('settings.mapping.purge')" :disabled="!hasRemovableMappings" :loading="mappings.phase === 'purging'"><template #icon><NIcon><Trash2 /></NIcon></template></NButton>
-                </template>
-                {{ t("settings.mapping.purge.confirm") }}
-              </NPopconfirm>
-              <input ref="importInput" class="sr-only" type="file" accept="application/json,.json" @change="onImportFile" />
             </div>
             <p v-if="transferMessage" class="mapping-message">{{ transferMessage }}</p>
             <p v-if="mappings.error" class="mapping-error">{{ mappings.error }}</p>
@@ -413,14 +478,7 @@ function setCalendarName(name: string): void {
               <article v-for="item in filteredMappings" :key="item.id" class="mapping-item">
                 <div class="mapping-kind" :class="`mapping-kind--${item.entityKind}`"><NIcon :size="15"><Tags /></NIcon></div>
                 <div class="mapping-body">
-                  <div class="mapping-title"><strong>{{ item.displayName }}</strong><NTag size="tiny" :bordered="false">{{ item.entityKind === 'collection' ? t('settings.mapping.table') : t('settings.mapping.field') }}</NTag><NTag v-if="item.status !== 'active'" size="tiny" type="warning">{{ item.status }}</NTag>
-                    <NPopconfirm v-if="item.status === 'orphaned' || item.status === 'deleted'" placement="bottom-end" :positive-text="t('settings.mapping.delete')" :negative-text="t('settings.mapping.cancel')" @positive-click="emit('deleteMapping', item.id)">
-                      <template #trigger>
-                        <NButton class="mapping-delete" quaternary circle size="tiny" :aria-label="t('settings.mapping.delete')" :loading="mappings.phase === 'deleting'"><template #icon><NIcon :size="14"><Trash2 /></NIcon></template></NButton>
-                      </template>
-                      {{ t("settings.mapping.delete.confirm") }}
-                    </NPopconfirm>
-                  </div>
+                  <div class="mapping-title"><strong>{{ item.displayName }}</strong><NTag size="tiny" :bordered="false">{{ item.entityKind === 'collection' ? t('settings.mapping.table') : t('settings.mapping.field') }}</NTag><NTag v-if="item.status !== 'active'" size="tiny" type="warning">{{ item.status }}</NTag></div>
                   <button class="physical-key" type="button" @click="copyPhysicalKey(item.physicalName)"><code>{{ item.physicalName }}</code><NIcon :size="13"><Copy /></NIcon></button>
                   <div v-if="editingMappingId === item.id" class="alias-editor">
                     <NDynamicTags v-model:value="aliasDraft" />
@@ -435,7 +493,7 @@ function setCalendarName(name: string): void {
                 </div>
               </article>
             </div>
-            <footer class="mapping-footer"><span>{{ t("settings.mapping.physicalLocked") }}</span><NButton size="small" @click="emit('openAdmin')">{{ t("nav.directus") }}</NButton></footer>
+            <footer class="mapping-footer"><span>{{ t("settings.mapping.physicalLocked") }}</span><NButton size="small" @click="emit('openAdmin')">{{ t("nav.admin") }}</NButton></footer>
           </section>
         </template>
 
@@ -443,13 +501,137 @@ function setCalendarName(name: string): void {
           <header><h1>{{ t("settings.source") }}</h1><p>{{ t("settings.source.description") }}</p></header>
           <section class="setting-card">
             <div class="setting-row setting-row--tall">
-              <div><strong>Directus</strong><small>{{ connectionDetail }}</small></div>
+              <div><strong>{{ t("settings.source.localService") }}</strong><small>{{ connectionDetail }}</small></div>
               <div class="setting-control--pill"><ConnectionPill @reconnect="emit('reconnect')" /></div>
             </div>
             <div class="source-note">
               <NIcon :size="17"><Database /></NIcon>
               <p>{{ t("settings.source.automatic") }}</p>
             </div>
+          </section>
+          <PresetVersionPanel />
+        </template>
+
+        <template v-else-if="current === 'backup'">
+          <header>
+            <h1>{{ t("settings.backup") }}</h1>
+            <p>{{ t("settings.backup.description") }}</p>
+          </header>
+          <section class="backup-workbench">
+            <div class="backup-toolbar">
+              <div>
+                <strong>{{ t("settings.backup.local") }}</strong>
+                <small>{{ t("settings.backup.localHint") }}</small>
+              </div>
+              <div class="backup-actions">
+                <NButton
+                  size="small"
+                  quaternary
+                  :loading="backupPhase === 'loading'"
+                  :disabled="backupPhase !== 'idle'"
+                  data-testid="backup-refresh"
+                  @click="loadBackups"
+                >
+                  {{ t("settings.backup.refresh") }}
+                </NButton>
+                <NButton
+                  size="small"
+                  type="primary"
+                  :loading="backupPhase === 'creating'"
+                  :disabled="backupPhase !== 'idle'"
+                  data-testid="backup-create"
+                  @click="createBackup"
+                >
+                  {{ t("settings.backup.create") }}
+                </NButton>
+              </div>
+            </div>
+
+            <NAlert
+              v-if="backupError"
+              type="error"
+              :title="t('settings.backup.failed')"
+              data-testid="backup-error"
+            >
+              {{ backupError }}
+            </NAlert>
+            <NAlert
+              v-if="backupStatus"
+              :type="backupPhase === 'restoring' ? 'warning' : 'success'"
+              :title="t('settings.backup.status')"
+              data-testid="backup-status"
+            >
+              {{ backupStatus }}
+            </NAlert>
+
+            <div v-if="backupPhase === 'loading'" class="backup-empty">
+              {{ t("settings.backup.loading") }}
+            </div>
+            <div v-else-if="backups.length === 0" class="backup-empty">
+              <strong>{{ t("settings.backup.empty") }}</strong>
+              <small>{{ t("settings.backup.emptyHint") }}</small>
+            </div>
+            <div v-else class="backup-list">
+              <article v-for="backup in backups" :key="backup.name" class="backup-entry">
+                <div class="backup-entry-mark"><ArchiveRestore :size="17" /></div>
+                <div class="backup-entry-copy">
+                  <strong>{{ backup.name }}</strong>
+                  <span>{{ formatBackupDate(backup.modified) }} · {{ formatBackupSize(backup.size) }}</span>
+                  <code :title="backup.sha256">SHA-256 {{ backup.sha256.slice(0, 12) }}…</code>
+                </div>
+                <NButton
+                  size="small"
+                  secondary
+                  type="warning"
+                  :disabled="backupPhase !== 'idle'"
+                  :data-testid="`backup-restore-${backup.name}`"
+                  @click="openRestoreConfirmation(backup, $event)"
+                >
+                  {{ t("settings.backup.restore") }}
+                </NButton>
+              </article>
+            </div>
+
+            <NModal
+              :show="!!restoreTarget"
+              preset="card"
+              :title="t('settings.backup.confirmTitle')"
+              class="backup-confirmation-modal"
+              :auto-focus="true"
+              :trap-focus="true"
+              :close-on-esc="true"
+              :mask-closable="false"
+              aria-modal="true"
+              :aria-label="t('settings.backup.confirmTitle')"
+              data-testid="backup-restore-confirmation"
+              @update:show="show => { if (!show) closeRestoreConfirmation() }"
+            >
+              <div v-if="restoreTarget" class="backup-confirmation">
+                <p>{{ t("settings.backup.confirmMessage", { name: restoreTarget.name }) }}</p>
+                <small>{{ t("settings.backup.confirmSafety") }}</small>
+                <div class="backup-confirmation-actions">
+                  <NButton
+                    size="small"
+                    data-testid="backup-restore-cancel"
+                    @click="closeRestoreConfirmation"
+                  >
+                    {{ t("settings.backup.cancel") }}
+                  </NButton>
+                  <NButton
+                    size="small"
+                    type="error"
+                    data-testid="backup-restore-confirm"
+                    @click="confirmRestore"
+                  >
+                    {{ t("settings.backup.confirm") }}
+                  </NButton>
+                </div>
+              </div>
+            </NModal>
+
+            <footer class="backup-safety-note">
+              {{ t("settings.backup.safety") }}
+            </footer>
           </section>
         </template>
 
@@ -593,7 +775,7 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   background: var(--vt-bg-subtle);
 }
 .mapping-workbench { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
-.mapping-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(4, 32px); gap: 6px; padding: 12px; border-bottom: 1px solid var(--vt-border); }
+.mapping-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(2, 32px); gap: 6px; padding: 12px; border-bottom: 1px solid var(--vt-border); }
 .mapping-list { max-height: 520px; overflow: auto; }
 .mapping-item { display: grid; grid-template-columns: 30px 1fr; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--vt-border); }
 .mapping-kind { display: grid; place-items: center; width: 28px; height: 28px; color: var(--vt-color-primary-500); border-radius: 6px; background: var(--vt-color-primary-50); }
@@ -601,7 +783,6 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .mapping-body { min-width: 0; }
 .mapping-title { display: flex; align-items: center; gap: 7px; }
 .mapping-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
-.mapping-delete { margin-left: auto; color: var(--vt-color-danger-500, #d03050); }
 .physical-key { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; margin: 4px 0 7px; padding: 0; color: var(--vt-fg-muted); border: 0; background: transparent; cursor: pointer; }
 .physical-key code { overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
 .alias-line { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; width: 100%; padding: 0; color: var(--vt-fg-muted); text-align: left; border: 0; background: transparent; cursor: pointer; }
@@ -626,6 +807,90 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .metric { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .source-note { display: flex; gap: 9px; margin: 16px; padding: 12px; color: var(--vt-fg-muted); border-radius: var(--vt-radius-md); background: var(--vt-bg-subtle); }
 .source-note p { margin: 0; }
+.backup-workbench {
+  overflow: hidden;
+  border: 1px solid var(--vt-border);
+  border-radius: var(--vt-radius-lg);
+  background: var(--vt-bg);
+}
+.backup-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--vt-border);
+}
+.backup-toolbar > div:first-child,
+.backup-empty,
+.backup-entry-copy {
+  display: flex;
+  flex-direction: column;
+}
+.backup-toolbar small,
+.backup-entry-copy span,
+.backup-entry-copy code,
+.backup-empty small,
+.backup-confirmation small {
+  color: var(--vt-fg-muted);
+  font-size: var(--vt-font-caption);
+}
+.backup-actions,
+.backup-confirmation-actions {
+  display: flex;
+  gap: 8px;
+}
+.backup-workbench :deep(.n-alert) { margin: 12px 14px 0; }
+.backup-list { border-top: 0; }
+.backup-entry {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  min-height: 72px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--vt-border);
+}
+.backup-entry-mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: var(--vt-color-primary-500);
+  border-radius: var(--vt-radius-md);
+  background: var(--vt-color-primary-50);
+}
+.backup-entry-copy { min-width: 0; gap: 2px; }
+.backup-entry-copy strong,
+.backup-entry-copy code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.backup-entry-copy strong { font-weight: 550; }
+.backup-empty {
+  align-items: center;
+  gap: 4px;
+  padding: 42px 18px;
+  text-align: center;
+}
+.backup-confirmation {
+  display: grid;
+  gap: 14px;
+}
+.backup-confirmation p { margin: 4px 0; }
+.backup-confirmation-actions { flex: none; justify-content: flex-end; }
+.backup-confirmation-modal {
+  width: min(500px, calc(100vw - 32px));
+  border-top: 3px solid var(--vt-color-danger-500);
+}
+.backup-safety-note {
+  padding: 10px 14px;
+  color: var(--vt-fg-muted);
+  font-size: var(--vt-font-caption);
+  border-top: 1px solid var(--vt-border);
+  background: var(--vt-bg-subtle);
+}
 .setting-action {
   display: grid;
   grid-template-columns: 34px 1fr auto;
@@ -663,5 +928,9 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   .setting-row > .setting-control { width: 100%; }
   .calendar-layout { padding: 12px; }
   .mapping-footer { align-items: flex-start; flex-direction: column; }
+  .backup-toolbar,
+  .backup-confirmation { align-items: stretch; flex-direction: column; }
+  .backup-actions,
+  .backup-confirmation-actions { justify-content: flex-end; }
 }
 </style>

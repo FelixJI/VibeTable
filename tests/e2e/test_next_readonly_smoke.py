@@ -3,9 +3,8 @@
 The test launches the built WPF executable and waits for a readiness report
 that can only be written after three production boundaries succeed: the real
 Python backend handshake, real WebView2 navigation to the bundled web build,
-and the renderer-to-host ``app.ready`` bridge message. It deliberately does
-not require an external Directus instance; data integration is covered by the
-backend and contract suites.
+and the renderer-to-host ``app.ready`` bridge message. Data integration is
+covered by the backend and contract suites.
 """
 
 from __future__ import annotations
@@ -24,7 +23,13 @@ from scripts._host_paths import host_bin_exe
 
 ROOT = Path(__file__).resolve().parents[2]
 HOST_PROJECT = ROOT / "desktop" / "src" / "VibeTable.Desktop"
-HOST_EXE = host_bin_exe(ROOT, config="Release")
+DESKTOP_SOURCE = ROOT / "desktop" / "src"
+PACKAGED_HOST = os.environ.get("VIBETABLE_E2E_HOST")
+HOST_EXE = (
+    Path(PACKAGED_HOST).resolve()
+    if PACKAGED_HOST
+    else host_bin_exe(ROOT, config="Release")
+)
 PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
 DOTNET = (
     str(PREFERRED_DOTNET) if PREFERRED_DOTNET.is_file() else (shutil.which("dotnet") or "dotnet")
@@ -33,14 +38,18 @@ READINESS_TIMEOUT_SECONDS = 60.0
 
 
 def _host_is_stale(executable: Path) -> bool:
+    if PACKAGED_HOST:
+        return not executable.is_file()
     if not executable.is_file():
         return True
     built_at = executable.stat().st_mtime
     inputs = [
-        *HOST_PROJECT.rglob("*.cs"),
-        *HOST_PROJECT.rglob("*.xaml"),
-        *HOST_PROJECT.rglob("*.csproj"),
+        path
+        for pattern in ("*.cs", "*.xaml", "*.csproj")
+        for path in DESKTOP_SOURCE.rglob(pattern)
+        if "bin" not in path.parts and "obj" not in path.parts
     ]
+    inputs.append(ROOT / "desktop" / "Directory.Build.props")
     return any(path.stat().st_mtime > built_at for path in inputs)
 
 
@@ -78,11 +87,17 @@ def _read_report(readiness_dir: Path) -> dict[str, object] | None:
 
 
 def _trace(readiness_dir: Path) -> str:
-    path = readiness_dir / "vibetable-trace.log"
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return "<trace unavailable>"
+    sections: list[str] = []
+    for name in ("vibetable-trace.log", "host-stdout.log", "host-stderr.log"):
+        path = readiness_dir / name
+        try:
+            sections.append(
+                f"--- {name} ---\n"
+                + path.read_text(encoding="utf-8", errors="replace")
+            )
+        except OSError:
+            sections.append(f"--- {name} unavailable ---")
+    return "\n".join(sections)
 
 
 @pytest.mark.e2e
@@ -94,52 +109,58 @@ def test_next_shell_reaches_backend_webview_and_renderer_ready(tmp_path: Path) -
     readiness_dir = tmp_path / "readiness"
     readiness_dir.mkdir()
     environment = os.environ.copy()
-    environment.pop("VIBETABLE_DIRECTUS_URL", None)
-
-    proc = subprocess.Popen(
-        [
-            str(host),
-            "--test-mode",
-            # This smoke targets the backend + WebView2 + app.ready bridge only
-            # (see the module docstring: it does not require Directus). A bare
-            # launch in the repo layout would otherwise auto-start a local
-            # Directus and block the backend readiness window. --no-directus-auto
-            # pins the host to the backend-only startup path this test asserts.
-            "--no-directus-auto",
-            "--readiness-dir",
-            str(readiness_dir),
-        ],
-        cwd=host.parent,
-        env=environment,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    # Desktop CI and remote Windows agents may not expose a stable GPU
+    # process. Force WebView2 software rendering for this real renderer smoke.
+    environment.setdefault(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--disable-gpu",
     )
-    report: dict[str, object] | None = None
-    try:
-        deadline = time.monotonic() + READINESS_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            report = _read_report(readiness_dir)
-            if report is not None:
-                break
-            if proc.poll() is not None:
+    environment["VIBETABLE_E2E_WEBVIEW2_USER_DATA_ROOT"] = str(
+        tmp_path / "webview2-user-data"
+    )
+
+    with (
+        (readiness_dir / "host-stdout.log").open("wb") as stdout_log,
+        (readiness_dir / "host-stderr.log").open("wb") as stderr_log,
+    ):
+        proc = subprocess.Popen(
+            [
+                str(host),
+                "--test-mode",
+                "--readiness-dir",
+                str(readiness_dir),
+            ],
+            cwd=host.parent,
+            env=environment,
+            stdout=stdout_log,
+            stderr=stderr_log,
+        )
+        report: dict[str, object] | None = None
+        try:
+            deadline = time.monotonic() + READINESS_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                report = _read_report(readiness_dir)
+                if report is not None:
+                    break
+                if proc.poll() is not None:
+                    pytest.fail(
+                        f"WPF host exited with code {proc.returncode} before readiness.\n"
+                        f"Trace:\n{_trace(readiness_dir)}"
+                    )
+                time.sleep(0.25)
+            if report is None:
                 pytest.fail(
-                    f"WPF host exited with code {proc.returncode} before readiness.\n"
+                    f"readiness not reported within {READINESS_TIMEOUT_SECONDS:g}s.\n"
                     f"Trace:\n{_trace(readiness_dir)}"
                 )
-            time.sleep(0.25)
-        if report is None:
-            pytest.fail(
-                f"readiness not reported within {READINESS_TIMEOUT_SECONDS:g}s.\n"
-                f"Trace:\n{_trace(readiness_dir)}"
-            )
-    finally:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=10)
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=10)
 
     assert report.get("ready") is True, report
     assert report.get("mode") == "shell", report

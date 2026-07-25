@@ -1,0 +1,28 @@
+{
+  "contractVersion": "1.0",
+  "status": "applied",
+  "changeSetId": "chg_01HZX",
+  "affectedRows": [
+    {
+      "recordId": "rec_001",
+      "operation": "update",
+      "revision": "row_0004",
+      "digest": "sha256:78dbae"
+    },
+    {
+      "recordId": "rec_001",
+      "operation": "setAttachments",
+      "revision": "row_0004",
+      "digest": "sha256:78dbae"
+    }
+  ],
+  "computedFields": {
+    "rec_001": {
+      "subtotal": 37.5
+    }
+  },
+  "newRevision": "data_0012",
+  "emittedEvents": ["evt_data_0012"],
+  "warnings": []
+}
+

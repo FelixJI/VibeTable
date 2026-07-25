@@ -1,4 +1,4 @@
-/** Resolve a B2 paste target from the rendered Directus page and Tabulator range. */
+/** Resolve a paste target from the rendered product page and Tabulator range. */
 
 import type { Tabulator } from "tabulator-tables";
 

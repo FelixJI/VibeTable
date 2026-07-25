@@ -4,8 +4,6 @@ import type {
   PluginAuditEvent,
   PluginCommandContext,
   PluginEventEnvelope,
-  PluginExternalFlowCandidate,
-  PluginFlowBindingSnapshot,
   PluginInstallPlan,
   PluginInteractionSnapshot,
   PluginSnapshot,
@@ -28,17 +26,9 @@ export interface PluginService {
   retryCleanup(pluginId: string): Promise<PluginUninstallResult>;
   inspectInstall(sourceLocation: string): Promise<PluginInstallPlan>;
   commitInstall(plan: PluginInstallPlan): Promise<PluginSnapshot>;
-  listExternalFlows(pluginId: string, logicalFlowId: string): Promise<readonly PluginExternalFlowCandidate[]>;
-  bindExternalFlow(input: {
-    pluginId: string;
-    logicalFlowId: string;
-    directusFlowUuid: string;
-    acceptsUnknownSideEffects: boolean;
-  }): Promise<PluginFlowBindingSnapshot>;
   setEnabled(plugin: PluginSnapshot, enabled: boolean): Promise<PluginSnapshot>;
   upgrade(plugin: PluginSnapshot, plan: PluginInstallPlan): Promise<PluginSnapshot>;
   rollback(plugin: PluginSnapshot): Promise<PluginSnapshot>;
-  resolveDrift(plugin: PluginSnapshot, logicalFlowId: string, strategy: "restore" | "detach"): Promise<PluginSnapshot>;
   uninstall(plugin: PluginSnapshot, cleanupPrivateSettings: boolean): Promise<PluginUninstallResult>;
   describeAction(pluginId: string, actionId: string, context: PluginCommandContext): Promise<PluginActionAvailability>;
   startAction(pluginId: string, actionId: string, input: Readonly<Record<string, unknown>>, context: PluginCommandContext): Promise<PluginTaskViewSnapshot>;
@@ -77,6 +67,7 @@ export function usePluginService(): PluginService {
   const store = usePluginStore();
   let initialized = false;
   let unsubscribe: Array<() => void> = [];
+  const taskPollers = new Map<string, { cancelled: boolean }>();
 
   function applyEnvelope(envelope: PluginEventEnvelope): void {
     const snapshot = envelope.snapshot;
@@ -103,6 +94,8 @@ export function usePluginService(): PluginService {
   function dispose(): void {
     for (const stop of unsubscribe) stop();
     unsubscribe = [];
+    for (const poller of taskPollers.values()) poller.cancelled = true;
+    taskPollers.clear();
     initialized = false;
   }
 
@@ -126,9 +119,6 @@ export function usePluginService(): PluginService {
     );
     if (store.projectKey !== projectKey) return snapshots;
     store.replaceCatalog(projectKey, snapshots);
-    for (const snapshot of snapshots) {
-      for (const binding of snapshot.flowBindings ?? []) store.applyBinding(binding);
-    }
     return snapshots;
   }
 
@@ -148,7 +138,6 @@ export function usePluginService(): PluginService {
       projectRevision: store.projectRevision,
     });
     store.applyPlugin(snapshot);
-    for (const binding of snapshot.flowBindings ?? []) store.applyBinding(binding);
     store.setInstallPlan(null);
     return snapshot;
   }
@@ -157,17 +146,43 @@ export function usePluginService(): PluginService {
     | "plugin.lifecycle.setEnabled"
     | "plugin.lifecycle.upgrade"
     | "plugin.lifecycle.rollback"
-    | "plugin.lifecycle.resolveDrift"
   >(type: K, payload: WebPayloadMap[K]): Promise<PluginSnapshot> {
     const snapshot = await call<K, PluginSnapshot>(type, payload);
     store.applyPlugin(snapshot);
-    for (const binding of snapshot.flowBindings ?? []) store.applyBinding(binding);
     return snapshot;
   }
 
   async function getTask(taskId: string): Promise<PluginTaskViewSnapshot> {
     const task = await call<"plugin.task.get", PluginTaskSnapshot>("plugin.task.get", { taskId });
     return store.applyTask(task);
+  }
+
+  function pollTaskUntilTerminal(taskId: string): void {
+    const previous = taskPollers.get(taskId);
+    if (previous) previous.cancelled = true;
+    const poller = { cancelled: false };
+    taskPollers.set(taskId, poller);
+    const deadline = Date.now() + 310_000;
+    void (async () => {
+      try {
+        while (!poller.cancelled && Date.now() < deadline) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 150));
+          if (poller.cancelled) break;
+          try {
+            const snapshot = await bridge.request("plugin.task.get", { taskId });
+            if (!isTaskSnapshot(snapshot)) continue;
+            const current = store.applyTask(snapshot);
+            if (["succeeded", "failed", "cancelled", "aborted"].includes(current.state)) break;
+          } catch {
+            // Notifications remain the primary fast path. A transient bridge
+            // read failure must not turn the reconciliation fallback itself
+            // into a user-visible error.
+          }
+        }
+      } finally {
+        if (taskPollers.get(taskId) === poller) taskPollers.delete(taskId);
+      }
+    })();
   }
 
   async function describeAction(
@@ -205,18 +220,6 @@ export function usePluginService(): PluginService {
     }),
     inspectInstall,
     commitInstall,
-    listExternalFlows: (pluginId, logicalFlowId) => call(
-      "plugin.externalFlow.listCandidates",
-      { projectKey: store.projectKey, pluginId, logicalFlowId },
-    ),
-    bindExternalFlow: async (input) => {
-      const binding = await call<"plugin.externalFlow.bind", PluginFlowBindingSnapshot>(
-        "plugin.externalFlow.bind",
-        { projectKey: store.projectKey, ...input },
-      );
-      store.applyBinding(binding);
-      return binding;
-    },
     setEnabled: (plugin, enabled) => applyPluginRequest("plugin.lifecycle.setEnabled", {
       projectKey: plugin.projectKey,
       pluginId: plugin.pluginId,
@@ -232,10 +235,6 @@ export function usePluginService(): PluginService {
       projectKey: plugin.projectKey,
       pluginId: plugin.pluginId,
     }),
-    resolveDrift: (plugin, logicalFlowId, strategy) => applyPluginRequest(
-      "plugin.lifecycle.resolveDrift",
-      { projectKey: plugin.projectKey, pluginId: plugin.pluginId, logicalFlowId, strategy },
-    ),
     uninstall: async (plugin, cleanupPrivateSettings) => {
       const result = await call<"plugin.lifecycle.uninstall", PluginUninstallResult>(
         "plugin.lifecycle.uninstall",
@@ -253,7 +252,11 @@ export function usePluginService(): PluginService {
         context,
         input,
       });
-      return store.applyTask(task);
+      const projected = store.applyTask(task);
+      if (["queued", "running"].includes(projected.state)) {
+        pollTaskUntilTerminal(projected.taskId);
+      }
+      return projected;
     },
     resolveInteraction: async (task, decision) => {
       if (!task.confirmation) throw new Error("当前任务没有待确认交互");
@@ -264,7 +267,16 @@ export function usePluginService(): PluginService {
         decision,
       });
       store.clearConfirmation(task.runId, interactionId);
-      return getTask(task.taskId);
+      let current = await getTask(task.taskId);
+      const deadline = Date.now() + 5_000;
+      while (
+        (current.state === "queued" || current.state === "running")
+        && Date.now() < deadline
+      ) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        current = await getTask(task.taskId);
+      }
+      return current;
     },
     cancelTask: async (taskId) => {
       const task = await call<"plugin.task.cancel", PluginTaskSnapshot>("plugin.task.cancel", { taskId });
@@ -322,7 +334,6 @@ function isPluginSnapshot(value: unknown): value is PluginSnapshot {
     && typeof value.version === "string"
     && typeof value.packageHash === "string"
     && isRecord(value.manifest)
-    && Array.isArray(value.flowRequirements)
     && typeof value.status === "string"
     && typeof value.revision === "number";
 }

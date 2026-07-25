@@ -1,13 +1,10 @@
-"""B2 paste application service.
-
-Owns the two-phase paste flow over the B4 Directus data plane:
+"""Two-phase paste application service over product-owned ports.
 
 * :meth:`preview` produces a :class:`PastePlan` (no writes) and a single-use
   :class:`PasteToken` bound to the user / project / collection / schema hash /
   target rows / payload hash.
 * :meth:`apply` validates the token and delegates the atomic batch to the
-  Directus ``vibetable-bulk-mutation.v1`` custom endpoint, returning a confirmed
-  :class:`ApplyPasteResult`.
+  product mutation endpoint, returning a confirmed :class:`ApplyPasteResult`.
 
 The bulk endpoint runs in one server transaction (all-or-nothing) and honours
 an idempotency key for safe retries. The Python layer never holds raw payload
@@ -22,20 +19,17 @@ the token with a precise error.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import secrets as pysecrets
 import time
 from collections.abc import Callable
-from typing import Any
+from decimal import Decimal, InvalidOperation
+from typing import Any, Protocol
 
-from backend.adapters.directus.auth import DirectusAuthBroker
-from backend.adapters.directus.client import DirectusClient
-from backend.adapters.directus.coerce import validate_number_field
-from backend.adapters.directus.errors import DirectusSchemaError, DirectusTransportError
-from backend.adapters.directus.profile import CollectionProfile
-from backend.adapters.directus.schema import build_directus_schema
+from backend.contracts.data_profile import CollectionProfile
 from backend.contracts.paste import (
     ApplyPasteConflict,
     ApplyPasteParams,
@@ -58,7 +52,7 @@ MAX_PASTE_CELLS: int = 10_000
 
 
 class PasteError(Exception):
-    """A paste-flow error carrying an RPC-friendly ``code`` and ``data``."""
+    """A paste error carrying an RPC-friendly ``code`` and ``data``."""
 
     def __init__(self, message: str, *, code: str, data: dict[str, Any] | None = None) -> None:
         super().__init__(message)
@@ -81,6 +75,7 @@ class _StoredPlan:
         "collection",
         "consumed",
         "expires_at",
+        "idempotency_key",
         "payload_hash",
         "project",
         "row_revisions",
@@ -112,6 +107,7 @@ class _StoredPlan:
         self.row_revisions = row_revisions
         self.expires_at = expires_at
         self.consumed = False
+        self.idempotency_key: str | None = None
 
 
 class PasteTokenStore:
@@ -171,19 +167,7 @@ class PasteTokenStore:
         return token in self._plans
 
 
-class BulkMutationClient:
-    """Calls the Directus ``vibetable-bulk-mutation.v1`` custom endpoint.
-
-    The endpoint receives the verified plan rows + idempotency key and applies
-    them in a single server transaction under the current user's permissions.
-    On a timeout (network uncertainty) it returns ``outcome="pending"`` so the
-    host can poll by idempotency key instead of fabricating a success.
-    """
-
-    def __init__(self, transport: Any, auth: DirectusAuthBroker) -> None:
-        self._transport = transport
-        self._auth = auth
-
+class PasteMutationPort(Protocol):
     async def apply(
         self,
         *,
@@ -192,40 +176,42 @@ class BulkMutationClient:
         rows: list[PastePlanRow],
         row_revisions: dict[str | int, str],
         idempotency_key: str,
-    ) -> ApplyPasteResult:
-        token = await self._auth.access_token()
-        payload = _build_bulk_payload(
-            collection=collection,
-            profile=profile,
-            rows=rows,
-            row_revisions=row_revisions,
-            idempotency_key=idempotency_key,
-        )
-        try:
-            response = await self._transport.request(
-                "POST",
-                "/vibetable-bulk-mutation/apply",
-                access_token=token,
-                json_body=payload,
-                headers={"Idempotency-Key": idempotency_key},
-            )
-        except DirectusTransportError as exc:
-            if exc.status == 408 or exc.code == "REQUEST_TIMEOUT":
-                return ApplyPasteResult(
-                    collection=collection,
-                    outcome="pending",
-                    request_id=idempotency_key,
-                )
-            if exc.code == "EDIT_CONFLICT":
-                conflicts = _extract_conflicts(exc, profile)
-                return ApplyPasteResult(
-                    collection=collection,
-                    outcome="conflict",
-                    conflicts=conflicts,
-                    request_id=idempotency_key,
-                )
-            raise
-        return _parse_bulk_response(collection, response, idempotency_key)
+        schema_revision: str | None = None,
+    ) -> ApplyPasteResult: ...
+
+
+class _CurrentActor(Protocol):
+    id: str
+
+
+class PasteAuthPort(Protocol):
+    async def current_user(self) -> _CurrentActor: ...
+
+
+class PasteReadPort(Protocol):
+    async def fields(self, profile: CollectionProfile) -> list[dict[str, Any]]: ...
+
+    async def readonly_fields(
+        self,
+        profile: CollectionProfile,
+        *,
+        refresh: bool,
+    ) -> set[str]: ...
+
+    async def require_write_fields(
+        self,
+        profile: CollectionProfile,
+        fields: set[str],
+        *,
+        operation: str,
+        refresh: bool,
+    ) -> None: ...
+
+    async def read_item(
+        self,
+        profile: CollectionProfile,
+        item_id: str,
+    ) -> dict[str, Any]: ...
 
 
 class PasteService:
@@ -234,9 +220,9 @@ class PasteService:
     def __init__(
         self,
         *,
-        client: DirectusClient,
-        auth: DirectusAuthBroker,
-        bulk: BulkMutationClient,
+        client: PasteReadPort,
+        auth: PasteAuthPort,
+        bulk: PasteMutationPort,
         profiles: dict[str, CollectionProfile],
         project: str,
         token_store: PasteTokenStore | None = None,
@@ -247,6 +233,7 @@ class PasteService:
         self._profiles = profiles
         self._project = project
         self._tokens = token_store or PasteTokenStore()
+        self._apply_lock = asyncio.Lock()
 
     async def preview(self, params: PreviewPasteParams) -> PastePlan:
         profile = self._profile(params.collection)
@@ -267,12 +254,11 @@ class PasteService:
                 data={"maxCells": MAX_PASTE_CELLS, "cellCount": total_cells},
             )
         user = await self._auth.current_user()
-        # Fetch the collection's fields ONCE: readonly_fields() caches the
-        # Directus write restrictions as a side effect, and we reuse the same
+        # Fetch the collection's fields once and reuse the same
         # payload to build the numeric scale/precision map for paste validation.
         fields_payload = await self._client.fields(profile)
-        directus_readonly = await self._client.readonly_fields(profile, refresh=False)
-        editable_columns, readonly_columns = self._column_layout(profile, directus_readonly)
+        readonly = await self._client.readonly_fields(profile, refresh=False)
+        editable_columns, readonly_columns = self._column_layout(profile, readonly)
         anchor_column_index = _anchor_column_index(params.start_cell, editable_columns)
         column_schema = _numeric_column_schema(profile, fields_payload)
         plan_rows, row_revisions = await self._resolve_plan(
@@ -308,6 +294,10 @@ class PasteService:
         )
 
     async def apply(self, params: ApplyPasteParams) -> ApplyPasteResult:
+        async with self._apply_lock:
+            return await self._apply_serialized(params)
+
+    async def _apply_serialized(self, params: ApplyPasteParams) -> ApplyPasteResult:
         profile = self._profile(params.collection)
         stored = self._tokens.resolve(params.token)
         if stored.consumed:
@@ -326,6 +316,13 @@ class PasteService:
         user = await self._auth.current_user()
         if stored.user_id != user.id:
             raise PasteError("paste token belongs to another user", code="paste_token_invalid")
+        if stored.idempotency_key is None:
+            stored.idempotency_key = params.idempotency_key
+        elif stored.idempotency_key != params.idempotency_key:
+            raise PasteError(
+                "paste token is bound to a different idempotency key",
+                code="paste_idempotency_mismatch",
+            )
         create_fields = {
             name for row in stored.rows if row.kind == "insert" for name in row.changes
         }
@@ -349,9 +346,9 @@ class PasteService:
                     operation="update",
                     refresh=not create_fields,
                 )
-        except DirectusSchemaError as exc:
+        except Exception as exc:
             raise PasteError(
-                "Directus field policy changed since the plan was prepared",
+                "field policy changed since the plan was prepared",
                 code="schema_mismatch",
             ) from exc
         result = await self._bulk.apply(
@@ -360,6 +357,7 @@ class PasteService:
             rows=stored.rows,
             row_revisions=stored.row_revisions,
             idempotency_key=params.idempotency_key,
+            schema_revision=stored.schema_revision,
         )
         if result.outcome == "committed":
             self._tokens.consume(stored)
@@ -372,18 +370,21 @@ class PasteService:
     def _profile(self, collection: str) -> CollectionProfile:
         profile = self._profiles.get(collection)
         if profile is None:
-            raise DirectusSchemaError(f"collection {collection!r} is not in capability manifest")
+            raise PasteError(
+                f"collection {collection!r} is not in the product schema",
+                code="schema_unknown",
+            )
         return profile
 
     def _column_layout(
         self,
         profile: CollectionProfile,
-        directus_readonly: set[str],
+        readonly_fields: set[str],
     ) -> tuple[list[str], list[str]]:
         editable = [
             name
             for name in profile.update_fields
-            if name in profile.fields and name not in directus_readonly
+            if name in profile.fields and name not in readonly_fields
         ]
         readonly = [name for name in profile.fields if name not in editable]
         return editable, readonly
@@ -428,8 +429,11 @@ class PasteService:
             if kind == "update" and target_key is not None:
                 current = await self._client.read_item(profile, str(target_key))
                 date_updated_field = profile.date_updated_field
-                if date_updated_field:
-                    row_revisions[target_key] = str(current.get(date_updated_field, ""))
+                guard_value = (
+                    current.get(date_updated_field) if date_updated_field else None
+                ) or current.get("__vibetableDigest")
+                if isinstance(guard_value, str) and guard_value:
+                    row_revisions[target_key] = guard_value
                 changes, diagnostics = self._build_changes(
                     cell_row=cell_row,
                     editable_columns=editable_columns,
@@ -516,7 +520,22 @@ class PasteService:
                     )
                 continue
             before = current_row.get(column)
-            after = cell.parsed_value
+            after, coercion_error = _coerce_paste_value(
+                column,
+                cell.parsed_value,
+                column_schema,
+            )
+            if coercion_error is not None:
+                diagnostics.append(
+                    PasteCellDiagnostic(
+                        row_index=cell.row_index,
+                        column_index=cell.column_index,
+                        severity="error",
+                        code="invalid_json",
+                        message=coercion_error,
+                    )
+                )
+                continue
             if before == after:
                 continue
             # Numeric scale/precision guard: flag values the DB would silently
@@ -547,7 +566,7 @@ def _numeric_column_schema(
     profile: CollectionProfile,
     fields_payload: list[dict[str, Any]],
 ) -> dict[str, tuple[str | None, int | None, int | None]]:
-    """Project Directus field metadata to ``{column: (data_type, scale, precision)}``.
+    """Project field metadata to ``{column: (data_type, scale, precision)}``.
 
     Used by the paste preview to flag values that exceed a column's declared
     scale/precision before they reach the bulk-write endpoint. Only the numeric
@@ -557,17 +576,23 @@ def _numeric_column_schema(
     paste still proceeds — the database remains the final authority on column
     bounds.
     """
-    try:
-        schema = build_directus_schema(
-            collection=profile.collection,
-            fields=fields_payload,
-            collection_permissions={"read": {"access": "full", "fields": profile.fields}},
+    result: dict[str, tuple[str | None, int | None, int | None]] = {}
+    for item in fields_payload:
+        name = item.get("field") or item.get("name")
+        if not isinstance(name, str) or name not in profile.fields:
+            continue
+        raw_schema = item.get("schema")
+        schema: dict[str, Any] = raw_schema if isinstance(raw_schema, dict) else item
+        result[name] = (
+            schema.get("data_type") if isinstance(schema.get("data_type"), str) else None,
+            schema.get("numeric_scale") if isinstance(schema.get("numeric_scale"), int) else None,
+            (
+                schema.get("numeric_precision")
+                if isinstance(schema.get("numeric_precision"), int)
+                else None
+            ),
         )
-    except Exception:  # schema projection is intentionally best-effort here
-        return {}
-    return {
-        column.name: (column.data_type, column.scale, column.precision) for column in schema.columns
-    }
+    return result
 
 
 def _check_numeric_scale(
@@ -577,9 +602,7 @@ def _check_numeric_scale(
 ) -> str | None:
     """Return an error message if ``value`` exceeds the column's scale/precision.
 
-    Thin wrapper over :func:`validate_number_field` that converts the raised
-    :class:`DirectusSchemaError` into a diagnostic string (or ``None`` when the
-    value is acceptable / untyped). When ``column_schema`` is missing the column
+    When ``column_schema`` is missing the column
     is treated as untyped (no-op), preserving backward compatibility.
     """
     if not column_schema:
@@ -588,17 +611,47 @@ def _check_numeric_scale(
     if meta is None:
         return None
     data_type, scale, precision = meta
+    if value is None or data_type not in {"decimal", "numeric"}:
+        return None
     try:
-        validate_number_field(
-            value,
-            data_type=data_type,
-            scale=scale,
-            precision=precision,
-            field_name=column,
-        )
-    except DirectusSchemaError as exc:
-        return str(exc)
+        decimal = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return f"{column} must be numeric"
+    sign, digits, exponent = decimal.as_tuple()
+    del sign
+    if not isinstance(exponent, int):
+        return f"{column} must be finite"
+    fractional = max(-exponent, 0)
+    integral = max(len(digits) + exponent, 0)
+    if scale is not None and fractional > scale:
+        return f"{column} exceeds scale {scale}"
+    if precision is not None and integral + fractional > precision:
+        return f"{column} exceeds precision {precision}"
     return None
+
+
+def _coerce_paste_value(
+    column: str,
+    value: Any,
+    column_schema: dict[str, tuple[str | None, int | None, int | None]] | None,
+) -> tuple[Any, str | None]:
+    """Coerce structured wire values before the authoritative paste preview."""
+    if not column_schema:
+        return value, None
+    meta = column_schema.get(column)
+    if meta is None:
+        return value, None
+    data_type = meta[0]
+    if data_type not in {"json", "geoJson", "list"}:
+        return value, None
+    if value is None or value == "":
+        return None, None
+    if isinstance(value, (dict, list, int, float, bool)):
+        return value, None
+    try:
+        return json.loads(str(value)), None
+    except (json.JSONDecodeError, TypeError):
+        return None, f"{column} must contain valid JSON"
 
 
 def _selection_row_keys(selection: Any) -> list[str | int]:
@@ -750,34 +803,11 @@ def _parse_bulk_response(
     )
 
 
-def _extract_conflicts(
-    exc: DirectusTransportError, profile: CollectionProfile
-) -> list[ApplyPasteConflict]:
-    field_errors = exc.field_errors or {}
-    raw: Any = field_errors.get("conflicts") or field_errors.get("operations") or []
-    conflicts: list[ApplyPasteConflict] = []
-    if isinstance(raw, list):
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            key = item.get("primaryKey") or item.get(profile.primary_key)
-            if key is None:
-                continue
-            conflicts.append(
-                ApplyPasteConflict(
-                    row_key=key,
-                    current_value=item.get("currentValue", {}),
-                    expected_date_updated=item.get("expectedDateUpdated"),
-                )
-            )
-    return conflicts
-
-
 __all__ = [
     "MAX_PASTE_CELLS",
     "TOKEN_TTL_SECONDS",
-    "BulkMutationClient",
     "PasteError",
+    "PasteMutationPort",
     "PasteService",
     "PasteTokenStore",
 ]

@@ -2,12 +2,20 @@ import { useHostBridge } from "./bridgeContext";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useHistoryStore } from "@/stores/historyStore";
+import { useRealtimeStore } from "@/stores/realtimeStore";
 import type {
+  DataChangedEvent,
   DatasetReadyPayload,
   EditSchemaResult,
   TablePage,
   TablePageLoadedPayload,
+  TaskChangedEvent,
 } from "@/contracts";
+import {
+  createBridgeRealtimeReconcilePort,
+  RealtimeReconciler,
+  RealtimeTaskTracker,
+} from "./realtimeReconciler";
 
 /**
  * tableService — wires inbound host events to `tableStore` and exposes the
@@ -35,6 +43,7 @@ import type {
  */
 export function useTableService(): {
   init: () => void;
+  dispose: () => void;
   selectTable: (name: string) => void;
   refresh: () => void;
 } {
@@ -42,9 +51,24 @@ export function useTableService(): {
   const tableStore = useTableStore();
   const workspaceStore = useWorkspaceStore();
   const history = useHistoryStore();
+  const realtimeStore = useRealtimeStore();
+  const taskTracker = new RealtimeTaskTracker();
+  const unsubscribe: Array<() => void> = [];
+  let initialized = false;
+  let pendingDataChange: DataChangedEvent | null = null;
+  let refreshAfterLoad = false;
+  const realtime = new RealtimeReconciler(
+    createBridgeRealtimeReconcilePort(bridge),
+    {
+      refreshData: () => invalidateAndRefresh("refresh-data"),
+      reloadSchema: () => invalidateAndRefresh("reload-schema"),
+    },
+  );
 
   function init(): void {
-    bridge.on("table.pageLoaded", (payload: TablePageLoadedPayload) => {
+    if (initialized) return;
+    initialized = true;
+    unsubscribe.push(bridge.on("table.pageLoaded", (payload: TablePageLoadedPayload) => {
       // The pageLoaded payload is flattened (no `.page` field); project it onto
       // a `TablePage`, dropping the transport-only `loadedRows` counter.
       const page: TablePage = {
@@ -60,12 +84,20 @@ export function useTableService(): {
         revision: payload.revision,
       };
       tableStore.appendPage(page);
-    });
-    bridge.on("table.datasetReady", (payload: DatasetReadyPayload) => {
+    }));
+    unsubscribe.push(bridge.on("table.datasetReady", (payload: DatasetReadyPayload) => {
       // DatasetReadyPayload extends TablePage — it IS the authoritative page.
       tableStore.setDatasetReady(payload);
-    });
-    bridge.on("table.editSchemaLoaded", (payload: EditSchemaResult) => {
+      if (refreshAfterLoad) {
+        refreshAfterLoad = false;
+        refresh();
+        return;
+      }
+      const pending = pendingDataChange;
+      pendingDataChange = null;
+      if (pending) reconcileDataChange(pending);
+    }));
+    unsubscribe.push(bridge.on("table.editSchemaLoaded", (payload: EditSchemaResult) => {
       // EditSchemaResult only carries schemaRevision; the full MutationRevision
       // (with real databaseSessionId/dataRevision) arrives later via
       // datasetReady, whose handler overrides this placeholder revision.
@@ -74,11 +106,36 @@ export function useTableService(): {
         schemaRevision: payload.schemaRevision,
         dataRevision: 0,
       });
-    });
+    }));
+    unsubscribe.push(bridge.on("data.changed", (payload) => {
+      if (payload.tableId !== workspaceStore.currentTable) return;
+      if (tableStore.loading || !tableStore.revision) {
+        if (
+          !pendingDataChange
+          || payload.occurredAt > pendingDataChange.occurredAt
+          || (payload.occurredAt === pendingDataChange.occurredAt
+            && payload.sequence > pendingDataChange.sequence)
+        ) {
+          pendingDataChange = payload;
+        }
+        return;
+      }
+      reconcileDataChange(payload);
+    }));
+    unsubscribe.push(bridge.on("task.changed", applyTaskChange));
+  }
+
+  function dispose(): void {
+    for (const stop of unsubscribe.splice(0)) stop();
+    initialized = false;
+    pendingDataChange = null;
+    refreshAfterLoad = false;
   }
 
   function selectTable(name: string): void {
     if (!name) return;
+    pendingDataChange = null;
+    refreshAfterLoad = false;
     workspaceStore.selectTable(name);
     tableStore.reset();
     // A table switch invalidates the undo stack: history entries reference
@@ -101,5 +158,48 @@ export function useTableService(): {
     bridge.notify("table.selected", { table: current });
   }
 
-  return { init, selectTable, refresh };
+  function reconcileDataChange(event: DataChangedEvent): void {
+    const revision = tableStore.revision;
+    if (!revision || event.tableId !== workspaceStore.currentTable) return;
+    void realtime.handle(
+      event,
+      revision.schemaRevision,
+      formatProductDataRevision(revision.dataRevision),
+    ).catch((error: unknown) => realtimeStore.failReconcile(error));
+  }
+
+  function invalidateAndRefresh(action: "refresh-data" | "reload-schema"): void {
+    realtimeStore.markInvalidated(action);
+    if (tableStore.loading) {
+      refreshAfterLoad = true;
+      return;
+    }
+    refresh();
+  }
+
+  function applyTaskChange(event: TaskChangedEvent): void {
+    if (!taskTracker.accept(event)) return;
+    realtimeStore.applyTask(event);
+    if (
+      event.taskType !== "formulaBackfill"
+      || (event.state !== "succeeded"
+        && event.state !== "failed"
+        && event.state !== "cancelled")
+    ) return;
+    if (tableStore.loading) {
+      refreshAfterLoad = true;
+    } else {
+      refresh();
+    }
+  }
+
+  return { init, dispose, selectTable, refresh };
+}
+
+/** Convert the desktop mutation revision to the frozen PocketBase revision ID. */
+export function formatProductDataRevision(revision: number): string {
+  if (!Number.isSafeInteger(revision) || revision < 0) {
+    throw new Error("Invalid product data revision.");
+  }
+  return `data_${String(revision).padStart(4, "0")}`;
 }

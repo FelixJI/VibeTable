@@ -1,6 +1,6 @@
 """C1 relation workspace contracts.
 
-The relation workspace shows rows from a Directus collection with their
+The relation workspace shows rows from a product table with their
 declared relations expanded as display columns. Unlike a generic SQL join, it
 only ever uses relations the capability manifest declares, and it cannot pick
 arbitrary left/right tables, fields, or join types.

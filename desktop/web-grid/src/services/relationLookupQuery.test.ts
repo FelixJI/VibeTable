@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildAuthoritativeLookupViewQuery } from "./relationLookupQuery";
+import {
+  buildAuthoritativeLookupViewQuery,
+  buildLookupProjectionFieldRefs,
+} from "./relationLookupQuery";
 
 describe("buildAuthoritativeLookupViewQuery", () => {
   it("preserves remote filters, sorts and groups with stable field refs", () => {
@@ -21,5 +24,13 @@ describe("buildAuthoritativeLookupViewQuery", () => {
   it("accepts string groupBy snapshots without disabling grouping", () => {
     const result = buildAuthoritativeLookupViewQuery({ groupBy: ["customer"] }, new Map());
     expect(result.groups).toEqual([{ fieldRef: "customer", direction: "asc" }]);
+  });
+
+  it("projects only Lookup field keys and removes duplicates", () => {
+    expect(buildLookupProjectionFieldRefs([
+      { fieldKey: "customer_name" },
+      { fieldKey: "customer_name" },
+      { fieldKey: "contract_total" },
+    ])).toEqual(["customer_name", "contract_total"]);
   });
 });

@@ -1,512 +1,661 @@
 #!/usr/bin/env python3
-"""VibeTable unified cross-stack quality gate.
-
-Runs version/package checks, Python and contract tests, .NET tests, web-grid
-tests/build, Directus extension tests/typecheck/build and the end-to-end smoke.
-
-Design contract (verbatim from the Task 12 brief):
-
-* ``--list`` prints the exact ordered stages, including ``dev-build`` after
-  the read-only repository checks so a clean checkout exercises the real
-  development-launcher build path before the per-stack test stages.
-* ``--ci`` runs them in order, STOPS on the first failure, and returns that
-  stage's non-zero exit code.
-* Each stage uses :func:`subprocess.run` with an ARGUMENT LIST (never
-  ``shell=True``), with the repository root as the working directory, and
-  decodes child output as UTF-8 with ``errors="replace"`` so a stray byte
-  never crashes the gate.
-* Each stage's stdout and stderr are preserved verbatim in the report so a
-  reviewer can see exactly what the underlying tool printed.
-* A skipped smoke test is missing Windows/WebView2 evidence and fails the
-  Phase-A gate; only an executed end-to-end pass is accepted.
-
-The dotnet/npm commands are resolved through PATHEXT on Windows (so the
-``.cmd`` shims work) and dotnet is preferred from the x64 install at
-``C:\\Program Files\\dotnet`` when present. This module is import-safe:
-importing it has no side effects. ``main()`` does the work.
-"""
+"""Cross-stack CI gate with real PocketBase sidecar verification."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Repository layout
-# ---------------------------------------------------------------------------
+try:
+    from qa import handoff as handoff_gate
+except ModuleNotFoundError:  # pragma: no cover - direct ``python qa/next.py``
+    import handoff as handoff_gate  # type: ignore[no-redef]
 
-REPO_ROOT: Path = Path(__file__).resolve().parent.parent
-WEB_GRID_DIR: Path = REPO_ROOT / "desktop" / "web-grid"
-DESKTOP_SLN: Path = REPO_ROOT / "desktop" / "VibeTable.Desktop.sln"
-E2E_SMOKE_TEST: Path = REPO_ROOT / "tests" / "e2e" / "test_next_readonly_smoke.py"
-DEV_LAUNCHER: Path = REPO_ROOT / "scripts" / "dev.py"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SIDECAR_DIR = REPO_ROOT / "sidecar"
+WEB_GRID_DIR = REPO_ROOT / "desktop" / "web-grid"
+DESKTOP_SLN = REPO_ROOT / "desktop" / "VibeTable.Desktop.sln"
+DEV_LAUNCHER = REPO_ROOT / "scripts" / "dev.py"
+SIDECAR_MATRIX = (
+    REPO_ROOT / "tests" / "integration" / "packaged_sidecar_matrix.py"
+)
+FAULT_INJECTION = REPO_ROOT / "qa" / "fault_injection.py"
+GO_FORMAT_CHECK = REPO_ROOT / "qa" / "go_format_check.py"
+E2E_SMOKE = REPO_ROOT / "tests" / "e2e" / "test_next_readonly_smoke.py"
+UPGRADE_SMOKE = (
+    REPO_ROOT / "tests" / "integration" / "test_upgrade_activation_smoke.py"
+)
 
-# G0.2: Directus extension directories are discovered from the version-controlled
-# manifest (directus/extensions/manifest.json) rather than hard-coded. Each
-# directus-* stage iterates every declared extension in order.
-_DIRECTUS_EXTENSIONS_ROOT: Path = REPO_ROOT / "directus" / "extensions"
-
-
-def _directus_extension_dirs() -> list[Path]:
-    """Return the ordered list of Directus extension source directories.
-
-    Reads ``directus/extensions/manifest.json``. Falls back to the single
-    ``vibetable-bulk-mutation`` directory if the manifest is absent (defensive —
-    the manifest is committed and should always exist).
-    """
-    manifest = _DIRECTUS_EXTENSIONS_ROOT / "manifest.json"
-    if manifest.is_file():
-        import json
-
-        data = json.loads(manifest.read_text(encoding="utf-8"))
-        names = [ext["name"] for ext in data.get("extensions", []) if "name" in ext]
-        if names:
-            return [_DIRECTUS_EXTENSIONS_ROOT / name for name in names]
-    return [_DIRECTUS_EXTENSIONS_ROOT / "vibetable-bulk-mutation"]
-
-
-#: The exact, ordered Phase A stage list. Tests assert this tuple verbatim.
-STAGES: tuple[str, ...] = (
+STAGES = (
     "version",
     "package",
+    "go-fmt",
+    "go-vet",
+    "go-test",
+    "go-race",
+    "go-build",
+    "sidecar-smoke",
+    "upgrade-smoke",
     "dev-build",
     "python",
     "contracts",
+    "tooling",
     "dotnet",
     "web-test",
     "web-build",
-    "directus-test",
-    "directus-typecheck",
-    "directus-build",
+    "fault-injection",
+    "product-e2e",
     "smoke",
 )
-
-
-# ---------------------------------------------------------------------------
-# Result type
-# ---------------------------------------------------------------------------
+DEFAULT_STAGE_TIMEOUT_SECONDS = 15 * 60
+STAGE_TIMEOUT_SECONDS = {
+    "fault-injection": 30 * 60,
+    "product-e2e": 30 * 60,
+}
+RACE_COMMAND_TIMEOUT_SECONDS = 7 * 60
+RACE_LONG_COMMAND_TIMEOUT_SECONDS = 16 * 60
+RACE_LONG_TEST_TIMEOUT = "15m"
+RACE_LONG_TESTS = frozenset(
+    {
+        "TestFormulaBackfillTenThousandRowsCancelsResumesWithoutDuplicateAudit",
+        "TestMutationKernelOneThousandOperationsCommitOrFullyRollback",
+        "TestQueryPortPagesFiltersAndSortsTwentyFiveThousandRows",
+    }
+)
+TIMEOUT_RETURNCODE = 124
+WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS = 3
+QA_RUN_TEMP_DIR = (
+    REPO_ROOT
+    / "build"
+    / "qa"
+    / "tmp"
+    / f"run-{os.getpid()}-{time.time_ns()}"
+)
 
 
 @dataclass
 class StageResult:
-    """Captured outcome of running one stage.
-
-    ``returncode`` is the underlying tool's exit status. ``stdout`` and
-    ``stderr`` preserve the tool's output verbatim (decoded UTF-8 /
-    replace). ``skipped`` is set by :func:`is_stage_skipped` callers to flag
-    a stage whose underlying test was deliberately skipped (the smoke test
-    on a broken WebView2 runtime); such stages do NOT fail the gate.
-    """
-
     stage: str
     command: list[str]
     returncode: int
     elapsed: float
-    stdout: str = ""
-    stderr: str = ""
-    cwd: str = ""
-    skipped: bool = False
+    stdout: str
+    stderr: str
+    cwd: str
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-# ---------------------------------------------------------------------------
-# Executable resolution (Windows .cmd shims + x64 dotnet)
-# ---------------------------------------------------------------------------
+def _resolve(name: str) -> str:
+    if name == "go":
+        suffix = "go.exe" if os.name == "nt" else "go"
+        candidate = REPO_ROOT / ".tools" / "go-full" / "go" / "bin" / suffix
+        if candidate.is_file():
+            return str(candidate)
+    if name == "gcc" and os.name == "nt":
+        for candidate in (
+            REPO_ROOT / ".tools" / "w64devkit" / "bin" / "gcc.exe",
+            REPO_ROOT
+            / ".tools"
+            / "w64devkit"
+            / "w64devkit"
+            / "bin"
+            / "gcc.exe",
+        ):
+            if candidate.is_file():
+                return str(candidate)
+    if name == "dotnet":
+        bundled = REPO_ROOT / ".tools" / "dotnet" / "dotnet.exe"
+        if bundled.is_file():
+            return str(bundled)
+        system = Path(r"C:\Program Files\dotnet\dotnet.exe")
+        if system.is_file():
+            return str(system)
+    return shutil.which(name) or name
 
 
-def _resolve_executable(name: str) -> str:
-    """Resolve a bare command name to an executable path.
-
-    On Windows ``npm`` / ``dotnet`` ship as ``.cmd`` shims; ``subprocess.run``
-    does NOT consult PATHEXT for bare names, so a naive ``["npm", "ci"]``
-    raises ``FileNotFoundError``. :func:`shutil.which` DOES respect PATHEXT,
-    so we use it. Absolute paths and ``sys.executable`` are returned as-is.
-    """
-    if os.path.sep in name or (os.path.altsep and os.path.altsep in name):
-        return name
-    resolved = shutil.which(name)
-    return resolved or name
-
-
-def _dotnet_path() -> str:
-    """Prefer the x64 .NET SDK when present.
-
-    The WPF host targets x64 (``PlatformTarget=x64`` in
-    ``desktop/Directory.Build.props``); an x86-only dotnet on PATH cannot
-    build it. We prefer ``C:\\Program Files\\dotnet\\dotnet.exe`` when it
-    exists, falling back to whatever ``shutil.which`` finds.
-    """
-    preferred = r"C:\Program Files\dotnet\dotnet.exe"
-    if Path(preferred).is_file():
-        return preferred
-    resolved = shutil.which("dotnet")
-    return resolved or "dotnet"
-
-
-# ---------------------------------------------------------------------------
-# Stage command construction
-# ---------------------------------------------------------------------------
-
-
-def stage_command(
-    stage: str, *, directus_extension_dir: Path | None = None
-) -> tuple[list[str], str]:
-    """Return the (argument-list command, cwd) for ``stage``.
-
-    The commands mirror the per-stage brief in Task 12. The argument lists
-    are passed verbatim to :func:`subprocess.run`; no shell invocation.
-
-    G0.2: for ``directus-*`` stages, ``directus_extension_dir`` selects which
-    extension to target. When omitted, the first declared extension is used.
-    """
+def stage_command(stage: str) -> tuple[list[str], str]:
+    go = _resolve("go")
     if stage == "version":
-        return ([sys.executable, "qa/version_check.py"], str(REPO_ROOT))
+        return [sys.executable, "qa/version_check.py"], str(REPO_ROOT)
     if stage == "package":
-        return ([sys.executable, "qa/package_check.py"], str(REPO_ROOT))
+        return [sys.executable, "qa/package_check.py"], str(REPO_ROOT)
+    if stage == "go-fmt":
+        return [sys.executable, str(GO_FORMAT_CHECK)], str(REPO_ROOT)
+    if stage == "go-vet":
+        return [go, "vet", "./..."], str(SIDECAR_DIR)
+    if stage == "go-test":
+        return [go, "test", "./..."], str(SIDECAR_DIR)
+    if stage == "go-race":
+        return [
+            go,
+            "test",
+            "-race",
+            "all non-integration packages, then integration tests in isolated batches",
+        ], str(SIDECAR_DIR)
+    if stage == "go-build":
+        output = REPO_ROOT / "build" / "qa" / (
+            "vibetable-pb.exe" if os.name == "nt" else "vibetable-pb"
+        )
+        return [
+            go,
+            "build",
+            "-trimpath",
+            "-buildvcs=true",
+            "-o",
+            str(output),
+            "./cmd/vibetable-pb",
+        ], str(SIDECAR_DIR)
+    if stage == "sidecar-smoke":
+        return [
+            sys.executable,
+            str(SIDECAR_MATRIX),
+            "--json-report",
+            str(REPO_ROOT / "build" / "qa" / "packaged-sidecar-matrix.json"),
+        ], str(REPO_ROOT)
+    if stage == "upgrade-smoke":
+        return [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(UPGRADE_SMOKE),
+            "-q",
+            "-o",
+            "addopts=",
+            "-p",
+            "no:cacheprovider",
+        ], str(REPO_ROOT)
     if stage == "dev-build":
-        return (
-            [sys.executable, str(DEV_LAUNCHER), "--build-only"],
-            str(REPO_ROOT),
+        return [sys.executable, str(DEV_LAUNCHER), "--build-only"], str(
+            REPO_ROOT
         )
     if stage == "python":
-        # Backend + RPC tests: framing, dispatcher, server, table service.
-        return (
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "tests/backend",
-                "--no-cov",
-                "-q",
-            ],
-            str(REPO_ROOT),
-        )
+        return [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/backend",
+            "-q",
+            "-o",
+            "addopts=",
+            "-p",
+            "no:cacheprovider",
+        ], str(REPO_ROOT)
     if stage == "contracts":
-        # Language-neutral contract fixtures. Asserted byte-for-byte by both
-        # the Python contract tests and the C# fixture tests (dotnet stage).
-        return (
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "tests/contract",
-                "--no-cov",
-                "-q",
-            ],
-            str(REPO_ROOT),
-        )
+        return [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/contract",
+            "-q",
+            "-o",
+            "addopts=",
+            "-p",
+            "no:cacheprovider",
+        ], str(REPO_ROOT)
+    if stage == "tooling":
+        return [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/test_release_tooling.py",
+            "tests/test_architecture.py",
+            "tests/test_dev.py",
+            "tests/test_handoff_artifacts.py",
+            "tests/test_next_gate.py",
+            "-q",
+            "-o",
+            "addopts=",
+            "-p",
+            "no:cacheprovider",
+        ], str(REPO_ROOT)
     if stage == "dotnet":
-        return (
-            [
-                _dotnet_path(),
-                "test",
-                str(DESKTOP_SLN),
-                "--configuration",
-                "Release",
-                "/p:CollectCoverage=true",
-                "/p:CoverletOutputFormat=cobertura",
-            ],
-            str(REPO_ROOT),
-        )
+        return [
+            _resolve("dotnet"),
+            "test",
+            str(DESKTOP_SLN),
+            "--configuration",
+            "Release",
+            "/p:CollectCoverage=true",
+            "/p:CoverletOutputFormat=cobertura",
+        ], str(REPO_ROOT)
     if stage == "web-test":
-        return (
-            [_resolve_executable("npm"), "run", "test:coverage"],
-            str(WEB_GRID_DIR),
-        )
+        return [_resolve("npm"), "run", "test:coverage"], str(WEB_GRID_DIR)
     if stage == "web-build":
-        return (
-            [_resolve_executable("npm"), "run", "build"],
-            str(WEB_GRID_DIR),
-        )
-    if stage.startswith("directus-"):
-        ext_dirs = _directus_extension_dirs()
-        ext_dir = directus_extension_dir or ext_dirs[0]
-        if stage == "directus-test":
-            return (
-                [_resolve_executable("npm"), "run", "test:coverage"],
-                str(ext_dir),
-            )
-        if stage == "directus-typecheck":
-            return (
-                [_resolve_executable("npm"), "run", "typecheck"],
-                str(ext_dir),
-            )
-        if stage == "directus-build":
-            return ([_resolve_executable("npm"), "run", "build"], str(ext_dir))
+        return [_resolve("npm"), "run", "build"], str(WEB_GRID_DIR)
+    if stage == "fault-injection":
+        return [sys.executable, str(FAULT_INJECTION)], str(REPO_ROOT)
+    if stage == "product-e2e":
+        return [sys.executable, "qa/product_acceptance.py"], str(REPO_ROOT)
     if stage == "smoke":
-        return (
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                str(E2E_SMOKE_TEST),
-                "--no-cov",
-                "-q",
-            ],
-            str(REPO_ROOT),
+        return [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(E2E_SMOKE),
+            "-q",
+            "-o",
+            "addopts=",
+            "-p",
+            "no:cacheprovider",
+        ], str(REPO_ROOT)
+    raise ValueError(f"unknown stage: {stage}")
+
+
+def _stage_environment(stage: str, command: list[str]) -> dict[str, str]:
+    # Keep every gate invocation isolated. Reusing the parent directory lets
+    # pytest discover a stale ``pytest-of-<user>`` folder whose ACL may belong
+    # to a previous Windows sandbox account, failing before any test executes.
+    qa_tmp = QA_RUN_TEMP_DIR
+    qa_tmp.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    environment["TMP"] = str(qa_tmp)
+    environment["TEMP"] = str(qa_tmp)
+    if stage.startswith("go-"):
+        go_cache = REPO_ROOT / "build" / "qa" / "go-cache"
+        go_tmp = REPO_ROOT / "build" / "qa" / "go-tmp"
+        go_cache.mkdir(parents=True, exist_ok=True)
+        go_tmp.mkdir(parents=True, exist_ok=True)
+        environment["GOCACHE"] = str(go_cache)
+        environment["GOTMPDIR"] = str(go_tmp)
+    if stage == "go-race" and os.name == "nt":
+        # Go's Windows race runtime requires cgo plus a MinGW-w64 runtime that
+        # provides libsynchronization.a. Prefer the repository-local,
+        # hash-verified w64devkit toolchain while still allowing a system gcc.
+        compiler = _resolve("gcc")
+        environment["CGO_ENABLED"] = "1"
+        environment["CC"] = compiler
+        compiler_dir = str(Path(compiler).parent)
+        # w64devkit's collect2 resolves ld through COMPILER_PATH when invoked
+        # indirectly by the Go linker. PATH alone is not reliable in a clean
+        # Windows process environment.
+        environment["COMPILER_PATH"] = compiler_dir
+        environment["PATH"] = compiler_dir + os.pathsep + environment.get("PATH", "")
+    if stage == "go-build":
+        Path(command[command.index("-o") + 1]).parent.mkdir(
+            parents=True, exist_ok=True
         )
-    raise ValueError(f"unknown stage: {stage!r}")
+    return environment
 
 
-# ---------------------------------------------------------------------------
-# Stage execution
-# ---------------------------------------------------------------------------
-
-
-def run_stage(stage: str) -> StageResult:
-    """Execute ``stage`` and capture its result.
-
-    Uses :func:`subprocess.run` with an argument list (no shell), repo-root
-    cwd, and UTF-8 / replace decoding. Elapsed time is wall-clock seconds.
-
-    G0.2: for ``directus-*`` stages, iterates every extension declared in the
-    manifest. The stage passes only if ALL extensions pass; output from each
-    extension is concatenated so the report shows which one failed.
-    """
-    if stage.startswith("directus-"):
-        return _run_multi_extension_stage(stage)
-    command, cwd = stage_command(stage)
-    start = time.perf_counter()
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        with suppress(OSError, subprocess.TimeoutExpired):
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                capture_output=True,
+                timeout=30,
+            )
+    else:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
     try:
-        proc = subprocess.run(
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=30)
+
+
+def _timeout_text(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
+
+
+def _run_command(
+    command: list[str],
+    *,
+    cwd: str,
+    environment: dict[str, str],
+    timeout: int,
+) -> tuple[int, str, str]:
+    popen_kwargs: dict[str, object] = {}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+    try:
+        process = subprocess.Popen(
             command,
             cwd=cwd,
-            check=False,
-            capture_output=True,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
+            **popen_kwargs,
         )
-        returncode = proc.returncode
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-    except FileNotFoundError as exc:
-        # Missing tool (e.g. dotnet not installed) is a hard failure with the
-        # reason captured in stderr so the report shows what was missing.
-        returncode = 127
-        stdout = ""
-        stderr = f"command not found: {command[0] if command else '?'}: {exc}"
-    elapsed = time.perf_counter() - start
+    except OSError as exc:
+        return 127, "", str(exc)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return process.returncode, stdout or "", stderr or ""
+    except subprocess.TimeoutExpired as exc:
+        _terminate_process_tree(process)
+        final_stdout, final_stderr = process.communicate()
+        stdout = _timeout_text(exc.output) + (final_stdout or "")
+        stderr = _timeout_text(exc.stderr) + (final_stderr or "")
+        stderr += f"\nprocess tree timed out after {timeout}s and was terminated\n"
+        return TIMEOUT_RETURNCODE, stdout, stderr
+
+
+def _run_go_race(
+    *,
+    cwd: str,
+    environment: dict[str, str],
+) -> tuple[int, str, str]:
+    """Run every Go test under race while recycling watcher-heavy test processes."""
+
+    go = _resolve("go")
+    package_command = [go, "list", "./..."]
+    package_code, package_stdout, package_stderr = _run_command(
+        package_command,
+        cwd=cwd,
+        environment=environment,
+        timeout=RACE_COMMAND_TIMEOUT_SECONDS,
+    )
+    output = ["$ " + subprocess.list2cmdline(package_command), package_stdout]
+    errors = [package_stderr]
+    if package_code:
+        return package_code, "\n".join(output), "\n".join(errors)
+    packages = [line.strip() for line in package_stdout.splitlines() if line.strip()]
+    if not packages:
+        return 1, "\n".join(output), "race package discovery found zero packages"
+    commands: list[tuple[list[str], int]] = []
+    discovered_names: list[tuple[str, str]] = []
+    for package in packages:
+        list_command = [
+            go,
+            "test",
+            package,
+            "-list",
+            "^(Test|Example|Fuzz)",
+        ]
+        listed_code, listed_stdout, listed_stderr = _run_command(
+            list_command,
+            cwd=cwd,
+            environment=environment,
+            timeout=RACE_COMMAND_TIMEOUT_SECONDS,
+        )
+        output.extend(("$ " + subprocess.list2cmdline(list_command), listed_stdout))
+        errors.append(listed_stderr)
+        if listed_code:
+            return listed_code, "\n".join(output), "\n".join(errors)
+        names = [
+            line.strip()
+            for line in listed_stdout.splitlines()
+            if re.fullmatch(r"(?:Test|Example|Fuzz)[A-Za-z0-9_]+", line.strip())
+        ]
+        if not names:
+            commands.append(
+                (
+                    [
+                        go,
+                        "test",
+                        "-race",
+                        "-count=1",
+                        "-timeout=5m",
+                        package,
+                    ],
+                    RACE_COMMAND_TIMEOUT_SECONDS,
+                )
+            )
+            continue
+        discovered_names.extend((package, name) for name in names)
+    if not discovered_names:
+        return 1, "\n".join(output), "race discovery found zero named Go tests"
+    regular = [
+        item for item in discovered_names if item[1] not in RACE_LONG_TESTS
+    ]
+    long_running = [
+        item for item in discovered_names if item[1] in RACE_LONG_TESTS
+    ]
+    for package, name in (*regular, *long_running):
+        is_long = name in RACE_LONG_TESTS
+        go_timeout = RACE_LONG_TEST_TIMEOUT if is_long else "5m"
+        commands.append(
+            (
+                [
+                    go,
+                    "test",
+                    "-race",
+                    "-count=1",
+                    "-parallel=1",
+                    f"-timeout={go_timeout}",
+                    package,
+                    "-run",
+                    f"^{re.escape(name)}$",
+                ],
+                (
+                    RACE_LONG_COMMAND_TIMEOUT_SECONDS
+                    if is_long
+                    else RACE_COMMAND_TIMEOUT_SECONDS
+                ),
+            )
+        )
+    for command, timeout in commands:
+        output.append("$ " + subprocess.list2cmdline(command))
+        code, stdout, stderr = _run_command(
+            command,
+            cwd=cwd,
+            environment=environment,
+            timeout=timeout,
+        )
+        output.append(stdout)
+        errors.append(stderr)
+        combined = stdout + "\n" + stderr
+        attempt = 1
+        while (
+            code
+            and attempt < WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS
+            and _is_windows_tempdir_cleanup_flake(combined)
+        ):
+            attempt += 1
+            output.append(
+                "known Windows TempDir watcher cleanup flake; "
+                "retrying this exact race command in a fresh process "
+                f"(attempt {attempt}/{WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS})"
+            )
+            code, stdout, stderr = _run_command(
+                command,
+                cwd=cwd,
+                environment=environment,
+                timeout=timeout,
+            )
+            output.append(stdout)
+            errors.append(stderr)
+            combined = stdout + "\n" + stderr
+        if code:
+            return code, "\n".join(output), "\n".join(errors)
+    return 0, "\n".join(output), "\n".join(errors)
+
+
+def _is_windows_tempdir_cleanup_flake(output: str) -> bool:
+    """Recognize only the narrow PocketBase watcher cleanup race, never Go races."""
+
+    if os.name != "nt":
+        return False
+    if "WARNING: DATA RACE" in output or "panic:" in output:
+        return False
+    if "TempDir RemoveAll cleanup:" not in output:
+        return False
+    if "The directory is not empty" not in output:
+        return False
+    diagnostics = re.findall(r"^\s+([^:\r\n]+\.go):\d+:", output, flags=re.MULTILINE)
+    return bool(diagnostics) and all(
+        Path(source).name == "testing.go" for source in diagnostics
+    )
+
+
+def run_stage(stage: str) -> StageResult:
+    command, cwd = stage_command(stage)
+    environment = _stage_environment(stage, command)
+    started = time.monotonic()
+    if stage == "go-race":
+        returncode, stdout, stderr = _run_go_race(
+            cwd=cwd,
+            environment=environment,
+        )
+    else:
+        returncode, stdout, stderr = _run_command(
+            command,
+            cwd=cwd,
+            environment=environment,
+            timeout=STAGE_TIMEOUT_SECONDS.get(
+                stage,
+                DEFAULT_STAGE_TIMEOUT_SECONDS,
+            ),
+        )
+        attempt = 1
+        while (
+            stage == "go-test"
+            and returncode
+            and attempt < WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS
+            and _is_windows_tempdir_cleanup_flake(stdout + "\n" + stderr)
+        ):
+            attempt += 1
+            previous_stdout, previous_stderr = stdout, stderr
+            returncode, stdout, stderr = _run_command(
+                command,
+                cwd=cwd,
+                environment=environment,
+                timeout=STAGE_TIMEOUT_SECONDS.get(
+                    stage,
+                    DEFAULT_STAGE_TIMEOUT_SECONDS,
+                ),
+            )
+            stdout = "\n".join(
+                (
+                    previous_stdout,
+                    "known Windows TempDir watcher cleanup flake; "
+                    "retried the exact go-test command in a fresh process "
+                    f"(attempt {attempt}/"
+                    f"{WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS})",
+                    stdout,
+                )
+            )
+            stderr = "\n".join((previous_stderr, stderr))
     return StageResult(
         stage=stage,
         command=command,
         returncode=returncode,
-        elapsed=elapsed,
+        elapsed=time.monotonic() - started,
         stdout=stdout,
         stderr=stderr,
         cwd=cwd,
     )
 
 
-def _run_multi_extension_stage(stage: str) -> StageResult:
-    """Run a ``directus-*`` stage across every declared extension.
+def _write_console_text(stream: object, value: str) -> None:
+    """Write captured UTF-8 output without crashing on a legacy Windows code page."""
 
-    Iterates :func:`_directus_extension_dirs`; stops at the first failure.
-    The returned result carries the failing extension's command, but stdout
-    and stderr are concatenated across all extensions so a reviewer can see
-    the full per-extension trail.
-    """
-    ext_dirs = _directus_extension_dirs()
-    combined_stdout: list[str] = []
-    combined_stderr: list[str] = []
-    total_elapsed = 0.0
-    last_command: list[str] = []
-    last_cwd = ""
-    for ext_dir in ext_dirs:
-        command, cwd = stage_command(stage, directus_extension_dir=ext_dir)
-        last_command = command
-        last_cwd = cwd
-        header = f"--- Directus extension: {ext_dir.name} ({stage}) ---\n"
-        start = time.perf_counter()
-        try:
-            proc = subprocess.run(
-                command,
-                cwd=cwd,
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            returncode = proc.returncode
-            stdout = proc.stdout or ""
-            stderr = proc.stderr or ""
-        except FileNotFoundError as exc:
-            returncode = 127
-            stdout = ""
-            stderr = f"command not found: {command[0] if command else '?'}: {exc}"
-        total_elapsed += time.perf_counter() - start
-        combined_stdout.append(header + stdout)
-        combined_stderr.append(stderr)
-        if returncode != 0:
-            return StageResult(
-                stage=stage,
-                command=last_command,
-                returncode=returncode,
-                elapsed=total_elapsed,
-                stdout="".join(combined_stdout),
-                stderr="".join(combined_stderr),
-                cwd=last_cwd,
-            )
-    return StageResult(
-        stage=stage,
-        command=last_command,
-        returncode=0,
-        elapsed=total_elapsed,
-        stdout="".join(combined_stdout),
-        stderr="".join(combined_stderr),
-        cwd=last_cwd,
-    )
-
-
-def is_stage_skipped(result: StageResult) -> bool:
-    """True when the smoke stage's underlying pytest skipped all tests.
-
-    ``pytest`` exits 0 whether tests pass or skip; we detect a deliberate
-    skip by looking for the ``skip`` marker in the tail of pytest's output
-    (e.g. ``1 skipped``).
-    """
-    if result.stage != "smoke":
-        return False
-    tail = (result.stdout + result.stderr).lower()
-    if "skipped" not in tail:
-        return False
-    # If any test FAILED (even alongside a skip), pytest exits non-zero and
-    # the gate fails; only a pure skip (exit 0) is treated as acceptable.
-    return result.returncode == 0
-
-
-def is_stage_failure(result: StageResult) -> bool:
-    """True on non-zero exit or a skipped end-to-end smoke stage."""
-    return result.returncode != 0 or is_stage_skipped(result)
-
-
-# ---------------------------------------------------------------------------
-# Reporting
-# ---------------------------------------------------------------------------
-
-
-def _write_console_text(stream, value: str) -> None:
-    """Write child output without crashing on a narrower Windows code page."""
+    if not value:
+        return
     try:
-        stream.write(value)
+        stream.write(value)  # type: ignore[attr-defined]
     except UnicodeEncodeError:
         encoding = getattr(stream, "encoding", None) or "utf-8"
-        safe = value.encode(encoding, errors="replace").decode(encoding)
-        stream.write(safe)
+        safe_value = value.encode(encoding, errors="backslashreplace").decode(encoding)
+        stream.write(safe_value)  # type: ignore[attr-defined]
+    stream.flush()  # type: ignore[attr-defined]
 
 
-def _print_stage_result(result: StageResult) -> None:
-    status = (
-        "SKIP" if is_stage_skipped(result) else ("PASS" if not is_stage_failure(result) else "FAIL")
-    )
-    print(f"[{status}] {result.stage} ({result.elapsed:.2f}s) $ {' '.join(result.command)}")
-    if result.stdout:
-        _write_console_text(
-            sys.stdout,
-            result.stdout if result.stdout.endswith("\n") else result.stdout + "\n",
-        )
-    if result.stderr:
-        _write_console_text(
-            sys.stderr,
-            result.stderr if result.stderr.endswith("\n") else result.stderr + "\n",
-        )
-
-
-def _print_summary(results: list[StageResult]) -> int:
-    """Print the per-stage summary and return the gate exit code."""
-    print()
-    print("=" * 72)
-    print("  VibeTable Next Phase A gate summary")
-    print("=" * 72)
-    exit_code = 0
-    for r in results:
-        failed = is_stage_failure(r)
-        if failed:
-            status = "SKIP" if is_stage_skipped(r) else "FAIL"
-            exit_code = r.returncode or 1
-        else:
-            status = "PASS"
-        print(f"  {r.stage:<20} {status:<5} ({r.elapsed:6.2f}s)")
-    # Stages after the first failure were not run.
-    not_run = [s for s in STAGES if s not in {r.stage for r in results}]
-    if not_run:
-        print("  (not run: " + ", ".join(not_run) + ")")
-    total = sum(r.elapsed for r in results)
-    print(f"  total elapsed: {total:.2f}s")
-    print("=" * 72)
-    return exit_code
-
-
-# ---------------------------------------------------------------------------
-# CLI entry points
-# ---------------------------------------------------------------------------
-
-
-def cmd_list() -> int:
-    """Print the exact ordered stages, one per line."""
-    for stage in STAGES:
-        print(stage)
-    return 0
-
-
-def cmd_ci() -> int:
-    """Run every stage in order, stopping on the first failure."""
-    print(f"# VibeTable Next Phase A gate ({datetime.now().isoformat()})")
-    print(f"# repo: {REPO_ROOT}")
-    print(f"# stages: {', '.join(STAGES)}")
+def run_ci() -> tuple[int, list[StageResult]]:
     results: list[StageResult] = []
     for stage in STAGES:
-        print()
-        print(f"---- stage: {stage} ----")
         result = run_stage(stage)
         results.append(result)
-        _print_stage_result(result)
-        if is_stage_failure(result):
-            # STOP on first failure; remaining stages are not executed.
-            break
-    return _print_summary(results)
+        _write_console_text(sys.stdout, result.stdout)
+        _write_console_text(sys.stderr, result.stderr)
+        if result.returncode:
+            return result.returncode, results
+    return 0, results
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="next.py",
-        description="VibeTable cross-stack aggregate quality gate.",
-    )
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument(
-        "--list",
-        action="store_true",
-        help="Print the exact ordered stages (one per line) and exit.",
-    )
-    mode.add_argument(
-        "--ci",
-        action="store_true",
-        help="Run every stage in order, stopping on the first failure. "
-        "Exits with the failing stage's non-zero code.",
-    )
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("--ci", action="store_true")
+    parser.add_argument("--stage", choices=STAGES)
+    parser.add_argument("--json-report", type=Path)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_arg_parser()
-    args = parser.parse_args(argv)
+    args = _parser().parse_args(argv)
     if args.list:
-        return cmd_list()
-    if args.ci:
-        return cmd_ci()
-    parser.error("no mode selected")  # unreachable: mutually exclusive required
-    return 2
+        print("\n".join(STAGES))
+        return 0
+    try:
+        starting_commit = handoff_gate.git_head_sha()
+        dependencies = handoff_gate.load_dependencies()
+        starting_hashes = handoff_gate.artifact_hashes(dependencies)
+        starting_source_hash = handoff_gate.release_source_hash(dependencies)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"failed to capture gate identity: {exc}", file=sys.stderr)
+        return 2
+    if args.stage:
+        result = run_stage(args.stage)
+        results = [result]
+        code = result.returncode
+    elif args.ci:
+        code, results = run_ci()
+    else:
+        _parser().error("choose --list, --stage, or --ci")
+    ending_commit = handoff_gate.git_head_sha()
+    ending_dependencies = handoff_gate.load_dependencies()
+    ending_hashes = handoff_gate.artifact_hashes(ending_dependencies)
+    ending_source_hash = handoff_gate.release_source_hash(ending_dependencies)
+    identity_stable = (
+        starting_commit == ending_commit
+        and starting_hashes == ending_hashes
+        and starting_source_hash == ending_source_hash
+    )
+    if not identity_stable:
+        print(
+            "release identity changed while the gate was running",
+            file=sys.stderr,
+        )
+        code = code or 1
+    release_eligible = bool(args.ci and code == 0 and identity_stable)
+    if args.json_report:
+        args.json_report.parent.mkdir(parents=True, exist_ok=True)
+        args.json_report.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "ok": code == 0,
+                    "releaseEligible": release_eligible,
+                    "generatedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                    "commit": ending_commit,
+                    "artifactHashes": ending_hashes,
+                    "sourceHash": ending_source_hash,
+                    "results": [item.to_dict() for item in results],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    return code
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

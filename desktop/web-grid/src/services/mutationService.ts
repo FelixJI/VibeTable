@@ -6,6 +6,7 @@ import type {
   ApplyPasteResult,
   DeleteRowsResult,
   InsertRowResult,
+  MutationErrorPayload,
   UpdateCellResult,
 } from "@/contracts";
 
@@ -38,12 +39,13 @@ import type {
  * the user can restore the deleted rows.
  */
 export function useMutationService(): {
-  init: () => void;
+  init: (onEditRejected?: (error: MutationErrorPayload) => void) => void;
   updateCell: (
     rowKey: number | string,
     column: string,
     oldValue: unknown,
     newValue: unknown,
+    expectedDigest?: string | null,
   ) => void;
   insertRow: (values: Readonly<Record<string, unknown>>) => void;
   deleteRows: (rows: readonly DeleteRowReqItem[]) => void;
@@ -65,10 +67,10 @@ export function useMutationService(): {
   const history = useHistoryStore();
 
   /**
-   * Feedback-loop guard: while true, the NEXT matching inbound mutation result
-   * still applies to the store (and runs the schema-clear check) but skips
-   * pushing a new history entry, then CONSUMES the flag (sets it back to
-   * false).
+   * A pending history round-trip applies the matching inbound mutation result
+   * to the store without pushing a duplicate entry. Its Promise resolves only
+   * after host confirmation, so historyStore moves stacks at the truthful
+   * commit boundary and can restore the entry when the host rejects it.
    *
    * Lifecycle (consume-on-inbound, NOT time/await based):
    *   1. `performUndo`/`performRedo` set this to true BEFORE calling
@@ -83,25 +85,35 @@ export function useMutationService(): {
    *      change to the store, SKIPS `history.push`, and sets the flag back to
    *      false (one undo/redo == one outbound request == one inbound result).
    *
-   * Stale-flag recovery: if the host never replies (it fails the operation),
-   * no editCommitted/rowsInserted/rowsDeleted/pasteApplied ever arrives. The
-   * `operation.failed` subscription below clears the flag so the NEXT user
-   * edit is not wrongly suppressed. As a defensive backstop, a 5s timer also
-   * clears it (covers a host that neither confirms nor fails — should not
-   * happen, but a stuck suppressHistory would silently swallow every edit
-   * afterward).
+   * `table.editRejected`/`operation.failed` reject the Promise, while a 5s
+   * timeout prevents an unresponsive host from locking history indefinitely.
    *
    * Module-level inside the closure so it is shared across all inbound
    * handlers of this service instance.
    */
-  let suppressHistory = false;
-  /** Defensive backstop timer that clears a stuck `suppressHistory`. */
-  let suppressHistoryTimer: ReturnType<typeof setTimeout> | null = null;
-  /** How long the suppress guard may stay up before being force-cleared. */
-  const SUPPRESS_HISTORY_TIMEOUT_MS = 5_000;
+  type HistoryResultType =
+    | "table.editCommitted"
+    | "table.rowsInserted"
+    | "table.rowsDeleted";
+  interface PendingHistoryRoundTrip {
+    readonly expectedType: HistoryResultType;
+    readonly resolve: () => void;
+    readonly reject: (error: Error) => void;
+    readonly timer: ReturnType<typeof setTimeout>;
+  }
+  let pendingHistoryRoundTrip: PendingHistoryRoundTrip | null = null;
+  const HISTORY_ROUND_TRIP_TIMEOUT_MS = 5_000;
 
   /** Caches row snapshots for pending deleteRows, keyed by stringified keys. */
   const pendingDeleteSnapshot = new Map<string, Record<string, unknown>[]>();
+  const pendingCellEdits: Array<{
+    readonly rowKey: number | string;
+    readonly column: string;
+    readonly oldValue: unknown;
+  }> = [];
+  let editRejectedHandler:
+    | ((error: MutationErrorPayload) => void)
+    | undefined;
 
   function currentSchemaRev(): string {
     return table.revision?.schemaRevision ?? "";
@@ -118,65 +130,89 @@ export function useMutationService(): {
    * after, prev and new would always match and history would never clear.
    */
   function applyAndMaybeClear(
+    resultType: HistoryResultType,
     newSchemaRev: string,
     apply: () => void,
     pushEntry: () => void,
   ): void {
     const prevSchemaRev = table.revision?.schemaRevision ?? null;
-    // Capture BEFORE apply: this inbound result is the one expected from an
-    // undo/redo round-trip if and only if the guard is up. We consume the
-    // flag (clear it) when we see it — one undo/redo yields exactly one
-    // inbound result.
-    const wasSuppressing = suppressHistory;
+    const isHistoryConfirmation =
+      pendingHistoryRoundTrip?.expectedType === resultType;
     apply();
     if (prevSchemaRev !== null && prevSchemaRev !== newSchemaRev) {
       // Schema changed across this mutation — undo/redo is no longer safe.
       // NOTE: schema-clear intentionally runs even while suppressing, because
       // a real schema change during a re-notification must still invalidate
-      // history. We still consume the suppress flag below.
+      // history.
       history.clear();
-      if (wasSuppressing) clearSuppressHistory();
-    } else if (wasSuppressing) {
-      // Undo/redo round-trip confirmation: apply already ran above, just drop
-      // the guard without pushing a duplicate entry.
-      clearSuppressHistory();
-    } else {
+    } else if (!isHistoryConfirmation) {
       pushEntry();
     }
+    if (isHistoryConfirmation) resolveHistoryRoundTrip();
   }
 
-  /**
-   * Drop the suppress guard and cancel its backstop timer. Called when an
-   * inbound mutation result arrives (the round-trip completed) OR when
-   * `operation.failed` arrives (the round-trip will never complete).
-   */
-  function clearSuppressHistory(): void {
-    suppressHistory = false;
-    if (suppressHistoryTimer !== null) {
-      clearTimeout(suppressHistoryTimer);
-      suppressHistoryTimer = null;
+  function resolveHistoryRoundTrip(): void {
+    const pending = pendingHistoryRoundTrip;
+    if (!pending) return;
+    pendingHistoryRoundTrip = null;
+    clearTimeout(pending.timer);
+    pending.resolve();
+  }
+
+  function rejectHistoryRoundTrip(message: string): void {
+    const pending = pendingHistoryRoundTrip;
+    if (!pending) return;
+    pendingHistoryRoundTrip = null;
+    clearTimeout(pending.timer);
+    pending.reject(new Error(message));
+  }
+
+  function runHistoryRoundTrip(
+    expectedType: HistoryResultType,
+    send: () => void,
+  ): Promise<void> {
+    if (pendingHistoryRoundTrip) {
+      return Promise.reject(new Error("Another undo or redo is still pending."));
     }
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        rejectHistoryRoundTrip("The host did not confirm the undo or redo.");
+      }, HISTORY_ROUND_TRIP_TIMEOUT_MS);
+      pendingHistoryRoundTrip = { expectedType, resolve, reject, timer };
+      try {
+        send();
+      } catch (error) {
+        rejectHistoryRoundTrip(
+          error instanceof Error ? error.message : "Unable to send undo or redo.",
+        );
+      }
+    });
   }
 
-  /**
-   * Arm the suppress guard and a defensive 5s backstop. The backstop ensures
-   * that if the host neither confirms nor fails the operation, a stuck guard
-   * does not silently swallow every subsequent user edit.
-   */
-  function armSuppressHistory(): void {
-    clearSuppressHistory();
-    suppressHistory = true;
-    suppressHistoryTimer = setTimeout(() => {
-      suppressHistoryTimer = null;
-      suppressHistory = false;
-    }, SUPPRESS_HISTORY_TIMEOUT_MS);
-  }
+  function init(
+    onEditRejected?: (error: MutationErrorPayload) => void,
+  ): void {
+    editRejectedHandler = onEditRejected ?? editRejectedHandler;
+    bridge.on("table.editRejected", (error: MutationErrorPayload) => {
+      const pending = takeRejectedCellEdit(error);
+      if (pending) {
+        table.rollbackCellEdit(
+          pending.rowKey,
+          pending.column,
+          pending.oldValue,
+          error.currentRow,
+        );
+      }
+      editRejectedHandler?.(error);
+      rejectHistoryRoundTrip(error.message);
+    });
 
-  function init(): void {
     bridge.on("table.editCommitted", (r: UpdateCellResult) => {
       // Capture the old value BEFORE applying (apply overwrites the row).
-      const oldValue = findCellValue(r.rowKey, r.column);
+      const pending = takePendingCellEdit(r.rowKey, r.column);
+      const oldValue = pending?.oldValue ?? findCellValue(r.rowKey, r.column);
       applyAndMaybeClear(
+        "table.editCommitted",
         r.revision.schemaRevision,
         () => table.applyCellEdit(r),
         () => {
@@ -186,23 +222,29 @@ export function useMutationService(): {
             label: `编辑 ${r.column}`,
             timestamp: Date.now(),
             undo: async () => {
-              bridge.notify("table.updateCellRequested", {
-                table: ws.currentTable ?? "",
-                rowKey: r.rowKey,
-                column: r.column,
-                oldValue: r.storedValue,
-                newValue: oldValue,
-                schemaRevision: currentSchemaRev(),
+              await runHistoryRoundTrip("table.editCommitted", () => {
+                bridge.notify("table.updateCellRequested", {
+                  table: ws.currentTable ?? "",
+                  rowKey: r.rowKey,
+                  column: r.column,
+                  oldValue: r.storedValue,
+                  newValue: oldValue,
+                  expectedDigest: findRowDigest(r.rowKey),
+                  schemaRevision: currentSchemaRev(),
+                });
               });
             },
             redo: async () => {
-              bridge.notify("table.updateCellRequested", {
-                table: ws.currentTable ?? "",
-                rowKey: r.rowKey,
-                column: r.column,
-                oldValue: oldValue,
-                newValue: r.storedValue,
-                schemaRevision: currentSchemaRev(),
+              await runHistoryRoundTrip("table.editCommitted", () => {
+                bridge.notify("table.updateCellRequested", {
+                  table: ws.currentTable ?? "",
+                  rowKey: r.rowKey,
+                  column: r.column,
+                  oldValue: oldValue,
+                  newValue: r.storedValue,
+                  expectedDigest: findRowDigest(r.rowKey),
+                  schemaRevision: currentSchemaRev(),
+                });
               });
             },
           });
@@ -212,6 +254,7 @@ export function useMutationService(): {
 
     bridge.on("table.rowsInserted", (r: InsertRowResult) => {
       applyAndMaybeClear(
+        "table.rowsInserted",
         r.revision.schemaRevision,
         () => table.applyInsert(r),
         () => {
@@ -221,17 +264,25 @@ export function useMutationService(): {
             label: "插入行",
             timestamp: Date.now(),
             undo: async () => {
-              bridge.notify("table.deleteRowsRequested", {
-                table: ws.currentTable ?? "",
-                rows: [{ rowKey: r.rowKey, expectedDigest: "" }],
-                schemaRevision: currentSchemaRev(),
+              const expectedDigest = findRowDigest(r.rowKey);
+              if (!expectedDigest) {
+                throw new Error("The row changed and cannot be undone safely.");
+              }
+              await runHistoryRoundTrip("table.rowsDeleted", () => {
+                bridge.notify("table.deleteRowsRequested", {
+                  table: ws.currentTable ?? "",
+                  rows: [{ rowKey: r.rowKey, expectedDigest }],
+                  schemaRevision: currentSchemaRev(),
+                });
               });
             },
             redo: async () => {
-              bridge.notify("table.insertRowRequested", {
-                table: ws.currentTable ?? "",
-                values: r.row,
-                schemaRevision: currentSchemaRev(),
+              await runHistoryRoundTrip("table.rowsInserted", () => {
+                bridge.notify("table.insertRowRequested", {
+                  table: ws.currentTable ?? "",
+                  values: r.row,
+                  schemaRevision: currentSchemaRev(),
+                });
               });
             },
           });
@@ -246,6 +297,7 @@ export function useMutationService(): {
       const snapshot = pendingDeleteSnapshot.get(key) ?? [];
       pendingDeleteSnapshot.delete(key);
       applyAndMaybeClear(
+        "table.rowsDeleted",
         r.revision.schemaRevision,
         () => table.applyDelete(r),
         () => {
@@ -256,21 +308,29 @@ export function useMutationService(): {
             timestamp: Date.now(),
             undo: async () => {
               for (const row of snapshot) {
-                bridge.notify("table.insertRowRequested", {
-                  table: ws.currentTable ?? "",
-                  values: row,
-                  schemaRevision: currentSchemaRev(),
+                await runHistoryRoundTrip("table.rowsInserted", () => {
+                  bridge.notify("table.insertRowRequested", {
+                    table: ws.currentTable ?? "",
+                    values: row,
+                    schemaRevision: currentSchemaRev(),
+                  });
                 });
               }
             },
             redo: async () => {
-              bridge.notify("table.deleteRowsRequested", {
-                table: ws.currentTable ?? "",
-                rows: r.deletedRowKeys.map((k) => ({
-                  rowKey: k,
-                  expectedDigest: "",
-                })),
-                schemaRevision: currentSchemaRev(),
+              const guardedRows = r.deletedRowKeys.flatMap((rowKey) => {
+                const expectedDigest = findRowDigest(rowKey);
+                return expectedDigest ? [{ rowKey, expectedDigest }] : [];
+              });
+              if (guardedRows.length !== r.deletedRowKeys.length) {
+                throw new Error("The rows changed and cannot be redone safely.");
+              }
+              await runHistoryRoundTrip("table.rowsDeleted", () => {
+                bridge.notify("table.deleteRowsRequested", {
+                  table: ws.currentTable ?? "",
+                  rows: guardedRows,
+                  schemaRevision: currentSchemaRev(),
+                });
               });
             },
           });
@@ -287,15 +347,7 @@ export function useMutationService(): {
       // owns the history entry. Skip the apply/store update and skip the schema
       // clear path (no revision on ApplyPasteResult); push directly.
       //
-      // Suppress-consume: if this paste confirmation is the inbound result of
-      // a redo (paste redo is a no-op, but defensively), drop the guard
-      // without pushing a duplicate entry.
-      if (suppressHistory) {
-        clearSuppressHistory();
-        return;
-      }
       const created = r.createdRowKeys as readonly (number | string)[];
-      const createdCount = created.length;
       history.push({
         id: crypto.randomUUID(),
         kind: "applyPaste",
@@ -304,36 +356,38 @@ export function useMutationService(): {
         undo: async () => {
           // Undo a paste by deleting any created rows. Updated rows are
           // NOT reverted here (their pre-paste values are not available on the
-          // web side; the host would need a restore primitive). expectedDigest
-          // is required by the wire contract but ignored by the backend; "" is
-          // a stable filler that mirrors the insertRow undo closure above.
+          // web side; the refreshed authoritative rows do carry QueryPort
+          // digests, so capture those immediately before the guarded delete.
           if (created.length === 0) return;
-          bridge.notify("table.deleteRowsRequested", {
-            table: ws.currentTable ?? "",
-            rows: created.map((k) => ({ rowKey: k, expectedDigest: "" })),
-            schemaRevision: currentSchemaRev(),
+          const guardedRows = created.flatMap((rowKey) => {
+            const expectedDigest = findRowDigest(rowKey);
+            return expectedDigest ? [{ rowKey, expectedDigest }] : [];
           });
-        },
-        redo: async () => {
-          // Paste tokens are single-use: the host consumed `token` during the
-          // original apply and will reject a replay. We cannot re-issue the
-          // paste without re-running the preview flow, so redo is a no-op.
-          // Keeping a closure (rather than throwing) means the entry cleanly
-          // returns to the redo stack without surfacing an error toast.
-          void createdCount;
+          if (guardedRows.length !== created.length) {
+            throw new Error("The pasted rows changed and cannot be undone safely.");
+          }
+          await runHistoryRoundTrip("table.rowsDeleted", () => {
+            bridge.notify("table.deleteRowsRequested", {
+              table: ws.currentTable ?? "",
+              rows: guardedRows,
+              schemaRevision: currentSchemaRev(),
+            });
+          });
         },
       });
     });
 
-    // Stale-guard recovery: if an undo/redo's re-notification fails on the
-    // host side, the host broadcasts `operation.failed` (handled centrally by
-    // errorRouter) instead of any editCommitted/rowsInserted/rowsDeleted/
-    // pasteApplied confirmation. Without this subscription, suppressHistory
-    // would stay up forever (until the 5s backstop fires) and silently
-    // swallow the next user edit. Drop the guard here so the next genuine
-    // user edit is recorded normally.
-    bridge.on("operation.failed", () => {
-      if (suppressHistory) clearSuppressHistory();
+    // A host-side failure rejects the pending history Promise. historyStore
+    // then restores the entry to its original stack for a truthful retry.
+    bridge.on("operation.failed", (failure) => {
+      const message =
+        typeof failure === "object"
+        && failure !== null
+        && "message" in failure
+        && typeof failure.message === "string"
+          ? failure.message
+          : "The host rejected the undo or redo.";
+      rejectHistoryRoundTrip(message);
     });
   }
 
@@ -350,20 +404,53 @@ export function useMutationService(): {
     return undefined;
   }
 
+  function findRowDigest(rowKey: number | string): string | null {
+    const row = table.allRows.find((item) => item.rowKey === rowKey);
+    const value = row?.__vibetableDigest;
+    return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value)
+      ? value
+      : null;
+  }
+
   function updateCell(
     rowKey: number | string,
     column: string,
     oldValue: unknown,
     newValue: unknown,
+    expectedDigest: string | null = null,
   ): void {
+    pendingCellEdits.push({ rowKey, column, oldValue });
     bridge.notify("table.updateCellRequested", {
       table: ws.currentTable ?? "",
       rowKey,
       column,
       oldValue,
       newValue,
+      expectedDigest: expectedDigest ?? findRowDigest(rowKey),
       schemaRevision: currentSchemaRev(),
     });
+  }
+
+  function takePendingCellEdit(
+    rowKey: number | string,
+    column: string,
+  ): { readonly rowKey: number | string; readonly column: string; readonly oldValue: unknown } | undefined {
+    const index = pendingCellEdits.findIndex(
+      (pending) => pending.rowKey === rowKey && pending.column === column,
+    );
+    if (index < 0) return undefined;
+    return pendingCellEdits.splice(index, 1)[0];
+  }
+
+  function takeRejectedCellEdit(
+    error: MutationErrorPayload,
+  ): { readonly rowKey: number | string; readonly column: string; readonly oldValue: unknown } | undefined {
+    const conflicts = new Set(error.conflictingRowKeys ?? []);
+    const index = conflicts.size > 0
+      ? pendingCellEdits.findIndex((pending) => conflicts.has(pending.rowKey))
+      : 0;
+    if (index < 0 || pendingCellEdits.length === 0) return undefined;
+    return pendingCellEdits.splice(index, 1)[0];
   }
 
   function insertRow(values: Readonly<Record<string, unknown>>): void {
@@ -389,30 +476,15 @@ export function useMutationService(): {
   }
 
   /**
-   * Run `history.undo()` with the consume-on-inbound suppress guard armed.
-   *
-   * The undo closure re-notifies the host (e.g. `updateCellRequested` with
-   * `oldValue`). The notify returns immediately (postMessage is sync from the
-   * web side), so `await history.undo()` resolves before the C# host has even
-   * processed the request. The host emits `table.editCommitted`
-   * ASYNCHRONOUSLY later — by which point a time/await-based guard would have
-   * already flipped back off, and the inbound handler would push a duplicate
-   * entry and clear the redo stack.
-   *
-   * Instead we arm the guard here and leave it up. The matching inbound
-   * mutation handler consumes it (see `applyAndMaybeClear` /
-   * `pasteApplied`). If the host fails instead, the `operation.failed`
-   * subscription drops the guard. A 5s backstop also clears it as a last
-   * resort so a stuck guard cannot silently swallow future edits.
+   * Run `history.undo()`. Each mutation closure waits for the matching host
+   * confirmation before this Promise resolves.
    */
   async function performUndo(): Promise<void> {
-    armSuppressHistory();
     await history.undo();
   }
 
   /** Redo counterpart to {@link performUndo}. */
   async function performRedo(): Promise<void> {
-    armSuppressHistory();
     await history.redo();
   }
 

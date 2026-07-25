@@ -176,6 +176,113 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it("correlates the fixed daily quote RPC by its same response type", async () => {
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "quote-req-1",
+    });
+    bridge.start();
+
+    const pending = bridge.request("dailyQuote.fetch", {
+      provider: "quotable",
+      style: "philosophy",
+      locale: "en-US",
+    });
+    expect(webview.postMessage).toHaveBeenCalledWith({
+      type: "dailyQuote.fetch",
+      requestId: "quote-req-1",
+      payload: {
+        provider: "quotable",
+        style: "philosophy",
+        locale: "en-US",
+      },
+    });
+
+    webview.emit({
+      type: "dailyQuote.fetch",
+      requestId: "quote-req-1",
+      payload: {
+        text: "Know thyself.",
+        attribution: "Socrates",
+        url: "https://quotable.io/quotes/socrates",
+      },
+    });
+    await expect(pending).resolves.toMatchObject({ text: "Know thyself." });
+    bridge.stop();
+  });
+
+  it("keeps a request pending when a correlated response has the wrong type", async () => {
+    const onDiagnostic = vi.fn();
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "req-mismatch",
+      onDiagnostic,
+    });
+    bridge.start();
+
+    const pending = bridge.request("dashboard.listRequested", {});
+    let settled = false;
+    void pending.finally(() => {
+      settled = true;
+    });
+
+    webview.emit({
+      type: "dashboard.queryLoaded",
+      requestId: "req-mismatch",
+      payload: { rows: [{ forged: true }] },
+    });
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "mismatched-response",
+      type: "dashboard.queryLoaded",
+      reason: expect.stringContaining("expected: dashboard.listLoaded"),
+    }));
+
+    webview.emit({
+      type: "dashboard.listLoaded",
+      requestId: "req-mismatch",
+      payload: { dashboards: [] },
+    });
+    await expect(pending).resolves.toEqual({ dashboards: [] });
+    bridge.stop();
+  });
+
+  it("still rejects operation.failed after an earlier mismatched response", async () => {
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "req-mismatch-fail",
+    });
+    bridge.start();
+
+    const pending = bridge.request("history.queryRequested", {
+      collection: "orders",
+      scope: "table",
+      limit: 50,
+      offset: 0,
+    });
+    webview.emit({
+      type: "history.restoreApplied",
+      requestId: "req-mismatch-fail",
+      payload: { forged: true },
+    });
+    webview.emit({
+      type: "operation.failed",
+      requestId: "req-mismatch-fail",
+      payload: { message: "history unavailable", code: "HISTORY_FAILED" },
+    });
+
+    await expect(pending).rejects.toMatchObject({
+      message: "history unavailable",
+      code: "HISTORY_FAILED",
+    });
+    bridge.stop();
+  });
+
   it("fans out operation.failed with null requestId (PostReply production shape)", () => {
     // Regression: the C# host serializes a null RequestId as `"requestId":null`
     // when a notify-based request (e.g. table-admin create/delete, which use
@@ -302,8 +409,10 @@ describe("HostBridge", () => {
     });
 
     const openedHandler = vi.fn();
+    const taskHandler = vi.fn();
     bridge.on("database.opened", openedHandler);
-    bridge.on("directus.changed", () => undefined);
+    bridge.on("data.changed", () => undefined);
+    bridge.on("task.changed", taskHandler);
     bridge.start();
 
     const opened: DatabaseOpenedPayload = { tables: ["contracts"], views: [] };
@@ -311,6 +420,21 @@ describe("HostBridge", () => {
 
     expect(openedHandler).toHaveBeenCalledTimes(1);
     expect(openedHandler).toHaveBeenCalledWith(opened);
+    const task = {
+      contractVersion: "1.0",
+      topic: "task.changed",
+      eventId: "evt-1",
+      sequence: 1,
+      occurredAt: "2026-07-24T08:31:00Z",
+      taskId: "job-1",
+      taskType: "formulaBackfill",
+      state: "running",
+      progress: 0.5,
+      cursor: "row:5000",
+      error: null,
+    } as const;
+    webview.emit({ type: "task.changed", payload: task });
+    expect(taskHandler).toHaveBeenCalledWith(task);
 
     bridge.stop();
   });
@@ -355,6 +479,74 @@ describe("HostBridge", () => {
     expect(posted.requestId).toBeUndefined();
     expect(posted.payload).toEqual({});
 
+    bridge.stop();
+  });
+
+  it("reports a rejected synthetic File boundary as unavailable", () => {
+    const postMessageWithAdditionalObjects = vi.fn(() => {
+      throw new DOMException("File is not backed by disk");
+    });
+    Object.assign(webview, { postMessageWithAdditionalObjects });
+    const bridge = createHostBridge({ webview, timeoutMs: 1000 });
+    const file = new File(["content"], "synthetic.txt", { type: "text/plain" });
+
+    const posted = bridge.notifyWithAdditionalObjects(
+      "file.uploadRequested",
+      {
+        tableId: "tbl_files",
+        recordId: "row-1",
+        fieldId: "tbl_files.attachments",
+        schemaRevision: "schema_0001",
+        expectedDigest: `sha256:${"a".repeat(64)}`,
+      },
+      [file],
+    );
+
+    expect(posted).toBe(false);
+    expect(postMessageWithAdditionalObjects).toHaveBeenCalledTimes(1);
+  });
+
+  it("correlates a native attachment request before reporting completion", async () => {
+    const postMessageWithAdditionalObjects = vi.fn();
+    Object.assign(webview, { postMessageWithAdditionalObjects });
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "attachment-req-1",
+    });
+    bridge.start();
+    const file = new File(["content"], "receipt.txt", { type: "text/plain" });
+
+    const pending = bridge.requestWithAdditionalObjects(
+      "file.uploadRequested",
+      {
+        tableId: "tbl_files",
+        recordId: "row-1",
+        fieldId: "tbl_files.attachments",
+        schemaRevision: "schema_0001",
+        expectedDigest: `sha256:${"a".repeat(64)}`,
+      },
+      [file],
+    );
+
+    expect(pending).not.toBeNull();
+    expect(postMessageWithAdditionalObjects).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "file.uploadRequested",
+        requestId: "attachment-req-1",
+      }),
+      [file],
+    );
+    webview.emit({
+      type: "file.uploadRequested",
+      requestId: "attachment-req-1",
+      payload: {
+        contractVersion: "1.0",
+        status: "applied",
+        changeSetId: "change-1",
+      },
+    });
+    await expect(pending).resolves.toMatchObject({ status: "applied" });
     bridge.stop();
   });
 

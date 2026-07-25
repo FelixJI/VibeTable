@@ -1,16 +1,13 @@
-"""Deep module for project-level plugin installation lifecycle."""
+"""Project-local registry for installed local-worker plugins."""
 
 from __future__ import annotations
 
 import builtins
 import uuid
-from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Protocol
 
 from backend.contracts.plugin import (
-    FlowBindingSnapshot,
-    FlowRemovalReport,
-    FlowRequirement,
     InstallPlan,
     PluginAuditEvent,
     PluginSnapshot,
@@ -22,7 +19,10 @@ class PluginStore(Protocol):
     def get_installation(self, project_key: str, plugin_id: str) -> PluginSnapshot | None: ...
 
     def save_installation(
-        self, snapshot: PluginSnapshot, *, expected_revision: int | None = None
+        self,
+        snapshot: PluginSnapshot,
+        *,
+        expected_revision: int | None,
     ) -> PluginSnapshot: ...
 
     def list_installations(self, project_key: str) -> list[PluginSnapshot]: ...
@@ -36,67 +36,49 @@ class PluginStore(Protocol):
     def list_audit(self, project_key: str, plugin_id: str) -> list[PluginAuditEvent]: ...
 
 
-class BindingResolver(Protocol):
-    def resolve(
-        self, project_key: str, plugin_id: str, logical_flow_id: str
-    ) -> FlowBindingSnapshot | None: ...
-
-    async def remove_owned(self, project_key: str, plugin_id: str) -> FlowRemovalReport: ...
-
-
 class PluginRegistryError(Exception):
-    """Safe Registry failure with a stable recovery-oriented code."""
-
     def __init__(self, message: str, *, code: str) -> None:
         super().__init__(message)
         self.code = code
 
     @property
     def rpc_error_data(self) -> dict[str, str]:
-        recovery = "reinstall" if "install" in self.code else "reconfigure"
-        return {"code": self.code, "recoverability": recovery}
+        return {"code": self.code}
 
 
 class PluginRegistry:
-    """Owns current plugin instances for each normalized Directus project."""
+    """Owns one immutable local-worker installation per project/plugin id."""
 
-    def __init__(self, *, store: PluginStore, bindings: BindingResolver | None = None) -> None:
+    def __init__(self, *, store: PluginStore) -> None:
         self._store = store
-        self._bindings = bindings
 
     async def install(self, plan: InstallPlan) -> PluginSnapshot:
-        """Commit one previously approved installation plan.
-
-        Installing another current version is never an implicit upgrade: callers
-        must use the upgrade use case so its Flow and rollback plan is visible.
-        """
         plugin_id = plan.manifest.plugin_id
         if self._store.get_installation(plan.project_key, plugin_id) is not None:
             raise PluginRegistryError(
-                f"plugin {plugin_id!r} is already installed in this project",
+                "plugin is already installed",
                 code="plugin_already_installed",
             )
-        blocking_reasons = self._blocking_reasons(
-            plan.project_key, plugin_id, plan.flow_requirements
+        self._validate_plan(plan)
+        snapshot = PluginSnapshot(
+            project_key=plan.project_key,
+            plugin_id=plugin_id,
+            version=plan.manifest.version,
+            package_hash=plan.package_hash,
+            source_type=plan.source_type,
+            source_location=plan.source_location,
+            development_source_location=(
+                plan.source_location if plan.source_type == "local-folder" else None
+            ),
+            manifest=plan.manifest,
+            schemas=plan.schemas,
+            status="disabled",
+            disabled_reason="disabled_by_user",
+            revision=1,
         )
-        disabled_reason = blocking_reasons[0] if blocking_reasons else None
-        return self._store.save_installation(
-            PluginSnapshot(
-                project_key=plan.project_key,
-                plugin_id=plugin_id,
-                version=plan.manifest.version,
-                package_hash=plan.package_hash,
-                source_type=plan.source_type,
-                source_location=plan.source_location,
-                manifest=plan.manifest,
-                flow_requirements=plan.flow_requirements,
-                schemas=plan.schemas,
-                status="disabled" if disabled_reason else "enabled",
-                disabled_reason=disabled_reason,
-                blocking_reasons=blocking_reasons,
-                revision=1,
-            )
-        )
+        saved = self._store.save_installation(snapshot, expected_revision=None)
+        self._audit(saved, "install", "succeeded")
+        return saved
 
     def get(self, project_key: str, plugin_id: str) -> PluginSnapshot | None:
         return self._store.get_installation(project_key, plugin_id)
@@ -104,263 +86,134 @@ class PluginRegistry:
     def list(self, project_key: str) -> builtins.list[PluginSnapshot]:
         return self._store.list_installations(project_key)
 
-    def blocking_reasons(self, project_key: str, plugin_id: str) -> builtins.list[str]:
-        current = self._store.get_installation(project_key, plugin_id)
-        if current is None:
-            raise PluginRegistryError("plugin is not installed", code="plugin_not_installed")
-        return self._blocking_reasons(project_key, plugin_id, current.flow_requirements)
+    def record_audit(self, event: PluginAuditEvent) -> PluginAuditEvent:
+        """Persist an execution/lifecycle audit event through the registry port."""
+        return self._store.record_audit(event)
 
-    def blocking_reasons_for(
+    def blocking_reasons(self, project_key: str, plugin_id: str) -> builtins.list[str]:
+        snapshot = self._required(project_key, plugin_id)
+        return list(snapshot.blocking_reasons)
+
+    def touch(self, project_key: str, plugin_id: str) -> PluginSnapshot:
+        current = self._required(project_key, plugin_id)
+        updated = current.model_copy(update={"revision": current.revision + 1})
+        return self._store.save_installation(
+            updated,
+            expected_revision=current.revision,
+        )
+
+    async def set_enabled(
         self,
         project_key: str,
         plugin_id: str,
-        requirements: Sequence[FlowRequirement],
-    ) -> builtins.list[str]:
-        """Evaluate a proposed topology before committing its manifest."""
-
-        return self._blocking_reasons(project_key, plugin_id, requirements)
-
-    def touch(self, project_key: str, plugin_id: str) -> PluginSnapshot:
-        """Advance the canonical snapshot after binding/source metadata changes."""
-
-        current = self._store.get_installation(project_key, plugin_id)
-        if current is None:
-            raise PluginRegistryError("plugin is not installed", code="plugin_not_installed")
-        updated = current.model_copy(update={"revision": current.revision + 1})
-        return self._store.save_installation(updated, expected_revision=current.revision)
-
-    async def set_enabled(
-        self, *, project_key: str, plugin_id: str, enabled: bool
+        enabled: bool,
     ) -> PluginSnapshot:
-        current = self._store.get_installation(project_key, plugin_id)
-        if current is None:
-            raise PluginRegistryError("plugin is not installed", code="plugin_not_installed")
-        blocking_reasons: builtins.list[str] = []
-        if enabled:
-            blocking_reasons = self._blocking_reasons(
-                project_key, plugin_id, current.flow_requirements
+        current = self._required(project_key, plugin_id)
+        if enabled and current.blocking_reasons:
+            raise PluginRegistryError(
+                "plugin has blocking reasons",
+                code="plugin_blocked",
             )
-            if blocking_reasons:
-                raise PluginRegistryError(
-                    f"plugin cannot be enabled: {'; '.join(blocking_reasons)}",
-                    code="plugin_flow_invalid",
-                )
         updated = current.model_copy(
             update={
                 "status": "enabled" if enabled else "disabled",
-                "disabled_reason": None if enabled else "user_disabled",
-                "blocking_reasons": blocking_reasons if enabled else ["user_disabled"],
+                "disabled_reason": None if enabled else "disabled_by_user",
                 "revision": current.revision + 1,
             }
         )
-        return self._store.save_installation(updated, expected_revision=current.revision)
+        saved = self._store.save_installation(
+            updated,
+            expected_revision=current.revision,
+        )
+        self._audit(saved, "enable" if enabled else "disable", "succeeded")
+        return saved
 
     def refresh_status(self, project_key: str, plugin_id: str) -> PluginSnapshot:
-        """Reconcile whole-plugin availability after binding health refresh."""
-
-        current = self._store.get_installation(project_key, plugin_id)
-        if current is None:
-            raise PluginRegistryError("plugin is not installed", code="plugin_not_installed")
-        if current.disabled_reason == "user_disabled":
-            return current
-        reasons = self._blocking_reasons(project_key, plugin_id, current.flow_requirements)
-        reason = reasons[0] if reasons else None
-        target_status = "disabled" if reasons else "enabled"
-        if (
-            current.status == target_status
-            and current.disabled_reason == reason
-            and current.blocking_reasons == reasons
-        ):
-            return current
-        updated = current.model_copy(
-            update={
-                "status": target_status,
-                "disabled_reason": reason,
-                "blocking_reasons": reasons,
-                "revision": current.revision + 1,
-            }
-        )
-        return self._store.save_installation(updated, expected_revision=current.revision)
-
-    def adopt_external_flow(
-        self, project_key: str, plugin_id: str, logical_flow_id: str
-    ) -> PluginSnapshot:
-        """Persist the user's decision to stop managing one installed Flow."""
-
-        current = self._store.get_installation(project_key, plugin_id)
-        if current is None:
-            raise PluginRegistryError("plugin is not installed", code="plugin_not_installed")
-        requirements = [
-            item.model_copy(update={"ownership": "external"})
-            if item.logical_flow_id == logical_flow_id
-            else item
-            for item in current.flow_requirements
-        ]
-        updated = current.model_copy(
-            update={"flow_requirements": requirements, "revision": current.revision + 1}
-        )
-        return self._store.save_installation(updated, expected_revision=current.revision)
+        return self._required(project_key, plugin_id)
 
     async def commit_upgrade(self, plan: InstallPlan) -> PluginSnapshot:
-        current = self._store.get_installation(plan.project_key, plan.manifest.plugin_id)
-        if current is None:
-            raise PluginRegistryError("plugin is not installed", code="plugin_not_installed")
-        blocking_reasons = self._blocking_reasons(
-            plan.project_key, plan.manifest.plugin_id, plan.flow_requirements
-        )
-        disabled_reason = blocking_reasons[0] if blocking_reasons else None
-        user_disabled = current.status == "disabled" and current.disabled_reason == "user_disabled"
+        return await self._commit_package_change(plan, event_type="upgrade")
+
+    async def commit_rollback(self, plan: InstallPlan) -> PluginSnapshot:
+        return await self._commit_package_change(plan, event_type="rollback")
+
+    async def _commit_package_change(
+        self,
+        plan: InstallPlan,
+        *,
+        event_type: str,
+    ) -> PluginSnapshot:
+        current = self._required(plan.project_key, plan.manifest.plugin_id)
+        self._validate_plan(plan)
         updated = current.model_copy(
             update={
                 "version": plan.manifest.version,
                 "package_hash": plan.package_hash,
                 "source_type": plan.source_type,
                 "source_location": plan.source_location,
+                "development_source_location": (
+                    plan.source_location if plan.source_type == "local-folder" else None
+                ),
                 "manifest": plan.manifest,
-                "flow_requirements": plan.flow_requirements,
                 "schemas": plan.schemas,
-                "status": "disabled" if user_disabled or disabled_reason else "enabled",
-                "disabled_reason": "user_disabled" if user_disabled else disabled_reason,
-                "blocking_reasons": ["user_disabled"] if user_disabled else blocking_reasons,
+                "source_changed": False,
                 "revision": current.revision + 1,
             }
         )
-        return self._store.save_installation(updated, expected_revision=current.revision)
+        saved = self._store.save_installation(
+            updated,
+            expected_revision=current.revision,
+        )
+        self._audit(saved, event_type, "succeeded")
+        return saved
 
     async def uninstall(
         self,
-        *,
         project_key: str,
         plugin_id: str,
+        *,
         cleanup_private_settings: bool,
     ) -> UninstallResult:
-        current = self._store.get_installation(project_key, plugin_id)
-        if current is None:
-            return await self._retry_uninstall_cleanup(
-                project_key=project_key,
-                plugin_id=plugin_id,
-                cleanup_private_settings=cleanup_private_settings,
-            )
-        if current.status != "disabled":
-            current = self._store.save_installation(
-                current.model_copy(
-                    update={
-                        "status": "disabled",
-                        "disabled_reason": "uninstalling",
-                        "revision": current.revision + 1,
-                    }
-                ),
-                expected_revision=current.revision,
-            )
-        cleanup_error: str | None = None
-        try:
-            removal = (
-                await self._bindings.remove_owned(project_key, plugin_id)
-                if self._bindings is not None
-                else FlowRemovalReport()
-            )
-        except Exception as exc:
-            # Local uninstall is authoritative. Retaining the binding rows is
-            # the durable retry record for managed Directus resources.
-            removal = FlowRemovalReport()
-            cleanup_error = str(exc) or exc.__class__.__name__
+        current = self._required(project_key, plugin_id)
         self._store.delete_installation(project_key, plugin_id)
         if cleanup_private_settings:
             self._store.delete_private_settings(project_key, plugin_id)
-        self._store.record_audit(
-            PluginAuditEvent(
-                event_id=f"audit-{uuid.uuid4().hex}",
-                project_key=project_key,
-                plugin_id=plugin_id,
-                plugin_version=current.version,
-                package_hash=current.package_hash,
-                event_type="uninstall",
-                outcome="pending-cleanup" if cleanup_error else "succeeded",
-                details={
-                    "managedFlowsRemoved": removal.managed_flows_removed,
-                    "externalFlowsUnbound": removal.external_flows_unbound,
-                    "cleanupError": cleanup_error,
-                },
-            )
-        )
+        self._audit(current, "uninstall", "succeeded")
         return UninstallResult(
             uninstalled=True,
-            managed_flows_removed=removal.managed_flows_removed,
-            external_flows_unbound=removal.external_flows_unbound,
             private_settings_retained=not cleanup_private_settings,
-            cleanup_pending=cleanup_error is not None,
         )
 
-    async def _retry_uninstall_cleanup(
-        self,
-        *,
-        project_key: str,
-        plugin_id: str,
-        cleanup_private_settings: bool,
-    ) -> UninstallResult:
-        removal = FlowRemovalReport()
-        cleanup_error: str | None = None
-        try:
-            if self._bindings is not None:
-                removal = await self._bindings.remove_owned(project_key, plugin_id)
-        except Exception as exc:
-            cleanup_error = str(exc) or exc.__class__.__name__
-        if cleanup_private_settings:
-            self._store.delete_private_settings(project_key, plugin_id)
-        previous = self._store.list_audit(project_key, plugin_id)
-        latest = previous[-1] if previous else None
-        pending = latest if latest is not None and latest.outcome == "pending-cleanup" else None
-        if pending is not None:
-            self._store.record_audit(
-                PluginAuditEvent(
-                    event_id=f"audit-{uuid.uuid4().hex}",
-                    project_key=project_key,
-                    plugin_id=plugin_id,
-                    plugin_version=pending.plugin_version,
-                    package_hash=pending.package_hash,
-                    event_type="uninstall-cleanup-retry",
-                    outcome="pending-cleanup" if cleanup_error else "succeeded",
-                    details={
-                        "managedFlowsRemoved": removal.managed_flows_removed,
-                        "externalFlowsUnbound": removal.external_flows_unbound,
-                        "cleanupError": cleanup_error,
-                    },
-                )
+    def _required(self, project_key: str, plugin_id: str) -> PluginSnapshot:
+        current = self._store.get_installation(project_key, plugin_id)
+        if current is None:
+            raise PluginRegistryError("plugin is not installed", code="plugin_not_found")
+        return current
+
+    @staticmethod
+    def _validate_plan(plan: InstallPlan) -> None:
+        if any(action.mode != "local" or not action.worker_entry for action in plan.manifest.actions):
+            raise PluginRegistryError(
+                "only local-worker actions are supported",
+                code="plugin_manifest_legacy",
             )
-        return UninstallResult(
-            uninstalled=False,
-            managed_flows_removed=removal.managed_flows_removed,
-            external_flows_unbound=removal.external_flows_unbound,
-            private_settings_retained=not cleanup_private_settings,
-            cleanup_pending=cleanup_error is not None,
-        )
 
-    def _blocking_reasons(
-        self, project_key: str, plugin_id: str, requirements: Sequence[FlowRequirement]
-    ) -> builtins.list[str]:
-        if not requirements:
-            return []
-        if self._bindings is None:
-            return [f"flow_unbound:{item.logical_flow_id}" for item in requirements]
-        reasons: builtins.list[str] = []
-        for requirement in requirements:
-            logical_id = requirement.logical_flow_id
-            binding = self._bindings.resolve(project_key, plugin_id, logical_id)
-            if binding is None:
-                reasons.append(f"flow_unbound:{logical_id}")
-                continue
-            if binding.ownership != requirement.ownership:
-                reasons.append(f"flow_ownership_mismatch:{logical_id}")
-                continue
-            if (
-                binding.trigger_type != requirement.trigger
-                or binding.contract_version != requirement.contract_version
-            ):
-                reasons.append(f"flow_contract_mismatch:{logical_id}")
-                continue
-            if binding.health not in ("healthy", "drifted"):
-                reasons.append(f"flow_invalid:{logical_id}")
-        return list(dict.fromkeys(reasons))
+    def _audit(self, snapshot: PluginSnapshot, event_type: str, outcome: str) -> None:
+        now = datetime.now(UTC).replace(microsecond=0)
+        self._store.record_audit(
+            PluginAuditEvent(
+                event_id=str(uuid.uuid4()),
+                project_key=snapshot.project_key,
+                plugin_id=snapshot.plugin_id,
+                plugin_version=snapshot.version,
+                package_hash=snapshot.package_hash,
+                event_type=event_type,
+                outcome=outcome,
+                started_at=now,
+                finished_at=now,
+                duration_ms=0,
+            )
+        )
 
 
 __all__ = ["PluginRegistry", "PluginRegistryError", "PluginStore"]

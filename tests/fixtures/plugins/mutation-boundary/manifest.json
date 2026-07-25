@@ -1,0 +1,76 @@
+{
+  "$schema": "vibetable.plugin-manifest.v1",
+  "pluginId": "com.vibetable.e2e.mutation-boundary",
+  "version": "1.0.0",
+  "displayName": {
+    "zh-CN": "E2E 插件变更边界",
+    "en-US": "E2E mutation boundary"
+  },
+  "description": {
+    "zh-CN": "确定性验证 mutation plan 确认与字段越权拒绝"
+  },
+  "compatibility": {
+    "minHostVersion": "1.0.0",
+    "pluginApi": "1.x"
+  },
+  "permissions": {
+    "data": [
+      {
+        "collection": "$active",
+        "operations": ["read", "create", "update"],
+        "fields": ["value"]
+      }
+    ],
+    "files": [],
+    "privateStorage": false,
+    "network": {
+      "domains": [],
+      "methods": ["GET"]
+    }
+  },
+  "actions": [
+    {
+      "actionId": "allowed-plan",
+      "displayName": {
+        "zh-CN": "提交授权变更计划"
+      },
+      "description": {
+        "zh-CN": "创建一条仅写入 value 字段的记录"
+      },
+      "mode": "local",
+      "risk": "write",
+      "invocation": "manual",
+      "placements": ["table.toolbar"],
+      "requires": {
+        "selection": "none"
+      },
+      "workerEntry": "dist/allowed.js",
+      "formSchema": "schemas/empty.json",
+      "inputSchema": "schemas/empty.json",
+      "outputSchema": "schemas/result.json"
+    },
+    {
+      "actionId": "denied-plan",
+      "displayName": {
+        "zh-CN": "提交越权变更计划"
+      },
+      "description": {
+        "zh-CN": "尝试写入未授权 forbidden 字段"
+      },
+      "mode": "local",
+      "risk": "write",
+      "invocation": "manual",
+      "placements": ["table.toolbar"],
+      "requires": {
+        "selection": "none"
+      },
+      "workerEntry": "dist/denied.js",
+      "formSchema": "schemas/empty.json",
+      "inputSchema": "schemas/empty.json",
+      "outputSchema": "schemas/result.json"
+    }
+  ],
+  "ui": {
+    "customViews": []
+  }
+}

@@ -28,7 +28,7 @@ import type {
  * Wire contracts shared between the web grid (TypeScript) and the .NET host.
  *
  * The host owns this camelCase wire shape and forwards it over
- * `window.chrome.webview`. Directus/Python transport details stay behind the
+ * `window.chrome.webview`. Provider/Python transport details stay behind the
  * WPF gateway boundary.
  *
  * Message flow:
@@ -60,22 +60,30 @@ export interface ColumnSchema {
   readonly title: string;
   /** Stable logical field id; physical names remain an implementation detail. */
   readonly fieldId?: string | null;
-  readonly kind?: "scalar" | "relation" | "lookup";
+  readonly kind?:
+    | "scalar"
+    | "relation"
+    | "lookup"
+    | "formula"
+    | "attachment"
+    | "system";
   readonly relationId?: string | null;
   readonly lookupId?: string | null;
+  /** Normalized limits for managed attachment cells. */
+  readonly attachmentPolicy?: AttachmentPolicy | null;
   /** Grid renderer type hint. */
   readonly dataType: ColumnDataType;
-  /** Whether the current Directus capability schema permits editing. */
+  /** Whether the current product capability schema permits editing. */
   readonly editable: boolean;
   /** Whether the column may hold NULL. */
   readonly nullable: boolean;
   /**
-   * Numeric scale (digits after the decimal point) from Directus
-   * `numeric_scale`. `null` for non-numeric fields or when Directus does not
+   * Numeric scale (digits after the decimal point) from the product schema.
+   * `null` for non-numeric fields or when the schema does not
    * report it. Drives decimal display precision and edit-side scale checks.
    */
   readonly scale?: number | null;
-  /** Numeric precision (total significant digits) from Directus. */
+  /** Numeric precision (total significant digits) from the product schema. */
   readonly precision?: number | null;
 }
 
@@ -95,7 +103,7 @@ export interface TablePage {
   readonly limit: number;
   readonly totalRows: number;
   readonly mode: TableMode;
-  /** B3/Directus metadata used to bind mutations to the rendered page. */
+  /** Product metadata used to bind mutations to the rendered page. */
   readonly filteredRows?: number | null;
   readonly querySnapshot?: QuerySnapshot | null;
   readonly revision?: MutationRevision | null;
@@ -117,7 +125,7 @@ export interface TablePageLoadedPayload {
   readonly mode: TableMode;
   /** Cumulative rows fetched so far in the client-mode multi-page load. */
   readonly loadedRows: number;
-  /** B3/Directus query metadata required by mutations and paste preview. */
+  /** Product query metadata required by mutations and paste preview. */
   readonly filteredRows?: number | null;
   readonly querySnapshot?: QuerySnapshot | null;
   readonly revision?: MutationRevision | null;
@@ -141,11 +149,11 @@ export interface DatabaseOpenedPayload {
   readonly [key: string]: unknown;
   readonly tables: readonly string[];
   readonly views: readonly string[];
-  /** Stable host-normalized Directus identity used for project-local plugin state. */
+  /** Stable host-normalized project identity used for project-local plugin state. */
   readonly projectKey?: string;
   /** Host workspace revision used to invalidate stale install plans. */
   readonly projectRevision?: string;
-  /** Safe display identity; authentication secrets are never included. */
+  /** Safe display identity; session secrets are never included. */
   readonly currentUser?: Readonly<Record<string, unknown>>;
   readonly hostVersion?: string;
   /** Physical collection -> user-facing label. Optional for old hosts. */
@@ -187,7 +195,8 @@ export type EditorKind =
   | "boolean"
   | "date"
   | "single_select"
-  | "multi_select";
+  | "multi_select"
+  | "json";
 
 /** Base editor shape (discriminated by `kind`). */
 export interface EditorBase {
@@ -232,13 +241,19 @@ export interface MultiSelectEditor extends EditorBase {
   readonly allowCustom?: boolean;
 }
 
+export interface JsonEditor extends EditorBase {
+  readonly kind: "json";
+  readonly schema?: Readonly<Record<string, unknown>> | null;
+}
+
 export type Editor =
   | TextEditor
   | NumberEditor
   | BooleanEditor
   | DateEditor
   | SingleSelectEditor
-  | MultiSelectEditor;
+  | MultiSelectEditor
+  | JsonEditor;
 
 /** Validation rule discriminator kind. */
 export type RuleKind =
@@ -266,7 +281,8 @@ export interface ColumnEditSchema {
     | "datetime"
     | "time"
     | "single_select"
-    | "multi_select";
+    | "multi_select"
+    | "json";
   readonly editable: boolean;
   readonly nullable: boolean;
   readonly primaryKey: boolean;
@@ -340,6 +356,7 @@ export interface UpdateCellRequestedPayload {
   readonly column: string;
   readonly oldValue: unknown;
   readonly newValue: unknown;
+  readonly expectedDigest: string | null;
   readonly schemaRevision: string;
 }
 
@@ -567,30 +584,182 @@ export interface ApplyPasteResult {
 // Table-admin contracts (mirror backend/contracts/table_admin.py)
 // ---------------------------------------------------------------------------
 
-/** Persisted Directus field types supported by the create-table wizard.
- *  `alias` is intentionally excluded: it is a virtual relationship/display
- *  field and requires relation-specific configuration rather than a column. */
+/** Frozen normalized product data types. No PocketBase storage names leak here. */
 export const TABLE_FIELD_TYPES = [
-  "string",
-  "text",
+  "shortText",
+  "longText",
+  "richText",
+  "boolean",
   "integer",
-  "bigInteger",
   "float",
   "decimal",
-  "boolean",
   "date",
   "dateTime",
-  "timestamp",
+  "autoDate",
   "time",
-  "json",
-  "csv",
+  "email",
+  "url",
   "uuid",
+  "select",
+  "multiSelect",
+  "json",
+  "geoPoint",
+  "geoJson",
+  "file",
+  "relation",
+  "lookup",
+  "formula",
+  "list",
   "hash",
-  "binary",
+  "secret",
 ] as const;
 export type TableFieldType = (typeof TABLE_FIELD_TYPES)[number];
 
-/** Unicode display-name rule. Physical Directus identifiers are host-owned. */
+export type ProductFieldKind =
+  | "scalar" | "relation" | "lookup" | "formula" | "attachment" | "system";
+
+export interface ProductErrorPayload {
+  readonly code: string;
+  readonly path: string;
+  readonly message: string;
+  readonly details?: Readonly<Record<string, unknown>>;
+  readonly retryable?: boolean;
+}
+
+export interface FormulaDefinition {
+  readonly language: "cel-v1";
+  readonly source: string;
+  readonly resultType: Exclude<TableFieldType, "formula" | "relation" | "lookup" | "file" | "autoDate">;
+  readonly version: number;
+  readonly status: "ready" | "backfilling" | "failed";
+}
+
+export interface AttachmentPolicy {
+  readonly maxFiles: number;
+  readonly maxBytesPerFile: number;
+  readonly allowedMimeTypes: readonly string[];
+  readonly thumbnailVariants: readonly string[];
+  readonly protected: boolean;
+}
+
+export interface ManagedAttachmentRef {
+  readonly contractVersion: "1.0";
+  readonly tableId: string;
+  readonly recordId: string;
+  readonly fieldId: string;
+  readonly storedName: string;
+  readonly originalName: string;
+  readonly mimeType: string;
+  readonly size: number;
+  readonly sha256: string;
+  readonly downloadCapability: string;
+  readonly thumbnails: ReadonlyArray<{
+    readonly variant: string;
+    readonly downloadCapability: string;
+  }>;
+}
+
+export interface AttachmentListResult {
+  readonly attachments: readonly ManagedAttachmentRef[];
+}
+
+export interface AttachmentCellActionPayload {
+  readonly tableId: string;
+  readonly recordId: string;
+  readonly fieldId: string;
+  readonly schemaRevision: string;
+  readonly expectedDigest: string;
+}
+
+export interface AttachmentRemovePayload extends AttachmentCellActionPayload {
+  readonly storedName: string;
+}
+
+export interface AttachmentReplacePayload extends AttachmentCellActionPayload {
+  readonly storedName: string;
+}
+
+export interface AttachmentDownloadPayload {
+  readonly tableId: string;
+  readonly recordId: string;
+  readonly fieldId: string;
+  readonly storedName: string;
+  readonly originalName: string;
+}
+
+export interface ProductFieldDefinition {
+  readonly fieldId: string;
+  readonly physicalName: string;
+  readonly displayName: string;
+  readonly kind: ProductFieldKind;
+  readonly dataType: TableFieldType;
+  readonly storageType:
+    | "text"
+    | "editor"
+    | "bool"
+    | "number"
+    | "date"
+    | "autodate"
+    | "email"
+    | "url"
+    | "select"
+    | "json"
+    | "geoPoint"
+    | "file"
+    | "relation";
+  readonly nullable: boolean;
+  readonly defaultValue: unknown;
+  readonly constraints: readonly Readonly<Record<string, unknown>>[];
+  readonly editor: {
+    readonly kind: string;
+    readonly config: Readonly<Record<string, unknown>>;
+  };
+  readonly readOnly: boolean;
+  readonly formula: FormulaDefinition | null;
+  readonly relation: Readonly<Record<string, unknown>> | null;
+  readonly lookup: Readonly<Record<string, unknown>> | null;
+  readonly attachmentPolicy: AttachmentPolicy | null;
+}
+
+export interface ProductTableDefinition {
+  readonly contractVersion: "1.0";
+  readonly tableId: string;
+  readonly physicalName: string;
+  readonly displayName: string;
+  readonly kind: "base" | "view";
+  readonly schemaRevision: string;
+  readonly archivePolicy: {
+    readonly mode: "none" | "status" | "deletedAt";
+    readonly fieldId: string | null;
+    readonly archivedValue: unknown;
+  };
+  /**
+   * Present only for read-only views. The sidecar compiles this normalized
+   * source projection; renderer code never supplies SQL or PB filters.
+   */
+  readonly view?: {
+    readonly sourceTableId: string;
+  };
+  readonly fields: readonly ProductFieldDefinition[];
+  readonly indexes: readonly {
+    readonly name: string;
+    readonly fieldIds: readonly string[];
+    readonly unique: boolean;
+  }[];
+}
+
+export interface SchemaChangePayload {
+  readonly definition: ProductTableDefinition;
+  readonly expectedRevision: number;
+}
+
+export interface FormulaPreviewRpcPayload {
+  readonly definition: ProductTableDefinition;
+  readonly row: Readonly<Record<string, unknown>>;
+  readonly changedFieldIds: readonly string[];
+}
+
+/** Unicode display-name rule. Physical identifiers are host-owned. */
 export const TABLE_NAME_PATTERN = /^[^\u0000-\u001F\u007F-\u009F]{1,128}$/u;
 
 export interface TableAdminFieldInput {
@@ -779,7 +948,7 @@ export interface DashboardManifestEntryPayload {
 export interface DashboardManifestLoadedPayload {
   readonly manifest: {
     readonly manifestVersion: string;
-    readonly directusCompatibility: string;
+    readonly queryContract: string;
     readonly panels: readonly DashboardManifestEntryPayload[];
   };
   readonly queryLimits: DashboardQueryLimitsPayload;
@@ -799,16 +968,8 @@ export interface IdentifierMappingEntry {
   readonly displayName: string;
   readonly locale: string;
   readonly aliases: readonly string[];
-  readonly origin: "vibetable" | "directus" | "import";
-  readonly status: "pending" | "active" | "orphaned" | "deleted";
-}
-
-export interface IdentifierMappingImportItem {
-  readonly entityKind: "collection" | "field";
-  readonly parentPhysicalName?: string | null;
-  readonly physicalName: string;
-  readonly displayName: string;
-  readonly aliases: readonly string[];
+  readonly origin: "vibetable" | "pocketbase";
+  readonly status: "pending" | "active";
 }
 
 export interface IdentifierMappingsResult {
@@ -816,15 +977,12 @@ export interface IdentifierMappingsResult {
 }
 
 // ---------------------------------------------------------------------------
-// Flow-first plugin platform (host/WebView contract v1)
+// Local-worker plugin platform (host/WebView contract v1)
 // ---------------------------------------------------------------------------
 
 export type PluginRisk = "read" | "write" | "destructive";
 export type PluginSourceType = "package" | "local-folder";
 export type PluginStatus = "disabled" | "enabled" | "error";
-export type PluginFlowOwnership = "managed" | "external";
-export type PluginFlowTrigger = "manual" | "webhook" | "schedule" | "event";
-export type PluginFlowHealth = "healthy" | "missing" | "incompatible" | "drifted";
 export type PluginTaskState =
   | "queued"
   | "running"
@@ -837,13 +995,12 @@ export interface PluginAction {
   readonly actionId: string;
   readonly displayName: Readonly<Record<string, string>>;
   readonly description: Readonly<Record<string, string>>;
-  readonly mode: "flow" | "local" | "hybrid";
+  readonly mode: "local";
   readonly risk: PluginRisk;
   readonly invocation: "manual" | "webhook";
   readonly placements: readonly string[];
   readonly requires: Readonly<Record<string, unknown>>;
-  readonly entryFlow: string | null;
-  readonly workerEntry: string | null;
+  readonly workerEntry: string;
   readonly formSchema: string | null;
   readonly inputSchema: string | null;
   readonly outputSchema: string | null;
@@ -858,20 +1015,7 @@ export interface PluginManifest {
   readonly compatibility: Readonly<Record<string, unknown>>;
   readonly permissions: Readonly<Record<string, unknown>>;
   readonly actions: readonly PluginAction[];
-  readonly flows: readonly Readonly<Record<string, unknown>>[];
   readonly ui: Readonly<Record<string, unknown>>;
-}
-
-export interface PluginFlowRequirement {
-  readonly logicalFlowId: string;
-  readonly ownership: PluginFlowOwnership;
-  readonly trigger: PluginFlowTrigger;
-  readonly risk: PluginRisk;
-  readonly contractVersion: string;
-  readonly requiresOperations: readonly string[];
-  readonly inputSchema: Readonly<Record<string, unknown>>;
-  readonly outputSchema: Readonly<Record<string, unknown>>;
-  readonly definition: Readonly<Record<string, unknown>> | null;
 }
 
 /** Canonical Python PluginSnapshot; WPF forwards it unchanged. */
@@ -884,8 +1028,6 @@ export interface PluginSnapshot {
   readonly sourceLocation: string;
   readonly sourceChanged?: boolean;
   readonly manifest: PluginManifest;
-  readonly flowRequirements: readonly PluginFlowRequirement[];
-  readonly flowBindings?: readonly PluginFlowBindingSnapshot[];
   readonly schemas: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   readonly status: PluginStatus;
   readonly disabledReason: string | null;
@@ -901,42 +1043,10 @@ export interface PluginInstallPlan {
   readonly sourceLocation: string;
   readonly packageHash: string;
   readonly manifest: PluginManifest;
-  readonly flowRequirements: readonly PluginFlowRequirement[];
   readonly schemas: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
 }
 
-export interface PluginExternalFlowCandidate {
-  readonly directusFlowUuid: string;
-  readonly name: string;
-  readonly triggerType: PluginFlowTrigger;
-  readonly status: "active" | "inactive";
-  readonly operationKeys: readonly string[];
-  readonly compatible: boolean;
-  readonly reasons: readonly string[];
-}
-
-export interface PluginFlowBindingSnapshot {
-  readonly projectKey: string;
-  readonly pluginId: string;
-  readonly logicalFlowId: string;
-  readonly ownership: PluginFlowOwnership;
-  readonly directusFlowUuid: string;
-  readonly rollbackFlowUuid: string | null;
-  readonly rollbackContractVersion: string | null;
-  readonly rollbackDefinitionHash: string | null;
-  readonly triggerType: PluginFlowTrigger;
-  readonly contractVersion: string;
-  readonly installedDefinitionHash: string | null;
-  readonly observedDefinitionHash: string;
-  readonly revision: number;
-  readonly health: PluginFlowHealth;
-  readonly driftStatus: "clean" | "drifted" | "not-applicable";
-  readonly lastError: string | null;
-}
-
 export interface PluginUninstallResult {
-  readonly managedFlowsRemoved: number;
-  readonly externalFlowsUnbound: number;
   readonly uninstalled: boolean;
   readonly privateSettingsRetained: boolean;
   readonly cleanupPending: boolean;
@@ -1083,7 +1193,7 @@ export interface PluginSafeError {
   readonly contract: "vibetable.plugin-error.v1";
   readonly code: string;
   readonly message: string;
-  readonly recoverability: "retry" | "rebind" | "reconfigure" | "reinstall" | "none";
+  readonly recoverability: "retry" | "reconfigure" | "reinstall" | "none";
   readonly pluginId: string | null;
   readonly actionId: string | null;
   readonly runId: string | null;
@@ -1147,8 +1257,103 @@ export interface PluginEventEnvelope {
 }
 
 // ---------------------------------------------------------------------------
+// Presets and content versions
+// ---------------------------------------------------------------------------
+
+export interface PresetView {
+  readonly filters: readonly Readonly<Record<string, unknown>>[];
+  readonly sorts: readonly Readonly<Record<string, unknown>>[];
+  readonly search: string;
+  readonly visibleFields: readonly string[];
+  readonly layout: string;
+}
+
+export interface PresetEntry {
+  readonly id: string;
+  readonly collection: string;
+  readonly name: string;
+  readonly scope: "personal" | "system" | "role";
+  readonly view: PresetView;
+  readonly userId?: string | null;
+  readonly revision: string;
+  readonly changeSetId?: string | null;
+  readonly emittedEvents: readonly string[];
+}
+
+export interface PresetsResult {
+  readonly collection: string;
+  readonly presets: readonly PresetEntry[];
+}
+
+export interface ContentVersionEntry {
+  readonly id: string;
+  readonly key: string;
+  readonly name: string;
+  readonly outdated: boolean;
+  readonly mainHash: string;
+  readonly revision: string;
+  readonly changeSetId?: string | null;
+  readonly emittedEvents: readonly string[];
+}
+
+export interface VersionsResult {
+  readonly collection: string;
+  readonly itemId: string;
+  readonly versions: readonly ContentVersionEntry[];
+}
+
+export interface VersionCompareResult {
+  readonly collection: string;
+  readonly itemId: string;
+  readonly versionId: string;
+  readonly outdated: boolean;
+  readonly mainHash: string;
+  readonly differences: Readonly<Record<string, {
+    readonly main: unknown;
+    readonly version: unknown;
+  }>>;
+}
+
+export interface VersionSaveResult {
+  readonly saved: string;
+  readonly changeSetId: string;
+  readonly revisionId: string;
+}
+
+export interface VersionPromoteResult {
+  readonly promoted: string;
+  readonly restoredToRevision: string;
+  readonly result: Readonly<Record<string, unknown>>;
+}
+
+export interface DeletePresetVersionResult {
+  readonly deleted: string;
+}
+
+// ---------------------------------------------------------------------------
 // Host bridge envelope
 // ---------------------------------------------------------------------------
+
+export type DailyQuoteProvider = "hitokoto" | "jinrishici" | "quotable";
+export type DailyQuoteRequestStyle =
+  | "mixed"
+  | "inspiring"
+  | "literary"
+  | "philosophy"
+  | "poetry"
+  | "lighthearted";
+
+export interface DailyQuoteFetchRequest {
+  readonly provider: DailyQuoteProvider;
+  readonly style: DailyQuoteRequestStyle;
+  readonly locale: "zh-CN" | "en-US";
+}
+
+export interface DailyQuoteFetchResult {
+  readonly text: string;
+  readonly attribution: string;
+  readonly url: string;
+}
 
 /**
  * Outbound (web -> host) message types produced by this layer.
@@ -1156,8 +1361,6 @@ export interface PluginEventEnvelope {
  */
 export type WebMessageType =
   | "app.ready"
-  | "host.firstRunSubmitted"
-  | "host.loginSubmitted"
   | "host.startupRetryRequested"
   | "host.startupCancelRequested"
   | "database.openRequested"
@@ -1166,6 +1369,22 @@ export type WebMessageType =
   | "table.updateCellRequested"
   | "table.insertRowRequested"
   | "table.deleteRowsRequested"
+  | "schema.getTable"
+  | "schema.validate"
+  | "schema.apply"
+  | "query.page"
+  | "mutation.preview"
+  | "mutation.apply"
+  | "formula.validate"
+  | "formula.preview"
+  | "file.list"
+  | "file.token"
+  | "file.uploadRequested"
+  | "file.replaceRequested"
+  | "file.removeRequested"
+  | "file.previewRequested"
+  | "file.downloadRequested"
+  | "events.reconcile"
   | "schema.describe"
   | "relation.searchTargets"
   | "relation.updateSingle"
@@ -1180,12 +1399,30 @@ export type WebMessageType =
   | "lookup.delete"
   | "lookup.preview"
   | "lookup.query"
+  | "preset.list"
+  | "preset.save"
+  | "preset.delete"
+  | "version.list"
+  | "version.create"
+  | "version.save"
+  | "version.compare"
+  | "version.promote"
+  | "version.delete"
   // B3 query + state requests.
   | "table.queryRequested"
   | "gridState.saveRequested"
   // B2 paste preview + apply requests.
   | "table.previewPasteRequested"
   | "table.applyPasteRequested"
+  | "data.importSourceRequested"
+  | "data.exportTargetRequested"
+  | "data.previewImport"
+  | "data.applyImport"
+  | "data.export"
+  | "task.create"
+  | "task.cancel"
+  | "task.status"
+  | "dailyQuote.fetch"
   // Revision audit + two-phase safe restore requests.
   | "history.queryRequested"
   | "history.previewRestoreRequested"
@@ -1205,10 +1442,7 @@ export type WebMessageType =
   | "tableAdmin.deleteRequested"
   | "identifierMappings.listRequested"
   | "identifierMappings.updateAliasesRequested"
-  | "identifierMappings.importRequested"
   | "identifierMappings.reconcileRequested"
-  | "identifierMappings.deleteRequested"
-  | "identifierMappings.purgeRequested"
   | "dashboard.listRequested"
   | "dashboard.readRequested"
   | "dashboard.manifestRequested"
@@ -1221,12 +1455,9 @@ export type WebMessageType =
   | "plugin.cleanup.listPending"
   | "plugin.install.inspect"
   | "plugin.install.commit"
-  | "plugin.externalFlow.listCandidates"
-  | "plugin.externalFlow.bind"
   | "plugin.lifecycle.setEnabled"
   | "plugin.lifecycle.upgrade"
   | "plugin.lifecycle.rollback"
-  | "plugin.lifecycle.resolveDrift"
   | "plugin.lifecycle.uninstall"
   | "plugin.action.describe"
   | "plugin.action.start"
@@ -1234,7 +1465,7 @@ export type WebMessageType =
   | "plugin.task.cancel"
   | "plugin.task.get"
   | "plugin.surface.event"
-  // Open the embedded Directus admin (Data Studio) in this webview.
+  // Open the embedded data administration surface in this webview.
   | "admin.openRequested";
 
 /**
@@ -1252,7 +1483,31 @@ export type HostMessageType =
   | "table.editRejected"
   | "table.rowsInserted"
   | "table.rowsDeleted"
-  | "directus.changed"
+  | "data.changed"
+  | "task.changed"
+  | "data.importSourceRequested"
+  | "data.exportTargetRequested"
+  | "data.previewImport"
+  | "data.applyImport"
+  | "data.export"
+  | "task.create"
+  | "task.cancel"
+  | "task.status"
+  | "dailyQuote.fetch"
+  | "schema.getTable"
+  | "schema.validate"
+  | "schema.apply"
+  | "query.page"
+  | "mutation.preview"
+  | "mutation.apply"
+  | "formula.validate"
+  | "formula.preview"
+  | "file.list"
+  | "file.token"
+  | "file.uploadRequested"
+  | "file.replaceRequested"
+  | "file.removeRequested"
+  | "events.reconcile"
   | "schema.describe"
   | "relation.searchTargets"
   | "relation.updateSingle"
@@ -1267,6 +1522,15 @@ export type HostMessageType =
   | "lookup.delete"
   | "lookup.preview"
   | "lookup.query"
+  | "preset.list"
+  | "preset.save"
+  | "preset.delete"
+  | "version.list"
+  | "version.create"
+  | "version.save"
+  | "version.compare"
+  | "version.promote"
+  | "version.delete"
   // B2 paste preview + apply outcomes.
   | "table.pastePreviewReady"
   | "table.pasteApplied"
@@ -1299,12 +1563,9 @@ export type HostMessageType =
   | "plugin.cleanup.listPending"
   | "plugin.install.inspect"
   | "plugin.install.commit"
-  | "plugin.externalFlow.listCandidates"
-  | "plugin.externalFlow.bind"
   | "plugin.lifecycle.setEnabled"
   | "plugin.lifecycle.upgrade"
   | "plugin.lifecycle.rollback"
-  | "plugin.lifecycle.resolveDrift"
   | "plugin.lifecycle.uninstall"
   | "plugin.action.describe"
   | "plugin.action.start"
@@ -1313,19 +1574,127 @@ export type HostMessageType =
   | "plugin.task.get"
   | "plugin.surface.event";
 
-export interface DirectusChangePayload {
-  readonly [key: string]: unknown;
-  readonly uid: string;
+/** Frozen v1 provider-neutral realtime envelope from the local data service. */
+export interface DataChangedEvent {
+  readonly contractVersion: "1.0";
+  readonly topic: "data.changed";
+  readonly eventId: string;
+  readonly sequence: number;
+  readonly occurredAt: string;
+  readonly schemaRevision: string;
+  readonly dataRevision: string;
+  readonly changeSetId: string;
+  readonly tableId: string;
+  readonly recordIds: readonly string[];
+  readonly operation: "create" | "update" | "archive" | "restore" | "delete";
+}
+
+export interface TaskChangedEvent {
+  readonly contractVersion: "1.0";
+  readonly topic: "task.changed";
+  readonly eventId: string;
+  readonly sequence: number;
+  readonly occurredAt: string;
+  readonly taskId: string;
+  readonly taskType: "formulaBackfill" | "import" | "export" | "reconcile" | "backup" | "restore";
+  readonly state: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+  readonly progress: number;
+  readonly cursor: string | null;
+  readonly error: MutationErrorPayload | null;
+}
+
+export interface SessionPathGrant {
+  readonly grantId: string;
+  readonly purpose: "import_source" | "export_target";
+  readonly direction: "read" | "write";
+  readonly displayName: string;
+  readonly sizeBytes: number | null;
+  readonly mimeType: string | null;
+  readonly expiresAt: number;
+}
+
+export interface ImportPlan {
   readonly collection: string;
-  readonly event: "create" | "update" | "delete";
-  readonly data: ReadonlyArray<unknown>;
-  readonly invalidateQuery: boolean;
+  readonly schemaRevision: string;
+  readonly summary: {
+    readonly totalRows: number;
+    readonly validRows: number;
+    readonly errorRows: number;
+    readonly warningRows: number;
+    readonly errorCount: number;
+    readonly warningCount: number;
+  };
+  readonly token: { readonly token: string; readonly expiresAt: number; readonly consumed: boolean };
+}
+
+export interface ApplyImportResult {
+  readonly collection: string;
+  readonly createdCount: number;
+  readonly updatedCount: number;
+  readonly failedRows: readonly number[];
+  readonly chunks: readonly ImportChunkResult[];
+  readonly requestIds: readonly string[];
+}
+
+export interface ImportChunkResult {
+  readonly chunkIndex: number;
+  readonly createdRowKeys: readonly string[];
+  readonly updatedRowKeys: readonly string[];
+  readonly failedRows: readonly number[];
+  readonly idempotencyKey: string;
+}
+
+export interface ExportResult {
+  readonly collection: string;
+  readonly format: "csv" | "xlsx";
+  readonly rowsWritten: number;
+  readonly schemaRevision: string;
+  readonly capabilityHash: string;
+  readonly outputDisplayName: string;
+}
+
+export interface MutationAffectedRow {
+  readonly recordId: string;
+  readonly operation:
+    | "insert"
+    | "update"
+    | "archive"
+    | "restore"
+    | "delete"
+    | "setAttachments";
+  readonly revision: string;
+  readonly digest: string;
+}
+
+/** Authoritative result returned by every committed MutationKernel write. */
+export interface MutationReceipt {
+  readonly contractVersion: "1.0";
+  readonly status: "applied" | "replayed" | "pending" | "rejected";
+  readonly changeSetId: string | null;
+  readonly affectedRows: readonly MutationAffectedRow[];
+  readonly computedFields: Readonly<
+    Record<string, Readonly<Record<string, unknown>>>
+  >;
+  readonly newRevision: string | null;
+  readonly emittedEvents: readonly string[];
+  readonly warnings: readonly ProductErrorPayload[];
+}
+
+export interface DataTaskStatus {
+  readonly taskId: string;
+  readonly kind: "data.import" | "data.export";
+  readonly state: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "aborted";
+  readonly progress: { readonly done: number; readonly total: number; readonly message: string };
+  readonly result: unknown;
+  readonly error: string | null;
 }
 
 /** Envelope posted to / received from the host. */
 export interface BridgeMessage<P = unknown> {
   readonly type: string;
   readonly requestId?: string;
+  /** True only when sent through WebView2's native AdditionalObjects channel. */
+  readonly nativeObjects?: true;
   readonly payload?: P;
 }
 
@@ -1341,7 +1710,31 @@ export interface HostPayloadMap {
   "table.editRejected": MutationErrorPayload;
   "table.rowsInserted": InsertRowResult;
   "table.rowsDeleted": DeleteRowsResult;
-  "directus.changed": DirectusChangePayload;
+  "data.changed": DataChangedEvent;
+  "task.changed": TaskChangedEvent;
+  "data.importSourceRequested": SessionPathGrant;
+  "data.exportTargetRequested": SessionPathGrant;
+  "data.previewImport": ImportPlan;
+  "data.applyImport": ApplyImportResult;
+  "data.export": ExportResult;
+  "task.create": DataTaskStatus;
+  "task.cancel": DataTaskStatus;
+  "task.status": DataTaskStatus;
+  "dailyQuote.fetch": DailyQuoteFetchResult;
+  "schema.getTable": ProductTableDefinition;
+  "schema.validate": Readonly<Record<string, unknown>>;
+  "schema.apply": ProductTableDefinition;
+  "query.page": Readonly<Record<string, unknown>>;
+  "mutation.preview": Readonly<Record<string, unknown>>;
+  "mutation.apply": MutationReceipt;
+  "formula.validate": Readonly<Record<string, unknown>>;
+  "formula.preview": { readonly values: Readonly<Record<string, unknown>> };
+  "file.list": AttachmentListResult;
+  "file.token": Readonly<Record<string, unknown>>;
+  "file.uploadRequested": MutationReceipt;
+  "file.replaceRequested": MutationReceipt;
+  "file.removeRequested": MutationReceipt;
+  "events.reconcile": Readonly<Record<string, unknown>>;
   "schema.describe": SchemaDescribeResult;
   "relation.searchTargets": RelationSearchResult;
   "relation.updateSingle": RelationSingleUpdateResult;
@@ -1356,6 +1749,15 @@ export interface HostPayloadMap {
   "lookup.delete": LookupMutationResult;
   "lookup.preview": LookupQueryResult;
   "lookup.query": LookupQueryResult;
+  "preset.list": PresetsResult;
+  "preset.save": PresetEntry;
+  "preset.delete": DeletePresetVersionResult;
+  "version.list": VersionsResult;
+  "version.create": ContentVersionEntry;
+  "version.save": VersionSaveResult;
+  "version.compare": VersionCompareResult;
+  "version.promote": VersionPromoteResult;
+  "version.delete": DeletePresetVersionResult;
   "table.pastePreviewReady": PastePlan;
   "table.pasteApplied": ApplyPasteResult;
   "history.pageLoaded": HistoryPage;
@@ -1384,12 +1786,9 @@ export interface HostPayloadMap {
   "plugin.cleanup.listPending": readonly PluginAuditEvent[];
   "plugin.install.inspect": PluginInstallPlan;
   "plugin.install.commit": PluginSnapshot;
-  "plugin.externalFlow.listCandidates": readonly PluginExternalFlowCandidate[];
-  "plugin.externalFlow.bind": PluginFlowBindingSnapshot;
   "plugin.lifecycle.setEnabled": PluginSnapshot;
   "plugin.lifecycle.upgrade": PluginSnapshot;
   "plugin.lifecycle.rollback": PluginSnapshot;
-  "plugin.lifecycle.resolveDrift": PluginSnapshot;
   "plugin.lifecycle.uninstall": PluginUninstallResult;
   "plugin.action.describe": PluginActionAvailability;
   "plugin.action.start": PluginTaskSnapshot;
@@ -1402,8 +1801,6 @@ export interface HostPayloadMap {
 /** Map of (outbound) message type -> payload type, for typed requests. */
 export interface WebPayloadMap {
   "app.ready": Record<string, never>;
-  "host.firstRunSubmitted": FirstRunSubmittedPayload;
-  "host.loginSubmitted": LoginSubmittedPayload;
   "host.startupRetryRequested": Record<string, never>;
   "host.startupCancelRequested": Record<string, never>;
   "database.openRequested": DatabaseOpenRequestedPayload;
@@ -1412,6 +1809,36 @@ export interface WebPayloadMap {
   "table.updateCellRequested": UpdateCellRequestedPayload;
   "table.insertRowRequested": InsertRowRequestedPayload;
   "table.deleteRowsRequested": DeleteRowsRequestedPayload;
+  "schema.getTable": { readonly tableId: string };
+  "schema.validate": SchemaChangePayload;
+  "schema.apply": SchemaChangePayload;
+  "query.page": Readonly<Record<string, unknown>>;
+  "mutation.preview": Readonly<Record<string, unknown>>;
+  "mutation.apply": Readonly<Record<string, unknown>>;
+  "formula.validate": { readonly definition: Readonly<Record<string, unknown>> };
+  "formula.preview": FormulaPreviewRpcPayload;
+  "file.list": {
+    readonly tableId: string;
+    readonly recordId: string;
+    readonly fieldId: string;
+  };
+  "file.token": {
+    readonly tableId: string;
+    readonly recordId: string;
+    readonly fieldId: string;
+    readonly storedName: string;
+    readonly variant?: string | null;
+  };
+  "file.uploadRequested": AttachmentCellActionPayload;
+  "file.replaceRequested": AttachmentReplacePayload;
+  "file.removeRequested": AttachmentRemovePayload;
+  "file.previewRequested": AttachmentDownloadPayload;
+  "file.downloadRequested": AttachmentDownloadPayload;
+  "events.reconcile": {
+    readonly tableId: string;
+    readonly schemaRevision: string;
+    readonly dataRevision: string;
+  };
   "schema.describe": SchemaDescribeParams;
   "relation.searchTargets": RelationSearchParams;
   "relation.updateSingle": RelationUpdateSingleParams;
@@ -1426,12 +1853,94 @@ export interface WebPayloadMap {
   "lookup.delete": LookupDeleteParams;
   "lookup.preview": LookupPreviewParams;
   "lookup.query": LookupQueryParams;
+  "preset.list": { readonly collection: string };
+  "preset.save": {
+    readonly collection: string;
+    readonly name: string;
+    readonly view: PresetView;
+    readonly presetId?: string | null;
+    readonly operationId: string;
+  };
+  "preset.delete": {
+    readonly presetId: string;
+    readonly expectedRevision: string;
+    readonly operationId: string;
+  };
+  "version.list": { readonly collection: string; readonly itemId: string };
+  "version.create": {
+    readonly collection: string;
+    readonly itemId: string;
+    readonly key: string;
+    readonly name: string;
+    readonly operationId: string;
+  };
+  "version.save": {
+    readonly collection: string;
+    readonly itemId: string;
+    readonly versionId: string;
+    readonly values: Readonly<Record<string, unknown>>;
+    readonly operationId: string;
+  };
+  "version.compare": {
+    readonly collection: string;
+    readonly itemId: string;
+    readonly versionId: string;
+  };
+  "version.promote": {
+    readonly collection: string;
+    readonly itemId: string;
+    readonly versionId: string;
+    readonly mainHash: string;
+    readonly operationId: string;
+  };
+  "version.delete": {
+    readonly collection: string;
+    readonly itemId: string;
+    readonly versionId: string;
+    readonly expectedRevision: string;
+    readonly operationId: string;
+  };
   // B3 query + state requests.
   "table.queryRequested": TableQueryRequestedPayload;
   "gridState.saveRequested": GridStateSaveRequestedPayload;
   // B2 paste preview + apply requests.
   "table.previewPasteRequested": PreviewPasteRequestedPayload;
   "table.applyPasteRequested": ApplyPasteRequestedPayload;
+  "data.importSourceRequested": { readonly accept: readonly string[] };
+  "data.exportTargetRequested": {
+    readonly defaultName: string;
+    readonly format: "csv" | "xlsx";
+  };
+  "data.previewImport": {
+    readonly grantId: string;
+    readonly collection: string;
+    readonly schemaRevision: string;
+    readonly mode: "create_only" | "upsert";
+    readonly columnMapping: readonly Readonly<Record<string, unknown>>[];
+  };
+  "data.applyImport": {
+    readonly grantId: string;
+    readonly collection: string;
+    readonly token: string;
+    readonly mode: "create_only" | "upsert";
+    readonly chunkSize: number;
+    readonly idempotencyPrefix: string;
+  };
+  "data.export": {
+    readonly grantId: string;
+    readonly collection: string;
+    readonly query: Readonly<Record<string, unknown>>;
+    readonly format: "csv" | "xlsx";
+    readonly includeRelations: boolean;
+    readonly lookupIds: readonly string[];
+  };
+  "task.create": {
+    readonly kind: "data.import" | "data.export";
+    readonly params: Readonly<Record<string, unknown>>;
+  };
+  "task.cancel": { readonly taskId: string };
+  "task.status": { readonly taskId: string };
+  "dailyQuote.fetch": DailyQuoteFetchRequest;
   // Revision audit + two-phase safe restore requests.
   "history.queryRequested": HistoryQueryPayload;
   "history.previewRestoreRequested": HistoryPreviewRestorePayload;
@@ -1456,9 +1965,6 @@ export interface WebPayloadMap {
     readonly mappingId: string;
     readonly aliases: readonly string[];
   };
-  "identifierMappings.importRequested": {
-    readonly mappings: readonly IdentifierMappingImportItem[];
-  };
   "identifierMappings.reconcileRequested": Record<string, never>;
   "dashboard.listRequested": Record<string, never>;
   "dashboard.readRequested": { readonly dashboardId: string };
@@ -1467,8 +1973,6 @@ export interface WebPayloadMap {
   "dashboard.saveRequested": DashboardSaveRequestedPayload;
   "dashboard.deleteRequested": { readonly dashboardId: string };
   "dashboard.cancelRequested": { readonly targetRequestId: string };
-  "identifierMappings.deleteRequested": { readonly mappingId: string };
-  "identifierMappings.purgeRequested": Record<string, never>;
   "plugin.catalog.list": { readonly projectKey: string };
   "plugin.audit.list": { readonly projectKey: string; readonly pluginId: string };
   "plugin.cleanup.listPending": { readonly projectKey: string };
@@ -1478,18 +1982,6 @@ export interface WebPayloadMap {
     readonly sourceLocation: string;
   };
   "plugin.install.commit": { readonly planId: string; readonly projectRevision: string };
-  "plugin.externalFlow.listCandidates": {
-    readonly projectKey: string;
-    readonly pluginId: string;
-    readonly logicalFlowId: string;
-  };
-  "plugin.externalFlow.bind": {
-    readonly projectKey: string;
-    readonly pluginId: string;
-    readonly logicalFlowId: string;
-    readonly directusFlowUuid: string;
-    readonly acceptsUnknownSideEffects: boolean;
-  };
   "plugin.lifecycle.setEnabled": {
     readonly projectKey: string;
     readonly pluginId: string;
@@ -1502,12 +1994,6 @@ export interface WebPayloadMap {
     readonly projectRevision: string;
   };
   "plugin.lifecycle.rollback": { readonly projectKey: string; readonly pluginId: string };
-  "plugin.lifecycle.resolveDrift": {
-    readonly projectKey: string;
-    readonly pluginId: string;
-    readonly logicalFlowId: string;
-    readonly strategy: "restore" | "detach";
-  };
   "plugin.lifecycle.uninstall": {
     readonly projectKey: string;
     readonly pluginId: string;
@@ -1545,7 +2031,7 @@ export interface WebPayloadMap {
 // Web-first startup lifecycle contracts
 // ---------------------------------------------------------------------------
 
-export type StartupPhase = "starting" | "firstRun" | "login" | "ready" | "faulted";
+export type StartupPhase = "starting" | "ready" | "faulted";
 
 export interface StartupLogEntry {
   readonly time: string;
@@ -1557,28 +2043,9 @@ export interface StartupStatePayload {
   readonly phase: StartupPhase;
   readonly stage?: string | null;
   readonly detail?: string | null;
-  readonly email?: string | null;
-  readonly rememberPassword?: boolean;
-  readonly autoLogin?: boolean;
   readonly canRetry?: boolean;
   readonly canCancel?: boolean;
   readonly logs?: readonly StartupLogEntry[];
-}
-
-export interface FirstRunSubmittedPayload {
-  readonly email: string;
-  readonly password: string;
-  readonly managedLogin: boolean;
-  readonly rememberPassword: boolean;
-  readonly autoLogin: boolean;
-}
-
-export interface LoginSubmittedPayload {
-  readonly email: string;
-  readonly password: string;
-  readonly otp?: string;
-  readonly rememberPassword: boolean;
-  readonly autoLogin: boolean;
 }
 
 /** Payload produced by the web layer for `table.queryRequested`. */
@@ -1654,6 +2121,7 @@ export interface HistoryRecordChange {
 /** One logical business change aggregating scalar + relation field changes. */
 export interface HistoryChangeSet {
   readonly rootRevisionId: string;
+  readonly changeSetId: string;
   readonly activityId: string | null;
   readonly itemId?: string | null;
   readonly recordLabel?: string | null;

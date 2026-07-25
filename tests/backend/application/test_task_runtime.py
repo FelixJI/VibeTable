@@ -46,6 +46,27 @@ async def test_create_runs_handler_and_reports_succeeded() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_passes_frozen_request_params_to_product_handler() -> None:
+    runtime = TaskRuntime(notification_sink=_noop_sink)
+    seen: list[dict[str, Any]] = []
+
+    async def handler(task_id, reporter, token, params):  # type: ignore[no-untyped-def]
+        del task_id, reporter, token
+        seen.append(dict(params))
+        params["collection"] = "changed-inside-handler"
+        return {"accepted": True}
+
+    runtime.register("data.export", handler)
+    request = {"collection": "orders"}
+    status = await runtime.create("data.export", request)
+    request["collection"] = "changed-by-caller"
+    await runtime.wait(status.task_id)
+
+    assert seen == [{"collection": "orders"}]
+    assert runtime.status(status.task_id).result == {"accepted": True}
+
+
+@pytest.mark.asyncio
 async def test_failed_task_carries_error_message() -> None:
     runtime = TaskRuntime(notification_sink=_noop_sink)
 
@@ -66,7 +87,7 @@ async def test_cancel_marks_running_task_cancelled() -> None:
 
     async def handler(task_id, reporter, token):  # type: ignore[no-untyped-def]
         await token.wait()
-        return {}
+        raise asyncio.CancelledError
 
     runtime.register("test.slow", handler)
     status = await runtime.create("test.slow", {})
@@ -76,6 +97,22 @@ async def test_cancel_marks_running_task_cancelled() -> None:
     await asyncio.sleep(0.05)
     final = runtime.status(status.task_id)
     assert final.state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_arriving_after_handler_commit_keeps_success_result() -> None:
+    runtime = TaskRuntime(notification_sink=_noop_sink)
+
+    async def handler(task_id, reporter, token):  # type: ignore[no-untyped-def]
+        token.cancel()
+        return {"committed": True}
+
+    runtime.register("test.commit", handler)
+    status = await runtime.create("test.commit", {})
+    await asyncio.sleep(0.05)
+    final = runtime.status(status.task_id)
+    assert final.state == "succeeded"
+    assert final.result == {"committed": True}
 
 
 @pytest.mark.asyncio

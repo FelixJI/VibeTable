@@ -173,6 +173,14 @@ public sealed class HistoryBridgeTests
     [TestMethod]
     [DataRow("history_not_allowed", "history_not_allowed")]
     [DataRow("history_field_unreadable", "history_field_unreadable")]
+    [DataRow("history.field_unreadable", "history_field_unreadable")]
+    [DataRow("history.request_invalid", "history_request_invalid")]
+    [DataRow("restore.request_invalid", "history_request_invalid")]
+    [DataRow("history.table_not_found", "history_table_not_found")]
+    [DataRow("history.field_not_found", "history_field_not_found")]
+    [DataRow("history.storage_failed", "history_backend_unavailable")]
+    [DataRow("history.storage_corrupt", "history_storage_corrupt")]
+    [DataRow("restore.capacity_exhausted", "history_capacity_exhausted")]
     [DataRow("archive_not_supported", "archive_not_supported")]
     [DataRow("restore_token_expired", "restore_token_expired")]
     [DataRow("restore_scope_mismatch", "restore_scope_mismatch")]
@@ -182,6 +190,9 @@ public sealed class HistoryBridgeTests
     [DataRow("target_revision_invalid", "target_revision_invalid")]
     [DataRow("relation_target_unavailable", "relation_target_unavailable")]
     [DataRow("revision_not_created", "revision_not_created")]
+    [DataRow("restore_attachment_missing", "restore_attachment_missing")]
+    [DataRow("restore_attachment_corrupt", "restore_attachment_corrupt")]
+    [DataRow("restore_validation_failed", "restore_validation_failed")]
     public void ErrorMapper_UsesStableRendererCodes(string backendCode, string expectedCode)
     {
         var failure = HistoryErrorMapper.MapBackendCode(
@@ -198,7 +209,7 @@ public sealed class HistoryBridgeTests
         var sink = new FakeWebReplySink();
         var dispatcher = new WorkspaceRequestDispatcher(
             new TableWorkspaceService(gateway),
-            new FakeDatabasePicker("directus://configured"),
+            new FakeDatabasePicker("local://configured"),
             sink);
         return (dispatcher, gateway, sink);
     }

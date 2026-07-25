@@ -35,7 +35,7 @@ export function useRelationLookupService() {
 
   function init(onDataInvalidated?: () => void): void {
     if (unsubscribe) return;
-    unsubscribe = bridge.on("directus.changed", (change) => {
+    unsubscribe = bridge.on("data.changed", (change) => {
       const active = store.collection;
       const snapshot = store.schema;
       if (!active) return;
@@ -43,7 +43,7 @@ export function useRelationLookupService() {
       // another Lookup at its endpoint. The current schema snapshot only
       // contains the first-hop relation descriptors, so it cannot prove that
       // a seemingly unrelated collection is irrelevant. While this context
-      // has Lookups, conservatively invalidate on every Directus data event.
+      // has Lookups, conservatively invalidate on every product data event.
       // This may refresh more often, but it cannot leave a deep Lookup stale.
       const hasLookup = invalidateAllCollections || store.lookups.length > 0;
       if (hasLookup) invalidateAllCollections = true;
@@ -54,7 +54,7 @@ export function useRelationLookupService() {
           ...relation.allowedCollections,
           relation.junction?.collection,
         ].filter((item): item is string => !!item)));
-        if (change.collection !== active && !relatedCollections.has(change.collection)) return;
+        if (change.tableId !== active && !relatedCollections.has(change.tableId)) return;
       }
       // Related writes can invalidate realtime Lookup values. Let the
       // integration layer refresh authoritative rows, then renegotiate all
@@ -247,7 +247,10 @@ export function useRelationLookupService() {
       readonly query: Omit<LookupQueryParams["query"], "offset" | "limit">;
     },
   ): Promise<LookupQueryResult> {
-    const pageSize = 10_000;
+    // The authoritative backend intentionally caps one query page at 500.
+    // Fetch the complete client dataset through bounded pages instead of
+    // sending an oversized request that the closed RPC contract rejects.
+    const pageSize = 500;
     const first = await queryLookups({
       ...params,
       query: { ...params.query, offset: 0, limit: pageSize },

@@ -15,12 +15,12 @@ namespace VibeTable.Desktop.Services;
 internal sealed record RelationLookupRpcEndpoint(
     string Type,
     Func<JsonElement, bool> IsValidPayload,
-    Func<IDirectusRpcGateway, JsonElement, CancellationToken, Task<JsonElement>> InvokeAsync);
+    Func<IRelationLookupRpcGateway, JsonElement, CancellationToken, Task<JsonElement>> InvokeAsync);
 
 /// <summary>
 /// Closed registry shared by the WebView whitelist and workspace dispatcher.
 /// Adding an endpoint is intentionally a single edit that must supply both a
-/// host-side payload guard and an explicit <see cref="IDirectusRpcGateway"/>
+/// host-side payload guard and an explicit <see cref="IRelationLookupRpcGateway"/>
 /// method binding.
 /// </summary>
 internal static class RelationLookupRpcRegistry

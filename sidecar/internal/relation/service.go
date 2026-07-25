@@ -1,0 +1,1023 @@
+package relation
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"sort"
+
+	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/core"
+
+	lookupcalc "github.com/vibetable/vibetable/sidecar/internal/lookup"
+	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/query"
+	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+)
+
+type MutationKernel interface {
+	Preview(context.Context, mutation.Request) (mutation.PreviewResult, error)
+	Apply(context.Context, mutation.Request) (mutation.Receipt, error)
+}
+
+type Service struct {
+	app     core.App
+	queries query.QueryPort
+	kernel  MutationKernel
+}
+
+func New(app core.App, queries query.QueryPort, kernel MutationKernel) *Service {
+	return &Service{app: app, queries: queries, kernel: kernel}
+}
+
+func (service *Service) Describe(
+	ctx context.Context,
+	tableID string,
+) (CatalogResult, error) {
+	if tableID == "" {
+		return CatalogResult{}, relationError(
+			"relation.request.invalid", "tableId is required",
+		)
+	}
+	definition, err := schemaapi.New(service.app).Describe(ctx, tableID)
+	if err != nil {
+		return CatalogResult{}, err
+	}
+	result := CatalogResult{
+		TableID: tableID, SchemaRevision: definition.SchemaRevision,
+		Relations: []Descriptor{}, Lookups: []LookupDescriptor{},
+	}
+	lookupRevisions := map[string]int{}
+	lookupRecords, lookupErr := service.app.FindRecordsByFilter(
+		"vibetable_lookups", "table_id={:table}", "", 0, 0,
+		dbx.Params{"table": tableID},
+	)
+	if lookupErr != nil {
+		return CatalogResult{}, relationError(
+			"lookup.storage_failed", "lookup metadata could not be read",
+		)
+	}
+	for _, record := range lookupRecords {
+		lookupRevisions[record.GetString("lookup_id")] = record.GetInt("revision")
+	}
+	for _, field := range definition.Fields {
+		if field.Kind == schema.FieldKindRelation && field.Relation != nil {
+			result.Relations = append(
+				result.Relations,
+				descriptorFrom(tableID+"."+field.FieldID, tableID, field),
+			)
+		}
+		if field.Kind == schema.FieldKindLookup && field.Lookup != nil {
+			path, pathErr := service.describeLookupPath(
+				ctx, definition, *field.Lookup,
+			)
+			if pathErr != nil {
+				return CatalogResult{}, pathErr
+			}
+			lookupID := tableID + "." + field.FieldID
+			revision := lookupRevisions[lookupID]
+			if revision < 1 {
+				revision = 1
+			}
+			result.Lookups = append(result.Lookups, LookupDescriptor{
+				LookupID: lookupID,
+				TableID:  tableID, FieldID: field.FieldID,
+				PhysicalName: field.PhysicalName, DisplayName: field.DisplayName,
+				RelationFieldID: field.Lookup.RelationFieldID,
+				Path:            path,
+				TargetFieldID:   field.Lookup.TargetFieldID,
+				JunctionFieldID: field.Lookup.JunctionFieldID,
+				TargetFieldIDs:  field.Lookup.TargetFieldIDs,
+				Aggregate:       field.Lookup.Aggregate,
+				OutputStorage:   field.StorageType, Revision: revision,
+			})
+		}
+	}
+	return result, nil
+}
+
+func (service *Service) describeLookupPath(
+	ctx context.Context,
+	source schema.TableDefinition,
+	spec schema.LookupSpec,
+) ([]LookupPathDescriptor, error) {
+	current := source
+	result := make([]LookupPathDescriptor, 0, len(spec.EffectivePath()))
+	for _, step := range spec.EffectivePath() {
+		relationField, found := relationFieldByID(current, step.RelationFieldID)
+		if !found || relationField.Relation == nil {
+			return nil, relationError(
+				"lookup.schema_invalid",
+				"lookup path relation metadata is unavailable",
+			)
+		}
+		result = append(result, LookupPathDescriptor{
+			RelationID:    current.TableID + "." + step.RelationFieldID,
+			M2ACollection: step.M2ACollection,
+		})
+		targetTableID := relationField.Relation.TargetTableID
+		if step.M2ACollection != "" {
+			targetTableID = step.M2ACollection
+		}
+		target, err := schemaapi.New(service.app).Describe(ctx, targetTableID)
+		if err != nil {
+			return nil, err
+		}
+		current = target
+	}
+	return result, nil
+}
+
+func relationFieldByID(
+	definition schema.TableDefinition,
+	fieldID string,
+) (schema.FieldDefinition, bool) {
+	for _, field := range definition.Fields {
+		if field.FieldID == fieldID {
+			return field, true
+		}
+	}
+	return schema.FieldDefinition{}, false
+}
+
+func (service *Service) SearchTargets(
+	ctx context.Context,
+	request SearchRequest,
+) (SearchResult, error) {
+	resolved, err := service.resolve(ctx, request.RelationID)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	if request.Offset < 0 || request.Limit < 1 || request.Limit > 100 {
+		return SearchResult{}, relationError(
+			"relation.request.invalid",
+			"relation search paging is invalid",
+		)
+	}
+	targetTableID := resolved.descriptor.TargetTableID
+	if resolved.descriptor.Mode == "m2a" {
+		targetTableID = request.TargetTableID
+		if !contains(resolved.descriptor.AllowedTargetTableIDs, targetTableID) {
+			return SearchResult{}, relationError(
+				"relation.target_invalid",
+				"m2a target table is not allowed",
+			)
+		}
+	} else if request.TargetTableID != "" &&
+		request.TargetTableID != targetTableID {
+		return SearchResult{}, relationError(
+			"relation.target_invalid",
+			"target table does not match the relation",
+		)
+	}
+	page, err := service.queries.QueryPage(
+		ctx,
+		targetTableID,
+		query.TableQuery{
+			Keyword: request.Query,
+			Offset:  request.Offset,
+			Limit:   request.Limit,
+			Filters: []query.FilterExpression{},
+			Sorts: []query.SortCondition{{
+				Field: "id", Direction: query.SortAscending,
+			}},
+		},
+	)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	target, err := schemaapi.New(service.app).Describe(
+		ctx, targetTableID,
+	)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	labelField := targetLabelField(target)
+	items := make([]TargetRef, 0, len(page.Rows))
+	for _, row := range page.Rows {
+		recordID := fmt.Sprint(row["id"])
+		label := recordID
+		if labelField != "" && row[labelField] != nil &&
+			fmt.Sprint(row[labelField]) != "" {
+			label = fmt.Sprint(row[labelField])
+		}
+		items = append(items, TargetRef{
+			TableID:        targetTableID,
+			RecordID:       recordID,
+			Label:          label,
+			JunctionValues: map[string]any{},
+		})
+	}
+	return SearchResult{
+		Items: items, Total: page.FilteredRows, Snapshot: page.Snapshot,
+	}, nil
+}
+
+func (service *Service) PreviewDelta(
+	ctx context.Context,
+	request DeltaRequest,
+) (DeltaPreview, error) {
+	resolved, current, result, err := service.prepareDelta(ctx, request)
+	if err != nil {
+		return DeltaPreview{}, err
+	}
+	mutationRequest := service.deltaMutation(request, resolved, result)
+	if _, err := service.kernel.Preview(ctx, mutationRequest); err != nil {
+		return DeltaPreview{}, err
+	}
+	return DeltaPreview{
+		RelationID:     request.RelationID,
+		SourceRecordID: request.SourceRecordID,
+		Current:        current, Result: result,
+		Adds: len(request.Adds), Removes: len(request.Removes),
+		CanApply: true,
+	}, nil
+}
+
+func (service *Service) ApplyDelta(
+	ctx context.Context,
+	request DeltaRequest,
+) (DeltaResult, error) {
+	resolved, _, result, err := service.prepareDelta(ctx, request)
+	if err != nil {
+		return DeltaResult{}, err
+	}
+	receipt, err := service.kernel.Apply(
+		ctx, service.deltaMutation(request, resolved, result),
+	)
+	if err != nil {
+		return DeltaResult{}, err
+	}
+	return DeltaResult{Current: result, Receipt: receipt}, nil
+}
+
+func (service *Service) QueryLookups(
+	ctx context.Context,
+	request LookupQueryRequest,
+) (query.Page, error) {
+	definition, err := schemaapi.New(service.app).Describe(ctx, request.TableID)
+	if err != nil {
+		return query.Page{}, err
+	}
+	if definition.SchemaRevision != request.SchemaRevision {
+		return query.Page{}, relationError(
+			"lookup.schema_revision_conflict",
+			"lookup schema revision does not match",
+		)
+	}
+	return service.queries.QueryPage(ctx, request.TableID, request.Query)
+}
+
+func (service *Service) PreviewLookups(
+	ctx context.Context,
+	request LookupPreviewRequest,
+) (query.Page, error) {
+	currentRevision, err := schemaapi.New(service.app).GetRevision(
+		ctx, request.Definition.TableID,
+	)
+	if err != nil {
+		return query.Page{}, err
+	}
+	if _, err := schemaapi.New(service.app).ValidateChange(
+		ctx,
+		schemaapi.Change{
+			Definition: request.Definition, ExpectedRevision: currentRevision,
+		},
+	); err != nil {
+		return query.Page{}, err
+	}
+	selected := make(map[string]schema.FieldDefinition, len(request.FieldIDs))
+	for _, field := range request.Definition.Fields {
+		if field.Kind != schema.FieldKindLookup || field.Lookup == nil {
+			continue
+		}
+		for _, fieldID := range request.FieldIDs {
+			if field.FieldID == fieldID {
+				selected[fieldID] = field
+			}
+		}
+	}
+	if len(selected) != len(request.FieldIDs) {
+		return query.Page{}, relationError(
+			"lookup.request.invalid", "preview fieldIds contain an unknown Lookup",
+		)
+	}
+	page, err := service.queries.QueryPage(
+		ctx, request.Definition.TableID, request.Query,
+	)
+	if err != nil {
+		return query.Page{}, err
+	}
+	meta, err := service.app.FindFirstRecordByFilter(
+		"vibetable_tables", "table_id={:table}",
+		dbx.Params{"table": request.Definition.TableID},
+	)
+	if err != nil {
+		return query.Page{}, relationError(
+			"lookup.storage_failed", "lookup source storage is unavailable",
+		)
+	}
+	collection, err := service.app.FindCollectionByNameOrId(
+		meta.GetString("collection_id"),
+	)
+	if err != nil {
+		return query.Page{}, relationError(
+			"lookup.storage_failed", "lookup source storage is unavailable",
+		)
+	}
+	calculator := lookupcalc.NewCalculator()
+	for _, row := range page.Rows {
+		recordID, ok := row["id"].(string)
+		if !ok || recordID == "" {
+			return query.Page{}, relationError(
+				"lookup.storage_failed", "lookup source row has no id",
+			)
+		}
+		record, findErr := service.app.FindRecordById(collection, recordID)
+		if findErr != nil {
+			return query.Page{}, relationError(
+				"lookup.storage_failed", "lookup source row could not be read",
+			)
+		}
+		values, calculateErr := calculator.Calculate(
+			ctx, service.app, request.Definition, record,
+		)
+		if calculateErr != nil {
+			return query.Page{}, calculateErr
+		}
+		for fieldID, field := range selected {
+			row[field.PhysicalName] = values[field.PhysicalName]
+			_ = fieldID
+		}
+	}
+	return page, nil
+}
+
+type resolvedRelation struct {
+	definition schema.TableDefinition
+	field      schema.FieldDefinition
+	descriptor Descriptor
+	junction   *schema.TableDefinition
+}
+
+func (service *Service) resolve(
+	ctx context.Context,
+	relationID string,
+) (resolvedRelation, error) {
+	if relationID == "" {
+		return resolvedRelation{}, relationError(
+			"relation.request.invalid", "relationId is required",
+		)
+	}
+	meta, err := service.app.FindFirstRecordByFilter(
+		"vibetable_relations",
+		"relation_id={:relation}",
+		dbx.Params{"relation": relationID},
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return resolvedRelation{}, relationError(
+				"relation.not_found", "relation was not found",
+			)
+		}
+		return resolvedRelation{}, relationError(
+			"relation.storage_failed", "relation metadata could not be read",
+		)
+	}
+	definition, err := schemaapi.New(service.app).Describe(
+		ctx, meta.GetString("source_table_id"),
+	)
+	if err != nil {
+		return resolvedRelation{}, err
+	}
+	for _, field := range definition.Fields {
+		if field.FieldID == meta.GetString("source_field_id") &&
+			field.Kind == schema.FieldKindRelation &&
+			field.Relation != nil {
+			resolved := resolvedRelation{
+				definition: definition,
+				field:      field,
+				descriptor: descriptorFrom(
+					relationID, definition.TableID, field,
+				),
+			}
+			if field.Relation.EffectiveMode() != "direct" {
+				junction, junctionErr := schemaapi.New(service.app).Describe(
+					ctx, *field.Relation.JunctionTableID,
+				)
+				if junctionErr != nil {
+					return resolvedRelation{}, junctionErr
+				}
+				resolved.junction = &junction
+			}
+			return resolved, nil
+		}
+	}
+	return resolvedRelation{}, relationError(
+		"relation.schema_invalid",
+		"relation field is unavailable in the current schema",
+	)
+}
+
+func (service *Service) prepareDelta(
+	ctx context.Context,
+	request DeltaRequest,
+) (resolvedRelation, []TargetRef, []TargetRef, error) {
+	resolved, err := service.resolve(ctx, request.RelationID)
+	if err != nil {
+		return resolvedRelation{}, nil, nil, err
+	}
+	if request.SourceRecordID == "" ||
+		request.SchemaRevision != resolved.definition.SchemaRevision ||
+		request.RequestID == "" || request.IdempotencyKey == "" ||
+		request.Actor.Type == "" || request.Actor.ID == "" {
+		return resolvedRelation{}, nil, nil, relationError(
+			"relation.request.invalid",
+			"relation delta request is incomplete or stale",
+		)
+	}
+	if resolved.descriptor.Mode != "direct" {
+		current, result, junctionErr := service.prepareJunctionDelta(
+			ctx, resolved, request,
+		)
+		return resolved, current, result, junctionErr
+	}
+	if resolved.descriptor.Cardinality != "many" {
+		if len(request.Adds) > 1 || len(request.Removes) > 1 {
+			return resolvedRelation{}, nil, nil, relationError(
+				"relation.cardinality",
+				"single relation accepts at most one add and remove",
+			)
+		}
+	}
+	rows, err := service.queries.ReadRows(
+		ctx, resolved.definition.TableID,
+		[]string{request.SourceRecordID},
+	)
+	if err != nil {
+		return resolvedRelation{}, nil, nil, err
+	}
+	if len(rows) != 1 {
+		return resolvedRelation{}, nil, nil, relationError(
+			"relation.source_not_found", "source record was not found",
+		)
+	}
+	currentIDs := relationIDs(rows[0][resolved.field.PhysicalName])
+	currentSet := make(map[string]TargetRef, len(currentIDs))
+	for _, recordID := range currentIDs {
+		currentSet[recordID] = TargetRef{
+			TableID:  resolved.descriptor.TargetTableID,
+			RecordID: recordID,
+			Label:    recordID,
+		}
+	}
+	for _, remove := range request.Removes {
+		if remove.TableID != resolved.descriptor.TargetTableID {
+			return resolvedRelation{}, nil, nil, relationError(
+				"relation.target_invalid",
+				"remove target belongs to another table",
+			)
+		}
+		if _, exists := currentSet[remove.RecordID]; !exists {
+			return resolvedRelation{}, nil, nil, relationError(
+				"relation.target_not_linked",
+				"remove target is not linked",
+			)
+		}
+		delete(currentSet, remove.RecordID)
+	}
+	for _, add := range request.Adds {
+		if add.TableID != resolved.descriptor.TargetTableID ||
+			add.RecordID == "" {
+			return resolvedRelation{}, nil, nil, relationError(
+				"relation.target_invalid",
+				"add target belongs to another table",
+			)
+		}
+		if _, duplicate := currentSet[add.RecordID]; duplicate {
+			return resolvedRelation{}, nil, nil, relationError(
+				"relation.target_duplicate",
+				"add target is already linked",
+			)
+		}
+		currentSet[add.RecordID] = add
+	}
+	current := refsFromIDs(
+		resolved.descriptor.TargetTableID, currentIDs,
+	)
+	result := make([]TargetRef, 0, len(currentSet))
+	for _, item := range currentSet {
+		result = append(result, item)
+	}
+	sort.Slice(result, func(left, right int) bool {
+		return result[left].RecordID < result[right].RecordID
+	})
+	if resolved.descriptor.Cardinality == "one" && len(result) > 1 {
+		return resolvedRelation{}, nil, nil, relationError(
+			"relation.cardinality",
+			"single relation accepts at most one target",
+		)
+	}
+	return resolved, current, result, nil
+}
+
+func (service *Service) deltaMutation(
+	request DeltaRequest,
+	resolved resolvedRelation,
+	result []TargetRef,
+) mutation.Request {
+	if resolved.descriptor.Mode != "direct" {
+		return service.junctionMutation(request, resolved)
+	}
+	ids := make([]string, 0, len(result))
+	for _, item := range result {
+		ids = append(ids, item.RecordID)
+	}
+	var value any = ids
+	if resolved.descriptor.Cardinality == "one" {
+		value = nil
+		if len(ids) == 1 {
+			value = ids[0]
+		}
+	}
+	recordID := request.SourceRecordID
+	return mutation.Request{
+		ContractVersion: mutation.ContractVersion,
+		RequestID:       request.RequestID,
+		IdempotencyKey:  request.IdempotencyKey,
+		TableID:         resolved.definition.TableID,
+		SchemaRevision:  request.SchemaRevision,
+		Operations: []mutation.Operation{{
+			Kind:     mutation.OperationUpdate,
+			RecordID: &recordID,
+			Values:   map[string]any{resolved.field.PhysicalName: value},
+		}},
+		Actor:          request.Actor,
+		ExpectedDigest: request.ExpectedDigest,
+	}
+}
+
+func descriptorFrom(
+	relationID string,
+	tableID string,
+	field schema.FieldDefinition,
+) Descriptor {
+	relation := field.Relation
+	return Descriptor{
+		RelationID: relationID, SourceTableID: tableID,
+		SourceFieldID: field.FieldID, PhysicalName: field.PhysicalName,
+		Mode:          relation.EffectiveMode(),
+		TargetTableID: relation.TargetTableID,
+		Cardinality:   relation.Cardinality, DeletePolicy: relation.DeletePolicy,
+		JunctionTableID:              relation.JunctionTableID,
+		JunctionSourceFieldID:        relation.JunctionSourceFieldID,
+		JunctionTargetFieldID:        relation.JunctionTargetFieldID,
+		JunctionDiscriminatorFieldID: relation.JunctionDiscriminatorFieldID,
+		AllowedTargetTableIDs: append(
+			[]string{}, relation.AllowedTargetTableIDs...,
+		),
+	}
+}
+
+func (service *Service) prepareJunctionDelta(
+	ctx context.Context,
+	resolved resolvedRelation,
+	request DeltaRequest,
+) ([]TargetRef, []TargetRef, error) {
+	if resolved.junction == nil {
+		return nil, nil, relationError(
+			"relation.schema_invalid", "junction schema is unavailable",
+		)
+	}
+	rows, err := service.junctionRefs(ctx, resolved, request.SourceRecordID)
+	if err != nil {
+		return nil, nil, err
+	}
+	byJunction := make(map[string]TargetRef, len(rows))
+	byTarget := make(map[string]string, len(rows))
+	for _, item := range rows {
+		byJunction[item.JunctionID] = item
+		byTarget[targetKey(item)] = item.JunctionID
+	}
+	result := append([]TargetRef(nil), rows...)
+	for _, remove := range request.Removes {
+		junctionID := remove.JunctionID
+		if junctionID == "" {
+			junctionID = byTarget[targetKey(remove)]
+		}
+		if _, exists := byJunction[junctionID]; !exists {
+			return nil, nil, relationError(
+				"relation.target_not_linked", "remove target is not linked",
+			)
+		}
+		delete(byJunction, junctionID)
+	}
+	for _, update := range request.Updates {
+		item, exists := byJunction[update.JunctionID]
+		if !exists {
+			return nil, nil, relationError(
+				"relation.junction_not_found", "junction row was not found",
+			)
+		}
+		values, validateErr := junctionContextValues(
+			*resolved.junction, resolved.descriptor, update.Values,
+		)
+		if validateErr != nil {
+			return nil, nil, validateErr
+		}
+		item.JunctionValues = merge(item.JunctionValues, values)
+		byJunction[update.JunctionID] = item
+	}
+	for _, add := range request.Adds {
+		if err := service.validateTarget(ctx, resolved.descriptor, add); err != nil {
+			return nil, nil, err
+		}
+		if _, duplicate := byTarget[targetKey(add)]; duplicate {
+			// Preserve the original delta shape so an exact idempotent retry
+			// reaches MutationKernel replay before insert validation.
+			continue
+		}
+		values, validateErr := junctionContextValues(
+			*resolved.junction, resolved.descriptor, add.JunctionValues,
+		)
+		if validateErr != nil {
+			return nil, nil, validateErr
+		}
+		add.JunctionID = stableJunctionID(
+			request.RelationID, request.SourceRecordID, add,
+		)
+		add.JunctionValues = values
+		byJunction[add.JunctionID] = add
+		byTarget[targetKey(add)] = add.JunctionID
+	}
+	result = result[:0]
+	for _, item := range byJunction {
+		result = append(result, item)
+	}
+	sort.Slice(result, func(left, right int) bool {
+		return result[left].JunctionID < result[right].JunctionID
+	})
+	return rows, result, nil
+}
+
+func (service *Service) junctionRefs(
+	ctx context.Context,
+	resolved resolvedRelation,
+	sourceRecordID string,
+) ([]TargetRef, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	junction := *resolved.junction
+	source, _ := schemaField(junction, resolved.descriptor.JunctionSourceFieldID)
+	target, _ := schemaField(junction, resolved.descriptor.JunctionTargetFieldID)
+	discriminator, _ := schemaField(
+		junction, resolved.descriptor.JunctionDiscriminatorFieldID,
+	)
+	meta, err := service.app.FindFirstRecordByFilter(
+		"vibetable_tables", "table_id={:table}",
+		dbx.Params{"table": junction.TableID},
+	)
+	if err != nil {
+		return nil, relationError(
+			"relation.storage_failed", "junction storage is unavailable",
+		)
+	}
+	collection, err := service.app.FindCollectionByNameOrId(
+		meta.GetString("collection_id"),
+	)
+	if err != nil {
+		return nil, relationError(
+			"relation.storage_failed", "junction storage is unavailable",
+		)
+	}
+	records, err := service.app.FindRecordsByFilter(
+		collection,
+		source.PhysicalName+"={:source}",
+		"+id",
+		maxRelationRows+1,
+		0,
+		dbx.Params{"source": sourceRecordID},
+	)
+	if err != nil || len(records) > maxRelationRows {
+		return nil, relationError(
+			"relation.storage_failed", "junction rows could not be read",
+		)
+	}
+	result := make([]TargetRef, 0, len(records))
+	for _, record := range records {
+		tableID := resolved.descriptor.TargetTableID
+		if resolved.descriptor.Mode == "m2a" {
+			tableID = record.GetString(discriminator.PhysicalName)
+			if !contains(
+				resolved.descriptor.AllowedTargetTableIDs, tableID,
+			) {
+				continue
+			}
+		} else if record.GetString(target.PhysicalName) == "" {
+			continue
+		}
+		values := map[string]any{}
+		for _, field := range junction.Fields {
+			if field.FieldID == resolved.descriptor.JunctionSourceFieldID ||
+				field.FieldID == resolved.descriptor.JunctionTargetFieldID ||
+				field.FieldID == resolved.descriptor.JunctionDiscriminatorFieldID ||
+				field.ReadOnly {
+				continue
+			}
+			value := record.GetRaw(field.PhysicalName)
+			if field.DataType == schema.DataTypeSelect ||
+				field.DataType == schema.DataTypeMultiSelect {
+				value = schema.DecodeSelectValueFromStorage(field, value)
+			}
+			values[field.PhysicalName] = value
+		}
+		revision, revisionErr := relationRowRevision(
+			ctx, service.app, junction.TableID, record.Id,
+		)
+		if revisionErr != nil {
+			return nil, revisionErr
+		}
+		result = append(result, TargetRef{
+			TableID: tableID, RecordID: record.GetString(target.PhysicalName),
+			Label:            record.GetString(target.PhysicalName),
+			JunctionID:       record.Id,
+			JunctionRevision: fmt.Sprintf("row_%04d", revision),
+			JunctionValues:   values,
+		})
+	}
+	return result, nil
+}
+
+const maxRelationRows = 1000
+
+func (service *Service) junctionMutation(
+	request DeltaRequest,
+	resolved resolvedRelation,
+) mutation.Request {
+	junction := *resolved.junction
+	source, _ := schemaField(junction, resolved.descriptor.JunctionSourceFieldID)
+	target, _ := schemaField(junction, resolved.descriptor.JunctionTargetFieldID)
+	discriminator, _ := schemaField(
+		junction, resolved.descriptor.JunctionDiscriminatorFieldID,
+	)
+	operations := make([]mutation.Operation, 0,
+		len(request.Adds)+len(request.Updates)+len(request.Removes))
+	for _, add := range request.Adds {
+		recordID := stableJunctionID(
+			request.RelationID, request.SourceRecordID, add,
+		)
+		values := map[string]any{
+			source.PhysicalName: request.SourceRecordID,
+			target.PhysicalName: add.RecordID,
+		}
+		if resolved.descriptor.Mode == "m2a" {
+			values[discriminator.PhysicalName] = add.TableID
+		}
+		values = merge(values, add.JunctionValues)
+		operations = append(operations, mutation.Operation{
+			Kind: mutation.OperationInsert, RecordID: &recordID, Values: values,
+		})
+	}
+	for _, update := range request.Updates {
+		recordID := update.JunctionID
+		operations = append(operations, mutation.Operation{
+			Kind: mutation.OperationUpdate, RecordID: &recordID,
+			Values:           update.Values,
+			ExpectedRevision: update.ExpectedRevision,
+			ExpectedDigest:   update.ExpectedDigest,
+		})
+	}
+	for _, remove := range request.Removes {
+		recordID := remove.JunctionID
+		if recordID == "" {
+			recordID = stableJunctionID(
+				request.RelationID, request.SourceRecordID, remove,
+			)
+		}
+		expected := nullable(remove.JunctionRevision)
+		operations = append(operations, mutation.Operation{
+			Kind: mutation.OperationDelete, RecordID: &recordID,
+			ExpectedRevision: expected,
+		})
+	}
+	return mutation.Request{
+		ContractVersion: mutation.ContractVersion,
+		RequestID:       request.RequestID, IdempotencyKey: request.IdempotencyKey,
+		TableID: junction.TableID, SchemaRevision: junction.SchemaRevision,
+		Operations: operations, Actor: request.Actor,
+	}
+}
+
+func (service *Service) validateTarget(
+	ctx context.Context,
+	descriptor Descriptor,
+	target TargetRef,
+) error {
+	if target.RecordID == "" ||
+		(descriptor.Mode == "m2a" &&
+			!contains(descriptor.AllowedTargetTableIDs, target.TableID)) ||
+		(descriptor.Mode != "m2a" &&
+			target.TableID != descriptor.TargetTableID) {
+		return relationError(
+			"relation.target_invalid", "relation target is not allowed",
+		)
+	}
+	meta, err := service.app.FindFirstRecordByFilter(
+		"vibetable_tables", "table_id={:table}",
+		dbx.Params{"table": target.TableID},
+	)
+	if err != nil {
+		return relationError(
+			"relation.target_invalid", "relation target table was not found",
+		)
+	}
+	collection, err := service.app.FindCollectionByNameOrId(
+		meta.GetString("collection_id"),
+	)
+	if err != nil {
+		return relationError(
+			"relation.storage_failed", "relation target storage is unavailable",
+		)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := service.app.FindRecordById(collection, target.RecordID); err != nil {
+		return relationError(
+			"relation.target_not_found", "relation target record was not found",
+		)
+	}
+	return nil
+}
+
+func junctionContextValues(
+	junction schema.TableDefinition,
+	descriptor Descriptor,
+	values map[string]any,
+) (map[string]any, error) {
+	result := make(map[string]any, len(values))
+	for key, value := range values {
+		field, ok := schemaFieldByAlias(junction, key)
+		if !ok || field.ReadOnly ||
+			field.FieldID == descriptor.JunctionSourceFieldID ||
+			field.FieldID == descriptor.JunctionTargetFieldID ||
+			field.FieldID == descriptor.JunctionDiscriminatorFieldID ||
+			field.Kind != schema.FieldKindScalar {
+			return nil, relationError(
+				"relation.junction_value_invalid",
+				"junction context field is not writable",
+			)
+		}
+		result[field.PhysicalName] = value
+	}
+	return result, nil
+}
+
+func schemaField(
+	definition schema.TableDefinition,
+	fieldID string,
+) (schema.FieldDefinition, bool) {
+	for _, field := range definition.Fields {
+		if field.FieldID == fieldID {
+			return field, true
+		}
+	}
+	return schema.FieldDefinition{}, false
+}
+
+func schemaFieldByAlias(
+	definition schema.TableDefinition,
+	key string,
+) (schema.FieldDefinition, bool) {
+	for _, field := range definition.Fields {
+		if field.FieldID == key || field.PhysicalName == key {
+			return field, true
+		}
+	}
+	return schema.FieldDefinition{}, false
+}
+
+func stableJunctionID(
+	relationID string,
+	sourceRecordID string,
+	target TargetRef,
+) string {
+	digest := sha256.Sum256([]byte(
+		relationID + "\x00" + sourceRecordID + "\x00" +
+			target.TableID + "\x00" + target.RecordID,
+	))
+	return hex.EncodeToString(digest[:])[:15]
+}
+
+func targetKey(target TargetRef) string {
+	return target.TableID + "\x00" + target.RecordID
+}
+
+func merge(left map[string]any, right map[string]any) map[string]any {
+	result := make(map[string]any, len(left)+len(right))
+	for key, value := range left {
+		result[key] = value
+	}
+	for key, value := range right {
+		result[key] = value
+	}
+	return result
+}
+
+func contains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func nullable(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func relationRowRevision(
+	ctx context.Context,
+	app core.App,
+	tableID string,
+	recordID string,
+) (int64, error) {
+	var count int64
+	err := app.ConcurrentDB().NewQuery(`
+		SELECT COUNT(DISTINCT change_set_id)
+		FROM vibetable_audit_events
+		WHERE table_id = {:table} AND record_id = {:record}
+	`).WithContext(ctx).Bind(dbx.Params{
+		"table": tableID, "record": recordID,
+	}).Row(&count)
+	if err != nil {
+		return 0, relationError(
+			"relation.storage_failed", "junction revision could not be read",
+		)
+	}
+	return count, nil
+}
+
+func targetLabelField(definition schema.TableDefinition) string {
+	for _, field := range definition.Fields {
+		if field.ReadOnly || field.Kind != schema.FieldKindScalar {
+			continue
+		}
+		switch field.DataType {
+		case schema.DataTypeShortText, schema.DataTypeLongText,
+			schema.DataTypeEmail, schema.DataTypeUUID:
+			return field.PhysicalName
+		}
+	}
+	return ""
+}
+
+func relationIDs(value any) []string {
+	switch typed := value.(type) {
+	case nil:
+		return []string{}
+	case string:
+		if typed == "" {
+			return []string{}
+		}
+		return []string{typed}
+	case []string:
+		return append([]string(nil), typed...)
+	case []any:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok && text != "" {
+				result = append(result, text)
+			}
+		}
+		return result
+	default:
+		return []string{}
+	}
+}
+
+func refsFromIDs(tableID string, ids []string) []TargetRef {
+	result := make([]TargetRef, 0, len(ids))
+	for _, recordID := range ids {
+		result = append(result, TargetRef{
+			TableID: tableID, RecordID: recordID, Label: recordID,
+		})
+	}
+	return result
+}
+
+func relationError(code, message string) *mutation.ProductError {
+	return &mutation.ProductError{
+		ContractVersion: mutation.ContractVersion,
+		Code:            code, Message: message, Details: map[string]any{},
+	}
+}

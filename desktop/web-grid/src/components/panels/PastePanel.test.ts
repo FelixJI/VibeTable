@@ -130,6 +130,7 @@ describe("PastePanel", () => {
     expect(wrapper.get('[data-testid="paste-close"]').find("svg").exists()).toBe(true);
     await wrapper.find('[data-testid="paste-close"]').trigger("click");
     expect(wrapper.emitted("cancel")).toBeTruthy();
+    expect(wrapper.find('[data-testid="paste-panel"]').exists()).toBe(false);
   });
 
   it("emits cancel when the cancel button is clicked", async () => {
@@ -140,5 +141,6 @@ describe("PastePanel", () => {
     const wrapper = mountPanel();
     await wrapper.find('[data-testid="paste-cancel"]').trigger("click");
     expect(wrapper.emitted("cancel")).toBeTruthy();
+    expect(wrapper.find('[data-testid="paste-panel"]').exists()).toBe(false);
   });
 });

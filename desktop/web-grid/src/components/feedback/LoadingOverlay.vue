@@ -1,11 +1,18 @@
 <script setup lang="ts">
 import { NSpin } from "naive-ui";
+import { t } from "@/i18n";
 
 defineProps<{ show: boolean }>();
 </script>
 
 <template>
-  <div v-if="show" class="overlay overlay--loading">
+  <div
+    v-if="show"
+    class="overlay overlay--loading"
+    role="status"
+    aria-live="polite"
+    :aria-label="t('app.loading')"
+  >
     <NSpin size="medium" />
   </div>
 </template>

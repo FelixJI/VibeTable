@@ -123,8 +123,8 @@ class IdentifierMappingEntry(CamelModel):
     display_name: str
     locale: str = "zh-CN"
     aliases: list[str] = Field(default_factory=list)
-    origin: Literal["vibetable", "directus", "import"]
-    status: Literal["pending", "active", "orphaned", "deleted"]
+    origin: Literal["vibetable", "pocketbase"]
+    status: Literal["pending", "active"]
 
 
 class IdentifierMappingsResult(CamelModel):
@@ -140,46 +140,20 @@ class UpdateIdentifierAliasesParams(CamelModel):
     aliases: list[str] = Field(default_factory=list, max_length=32)
 
 
-class ImportIdentifierMappingItem(CamelModel):
-    """Portable mapping data. Physical identity is matched, never changed."""
-
-    entity_kind: Literal["collection", "field"]
-    parent_physical_name: str | None = None
-    physical_name: str = Field(min_length=1, max_length=128)
-    display_name: str = Field(min_length=1, max_length=128)
-    aliases: list[str] = Field(default_factory=list, max_length=32)
-
-
-class ImportIdentifierMappingsParams(CamelModel):
-    mappings: list[ImportIdentifierMappingItem] = Field(default_factory=list, max_length=4096)
-
-
 class ReconcileIdentifierMappingsParams(CamelModel):
-    pass
-
-
-class DeleteIdentifierMappingParams(CamelModel):
-    mapping_id: str = Field(min_length=1, max_length=64)
-
-
-class PurgeIdentifierMappingsParams(CamelModel):
     pass
 
 
 __all__ = [
     "CreateTableParams",
     "CreateTableResult",
-    "DeleteIdentifierMappingParams",
     "DeleteTableParams",
     "DeleteTableResult",
     "FieldDefinition",
     "FieldType",
     "IdentifierMappingEntry",
     "IdentifierMappingsResult",
-    "ImportIdentifierMappingItem",
-    "ImportIdentifierMappingsParams",
     "ListIdentifierMappingsParams",
-    "PurgeIdentifierMappingsParams",
     "ReconcileIdentifierMappingsParams",
     "UpdateIdentifierAliasesParams",
 ]

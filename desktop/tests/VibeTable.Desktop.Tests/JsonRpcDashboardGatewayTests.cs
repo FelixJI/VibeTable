@@ -17,20 +17,20 @@ public sealed class JsonRpcDashboardGatewayTests
         var gateway = new JsonRpcDashboardGateway(client);
 
         await gateway.ListDashboardsAsync(CancellationToken.None);
-        AssertMethod(transport, "directus.listDashboards");
+        AssertMethod(transport, "insights.listDashboards");
 
         await gateway.ReadDashboardWorkspaceAsync("dash-1", CancellationToken.None);
-        AssertMethod(transport, "directus.readDashboardWorkspace");
+        AssertMethod(transport, "insights.readDashboardWorkspace");
         Assert.AreEqual("dash-1", transport.LastRequest.GetProperty("params").GetProperty("dashboardId").GetString());
 
         var draft = Draft();
         await gateway.SaveDashboardDraftAsync(draft, CancellationToken.None);
-        AssertMethod(transport, "directus.saveDashboardDraft");
+        AssertMethod(transport, "insights.saveDashboardDraft");
         Assert.AreEqual(draft.IdempotencyKey,
             transport.LastRequest.GetProperty("params").GetProperty("idempotencyKey").GetString());
 
         await gateway.DeleteDashboardAsync("dash-1", CancellationToken.None);
-        AssertMethod(transport, "directus.deleteDashboardWorkspace");
+        AssertMethod(transport, "insights.deleteDashboardWorkspace");
         Assert.AreEqual("dash-1", transport.LastRequest.GetProperty("params").GetProperty("dashboardId").GetString());
 
         await gateway.ExecuteDashboardQueryAsync(
@@ -39,16 +39,16 @@ public sealed class JsonRpcDashboardGatewayTests
                 new DashboardRecordQuery("orders", ["id"]),
                 "web-request-7"),
             CancellationToken.None);
-        AssertMethod(transport, "directus.executeDashboardQuery");
+        AssertMethod(transport, "insights.executeDashboardQuery");
         var query = transport.LastRequest.GetProperty("params").GetProperty("query");
         Assert.AreEqual("records", query.GetProperty("kind").GetString());
         Assert.AreEqual("web-request-7",
             transport.LastRequest.GetProperty("params").GetProperty("requestId").GetString());
 
         await gateway.GetDashboardQueryLimitsAsync(CancellationToken.None);
-        AssertMethod(transport, "directus.dashboardQueryLimits");
+        AssertMethod(transport, "insights.dashboardQueryLimits");
         await gateway.GetPanelManifestAsync(CancellationToken.None);
-        AssertMethod(transport, "directus.panelManifest");
+        AssertMethod(transport, "insights.panelManifest");
     }
 
     private static void AssertMethod(DashboardTransport transport, string expected)
@@ -75,13 +75,13 @@ public sealed class JsonRpcDashboardGatewayTests
             string method = LastRequest.GetProperty("method").GetString()!;
             string result = method switch
             {
-                "directus.listDashboards" => """{"dashboards":[]}""",
-                "directus.readDashboardWorkspace" => WorkspaceJson,
-                "directus.saveDashboardDraft" => $$"""{"workspace":{{WorkspaceJson}},"clientPanelIds":{},"atomic":true}""",
-                "directus.deleteDashboardWorkspace" => """{"deleted":"dash-1"}""",
-                "directus.executeDashboardQuery" => """{"rows":[],"truncated":false,"maxPoints":100000}""",
-                "directus.dashboardQueryLimits" => LimitsJson,
-                "directus.panelManifest" => """{"manifestVersion":"v2","directusCompatibility":">=12 <13","panels":[]}""",
+                "insights.listDashboards" => """{"dashboards":[]}""",
+                "insights.readDashboardWorkspace" => WorkspaceJson,
+                "insights.saveDashboardDraft" => $$"""{"workspace":{{WorkspaceJson}},"clientPanelIds":{},"atomic":true}""",
+                "insights.deleteDashboardWorkspace" => """{"deleted":"dash-1"}""",
+                "insights.executeDashboardQuery" => """{"rows":[],"truncated":false,"maxPoints":100000}""",
+                "insights.dashboardQueryLimits" => LimitsJson,
+                "insights.panelManifest" => """{"manifestVersion":"v2","queryContract":"product-query-port.v1","panels":[]}""",
                 _ => "{}",
             };
             using var response = JsonDocument.Parse(

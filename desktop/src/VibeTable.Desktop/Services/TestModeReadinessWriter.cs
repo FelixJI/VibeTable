@@ -57,9 +57,9 @@ public sealed class TestModeReadinessWriter
     }
 
     /// <summary>
-    /// Writes the Directus-era shell smoke result after the real backend
+    /// Writes the shell smoke result after the real backend
     /// handshake, WebView2 navigation, and renderer <c>app.ready</c> bridge
-    /// handshake have all completed. No external Directus server is required
+    /// handshake have all completed. No external server is required
     /// for this startup-contract check.
     /// </summary>
     public void WriteShellReady()

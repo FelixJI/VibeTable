@@ -32,6 +32,34 @@ describe("AppToolbar", () => {
     expect(wrapper.text()).toContain("vt_t_01abc");
   });
 
+  it("provides a compact accessible table switcher with every table on narrow layouts", () => {
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([
+      { collection: "orders", displayName: "订单" },
+      { collection: "users", metadata: { displayName: "客户清单" } },
+    ]);
+    workspace.selectTable("orders");
+    const wrapper = mount(AppToolbar);
+
+    const trigger = wrapper.get('[data-testid="compact-table-switcher"]');
+    expect(trigger.attributes("aria-label")).toBe("切换数据表，当前为订单");
+    expect(trigger.attributes("aria-haspopup")).toBe("menu");
+
+    const dropdown = wrapper.findAllComponents(NDropdown).find((candidate) => {
+      const options = candidate.props("options") as Array<{ key: string }>;
+      return options.some((option) => option.key === "users");
+    });
+    expect(dropdown).toBeTruthy();
+    expect(dropdown!.props("options")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "orders", label: "订单" }),
+      expect.objectContaining({ key: "users", label: "客户清单" }),
+    ]));
+
+    const select = dropdown!.props("onSelect") as (key: string) => void;
+    select("users");
+    expect(wrapper.emitted("selectTable")).toEqual([["users"]]);
+  });
+
   it("exposes refresh and help through the More menu", () => {
     const workspace = useWorkspaceStore();
     workspace.selectTable("orders");
@@ -45,6 +73,25 @@ describe("AppToolbar", () => {
     select("help");
     expect(wrapper.emitted("refresh")).toHaveLength(1);
     expect(wrapper.emitted("openHelp")).toHaveLength(1);
+  });
+
+  it("keeps secondary data actions collected in More for narrow layouts", () => {
+    const wrapper = mount(AppToolbar);
+    const dropdown = wrapper.findAllComponents(NDropdown).find((candidate) =>
+      (candidate.props("options") as Array<{ key: string }>).some(
+        (option) => option.key === "refresh",
+      ),
+    );
+    const keys = (dropdown!.props("options") as Array<{ key: string }>)
+      .map((option) => option.key);
+
+    expect(keys).toEqual([
+      "cancel-data-task",
+      "import",
+      "export",
+      "refresh",
+      "help",
+    ]);
   });
 
   it("provides an accessible tooltip trigger for More", () => {
@@ -63,6 +110,13 @@ describe("AppToolbar", () => {
     expect(button.attributes("aria-label")).toBe("插入新行");
     await button.trigger("click");
     expect(wrapper.emitted("insertRow")).toHaveLength(1);
+  });
+
+  it("keeps insert disabled until the selected table mutation revision is ready", () => {
+    const workspace = useWorkspaceStore();
+    workspace.selectTable("orders");
+    const wrapper = mount(AppToolbar, { props: { insertRowDisabled: true } });
+    expect(wrapper.get('[data-testid="toolbar-insert-row"]').attributes("disabled")).toBeDefined();
   });
 
   it("opens the current history scope and exposes deleted records separately", async () => {

@@ -1,30 +1,48 @@
 {
   "protocolVersion": "1.0",
   "components": {
-    "host": { "version": "1.0.0" },
-    "backend": { "version": "1.0.0" },
-    "web": { "version": "1.0.0" },
-    "directusExtension": { "version": "1.0.0" },
-    "directusExtensions": [
-      { "name": "vibetable-bulk-mutation", "version": "1.0.0" },
-      { "name": "vibetable-workspace-index", "version": "1.0.0" },
-      { "name": "vibetable-plugin-bridge", "version": "1.0.0" },
-      { "name": "vibetable-lookup-query", "version": "1.0.0" }
-    ],
-    "localDirectus": { "version": "1.0.0" }
+    "host": {
+      "version": "1.0.0"
+    },
+    "backend": {
+      "version": "1.0.0"
+    },
+    "web": {
+      "version": "1.0.0"
+    },
+    "sidecar": {
+      "version": "1.0.0",
+      "pocketBaseVersion": "0.39.9",
+      "celVersion": "0.26.1",
+      "contractVersion": "v1",
+      "schemaVersion": "4",
+      "migrationHash": "ad8d44046cf3b330c6d7491bc0fdc9f98a0b182fe6618435607860be95b36c7f",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
   },
-  "webview2": { "sdk": "1.0.4078.44" },
-  "webGrid": { "tabulator": "6.5.2" },
+  "webview2": {
+    "sdk": "1.0.4078.44"
+  },
+  "webGrid": {
+    "tabulator": "6.5.2"
+  },
   "launch": {
+    "host": "VibeTable.Next.exe",
     "backend": "backend/vibetable-backend.exe",
     "webGrid": "web-grid",
-    "directusExtension": "directus/extensions/vibetable-bulk-mutation",
-    "directusExtensions": [
-      "directus/extensions/vibetable-bulk-mutation",
-      "directus/extensions/vibetable-workspace-index",
-      "directus/extensions/vibetable-plugin-bridge",
-      "directus/extensions/vibetable-lookup-query"
-    ],
-    "localDirectus": "local-directus"
+    "sidecar": "sidecar/vibetable-pb.exe"
+  },
+  "assets": {
+    "migrations": "sidecar/migrations/manifest.json",
+    "buildInfo": "sidecar/build-info.json",
+    "sidecarChecksum": "sidecar/vibetable-pb.exe.sha256",
+    "licenses": "sidecar/THIRD_PARTY_LICENSES.txt",
+    "sbom": "sidecar/sbom.cdx.json"
+  },
+  "data": {
+    "rootPolicy": "per-user-local-app-data",
+    "relativePath": "VibeTable/data",
+    "backupRelativePath": "VibeTable/backups",
+    "preserveOnUninstall": true
   }
 }

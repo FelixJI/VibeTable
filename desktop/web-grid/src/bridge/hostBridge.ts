@@ -29,15 +29,29 @@
 
 import type {
   BridgeMessage,
-  HostMessageType,
-  HostPayloadMap,
-  WebMessageType,
-  WebPayloadMap,
+  HostMessageType as SharedHostMessageType,
+  HostPayloadMap as SharedHostPayloadMap,
+  WebMessageType as SharedWebMessageType,
+  WebPayloadMap as SharedWebPayloadMap,
   OperationFailedPayload,
 } from "@/contracts";
+import type {
+  BackupHostMessageType,
+  BackupHostPayloadMap,
+  BackupWebMessageType,
+  BackupWebPayloadMap,
+} from "@/contracts/backupContracts";
+
+type HostMessageType = SharedHostMessageType | BackupHostMessageType;
+type HostPayloadMap = SharedHostPayloadMap & BackupHostPayloadMap;
+type WebMessageType = SharedWebMessageType | BackupWebMessageType;
+type WebPayloadMap = SharedWebPayloadMap & BackupWebPayloadMap;
 
 /** Diagnostic emitted when an inbound message is dropped. */
-export type DiagnosticKind = "unknown-type" | "malformed";
+export type DiagnosticKind =
+  | "unknown-type"
+  | "malformed"
+  | "mismatched-response";
 
 export interface Diagnostic {
   readonly kind: DiagnosticKind;
@@ -75,6 +89,13 @@ export interface HostBridgeOptions {
   readonly webview?: WebViewLike;
   /** Per-request timeout in ms. Default 10_000. */
   readonly timeoutMs?: number;
+  /**
+   * Native File-object delivery should be acknowledged almost immediately.
+   * A shorter timeout lets the UI fall back to a host-owned picker when a
+   * WebView runtime accepts the call but silently drops synthetic/unsupported
+   * File objects.
+   */
+  readonly additionalObjectsTimeoutMs?: number;
   /** Deterministic requestId source (tests). Defaults to UUID-ish counter. */
   readonly generateRequestId?: () => string;
   /** Invoked for every dropped inbound message. No-op by default. */
@@ -123,7 +144,31 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "table.editRejected",
   "table.rowsInserted",
   "table.rowsDeleted",
-  "directus.changed",
+  "data.changed",
+  "task.changed",
+  "data.importSourceRequested",
+  "data.exportTargetRequested",
+  "data.previewImport",
+  "data.applyImport",
+  "data.export",
+  "task.create",
+  "task.cancel",
+  "task.status",
+  "dailyQuote.fetch",
+  "schema.getTable",
+  "schema.validate",
+  "schema.apply",
+  "query.page",
+  "mutation.preview",
+  "mutation.apply",
+  "formula.validate",
+  "formula.preview",
+  "file.list",
+  "file.token",
+  "file.uploadRequested",
+  "file.replaceRequested",
+  "file.removeRequested",
+  "events.reconcile",
   "schema.describe",
   "relation.searchTargets",
   "relation.updateSingle",
@@ -138,6 +183,18 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "lookup.delete",
   "lookup.preview",
   "lookup.query",
+  "preset.list",
+  "preset.save",
+  "preset.delete",
+  "version.list",
+  "version.create",
+  "version.save",
+  "version.compare",
+  "version.promote",
+  "version.delete",
+  "backup.list",
+  "backup.create",
+  "backup.restore",
   // B2 paste preview + apply outcomes.
   "table.pastePreviewReady",
   "table.pasteApplied",
@@ -167,12 +224,9 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "plugin.cleanup.listPending",
   "plugin.install.inspect",
   "plugin.install.commit",
-  "plugin.externalFlow.listCandidates",
-  "plugin.externalFlow.bind",
   "plugin.lifecycle.setEnabled",
   "plugin.lifecycle.upgrade",
   "plugin.lifecycle.rollback",
-  "plugin.lifecycle.resolveDrift",
   "plugin.lifecycle.uninstall",
   "plugin.action.describe",
   "plugin.action.start",
@@ -190,8 +244,6 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   WebMessageType
 >([
   "app.ready",
-  "host.firstRunSubmitted",
-  "host.loginSubmitted",
   "host.startupRetryRequested",
   "host.startupCancelRequested",
   "database.openRequested",
@@ -200,6 +252,22 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "table.updateCellRequested",
   "table.insertRowRequested",
   "table.deleteRowsRequested",
+  "schema.getTable",
+  "schema.validate",
+  "schema.apply",
+  "query.page",
+  "mutation.preview",
+  "mutation.apply",
+  "formula.validate",
+  "formula.preview",
+  "file.list",
+  "file.token",
+  "file.uploadRequested",
+  "file.replaceRequested",
+  "file.removeRequested",
+  "file.previewRequested",
+  "file.downloadRequested",
+  "events.reconcile",
   "schema.describe",
   "relation.searchTargets",
   "relation.updateSingle",
@@ -214,12 +282,33 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "lookup.delete",
   "lookup.preview",
   "lookup.query",
+  "preset.list",
+  "preset.save",
+  "preset.delete",
+  "version.list",
+  "version.create",
+  "version.save",
+  "version.compare",
+  "version.promote",
+  "version.delete",
+  "backup.list",
+  "backup.create",
+  "backup.restore",
   // B3 query + state requests.
   "table.queryRequested",
   "gridState.saveRequested",
   // B2 paste preview + apply requests.
   "table.previewPasteRequested",
   "table.applyPasteRequested",
+  "data.importSourceRequested",
+  "data.exportTargetRequested",
+  "data.previewImport",
+  "data.applyImport",
+  "data.export",
+  "task.create",
+  "task.cancel",
+  "task.status",
+  "dailyQuote.fetch",
   "history.queryRequested",
   "history.previewRestoreRequested",
   "history.applyRestoreRequested",
@@ -228,10 +317,7 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "tableAdmin.deleteRequested",
   "identifierMappings.listRequested",
   "identifierMappings.updateAliasesRequested",
-  "identifierMappings.importRequested",
   "identifierMappings.reconcileRequested",
-  "identifierMappings.deleteRequested",
-  "identifierMappings.purgeRequested",
   "dashboard.listRequested",
   "dashboard.readRequested",
   "dashboard.manifestRequested",
@@ -244,12 +330,9 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "plugin.cleanup.listPending",
   "plugin.install.inspect",
   "plugin.install.commit",
-  "plugin.externalFlow.listCandidates",
-  "plugin.externalFlow.bind",
   "plugin.lifecycle.setEnabled",
   "plugin.lifecycle.upgrade",
   "plugin.lifecycle.rollback",
-  "plugin.lifecycle.resolveDrift",
   "plugin.lifecycle.uninstall",
   "plugin.action.describe",
   "plugin.action.start",
@@ -266,7 +349,7 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "document.revealRequested",
   "document.historyRequested",
   "document.relinkRequested",
-  // Open the embedded Directus admin (Data Studio) in this webview.
+  // Open the embedded data administration surface in this webview.
   "admin.openRequested",
 ]);
 
@@ -276,9 +359,59 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
 
 interface Pending {
   readonly messageType: WebMessageType;
+  readonly responseTypes: ReadonlySet<HostMessageType>;
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: unknown) => void;
   readonly timer: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * Correlated response names implemented by the desktop host. Closed RPC
+ * endpoints (including backup and plugin endpoints) reply with their request
+ * type; workflow endpoints use the explicit outcome names below.
+ */
+const RESPONSE_TYPE_OVERRIDES: Readonly<
+  Partial<Record<WebMessageType, readonly HostMessageType[]>>
+> = {
+  "database.openRequested": ["database.opened"],
+  "table.selected": ["table.editSchemaLoaded"],
+  "table.pageRequested": ["table.pageLoaded"],
+  "table.updateCellRequested": ["table.editCommitted", "table.editRejected"],
+  "table.insertRowRequested": ["table.rowsInserted"],
+  "table.deleteRowsRequested": ["table.rowsDeleted"],
+  "table.queryRequested": ["table.pageLoaded"],
+  "table.previewPasteRequested": ["table.pastePreviewReady"],
+  "table.applyPasteRequested": ["table.pasteApplied"],
+  "history.queryRequested": ["history.pageLoaded"],
+  "history.previewRestoreRequested": ["history.restorePreviewReady"],
+  "history.applyRestoreRequested": ["history.restoreApplied"],
+  "tableAdmin.createRequested": ["database.collectionsChanged"],
+  "tableAdmin.deleteRequested": ["database.collectionsChanged"],
+  "identifierMappings.listRequested": ["identifierMappings.result"],
+  "identifierMappings.updateAliasesRequested": ["identifierMappings.result"],
+  "identifierMappings.reconcileRequested": ["identifierMappings.result"],
+  "dashboard.listRequested": ["dashboard.listLoaded"],
+  "dashboard.readRequested": ["dashboard.loaded"],
+  "dashboard.manifestRequested": ["dashboard.manifestLoaded"],
+  "dashboard.queryRequested": ["dashboard.queryLoaded"],
+  "dashboard.saveRequested": ["dashboard.saved"],
+  "dashboard.deleteRequested": ["dashboard.deleted"],
+  "document.listRequested": ["document.listLoaded"],
+  "document.historyRequested": ["document.historyLoaded"],
+  "document.openRequested": ["document.actionCompleted"],
+  "document.previewRequested": ["document.actionCompleted"],
+  "document.revealRequested": ["document.actionCompleted"],
+};
+
+function responseTypesFor(type: WebMessageType): ReadonlySet<HostMessageType> {
+  const overrides = RESPONSE_TYPE_OVERRIDES[type];
+  if (overrides) return new Set(overrides);
+  // Product-data, relation/Lookup, backup, attachment and plugin RPC replies
+  // reuse the closed request type. Only accept that default when it is also a
+  // declared host message type.
+  return HOST_EVENT_TYPES.has(type as HostMessageType)
+    ? new Set([type as HostMessageType])
+    : new Set();
 }
 
 // ---------------------------------------------------------------------------
@@ -291,33 +424,63 @@ export interface HostBridge {
   /** Stop listening. Idempotent. */
   stop(): void;
   /** Outbound request awaiting a matching response. */
-  request<K extends WebMessageType>(
+  request<K extends BackupWebMessageType>(
     type: K,
-    payload: WebPayloadMap[K],
+    payload: BackupWebPayloadMap[K],
+  ): Promise<unknown>;
+  request<K extends SharedWebMessageType>(
+    type: K,
+    payload: SharedWebPayloadMap[K],
   ): Promise<unknown>;
   /** Begin a correlated request and expose its envelope id for typed cancellation. */
-  requestWithHandle<K extends WebMessageType>(
+  requestWithHandle<K extends BackupWebMessageType>(
     type: K,
-    payload: WebPayloadMap[K],
+    payload: BackupWebPayloadMap[K],
+  ): { readonly requestId: string; readonly promise: Promise<unknown> };
+  requestWithHandle<K extends SharedWebMessageType>(
+    type: K,
+    payload: SharedWebPayloadMap[K],
   ): { readonly requestId: string; readonly promise: Promise<unknown> };
   /** Outbound fire-and-forget notification (no requestId). */
-  notify<K extends WebMessageType>(
+  notify<K extends BackupWebMessageType>(
     type: K,
-    payload: WebPayloadMap[K],
+    payload: BackupWebPayloadMap[K],
+  ): void;
+  notify<K extends SharedWebMessageType>(
+    type: K,
+    payload: SharedWebPayloadMap[K],
   ): void;
   /**
    * Post an envelope and DOM File objects over WebView2's native additional
    * objects channel. Returns false when the installed runtime lacks the API.
    */
-  notifyWithAdditionalObjects<K extends WebMessageType>(
+  notifyWithAdditionalObjects<K extends BackupWebMessageType>(
     type: K,
-    payload: WebPayloadMap[K],
+    payload: BackupWebPayloadMap[K],
     additionalObjects: readonly File[],
   ): boolean;
-  /** Subscribe to a whitelisted host -> web event. Returns an unsubscribe fn. */
-  on<K extends HostMessageType>(
+  notifyWithAdditionalObjects<K extends SharedWebMessageType>(
     type: K,
-    handler: (payload: HostPayloadMap[K]) => void,
+    payload: SharedWebPayloadMap[K],
+    additionalObjects: readonly File[],
+  ): boolean;
+  /**
+   * Correlated native-file request. Returns null when WebView2 cannot carry
+   * the supplied native objects, allowing a closed host-owned picker fallback.
+   */
+  requestWithAdditionalObjects<K extends SharedWebMessageType>(
+    type: K,
+    payload: SharedWebPayloadMap[K],
+    additionalObjects: readonly File[],
+  ): Promise<unknown> | null;
+  /** Subscribe to a whitelisted host -> web event. Returns an unsubscribe fn. */
+  on<K extends BackupHostMessageType>(
+    type: K,
+    handler: (payload: BackupHostPayloadMap[K]) => void,
+  ): () => void;
+  on<K extends SharedHostMessageType>(
+    type: K,
+    handler: (payload: SharedHostPayloadMap[K]) => void,
   ): () => void;
 }
 
@@ -328,6 +491,8 @@ export interface HostBridge {
  */
 export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
   const timeoutMs = options.timeoutMs ?? 10_000;
+  const additionalObjectsTimeoutMs =
+    options.additionalObjectsTimeoutMs ?? Math.min(timeoutMs, 1_500);
   const onDiagnostic = options.onDiagnostic ?? (() => undefined);
   const generateRequestId =
     options.generateRequestId ?? defaultGenerateRequestId;
@@ -444,17 +609,33 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     if (typeof requestId === "string") {
       const entry = pending.get(requestId);
       if (entry) {
-        clearTimeout(entry.timer);
-        pending.delete(requestId);
         if (type === "operation.failed") {
+          clearTimeout(entry.timer);
+          pending.delete(requestId);
           entry.reject(
             new BridgeOperationError(
               normalizeFailure(payload),
             ),
           );
-        } else {
-          entry.resolve(payload);
+          return;
         }
+        if (!entry.responseTypes.has(type as HostMessageType)) {
+          onDiagnostic({
+            kind: "mismatched-response",
+            type,
+            reason:
+              `response type "${type}" does not match request type ` +
+              `"${entry.messageType}" (requestId=${requestId}); expected: ` +
+              `${[...entry.responseTypes].join(", ") || "<failure only>"}`,
+            raw,
+          });
+          // Keep the request pending: a valid response or operation.failed may
+          // still arrive, otherwise the existing timeout closes the request.
+          return;
+        }
+        clearTimeout(entry.timer);
+        pending.delete(requestId);
+        entry.resolve(payload);
         // Note: for a request-response type we still ALSO fan out to handlers
         // only when the host uses it as a broadcast (no requestId). Since this
         // branch has a requestId, we return after resolving the request.
@@ -536,7 +717,13 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
           reject(new BridgeTimeoutError(type, requestId, timeoutMs));
         }
       }, timeoutMs);
-      pending.set(requestId, { messageType: type, resolve, reject, timer });
+      pending.set(requestId, {
+        messageType: type,
+        responseTypes: responseTypesFor(type),
+        resolve,
+        reject,
+        timer,
+      });
       try {
         postEnvelope(env);
       } catch (err) {
@@ -569,11 +756,67 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     if (!target.postMessageWithAdditionalObjects) return false;
     // The JSON-shaped envelope contains only the typed payload. File objects
     // travel exclusively in WebView2's native additionalObjects collection.
-    target.postMessageWithAdditionalObjects(
-      { type, payload },
-      [...additionalObjects],
-    );
-    return true;
+    try {
+      target.postMessageWithAdditionalObjects(
+        { type, nativeObjects: true, payload },
+        [...additionalObjects],
+      );
+      return true;
+    } catch {
+      // WebView2 rejects synthetic File objects that are not backed by a disk
+      // path. Return the same capability signal as an unavailable native API;
+      // the caller may use a closed host-owned picker flow.
+      return false;
+    }
+  }
+
+  function requestWithAdditionalObjects<K extends WebMessageType>(
+    type: K,
+    payload: WebPayloadMap[K],
+    additionalObjects: readonly File[],
+  ): Promise<unknown> | null {
+    if (!WEB_MESSAGE_TYPES.has(type)) {
+      throw new Error(
+        `HostBridge: refusing to post non-whitelisted web message type "${type}"`,
+      );
+    }
+    const target = webview();
+    if (!target.postMessageWithAdditionalObjects) return null;
+    const requestId = generateRequestId();
+    const promise = new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (pending.delete(requestId)) {
+          reject(
+            new BridgeTimeoutError(
+              type,
+              requestId,
+              additionalObjectsTimeoutMs,
+            ),
+          );
+        }
+      }, additionalObjectsTimeoutMs);
+      pending.set(requestId, {
+        messageType: type,
+        responseTypes: responseTypesFor(type),
+        resolve,
+        reject,
+        timer,
+      });
+    });
+    try {
+      target.postMessageWithAdditionalObjects(
+        { type, requestId, nativeObjects: true, payload },
+        [...additionalObjects],
+      );
+      return promise;
+    } catch {
+      const entry = pending.get(requestId);
+      if (entry) clearTimeout(entry.timer);
+      pending.delete(requestId);
+      // Prevent an unhandled rejection: the pending promise was never exposed.
+      promise.catch(() => undefined);
+      return null;
+    }
   }
 
   function on<K extends HostMessageType>(
@@ -595,7 +838,16 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     };
   }
 
-  return { start, stop, request, requestWithHandle, notify, notifyWithAdditionalObjects, on };
+  return {
+    start,
+    stop,
+    request,
+    requestWithHandle,
+    notify,
+    notifyWithAdditionalObjects,
+    requestWithAdditionalObjects,
+    on,
+  };
 }
 
 // ---------------------------------------------------------------------------

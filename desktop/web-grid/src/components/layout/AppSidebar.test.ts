@@ -53,7 +53,7 @@ describe("AppSidebar", () => {
     expect(wrapper.emitted("newTable")!.length).toBe(1);
   });
 
-  it("does not duplicate the Directus entry from the application navigation", () => {
+  it("does not duplicate the administration entry from the application navigation", () => {
     const wrapper = mountSidebar();
     expect(wrapper.find('[data-testid="sidebar-open-admin"]').exists()).toBe(false);
   });

@@ -5,7 +5,12 @@ import type { CollectionSummary } from "@/stores/workspaceStore";
 import type {
   CollectionsChangedPayload,
   DatabaseOpenedPayload,
+  ProductErrorPayload,
+  ProductTableDefinition,
+  SchemaChangePayload,
 } from "@/contracts";
+import { buildProductFieldDefinition } from "./schemaFieldDraft";
+import { buildProductIndexDefinitions } from "./schemaIndexDraft";
 
 /**
  * Translate the wire-level `database.opened` payload (separate `tables`/
@@ -58,7 +63,7 @@ function toCollectionsFromChanged(
  */
 export function useTableAdminService(): {
   init: () => void;
-  createTable: () => void;
+  createTable: () => Promise<void>;
   deleteTable: (name: string) => void;
   openAdmin: () => void;
 } {
@@ -99,13 +104,42 @@ export function useTableAdminService(): {
     });
   }
 
-  function createTable(): void {
+  async function createTable(): Promise<void> {
     if (!store.canSubmit) return;
     store.beginSubmit();
-    bridge.notify("tableAdmin.createRequested", {
-      name: store.form.name,
-      fields: store.form.fields.map((f) => ({ key: f.name, type: f.type })),
-    });
+    const fields = store.form.fields.map((field, index) =>
+      buildProductFieldDefinition(field, index));
+    const definition = buildProductTableDefinition(
+      store.form.name,
+      fields,
+      buildProductIndexDefinitions(store.form.indexes, store.form.fields, fields),
+    );
+    const change: SchemaChangePayload = { definition, expectedRevision: 0 };
+    try {
+      const validation = await bridge.request("schema.validate", change);
+      const validationError = productError(validation);
+      if (validationError) {
+        store.fail(validationError.message, validationError.path);
+        return;
+      }
+      const normalized = (
+        validation as { readonly definition?: ProductTableDefinition }
+      )?.definition ?? definition;
+      const applied = await bridge.request("schema.apply", {
+        definition: normalized,
+        expectedRevision: 0,
+      });
+      const applyError = productError(applied);
+      if (applyError) {
+        store.fail(applyError.message, applyError.path);
+        return;
+      }
+      store.succeed();
+      ui.closeCreate();
+    } catch (error) {
+      const mapped = error as Error & { readonly path?: string };
+      store.fail(mapped.message || "创建数据表失败。", mapped.path ?? null);
+    }
   }
 
   function deleteTable(name: string): void {
@@ -123,4 +157,39 @@ export function useTableAdminService(): {
   }
 
   return { init, createTable, deleteTable, openAdmin };
+}
+
+export function buildProductTableDefinition(
+  displayName: string,
+  fields: ProductTableDefinition["fields"],
+  indexes: ProductTableDefinition["indexes"],
+): ProductTableDefinition {
+  const physicalName = slug(displayName) || `table_${Date.now().toString(36)}`;
+  return {
+    contractVersion: "1.0",
+    tableId: `tbl_${physicalName}`,
+    physicalName,
+    displayName: displayName.trim(),
+    kind: "base",
+    schemaRevision: "schema_0000",
+    archivePolicy: { mode: "none", fieldId: null, archivedValue: null },
+    fields,
+    indexes,
+  };
+}
+
+function productError(value: unknown): ProductErrorPayload | null {
+  if (!value || typeof value !== "object") return null;
+  const error = (value as { readonly error?: unknown }).error;
+  if (!error || typeof error !== "object") return null;
+  const candidate = error as Partial<ProductErrorPayload>;
+  if (typeof candidate.code !== "string"
+      || typeof candidate.path !== "string"
+      || typeof candidate.message !== "string") return null;
+  return candidate as ProductErrorPayload;
+}
+
+function slug(value: string): string {
+  return value.trim().normalize("NFKC").toLocaleLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
 }

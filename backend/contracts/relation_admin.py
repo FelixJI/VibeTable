@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
-from backend.adapters.directus.profile import JunctionProfile, RelationDeletePolicy
+from backend.contracts.data_profile import JunctionProfile, RelationDeletePolicy
 from backend.contracts.table import CamelModel, ColumnSchema
 
 
@@ -95,8 +95,8 @@ class CreateM2OConfig(RelationCommonConfig):
     def validate_preset(self) -> CreateM2OConfig:
         if self.preset not in {"standard", "file"}:
             raise ValueError("M2O supports only standard or file preset")
-        if self.preset == "file" and self.related_collection != "directus_files":
-            raise ValueError("file preset must target directus_files")
+        if self.preset == "file" and self.related_collection != "_managed_attachments":
+            raise ValueError("file preset must target _managed_attachments")
         return self
 
 
@@ -144,8 +144,8 @@ class CreateM2MConfig(RelationCommonConfig):
     def validate_preset(self) -> CreateM2MConfig:
         if self.preset not in {"standard", "files"}:
             raise ValueError("M2M supports only standard or files preset")
-        if self.preset == "files" and self.related_collection != "directus_files":
-            raise ValueError("files preset must target directus_files")
+        if self.preset == "files" and self.related_collection != "_managed_attachments":
+            raise ValueError("files preset must target _managed_attachments")
         return self
 
 

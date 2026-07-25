@@ -213,6 +213,72 @@ public sealed class WorkspaceVersionServiceTests
     }
 
     [TestMethod]
+    public async Task RefStore_CAS_Update_ConcurrentWriters_OnlyOneSucceeds()
+    {
+        var backup = MakeTempBackupRoot();
+        try
+        {
+            for (int attempt = 0; attempt < 32; attempt++)
+            {
+                var json = new AtomicJsonStore();
+                var initializer = new RefStore(backup, json);
+                string schemeId = $"scheme-{attempt}";
+                initializer.Initialize(new RefManifest(
+                    1,
+                    "doc-1",
+                    schemeId,
+                    "main",
+                    "rev-1",
+                    "main.docx",
+                    "2026-07-15T00:00:00Z"));
+
+                using var barrier = new Barrier(2);
+                var outcomes = new System.Collections.Concurrent.ConcurrentBag<string>();
+                Task writerA = Task.Run(() => AttemptUpdate("rev-a"));
+                Task writerB = Task.Run(() => AttemptUpdate("rev-b"));
+                await Task.WhenAll(writerA, writerB);
+
+                Assert.AreEqual(
+                    1,
+                    outcomes.Count(outcome => outcome == "success"),
+                    $"attempt {attempt}: {string.Join(", ", outcomes)}");
+                Assert.AreEqual(
+                    1,
+                    outcomes.Count(outcome => outcome == "conflict"),
+                    $"attempt {attempt}: {string.Join(", ", outcomes)}");
+
+                void AttemptUpdate(string newHead)
+                {
+                    var store = new RefStore(backup, new AtomicJsonStore());
+                    barrier.SignalAndWait();
+                    try
+                    {
+                        store.UpdateHead(
+                            "doc-1",
+                            schemeId,
+                            "rev-1",
+                            newHead,
+                            "2026-07-15T01:00:00Z");
+                        outcomes.Add("success");
+                    }
+                    catch (RefCasConflictException)
+                    {
+                        outcomes.Add("conflict");
+                    }
+                    catch (Exception error)
+                    {
+                        outcomes.Add(error.GetType().Name);
+                    }
+                }
+            }
+        }
+        finally
+        {
+            CleanupDir(Path.GetDirectoryName(backup)!);
+        }
+    }
+
+    [TestMethod]
     public void VersionService_CommitFormal_FullPipeline()
     {
         var backup = MakeTempBackupRoot();
@@ -244,7 +310,7 @@ public sealed class WorkspaceVersionServiceTests
                 createdAt: "2026-07-15T10:00:00Z"
             );
 
-            Assert.AreEqual(WorkspaceVersionService.CommitStage.RefCasCommitted, outcome.FinalStage);
+            Assert.AreEqual(WorkspaceVersionService.CommitStage.PublishPending, outcome.FinalStage);
             Assert.IsTrue(outcome.RefUpdated);
             Assert.IsFalse(string.IsNullOrEmpty(outcome.ContentHash));
             Assert.IsFalse(string.IsNullOrEmpty(outcome.RevisionId));
@@ -258,6 +324,11 @@ public sealed class WorkspaceVersionServiceTests
             var refHead = refs.Read("doc-1", "scheme-1");
             Assert.IsNotNull(refHead);
             Assert.AreEqual(outcome.RevisionId, refHead!.HeadRevisionId);
+
+            var pending = new RevisionPublishOutboxStore(backup, json)
+                .ListByDocument("doc-1");
+            Assert.AreEqual(1, pending.Count);
+            Assert.AreEqual(outcome.RevisionId, pending[0].RevisionId);
         }
         finally
         {
@@ -300,7 +371,7 @@ public sealed class WorkspaceVersionServiceTests
             );
 
             // The revision is committed but the ref is NOT updated.
-            Assert.AreEqual(WorkspaceVersionService.CommitStage.RevisionCommitted, outcome.FinalStage);
+            Assert.AreEqual(WorkspaceVersionService.CommitStage.PublishPending, outcome.FinalStage);
             Assert.IsFalse(outcome.RefUpdated);
             Assert.IsNotNull(outcome.ConflictMessage);
 
@@ -312,10 +383,293 @@ public sealed class WorkspaceVersionServiceTests
             // But the revision exists.
             var rev = revisions.Read("doc-1", outcome.RevisionId);
             Assert.IsNotNull(rev);
+            var pending = new RevisionPublishOutboxStore(backup, json)
+                .ListByDocument("doc-1");
+            Assert.AreEqual(1, pending.Count);
+            Assert.AreEqual(outcome.RevisionId, pending[0].RevisionId);
+
+            var conflictRefs = refs.ListByDocument("doc-1")
+                .Where(reference => reference.SchemeId.StartsWith(
+                    "conflict-",
+                    StringComparison.Ordinal))
+                .ToArray();
+            Assert.AreEqual(1, conflictRefs.Length);
+            Assert.AreEqual(outcome.RevisionId, conflictRefs[0].HeadRevisionId);
+            Assert.AreEqual(
+                conflictRefs[0].SchemeId,
+                new VibeTable.Workspace.Reconciliation.RefConflictResolver(
+                    backup,
+                    revisions,
+                    refs,
+                    json)
+                    .ResolveConflict(
+                        "doc-1",
+                        "scheme-1",
+                        outcome.RevisionId,
+                        "2026-07-15T10:00:00Z")
+                    .ConflictSchemeId);
         }
         finally
         {
             CleanupDir(Path.GetDirectoryName(backup)!);
+        }
+    }
+
+    [TestMethod]
+    public void VersionService_CommitFormal_RejectsMissingParentBeforeWritingRevision()
+    {
+        var backup = MakeTempBackupRoot();
+        try
+        {
+            var json = new AtomicJsonStore();
+            var revisions = new RevisionStore(backup, json);
+            var service = new WorkspaceVersionService(
+                backup,
+                new ContentObjectStore(backup),
+                revisions,
+                new RefStore(backup, json),
+                json);
+            service.InitializeScheme(new RefManifest(
+                1,
+                "doc-1",
+                "scheme-1",
+                "main",
+                "missing-parent",
+                "main.docx",
+                "2026-07-15T00:00:00Z"));
+
+            Assert.Throws<InvalidOperationException>(() => service.CommitFormal(
+                MakeWorkingFile("content"),
+                "main.docx",
+                "doc-1",
+                "scheme-1",
+                "missing-parent",
+                2,
+                "main/V2",
+                "application/octet-stream",
+                "user-1",
+                null,
+                null,
+                "2026-07-15T10:00:00Z"));
+            Assert.AreEqual(0, revisions.ListByDocument("doc-1").Count);
+        }
+        finally
+        {
+            CleanupDir(Path.GetDirectoryName(backup)!);
+        }
+    }
+
+    [TestMethod]
+    public void VersionService_CommitFormal_RejectsWrongSchemeAndNonConsecutiveSequence()
+    {
+        var backup = MakeTempBackupRoot();
+        try
+        {
+            var json = new AtomicJsonStore();
+            var revisions = new RevisionStore(backup, json);
+            revisions.Write(MakeTestRevision("rev-1", "doc-1", "scheme-other"));
+            var refs = new RefStore(backup, json);
+            refs.Initialize(new RefManifest(
+                1,
+                "doc-1",
+                "scheme-1",
+                "main",
+                "rev-1",
+                "main.docx",
+                "2026-07-15T00:00:00Z"));
+            var service = new WorkspaceVersionService(
+                backup,
+                new ContentObjectStore(backup),
+                revisions,
+                refs,
+                json);
+
+            Assert.Throws<InvalidOperationException>(() => service.CommitFormal(
+                MakeWorkingFile("content"),
+                "main.docx",
+                "doc-1",
+                "scheme-1",
+                "rev-1",
+                2,
+                "main/V2",
+                "application/octet-stream",
+                "user-1",
+                null,
+                null,
+                "2026-07-15T10:00:00Z"));
+
+            revisions.Write(MakeTestRevision(
+                "rev-2",
+                "doc-1",
+                "scheme-1") with { Sequence = 7 });
+            refs.UpdateHead(
+                "doc-1",
+                "scheme-1",
+                "rev-1",
+                "rev-2",
+                "2026-07-15T09:00:00Z");
+            Assert.Throws<InvalidOperationException>(() => service.CommitFormal(
+                MakeWorkingFile("content"),
+                "main.docx",
+                "doc-1",
+                "scheme-1",
+                "rev-2",
+                9,
+                "main/V9",
+                "application/octet-stream",
+                "user-1",
+                null,
+                null,
+                "2026-07-15T10:00:00Z"));
+        }
+        finally
+        {
+            CleanupDir(Path.GetDirectoryName(backup)!);
+        }
+    }
+
+    [TestMethod]
+    public void VersionService_CommitFormal_RequiresAndCanonicalizesUtcRfc3339Timestamp()
+    {
+        var backup = MakeTempBackupRoot();
+        try
+        {
+            var json = new AtomicJsonStore();
+            var revisions = new RevisionStore(backup, json);
+            var refs = new RefStore(backup, json);
+            var service = new WorkspaceVersionService(
+                backup,
+                new ContentObjectStore(backup),
+                revisions,
+                refs,
+                json);
+            refs.Initialize(new RefManifest(
+                1,
+                "doc-1",
+                "scheme-1",
+                "main",
+                "",
+                "main.docx",
+                "2026-07-15T00:00:00Z"));
+
+            Assert.Throws<ArgumentException>(() => service.CommitFormal(
+                MakeWorkingFile("invalid"),
+                "main.docx",
+                "doc-1",
+                "scheme-1",
+                null,
+                1,
+                "main/V1",
+                "application/octet-stream",
+                "user-1",
+                null,
+                null,
+                "2026-07-15T10:00:00+08:00"));
+
+            var outcome = service.CommitFormal(
+                MakeWorkingFile("valid"),
+                "main.docx",
+                "doc-1",
+                "scheme-1",
+                null,
+                1,
+                "main/V1",
+                "application/octet-stream",
+                "user-1",
+                null,
+                null,
+                "2026-07-15T10:00:00.1200000Z");
+            Assert.AreEqual(
+                "2026-07-15T10:00:00.12Z",
+                revisions.Read("doc-1", outcome.RevisionId)!.CreatedAt);
+        }
+        finally
+        {
+            CleanupDir(Path.GetDirectoryName(backup)!);
+        }
+    }
+
+    [TestMethod]
+    public void RevisionPublishOutbox_InvalidEntryIsNotSilentlyIgnored()
+    {
+        var backup = MakeTempBackupRoot();
+        try
+        {
+            var json = new AtomicJsonStore();
+            var outbox = new RevisionPublishOutboxStore(backup, json);
+            var invalid = MakeTestRevision(
+                "rev-invalid",
+                "doc-1",
+                "scheme-1") with { FormatVersion = 999 };
+            json.Write(outbox.GetPath("doc-1", "rev-invalid"), invalid);
+
+            Assert.Throws<InvalidOperationException>(
+                () => outbox.ListByDocument("doc-1"));
+            Assert.IsTrue(File.Exists(
+                outbox.GetPath("doc-1", "rev-invalid")));
+        }
+        finally
+        {
+            CleanupDir(Path.GetDirectoryName(backup)!);
+        }
+    }
+
+    [TestMethod]
+    public void VersionService_CommitAndRestore_NeverWritesBackendDataDirectory()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-boundary-" + Guid.NewGuid().ToString("N")[..8]);
+        string workspaceRoot = Path.Combine(root, "workspace");
+        string backup = Path.Combine(workspaceRoot, ".backup");
+        string backendData = Path.Combine(root, "pb_data");
+        Directory.CreateDirectory(workspaceRoot);
+        Directory.CreateDirectory(backup);
+        Directory.CreateDirectory(backendData);
+        string sentinel = Path.Combine(backendData, "do-not-touch.bin");
+        File.WriteAllText(sentinel, "owned-by-data-backend");
+
+        try
+        {
+            var json = new AtomicJsonStore();
+            var objects = new ContentObjectStore(backup);
+            var revisions = new RevisionStore(backup, json);
+            var refs = new RefStore(backup, json);
+            var service = new WorkspaceVersionService(
+                backup, objects, revisions, refs, json);
+            service.InitializeWorkspace(new WorkspaceManifest(
+                1, "ws-1", "Workspace", "2026-07-24T00:00:00Z"));
+            service.InitializeScheme(new RefManifest(
+                1, "doc-1", "scheme-1", "main", "", "main.txt",
+                "2026-07-24T00:00:00Z"));
+
+            string workingFile = Path.Combine(workspaceRoot, "main.txt");
+            File.WriteAllText(workingFile, "workspace content");
+            var outcome = service.CommitFormal(
+                workingFile,
+                "main.txt",
+                "doc-1",
+                "scheme-1",
+                null,
+                1,
+                "main/V1",
+                "text/plain",
+                "local-user",
+                null,
+                null,
+                "2026-07-24T00:01:00Z");
+            string restored = Path.Combine(workspaceRoot, "restored.txt");
+            objects.Restore(outcome.ContentHash, restored);
+
+            Assert.AreEqual("workspace content", File.ReadAllText(restored));
+            Assert.AreEqual("owned-by-data-backend", File.ReadAllText(sentinel));
+            CollectionAssert.AreEqual(
+                new[] { "do-not-touch.bin" },
+                Directory.GetFiles(backendData).Select(Path.GetFileName).ToArray());
+        }
+        finally
+        {
+            CleanupDir(root);
         }
     }
 

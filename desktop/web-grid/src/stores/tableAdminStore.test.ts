@@ -10,6 +10,7 @@ describe("tableAdminStore", () => {
     expect(s.phase).toBe("idle");
     expect(s.form.name).toBe("");
     expect(s.form.fields).toEqual([]);
+    expect(s.form.indexes).toEqual([]);
     expect(s.canSubmit).toBe(false);
   });
 
@@ -40,6 +41,40 @@ describe("tableAdminStore", () => {
     s.addField();
     s.removeField(0);
     expect(s.form.fields).toHaveLength(1);
+  });
+
+  it("owns index drafts and prunes field references when a field is removed", () => {
+    const s = useTableAdminStore();
+    s.openCreate();
+    s.updateField(0, { name: "status" });
+    s.addField("dateTime");
+    s.updateField(1, { name: "created_at" });
+    s.addIndex();
+    s.form.indexes[0]!.name = "idx_status_created";
+    s.form.indexes[0]!.fieldClientIds = s.form.fields.map((field) => field.clientId);
+
+    const removedClientId = s.form.fields[0]!.clientId;
+    s.removeField(0);
+
+    expect(s.form.indexes[0]!.fieldClientIds).not.toContain(removedClientId);
+    expect(s.form.indexes[0]!.fieldClientIds).toEqual([s.form.fields[0]!.clientId]);
+  });
+
+  it("blocks submission until every configured index is locally valid", () => {
+    const s = useTableAdminStore();
+    s.openCreate();
+    s.form.name = "订单";
+    s.updateField(0, { name: "status" });
+    s.addIndex();
+    expect(s.canSubmit).toBe(false);
+    expect(s.localIndexErrors.map((error) => error.path)).toEqual([
+      "indexes[0].name",
+      "indexes[0].fieldIds",
+    ]);
+
+    s.form.indexes[0]!.name = "idx_status";
+    s.form.indexes[0]!.fieldClientIds = [s.form.fields[0]!.clientId];
+    expect(s.canSubmit).toBe(true);
   });
 
   it("canSubmit true when name + at least one named field", () => {

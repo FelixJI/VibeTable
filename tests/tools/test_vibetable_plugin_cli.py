@@ -11,7 +11,7 @@ CLI = ROOT / "scripts" / "vibetable_plugin.py"
 
 def _write_readonly_plugin(root: Path) -> None:
     (root / "schemas").mkdir(parents=True)
-    (root / "flows").mkdir()
+    (root / "dist" / "workers").mkdir(parents=True)
     manifest = {
         "$schema": "vibetable.plugin-manifest.v1",
         "pluginId": "com.example.reader",
@@ -20,29 +20,22 @@ def _write_readonly_plugin(root: Path) -> None:
         "compatibility": {
             "minHostVersion": "1.0.0",
             "pluginApi": "1.x",
-            "directus": ">=12.1 <13",
         },
-        "permissions": {"data": [], "files": [], "privateStorage": False},
+        "permissions": {
+            "data": [],
+            "files": [],
+            "privateStorage": False,
+            "network": {"domains": [], "methods": []},
+        },
         "actions": [
             {
                 "actionId": "read",
                 "displayName": {"zh-CN": "读取"},
-                "mode": "flow",
+                "mode": "local",
                 "risk": "read",
-                "entryFlow": "read",
+                "workerEntry": "dist/workers/read.js",
                 "inputSchema": "schemas/input.json",
                 "outputSchema": "schemas/output.json",
-            }
-        ],
-        "flows": [
-            {
-                "logicalFlowId": "read",
-                "ownership": "managed",
-                "risk": "read",
-                "definition": "flows/read.json",
-                "inputSchema": "schemas/input.json",
-                "outputSchema": "schemas/output.json",
-                "requiresOperations": [],
             }
         ],
         "ui": {"customViews": []},
@@ -50,7 +43,10 @@ def _write_readonly_plugin(root: Path) -> None:
     (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (root / "schemas" / "input.json").write_text('{"type":"object"}', encoding="utf-8")
     (root / "schemas" / "output.json").write_text('{"type":"object"}', encoding="utf-8")
-    (root / "flows" / "read.json").write_text('{"operations":[]}', encoding="utf-8")
+    (root / "dist" / "workers" / "read.js").write_text(
+        'export async function run() { return { contract: "vibetable.plugin-result.v1", status: "success", summary: "ok" }; }',
+        encoding="utf-8",
+    )
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -82,7 +78,9 @@ def test_validate_reports_plugin_identity_as_json(tmp_path: Path) -> None:
     assert report["packageHash"].startswith("sha256:")
 
 
-def test_offline_test_command_executes_plugin_tests_from_plugin_directory(tmp_path: Path) -> None:
+def test_offline_test_command_executes_plugin_tests_from_plugin_directory(
+    tmp_path: Path,
+) -> None:
     plugin = tmp_path / "reader"
     _write_readonly_plugin(plugin)
     (plugin / "tests").mkdir()
@@ -99,7 +97,9 @@ def test_offline_test_command_executes_plugin_tests_from_plugin_directory(tmp_pa
     assert "pass 1" in completed.stdout
 
 
-def test_init_build_inspect_and_pack_form_an_offline_developer_lifecycle(tmp_path: Path) -> None:
+def test_init_build_inspect_and_pack_form_an_offline_developer_lifecycle(
+    tmp_path: Path,
+) -> None:
     plugin = tmp_path / "new-plugin"
     initialized = _run_cli(
         "init",
@@ -108,12 +108,20 @@ def test_init_build_inspect_and_pack_form_an_offline_developer_lifecycle(tmp_pat
         "com.example.new-plugin",
         "--display-name",
         "新插件",
-        "--with-flow",
     )
 
     assert initialized.returncode == 0, initialized.stdout + initialized.stderr
     assert (plugin / "src" / "action.ts").is_file()
-    assert _run_cli("build", str(plugin)).returncode == 0
+    build = _run_cli("build", str(plugin))
+    assert build.returncode == 2
+    assert json.loads(build.stdout)["code"] == "bundler_missing"
+    worker = plugin / "dist" / "workers" / "action.js"
+    worker.parent.mkdir(parents=True)
+    worker.write_text(
+        'export async function run() { return { contract: "vibetable.plugin-result.v1", status: "success", summary: "ok" }; }',
+        encoding="utf-8",
+    )
+    assert _run_cli("validate", str(plugin)).returncode == 0
     assert _run_cli("test", str(plugin)).returncode == 0
     permissions = _run_cli("inspect-permissions", str(plugin), "--json")
     assert json.loads(permissions.stdout)["risks"] == ["read"]
@@ -126,7 +134,22 @@ def test_init_build_inspect_and_pack_form_an_offline_developer_lifecycle(tmp_pat
     assert json.loads(packed.stdout)["packageHash"].startswith("sha256:")
 
 
-def test_build_transpiles_declared_worker_from_typescript_source(tmp_path: Path) -> None:
+def test_init_rejects_removed_flow_flag(tmp_path: Path) -> None:
+    completed = _run_cli(
+        "init",
+        str(tmp_path / "legacy"),
+        "--plugin-id",
+        "com.example.legacy",
+        "--display-name",
+        "旧插件",
+        "--with-flow",
+    )
+
+    assert completed.returncode != 0
+    assert "--with-flow" in completed.stderr
+
+
+def test_build_never_falls_back_to_removed_repository_bundler(tmp_path: Path) -> None:
     plugin = tmp_path / "local-plugin"
     initialized = _run_cli(
         "init",
@@ -153,9 +176,7 @@ def test_build_transpiles_declared_worker_from_typescript_source(tmp_path: Path)
 
     built = _run_cli("build", str(plugin))
 
-    assert built.returncode == 0, built.stdout + built.stderr
-    artifact = (plugin / "dist" / "workers" / "action.js").read_text(encoding="utf-8")
-    assert "compiled-with-dependencies" in artifact
-    assert "@vibetable/plugin-sdk" not in artifact
-    assert "./summary.js" not in artifact
-    assert "Record<string" not in artifact
+    assert built.returncode == 2
+    error = json.loads(built.stdout)
+    assert error["code"] == "bundler_missing"
+    assert "plugin-local esbuild" in error["message"]

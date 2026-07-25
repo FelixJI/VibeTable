@@ -31,18 +31,6 @@ describe("plugin bridge whitelist", () => {
       sourceLocation: "C:/plugins/clean.vtplugin",
     });
     bridge.notify("plugin.install.commit", { planId: "plan-1", projectRevision: "r1" });
-    bridge.notify("plugin.externalFlow.listCandidates", {
-      projectKey: "local:default",
-      pluginId: "com.acme.clean",
-      logicalFlowId: "clean",
-    });
-    bridge.notify("plugin.externalFlow.bind", {
-      projectKey: "local:default",
-      pluginId: "com.acme.clean",
-      logicalFlowId: "clean",
-      directusFlowUuid: "flow-1",
-      acceptsUnknownSideEffects: false,
-    });
     bridge.notify("plugin.lifecycle.setEnabled", {
       projectKey: "local:default",
       pluginId: "com.acme.clean",
@@ -79,8 +67,6 @@ describe("plugin bridge whitelist", () => {
       "plugin.catalog.list",
       "plugin.install.inspect",
       "plugin.install.commit",
-      "plugin.externalFlow.listCandidates",
-      "plugin.externalFlow.bind",
       "plugin.lifecycle.setEnabled",
       "plugin.lifecycle.upgrade",
       "plugin.lifecycle.rollback",
@@ -94,7 +80,7 @@ describe("plugin bridge whitelist", () => {
     ]);
     expect(JSON.stringify(postMessage.mock.calls)).not.toContain("rpc.invoke");
     expect(JSON.stringify(postMessage.mock.calls)).not.toMatch(
-      /sourceToken|planToken|expectedRevision|flowUuid|acknowledgeUnknownSideEffects|cleanupSettings|"decision":"approve"|"decision":"reject"/,
+      /sourceToken|planToken|expectedRevision|cleanupSettings|"decision":"approve"|"decision":"reject"/,
     );
   });
 });

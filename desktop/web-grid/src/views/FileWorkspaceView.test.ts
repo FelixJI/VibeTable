@@ -87,18 +87,9 @@ describe("FileWorkspaceView", () => {
     }]);
   });
 
-  it("marks cloud attachments as unavailable until the host scope is connected", async () => {
-    const store = useDocumentWorkspaceStore();
-    store.setEntries([
-      { entryHandle: "local", documentId: "1", displayName: "local.pdf", authority: "workspace", availability: "available", capabilities: ["preview"] },
-      { entryHandle: "cloud", documentId: "2", displayName: "cloud.pdf", authority: "cloud", availability: "remote", capabilities: ["preview"] },
-    ]);
+  it("shows only the local workspace source without a disabled cloud tab", () => {
     const wrapper = mount(FileWorkspaceView);
-    expect(wrapper.text()).toContain("local.pdf");
-    const sourceTabs = wrapper.findAll(".authority-switch button");
-    expect(sourceTabs[1].attributes("disabled")).toBeDefined();
-    await sourceTabs[1].trigger("click");
-    expect(wrapper.text()).toContain("local.pdf");
-    expect(wrapper.text()).not.toContain("cloud.pdf");
+    expect(wrapper.find(".authority-switch").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Cloud attachments");
   });
 });

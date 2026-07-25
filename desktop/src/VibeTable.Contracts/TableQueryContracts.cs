@@ -47,14 +47,14 @@ public sealed record SortCondition(
     bool NullsLast = true);
 
 /// <summary>
-/// The typed query AST compiled by the Directus table gateway. Mirrors
+/// The typed query AST compiled by the product table gateway. Mirrors
 /// <c>backend.contracts.query.TableQuery</c>:
 /// <c>{"keyword","filters":[...],"sorts":[...],"offset","limit"}</c>.
 /// </summary>
 /// <remarks>
 /// The web layer maps Tabulator sorts, filters and search onto this AST. The
-/// Directus gateway validates fields against the capability schema and maps
-/// supported operators to Directus query parameters; raw filter JSON and SQL
+/// The gateway validates fields against the capability schema and maps
+/// supported operators to product query parameters; raw filter JSON and SQL
 /// fragments never cross the workspace boundary.
 /// </remarks>
 public sealed record TableQuery(

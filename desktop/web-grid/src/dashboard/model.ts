@@ -12,25 +12,12 @@ import {
 
 const PRODUCT_TYPES = new Set<string>(PRODUCT_PANEL_TYPES);
 
-export function directusTypeToProduct(
-  type: string,
-  options: Readonly<Record<string, unknown>> = {},
-): ParsedPanelType {
-  if (type === "bar-chart") return "bar";
-  if (type === "line-chart") return "line";
-  if (type === "pie-chart") {
-    return options.donut === true || options.isDonut === true || options.shape === "donut"
-      ? "donut"
-      : "pie";
-  }
+export function parseProductPanelType(type: string): ParsedPanelType {
   if (type === "custom") return "custom";
   return PRODUCT_TYPES.has(type) ? type as ProductPanelType : "unknown";
 }
 
-export function productTypeToDirectus(type: ProductPanelType): string {
-  if (type === "bar") return "bar-chart";
-  if (type === "line") return "line-chart";
-  if (type === "pie" || type === "donut") return "pie-chart";
+export function serializeProductPanelType(type: ProductPanelType): string {
   return type;
 }
 
@@ -39,7 +26,7 @@ export function parseWirePanel(value: unknown): DashboardPanel {
   const rawOptions = cloneRecord(source.options);
   const rawQuery = cloneRecord(source.query);
   const rawType = stringValue(source.type, "unknown");
-  const productType = directusTypeToProduct(rawType, rawOptions);
+  const productType = parseProductPanelType(rawType);
   return {
     id: stringValue(source.id),
     dashboardId: stringValue(source.dashboardId ?? source.dashboard_id),
@@ -80,7 +67,7 @@ export function parseWireDashboard(value: unknown): Dashboard {
 }
 
 /**
- * Project a trusted product panel back to Directus. Unknown/custom panels are
+ * Project a trusted product panel back to the wire contract. Unknown/custom panels are
  * emitted byte-for-byte at the options/query/type boundary and remain read-only.
  */
 export function toWirePanel(panel: DashboardPanel): WirePanel {
@@ -100,9 +87,6 @@ export function toWirePanel(panel: DashboardPanel): WirePanel {
       query: cloneRecord(panel.rawQuery),
     };
   }
-  const options = cloneRecord(panel.options);
-  if (panel.productType === "donut") options.donut = true;
-  if (panel.productType === "pie") options.donut = false;
   return {
     id: panel.id,
     dashboardId: panel.dashboardId,
@@ -111,9 +95,9 @@ export function toWirePanel(panel: DashboardPanel): WirePanel {
     icon: panel.icon,
     color: panel.color,
     showHeader: panel.showHeader,
-    type: productTypeToDirectus(panel.productType),
+    type: serializeProductPanelType(panel.productType),
     position: { ...panel.position },
-    options,
+    options: cloneRecord(panel.options),
     query: cloneRecord(panel.query),
   };
 }

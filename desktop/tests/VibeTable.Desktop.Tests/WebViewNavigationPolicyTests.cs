@@ -20,20 +20,20 @@ public sealed class WebViewNavigationPolicyTests
     }
 
     [TestMethod]
-    public void AdminPolicy_AllowsOnlyConfiguredDirectusOrigin()
+    public void AdminPolicy_AllowsOnlyConfiguredAdminOrigin()
     {
-        const string directus = "http://127.0.0.1:49152";
+        const string adminBaseUrl = "http://127.0.0.1:49152";
 
         Assert.IsTrue(WebViewNavigationPolicy.IsAdminNavigation(
-            "http://127.0.0.1:49152/admin/content/orders?layout=tabular", directus));
+            "http://127.0.0.1:49152/admin/content/orders?layout=tabular", adminBaseUrl));
         Assert.IsFalse(WebViewNavigationPolicy.IsAdminNavigation(
-            "http://127.0.0.1:49153/admin/", directus));
+            "http://127.0.0.1:49153/admin/", adminBaseUrl));
         Assert.IsFalse(WebViewNavigationPolicy.IsAdminNavigation(
-            "http://localhost:49152/admin/", directus));
+            "http://localhost:49152/admin/", adminBaseUrl));
         Assert.IsFalse(WebViewNavigationPolicy.IsAdminNavigation(
-            "https://app.vibetable.local/index.html", directus));
+            "https://app.vibetable.local/index.html", adminBaseUrl));
         Assert.IsFalse(WebViewNavigationPolicy.IsAdminNavigation(
-            "file:///C:/temp/admin.html", directus));
+            "file:///C:/temp/admin.html", adminBaseUrl));
     }
 
     [TestMethod]
@@ -43,7 +43,7 @@ public sealed class WebViewNavigationPolicyTests
             WebViewNavigationPolicy.ClassifyAppNewWindow(
                 "https://app.vibetable.local/help"));
         Assert.AreEqual(WebViewLinkDisposition.ExternalBrowser,
-            WebViewNavigationPolicy.ClassifyAppNewWindow("https://directus.io/docs"));
+            WebViewNavigationPolicy.ClassifyAppNewWindow("https://example.test/docs"));
         Assert.AreEqual(WebViewLinkDisposition.Block,
             WebViewNavigationPolicy.ClassifyAppNewWindow("file:///C:/secret.txt"));
         Assert.AreEqual(WebViewLinkDisposition.Block,

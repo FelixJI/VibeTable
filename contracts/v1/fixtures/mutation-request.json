@@ -1,0 +1,35 @@
+{
+  "contractVersion": "1.0",
+  "requestId": "req_01HZX",
+  "idempotencyKey": "idem_01HZX",
+  "tableId": "tbl_order_lines",
+  "schemaRevision": "schema_0007",
+  "operations": [
+    {
+      "kind": "update",
+      "recordId": "rec_001",
+      "expectedRevision": "row_0003",
+      "values": {
+        "quantity": 3,
+        "unit_price": 12.5,
+        "metadata": {
+          "source": "manual"
+        }
+      }
+    },
+    {
+      "kind": "setAttachments",
+      "recordId": "rec_001",
+      "fieldId": "fld_receipts",
+      "uploadHandles": ["upload_01HZX"],
+      "removeStoredNames": []
+    }
+  ],
+  "actor": {
+    "type": "user",
+    "id": "local-user",
+    "displayName": "Local user"
+  },
+  "expectedRevision": "row_0003",
+  "expectedDigest": "sha256:7e0bca"
+}

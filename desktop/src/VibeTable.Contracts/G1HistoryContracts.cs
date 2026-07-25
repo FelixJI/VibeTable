@@ -39,7 +39,7 @@ public sealed record RelationFieldChange(
 
 /// <summary>
 /// One record inside an activity-level change group. Table history groups all
-/// revisions produced by the same Directus activity while row/cell history
+/// revisions produced by the same product activity while row/cell history
 /// normally contains a single record change.
 /// </summary>
 public sealed record HistoryRecordChange(
@@ -55,6 +55,7 @@ public sealed record HistoryRecordChange(
 
 public sealed record HistoryChangeSet(
     [property: JsonPropertyName("rootRevisionId")] string RootRevisionId,
+    [property: JsonPropertyName("changeSetId")] string ChangeSetId,
     [property: JsonPropertyName("activityId")] string? ActivityId,
     [property: JsonPropertyName("action")] string Action,
     [property: JsonPropertyName("timestamp")] string Timestamp,

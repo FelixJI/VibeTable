@@ -1,0 +1,14 @@
+{
+  "contractVersion": "1.0",
+  "code": "formula.cycle",
+  "path": "fields[6].formula.source",
+  "message": "Formula dependency cycle detected",
+  "details": {
+    "cycle": ["subtotal", "tax", "subtotal"]
+  },
+  "sourceSpan": {
+    "start": 0,
+    "end": 8
+  }
+}
+

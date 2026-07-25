@@ -1,8 +1,8 @@
-"""Directus table-query contracts shared by the backend and protocol fixtures.
+"""Product table-query contracts shared by the backend and protocol fixtures.
 
 The web layer maps grid sorts, filters and search onto this small typed AST.
-The Directus adapter validates every field against the capability manifest and
-translates the AST to supported Directus query parameters. Raw filter JSON and
+The query adapter validates every field against the capability manifest and
+translates the AST to supported query parameters. Raw filter JSON and
 SQL fragments never cross the workspace boundary.
 
 Wire conventions
@@ -19,8 +19,8 @@ Design notes
 ------------
 
 * Filters carry an explicit ``logic`` connector (``AND``/``OR``).
-* ``regex`` remains in the stable contract but the Directus adapter rejects it
-  explicitly because Directus 11 has no equivalent portable operator.
+* ``regex`` remains in the stable contract and unsupported adapters reject it
+  explicitly when no portable operator exists.
 * Stable ordering appends the collection primary key as the final sort so
   paginated reads remain deterministic.
 """
@@ -118,7 +118,7 @@ class SortCondition(CamelModel):
 
 
 class TableQuery(CamelModel):
-    """The typed query AST compiled to Directus query parameters.
+    """The typed query AST compiled to product query parameters.
 
     Wire form::
 
@@ -127,7 +127,7 @@ class TableQuery(CamelModel):
          "sorts": [{"field": "amount", "direction": "desc"}],
          "offset": 0, "limit": 100}
 
-    * ``keyword`` is an optional Directus full-text search term.
+    * ``keyword`` is an optional full-text search term.
     * ``filters`` is an ordered list of conditions (see :class:`FilterCondition`).
     * ``sorts`` is ordered; the adapter appends the collection primary key as
       a final tie-breaker.

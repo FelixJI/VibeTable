@@ -175,7 +175,7 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public Task<UpdateCellResult> UpdateCellAsync(
         string table, object rowKey, string column,
         object? oldValue, object? newValue, string schemaRevision,
-        CancellationToken token)
+        CancellationToken token, string? expectedDigest = null)
     {
         UpdateCellCalls.Add(table);
         if (NextUpdateCellException is not null)
@@ -316,6 +316,7 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     // -------------------------------------------------------------------
 
     public List<string> QueryTablePageCalls { get; } = new();
+    public List<TableQuery> QueryTablePageQueries { get; } = new();
     public Dictionary<string, TablePage> QueryTablePageResults { get; } =
         new(StringComparer.Ordinal);
 
@@ -332,6 +333,7 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
         string table, int offset, int limit, TableQuery query, CancellationToken token)
     {
         QueryTablePageCalls.Add(table);
+        QueryTablePageQueries.Add(query);
         if (QueryTablePageResults.TryGetValue(table, out var page))
         {
             return Task.FromResult(page);

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 namespace VibeTable.Contracts;
 
 /// <summary>
-/// D2 settings/flows/commands/shortcuts contracts. Mirrors
+/// D2 settings/commands/shortcuts contracts. Mirrors
 /// <c>backend.contracts.settings_commands</c>.
 /// </summary>
 
@@ -31,18 +31,6 @@ public sealed record ReadSharedSettingsParams(string Collection, IReadOnlyList<s
 public sealed record SharedSettingsResult(IReadOnlyList<SharedSettingsEntry> Settings, string CachedOn, bool Fresh);
 
 public sealed record SaveDeviceSettingsParams(DeviceSettings Settings);
-
-// --- Flows ---
-
-public sealed record ApprovedFlowEntry(
-    string FlowId, string Name, string Trigger, IReadOnlyDictionary<string, object?> PayloadSchema);
-
-public sealed record ApprovedFlowsResult(IReadOnlyList<ApprovedFlowEntry> Flows);
-
-public sealed record InvokeFlowParams(string FlowId, string CorrelationId, IReadOnlyDictionary<string, object?> Payload);
-
-public sealed record FlowInvocationResult(
-    string FlowId, string CorrelationId, bool AsyncAcknowledged, IReadOnlyDictionary<string, object?> Response, string? Error);
 
 // --- Commands ---
 

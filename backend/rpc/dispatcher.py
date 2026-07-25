@@ -47,13 +47,17 @@ produce no response object — ``dispatch`` returns ``None`` for them.
 from __future__ import annotations
 
 import inspect
+import logging
 from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
+from pydantic_core import to_jsonable_python
 
 from backend.application.system_service import ProtocolMismatchError
 from backend.rpc.messages import RpcRequest
+
+logger = logging.getLogger(__name__)
 
 #: JSON-RPC error codes used by this dispatcher.
 CODE_INVALID_REQUEST = -32600
@@ -66,21 +70,15 @@ CODE_MUTATION_VALIDATION = -32011
 CODE_TABLE_NOT_FOUND = -32020
 CODE_INVALID_ARGUMENT = -32021
 CODE_DATABASE_NOT_FOUND = -32022
-CODE_DIRECTUS_SESSION = -32030
-CODE_DIRECTUS_API = -32031
-CODE_DIRECTUS_SCHEMA = -32032
 CODE_PASTE = -32040
 CODE_PATH_GRANT = -32050
 CODE_IMPORT = -32060
-CODE_COLLABORATION = -32070
+CODE_EXPORT = -32061
 CODE_INSIGHTS = -32080
-CODE_FILE_TOOLS = -32090
 CODE_SETTINGS_COMMAND = -32100
-CODE_TABLE_ADMIN = -32110
 CODE_PLUGIN = -32120
-CODE_HISTORY = -32130
-CODE_LOOKUP = -32140
-CODE_RELATION = -32141
+CODE_PRODUCT_DATA = -32150
+CODE_IDENTIFIER = -32160
 
 #: Maps each typed application error class to a ``(code, message, kind)``
 #: tuple. Order matters only if classes share a base class — they do not here.
@@ -91,28 +89,20 @@ _APP_ERROR_MAP: dict[type[Exception], tuple[int, str, str]] = {
 }
 
 
-def register_directus_errors() -> None:
-    """Register B4 Directus errors without importing the adapter at startup."""
-    from backend.adapters.directus.errors import (
-        DirectusSchemaError,
-        DirectusSessionError,
-        DirectusTransportError,
-    )
+def register_pocketbase_product_errors() -> None:
+    """Register sanitized local product API and transport failures."""
+    from backend.adapters.pocketbase.client import PocketBaseProductError
+    from backend.adapters.pocketbase.transport import PocketBaseTransportError
 
-    _APP_ERROR_MAP[DirectusSessionError] = (
-        CODE_DIRECTUS_SESSION,
-        "Directus session error",
-        "directus_session",
+    _APP_ERROR_MAP[PocketBaseProductError] = (
+        CODE_PRODUCT_DATA,
+        "Product data error",
+        "product_data_error",
     )
-    _APP_ERROR_MAP[DirectusTransportError] = (
-        CODE_DIRECTUS_API,
-        "Directus API error",
-        "directus_api",
-    )
-    _APP_ERROR_MAP[DirectusSchemaError] = (
-        CODE_DIRECTUS_SCHEMA,
-        "Directus schema error",
-        "directus_schema",
+    _APP_ERROR_MAP[PocketBaseTransportError] = (
+        CODE_PRODUCT_DATA,
+        "Product data unavailable",
+        "product_data_unavailable",
     )
 
 
@@ -152,15 +142,29 @@ def register_import_errors() -> None:
         )
 
 
-def register_collaboration_errors() -> None:
-    """Register C2 collaboration errors without importing the service at startup."""
-    from backend.application.collaboration_service import CollaborationError
+def register_export_errors() -> None:
+    """Register C1 export errors without importing the service at startup."""
+    from backend.application.export_service import ExportError
 
-    if CollaborationError not in _APP_ERROR_MAP:
-        _APP_ERROR_MAP[CollaborationError] = (
-            CODE_COLLABORATION,
-            "Collaboration error",
-            "collaboration_error",
+    if ExportError not in _APP_ERROR_MAP:
+        _APP_ERROR_MAP[ExportError] = (
+            CODE_EXPORT,
+            "Export error",
+            "export_error",
+        )
+
+
+def register_identifier_errors() -> None:
+    """Register product identifier-management errors."""
+    from backend.application.identifier_mapping_service import (
+        IdentifierManagementError,
+    )
+
+    if IdentifierManagementError not in _APP_ERROR_MAP:
+        _APP_ERROR_MAP[IdentifierManagementError] = (
+            CODE_IDENTIFIER,
+            "Identifier mapping error",
+            "identifier_mapping_error",
         )
 
 
@@ -176,18 +180,6 @@ def register_insights_errors() -> None:
         )
 
 
-def register_file_tools_errors() -> None:
-    """Register D1 file-tools errors without importing the service at startup."""
-    from backend.application.file_tools_service import FileToolsError
-
-    if FileToolsError not in _APP_ERROR_MAP:
-        _APP_ERROR_MAP[FileToolsError] = (
-            CODE_FILE_TOOLS,
-            "File tools error",
-            "file_tools_error",
-        )
-
-
 def register_settings_command_errors() -> None:
     """Register D2 settings/command errors without importing the service at startup."""
     from backend.application.settings_command_service import SettingsCommandError
@@ -200,56 +192,15 @@ def register_settings_command_errors() -> None:
         )
 
 
-def register_table_admin_errors() -> None:
-    """Register Phase 4 table-admin errors without importing the service at startup."""
-    from backend.application.table_admin_service import TableAdminError
-
-    if TableAdminError not in _APP_ERROR_MAP:
-        _APP_ERROR_MAP[TableAdminError] = (
-            CODE_TABLE_ADMIN,
-            "Table admin error",
-            "table_admin_error",
-        )
-
-
-def register_lookup_errors() -> None:
-    """Register stable Lookup metadata/execution failures."""
-    from backend.application.lookup_service import LookupServiceError
-
-    if LookupServiceError not in _APP_ERROR_MAP:
-        _APP_ERROR_MAP[LookupServiceError] = (
-            CODE_LOOKUP,
-            "Lookup error",
-            "lookup_error",
-        )
-
-
-def register_relation_errors() -> None:
-    """Register relation search/edit failures."""
-    from backend.application.relation_data_service import RelationDataError
-    from backend.application.relation_schema_service import RelationSchemaError
-
-    for error_type in (RelationDataError, RelationSchemaError):
-        if error_type in _APP_ERROR_MAP:
-            continue
-        _APP_ERROR_MAP[error_type] = (
-            CODE_RELATION,
-            "Relation error",
-            "relation_error",
-        )
-
-
 def register_plugin_errors() -> None:
     """Register stable plugin-domain failures without loading them at startup."""
 
-    from backend.application.flow_binding_manager import FlowBindingError
     from backend.application.plugin_registry import PluginRegistryError
     from backend.infrastructure.plugin_package import PluginPackageError
     from backend.infrastructure.plugin_schema import PluginSchemaError
 
     for error_type in (
         PluginRegistryError,
-        FlowBindingError,
         PluginPackageError,
         PluginSchemaError,
     ):
@@ -259,19 +210,6 @@ def register_plugin_errors() -> None:
                 "Plugin error",
                 "plugin_error",
             )
-
-
-def register_history_errors() -> None:
-    """Register history query/restore failures as stable RPC errors."""
-
-    from backend.application.history_service import HistoryError
-
-    if HistoryError not in _APP_ERROR_MAP:
-        _APP_ERROR_MAP[HistoryError] = (
-            CODE_HISTORY,
-            "History error",
-            "history_error",
-        )
 
 
 Handler = Callable[..., Any]
@@ -307,7 +245,11 @@ class RpcDispatcher:
                 inspect.Parameter.KEYWORD_ONLY,
             )
         ]
-        unpack_params = bool(parameters) and all(
+        receives_model = (
+            len(parameters) == 1
+            and parameters[0].name in {"params", "_params"}
+        )
+        unpack_params = bool(parameters) and not receives_model and all(
             parameter.name in params_model.model_fields for parameter in parameters
         )
         self._handlers[method] = (handler, params_model, unpack_params)
@@ -387,6 +329,11 @@ class RpcDispatcher:
                     message,
                     data=data,
                 )
+            logger.exception(
+                "rpc handler failed: method=%s exception=%s",
+                request.method,
+                type(exc).__name__,
+            )
             return self._error_response(
                 request.id,
                 CODE_INTERNAL_ERROR,
@@ -397,10 +344,25 @@ class RpcDispatcher:
             return None
 
         # --- 5. Serialize the result by alias ----------------------------
-        if isinstance(result, BaseModel):
-            serialized = result.model_dump(by_alias=True, mode="json")
-        else:
-            serialized = result
+        # Results are not always a single top-level model. Collection RPCs
+        # (for example plugin.listAudit) return lists containing Pydantic
+        # models and datetime values. Passing those objects through to the
+        # framing layer makes json.dumps fail after the handler succeeded,
+        # which strands the correlated caller without a response.
+        try:
+            serialized = to_jsonable_python(result, by_alias=True)
+        except Exception as exc:
+            logger.exception(
+                "rpc result serialization failed: method=%s result=%s exception=%s",
+                request.method,
+                type(result).__name__,
+                type(exc).__name__,
+            )
+            return self._error_response(
+                request.id,
+                CODE_INTERNAL_ERROR,
+                "Internal error",
+            )
         return {
             "jsonrpc": "2.0",
             "id": request.id,

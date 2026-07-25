@@ -1,4 +1,6 @@
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using VibeTable.Workspace.Domain;
 using VibeTable.Workspace.Storage;
 
@@ -70,7 +72,10 @@ public sealed class RefConflictResolver
                 $"conflicting revision {conflictingRevisionId} not found");
 
         // Create a new scheme to hold the conflicting revision chain.
-        var conflictSchemeId = Guid.NewGuid().ToString("N");
+        string identity = $"{documentId}\n{schemeId}\n{conflictingRevisionId}";
+        string conflictSchemeId = "conflict-" + Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(identity)))
+            .ToLowerInvariant()[..24];
         var conflictSchemeName = $"冲突候选 ({conflictingRev.VersionLabel})";
 
         var conflictRef = new RefManifest(
@@ -82,7 +87,36 @@ public sealed class RefConflictResolver
             WorkingRelativePath: currentRef.WorkingRelativePath,
             UpdatedAt: createdAt
         );
-        _refs.Initialize(conflictRef);
+        var existingConflict = _refs.Read(documentId, conflictSchemeId);
+        if (existingConflict is null)
+        {
+            _refs.Initialize(conflictRef);
+        }
+        else if (existingConflict.FormatVersion != conflictRef.FormatVersion
+            || !string.Equals(
+                existingConflict.DocumentId,
+                conflictRef.DocumentId,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                existingConflict.SchemeId,
+                conflictRef.SchemeId,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                existingConflict.SchemeName,
+                conflictRef.SchemeName,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                existingConflict.HeadRevisionId,
+                conflictRef.HeadRevisionId,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                existingConflict.WorkingRelativePath,
+                conflictRef.WorkingRelativePath,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"conflict ref {conflictSchemeId} already exists with different content");
+        }
 
         return new ConflictResolution(
             Status: "conflict-preserved",

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   mergePanelFilters,
   resolveSelectionTargets,
-  toDirectusFilter,
+  toProductFilters,
   type DashboardFilterVariable,
 } from "./filters";
 
@@ -44,15 +44,13 @@ describe("dashboard filters", () => {
         value: "east",
       }],
     );
-    expect(toDirectusFilter(merged)).toEqual({
-      _and: [
-        { status: { _eq: "open" } },
-        { created_at: { _between: ["2026-01-01", "2026-01-31"] } },
-        { owner: { _in: ["u1", "u2"] } },
-        { amount: { _between: [10, 50] } },
-        { region: { _eq: "east" } },
-      ],
-    });
+    expect(toProductFilters(merged)).toEqual([
+      { field: "status", operator: "eq", value: "open" },
+      { field: "created_at", operator: "between", value: ["2026-01-01", "2026-01-31"] },
+      { field: "owner", operator: "in", value: ["u1", "u2"] },
+      { field: "amount", operator: "between", value: [10, 50] },
+      { field: "region", operator: "eq", value: "east" },
+    ]);
   });
 
   it("supports all five variable types and skips inactive/untargeted values", () => {
@@ -68,13 +66,11 @@ describe("dashboard filters", () => {
       state: "active",
       account: ["a", "b"],
     });
-    expect(toDirectusFilter(result)).toEqual({
-      _and: [
-        { owner: { _eq: "u1" } },
-        { state: { _eq: "active" } },
-        { account: { _in: ["a", "b"] } },
-      ],
-    });
+    expect(toProductFilters(result)).toEqual([
+      { field: "owner", operator: "eq", value: "u1" },
+      { field: "state", operator: "eq", value: "active" },
+      { field: "account", operator: "in", value: ["a", "b"] },
+    ]);
   });
 
   it("drops self, missing and duplicate link targets", () => {
@@ -86,7 +82,7 @@ describe("dashboard filters", () => {
     }, ["a", "b", "c"])).toEqual(["b"]);
   });
 
-  it("treats explicit null as cleared and maps null operators to Directus", () => {
+  it("treats explicit null as cleared and preserves null operators", () => {
     const result = mergePanelFilters("p", null, [{
       key: "state",
       label: "State",
@@ -96,11 +92,11 @@ describe("dashboard filters", () => {
       targetPanels: [],
     }], { state: null });
     expect(result).toBeNull();
-    expect(toDirectusFilter({ field: "deleted_at", operator: "is_null" })).toEqual({
-      deleted_at: { _null: true },
-    });
-    expect(toDirectusFilter({ field: "deleted_at", operator: "is_not_null" })).toEqual({
-      deleted_at: { _nnull: true },
-    });
+    expect(toProductFilters({ field: "deleted_at", operator: "is_null" })).toEqual([
+      { field: "deleted_at", operator: "is_null" },
+    ]);
+    expect(toProductFilters({ field: "deleted_at", operator: "is_not_null" })).toEqual([
+      { field: "deleted_at", operator: "is_not_null" },
+    ]);
   });
 });

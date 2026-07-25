@@ -12,6 +12,7 @@
  */
 
 import type {
+  ColumnSchema,
   FilterCondition,
   FilterOperator,
   SortCondition,
@@ -43,6 +44,8 @@ export interface QueryAdapterOptions {
   readonly sorters?: readonly TabulatorSorter[];
   /** Tabulator's header filters. */
   readonly headerFilters?: readonly TabulatorHeaderFilter[];
+  /** Current schema, used to select the product-valid operator per field. */
+  readonly columns?: readonly ColumnSchema[];
   /** Page offset (0-based). */
   readonly offset?: number;
   /** Page size. */
@@ -59,13 +62,16 @@ export interface QueryAdapterOptions {
 export function buildQuery(options: QueryAdapterOptions): TableQuery {
   const keyword = normalizeKeyword(options.keyword);
   const filters: FilterCondition[] = [];
+  const columns = new Map((options.columns ?? []).map((column) => [column.name, column]));
   for (const hf of options.headerFilters ?? []) {
     if (hf.value === null || hf.value === undefined || hf.value === "") {
       continue;
     }
     filters.push({
       field: hf.field,
-      operator: "eq",
+      // Whole JSON documents support textual containment, not scalar
+      // equality, in the authoritative QueryPort contract.
+      operator: columns.get(hf.field)?.dataType === "json" ? "contains" : "eq",
       value: hf.value,
       logic: "AND",
     });
@@ -99,7 +105,7 @@ export function queryToTabulator(query: TableQuery): {
     dir: s.direction ?? "asc",
   }));
   const headerFilters: TabulatorHeaderFilter[] = (query.filters ?? [])
-    .filter((f) => f.operator === "eq")
+    .filter((f) => f.operator === "eq" || f.operator === "contains")
     .map((f) => ({ field: f.field, value: f.value }));
   return { sorters, headerFilters };
 }

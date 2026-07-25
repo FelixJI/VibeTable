@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import { NDrawer } from "naive-ui";
 import RevisionHistoryDrawer from "./RevisionHistoryDrawer.vue";
 import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
 import type { HistoryPage, RestorePreview } from "@/contracts";
@@ -22,6 +23,7 @@ const page: HistoryPage = {
   scope: "table",
   changeSets: [{
     rootRevisionId: "r2",
+    changeSetId: "change-1",
     activityId: "activity-1",
     revisionIds: ["r2", "r3"],
     affectedRecords: 2,
@@ -74,6 +76,33 @@ describe("RevisionHistoryDrawer", () => {
     expect(wrapper.text()).toContain("客户 A");
     expect(wrapper.text()).toContain("new");
     expect(wrapper.text()).toContain("done");
+  });
+
+  it("uses a responsive compact drawer width and keeps activity metadata together", async () => {
+    const store = useRevisionHistoryStore();
+    store.open({ scope: "table" });
+    store.receivePage(page);
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    expect(wrapper.getComponent(NDrawer).props("width"))
+      .toBe("min(calc(100vw - 24px), clamp(360px, 34vw, 420px))");
+    const meta = wrapper.get('[data-testid="history-entry-meta-r2"]');
+    expect(meta.text()).toContain("林舟");
+    expect(meta.text()).toContain("2 条记录");
+  });
+
+  it("groups narrow-drawer metadata and keeps every filter in the responsive grid", async () => {
+    const store = useRevisionHistoryStore();
+    store.open({ scope: "table" });
+    store.receivePage(page);
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    expect(wrapper.findAll(".filter-grid > *").length).toBe(5);
+    expect(
+      wrapper.get('[data-testid="history-entry-meta-r2"]').findAll(".meta-item"),
+    ).toHaveLength(2);
   });
 
   it("updates the unified server search on Enter and emits reload", async () => {

@@ -181,18 +181,21 @@ public sealed class JsonRpcClient : IAsyncDisposable
                 // Transport errors are fatal: every pending call gets a
                 // BackendUnavailableException so the caller knows the
                 // backend stream is gone.
+                MarkReaderDead();
                 FailAllPending(new BackendUnavailableException(
                     "JSON-RPC transport failed while reading.", ex));
-                MarkReaderDead();
                 return;
             }
 
             if (frame is null)
             {
                 // Clean EOF — backend closed the stream deliberately.
+                // Publish the terminal state before completing pending calls:
+                // a caller released by FailAllPending may immediately invoke
+                // again on another thread.
+                MarkReaderDead();
                 FailAllPending(new BackendUnavailableException(
                     "JSON-RPC backend closed the stream (clean EOF)."));
-                MarkReaderDead();
                 return;
             }
 
@@ -262,7 +265,7 @@ public sealed class JsonRpcClient : IAsyncDisposable
             // Mapped backend errors keep a stable protocol-level message and
             // place the sanitized, actionable detail in error.data.message.
             // Prefer that detail for Exception.Message so desktop/Web users do
-            // not see opaque text such as "Directus API error". Internal errors
+            // not see opaque provider error text. Internal errors
             // have no data.message and therefore remain intentionally generic.
             if (data is JsonElement errorData
                 && errorData.ValueKind == JsonValueKind.Object

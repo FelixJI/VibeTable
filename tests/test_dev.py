@@ -1,212 +1,132 @@
 from __future__ import annotations
 
-import os
 import subprocess
-import sys
 from pathlib import Path
-
-import pytest
 
 from scripts import dev
 
 
-def test_build_only_builds_host_without_launching(monkeypatch) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(dev, "_ensure_host_built", lambda: calls.append("build"))
+def test_build_only_runs_product_builds_without_launching(monkeypatch) -> None:
+    calls: list[tuple[bool, bool, bool]] = []
     monkeypatch.setattr(
         dev,
-        "_launch_host",
-        lambda *_args, **_kwargs: calls.append("launch"),
+        "build",
+        lambda *, web, sidecar, host: calls.append((web, sidecar, host)),
     )
-    monkeypatch.setattr(sys, "argv", ["dev.py", "--build-only"])
+    monkeypatch.setattr(dev, "launch", lambda _path: 99)
 
-    assert dev.main() == 0
-    assert calls == ["build"]
+    result = dev.main(["--build-only"])
 
-
-def test_ensure_host_built_runs_asset_checks_and_msbuild(monkeypatch, tmp_path: Path) -> None:
-    host = tmp_path / "VibeTable.Desktop.exe"
-    host.write_bytes(b"host")
-    calls: list[tuple[str, list[str], Path]] = []
-
-    monkeypatch.setattr(dev, "HOST_EXE", host)
-    monkeypatch.setattr(dev, "DOTNET", str(tmp_path / "dotnet.exe"))
-    Path(dev.DOTNET).write_bytes(b"dotnet")
-    monkeypatch.setattr(dev, "_ensure_web_built", lambda: calls.append(("web", [], tmp_path)))
-    monkeypatch.setattr(
-        dev,
-        "_ensure_directus_extensions_built",
-        lambda: calls.append(("extensions", [], tmp_path)),
-    )
-    monkeypatch.setattr(
-        dev,
-        "_run_build",
-        lambda label, command, cwd, **_: calls.append((label, command, cwd)),
-    )
-
-    assert dev._ensure_host_built() == host
-    assert [call[0] for call in calls[:2]] == ["web", "extensions"]
-    assert calls[2][1][:2] == [dev.DOTNET, "build"]
+    assert result == 0
+    assert calls == [(True, True, True)]
 
 
-def test_node_project_build_installs_dependencies_only_when_needed(
-    monkeypatch, tmp_path: Path
+def test_build_uses_restored_dependencies_and_never_installs_runtime(
+    monkeypatch,
+    tmp_path: Path,
 ) -> None:
-    project = tmp_path / "web"
-    project.mkdir()
-    (project / "package-lock.json").write_text("{}", encoding="utf-8")
-    calls: list[tuple[str, object]] = []
+    calls: list[tuple[list[str], Path]] = []
+    monkeypatch.setattr(dev, "BUILD_DIR", tmp_path / "build")
+    monkeypatch.setattr(dev, "SIDECAR_BINARY", tmp_path / "build" / "vibetable-pb.exe")
+    monkeypatch.setattr(dev, "_resolve", lambda name: name)
     monkeypatch.setattr(
         dev,
-        "_stop_node_processes_for_project",
-        lambda target: calls.append(("stop", target)),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        dev,
-        "_run_build",
-        lambda _label, command, _cwd, **_: calls.append(("run", command)),
+        "_run",
+        lambda command, *, cwd: calls.append((command, cwd)),
     )
 
-    dev._ensure_node_dependencies(project)
-    assert calls == [
-        ("stop", project),
-        ("run", [dev.NPM, "ci"]),
-    ]
+    dev.build()
 
-    marker = project / "node_modules" / ".package-lock.json"
-    marker.parent.mkdir()
-    marker.write_text("{}", encoding="utf-8")
-    os.utime(marker, (marker.stat().st_atime, (project / "package-lock.json").stat().st_mtime + 1))
-    calls.clear()
-    dev._ensure_node_dependencies(project)
-    assert calls == []
+    commands = [command for command, _ in calls]
+    assert commands[0][:3] == ["go", "build", "-trimpath"]
+    assert commands[1] == ["npm", "run", "build"]
+    assert commands[2][:2] == ["dotnet", "build"]
+    assert not any("install" in token or token == "ci" for command in commands for token in command)
+    assert not any("dire" "ctus" in token.lower() for command in commands for token in command)
 
 
-def test_stop_node_processes_uses_scoped_cim_query_and_logs_matches(
-    monkeypatch, tmp_path: Path
+def test_launch_opens_desktop_host_which_owns_runtime(
+    monkeypatch,
+    tmp_path: Path,
 ) -> None:
-    project = tmp_path / "desktop" / "web-grid"
-    project.mkdir(parents=True)
-    captured: dict[str, object] = {}
-    messages: list[str] = []
-
-    def _run(command, **kwargs):
-        captured["command"] = command
-        captured.update(kwargs)
-        return subprocess.CompletedProcess(
-            args=command,
-            returncode=0,
-            stdout=(
-                '[{"ProcessId":321,"CommandLine":'
-                '"node.exe C:\\\\repo\\\\desktop\\\\web-grid\\\\node_modules\\\\vite\\\\bin\\\\vite.js",'
-                '"Stopped":true,"Error":null}]'
-            ),
-            stderr="",
-        )
-
-    monkeypatch.setattr(dev.sys, "platform", "win32")
-    monkeypatch.setattr(dev.subprocess, "run", _run)
-    monkeypatch.setattr(dev, "_info", messages.append)
-
-    dev._stop_node_processes_for_project(project)
-
-    command = captured["command"]
-    assert isinstance(command, list)
-    assert "Get-CimInstance Win32_Process" in command[-1]
-    assert "Name = 'node.exe'" in command[-1]
-    assert "RegexOptions]::IgnoreCase" in command[-1]
-    assert "Stop-Process" in command[-1]
-    env = captured["env"]
-    assert isinstance(env, dict)
-    assert env["VIBETABLE_NODE_PROJECT_PATH"] == str(project.resolve())
-    assert any("PID 321" in message and "vite" in message for message in messages)
-
-
-def test_stop_node_processes_warns_and_allows_npm_ci_after_scan_failure(
-    monkeypatch, tmp_path: Path
-) -> None:
-    messages: list[str] = []
-    monkeypatch.setattr(dev.sys, "platform", "win32")
-    monkeypatch.setattr(
-        dev.subprocess,
-        "run",
-        lambda command, **_kwargs: subprocess.CompletedProcess(
-            args=command,
-            returncode=1,
-            stdout="",
-            stderr="Get-CimInstance: Access denied",
-        ),
+    host_binary = tmp_path / "VibeTable.Desktop.exe"
+    host_binary.write_bytes(b"desktop-host")
+    monkeypatch.setattr(dev, "HOST_BINARY", host_binary, raising=False)
+    monkeypatch.setattr(dev, "BUILD_DIR", tmp_path)
+    monkeypatch.setattr(dev, "SIDECAR_BINARY", tmp_path / "vibetable-pb.exe")
+    monkeypatch.setattr(dev, "_resolve", lambda name: name)
+    monkeypatch.setenv("VIBETABLE_STATE_DIR", "stale-state")
+    monkeypatch.setenv(
+        "VIBETABLE_E2E_WEBVIEW2_USER_DATA_ROOT",
+        "stale-webview",
     )
-    monkeypatch.setattr(dev, "_info", messages.append)
-
-    dev._stop_node_processes_for_project(tmp_path)
-
-    assert any("warning" in message.lower() for message in messages)
-    assert any("Access denied" in message for message in messages)
-
-
-def test_run_build_eperm_failure_explains_locked_node_modules(monkeypatch, tmp_path: Path) -> None:
-    """An EPERM during ``npm ci`` must point at a process holding node_modules.
-
-    Windows raises EPERM when ``npm ci`` tries to unlink a native binary (e.g.
-    the @rolldown binding) that a still-running vite/node process has loaded.
-    The raw npm error blames antivirus or permissions; the real cause is almost
-    always a leftover dev server. The build error must surface that hint so the
-    next person hits it doesn't re-trace the whole stack.
-    """
-
-    def _npm_ci_eperm(_command, **_kwargs):
-        return subprocess.CompletedProcess(
-            args=[dev.NPM, "ci"],
-            returncode=-4048,
-            stdout="",
-            stderr=(
-                "npm error code EPERM\nnpm error syscall unlink\n"
-                "npm error path ...\\node_modules\\@rolldown\\.binding-win32-x64-msvc-P4K6Wv0J\\"
-                "rolldown-binding.win32-x64-msvc.node\n"
-                "npm error errno -4048\n"
-            ),
-        )
-
-    monkeypatch.setattr(dev.subprocess, "run", _npm_ci_eperm)
-
-    with pytest.raises(RuntimeError) as exc_info:
-        dev._run_build("web-grid dependencies", [dev.NPM, "ci"], tmp_path)
-
-    message = str(exc_info.value)
-    assert "EPERM" in message
-    assert "node_modules" in message.lower()
-    # Actionable hint, not just the npm-blames-AV text:
-    assert "still running" in message.lower() or "vite" in message.lower()
-
-
-def test_launch_host_uses_explicit_routing_and_preserves_proxy_settings(
-    monkeypatch, tmp_path: Path
-) -> None:
-    host = tmp_path / "VibeTable.Desktop.exe"
-    host.write_bytes(b"host")
-    captured: dict[str, object] = {}
+    monkeypatch.setenv(
+        "VIBETABLE_E2E_MUTATION_BARRIER_DIR",
+        "stale-mutation-barrier",
+    )
+    monkeypatch.setenv(
+        "VIBETABLE_WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--remote-debugging-port=9222",
+    )
+    monkeypatch.setenv("VIBETABLE_SIDECAR_SESSION_SECRET", "stale-secret")
+    monkeypatch.setenv("VIBETABLE_SIDECAR_URL", "http://127.0.0.1:1")
+    dev.PROCESSES.clear()
+    launched: list[dict[str, object]] = []
 
     class FakeProcess:
-        def __init__(self, argv, **kwargs):
-            captured["argv"] = argv
-            captured.update(kwargs)
+        def __init__(self, command, **kwargs):
+            self.command = command
+            self.returncode = 0
+            launched.append({"command": command, **kwargs})
 
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(dev.subprocess, "Popen", FakeProcess)
+
+    assert dev.launch(tmp_path / "runtime-data") == 0
+
+    runtime_data = (tmp_path / "runtime-data").resolve()
+    assert [item["command"] for item in launched] == [[
+        str(host_binary),
+        "--dev-data-root",
+        str(runtime_data),
+    ]]
+    environment = launched[0]["env"]
+    assert isinstance(environment, dict)
+    assert environment["VIBETABLE_PYTHON"] == dev.sys.executable
+    for variable in dev.UNSAFE_INHERITED_RUNTIME_VARIABLES:
+        assert variable not in environment
+
+
+def test_cleanup_terminates_then_kills_stuck_children(monkeypatch) -> None:
+    actions: list[str] = []
+
+    class FakeProcess:
         def poll(self):
             return None
 
-    monkeypatch.setattr(dev, "_ensure_host_built", lambda: host)
-    monkeypatch.setattr(dev.subprocess, "Popen", FakeProcess)
-    monkeypatch.setenv("VIBETABLE_DIRECTUS_URL", "https://must-not-leak.example")
-    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
-    dev._PROCS.clear()
+        def terminate(self):
+            actions.append("terminate")
 
-    dev._launch_host("https://directus.example/", no_directus_auto=True)
+        def wait(self, timeout=None):
+            actions.append("wait")
+            raise subprocess.TimeoutExpired("process", timeout)
 
-    assert captured["argv"] == [str(host), "--no-directus-auto"]
-    env = captured["env"]
-    assert isinstance(env, dict)
-    assert env["VIBETABLE_DIRECTUS_URL"] == "https://directus.example/"
-    assert env["VIBETABLE_PYTHON"] == dev.PYTHON
-    assert env["HTTPS_PROXY"] == "http://proxy.example:8080"
+        def kill(self):
+            actions.append("kill")
+
+    dev.PROCESSES[:] = [FakeProcess()]
+    dev._cleanup()
+
+    assert actions == ["terminate", "wait", "kill"]
+    dev.PROCESSES.clear()

@@ -23,6 +23,10 @@ public sealed record PluginPackageRevision(
             throw new ArgumentException("Package root is required.", nameof(packageRoot));
         }
         string normalizedHash = packageHash?.Trim().ToLowerInvariant() ?? string.Empty;
+        if (normalizedHash.StartsWith("sha256:", StringComparison.Ordinal))
+        {
+            normalizedHash = normalizedHash["sha256:".Length..];
+        }
         if (!Sha256Pattern.IsMatch(normalizedHash))
         {
             throw new ArgumentException("Package hash must be a 64-character SHA-256 hex value.", nameof(packageHash));

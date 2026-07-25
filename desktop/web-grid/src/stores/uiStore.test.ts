@@ -52,6 +52,7 @@ describe("uiStore", () => {
   it("starts on Home and persists product preferences", () => {
     const s = useUiStore();
     expect(s.activeView).toBe("home");
+    expect(s.dailyQuoteSource).toBe("builtin");
     s.navigate("settings");
     s.setStartupPage("tables");
     s.setShowDailyQuote(false);

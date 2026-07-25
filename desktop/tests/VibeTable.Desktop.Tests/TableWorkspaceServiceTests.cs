@@ -273,19 +273,17 @@ public sealed class TableWorkspaceServiceTests
     public async Task UpdateKnownTables_FiltersSystemTables_Defensively()
     {
         // Even if a caller hands in system-prefixed names, they must NOT become
-        // selectable — the sidebar hides directus_*/vibetable_*, so the cache
-        // must too.
+        // selectable — product-owned vibetable_* metadata never belongs in
+        // the user-table cache.
         var gateway = new FakeTableRpcGateway();
         gateway.DatabaseOpenResults["db"] =
             new DatabaseOpenResult(Array.Empty<string>(), Array.Empty<string>());
         var service = new TableWorkspaceService(gateway);
         await service.OpenDatabaseAsync("db");
 
-        service.UpdateKnownTables(new[] { "real", "directus_users", "vibetable_settings" });
+        service.UpdateKnownTables(new[] { "real", "vibetable_settings" });
 
         await service.SelectTableAsync("real"); // user table: OK
-        await Assert.ThrowsExactlyAsync<ArgumentException>(
-            async () => await service.SelectTableAsync("directus_users"));
         await Assert.ThrowsExactlyAsync<ArgumentException>(
             async () => await service.SelectTableAsync("vibetable_settings"));
     }
@@ -294,13 +292,13 @@ public sealed class TableWorkspaceServiceTests
     public async Task RefreshKnownTablesAsync_FiltersSystemTablesAndUpdatesCache()
     {
         // The gateway's ListTablesAsync returns the RAW collection list (incl.
-        // system tables). RefreshKnownTablesAsync must filter through
-        // DirectusCollectionFilter so the cache matches the sidebar exactly.
+        // product metadata). RefreshKnownTablesAsync keeps those names out of
+        // the selectable cache.
         var gateway = new FakeTableRpcGateway();
         gateway.DatabaseOpenResults["db"] =
             new DatabaseOpenResult(Array.Empty<string>(), Array.Empty<string>());
         gateway.ListTablesResult = new TableSummary(
-            new[] { "alpha", "directus_users", "vibetable_settings", "beta" },
+            new[] { "alpha", "vibetable_settings", "beta" },
             Array.Empty<string>());
         gateway.TablePages["alpha"] = BuildPages("alpha", totalRows: 1, pageSize: 500);
         gateway.TablePages["beta"] = BuildPages("beta", totalRows: 1, pageSize: 500);
@@ -312,8 +310,6 @@ public sealed class TableWorkspaceServiceTests
         // User tables selectable; system tables rejected.
         await service.SelectTableAsync("alpha");
         await service.SelectTableAsync("beta");
-        await Assert.ThrowsExactlyAsync<ArgumentException>(
-            async () => await service.SelectTableAsync("directus_users"));
         await Assert.ThrowsExactlyAsync<ArgumentException>(
             async () => await service.SelectTableAsync("vibetable_settings"));
     }

@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
-# Directus-first 生产 Python 运行时；scripts/tests 由配置显式排除。
+# Python 产品编排运行时；scripts/tests 由配置显式排除。
 TARGET_DIRS = ["backend"]
 
 

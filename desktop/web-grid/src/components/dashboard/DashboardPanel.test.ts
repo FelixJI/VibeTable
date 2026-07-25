@@ -9,10 +9,10 @@ const data = { state: "ready" as const, rows: [{ value: 42 }], truncated: false,
 describe("DashboardPanel", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
-  it("degrades unknown Directus panels to a safe read-only explanation", () => {
+  it("degrades unknown panels to a safe read-only explanation", () => {
     const panel = parseWirePanel({ id: "p1", dashboardId: "d1", name: "Heatmap", type: "vendor-heatmap", position: { x: 0, y: 0, width: 6, height: 4 }, options: { executable: "not-run" }, query: {} });
     const wrapper = mount(DashboardPanel, { props: { panel, data, editing: false, visible: true } });
-    expect(wrapper.text()).toContain("不支持的 Directus 面板");
+    expect(wrapper.text()).toContain("不支持的面板");
     expect(wrapper.text()).toContain("vendor-heatmap");
     expect(wrapper.find('[aria-label="删除面板"]').exists()).toBe(false);
   });

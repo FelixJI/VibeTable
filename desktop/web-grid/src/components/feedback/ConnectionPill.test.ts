@@ -19,7 +19,7 @@ describe("ConnectionPill", () => {
     );
     const wrapper = mount(ConnectionPill);
     const pill = wrapper.get('[data-testid="connection-pill"]');
-    expect(pill.text()).toContain("Directus 正常");
+    expect(pill.text()).toContain("本地数据服务正常");
     expect(pill.text()).toContain("3 张表");
   });
 

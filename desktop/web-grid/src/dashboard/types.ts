@@ -37,7 +37,7 @@ export interface WirePanel {
 export interface DashboardPanel extends WirePanel {
   readonly productType: ParsedPanelType;
   readonly editable: boolean;
-  /** Exact inbound type, including an unknown/custom Directus extension id. */
+  /** Exact inbound type, including an unknown/custom panel extension id. */
   readonly rawType: string;
   readonly query: Readonly<Record<string, unknown>>;
   /** Exact inbound options retained for lossless safe fallback. */

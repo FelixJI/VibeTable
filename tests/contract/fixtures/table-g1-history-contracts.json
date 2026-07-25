@@ -18,6 +18,7 @@
       "changeSets": [
         {
           "rootRevisionId": "rev-10",
+          "changeSetId": "change-set-10",
           "activityId": "act-10",
           "action": "update",
           "timestamp": "2026-07-15T10:00:00Z",
@@ -48,6 +49,7 @@
         },
         {
           "rootRevisionId": "rev-9",
+          "changeSetId": "change-set-9",
           "activityId": "act-9",
           "action": "create",
           "timestamp": "2026-07-15T09:00:00Z",

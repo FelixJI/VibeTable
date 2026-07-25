@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h } from "vue";
 import { NButton, NButtonGroup, NDropdown, NIcon, NTooltip } from "naive-ui";
-import { ChevronDown, History, Keyboard, MoreHorizontal, Network, Plus, RefreshCw, Table2, Trash2 } from "lucide-vue-next";
+import { ChevronDown, Download, History, Keyboard, MoreHorizontal, Network, Plus, RefreshCw, Table2, Trash2, Upload } from "lucide-vue-next";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { collectionLabel } from "./collectionLabel";
 import { t } from "@/i18n";
@@ -16,15 +16,21 @@ const props = withDefaults(defineProps<{
   }[];
   historyScopeLabel?: string;
   historyDisabled?: boolean;
+  insertRowDisabled?: boolean;
+  dataIoBusy?: boolean;
 }>(), { pluginActions: () => [] });
 
 const emit = defineEmits<{
+  selectTable: [name: string];
   refresh: [];
   insertRow: [];
   openHelp: [];
   openHistory: [];
   openArchivedHistory: [];
   openFieldManager: [];
+  importData: [];
+  exportData: [];
+  cancelDataTask: [];
   pluginAction: [key: string];
 }>();
 
@@ -33,7 +39,29 @@ const currentLabel = computed(() => {
   const item = workspace.collections.find((col) => col.collection === workspace.currentTable);
   return item ? collectionLabel(item, displayNames.value) : t("toolbar.noTable");
 });
+const tableOptions = computed(() => workspace.collections.map((collection) => ({
+  key: collection.collection,
+  label: collectionLabel(collection, displayNames.value),
+  icon: () => h(Table2),
+})));
 const moreOptions = computed(() => [
+  {
+    label: "取消数据任务",
+    key: "cancel-data-task",
+    disabled: !props.dataIoBusy,
+  },
+  {
+    label: "导入数据",
+    key: "import",
+    icon: () => h(Upload),
+    disabled: !workspace.currentTable,
+  },
+  {
+    label: "导出数据",
+    key: "export",
+    icon: () => h(Download),
+    disabled: !workspace.currentTable,
+  },
   {
     label: t("toolbar.refreshShortcut"),
     key: "refresh",
@@ -56,19 +84,47 @@ const historyOptions = computed(() => [{
 function onMore(key: string) {
   if (key === "refresh") emit("refresh");
   if (key === "help") emit("openHelp");
+  if (key === "import") emit("importData");
+  if (key === "export") emit("exportData");
+  if (key === "cancel-data-task") emit("cancelDataTask");
 }
 
 function onHistoryMenu(key: string) {
   if (key === "archived") emit("openArchivedHistory");
 }
+
+function onSelectTable(key: string) {
+  if (key !== workspace.currentTable) emit("selectTable", key);
+}
 </script>
 
 <template>
   <div class="toolbar">
-    <div class="table-heading">
+    <div class="table-heading desktop-table-heading">
       <NIcon :size="16"><Table2 /></NIcon>
       <strong data-testid="toolbar-table-title">{{ currentLabel }}</strong>
       <span v-if="workspace.currentTable && currentLabel !== workspace.currentTable">{{ workspace.currentTable }}</span>
+    </div>
+    <div class="compact-table-switcher">
+      <NDropdown
+        :options="tableOptions"
+        placement="bottom-start"
+        @select="onSelectTable"
+      >
+        <NButton
+          size="small"
+          secondary
+          class="compact-table-trigger"
+          :disabled="workspace.collections.length === 0"
+          :aria-label="t('toolbar.switchTable', { name: currentLabel })"
+          aria-haspopup="menu"
+          data-testid="compact-table-switcher"
+        >
+          <template #icon><NIcon :size="15"><Table2 /></NIcon></template>
+          <span class="compact-table-label">{{ currentLabel }}</span>
+          <NIcon class="compact-table-chevron" :size="13"><ChevronDown /></NIcon>
+        </NButton>
+      </NDropdown>
     </div>
     <div class="toolbar-actions">
       <NTooltip v-for="action in props.pluginActions" :key="action.key" placement="bottom" :delay="450">
@@ -104,7 +160,7 @@ function onHistoryMenu(key: string) {
           <NButton
             size="small"
             quaternary
-            :disabled="!workspace.currentTable"
+            :disabled="!workspace.currentTable || props.insertRowDisabled"
             :aria-label="t('toolbar.insertRow')"
             data-testid="toolbar-insert-row"
             @click="emit('insertRow')"
@@ -176,7 +232,55 @@ function onHistoryMenu(key: string) {
 .table-heading > :deep(.n-icon) { color: var(--vt-color-primary-500); }
 .table-heading strong { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .table-heading span { overflow: hidden; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); text-overflow: ellipsis; white-space: nowrap; }
+.compact-table-switcher {
+  display: none;
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.compact-table-trigger {
+  min-width: 0;
+  max-width: min(52vw, 260px);
+  border-color: var(--vt-border);
+  background: var(--vt-bg-subtle);
+}
+.compact-table-trigger :deep(.n-button__content) {
+  min-width: 0;
+}
+.compact-table-label {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compact-table-chevron {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  color: var(--vt-fg-muted);
+}
 .toolbar-actions { display: flex; align-items: center; }
 .history-control { margin-left: 2px; }
 .history-menu-trigger { width: 22px; padding: 0 3px; }
+@media (max-width: 899px) {
+  .toolbar {
+    flex-wrap: wrap;
+    gap: 2px 8px;
+    padding-block: 4px;
+  }
+  .table-heading {
+    flex: 1 1 180px;
+  }
+  .desktop-table-heading {
+    display: none;
+  }
+  .compact-table-switcher {
+    display: flex;
+  }
+  .toolbar-actions {
+    flex: 0 1 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    margin-left: auto;
+  }
+}
 </style>

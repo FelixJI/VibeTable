@@ -29,7 +29,7 @@ namespace VibeTable.Desktop.Services;
 /// <list type="bullet">
 /// <item><c>app.ready</c> — marks the host ready (caller does this); this
 /// dispatcher has no additional work for this handshake.</item>
-/// <item><c>database.openRequested</c> — resolves the configured Directus
+/// <item><c>database.openRequested</c> — resolves the configured local data
 /// source, then <see cref="TableWorkspaceService.OpenDatabaseAsync"/>,
 /// then posts <c>database.opened</c> or <c>operation.failed</c>. The web
 /// payload's path field is ignored — the host never trusts a renderer-supplied
@@ -53,7 +53,7 @@ public sealed class WorkspaceRequestDispatcher
     private readonly TimeSpan _dashboardRequestTimeout;
     private readonly ConcurrentDictionary<string, DashboardRequestState> _dashboardRequests = new();
     private readonly SemaphoreSlim _dashboardQueryGate = new(6, 6);
-    private IDirectusRpcGateway? _directusGateway;
+    private IProductDataRpcGateway? _productDataGateway;
     private IDashboardRpcGateway? _dashboardGateway;
     private CancellationToken _dashboardSessionToken;
     private DocumentWorkspaceHostService? _documents;
@@ -75,12 +75,29 @@ public sealed class WorkspaceRequestDispatcher
     }
 
     /// <summary>
-    /// Injects the Directus RPC gateway used by table-management handlers.
-    /// Called by MainWindow after the session is authenticated; null before
-    /// that (handlers return operation.failed code NOT_AUTHENTICATED).
+    /// Injects the provider-neutral product data gateway. The composition root
+    /// owns its lifecycle and must never expose its sidecar credentials.
     /// </summary>
-    public void SetDirectusGateway(IDirectusRpcGateway gateway)
-        => _directusGateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
+    public void SetProductDataGateway(IProductDataRpcGateway gateway)
+        => Interlocked.Exchange(
+            ref _productDataGateway,
+            gateway ?? throw new ArgumentNullException(nameof(gateway)));
+
+    /// <summary>
+    /// Removes a product gateway only when it is still the currently published
+    /// instance. This prevents a late backend-stop callback from clearing a
+    /// newly configured gateway.
+    /// </summary>
+    public bool ClearProductDataGateway(IProductDataRpcGateway expected)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        return ReferenceEquals(
+            Interlocked.CompareExchange(
+                ref _productDataGateway,
+                null,
+                expected),
+            expected);
+    }
 
     public void SetDashboardGateway(
         IDashboardRpcGateway gateway,
@@ -118,9 +135,10 @@ public sealed class WorkspaceRequestDispatcher
             }
             catch (Exception ex)
             {
+                Trace.TraceError($"Workspace request failed ({request.Type}): {ex}");
                 _reply.PostOperationFailed(
                     request.RequestId,
-                    ex.Message,
+                    "Workspace operation failed.",
                     code: "WORKSPACE_ERROR");
             }
         });
@@ -128,6 +146,11 @@ public sealed class WorkspaceRequestDispatcher
 
     private async Task DispatchAsync(RoutedWebRequest request)
     {
+        if (ProductDataRpcRegistry.Contains(request.Type))
+        {
+            await OnProductDataRequestAsync(request).ConfigureAwait(false);
+            return;
+        }
         if (RelationLookupRpcRegistry.Contains(request.Type))
         {
             await OnRelationLookupRequestAsync(request).ConfigureAwait(false);
@@ -189,17 +212,8 @@ public sealed class WorkspaceRequestDispatcher
             case "identifierMappings.updateAliasesRequested":
                 await OnUpdateIdentifierAliasesAsync(request).ConfigureAwait(false);
                 break;
-            case "identifierMappings.importRequested":
-                await OnImportIdentifierMappingsAsync(request).ConfigureAwait(false);
-                break;
             case "identifierMappings.reconcileRequested":
                 await OnReconcileIdentifierMappingsAsync(request).ConfigureAwait(false);
-                break;
-            case "identifierMappings.deleteRequested":
-                await OnDeleteIdentifierMappingAsync(request).ConfigureAwait(false);
-                break;
-            case "identifierMappings.purgeRequested":
-                await OnPurgeIdentifierMappingsAsync(request).ConfigureAwait(false);
                 break;
             case "dashboard.listRequested":
                 await OnDashboardListRequestedAsync(request).ConfigureAwait(false);
@@ -345,13 +359,28 @@ public sealed class WorkspaceRequestDispatcher
         }
         TryGetProperty(request.Payload, "oldValue", out var oldValue);
         TryGetProperty(request.Payload, "newValue", out var newValue);
+        string? expectedDigest = TryGetString(request.Payload, "expectedDigest");
+        if (expectedDigest is not null
+            && (expectedDigest.Length != 71
+                || !expectedDigest.StartsWith("sha256:", StringComparison.Ordinal)
+                || expectedDigest[7..].Any(character =>
+                    !((character >= '0' && character <= '9')
+                      || (character >= 'a' && character <= 'f')))))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "Invalid update-cell digest guard.",
+                "BAD_PAYLOAD");
+            return;
+        }
         await _workspace.UpdateCellAsync(
             table,
             ToObject(rowKey)!,
             column,
             ToObject(oldValue),
             ToObject(newValue),
-            schemaRevision).ConfigureAwait(false);
+            schemaRevision,
+            expectedDigest).ConfigureAwait(false);
     }
 
     private async Task OnInsertRowRequestedAsync(RoutedWebRequest request)
@@ -662,225 +691,137 @@ public sealed class WorkspaceRequestDispatcher
         => TryGetString(payload, "table") ?? TryGetString(payload, "collection");
 
     // -------------------------------------------------------------------
-    // Task 8: table admin (create/delete) handlers wired to the Directus
-    // RPC gateway. On success both re-list collections and push
-    // database.collectionsChanged so the web sidebar refreshes.
+    // Table creation uses the renderer-facing schema.validate/schema.apply
+    // product endpoints directly. The legacy notification remains closed and
+    // fails explicitly so an old renderer cannot bypass normalized schema.
     // -------------------------------------------------------------------
 
     private async Task OnCreateTableRequestedAsync(RoutedWebRequest request)
     {
-        if (_directusGateway is null)
-        {
-            _reply.PostOperationFailed(request.RequestId, "Directus 尚未登录。", code: "NOT_AUTHENTICATED");
-            return;
-        }
-        string? name = TryGetString(request.Payload, "name");
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            _reply.PostOperationFailed(request.RequestId, "缺少表名。", code: "BAD_PAYLOAD");
-            return;
-        }
-        var fields = new List<FieldDefinition>();
-        if (TryGetProperty(request.Payload, "fields", out var fieldsEl)
-            && fieldsEl.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in fieldsEl.EnumerateArray())
-            {
-                string? key = item.ValueKind == JsonValueKind.Object
-                    && item.TryGetProperty("key", out var kEl) && kEl.ValueKind == JsonValueKind.String
-                    ? kEl.GetString() : null;
-                string? type = item.ValueKind == JsonValueKind.Object
-                    && item.TryGetProperty("type", out var tEl) && tEl.ValueKind == JsonValueKind.String
-                    ? tEl.GetString() : null;
-                if (!string.IsNullOrWhiteSpace(key) && !string.IsNullOrWhiteSpace(type))
-                {
-                    fields.Add(new FieldDefinition(key!, type!));
-                }
-            }
-        }
-        try
-        {
-            await _directusGateway.CreateTableAsync(name, fields, CancellationToken.None)
-                .ConfigureAwait(false);
-            await PostCollectionsChangedAsync().ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _reply.PostOperationFailed(
-                request.RequestId,
-                $"创建表失败：{ex.Message}",
-                code: "CREATE_TABLE_FAILED");
-        }
+        await Task.CompletedTask.ConfigureAwait(false);
+        _reply.PostOperationFailed(
+            request.RequestId,
+            "请刷新界面后通过结构验证流程创建数据表。",
+            code: "SCHEMA_CONTRACT_REQUIRED");
     }
 
     private async Task OnDeleteTableRequestedAsync(RoutedWebRequest request)
     {
-        if (_directusGateway is null)
-        {
-            _reply.PostOperationFailed(request.RequestId, "Directus 尚未登录。", code: "NOT_AUTHENTICATED");
-            return;
-        }
         string? collection = TryGetString(request.Payload, "collection");
         if (string.IsNullOrWhiteSpace(collection))
         {
             _reply.PostOperationFailed(request.RequestId, "缺少表名。", code: "BAD_PAYLOAD");
             return;
         }
+        IProductDataRpcGateway? gateway = Volatile.Read(ref _productDataGateway);
+        if (gateway is null)
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "本地数据服务尚未就绪。",
+                code: "BACKEND_UNAVAILABLE");
+            return;
+        }
         try
         {
-            var result = await _directusGateway.DeleteTableAsync(collection, CancellationToken.None)
-                .ConfigureAwait(false);
-            // The backend may decline to delete (e.g. protected/system collection,
-            // or a no-op because the table no longer exists). Surface that as an
-            // explicit operation.failed rather than silently reporting success via
-            // collectionsChanged — mirrors the deleted native TableManagementWindow
-            // which warned on !result.Deleted.
-            if (!result.Deleted)
+            JsonElement schema = await gateway.GetTableSchemaAsync(
+                JsonSerializer.SerializeToElement(new { tableId = collection }),
+                CancellationToken.None).ConfigureAwait(false);
+            string? revision = TryGetString(schema, "schemaRevision");
+            if (string.IsNullOrWhiteSpace(revision))
             {
-                _reply.PostOperationFailed(
-                    request.RequestId,
-                    $"后端未删除表 \"{collection}\"。",
-                    code: "DELETE_DECLINED");
-                return;
+                throw new InvalidOperationException("结构版本不可用。");
             }
-            await PostCollectionsChangedAsync().ConfigureAwait(false);
+            await gateway.DeleteSchemaAsync(
+                JsonSerializer.SerializeToElement(new
+                {
+                    tableId = collection,
+                    expectedRevision = revision,
+                }),
+                CancellationToken.None).ConfigureAwait(false);
+            await RefreshCollectionListAsync().ConfigureAwait(false);
+        }
+        catch (RpcRemoteException ex) when (ex.Code == -32602)
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "删除数据表的请求无效。",
+                code: "BAD_PAYLOAD");
         }
         catch (Exception ex)
         {
-            _reply.PostOperationFailed(request.RequestId, ex.Message, code: "DELETE_TABLE_FAILED");
+            Trace.TraceError($"Schema delete failed ({collection}): {ex}");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "删除数据表失败。",
+                code: "SCHEMA_DELETE_FAILED");
         }
     }
 
     private async Task OnListIdentifierMappingsAsync(RoutedWebRequest request)
     {
-        if (!TryRequireDirectus(request)) return;
-        try
-        {
-            var result = await _directusGateway!.ListIdentifierMappingsAsync(
-                TryGetString(request.Payload, "search"), CancellationToken.None)
-                .ConfigureAwait(false);
-            _reply.PostResponse("identifierMappings.result", request.RequestId, result);
-        }
-        catch (Exception ex)
-        {
-            _reply.PostOperationFailed(request.RequestId, ex.Message, "MAPPING_LIST_FAILED");
-        }
+        await RunIdentifierRequestAsync(
+            request,
+            (gateway, token) => gateway.ListIdentifierMappingsAsync(
+                request.Payload,
+                token)).ConfigureAwait(false);
     }
 
     private async Task OnUpdateIdentifierAliasesAsync(RoutedWebRequest request)
     {
-        if (!TryRequireDirectus(request)) return;
-        string? mappingId = TryGetString(request.Payload, "mappingId");
-        var aliases = TryGetStringArray(request.Payload, "aliases");
-        if (string.IsNullOrWhiteSpace(mappingId) || aliases is null)
-        {
-            _reply.PostOperationFailed(request.RequestId, "映射别名参数无效。", "BAD_PAYLOAD");
-            return;
-        }
-        try
-        {
-            var result = await _directusGateway!.UpdateIdentifierAliasesAsync(
-                mappingId, aliases, CancellationToken.None).ConfigureAwait(false);
-            _reply.PostResponse("identifierMappings.result", request.RequestId, result);
-        }
-        catch (Exception ex)
-        {
-            _reply.PostOperationFailed(request.RequestId, ex.Message, "MAPPING_UPDATE_FAILED");
-        }
-    }
-
-    private async Task OnImportIdentifierMappingsAsync(RoutedWebRequest request)
-    {
-        if (!TryRequireDirectus(request)) return;
-        if (!TryGetProperty(request.Payload, "mappings", out var mappingsElement)
-            || mappingsElement.ValueKind != JsonValueKind.Array)
-        {
-            _reply.PostOperationFailed(request.RequestId, "映射导入文件格式无效。", "BAD_PAYLOAD");
-            return;
-        }
-        var mappings = new List<IdentifierMappingImportItem>();
-        foreach (var item in mappingsElement.EnumerateArray())
-        {
-            string? entityKind = TryGetString(item, "entityKind");
-            string? physicalName = TryGetString(item, "physicalName");
-            string? displayName = TryGetString(item, "displayName");
-            var aliases = TryGetStringArray(item, "aliases");
-            if (string.IsNullOrWhiteSpace(entityKind)
-                || string.IsNullOrWhiteSpace(physicalName)
-                || string.IsNullOrWhiteSpace(displayName)
-                || aliases is null)
-            {
-                _reply.PostOperationFailed(request.RequestId, "映射导入项格式无效。", "BAD_PAYLOAD");
-                return;
-            }
-            mappings.Add(new IdentifierMappingImportItem(
-                entityKind,
-                TryGetString(item, "parentPhysicalName"),
-                physicalName,
-                displayName,
-                aliases));
-        }
-        try
-        {
-            var result = await _directusGateway!.ImportIdentifierMappingsAsync(
-                mappings, CancellationToken.None).ConfigureAwait(false);
-            _reply.PostResponse("identifierMappings.result", request.RequestId, result);
-        }
-        catch (Exception ex)
-        {
-            _reply.PostOperationFailed(request.RequestId, ex.Message, "MAPPING_IMPORT_FAILED");
-        }
+        await RunIdentifierRequestAsync(
+            request,
+            (gateway, token) => gateway.UpdateIdentifierAliasesAsync(
+                request.Payload,
+                token)).ConfigureAwait(false);
     }
 
     private async Task OnReconcileIdentifierMappingsAsync(RoutedWebRequest request)
     {
-        if (!TryRequireDirectus(request)) return;
-        try
-        {
-            var result = await _directusGateway!.ReconcileIdentifierMappingsAsync(
-                CancellationToken.None).ConfigureAwait(false);
-            _reply.PostResponse("identifierMappings.result", request.RequestId, result);
-            await PostCollectionsChangedAsync().ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _reply.PostOperationFailed(request.RequestId, ex.Message, "MAPPING_RECONCILE_FAILED");
-        }
+        await RunIdentifierRequestAsync(
+            request,
+            (gateway, token) => gateway.ReconcileIdentifierMappingsAsync(
+                request.Payload,
+                token)).ConfigureAwait(false);
     }
 
-    private async Task OnDeleteIdentifierMappingAsync(RoutedWebRequest request)
+    private async Task RunIdentifierRequestAsync(
+        RoutedWebRequest request,
+        Func<IProductDataRpcGateway, CancellationToken, Task<JsonElement>> action)
     {
-        if (!TryRequireDirectus(request)) return;
-        string? mappingId = TryGetString(request.Payload, "mappingId");
-        if (string.IsNullOrWhiteSpace(mappingId))
+        IProductDataRpcGateway? gateway = Volatile.Read(ref _productDataGateway);
+        if (gateway is null)
         {
-            _reply.PostOperationFailed(request.RequestId, "映射标识无效。", "BAD_PAYLOAD");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "本地数据服务尚未就绪。",
+                "BACKEND_UNAVAILABLE");
             return;
         }
         try
         {
-            var result = await _directusGateway!.DeleteIdentifierMappingAsync(
-                mappingId, CancellationToken.None).ConfigureAwait(false);
-            _reply.PostResponse("identifierMappings.result", request.RequestId, result);
+            JsonElement result = await action(gateway, CancellationToken.None)
+                .ConfigureAwait(false);
+            _reply.PostResponse(
+                "identifierMappings.result",
+                request.RequestId,
+                result);
+        }
+        catch (RpcRemoteException ex) when (ex.Code == -32602)
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "标识映射请求参数无效。",
+                "BAD_PAYLOAD");
         }
         catch (Exception ex)
         {
-            _reply.PostOperationFailed(request.RequestId, ex.Message, "MAPPING_DELETE_FAILED");
-        }
-    }
-
-    private async Task OnPurgeIdentifierMappingsAsync(RoutedWebRequest request)
-    {
-        if (!TryRequireDirectus(request)) return;
-        try
-        {
-            var result = await _directusGateway!.PurgeIdentifierMappingsAsync(
-                CancellationToken.None).ConfigureAwait(false);
-            _reply.PostResponse("identifierMappings.result", request.RequestId, result);
-        }
-        catch (Exception ex)
-        {
-            _reply.PostOperationFailed(request.RequestId, ex.Message, "MAPPING_PURGE_FAILED");
+            Trace.TraceError(
+                $"Identifier mapping request failed ({request.Type}): {ex}");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "标识映射操作失败。",
+                "IDENTIFIER_MAPPING_FAILED");
         }
     }
 
@@ -1167,7 +1108,7 @@ public sealed class WorkspaceRequestDispatcher
             => Interlocked.Exchange(ref _cancellationReplyPosted, 1) == 0;
     }
 
-    // Directus relation + realtime Lookup. This is a closed dispatch table:
+    // Product relation + realtime Lookup. This is a closed dispatch table:
     // no renderer-provided method name can reach JsonRpcClient.
     // -------------------------------------------------------------------
 
@@ -1182,7 +1123,6 @@ public sealed class WorkspaceRequestDispatcher
             return;
         }
 
-        if (!TryRequireDirectus(request)) return;
         if (!endpoint.IsValidPayload(request.Payload))
         {
             _reply.PostOperationFailed(
@@ -1191,42 +1131,122 @@ public sealed class WorkspaceRequestDispatcher
                 "BAD_PAYLOAD");
             return;
         }
+        IProductDataRpcGateway? productGateway =
+            Volatile.Read(ref _productDataGateway);
+        IRelationLookupRpcGateway? relationGateway = productGateway;
+        if (relationGateway is null)
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "数据服务尚未就绪。",
+                "NOT_AUTHENTICATED");
+            return;
+        }
 
         try
         {
             JsonElement result = await endpoint.InvokeAsync(
-                _directusGateway!,
+                relationGateway,
                 request.Payload,
                 CancellationToken.None).ConfigureAwait(false);
             _reply.PostResponse(request.Type, request.RequestId, result);
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            _reply.PostOperationFailed(request.RequestId, ex.Message, "BAD_PAYLOAD");
+            _reply.PostOperationFailed(request.RequestId, "Invalid request payload.", "BAD_PAYLOAD");
         }
         catch (RpcRemoteException ex) when (ex.Code == -32602)
         {
             // Canonical Pydantic validation happens in Python. Normalize its
             // JSON-RPC invalid-params response at the WebView boundary.
-            _reply.PostOperationFailed(request.RequestId, ex.Message, "BAD_PAYLOAD");
+            _reply.PostOperationFailed(request.RequestId, "Invalid request payload.", "BAD_PAYLOAD");
         }
         catch (RpcRemoteException ex) when (ex.Code == -32030)
         {
-            // The gateway can exist before a usable Python-owned Directus
-            // session does. Never expose session/token details to the page.
+            // The gateway can exist while the private sidecar is recovering.
+            // Never expose loopback or credential details to the page.
             _reply.PostOperationFailed(
                 request.RequestId,
-                "Directus session is not authenticated.",
-                "NOT_AUTHENTICATED");
+                "Local data service is unavailable.",
+                "BACKEND_UNAVAILABLE");
         }
         catch (Exception ex)
         {
             Trace.TraceError($"Relation/Lookup request failed ({request.Type}): {ex}");
             _reply.PostOperationFailed(
                 request.RequestId,
-                ex.Message,
+                "Relation or lookup operation failed.",
                 "RELATION_LOOKUP_FAILED");
         }
+    }
+
+    private async Task OnProductDataRequestAsync(RoutedWebRequest request)
+    {
+        if (!ProductDataRpcRegistry.TryGet(request.Type, out var endpoint))
+        {
+            _reply.PostOperationFailed(request.RequestId, "Unknown product data request.", "UNKNOWN_TYPE");
+            return;
+        }
+        IProductDataRpcGateway? productGateway =
+            Volatile.Read(ref _productDataGateway);
+        if (productGateway is null)
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "本地数据服务尚未就绪。",
+                "BACKEND_UNAVAILABLE");
+            return;
+        }
+        if (!endpoint.IsValidPayload(request.Payload))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                $"{request.Type} has an invalid payload.",
+                "BAD_PAYLOAD");
+            return;
+        }
+        try
+        {
+            JsonElement result = await endpoint.InvokeAsync(
+                productGateway, request.Payload, CancellationToken.None).ConfigureAwait(false);
+            _reply.PostResponse(request.Type, request.RequestId, result);
+            if (string.Equals(request.Type, "schema.apply", StringComparison.Ordinal))
+            {
+                await RefreshCollectionListAsync().ConfigureAwait(false);
+            }
+        }
+        catch (RpcRemoteException ex)
+            when (ex.ErrorData is JsonElement data
+                && ProductRpcErrorMapper.TryMap(data, out _))
+        {
+            ProductRpcErrorMapper.TryMap(ex.ErrorData!.Value, out var mapped);
+            _reply.PostResponse(request.Type, request.RequestId, mapped);
+        }
+        catch (RpcRemoteException ex) when (ex.Code == -32602)
+        {
+            _reply.PostOperationFailed(request.RequestId, "Invalid request payload.", "BAD_PAYLOAD");
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Product data request failed ({request.Type}): {ex}");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "Product data operation failed.",
+                "PRODUCT_DATA_FAILED");
+        }
+    }
+
+    private async Task RefreshCollectionListAsync()
+    {
+        TableSummary summary = await _workspace.Gateway.ListTablesAsync(
+            CancellationToken.None).ConfigureAwait(false);
+        _workspace.UpdateKnownTables(summary.Tables);
+        _reply.PostNotification("database.collectionsChanged", new
+        {
+            tables = summary.Tables,
+            displayNames = summary.DisplayNames
+                ?? new Dictionary<string, string>(),
+        });
     }
 
     private async Task OnDocumentListRequestedAsync(RoutedWebRequest request)
@@ -1424,36 +1444,6 @@ public sealed class WorkspaceRequestDispatcher
             _ => ("DOCUMENT_OPERATION_FAILED", "文档操作失败，请稍后重试。"),
         };
 
-    private bool TryRequireDirectus(RoutedWebRequest request)
-    {
-        if (_directusGateway is not null) return true;
-        _reply.PostOperationFailed(request.RequestId, "Directus 尚未登录。", "NOT_AUTHENTICATED");
-        return false;
-    }
-
-    /// <summary>
-    /// Re-lists collections, filters to user tables, and pushes
-    /// database.collectionsChanged so the sidebar refreshes. Also refreshes the
-    /// workspace's known-tables cache so a subsequent <c>table.selected</c> for
-    /// the new (or just-removed) collection validates against the FRESH list.
-    /// </summary>
-    private async Task PostCollectionsChangedAsync()
-    {
-        var list = await _directusGateway!.ListCollectionsAsync(CancellationToken.None)
-            .ConfigureAwait(false);
-        var tables = DirectusCollectionFilter.FilterUserTables(list.Collections);
-        // Keep the workspace cache in sync with the sidebar: without this, the
-        // cache populated once at session open would reject a freshly-created
-        // table (or accept a just-deleted one) at the next SelectTableAsync.
-        _workspace.UpdateKnownTables(tables);
-        _reply.PostNotification("database.collectionsChanged", new
-        {
-            tables,
-            capabilityHashes = list.CapabilityHashes,
-            displayNames = list.DisplayNames,
-        });
-    }
-
     private static PasteStartCell? TryGetStartCell(JsonElement payload)
     {
         if (payload.ValueKind != JsonValueKind.Object
@@ -1532,8 +1522,9 @@ public sealed class WorkspaceRequestDispatcher
 
     private static TableQuery TryGetQuery(JsonElement payload)
     {
-        // Build a TableQuery from the payload's "query" object (best-effort).
-        // The backend re-validates; the host only forwards known fields.
+        // Build a TableQuery from the payload's "query" object. Only the
+        // frozen contract fields are forwarded, while filter values retain
+        // their JSON scalar/array/object shape for the provider-neutral AST.
         string? keyword = null;
         if (payload.ValueKind == JsonValueKind.Object
             && payload.TryGetProperty("query", out var q)
@@ -1545,10 +1536,97 @@ public sealed class WorkspaceRequestDispatcher
             }
             int offset = q.TryGetProperty("offset", out var off) && off.TryGetInt32(out var o) ? o : 0;
             int limit = q.TryGetProperty("limit", out var lim) && lim.TryGetInt32(out var l) ? l : 100;
-            return new TableQuery(keyword, null, null, offset, limit);
+            return new TableQuery(
+                keyword,
+                ParseFilterConditions(q),
+                ParseSortConditions(q),
+                offset,
+                limit);
         }
         return new TableQuery();
     }
+
+    private static IReadOnlyList<FilterCondition>? ParseFilterConditions(JsonElement query)
+    {
+        if (!query.TryGetProperty("filters", out var filters)
+            || filters.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+        var result = new List<FilterCondition>();
+        foreach (var item in filters.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object
+                || !item.TryGetProperty("field", out var fieldElement)
+                || fieldElement.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(fieldElement.GetString())
+                || !item.TryGetProperty("operator", out var operatorElement)
+                || operatorElement.ValueKind != JsonValueKind.String
+                || !IsKnownFilterOperator(operatorElement.GetString()))
+            {
+                continue;
+            }
+            string logic = item.TryGetProperty("logic", out var logicElement)
+                && logicElement.ValueKind == JsonValueKind.String
+                && string.Equals(logicElement.GetString(), "OR", StringComparison.OrdinalIgnoreCase)
+                    ? "OR"
+                    : "AND";
+            object? value = item.TryGetProperty("value", out var valueElement)
+                ? ToObject(valueElement)
+                : null;
+            result.Add(new FilterCondition(
+                fieldElement.GetString()!,
+                operatorElement.GetString()!,
+                value,
+                logic));
+        }
+        return result;
+    }
+
+    private static IReadOnlyList<SortCondition>? ParseSortConditions(JsonElement query)
+    {
+        if (!query.TryGetProperty("sorts", out var sorts)
+            || sorts.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+        var result = new List<SortCondition>();
+        foreach (var item in sorts.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object
+                || !item.TryGetProperty("field", out var fieldElement)
+                || fieldElement.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(fieldElement.GetString()))
+            {
+                continue;
+            }
+            string direction = item.TryGetProperty("direction", out var directionElement)
+                && directionElement.ValueKind == JsonValueKind.String
+                && string.Equals(directionElement.GetString(), "desc", StringComparison.OrdinalIgnoreCase)
+                    ? "desc"
+                    : "asc";
+            bool nullsLast = !item.TryGetProperty("nullsLast", out var nullsLastElement)
+                || nullsLastElement.ValueKind != JsonValueKind.False;
+            result.Add(new SortCondition(fieldElement.GetString()!, direction, nullsLast));
+        }
+        return result;
+    }
+
+    private static bool IsKnownFilterOperator(string? value)
+        => value is FilterOperators.Contains
+            or FilterOperators.Equal
+            or FilterOperators.NotEqual
+            or FilterOperators.StartsWith
+            or FilterOperators.EndsWith
+            or FilterOperators.Greater
+            or FilterOperators.Less
+            or FilterOperators.GreaterEqual
+            or FilterOperators.LessEqual
+            or FilterOperators.Between
+            or FilterOperators.In
+            or FilterOperators.IsNull
+            or FilterOperators.IsNotNull
+            or FilterOperators.Regex;
 
     private static GridState? TryGetGridState(JsonElement payload)
     {

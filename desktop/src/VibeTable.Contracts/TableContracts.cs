@@ -6,7 +6,7 @@ namespace VibeTable.Contracts;
 /// One column's read-side schema. Mirrors
 /// <c>backend.contracts.table.ColumnSchema</c> (camelCase wire form):
 /// <c>{"name","title","dataType","editable","nullable","scale","precision",</c>
-/// <c>"fieldId","kind","relationId","lookupId"}</c>.
+/// <c>"fieldId","kind","relationId","lookupId","attachmentPolicy"}</c>.
 /// </summary>
 public sealed record ColumnSchema(
     string Name,
@@ -19,7 +19,8 @@ public sealed record ColumnSchema(
     string? FieldId = null,
     string Kind = "scalar",
     string? RelationId = null,
-    string? LookupId = null);
+    string? LookupId = null,
+    IReadOnlyDictionary<string, object?>? AttachmentPolicy = null);
 
 /// <summary>
 /// Result of opening the configured logical source through the table gateway:
@@ -27,7 +28,7 @@ public sealed record ColumnSchema(
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="OpenMode"/> is retained for wire compatibility. The Directus
+/// <see cref="OpenMode"/> is retained for wire compatibility. The product
 /// gateway currently returns <c>"remote"</c>; it does not negotiate a local
 /// database lease.
 /// </para>
@@ -48,7 +49,7 @@ public sealed record TableSummary(
     IReadOnlyDictionary<string, string>? DisplayNames = null);
 
 /// <summary>
-/// One page of rows from a Directus-backed collection view:
+/// One page of rows from a product collection view:
 /// <c>{"table","columns":[...],"rows":[{...,"rowKey"}],"offset","limit","totalRows","mode",</c>
 /// <c>"filteredRows","querySnapshot","revision"}</c>.
 /// </summary>

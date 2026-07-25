@@ -13,10 +13,17 @@ export const currentLocale = ref<Locale>("zh-CN");
 
 const STORAGE_KEY = "vt:locale";
 
+function syncDocumentLanguage(locale: Locale): void {
+  if (typeof document !== "undefined") {
+    document.documentElement.lang = locale;
+  }
+}
+
 /** Initialize locale from localStorage at module load. Call once in main.ts. */
 export function initLocale(): void {
   const stored = localStorage.getItem(STORAGE_KEY) as Locale | null;
   if (stored && stored in locales) currentLocale.value = stored;
+  syncDocumentLanguage(currentLocale.value);
 }
 
 export function getLocale(): Locale {
@@ -26,6 +33,7 @@ export function getLocale(): Locale {
 export function setLocale(locale: Locale): void {
   if (!(locale in locales)) return;
   currentLocale.value = locale;
+  syncDocumentLanguage(locale);
   try {
     localStorage.setItem(STORAGE_KEY, locale);
   } catch {

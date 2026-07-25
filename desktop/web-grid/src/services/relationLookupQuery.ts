@@ -1,4 +1,15 @@
-import type { FilterCondition, LookupGroup, SortCondition } from "@/contracts";
+import type { FilterCondition, LookupDefinition, LookupGroup, SortCondition } from "@/contracts";
+
+/**
+ * `lookup.query.fieldRefs` is a projection of Lookup outputs only. Regular
+ * table columns still participate in the query AST, but sending them as
+ * projection fields makes the backend reject the entire authoritative query.
+ */
+export function buildLookupProjectionFieldRefs(
+  definitions: readonly Pick<LookupDefinition, "fieldKey">[],
+): string[] {
+  return [...new Set(definitions.map((definition) => definition.fieldKey))];
+}
 
 /**
  * Preserve the authoritative table view AST when switching to Lookup query.

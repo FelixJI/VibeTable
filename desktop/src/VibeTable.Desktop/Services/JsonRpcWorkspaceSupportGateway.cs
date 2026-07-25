@@ -23,7 +23,7 @@ public sealed record ApplyPasteRpcParams(
 
 /// <summary>
 /// JSON-RPC adapter for backend support operations that remain local after
-/// the Directus migration. It intentionally exposes no local business-table
+/// the provider migration. It intentionally exposes no local business-table
 /// read/write methods.
 /// </summary>
 public sealed class JsonRpcWorkspaceSupportGateway : IWorkspaceSupportRpcGateway

@@ -4,7 +4,7 @@ import type { HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { useRelationLookupService } from "./relationLookupService";
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
-import type { DirectusChangePayload, LookupDefinition, SchemaSnapshot } from "@/contracts";
+import type { DataChangedEvent, LookupDefinition, SchemaSnapshot } from "@/contracts";
 
 describe("relationLookupService", () => {
   const request = vi.fn();
@@ -30,6 +30,56 @@ describe("relationLookupService", () => {
       query: { filters: [], sorts: [], groups: [], offset: 0, limit: 100 },
     })).rejects.toThrow("Lookup 扩展未安装");
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("loads an authoritative Lookup dataset through backend-bounded pages", async () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("orders");
+    store.acceptContext(generation, {
+      collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [],
+      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+    }, [], {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+    });
+    request.mockImplementation(async (_method: string, payload: {
+      requestGeneration: number;
+      query: { offset: number; limit: number };
+    }) => {
+      const count = payload.query.offset === 0 ? 500 : 100;
+      return {
+        contract: "vibetable.lookup-query.v1",
+        collection: "orders",
+        requestGeneration: payload.requestGeneration,
+        schemaRevision: "s",
+        permissionRevision: "p",
+        lookupRevision: "l",
+        columns: [],
+        rows: Array.from({ length: count }, (_, index) => ({
+          rowKey: payload.query.offset + index,
+        })),
+        groups: [],
+        offset: payload.query.offset,
+        limit: payload.query.limit,
+        filteredRows: 600,
+        totalRows: 600,
+        snapshot: {},
+      };
+    });
+
+    const result = await useRelationLookupService().queryDataset({
+      collection: "orders",
+      fieldRefs: ["customer_name"],
+      query: { filters: [], sorts: [], groups: [] },
+    });
+
+    expect(result.rows).toHaveLength(600);
+    expect(request).toHaveBeenNthCalledWith(1, "lookup.query", expect.objectContaining({
+      query: expect.objectContaining({ offset: 0, limit: 500 }),
+    }));
+    expect(request).toHaveBeenNthCalledWith(2, "lookup.query", expect.objectContaining({
+      query: expect.objectContaining({ offset: 500, limit: 500 }),
+    }));
   });
 
   it("builds add/update/remove from a staged multi relation", () => {
@@ -205,7 +255,7 @@ describe("relationLookupService", () => {
       contract: "vibetable.relation-capabilities.v1",
       relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
     });
-    let changed: ((change: DirectusChangePayload) => void) | undefined;
+    let changed: ((change: DataChangedEvent) => void) | undefined;
     const invalidated = vi.fn();
     request.mockImplementation(async (method: string, payload: unknown) => {
       if (method === "schema.describe") {
@@ -228,7 +278,8 @@ describe("relationLookupService", () => {
     setHostBridgeForTesting({
       request,
       on: vi.fn((_type, handler) => {
-        changed = handler as (change: DirectusChangePayload) => void;
+        expect(_type).toBe("data.changed");
+        changed = handler as (change: DataChangedEvent) => void;
         return vi.fn();
       }),
     } as unknown as HostBridge);
@@ -236,14 +287,20 @@ describe("relationLookupService", () => {
     service.init(invalidated);
 
     changed?.({
-      uid: "country-change", collection: "countries", event: "update", data: ["country-1"],
-      invalidateQuery: true,
+      contractVersion: "1.0", topic: "data.changed", eventId: "country-change",
+      sequence: 7, occurredAt: "2026-07-24T08:30:00Z",
+      schemaRevision: "schema_0007", dataRevision: "data_0007",
+      changeSetId: "chg-country", tableId: "countries",
+      recordIds: ["country-1"], operation: "update",
     });
     // loadContext clears the visible definitions while it renegotiates. A
     // second deeper event in that window must still invalidate the table.
     changed?.({
-      uid: "currency-change", collection: "currencies", event: "update", data: ["currency-1"],
-      invalidateQuery: true,
+      contractVersion: "1.0", topic: "data.changed", eventId: "currency-change",
+      sequence: 8, occurredAt: "2026-07-24T08:31:00Z",
+      schemaRevision: "schema_0007", dataRevision: "data_0008",
+      changeSetId: "chg-currency", tableId: "currencies",
+      recordIds: ["currency-1"], operation: "update",
     });
 
     expect(invalidated).toHaveBeenCalledTimes(2);

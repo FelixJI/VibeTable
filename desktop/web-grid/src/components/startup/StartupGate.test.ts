@@ -7,14 +7,11 @@ const baseProps = {
   phase: "starting" as const,
   stage: "启动本地数据服务",
   detail: "本地数据库与数据结构已完成初始化，本次直接复用。",
-  email: "",
-  rememberPassword: false,
-  autoLogin: false,
   canRetry: false,
   canCancel: true,
   logs: [
     { time: "08:30:01", source: "复用", message: "依赖完整性校验仍然有效。" },
-    { time: "08:30:02", source: "阶段", message: "正在启动 Directus 服务。" },
+    { time: "08:30:02", source: "阶段", message: "正在启动本地数据服务。" },
   ],
 };
 

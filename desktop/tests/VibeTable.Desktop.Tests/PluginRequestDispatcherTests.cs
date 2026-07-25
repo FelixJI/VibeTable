@@ -172,13 +172,12 @@ public sealed class PluginRequestDispatcherTests
                 "open-dashboard",
                 new Dictionary<string, string> { ["en-US"] = "Open dashboard" },
                 new Dictionary<string, string>(),
-                "interactive",
+                "local",
                 PluginRisk.Read,
-                "command",
+                "manual",
                 [],
                 JsonSerializer.SerializeToElement(new { }),
-                null,
-                null,
+                "dist/workers/open-dashboard.js",
                 null,
                 null,
                 null);
@@ -290,10 +289,10 @@ public sealed class PluginRequestDispatcherTests
             new Dictionary<string, string>(),
             JsonDocument.Parse("{}").RootElement.Clone(),
             JsonDocument.Parse("{}").RootElement.Clone(),
-            [], [], JsonDocument.Parse("{}").RootElement.Clone());
+            [], JsonDocument.Parse("{}").RootElement.Clone());
         public static readonly PluginRuntimeSnapshot DefaultSnapshot = new(
             "project-1", "com.acme.clean", "1.0.0", new string('a', 64),
-            "package", "package.vtplugin", Manifest, [], [],
+            "package", "package.vtplugin", Manifest,
             new Dictionary<string, IReadOnlyDictionary<string, JsonElement>>(),
             "enabled", null, 1);
         private static readonly PluginRuntimeTaskSnapshot Task = new(
@@ -371,28 +370,19 @@ public sealed class PluginRequestDispatcherTests
             InspectRequest = request;
             return System.Threading.Tasks.Task.FromResult(new PluginRuntimeInstallPlan(
                 "plan-1", "project-1", "1", "package", "package.vtplugin",
-                DefaultSnapshot.PackageHash, Manifest, [],
+                DefaultSnapshot.PackageHash, Manifest,
                 new Dictionary<string, IReadOnlyDictionary<string, JsonElement>>()));
         }
         public Task<PluginRuntimeSnapshot> CommitInstallAsync(PluginCommitInstallParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
-        public Task<PluginRuntimeExternalFlowCandidate[]> ListExternalFlowCandidatesAsync(PluginListExternalFlowCandidatesParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(Array.Empty<PluginRuntimeExternalFlowCandidate>());
-        public Task<PluginRuntimeFlowBindingSnapshot> BindExternalFlowAsync(PluginBindExternalFlowParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(new PluginRuntimeFlowBindingSnapshot(
-                "project-1", CatalogSnapshot.PluginId, "flow", "external", "flow-1",
-                null, null, null, "manual", "1", null, new string('b', 64),
-                1, "healthy", "not-applicable", null));
         public Task<PluginRuntimeSnapshot> SetEnabledAsync(PluginSetEnabledParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
         public Task<PluginRuntimeSnapshot> UpgradeAsync(PluginUpgradeParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
         public Task<PluginRuntimeSnapshot> RollbackAsync(PluginRollbackParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
-        public Task<PluginRuntimeSnapshot> ResolveDriftAsync(PluginResolveDriftParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
         public Task<PluginRuntimeUninstallResult> UninstallAsync(PluginUninstallParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(new PluginRuntimeUninstallResult(0, 0, true, true));
+            => System.Threading.Tasks.Task.FromResult(new PluginRuntimeUninstallResult(true, true));
         public Task<PluginRuntimeActionAvailability> DescribeActionAsync(PluginDescribeActionParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(new PluginRuntimeActionAvailability(true, []));
         public Task<PluginRuntimeTaskSnapshot> StartActionAsync(PluginStartActionParams request, CancellationToken token)

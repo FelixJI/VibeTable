@@ -1,4 +1,4 @@
-"""In-memory interaction adapter with the same non-recoverable semantics as Directus."""
+"""In-memory interaction adapter with fail-closed non-recoverable semantics."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from backend.contracts.plugin import (
     CancelFlag,
@@ -206,7 +207,7 @@ class HostConfirmationAdapter:
         preview: ConfirmationPreview,
         risk: PluginRisk,
         *,
-        execution: dict[str, object] | None = None,
+        execution: dict[str, Any] | None = None,
     ) -> bool:
         if self._sink is None:
             raise RuntimeError("host confirmation channel is unavailable")

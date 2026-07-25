@@ -178,6 +178,20 @@ class RequestExportTargetGrantParams(CamelModel):
     format: str = Field(default="csv", max_length=16)
 
 
+class HostImportSourceParams(CamelModel):
+    """Trusted-host-only canonical path selected by the native open dialog."""
+
+    path: str = Field(min_length=1, max_length=32767)
+    size_bytes: int | None = Field(default=None, ge=0)
+    mime_type: str | None = Field(default=None, max_length=128)
+
+
+class HostExportTargetParams(CamelModel):
+    """Trusted-host-only canonical path selected by the native save dialog."""
+
+    path: str = Field(min_length=1, max_length=32767)
+
+
 class ResolveGrantParams(CamelModel):
     """Parameters for ``path.resolve`` (internal: broker-side grant lookup).
 
@@ -194,6 +208,8 @@ class ResolveGrantParams(CamelModel):
 __all__ = [
     "CamelModel",
     "CreateTaskParams",
+    "HostExportTargetParams",
+    "HostImportSourceParams",
     "PathGrantDirection",
     "PathGrantPurpose",
     "RequestExportTargetGrantParams",

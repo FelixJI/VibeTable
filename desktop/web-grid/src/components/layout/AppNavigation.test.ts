@@ -21,9 +21,9 @@ describe("AppNavigation", () => {
     ]);
   });
 
-  it("emits Directus and help actions without pretending they are routes", async () => {
+  it("emits administration and help actions without pretending they are routes", async () => {
     const wrapper = mount(AppNavigation);
-    await wrapper.get('[data-testid="nav-directus"]').trigger("click");
+    await wrapper.get('[data-testid="nav-admin"]').trigger("click");
     await wrapper.get('[data-testid="nav-help"]').trigger("click");
     expect(wrapper.emitted("openAdmin")).toHaveLength(1);
     expect(wrapper.emitted("openHelp")).toHaveLength(1);

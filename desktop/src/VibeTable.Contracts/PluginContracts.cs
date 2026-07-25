@@ -79,16 +79,6 @@ public sealed record PluginInspectInstallParams(
     string ProjectRevision,
     string SourceLocation);
 public sealed record PluginCommitInstallParams(string PlanId, string ProjectRevision);
-public sealed record PluginListExternalFlowCandidatesParams(
-    string ProjectKey,
-    string PluginId,
-    string LogicalFlowId);
-public sealed record PluginBindExternalFlowParams(
-    string ProjectKey,
-    string PluginId,
-    string LogicalFlowId,
-    string DirectusFlowUuid,
-    bool AcceptsUnknownSideEffects);
 public sealed record PluginSetEnabledParams(
     string ProjectKey,
     string PluginId,
@@ -99,11 +89,6 @@ public sealed record PluginUpgradeParams(
     string PlanId,
     string ProjectRevision);
 public sealed record PluginRollbackParams(string ProjectKey, string PluginId);
-public sealed record PluginResolveDriftParams(
-    string ProjectKey,
-    string PluginId,
-    string LogicalFlowId,
-    string Strategy);
 public sealed record PluginUninstallParams(
     string ProjectKey,
     string PluginId,
@@ -233,8 +218,7 @@ public sealed record PluginRuntimeAction(
     string Invocation,
     IReadOnlyList<string> Placements,
     JsonElement Requires,
-    string? EntryFlow,
-    string? WorkerEntry,
+    string WorkerEntry,
     string? FormSchema,
     string? InputSchema,
     string? OutputSchema);
@@ -248,19 +232,7 @@ public sealed record PluginRuntimeManifest(
     JsonElement Compatibility,
     JsonElement Permissions,
     IReadOnlyList<PluginRuntimeAction> Actions,
-    IReadOnlyList<JsonElement> Flows,
     JsonElement Ui);
-
-public sealed record PluginRuntimeFlowRequirement(
-    string LogicalFlowId,
-    string Ownership,
-    string Trigger,
-    string Risk,
-    string ContractVersion,
-    IReadOnlyList<string> RequiresOperations,
-    JsonElement InputSchema,
-    JsonElement OutputSchema,
-    JsonElement? Definition);
 
 public sealed record PluginRuntimeInstallPlan(
     string PlanId,
@@ -270,7 +242,6 @@ public sealed record PluginRuntimeInstallPlan(
     string SourceLocation,
     string PackageHash,
     PluginRuntimeManifest Manifest,
-    IReadOnlyList<PluginRuntimeFlowRequirement> FlowRequirements,
     IReadOnlyDictionary<string, IReadOnlyDictionary<string, JsonElement>> Schemas);
 
 public sealed record PluginRuntimeSnapshot(
@@ -281,8 +252,6 @@ public sealed record PluginRuntimeSnapshot(
     string SourceType,
     string SourceLocation,
     PluginRuntimeManifest Manifest,
-    IReadOnlyList<PluginRuntimeFlowRequirement> FlowRequirements,
-    IReadOnlyList<PluginRuntimeFlowBindingSnapshot> FlowBindings,
     IReadOnlyDictionary<string, IReadOnlyDictionary<string, JsonElement>> Schemas,
     string Status,
     string? DisabledReason,
@@ -290,39 +259,9 @@ public sealed record PluginRuntimeSnapshot(
     IReadOnlyList<string>? BlockingReasons = null,
     bool SourceChanged = false);
 
-public sealed record PluginRuntimeExternalFlowCandidate(
-    string DirectusFlowUuid,
-    string Name,
-    string TriggerType,
-    string Status,
-    IReadOnlyList<string> OperationKeys,
-    bool Compatible,
-    IReadOnlyList<string> Reasons);
-
-public sealed record PluginRuntimeFlowBindingSnapshot(
-    string ProjectKey,
-    string PluginId,
-    string LogicalFlowId,
-    string Ownership,
-    string DirectusFlowUuid,
-    string? RollbackFlowUuid,
-    string? RollbackContractVersion,
-    string? RollbackDefinitionHash,
-    string TriggerType,
-    string ContractVersion,
-    string? InstalledDefinitionHash,
-    string ObservedDefinitionHash,
-    int Revision,
-    string Health,
-    string DriftStatus,
-    string? LastError);
-
 public sealed record PluginRuntimeUninstallResult(
-    int ManagedFlowsRemoved,
-    int ExternalFlowsUnbound,
     bool Uninstalled,
-    bool PrivateSettingsRetained,
-    bool CleanupPending = false);
+    bool PrivateSettingsRetained);
 
 public sealed record PluginRuntimeAuditEvent(
     string EventId,

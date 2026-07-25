@@ -88,6 +88,7 @@ describe("revisionHistoryService", () => {
       scope: "table",
       changeSets: [{
         rootRevisionId: "r2",
+        changeSetId: "change-2",
         activityId: "a2",
         itemId: "42",
         action: "update",

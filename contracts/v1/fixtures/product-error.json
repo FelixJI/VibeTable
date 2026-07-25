@@ -1,0 +1,12 @@
+{
+  "contractVersion": "1.0",
+  "code": "schema.field.invalid_constraint",
+  "path": "fields[2].constraints[0].scale",
+  "message": "scale cannot exceed precision",
+  "details": {
+    "precision": 8,
+    "scale": 10
+  },
+  "retryable": false
+}
+

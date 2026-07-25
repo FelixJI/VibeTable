@@ -1,18 +1,26 @@
 /* VibeTable design tokens — Feishu-style. Light default, dark under :root.dark. */
 :root {
+  color-scheme: light;
+
   /* Brand primary — Feishu blue-violet #3370FF + lightness scale */
   --vt-color-primary-50:  #e8f0ff;
   --vt-color-primary-100: #d4e3ff;
   --vt-color-primary-200: #b3ccff;
+  --vt-color-primary-300: #7aa7ff;
   --vt-color-primary-500: #3370ff;
   --vt-color-primary-600: #2b5fe0;
   --vt-color-primary-700: #1f47b3;
 
   /* Semantic colors (Feishu) */
-  --vt-color-success: #00b88a;
-  --vt-color-warning: #ffa600;
-  --vt-color-danger:  #f54a45;
+  --vt-color-success: #007f63;
+  --vt-color-warning: #8f4f00;
+  --vt-color-danger:  #c2312c;
   --vt-color-info:    #3370ff;
+  --vt-color-warning-50: #fff7e8;
+  --vt-color-warning-700: #8f4f00;
+  --vt-color-danger-500: #d83b36;
+  --vt-color-danger-600: #b92520;
+  --vt-color-error-500: var(--vt-color-danger-500);
 
   /* Neutral grayscale — 7 stops */
   --vt-gray-0:   #ffffff;
@@ -20,7 +28,7 @@
   --vt-gray-100: #f2f3f5;
   --vt-gray-200: #e5e6eb;
   --vt-gray-300: #c9cdd4;
-  --vt-gray-400: #86909c;
+  --vt-gray-400: #646f7d;
   --vt-gray-500: #4e5969;
   --vt-gray-600: #272e3b;
 
@@ -32,10 +40,17 @@
   --vt-fg:        var(--vt-gray-600);
   --vt-fg-secondary: var(--vt-gray-500);
   --vt-fg-muted:  var(--vt-gray-400);
+  --vt-fg-subtle: var(--vt-gray-400);
+  --vt-fg-placeholder: #717b89;
+  --vt-fg-accent: var(--vt-color-primary-700);
+  --vt-fg-accent-strong: var(--vt-color-primary-600);
+  --vt-text-secondary: var(--vt-fg-secondary);
   --vt-border:    var(--vt-gray-200);
+  --vt-border-subtle: #eef0f3;
 
   /* Shadows — restrained */
   --vt-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --vt-shadow-sm: var(--vt-shadow-1);
   --vt-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.08);
   --vt-shadow-3: 0 8px 24px rgba(0, 0, 0, 0.12);
 
@@ -72,18 +87,36 @@
 }
 
 :root.dark {
+  color-scheme: dark;
+  --vt-color-primary-50: #1d2b4b;
+  --vt-color-primary-100: #23375f;
+  --vt-color-primary-200: #2b4780;
+  --vt-color-primary-300: #8aabff;
   --vt-color-primary-500: #5b8bff;  /* lifted for contrast on dark */
-  --vt-color-primary-600: #4a7dff;
-  --vt-color-primary-700: #3a6bff;
+  --vt-color-primary-600: #315fca;
+  --vt-color-primary-700: #274da8;
+  --vt-color-success: #3dd7af;
+  --vt-color-warning: #ffc766;
+  --vt-color-danger: #ff8b87;
 
   --vt-gray-0:   #17191f;
   --vt-gray-50:  #1e2128;
   --vt-gray-100: #23262e;
   --vt-gray-200: #2a2e37;
   --vt-gray-300: #3a3f4a;
-  --vt-gray-400: #6b7280;
-  --vt-gray-500: #9ca3af;
-  --vt-gray-600: #c9cdd4;
+  --vt-gray-400: #a7afbb;
+  --vt-gray-500: #b8c0cb;
+  --vt-gray-600: #e1e6ed;
+
+  --vt-color-warning-50: #342a18;
+  --vt-color-warning-700: #ffc766;
+  --vt-color-danger-500: #ff716c;
+  --vt-color-danger-600: #ff8b87;
+  --vt-color-error-500: var(--vt-color-danger-500);
+  --vt-fg-placeholder: #8f98a5;
+  --vt-fg-accent: var(--vt-color-primary-300);
+  --vt-fg-accent-strong: var(--vt-color-primary-300);
+  --vt-border-subtle: #252932;
 
   --vt-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
   --vt-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.4);
@@ -112,6 +145,48 @@ html, body {
 
 button, input, select, textarea {
   font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--vt-color-primary-500);
+  outline-offset: 2px;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--vt-gray-300) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--vt-gray-300);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--vt-gray-400);
+  background-clip: padding-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 ::selection {

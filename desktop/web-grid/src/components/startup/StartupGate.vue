@@ -3,30 +3,18 @@ import { computed } from "vue";
 import { NButton, NIcon } from "naive-ui";
 import { AlertCircle, DatabaseZap, RotateCw, X } from "lucide-vue-next";
 import brandIconUrl from "@/assets/brand/vibetable.png";
-import FirstRunForm from "./FirstRunForm.vue";
-import LoginForm from "./LoginForm.vue";
-import type {
-  FirstRunSubmittedPayload,
-  LoginSubmittedPayload,
-  StartupPhase,
-  StartupLogEntry,
-} from "@/contracts";
+import type { StartupPhase, StartupLogEntry } from "@/contracts";
 import { t } from "@/i18n";
 
 const props = defineProps<{
   phase: Exclude<StartupPhase, "ready">;
   stage: string | null;
   detail: string | null;
-  email: string;
-  rememberPassword: boolean;
-  autoLogin: boolean;
   canRetry: boolean;
   canCancel: boolean;
   logs: readonly StartupLogEntry[];
 }>();
 defineEmits<{
-  firstRunSubmit: [payload: FirstRunSubmittedPayload];
-  loginSubmit: [payload: LoginSubmittedPayload];
   retry: [];
   cancel: [];
 }>();
@@ -46,16 +34,15 @@ const subtitle = computed(() => props.detail || t(`startup.${props.phase}.subtit
           <p>{{ t("startup.productLine") }}</p>
         </div>
         <ol class="startup-steps" :aria-label="t('startup.progress')">
-          <li :class="{ active: phase === 'starting', complete: phase === 'firstRun' || phase === 'login' }"><i></i><span>{{ t("startup.step.runtime") }}</span></li>
-          <li :class="{ active: phase === 'firstRun', complete: phase === 'login' }"><i></i><span>{{ t("startup.step.account") }}</span></li>
-          <li :class="{ active: phase === 'login' }"><i></i><span>{{ t("startup.step.workspace") }}</span></li>
+          <li :class="{ active: phase === 'starting' }"><i></i><span>{{ t("startup.step.runtime") }}</span></li>
+          <li><i></i><span>{{ t("startup.step.workspace") }}</span></li>
         </ol>
         <small>{{ t("startup.localFirst") }}</small>
       </aside>
 
       <div class="startup-content">
         <header>
-          <p class="eyebrow">{{ phase === "firstRun" ? t("startup.firstUse") : t("startup.status") }}</p>
+          <p class="eyebrow">{{ t("startup.status") }}</p>
           <h1>{{ heading }}</h1>
           <p>{{ subtitle }}</p>
         </header>
@@ -68,26 +55,6 @@ const subtitle = computed(() => props.detail || t(`startup.${props.phase}.subtit
           </div>
           <NButton v-if="canCancel" quaternary size="small" @click="$emit('cancel')">{{ t("startup.cancel") }}</NButton>
         </div>
-
-        <FirstRunForm
-          v-else-if="phase === 'firstRun'"
-          :email="email"
-          :remember-password="rememberPassword"
-          :auto-login="autoLogin"
-          :can-cancel="canCancel"
-          @submit="$emit('firstRunSubmit', $event)"
-          @cancel="$emit('cancel')"
-        />
-
-        <LoginForm
-          v-else-if="phase === 'login'"
-          :email="email"
-          :remember-password="rememberPassword"
-          :auto-login="autoLogin"
-          :can-cancel="canCancel"
-          @submit="$emit('loginSubmit', $event)"
-          @cancel="$emit('cancel')"
-        />
 
         <div v-else class="fault-state" role="alert">
           <span><NIcon :size="24"><AlertCircle /></NIcon></span>

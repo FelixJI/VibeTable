@@ -5,14 +5,20 @@ import type {
   NormalizedRelationDescriptor,
   RelationTargetRef,
 } from "@/contracts";
+import { t } from "@/i18n";
 
 export function relationFormatter(descriptor: NormalizedRelationDescriptor) {
   return (cell: { getValue(): unknown }): HTMLElement => {
     const root = element("div", "vt-relation-value");
     root.dataset.relationKind = descriptor.kind;
     if (descriptor.state !== "valid") {
-      root.append(stateBadge(descriptor.state === "invalid" ? "关系无效" : "只读关系", descriptor.state));
-      root.title = descriptor.diagnostics.map((item) => item.message).join("；");
+      root.append(stateBadge(
+        descriptor.state === "invalid"
+          ? t("grid.relation.invalid")
+          : t("grid.relation.readOnly"),
+        descriptor.state,
+      ));
+      root.title = descriptor.diagnostics.map((item) => item.message).join(t("grid.diagnosticSeparator"));
       return root;
     }
     const targets = normalizeTargets(cell.getValue());
@@ -44,24 +50,26 @@ export function lookupFormatter(
     const root = element("div", "vt-lookup-value");
     root.append(element("span", "vt-lookup-mark", "↳"));
     if (!lookupQueryAvailable) {
-      const badge = stateBadge("不可用", "invalid");
-      badge.title = unavailableReason ?? "Lookup 权威查询扩展不可用";
+      const badge = stateBadge(t("grid.lookup.unavailable"), "invalid");
+      badge.title = unavailableReason ?? t("grid.lookup.unavailableHint");
       root.append(badge);
       return root;
     }
     if (definition && definition.state !== "valid") {
-      const label = definition.state === "restricted" ? "受限" : "无效";
+      const label = definition.state === "restricted"
+        ? t("grid.lookup.restricted")
+        : t("grid.lookup.invalid");
       const badge = stateBadge(label, definition.state);
-      badge.title = definition.diagnostics.map((item) => item.message).join("；");
+      badge.title = definition.diagnostics.map((item) => item.message).join(t("grid.diagnosticSeparator"));
       root.append(badge);
       return root;
     }
     const value = normalizeLookupCell(cell.getValue());
     if (value.state !== "ok") {
       const labels: Record<Exclude<LookupCellValue["state"], "ok">, string> = {
-        restricted: "受限",
-        invalid: "无效",
-        too_expensive: "超出预算",
+        restricted: t("grid.lookup.restricted"),
+        invalid: t("grid.lookup.invalid"),
+        too_expensive: t("grid.lookup.tooExpensive"),
       };
       const badge = stateBadge(labels[value.state], value.state);
       badge.title = value.diagnostic?.message ?? labels[value.state];
@@ -71,13 +79,16 @@ export function lookupFormatter(
     const display = formatLookupValue(value.value);
     root.append(element("span", display === "" ? "vt-cell-empty" : "vt-lookup-text", display || "—"));
     if (value.provenance.length > 0) {
-      root.title = `${value.provenance.length} 个来源记录`;
+      root.title = t("grid.lookup.sourceCount", { count: value.provenance.length });
       for (const source of value.provenance.slice(0, 3)) {
         const button = document.createElement("button");
         button.className = "vt-lookup-source";
         button.textContent = `${source.collection} · ${source.itemId}`;
         button.type = "button";
-        button.title = `打开 ${source.collection} · ${source.itemId}`;
+        button.title = t("grid.lookup.openSource", {
+          collection: source.collection,
+          itemId: source.itemId,
+        });
         button.addEventListener("click", (event) => {
           event.stopPropagation();
           onSourceRequested?.(source);
@@ -134,7 +145,9 @@ function normalizeLookupCell(value: unknown): LookupCellValue {
 
 function formatLookupValue(value: unknown): string {
   if (value == null) return "";
-  if (Array.isArray(value)) return value.map((item) => String(item)).join(" · ");
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).join(t("grid.valueSeparator"));
+  }
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }

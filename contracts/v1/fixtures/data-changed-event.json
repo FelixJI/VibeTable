@@ -1,0 +1,14 @@
+{
+  "contractVersion": "1.0",
+  "topic": "data.changed",
+  "eventId": "evt_data_0012",
+  "sequence": 12,
+  "occurredAt": "2026-07-24T08:30:00Z",
+  "schemaRevision": "schema_0007",
+  "dataRevision": "data_0012",
+  "changeSetId": "chg_01HZX",
+  "tableId": "tbl_order_lines",
+  "recordIds": ["rec_001"],
+  "operation": "update"
+}
+

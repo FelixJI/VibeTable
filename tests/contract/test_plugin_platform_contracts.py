@@ -22,5 +22,5 @@ def test_plugin_platform_fixture_is_valid_across_public_contracts() -> None:
     assert PluginResult.model_validate(fixture["result"]).status == "success"
     assert InteractionSnapshot.model_validate(fixture["interaction"]).progress.current == 2
     assert PluginTaskSnapshot.model_validate(fixture["task"]).state == "succeeded"
-    assert PluginSafeError.model_validate(fixture["error"]).recoverability == "rebind"
+    assert PluginSafeError.model_validate(fixture["error"]).recoverability == "reconfigure"
     assert PluginEventEnvelope.model_validate(fixture["event"]).revision == 7

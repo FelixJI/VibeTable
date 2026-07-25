@@ -1,6 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { buildColumns, buildOptions, ROW_KEY_FIELD, ROW_NUMBER_FIELD } from "./createGrid";
+import {
+  buildColumns,
+  buildEditEventHandlers,
+  buildOptions,
+  buildTabulatorColumns,
+  jsonHeaderFilter,
+  jsonValueFormatter,
+  ROW_KEY_FIELD,
+  ROW_NUMBER_FIELD,
+} from "./createGrid";
+import type { GridColumnDefinition } from "./createGrid";
 import type { ColumnEditSchema, TablePage } from "@/contracts";
 
 /** A representative Phase-A page: text/integer/decimal/boolean/date + rowKey. */
@@ -67,6 +77,33 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
     expect((cols[0] as { editable: boolean }).editable).toBe(false);
   });
 
+  it("sets readable field-family minimum widths so dense grids scroll horizontally", () => {
+    const page: TablePage = {
+      ...samplePage(),
+      columns: [
+        { name: "enabled", title: "Enabled", dataType: "boolean", editable: false, nullable: false },
+        { name: "count", title: "Count", dataType: "integer", editable: false, nullable: false },
+        { name: "due", title: "Due", dataType: "date", editable: false, nullable: false },
+        { name: "created", title: "Created", dataType: "datetime", editable: false, nullable: false },
+        { name: "name", title: "Name", dataType: "text", editable: false, nullable: false },
+        { name: "payload", title: "Payload", dataType: "json", editable: false, nullable: false },
+        {
+          name: "files",
+          title: "Files",
+          dataType: "json",
+          kind: "attachment",
+          editable: false,
+          nullable: false,
+        },
+      ],
+      rows: [],
+    };
+
+    expect(buildColumns(page).map(({ minWidth }) => minWidth))
+      .toEqual([100, 120, 132, 180, 160, 190, 190]);
+    expect(buildOptions(page).layout).toBe("fitColumns");
+  });
+
   it("does NOT emit a Tabulator column for rowKey (hidden transport metadata)", () => {
     const cols = buildColumns(samplePage());
     const fields = cols.map((c) => (c as { field: string }).field);
@@ -109,11 +146,20 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
     };
 
     const columns = buildColumns(page);
-    expect(columns.map((column) => column.formatter)).toEqual([
-      "datetime",
-      "datetime",
-      "plaintext",
-    ]);
+    expect(typeof columns[0]?.formatter).toBe("function");
+    expect(typeof columns[1]?.formatter).toBe("function");
+    expect(columns[2]?.formatter).toBe("plaintext");
+    const dateValue = "2026-07-25";
+    const dateTimeValue = "2026-07-25T08:30:45.123Z";
+    const dateFormatter = columns[0]?.formatter as (
+      cell: { getValue(): unknown },
+    ) => HTMLElement;
+    const dateTimeFormatter = columns[1]?.formatter as (
+      cell: { getValue(): unknown },
+    ) => HTMLElement;
+    expect(dateFormatter({ getValue: () => dateValue }).textContent).toBe(dateValue);
+    expect(dateTimeFormatter({ getValue: () => dateTimeValue }).textContent)
+      .toBe("2026-07-25 08:30:45.123Z");
   });
 
   it("derives decimal display precision from the column's scale", () => {
@@ -162,6 +208,86 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
     };
     expect(col.formatterParams?.precision).toBe(6);
   });
+
+  it("renders JSON as a compact safe summary without changing the raw value", () => {
+    const value = {
+      status: "<img src=x onerror=alert(1)>",
+      nested: { html: "<script>alert(1)</script>" },
+    };
+    const rendered = jsonValueFormatter({ getValue: () => value });
+    expect(rendered.textContent).toBe("{…} · 2 个键");
+    expect(rendered.title).toBe(JSON.stringify(value));
+    expect(rendered.querySelector("script")).toBeNull();
+    expect(rendered.innerHTML).not.toContain("<img");
+    expect(rendered.innerHTML).not.toContain("<script");
+    expect(value).toEqual({
+      status: "<img src=x onerror=alert(1)>",
+      nested: { html: "<script>alert(1)</script>" },
+    });
+  });
+
+  it("summarizes JSON arrays and renders null as an em dash", () => {
+    expect(jsonValueFormatter({ getValue: () => [1, 2, 3] }).textContent)
+      .toBe("[…] · 3 项");
+    expect(jsonValueFormatter({ getValue: () => null }).textContent).toBe("—");
+  });
+
+  it("filters JSON by nested serialized values without mutating or throwing", () => {
+    const matching = { nested: { value: 8 }, items: [4, 5], label: "Alpha" };
+    const other = { nested: { value: 7 }, items: [1, 2, 3] };
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+
+    expect(jsonHeaderFilter("8", matching)).toBe(true);
+    expect(jsonHeaderFilter("8", other)).toBe(false);
+    expect(jsonHeaderFilter("alpha", matching)).toBe(true);
+    expect(jsonHeaderFilter("", matching)).toBe(true);
+    expect(jsonHeaderFilter("self", cyclic)).toBe(false);
+    expect(matching).toEqual({
+      nested: { value: 8 },
+      items: [4, 5],
+      label: "Alpha",
+    });
+  });
+
+  it("wires the structured JSON filter into the Tabulator column", () => {
+    const page: TablePage = {
+      table: "t",
+      columns: [
+        { name: "payload", title: "Payload", dataType: "json", editable: true, nullable: true },
+      ],
+      rows: [],
+      offset: 0,
+      limit: 0,
+      totalRows: 0,
+      mode: "client",
+    };
+
+    expect(buildColumns(page)[0]?.headerFilterFunc).toBe(jsonHeaderFilter);
+    expect(buildTabulatorColumns(page)[1]?.headerFilterFunc).toBe(jsonHeaderFilter);
+
+    const interactive = buildColumns(
+      page,
+      [editCol("payload", { kind: "json" }, true)],
+    )[0]!;
+    const element = document.createElement("div");
+    const cell = {
+      getField: () => "payload",
+      getValue: () => ({}),
+      setValue: vi.fn(),
+      getRow: () => ({ getData: () => ({ rowKey: "row-1" }) }),
+      getElement: () => element,
+    };
+    const formatter = interactive.formatter as (
+      formattedCell: typeof cell,
+      params: Record<string, unknown>,
+      onRendered: (callback: () => void) => void,
+    ) => HTMLElement;
+    formatter(cell, {}, (callback) => callback());
+    expect(element.tabIndex).toBe(0);
+    expect(element.getAttribute("aria-keyshortcuts")).toContain("Enter");
+    expect(interactive).not.toHaveProperty("cellRendered");
+  });
 });
 
 describe("buildOptions (read-only Tabulator options)", () => {
@@ -176,9 +302,30 @@ describe("buildOptions (read-only Tabulator options)", () => {
     });
   });
 
+  it("renders a localized empty-table placeholder", () => {
+    expect(buildOptions(samplePage()).placeholder)
+      .toBe("暂无记录，使用“+”添加第一行");
+  });
+
+  it("does not leak product-only metadata into Tabulator column options", () => {
+    const columns = buildOptions(samplePage()).columns as Array<Record<string, unknown>>;
+    expect(columns.every((column) => !("dataType" in column))).toBe(true);
+    expect(columns.every((column) => !("nullable" in column))).toBe(true);
+  });
+
+  it("strips product-only metadata for every incremental setColumns refresh", () => {
+    const columns = buildTabulatorColumns(samplePage());
+    expect(columns.every((column) => !("dataType" in column))).toBe(true);
+    expect(columns.every((column) => !("nullable" in column))).toBe(true);
+  });
+
   it("enables selectableRange:true", () => {
     const opts = buildOptions(samplePage());
     expect(opts.selectableRange).toBe(true);
+    expect(opts.selectableRangeAutoFocus).toBe(false);
+    expect(opts.selectableRangeRows).toBe(true);
+    expect(opts.editTriggerEvent).toBe("dblclick");
+    expect(opts.popupContainer).toBe(true);
   });
 
   it("uses the transport row key as the stable Tabulator index", () => {
@@ -247,6 +394,84 @@ function editCol(
 }
 
 describe("buildColumns (with editSchema — Task M3)", () => {
+  it("keeps managed attachments on the native panel when edit schema advertises text editing", () => {
+    const onAttachmentOpenRequested = vi.fn();
+    const page: TablePage = {
+      table: "orders",
+      columns: [
+        {
+          name: "invoice",
+          title: "附件",
+          fieldId: "fld_invoice",
+          dataType: "text",
+          kind: "attachment",
+          editable: true,
+          nullable: true,
+          attachmentPolicy: {
+            maxFiles: 2,
+            maxBytesPerFile: 1024,
+            allowedMimeTypes: ["application/pdf"],
+            thumbnailVariants: [],
+            protected: false,
+          },
+        },
+      ],
+      rows: [],
+      offset: 0,
+      limit: 100,
+      totalRows: 0,
+      mode: "client",
+    };
+
+    const column = buildColumns(
+      page,
+      [editCol("invoice", { kind: "text" }, true)],
+      {
+        relations: new Map(),
+        lookups: new Map(),
+        relationEditAvailable: false,
+        lookupQueryAvailable: false,
+        onAttachmentOpenRequested,
+      },
+    )[0] as GridColumnDefinition;
+    expect(column.editable).toBe(false);
+    expect(column.editor).toBeUndefined();
+    expect(column.cssClass).toBe("vt-attachment-cell vt-structured-cell");
+    expect(column.cellDblClick).toEqual(expect.any(Function));
+    const formatter = column.formatter as (
+      cell: {
+        getField(): string;
+        getValue(): unknown;
+        setValue(value: unknown): void;
+        getRow(): { getData(): Record<string, unknown> };
+        getElement(): HTMLElement;
+      },
+      params?: Record<string, unknown>,
+      onRendered?: (callback: () => void) => void,
+    ) => HTMLElement;
+    const element = document.createElement("div");
+    const cell = {
+      getField: () => "invoice",
+      getValue: () => [
+        { storedName: "hash_invoice.pdf", originalName: "发票.pdf" },
+      ],
+      setValue: vi.fn(),
+      getRow: () => ({ getData: () => ({ rowKey: "record-7" }) }),
+      getElement: () => element,
+    };
+    const rendered = formatter(cell, {}, (callback) => callback());
+    expect(rendered.textContent).toBe("1 个附件 · 发票.pdf");
+    expect(element.tabIndex).toBe(0);
+    expect(element.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(element.getAttribute("aria-label")).toContain("附件");
+    expect(column).not.toHaveProperty("cellRendered");
+    column.cellDblClick?.(new MouseEvent("dblclick"), cell);
+    expect(onAttachmentOpenRequested).toHaveBeenCalledWith(
+      "record-7",
+      page.columns[0],
+    );
+  });
+
   it("attaches a Tabulator editor to editable columns", () => {
     const page: TablePage = {
       table: "t",
@@ -272,7 +497,7 @@ describe("buildColumns (with editSchema — Task M3)", () => {
     expect((cols[1] as { editor?: string }).editor).toBe("input");
   });
 
-  it("downgrades multi_select columns to read-only (no host dialog)", () => {
+  it("attaches the real multi_select list editor", () => {
     const page: TablePage = {
       table: "t",
       columns: [
@@ -284,14 +509,14 @@ describe("buildColumns (with editSchema — Task M3)", () => {
       totalRows: 0,
       mode: "client",
     };
-    // The host advertises tags as editable + multi_select. Spec §7.3: multi_select
-    // cannot be edited inline (no host dialog in web-grid), so it MUST degrade.
     const editSchema: ColumnEditSchema[] = [
       editCol("tags", { kind: "multi_select", options: ["a", "b"], allowCustom: false }, true),
     ];
     const cols = buildColumns(page, editSchema);
-    expect((cols[0] as { editable: boolean }).editable).toBe(false);
-    expect((cols[0] as { editor?: string }).editor).toBeUndefined();
+    expect((cols[0] as { editable: boolean }).editable).toBe(true);
+    expect((cols[0] as { editor?: string }).editor).toBe("list");
+    expect((cols[0] as { editorParams?: Record<string, unknown> }).editorParams)
+      .toMatchObject({ values: ["a", "b"], multiselect: true });
   });
 
   it("leaves columns absent from editSchema read-only (editable:false, no editor)", () => {
@@ -390,46 +615,22 @@ describe("buildColumns (with editSchema — Task M3)", () => {
   });
 });
 
-describe("buildOptions (with onCellEdited — Task M3)", () => {
+describe("buildEditEventHandlers (Task M3)", () => {
   /**
    * Tabulator's cellEdited fires AFTER the value is already changed; oldValue
    * must be captured in cellEditing. We cannot drive a real Tabulator in jsdom,
-   * but we CAN assert that buildOptions wires both callbacks onto the options
-   * object so the grid layer hands them to Tabulator.
+   * but we CAN assert the handlers registered through Tabulator 6's table.on
+   * event API.
    */
   it("registers cellEditing + cellEdited callbacks when onCellEdited is supplied", () => {
-    const page: TablePage = {
-      table: "t",
-      columns: [
-        { name: "name", title: "Name", dataType: "text", editable: true, nullable: false },
-      ],
-      rows: [{ rowKey: 1, name: "old" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "client",
-    };
     const onCellEdited = vi.fn();
-    const opts = buildOptions(page, { onCellEdited });
-    expect(typeof opts.cellEditing).toBe("function");
-    expect(typeof opts.cellEdited).toBe("function");
+    const handlers = buildEditEventHandlers(undefined, onCellEdited);
+    expect(typeof handlers?.cellEditing).toBe("function");
+    expect(typeof handlers?.cellEdited).toBe("function");
   });
 
   it("does NOT register cellEditing/cellEdited when no onCellEdited callback is given (read-only)", () => {
-    const page: TablePage = {
-      table: "t",
-      columns: [
-        { name: "name", title: "Name", dataType: "text", editable: false, nullable: false },
-      ],
-      rows: [],
-      offset: 0,
-      limit: 0,
-      totalRows: 0,
-      mode: "client",
-    };
-    const opts = buildOptions(page);
-    expect(opts.cellEditing ?? null).toBeNull();
-    expect(opts.cellEdited ?? null).toBeNull();
+    expect(buildEditEventHandlers(undefined)).toBeNull();
   });
 
   /**
@@ -439,35 +640,40 @@ describe("buildOptions (with onCellEdited — Task M3)", () => {
    * newValue) to onCellEdited.
    */
   it("captures oldValue in cellEditing and forwards (rk, col, old, new) in cellEdited", () => {
-    const page: TablePage = {
-      table: "t",
-      columns: [
-        { name: "name", title: "Name", dataType: "text", editable: true, nullable: false },
-      ],
-      rows: [{ rowKey: 7, name: "old" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "client",
-    };
     const onCellEdited = vi.fn();
-    const opts = buildOptions(page, { onCellEdited });
+    const handlers = buildEditEventHandlers(undefined, onCellEdited);
+    const digest = `sha256:${"a".repeat(64)}`;
 
     // A minimal cell stub that mimics Tabulator's CellComponent for our wiring.
     let current = "old";
     const cell = {
       getField: () => "name",
       getValue: () => current,
-      getRow: () => ({ getData: () => ({ rowKey: 7, name: current }) }),
+      setValue: (value: unknown) => {
+        current = String(value);
+      },
+      getRow: () => ({
+        getData: () => ({
+          rowKey: 7,
+          name: current,
+          __vibetableDigest: digest,
+        }),
+      }),
     };
     // Phase 1: cellEditing fires BEFORE the value changes. cell.getValue() is
     // still the old value; the wiring caches it.
-    (opts.cellEditing as (c: typeof cell) => void)(cell);
+    handlers!.cellEditing(cell);
     // Phase 2: Tabulator commits the new value, THEN fires cellEdited.
     current = "new";
-    (opts.cellEdited as (c: typeof cell) => void)(cell);
+    handlers!.cellEdited(cell);
 
     expect(onCellEdited).toHaveBeenCalledTimes(1);
-    expect(onCellEdited).toHaveBeenCalledWith(7, "name", "old", "new");
+    expect(onCellEdited).toHaveBeenCalledWith(
+      7,
+      "name",
+      "old",
+      "new",
+      digest,
+    );
   });
 });

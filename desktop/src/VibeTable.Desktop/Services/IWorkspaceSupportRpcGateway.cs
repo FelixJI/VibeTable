@@ -6,8 +6,8 @@ using VibeTable.Contracts;
 namespace VibeTable.Desktop.Services;
 
 /// <summary>
-/// Backend-owned support operations used by the Directus workspace. Business
-/// records stay in Directus; only per-user grid state and brokered atomic paste
+/// Backend-owned support operations used by the product workspace. Business
+/// records stay in the local data service; only per-user grid state and brokered atomic paste
 /// operations cross this JSON-RPC adapter.
 /// </summary>
 public interface IWorkspaceSupportRpcGateway

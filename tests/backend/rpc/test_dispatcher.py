@@ -101,6 +101,79 @@ async def test_successful_handshake_serializes_by_alias(dispatcher: RpcDispatche
     assert "error" not in response
 
 
+@pytest.mark.asyncio
+async def test_nested_model_results_are_json_frame_serializable() -> None:
+    """Collection RPCs must encode contained models, not leak BaseModel objects."""
+    import json
+    from datetime import UTC, datetime
+
+    from pydantic import BaseModel
+
+    class _Params(BaseModel):
+        model_config = {"extra": "forbid"}
+
+    class _AuditEvent(BaseModel):
+        model_config = {
+            "alias_generator": lambda name: "".join(
+                (
+                    name.split("_")[0],
+                    *(part.title() for part in name.split("_")[1:]),
+                )
+            ),
+            "populate_by_name": True,
+        }
+
+        event_id: str
+        started_at: datetime
+
+    def handler(_params: _Params) -> list[_AuditEvent]:
+        return [
+            _AuditEvent(
+                event_id="event-1",
+                started_at=datetime(2026, 7, 24, 17, 17, 2, tzinfo=UTC),
+            )
+        ]
+
+    disp = RpcDispatcher()
+    disp.register("test.audit", handler, _Params)
+    response = await disp.dispatch(
+        {"jsonrpc": "2.0", "id": "audit-1", "method": "test.audit", "params": {}}
+    )
+
+    assert response is not None
+    assert response["result"] == [
+        {"eventId": "event-1", "startedAt": "2026-07-24T17:17:02Z"}
+    ]
+    json.dumps(response)
+
+
+@pytest.mark.asyncio
+async def test_unserializable_handler_result_maps_to_internal_error() -> None:
+    """A successful handler must not strand its caller during frame encoding."""
+    from pydantic import BaseModel
+
+    class _Params(BaseModel):
+        model_config = {"extra": "forbid"}
+
+    class _OpaqueResult:
+        pass
+
+    def handler(_params: _Params) -> _OpaqueResult:
+        return _OpaqueResult()
+
+    disp = RpcDispatcher()
+    disp.register("test.opaque", handler, _Params)
+    response = await disp.dispatch(
+        {"jsonrpc": "2.0", "id": "opaque-1", "method": "test.opaque", "params": {}}
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": "opaque-1",
+        "error": {"code": -32603, "message": "Internal error"},
+    }
+
+
 def test_registered_methods_are_sorted_and_current(dispatcher: RpcDispatcher) -> None:
     assert dispatcher.registered_methods == ("system.handshake",)
 
@@ -166,3 +239,32 @@ async def test_sync_handler_receives_unpacked_validated_fields() -> None:
 
     assert response is not None
     assert response["result"] == {"doubled": 8}
+
+
+@pytest.mark.asyncio
+async def test_model_handler_is_not_confused_by_a_field_named_params() -> None:
+    """A DTO's own ``params`` field must not trigger keyword unpacking."""
+    from typing import Any
+
+    from pydantic import BaseModel
+
+    class _Params(BaseModel):
+        kind: str
+        params: dict[str, Any]
+
+    async def handler(params: _Params) -> dict[str, str]:
+        return {"kind": params.kind, "value": str(params.params["value"])}
+
+    disp = RpcDispatcher()
+    disp.register("test.dto", handler, _Params)
+    response = await disp.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": "dto-1",
+            "method": "test.dto",
+            "params": {"kind": "echo", "params": {"value": 7}},
+        }
+    )
+
+    assert response is not None
+    assert response["result"] == {"kind": "echo", "value": "7"}

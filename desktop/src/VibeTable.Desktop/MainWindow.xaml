@@ -12,7 +12,6 @@
         Height="720" Width="1024"
         Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
         Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"
-        PreviewKeyDown="OnPreviewKeyDown"
         WindowStartupLocation="CenterScreen">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
@@ -23,121 +22,6 @@
             x:Name="AppWebView"
             AllowExternalDrop="True"
             Visibility="{Binding IsWebViewVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
-
-        <!-- Lazy, host-owned Directus surface. Hiding it preserves both WebViews. -->
-        <Grid x:Name="AdminSurface" Panel.ZIndex="20" Visibility="Collapsed" Background="#FFFFFF">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="40"/>
-                <RowDefinition Height="*"/>
-            </Grid.RowDefinitions>
-
-            <Border Grid.Row="0" Background="#F7F8FA" BorderBrush="#E5E6EB" BorderThickness="0,0,0,1">
-                <Grid Margin="12,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-
-                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button Width="18" Height="28" Padding="0" Margin="0,0,3,0"
-                                Background="Transparent" BorderThickness="0"
-                                Click="OnCloseAdminClick" ToolTip="关闭管理后台"
-                                ToolTipService.InitialShowDelay="450">
-                            <Ellipse Width="10" Height="10" Fill="#FF5F57"/>
-                        </Button>
-                        <Ellipse Width="10" Height="10" Fill="#FEBC2E" Margin="3,0" IsHitTestVisible="False"/>
-                        <Ellipse Width="10" Height="10" Fill="#28C840" Margin="3,0,10,0" IsHitTestVisible="False"/>
-                    </StackPanel>
-
-                    <Button Grid.Column="1" Height="28" Padding="8,0" Margin="0,0,12,0"
-                            Background="Transparent" BorderThickness="0"
-                            Foreground="#1F2329" FontSize="12"
-                            Content="返回 VibeTable" Click="OnCloseAdminClick"/>
-
-                    <Border Grid.Column="2" Height="28" MaxWidth="420" Padding="12,0"
-                            HorizontalAlignment="Center" Background="#FFFFFF"
-                            BorderBrush="#DEE0E3" BorderThickness="1" CornerRadius="6">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <Viewbox Width="12" Height="12" Margin="0,0,6,0">
-                                <Path Stroke="#646A73" StrokeThickness="1.5" Data="M1,1 H11 V11 H1 Z M1,5 H11 M5,1 V11"/>
-                            </Viewbox>
-                            <TextBlock Text="本地管理后台 · Directus" Foreground="#4E5969" FontSize="12"/>
-                        </StackPanel>
-                    </Border>
-
-                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button Width="30" Height="28" Padding="0" Background="Transparent" BorderThickness="0"
-                                Click="OnReloadAdminClick" ToolTip="重新载入管理后台"
-                                ToolTipService.InitialShowDelay="450">
-                            <Viewbox Width="16" Height="16">
-                                <Path Stroke="#4E5969" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                                      Data="M11,3 H15 V7 M15,3 L12.3,5.7 A6,6 0 1 0 13.7,11"/>
-                            </Viewbox>
-                        </Button>
-                        <Button Width="30" Height="28" Padding="0" Background="Transparent" BorderThickness="0"
-                                ToolTip="更多"
-                                ToolTipService.InitialShowDelay="450" Click="OnAdminMoreClick">
-                            <StackPanel Orientation="Horizontal">
-                                <Ellipse Width="3" Height="3" Fill="#4E5969" Margin="1"/>
-                                <Ellipse Width="3" Height="3" Fill="#4E5969" Margin="1"/>
-                                <Ellipse Width="3" Height="3" Fill="#4E5969" Margin="1"/>
-                            </StackPanel>
-                            <Button.ContextMenu>
-                                <ContextMenu>
-                                    <MenuItem Header="重新载入" Click="OnReloadAdminClick"/>
-                                    <Separator/>
-                                    <MenuItem Header="返回 VibeTable" Click="OnCloseAdminClick"/>
-                                </ContextMenu>
-                            </Button.ContextMenu>
-                        </Button>
-                    </StackPanel>
-                </Grid>
-            </Border>
-
-            <wv2:WebView2 x:Name="DirectusWebView" Grid.Row="1"/>
-
-            <Grid x:Name="AdminLoadingOverlay" Grid.Row="1" Background="#FFFFFF">
-                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                    <ProgressBar Width="180" Height="3" IsIndeterminate="True" Foreground="#3370FF"/>
-                    <TextBlock Text="正在打开本地管理后台…" Margin="0,16,0,0"
-                               Foreground="#646A73" FontSize="13" HorizontalAlignment="Center"/>
-                </StackPanel>
-            </Grid>
-
-            <Grid x:Name="AdminErrorOverlay" Grid.Row="1" Background="#FFFFFF" Visibility="Collapsed">
-                <StackPanel Width="420" HorizontalAlignment="Center" VerticalAlignment="Center">
-                    <TextBlock Text="管理后台暂时不可用" FontSize="18" FontWeight="SemiBold"
-                               Foreground="#1F2329" HorizontalAlignment="Center"/>
-                    <TextBlock x:Name="AdminErrorText" Margin="0,10,0,20" TextWrapping="Wrap"
-                               TextAlignment="Center" Foreground="#646A73" FontSize="13"/>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                        <Button Content="返回 VibeTable" Padding="14,6" Margin="0,0,8,0"
-                                Click="OnCloseAdminClick"/>
-                        <Button Content="重试" Padding="14,6" Background="#3370FF" Foreground="White"
-                                BorderBrush="#3370FF" Click="OnRetryAdminClick"/>
-                    </StackPanel>
-                </StackPanel>
-            </Grid>
-
-            <Grid x:Name="AdminCloseConfirmOverlay" Grid.Row="1" Panel.ZIndex="30"
-                  Background="#66000000" Visibility="Collapsed">
-                <Border Width="360" Padding="22" HorizontalAlignment="Center" VerticalAlignment="Center"
-                        Background="#FFFFFF" BorderBrush="#E5E6EB" BorderThickness="1" CornerRadius="8">
-                    <StackPanel>
-                        <TextBlock Text="返回 VibeTable？" FontSize="17" FontWeight="SemiBold" Foreground="#1F2329"/>
-                        <TextBlock Text="请先确认 Directus 中的编辑已保存。关闭后台不会关闭 VibeTable 当前表格。"
-                                   Margin="0,8,0,20" TextWrapping="Wrap" Foreground="#646A73" FontSize="13"/>
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                            <Button Content="继续编辑" Padding="13,6" Margin="0,0,8,0" Click="OnCancelAdminCloseClick"/>
-                            <Button Content="返回 VibeTable" Padding="13,6" Background="#3370FF" Foreground="White"
-                                    BorderBrush="#3370FF" Click="OnConfirmAdminCloseClick"/>
-                        </StackPanel>
-                    </StackPanel>
-                </Border>
-            </Grid>
-        </Grid>
 
         <!-- Host fallback exists only while bootstrapping or after a fatal fault. -->
         <Grid Panel.ZIndex="30" Background="#F7F8FA"

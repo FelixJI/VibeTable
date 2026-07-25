@@ -1,690 +1,195 @@
 {
-  "version": 1,
-  "description": "Approved VibeTable WPF migration stage sequence and the capabilities each stage must deliver before its successor may begin. Consumed by qa/handoff.py to drive record/verify. The sequence mirrors docs/superpowers/plans/2026-07-11-wpf-production-client-roadmap.md (B3 precedes B2 because B2 consumes B3's QuerySnapshot/SelectionSnapshot). G0-G5 append the workspace + full-field-history phases (docs/plans/2026-07-15-workspace-and-full-field-history-implementation-plan.md); G1/G2 are domain-independent but recorded linearly to preserve handoff chain integrity.",
+  "version": 2,
+  "description": "PocketBase-only delivery sequence and product evidence consumed by qa/handoff.py.",
   "sequence": [
-    "A",
-    "B1",
-    "B3",
-    "B4",
-    "B2",
-    "C1",
-    "C2",
-    "D1",
-    "D2",
-    "F",
-    "E2",
-    "E3",
-    "G0",
-    "G1",
-    "G2",
-    "G3",
-    "G4",
-    "G5"
+    "CONTRACT",
+    "SIDECAR",
+    "DESKTOP",
+    "PRODUCT",
+    "RELEASE",
+    "DELETE"
   ],
-  "protocolVersion": "1.0",
+  "protocolVersion": "2.0",
+  "gateSummaryMaxAgeSeconds": 86400,
+  "requiredGateStages": [
+    "version",
+    "package",
+    "go-fmt",
+    "go-vet",
+    "go-test",
+    "go-race",
+    "go-build",
+    "sidecar-smoke",
+    "upgrade-smoke",
+    "dev-build",
+    "python",
+    "contracts",
+    "tooling",
+    "dotnet",
+    "web-test",
+    "web-build",
+    "fault-injection",
+    "product-e2e",
+    "smoke"
+  ],
+  "releaseIdentityInputs": [
+    "backend",
+    "contracts",
+    "desktop/src",
+    "desktop/tests",
+    "desktop/web-grid",
+    "desktop/Directory.Build.props",
+    "desktop/publish-layout.json",
+    "desktop/VibeTable.Desktop.sln",
+    "qa",
+    "scripts",
+    "sidecar/cmd",
+    "sidecar/internal",
+    "sidecar/migrations",
+    "sidecar/tests",
+    "sidecar/go.mod",
+    "sidecar/go.sum",
+    "tests",
+    "global.json",
+    "pyproject.toml",
+    "uv.lock"
+  ],
+  "releaseIdentityExcludedDirectories": [
+    ".cache",
+    ".codex-go-cache",
+    ".codex-test-tmp",
+    ".idea",
+    ".pytest_cache",
+    ".vite",
+    "__pycache__",
+    "bin",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "obj",
+    "TestResults"
+  ],
+  "releaseIdentityExtensions": [
+    ".bat",
+    ".cjs",
+    ".cs",
+    ".csproj",
+    ".css",
+    ".go",
+    ".html",
+    ".ico",
+    ".ini",
+    ".js",
+    ".json",
+    ".jpeg",
+    ".jpg",
+    ".lock",
+    ".md",
+    ".mjs",
+    ".mod",
+    ".png",
+    ".props",
+    ".ps1",
+    ".py",
+    ".sh",
+    ".sln",
+    ".sum",
+    ".svg",
+    ".targets",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".vue",
+    ".webp",
+    ".xaml",
+    ".yaml",
+    ".yml"
+  ],
   "capabilities": {
-    "A": [
-      "rpc.request.v1",
-      "rpc.notification.v1",
-      "database.read.v1",
-      "table.page.v1",
-      "web.host-bridge.v1",
-      "build.next-layout.v1"
+    "CONTRACT": [
+      "product.contract.v1",
+      "product.error.v1",
+      "mutation.receipt.v1"
     ],
-    "B1": [
-      "table.cell-write.v1",
-      "table.row-crud.v1"
+    "SIDECAR": [
+      "sidecar.health.v1",
+      "sidecar.session.v1",
+      "schema.catalog.v1",
+      "query.port.v1",
+      "mutation.kernel.v1",
+      "realtime.data-changed.v1"
     ],
-    "B3": [
-      "query.state.v1",
-      "selection.snapshot.v1",
-      "grid.state.v1"
+    "DESKTOP": [
+      "sidecar.supervisor.v1",
+      "sidecar.offline-launch.v1",
+      "product.rpc-gateway.v1"
     ],
-    "B4": [
-      "directus.project.v1",
-      "auth.local-session.v1",
-      "directus.schema.v1",
-      "table.query.directus.v1",
-      "table.mutation.directus.v1",
-      "directus.realtime.v1"
+    "PRODUCT": [
+      "formula.cel-v1",
+      "audit.restore.v1",
+      "managed-attachments.v1",
+      "relation.lookup.v1",
+      "plugin.local-worker.v1"
     ],
-    "B2": [
-      "table.paste.directus.v1",
-      "vibetable-bulk-mutation.v1"
+    "RELEASE": [
+      "release.sidecar-hash.v1",
+      "release.migration-hash.v1",
+      "release.sbom.v1",
+      "release.backup-restore.v1"
     ],
-    "C1": [
-      "task.runtime.v1",
-      "path.session-grant.v1",
-      "data.import.directus.v1",
-      "data.export.directus.v1",
-      "relation.workspace.v1"
+    "DELETE": [
+      "provider.legacy-runtime.absent.v1",
+      "automation.compatibility.absent.v1",
+      "collaboration.ui.absent.v1"
+    ]
+  },
+  "artifactFiles": {
+    "sidecar": [
+      "sidecar/go.mod",
+      "sidecar/go.sum",
+      "sidecar/migrations/manifest.json"
     ],
-    "C2": [
-      "directus.activity.v1",
-      "directus.revision-revert.v1",
-      "directus.comments.v1",
-      "directus.notifications.v1",
-      "directus.presets.v1",
-      "directus.versions.v1",
-      "directus.dashboards.v1",
-      "dashboard-filter.v1"
+    "schema": [
+      "contracts/v1/contracts.schema.json"
     ],
-    "D1": [
-      "file.operation-journal.v1",
-      "directus.files.v1"
+    "migrations": [
+      "sidecar/migrations/manifest.json",
+      "sidecar/migrations/2026072401_bootstrap.go",
+      "sidecar/migrations/2026072402_internal_collections.go",
+      "sidecar/migrations/2026072403_internal_metadata_channel.go",
+      "sidecar/migrations/2026072404_realtime_outbox_retention.go"
     ],
-    "D2": [
-      "settings.local.v1",
-      "settings.shared.v1",
-      "directus.flows.v1",
-      "local-command.v1",
-      "shortcut.launch.v1"
-    ],
-    "E1": [
-      "plugin.commands.v1"
-    ],
-    "E2": [
-      "release.manifest.v2",
-      "launcher.pointer.v1",
-      "updater.v1",
-      "directus.compatibility.v1"
-    ],
-    "E3": [
-      "production.bootstrap.v1",
-      "production.acceptance.v1",
-      "operations.runbook.v1",
-      "release.approval.v1"
-    ],
-    "F": [
-      "qt.runtime.absent.v1",
-      "sqlite.business.absent.v1",
-      "legacy.runtime.absent.v1"
-    ],
-    "G0": [
-      "directus.extension-bundle.v2",
-      "schema.diff-apply.v1"
-    ],
-    "G1": [
-      "directus.full-field-history.v1",
-      "history.changeset.v1",
-      "history.safe-restore.v1"
-    ],
-    "G2": [
-      "workspace.local-version-store.v1",
-      "workspace.atomic-commit.v1",
-      "workspace.recovery-scan.v1"
-    ],
-    "G3": [
-      "workspace.index.v1",
-      "workspace.table-link.v1",
-      "vibetable-workspace-index.v1"
-    ],
-    "G4": [
-      "workspace.scheme-versioning.v1",
-      "workspace.scheme-adoption.v1",
-      "workspace.conflict-preservation.v1"
-    ],
-    "G5": [
-      "document.diff.v1",
-      "workspace.integrity.v1"
+    "capabilities": [
+      "sidecar/internal/schema/capabilities.go",
+      "contracts/v1/README.md",
+      "qa/handoff_dependencies.json"
+    ]
+  },
+  "artifactPatterns": {
+    "sidecar": [
+      "sidecar/**/*.go"
     ]
   },
   "fixtures": {
-    "A": [
-      "tests/contract/fixtures/system-handshake-request.json",
-      "tests/contract/fixtures/system-handshake-response.json",
-      "tests/contract/fixtures/database-open-result.json",
-      "tests/contract/fixtures/table-page-contracts.json"
+    "CONTRACT": [
+      "contracts/v1/fixtures/table-definition.json",
+      "contracts/v1/fixtures/mutation-request.json",
+      "contracts/v1/fixtures/mutation-receipt.json",
+      "contracts/v1/fixtures/product-error.json"
     ],
-    "B1": [
-      "tests/contract/fixtures/table-edit-schema.json",
-      "tests/contract/fixtures/table-mutation-results.json"
+    "SIDECAR": [
+      "sidecar/migrations/manifest.json"
     ],
-    "B3": [
-      "tests/contract/fixtures/table-query.json",
-      "tests/contract/fixtures/query-snapshot.json",
-      "tests/contract/fixtures/selection-snapshot.json",
-      "tests/contract/fixtures/grid-state.json"
+    "DESKTOP": [],
+    "PRODUCT": [
+      "contracts/v1/fixtures/data-changed-event.json",
+      "contracts/v1/fixtures/managed-attachment-ref.json"
     ],
-    "B4": [
-      "directus/blueprints/vibetable-empty.json",
-      "directus/capabilities/vibetable-empty-capabilities.json",
-      "tests/contract/fixtures/directus-b4-contracts.json"
+    "RELEASE": [
+      "desktop/publish-layout.json"
     ],
-    "B2": [
-      "tests/contract/fixtures/table-b2-paste-contracts.json",
-      "directus/extensions/vibetable-bulk-mutation/src/index.ts",
-      "directus/extensions/vibetable-bulk-mutation/src/bulk-mutation-helpers.ts"
-    ],
-    "C1": [
-      "tests/contract/fixtures/table-c1-data-io-contracts.json",
-      "backend/contracts/task.py",
-      "backend/contracts/data_io.py",
-      "backend/contracts/relation.py"
-    ],
-    "C2": [
-      "tests/contract/fixtures/table-c2-collaboration-contracts.json",
-      "backend/contracts/collaboration.py",
-      "backend/contracts/presets_versions_dashboards.py"
-    ],
-    "D1": [
-      "tests/contract/fixtures/table-d1-file-tools-contracts.json",
-      "backend/contracts/file_tools.py",
-      "backend/application/file_tools_service.py"
-    ],
-    "D2": [
-      "tests/contract/fixtures/table-d2-settings-contracts.json",
-      "backend/contracts/settings_commands.py",
-      "backend/application/settings_command_service.py"
-    ],
-    "F": [
-      "tests/test_architecture.py",
-      "backend/__main__.py"
-    ],
-    "G0": [
-      "directus/extensions/manifest.json",
-      "backend/contracts/schema_deployment.py",
-      "backend/adapters/directus/schema_deployment.py"
-    ],
-    "G1": [
-      "tests/contract/fixtures/table-g1-history-contracts.json",
-      "backend/contracts/collaboration.py",
-      "backend/application/collaboration_service.py"
-    ],
-    "G2": [
-      "desktop/src/VibeTable.Workspace/VibeTable.Workspace.csproj"
-    ],
-    "G3": [
-      "tests/contract/fixtures/table-g3-document-workspace-contracts.json",
-      "directus/extensions/vibetable-workspace-index/src/index.ts",
-      "backend/contracts/document_workspace.py"
-    ],
-    "G4": [
-      "desktop/src/VibeTable.Workspace/Services/SchemeService.cs"
-    ],
-    "G5": [
-      "desktop/src/VibeTable.DocumentDiff.OpenXml/VibeTable.DocumentDiff.OpenXml.csproj"
-    ],
-    "E2": [
-      "tests/contract/fixtures/table-e2-e3-release-contracts.json",
-      "backend/contracts/release.py",
-      "backend/application/release_service.py"
-    ],
-    "E3": [
-      "tests/contract/fixtures/table-e2-e3-release-contracts.json",
-      "backend/contracts/production.py"
-    ]
-  },
-  "migrationState": {
-    "A": {
-      "businessSchemaChanged": false
-    },
-    "B1": {
-      "businessSchemaChanged": false
-    },
-    "B3": {
-      "businessSchemaChanged": false
-    },
-    "B4": {
-      "businessSchemaChanged": true,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "B2": {
-      "businessSchemaChanged": false,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "C1": {
-      "businessSchemaChanged": false,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "C2": {
-      "businessSchemaChanged": false,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "D1": {
-      "businessSchemaChanged": false,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "D2": {
-      "businessSchemaChanged": false,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "F": {
-      "businessSchemaChanged": false,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "E2": {
-      "businessSchemaChanged": false,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "E3": {
-      "businessSchemaChanged": false,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "G0": {
-      "businessSchemaChanged": false,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "G1": {
-      "businessSchemaChanged": true,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "G2": {
-      "businessSchemaChanged": false,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "G3": {
-      "businessSchemaChanged": true,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "G4": {
-      "businessSchemaChanged": false,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    },
-    "G5": {
-      "businessSchemaChanged": false,
-      "source": "directus",
-      "schemaVersion": "vibetable-1.0"
-    }
-  },
-  "stageMetadata": {
-    "B4": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "localAuth": true,
-        "externalSso": false,
-        "realtime": true,
-        "archiveRestore": true,
-        "permanentDeleteByDefault": false,
-        "shares": false,
-        "translations": false,
-        "shareEmailFlow": false
-      },
-      "semanticGaps": [
-        "regex filters are rejected rather than reinterpreted",
-        "explicit NULL ordering is reported as unsupported"
-      ],
-      "managementBoundary": [
-        "schema, policies, roles and permissions are deployed with the admin-only bootstrap",
-        "ordinary clients use only current-user REST and Realtime permissions",
-        "tokens remain inside the Python broker and DPAPI-backed secret store"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "No Directus or Docker runtime is installed on this workstation"
-      }
-    },
-    "B2": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "batchPaste": true,
-        "atomicBulkWrite": true,
-        "idempotentRetry": true,
-        "permanentDeleteByDefault": false
-      },
-      "semanticGaps": [
-        "the vibetable-bulk-mutation.v1 extension passes local unit/type/build gates; live transaction/integration testing still requires a deployed Directus 11 instance"
-      ],
-      "managementBoundary": [
-        "paste preview runs entirely in the Python broker under the current user token; no payloads cross the WebView boundary",
-        "the atomic batch write runs in a single server transaction inside the approved Directus custom endpoint",
-        "the endpoint never bypasses permissions; Directus enforces field/row policy per item"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "No Directus or Docker runtime is installed on this workstation; the extension source and its pure-helper unit tests are delivered, but the live transaction path is deferred to the deployment environment"
-      }
-    },
-    "C1": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "streamingImport": true,
-        "streamingExport": true,
-        "chunkedAtomicImport": true,
-        "cooperativeCancellation": true,
-        "relationWorkspace": true,
-        "genericJoinEngine": false
-      },
-      "semanticGaps": [
-        "import apply is chunked, not whole-file atomic; the UI shows the committed count and chunk boundary",
-        "relation display-name lookup (resolving a business key to a primary key) accepts PK values directly in the first cut; display-name resolution requires explicit mapping",
-        "export uses offset paging (Directus has no cursor) at 100 rows/page; very large exports are streamed but not cursor-based"
-      ],
-      "managementBoundary": [
-        "the file picker runs in WPF; the Web layer only holds opaque grant ids + display metadata, never raw paths",
-        "import preview is zero-write; apply reuses the B2 bulk-mutation endpoint per chunk with idempotency keys",
-        "export honours field/row permissions via the current user token; no admin service token bypass",
-        "the relation workspace only expands relations declared in the capability manifest; there is no generic join engine"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "No Directus or Docker runtime is installed on this workstation; the import/export/relation services are unit-tested with faked transports, but live end-to-end verification is deferred to the deployment environment"
-      }
-    },
-    "C2": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "activity": true,
-        "revisionRevert": true,
-        "comments": true,
-        "notifications": true,
-        "presets": true,
-        "contentVersions": true,
-        "dashboards": true,
-        "interactiveFilter": true,
-        "customPanelExecution": false,
-        "shares": false,
-        "translations": false,
-        "shareEmailFlow": false,
-        "externalSso": false
-      },
-      "semanticGaps": [
-        "no local activity/revision/notification mirror database; bounded in-process cache only",
-        "revert is restricted to collection allowlist + update/revert capability; no multi-item or cross-collection rollback",
-        "locked built-in panel manifest covers label/metric/metric-list/list/time-series; custom/unknown panels render as safe fallback placeholders",
-        "global dashboard filters merge via explicit _and with declared variables only; users cannot inject raw Directus filter JSON"
-      ],
-      "managementBoundary": [
-        "all collaboration reads use the current user token; system-collection permission denials degrade safely, never via admin bypass",
-        "dashboard/panel designer is implemented in VibeTable; schema/Flow/extension designers remain in Data Studio",
-        "Shares, Translations and Share Email Flow are explicitly disabled and absent from RPC/UI/fixtures"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "No Directus or Docker runtime is installed on this workstation; collaboration/insights services are unit-tested with faked transports, but live end-to-end verification is deferred to the deployment environment"
-      }
-    },
-    "D1": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "directusFiles": true,
-        "assetPresetPreview": true,
-        "operationJournal": true,
-        "contentReplace": false,
-        "batchRename": false,
-        "localFileRepository": false,
-        "gitStyleVersionTree": false
-      },
-      "semanticGaps": [
-        "operation journal is in-process + bounded; a production deployment may persist it to a local recovery store"
-      ],
-      "managementBoundary": [
-        "business attachments live in Directus Files; VibeTable keeps no second authoritative metadata",
-        "Asset Preset previews use only approved key=<preset>; Web never sends arbitrary width/height/quality",
-        "destructive operations (rename/replace) keep a recovery journal with backup artifacts; startup surfaces pending operations for user resolution, never auto-rollback",
-        "no generic SQLite file repository, no git-style file version tree"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "No Directus or Docker runtime (and no Office installation) on this workstation; file-tools services are unit-tested with faked transports and temp files, but live end-to-end verification is deferred to the deployment environment"
-      }
-    },
-    "D2": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "deviceLocalSettings": true,
-        "sharedBusinessSettings": true,
-        "directusFlows": true,
-        "typedLocalCommands": true,
-        "shortcutLaunch": true,
-        "desktopDbBackup": false,
-        "arbitraryScriptExecution": false,
-        "asyncScheduler": false
-      },
-      "semanticGaps": [
-        "D2 is implemented as a single merged stage (SettingsCommandService covers settings, flows, commands and shortcuts)",
-        "shared-business settings offline return empty + not-fresh (no fake defaults); cache timestamp shown",
-        "typed local commands delegate to C1/D1 services; no arbitrary code text, DSL or dynamic import",
-        "the optional trusted-script adapter and minimal local scheduler are not needed (no real local timed use case); recorded as not-required"
-      ],
-      "managementBoundary": [
-        "device-local settings persist to a local JSON file with version migration + corrupt recovery; shared-business settings read from a permission-protected Directus collection",
-        "only approved manual/webhook Flows are invocable; async results arrive via Notifications, not Flow internal tables",
-        "shortcuts reference versioned built-in commands or approved URL/file actions; the OS Launch Broker blocks dangerous schemes (javascript/vbscript/data/file)",
-        "no desktop DB backup/archive; no generic script workflow platform"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "No Directus or Docker runtime on this workstation; settings/command services are unit-tested with faked transports and temp files, but live end-to-end verification is deferred to the deployment environment"
-      }
-    },
-    "F": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "qtRuntime": false,
-        "businessSqlite": false,
-        "legacyPluginRuntime": false,
-        "legacyScriptScheduler": false,
-        "directusFirst": true
-      },
-      "semanticGaps": [],
-      "managementBoundary": [
-        "production runtime is Qt-free and business-SQLite-free (proven by AST architecture gates)",
-        "deleted: ui/, main.py, plugins/, core/shared Python sources, SQLite business services, PySide6/qasync/pytest-qt deps, legacy tests and the in-place updater",
-        "retained: backend/ (Directus-first RPC), desktop/ (WPF+web-grid), directus/ (schema/extensions), generic query/selection/mutation contracts and device-local state"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "Cross-stack quality gates pass; architecture tests prove the backend is Qt-free, business-SQLite-free, and contains no legacy updater path"
-      }
-    },
-    "E2": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "signedReleaseManifest": true,
-        "launcherPointer": true,
-        "updaterWithRollback": true,
-        "compatibilityPreflight": true,
-        "offlinePolicy": true,
-        "directusServerInPackage": false,
-        "secretsInPackage": false
-      },
-      "semanticGaps": [
-        "the actual NSIS installer, code-signing pipeline and download/unpack host process require deployment infrastructure not present on this workstation",
-        "the updater state machine and manifest validation are delivered as contracts + unit tests; the host-side download/verify callbacks are stubs in tests"
-      ],
-      "managementBoundary": [
-        "release manifest binds WPF/Python/Web/protocol/fixtures/SBOM into one signed unit with NO endpoint secret, token or production URL",
-        "Launcher verifies signature + compatibility before starting; offline is not treated as client corruption",
-        "Updater atomically swaps the pointer; rollback never touches Directus schema or data"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "release-manifest validation, compatibility preflight and updater state machine are unit-tested; the actual installer/signing/download requires deployment infrastructure"
-      }
-    },
-    "E3": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "greenfieldBootstrap": true,
-        "acceptanceChecklist": true,
-        "operationsRunbook": true,
-        "releaseApproval": true,
-        "legacyDataMigration": false,
-        "dualWrite": false
-      },
-      "semanticGaps": [
-        "production deployment (Directus server, PostgreSQL, TLS, monitoring) requires infrastructure not present on this workstation",
-        "the bootstrap plan, acceptance checklist, runbook and approval contracts are delivered; live acceptance requires a deployed Directus instance"
-      ],
-      "managementBoundary": [
-        "production bootstrap from blank instance; no legacy data import",
-        "schema/policies/Flows/extensions deployed via version-controlled CLI; admin token rotated after bootstrap",
-        "Directus server and VibeTable client deploy/version/rollback independently but are bound by the capability contract"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "bootstrap/acceptance/runbook/approval contracts are delivered and fixture-tested; live production acceptance requires a deployed Directus instance"
-      }
-    },
-    "G0": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "multiExtensionBuild": true,
-        "schemaDiffApply": true
-      },
-      "semanticGaps": [
-        "G0 introduces tooling only (multi-extension build, schema diff/apply, G-stage handoff); no user-visible feature change",
-        "schema diff/apply dry-run and live apply require a Directus 12/PostgreSQL instance for live verification"
-      ],
-      "managementBoundary": [
-        "the extension manifest is version-controlled; QA/build/release iterate all declared extensions",
-        "schema diff/apply defaults to rejecting destructive actions (drop, type narrowing, non-null without default); admin deployment entry only"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "multi-extension build and schema diff/apply are unit-tested; live schema apply requires a deployed Directus instance"
-      }
-    },
-    "G1": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "fullFieldHistory": false,
-        "contentVersions": false
-      },
-      "supersedes": [
-        {
-          "stage": "C2",
-          "capability": "directus.versions.v1",
-          "replacement": "directus.full-field-history.v1",
-          "notes": "G1 closes Content Versions draft/promote workflow; Activity/Revisions become the sole business field history. C2.json is not modified."
-        }
-      ],
-      "semanticGaps": [
-        "G1 fullFieldHistory flag stays off until the G1 handoff gate passes",
-        "relational revision aggregation requires a live Directus instance to verify parent-chain revert"
-      ],
-      "managementBoundary": [
-        "all business collections set versioning=false and allow_versions=false; allow_revision_history/revert enabled per collection",
-        "restore is two-phase (preview token bound to current hash + target revision) with zero-write on any diagnostic error",
-        "no permission field leaks into fixtures, logs or error messages"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "ChangeSet aggregation and safe restore are unit-tested; live relational revision revert requires a deployed Directus instance"
-      }
-    },
-    "G2": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "localWorkspace": false
-      },
-      "supersedes": [
-        {
-          "stage": "D1",
-          "capability": "file.operation-journal.v1",
-          "replacement": "workspace.local-version-store.v1",
-          "notes": "G2 replaces the in-memory operation journal with a durable .backup atomic-commit + recovery scanner. D1.json is not modified."
-        }
-      ],
-      "semanticGaps": [
-        "G2 localWorkspace flag stays off until single-machine recovery test passes",
-        "watcher produces dirty + snapshot states only; formal version requires explicit user action"
-      ],
-      "managementBoundary": [
-        "Workspace UUID is locally authoritative; Directus only mirrors it",
-        ".backup objects are content-addressed (SHA-256) and immutable after commit",
-        "expected-head CAS conflicts preserve both sides; no last-write-wins"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "not-required",
-        "reason": "G2 is a local .NET version kernel with no Directus dependency; validated by crash-recovery temp-dir tests"
-      }
-    },
-    "G3": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "workspaceIndex": false
-      },
-      "supersedes": [
-        {
-          "stage": "D1",
-          "capability": "directus.files.v1",
-          "replacement": "workspace.index.v1 + workspace.table-link.v1",
-          "notes": "G3/G2 jointly supersede D1's business-attachment authority boundary. Directus Files remain for avatars/preview/export assets; no longer the authoritative source for working documents. D1.json is not modified."
-        }
-      ],
-      "semanticGaps": [
-        "G3 workspaceIndex flag stays off until schema + extension + BFF live smoke passes",
-        "M2A junction links require permission validation on both the business item and workspace",
-        "legacy document -> directus_files field kept read-only during migration; removal deferred to a separate destructive-change plan"
-      ],
-      "managementBoundary": [
-        "the vibetable-workspace-index extension uses current-user accountability, server transactions and client-UUID idempotency; no raw SQL/filter surface",
-        "BFF handles metadata only; never accepts local absolute paths or binary payloads",
-        "migration is plan/copy/publish/verify with durable journal and idempotency keys; no dual-write to two authorities"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "workspace-index extension and BFF RPC are unit-tested; live transaction and migration verification require a deployed Directus instance"
-      }
-    },
-    "G4": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "documentSchemes": false
-      },
-      "semanticGaps": [
-        "G4 documentSchemes flag stays off until dual-device conflict test passes",
-        "scheme adoption creates a new main Revision recording sourceRevisionId; no automatic Office/PDF merge"
-      ],
-      "managementBoundary": [
-        "schemes have visible work copies in normal directories; no global branch checkout",
-        "two heads sharing the same parent are preserved as conflicting scheme candidates; no silent overwrite",
-        "scheme head updates carry expected-head CAS; duplicate labels return diagnostics, never silent renumbering"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "scheme/adoption/conflict services are unit-tested; live two-device conflict drill requires deployed infrastructure"
-      }
-    },
-    "G5": {
-      "directusCompatibility": ">=12 <13",
-      "featureFlags": {
-        "richDocumentDiff": false
-      },
-      "semanticGaps": [
-        "G5 richDocumentDiff flag stays off until Office/PDF adapter tests pass",
-        "removal of the legacy vibetable_documents.document field is a separate destructive-change plan, not part of the default G5 apply"
-      ],
-      "managementBoundary": [
-        "Open XML SDK lives in a separate adapter project; the core version library never depends on it",
-        "GC generates a plan, quarantines objects, then physically deletes only after retention period and independent backup confirmation",
-        "Directus mirror loss can rebuild from .backup; .backup loss cannot recover binary from Directus metadata"
-      ],
-      "validationBoundary": {
-        "automatedProtocolAndUi": "passed",
-        "liveDirectusInstance": "environment-required",
-        "reason": "diff adapters and integrity/GC planning are unit-tested; production Synology/backup acceptance requires deployed infrastructure"
-      }
-    }
+    "DELETE": []
   }
 }

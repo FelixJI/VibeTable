@@ -74,8 +74,8 @@ describe("PluginActionPanel", () => {
       confirmation: null,
       error: {
         contract: "vibetable.plugin-error.v1",
-        code: "plugin_directus_unavailable",
-        message: "Directus 暂时不可用",
+        code: "plugin_data_service_unavailable",
+        message: "本地数据服务暂时不可用",
         recoverability: "retry",
         pluginId: "com.acme.clean",
         actionId: "normalize",
@@ -85,8 +85,8 @@ describe("PluginActionPanel", () => {
       },
     } } });
 
-    expect(wrapper.get('[data-testid="plugin-task-error"]').text()).toContain("plugin_directus_unavailable");
-    expect(wrapper.text()).toContain("Directus 暂时不可用");
+    expect(wrapper.get('[data-testid="plugin-task-error"]').text()).toContain("plugin_data_service_unavailable");
+    expect(wrapper.text()).toContain("本地数据服务暂时不可用");
     expect(wrapper.text()).toContain("retry");
   });
 });

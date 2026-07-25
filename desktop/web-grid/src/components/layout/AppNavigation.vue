@@ -50,6 +50,7 @@ function navigate(view: AppView) {
             class="nav-button"
             :class="{ 'nav-button--active': ui.activeView === item.view }"
             :aria-label="t(item.label)"
+            :aria-current="ui.activeView === item.view ? 'page' : undefined"
             :data-testid="`nav-${item.view}`"
             @click="navigate(item.view)"
           >
@@ -66,14 +67,14 @@ function navigate(view: AppView) {
           <NButton
             quaternary
             class="nav-button"
-            :aria-label="t('nav.directus')"
-            data-testid="nav-directus"
+            :aria-label="t('nav.admin')"
+            data-testid="nav-admin"
             @click="emit('openAdmin')"
           >
             <template #icon><NIcon :size="19"><Database /></NIcon></template>
           </NButton>
         </template>
-        {{ t("nav.directus") }}
+        {{ t("nav.admin") }}
       </NTooltip>
       <NTooltip placement="right" :delay="450">
         <template #trigger>
@@ -96,6 +97,7 @@ function navigate(view: AppView) {
             class="nav-button"
             :class="{ 'nav-button--active': ui.activeView === 'settings' }"
             :aria-label="t('nav.settings')"
+            :aria-current="ui.activeView === 'settings' ? 'page' : undefined"
             data-testid="nav-settings"
             @click="navigate('settings')"
           >

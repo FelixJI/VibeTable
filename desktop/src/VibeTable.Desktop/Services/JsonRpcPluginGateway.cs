@@ -52,16 +52,6 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
         => InvokeAsync<PluginCommitInstallParams, PluginRuntimeSnapshot>(
             "plugin.commitInstall", request, token);
 
-    public Task<PluginRuntimeExternalFlowCandidate[]> ListExternalFlowCandidatesAsync(
-        PluginListExternalFlowCandidatesParams request, CancellationToken token)
-        => InvokeAsync<PluginListExternalFlowCandidatesParams, PluginRuntimeExternalFlowCandidate[]>(
-            "plugin.listExternalFlowCandidates", request, token);
-
-    public Task<PluginRuntimeFlowBindingSnapshot> BindExternalFlowAsync(
-        PluginBindExternalFlowParams request, CancellationToken token)
-        => InvokeAsync<PluginBindExternalFlowParams, PluginRuntimeFlowBindingSnapshot>(
-            "plugin.bindExternalFlow", request, token);
-
     public Task<PluginRuntimeSnapshot> SetEnabledAsync(
         PluginSetEnabledParams request, CancellationToken token)
         => InvokeAsync<PluginSetEnabledParams, PluginRuntimeSnapshot>(
@@ -76,11 +66,6 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
         PluginRollbackParams request, CancellationToken token)
         => InvokeAsync<PluginRollbackParams, PluginRuntimeSnapshot>(
             "plugin.rollback", request, token);
-
-    public Task<PluginRuntimeSnapshot> ResolveDriftAsync(
-        PluginResolveDriftParams request, CancellationToken token)
-        => InvokeAsync<PluginResolveDriftParams, PluginRuntimeSnapshot>(
-            "plugin.resolveDrift", request, token);
 
     public Task<PluginRuntimeUninstallResult> UninstallAsync(
         PluginUninstallParams request, CancellationToken token)

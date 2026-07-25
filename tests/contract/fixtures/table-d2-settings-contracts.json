@@ -3,38 +3,93 @@
   "schemaVersion": "vibetable-1.0",
   "deviceSettings": {
     "schemaVersion": 1,
-    "theme": {"mode": "dark", "accent": "#2563eb", "background": "#0f172a", "foreground": "#f1f5f9"},
-    "windowPosition": {"x": 100, "y": 200, "width": 1280, "height": 800},
-    "recentCollections": ["vibetable_demo", "vibetable_demo"]
+    "theme": {
+      "mode": "dark",
+      "accent": "#2563eb",
+      "background": "#0f172a",
+      "foreground": "#f1f5f9"
+    },
+    "windowPosition": {
+      "x": 100,
+      "y": 200,
+      "width": 1280,
+      "height": 800
+    },
+    "recentCollections": [
+      "vibetable_demo",
+      "vibetable_demo"
+    ]
   },
   "sharedSettings": {
-    "params": {"collection": "vibetable_settings", "keys": ["holiday"]},
+    "params": {
+      "collection": "vibetable_settings",
+      "keys": [
+        "holiday"
+      ]
+    },
     "result": {
-      "settings": [{"key": "holiday", "value": {"type": "national", "date": "2026-10-01"}, "updatedOn": "2026-07-14T00:00:00Z"}],
+      "settings": [
+        {
+          "key": "holiday",
+          "value": {
+            "type": "national",
+            "date": "2026-10-01"
+          },
+          "updatedOn": "2026-07-14T00:00:00Z"
+        }
+      ],
       "cachedOn": "2026-07-14T12:00:00Z",
       "fresh": true
     },
     "offlineFresh": false
   },
-  "flows": {
-    "approved": {
-      "flows": [{"flowId": "vibetable-notify-owner", "name": "Notify record owner", "trigger": "manual", "payloadSchema": {"collection": {"type": "string"}}}]
-    },
-    "invocation": {
-      "params": {"flowId": "vibetable-notify-owner", "correlationId": "corr-1", "payload": {"collection": "vibetable_demo"}},
-      "result": {"flowId": "vibetable-notify-owner", "correlationId": "corr-1", "asyncAcknowledged": false, "response": {"ok": true}, "error": null}
-    }
-  },
   "commands": {
     "catalog": {
-      "commands": [{"commandId": "export.query", "version": "1", "paramSchema": {"collection": {"type": "string"}}, "requiresGrant": true, "cancellable": true, "risk": "none", "description": "Export a collection query"}]
+      "commands": [
+        {
+          "commandId": "export.query",
+          "version": "1",
+          "paramSchema": {
+            "collection": {
+              "type": "string"
+            }
+          },
+          "requiresGrant": true,
+          "cancellable": true,
+          "risk": "none",
+          "description": "Export a collection query"
+        }
+      ]
     },
-    "runResult": {"commandId": "export.query", "success": true, "output": {"acknowledged": true}, "error": null}
+    "runResult": {
+      "commandId": "export.query",
+      "success": true,
+      "output": {
+        "acknowledged": true
+      },
+      "error": null
+    }
   },
   "shortcuts": {
-    "entry": {"shortcutId": "s1", "target": "url", "commandId": null, "url": "https://example.com", "label": "Example", "accelerator": "Ctrl+Shift+E"},
-    "launchResult": {"shortcutId": "s1", "launched": true, "blockedReason": null},
-    "blockedSchemes": ["javascript", "file", "data", "vbscript"]
+    "entry": {
+      "shortcutId": "s1",
+      "target": "url",
+      "commandId": null,
+      "url": "https://example.com",
+      "label": "Example",
+      "accelerator": "Ctrl+Shift+E"
+    },
+    "launchResult": {
+      "shortcutId": "s1",
+      "launched": true,
+      "blockedReason": null
+    },
+    "blockedSchemes": [
+      "javascript",
+      "file",
+      "data",
+      "vbscript"
+    ]
   },
   "noDesktopDbBackup": true,
   "noArbitraryScript": true

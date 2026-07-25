@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace VibeTable.Contracts;
 
 /// <summary>
-/// One column's editable schema supplied by the Directus table gateway. The <c>editor</c> and
+/// One column's editable schema supplied by the product table gateway. The <c>editor</c> and
 /// <c>validation</c> fields are deliberately untyped dictionaries here: the
 /// discriminated-union <c>kind</c> discriminator is validated by the web layer
 /// and the C# host treats them as opaque payloads it forwards to the
@@ -40,7 +40,7 @@ public sealed record MutationRevision(
     int DataRevision);
 
 /// <summary>
-/// Result of updating one Directus item field.
+/// Result of updating one product item field.
 /// </summary>
 public sealed record UpdateCellResult(
     object RowKey,
@@ -50,7 +50,7 @@ public sealed record UpdateCellResult(
     MutationRevision Revision);
 
 /// <summary>
-/// Result of creating one Directus item.
+/// Result of creating one product item.
 /// </summary>
 public sealed record InsertRowResult(
     object RowKey,
@@ -58,14 +58,14 @@ public sealed record InsertRowResult(
     MutationRevision Revision);
 
 /// <summary>
-/// Result of deleting Directus items.
+/// Result of deleting product items.
 /// </summary>
 public sealed record DeleteRowsResult(
     IReadOnlyList<object> DeletedRowKeys,
     MutationRevision Revision);
 
 /// <summary>
-/// Result of re-reading selected Directus items.
+/// Result of re-reading selected product items.
 /// </summary>
 public sealed record ReadRowsResult(
     IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows,

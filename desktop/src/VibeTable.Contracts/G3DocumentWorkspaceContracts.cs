@@ -58,6 +58,7 @@ public sealed record RegisterDocumentParams(
     [property: JsonPropertyName("revisionId")] string RevisionId,
     [property: JsonPropertyName("hash")] string Hash,
     [property: JsonPropertyName("size")] long Size,
+    [property: JsonPropertyName("createdAt")] string CreatedAt,
     [property: JsonPropertyName("itemCollection")] string? ItemCollection,
     [property: JsonPropertyName("itemId")] string? ItemId,
     [property: JsonPropertyName("linkType")] string LinkType
@@ -82,13 +83,22 @@ public sealed record RevisionIndexEntry(
     [property: JsonPropertyName("hash")] string Hash,
     [property: JsonPropertyName("size")] long Size,
     [property: JsonPropertyName("mimeType")] string MimeType,
+    [property: JsonPropertyName("createdAt")] string CreatedAt,
     [property: JsonPropertyName("createdBy")] string? CreatedBy,
     [property: JsonPropertyName("deviceId")] string? DeviceId,
     [property: JsonPropertyName("comment")] string? Comment
 );
 
+public sealed record PublishHeadAdvance(
+    [property: JsonPropertyName("documentId")] string DocumentId,
+    [property: JsonPropertyName("schemeId")] string SchemeId,
+    [property: JsonPropertyName("expectedHeadRevisionId")] string? ExpectedHeadRevisionId,
+    [property: JsonPropertyName("newHeadRevisionId")] string NewHeadRevisionId
+);
+
 public sealed record PublishIndexBatchParams(
     [property: JsonPropertyName("revisions")] List<RevisionIndexEntry> Revisions,
+    [property: JsonPropertyName("headAdvance")] PublishHeadAdvance? HeadAdvance,
     [property: JsonPropertyName("idempotencyKey")] string IdempotencyKey
 );
 

@@ -48,6 +48,12 @@ export const useTableStore = defineStore("table", () => {
   const editSchema = ref<readonly ColumnEditSchema[] | null>(null);
   /** Current mutation revision (databaseSessionId/schemaRevision/dataRevision). */
   const revision = ref<MutationRevision | null>(null);
+  /**
+   * Monotonic table-load identity. A refresh may return an identical schema
+   * signature, but the existing Tabulator columns can still have crossed a
+   * reset boundary and must be rebound to the newly loaded edit schema.
+   */
+  const loadGeneration = ref(0);
   /** Authoritative group nodes returned by the server-side Lookup executor. */
   const lookupGroups = ref<LookupQueryResult["groups"]>([]);
 
@@ -58,6 +64,7 @@ export const useTableStore = defineStore("table", () => {
 
   /** Begin a load: clear stale state and mark loading. */
   function beginLoad(): void {
+    loadGeneration.value += 1;
     loading.value = true;
     datasetReady.value = false;
     pages.value = [];
@@ -94,7 +101,6 @@ export const useTableStore = defineStore("table", () => {
     rowCount.value = payload.totalRows;
     datasetReady.value = true;
     loading.value = false;
-    error.value = null;
     // DatasetReadyPayload extends TablePage which carries the authoritative
     // MutationRevision. If the host supplied one, adopt it (overriding the
     // placeholder databaseSessionId/dataRevision set by setEditSchema).
@@ -157,11 +163,52 @@ export const useTableStore = defineStore("table", () => {
   }
 
   /**
+   * Restore only the cell/row affected by a rejected optimistic edit. Replacing
+   * the page object makes useTabulator push the corrected row back into the
+   * grid without putting the whole table into an error state.
+   */
+  function rollbackCellEdit(
+    rowKey: number | string,
+    column: string,
+    oldValue: unknown,
+    currentRow?: Readonly<Record<string, unknown>> | null,
+  ): void {
+    pages.value = pages.value.map((page) => {
+      let changed = false;
+      const rows = page.rows.map((row) => {
+        if (row.rowKey !== rowKey) return row;
+        changed = true;
+        const authoritativeValue = currentRow
+          && Object.prototype.hasOwnProperty.call(currentRow, column)
+          ? currentRow[column]
+          : oldValue;
+        return {
+          ...row,
+          ...(currentRow ?? {}),
+          rowKey,
+          [column]: authoritativeValue,
+        };
+      });
+      return changed ? { ...page, rows } : page;
+    });
+  }
+
+  /**
    * Apply an inbound `table.rowsInserted` result. Appends the new row to the
    * last page's rows array in-place (mutating the existing page object to keep
    * reactivity); creates no new page.
    */
   function applyInsert(result: InsertRowResult): void {
+    for (const page of pages.value) {
+      const existing = (page.rows as Record<string, unknown>[]).find(
+        (row) => row.rowKey === result.rowKey,
+      );
+      if (existing) {
+        Object.assign(existing, result.row);
+        revision.value = result.revision;
+        return;
+      }
+    }
     const last = pages.value[pages.value.length - 1];
     if (last) {
       (last.rows as Record<string, unknown>[]).push(result.row);
@@ -264,6 +311,7 @@ export const useTableStore = defineStore("table", () => {
     error,
     editSchema,
     revision,
+    loadGeneration,
     lookupGroups,
     allRows,
     beginLoad,
@@ -273,6 +321,7 @@ export const useTableStore = defineStore("table", () => {
     reset,
     setEditSchema,
     applyCellEdit,
+    rollbackCellEdit,
     applyInsert,
     applyDelete,
     snapshotRows,

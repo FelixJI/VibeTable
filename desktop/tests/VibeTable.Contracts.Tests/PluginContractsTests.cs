@@ -15,7 +15,7 @@ public sealed class PluginContractsTests
         {
           "contract": "vibetable.plugin-error.v1",
           "code": "flow_unbound",
-          "message": "Flow is not bound",
+          "message": "Local worker is unavailable",
           "recoverability": "rebind",
           "pluginId": "com.acme.clean",
           "actionId": "clean",

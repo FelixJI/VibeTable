@@ -1,0 +1,913 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibetable.local/contracts/v1/contracts.schema.json",
+  "title": "VibeTable Product Contracts v1",
+  "oneOf": [
+    {"$ref": "#/$defs/TableDefinition"},
+    {"$ref": "#/$defs/ProductError"},
+    {"$ref": "#/$defs/FormulaError"},
+    {"$ref": "#/$defs/MutationRequest"},
+    {"$ref": "#/$defs/MutationReceipt"},
+    {"$ref": "#/$defs/ManagedAttachmentRef"},
+    {"$ref": "#/$defs/DataChangedEvent"},
+    {"$ref": "#/$defs/TaskChangedEvent"},
+    {"$ref": "#/$defs/RpcContractCatalog"}
+  ],
+  "$defs": {
+    "ContractVersion": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "JsonObject": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "JsonValue": {},
+    "RpcContractCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "rpcMethods",
+        "eventTopics",
+        "requestEnvelope",
+        "successEnvelope",
+        "errorEnvelope",
+        "rpcCases",
+        "eventCases"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "rpcMethods": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][A-Za-z0-9_]*(\\.[a-zA-Z][A-Za-z0-9_]*)+$"
+          }
+        },
+        "eventTopics": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$"
+          }
+        },
+        "requestEnvelope": {"$ref": "#/$defs/RpcRequestEnvelope"},
+        "successEnvelope": {"$ref": "#/$defs/RpcSuccessEnvelope"},
+        "errorEnvelope": {"$ref": "#/$defs/RpcErrorEnvelope"},
+        "rpcCases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/RpcGoldenCase"}
+        },
+        "eventCases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/EventGoldenCase"}
+        }
+      }
+    },
+    "RpcGoldenCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "paramsModel",
+        "resultModel",
+        "resultSchema",
+        "request",
+        "success",
+        "error"
+      ],
+      "properties": {
+        "method": {"type": "string", "minLength": 3},
+        "paramsModel": {"type": "string", "minLength": 3},
+        "resultModel": {"type": "string", "minLength": 3},
+        "resultSchema": {"$ref": "#/$defs/JsonObject"},
+        "request": {"$ref": "#/$defs/RpcRequestEnvelope"},
+        "success": {"$ref": "#/$defs/RpcSuccessEnvelope"},
+        "error": {"$ref": "#/$defs/RpcErrorEnvelope"}
+      }
+    },
+    "EventGoldenCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic", "event"],
+      "properties": {
+        "topic": {"type": "string", "minLength": 3},
+        "event": {"$ref": "#/$defs/JsonObject"}
+      }
+    },
+    "RpcRequestEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"type": "string", "minLength": 1},
+        "method": {"type": "string", "minLength": 3},
+        "params": {"$ref": "#/$defs/JsonObject"}
+      }
+    },
+    "RpcSuccessEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "result"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"type": "string", "minLength": 1},
+        "result": {"$ref": "#/$defs/JsonValue"}
+      }
+    },
+    "RpcErrorEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "error"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"type": "string", "minLength": 1},
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message", "data"],
+          "properties": {
+            "code": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$"
+            },
+            "message": {"type": "string", "minLength": 1},
+            "data": {"$ref": "#/$defs/JsonObject"}
+          }
+        }
+      }
+    },
+    "ProductError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "code", "path", "message", "details", "retryable"],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$"
+        },
+        "path": {"type": ["string", "null"]},
+        "message": {"type": "string", "minLength": 1},
+        "details": {"$ref": "#/$defs/JsonObject"},
+        "retryable": {"type": "boolean"}
+      }
+    },
+    "FormulaError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "code",
+        "path",
+        "message",
+        "details",
+        "sourceSpan"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "code": {
+          "type": "string",
+          "enum": [
+            "formula.syntax",
+            "formula.type",
+            "formula.dependency",
+            "formula.cycle",
+            "formula.resource_limit",
+            "formula.runtime",
+            "formula.null",
+            "formula.divide_by_zero",
+            "formula.overflow",
+            "formula.timezone"
+          ]
+        },
+        "path": {"type": ["string", "null"]},
+        "message": {"type": "string", "minLength": 1},
+        "details": {"$ref": "#/$defs/JsonObject"},
+        "sourceSpan": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["start", "end"],
+          "properties": {
+            "start": {"type": "integer", "minimum": 0},
+            "end": {"type": "integer", "minimum": 0}
+          }
+        }
+      }
+    },
+    "RequiredConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"const": "required"},
+        "value": {"type": "boolean"}
+      }
+    },
+    "DefaultConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"const": "default"},
+        "value": {}
+      }
+    },
+    "UniqueConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"const": "unique"},
+        "value": {"type": "boolean"}
+      }
+    },
+    "IndexConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "fieldIds", "unique"],
+      "properties": {
+        "kind": {"const": "index"},
+        "fieldIds": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "unique": {"type": "boolean"}
+      }
+    },
+    "RangeConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "min", "max", "exclusiveMin", "exclusiveMax"],
+      "properties": {
+        "kind": {"const": "range"},
+        "min": {"type": ["number", "null"]},
+        "max": {"type": ["number", "null"]},
+        "exclusiveMin": {"type": "boolean"},
+        "exclusiveMax": {"type": "boolean"}
+      }
+    },
+    "LengthConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "minLength", "maxLength"],
+      "properties": {
+        "kind": {"const": "length"},
+        "minLength": {"type": ["integer", "null"], "minimum": 0},
+        "maxLength": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "PatternConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "pattern", "flags"],
+      "properties": {
+        "kind": {"const": "pattern"},
+        "pattern": {"type": "string"},
+        "flags": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["i", "m", "s", "u"]},
+          "uniqueItems": true
+        }
+      }
+    },
+    "PrecisionScaleConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "precision", "scale"],
+      "properties": {
+        "kind": {"const": "precisionScale"},
+        "precision": {"type": "integer", "minimum": 1},
+        "scale": {"type": "integer", "minimum": 0}
+      }
+    },
+    "EnumConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "multiple", "minSelected", "maxSelected", "options"],
+      "properties": {
+        "kind": {"const": "enum"},
+        "multiple": {"type": "boolean"},
+        "minSelected": {"type": "integer", "minimum": 0},
+        "maxSelected": {"type": ["integer", "null"], "minimum": 0},
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["value", "displayName"],
+            "properties": {
+              "value": {"type": ["string", "number", "boolean"]},
+              "displayName": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "JsonSchemaConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schema"],
+      "properties": {
+        "kind": {"const": "jsonSchema"},
+        "schema": {"$ref": "#/$defs/JsonObject"}
+      }
+    },
+    "RelationConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "targetTableId", "cardinality", "deletePolicy"],
+      "properties": {
+        "kind": {"const": "relation"},
+        "targetTableId": {"type": "string", "minLength": 1},
+        "cardinality": {"type": "string", "enum": ["one", "many"]},
+        "deletePolicy": {
+          "type": "string",
+          "enum": ["restrict", "cascade", "setNull"]
+        }
+      }
+    },
+    "AttachmentPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxFiles",
+        "maxBytesPerFile",
+        "allowedMimeTypes",
+        "thumbnailVariants",
+        "protected"
+      ],
+      "properties": {
+        "maxFiles": {"type": "integer", "minimum": 1},
+        "maxBytesPerFile": {"type": "integer", "minimum": 1},
+        "allowedMimeTypes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "thumbnailVariants": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[1-9][0-9]*x[1-9][0-9]*$"},
+          "uniqueItems": true
+        },
+        "protected": {"type": "boolean"}
+      }
+    },
+    "AttachmentConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "policy"],
+      "properties": {
+        "kind": {"const": "attachment"},
+        "policy": {"$ref": "#/$defs/AttachmentPolicy"}
+      }
+    },
+    "FieldConstraint": {
+      "oneOf": [
+        {"$ref": "#/$defs/RequiredConstraint"},
+        {"$ref": "#/$defs/DefaultConstraint"},
+        {"$ref": "#/$defs/UniqueConstraint"},
+        {"$ref": "#/$defs/IndexConstraint"},
+        {"$ref": "#/$defs/RangeConstraint"},
+        {"$ref": "#/$defs/LengthConstraint"},
+        {"$ref": "#/$defs/PatternConstraint"},
+        {"$ref": "#/$defs/PrecisionScaleConstraint"},
+        {"$ref": "#/$defs/EnumConstraint"},
+        {"$ref": "#/$defs/JsonSchemaConstraint"},
+        {"$ref": "#/$defs/RelationConstraint"},
+        {"$ref": "#/$defs/AttachmentConstraint"}
+      ]
+    },
+    "EditorDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "config"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "config": {"$ref": "#/$defs/JsonObject"}
+      }
+    },
+    "RelationDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetTableId", "cardinality", "deletePolicy", "junctionTableId"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["direct", "junction", "m2a"]
+        },
+        "targetTableId": {"type": "string", "minLength": 1},
+        "cardinality": {"type": "string", "enum": ["one", "many"]},
+        "deletePolicy": {
+          "type": "string",
+          "enum": ["restrict", "cascade", "setNull"]
+        },
+        "junctionTableId": {"type": ["string", "null"]},
+        "junctionSourceFieldId": {"type": "string", "minLength": 1},
+        "junctionTargetFieldId": {"type": "string", "minLength": 1},
+        "junctionDiscriminatorFieldId": {"type": "string", "minLength": 1},
+        "allowedTargetTableIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "LookupDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relationFieldId", "targetFieldId", "aggregate"],
+      "properties": {
+        "relationFieldId": {"type": "string", "minLength": 1},
+        "targetFieldId": {"type": "string", "minLength": 1},
+        "junctionFieldId": {"type": "string", "minLength": 1},
+        "targetFieldIds": {
+          "type": "object",
+          "additionalProperties": {"type": "string", "minLength": 1}
+        },
+        "aggregate": {
+          "type": "string",
+          "enum": ["none", "first", "count", "sum", "min", "max"]
+        }
+      }
+    },
+    "FormulaDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "source", "resultType", "version", "status"],
+      "properties": {
+        "language": {"const": "cel-v1"},
+        "source": {"type": "string", "minLength": 1},
+        "resultType": {"type": "string", "minLength": 1},
+        "version": {"type": "integer", "minimum": 1},
+        "status": {
+          "type": "string",
+          "enum": ["draft", "backfilling", "ready", "failed"]
+        }
+      }
+    },
+    "FieldDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fieldId",
+        "physicalName",
+        "displayName",
+        "kind",
+        "dataType",
+        "storageType",
+        "nullable",
+        "defaultValue",
+        "constraints",
+        "editor",
+        "readOnly",
+        "formula",
+        "relation",
+        "lookup",
+        "attachmentPolicy"
+      ],
+      "properties": {
+        "fieldId": {"type": "string", "minLength": 1},
+        "physicalName": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "displayName": {"type": "string", "minLength": 1},
+        "kind": {
+          "type": "string",
+          "enum": ["scalar", "relation", "lookup", "formula", "attachment", "system"]
+        },
+        "dataType": {
+          "type": "string",
+          "enum": [
+            "shortText",
+            "longText",
+            "richText",
+            "boolean",
+            "integer",
+            "float",
+            "decimal",
+            "date",
+            "dateTime",
+            "autoDate",
+            "time",
+            "email",
+            "url",
+            "uuid",
+            "select",
+            "multiSelect",
+            "json",
+            "geoPoint",
+            "geoJson",
+            "file",
+            "relation",
+            "lookup",
+            "formula",
+            "list",
+            "hash",
+            "secret"
+          ]
+        },
+        "storageType": {"type": "string", "minLength": 1},
+        "nullable": {"type": "boolean"},
+        "defaultValue": {},
+        "constraints": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/FieldConstraint"}
+        },
+        "editor": {"$ref": "#/$defs/EditorDefinition"},
+        "readOnly": {"type": "boolean"},
+        "formula": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/FormulaDefinition"}
+          ]
+        },
+        "relation": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/RelationDefinition"}
+          ]
+        },
+        "lookup": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/LookupDefinition"}
+          ]
+        },
+        "attachmentPolicy": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/AttachmentPolicy"}
+          ]
+        }
+      }
+    },
+    "IndexDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "fieldIds", "unique"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "fieldIds": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "unique": {"type": "boolean"}
+      }
+    },
+    "ArchivePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "fieldId", "archivedValue"],
+      "properties": {
+        "mode": {"type": "string", "enum": ["none", "status", "deletedAt"]},
+        "fieldId": {"type": ["string", "null"]},
+        "archivedValue": {}
+      }
+    },
+    "ViewDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceTableId"],
+      "properties": {
+        "sourceTableId": {"type": "string", "minLength": 1}
+      }
+    },
+    "TableDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "tableId",
+        "physicalName",
+        "displayName",
+        "kind",
+        "schemaRevision",
+        "archivePolicy",
+        "fields",
+        "indexes"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "tableId": {"type": "string", "minLength": 1},
+        "physicalName": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "displayName": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "enum": ["base", "view"]},
+        "schemaRevision": {"type": "string", "minLength": 1},
+        "archivePolicy": {"$ref": "#/$defs/ArchivePolicy"},
+        "view": {"$ref": "#/$defs/ViewDefinition"},
+        "fields": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/FieldDefinition"},
+          "minItems": 1
+        },
+        "indexes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/IndexDefinition"}
+        }
+      }
+    },
+    "Actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "displayName"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["user", "system", "plugin", "import", "restore"]
+        },
+        "id": {"type": "string", "minLength": 1},
+        "displayName": {"type": ["string", "null"]}
+      }
+    },
+    "InsertOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "recordId", "values"],
+      "properties": {
+        "kind": {"const": "insert"},
+        "recordId": {"type": ["string", "null"]},
+        "values": {"$ref": "#/$defs/JsonObject"}
+      }
+    },
+    "UpdateOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "recordId", "values"],
+      "properties": {
+        "kind": {"const": "update"},
+        "recordId": {"type": "string", "minLength": 1},
+        "values": {"$ref": "#/$defs/JsonObject"},
+        "expectedRevision": {"type": ["string", "null"]},
+        "expectedDigest": {"type": ["string", "null"]}
+      }
+    },
+    "RecordStateOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "recordId"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["archive", "restore", "delete"]},
+        "recordId": {"type": "string", "minLength": 1},
+        "expectedRevision": {"type": ["string", "null"]},
+        "expectedDigest": {"type": ["string", "null"]}
+      }
+    },
+    "SetAttachmentsOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "recordId", "fieldId", "uploadHandles", "removeStoredNames"],
+      "properties": {
+        "kind": {"const": "setAttachments"},
+        "recordId": {"type": "string", "minLength": 1},
+        "fieldId": {"type": "string", "minLength": 1},
+        "uploadHandles": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "removeStoredNames": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "MutationOperation": {
+      "oneOf": [
+        {"$ref": "#/$defs/InsertOperation"},
+        {"$ref": "#/$defs/UpdateOperation"},
+        {"$ref": "#/$defs/RecordStateOperation"},
+        {"$ref": "#/$defs/SetAttachmentsOperation"}
+      ]
+    },
+    "MutationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "requestId",
+        "idempotencyKey",
+        "tableId",
+        "schemaRevision",
+        "operations",
+        "actor",
+        "expectedRevision",
+        "expectedDigest"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "requestId": {"type": "string", "minLength": 1},
+        "idempotencyKey": {"type": "string", "minLength": 1},
+        "tableId": {"type": "string", "minLength": 1},
+        "schemaRevision": {"type": "string", "minLength": 1},
+        "operations": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/MutationOperation"},
+          "minItems": 1
+        },
+        "actor": {"$ref": "#/$defs/Actor"},
+        "expectedRevision": {"type": ["string", "null"]},
+        "expectedDigest": {"type": ["string", "null"]}
+      }
+    },
+    "AffectedRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recordId", "operation", "revision", "digest"],
+      "properties": {
+        "recordId": {"type": "string", "minLength": 1},
+        "operation": {
+          "type": "string",
+          "enum": ["insert", "update", "archive", "restore", "delete", "setAttachments"]
+        },
+        "revision": {"type": "string", "minLength": 1},
+        "digest": {"type": "string", "minLength": 1}
+      }
+    },
+    "MutationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "status",
+        "changeSetId",
+        "affectedRows",
+        "computedFields",
+        "newRevision",
+        "emittedEvents",
+        "warnings"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "status": {
+          "type": "string",
+          "enum": ["applied", "replayed", "pending", "rejected"]
+        },
+        "changeSetId": {"type": ["string", "null"]},
+        "affectedRows": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/AffectedRow"}
+        },
+        "computedFields": {"$ref": "#/$defs/JsonObject"},
+        "newRevision": {"type": ["string", "null"]},
+        "emittedEvents": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ProductError"}
+        }
+      }
+    },
+    "AttachmentThumbnail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variant", "downloadCapability"],
+      "properties": {
+        "variant": {"type": "string", "minLength": 1},
+        "downloadCapability": {"type": "string", "minLength": 1}
+      }
+    },
+    "ManagedAttachmentRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "tableId",
+        "recordId",
+        "fieldId",
+        "storedName",
+        "originalName",
+        "mimeType",
+        "size",
+        "sha256",
+        "downloadCapability",
+        "thumbnails"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "tableId": {"type": "string", "minLength": 1},
+        "recordId": {"type": "string", "minLength": 1},
+        "fieldId": {"type": "string", "minLength": 1},
+        "storedName": {"type": "string", "minLength": 1},
+        "originalName": {"type": "string", "minLength": 1},
+        "mimeType": {"type": "string", "minLength": 1},
+        "size": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "downloadCapability": {"type": "string", "minLength": 1},
+        "thumbnails": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/AttachmentThumbnail"}
+        }
+      }
+    },
+    "EventBaseProperties": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "eventId", "sequence", "occurredAt"],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "eventId": {"type": "string", "minLength": 1},
+        "sequence": {"type": "integer", "minimum": 1},
+        "occurredAt": {"type": "string", "format": "date-time"}
+      }
+    },
+    "DataChangedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "topic",
+        "eventId",
+        "sequence",
+        "occurredAt",
+        "schemaRevision",
+        "dataRevision",
+        "changeSetId",
+        "tableId",
+        "recordIds",
+        "operation"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "topic": {"const": "data.changed"},
+        "eventId": {"type": "string", "minLength": 1},
+        "sequence": {"type": "integer", "minimum": 1},
+        "occurredAt": {"type": "string", "format": "date-time"},
+        "schemaRevision": {"type": "string", "minLength": 1},
+        "dataRevision": {"type": "string", "minLength": 1},
+        "changeSetId": {"type": ["string", "null"]},
+        "tableId": {"type": "string", "minLength": 1},
+        "recordIds": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "operation": {
+          "type": "string",
+          "enum": ["insert", "update", "archive", "restore", "delete", "schema"]
+        }
+      }
+    },
+    "TaskError": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/ProductError"}
+      ]
+    },
+    "TaskChangedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "topic",
+        "eventId",
+        "sequence",
+        "occurredAt",
+        "taskId",
+        "taskType",
+        "state",
+        "progress",
+        "cursor",
+        "error"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "topic": {"const": "task.changed"},
+        "eventId": {"type": "string", "minLength": 1},
+        "sequence": {"type": "integer", "minimum": 1},
+        "occurredAt": {"type": "string", "format": "date-time"},
+        "taskId": {"type": "string", "minLength": 1},
+        "taskType": {
+          "type": "string",
+          "enum": ["formulaBackfill", "import", "export", "reconcile", "backup", "restore"]
+        },
+        "state": {
+          "type": "string",
+          "enum": ["pending", "running", "succeeded", "failed", "cancelled"]
+        },
+        "progress": {"type": "number", "minimum": 0, "maximum": 1},
+        "cursor": {"type": ["string", "null"]},
+        "error": {"$ref": "#/$defs/TaskError"}
+      }
+    }
+  }
+}

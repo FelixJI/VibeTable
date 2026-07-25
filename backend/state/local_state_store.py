@@ -6,7 +6,7 @@ user profile) with a JSON payload, a revision token and an updated timestamp.
 
 Design invariants (per the B3 plan):
 
-* It never opens Directus business data. Grid state is device-local only.
+* It never opens authoritative business data. Grid state is device-local only.
 * Migration is idempotent: running ``ensure_schema()`` twice is a no-op.
 * Revision tokens are opaque monotonic strings so the host can detect
   conflicts (stale revision on save).

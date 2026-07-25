@@ -11,7 +11,7 @@
  * is true), so that branch renders the redirect hint as designed.
  */
 import { computed } from "vue";
-import { NCard, NButton, NSpace, NCheckbox, NIcon, NTag, NText, NTooltip } from "naive-ui";
+import { NCard, NButton, NSpace, NCheckbox, NIcon, NTag, NText } from "naive-ui";
 import { X } from "lucide-vue-next";
 import { usePasteStore } from "@/stores/pasteStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -48,6 +48,14 @@ const canConfirm = computed(() =>
   && !hasError.value
   && (!hasWarning.value || paste.acked),
 );
+
+function requestCancel(): void {
+  // Close the surface in the same event turn. The parent still owns/reset the
+  // paste workflow through the cancel event, but visibility must not depend
+  // on a parent render round-trip (notably from NCard's header-extra slot).
+  ui.closePastePanel();
+  emit("cancel");
+}
 </script>
 
 <template>
@@ -56,24 +64,22 @@ const canConfirm = computed(() =>
     class="paste-panel"
     :bordered="true"
     size="small"
+    role="dialog"
+    aria-modal="true"
     data-testid="paste-panel"
   >
     <template #header>{{ t(titleKey) }}</template>
     <template #header-extra>
-      <NTooltip placement="left" :delay="450">
-        <template #trigger>
-          <NButton
-            size="tiny"
-            quaternary
-            :aria-label="t('paste.cancel')"
-            data-testid="paste-close"
-            @click="emit('cancel')"
-          >
-            <template #icon><NIcon :size="15"><X /></NIcon></template>
-          </NButton>
-        </template>
-        {{ t("paste.cancel") }}
-      </NTooltip>
+      <NButton
+        size="tiny"
+        quaternary
+        :aria-label="t('paste.cancel')"
+        :title="t('paste.cancel')"
+        data-testid="paste-close"
+        @click.stop="requestCancel"
+      >
+        <template #icon><NIcon :size="15"><X /></NIcon></template>
+      </NButton>
     </template>
 
     <div class="paste-body">
@@ -110,7 +116,7 @@ const canConfirm = computed(() =>
 
     <template #action>
       <NSpace justify="end">
-        <NButton size="small" data-testid="paste-cancel" @click="emit('cancel')">
+        <NButton size="small" data-testid="paste-cancel" @click.stop="requestCancel">
           {{ t("paste.cancel") }}
         </NButton>
         <NButton

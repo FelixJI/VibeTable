@@ -1,32 +1,9 @@
 #!/usr/bin/env python3
-"""Build the development assets and launch the WPF host.
-
-The host's startup decides whether to start a local Directus 12 (SQLite) for
-this run:
-
-* A bare launch (no flag, no ``VIBETABLE_DIRECTUS_URL``) starts the host which
-  then brings up the local Directus *and* the Python backend itself.
-* ``--directus-url <url>`` points the host at an external Directus instead.
-* ``--no-directus-auto`` makes the host start only itself (e.g. to debug the UI
-  against an already-running external Directus set via ``VIBETABLE_DIRECTUS_URL``).
-
-The script builds the WebView application and every first-party Directus
-extension when their source is newer than the ignored build output. It then
-runs an incremental MSBuild build (MSBuild owns project-graph staleness) and
-launches the host.
-Run::
-
-    .venv\\Scripts\\python.exe scripts\\dev.py                        # full stack
-    .venv\\Scripts\\python.exe scripts\\dev.py --directus-url http://...   # remote Directus
-    .venv\\Scripts\\python.exe scripts\\dev.py --build-only          # CI/dev gate
-
-Stop everything with Ctrl+C; the host owns teardown of its child processes.
-"""
+"""Build the product stack and launch the desktop host in development mode."""
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import signal
@@ -34,386 +11,166 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Run both as ``python scripts/dev.py`` (sibling import) and as a package
-# member; mirrors the try/except used for ``versioning`` elsewhere.
-try:
-    from scripts._host_paths import host_bin_exe, host_target_framework
-    from scripts.extension_manifest import extension_names, package_entry_paths
-except ImportError:  # pragma: no cover - exercised only by direct script runs
-    from _host_paths import host_bin_exe, host_target_framework
-    from extension_manifest import extension_names, package_entry_paths
+if __package__:
+    from ._host_paths import host_bin_exe
+else:
+    from _host_paths import host_bin_exe
 
 ROOT = Path(__file__).resolve().parents[1]
+WEB_DIR = ROOT / "desktop" / "web-grid"
+SIDECAR_DIR = ROOT / "sidecar"
 HOST_PROJECT = ROOT / "desktop" / "src" / "VibeTable.Desktop"
-HOST_CONFIG = "Release"
-HOST_TFM = host_target_framework(ROOT)
-HOST_EXE = host_bin_exe(ROOT, config=HOST_CONFIG)
-PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
-DOTNET = (
-    str(PREFERRED_DOTNET) if PREFERRED_DOTNET.is_file() else (shutil.which("dotnet") or "dotnet")
+BUILD_DIR = ROOT / "build" / "dev"
+HOST_BINARY = host_bin_exe(ROOT, config="Release", host_project=HOST_PROJECT)
+SIDECAR_BINARY = BUILD_DIR / (
+    "vibetable-pb.exe" if os.name == "nt" else "vibetable-pb"
 )
-PYTHON = sys.executable
-_PROCS: list[subprocess.Popen[str]] = []
-
-WEB_PROJECT = ROOT / "desktop" / "web-grid"
-WEB_OUTPUT = WEB_PROJECT / "dist" / "index.html"
-DIRECTUS_EXTENSION_DIRS = [
-    ROOT / "directus" / "extensions" / name for name in extension_names(ROOT)
-]
-
-
-def _resolve_npm() -> str:
-    bundled_cli = ROOT / "runtime" / "node" / "node_modules" / "npm" / "bin" / "npm-cli.js"
-    bundled_cmd = ROOT / "runtime" / "node" / ("npm.cmd" if os.name == "nt" else "npm")
-    if bundled_cli.is_file() and bundled_cmd.is_file():
-        return str(bundled_cmd)
-    return shutil.which("npm.cmd") or shutil.which("npm") or "npm"
+PROCESSES: list[subprocess.Popen[str]] = []
+UNSAFE_INHERITED_RUNTIME_VARIABLES = {
+    "VIBETABLE_E2E_WEBVIEW2_USER_DATA_ROOT",
+    "VIBETABLE_E2E_MUTATION_BARRIER_DIR",
+    "VIBETABLE_SIDECAR_DATA_DIR",
+    "VIBETABLE_SIDECAR_SESSION_SECRET",
+    "VIBETABLE_SIDECAR_URL",
+    "VIBETABLE_STATE_DIR",
+    "VIBETABLE_WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+}
 
 
-NPM = _resolve_npm()
-
-_WINDOWS_NODE_CLEANUP_SCRIPT = r"""
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$projectPath = [System.IO.Path]::GetFullPath($env:VIBETABLE_NODE_PROJECT_PATH)
-$projectPattern = [regex]::Escape($projectPath.TrimEnd('\', '/')) +
-    '(?:[\\/]|(?=["''\s]|$))'
-$matches = @(
-    Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" |
-        Where-Object {
-            $_.CommandLine -and
-            [regex]::IsMatch(
-                $_.CommandLine.Replace('/', '\'),
-                $projectPattern,
-                [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-            )
-        }
-)
-$results = @(
-    foreach ($process in $matches) {
-        try {
-            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
-            [PSCustomObject]@{
-                ProcessId = [int]$process.ProcessId
-                CommandLine = [string]$process.CommandLine
-                Stopped = $true
-                Error = $null
-            }
-        }
-        catch {
-            [PSCustomObject]@{
-                ProcessId = [int]$process.ProcessId
-                CommandLine = [string]$process.CommandLine
-                Stopped = $false
-                Error = [string]$_.Exception.Message
-            }
-        }
-    }
-)
-ConvertTo-Json -InputObject $results -Compress
-"""
+def _resolve(name: str) -> str:
+    if name == "go":
+        suffix = "go.exe" if os.name == "nt" else "go"
+        bundled = ROOT / ".tools" / "go-full" / "go" / "bin" / suffix
+        if bundled.is_file():
+            return str(bundled)
+    if name == "dotnet":
+        preferred = Path(r"C:\Program Files\dotnet\dotnet.exe")
+        if preferred.is_file():
+            return str(preferred)
+    return shutil.which(name) or name
 
 
-def _info(msg: str) -> None:
-    print(f"[dev] {msg}", flush=True)
+def _run(command: list[str], *, cwd: Path) -> None:
+    subprocess.run(command, cwd=cwd, check=True)
 
 
-def _is_stale(output: Path, inputs: list[Path]) -> bool:
-    if not output.is_file():
-        return True
-    built_at = output.stat().st_mtime
-    return any(path.is_file() and path.stat().st_mtime > built_at for path in inputs)
+def build(*, web: bool = True, sidecar: bool = True, host: bool = True) -> None:
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    if sidecar:
+        _run(
+            [
+                _resolve("go"),
+                "build",
+                "-trimpath",
+                "-o",
+                str(SIDECAR_BINARY),
+                "./cmd/vibetable-pb",
+            ],
+            cwd=SIDECAR_DIR,
+        )
+    if web:
+        # Dependencies must already be restored. Development never installs at
+        # runtime and release artifacts never contain Node/npm.
+        _run([_resolve("npm"), "run", "build"], cwd=WEB_DIR)
+    if host:
+        _run(
+            [
+                _resolve("dotnet"),
+                "build",
+                str(HOST_PROJECT),
+                "--configuration",
+                "Release",
+            ],
+            cwd=ROOT,
+        )
 
 
-def _project_inputs(project: Path) -> list[Path]:
-    inputs: list[Path] = []
-    for relative in ("package.json", "package-lock.json", "tsconfig.json", "vite.config.ts"):
-        candidate = project / relative
-        if candidate.is_file():
-            inputs.append(candidate)
-    source = project / "src"
-    if source.is_dir():
-        inputs.extend(path for path in source.rglob("*") if path.is_file())
-    return inputs
-
-
-def _run_build(label: str, command: list[str], cwd: Path, *, timeout: int = 600) -> None:
-    _info(f"building {label} ...")
-    proc = subprocess.run(
+def _start(command: list[str], *, cwd: Path, env: dict[str, str] | None = None):
+    process = subprocess.Popen(
         command,
         cwd=cwd,
-        capture_output=True,
+        env=env,
         text=True,
         encoding="utf-8",
         errors="replace",
-        check=False,
-        timeout=timeout,
     )
-    if proc.returncode != 0:
-        stderr = proc.stderr or ""
-        hint = _npm_eperm_hint(stderr, cwd)
-        raise RuntimeError(
-            f"{label} build failed (exit {proc.returncode}):\n"
-            f"stdout:\n{proc.stdout}\nstderr:\n{stderr}{hint}"
+    PROCESSES.append(process)
+    return process
+
+
+def _cleanup(*_args: object) -> None:
+    for process in reversed(PROCESSES):
+        if process.poll() is None:
+            process.terminate()
+    for process in reversed(PROCESSES):
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+def launch(data_dir: Path) -> int:
+    if not HOST_BINARY.is_file():
+        raise FileNotFoundError(
+            f"desktop host is missing: {HOST_BINARY}; "
+            "run without --no-host-build first"
         )
 
-
-def _npm_eperm_hint(stderr: str, cwd: Path) -> str:
-    """Append an actionable hint when ``npm ci`` hits a Windows EPERM unlink.
-
-    ``npm ci`` wipes ``node_modules`` before reinstalling. On Windows a native
-    binary that a still-running process has loaded (most often the @rolldown
-    binding loaded by a leftover ``vite`` dev server, or an AV scan) cannot be
-    unlinked, so npm dies with ``EPERM`` / ``errno -4048``. npm's own message
-    blames permissions or antivirus; the recurring real-world cause is a
-    dev server left running from a previous session. Surface that so the next
-    person does not have to re-trace the whole stack.
-    """
-    blob = stderr.lower()
-    is_eperm = "eperm" in blob or "-4048" in blob
-    touches_node_modules = "unlink" in blob and "node_modules" in blob
-    if not (is_eperm and touches_node_modules):
-        return ""
-    return (
-        "\n\nHint: npm ci failed to delete a file under node_modules. On Windows "
-        "this is almost always a process still holding a native binary open — "
-        "commonly a `vite`/`node` dev server left running from a previous "
-        "session (check `tasklist | findstr node`) or an antivirus scan. Stop "
-        "the process holding the lock, or run "
-        f"`Remove-Item -Recurse -Force {cwd / 'node_modules'}` and retry."
+    environment = os.environ.copy()
+    for variable in UNSAFE_INHERITED_RUNTIME_VARIABLES:
+        environment.pop(variable, None)
+    # The source-layout host owns both runtime children. Passing the exact
+    # interpreter keeps it on this repository's environment.
+    environment["VIBETABLE_PYTHON"] = sys.executable
+    development_data_root = data_dir.resolve()
+    host = _start(
+        [
+            str(HOST_BINARY),
+            "--dev-data-root",
+            str(development_data_root),
+        ],
+        cwd=ROOT,
+        env=environment,
     )
-
-
-def _single_line(value: object) -> str:
-    return " ".join(str(value).split())
-
-
-def _stop_node_processes_for_project(project: Path) -> None:
-    """Stop Windows Node processes whose command line belongs to ``project``.
-
-    ``npm ci`` replaces ``node_modules`` and cannot unlink loaded native
-    modules on Windows. Querying only ``node.exe`` processes whose normalized
-    command line contains this project's directory prefix avoids touching
-    Node-based applications and other repositories.
-
-    The cleanup is best-effort: npm remains the source of truth if CIM is
-    unavailable or a process cannot be terminated.
-    """
-    if sys.platform != "win32":
-        return
-
-    powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe") or "powershell.exe"
-    env = os.environ.copy()
-    env["VIBETABLE_NODE_PROJECT_PATH"] = str(project.resolve())
-    try:
-        proc = subprocess.run(
-            [
-                powershell,
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                _WINDOWS_NODE_CLEANUP_SCRIPT,
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=10,
-            env=env,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        _info(f"warning: could not scan Node processes for {project.name}: {_single_line(exc)}")
-        return
-
-    if proc.returncode != 0:
-        details = _single_line(proc.stderr or proc.stdout or "PowerShell exited without details")
-        _info(f"warning: could not scan Node processes for {project.name}: {details}")
-        return
-
-    try:
-        results = json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        _info(f"warning: could not read Node process scan for {project.name}: {_single_line(exc)}")
-        return
-    if not isinstance(results, list):
-        _info(f"warning: unexpected Node process scan result for {project.name}")
-        return
-
-    for result in results:
-        if not isinstance(result, dict):
-            continue
-        pid = result.get("ProcessId", "unknown")
-        command_line = _single_line(result.get("CommandLine") or "<command line unavailable>")
-        if result.get("Stopped"):
-            _info(f"stopped project Node process before npm ci: PID {pid}; {command_line}")
-        else:
-            error = _single_line(result.get("Error") or "unknown error")
-            _info(f"warning: could not stop project Node process PID {pid}: {error}")
-
-
-def _ensure_node_dependencies(project: Path) -> None:
-    lockfile = project / "package-lock.json"
-    install_marker = project / "node_modules" / ".package-lock.json"
-    if not (project / "node_modules").is_dir() or _is_stale(install_marker, [lockfile]):
-        _stop_node_processes_for_project(project)
-        _run_build(f"{project.name} dependencies", [NPM, "ci"], project)
-
-
-def _ensure_web_built() -> None:
-    if not _is_stale(WEB_OUTPUT, _project_inputs(WEB_PROJECT)):
-        _info(f"web-grid up to date: {WEB_OUTPUT}")
-        return
-    _ensure_node_dependencies(WEB_PROJECT)
-    _run_build("web-grid", [NPM, "run", "build"], WEB_PROJECT)
-    if not WEB_OUTPUT.is_file():
-        raise RuntimeError(f"web-grid entry not found after build: {WEB_OUTPUT}")
-
-
-def _ensure_directus_extensions_built() -> None:
-    for project in DIRECTUS_EXTENSION_DIRS:
-        outputs = [project / entry for entry in package_entry_paths(project)]
-        if all(not _is_stale(output, _project_inputs(project)) for output in outputs):
-            _info(f"Directus extension up to date: {project.name}")
-            continue
-        _ensure_node_dependencies(project)
-        _run_build(f"Directus extension {project.name}", [NPM, "run", "build"], project)
-        for output in outputs:
-            if not output.is_file():
-                raise RuntimeError(f"Directus extension entry not found after build: {output}")
-
-
-def _ensure_host_built() -> Path:
-    _ensure_web_built()
-    _ensure_directus_extensions_built()
-    if not Path(DOTNET).is_file():
-        raise RuntimeError(
-            "dotnet SDK not found; build the host manually: "
-            "dotnet build desktop/VibeTable.Desktop.sln --configuration Release"
-        )
-    _run_build(
-        f"WPF host ({HOST_CONFIG}/{HOST_TFM})",
-        [DOTNET, "build", str(HOST_PROJECT), "--configuration", HOST_CONFIG],
-        ROOT,
+    print(
+        f"VibeTable desktop started: {HOST_BINARY} (Ctrl+C to stop)",
+        flush=True,
     )
-    if not HOST_EXE.is_file():
-        raise RuntimeError(f"host executable not found after build: {HOST_EXE}")
-    _info(f"WPF host built: {HOST_EXE}")
-    return HOST_EXE
+    return host.wait()
 
 
-def _launch_host(
-    directus_url: str | None = None,
-    no_directus_auto: bool = False,
-) -> subprocess.Popen[str]:
-    """Launch the WPF client with an isolated environment.
-
-    The env is built fresh (system paths + only the VIBETABLE_DIRECTUS_* vars
-    for this run) so a globally-set ``VIBETABLE_DIRECTUS_URL`` cannot leak in or
-    conflict. The host then owns Directus and the Python backend lifetimes.
-    """
-    host = _ensure_host_built()
-    argv = [str(host)]
-    if no_directus_auto:
-        argv.append("--no-directus-auto")
-        _info("launching WPF client -> --no-directus-auto (host only)")
-    else:
-        _info("launching WPF client (host owns Directus + Python backend)")
-    env = {
-        # Minimal, isolated environment: system paths + the run-specific vars.
-        "PATH": os.environ.get("PATH", ""),
-        "SYSTEMROOT": os.environ.get("SYSTEMROOT", r"C:\WINDOWS"),
-        # WPF's font cache (MS.Internal.FontCache.Util) builds its fonts URI
-        # from ``windir`` (NOT SystemRoot); without it the CoreWebView2-less
-        # type init throws UriFormatException and the host dies before any
-        # window appears. Keep it in the isolated env.
-        "WINDIR": os.environ.get("WINDIR", r"C:\WINDOWS"),
-        "TEMP": os.environ.get("TEMP", ""),
-        "TMP": os.environ.get("TMP", ""),
-        "USERPROFILE": os.environ.get("USERPROFILE", ""),
-        "LOCALAPPDATA": os.environ.get("LOCALAPPDATA", ""),
-        # The host uses the same interpreter that successfully ran this
-        # launcher instead of trusting a possibly stale .venv shim.
-        "VIBETABLE_PYTHON": PYTHON,
-    }
-    for name in (
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "NO_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "no_proxy",
-        "NODE_EXTRA_CA_CERTS",
-        "SSL_CERT_FILE",
-    ):
-        if value := os.environ.get(name):
-            env[name] = value
-    if directus_url:
-        # The ONLY Directus routing the host sees:
-        env["VIBETABLE_DIRECTUS_URL"] = directus_url
-        env["VIBETABLE_DIRECTUS_PROJECT"] = "default"
-        _info(f"  VIBETABLE_DIRECTUS_URL = {directus_url}")
-    proc = subprocess.Popen(
-        argv,
-        cwd=HOST_EXE.parent,
-        env=env,
-        text=True,
-    )
-    _PROCS.append(proc)
-    return proc
-
-
-def _cleanup(*_: object) -> None:
-    _info("shutting down ...")
-    for proc in reversed(_PROCS):
-        if proc.poll() is None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=10)
-            except (subprocess.TimeoutExpired, OSError):
-                proc.kill()
-
-
-def main() -> int:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--build-only", action="store_true")
+    parser.add_argument("--no-web-build", action="store_true")
+    parser.add_argument("--no-sidecar-build", action="store_true")
+    parser.add_argument("--no-host-build", action="store_true")
     parser.add_argument(
-        "--directus-url",
-        default=None,
-        help="explicit external Directus base URL; the host connects to it "
-        "instead of starting a local one",
+        "--data-dir",
+        type=Path,
+        default=ROOT / ".dev-data" / "pocketbase",
     )
-    parser.add_argument(
-        "--no-directus-auto",
-        action="store_true",
-        help="start only the WPF host; do not let it auto-start a local "
-        "Directus (combine with --directus-url for an external service, "
-        "or use it to debug the UI alone)",
-    )
-    parser.add_argument(
-        "--build-only",
-        action="store_true",
-        help="build all development assets and the WPF host, then exit "
-        "without launching any process",
-    )
-    args = parser.parse_args()
+    return parser
 
-    if args.build_only:
-        _ensure_host_built()
-        _info("build-only gate passed; no host process was launched.")
-        return 0
 
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
     signal.signal(signal.SIGINT, _cleanup)
-    signal.signal(signal.SIGTERM, _cleanup)
-
-    directus_url = args.directus_url.rstrip("/") if args.directus_url else None
-    _launch_host(directus_url=directus_url, no_directus_auto=args.no_directus_auto)
-    _info("stack is up. Ctrl+C to stop everything (the host owns its children).")
-    # Wait for the client to exit; cleanup runs via signal on Ctrl+C.
-    return_code = 0
-    for proc in _PROCS:
-        return_code = proc.wait()
-    return return_code
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _cleanup)
+    try:
+        build(
+            web=not args.no_web_build,
+            sidecar=not args.no_sidecar_build,
+            host=not args.no_host_build,
+        )
+        return 0 if args.build_only else launch(args.data_dir)
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+        print(f"development stack failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        _cleanup()
 
 
 if __name__ == "__main__":

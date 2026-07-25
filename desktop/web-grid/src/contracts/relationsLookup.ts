@@ -1,5 +1,5 @@
 /**
- * Directus relation + realtime Lookup wire contracts.
+ * Product relation + realtime lookup wire contracts.
  *
  * Keep these names aligned with backend/contracts/{relation_admin,lookup}.py.
  * In particular, `m2a` is always lower-case on the wire.
@@ -43,7 +43,7 @@ export interface NormalizedRelationDescriptor {
   readonly selfRelation: boolean;
   readonly managed: boolean;
   readonly state: RelationState;
-  /** Explicit Directus template. Never inferred by the renderer. */
+  /** Explicit display template. Never inferred by the renderer. */
   readonly displayTemplate?: string | null;
   readonly diagnostics: readonly RelationDiagnostic[];
 }
@@ -62,7 +62,7 @@ interface RelationCommonConfig {
   readonly nullable: boolean;
   readonly onDelete: RelationDeletePolicy;
   readonly preset: RelationPreset;
-  /** Explicit Directus display template. Empty means no template; never inferred. */
+  /** Explicit display template. Empty means no template; never inferred. */
   readonly displayTemplate?: string | null;
 }
 

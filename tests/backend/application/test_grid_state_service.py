@@ -7,7 +7,7 @@ Covers (per B3 Task 3):
 * stale revision conflict (caller must re-read)
 * local migration idempotency (store-level; exercised via repeated gets)
 * database rename identity mapping (store-level; covered in store tests)
-* saved columns preserved for Directus-aware host reconciliation
+* saved columns preserved for host-owned schema reconciliation
 * state excludes row data and pending edits
 """
 
@@ -132,12 +132,12 @@ async def test_stale_revision_conflict_returns_current_state(
 
 
 # ---------------------------------------------------------------------------
-# Directus-aware host owns schema reconciliation
+# The native host owns schema reconciliation.
 # ---------------------------------------------------------------------------
 
 
 async def test_saved_columns_preserved_on_load(service: GridStateService) -> None:
-    """F stage: column pruning moved to the Directus capability layer; the
+    """F stage: column pruning moved to the native capability layer; the
     GridStateService preserves saved columns as-is (no SQLite schema lookup)."""
     state = _state(
         columns=[

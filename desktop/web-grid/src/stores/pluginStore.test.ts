@@ -19,13 +19,11 @@ const plugin = (revision: number, status: PluginSnapshot["status"] = "enabled"):
     compatibility: {},
     permissions: { data: ["customers:read"] },
     actions: [],
-    flows: [],
     ui: {},
   },
-  flowRequirements: [],
   schemas: {},
   status,
-  disabledReason: status === "enabled" ? null : "Flow 未绑定",
+  disabledReason: status === "enabled" ? null : "本地 worker 不可用",
   revision,
 });
 

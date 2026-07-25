@@ -1,8 +1,19 @@
 import { defineStore } from "pinia";
 import { computed, reactive, ref } from "vue";
-import { TABLE_FIELD_TYPES } from "@/contracts";
 import type { TableFieldType } from "@/contracts";
 import { validateFields, validateTableName } from "@/services/tableAdminValidation";
+import {
+  createSchemaFieldDraft,
+  validateSchemaFieldDraft,
+  type FieldDraftError,
+  type SchemaFieldDraft,
+} from "@/services/schemaFieldDraft";
+import {
+  createSchemaIndexDraft,
+  validateSchemaIndexDrafts,
+  type IndexDraftError,
+  type SchemaIndexDraft,
+} from "@/services/schemaIndexDraft";
 import type { CollectionSummary } from "@/stores/workspaceStore";
 
 /** Lifecycle of the create/delete admin flows. */
@@ -20,13 +31,10 @@ export type TableAdminPhase =
  * the wire-level `TableAdminFieldInput { key, type }` (see `@/contracts`), so
  * the wire boundary keeps the host's `key` naming while the store keeps `name`.
  */
-export interface FieldRow {
-  name: string;
-  type: TableFieldType;
-}
+export interface FieldRow extends SchemaFieldDraft {}
 
-function emptyField(): FieldRow {
-  return { name: "", type: TABLE_FIELD_TYPES[0] };
+function emptyField(type?: TableFieldType): FieldRow {
+  return createSchemaFieldDraft(type);
 }
 
 /**
@@ -41,11 +49,13 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
   const collections = ref<readonly CollectionSummary[]>([]);
   const pendingDelete = ref<string | null>(null);
   const error = ref<string | null>(null);
+  const serverFieldErrors = ref<Readonly<Record<string, string>>>({});
 
   // Form state lives in the store, NOT in the DOM (architecture fix #3).
   const form = reactive({
     name: "" as string,
     fields: [] as FieldRow[],
+    indexes: [] as SchemaIndexDraft[],
   });
 
   /**
@@ -61,8 +71,15 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
     if (validateTableName(form.name) !== null) return false;
     const rows = form.fields.map((f) => ({ key: f.name, type: f.type }));
     const result = validateFields(rows);
-    return result.fields.length >= 1 && result.errors.length === 0;
+    return result.fields.length >= 1
+      && result.errors.length === 0
+      && localFieldErrors.value.length === 0
+      && localIndexErrors.value.length === 0;
   });
+  const localFieldErrors = computed<readonly FieldDraftError[]>(() =>
+    form.fields.flatMap((field, index) => validateSchemaFieldDraft(field, index)));
+  const localIndexErrors = computed<readonly IndexDraftError[]>(() =>
+    validateSchemaIndexDrafts(form.indexes, form.fields));
 
   function setCollections(cols: readonly CollectionSummary[]): void {
     collections.value = cols;
@@ -72,11 +89,13 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
     phase.value = "creating";
     form.name = "";
     form.fields = [emptyField()];
+    form.indexes = [];
     error.value = null;
+    serverFieldErrors.value = {};
   }
 
-  function addField(): void {
-    form.fields.push(emptyField());
+  function addField(type?: TableFieldType): void {
+    form.fields.push(emptyField(type));
   }
 
   function updateField(index: number, patch: Partial<FieldRow>): void {
@@ -86,37 +105,59 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
 
   function removeField(index: number): void {
     if (index < 0 || index >= form.fields.length) return;
+    const removedClientId = form.fields[index]?.clientId;
     form.fields.splice(index, 1);
+    if (removedClientId) {
+      for (const draft of form.indexes) {
+        draft.fieldClientIds = draft.fieldClientIds
+          .filter((clientId) => clientId !== removedClientId);
+      }
+    }
+  }
+
+  function addIndex(): void {
+    form.indexes.push(createSchemaIndexDraft());
+  }
+
+  function removeIndex(index: number): void {
+    if (index < 0 || index >= form.indexes.length) return;
+    form.indexes.splice(index, 1);
   }
 
   function beginSubmit(): void {
     phase.value = "submitting";
     error.value = null;
+    serverFieldErrors.value = {};
   }
 
   function requestDelete(name: string): void {
     pendingDelete.value = name;
     phase.value = "deleting";
     error.value = null;
+    serverFieldErrors.value = {};
   }
 
   function succeed(): void {
     phase.value = "idle";
     form.name = "";
     form.fields = [];
+    form.indexes = [];
     pendingDelete.value = null;
     error.value = null;
+    serverFieldErrors.value = {};
   }
 
-  function fail(message: string): void {
+  function fail(message: string, path?: string | null): void {
     phase.value = "failed";
     error.value = message;
+    serverFieldErrors.value = path ? { [path]: message } : {};
   }
 
   function close(): void {
     phase.value = "idle";
     pendingDelete.value = null;
     error.value = null;
+    serverFieldErrors.value = {};
   }
 
   return {
@@ -124,13 +165,18 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
     collections,
     pendingDelete,
     error,
+    serverFieldErrors,
     form,
     canSubmit,
+    localFieldErrors,
+    localIndexErrors,
     setCollections,
     openCreate,
     addField,
     updateField,
     removeField,
+    addIndex,
+    removeIndex,
     beginSubmit,
     requestDelete,
     succeed,

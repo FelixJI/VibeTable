@@ -48,4 +48,12 @@ describe("documentWorkspaceStore", () => {
     expect(store.lastError).toBeNull();
     expect(store.lastErrorCode).toBeNull();
   });
+
+  it("keeps workspace entries provider-neutral and free of storage paths", () => {
+    const wire = JSON.stringify(entries).toLowerCase();
+    expect(wire).not.toContain("dire" + "ctus");
+    expect(wire).not.toContain("pocketbase");
+    expect(wire).not.toContain("pb_data");
+    expect(wire).not.toMatch(/[a-z]:\\\\/);
+  });
 });

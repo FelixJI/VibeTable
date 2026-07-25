@@ -1,0 +1,271 @@
+{
+  "contractVersion": "1.0",
+  "tableId": "tbl_order_lines",
+  "physicalName": "order_lines",
+  "displayName": "Order lines",
+  "kind": "base",
+  "schemaRevision": "schema_0007",
+  "archivePolicy": {
+    "mode": "status",
+    "fieldId": "fld_status",
+    "archivedValue": "archived"
+  },
+  "fields": [
+    {
+      "fieldId": "fld_sku",
+      "physicalName": "sku",
+      "displayName": "SKU",
+      "kind": "scalar",
+      "dataType": "shortText",
+      "storageType": "text",
+      "nullable": false,
+      "defaultValue": null,
+      "constraints": [
+        {"kind": "required", "value": true},
+        {"kind": "length", "minLength": 3, "maxLength": 32},
+        {"kind": "pattern", "pattern": "^[A-Z0-9-]+$", "flags": []},
+        {"kind": "unique", "value": true},
+        {"kind": "index", "fieldIds": ["fld_sku"], "unique": true}
+      ],
+      "editor": {"kind": "text", "config": {}},
+      "readOnly": false,
+      "formula": null,
+      "relation": null,
+      "lookup": null,
+      "attachmentPolicy": null
+    },
+    {
+      "fieldId": "fld_quantity",
+      "physicalName": "quantity",
+      "displayName": "Quantity",
+      "kind": "scalar",
+      "dataType": "integer",
+      "storageType": "number",
+      "nullable": false,
+      "defaultValue": 1,
+      "constraints": [
+        {"kind": "default", "value": 1},
+        {"kind": "range", "min": 0, "max": 1000000, "exclusiveMin": false, "exclusiveMax": false}
+      ],
+      "editor": {"kind": "number", "config": {"step": 1}},
+      "readOnly": false,
+      "formula": null,
+      "relation": null,
+      "lookup": null,
+      "attachmentPolicy": null
+    },
+    {
+      "fieldId": "fld_unit_price",
+      "physicalName": "unit_price",
+      "displayName": "Unit price",
+      "kind": "scalar",
+      "dataType": "decimal",
+      "storageType": "number",
+      "nullable": false,
+      "defaultValue": 0,
+      "constraints": [
+        {"kind": "precisionScale", "precision": 12, "scale": 2}
+      ],
+      "editor": {"kind": "decimal", "config": {"scale": 2}},
+      "readOnly": false,
+      "formula": null,
+      "relation": null,
+      "lookup": null,
+      "attachmentPolicy": null
+    },
+    {
+      "fieldId": "fld_metadata",
+      "physicalName": "metadata",
+      "displayName": "Metadata",
+      "kind": "scalar",
+      "dataType": "json",
+      "storageType": "json",
+      "nullable": true,
+      "defaultValue": {},
+      "constraints": [
+        {
+          "kind": "jsonSchema",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "source": {"type": "string"}
+            }
+          }
+        }
+      ],
+      "editor": {"kind": "json", "config": {}},
+      "readOnly": false,
+      "formula": null,
+      "relation": null,
+      "lookup": null,
+      "attachmentPolicy": null
+    },
+    {
+      "fieldId": "fld_status",
+      "physicalName": "status",
+      "displayName": "Status",
+      "kind": "scalar",
+      "dataType": "select",
+      "storageType": "select",
+      "nullable": false,
+      "defaultValue": "active",
+      "constraints": [
+        {
+          "kind": "enum",
+          "multiple": false,
+          "minSelected": 1,
+          "maxSelected": 1,
+          "options": [
+            {"value": "active", "displayName": "Active"},
+            {"value": "archived", "displayName": "Archived"}
+          ]
+        }
+      ],
+      "editor": {"kind": "select", "config": {}},
+      "readOnly": false,
+      "formula": null,
+      "relation": null,
+      "lookup": null,
+      "attachmentPolicy": null
+    },
+    {
+      "fieldId": "fld_product",
+      "physicalName": "product",
+      "displayName": "Product",
+      "kind": "relation",
+      "dataType": "relation",
+      "storageType": "relation",
+      "nullable": true,
+      "defaultValue": null,
+      "constraints": [
+        {
+          "kind": "relation",
+          "targetTableId": "tbl_products",
+          "cardinality": "one",
+          "deletePolicy": "setNull"
+        }
+      ],
+      "editor": {"kind": "relation", "config": {}},
+      "readOnly": false,
+      "formula": null,
+      "relation": {
+        "mode": "direct",
+        "targetTableId": "tbl_products",
+        "cardinality": "one",
+        "deletePolicy": "setNull",
+        "junctionTableId": null
+      },
+      "lookup": null,
+      "attachmentPolicy": null
+    },
+    {
+      "fieldId": "fld_product_name",
+      "physicalName": "product_name",
+      "displayName": "Product name",
+      "kind": "lookup",
+      "dataType": "lookup",
+      "storageType": "text",
+      "nullable": true,
+      "defaultValue": null,
+      "constraints": [],
+      "editor": {"kind": "readonly", "config": {}},
+      "readOnly": true,
+      "formula": null,
+      "relation": null,
+      "lookup": {
+        "relationFieldId": "fld_product",
+        "targetFieldId": "fld_product_title",
+        "aggregate": "none"
+      },
+      "attachmentPolicy": null
+    },
+    {
+      "fieldId": "fld_subtotal",
+      "physicalName": "subtotal",
+      "displayName": "Subtotal",
+      "kind": "formula",
+      "dataType": "formula",
+      "storageType": "number",
+      "nullable": true,
+      "defaultValue": null,
+      "constraints": [
+        {"kind": "precisionScale", "precision": 14, "scale": 2}
+      ],
+      "editor": {"kind": "formula", "config": {}},
+      "readOnly": true,
+      "formula": {
+        "language": "cel-v1",
+        "source": "quantity * unit_price",
+        "resultType": "decimal",
+        "version": 1,
+        "status": "ready"
+      },
+      "relation": null,
+      "lookup": null,
+      "attachmentPolicy": null
+    },
+    {
+      "fieldId": "fld_receipts",
+      "physicalName": "receipts",
+      "displayName": "Receipts",
+      "kind": "attachment",
+      "dataType": "file",
+      "storageType": "file",
+      "nullable": true,
+      "defaultValue": [],
+      "constraints": [
+        {
+          "kind": "attachment",
+          "policy": {
+            "maxFiles": 5,
+            "maxBytesPerFile": 10485760,
+            "allowedMimeTypes": ["application/pdf", "image/png"],
+            "thumbnailVariants": ["320x240"],
+            "protected": true
+          }
+        }
+      ],
+      "editor": {"kind": "attachment", "config": {}},
+      "readOnly": false,
+      "formula": null,
+      "relation": null,
+      "lookup": null,
+      "attachmentPolicy": {
+        "maxFiles": 5,
+        "maxBytesPerFile": 10485760,
+        "allowedMimeTypes": ["application/pdf", "image/png"],
+        "thumbnailVariants": ["320x240"],
+        "protected": true
+      }
+    },
+    {
+      "fieldId": "fld_created_at",
+      "physicalName": "created_at",
+      "displayName": "Created at",
+      "kind": "system",
+      "dataType": "autoDate",
+      "storageType": "autodate",
+      "nullable": false,
+      "defaultValue": null,
+      "constraints": [],
+      "editor": {"kind": "readonly", "config": {}},
+      "readOnly": true,
+      "formula": null,
+      "relation": null,
+      "lookup": null,
+      "attachmentPolicy": null
+    }
+  ],
+  "indexes": [
+    {
+      "name": "ux_order_lines_sku",
+      "fieldIds": ["fld_sku"],
+      "unique": true
+    },
+    {
+      "name": "ix_order_lines_product_status",
+      "fieldIds": ["fld_product", "fld_status"],
+      "unique": false
+    }
+  ]
+}

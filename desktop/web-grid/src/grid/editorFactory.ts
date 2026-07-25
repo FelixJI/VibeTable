@@ -156,6 +156,28 @@ export function validateLocally(
     }
   }
 
+  if (editor.kind === "multi_select") {
+    if (!Array.isArray(value)) {
+      return { ok: false, error: "this column requires a list of choices" };
+    }
+    if (!editor.allowCustom) {
+      const invalid = value.find((item) => !editor.options.includes(String(item)));
+      if (invalid !== undefined) {
+        return { ok: false, error: `${String(invalid)} is not a valid choice` };
+      }
+    }
+  }
+
+  if (editor.kind === "json") {
+    if (typeof value === "string") {
+      try {
+        JSON.parse(value);
+      } catch {
+        return { ok: false, error: "this column requires valid JSON" };
+      }
+    }
+  }
+
   return { ok: true };
 }
 
@@ -175,9 +197,19 @@ export function parseValue(editor: Editor, raw: string): unknown {
     return /^(1|true|yes|y)$/i.test(raw);
   }
   if (editor.kind === "multi_select") {
-    // Multi-select is stored as JSON-encoded array by the backend; the grid
-    // edits it via a dialog, not inline text, so this is a fallback.
-    return raw;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) ? parsed : raw;
+    } catch {
+      return raw.split(",").map((item) => item.trim()).filter(Boolean);
+    }
+  }
+  if (editor.kind === "json") {
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return raw;
+    }
   }
   return raw;
 }
@@ -187,7 +219,7 @@ export function parseValue(editor: Editor, raw: string): unknown {
  * layer maps this onto the Tabulator `editor` / `editorParams` column props.
  *
  * Tabulator's built-in editors are: "input", "textarea", "number", "tickbox",
- * "select", "datetime". We pick the closest match; the host's dialog-based
+ * and "list". We pick the closest match; the host's dialog-based
  * multi-select and foreign-key pickers are handled by a custom editor the grid
  * wires up separately (Task 6 integration).
  */
@@ -225,23 +257,32 @@ export function tabulatorEditor(editor: Editor): {
     case "single_select": {
       const s = editor as SingleSelectEditor;
       return {
-        editor: "select",
+        editor: "list",
         editorParams: {
           values: ["", ...s.options],
-          autocomplete: !s.allowCustom,
+          autocomplete: true,
+          freetext: s.allowCustom === true,
+          clearable: true,
         },
       };
     }
     case "multi_select": {
-      // Multi-select uses a custom host-driven dialog; the grid registers a
-      // placeholder editor that opens it. The descriptor here is a marker the
-      // grid recognizes.
       const m = editor as MultiSelectEditor;
       return {
-        editor: "vibetable_multi_select",
-        editorParams: { options: m.options, allowCustom: m.allowCustom },
+        editor: "list",
+        editorParams: {
+          values: m.options,
+          multiselect: true,
+          autocomplete: false,
+          clearable: true,
+        },
       };
     }
+    case "json":
+      // JSON uses the product modal editor opened by GridHost. Keep the
+      // Tabulator cell read-only so raw text can never bypass structured
+      // parsing and server validation.
+      return { editor: "input" };
     case "text":
     default:
       return { editor: editor.multiline ? "textarea" : "input" };

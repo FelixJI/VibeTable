@@ -9,13 +9,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- VibeTable.Desktop's HostStartupOptions reaches into LaunchPaths to
-         detect the dev local-Directus directory when deciding whether to
-         auto-start Directus on a bare run. Internal keeps the path helpers
-         out of the public surface while still letting the host see them. -->
+    <!-- Desktop startup keeps path helpers internal to the host boundary. -->
     <InternalsVisibleTo Include="VibeTable.Desktop" />
-    <!-- Test project exercises the internal payload-construction methods
-         (1:1 Python-port fidelity checks). -->
+    <!-- Infrastructure tests exercise internal launch and sidecar boundaries. -->
     <InternalsVisibleTo Include="VibeTable.Infrastructure.Tests" />
   </ItemGroup>
 

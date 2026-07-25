@@ -26,6 +26,18 @@ describe("buildQuery", () => {
     ]);
   });
 
+  it("maps whole-JSON header filters to authoritative contains operators", () => {
+    const q = buildQuery({
+      columns: [
+        { name: "payload", title: "Payload", dataType: "json", editable: true, nullable: true },
+      ],
+      headerFilters: [{ field: "payload", value: "8" }],
+    });
+    expect(q.filters).toEqual([
+      { field: "payload", operator: "contains", value: "8", logic: "AND" },
+    ]);
+  });
+
   it("skips empty header filter values", () => {
     const q = buildQuery({
       headerFilters: [
@@ -73,16 +85,19 @@ describe("queryToTabulator", () => {
     expect(headerFilters).toEqual([{ field: "status", value: "open" }]);
   });
 
-  it("drops non-eq filters from header-filter restore", () => {
+  it("restores eq/contains filters and drops non-header operators", () => {
     const q: TableQuery = {
       filters: [
         { field: "amount", operator: "gt", value: 10 },
         { field: "status", operator: "eq", value: "open" },
+        { field: "payload", operator: "contains", value: "8" },
       ],
     };
     const { headerFilters } = queryToTabulator(q);
-    expect(headerFilters).toHaveLength(1);
-    expect(headerFilters[0].field).toBe("status");
+    expect(headerFilters).toEqual([
+      { field: "status", value: "open" },
+      { field: "payload", value: "8" },
+    ]);
   });
 });
 

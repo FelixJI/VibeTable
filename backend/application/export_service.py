@@ -1,45 +1,43 @@
-"""C1 export service: stream a full Directus query result to CSV/XLSX.
+"""Export service: stream a full product query result to CSV/XLSX.
 
 Covers the C1 Task 4 requirements:
 
-* Reuses the B4 query compilation (``filter/sort/search/fields``) — the export
-  covers ALL matching rows, not just the current Web page, via stable offset
-  paging (Directus has no cursor; the limit is capped at 100/page by the query
-  contract, so the export loops pages).
+* Reuses the product query contract (``filter/sort/search/fields``) and covers
+  all matching rows via stable paging.
 * Streams rows to CSV/XLSX so memory stays roughly constant regardless of result
   size. Reports progress via the task runtime.
-* Honours field/row permissions: the export uses the current user's token (via
-  :class:`DirectusClient`), never an admin service token, so a user cannot
-  export rows they cannot read.
+* Honours field/row permissions through the product query port.
 * Templates: :meth:`generate_template` writes a schema-derived template (column
   names, required hints, enum/relation notes) to an export-target grant.
 
-Cancellation is cooperative: the host may cancel the task between pages; the
-export stops at the next page boundary (already-written rows remain in the
-output file, which is a partial-but-honest artifact).
+Cancellation is cooperative between pages. Output is written to a sibling
+temporary file and atomically replaces the selected target only on success;
+cancelled/failed exports never expose a partial artifact.
 """
 
 from __future__ import annotations
 
+import asyncio
 import csv
+import json
+import os
+import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from backend.adapters.directus.auth import DirectusAuthBroker
-from backend.adapters.directus.client import DirectusClient
-from backend.adapters.directus.profile import CollectionProfile
 from backend.contracts.data_io import ExportParams, ExportResult, TemplateResult
+from backend.contracts.data_profile import CollectionProfile
 from backend.contracts.query import TableQuery
 
-#: Page size for the export paging loop (Directus offset paging).
+#: Page size for the export paging loop.
 EXPORT_PAGE_SIZE: int = 100
 
 
 class ExportError(Exception):
-    """An export-flow error carrying an RPC-friendly ``code``."""
+    """An export error carrying an RPC-friendly ``code``."""
 
     def __init__(self, message: str, *, code: str) -> None:
         super().__init__(message)
@@ -70,7 +68,7 @@ class AuthoritativeLookupExportProvider(Protocol):
     """Adapter over the authoritative Lookup query endpoint.
 
     Implementations must execute the supplied full query under the current
-    Directus accountability. They must not derive Lookup cells from rows already
+    Product-session accountability. They must not derive Lookup cells from rows already
     loaded in the Web grid.
     """
 
@@ -87,20 +85,33 @@ class AuthoritativeLookupExportProvider(Protocol):
     ) -> AuthoritativeLookupExportPage: ...
 
 
+class QueryPage(Protocol):
+    rows: list[dict[str, Any]]
+    filtered_rows: int
+    total_rows: int
+
+
+class QueryPagePort(Protocol):
+    async def query_page(
+        self,
+        *,
+        table_id: str,
+        query: dict[str, Any],
+    ) -> QueryPage: ...
+
+
 class ExportService:
     """C1 query-based export + template generation."""
 
     def __init__(
         self,
         *,
-        client: DirectusClient,
-        auth: DirectusAuthBroker,
+        query_port: QueryPagePort,
         profiles: dict[str, CollectionProfile],
         resolve_path: Callable[..., str],
         lookup_provider: AuthoritativeLookupExportProvider | None = None,
     ) -> None:
-        self._client = client
-        self._auth = auth
+        self._query_port = query_port
         self._profiles = profiles
         self._resolve_path = resolve_path
         self._lookup_provider = lookup_provider
@@ -125,40 +136,61 @@ class ExportService:
                     col = f"{relation.field}.{display}"
                     if col not in output_columns:
                         output_columns.append(col)
+        target = Path(path)
+        temporary = target.with_name(
+            f".{target.name}.vibetable-{uuid.uuid4().hex}.tmp"
+        )
         rows_written = 0
         fmt = params.format
-        if params.lookup_ids:
-            if self._lookup_provider is None:
-                raise ExportError(
-                    "authoritative Lookup export is not configured",
-                    code="lookup_export_provider_missing",
-                )
-            assert params.lookup_revision is not None
-            rows_written = await self._export_with_lookups(
-                path,
-                profile,
-                params,
-                output_columns,
-                progress,
-                cancelled,
-            )
-        else:
-            query = TableQuery.model_validate(params.query)
-            if fmt == "csv":
-                rows_written = await self._export_csv(
-                    path, profile, query, output_columns, progress, cancelled
+        try:
+            if params.lookup_ids:
+                if self._lookup_provider is None:
+                    raise ExportError(
+                        "authoritative Lookup export is not configured",
+                        code="lookup_export_provider_missing",
+                    )
+                assert params.lookup_revision is not None
+                rows_written = await self._export_with_lookups(
+                    str(temporary),
+                    profile,
+                    params,
+                    output_columns,
+                    progress,
+                    cancelled,
                 )
             else:
-                rows_written = await self._export_xlsx(
-                    path, profile, query, output_columns, progress, cancelled
-                )
+                query = TableQuery.model_validate(params.query)
+                if fmt == "csv":
+                    rows_written = await self._export_csv(
+                        str(temporary),
+                        profile,
+                        query,
+                        output_columns,
+                        progress,
+                        cancelled,
+                    )
+                else:
+                    rows_written = await self._export_xlsx(
+                        str(temporary),
+                        profile,
+                        query,
+                        output_columns,
+                        progress,
+                        cancelled,
+                    )
+            if cancelled and cancelled():
+                raise asyncio.CancelledError
+            os.replace(temporary, target)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
         return ExportResult(
             collection=params.collection,
             format=fmt,
             rows_written=rows_written,
             schema_revision=profile.capability_hash,
             capability_hash=profile.capability_hash,
-            output_display_name=Path(path).name,
+            output_display_name=target.name,
         )
 
     async def generate_template(
@@ -313,19 +345,18 @@ class ExportService:
                 if cancelled and cancelled():
                     break
                 page_query = query.model_copy(update={"offset": offset, "limit": EXPORT_PAGE_SIZE})
-                rows, meta, _plan = await self._client.read_items(profile, page_query)
+                page = await self._query_port.query_page(
+                    table_id=profile.collection,
+                    query=page_query.model_dump(mode="json", by_alias=True, exclude_none=True),
+                )
                 if offset == 0:
-                    total_estimate = (
-                        _safe_int(meta.get("filter_count"))
-                        or _safe_int(meta.get("total_count"))
-                        or 0
-                    )
-                for row in rows:
+                    total_estimate = page.filtered_rows
+                for row in page.rows:
                     writer.writerow([_render_cell(row, col) for col in columns])
                     written += 1
                 if progress:
                     await progress(written, total_estimate, f"exported {written} rows")
-                if len(rows) < EXPORT_PAGE_SIZE:
+                if len(page.rows) < EXPORT_PAGE_SIZE:
                     break
                 offset += EXPORT_PAGE_SIZE
         return written
@@ -351,17 +382,18 @@ class ExportService:
             if cancelled and cancelled():
                 break
             page_query = query.model_copy(update={"offset": offset, "limit": EXPORT_PAGE_SIZE})
-            rows, meta, _plan = await self._client.read_items(profile, page_query)
+            page = await self._query_port.query_page(
+                table_id=profile.collection,
+                query=page_query.model_dump(mode="json", by_alias=True, exclude_none=True),
+            )
             if offset == 0:
-                total_estimate = (
-                    _safe_int(meta.get("filter_count")) or _safe_int(meta.get("total_count")) or 0
-                )
-            for row in rows:
+                total_estimate = page.filtered_rows
+            for row in page.rows:
                 ws.append([_render_cell(row, col) for col in columns])
                 written += 1
             if progress:
                 await progress(written, total_estimate, f"exported {written} rows")
-            if len(rows) < EXPORT_PAGE_SIZE:
+            if len(page.rows) < EXPORT_PAGE_SIZE:
                 break
             offset += EXPORT_PAGE_SIZE
         wb.save(path)
@@ -369,11 +401,12 @@ class ExportService:
         return written
 
     def _profile(self, collection: str) -> CollectionProfile:
-        from backend.adapters.directus.errors import DirectusSchemaError
-
         profile = self._profiles.get(collection)
         if profile is None:
-            raise DirectusSchemaError(f"collection {collection!r} is not in capability manifest")
+            raise ExportError(
+                f"collection {collection!r} is not in the product schema",
+                code="schema_unknown",
+            )
         return profile
 
 
@@ -388,6 +421,19 @@ def _render_cell(row: dict[str, Any], column: str) -> Any:
     value = row.get(column)
     if value is None:
         return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        # QueryPort exposes attachment manifests. Binary material is never
+        # embedded into ordinary CSV/XLSX exports; a future ZIP exporter can
+        # consume the manifest through a separate capability.
+        return '{"kind":"binary_omitted"}'
     return value
 
 
@@ -402,4 +448,5 @@ __all__ = [
     "AuthoritativeLookupExportProvider",
     "ExportError",
     "ExportService",
+    "QueryPagePort",
 ]

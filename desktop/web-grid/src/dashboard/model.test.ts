@@ -1,22 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
-  directusTypeToProduct,
   parseWireDashboard,
   parseWirePanel,
-  productTypeToDirectus,
+  parseProductPanelType,
+  serializeProductPanelType,
   toWirePanel,
 } from "./model";
 
 describe("dashboard wire model", () => {
-  it("maps Directus chart ids to product types in both directions", () => {
-    expect(directusTypeToProduct("bar-chart")).toBe("bar");
-    expect(directusTypeToProduct("line-chart")).toBe("line");
-    expect(directusTypeToProduct("pie-chart", { donut: true })).toBe("donut");
-    expect(directusTypeToProduct("pie-chart", { shape: "donut" })).toBe("donut");
-    expect(directusTypeToProduct("pie-chart", {})).toBe("pie");
-    expect(productTypeToDirectus("bar")).toBe("bar-chart");
-    expect(productTypeToDirectus("line")).toBe("line-chart");
-    expect(productTypeToDirectus("donut")).toBe("pie-chart");
+  it("keeps canonical product panel types stable in both directions", () => {
+    expect(parseProductPanelType("bar")).toBe("bar");
+    expect(parseProductPanelType("line")).toBe("line");
+    expect(parseProductPanelType("donut")).toBe("donut");
+    expect(parseProductPanelType("vendor-chart")).toBe("unknown");
+    expect(serializeProductPanelType("bar")).toBe("bar");
+    expect(serializeProductPanelType("line")).toBe("line");
+    expect(serializeProductPanelType("donut")).toBe("donut");
   });
 
   it("keeps custom and unknown panels read-only and lossless", () => {
@@ -58,17 +57,17 @@ describe("dashboard wire model", () => {
     expect(parseWireDashboard(null)).toEqual({ id: "", name: "", note: "", panels: [] });
   });
 
-  it("accepts missing or null query from legacy Directus panels", () => {
+  it("accepts missing or null query from older product panels", () => {
     expect(parseWirePanel({ id: "missing", type: "metric", options: {} }).query).toEqual({});
     expect(parseWirePanel({ id: "null", type: "metric", options: {}, query: null }).query).toEqual({});
   });
 
-  it("sets the Directus donut discriminator without losing other options", () => {
+  it("preserves canonical donut options without adding provider discriminators", () => {
     const panel = parseWirePanel({
       id: "p",
       dashboardId: "d",
       name: "Share",
-      type: "pie-chart",
+      type: "donut",
       position: { x: 0, y: 0, width: 4, height: 4 },
       options: { donut: true, legend: "right", future: { preserved: 1 } },
       query: {},

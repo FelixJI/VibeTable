@@ -91,6 +91,7 @@ celerybeat-schedule
 # Environments
 .env
 .venv
+.tools/
 env/
 venv/
 ENV/
@@ -151,6 +152,7 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+pb_data/
 
 # Reports output
 reports/
@@ -174,30 +176,19 @@ desktop/**/obj/
 desktop/web-grid/node_modules/
 desktop/web-grid/dist/
 TestResults/
+/sidecar/vibetable-pb.exe
 
 # Git worktrees
 .worktrees/
 
-# scripts/local_directus — runtime-introduced Directus 12 instance
-# (the package.json/.env.template/README are committed; everything else is local)
-scripts/local_directus/.env
-scripts/local_directus/.npm-cache/
-scripts/local_directus/.npm-prefix/
-scripts/local_directus/.npmrc.user
-scripts/local_directus/.npmrc.global
-scripts/local_directus/node_modules/
-scripts/local_directus/data/
-scripts/local_directus/uploads/
-scripts/local_directus/extensions/
-scripts/local_directus/.schema-applied
-scripts/local_directus/.bootstrapped
-scripts/local_directus/.install-verified
-scripts/local_directus/.vibetable-initialized
-scripts/local_directus/.first-run-backups/
-scripts/local_directus/.integration/
-
 # Local planning/scratch artifacts (planning-with-files and ad-hoc debugging)
 /.tmp-shot/
+/.codex-test-tmp/
+/.codex-go-cache/
+/.e2e-pytest-runner-*/
+/.pytest-*/
+/.pytest_tmp_*/
+/.test-tmp/
 /task_plan.md
 /progress.md
 /findings.md

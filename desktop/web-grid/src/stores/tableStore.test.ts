@@ -82,7 +82,9 @@ describe("tableStore", () => {
   it("beginLoad sets loading and clears previous data", () => {
     const s = useTableStore();
     s.appendPage(makePage([{ id: 1 }]));
+    expect(s.loadGeneration).toBe(0);
     s.beginLoad();
+    expect(s.loadGeneration).toBe(1);
     expect(s.loading).toBe(true);
     expect(s.allRows).toEqual([]);
     expect(s.schema).toBeNull();
@@ -125,6 +127,19 @@ describe("tableStore", () => {
     s.setError("boom");
     expect(s.loading).toBe(false);
     expect(s.error).toBe("boom");
+  });
+
+  it("keeps a mutation error when a concurrent dataset refresh finishes", () => {
+    const s = useTableStore();
+    s.beginLoad();
+    s.setError("EDIT_CONFLICT");
+    s.setDatasetReady(makeDatasetReady([{ id: 1 }], [makeColumn("id")], 1));
+
+    expect(s.error).toBe("EDIT_CONFLICT");
+
+    // A deliberate new load is the boundary that clears the stale error.
+    s.beginLoad();
+    expect(s.error).toBeNull();
   });
 
   it("reset clears everything", () => {
@@ -214,6 +229,20 @@ describe("tableStore mutation extensions", () => {
     });
     expect(s.allRows).toHaveLength(2);
     expect(s.allRows[1]?.rowKey).toBe(2);
+  });
+
+  it("applyInsert merges a realtime-visible row instead of duplicating it", () => {
+    const s = useTableStore();
+    s.beginLoad();
+    s.appendPage(makePage([{ rowKey: 2, name: "realtime" }]));
+
+    s.applyInsert({
+      rowKey: 2,
+      row: { rowKey: 2, name: "committed" },
+      revision: makeRevision({ dataRevision: 2 }),
+    });
+
+    expect(s.allRows).toEqual([{ rowKey: 2, name: "committed" }]);
   });
 
   it("applyDelete removes the deleted rows", () => {

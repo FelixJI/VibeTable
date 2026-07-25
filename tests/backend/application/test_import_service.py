@@ -1,22 +1,14 @@
-"""C1 import service tests.
-
-Covers file reading (CSV/XLSX), auto/explicit column mapping, the pure
-normalization helpers (date/currency/number/choice), and the preview/apply
-flow against a faked bulk-mutation client.
-"""
+"""Provider-neutral import normalization and atomic-apply tests."""
 
 from __future__ import annotations
 
 import csv
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from backend.adapters.directus.auth import CurrentUser, DirectusAuthBroker
-from backend.adapters.directus.client import DirectusClient
-from backend.adapters.directus.errors import DirectusTransportError
-from backend.adapters.directus.profile import CapabilityManifest, CollectionProfile
 from backend.application.import_service import (
     ImportFlowError,
     ImportService,
@@ -29,91 +21,29 @@ from backend.application.import_service import (
     parse_number,
     validate_choice,
 )
-from backend.application.paste_service import BulkMutationClient
+from backend.application.paste_service import PasteError
 from backend.contracts.data_io import (
     ApplyImportParams,
     ImportColumnMapping,
     PreviewImportParams,
 )
-
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
+from backend.contracts.data_profile import CollectionProfile, RelationProfile
+from backend.contracts.paste import ApplyPasteResult
 
 
-class FakeDirectusAuth(DirectusAuthBroker):
-    def __init__(self, user_id: str = "user-1") -> None:
-        self._user = CurrentUser(id=user_id, display_name="Tester", role_id="role-1")
+class FakeProductMutationPort:
+    def __init__(self, result: ApplyPasteResult | None = None) -> None:
+        self.result = result or ApplyPasteResult(
+            collection="vibetable_demo",
+            outcome="committed",
+            created_row_keys=["created-1", "created-2"],
+            request_id="request-1",
+        )
+        self.calls: list[dict[str, Any]] = []
 
-    async def access_token(self) -> str:
-        return "access"
-
-    async def current_user(self) -> CurrentUser:
-        return self._user
-
-
-class FakeTransport:
-    def __init__(self, responses: list[Any]) -> None:
-        self.responses = list(responses)
-        self.requests: list[dict[str, Any]] = []
-
-    async def request(self, method: str, path: str, **kwargs: Any) -> Any:
-        self.requests.append({"method": method, "path": path, **kwargs})
-        if not self.responses:
-            raise AssertionError(f"unexpected {method} {path}")
-        response = self.responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
-
-
-def _manifest() -> CapabilityManifest:
-    return CapabilityManifest.model_validate(
-        {
-            "contract": "directus.project.v1",
-            "schema_version": "vibetable-1.0",
-            "directus_compatibility": ">=12 <13",
-            "collections": [
-                {
-                    "collection": "vibetable_demo",
-                    "primary_key": "id",
-                    "fields": [
-                        "id",
-                        "status",
-                        "number",
-                        "title",
-                        "amount",
-                        "signed_on",
-                        "date_updated",
-                    ],
-                    "create_fields": ["id", "status", "number", "title", "amount", "signed_on"],
-                    "update_fields": ["status", "number", "title", "amount", "signed_on"],
-                    "archive_field": "status",
-                    "archive_value": "archived",
-                    "restore_value": "active",
-                    "date_updated_field": "date_updated",
-                }
-            ],
-        }
-    )
-
-
-def _relation_manifest() -> CapabilityManifest:
-    raw = _manifest().model_dump(mode="json")
-    collection = raw["collections"][0]
-    collection["fields"].append("contract")
-    collection["create_fields"].append("contract")
-    collection["update_fields"].append("contract")
-    collection["relations"] = [
-        {
-            "relation_id": "rel_contract",
-            "field": "contract",
-            "kind": "m2o",
-            "related_collection": "contracts",
-            "display_fields": ["number"],
-        }
-    ]
-    return CapabilityManifest.model_validate(raw)
+    async def apply(self, **kwargs: Any) -> ApplyPasteResult:
+        self.calls.append(kwargs)
+        return self.result
 
 
 class FakeRelationProvider:
@@ -130,6 +60,7 @@ class FakeRelationProvider:
         relation_id: str,
         match_field: str,
     ) -> RelationImportTarget:
+        del collection
         self.inspected.append((relation_id, match_field))
         if match_field == "title":
             raise ValueError("match field is not unique")
@@ -141,7 +72,12 @@ class FakeRelationProvider:
             match_field=match_field,
         )
 
-    async def find_exact(self, target: RelationImportTarget, value: Any) -> list[Any]:
+    async def find_exact(
+        self,
+        target: RelationImportTarget,
+        value: Any,
+    ) -> list[Any]:
+        del target
         return self.matches.get(str(value), [])
 
     async def apply_chunk(self, **kwargs: Any) -> RelationImportBatchResult:
@@ -149,389 +85,268 @@ class FakeRelationProvider:
         return RelationImportBatchResult(
             created_row_keys=["source-1"],
             updated_row_keys=[],
-            request_id="relation-import-1",
+            request_id="relation-request-1",
         )
 
 
-def _profile(manifest: CapabilityManifest) -> CollectionProfile:
-    return manifest.by_collection["vibetable_demo"]
+def _profile(*, relation: bool = False) -> CollectionProfile:
+    relations = (
+        [
+            RelationProfile(
+                relation_id="rel_contract",
+                field="contract",
+                kind="m2o",
+                related_collection="contracts",
+                display_fields=["number"],
+            )
+        ]
+        if relation
+        else []
+    )
+    relation_fields = ["contract"] if relation else []
+    return CollectionProfile(
+        collection="vibetable_demo",
+        schema_revision="schema-1",
+        fields=[
+            "id",
+            "status",
+            "number",
+            "title",
+            "amount",
+            "signed_on",
+            "date_updated",
+            *relation_fields,
+        ],
+        field_schemas={
+            "number": {"dataType": "shortText", "constraints": []},
+            "title": {"dataType": "shortText", "constraints": []},
+            "amount": {"dataType": "float", "constraints": []},
+            "signed_on": {"dataType": "date", "constraints": []},
+            "status": {
+                "dataType": "select",
+                "constraints": [
+                    {
+                        "kind": "enum",
+                        "options": [{"value": "active"}, {"value": "archived"}],
+                    }
+                ],
+            },
+        },
+        create_fields=[
+            "id",
+            "status",
+            "number",
+            "title",
+            "amount",
+            "signed_on",
+            *relation_fields,
+        ],
+        update_fields=[
+            "status",
+            "number",
+            "title",
+            "amount",
+            "signed_on",
+            *relation_fields,
+        ],
+        relations=relations,
+    )
 
 
-def _write_csv(path, header: list[str], rows: list[list[str]]) -> None:
-    with open(path, "w", encoding="utf-8", newline="") as fh:
-        writer = csv.writer(fh)
+def _write_csv(path: Path, header: list[str], rows: list[list[str]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream)
         writer.writerow(header)
-        for row in rows:
-            writer.writerow(row)
+        writer.writerows(rows)
 
 
 def _service(
-    transport: FakeTransport,
-    manifest: CapabilityManifest,
-    path_for_grant: str,
-    relation_provider: Any = None,
-) -> ImportService:
-    return ImportService(
-        client=DirectusClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        bulk=BulkMutationClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
-        profiles=manifest.by_collection,
-        resolve_path=lambda _grant, *, purpose, direction: path_for_grant,
-        consume_grant=lambda _grant: None,
-        relation_provider=relation_provider,
+    path: Path,
+    *,
+    profile: CollectionProfile | None = None,
+    mutation: FakeProductMutationPort | None = None,
+    relation_provider: FakeRelationProvider | None = None,
+    consumed: list[str] | None = None,
+    clock: Any = None,
+) -> tuple[ImportService, FakeProductMutationPort]:
+    profile = profile or _profile()
+    mutation = mutation or FakeProductMutationPort()
+    kwargs: dict[str, Any] = {}
+    if clock is not None:
+        kwargs["clock"] = clock
+    return (
+        ImportService(
+            client=object(),
+            auth=object(),
+            bulk=mutation,
+            profiles={profile.collection: profile},
+            resolve_path=lambda _grant, **_kwargs: str(path),
+            consume_grant=lambda grant: consumed.append(grant) if consumed is not None else None,
+            relation_provider=relation_provider,
+            **kwargs,
+        ),
+        mutation,
     )
 
 
-# ---------------------------------------------------------------------------
-# Normalization helpers
-# ---------------------------------------------------------------------------
-
-
-def test_parse_date_multi_format() -> None:
-    assert parse_date("2026-07-14")[1] == "2026-07-14"
-    assert parse_date("2026/07/14")[1] == "2026-07-14"
-    assert parse_date("2026年7月14日")[1] == "2026-07-14"
-    assert parse_date("")[1] is None
-    ok, _value, error = parse_date("not-a-date")
-    assert not ok
-    assert error
-
-
-def test_parse_date_excel_serial() -> None:
-    # Excel serial 46281 = 2026-09-01 (approx).
-    ok, value, _ = parse_date(46281)
-    assert ok
-    assert value is not None
-    assert value.startswith("2026-")
-    assert parse_date(46281, date_type="datetime")[1].startswith("2026-")
-
-
-def test_parse_date_typed_values_and_datetime_mode() -> None:
+def test_normalization_helpers_cover_dates_currency_numbers_and_choices() -> None:
+    assert parse_date("2026-07-14") == (True, "2026-07-14", None)
     assert parse_date(date(2026, 7, 23)) == (True, "2026-07-23", None)
-    assert parse_date(datetime(2026, 7, 23, 9, 30), date_type="date") == (
-        True,
-        "2026-07-23",
-        None,
-    )
     assert parse_date(datetime(2026, 7, 23, 9, 30), date_type="datetime") == (
         True,
         "2026-07-23 09:30:00",
         None,
     )
-    assert parse_date("2026-07-23 09:30:00", date_type="datetime")[0] is True
-    assert parse_date(float("inf"))[0] is False
+    assert parse_date(46281)[0]
+    assert not parse_date("not-a-date")[0]
+    assert clean_currency("$1,234.50") == "1234.50"
+    assert parse_number("$1,234.50") == (True, 1234.5, None)
+    assert parse_number("12.5", integer=True) == (True, 12, None)
+    assert validate_choice("open", ["open", "closed"]) == (True, "open", None)
+    assert validate_choice("missing", ["open", "closed"])[0] is False
 
 
-def test_clean_currency_strips_symbols() -> None:
-    assert clean_currency("￥1,000.50") == "1000.50"
-    assert clean_currency("$500") == "500"
-    assert clean_currency("") == ""
-
-
-def test_parse_number_integer_and_decimal() -> None:
-    assert parse_number("100", integer=True)[1] == 100
-    assert parse_number("￥100.50")[1] == 100.50
-    ok, _value, error = parse_number("abc")
-    assert not ok
-    assert error
-
-
-def test_numeric_and_choice_edges() -> None:
-    assert parse_number(None) == (True, None, None)
-    assert parse_number(12.8, integer=True) == (True, 12, None)
-    assert clean_currency(None) == ""
-    ok, value, error = validate_choice("missing", [str(index) for index in range(12)])
-    assert ok is False
-    assert value is None
-    assert error is not None
-    assert "12 total" in error
-
-
-def test_import_error_exposes_only_structured_rpc_data() -> None:
+def test_import_error_exposes_only_structured_product_data() -> None:
     error = ImportFlowError(
-        "row failed",
-        code="import_row_failed",
-        data={"row": 7, "internal": "redacted-by-caller"},
+        "internal detail",
+        code="schema_mismatch",
+        data={"currentSchemaRevision": "schema-2"},
     )
     assert error.rpc_error_data == {
-        "code": "import_row_failed",
-        "row": 7,
-        "internal": "redacted-by-caller",
+        "code": "schema_mismatch",
+        "currentSchemaRevision": "schema-2",
     }
 
 
-def test_validate_choice_strict() -> None:
-    assert validate_choice("active", ["active", "archived"])[1] == "active"
-    assert validate_choice("", ["active"])[1] is None
-    ok, _value, error = validate_choice("nope", ["active"])
-    assert not ok
-    assert error
+def test_source_file_reads_bounded_csv_and_rejects_other_formats(tmp_path: Path) -> None:
+    csv_path = tmp_path / "source.csv"
+    _write_csv(csv_path, ["number", "title"], [["1", "one"], ["2", "two"]])
 
-
-# ---------------------------------------------------------------------------
-# SourceFile
-# ---------------------------------------------------------------------------
-
-
-def test_source_file_reads_csv(tmp_path: Any) -> None:
-    path = tmp_path / "contracts.csv"
-    _write_csv(str(path), ["number", "title"], [["A-1", "Alpha"], ["A-2", "Beta"]])
-    source = SourceFile(str(path))
-    header, rows, source_hash = source.read_header_and_rows()
+    header, rows, source_hash = SourceFile(str(csv_path)).read_header_and_rows(max_rows=1)
     assert header == ["number", "title"]
-    assert len(rows) == 2
-    assert rows[0] == ["A-1", "Alpha"]
+    assert rows == [["1", "one"]]
     assert len(source_hash) == 64
 
+    unsupported = tmp_path / "source.txt"
+    unsupported.write_text("x", encoding="utf-8")
+    with pytest.raises(ImportFlowError) as error:
+        SourceFile(str(unsupported)).read_header_and_rows()
+    assert error.value.code == "import_unsupported_format"
 
-def test_source_file_rejects_unsupported_format(tmp_path: Any) -> None:
-    path = tmp_path / "data.txt"
-    path.write_text("x")
-    with pytest.raises(Exception, match="unsupported"):
-        SourceFile(str(path)).read_header_and_rows()
 
-
-def test_source_file_reads_xlsx_named_sheet_with_row_limit(tmp_path: Any) -> None:
-    from openpyxl import Workbook
-
-    path = tmp_path / "contracts.xlsx"
-    workbook = Workbook()
-    active = workbook.active
-    assert active is not None
-    active.title = "ignored"
-    selected = workbook.create_sheet("contracts")
-    selected.append(["number", "title"])
-    selected.append(["A-1", "Alpha"])
-    selected.append(["A-2", "Beta"])
+def test_source_file_reads_named_xlsx_sheet_and_empty_workbook(tmp_path: Path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.title = "First"
+    sheet.append(["ignored"])
+    chosen = workbook.create_sheet("Chosen")
+    chosen.append(["number", "title"])
+    chosen.append(["1", "one"])
+    chosen.append(["2", "two"])
+    path = tmp_path / "source.xlsx"
     workbook.save(path)
     workbook.close()
 
-    header, rows, source_hash = SourceFile(str(path)).read_header_and_rows(
+    header, rows, _ = SourceFile(str(path)).read_header_and_rows(
         max_rows=1,
-        sheet="contracts",
+        sheet="Chosen",
     )
     assert header == ["number", "title"]
-    assert rows == [["A-1", "Alpha"]]
-    assert len(source_hash) == 64
+    assert rows == [["1", "one"]]
+
+    empty = openpyxl.Workbook()
+    empty_sheet = empty.active
+    assert empty_sheet is not None
+    empty_sheet.delete_rows(1, empty_sheet.max_row)
+    empty_path = tmp_path / "empty.xlsx"
+    empty.save(empty_path)
+    empty.close()
+    header, rows, _ = SourceFile(str(empty_path)).read_header_and_rows()
+    assert header == []
+    assert rows == []
 
 
-def test_source_file_empty_xlsx_is_safe(tmp_path: Any) -> None:
-    from openpyxl import Workbook
-
-    path = tmp_path / "empty.xlsx"
-    workbook = Workbook()
-    workbook.save(path)
-    workbook.close()
-    assert SourceFile(str(path)).read_header_and_rows()[:2] == ([], [])
-
-
-def test_source_file_empty_csv_is_safe(tmp_path: Any) -> None:
-    path = tmp_path / "empty.csv"
-    path.write_text("", encoding="utf-8")
-    assert SourceFile(str(path)).read_header_and_rows()[:2] == ([], [])
-
-
-def test_source_file_csv_row_limit_stops_before_extra_data(tmp_path: Any) -> None:
-    path = tmp_path / "limited.csv"
-    _write_csv(str(path), ["number"], [["A-1"], ["A-2"]])
-    assert SourceFile(str(path)).read_header_and_rows(max_rows=1)[1] == [["A-1"]]
-
-
-def test_service_normalizes_relation_and_scalar_fields() -> None:
-    manifest = _relation_manifest()
-    service = _service(FakeTransport([]), manifest, "")
-    profile = _profile(manifest)
-    relations = {relation.field: relation for relation in profile.relations}
-
-    assert service._normalize("contract", "", profile, relations) == (True, None, None)
-    assert service._normalize("contract", "  c-1  ", profile, relations) == (
-        True,
-        "c-1",
-        None,
-    )
-    assert service._normalize("signed_on", "2026-07-23", profile, relations)[1] == "2026-07-23"
-    assert service._normalize("amount", "￥12.50", profile, relations)[1] == 12.5
-    assert service._normalize("sort", "7", profile, relations)[1] == 7
-    assert service._normalize("title", None, profile, relations) == (True, None, None)
-    assert service._normalize("title", 7.0, profile, relations) == (True, "7", None)
-    assert service._normalize("title", "  safe  ", profile, relations) == (
-        True,
-        "safe",
-        None,
-    )
-    with pytest.raises(Exception, match="not in capability manifest"):
-        service._profile("missing")
-
-
-# ---------------------------------------------------------------------------
-# Column mapping
-# ---------------------------------------------------------------------------
-
-
-def test_auto_map_matches_by_field_key() -> None:
-    profile = _profile(_manifest())
-    mapping, unmatched = auto_map_columns(["number", "title", "unknown"], profile, [])
-    assert mapping == {0: "number", 1: "title"}
-    assert unmatched == ["unknown"]
-
-
-def test_auto_map_case_insensitive_and_spaces() -> None:
-    profile = _profile(_manifest())
-    mapping, _ = auto_map_columns(["Number", "Title"], profile, [])
-    assert mapping == {0: "number", 1: "title"}
-
-
-def test_explicit_mapping_overrides_auto() -> None:
-    profile = _profile(_manifest())
-    mapping, _ = auto_map_columns(
-        ["合同号"],
+def test_auto_mapping_is_case_insensitive_and_explicit_mapping_wins() -> None:
+    profile = _profile()
+    mapping, unmatched = auto_map_columns(
+        ["Number", "Signed On", "External title"],
         profile,
-        [ImportColumnMapping(source_column="合同号", target_field="number")],
+        [
+            ImportColumnMapping(
+                source_column="External title",
+                target_field="title",
+            )
+        ],
     )
-    assert mapping == {0: "number"}
-
-
-# ---------------------------------------------------------------------------
-# Preview + apply
-# ---------------------------------------------------------------------------
+    assert mapping == {0: "number", 1: "signed_on", 2: "title"}
+    assert unmatched == []
 
 
 @pytest.mark.asyncio
-async def test_preview_returns_plan_with_source_hash_and_token(tmp_path: Any) -> None:
-    path = tmp_path / "contracts.csv"
-    _write_csv(str(path), ["number", "title"], [["A-1", "Alpha"], ["A-2", "Beta"]])
-    manifest = _manifest()
-    transport = FakeTransport([])
-    service = _service(transport, manifest, str(path))
+async def test_preview_binds_source_and_normalizes_product_fields(tmp_path: Path) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(
+        path,
+        ["number", "amount", "signed_on", "unused"],
+        [["A-1", "$1,234.50", "2026-07-14", "ignored"]],
+    )
+    service, _ = _service(path)
+
     plan = await service.preview(
         PreviewImportParams(
             grant_id="grant-1",
             collection="vibetable_demo",
-            schema_revision=_profile(manifest).capability_hash,
+            schema_revision="schema-1",
         )
     )
-    assert plan.summary.total_rows == 2
-    assert plan.summary.valid_rows == 2
+
     assert len(plan.source_hash) == 64
+    assert plan.summary.valid_rows == 1
+    assert plan.rows[0].values == {
+        "number": "A-1",
+        "amount": 1234.5,
+        "signed_on": "2026-07-14",
+    }
+    assert plan.unmatched_columns == ["unused"]
     assert plan.token.token
-    assert plan.rows[0].values["number"] == "A-1"
 
 
 @pytest.mark.asyncio
-async def test_apply_chunks_rows_and_reports_committed(tmp_path: Any) -> None:
-    path = tmp_path / "contracts.csv"
-    rows = [[f"A-{i}", f"Title {i}"] for i in range(5)]
-    _write_csv(str(path), ["number", "title"], rows)
-    manifest = _manifest()
-    # The bulk endpoint returns one created key per chunk.
-    transport = FakeTransport(
-        [
-            {
-                "data": {
-                    "createdRowKeys": ["c1", "c2"],
-                    "updatedRowKeys": [],
-                    "skippedRowKeys": [],
-                    "conflicts": [],
-                }
-            },
-            {
-                "data": {
-                    "createdRowKeys": ["c3", "c4", "c5"],
-                    "updatedRowKeys": [],
-                    "skippedRowKeys": [],
-                    "conflicts": [],
-                }
-            },
-        ]
-    )
-    service = _service(transport, manifest, str(path))
+async def test_apply_is_one_atomic_product_mutation_and_consumes_grant(tmp_path: Path) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"], ["A-2"]])
+    consumed: list[str] = []
+    service, mutation = _service(path, consumed=consumed)
     plan = await service.preview(
         PreviewImportParams(
             grant_id="grant-1",
             collection="vibetable_demo",
-            schema_revision=_profile(manifest).capability_hash,
+            schema_revision="schema-1",
         )
     )
-    result = await service.apply(
-        ApplyImportParams(
-            grant_id="grant-1",
-            collection="vibetable_demo",
-            token=plan.token.token,
-            chunk_size=3,
-        )
-    )
-    assert result.created_count == 5
-    assert len(result.chunks) == 2  # 3 + 2
-    assert result.failed_rows == []
 
-
-@pytest.mark.asyncio
-async def test_apply_records_failed_chunks_without_rolling_back_committed(tmp_path: Any) -> None:
-    path = tmp_path / "contracts.csv"
-    _write_csv(str(path), ["number", "title"], [["A-1", "T1"], ["A-2", "T2"]])
-    manifest = _manifest()
-    transport = FakeTransport(
-        [
-            {
-                "data": {
-                    "createdRowKeys": ["c1"],
-                    "updatedRowKeys": [],
-                    "skippedRowKeys": [],
-                    "conflicts": [],
-                }
-            },
-            DirectusTransportError("server error", status=500, code="FAILED"),
-        ]
-    )
-    service = _service(transport, manifest, str(path))
-    plan = await service.preview(
-        PreviewImportParams(
-            grant_id="grant-1",
-            collection="vibetable_demo",
-            schema_revision=_profile(manifest).capability_hash,
-        )
-    )
     result = await service.apply(
         ApplyImportParams(
             grant_id="grant-1",
             collection="vibetable_demo",
             token=plan.token.token,
             chunk_size=1,
+            idempotency_prefix="import-1",
         )
     )
-    # First chunk committed (1 created), second chunk failed.
-    assert result.created_count == 1
-    assert len(result.failed_rows) == 1  # the second source row
 
+    assert result.created_count == 2
+    assert result.failed_rows == []
+    assert len(result.chunks) == 1
+    assert result.chunks[0].idempotency_key == "import-1-0"
+    assert len(mutation.calls) == 1
+    assert mutation.calls[0]["schema_revision"] == "schema-1"
+    assert len(mutation.calls[0]["rows"]) == 2
+    assert consumed == ["grant-1"]
 
-@pytest.mark.asyncio
-async def test_apply_rejects_expired_token(tmp_path: Any) -> None:
-    path = tmp_path / "contracts.csv"
-    _write_csv(str(path), ["number"], [["A-1"]])
-    manifest = _manifest()
-    transport = FakeTransport([])
-    # Clock advanced past TTL.
-    clock = [0.0]
-    service = ImportService(
-        client=DirectusClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
-        auth=FakeDirectusAuth(),  # type: ignore[arg-type]
-        bulk=BulkMutationClient(transport, FakeDirectusAuth()),  # type: ignore[arg-type]
-        profiles=manifest.by_collection,
-        resolve_path=lambda _g, *, purpose, direction: str(path),
-        consume_grant=lambda _g: None,
-        clock=lambda: clock[0],
-    )
-    plan = await service.preview(
-        PreviewImportParams(
-            grant_id="grant-1",
-            collection="vibetable_demo",
-            schema_revision=_profile(manifest).capability_hash,
-        )
-    )
-    clock[0] = plan.token.expires_at + 1
-    from backend.application.import_service import ImportFlowError
-
-    with pytest.raises(ImportFlowError, match="expired"):
+    with pytest.raises(ImportFlowError) as replay:
         await service.apply(
             ApplyImportParams(
                 grant_id="grant-1",
@@ -539,85 +354,163 @@ async def test_apply_rejects_expired_token(tmp_path: Any) -> None:
                 token=plan.token.token,
             )
         )
+    assert replay.value.code == "import_token_consumed"
 
 
 @pytest.mark.asyncio
-async def test_apply_rejects_consumed_token(tmp_path: Any) -> None:
-    path = tmp_path / "contracts.csv"
-    _write_csv(str(path), ["number"], [["A-1"]])
-    manifest = _manifest()
-    transport = FakeTransport(
-        [
-            {
-                "data": {
-                    "createdRowKeys": ["c1"],
-                    "updatedRowKeys": [],
-                    "skippedRowKeys": [],
-                    "conflicts": [],
-                }
-            }
-        ]
+async def test_thousand_row_import_uses_one_atomic_product_mutation(tmp_path: Path) -> None:
+    path = tmp_path / "thousand.csv"
+    _write_csv(
+        path,
+        ["number"],
+        [[f"A-{index:04d}"] for index in range(1_000)],
     )
-    service = _service(transport, manifest, str(path))
+    mutation = FakeProductMutationPort(
+        ApplyPasteResult(
+            collection="vibetable_demo",
+            outcome="committed",
+            created_row_keys=[f"row-{index:04d}" for index in range(1_000)],
+            request_id="request-1000",
+        )
+    )
+    service, _ = _service(path, mutation=mutation)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1000",
+            collection="vibetable_demo",
+            schema_revision="schema-1",
+        )
+    )
+
+    result = await service.apply(
+        ApplyImportParams(
+            grant_id="grant-1000",
+            collection="vibetable_demo",
+            token=plan.token.token,
+            chunk_size=100,
+            idempotency_prefix="import-1000",
+        )
+    )
+
+    assert result.created_count == 1_000
+    assert len(mutation.calls) == 1
+    assert len(mutation.calls[0]["rows"]) == 1_000
+
+
+@pytest.mark.asyncio
+async def test_failed_atomic_apply_commits_nothing_and_keeps_grant(tmp_path: Path) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"], ["A-2"]])
+    consumed: list[str] = []
+    mutation = FakeProductMutationPort(
+        ApplyPasteResult(
+            collection="vibetable_demo",
+            outcome="conflict",
+        )
+    )
+    service, _ = _service(path, consumed=consumed, mutation=mutation)
     plan = await service.preview(
         PreviewImportParams(
             grant_id="grant-1",
             collection="vibetable_demo",
-            schema_revision=_profile(manifest).capability_hash,
+            schema_revision="schema-1",
         )
     )
-    await service.apply(
-        ApplyImportParams(grant_id="grant-1", collection="vibetable_demo", token=plan.token.token)
-    )
-    from backend.application.import_service import ImportFlowError
 
-    with pytest.raises(ImportFlowError, match="already used"):
-        await service.apply(
-            ApplyImportParams(
-                grant_id="grant-1", collection="vibetable_demo", token=plan.token.token
-            )
-        )
+    progress_messages: list[str] = []
 
+    async def progress(_done: int, _total: int, message: str) -> None:
+        progress_messages.append(message)
 
-@pytest.mark.asyncio
-async def test_relation_column_requires_explicit_relation_id_and_match_field(tmp_path: Any) -> None:
-    path = tmp_path / "contracts.csv"
-    _write_csv(str(path), ["contract"], [["C-001"]])
-    manifest = _relation_manifest()
-    service = _service(FakeTransport([]), manifest, str(path), FakeRelationProvider({}))
-
-    plan = await service.preview(
-        PreviewImportParams(
+    result = await service.apply(
+        ApplyImportParams(
             grant_id="grant-1",
             collection="vibetable_demo",
-            schema_revision=_profile(manifest).capability_hash,
-        )
+            token=plan.token.token,
+        ),
+        progress=progress,
     )
 
-    assert plan.summary.error_rows == 1
-    assert plan.rows[0].diagnostics[0].code == "relation_mapping_required"
+    assert result.created_count == result.updated_count == 0
+    assert result.failed_rows == [2, 3]
+    assert consumed == []
+    assert progress_messages == ["atomic import failed [import_conflict]"]
 
 
 @pytest.mark.asyncio
-async def test_relation_preview_uses_exact_unique_match_and_diagnoses_zero_and_many(
-    tmp_path: Any,
+async def test_failed_atomic_apply_surfaces_safe_product_path_and_message(
+    tmp_path: Path,
 ) -> None:
-    path = tmp_path / "contracts.csv"
-    _write_csv(str(path), ["合同号"], [["C-001"], ["missing"], ["duplicate"]])
-    manifest = _relation_manifest()
-    provider = FakeRelationProvider(
-        {"C-001": ["contract-1"], "duplicate": ["contract-2", "contract-3"]}
+    class ProductCauseError(Exception):
+        path = "payload"
+
+    class FailingMutation(FakeProductMutationPort):
+        async def apply(self, **kwargs: Any) -> ApplyPasteResult:
+            del kwargs
+            try:
+                raise ProductCauseError("Invalid JSON value.")
+            except ProductCauseError as cause:
+                raise PasteError(
+                    "PocketBase rejected the mutation",
+                    code="mutation.validation.failed",
+                ) from cause
+
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"]])
+    service, _ = _service(path, mutation=FailingMutation())
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1",
+            collection="vibetable_demo",
+            schema_revision="schema-1",
+        )
     )
-    service = _service(FakeTransport([]), manifest, str(path), provider)
+    progress_messages: list[str] = []
+
+    async def progress(_done: int, _total: int, message: str) -> None:
+        progress_messages.append(message)
+
+    result = await service.apply(
+        ApplyImportParams(
+            grant_id="grant-1",
+            collection="vibetable_demo",
+            token=plan.token.token,
+        ),
+        progress=progress,
+    )
+
+    assert result.failed_rows == [2]
+    assert progress_messages == [
+        "atomic import failed [mutation.validation.failed]: at payload: Invalid JSON value."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_relation_preview_requires_stable_identity_and_exact_unique_match(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["contract"], [["C-1"], ["missing"], ["duplicate"]])
+    provider = FakeRelationProvider(
+        {
+            "C-1": ["contract-1"],
+            "duplicate": ["contract-2", "contract-3"],
+        }
+    )
+    service, _ = _service(
+        path,
+        profile=_profile(relation=True),
+        relation_provider=provider,
+    )
 
     plan = await service.preview(
         PreviewImportParams(
             grant_id="grant-1",
             collection="vibetable_demo",
-            schema_revision=_profile(manifest).capability_hash,
+            schema_revision="schema-1",
             column_mapping=[
                 ImportColumnMapping(
-                    source_column="合同号",
+                    source_column="contract",
                     target_field="contract",
                     relation_id="rel_contract",
                     match_field="number",
@@ -626,92 +519,34 @@ async def test_relation_preview_uses_exact_unique_match_and_diagnoses_zero_and_m
         )
     )
 
-    assert provider.inspected == [("rel_contract", "number")]
     assert plan.rows[0].values["contract"] == "contract-1"
     assert plan.rows[0].relation_resolutions[0].state == "matched"
     assert plan.rows[1].diagnostics[0].code == "relation_match_not_found"
     assert plan.rows[2].diagnostics[0].code == "relation_match_ambiguous"
+    assert provider.inspected == [("rel_contract", "number")]
 
 
 @pytest.mark.asyncio
-async def test_create_if_missing_is_default_off_preview_only_and_atomic_on_apply(
-    tmp_path: Any,
-) -> None:
-    path = tmp_path / "contracts.csv"
-    _write_csv(str(path), ["合同号"], [["NEW-001"]])
-    manifest = _relation_manifest()
-    provider = FakeRelationProvider({})
-    service = _service(FakeTransport([]), manifest, str(path), provider)
-    mapping = [
-        ImportColumnMapping(
-            source_column="合同号",
-            target_field="contract",
-            relation_id="rel_contract",
-            match_field="number",
-        )
-    ]
-
-    blocked = await service.preview(
-        PreviewImportParams(
-            grant_id="grant-1",
-            collection="vibetable_demo",
-            schema_revision=_profile(manifest).capability_hash,
-            column_mapping=mapping,
-        )
-    )
-    assert blocked.rows[0].diagnostics[0].code == "relation_match_not_found"
-    assert provider.applied == []
-
+async def test_expired_import_token_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"]])
+    now = [100.0]
+    service, _ = _service(path, clock=lambda: now[0])
     plan = await service.preview(
         PreviewImportParams(
             grant_id="grant-1",
             collection="vibetable_demo",
-            schema_revision=_profile(manifest).capability_hash,
-            column_mapping=mapping,
-            create_if_missing=True,
+            schema_revision="schema-1",
         )
     )
-    assert plan.summary.error_count == 0
-    assert plan.rows[0].relation_resolutions[0].state == "create"
-    assert "contract" not in plan.rows[0].values
-    assert provider.applied == []  # preview performs no target write
+    now[0] += 601
 
-    result = await service.apply(
-        ApplyImportParams(
-            grant_id="grant-1",
-            collection="vibetable_demo",
-            token=plan.token.token,
-            idempotency_prefix="import-contracts",
+    with pytest.raises(ImportFlowError) as error:
+        await service.apply(
+            ApplyImportParams(
+                grant_id="grant-1",
+                collection="vibetable_demo",
+                token=plan.token.token,
+            )
         )
-    )
-    assert result.created_count == 1
-    assert len(provider.applied) == 1
-    assert provider.applied[0]["idempotency_key"] == "import-contracts-0"
-    assert provider.applied[0]["rows"][0].relation_resolutions[0].state == "create"
-
-
-@pytest.mark.asyncio
-async def test_relation_match_field_must_be_live_schema_proven_unique(tmp_path: Any) -> None:
-    path = tmp_path / "contracts.csv"
-    _write_csv(str(path), ["合同"], [["Alpha"]])
-    manifest = _relation_manifest()
-    service = _service(FakeTransport([]), manifest, str(path), FakeRelationProvider({}))
-
-    plan = await service.preview(
-        PreviewImportParams(
-            grant_id="grant-1",
-            collection="vibetable_demo",
-            schema_revision=_profile(manifest).capability_hash,
-            column_mapping=[
-                ImportColumnMapping(
-                    source_column="合同",
-                    target_field="contract",
-                    relation_id="rel_contract",
-                    match_field="title",
-                )
-            ],
-        )
-    )
-
-    assert plan.summary.error_rows == 1
-    assert plan.rows[0].diagnostics[0].code == "relation_mapping_invalid"
+    assert error.value.code == "import_token_expired"

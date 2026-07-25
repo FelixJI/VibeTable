@@ -4,7 +4,7 @@ namespace VibeTable.Desktop.Services;
 
 /// <summary>
 /// Pure URI policy shared by the two WebView2 hosts. Keeping the policies
-/// separate prevents the trusted Directus origin from leaking into the main
+/// separate prevents the trusted administration origin from leaking into the main
 /// application renderer's navigation boundary.
 /// </summary>
 public static class WebViewNavigationPolicy
@@ -17,10 +17,10 @@ public static class WebViewNavigationPolicy
             && candidate.IsDefaultPort;
     }
 
-    public static bool IsAdminNavigation(string? uri, string? directusBaseUrl)
+    public static bool IsAdminNavigation(string? uri, string? adminBaseUrl)
     {
         if (!TryGetAbsoluteHttpUri(uri, out var candidate)
-            || !TryGetAbsoluteHttpUri(directusBaseUrl, out var allowed))
+            || !TryGetAbsoluteHttpUri(adminBaseUrl, out var allowed))
         {
             return false;
         }
@@ -35,8 +35,8 @@ public static class WebViewNavigationPolicy
 
     public static WebViewLinkDisposition ClassifyAdminNewWindow(
         string? uri,
-        string? directusBaseUrl)
-        => ClassifyNewWindow(uri, IsAdminNavigation(uri, directusBaseUrl));
+        string? adminBaseUrl)
+        => ClassifyNewWindow(uri, IsAdminNavigation(uri, adminBaseUrl));
 
     private static WebViewLinkDisposition ClassifyNewWindow(string? uri, bool trusted)
     {

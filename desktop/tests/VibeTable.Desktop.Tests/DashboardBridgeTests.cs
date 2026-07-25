@@ -311,7 +311,7 @@ public sealed class DashboardBridgeTests
         public Task<PanelManifestResult> GetPanelManifestAsync(CancellationToken token)
         {
             ManifestCalls++;
-            return Task.FromResult(new PanelManifestResult("v2", ">=12 <13", []));
+            return Task.FromResult(new PanelManifestResult("v2", "product-query-port.v1", []));
         }
 
         private static DashboardWorkspaceResult Workspace(string id)

@@ -30,5 +30,9 @@ public interface IDocumentWorkspaceRpcGateway
         RegisterDocumentParams request,
         CancellationToken token);
 
+    Task<PublishIndexBatchResult> PublishIndexBatchAsync(
+        PublishIndexBatchParams request,
+        CancellationToken token);
+
     Task UnlinkAsync(string linkId, CancellationToken token);
 }

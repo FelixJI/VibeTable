@@ -7,7 +7,7 @@ namespace VibeTable.Infrastructure.Workspace;
 /// Per-machine mount registry for workspace roots.
 ///
 /// Stored at <c>%LOCALAPPDATA%/VibeTable/workspace-mounts.json</c>. Maps
-/// <c>workspaceId → localRoot</c>. Does NOT enter Directus or the Web layer;
+/// <c>workspaceId → localRoot</c>. Does NOT enter the data service or the Web layer;
 /// each machine maps the same workspace UUID to its own local path.
 /// </summary>
 public sealed class WorkspaceMountStore
