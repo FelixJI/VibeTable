@@ -43,17 +43,17 @@ PresetScope = Literal["personal", "system", "role"]
 
 
 class PresetView(CamelModel):
-    """The shared business view a preset carries (filter/sort/layout).
-
-    Only business-view data; device-local pixel widths/positions stay in B3
-    local Grid State.
-    """
+    """A reusable table presentation for one local data source."""
 
     filters: list[dict[str, Any]] = Field(default_factory=list)
     sorts: list[dict[str, Any]] = Field(default_factory=list)
     search: str = Field(default="", max_length=256)
     visible_fields: list[str] = Field(default_factory=list, max_length=128)
     layout: str = Field(default="table", max_length=32)
+    kind: Literal["table"] = "table"
+    columns: list[dict[str, Any]] = Field(default_factory=list, max_length=128)
+    density: Literal["compact", "comfortable", "cozy"] = "comfortable"
+    is_default: bool = False
 
 
 class PresetEntry(CamelModel):

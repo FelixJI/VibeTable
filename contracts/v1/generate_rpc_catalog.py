@@ -26,6 +26,7 @@ from backend.application.product_data_service import (  # noqa: E402
 )
 from backend.contracts.backup import (  # noqa: E402
     BackupCreateResult,
+    BackupDeleteResult,
     BackupListResult,
     BackupRestoreResult,
 )
@@ -349,6 +350,11 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
     }
     specs: dict[str, ResultSpec] = {
         "backup.create": _typed(BackupCreateResult),
+        "backup.delete": _manual(
+            "BackupDeleteResult",
+            {"deleted": "manual_20260724_101500.zip"},
+            BackupDeleteResult.model_json_schema(),
+        ),
         "backup.list": _typed(BackupListResult),
         "backup.restore": _typed(BackupRestoreResult),
         "command.list": _typed(CommandsResult),

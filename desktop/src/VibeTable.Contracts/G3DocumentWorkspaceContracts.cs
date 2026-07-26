@@ -167,3 +167,78 @@ public sealed record DocumentOperationFailedPayload(
     [property: JsonPropertyName("message")] string Message,
     [property: JsonPropertyName("code")] string? Code
 );
+
+// --- desktop file-version requests ---
+
+public sealed record DocumentEntryHandleRequest(
+    [property: JsonPropertyName("entryHandle")] string EntryHandle
+);
+
+public sealed record DocumentCommitRevisionRequestedPayload(
+    [property: JsonPropertyName("entryHandle")] string EntryHandle,
+    [property: JsonPropertyName("note")] string? Note,
+    [property: JsonPropertyName("schemeHandle")] string? SchemeHandle
+);
+
+public sealed record DocumentPromoteVersionRequestedPayload(
+    [property: JsonPropertyName("entryHandle")] string EntryHandle,
+    [property: JsonPropertyName("versionLabel")] string VersionLabel,
+    [property: JsonPropertyName("note")] string? Note,
+    [property: JsonPropertyName("schemeHandle")] string? SchemeHandle
+);
+
+public sealed record DocumentRevisionHandleRequest(
+    [property: JsonPropertyName("entryHandle")] string EntryHandle,
+    [property: JsonPropertyName("revisionHandle")] string RevisionHandle
+);
+
+public sealed record DocumentSchemeCreateRequestedPayload(
+    [property: JsonPropertyName("entryHandle")] string EntryHandle,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("baseRevisionHandle")] string? BaseRevisionHandle
+);
+
+public sealed record DocumentSchemeHandleRequest(
+    [property: JsonPropertyName("entryHandle")] string EntryHandle,
+    [property: JsonPropertyName("schemeHandle")] string SchemeHandle
+);
+
+public sealed record DocumentSchemeRenameRequestedPayload(
+    [property: JsonPropertyName("entryHandle")] string EntryHandle,
+    [property: JsonPropertyName("schemeHandle")] string SchemeHandle,
+    [property: JsonPropertyName("name")] string Name
+);
+
+// --- desktop file-version responses ---
+
+public sealed record DocumentVersionCommittedPayload(
+    [property: JsonPropertyName("entryHandle")] string EntryHandle,
+    [property: JsonPropertyName("revisionHandle")] string RevisionHandle,
+    [property: JsonPropertyName("currentRevision")] string CurrentRevision,
+    [property: JsonPropertyName("schemeHandle")] string? SchemeHandle
+);
+
+public sealed record DocumentRevisionPreviewCompletedPayload(
+    [property: JsonPropertyName("entryHandle")] string EntryHandle,
+    [property: JsonPropertyName("revisionHandle")] string RevisionHandle,
+    [property: JsonPropertyName("action")] string Action
+);
+
+public sealed record DocumentSchemeBridgeEntry(
+    [property: JsonPropertyName("schemeHandle")] string SchemeHandle,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("currentRevisionHandle")] string? CurrentRevisionHandle,
+    [property: JsonPropertyName("currentRevisionLabel")] string? CurrentRevisionLabel,
+    [property: JsonPropertyName("archived")] bool Archived,
+    [property: JsonPropertyName("active")] bool Active
+);
+
+public sealed record DocumentSchemeListLoadedPayload(
+    [property: JsonPropertyName("entryHandle")] string EntryHandle,
+    [property: JsonPropertyName("schemes")] IReadOnlyList<DocumentSchemeBridgeEntry> Schemes
+);
+
+public sealed record DocumentSchemeMutationCompletedPayload(
+    [property: JsonPropertyName("entryHandle")] string EntryHandle,
+    [property: JsonPropertyName("scheme")] DocumentSchemeBridgeEntry Scheme
+);

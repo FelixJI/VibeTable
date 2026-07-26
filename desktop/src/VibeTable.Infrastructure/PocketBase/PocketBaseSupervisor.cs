@@ -19,8 +19,11 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
     private const string ReadyEvent = "sidecar.ready";
     private const string SessionSecretEnvironment =
         "VIBETABLE_SIDECAR_SESSION_SECRET";
+    private const string SessionHeaderName = "X-VibeTable-Session";
     private const string HealthPath = "/api/vibetable/v1/health";
     private const string ShutdownPath = "/api/vibetable/v1/shutdown";
+    private const string AdminBootstrapPath =
+        "/api/vibetable/v1/admin/bootstrap";
 
     private readonly PocketBaseLaunchOptions _options;
     private readonly IPocketBaseProcessFactory _processFactory;
@@ -68,10 +71,40 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         }
     }
 
-    // The sidecar currently authenticates every route with a per-launch header.
-    // A system browser cannot safely attach that header, so no admin capability
-    // is advertised until a dedicated safe bridge exists.
-    public Uri? GetAdminUri() => null;
+    public Uri? GetAdminUri()
+    {
+        PocketBaseStatus status = GetStatus();
+        return status.State == PocketBaseState.Ready
+            && status.AdminAvailable
+            && status.BaseAddress is not null
+                ? new Uri(status.BaseAddress, "_/")
+                : null;
+    }
+
+    public PocketBaseAdminContext? GetAdminContext()
+    {
+        ProcessGeneration? generation = Volatile.Read(ref _generation);
+        if (generation is null) return null;
+
+        lock (generation.TransitionGate)
+        {
+            if (generation.Phase != ProcessGeneration.Ready
+                || generation.Process.HasExited
+                || generation.BaseAddress is null
+                || string.IsNullOrEmpty(generation.SessionSecret))
+            {
+                return null;
+            }
+
+            return new PocketBaseAdminContext(
+                new Uri(
+                    generation.BaseAddress,
+                    AdminBootstrapPath.TrimStart('/')),
+                generation.BaseAddress,
+                SessionHeaderName,
+                generation.SessionSecret);
+        }
+    }
 
     /// <summary>
     /// Copies the current private loopback origin and ephemeral credential
@@ -287,7 +320,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
                 PublishStatus(new PocketBaseStatus(
                     PocketBaseState.Ready,
                     generation.BaseAddress,
-                    false,
+                    true,
                     null,
                     null));
             }

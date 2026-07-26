@@ -44,6 +44,7 @@ from backend.application.system_service import SystemService
 from backend.application.task_service import build_task_service
 from backend.contracts.backup import (
     CreateBackupParams,
+    DeleteBackupParams,
     ListBackupsParams,
     RestoreBackupParams,
 )
@@ -299,12 +300,13 @@ def _register_backup_methods(
     dispatcher: RpcDispatcher,
     service: PocketBaseBackupService,
 ) -> None:
-    """Register the three fixed backup product operations."""
+    """Register the fixed backup product operations."""
     from backend.rpc.dispatcher import register_pocketbase_product_errors
 
     register_pocketbase_product_errors()
     dispatcher.register("backup.list", service.list_backups, ListBackupsParams)
     dispatcher.register("backup.create", service.create_backup, CreateBackupParams)
+    dispatcher.register("backup.delete", service.delete_backup, DeleteBackupParams)
     dispatcher.register("backup.restore", service.restore_backup, RestoreBackupParams)
 
 

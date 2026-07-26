@@ -17,15 +17,8 @@ export function usePresetVersionService() {
   const bridge = useHostBridge();
   const store = usePresetVersionStore();
 
-  async function listPresets(collection: string): Promise<void> {
-    store.begin();
-    try {
-      store.receivePresets(
-        await bridge.request("preset.list", { collection }) as PresetsResult,
-      );
-    } catch (error) {
-      store.fail(error);
-    }
+  async function listPresets(collection: string): Promise<PresetsResult> {
+    return await bridge.request("preset.list", { collection }) as PresetsResult;
   }
 
   async function savePreset(
@@ -34,30 +27,15 @@ export function usePresetVersionService() {
     view: PresetView,
     presetId?: string | null,
   ): Promise<PresetEntry> {
-    store.begin();
-    try {
-      const saved = await bridge.request("preset.save", {
-        collection, name, view, presetId, operationId: operationId(),
-      }) as PresetEntry;
-      store.upsertPreset(saved);
-      return saved;
-    } catch (error) {
-      store.fail(error);
-      throw error;
-    }
+    return await bridge.request("preset.save", {
+      collection, name, view, presetId, operationId: operationId(),
+    }) as PresetEntry;
   }
 
   async function deletePreset(presetId: string, expectedRevision: string): Promise<void> {
-    store.begin();
-    try {
-      await bridge.request("preset.delete", {
-        presetId, expectedRevision, operationId: operationId(),
-      });
-      store.removePreset(presetId);
-    } catch (error) {
-      store.fail(error);
-      throw error;
-    }
+    await bridge.request("preset.delete", {
+      presetId, expectedRevision, operationId: operationId(),
+    });
   }
 
   async function listVersions(collection: string, itemId: string): Promise<void> {

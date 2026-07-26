@@ -10,7 +10,7 @@ describe("FileWorkspaceView", () => {
   it("keeps single click for selection and double-click for open", async () => {
     const store = useDocumentWorkspaceStore();
     store.setEntries([
-      { entryHandle: "doc-1", documentId: "1", displayName: "方案.docx", authority: "workspace", availability: "available", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", capabilities: ["open", "preview", "reveal", "history"] },
+      { entryHandle: "doc-1", displayName: "方案.docx", authority: "workspace", availability: "available", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", capabilities: ["open", "preview", "reveal", "history"] },
     ]);
     const wrapper = mount(FileWorkspaceView);
     expect(wrapper.emitted("intent")?.[0]).toEqual([{
@@ -30,7 +30,7 @@ describe("FileWorkspaceView", () => {
   it("offers relink instead of reveal for a missing workspace document", async () => {
     const store = useDocumentWorkspaceStore();
     store.setEntries([
-      { entryHandle: "missing", documentId: "2", displayName: "预算.xlsx", authority: "workspace", availability: "missing", capabilities: ["relink", "history"] },
+      { entryHandle: "missing", displayName: "预算.xlsx", authority: "workspace", availability: "missing", capabilities: ["relink", "history"] },
     ]);
     const wrapper = mount(FileWorkspaceView);
     await wrapper.get('[data-testid="document-row-missing"]').trigger("contextmenu", { clientX: 20, clientY: 30 });
@@ -75,7 +75,7 @@ describe("FileWorkspaceView", () => {
   it("turns an eligible row drag gesture into an opaque drag-out intent", async () => {
     const store = useDocumentWorkspaceStore();
     store.setEntries([
-      { entryHandle: "drag-1", documentId: "3", displayName: "brief.pdf", authority: "workspace", availability: "available", capabilities: ["open", "dragOut"] },
+      { entryHandle: "drag-1", displayName: "brief.pdf", authority: "workspace", availability: "available", capabilities: ["open", "dragOut"] },
     ]);
     const wrapper = mount(FileWorkspaceView);
     const row = wrapper.get('[data-testid="document-row-drag-1"]');

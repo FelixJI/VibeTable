@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import {
   NButton,
   NAlert,
@@ -7,6 +7,7 @@ import {
   NIcon,
   NInput,
   NModal,
+  NPopconfirm,
   NRadioButton,
   NRadioGroup,
   NSelect,
@@ -24,6 +25,7 @@ import {
   HelpCircle,
   Database,
   Download,
+  FolderOpen,
   Info,
   Keyboard,
   Copy,
@@ -32,6 +34,7 @@ import {
   RefreshCw,
   Search,
   Tags,
+  Trash2,
   X,
 } from "lucide-vue-next";
 import brandIconUrl from "@/assets/brand/vibetable.png";
@@ -50,14 +53,15 @@ import type { Locale } from "@/i18n";
 import { t } from "@/i18n";
 import WorkCalendarMonth from "@/components/calendar/WorkCalendarMonth.vue";
 import MonthNavigator from "@/components/calendar/MonthNavigator.vue";
-import PresetVersionPanel from "@/components/settings/PresetVersionPanel.vue";
 import { formatDateKey, formatMonthKey, parseDateKey, shiftMonthKey } from "@/calendar/workCalendar";
 import { useWorkCalendarStore } from "@/stores/workCalendarStore";
 import type { WorkCalendarOverrideKind } from "@/calendar/workCalendar";
 import type { BackupEntry } from "@/contracts/backupContracts";
+import type { RuntimeDiagnostics } from "@/contracts/runtimeDiagnosticsContracts";
 import type { DataRootStatus } from "@/contracts";
 import { useBackupService } from "@/services/backupService";
 import { useDataRootService } from "@/services/dataRootService";
+import { useRuntimeDiagnosticsService } from "@/services/runtimeDiagnosticsService";
 
 type Section = "general" | "calendar" | "mapping" | "source" | "backup" | "interaction" | "about";
 
@@ -82,9 +86,10 @@ const calendarMonth = ref(formatMonthKey(new Date()));
 const selectedCalendarDate = ref(formatDateKey(new Date()));
 const backupService = useBackupService();
 const backups = ref<readonly BackupEntry[]>([]);
-const backupPhase = ref<"idle" | "loading" | "creating" | "restoring">("idle");
+const backupPhase = ref<"idle" | "loading" | "creating" | "deleting" | "restoring">("idle");
 const backupError = ref<string | null>(null);
 const backupStatus = ref<string | null>(null);
+let backupStatusTimer: number | null = null;
 const restoreTarget = ref<BackupEntry | null>(null);
 const restoreTrigger = ref<HTMLElement | null>(null);
 const dataRootService = useDataRootService();
@@ -92,6 +97,10 @@ const dataRootStatus = ref<DataRootStatus | null>(null);
 const dataRootPhase = ref<"idle" | "loading" | "choosing">("idle");
 const dataRootError = ref<string | null>(null);
 const dataRootMessage = ref<string | null>(null);
+const diagnosticsService = useRuntimeDiagnosticsService();
+const diagnostics = ref<RuntimeDiagnostics | null>(null);
+const diagnosticsPhase = ref<"idle" | "loading">("idle");
+const diagnosticsError = ref<string | null>(null);
 
 function openRestoreConfirmation(backup: BackupEntry, event: MouseEvent): void {
   restoreTrigger.value = event.currentTarget instanceof HTMLElement
@@ -122,6 +131,7 @@ watch(current, (section) => {
   if (section === "mapping") emit("loadMappings");
   if (section === "backup") void loadBackups();
   if (section === "source") void loadDataRoot();
+  if (section === "about") void loadDiagnostics();
 });
 
 function errorMessage(error: unknown): string {
@@ -171,6 +181,7 @@ async function chooseDataRootMigration(): Promise<void> {
 async function loadBackups(): Promise<void> {
   backupPhase.value = "loading";
   backupError.value = null;
+  clearBackupStatus();
   try {
     backups.value = (await backupService.listBackups()).backups;
   } catch (error) {
@@ -180,22 +191,64 @@ async function loadBackups(): Promise<void> {
   }
 }
 
+function clearBackupStatus(): void {
+  if (backupStatusTimer !== null) {
+    window.clearTimeout(backupStatusTimer);
+    backupStatusTimer = null;
+  }
+  backupStatus.value = null;
+}
+
+function setBackupStatus(message: string, autoClearMs = 0): void {
+  clearBackupStatus();
+  backupStatus.value = message;
+  if (autoClearMs > 0) {
+    backupStatusTimer = window.setTimeout(clearBackupStatus, autoClearMs);
+  }
+}
+
 async function createBackup(): Promise<void> {
   backupPhase.value = "creating";
   backupError.value = null;
-  backupStatus.value = t("settings.backup.creating");
+  setBackupStatus(t("settings.backup.creating"));
   try {
     const result = await backupService.createBackup();
     backups.value = [
       result.backup,
       ...backups.value.filter((item) => item.name !== result.backup.name),
     ];
-    backupStatus.value = t("settings.backup.created", { name: result.backup.name });
+    setBackupStatus(t("settings.backup.created", { name: result.backup.name }), 5000);
   } catch (error) {
     backupStatus.value = null;
     backupError.value = errorMessage(error);
   } finally {
     backupPhase.value = "idle";
+  }
+}
+
+async function deleteBackup(backup: BackupEntry): Promise<void> {
+  backupPhase.value = "deleting";
+  backupError.value = null;
+  setBackupStatus(t("settings.backup.deleting", { name: backup.name }));
+  try {
+    await backupService.deleteBackup(backup.name);
+    backups.value = backups.value.filter((item) => item.name !== backup.name);
+    setBackupStatus(t("settings.backup.deleted", { name: backup.name }), 5000);
+  } catch (error) {
+    clearBackupStatus();
+    backupError.value = errorMessage(error);
+  } finally {
+    backupPhase.value = "idle";
+  }
+}
+
+async function openBackupFolder(): Promise<void> {
+  backupError.value = null;
+  try {
+    await backupService.openBackupFolder();
+    setBackupStatus(t("settings.backup.folderOpened"), 3500);
+  } catch (error) {
+    backupError.value = errorMessage(error);
   }
 }
 
@@ -205,16 +258,36 @@ async function confirmRestore(): Promise<void> {
   restoreTarget.value = null;
   backupPhase.value = "restoring";
   backupError.value = null;
-  backupStatus.value = t("settings.backup.restoring");
+  setBackupStatus(t("settings.backup.restoring"));
   try {
     await backupService.restoreBackup(target.name, true);
-    backupStatus.value = t("settings.backup.restarting");
+    setBackupStatus(t("settings.backup.restarting"));
   } catch (error) {
     backupStatus.value = null;
     backupError.value = errorMessage(error);
     backupPhase.value = "idle";
   }
 }
+
+async function loadDiagnostics(): Promise<void> {
+  diagnosticsPhase.value = "loading";
+  diagnosticsError.value = null;
+  try {
+    diagnostics.value = await diagnosticsService.getDiagnostics();
+  } catch (error) {
+    diagnosticsError.value = error instanceof Error
+      ? error.message
+      : t("settings.about.failed");
+  } finally {
+    diagnosticsPhase.value = "idle";
+  }
+}
+
+function formatMemory(size: number): string {
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+onBeforeUnmount(clearBackupStatus);
 
 function formatBackupSize(size: number): string {
   if (size < 1024) return `${size} B`;
@@ -593,7 +666,6 @@ function setCalendarName(name: string): void {
               <p>{{ t("settings.source.automatic") }}</p>
             </div>
           </section>
-          <PresetVersionPanel />
         </template>
 
         <template v-else-if="current === 'backup'">
@@ -608,6 +680,15 @@ function setCalendarName(name: string): void {
                 <small>{{ t("settings.backup.localHint") }}</small>
               </div>
               <div class="backup-actions">
+                <NButton
+                  size="small"
+                  :disabled="backupPhase !== 'idle'"
+                  data-testid="backup-open-folder"
+                  @click="openBackupFolder"
+                >
+                  <template #icon><NIcon><FolderOpen /></NIcon></template>
+                  {{ t("settings.backup.openFolder") }}
+                </NButton>
                 <NButton
                   size="small"
                   quaternary
@@ -641,9 +722,11 @@ function setCalendarName(name: string): void {
             </NAlert>
             <NAlert
               v-if="backupStatus"
-              :type="backupPhase === 'restoring' ? 'warning' : 'success'"
+              :type="backupPhase === 'restoring' || backupPhase === 'deleting' ? 'warning' : 'success'"
               :title="t('settings.backup.status')"
+              closable
               data-testid="backup-status"
+              @close="clearBackupStatus"
             >
               {{ backupStatus }}
             </NAlert>
@@ -663,16 +746,37 @@ function setCalendarName(name: string): void {
                   <span>{{ formatBackupDate(backup.modified) }} · {{ formatBackupSize(backup.size) }}</span>
                   <code :title="backup.sha256">SHA-256 {{ backup.sha256.slice(0, 12) }}…</code>
                 </div>
-                <NButton
-                  size="small"
-                  secondary
-                  type="warning"
-                  :disabled="backupPhase !== 'idle'"
-                  :data-testid="`backup-restore-${backup.name}`"
-                  @click="openRestoreConfirmation(backup, $event)"
-                >
-                  {{ t("settings.backup.restore") }}
-                </NButton>
+                <div class="backup-entry-actions">
+                  <NButton
+                    size="small"
+                    secondary
+                    type="warning"
+                    :disabled="backupPhase !== 'idle'"
+                    :data-testid="`backup-restore-${backup.name}`"
+                    @click="openRestoreConfirmation(backup, $event)"
+                  >
+                    {{ t("settings.backup.restore") }}
+                  </NButton>
+                  <NPopconfirm
+                    :positive-text="t('settings.backup.deleteConfirm')"
+                    :negative-text="t('settings.backup.cancel')"
+                    @positive-click="deleteBackup(backup)"
+                  >
+                    <template #trigger>
+                      <NButton
+                        size="small"
+                        quaternary
+                        type="error"
+                        :disabled="backupPhase !== 'idle'"
+                        :data-testid="`backup-delete-${backup.name}`"
+                      >
+                        <template #icon><NIcon><Trash2 /></NIcon></template>
+                        {{ t("settings.backup.delete") }}
+                      </NButton>
+                    </template>
+                    {{ t("settings.backup.deleteMessage", { name: backup.name }) }}
+                  </NPopconfirm>
+                </div>
               </article>
             </div>
 
@@ -752,6 +856,32 @@ function setCalendarName(name: string): void {
             <img class="about-logo" :src="brandIconUrl" alt="" aria-hidden="true" />
             <div><strong>VibeTable</strong><small>{{ t("settings.about.tagline") }}</small></div>
             <span class="desktop-badge">{{ t("settings.about.desktop") }}</span>
+          </section>
+          <section class="diagnostics-card">
+            <div class="diagnostics-heading">
+              <div>
+                <strong>{{ t("settings.about.runtime") }}</strong>
+                <small>{{ t("settings.about.runtimeHint") }}</small>
+              </div>
+              <NButton size="small" :loading="diagnosticsPhase === 'loading'" @click="loadDiagnostics">
+                {{ t("settings.about.refresh") }}
+              </NButton>
+            </div>
+            <NAlert v-if="diagnosticsError" type="error" :title="t('settings.about.failed')">
+              {{ diagnosticsError }}
+            </NAlert>
+            <dl v-else-if="diagnostics" class="diagnostics-grid">
+              <div><dt>{{ t("settings.about.currentDirectory") }}</dt><dd><code>{{ diagnostics.currentDirectory }}</code></dd></div>
+              <div><dt>{{ t("settings.about.programDirectory") }}</dt><dd><code>{{ diagnostics.programDirectory }}</code></dd></div>
+              <div><dt>{{ t("settings.about.dataDirectory") }}</dt><dd><code>{{ diagnostics.dataDirectory }}</code></dd></div>
+              <div><dt>{{ t("settings.about.systemVersion") }}</dt><dd>{{ diagnostics.operatingSystem }}</dd></div>
+              <div><dt>{{ t("settings.about.programVersion") }}</dt><dd>{{ diagnostics.programVersion }}</dd></div>
+              <div><dt>{{ t("settings.about.runtimeVersion") }}</dt><dd>{{ diagnostics.dotnetVersion }}</dd></div>
+              <div><dt>{{ t("settings.about.pocketBaseVersion") }}</dt><dd>{{ diagnostics.pocketBaseVersion }}</dd></div>
+              <div><dt>{{ t("settings.about.memory") }}</dt><dd>{{ formatMemory(diagnostics.memoryBytes) }}</dd></div>
+              <div><dt>{{ t("settings.about.dataServiceState") }}</dt><dd>{{ diagnostics.dataServiceState }}</dd></div>
+            </dl>
+            <p v-else class="diagnostics-loading">{{ t("settings.about.loading") }}</p>
           </section>
         </template>
       </div>
@@ -838,21 +968,22 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 /* "今日/Today" 文字很短，但 Naive UI 默认按钮水平内边距（~14px×2）让它在
    工具栏里偏宽、挤占有限空间。收紧到与圆形图标按钮视觉一致。 */
 .calendar-today-btn :deep(.n-button__content) { padding: 0 6px; }
-.calendar-layout { display: grid; grid-template-columns: minmax(360px, 1fr) auto; gap: 18px; padding: 16px; }
+.calendar-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 220px); gap: 18px; padding: 16px; }
 /* 面板宽度由内容驱动（不再固定 230px）：NInput 的固定宽度定下列宽，
    单选按钮按文字自然宽度排列，标签/备注在列宽内换行。避免固定窄列把
    控件右边裁切。 */
-.calendar-rule-panel { display: flex; flex-direction: column; gap: 8px; padding: 14px; border-left: 1px solid var(--vt-border); }
+.calendar-rule-panel { display: flex; min-width: 0; flex-direction: column; gap: 8px; padding: 14px; border-left: 1px solid var(--vt-border); }
 .calendar-rule-panel > span, .calendar-rule-panel > label { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .calendar-rule-panel > strong { margin-bottom: 7px; font-size: 15px; font-weight: 600; line-height: 1.45; }
 .calendar-rule-panel > label { margin-top: 7px; }
 .calendar-rule-panel > p { margin: 8px 0 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); line-height: 1.55; }
 /* 名称输入框给固定宽度，作为面板列宽的基准（Naive UI 默认 width:100% 在
    auto 列里会塌缩，所以显式给值）。 */
-.calendar-name-input { width: 200px; }
+.calendar-name-input { width: min(200px, 100%); }
 /* 单选按钮按文字宽度排成一行（不再竖排拉满），按需换行。 */
 .calendar-rule-options { display: flex; flex-direction: row; flex-wrap: wrap; gap: 5px; }
-.calendar-rule-options :deep(.n-radio-button) { width: auto; }
+.calendar-rule-panel :deep(.n-radio-group) { min-width: 0; max-width: 100%; }
+.calendar-rule-options :deep(.n-radio-button) { flex: 0 1 auto; width: auto; max-width: 100%; }
 .calendar-footer { display: flex; align-items: center; gap: 14px; padding: 10px 14px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); border-top: 1px solid var(--vt-border); background: var(--vt-bg-subtle); }
 .calendar-footer > span { display: inline-flex; align-items: center; gap: 5px; }
 .calendar-footer small { margin-left: auto; }
@@ -931,8 +1062,10 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   font-size: var(--vt-font-caption);
 }
 .backup-actions,
+.backup-entry-actions,
 .backup-confirmation-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .backup-workbench :deep(.n-alert) { margin: 12px 14px 0; }
@@ -963,6 +1096,7 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   white-space: nowrap;
 }
 .backup-entry-copy strong { font-weight: 550; }
+.backup-entry-actions { justify-content: flex-end; }
 .backup-empty {
   align-items: center;
   gap: 4px;
@@ -1007,6 +1141,18 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .about-card > div:nth-child(2) { display: flex; flex: 1; flex-direction: column; }
 .about-card small { color: var(--vt-fg-muted); }
 .about-logo { width: 40px; height: 40px; border-radius: 10px; object-fit: cover; box-shadow: 0 5px 16px rgba(36, 89, 211, .2); }
+.diagnostics-card { margin-top: 16px; overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); }
+.diagnostics-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 16px; border-bottom: 1px solid var(--vt-border); }
+.diagnostics-heading > div { display: flex; min-width: 0; flex-direction: column; }
+.diagnostics-heading small, .diagnostics-loading { color: var(--vt-fg-muted); }
+.diagnostics-card :deep(.n-alert) { margin: 12px 14px; }
+.diagnostics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.diagnostics-grid > div { min-width: 0; padding: 12px 16px; border-bottom: 1px solid var(--vt-border); }
+.diagnostics-grid > div:nth-child(odd) { border-right: 1px solid var(--vt-border); }
+.diagnostics-grid dt { margin-bottom: 4px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
+.diagnostics-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.diagnostics-grid code { font-size: var(--vt-font-caption); }
+.diagnostics-loading { margin: 0; padding: 24px 16px; text-align: center; }
 @media (max-width: 760px) {
   .settings-nav { flex-basis: 52px; padding: 16px 7px; }
   .settings-nav-title { display: none; }
@@ -1016,6 +1162,8 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   .calendar-rule-panel { border-top: 1px solid var(--vt-border); border-left: 0; }
   /* 单列堆叠时输入框恢复满宽。 */
   .calendar-name-input { width: 100%; }
+  .diagnostics-grid { grid-template-columns: 1fr; }
+  .diagnostics-grid > div:nth-child(odd) { border-right: 0; }
 }
 @media (max-width: 560px) {
   .settings-content { padding: 24px 14px; }
@@ -1026,6 +1174,9 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   .backup-toolbar,
   .backup-confirmation { align-items: stretch; flex-direction: column; }
   .backup-actions,
+  .backup-entry-actions,
   .backup-confirmation-actions { justify-content: flex-end; }
+  .backup-entry { grid-template-columns: 34px minmax(0, 1fr); }
+  .backup-entry-actions { grid-column: 1 / -1; }
 }
 </style>

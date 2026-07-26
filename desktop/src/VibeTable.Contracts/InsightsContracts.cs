@@ -54,12 +54,23 @@ public static class PresetScopes
     public const string Role = "role";
 }
 
+public sealed record PresetColumnState(
+    string Name,
+    int? Order = null,
+    double? Width = null,
+    bool? Visible = null,
+    bool? Frozen = null);
+
 public sealed record PresetView(
     IReadOnlyList<IReadOnlyDictionary<string, object?>> Filters,
     IReadOnlyList<IReadOnlyDictionary<string, object?>> Sorts,
     string Search,
     IReadOnlyList<string> VisibleFields,
-    string Layout);
+    string Layout,
+    string Kind = "table",
+    IReadOnlyList<PresetColumnState>? Columns = null,
+    string Density = "comfortable",
+    bool IsDefault = false);
 
 public sealed record PresetEntry(
     string Id,

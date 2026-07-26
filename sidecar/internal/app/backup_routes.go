@@ -51,6 +51,24 @@ func registerBackupRoutes(
 		}
 		return request.JSON(http.StatusCreated, result)
 	})
+	r.DELETE("/api/vibetable/v1/backups", func(
+		request *core.RequestEvent,
+	) error {
+		var input backupRequest
+		if err := decodeBackupBody(
+			request.Request.Body, &input,
+		); err != nil {
+			return writeBackupError(request, err)
+		}
+		if err := service.Delete(
+			request.Request.Context(), input.Name,
+		); err != nil {
+			return writeBackupError(request, err)
+		}
+		return request.JSON(http.StatusOK, map[string]any{
+			"deleted": input.Name,
+		})
+	})
 	r.POST("/api/vibetable/v1/backups/restore", func(
 		request *core.RequestEvent,
 	) error {
@@ -118,7 +136,7 @@ func writeBackupError(
 		status = http.StatusBadRequest
 	case "backup.not_found":
 		status = http.StatusNotFound
-	case "backup.storage_failed", "backup.create_failed",
+	case "backup.storage_failed", "backup.create_failed", "backup.delete_failed",
 		"backup.restore_failed", "backup.safety_copy_failed",
 		"backup.internal_failed":
 		status = http.StatusInternalServerError

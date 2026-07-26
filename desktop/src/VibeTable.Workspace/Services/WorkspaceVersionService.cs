@@ -71,6 +71,35 @@ public sealed class WorkspaceVersionService
         string? ConflictMessage
     );
 
+    public sealed record RefCompensationOutcome(
+        bool RefRolledBack,
+        string? ConflictMessage
+    );
+
+    public enum RestoreTransactionStage
+    {
+        Prepared,
+        RefCommitted,
+    }
+
+    public sealed record RestoreTransactionJournal(
+        int FormatVersion,
+        string TransactionId,
+        string DocumentId,
+        string SchemeId,
+        string PreviousHeadRevisionId,
+        string RestoreRevisionId,
+        string RestoredFromRevisionId,
+        string WorkingRelativePath,
+        string StagedRelativePath,
+        string ContentHash,
+        long Size,
+        RestoreTransactionStage Stage,
+        string CreatedAt)
+    {
+        public const int CurrentFormatVersion = 1;
+    }
+
     /// <summary>
     /// Commit a file as a formal version.
     ///
@@ -217,6 +246,336 @@ public sealed class WorkspaceVersionService
     }
 
     /// <summary>
+    /// Restores immutable historical content as a new formal restore revision.
+    /// The method accepts no filesystem or object-store path. It reuses the
+    /// selected revision's verified content object, parents the new revision to
+    /// the caller-observed head, and advances the target ref with expected-head
+    /// CAS. A conflict preserves and enqueues the new revision without moving
+    /// the target ref.
+    /// </summary>
+    public CommitOutcome RestoreRevisionAsFormal(
+        string documentId,
+        string schemeId,
+        string expectedHeadRevisionId,
+        string restoredFromRevisionId,
+        string versionLabel,
+        string createdBy,
+        string? deviceId,
+        string? comment,
+        string createdAt,
+        string? revisionId = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(schemeId);
+        ArgumentNullException.ThrowIfNull(expectedHeadRevisionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(restoredFromRevisionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(versionLabel);
+        createdAt = UtcRfc3339Timestamp.Canonicalize(
+            createdAt,
+            nameof(createdAt));
+
+        var targetRef = _refs.Read(documentId, schemeId)
+            ?? throw new InvalidOperationException(
+                $"scheme {schemeId} not found in document {documentId}");
+        var restoredFrom = _revisions.Read(documentId, restoredFromRevisionId)
+            ?? throw new InvalidOperationException(
+                $"restore revision {restoredFromRevisionId} not found in document {documentId}");
+        if (!string.Equals(
+            restoredFrom.DocumentId,
+            documentId,
+            StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "restore revision must belong to the same document");
+        }
+
+        string? parentRevisionId = string.IsNullOrEmpty(expectedHeadRevisionId)
+            ? null
+            : expectedHeadRevisionId;
+        int sequence;
+        if (parentRevisionId is null)
+        {
+            sequence = 1;
+        }
+        else
+        {
+            var parent = _revisions.Read(documentId, parentRevisionId)
+                ?? throw new InvalidOperationException(
+                    $"expected head revision {parentRevisionId} not found in document {documentId}");
+            sequence = string.Equals(parent.SchemeId, schemeId, StringComparison.Ordinal)
+                ? parent.Sequence + 1
+                : 1;
+        }
+
+        string objectPath = _objects.GetObjectPath(restoredFrom.ContentHash);
+        if (!File.Exists(objectPath))
+            throw new FileNotFoundException(
+                "restore content object not found",
+                restoredFrom.ContentHash);
+        var objectInfo = new FileInfo(objectPath);
+        if (objectInfo.Length != restoredFrom.Size
+            || !string.Equals(
+                ContentObjectStore.ComputeHash(objectPath),
+                restoredFrom.ContentHash,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "restore content object failed integrity verification");
+        }
+
+        revisionId = string.IsNullOrWhiteSpace(revisionId)
+            ? Guid.NewGuid().ToString("N")
+            : DocumentCatalogStore.ValidateIdentifier(
+                revisionId,
+                nameof(revisionId));
+        var revision = new RevisionManifest(
+            FormatVersion: RevisionManifest.CurrentFormatVersion,
+            RevisionId: revisionId,
+            DocumentId: documentId,
+            SchemeId: schemeId,
+            ParentRevisionId: parentRevisionId,
+            SourceRevisionId: null,
+            RestoredFromRevisionId: restoredFromRevisionId,
+            Sequence: sequence,
+            VersionLabel: versionLabel,
+            Kind: RevisionKind.Restore,
+            ContentHash: restoredFrom.ContentHash,
+            Size: restoredFrom.Size,
+            MimeType: restoredFrom.MimeType,
+            WorkingRelativePath: targetRef.WorkingRelativePath,
+            CreatedAt: createdAt,
+            CreatedBy: createdBy,
+            DeviceId: deviceId,
+            Comment: comment);
+        _revisions.Write(revision);
+
+        bool refUpdated;
+        string? conflictMessage = null;
+        try
+        {
+            _refs.UpdateHead(
+                documentId,
+                schemeId,
+                expectedHeadRevisionId,
+                revisionId,
+                createdAt);
+            refUpdated = true;
+        }
+        catch (RefCasConflictException ex)
+        {
+            refUpdated = false;
+            conflictMessage = ex.Message;
+            new RefConflictResolver(
+                _backupRoot,
+                _revisions,
+                _refs,
+                _json)
+                .ResolveConflict(
+                    documentId,
+                    schemeId,
+                    revisionId,
+                    createdAt);
+        }
+
+        _publishOutbox.Enqueue(revision);
+        return new CommitOutcome(
+            CommitStage.PublishPending,
+            revision.ContentHash,
+            revision.Size,
+            revision.RevisionId,
+            refUpdated,
+            conflictMessage);
+    }
+
+    /// <summary>
+    /// Best-effort compensation for a restore whose working-copy
+    /// materialization failed after the restore ref was committed. The ref is
+    /// moved back only when it still points to the exact restore revision.
+    /// The immutable restore revision and its outbox entry are intentionally
+    /// preserved for diagnostics and reconciliation.
+    /// </summary>
+    public RefCompensationOutcome CompensateRestoreHead(
+        string documentId,
+        string schemeId,
+        string restoreRevisionId,
+        string previousHeadRevisionId,
+        string updatedAt)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(schemeId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(restoreRevisionId);
+        ArgumentNullException.ThrowIfNull(previousHeadRevisionId);
+        updatedAt = UtcRfc3339Timestamp.Canonicalize(
+            updatedAt,
+            nameof(updatedAt));
+
+        var restore = _revisions.Read(documentId, restoreRevisionId)
+            ?? throw new InvalidOperationException(
+                $"restore revision {restoreRevisionId} not found in document {documentId}");
+        if (restore.Kind != RevisionKind.Restore
+            || !string.Equals(restore.SchemeId, schemeId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "only a restore revision from the target scheme can be compensated");
+        }
+        if (!string.IsNullOrEmpty(previousHeadRevisionId))
+        {
+            var previous = _revisions.Read(documentId, previousHeadRevisionId)
+                ?? throw new InvalidOperationException(
+                    $"previous head revision {previousHeadRevisionId} not found in document {documentId}");
+            if (!string.Equals(
+                previous.SchemeId,
+                schemeId,
+                StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "the compensation head must belong to the target scheme");
+            }
+        }
+
+        try
+        {
+            _refs.UpdateHead(
+                documentId,
+                schemeId,
+                restoreRevisionId,
+                previousHeadRevisionId,
+                updatedAt);
+            return new RefCompensationOutcome(true, null);
+        }
+        catch (RefCasConflictException ex)
+        {
+            return new RefCompensationOutcome(false, ex.Message);
+        }
+    }
+
+    public void PrepareRestoreTransaction(RestoreTransactionJournal transaction)
+    {
+        ValidateRestoreTransaction(transaction);
+        string path = GetRestoreTransactionPath(transaction.TransactionId);
+        if (File.Exists(path))
+            throw new InvalidOperationException(
+                $"restore transaction {transaction.TransactionId} already exists");
+        _json.Write(path, transaction);
+    }
+
+    public RestoreTransactionJournal MarkRestoreRefCommitted(
+        string transactionId)
+    {
+        string path = GetRestoreTransactionPath(transactionId);
+        var current = _json.Read<RestoreTransactionJournal>(path)
+            ?? throw new InvalidOperationException(
+                $"restore transaction {transactionId} not found");
+        ValidateRestoreTransaction(current);
+        var updated = current with
+        {
+            Stage = RestoreTransactionStage.RefCommitted,
+        };
+        _json.Write(path, updated);
+        return updated;
+    }
+
+    public IReadOnlyList<RestoreTransactionJournal> ListRestoreTransactions()
+    {
+        string directory = GetRestoreTransactionsDirectory();
+        if (!Directory.Exists(directory))
+            return [];
+
+        var result = new List<RestoreTransactionJournal>();
+        foreach (string file in Directory.GetFiles(directory, "*.json"))
+        {
+            var transaction = _json.Read<RestoreTransactionJournal>(file)
+                ?? throw new InvalidDataException(
+                    $"restore transaction journal is unreadable: {Path.GetFileName(file)}");
+            ValidateRestoreTransaction(transaction);
+            string expectedPath = GetRestoreTransactionPath(
+                transaction.TransactionId);
+            if (!string.Equals(
+                Path.GetFullPath(file),
+                Path.GetFullPath(expectedPath),
+                StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    "restore transaction filename does not match its transaction id");
+            }
+            result.Add(transaction);
+        }
+        return result
+            .OrderBy(transaction => transaction.CreatedAt, StringComparer.Ordinal)
+            .ThenBy(transaction => transaction.TransactionId, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    public void DeleteRestoreTransaction(string transactionId)
+    {
+        string path = GetRestoreTransactionPath(transactionId);
+        if (File.Exists(path)) File.Delete(path);
+    }
+
+    private string GetRestoreTransactionsDirectory()
+        => Path.Combine(_backupRoot, "restore-transactions");
+
+    private string GetRestoreTransactionPath(string transactionId)
+        => Path.Combine(
+            GetRestoreTransactionsDirectory(),
+            DocumentCatalogStore.ValidateIdentifier(
+                transactionId,
+                nameof(transactionId)) + ".json");
+
+    private static void ValidateRestoreTransaction(
+        RestoreTransactionJournal transaction)
+    {
+        if (transaction.FormatVersion != RestoreTransactionJournal.CurrentFormatVersion)
+            throw new InvalidDataException(
+                "unsupported restore transaction journal format");
+        DocumentCatalogStore.ValidateIdentifier(
+            transaction.TransactionId,
+            nameof(transaction.TransactionId));
+        DocumentCatalogStore.ValidateIdentifier(
+            transaction.DocumentId,
+            nameof(transaction.DocumentId));
+        DocumentCatalogStore.ValidateIdentifier(
+            transaction.SchemeId,
+            nameof(transaction.SchemeId));
+        if (!string.IsNullOrEmpty(transaction.PreviousHeadRevisionId))
+        {
+            DocumentCatalogStore.ValidateIdentifier(
+                transaction.PreviousHeadRevisionId,
+                nameof(transaction.PreviousHeadRevisionId));
+        }
+        DocumentCatalogStore.ValidateIdentifier(
+            transaction.RestoreRevisionId,
+            nameof(transaction.RestoreRevisionId));
+        DocumentCatalogStore.ValidateIdentifier(
+            transaction.RestoredFromRevisionId,
+            nameof(transaction.RestoredFromRevisionId));
+        WorkspacePathGuard.ValidateRelativePath(transaction.WorkingRelativePath);
+        WorkspacePathGuard.ValidateRelativePath(transaction.StagedRelativePath);
+        string expectedStagedRelativePath =
+            transaction.WorkingRelativePath
+            + $".restore-{transaction.TransactionId}.partial";
+        if (!string.Equals(
+            transaction.StagedRelativePath,
+            expectedStagedRelativePath,
+            StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "restore transaction staging path is not bound to its target");
+        }
+        if (transaction.Size < 0
+            || transaction.ContentHash.Length != 64
+            || transaction.ContentHash.Any(character =>
+                !Uri.IsHexDigit(character)))
+        {
+            throw new InvalidDataException(
+                "restore transaction content identity is invalid");
+        }
+        _ = UtcRfc3339Timestamp.Canonicalize(
+            transaction.CreatedAt,
+            nameof(transaction.CreatedAt));
+    }
+
+    /// <summary>
     /// Initialize a workspace's .backup structure.
     /// </summary>
     public void InitializeWorkspace(WorkspaceManifest manifest)
@@ -229,6 +588,7 @@ public sealed class WorkspaceVersionService
         Directory.CreateDirectory(Path.Combine(_backupRoot, "documents"));
         Directory.CreateDirectory(Path.Combine(_backupRoot, "folders"));
         Directory.CreateDirectory(Path.Combine(_backupRoot, "outbox", "revisions"));
+        Directory.CreateDirectory(GetRestoreTransactionsDirectory());
 
         var workspacePath = Path.Combine(_backupRoot, "workspace.json");
         _json.Write(workspacePath, manifest);

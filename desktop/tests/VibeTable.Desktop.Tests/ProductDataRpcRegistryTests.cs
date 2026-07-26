@@ -23,7 +23,7 @@ public sealed class ProductDataRpcRegistryTests
             "preset.list", "preset.save", "preset.delete",
             "version.list", "version.create", "version.save", "version.compare",
             "version.promote", "version.delete",
-            "backup.list", "backup.create", "backup.restore",
+            "backup.list", "backup.create", "backup.delete", "backup.restore",
         ];
 
         CollectionAssert.AreEquivalent(expected, ProductDataRpcRegistry.RequestTypes.ToArray());
@@ -53,6 +53,7 @@ public sealed class ProductDataRpcRegistryTests
     {
         Assert.IsTrue(ProductDataRpcRegistry.TryGet("backup.list", out var list));
         Assert.IsTrue(ProductDataRpcRegistry.TryGet("backup.create", out var create));
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet("backup.delete", out var delete));
         Assert.IsTrue(ProductDataRpcRegistry.TryGet("backup.restore", out var restore));
 
         Assert.IsTrue(list.IsValidPayload(JsonDocument.Parse("{}").RootElement));
@@ -65,6 +66,11 @@ public sealed class ProductDataRpcRegistryTests
             JsonDocument.Parse("""{"name":"../data.db.zip"}""").RootElement));
         Assert.IsFalse(create.IsValidPayload(
             JsonDocument.Parse("""{"name":"safe.zip","path":"C:\\private"}""").RootElement));
+
+        Assert.IsTrue(delete.IsValidPayload(
+            JsonDocument.Parse("""{"name":"manual_20260724_101500.zip"}""").RootElement));
+        Assert.IsFalse(delete.IsValidPayload(
+            JsonDocument.Parse("""{"name":"../data.db.zip"}""").RootElement));
 
         Assert.IsTrue(restore.IsValidPayload(JsonDocument.Parse(
             """{"name":"manual_20260724_101500.zip","confirmed":true}""").RootElement));

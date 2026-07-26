@@ -170,7 +170,7 @@ describe("SettingsView", () => {
     expect(sourceRow, "data-service source row should render").toBeTruthy();
     expect(sourceRow!.find(".setting-control--pill").exists()).toBe(true);
     expect(sourceRow!.findComponent(ConnectionPill).exists()).toBe(true);
-    expect(wrapper.find('[data-testid="preset-version-panel"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="preset-version-panel"]').exists()).toBe(false);
   });
 
   it("shows the active data root and schedules native migration for restart", async () => {

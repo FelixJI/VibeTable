@@ -54,6 +54,12 @@ function commit(): void {
   }
 }
 
+function commitAndClose(event: KeyboardEvent): void {
+  commit();
+  open.value = false;
+  if (event.target instanceof HTMLInputElement) event.target.blur();
+}
+
 // 聚焦即全选：用户点进来后直接键入是覆盖整段月份文本，而非插入到标签中间。
 // NInput 的 focus 事件透传原生 FocusEvent，target 即输入框元素。
 function selectAll(event: FocusEvent): void {
@@ -79,7 +85,7 @@ function selectAll(event: FocusEvent): void {
         size="small"
         @focus="selectAll"
         @blur="commit"
-        @keyup.enter="commit"
+        @keyup.enter="commitAndClose"
       >
         <template #prefix>
           <NIcon :size="14" class="month-navigator-icon"><CalendarDays /></NIcon>

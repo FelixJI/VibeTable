@@ -176,6 +176,33 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it("correlates document requests with their distinct host outcomes", async () => {
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "document-version-1",
+    });
+    bridge.start();
+
+    const pending = bridge.request("document.commitRevisionRequested", {
+      entryHandle: "entry-opaque",
+      note: "checkpoint",
+    });
+    webview.emit({
+      type: "document.versionCommitted",
+      requestId: "document-version-1",
+      payload: {
+        entryHandle: "entry-opaque",
+        revisionHandle: "revision-opaque",
+        currentRevision: "R2",
+        schemeHandle: null,
+      },
+    });
+
+    await expect(pending).resolves.toMatchObject({ currentRevision: "R2" });
+    bridge.stop();
+  });
+
   it("correlates the fixed daily quote RPC by its same response type", async () => {
     const bridge = createHostBridge({
       webview,

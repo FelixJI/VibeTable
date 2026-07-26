@@ -142,6 +142,10 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 	relationService := relation.New(pb, queryPort, mutationKernel)
 	startedAt := time.Now().UTC()
 	pb.OnServe().BindFunc(func(event *core.ServeEvent) error {
+		// VibeTable owns the local data lifecycle. Never expose PocketBase's
+		// first-run superuser installer to the desktop user.
+		event.InstallerFunc = nil
+
 		if options.OnBootstrapReady != nil {
 			if err := options.OnBootstrapReady(); err != nil {
 				return err
@@ -153,8 +157,6 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		}
 
 		event.Server.Addr = rawListener.Addr().String()
-		event.InstallerFunc = nil
-
 		event.Router.Bind(&hook.Handler[*core.RequestEvent]{
 			Id:       "vibetableSessionAuth",
 			Priority: -10_000,
@@ -188,6 +190,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		event.Router.GET(buildInfoPath, func(request *core.RequestEvent) error {
 			return request.JSON(http.StatusOK, buildinfo.Current(migrations.Hash()))
 		})
+		registerAdminRoutes(event)
 		registerSchemaRoutes(event.Router, schemaapi.New(pb), jobService)
 		registerQueryRoutes(event.Router, queryPort)
 		registerFormulaRoutes(event.Router, formulaCompiler)

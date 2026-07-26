@@ -44,6 +44,7 @@ public interface ILocalDataAdminLauncher
 public sealed class LocalDataService : ILocalDataService
 {
     private readonly IPocketBaseSupervisor _supervisor;
+    private readonly ILocalDataAdminLauncher? _adminLauncher;
 
     public LocalDataService(
         IPocketBaseSupervisor supervisor,
@@ -51,7 +52,7 @@ public sealed class LocalDataService : ILocalDataService
     {
         _supervisor = supervisor
             ?? throw new ArgumentNullException(nameof(supervisor));
-        _ = adminLauncher;
+        _adminLauncher = adminLauncher;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -73,7 +74,9 @@ public sealed class LocalDataService : ILocalDataService
         return new LocalDataStatus(
             state,
             state == LocalDataState.Ready,
-            false,
+            state == LocalDataState.Ready
+                && status.AdminAvailable
+                && _supervisor.GetAdminContext() is not null,
             status.ExitCode,
             status.Error);
     }
@@ -81,9 +84,6 @@ public sealed class LocalDataService : ILocalDataService
     public Task StopAsync(CancellationToken cancellationToken)
         => _supervisor.StopAsync(cancellationToken);
 
-    // Every sidecar route currently requires an ephemeral request header.
-    // Launching a system browser would create a non-functional, unauthenticated
-    // admin page, so this capability is intentionally unavailable.
     public bool OpenAdmin() => false;
 
     public ValueTask DisposeAsync() => _supervisor.DisposeAsync();

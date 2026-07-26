@@ -1,8 +1,10 @@
 import type {
   BackupCreateResult,
+  BackupDeleteResult,
   BackupEntry,
   BackupHostPayloadMap,
   BackupListResult,
+  BackupOpenFolderResult,
   BackupRestoreResult,
   BackupWebMessageType,
   BackupWebPayloadMap,
@@ -88,6 +90,22 @@ function parseRestore(value: unknown): BackupRestoreResult {
   return { status: "restarting" };
 }
 
+function parseDelete(value: unknown, expectedName: string): BackupDeleteResult {
+  throwMappedError(value);
+  if (!isRecord(value) || value.deleted !== expectedName) {
+    throw new Error("Invalid backup response");
+  }
+  return { deleted: expectedName };
+}
+
+function parseOpenFolder(value: unknown): BackupOpenFolderResult {
+  throwMappedError(value);
+  if (!isRecord(value) || value.status !== "opened") {
+    throw new Error("Invalid backup response");
+  }
+  return { status: "opened" };
+}
+
 function automaticName(now: Date): string {
   const date = [
     now.getUTCFullYear(),
@@ -131,5 +149,25 @@ export function useBackupService() {
     }));
   }
 
-  return { listBackups, createBackup, restoreBackup };
+  async function deleteBackup(name: string): Promise<BackupDeleteResult> {
+    if (!BACKUP_NAME.test(name)) {
+      throw new Error("Invalid backup archive name");
+    }
+    return parseDelete(
+      await bridge.request("backup.delete", { name }),
+      name,
+    );
+  }
+
+  async function openBackupFolder(): Promise<BackupOpenFolderResult> {
+    return parseOpenFolder(await bridge.request("backup.openFolder", {}));
+  }
+
+  return {
+    listBackups,
+    createBackup,
+    deleteBackup,
+    openBackupFolder,
+    restoreBackup,
+  };
 }

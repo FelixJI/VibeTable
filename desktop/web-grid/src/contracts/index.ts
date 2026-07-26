@@ -1266,6 +1266,10 @@ export interface PresetView {
   readonly search: string;
   readonly visibleFields: readonly string[];
   readonly layout: string;
+  readonly kind?: "table";
+  readonly columns?: readonly ColumnState[];
+  readonly density?: "compact" | "comfortable" | "cozy";
+  readonly isDefault?: boolean;
 }
 
 export interface PresetEntry {
@@ -1452,6 +1456,14 @@ export type WebMessageType =
   | "document.previewRequested"
   | "document.revealRequested"
   | "document.relinkRequested"
+  | "document.commitRevisionRequested"
+  | "document.promoteVersionRequested"
+  | "document.revisionPreviewRequested"
+  | "document.revisionRestoreRequested"
+  | "document.schemeListRequested"
+  | "document.schemeCreateRequested"
+  | "document.schemeRenameRequested"
+  | "document.schemeArchiveRequested"
   // Table-admin requests.
   | "tableAdmin.createRequested"
   | "tableAdmin.deleteRequested"
@@ -1561,6 +1573,10 @@ export type HostMessageType =
   | "document.actionCompleted"
   | "document.operationFailed"
   | "document.workspaceChanged"
+  | "document.versionCommitted"
+  | "document.revisionPreviewCompleted"
+  | "document.schemeListLoaded"
+  | "document.schemeMutationCompleted"
   // Collections-changed notifications.
   | "database.collectionsChanged"
   | "identifierMappings.result"
@@ -1787,6 +1803,10 @@ export interface HostPayloadMap {
   "document.actionCompleted": DocumentActionCompletedPayload;
   "document.operationFailed": DocumentOperationFailedPayload;
   "document.workspaceChanged": DocumentWorkspaceChangedPayload;
+  "document.versionCommitted": DocumentVersionOperationResultPayload;
+  "document.revisionPreviewCompleted": DocumentRevisionActionResultPayload;
+  "document.schemeListLoaded": DocumentSchemeListResultPayload;
+  "document.schemeMutationCompleted": DocumentSchemeMutationResultPayload;
   // Collections-changed notifications.
   "database.collectionsChanged": CollectionsChangedPayload;
   "identifierMappings.result": IdentifierMappingsResult;
@@ -1978,6 +1998,14 @@ export interface WebPayloadMap {
   "document.previewRequested": DocumentHandlePayload;
   "document.revealRequested": DocumentHandlePayload;
   "document.relinkRequested": DocumentOpaqueHandlePayload;
+  "document.commitRevisionRequested": DocumentCommitRevisionRequestedPayload;
+  "document.promoteVersionRequested": DocumentPromoteVersionRequestedPayload;
+  "document.revisionPreviewRequested": DocumentRevisionHandlePayload;
+  "document.revisionRestoreRequested": DocumentRevisionHandlePayload;
+  "document.schemeListRequested": DocumentHandlePayload;
+  "document.schemeCreateRequested": DocumentSchemeCreateRequestedPayload;
+  "document.schemeRenameRequested": DocumentSchemeRenameRequestedPayload;
+  "document.schemeArchiveRequested": DocumentSchemeHandlePayload;
   // Table-admin requests.
   "tableAdmin.createRequested": TableAdminCreatePayload;
   "tableAdmin.deleteRequested": TableAdminDeletePayload;
@@ -2330,7 +2358,6 @@ export interface DocumentHandlePayload {
 
 export interface DocumentBridgeEntry {
   readonly entryHandle: string;
-  readonly documentId: string;
   readonly displayName: string;
   readonly mimeType: string | null;
   readonly availability: "available" | "missing" | "unmounted" | "unmanaged" | "unsafe" | "remote";
@@ -2360,6 +2387,66 @@ export interface DocumentHistoryLoadedPayload {
   readonly total: number;
 }
 
+export interface DocumentRevisionHandlePayload extends DocumentHandlePayload {
+  readonly revisionHandle: string;
+}
+
+export interface DocumentCommitRevisionRequestedPayload extends DocumentHandlePayload {
+  readonly note?: string | null;
+  readonly schemeHandle?: string | null;
+}
+
+export interface DocumentPromoteVersionRequestedPayload extends DocumentHandlePayload {
+  readonly versionLabel: string;
+  readonly note?: string | null;
+  readonly schemeHandle?: string | null;
+}
+
+export interface DocumentSchemeHandlePayload extends DocumentHandlePayload {
+  readonly schemeHandle: string;
+}
+
+export interface DocumentSchemeCreateRequestedPayload extends DocumentHandlePayload {
+  readonly name: string;
+  readonly baseRevisionHandle?: string | null;
+}
+
+export interface DocumentSchemeRenameRequestedPayload extends DocumentSchemeHandlePayload {
+  readonly name: string;
+}
+
+export interface DocumentSchemeBridgeEntry {
+  readonly schemeHandle: string;
+  readonly name: string;
+  readonly currentRevisionHandle: string | null;
+  readonly currentRevisionLabel: string | null;
+  readonly archived: boolean;
+  readonly active: boolean;
+}
+
+export interface DocumentSchemeListResultPayload {
+  readonly entryHandle: string;
+  readonly schemes: readonly DocumentSchemeBridgeEntry[];
+}
+
+export interface DocumentSchemeMutationResultPayload {
+  readonly entryHandle: string;
+  readonly scheme: DocumentSchemeBridgeEntry;
+}
+
+export interface DocumentVersionOperationResultPayload {
+  readonly entryHandle: string;
+  readonly revisionHandle: string;
+  readonly currentRevision: string;
+  readonly schemeHandle?: string | null;
+}
+
+export interface DocumentRevisionActionResultPayload {
+  readonly entryHandle: string;
+  readonly revisionHandle: string;
+  readonly action: "preview";
+}
+
 export interface DocumentActionCompletedPayload {
   readonly entryHandle: string;
   readonly action: "open" | "preview" | "reveal";
@@ -2371,6 +2458,6 @@ export interface DocumentOperationFailedPayload {
 }
 
 export interface DocumentWorkspaceChangedPayload {
-  readonly reason: "import" | "relink";
+  readonly reason: "import" | "relink" | "revision" | "restore" | "scheme";
   readonly affectedCount: number;
 }

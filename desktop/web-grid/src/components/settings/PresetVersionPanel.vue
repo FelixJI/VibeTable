@@ -38,19 +38,20 @@ async function addVersion(): Promise<void> {
 <template>
   <section class="preset-version-panel" data-testid="preset-version-panel">
     <header>
-      <strong>预设与内容版本</strong>
-      <small>管理可共享的业务视图，以及基于审计快照的未发布版本。</small>
+      <strong>本机数据中的可复用视图预设与记录草稿</strong>
+      <small>视图预设用于保存常用的筛选、排序、显示列和布局，例如“一键查看本月待办”或“只显示库存不足的商品”。预设只保存在当前本机数据中，不涉及多人共享。</small>
+      <small>记录草稿用于在大幅修改前留底、比较不同填写方案，或暂存尚未确认的内容。草稿是主记录某一时刻的快照；可以与当前主记录比较，也可以由你确认后覆盖主记录，但不会发布、不会自动合并。</small>
     </header>
     <div class="target-fields">
       <NInput v-model:value="collection" size="small" placeholder="集合键" aria-label="集合键" />
-      <NInput v-model:value="itemId" size="small" placeholder="记录 ID（内容版本）" aria-label="记录 ID" />
+      <NInput v-model:value="itemId" size="small" placeholder="记录 ID（记录草稿）" aria-label="记录 ID" />
       <NInput v-model:value="name" size="small" placeholder="名称" aria-label="名称" />
     </div>
     <div class="panel-actions">
       <NButton size="small" :disabled="!collection.trim()" @click="service().listPresets(collection.trim())">加载预设</NButton>
       <NButton size="small" type="primary" :disabled="!collection.trim() || !name.trim()" @click="addPreset">保存预设</NButton>
-      <NButton size="small" :disabled="!collection.trim() || !itemId.trim()" @click="service().listVersions(collection.trim(), itemId.trim())">加载版本</NButton>
-      <NButton size="small" type="primary" :disabled="!collection.trim() || !itemId.trim()" @click="addVersion">创建版本</NButton>
+      <NButton size="small" :disabled="!collection.trim() || !itemId.trim()" @click="service().listVersions(collection.trim(), itemId.trim())">加载记录草稿</NButton>
+      <NButton size="small" type="primary" :disabled="!collection.trim() || !itemId.trim()" @click="addVersion">创建记录草稿</NButton>
     </div>
 
     <p v-if="store.error" class="panel-error" role="alert">{{ store.error }}</p>
@@ -66,7 +67,7 @@ async function addVersion(): Promise<void> {
       </article>
     </div>
 
-    <div v-if="store.versions.length" class="entry-list" aria-label="内容版本列表">
+    <div v-if="store.versions.length" class="entry-list" aria-label="记录草稿列表">
       <article v-for="version in store.versions" :key="version.id">
         <div>
           <strong>{{ version.name || version.key }}</strong>
@@ -77,18 +78,18 @@ async function addVersion(): Promise<void> {
         <NButton size="tiny" quaternary @click="service().compareVersion(collection.trim(), itemId.trim(), version.id)">比较</NButton>
         <NPopconfirm
           :disabled="store.comparison?.versionId !== version.id"
-          positive-text="提升"
+          positive-text="应用"
           negative-text="取消"
           @positive-click="store.comparison && service().promoteVersion(collection.trim(), itemId.trim(), version.id, store.comparison.mainHash)"
         >
           <template #trigger>
-            <NButton size="tiny" quaternary type="primary" :disabled="store.comparison?.versionId !== version.id">提升</NButton>
+            <NButton size="tiny" quaternary type="primary" :disabled="store.comparison?.versionId !== version.id">应用到主记录</NButton>
           </template>
-          使用刚刚比较过的主记录哈希提升该版本？
+          用这个草稿覆盖当前主记录？该操作不是“发布”，只是更新本机主记录。
         </NPopconfirm>
         <NPopconfirm :disabled="!version.revision" positive-text="删除" negative-text="取消" @positive-click="service().deleteVersion(collection.trim(), itemId.trim(), version.id, version.revision)">
           <template #trigger><NButton size="tiny" quaternary type="error" :disabled="!version.revision">删除</NButton></template>
-          确认删除该内容版本？
+          确认删除该记录草稿？
         </NPopconfirm>
       </article>
     </div>

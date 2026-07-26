@@ -12,6 +12,9 @@ describe("presetVersionService", () => {
     requests.length = 0;
     const request = vi.fn(async (type: string, payload: Record<string, unknown>) => {
       requests.push({ type, payload });
+      if (type === "preset.list") {
+        return { collection: String(payload.collection), presets: [] };
+      }
       if (type === "preset.save") {
         return {
           id: "p1", collection: "orders", name: "My view", scope: "system",
@@ -83,6 +86,15 @@ describe("presetVersionService", () => {
         type: "version.compare",
         payload: { collection: "orders", itemId: "row-1", versionId: "v1" },
       },
+    ]);
+  });
+
+  it("loads collection-scoped table views without a write operation id", async () => {
+    const service = usePresetVersionService();
+    const result = await service.listPresets("orders");
+    expect(result).toEqual({ collection: "orders", presets: [] });
+    expect(requests).toEqual([
+      { type: "preset.list", payload: { collection: "orders" } },
     ]);
   });
 });

@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using VibeTable.Contracts;
 using VibeTable.Infrastructure.Workspace;
 using VibeTable.Workspace.Domain;
+using VibeTable.Workspace.Services;
 using VibeTable.Workspace.Storage;
 
 namespace VibeTable.Desktop.Services;
@@ -81,6 +82,15 @@ public sealed class DocumentWorkspaceHostService : IDisposable
     private readonly Func<string?>? _partitionKeyProvider;
     private readonly SemaphoreSlim _fileMutationGate = new(1, 1);
     private readonly SemaphoreSlim _publishGate = new(1, 1);
+    private readonly object _restoreReconciliationGate = new();
+    private readonly HashSet<string> _reconciledWorkspaceRoots =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly string _revisionPreviewRoot = Path.Combine(
+        Path.GetTempPath(),
+        "VibeTable",
+        "document-revision-preview",
+        $"p{Environment.ProcessId}-{Guid.NewGuid():N}");
+    private int _disposed;
 
     public DocumentWorkspaceHostService(
         IDocumentWorkspaceRpcGateway gateway,
@@ -110,6 +120,7 @@ public sealed class DocumentWorkspaceHostService : IDisposable
         await RetryPendingRegistrationsAsync(token).ConfigureAwait(false);
         var result = await _gateway.ReadFolderAsync(collection, itemId, token)
             .ConfigureAwait(false);
+        EnsureDocumentWorkspacesReconciled(result.Documents);
         if (await PublishChangedLocalHeadsAsync(result.Documents, token)
             .ConfigureAwait(false))
         {
@@ -131,6 +142,7 @@ public sealed class DocumentWorkspaceHostService : IDisposable
         await RetryPendingRegistrationsAsync(token).ConfigureAwait(false);
         var result = await _gateway.ReadDocumentsAsync(500, 0, token)
             .ConfigureAwait(false);
+        EnsureDocumentWorkspacesReconciled(result.Documents);
         if (await PublishChangedLocalHeadsAsync(result.Documents, token)
             .ConfigureAwait(false))
         {
@@ -143,6 +155,29 @@ public sealed class DocumentWorkspaceHostService : IDisposable
             entries.Add(BuildEntry(document));
         }
         return new DocumentListPayload(null, null, entries);
+    }
+
+    private void EnsureDocumentWorkspacesReconciled(
+        IEnumerable<DocumentSummary> documents)
+    {
+        foreach (string workspaceId in documents
+            .Select(document => document.WorkspaceId)
+            .Distinct(StringComparer.Ordinal))
+        {
+            string? root = _mounts.ResolveRoot(workspaceId, CurrentPartitionKey());
+            if (string.IsNullOrWhiteSpace(root))
+            {
+                continue;
+            }
+            string manifestPath = WorkspacePathGuard.ResolveAndCheck(
+                root,
+                ".backup/workspace.json");
+            if (!File.Exists(manifestPath))
+            {
+                continue;
+            }
+            _ = RequireManagedWorkspace(workspaceId);
+        }
     }
 
     public async Task<DocumentHistoryPayload> ReadHistoryAsync(
@@ -167,7 +202,7 @@ public sealed class DocumentWorkspaceHostService : IDisposable
                 descriptor.WorkspaceId,
                 descriptor.DocumentId,
                 revision.RevisionId,
-                ["preview"]),
+                ["preview", "restore", "branch"]),
             string.IsNullOrWhiteSpace(revision.VersionLabel)
                 ? $"v{revision.Sequence}"
                 : revision.VersionLabel,
@@ -175,6 +210,509 @@ public sealed class DocumentWorkspaceHostService : IDisposable
             revision.Size,
             revision.CreatedBy)).ToArray();
         return new DocumentHistoryPayload(entryHandle, revisions, result.Total);
+    }
+
+    public async Task<DocumentVersionCommittedPayload> CommitRevisionAsync(
+        string entryHandle,
+        string? note,
+        string? schemeHandle,
+        CancellationToken token)
+    {
+        var descriptor = _capabilities.Resolve(entryHandle, "version");
+        return await CommitVersionAsync(
+            entryHandle,
+            descriptor,
+            versionLabel: null,
+            note,
+            schemeHandle,
+            token).ConfigureAwait(false);
+    }
+
+    public async Task<DocumentVersionCommittedPayload> PromoteVersionAsync(
+        string entryHandle,
+        string versionLabel,
+        string? note,
+        string? schemeHandle,
+        CancellationToken token)
+    {
+        var descriptor = _capabilities.Resolve(entryHandle, "version");
+        ValidateShortText(versionLabel, nameof(versionLabel), 128);
+        return await CommitVersionAsync(
+            entryHandle,
+            descriptor,
+            versionLabel.Trim(),
+            note,
+            schemeHandle,
+            token).ConfigureAwait(false);
+    }
+
+    public DocumentRevisionPreviewCompletedPayload PreviewRevision(
+        string entryHandle,
+        string revisionHandle)
+    {
+        var entry = _capabilities.Resolve(entryHandle, "history");
+        var revisionDescriptor = _capabilities.ResolveRevision(
+            revisionHandle,
+            "preview");
+        EnsureSameDocument(entry, revisionDescriptor);
+
+        var context = RequireManagedWorkspace(entry.WorkspaceId);
+        var revision = RequireRevision(
+            context,
+            entry.DocumentId,
+            revisionDescriptor.RevisionId);
+        string extension = Path.GetExtension(
+            context.Catalog.ReadDocument(entry.DocumentId)?.FileName ?? string.Empty);
+        string previewPath = Path.Combine(
+            _revisionPreviewRoot,
+            $"preview-{Guid.NewGuid():N}{extension}");
+        MaterializeRevisionAtomically(
+            context,
+            revision,
+            previewPath,
+            overwrite: false);
+        try
+        {
+            _preview.Show(previewPath);
+        }
+        catch
+        {
+            TryDelete(previewPath);
+            throw;
+        }
+        return new DocumentRevisionPreviewCompletedPayload(
+            entryHandle,
+            revisionHandle,
+            "preview");
+    }
+
+    public async Task<DocumentVersionCommittedPayload> RestoreRevisionAsync(
+        string entryHandle,
+        string revisionHandle,
+        CancellationToken token)
+    {
+        var entry = _capabilities.Resolve(entryHandle, "restore");
+        var revisionDescriptor = _capabilities.ResolveRevision(
+            revisionHandle,
+            "restore");
+        EnsureSameDocument(entry, revisionDescriptor);
+
+        await _fileMutationGate.WaitAsync(token).ConfigureAwait(false);
+        WorkspaceVersionService.CommitOutcome outcome;
+        RevisionManifest restoredFrom;
+        string stagedPath = string.Empty;
+        string expectedHead = string.Empty;
+        string targetSchemeId = string.Empty;
+        string? restoreTransactionId = null;
+        string? committedRestoreRevisionId = null;
+        WorkspaceVersionService? versionService = null;
+        bool preserveRecoveryArtifacts = false;
+        try
+        {
+            var context = RequireManagedWorkspace(entry.WorkspaceId);
+            var json = new AtomicJsonStore();
+            var revisions = new RevisionStore(context.BackupRoot, json);
+            var refs = new RefStore(context.BackupRoot, json);
+            var main = RequireMainScheme(refs, entry.DocumentId);
+            targetSchemeId = main.SchemeId;
+            restoredFrom = RequireRevision(
+                revisions,
+                entry.DocumentId,
+                revisionDescriptor.RevisionId);
+            expectedHead = entry.CurrentRevisionId ?? string.Empty;
+            if (!string.Equals(
+                main.HeadRevisionId,
+                expectedHead,
+                StringComparison.Ordinal))
+            {
+                throw new DocumentFileOperationException(
+                    "The document changed after this view was loaded. Refresh and retry.",
+                    "DOCUMENT_VERSION_CONFLICT");
+            }
+
+            string targetPath = WorkspacePathGuard.ResolveAndCheck(
+                context.Root,
+                main.WorkingRelativePath);
+            restoreTransactionId = Guid.NewGuid().ToString("N");
+            string restoreRevisionId = Guid.NewGuid().ToString("N");
+            string stagedRelativePath =
+                main.WorkingRelativePath
+                + $".restore-{restoreTransactionId}.partial";
+            stagedPath = WorkspacePathGuard.ResolveAndCheck(
+                context.Root,
+                stagedRelativePath);
+            MaterializeRevisionAtomically(
+                context,
+                restoredFrom,
+                stagedPath,
+                overwrite: false);
+
+            versionService = new WorkspaceVersionService(
+                context.BackupRoot,
+                new ContentObjectStore(context.BackupRoot),
+                revisions,
+                refs,
+                json);
+            versionService.PrepareRestoreTransaction(
+                new WorkspaceVersionService.RestoreTransactionJournal(
+                    WorkspaceVersionService.RestoreTransactionJournal.CurrentFormatVersion,
+                    restoreTransactionId,
+                    entry.DocumentId,
+                    main.SchemeId,
+                    expectedHead,
+                    restoreRevisionId,
+                    restoredFrom.RevisionId,
+                    main.WorkingRelativePath,
+                    stagedRelativePath,
+                    restoredFrom.ContentHash,
+                    restoredFrom.Size,
+                    WorkspaceVersionService.RestoreTransactionStage.Prepared,
+                    DateTimeOffset.UtcNow.ToString("O")));
+            outcome = versionService.RestoreRevisionAsFormal(
+                entry.DocumentId,
+                main.SchemeId,
+                expectedHead,
+                restoredFrom.RevisionId,
+                BuildRestoreLabel(restoredFrom.VersionLabel),
+                "local",
+                deviceId: null,
+                comment: "Restored from an earlier file revision.",
+                createdAt: DateTimeOffset.UtcNow.ToString("O"),
+                revisionId: restoreRevisionId);
+            if (!outcome.RefUpdated)
+            {
+                TryDeleteRestoreTransaction(
+                    versionService,
+                    restoreTransactionId);
+                throw new DocumentFileOperationException(
+                    "The document changed while the restore was being applied. Refresh and retry.",
+                    "DOCUMENT_VERSION_CONFLICT");
+            }
+            committedRestoreRevisionId = outcome.RevisionId;
+            versionService.MarkRestoreRefCommitted(restoreTransactionId);
+
+            File.Move(stagedPath, targetPath, overwrite: true);
+            if (!FileMatchesContent(
+                targetPath,
+                restoredFrom.ContentHash,
+                restoredFrom.Size))
+            {
+                throw new InvalidDataException(
+                    "restored working copy failed post-move verification");
+            }
+            stagedPath = string.Empty;
+            committedRestoreRevisionId = null;
+            try
+            {
+                versionService.DeleteRestoreTransaction(restoreTransactionId);
+            }
+            catch (Exception cleanupException)
+            {
+                TraceFileFailure(
+                    "revision-restore-journal-cleanup",
+                    cleanupException);
+                throw new DocumentFileOperationException(
+                    "The restore completed, but its recovery journal could not be cleaned.",
+                    "DOCUMENT_RESTORE_JOURNAL_CLEANUP_FAILED");
+            }
+        }
+        catch (DocumentCapabilityException)
+        {
+            throw;
+        }
+        catch (DocumentFileOperationException)
+        {
+            if (committedRestoreRevisionId is null
+                && versionService is not null
+                && restoreTransactionId is not null)
+            {
+                TryDeleteRestoreTransaction(
+                    versionService,
+                    restoreTransactionId);
+            }
+            throw;
+        }
+        catch (Exception ex)
+        {
+            TraceFileFailure("revision-restore", ex);
+            bool compensationFailed = false;
+            if (committedRestoreRevisionId is not null && versionService is not null)
+            {
+                try
+                {
+                    var compensation = versionService.CompensateRestoreHead(
+                        entry.DocumentId,
+                        targetSchemeId,
+                        committedRestoreRevisionId,
+                        expectedHead,
+                        DateTimeOffset.UtcNow.ToString("O"));
+                    compensationFailed = !compensation.RefRolledBack;
+                    if (compensation.RefRolledBack
+                        && restoreTransactionId is not null)
+                    {
+                        versionService.DeleteRestoreTransaction(
+                            restoreTransactionId);
+                    }
+                }
+                catch (Exception compensationException)
+                {
+                    compensationFailed = true;
+                    TraceFileFailure(
+                        "revision-restore-compensation",
+                    compensationException);
+                }
+            }
+            else if (versionService is not null && restoreTransactionId is not null)
+            {
+                TryDeleteRestoreTransaction(
+                    versionService,
+                    restoreTransactionId);
+            }
+            preserveRecoveryArtifacts = compensationFailed;
+            throw new DocumentFileOperationException(
+                compensationFailed
+                    ? "The working copy could not be replaced and the restore ref could not be compensated safely."
+                    : "The working copy could not be replaced; the restore ref was rolled back.",
+                compensationFailed
+                    ? "DOCUMENT_RESTORE_COMPENSATION_FAILED"
+                    : "DOCUMENT_RESTORE_MATERIALIZE_FAILED");
+        }
+        finally
+        {
+            if (!preserveRecoveryArtifacts)
+                TryDelete(stagedPath);
+            _fileMutationGate.Release();
+        }
+
+        await TryPublishDocumentRevisionsAsync(
+            entry.WorkspaceId,
+            entry.DocumentId,
+            entry.CurrentRevisionId,
+            token).ConfigureAwait(false);
+        return new DocumentVersionCommittedPayload(
+            entryHandle,
+            IssueRevisionHandle(
+                entry.WorkspaceId,
+                entry.DocumentId,
+                outcome.RevisionId),
+            BuildRestoreLabel(restoredFrom.VersionLabel),
+            null);
+    }
+
+    public DocumentSchemeListLoadedPayload ListSchemes(string entryHandle)
+    {
+        var entry = _capabilities.Resolve(entryHandle, "schemes");
+        var context = RequireManagedWorkspace(entry.WorkspaceId);
+        var json = new AtomicJsonStore();
+        var revisions = new RevisionStore(context.BackupRoot, json);
+        var schemes = new SchemeService(
+            context.BackupRoot,
+            new ContentObjectStore(context.BackupRoot),
+            revisions,
+            new RefStore(context.BackupRoot, json),
+            json);
+        var payloads = schemes.ListSchemes(entry.DocumentId)
+            .OrderBy(scheme => string.Equals(
+                scheme.SchemeName,
+                "main",
+                StringComparison.Ordinal) ? 0 : 1)
+            .ThenBy(scheme => scheme.SchemeName, StringComparer.OrdinalIgnoreCase)
+            .Select(scheme => BuildSchemePayload(entry, scheme, revisions))
+            .ToArray();
+        return new DocumentSchemeListLoadedPayload(entryHandle, payloads);
+    }
+
+    public async Task<DocumentSchemeMutationCompletedPayload> CreateSchemeAsync(
+        string entryHandle,
+        string name,
+        string? baseRevisionHandle,
+        CancellationToken token)
+    {
+        var entry = _capabilities.Resolve(entryHandle, "schemes");
+        ValidateShortText(name, nameof(name), 128);
+
+        await _fileMutationGate.WaitAsync(token).ConfigureAwait(false);
+        string? schemeDirectory = null;
+        try
+        {
+            var context = RequireManagedWorkspace(entry.WorkspaceId);
+            var json = new AtomicJsonStore();
+            var revisions = new RevisionStore(context.BackupRoot, json);
+            var refs = new RefStore(context.BackupRoot, json);
+            var service = new SchemeService(
+                context.BackupRoot,
+                new ContentObjectStore(context.BackupRoot),
+                revisions,
+                refs,
+                json);
+            string normalizedName = name.Trim();
+            if (service.ListSchemes(entry.DocumentId).Any(scheme =>
+                string.Equals(
+                    scheme.SchemeName,
+                    normalizedName,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new DocumentFileOperationException(
+                    "A scheme with this name already exists.",
+                    "DOCUMENT_SCHEME_NAME_CONFLICT");
+            }
+
+            string sourceRevisionId = entry.CurrentRevisionId
+                ?? throw new DocumentFileOperationException(
+                    "This document does not have a local base revision.",
+                    "DOCUMENT_REVISION_UNAVAILABLE");
+            if (!string.IsNullOrWhiteSpace(baseRevisionHandle))
+            {
+                var sourceHandle = _capabilities.ResolveRevision(
+                    baseRevisionHandle,
+                    "branch");
+                EnsureSameDocument(entry, sourceHandle);
+                sourceRevisionId = sourceHandle.RevisionId;
+            }
+            var sourceRevision = RequireRevision(
+                revisions,
+                entry.DocumentId,
+                sourceRevisionId);
+            var localDocument = context.Catalog.ReadDocument(entry.DocumentId)
+                ?? throw new DocumentFileOperationException(
+                    "The managed document manifest is unavailable.",
+                    "DOCUMENT_MANIFEST_INVALID");
+            string relativePath = $".schemes/{Guid.NewGuid():N}/{localDocument.FileName}";
+            string workingPath = WorkspacePathGuard.ResolveAndCheck(
+                context.Root,
+                relativePath);
+            schemeDirectory = Path.GetDirectoryName(workingPath);
+            MaterializeRevisionAtomically(
+                context,
+                sourceRevision,
+                workingPath,
+                overwrite: false);
+            var created = service.CreateScheme(
+                entry.DocumentId,
+                normalizedName,
+                sourceRevisionId,
+                relativePath,
+                DateTimeOffset.UtcNow.ToString("O"));
+            var scheme = refs.Read(entry.DocumentId, created.SchemeId)
+                ?? throw new DocumentFileOperationException(
+                    "The scheme reference was not persisted.",
+                    "DOCUMENT_SCHEME_CREATE_FAILED");
+            return new DocumentSchemeMutationCompletedPayload(
+                entryHandle,
+                BuildSchemePayload(entry, scheme, revisions));
+        }
+        catch
+        {
+            if (!string.IsNullOrWhiteSpace(schemeDirectory))
+                TryDeleteDirectory(schemeDirectory);
+            throw;
+        }
+        finally
+        {
+            _fileMutationGate.Release();
+        }
+    }
+
+    public async Task<DocumentSchemeMutationCompletedPayload> RenameSchemeAsync(
+        string entryHandle,
+        string schemeHandle,
+        string name,
+        CancellationToken token)
+    {
+        var entry = _capabilities.Resolve(entryHandle, "schemes");
+        var schemeDescriptor = _capabilities.ResolveScheme(schemeHandle, "rename");
+        EnsureSameDocument(entry, schemeDescriptor);
+        ValidateShortText(name, nameof(name), 128);
+
+        await _fileMutationGate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            var context = RequireManagedWorkspace(entry.WorkspaceId);
+            var json = new AtomicJsonStore();
+            var revisions = new RevisionStore(context.BackupRoot, json);
+            var service = new SchemeService(
+                context.BackupRoot,
+                new ContentObjectStore(context.BackupRoot),
+                revisions,
+                new RefStore(context.BackupRoot, json),
+                json);
+            string normalizedName = name.Trim();
+            if (service.ListSchemes(entry.DocumentId).Any(scheme =>
+                !string.Equals(
+                    scheme.SchemeId,
+                    schemeDescriptor.SchemeId,
+                    StringComparison.Ordinal)
+                && string.Equals(
+                    scheme.SchemeName,
+                    normalizedName,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new DocumentFileOperationException(
+                    "A scheme with this name already exists.",
+                    "DOCUMENT_SCHEME_NAME_CONFLICT");
+            }
+            var renamed = service.RenameScheme(
+                entry.DocumentId,
+                schemeDescriptor.SchemeId,
+                schemeDescriptor.ObservedHeadRevisionId,
+                normalizedName,
+                DateTimeOffset.UtcNow.ToString("O"));
+            return new DocumentSchemeMutationCompletedPayload(
+                entryHandle,
+                BuildSchemePayload(entry, renamed, revisions));
+        }
+        catch (RefCasConflictException)
+        {
+            throw new DocumentFileOperationException(
+                "The scheme changed after this view was loaded. Refresh and retry.",
+                "DOCUMENT_VERSION_CONFLICT");
+        }
+        finally
+        {
+            _fileMutationGate.Release();
+        }
+    }
+
+    public async Task<DocumentSchemeMutationCompletedPayload> ArchiveSchemeAsync(
+        string entryHandle,
+        string schemeHandle,
+        CancellationToken token)
+    {
+        var entry = _capabilities.Resolve(entryHandle, "schemes");
+        var schemeDescriptor = _capabilities.ResolveScheme(schemeHandle, "archive");
+        EnsureSameDocument(entry, schemeDescriptor);
+
+        await _fileMutationGate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            var context = RequireManagedWorkspace(entry.WorkspaceId);
+            var json = new AtomicJsonStore();
+            var revisions = new RevisionStore(context.BackupRoot, json);
+            var service = new SchemeService(
+                context.BackupRoot,
+                new ContentObjectStore(context.BackupRoot),
+                revisions,
+                new RefStore(context.BackupRoot, json),
+                json);
+            var archived = service.ArchiveScheme(
+                entry.DocumentId,
+                schemeDescriptor.SchemeId,
+                schemeDescriptor.ObservedHeadRevisionId,
+                DateTimeOffset.UtcNow.ToString("O"));
+            return new DocumentSchemeMutationCompletedPayload(
+                entryHandle,
+                BuildSchemePayload(entry, archived, revisions));
+        }
+        catch (RefCasConflictException)
+        {
+            throw new DocumentFileOperationException(
+                "The scheme changed after this view was loaded. Refresh and retry.",
+                "DOCUMENT_VERSION_CONFLICT");
+        }
+        finally
+        {
+            _fileMutationGate.Release();
+        }
     }
 
     public void Open(string entryHandle)
@@ -645,10 +1183,323 @@ public sealed class DocumentWorkspaceHostService : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         RevokeAll();
         _preview.Dispose();
         _fileMutationGate.Dispose();
         _publishGate.Dispose();
+        TryDeleteDirectory(_revisionPreviewRoot);
+    }
+
+    private async Task<DocumentVersionCommittedPayload> CommitVersionAsync(
+        string entryHandle,
+        DocumentCapabilityDescriptor entry,
+        string? versionLabel,
+        string? note,
+        string? schemeHandle,
+        CancellationToken token)
+    {
+        if (note is not null && note.Length > 2000)
+            throw new DocumentFileOperationException(
+                "The revision note is too long.",
+                "BAD_PAYLOAD");
+
+        await _fileMutationGate.WaitAsync(token).ConfigureAwait(false);
+        WorkspaceVersionService.CommitOutcome outcome;
+        string? nextSchemeHandle = null;
+        string label;
+        try
+        {
+            var context = RequireManagedWorkspace(entry.WorkspaceId);
+            var json = new AtomicJsonStore();
+            var revisions = new RevisionStore(context.BackupRoot, json);
+            var refs = new RefStore(context.BackupRoot, json);
+            DocumentSchemeCapabilityDescriptor? selectedScheme = null;
+            RefManifest scheme;
+            if (!string.IsNullOrWhiteSpace(schemeHandle))
+            {
+                selectedScheme = _capabilities.ResolveScheme(
+                    schemeHandle,
+                    "commit");
+                EnsureSameDocument(entry, selectedScheme);
+                scheme = refs.Read(entry.DocumentId, selectedScheme.SchemeId)
+                    ?? throw new DocumentFileOperationException(
+                        "The selected scheme no longer exists.",
+                        "DOCUMENT_SCHEME_UNAVAILABLE");
+            }
+            else
+            {
+                scheme = RequireMainScheme(refs, entry.DocumentId);
+            }
+            if (scheme.Status != SchemeStatus.Active)
+                throw new DocumentFileOperationException(
+                    "Archived schemes cannot receive new revisions.",
+                    "DOCUMENT_SCHEME_ARCHIVED");
+
+            string expectedHead = selectedScheme?.ObservedHeadRevisionId
+                ?? entry.CurrentRevisionId
+                ?? string.Empty;
+            string workingPath = WorkspacePathGuard.ResolveAndCheck(
+                context.Root,
+                scheme.WorkingRelativePath);
+            if (!File.Exists(workingPath))
+                throw new DocumentFileOperationException(
+                    "The scheme working copy is missing.",
+                    "DOCUMENT_MISSING");
+            var localDocument = context.Catalog.ReadDocument(entry.DocumentId)
+                ?? throw new DocumentFileOperationException(
+                    "The managed document manifest is unavailable.",
+                    "DOCUMENT_MANIFEST_INVALID");
+            var service = new SchemeService(
+                context.BackupRoot,
+                new ContentObjectStore(context.BackupRoot),
+                revisions,
+                refs,
+                json);
+            label = versionLabel
+                ?? $"R{service.GetNextSequence(entry.DocumentId, scheme.SchemeId)}";
+            outcome = service.CommitSchemeVersion(
+                workingPath,
+                scheme.WorkingRelativePath,
+                entry.DocumentId,
+                scheme.SchemeId,
+                expectedHead,
+                label,
+                localDocument.MimeType,
+                "local",
+                deviceId: null,
+                comment: string.IsNullOrWhiteSpace(note) ? null : note.Trim(),
+                createdAt: DateTimeOffset.UtcNow.ToString("O"));
+            if (!outcome.RefUpdated)
+                throw new DocumentFileOperationException(
+                    "The document changed while this revision was being committed. Refresh and retry.",
+                    "DOCUMENT_VERSION_CONFLICT");
+            if (selectedScheme is not null)
+            {
+                var updatedScheme = refs.Read(entry.DocumentId, scheme.SchemeId)
+                    ?? throw new DocumentFileOperationException(
+                        "The updated scheme reference is unavailable.",
+                        "DOCUMENT_SCHEME_UNAVAILABLE");
+                nextSchemeHandle = IssueSchemeHandle(entry, updatedScheme);
+            }
+        }
+        finally
+        {
+            _fileMutationGate.Release();
+        }
+
+        await TryPublishDocumentRevisionsAsync(
+            entry.WorkspaceId,
+            entry.DocumentId,
+            entry.CurrentRevisionId,
+            token).ConfigureAwait(false);
+        return new DocumentVersionCommittedPayload(
+            entryHandle,
+            IssueRevisionHandle(
+                entry.WorkspaceId,
+                entry.DocumentId,
+                outcome.RevisionId),
+            label,
+            nextSchemeHandle);
+    }
+
+    private DocumentSchemeBridgeEntry BuildSchemePayload(
+        DocumentCapabilityDescriptor entry,
+        RefManifest scheme,
+        RevisionStore revisions)
+    {
+        RevisionManifest? head = string.IsNullOrWhiteSpace(scheme.HeadRevisionId)
+            ? null
+            : revisions.Read(entry.DocumentId, scheme.HeadRevisionId);
+        string? revisionHandle = head is null
+            ? null
+            : IssueRevisionHandle(
+                entry.WorkspaceId,
+                entry.DocumentId,
+                head.RevisionId);
+        return new DocumentSchemeBridgeEntry(
+            IssueSchemeHandle(entry, scheme),
+            scheme.SchemeName,
+            revisionHandle,
+            head?.VersionLabel,
+            scheme.Status == SchemeStatus.Archived,
+            string.Equals(scheme.SchemeName, "main", StringComparison.Ordinal));
+    }
+
+    private string IssueSchemeHandle(
+        DocumentCapabilityDescriptor entry,
+        RefManifest scheme)
+    {
+        var capabilities = new List<string> { "view" };
+        if (scheme.Status == SchemeStatus.Active)
+        {
+            capabilities.Add("commit");
+            if (!string.Equals(scheme.SchemeName, "main", StringComparison.Ordinal))
+            {
+                capabilities.Add("rename");
+                capabilities.Add("archive");
+            }
+        }
+        return _capabilities.IssueScheme(
+            entry.WorkspaceId,
+            entry.DocumentId,
+            scheme.SchemeId,
+            scheme.HeadRevisionId,
+            capabilities);
+    }
+
+    private string IssueRevisionHandle(
+        string workspaceId,
+        string documentId,
+        string revisionId)
+        => _capabilities.IssueRevision(
+            workspaceId,
+            documentId,
+            revisionId,
+            ["preview", "restore", "branch"]);
+
+    private static RefManifest RequireMainScheme(
+        RefStore refs,
+        string documentId)
+    {
+        var main = refs.ListByDocument(documentId)
+            .Where(reference => string.Equals(
+                reference.SchemeName,
+                "main",
+                StringComparison.Ordinal))
+            .ToArray();
+        if (main.Length != 1)
+            throw new DocumentFileOperationException(
+                "The document must have exactly one main scheme.",
+                "DOCUMENT_MAIN_SCHEME_INVALID");
+        return main[0];
+    }
+
+    private static RevisionManifest RequireRevision(
+        ManagedWorkspaceContext context,
+        string documentId,
+        string revisionId)
+        => RequireRevision(
+            new RevisionStore(context.BackupRoot, new AtomicJsonStore()),
+            documentId,
+            revisionId);
+
+    private static RevisionManifest RequireRevision(
+        RevisionStore revisions,
+        string documentId,
+        string revisionId)
+        => revisions.Read(documentId, revisionId)
+            ?? throw new DocumentFileOperationException(
+                "The selected revision is not available in this local workspace.",
+                "DOCUMENT_REVISION_UNAVAILABLE");
+
+    private static void EnsureSameDocument(
+        DocumentCapabilityDescriptor entry,
+        DocumentRevisionCapabilityDescriptor revision)
+    {
+        if (!string.Equals(entry.WorkspaceId, revision.WorkspaceId, StringComparison.Ordinal)
+            || !string.Equals(entry.DocumentId, revision.DocumentId, StringComparison.Ordinal))
+        {
+            throw new DocumentCapabilityException(
+                "The revision handle does not belong to this document.",
+                "REVISION_HANDLE_MISMATCH");
+        }
+    }
+
+    private static void EnsureSameDocument(
+        DocumentCapabilityDescriptor entry,
+        DocumentSchemeCapabilityDescriptor scheme)
+    {
+        if (!string.Equals(entry.WorkspaceId, scheme.WorkspaceId, StringComparison.Ordinal)
+            || !string.Equals(entry.DocumentId, scheme.DocumentId, StringComparison.Ordinal))
+        {
+            throw new DocumentCapabilityException(
+                "The scheme handle does not belong to this document.",
+                "SCHEME_HANDLE_MISMATCH");
+        }
+    }
+
+    private static void MaterializeRevisionAtomically(
+        ManagedWorkspaceContext context,
+        RevisionManifest revision,
+        string targetPath,
+        bool overwrite)
+    {
+        var objects = new ContentObjectStore(context.BackupRoot);
+        string objectPath = objects.GetObjectPath(revision.ContentHash);
+        if (!File.Exists(objectPath)
+            || new FileInfo(objectPath).Length != revision.Size
+            || !string.Equals(
+                ContentObjectStore.ComputeHash(objectPath),
+                revision.ContentHash,
+                StringComparison.Ordinal))
+        {
+            throw new DocumentFileOperationException(
+                "The revision content object is missing or failed integrity verification.",
+                "DOCUMENT_REVISION_OBJECT_INVALID");
+        }
+
+        string directory = Path.GetDirectoryName(targetPath)
+            ?? throw new DocumentFileOperationException(
+                "The revision target directory is invalid.",
+                "DOCUMENT_REVISION_TARGET_INVALID");
+        Directory.CreateDirectory(directory);
+        string temporaryPath = Path.Combine(
+            directory,
+            $".{Path.GetFileName(targetPath)}.{Guid.NewGuid():N}.partial");
+        try
+        {
+            using (var source = new FileStream(
+                objectPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                128 * 1024,
+                FileOptions.SequentialScan))
+            using (var temporary = new FileStream(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                128 * 1024,
+                FileOptions.SequentialScan))
+            {
+                source.CopyTo(temporary, 128 * 1024);
+                temporary.Flush(flushToDisk: true);
+            }
+            if (new FileInfo(temporaryPath).Length != revision.Size
+                || !string.Equals(
+                    ContentObjectStore.ComputeHash(temporaryPath),
+                    revision.ContentHash,
+                    StringComparison.Ordinal))
+            {
+                throw new DocumentFileOperationException(
+                    "The staged revision failed integrity verification.",
+                    "DOCUMENT_REVISION_STAGE_INVALID");
+            }
+            File.Move(temporaryPath, targetPath, overwrite);
+        }
+        finally
+        {
+            TryDelete(temporaryPath);
+        }
+    }
+
+    private static void ValidateShortText(
+        string value,
+        string parameterName,
+        int maximumLength)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Trim().Length > maximumLength)
+            throw new DocumentFileOperationException(
+                $"{parameterName} is missing or too long.",
+                "BAD_PAYLOAD");
+    }
+
+    private static string BuildRestoreLabel(string sourceLabel)
+    {
+        string label = $"Restore {sourceLabel}";
+        return label.Length <= 128 ? label : label[..128];
     }
 
     private async Task<bool> PublishChangedLocalHeadsAsync(
@@ -1140,12 +1991,226 @@ public sealed class DocumentWorkspaceHostService : IDisposable
         }
 
         string normalizedRoot = Path.GetFullPath(root);
-        return new ManagedWorkspaceContext(
+        var context = new ManagedWorkspaceContext(
             normalizedRoot,
             workspaceId,
             workspace.Name,
             Path.Combine(normalizedRoot, ".backup"),
             new DocumentCatalogStore(Path.Combine(normalizedRoot, ".backup"), json));
+        EnsureRestoreTransactionsReconciled(context);
+        return context;
+    }
+
+    private void EnsureRestoreTransactionsReconciled(
+        ManagedWorkspaceContext context)
+    {
+        lock (_restoreReconciliationGate)
+        {
+            if (_reconciledWorkspaceRoots.Contains(context.Root))
+                return;
+            try
+            {
+                ReconcileRestoreTransactions(context);
+                _reconciledWorkspaceRoots.Add(context.Root);
+            }
+            catch (DocumentFileOperationException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                TraceFileFailure("restore-reconciliation", ex);
+                throw new DocumentFileOperationException(
+                    "An interrupted file restore could not be reconciled safely.",
+                    "DOCUMENT_RESTORE_RECOVERY_REQUIRED");
+            }
+        }
+    }
+
+    private static void ReconcileRestoreTransactions(
+        ManagedWorkspaceContext context)
+    {
+        var json = new AtomicJsonStore();
+        var objects = new ContentObjectStore(context.BackupRoot);
+        var revisions = new RevisionStore(context.BackupRoot, json);
+        var refs = new RefStore(context.BackupRoot, json);
+        var outbox = new RevisionPublishOutboxStore(context.BackupRoot, json);
+        var versions = new WorkspaceVersionService(
+            context.BackupRoot,
+            objects,
+            revisions,
+            refs,
+            json);
+
+        foreach (var transaction in versions.ListRestoreTransactions())
+        {
+            var reference = refs.Read(
+                transaction.DocumentId,
+                transaction.SchemeId)
+                ?? throw new DocumentFileOperationException(
+                    "An interrupted restore references a missing scheme.",
+                    "DOCUMENT_RESTORE_RECOVERY_REQUIRED");
+            string targetPath = WorkspacePathGuard.ResolveAndCheck(
+                context.Root,
+                transaction.WorkingRelativePath);
+            string stagedPath = WorkspacePathGuard.ResolveAndCheck(
+                context.Root,
+                transaction.StagedRelativePath);
+            RevisionManifest? restoreRevision = revisions.Read(
+                transaction.DocumentId,
+                transaction.RestoreRevisionId);
+
+            if (string.Equals(
+                reference.HeadRevisionId,
+                transaction.RestoreRevisionId,
+                StringComparison.Ordinal))
+            {
+                if (restoreRevision is null
+                    || restoreRevision.Kind != RevisionKind.Restore
+                    || !string.Equals(
+                        restoreRevision.SchemeId,
+                        transaction.SchemeId,
+                        StringComparison.Ordinal)
+                    || !string.Equals(
+                        restoreRevision.RestoredFromRevisionId,
+                        transaction.RestoredFromRevisionId,
+                        StringComparison.Ordinal)
+                    || !string.Equals(
+                        restoreRevision.ContentHash,
+                        transaction.ContentHash,
+                        StringComparison.Ordinal)
+                    || restoreRevision.Size != transaction.Size)
+                {
+                    throw new DocumentFileOperationException(
+                        "An interrupted restore revision does not match its journal.",
+                        "DOCUMENT_RESTORE_RECOVERY_REQUIRED");
+                }
+
+                outbox.Enqueue(restoreRevision);
+                if (!FileMatchesContent(
+                    targetPath,
+                    transaction.ContentHash,
+                    transaction.Size))
+                {
+                    if (FileMatchesContent(
+                        stagedPath,
+                        transaction.ContentHash,
+                        transaction.Size))
+                    {
+                        try
+                        {
+                            Directory.CreateDirectory(
+                                Path.GetDirectoryName(targetPath)!);
+                            File.Move(stagedPath, targetPath, overwrite: true);
+                        }
+                        catch (Exception moveException)
+                        {
+                            TraceFileFailure(
+                                "restore-reconciliation-materialize",
+                                moveException);
+                        }
+                    }
+
+                    if (!FileMatchesContent(
+                        targetPath,
+                        transaction.ContentHash,
+                        transaction.Size))
+                    {
+                        var compensation = versions.CompensateRestoreHead(
+                            transaction.DocumentId,
+                            transaction.SchemeId,
+                            transaction.RestoreRevisionId,
+                            transaction.PreviousHeadRevisionId,
+                            DateTimeOffset.UtcNow.ToString("O"));
+                        if (!compensation.RefRolledBack)
+                        {
+                            throw new DocumentFileOperationException(
+                                "An interrupted restore could neither complete nor roll back.",
+                                "DOCUMENT_RESTORE_RECOVERY_REQUIRED");
+                        }
+                        TryDelete(stagedPath);
+                        versions.DeleteRestoreTransaction(
+                            transaction.TransactionId);
+                        continue;
+                    }
+                }
+
+                TryDelete(stagedPath);
+                versions.DeleteRestoreTransaction(transaction.TransactionId);
+                continue;
+            }
+
+            if (string.Equals(
+                reference.HeadRevisionId,
+                transaction.PreviousHeadRevisionId,
+                StringComparison.Ordinal))
+            {
+                if (restoreRevision is not null
+                    && FileMatchesContent(
+                        targetPath,
+                        transaction.ContentHash,
+                        transaction.Size))
+                {
+                    try
+                    {
+                        refs.UpdateHead(
+                            transaction.DocumentId,
+                            transaction.SchemeId,
+                            transaction.PreviousHeadRevisionId,
+                            transaction.RestoreRevisionId,
+                            DateTimeOffset.UtcNow.ToString("O"));
+                        outbox.Enqueue(restoreRevision);
+                    }
+                    catch (RefCasConflictException)
+                    {
+                        throw new DocumentFileOperationException(
+                            "An interrupted restore changed during reconciliation.",
+                            "DOCUMENT_RESTORE_RECOVERY_REQUIRED");
+                    }
+                }
+                TryDelete(stagedPath);
+                versions.DeleteRestoreTransaction(transaction.TransactionId);
+                continue;
+            }
+
+            throw new DocumentFileOperationException(
+                "An interrupted restore has an unexpected current head.",
+                "DOCUMENT_RESTORE_RECOVERY_REQUIRED");
+        }
+    }
+
+    private static bool FileMatchesContent(
+        string path,
+        string expectedHash,
+        long expectedSize)
+    {
+        try
+        {
+            return File.Exists(path)
+                && new FileInfo(path).Length == expectedSize
+                && string.Equals(
+                    ContentObjectStore.ComputeHash(path),
+                    expectedHash,
+                    StringComparison.Ordinal);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void TryDeleteRestoreTransaction(
+        WorkspaceVersionService versions,
+        string transactionId)
+    {
+        try
+        {
+            versions.DeleteRestoreTransaction(transactionId);
+        }
+        catch (Exception ex)
+        {
+            TraceFileFailure("restore-journal-cleanup", ex);
+        }
     }
 
     private static void ValidateImportRequest(DocumentImportRequest request)
@@ -1454,6 +2519,19 @@ public sealed class DocumentWorkspaceHostService : IDisposable
         }
     }
 
+    private static void TryDeleteDirectory(string? path)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path))
+                Directory.Delete(path, recursive: true);
+        }
+        catch
+        {
+            // Best effort for host-owned temporary and abandoned scheme paths.
+        }
+    }
+
     private static void TraceFileFailure(string operation, Exception exception)
         => Trace.TraceError(
             $"Document file {operation} failed ({exception.GetType().Name}, "
@@ -1504,7 +2582,7 @@ public sealed class DocumentWorkspaceHostService : IDisposable
         }
 
         bool exists = File.Exists(fullPath);
-        var capabilities = new List<string> { "history" };
+        var capabilities = new List<string> { "history", "schemes" };
         if (!string.IsNullOrWhiteSpace(document.LinkId)) capabilities.Add("unlink");
         if (exists)
         {
@@ -1516,6 +2594,8 @@ public sealed class DocumentWorkspaceHostService : IDisposable
             if (_preview.CanPreview(fullPath))
                 capabilities.Add("preview");
             capabilities.Add("reveal");
+            capabilities.Add("version");
+            capabilities.Add("restore");
         }
         else
         {
@@ -1531,12 +2611,11 @@ public sealed class DocumentWorkspaceHostService : IDisposable
             document.MainHead);
         return new DocumentEntryPayload(
             handle,
-            document.DocumentId,
             localDocument.FileName,
             localDocument.MimeType,
             exists ? "available" : "missing",
             capabilities.Contains("preview") ? "system" : "none",
-            document.MainHead,
+            ResolveRevisionLabel(root, document.DocumentId, document.MainHead),
             document.LinkType ?? "primary",
             capabilities);
     }
@@ -1560,14 +2639,33 @@ public sealed class DocumentWorkspaceHostService : IDisposable
             document.MainHead);
         return new DocumentEntryPayload(
             handle,
-            document.DocumentId,
             document.FileName,
             document.MimeType,
             availability,
             "none",
-            document.MainHead,
+            null,
             document.LinkType ?? "primary",
             capabilities);
+    }
+
+    private static string? ResolveRevisionLabel(
+        string workspaceRoot,
+        string documentId,
+        string? revisionId)
+    {
+        if (string.IsNullOrWhiteSpace(revisionId)) return null;
+        try
+        {
+            return new RevisionStore(
+                Path.Combine(workspaceRoot, ".backup"),
+                new AtomicJsonStore())
+                .Read(documentId, revisionId)
+                ?.VersionLabel;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private string ResolveExistingPath(DocumentCapabilityDescriptor descriptor)
@@ -1604,7 +2702,6 @@ public sealed record DocumentListPayload(
 
 public sealed record DocumentEntryPayload(
     string EntryHandle,
-    string DocumentId,
     string DisplayName,
     string? MimeType,
     string Availability,

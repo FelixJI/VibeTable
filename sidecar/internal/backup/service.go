@@ -184,6 +184,33 @@ func (service *Service) List(ctx context.Context) ([]Entry, error) {
 	return result, nil
 }
 
+func (service *Service) Delete(ctx context.Context, name string) error {
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	if _, err := service.entry(ctx, name); err != nil {
+		return err
+	}
+	fsys, err := service.app.NewBackupsFilesystem()
+	if err != nil {
+		return backupError(
+			"backup.storage_failed",
+			"backup storage is unavailable",
+			true,
+		)
+	}
+	defer fsys.Close()
+	fsys.SetContext(ctx)
+	if err := fsys.Delete(name); err != nil {
+		return backupError(
+			"backup.delete_failed",
+			"backup archive could not be deleted",
+			true,
+		)
+	}
+	return nil
+}
+
 func (service *Service) Restore(
 	ctx context.Context,
 	name string,

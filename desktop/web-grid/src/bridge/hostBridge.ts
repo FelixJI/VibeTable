@@ -217,6 +217,10 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "document.actionCompleted",
   "document.operationFailed",
   "document.workspaceChanged",
+  "document.versionCommitted",
+  "document.revisionPreviewCompleted",
+  "document.schemeListLoaded",
+  "document.schemeMutationCompleted",
   "plugin.catalog.changed",
   "plugin.task.changed",
   "plugin.interaction.requested",
@@ -353,6 +357,14 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "document.revealRequested",
   "document.historyRequested",
   "document.relinkRequested",
+  "document.commitRevisionRequested",
+  "document.promoteVersionRequested",
+  "document.revisionPreviewRequested",
+  "document.revisionRestoreRequested",
+  "document.schemeListRequested",
+  "document.schemeCreateRequested",
+  "document.schemeRenameRequested",
+  "document.schemeArchiveRequested",
   // Open the embedded data administration surface in this webview.
   "admin.openRequested",
 ]);
@@ -405,6 +417,14 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
   "document.openRequested": ["document.actionCompleted"],
   "document.previewRequested": ["document.actionCompleted"],
   "document.revealRequested": ["document.actionCompleted"],
+  "document.commitRevisionRequested": ["document.versionCommitted"],
+  "document.promoteVersionRequested": ["document.versionCommitted"],
+  "document.revisionPreviewRequested": ["document.revisionPreviewCompleted"],
+  "document.revisionRestoreRequested": ["document.versionCommitted"],
+  "document.schemeListRequested": ["document.schemeListLoaded"],
+  "document.schemeCreateRequested": ["document.schemeMutationCompleted"],
+  "document.schemeRenameRequested": ["document.schemeMutationCompleted"],
+  "document.schemeArchiveRequested": ["document.schemeMutationCompleted"],
 };
 
 function responseTypesFor(type: WebMessageType): ReadonlySet<HostMessageType> {

@@ -3,9 +3,9 @@ import { createPinia, setActivePinia } from "pinia";
 import { useDocumentWorkspaceStore, type DocumentEntry } from "./documentWorkspaceStore";
 
 const entries: readonly DocumentEntry[] = [
-  { entryHandle: "a", documentId: "1", displayName: "A.docx", authority: "workspace", availability: "available", capabilities: ["open", "preview", "reveal", "history"] },
-  { entryHandle: "b", documentId: "2", displayName: "B.pdf", authority: "workspace", availability: "available", capabilities: ["open", "preview"] },
-  { entryHandle: "c", documentId: "3", displayName: "C.xlsx", authority: "workspace", availability: "missing", capabilities: ["relink", "history"] },
+  { entryHandle: "a", displayName: "A.docx", authority: "workspace", availability: "available", capabilities: ["open", "preview", "reveal", "history"] },
+  { entryHandle: "b", displayName: "B.pdf", authority: "workspace", availability: "available", capabilities: ["open", "preview"] },
+  { entryHandle: "c", displayName: "C.xlsx", authority: "workspace", availability: "missing", capabilities: ["relink", "history"] },
 ];
 
 describe("documentWorkspaceStore", () => {
@@ -52,5 +52,25 @@ describe("documentWorkspaceStore", () => {
     expect(wire).not.toContain("pocketbase");
     expect(wire).not.toContain("pb_data");
     expect(wire).not.toMatch(/[a-z]:\\\\/);
+  });
+
+  it("tracks schemes and operations by opaque handles", () => {
+    const store = useDocumentWorkspaceStore();
+    store.setEntries(entries);
+    store.beginSchemes("a");
+    store.setSchemes("a", [{
+      schemeHandle: "scheme-opaque",
+      name: "方案 A",
+      currentRevisionHandle: "revision-opaque",
+      currentRevisionLabel: "A1",
+      archived: false,
+      active: true,
+    }]);
+    expect(store.inspectorTab).toBe("schemes");
+    expect(store.schemes.a?.[0]?.currentRevisionHandle).toBe("revision-opaque");
+    store.beginOperation("document.commitRevisionRequested");
+    expect(store.activeOperation).toBe("document.commitRevisionRequested");
+    store.finishOperation();
+    expect(store.activeOperation).toBeNull();
   });
 });

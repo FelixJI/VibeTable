@@ -22,6 +22,7 @@ const dropFeedback = ref(false);
 let dropFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 const selectedCount = computed(() => store.selectedHandles.length);
 const currentRevisions = computed(() => store.primaryHandle ? store.revisions[store.primaryHandle] ?? [] : []);
+const currentSchemes = computed(() => store.primaryHandle ? store.schemes[store.primaryHandle] ?? [] : []);
 
 function requestList(): void {
   store.setAuthorityFilter("workspace");
@@ -39,10 +40,23 @@ function history(entry: DocumentEntry): void {
   service.history(entry.entryHandle);
 }
 
+function schemes(entry: DocumentEntry): void {
+  store.beginSchemes(entry.entryHandle);
+  service.listSchemes(entry.entryHandle);
+}
+
 function onAction(action: DocumentCapability, entry: DocumentEntry): void {
   menu.value = null;
   if (action === "history") history(entry);
-  else service[action](entry.entryHandle);
+  else if (
+    action === "open" ||
+    action === "preview" ||
+    action === "reveal" ||
+    action === "relink" ||
+    action === "dragOut"
+  ) {
+    service[action](entry.entryHandle);
+  }
 }
 
 function isExternalFileDrag(event: DragEvent): boolean {
@@ -150,11 +164,22 @@ onBeforeUnmount(() => {
         :entry="store.primaryEntry"
         :active-tab="store.inspectorTab"
         :revisions="currentRevisions"
+        :schemes="currentSchemes"
         :history-loading="store.historyLoadingFor === store.primaryHandle"
+        :schemes-loading="store.schemesLoadingFor === store.primaryHandle"
+        :busy="store.activeOperation !== null"
         @tab="store.showInspector"
         @preview="service.preview($event.entryHandle)"
         @history="history"
+        @schemes="schemes"
         @relink="service.relink($event.entryHandle)"
+        @commit="(entry, note, schemeHandle) => service.commitRevision(entry.entryHandle, note, schemeHandle)"
+        @promote="(entry, label, note, schemeHandle) => service.promoteVersion(entry.entryHandle, label, note, schemeHandle)"
+        @preview-revision="(entry, revision) => service.previewRevision(entry.entryHandle, revision.revisionHandle)"
+        @restore-revision="(entry, revision) => service.restoreRevision(entry.entryHandle, revision.revisionHandle)"
+        @create-scheme="(entry, name, base) => service.createScheme(entry.entryHandle, name, base)"
+        @rename-scheme="(entry, scheme, name) => service.renameScheme(entry.entryHandle, scheme.schemeHandle, name)"
+        @archive-scheme="(entry, scheme) => service.archiveScheme(entry.entryHandle, scheme.schemeHandle)"
       />
     </div>
 
@@ -184,4 +209,11 @@ onBeforeUnmount(() => {
 .file-skeleton i { display: block; height: 40px; border-bottom: 1px solid var(--vt-border); background: linear-gradient(90deg, transparent 0%, var(--vt-bg-subtle) 30%, var(--vt-bg-sunken) 50%, var(--vt-bg-subtle) 70%, transparent 100%); background-size: 240% 100%; animation: shimmer 1.4s infinite; }
 @keyframes shimmer { to { background-position: -140% 0; } }
 @media (max-width: 920px) { .file-search { width: 180px; } :deep(.document-inspector) { flex-basis: 360px; } }
+@media (max-width: 680px) {
+  .file-toolbar { min-height: 46px; height: auto; flex-wrap: wrap; padding-block: 7px; }
+  .file-search { width: min(100%, 240px); flex: 1 1 180px; }
+  .selection-count { margin-left: 0; }
+  .file-body { flex-direction: column; overflow: auto; }
+  .file-list-pane { min-height: 260px; }
+}
 </style>

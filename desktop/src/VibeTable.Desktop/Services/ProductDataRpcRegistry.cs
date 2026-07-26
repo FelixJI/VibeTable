@@ -83,6 +83,8 @@ internal static class ProductDataRpcRegistry
             (g, p, t) => g.ListBackupsAsync(p, t)),
         new("backup.create", p => Safe(p) && HasExactProperties(p, "name") && HasBackupName(p),
             (g, p, t) => g.CreateBackupAsync(p, t)),
+        new("backup.delete", p => Safe(p) && HasExactProperties(p, "name") && HasBackupName(p),
+            (g, p, t) => g.DeleteBackupAsync(p, t)),
         new("backup.restore", p => Safe(p) && HasExactProperties(p, "name", "confirmed")
             && HasBackupName(p) && HasTrue(p, "confirmed"),
             (g, p, t) => g.RestoreBackupAsync(p, t)),

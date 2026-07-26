@@ -67,6 +67,7 @@ public interface IProductDataRpcGateway : IDisposable, IRelationLookupRpcGateway
     Task<JsonElement> DeleteVersionAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ListBackupsAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> CreateBackupAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> DeleteBackupAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> RestoreBackupAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> RegisterImportSourceAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> RegisterExportTargetAsync(JsonElement parameters, CancellationToken token);

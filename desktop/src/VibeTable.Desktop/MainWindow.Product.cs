@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -45,6 +46,8 @@ public partial class MainWindow : Window
     private readonly ILocalDocumentPreview _attachmentPreview;
     private readonly string _attachmentPreviewRoot;
     private readonly string _productDataRoot;
+    private readonly string _pocketBaseDataDirectory;
+    private readonly string _pocketBaseVersion;
     private readonly DashboardFeatureOptions _dashboardFeatures;
     private readonly MainWindowViewModel _viewModel;
     private readonly TestModeReadinessWriter? _readiness;
@@ -119,6 +122,9 @@ public partial class MainWindow : Window
                 Environment.GetFolderPath(
                     Environment.SpecialFolder.LocalApplicationData),
                 "VibeTable");
+        _pocketBaseDataDirectory = sidecarOptions.DataDirectory;
+        _pocketBaseVersion = sidecarOptions.ExpectedIdentity?.PocketBaseVersion
+            ?? "unknown";
         _attachmentPreviewRoot = Path.Combine(
             _productDataRoot,
             "attachment-preview",
@@ -325,13 +331,76 @@ public partial class MainWindow : Window
         }
         if (request.Type == "admin.openRequested")
         {
-            if (!_localData.OpenAdmin())
+            if (!OpenPocketBaseAdmin())
             {
                 _webBridge.PostOperationFailed(
                     request.RequestId,
                     "当前版本没有可安全打开的本地管理页面。",
                     "ADMIN_UNAVAILABLE");
             }
+            return;
+        }
+        if (request.Type == "backup.openFolder")
+        {
+            if (!HasEmptyObjectPayload(request))
+            {
+                _webBridge.PostOperationFailed(
+                    request.RequestId,
+                    "The backup-folder request is invalid.",
+                    "BACKUP_FOLDER_BAD_PAYLOAD");
+                return;
+            }
+            try
+            {
+                string backupDirectory = Path.Combine(
+                    _pocketBaseDataDirectory,
+                    "backups");
+                Directory.CreateDirectory(backupDirectory);
+                Process.Start(new ProcessStartInfo(backupDirectory)
+                {
+                    UseShellExecute = true,
+                });
+                _webBridge.PostResponse(
+                    request.Type,
+                    request.RequestId,
+                    new { status = "opened" });
+            }
+            catch (Exception exception)
+            {
+                _webBridge.PostOperationFailed(
+                    request.RequestId,
+                    exception.Message,
+                    "BACKUP_FOLDER_OPEN_FAILED");
+            }
+            return;
+        }
+        if (request.Type == "diagnostics.get")
+        {
+            if (!HasEmptyObjectPayload(request))
+            {
+                _webBridge.PostOperationFailed(
+                    request.RequestId,
+                    "The diagnostics request is invalid.",
+                    "DIAGNOSTICS_BAD_PAYLOAD");
+                return;
+            }
+            using Process process = Process.GetCurrentProcess();
+            _webBridge.PostResponse(
+                request.Type,
+                request.RequestId,
+                new
+                {
+                    currentDirectory = Environment.CurrentDirectory,
+                    programDirectory = AppContext.BaseDirectory,
+                    dataDirectory = _productDataRoot,
+                    operatingSystem = RuntimeInformation.OSDescription,
+                    programVersion = typeof(MainWindow).Assembly
+                        .GetName().Version?.ToString() ?? "unknown",
+                    dotnetVersion = Environment.Version.ToString(),
+                    pocketBaseVersion = _pocketBaseVersion,
+                    memoryBytes = process.WorkingSet64,
+                    dataServiceState = _localData.GetStatus().State.ToString(),
+                });
             return;
         }
         if (request.Type == "dailyQuote.fetch")
@@ -424,6 +493,20 @@ public partial class MainWindow : Window
         if (request.Type == "document.dragOutRequested")
         {
             DragDocumentOut(request.Payload);
+            return;
+        }
+        if (request.Type is
+            "document.commitRevisionRequested"
+            or "document.promoteVersionRequested"
+            or "document.revisionPreviewRequested"
+            or "document.revisionRestoreRequested"
+            or "document.schemeListRequested"
+            or "document.schemeCreateRequested"
+            or "document.schemeRenameRequested"
+            or "document.schemeArchiveRequested"
+            or "document.schemeActivateRequested")
+        {
+            _ = HandleDocumentVersionRequestAsync(request);
             return;
         }
         if (request.Type == "file.uploadRequested")
@@ -533,6 +616,174 @@ public partial class MainWindow : Window
             return;
         }
         _dispatcher.Dispatch(request);
+    }
+
+    private async Task HandleDocumentVersionRequestAsync(RoutedWebRequest request)
+    {
+        if (_documentWorkspace is null)
+        {
+            _webBridge.PostOperationFailed(
+                request.RequestId,
+                "The document workspace is not connected.",
+                "DOCUMENT_WORKSPACE_UNAVAILABLE");
+            return;
+        }
+
+        try
+        {
+            object result;
+            string responseType;
+            string? changedReason = null;
+            switch (request.Type)
+            {
+                case "document.commitRevisionRequested":
+                {
+                    var payload = ReadDocumentPayload<DocumentCommitRevisionRequestedPayload>(
+                        request.Payload);
+                    result = await _documentWorkspace.CommitRevisionAsync(
+                        payload.EntryHandle,
+                        payload.Note,
+                        payload.SchemeHandle,
+                        _session.Token).ConfigureAwait(false);
+                    responseType = "document.versionCommitted";
+                    changedReason = "revision";
+                    break;
+                }
+                case "document.promoteVersionRequested":
+                {
+                    var payload = ReadDocumentPayload<DocumentPromoteVersionRequestedPayload>(
+                        request.Payload);
+                    result = await _documentWorkspace.PromoteVersionAsync(
+                        payload.EntryHandle,
+                        payload.VersionLabel,
+                        payload.Note,
+                        payload.SchemeHandle,
+                        _session.Token).ConfigureAwait(false);
+                    responseType = "document.versionCommitted";
+                    changedReason = "revision";
+                    break;
+                }
+                case "document.revisionPreviewRequested":
+                {
+                    var payload = ReadDocumentPayload<DocumentRevisionHandleRequest>(
+                        request.Payload);
+                    result = _documentWorkspace.PreviewRevision(
+                        payload.EntryHandle,
+                        payload.RevisionHandle);
+                    responseType = "document.revisionPreviewCompleted";
+                    break;
+                }
+                case "document.revisionRestoreRequested":
+                {
+                    var payload = ReadDocumentPayload<DocumentRevisionHandleRequest>(
+                        request.Payload);
+                    result = await _documentWorkspace.RestoreRevisionAsync(
+                        payload.EntryHandle,
+                        payload.RevisionHandle,
+                        _session.Token).ConfigureAwait(false);
+                    responseType = "document.versionCommitted";
+                    changedReason = "restore";
+                    break;
+                }
+                case "document.schemeListRequested":
+                {
+                    var payload = ReadDocumentPayload<DocumentEntryHandleRequest>(
+                        request.Payload);
+                    result = _documentWorkspace.ListSchemes(payload.EntryHandle);
+                    responseType = "document.schemeListLoaded";
+                    break;
+                }
+                case "document.schemeCreateRequested":
+                {
+                    var payload = ReadDocumentPayload<DocumentSchemeCreateRequestedPayload>(
+                        request.Payload);
+                    result = await _documentWorkspace.CreateSchemeAsync(
+                        payload.EntryHandle,
+                        payload.Name,
+                        payload.BaseRevisionHandle,
+                        _session.Token).ConfigureAwait(false);
+                    responseType = "document.schemeMutationCompleted";
+                    changedReason = "scheme";
+                    break;
+                }
+                case "document.schemeRenameRequested":
+                {
+                    var payload = ReadDocumentPayload<DocumentSchemeRenameRequestedPayload>(
+                        request.Payload);
+                    result = await _documentWorkspace.RenameSchemeAsync(
+                        payload.EntryHandle,
+                        payload.SchemeHandle,
+                        payload.Name,
+                        _session.Token).ConfigureAwait(false);
+                    responseType = "document.schemeMutationCompleted";
+                    changedReason = "scheme";
+                    break;
+                }
+                case "document.schemeArchiveRequested":
+                {
+                    var payload = ReadDocumentPayload<DocumentSchemeHandleRequest>(
+                        request.Payload);
+                    result = await _documentWorkspace.ArchiveSchemeAsync(
+                        payload.EntryHandle,
+                        payload.SchemeHandle,
+                        _session.Token).ConfigureAwait(false);
+                    responseType = "document.schemeMutationCompleted";
+                    changedReason = "scheme";
+                    break;
+                }
+                case "document.schemeActivateRequested":
+                    _ = ReadDocumentPayload<DocumentSchemeHandleRequest>(
+                        request.Payload);
+                    throw new DocumentFileOperationException(
+                        "Activating a scheme is not supported because the workspace has no persistent active-scheme model.",
+                        "NOT_SUPPORTED");
+                default:
+                    return;
+            }
+
+            _webBridge.PostResponse(responseType, request.RequestId, result);
+            if (changedReason is not null)
+                PostDocumentWorkspaceChanged(changedReason, 1);
+        }
+        catch (OperationCanceledException) when (_session.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            DocumentOperationFailedPayload failure = exception switch
+            {
+                DocumentFileOperationException value =>
+                    new DocumentOperationFailedPayload(value.Message, value.Code),
+                DocumentCapabilityException value =>
+                    new DocumentOperationFailedPayload(value.Message, value.Code),
+                _ => new DocumentOperationFailedPayload(
+                    "The document version operation did not complete.",
+                    "DOCUMENT_VERSION_OPERATION_FAILED"),
+            };
+            _webBridge.PostOperationFailed(
+                request.RequestId,
+                failure.Message,
+                failure.Code);
+            PostDocumentFailure(
+                failure.Message,
+                failure.Code ?? "DOCUMENT_VERSION_OPERATION_FAILED");
+        }
+    }
+
+    private static T ReadDocumentPayload<T>(JsonElement payload)
+        where T : class
+    {
+        try
+        {
+            return payload.Deserialize<T>()
+                ?? throw new JsonException("Document request payload is empty.");
+        }
+        catch (JsonException)
+        {
+            throw new DocumentFileOperationException(
+                "The document request payload is invalid.",
+                "BAD_PAYLOAD");
+        }
     }
 
     private async Task ApplyAttachmentChangeAsync(

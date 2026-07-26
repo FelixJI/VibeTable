@@ -69,6 +69,15 @@ public enum RevisionKind
 }
 
 /// <summary>
+/// Persistent lifecycle state of a document scheme.
+/// </summary>
+public enum SchemeStatus
+{
+    Active,
+    Archived,
+}
+
+/// <summary>
 /// An immutable content commit within a scheme. Written once, never modified.
 /// </summary>
 public sealed record RevisionManifest(
@@ -110,4 +119,10 @@ public sealed record RefManifest(
 )
 {
     public const int CurrentFormatVersion = 1;
+
+    /// <summary>
+    /// Added as a format-v1 optional property so manifests written before the
+    /// scheme lifecycle was persisted continue to deserialize as active.
+    /// </summary>
+    public SchemeStatus Status { get; init; } = SchemeStatus.Active;
 }

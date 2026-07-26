@@ -109,6 +109,7 @@ public sealed class LocalDataServiceTests
         }
 
         public Uri? GetAdminUri() => AdminUri;
+        public PocketBaseAdminContext? GetAdminContext() => null;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

@@ -16,6 +16,8 @@ public sealed class DocumentCapabilityStore
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, DocumentRevisionCapabilityDescriptor> _revisions =
         new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DocumentSchemeCapabilityDescriptor> _schemes =
+        new(StringComparer.Ordinal);
     private readonly Func<DateTimeOffset> _clock;
     private readonly TimeSpan _ttl;
     private long _epoch;
@@ -156,12 +158,79 @@ public sealed class DocumentCapabilityStore
         }
     }
 
+    public string IssueScheme(
+        string workspaceId,
+        string documentId,
+        string schemeId,
+        string observedHeadRevisionId,
+        IEnumerable<string> capabilities)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(schemeId);
+        ArgumentNullException.ThrowIfNull(observedHeadRevisionId);
+        ArgumentNullException.ThrowIfNull(capabilities);
+
+        var grantedCapabilities = capabilities.ToFrozenSet(StringComparer.Ordinal);
+        lock (_gate)
+        {
+            var now = _clock();
+            PruneExpiredLocked(now);
+            string handle = $"scheme-{Guid.NewGuid():N}";
+            _schemes[handle] = new DocumentSchemeCapabilityDescriptor(
+                workspaceId,
+                documentId,
+                schemeId,
+                observedHeadRevisionId,
+                grantedCapabilities,
+                now + _ttl,
+                _epoch);
+            return handle;
+        }
+    }
+
+    public DocumentSchemeCapabilityDescriptor ResolveScheme(
+        string handle,
+        string requiredCapability)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(handle);
+        ArgumentException.ThrowIfNullOrWhiteSpace(requiredCapability);
+
+        lock (_gate)
+        {
+            if (!_schemes.TryGetValue(handle, out var descriptor))
+                throw new DocumentCapabilityException(
+                    "The scheme authorization is no longer valid. Refresh the scheme list.",
+                    "SCHEME_HANDLE_INVALID");
+            if (descriptor.Epoch != _epoch)
+            {
+                _schemes.Remove(handle);
+                throw new DocumentCapabilityException(
+                    "The scheme authorization is no longer valid. Refresh the scheme list.",
+                    "SCHEME_HANDLE_INVALID");
+            }
+            if (_clock() >= descriptor.ExpiresAt)
+            {
+                _schemes.Remove(handle);
+                throw new DocumentCapabilityException(
+                    "The scheme authorization expired. Refresh the scheme list.",
+                    "SCHEME_HANDLE_EXPIRED");
+            }
+            if (!descriptor.Capabilities.Contains(requiredCapability))
+                throw new DocumentCapabilityException(
+                    "This scheme does not allow the requested operation.",
+                    "SCHEME_CAPABILITY_DENIED");
+            return descriptor;
+        }
+    }
+
     public void RevokeAll()
     {
         lock (_gate)
         {
             _entries.Clear();
             _revisions.Clear();
+            _schemes.Clear();
         }
     }
 
@@ -176,6 +245,7 @@ public sealed class DocumentCapabilityStore
             _epoch = _epoch == long.MaxValue ? 0 : _epoch + 1;
             _entries.Clear();
             _revisions.Clear();
+            _schemes.Clear();
             return _epoch;
         }
     }
@@ -204,6 +274,13 @@ public sealed class DocumentCapabilityStore
         {
             _revisions.Remove(key);
         }
+        foreach (string key in _schemes
+            .Where(entry => now >= entry.Value.ExpiresAt)
+            .Select(entry => entry.Key)
+            .ToArray())
+        {
+            _schemes.Remove(key);
+        }
     }
 }
 
@@ -221,6 +298,15 @@ public sealed record DocumentRevisionCapabilityDescriptor(
     string WorkspaceId,
     string DocumentId,
     string RevisionId,
+    IReadOnlySet<string> Capabilities,
+    DateTimeOffset ExpiresAt,
+    long Epoch);
+
+public sealed record DocumentSchemeCapabilityDescriptor(
+    string WorkspaceId,
+    string DocumentId,
+    string SchemeId,
+    string ObservedHeadRevisionId,
     IReadOnlySet<string> Capabilities,
     DateTimeOffset ExpiresAt,
     long Epoch);

@@ -8,6 +8,7 @@ from backend.__main__ import _register_backup_methods
 from backend.adapters.pocketbase.client import PocketBaseProductError
 from backend.contracts.backup import (
     BackupCreateResult,
+    BackupDeleteResult,
     BackupEntry,
     BackupListResult,
     BackupRestoreResult,
@@ -31,16 +32,21 @@ class FakeBackupService:
     async def create_backup(self, _params: Any) -> BackupCreateResult:
         return BackupCreateResult(backup=backup_entry(), integrity_valid=True)
 
+    async def delete_backup(self, _params: Any) -> BackupDeleteResult:
+        return BackupDeleteResult(deleted=backup_entry().name)
+
     async def restore_backup(self, _params: Any) -> BackupRestoreResult:
         return BackupRestoreResult(status="restarting")
 
 
 @pytest.mark.asyncio
-async def test_registers_three_closed_backup_methods_and_serializes_aliases() -> None:
+async def test_registers_four_closed_backup_methods_and_serializes_aliases() -> None:
     dispatcher = RpcDispatcher()
     _register_backup_methods(dispatcher, FakeBackupService())
 
-    assert {"backup.list", "backup.create", "backup.restore"} <= set(dispatcher.registered_methods)
+    assert {"backup.list", "backup.create", "backup.delete", "backup.restore"} <= set(
+        dispatcher.registered_methods
+    )
     response = await dispatcher.dispatch(
         {
             "jsonrpc": "2.0",

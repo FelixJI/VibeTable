@@ -29,6 +29,7 @@ import AppSidebar from "@/components/layout/AppSidebar.vue";
 import AppToolbar from "@/components/layout/AppToolbar.vue";
 import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import GridHost from "@/components/grid/GridHost.vue";
+import DataSourceViewBar from "@/components/grid/DataSourceViewBar.vue";
 import RelationEditorPanel from "@/components/grid/RelationEditorPanel.vue";
 import FieldManagerDrawer from "@/components/relations/FieldManagerDrawer.vue";
 import { TABULATOR_INJECTION_KEY } from "@/components/grid/tabulatorInjection";
@@ -47,6 +48,7 @@ import ManagedAttachmentCell from "@/components/attachments/ManagedAttachmentCel
 import JsonValueEditor from "@/components/editors/JsonValueEditor.vue";
 import { projectPluginTheme } from "@/components/plugins/pluginTheme";
 import { useDocumentWorkspaceService } from "@/services/documentWorkspaceService";
+import { usePresetVersionService } from "@/services/presetVersionService";
 import { useHostBridge } from "@/services/bridgeContext";
 import {
   BridgeOperationError,
@@ -99,7 +101,14 @@ import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
 import { useDashboardDraftStore, useDashboardStore } from "@/stores/dashboardStore";
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
+import { usePresetVersionStore } from "@/stores/presetVersionStore";
 import { ROW_NUMBER_FIELD } from "@/grid/createGrid";
+import {
+  applyDataSourceView,
+  captureDataSourceView,
+  type DataSourceViewGrid,
+} from "@/grid/dataSourceViewState";
+import type { PresetEntry, PresetView } from "@/contracts";
 import {
   classifyClipboard,
   mapCellsToColumns,
@@ -134,6 +143,7 @@ import { t } from "@/i18n";
 const workspaceService = useWorkspaceService();
 const hostBridge = useHostBridge();
 const documentWorkspaceService = useDocumentWorkspaceService();
+const presetVersionService = usePresetVersionService();
 const tableService = useTableService();
 const pasteService = usePasteService();
 const dataIoService = useDataIoService();
@@ -157,6 +167,7 @@ const revisionHistory = useRevisionHistoryStore();
 const dashboards = useDashboardStore();
 const dashboardDraft = useDashboardDraftStore();
 const realtime = useRealtimeStore();
+const presetViews = usePresetVersionStore();
 const editRejection = ref<MutationErrorPayload | null>(null);
 const shouldShowNotification = createNotificationDeduper();
 const editRejectionText = computed(() =>
@@ -683,6 +694,7 @@ function onGridViewQueryChanged(query: {
   const table = workspace.currentTable;
   if (!table) return;
   interactiveGridQuery.value = query;
+  if (!applyingPresetView) presetViews.markDirty();
   hostBridge.notify("table.queryRequested", {
     table,
     // Standard table.query is page-bounded (backend max 500) but compiles the
@@ -903,6 +915,220 @@ watch(
  */
 const tabulator = ref<TabulatorFull | null>(null);
 provide(TABULATOR_INJECTION_KEY, tabulator);
+const pendingPresetView = ref<PresetView | null>(null);
+const memoryDefaultViews = new Map<string, PresetView>();
+let presetLoadGeneration = 0;
+let applyingPresetView = false;
+
+function captureCurrentView(isDefault = false): PresetView {
+  return captureDataSourceView(
+    tabulator.value as unknown as DataSourceViewGrid | null,
+    { isDefault, density: ui.density },
+  );
+}
+
+async function applyView(view: PresetView): Promise<void> {
+  const grid = tabulator.value as unknown as DataSourceViewGrid | null;
+  if (!grid) {
+    pendingPresetView.value = view;
+    return;
+  }
+  pendingPresetView.value = null;
+  applyingPresetView = true;
+  try {
+    await applyDataSourceView(grid, view);
+    await nextTick();
+  } finally {
+    applyingPresetView = false;
+  }
+}
+
+watch(tabulator, (grid) => {
+  const collection = workspace.currentTable;
+  if (!grid || !collection) return;
+  if (pendingPresetView.value) {
+    void applyView(pendingPresetView.value);
+  } else if (presetViews.presets.length === 0 && !memoryDefaultViews.has(collection)) {
+    memoryDefaultViews.set(collection, captureCurrentView());
+  }
+});
+
+async function loadCollectionViews(collection: string): Promise<void> {
+  const generation = ++presetLoadGeneration;
+  presetViews.begin();
+  try {
+    const result = await presetVersionService.listPresets(collection);
+    if (generation !== presetLoadGeneration || workspace.currentTable !== collection) return;
+    presetViews.receivePresets(result);
+    const selected = result.presets.find((view) => view.view.isDefault) ?? result.presets[0];
+    presetViews.activatePreset(selected?.id ?? null);
+    if (selected) {
+      await applyView(selected.view);
+    } else if (tabulator.value && !memoryDefaultViews.has(collection)) {
+      memoryDefaultViews.set(collection, captureCurrentView());
+    }
+  } catch (error) {
+    if (generation === presetLoadGeneration) {
+      message.error(error instanceof Error ? error.message : String(error));
+    }
+  }
+}
+
+watch(
+  () => workspace.currentTable,
+  (collection) => {
+    pendingPresetView.value = null;
+    presetViews.clearPresets(collection ?? "");
+    if (collection) void loadCollectionViews(collection);
+  },
+  { immediate: true },
+);
+
+async function persistView(
+  collection: string,
+  name: string,
+  view: PresetView,
+  presetId?: string | null,
+): Promise<PresetEntry | null> {
+  if (workspace.currentTable !== collection) return null;
+  const generation = presetLoadGeneration;
+  presetViews.begin();
+  try {
+    const saved = await presetVersionService.savePreset(
+      collection,
+      name,
+      view,
+      presetId,
+    );
+    if (generation !== presetLoadGeneration || workspace.currentTable !== collection) {
+      return null;
+    }
+    presetViews.upsertPreset(saved);
+    return saved;
+  } catch (error) {
+    if (generation === presetLoadGeneration && workspace.currentTable === collection) {
+      presetViews.fail(error);
+    }
+    return null;
+  }
+}
+
+async function saveView(view: PresetEntry): Promise<PresetEntry | null> {
+  const collection = workspace.currentTable;
+  if (!collection || view.collection !== collection) return null;
+  const saved = await persistView(
+    collection,
+    view.name,
+    { ...captureCurrentView(view.view.isDefault), isDefault: view.view.isDefault },
+    view.id,
+  );
+  if (saved) presetViews.markSaved();
+  return saved;
+}
+
+async function switchView(view: PresetEntry): Promise<void> {
+  if (view.collection !== workspace.currentTable || presetViews.loading) return;
+  if (view.id === presetViews.activePresetId) return;
+  const current = presetViews.presets.find((item) => item.id === presetViews.activePresetId);
+  if (current && !(await saveView(current))) return;
+  presetViews.activatePreset(view.id);
+  await applyView(view.view);
+}
+
+async function createView(name: string): Promise<void> {
+  const collection = workspace.currentTable;
+  if (!collection) return;
+  const saved = await persistView(
+    collection,
+    name,
+    captureCurrentView(presetViews.presets.length === 0),
+  );
+  if (!saved) return;
+  presetViews.activatePreset(saved.id);
+}
+
+async function duplicateView(view: PresetEntry, name: string): Promise<void> {
+  const collection = workspace.currentTable;
+  if (!collection) return;
+  const saved = await persistView(collection, name, {
+    ...view.view,
+    isDefault: false,
+  });
+  if (!saved) return;
+  presetViews.activatePreset(saved.id);
+  await applyView(saved.view);
+}
+
+async function renameView(view: PresetEntry, name: string): Promise<void> {
+  const source = view.id === presetViews.activePresetId
+    ? { ...captureCurrentView(view.view.isDefault), isDefault: view.view.isDefault }
+    : view.view;
+  const saved = await persistView(
+    view.collection,
+    name,
+    source,
+    view.id,
+  );
+  if (!saved) return;
+  presetViews.activatePreset(saved.id);
+}
+
+async function deleteView(view: PresetEntry): Promise<void> {
+  if (view.collection !== workspace.currentTable || presetViews.loading) return;
+  const generation = presetLoadGeneration;
+  presetViews.begin();
+  try {
+    await presetVersionService.deletePreset(view.id, view.revision);
+  } catch (error) {
+    if (generation === presetLoadGeneration && workspace.currentTable === view.collection) {
+      presetViews.fail(error);
+    }
+    return;
+  }
+  if (generation !== presetLoadGeneration || workspace.currentTable !== view.collection) return;
+  presetViews.removePreset(view.id);
+  const next = presetViews.presets.find((item) => item.view.isDefault) ?? presetViews.presets[0];
+  presetViews.activatePreset(next?.id ?? null);
+  if (next) {
+    await applyView(next.view);
+  } else {
+    const fallback = memoryDefaultViews.get(view.collection);
+    if (fallback) await applyView(fallback);
+  }
+}
+
+async function setDefaultView(view: PresetEntry): Promise<void> {
+  const previous = presetViews.presets.find((item) => item.view.isDefault && item.id !== view.id);
+  const source = view.id === presetViews.activePresetId
+    ? captureCurrentView(true)
+    : { ...view.view, isDefault: true };
+  const saved = await persistView(
+    view.collection,
+    view.name,
+    source,
+    view.id,
+  );
+  if (!saved) return;
+  if (previous) {
+    const demoted = await persistView(previous.collection, previous.name, {
+      ...previous.view,
+      isDefault: false,
+    }, previous.id);
+    if (!demoted && workspace.currentTable === view.collection) {
+      const compensated = await persistView(view.collection, view.name, {
+        ...source,
+        isDefault: false,
+      }, view.id);
+      if (!compensated) {
+        presetViews.fail(new Error(t("views.defaultCompensationFailed")));
+        return;
+      }
+      await loadCollectionViews(view.collection);
+      return;
+    }
+  }
+  presetViews.activatePreset(saved.id);
+}
 
 watch(
   [
@@ -1748,6 +1974,21 @@ useKeyboard({
               @export-data="exportTableData"
               @cancel-data-task="dataIoService.cancelActive"
               @plugin-action="openRegisteredPluginAction"
+            />
+            <DataSourceViewBar
+              v-if="workspace.currentTable"
+              :collection="workspace.currentTable"
+              :views="presetViews.presets"
+              :active-id="presetViews.activePresetId"
+              :loading="presetViews.loading"
+              :dirty="presetViews.dirty"
+              @create="createView"
+              @switch="switchView"
+              @save="saveView"
+              @duplicate="duplicateView"
+              @rename="renameView"
+              @delete="deleteView"
+              @set-default="setDefaultView"
             />
             <section
               v-if="editRejection"

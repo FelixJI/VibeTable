@@ -72,6 +72,8 @@ public sealed class WebMessageRouter
         "dailyQuote.fetch",
         "dataRoot.get",
         "dataRoot.chooseMigrationRequested",
+        "backup.openFolder",
+        "diagnostics.get",
         // G1 history query + two-phase safe restore.
         "history.queryRequested",
         "history.previewRestoreRequested",
@@ -100,6 +102,15 @@ public sealed class WebMessageRouter
         "document.revealRequested",
         "document.historyRequested",
         "document.relinkRequested",
+        "document.commitRevisionRequested",
+        "document.promoteVersionRequested",
+        "document.revisionPreviewRequested",
+        "document.revisionRestoreRequested",
+        "document.schemeListRequested",
+        "document.schemeCreateRequested",
+        "document.schemeRenameRequested",
+        "document.schemeArchiveRequested",
+        "document.schemeActivateRequested",
         // Native-file attachment actions. File paths arrive only as WebView2
         // AdditionalObjects and are never accepted in renderer JSON.
         "file.uploadRequested",
@@ -158,6 +169,8 @@ public sealed class WebMessageRouter
         "dailyQuote.fetch",
         "dataRoot.get",
         "dataRoot.chooseMigrationRequested",
+        "backup.openFolder",
+        "diagnostics.get",
         // G1 history query + two-phase safe restore outcomes.
         "history.pageLoaded",
         "history.restorePreviewReady",
@@ -176,6 +189,10 @@ public sealed class WebMessageRouter
         "document.actionCompleted",
         "document.operationFailed",
         "document.workspaceChanged",
+        "document.versionCommitted",
+        "document.revisionPreviewCompleted",
+        "document.schemeListLoaded",
+        "document.schemeMutationCompleted",
         // Correlated native attachment action acknowledgements.
         "file.uploadRequested",
         "file.replaceRequested",

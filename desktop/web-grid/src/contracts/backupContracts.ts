@@ -1,6 +1,8 @@
 export type BackupWebMessageType =
   | "backup.list"
   | "backup.create"
+  | "backup.delete"
+  | "backup.openFolder"
   | "backup.restore";
 
 export type BackupHostMessageType = BackupWebMessageType;
@@ -25,14 +27,26 @@ export interface BackupRestoreResult {
   readonly status: "restarting";
 }
 
+export interface BackupDeleteResult {
+  readonly deleted: string;
+}
+
+export interface BackupOpenFolderResult {
+  readonly status: "opened";
+}
+
 export interface BackupWebPayloadMap {
   "backup.list": Readonly<Record<string, never>>;
   "backup.create": { readonly name: string };
+  "backup.delete": { readonly name: string };
+  "backup.openFolder": Readonly<Record<string, never>>;
   "backup.restore": { readonly name: string; readonly confirmed: true };
 }
 
 export interface BackupHostPayloadMap {
   "backup.list": BackupListResult;
   "backup.create": BackupCreateResult;
+  "backup.delete": BackupDeleteResult;
+  "backup.openFolder": BackupOpenFolderResult;
   "backup.restore": BackupRestoreResult;
 }

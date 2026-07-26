@@ -248,6 +248,18 @@ class PocketBaseClient:
             "backup create result",
         )
 
+    async def delete_backup(self, name: str) -> dict[str, Any]:
+        return _object(
+            await self._transport.request(
+                "DELETE",
+                BACKUP_PATH,
+                json_body={"name": name},
+                headers=dict(self._headers),
+                expected_status=(200,),
+            ),
+            "backup delete result",
+        )
+
     async def restore_backup(self, name: str) -> dict[str, Any]:
         return _object(
             await self._transport.request(

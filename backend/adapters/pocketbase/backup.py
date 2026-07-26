@@ -9,10 +9,12 @@ from pydantic.alias_generators import to_camel
 
 from backend.contracts.backup import (
     BackupCreateResult,
+    BackupDeleteResult,
     BackupEntry,
     BackupListResult,
     BackupRestoreResult,
     CreateBackupParams,
+    DeleteBackupParams,
     ListBackupsParams,
     RestoreBackupParams,
 )
@@ -22,6 +24,8 @@ class BackupClient(Protocol):
     async def list_backups(self) -> dict[str, Any]: ...
 
     async def create_backup(self, name: str) -> dict[str, Any]: ...
+
+    async def delete_backup(self, name: str) -> dict[str, Any]: ...
 
     async def restore_backup(self, name: str) -> dict[str, Any]: ...
 
@@ -72,6 +76,9 @@ class PocketBaseBackupService:
         # `confirmed` is a product-boundary acknowledgement. The fixed sidecar
         # endpoint accepts only the validated archive name.
         return BackupRestoreResult.model_validate(await self._client.restore_backup(params.name))
+
+    async def delete_backup(self, params: DeleteBackupParams) -> BackupDeleteResult:
+        return BackupDeleteResult.model_validate(await self._client.delete_backup(params.name))
 
 
 __all__ = ["BackupClient", "PocketBaseBackupService"]

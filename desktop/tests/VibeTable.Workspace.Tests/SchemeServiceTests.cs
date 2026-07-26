@@ -93,6 +93,7 @@ public sealed class SchemeServiceTests
             // Commit a version in scheme A.
             scheme.CommitSchemeVersion(
                 MakeWorkFile("scheme a v1"), "方案A/main.docx", "doc-1", schemeA.SchemeId,
+                mainOutcome.RevisionId,
                 "方案A/V1", "app/docx", "u1", "d1", null, "2026-07-15T03:00:00Z"
             );
         }
@@ -112,7 +113,12 @@ public sealed class SchemeServiceTests
             vs.InitializeScheme(new RefManifest(1, "doc-1", "main-scheme", "main", "", "main.docx", "2026-07-15T00:00:00Z"));
 
             Assert.Throws<InvalidOperationException>(() =>
-                scheme.RenameScheme("doc-1", "main-scheme", "renamed-main", "2026-07-15T02:00:00Z"));
+                scheme.RenameScheme(
+                    "doc-1",
+                    "main-scheme",
+                    "",
+                    "renamed-main",
+                    "2026-07-15T02:00:00Z"));
         }
         finally { Cleanup(backup); }
     }
@@ -162,6 +168,7 @@ public sealed class SchemeServiceTests
             var schemeA = scheme.CreateScheme("doc-1", "方案A", v1.RevisionId, "方案A/main.docx", "2026-07-15T02:00:00Z");
             var aV1 = scheme.CommitSchemeVersion(
                 MakeWorkFile("scheme a v1"), "方案A/main.docx", "doc-1", schemeA.SchemeId,
+                v1.RevisionId,
                 "方案A/V1", "app/docx", "u1", "d1", null, "2026-07-15T03:00:00Z"
             );
 

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Threading;
 using VibeTable.Workspace.Domain;
 using VibeTable.Workspace.Storage;
 
@@ -108,6 +109,7 @@ public sealed class SchemeService
     public RefManifest RenameScheme(
         string documentId,
         string schemeId,
+        string expectedHeadRevisionId,
         string newName,
         string updatedAt
     )
@@ -115,17 +117,21 @@ public sealed class SchemeService
         if (string.IsNullOrWhiteSpace(newName))
             throw new ArgumentException("new name must not be empty", nameof(newName));
 
-        var current = _refs.Read(documentId, schemeId)
-            ?? throw new InvalidOperationException(
-                $"scheme {schemeId} not found in document {documentId}");
-
-        // main cannot be renamed.
-        if (current.SchemeName == "main")
-            throw new InvalidOperationException("the 'main' scheme cannot be renamed");
-
-        var updated = current with { SchemeName = newName, UpdatedAt = updatedAt };
-        _json.Write(_refs.GetPath(documentId, schemeId), updated);
-        return updated;
+        return MutateSchemeRef(
+            documentId,
+            schemeId,
+            expectedHeadRevisionId,
+            current =>
+            {
+                if (current.SchemeName == "main")
+                    throw new InvalidOperationException(
+                        "the 'main' scheme cannot be renamed");
+                return current with
+                {
+                    SchemeName = newName,
+                    UpdatedAt = updatedAt,
+                };
+            });
     }
 
     /// <summary>
@@ -136,26 +142,25 @@ public sealed class SchemeService
     public RefManifest ArchiveScheme(
         string documentId,
         string schemeId,
+        string expectedHeadRevisionId,
         string updatedAt
     )
     {
-        var current = _refs.Read(documentId, schemeId)
-            ?? throw new InvalidOperationException(
-                $"scheme {schemeId} not found in document {documentId}");
-
-        if (current.SchemeName == "main")
-            throw new InvalidOperationException("the 'main' scheme cannot be archived");
-
-        // Mark the ref as archived by setting status in the scheme name prefix.
-        // A proper status field would be on the RefManifest, but for format v1
-        // we use a convention: archived schemes get "[archived]" prefix.
-        // The scanner and UI interpret this.
-        var updated = current with
-        {
-            UpdatedAt = updatedAt,
-        };
-        _json.Write(_refs.GetPath(documentId, schemeId), updated);
-        return updated;
+        return MutateSchemeRef(
+            documentId,
+            schemeId,
+            expectedHeadRevisionId,
+            current =>
+            {
+                if (current.SchemeName == "main")
+                    throw new InvalidOperationException(
+                        "the 'main' scheme cannot be archived");
+                return current with
+                {
+                    Status = SchemeStatus.Archived,
+                    UpdatedAt = updatedAt,
+                };
+            });
     }
 
     /// <summary>
@@ -176,6 +181,7 @@ public sealed class SchemeService
         string workingRelativePath,
         string documentId,
         string schemeId,
+        string expectedHeadRevisionId,
         string versionLabel,
         string mimeType,
         string createdBy,
@@ -184,12 +190,28 @@ public sealed class SchemeService
         string createdAt
     )
     {
-        var currentRef = _refs.Read(documentId, schemeId)
+        _ = _refs.Read(documentId, schemeId)
             ?? throw new InvalidOperationException(
                 $"scheme {schemeId} not found in document {documentId}");
 
-        var sequence = GetNextSequence(documentId, schemeId);
-        var parentRevisionId = currentRef.HeadRevisionId;
+        string? parentRevisionId =
+            string.IsNullOrEmpty(expectedHeadRevisionId)
+                ? null
+                : expectedHeadRevisionId;
+        int sequence;
+        if (parentRevisionId is null)
+        {
+            sequence = 1;
+        }
+        else
+        {
+            var parent = _revisions.Read(documentId, parentRevisionId)
+                ?? throw new InvalidOperationException(
+                    $"expected head revision {parentRevisionId} not found in document {documentId}");
+            sequence = string.Equals(parent.SchemeId, schemeId, StringComparison.Ordinal)
+                ? parent.Sequence + 1
+                : 1;
+        }
 
         // Delegate to the existing version service commit logic.
         var versionService = new WorkspaceVersionService(
@@ -229,5 +251,60 @@ public sealed class SchemeService
                 result.Add(refManifest);
         }
         return result;
+    }
+
+    private RefManifest MutateSchemeRef(
+        string documentId,
+        string schemeId,
+        string expectedHeadRevisionId,
+        Func<RefManifest, RefManifest> mutation)
+    {
+        ArgumentNullException.ThrowIfNull(expectedHeadRevisionId);
+        ArgumentNullException.ThrowIfNull(mutation);
+
+        string path = _refs.GetPath(documentId, schemeId);
+        using var exclusive = AcquireExclusiveLock(path);
+        var current = _json.Read<RefManifest>(path)
+            ?? throw new InvalidOperationException(
+                $"scheme {schemeId} not found in document {documentId}");
+        if (!string.Equals(
+            current.HeadRevisionId,
+            expectedHeadRevisionId,
+            StringComparison.Ordinal))
+        {
+            throw new RefCasConflictException(
+                documentId,
+                schemeId,
+                expectedHeadRevisionId,
+                current.HeadRevisionId);
+        }
+
+        var updated = mutation(current);
+        _json.Write(path, updated);
+        return updated;
+    }
+
+    private static FileStream AcquireExclusiveLock(string refPath)
+    {
+        string lockPath = refPath + ".lock";
+        Directory.CreateDirectory(Path.GetDirectoryName(lockPath)!);
+        DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+        while (true)
+        {
+            try
+            {
+                return new FileStream(
+                    lockPath,
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    bufferSize: 1,
+                    FileOptions.WriteThrough);
+            }
+            catch (IOException) when (DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(10);
+            }
+        }
     }
 }

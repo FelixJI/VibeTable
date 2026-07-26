@@ -12,4 +12,11 @@ public interface IPocketBaseSupervisor : IAsyncDisposable
     PocketBaseStatus GetStatus();
     Task StopAsync(CancellationToken cancellationToken);
     Uri? GetAdminUri();
+    PocketBaseAdminContext? GetAdminContext();
 }
+
+public sealed record PocketBaseAdminContext(
+    Uri BootstrapUri,
+    Uri Origin,
+    string SessionHeaderName,
+    string SessionSecret);

@@ -406,6 +406,15 @@ public sealed class WebMessageRouterTests
             "document.revealRequested",
             "document.historyRequested",
             "document.relinkRequested",
+            "document.commitRevisionRequested",
+            "document.promoteVersionRequested",
+            "document.revisionPreviewRequested",
+            "document.revisionRestoreRequested",
+            "document.schemeListRequested",
+            "document.schemeCreateRequested",
+            "document.schemeRenameRequested",
+            "document.schemeArchiveRequested",
+            "document.schemeActivateRequested",
         })
         {
             var reply = router.Route(JsonSerializer.Serialize(new
@@ -417,12 +426,16 @@ public sealed class WebMessageRouterTests
             Assert.IsNull(reply, type);
         }
 
-        Assert.AreEqual(9, dispatched.Count);
+        Assert.AreEqual(18, dispatched.Count);
         Assert.IsTrue(router.IsHostNotificationAllowed("document.listLoaded"));
         Assert.IsTrue(router.IsHostNotificationAllowed("document.historyLoaded"));
         Assert.IsTrue(router.IsHostNotificationAllowed("document.actionCompleted"));
         Assert.IsTrue(router.IsHostNotificationAllowed("document.workspaceChanged"));
         Assert.IsTrue(router.IsHostNotificationAllowed("document.operationFailed"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("document.versionCommitted"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("document.revisionPreviewCompleted"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("document.schemeListLoaded"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("document.schemeMutationCompleted"));
     }
 
     [TestMethod]

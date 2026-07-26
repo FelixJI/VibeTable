@@ -143,6 +143,8 @@ Thumbs.db
 *.swp
 *.swo
 *~
+.dev-data/
+**/webview2-user-data/
 
 # Log files
 *.log

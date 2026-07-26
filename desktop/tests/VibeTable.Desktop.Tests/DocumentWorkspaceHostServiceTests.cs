@@ -5,6 +5,7 @@ using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 using VibeTable.Infrastructure.Workspace;
 using VibeTable.Workspace.Domain;
+using VibeTable.Workspace.Services;
 using VibeTable.Workspace.Storage;
 
 namespace VibeTable.Desktop.Tests;
@@ -621,6 +622,9 @@ public sealed class DocumentWorkspaceHostServiceTests
         Assert.IsNotNull(result);
         Assert.AreEqual("report (1).docx", result.DisplayName);
         Assert.AreEqual("document", File.ReadAllText(fixture.DocumentPath));
+        CollectionAssert.AreEqual(
+            System.Text.Encoding.UTF8.GetBytes("document"),
+            File.ReadAllBytes(fixture.DocumentPath));
         Assert.AreEqual(
             "new document",
             File.ReadAllText(Path.Combine(
@@ -933,6 +937,470 @@ public sealed class DocumentWorkspaceHostServiceTests
         }
     }
 
+    [TestMethod]
+    public async Task CommitRevision_UsesObservedHeadAndReturnsOnlyOpaqueRevisionHandle()
+    {
+        using var fixture = new DocumentFixture();
+        var list = await fixture.Service.ListAsync(
+            "orders", "42", CancellationToken.None);
+        string entryHandle = list.Entries.Single().EntryHandle;
+        File.WriteAllText(fixture.DocumentPath, "changed");
+
+        var result = await fixture.Service.CommitRevisionAsync(
+            entryHandle,
+            "local edit",
+            schemeHandle: null,
+            CancellationToken.None);
+
+        Assert.IsTrue(result.RevisionHandle.StartsWith("rev-", StringComparison.Ordinal));
+        Assert.AreEqual("R2", result.CurrentRevision);
+        Assert.IsNull(result.SchemeHandle);
+        string json = JsonSerializer.Serialize(result);
+        Assert.IsFalse(json.Contains("doc-1", StringComparison.Ordinal));
+        Assert.IsFalse(json.Contains("scheme-1", StringComparison.Ordinal));
+        var current = new RefStore(fixture.BackupRoot, new AtomicJsonStore())
+            .Read("doc-1", "scheme-1");
+        Assert.IsNotNull(current);
+        Assert.AreNotEqual("rev-1", current.HeadRevisionId);
+        var revision = new RevisionStore(fixture.BackupRoot, new AtomicJsonStore())
+            .Read("doc-1", current.HeadRevisionId);
+        Assert.IsNotNull(revision);
+        Assert.AreEqual("rev-1", revision.ParentRevisionId);
+        Assert.AreEqual("local edit", revision.Comment);
+    }
+
+    [TestMethod]
+    public async Task CommitRevision_RejectsStaleEntryHeadWithoutAdvancingMainRef()
+    {
+        using var fixture = new DocumentFixture();
+        var list = await fixture.Service.ListAsync(
+            "orders", "42", CancellationToken.None);
+        string entryHandle = list.Entries.Single().EntryHandle;
+        var json = new AtomicJsonStore();
+        var objects = new ContentObjectStore(fixture.BackupRoot);
+        string concurrentPath = fixture.CreatePickerFile("concurrent.docx", "concurrent");
+        var committed = objects.Commit(concurrentPath);
+        new RevisionStore(fixture.BackupRoot, json).Write(new RevisionManifest(
+            RevisionManifest.CurrentFormatVersion,
+            "rev-concurrent",
+            "doc-1",
+            "scheme-1",
+            "rev-1",
+            SourceRevisionId: null,
+            RestoredFromRevisionId: null,
+            Sequence: 2,
+            VersionLabel: "V2",
+            Kind: RevisionKind.Formal,
+            committed.ContentHash,
+            committed.Size,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "contracts/report.docx",
+            "2026-07-26T12:00:00Z",
+            null,
+            null,
+            null));
+        new RefStore(fixture.BackupRoot, json).UpdateHead(
+            "doc-1",
+            "scheme-1",
+            "rev-1",
+            "rev-concurrent",
+            "2026-07-26T12:00:00Z");
+
+        var error = await Assert.ThrowsExactlyAsync<DocumentFileOperationException>(
+            () => fixture.Service.CommitRevisionAsync(
+                entryHandle,
+                note: null,
+                schemeHandle: null,
+                CancellationToken.None));
+
+        Assert.AreEqual("DOCUMENT_VERSION_CONFLICT", error.Code);
+        Assert.AreEqual(
+            "rev-concurrent",
+            new RefStore(fixture.BackupRoot, json)
+                .Read("doc-1", "scheme-1")!
+                .HeadRevisionId);
+    }
+
+    [TestMethod]
+    public async Task PreviewAndRestoreRevision_UseHostTemporaryCopyAndCreateRestoreRevision()
+    {
+        using var fixture = new DocumentFixture();
+        var list = await fixture.Service.ListAsync(
+            "orders", "42", CancellationToken.None);
+        var entry = list.Entries.Single();
+        var history = await fixture.Service.ReadHistoryAsync(
+            entry.EntryHandle,
+            100,
+            0,
+            CancellationToken.None);
+        string revisionHandle = history.Revisions.Single().RevisionHandle;
+        File.WriteAllText(fixture.DocumentPath, "unsaved working content");
+
+        var preview = fixture.Service.PreviewRevision(
+            entry.EntryHandle,
+            revisionHandle);
+
+        Assert.AreEqual("preview", preview.Action);
+        Assert.IsNotNull(fixture.Preview.PreviewedPath);
+        Assert.IsFalse(
+            fixture.Preview.PreviewedPath.StartsWith(
+                fixture.WorkspaceRoot,
+                StringComparison.OrdinalIgnoreCase));
+        Assert.AreEqual("document", File.ReadAllText(fixture.Preview.PreviewedPath));
+
+        var restored = await fixture.Service.RestoreRevisionAsync(
+            entry.EntryHandle,
+            revisionHandle,
+            CancellationToken.None);
+
+        Assert.AreEqual("document", File.ReadAllText(fixture.DocumentPath));
+        Assert.IsTrue(restored.RevisionHandle.StartsWith("rev-", StringComparison.Ordinal));
+        var main = new RefStore(fixture.BackupRoot, new AtomicJsonStore())
+            .Read("doc-1", "scheme-1");
+        var restoreRevision = new RevisionStore(
+            fixture.BackupRoot,
+            new AtomicJsonStore()).Read("doc-1", main!.HeadRevisionId);
+        Assert.IsNotNull(restoreRevision);
+        Assert.AreEqual(RevisionKind.Restore, restoreRevision.Kind);
+        Assert.AreEqual("rev-1", restoreRevision.RestoredFromRevisionId);
+    }
+
+    [TestMethod]
+    public async Task RestoreRevision_WhenAtomicReplaceFails_CompensatesMainRef()
+    {
+        using var fixture = new DocumentFixture();
+        var list = await fixture.Service.ListAsync(
+            "orders", "42", CancellationToken.None);
+        var entry = list.Entries.Single();
+        var history = await fixture.Service.ReadHistoryAsync(
+            entry.EntryHandle,
+            100,
+            0,
+            CancellationToken.None);
+        File.WriteAllText(fixture.DocumentPath, "dirty working bytes");
+        byte[] before = File.ReadAllBytes(fixture.DocumentPath);
+
+        DocumentFileOperationException error;
+        using (var locked = new FileStream(
+            fixture.DocumentPath,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None))
+        {
+            error = await Assert.ThrowsExactlyAsync<DocumentFileOperationException>(
+                () => fixture.Service.RestoreRevisionAsync(
+                    entry.EntryHandle,
+                    history.Revisions.Single().RevisionHandle,
+                    CancellationToken.None));
+        }
+
+        Assert.AreEqual("DOCUMENT_RESTORE_MATERIALIZE_FAILED", error.Code);
+        Assert.AreEqual(
+            "rev-1",
+            new RefStore(fixture.BackupRoot, new AtomicJsonStore())
+                .Read("doc-1", "scheme-1")!
+                .HeadRevisionId);
+        CollectionAssert.AreEqual(before, File.ReadAllBytes(fixture.DocumentPath));
+        Assert.IsTrue(new RevisionStore(
+            fixture.BackupRoot,
+            new AtomicJsonStore())
+            .ListByDocument("doc-1")
+            .Any(revision => revision.Kind == RevisionKind.Restore));
+    }
+
+    [TestMethod]
+    public async Task SchemeLifecycle_UsesOpaqueHandlesAndPersistsArchivedStatus()
+    {
+        using var fixture = new DocumentFixture();
+        var list = await fixture.Service.ListAsync(
+            "orders", "42", CancellationToken.None);
+        string entryHandle = list.Entries.Single().EntryHandle;
+
+        var created = await fixture.Service.CreateSchemeAsync(
+            entryHandle,
+            "Option A",
+            baseRevisionHandle: null,
+            CancellationToken.None);
+        Assert.IsTrue(created.Scheme.SchemeHandle.StartsWith(
+            "scheme-",
+            StringComparison.Ordinal));
+        Assert.IsFalse(created.Scheme.Archived);
+        string payloadJson = JsonSerializer.Serialize(created);
+        Assert.IsFalse(payloadJson.Contains("scheme-1", StringComparison.Ordinal));
+        Assert.IsFalse(payloadJson.Contains("doc-1", StringComparison.Ordinal));
+
+        var renamed = await fixture.Service.RenameSchemeAsync(
+            entryHandle,
+            created.Scheme.SchemeHandle,
+            "Option B",
+            CancellationToken.None);
+        Assert.AreEqual("Option B", renamed.Scheme.Name);
+        var archived = await fixture.Service.ArchiveSchemeAsync(
+            entryHandle,
+            renamed.Scheme.SchemeHandle,
+            CancellationToken.None);
+        Assert.IsTrue(archived.Scheme.Archived);
+
+        var schemes = fixture.Service.ListSchemes(entryHandle);
+        Assert.AreEqual(2, schemes.Schemes.Count);
+        Assert.IsTrue(schemes.Schemes.Single(item => item.Name == "Option B").Archived);
+        var stored = new SchemeService(
+            fixture.BackupRoot,
+            new ContentObjectStore(fixture.BackupRoot),
+            new RevisionStore(fixture.BackupRoot, new AtomicJsonStore()),
+            new RefStore(fixture.BackupRoot, new AtomicJsonStore()),
+            new AtomicJsonStore())
+            .ListSchemes("doc-1")
+            .Single(item => item.SchemeName == "Option B");
+        Assert.AreEqual(SchemeStatus.Archived, stored.Status);
+    }
+
+    [TestMethod]
+    public async Task SchemeMutation_WithStaleHandle_ReturnsStableConflict()
+    {
+        using var fixture = new DocumentFixture();
+        var list = await fixture.Service.ListAsync(
+            "orders", "42", CancellationToken.None);
+        string entryHandle = list.Entries.Single().EntryHandle;
+        var created = await fixture.Service.CreateSchemeAsync(
+            entryHandle,
+            "Option A",
+            baseRevisionHandle: null,
+            CancellationToken.None);
+        await fixture.Service.CommitRevisionAsync(
+            entryHandle,
+            note: null,
+            created.Scheme.SchemeHandle,
+            CancellationToken.None);
+
+        var renameError = await Assert.ThrowsExactlyAsync<DocumentFileOperationException>(
+            () => fixture.Service.RenameSchemeAsync(
+                entryHandle,
+                created.Scheme.SchemeHandle,
+                "Stale rename",
+                CancellationToken.None));
+        var archiveError = await Assert.ThrowsExactlyAsync<DocumentFileOperationException>(
+            () => fixture.Service.ArchiveSchemeAsync(
+                entryHandle,
+                created.Scheme.SchemeHandle,
+                CancellationToken.None));
+
+        Assert.AreEqual("DOCUMENT_VERSION_CONFLICT", renameError.Code);
+        Assert.AreEqual("DOCUMENT_VERSION_CONFLICT", archiveError.Code);
+        Assert.AreEqual(
+            "Option A",
+            fixture.Service.ListSchemes(entryHandle)
+                .Schemes
+                .Single(scheme => scheme.Name == "Option A")
+                .Name);
+    }
+
+    [TestMethod]
+    public async Task RestoreRecovery_PreparedBeforeRefCommit_RollsBackAndCleans()
+    {
+        using var fixture = new DocumentFixture();
+        File.WriteAllText(fixture.DocumentPath, "dirty before prepared crash");
+        byte[] before = File.ReadAllBytes(fixture.DocumentPath);
+        var interrupted = PrepareInterruptedRestore(
+            fixture,
+            commitRef: false,
+            materialize: false,
+            removeStage: false);
+
+        await fixture.Service.ListGlobalAsync(CancellationToken.None);
+
+        Assert.AreEqual(
+            "rev-1",
+            new RefStore(fixture.BackupRoot, new AtomicJsonStore())
+                .Read("doc-1", "scheme-1")!
+                .HeadRevisionId);
+        CollectionAssert.AreEqual(before, File.ReadAllBytes(fixture.DocumentPath));
+        Assert.AreEqual(0, interrupted.Versions.ListRestoreTransactions().Count);
+        Assert.IsFalse(File.Exists(interrupted.StagedPath));
+    }
+
+    [TestMethod]
+    public async Task RestoreRecovery_RefCommittedBeforeJournalMark_CompletesMaterialization()
+    {
+        using var fixture = new DocumentFixture();
+        File.WriteAllText(fixture.DocumentPath, "dirty before ref crash");
+        var interrupted = PrepareInterruptedRestore(
+            fixture,
+            commitRef: true,
+            materialize: false,
+            removeStage: false);
+
+        await fixture.Service.ListGlobalAsync(CancellationToken.None);
+
+        Assert.AreEqual(
+            interrupted.RestoreRevisionId,
+            new RefStore(fixture.BackupRoot, new AtomicJsonStore())
+                .Read("doc-1", "scheme-1")!
+                .HeadRevisionId);
+        CollectionAssert.AreEqual(
+            System.Text.Encoding.UTF8.GetBytes("document"),
+            File.ReadAllBytes(fixture.DocumentPath));
+        Assert.AreEqual(0, interrupted.Versions.ListRestoreTransactions().Count);
+        Assert.IsFalse(File.Exists(interrupted.StagedPath));
+    }
+
+    [TestMethod]
+    public async Task RestoreRecovery_RefCommittedWithoutStage_CompensatesRef()
+    {
+        using var fixture = new DocumentFixture();
+        File.WriteAllText(fixture.DocumentPath, "dirty before missing stage");
+        byte[] before = File.ReadAllBytes(fixture.DocumentPath);
+        var interrupted = PrepareInterruptedRestore(
+            fixture,
+            commitRef: true,
+            materialize: false,
+            removeStage: true);
+
+        await fixture.Service.ListGlobalAsync(CancellationToken.None);
+
+        Assert.AreEqual(
+            "rev-1",
+            new RefStore(fixture.BackupRoot, new AtomicJsonStore())
+                .Read("doc-1", "scheme-1")!
+                .HeadRevisionId);
+        CollectionAssert.AreEqual(before, File.ReadAllBytes(fixture.DocumentPath));
+        Assert.AreEqual(0, interrupted.Versions.ListRestoreTransactions().Count);
+    }
+
+    [TestMethod]
+    public async Task RestoreRecovery_MaterializedBeforeJournalCleanup_VerifiesAndCleans()
+    {
+        using var fixture = new DocumentFixture();
+        File.WriteAllText(fixture.DocumentPath, "dirty before cleanup crash");
+        var interrupted = PrepareInterruptedRestore(
+            fixture,
+            commitRef: true,
+            materialize: true,
+            removeStage: false);
+
+        await fixture.Service.ListGlobalAsync(CancellationToken.None);
+
+        Assert.AreEqual(
+            interrupted.RestoreRevisionId,
+            new RefStore(fixture.BackupRoot, new AtomicJsonStore())
+                .Read("doc-1", "scheme-1")!
+                .HeadRevisionId);
+        CollectionAssert.AreEqual(
+            System.Text.Encoding.UTF8.GetBytes("document"),
+            File.ReadAllBytes(fixture.DocumentPath));
+        Assert.AreEqual(0, interrupted.Versions.ListRestoreTransactions().Count);
+    }
+
+    [TestMethod]
+    public async Task RestoreRecovery_UnexpectedLaterHead_BlocksAccessAndPreservesJournal()
+    {
+        using var fixture = new DocumentFixture();
+        File.WriteAllText(fixture.DocumentPath, "concurrent content");
+        var interrupted = PrepareInterruptedRestore(
+            fixture,
+            commitRef: true,
+            materialize: false,
+            removeStage: false);
+        var later = interrupted.Versions.CommitFormal(
+            fixture.DocumentPath,
+            "contracts/report.docx",
+            "doc-1",
+            "scheme-1",
+            interrupted.RestoreRevisionId,
+            3,
+            "Concurrent V3",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "other-process",
+            null,
+            null,
+            "2026-07-26T12:02:00Z");
+        Assert.IsTrue(later.RefUpdated);
+
+        var error = await Assert.ThrowsExactlyAsync<DocumentFileOperationException>(
+            () => fixture.Service.ListGlobalAsync(CancellationToken.None));
+
+        Assert.AreEqual("DOCUMENT_RESTORE_RECOVERY_REQUIRED", error.Code);
+        Assert.AreEqual(1, interrupted.Versions.ListRestoreTransactions().Count);
+        Assert.IsTrue(File.Exists(interrupted.StagedPath));
+        Assert.AreEqual(
+            later.RevisionId,
+            new RefStore(fixture.BackupRoot, new AtomicJsonStore())
+                .Read("doc-1", "scheme-1")!
+                .HeadRevisionId);
+    }
+
+    private static InterruptedRestore PrepareInterruptedRestore(
+        DocumentFixture fixture,
+        bool commitRef,
+        bool materialize,
+        bool removeStage)
+    {
+        var json = new AtomicJsonStore();
+        var objects = new ContentObjectStore(fixture.BackupRoot);
+        var revisions = new RevisionStore(fixture.BackupRoot, json);
+        var refs = new RefStore(fixture.BackupRoot, json);
+        var versions = new WorkspaceVersionService(
+            fixture.BackupRoot,
+            objects,
+            revisions,
+            refs,
+            json);
+        RevisionManifest source = revisions.Read("doc-1", "rev-1")!;
+        string transactionId = Guid.NewGuid().ToString("N");
+        string restoreRevisionId = Guid.NewGuid().ToString("N");
+        string stagedRelativePath =
+            $"contracts/report.docx.restore-{transactionId}.partial";
+        string stagedPath = WorkspacePathGuard.ResolveAndCheck(
+            fixture.WorkspaceRoot,
+            stagedRelativePath);
+        objects.Restore(source.ContentHash, stagedPath);
+        versions.PrepareRestoreTransaction(
+            new WorkspaceVersionService.RestoreTransactionJournal(
+                WorkspaceVersionService.RestoreTransactionJournal.CurrentFormatVersion,
+                transactionId,
+                "doc-1",
+                "scheme-1",
+                "rev-1",
+                restoreRevisionId,
+                "rev-1",
+                "contracts/report.docx",
+                stagedRelativePath,
+                source.ContentHash,
+                source.Size,
+                WorkspaceVersionService.RestoreTransactionStage.Prepared,
+                "2026-07-26T12:00:00Z"));
+
+        if (commitRef)
+        {
+            var outcome = versions.RestoreRevisionAsFormal(
+                "doc-1",
+                "scheme-1",
+                "rev-1",
+                "rev-1",
+                "Restore V1",
+                "local",
+                null,
+                "interrupted restore test",
+                "2026-07-26T12:01:00Z",
+                restoreRevisionId);
+            Assert.IsTrue(outcome.RefUpdated);
+        }
+        if (materialize)
+            File.Move(stagedPath, fixture.DocumentPath, overwrite: true);
+        if (removeStage)
+            File.Delete(stagedPath);
+
+        return new InterruptedRestore(
+            versions,
+            restoreRevisionId,
+            stagedPath);
+    }
+
+    private sealed record InterruptedRestore(
+        WorkspaceVersionService Versions,
+        string RestoreRevisionId,
+        string StagedPath);
+
     private sealed class DocumentFixture : IDisposable
     {
         private readonly string _baseDirectory;
@@ -984,8 +1452,14 @@ public sealed class DocumentWorkspaceHostServiceTests
                         "active", "2026-07-19T12:00:00Z"));
                     const string schemeId = "scheme-1";
                     const string revisionId = "rev-1";
-                    string contentHash = ContentObjectStore.ComputeHash(
-                        System.Text.Encoding.UTF8.GetBytes("document"));
+                    string objectSeedPath = Path.Combine(
+                        SourceRoot,
+                        ".initial-document-object");
+                    File.WriteAllText(objectSeedPath, "document");
+                    string contentHash = new ContentObjectStore(BackupRoot)
+                        .Commit(objectSeedPath)
+                        .ContentHash;
+                    File.Delete(objectSeedPath);
                     new RevisionStore(BackupRoot, json).Write(new RevisionManifest(
                         RevisionManifest.CurrentFormatVersion,
                         revisionId,
@@ -1052,6 +1526,7 @@ public sealed class DocumentWorkspaceHostServiceTests
 
         public void Dispose()
         {
+            Service.Dispose();
             try
             {
                 if (Directory.Exists(_baseDirectory))

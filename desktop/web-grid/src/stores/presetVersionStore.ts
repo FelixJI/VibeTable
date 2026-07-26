@@ -20,10 +20,19 @@ export const usePresetVersionStore = defineStore("preset-versions", {
     presets: [] as PresetEntry[],
     versions: [] as ContentVersionEntry[],
     comparison: null as VersionCompareResult | null,
+    activePresetId: null as string | null,
+    dirty: false,
   }),
   actions: {
     begin() {
       this.loading = true;
+      this.error = null;
+    },
+    clearPresets(collection = "") {
+      this.collection = collection;
+      this.presets = [];
+      this.activePresetId = null;
+      this.dirty = false;
       this.error = null;
     },
     fail(error: unknown) {
@@ -34,16 +43,45 @@ export const usePresetVersionStore = defineStore("preset-versions", {
       this.loading = false;
       this.collection = result.collection;
       this.presets = [...result.presets];
+      const current = this.presets.find((item) => item.id === this.activePresetId);
+      this.activePresetId = current?.id
+        ?? this.presets.find((item) => item.view.isDefault)?.id
+        ?? this.presets[0]?.id
+        ?? null;
+      this.dirty = false;
     },
     upsertPreset(entry: PresetEntry) {
       this.loading = false;
+      if (entry.view.isDefault) {
+        this.presets = this.presets.map((item) => item.id === entry.id
+          ? item
+          : { ...item, view: { ...item.view, isDefault: false } });
+      }
       const index = this.presets.findIndex((item) => item.id === entry.id);
       if (index < 0) this.presets.push(entry);
       else this.presets[index] = entry;
+      this.activePresetId = entry.id;
+      this.dirty = false;
     },
     removePreset(id: string) {
       this.loading = false;
       this.presets = this.presets.filter((item) => item.id !== id);
+      if (this.activePresetId === id) {
+        this.activePresetId = this.presets.find((item) => item.view.isDefault)?.id
+          ?? this.presets[0]?.id
+          ?? null;
+      }
+      this.dirty = false;
+    },
+    activatePreset(id: string | null) {
+      this.activePresetId = id;
+      this.dirty = false;
+    },
+    markDirty() {
+      if (this.activePresetId) this.dirty = true;
+    },
+    markSaved() {
+      this.dirty = false;
     },
     receiveVersions(result: VersionsResult) {
       this.loading = false;

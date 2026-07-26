@@ -41,6 +41,10 @@ class RestoreBackupParams(CamelModel):
     confirmed: Literal[True]
 
 
+class DeleteBackupParams(CamelModel):
+    name: BackupName
+
+
 class BackupEntry(CamelModel):
     name: BackupName
     size: int = Field(ge=0)
@@ -61,13 +65,19 @@ class BackupRestoreResult(CamelModel):
     status: Literal["restarting"]
 
 
+class BackupDeleteResult(CamelModel):
+    deleted: BackupName
+
+
 __all__ = [
     "BackupCreateResult",
+    "BackupDeleteResult",
     "BackupEntry",
     "BackupListResult",
     "BackupName",
     "BackupRestoreResult",
     "CreateBackupParams",
+    "DeleteBackupParams",
     "ListBackupsParams",
     "RestoreBackupParams",
 ]
