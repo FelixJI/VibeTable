@@ -41,11 +41,37 @@ import type {
   BackupWebMessageType,
   BackupWebPayloadMap,
 } from "@/contracts/backupContracts";
+import {
+  BACKUP_HOST_MESSAGE_TYPES,
+  BACKUP_WEB_MESSAGE_TYPES,
+} from "@/contracts/backupContracts";
+import type {
+  RuntimeDiagnosticsHostMessageType,
+  RuntimeDiagnosticsHostPayloadMap,
+  RuntimeDiagnosticsWebMessageType,
+  RuntimeDiagnosticsWebPayloadMap,
+} from "@/contracts/runtimeDiagnosticsContracts";
+import {
+  RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
+  RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
+} from "@/contracts/runtimeDiagnosticsContracts";
 
-type HostMessageType = SharedHostMessageType | BackupHostMessageType;
-type HostPayloadMap = SharedHostPayloadMap & BackupHostPayloadMap;
-type WebMessageType = SharedWebMessageType | BackupWebMessageType;
-type WebPayloadMap = SharedWebPayloadMap & BackupWebPayloadMap;
+type HostMessageType =
+  | SharedHostMessageType
+  | BackupHostMessageType
+  | RuntimeDiagnosticsHostMessageType;
+type HostPayloadMap =
+  & SharedHostPayloadMap
+  & BackupHostPayloadMap
+  & RuntimeDiagnosticsHostPayloadMap;
+type WebMessageType =
+  | SharedWebMessageType
+  | BackupWebMessageType
+  | RuntimeDiagnosticsWebMessageType;
+type WebPayloadMap =
+  & SharedWebPayloadMap
+  & BackupWebPayloadMap
+  & RuntimeDiagnosticsWebPayloadMap;
 
 /** Diagnostic emitted when an inbound message is dropped. */
 export type DiagnosticKind =
@@ -194,9 +220,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "version.compare",
   "version.promote",
   "version.delete",
-  "backup.list",
-  "backup.create",
-  "backup.restore",
+  ...BACKUP_HOST_MESSAGE_TYPES,
+  ...RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
   // B2 paste preview + apply outcomes.
   "table.pastePreviewReady",
   "table.pasteApplied",
@@ -297,9 +322,8 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "version.compare",
   "version.promote",
   "version.delete",
-  "backup.list",
-  "backup.create",
-  "backup.restore",
+  ...BACKUP_WEB_MESSAGE_TYPES,
+  ...RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
   // B3 query + state requests.
   "table.queryRequested",
   "gridState.saveRequested",
@@ -452,6 +476,10 @@ export interface HostBridge {
     type: K,
     payload: BackupWebPayloadMap[K],
   ): Promise<unknown>;
+  request<K extends RuntimeDiagnosticsWebMessageType>(
+    type: K,
+    payload: RuntimeDiagnosticsWebPayloadMap[K],
+  ): Promise<RuntimeDiagnosticsHostPayloadMap[K]>;
   request<K extends SharedWebMessageType>(
     type: K,
     payload: SharedWebPayloadMap[K],
@@ -461,6 +489,10 @@ export interface HostBridge {
     type: K,
     payload: BackupWebPayloadMap[K],
   ): { readonly requestId: string; readonly promise: Promise<unknown> };
+  requestWithHandle<K extends RuntimeDiagnosticsWebMessageType>(
+    type: K,
+    payload: RuntimeDiagnosticsWebPayloadMap[K],
+  ): { readonly requestId: string; readonly promise: Promise<unknown> };
   requestWithHandle<K extends SharedWebMessageType>(
     type: K,
     payload: SharedWebPayloadMap[K],
@@ -469,6 +501,10 @@ export interface HostBridge {
   notify<K extends BackupWebMessageType>(
     type: K,
     payload: BackupWebPayloadMap[K],
+  ): void;
+  notify<K extends RuntimeDiagnosticsWebMessageType>(
+    type: K,
+    payload: RuntimeDiagnosticsWebPayloadMap[K],
   ): void;
   notify<K extends SharedWebMessageType>(
     type: K,
@@ -481,6 +517,11 @@ export interface HostBridge {
   notifyWithAdditionalObjects<K extends BackupWebMessageType>(
     type: K,
     payload: BackupWebPayloadMap[K],
+    additionalObjects: readonly File[],
+  ): boolean;
+  notifyWithAdditionalObjects<K extends RuntimeDiagnosticsWebMessageType>(
+    type: K,
+    payload: RuntimeDiagnosticsWebPayloadMap[K],
     additionalObjects: readonly File[],
   ): boolean;
   notifyWithAdditionalObjects<K extends SharedWebMessageType>(
@@ -501,6 +542,10 @@ export interface HostBridge {
   on<K extends BackupHostMessageType>(
     type: K,
     handler: (payload: BackupHostPayloadMap[K]) => void,
+  ): () => void;
+  on<K extends RuntimeDiagnosticsHostMessageType>(
+    type: K,
+    handler: (payload: RuntimeDiagnosticsHostPayloadMap[K]) => void,
   ): () => void;
   on<K extends SharedHostMessageType>(
     type: K,

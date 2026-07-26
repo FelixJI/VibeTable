@@ -10,6 +10,19 @@ export interface RuntimeDiagnostics {
   readonly dataServiceState: string;
 }
 
+export const RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES = [
+  "diagnostics.get",
+] as const;
+
+export type RuntimeDiagnosticsWebMessageType =
+  (typeof RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES)[number];
+
+export const RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES =
+  RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES;
+
+export type RuntimeDiagnosticsHostMessageType =
+  (typeof RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES)[number];
+
 export interface RuntimeDiagnosticsWebPayloadMap {
   "diagnostics.get": Readonly<Record<string, never>>;
 }

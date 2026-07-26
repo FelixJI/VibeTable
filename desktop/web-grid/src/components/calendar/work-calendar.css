@@ -1,8 +1,14 @@
 .work-calendar {
-  --work-calendar-rest: #b94a48;
-  --work-calendar-rest-bg: rgba(185, 74, 72, 0.09);
-  --work-calendar-work: #2f67a8;
-  --work-calendar-work-bg: rgba(47, 103, 168, 0.1);
+  --work-calendar-rest: var(--vt-color-danger);
+  --work-calendar-rest-bg: color-mix(in srgb, var(--vt-color-danger) 14%, transparent);
+  --work-calendar-work: var(--vt-color-success);
+  --work-calendar-work-bg: color-mix(in srgb, var(--vt-color-success) 15%, transparent);
+  --work-calendar-rest-marker: #b94a48;
+  --work-calendar-rest-marker-bg: rgba(185, 74, 72, 0.09);
+  --work-calendar-work-marker: #2f67a8;
+  --work-calendar-work-marker-bg: rgba(47, 103, 168, 0.1);
+  --work-calendar-selected: #7a5af8;
+  --work-calendar-selected-bg: color-mix(in srgb, #7a5af8 16%, transparent);
   width: 100%;
   color: var(--vt-fg);
   font-variant-numeric: tabular-nums;
@@ -64,8 +70,13 @@
 }
 
 .work-calendar__day--selected {
-  border-color: var(--vt-color-primary-500);
-  background: var(--vt-color-primary-50);
+  border-color: var(--work-calendar-selected);
+  background: var(--work-calendar-selected-bg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--work-calendar-selected) 36%, transparent);
+}
+
+.work-calendar__day--selected .work-calendar__number {
+  color: var(--vt-fg);
 }
 
 .work-calendar__number {
@@ -80,17 +91,24 @@
   place-items: center;
   width: 19px;
   height: 19px;
-  color: var(--work-calendar-rest);
+  color: var(--work-calendar-rest-marker);
   font-size: 10px;
   font-weight: 700;
   border-radius: 50%;
-  background: var(--work-calendar-rest-bg);
+  background: var(--work-calendar-rest-marker-bg);
 }
 
 .work-calendar__day--workday .work-calendar__marker {
-  color: var(--work-calendar-work);
+  color: var(--work-calendar-work-marker);
   border-radius: 5px;
-  background: var(--work-calendar-work-bg);
+  background: var(--work-calendar-work-marker-bg);
+}
+
+:root.dark .work-calendar {
+  --work-calendar-rest-marker: #ef9a96;
+  --work-calendar-rest-marker-bg: rgba(239, 154, 150, 0.13);
+  --work-calendar-work-marker: #8bb8ed;
+  --work-calendar-work-marker-bg: rgba(139, 184, 237, 0.13);
 }
 
 .work-calendar__name {
@@ -125,6 +143,18 @@
   box-shadow: none;
 }
 
+.work-calendar--compact .work-calendar__day--selected {
+  color: #fff;
+  background: var(--work-calendar-selected);
+  border-color: var(--work-calendar-selected);
+  box-shadow: none;
+}
+
+.work-calendar--compact .work-calendar__day--selected .work-calendar__number,
+.work-calendar--compact .work-calendar__day--selected .work-calendar__marker {
+  color: #fff;
+}
+
 .work-calendar--compact .work-calendar__marker {
   top: -2px;
   right: -1px;
@@ -132,13 +162,6 @@
   height: 13px;
   font-size: 8px;
   box-shadow: 0 0 0 1px var(--vt-bg);
-}
-
-:root.dark .work-calendar {
-  --work-calendar-rest: #ef9a96;
-  --work-calendar-rest-bg: rgba(239, 154, 150, 0.13);
-  --work-calendar-work: #8bb8ed;
-  --work-calendar-work-bg: rgba(139, 184, 237, 0.13);
 }
 
 .work-date-popup {

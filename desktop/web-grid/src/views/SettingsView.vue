@@ -981,15 +981,16 @@ header p { margin: 0; color: var(--vt-fg-muted); }
    auto 列里会塌缩，所以显式给值）。 */
 .calendar-name-input { width: min(200px, 100%); }
 /* 单选按钮按文字宽度排成一行（不再竖排拉满），按需换行。 */
-.calendar-rule-options { display: flex; flex-direction: row; flex-wrap: wrap; gap: 5px; }
 .calendar-rule-panel :deep(.n-radio-group) { min-width: 0; max-width: 100%; }
-.calendar-rule-options :deep(.n-radio-button) { flex: 0 1 auto; width: auto; max-width: 100%; }
+.calendar-rule-panel { container-type: inline-size; }
+.calendar-rule-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+.calendar-rule-options :deep(.n-radio-button) { width: 100%; }
 .calendar-footer { display: flex; align-items: center; gap: 14px; padding: 10px 14px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); border-top: 1px solid var(--vt-border); background: var(--vt-bg-subtle); }
 .calendar-footer > span { display: inline-flex; align-items: center; gap: 5px; }
 .calendar-footer small { margin-left: auto; }
 .calendar-seal { display: grid; place-items: center; width: 18px; height: 18px; font-size: 9px; font-style: normal; font-weight: 700; }
-.calendar-seal--rest { color: #b94a48; border-radius: 50%; background: rgba(185, 74, 72, .09); }
-.calendar-seal--work { color: #2f67a8; border-radius: 5px; background: rgba(47, 103, 168, .1); }
+.calendar-seal--rest { color: var(--vt-color-danger); border-radius: 50%; background: color-mix(in srgb, var(--vt-color-danger) 14%, transparent); }
+.calendar-seal--work { color: var(--vt-color-success); border-radius: 5px; background: color-mix(in srgb, var(--vt-color-success) 15%, transparent); }
 .mapping-visual {
   display: flex;
   align-items: center;
@@ -1162,6 +1163,7 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   .calendar-rule-panel { border-top: 1px solid var(--vt-border); border-left: 0; }
   /* 单列堆叠时输入框恢复满宽。 */
   .calendar-name-input { width: 100%; }
+  .calendar-rule-options { grid-template-columns: 1fr; }
   .diagnostics-grid { grid-template-columns: 1fr; }
   .diagnostics-grid > div:nth-child(odd) { border-right: 0; }
 }

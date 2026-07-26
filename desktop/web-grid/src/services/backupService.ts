@@ -2,24 +2,14 @@ import type {
   BackupCreateResult,
   BackupDeleteResult,
   BackupEntry,
-  BackupHostPayloadMap,
   BackupListResult,
   BackupOpenFolderResult,
   BackupRestoreResult,
-  BackupWebMessageType,
-  BackupWebPayloadMap,
 } from "@/contracts/backupContracts";
 import { useHostBridge } from "./bridgeContext";
 
 const BACKUP_NAME = /^[a-z0-9][a-z0-9_-]{0,62}\.zip$/;
 const SHA256 = /^[0-9a-f]{64}$/;
-
-interface BackupBridge {
-  request<K extends BackupWebMessageType>(
-    type: K,
-    payload: BackupWebPayloadMap[K],
-  ): Promise<BackupHostPayloadMap[K]>;
-}
 
 export class BackupOperationError extends Error {
   public readonly code: string;
@@ -121,7 +111,7 @@ function automaticName(now: Date): string {
 }
 
 export function useBackupService() {
-  const bridge = useHostBridge() as unknown as BackupBridge;
+  const bridge = useHostBridge();
 
   async function listBackups(): Promise<BackupListResult> {
     return parseList(await bridge.request("backup.list", {}));

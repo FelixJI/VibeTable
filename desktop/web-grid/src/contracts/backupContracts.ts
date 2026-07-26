@@ -1,11 +1,16 @@
-export type BackupWebMessageType =
-  | "backup.list"
-  | "backup.create"
-  | "backup.delete"
-  | "backup.openFolder"
-  | "backup.restore";
+export const BACKUP_WEB_MESSAGE_TYPES = [
+  "backup.list",
+  "backup.create",
+  "backup.delete",
+  "backup.openFolder",
+  "backup.restore",
+] as const;
 
-export type BackupHostMessageType = BackupWebMessageType;
+export type BackupWebMessageType = (typeof BACKUP_WEB_MESSAGE_TYPES)[number];
+
+export const BACKUP_HOST_MESSAGE_TYPES = BACKUP_WEB_MESSAGE_TYPES;
+
+export type BackupHostMessageType = (typeof BACKUP_HOST_MESSAGE_TYPES)[number];
 
 export interface BackupEntry {
   readonly name: string;

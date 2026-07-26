@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { NButton, NIcon, NInput } from "naive-ui";
 import {
   ArrowRight,
@@ -75,20 +75,33 @@ const searchResults = computed(() => {
     .slice(0, 6);
 });
 
-const quotes = [
+const defaultQuotes = [
   "home.quote.1",
   "home.quote.2",
   "home.quote.3",
   "home.quote.4",
   "home.quote.5",
-];
+] as const;
+const movieQuotes = [
+  "home.quote.movie.1",
+  "home.quote.movie.2",
+  "home.quote.movie.3",
+  "home.quote.movie.4",
+] as const;
+const builtinQuoteFallbacks = [...defaultQuotes, ...movieQuotes] as const;
 const daySeed = Math.floor(
   Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86_400_000,
 );
-let fallbackCursor = daySeed % quotes.length;
+let fallbackCursor = daySeed;
+
+function getFallbackQuoteKeys(): readonly string[] {
+  return ui.dailyQuoteSource === "builtin" ? builtinQuoteFallbacks : defaultQuotes;
+}
+
 function nextFallbackQuote(): DailyQuote {
+  const quotes = getFallbackQuoteKeys();
   const key = quotes[fallbackCursor % quotes.length];
-  fallbackCursor = (fallbackCursor + 1) % quotes.length;
+  fallbackCursor += 1;
   return { text: t(key), attribution: "", url: "", origin: "builtin" };
 }
 const dailyQuote = ref<DailyQuote>(nextFallbackQuote());
@@ -99,6 +112,47 @@ const calendarMonth = formatMonthKey(now);
 const monthText = computed(() =>
   new Intl.DateTimeFormat(localeName.value, { year: "numeric", month: "long" }).format(now),
 );
+const homeAsideRef = ref<HTMLElement | null>(null);
+const syncedContinueHeight = ref(0);
+
+const continueCardStyle = computed(() =>
+  syncedContinueHeight.value > 0 ? { minHeight: `${syncedContinueHeight.value}px` } : undefined,
+);
+
+function syncContinueHeight(): void {
+  if (!window.matchMedia("(min-width: 901px)").matches) {
+    syncedContinueHeight.value = 0;
+    return;
+  }
+  if (!homeAsideRef.value) {
+    syncedContinueHeight.value = 0;
+    return;
+  }
+  syncedContinueHeight.value = Math.ceil(homeAsideRef.value.getBoundingClientRect().height);
+}
+
+const scheduleContinueHeightSync = () => void nextTick(syncContinueHeight);
+let asideObserver: ResizeObserver | null = null;
+
+watch(
+  () => [ui.showMiniCalendar, ui.showDailyQuote, ui.locale, ui.dailyQuoteSource, ui.dailyQuoteStyle, dailyQuote.value.text],
+  scheduleContinueHeightSync,
+  { immediate: true },
+);
+
+onMounted(() => {
+  if (typeof ResizeObserver !== "undefined" && homeAsideRef.value) {
+    asideObserver = new ResizeObserver(scheduleContinueHeightSync);
+    asideObserver.observe(homeAsideRef.value);
+  }
+  window.addEventListener("resize", scheduleContinueHeightSync);
+  scheduleContinueHeightSync();
+});
+
+onBeforeUnmount(() => {
+  asideObserver?.disconnect();
+  window.removeEventListener("resize", scheduleContinueHeightSync);
+});
 
 async function refreshDailyQuote(): Promise<void> {
   const requestId = ++quoteRequestId;
@@ -181,7 +235,7 @@ function openTable(name: string) {
 
     <div class="home-grid">
       <main class="home-main">
-        <section class="content-card continue-card">
+        <section class="content-card continue-card" :style="continueCardStyle">
           <div class="section-heading">
             <div>
               <p class="section-kicker">{{ t("home.continue.kicker") }}</p>
@@ -240,7 +294,7 @@ function openTable(name: string) {
         </section>
       </main>
 
-      <aside class="home-aside">
+      <aside class="home-aside" ref="homeAsideRef">
         <section v-if="ui.showMiniCalendar" class="content-card calendar-card">
           <div class="mini-heading">
             <span>{{ t("home.today") }}</span><strong>{{ monthText }}</strong>
@@ -348,6 +402,7 @@ h1 {
   display: grid;
   grid-template-columns: minmax(0, 7fr) minmax(230px, 3fr);
   gap: 16px;
+  align-items: start;
   max-width: 1180px;
   margin: 0 auto;
 }
@@ -356,7 +411,7 @@ h1 {
   border-radius: var(--vt-radius-lg);
   background: var(--vt-bg);
 }
-.continue-card { min-height: 430px; padding: 22px; }
+.continue-card { min-height: 0; padding: 22px; transition: min-height 160ms var(--vt-ease, ease); }
 .section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .section-heading h2 { margin: 0; font-size: var(--vt-font-heading); font-weight: 600; }
 .recent-list { border-top: 1px solid var(--vt-border); }
@@ -419,8 +474,8 @@ h1 {
 .calendar-legend { display: flex; gap: 10px; margin-top: 9px; color: var(--vt-fg-muted); font-size: 10px; }
 .calendar-legend span { display: inline-flex; align-items: center; gap: 4px; }
 .calendar-legend i { display: grid; place-items: center; width: 14px; height: 14px; font-size: 8px; font-style: normal; font-weight: 700; }
-.legend-rest { color: #b94a48; border-radius: 50%; background: rgba(185, 74, 72, .09); }
-.legend-work { color: #2f67a8; border-radius: 4px; background: rgba(47, 103, 168, .1); }
+.legend-rest { color: var(--vt-color-danger); border-radius: 50%; background: color-mix(in srgb, var(--vt-color-danger) 14%, transparent); }
+.legend-work { color: var(--vt-color-success); border-radius: 4px; background: color-mix(in srgb, var(--vt-color-success) 15%, transparent); }
 .quote-card { background: #fbfaf7; }
 :root.dark .quote-card { background: #24231f; }
 .quote-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
