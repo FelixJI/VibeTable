@@ -14,7 +14,10 @@ public sealed record DashboardFeatureOptions(bool Enabled)
         Func<string, string?>? readVariable = null)
     {
         string? raw = (readVariable ?? Environment.GetEnvironmentVariable)(EnvironmentVariable);
-        bool enabled = raw is not null && raw.Trim().ToLowerInvariant() is
+        // Dashboards are a completed product surface. Keep an explicit
+        // operational kill switch, but do not ship the feature permanently
+        // hidden when the environment variable is absent.
+        bool enabled = raw is null || raw.Trim().ToLowerInvariant() is
             "1" or "true" or "yes" or "on";
         return new DashboardFeatureOptions(enabled);
     }

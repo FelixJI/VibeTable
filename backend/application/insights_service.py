@@ -11,8 +11,8 @@ import asyncio
 import hashlib
 import json
 import uuid
-from collections.abc import Mapping
-from typing import Any, Protocol
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, Protocol, TypeGuard, cast
 
 from backend.contracts.presets_versions_dashboards import (
     CompiledDashboardQuery,
@@ -519,7 +519,10 @@ class InsightsService:
                 code="dashboard_atomic_endpoint_unavailable",
             )
         payload = params.model_dump(by_alias=True, mode="json")
-        result = await commit(payload)
+        result = await cast(
+            Callable[[dict[str, Any]], Awaitable[object]],
+            commit,
+        )(payload)
         if not isinstance(result, dict):
             raise InsightsError(
                 "atomic dashboard mutation returned invalid data",
@@ -797,11 +800,16 @@ def normalize_panel_type(
     return panel_type, _freeze(options)
 
 
+def _is_panel_type(value: str, known: set[PanelType]) -> TypeGuard[PanelType]:
+    return value in known
+
+
 def parse_panel_type(panel_type: str, options: dict[str, Any]) -> tuple[PanelType, dict[str, Any]]:
     """Parse a panel type, falling back safely for unknown renderers."""
-    known = {entry.type for entry in BUILT_IN_PANEL_MANIFEST}
+    known: set[PanelType] = {entry.type for entry in BUILT_IN_PANEL_MANIFEST}
+    canonical = panel_type if _is_panel_type(panel_type, known) else "custom"
     return (
-        panel_type if panel_type in known else "custom",
+        canonical,
         _freeze(options),
     )
 

@@ -87,9 +87,8 @@ describe("FileWorkspaceView", () => {
     }]);
   });
 
-  it("shows only the local workspace source without a disabled cloud tab", () => {
+  it("shows only the local workspace source without a second placeholder source", () => {
     const wrapper = mount(FileWorkspaceView);
     expect(wrapper.find(".authority-switch").exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("Cloud attachments");
   });
 });

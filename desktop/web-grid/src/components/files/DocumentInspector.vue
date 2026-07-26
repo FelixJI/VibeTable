@@ -47,7 +47,7 @@ function unavailableHint(entry: DocumentEntry): string {
     <template v-else>
       <header class="inspector-heading">
         <strong :title="entry.displayName">{{ entry.displayName }}</strong>
-        <small>{{ entry.authority === "workspace" ? t("files.authority.workspace") : t("files.authority.cloud") }}</small>
+        <small>{{ t("files.authority.workspace") }}</small>
       </header>
 
       <div v-if="!['available', 'remote'].includes(entry.availability)" class="missing-card">

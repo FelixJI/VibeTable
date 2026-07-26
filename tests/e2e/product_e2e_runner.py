@@ -690,6 +690,147 @@ def _failure_result(
     }
 
 
+def _nearest_rank(values: list[float], percentile: int) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, (len(ordered) * percentile + 99) // 100 - 1))
+    return round(ordered[index], 2)
+
+
+def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    scenario_timings: list[dict[str, Any]] = []
+    operation_samples: dict[str, list[dict[str, Any]]] = {}
+    ui_samples: dict[str, list[float]] = {}
+    pending_requests = 0
+    for result in results:
+        duration = result.get("durationMs")
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+            scenario_timings.append(
+                {
+                    "scenario": result.get("scenario"),
+                    "status": result.get("status"),
+                    "durationMs": round(float(duration), 2),
+                }
+            )
+        ui_timings = result.get("uiTimings")
+        if isinstance(ui_timings, list):
+            for timing in ui_timings:
+                if not isinstance(timing, dict):
+                    continue
+                name = timing.get("name")
+                ui_duration = timing.get("durationMs")
+                if (
+                    isinstance(name, str)
+                    and isinstance(ui_duration, (int, float))
+                    and not isinstance(ui_duration, bool)
+                ):
+                    ui_samples.setdefault(name, []).append(float(ui_duration))
+        diagnostics = result.get("bridgeDiagnostics")
+        if not isinstance(diagnostics, dict):
+            continue
+        pending = diagnostics.get("pending")
+        if isinstance(pending, list):
+            pending_requests += len(pending)
+        round_trips = diagnostics.get("roundTrips")
+        if not isinstance(round_trips, list):
+            continue
+        for sample in round_trips:
+            if not isinstance(sample, dict):
+                continue
+            request_type = sample.get("requestType")
+            sample_duration = sample.get("durationMs")
+            if (
+                not isinstance(request_type, str)
+                or not isinstance(sample_duration, (int, float))
+                or isinstance(sample_duration, bool)
+            ):
+                continue
+            operation_samples.setdefault(request_type, []).append(
+                {
+                    "scenario": result.get("scenario"),
+                    "durationMs": float(sample_duration),
+                    "failed": sample.get("responseType") == "operation.failed",
+                    "code": sample.get("code"),
+                }
+            )
+
+    by_operation: list[dict[str, Any]] = []
+    for request_type, samples in sorted(operation_samples.items()):
+        durations = [sample["durationMs"] for sample in samples]
+        by_operation.append(
+            {
+                "requestType": request_type,
+                "count": len(samples),
+                "failures": sum(sample["failed"] for sample in samples),
+                "p50Ms": _nearest_rank(durations, 50),
+                "p95Ms": _nearest_rank(durations, 95),
+                "maxMs": round(max(durations), 2),
+            }
+        )
+
+    history = next(
+        (
+            operation
+            for operation in by_operation
+            if operation["requestType"] == "history.queryRequested"
+        ),
+        None,
+    )
+    history_status = "not-measured"
+    if history is not None:
+        if history["maxMs"] > 2_000:
+            history_status = "hard-limit-exceeded"
+        elif history["p95Ms"] > 500:
+            history_status = "warning"
+        else:
+            history_status = "within-budget"
+    by_ui_action = [
+        {
+            "name": name,
+            "count": len(durations),
+            "p50Ms": _nearest_rank(durations, 50),
+            "p95Ms": _nearest_rank(durations, 95),
+            "maxMs": round(max(durations), 2),
+        }
+        for name, durations in sorted(ui_samples.items())
+    ]
+    history_ui = next(
+        (action for action in by_ui_action if action["name"] == "history.drawer.initialLoad"),
+        None,
+    )
+    history_ui_status = "not-measured"
+    if history_ui is not None:
+        if history_ui["maxMs"] > 2_000:
+            history_ui_status = "hard-limit-exceeded"
+        elif history_ui["p95Ms"] > 750:
+            history_ui_status = "warning"
+        else:
+            history_ui_status = "within-budget"
+    return {
+        "thresholds": {
+            "historyQueryP95WarningMs": 500,
+            "historyQueryHardLimitMs": 2_000,
+            "historyDrawerP95WarningMs": 750,
+            "historyDrawerHardLimitMs": 2_000,
+            "scenarioHardTimeoutMs": 180_000,
+            "note": (
+                "Scenario duration includes app startup and fixture work. "
+                "Deliberate sidecar recovery is assessed separately from normal bridge latency."
+            ),
+        },
+        "assessment": {
+            "historyQuery": history_status,
+            "historyDrawer": history_ui_status,
+            "pendingRequests": pending_requests,
+            "bridgeFailures": sum(operation["failures"] for operation in by_operation),
+        },
+        "scenarios": scenario_timings,
+        "byUiAction": by_ui_action,
+        "byOperation": by_operation,
+    }
+
+
 def run_scenario(
     scenario: Scenario,
     *,
@@ -921,6 +1062,7 @@ def write_aggregate(
             "failed": len(results) - passed,
             "skipped": 0,
         },
+        "performance": summarize_performance(results),
         "scenarios": results,
     }
     path.parent.mkdir(parents=True, exist_ok=True)

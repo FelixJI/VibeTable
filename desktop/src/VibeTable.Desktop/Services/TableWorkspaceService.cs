@@ -432,7 +432,8 @@ public sealed class TableWorkspaceService
         object? oldValue,
         object? newValue,
         string schemaRevision,
-        string? expectedDigest = null)
+        string? expectedDigest = null,
+        string? requestId = null)
     {
         if (string.IsNullOrEmpty(table))
         {
@@ -452,7 +453,8 @@ public sealed class TableWorkspaceService
             Emit(generation, new TableNotification(
                 Type: "table.editCommitted", Page: null, LoadedRows: 0,
                 MutationResult: new MutationOutcome(
-                    Kind: "updateCell", Success: true, Error: null, Result: result)));
+                    Kind: "updateCell", Success: true, Error: null, Result: result),
+                RequestId: requestId));
             return true;
         }
         catch (Exception ex)
@@ -461,7 +463,11 @@ public sealed class TableWorkspaceService
             {
                 return false;
             }
-            EmitMutationError(generation, "updateCell", MutationErrorMapper.Map(ex));
+            EmitMutationError(
+                generation,
+                "updateCell",
+                MutationErrorMapper.Map(ex),
+                requestId);
             return false;
         }
     }
@@ -470,7 +476,8 @@ public sealed class TableWorkspaceService
     public async Task<bool> InsertRowAsync(
         string table,
         IReadOnlyDictionary<string, object?> values,
-        string schemaRevision)
+        string schemaRevision,
+        string? requestId = null)
     {
         if (string.IsNullOrEmpty(table))
         {
@@ -489,7 +496,8 @@ public sealed class TableWorkspaceService
             Emit(generation, new TableNotification(
                 Type: "table.rowsInserted", Page: null, LoadedRows: 0,
                 MutationResult: new MutationOutcome(
-                    Kind: "insertRow", Success: true, Error: null, Result: result)));
+                    Kind: "insertRow", Success: true, Error: null, Result: result),
+                RequestId: requestId));
             return true;
         }
         catch (Exception ex)
@@ -498,7 +506,11 @@ public sealed class TableWorkspaceService
             {
                 return false;
             }
-            EmitMutationError(generation, "insertRow", MutationErrorMapper.Map(ex));
+            EmitMutationError(
+                generation,
+                "insertRow",
+                MutationErrorMapper.Map(ex),
+                requestId);
             return false;
         }
     }
@@ -507,7 +519,8 @@ public sealed class TableWorkspaceService
     public async Task<bool> DeleteRowsAsync(
         string table,
         IReadOnlyList<(object RowKey, string ExpectedDigest)> rows,
-        string schemaRevision)
+        string schemaRevision,
+        string? requestId = null)
     {
         if (string.IsNullOrEmpty(table) || rows.Count == 0)
         {
@@ -526,7 +539,8 @@ public sealed class TableWorkspaceService
             Emit(generation, new TableNotification(
                 Type: "table.rowsDeleted", Page: null, LoadedRows: 0,
                 MutationResult: new MutationOutcome(
-                    Kind: "deleteRows", Success: true, Error: null, Result: result)));
+                    Kind: "deleteRows", Success: true, Error: null, Result: result),
+                RequestId: requestId));
             return true;
         }
         catch (Exception ex)
@@ -535,17 +549,26 @@ public sealed class TableWorkspaceService
             {
                 return false;
             }
-            EmitMutationError(generation, "deleteRows", MutationErrorMapper.Map(ex));
+            EmitMutationError(
+                generation,
+                "deleteRows",
+                MutationErrorMapper.Map(ex),
+                requestId);
             return false;
         }
     }
 
-    private void EmitMutationError(int generation, string kind, MutationError error)
+    private void EmitMutationError(
+        int generation,
+        string kind,
+        MutationError error,
+        string? requestId = null)
     {
         Emit(generation, new TableNotification(
             Type: "table.editRejected", Page: null, LoadedRows: 0,
             MutationResult: new MutationOutcome(
-                Kind: kind, Success: false, Error: error, Result: null)));
+                Kind: kind, Success: false, Error: error, Result: null),
+            RequestId: requestId));
     }
 
     /// <summary>
@@ -612,18 +635,24 @@ public sealed class TableNotification
     public TableNotification() { }
 
     public TableNotification(
-        string Type, TablePage? Page, int LoadedRows, MutationOutcome? MutationResult = null)
+        string Type,
+        TablePage? Page,
+        int LoadedRows,
+        MutationOutcome? MutationResult = null,
+        string? RequestId = null)
     {
         this.Type = Type;
         this.Page = Page;
         this.LoadedRows = LoadedRows;
         this.MutationResult = MutationResult;
+        this.RequestId = RequestId;
     }
 
     public string Type { get; set; } = string.Empty;
     public TablePage? Page { get; set; }
     public int LoadedRows { get; set; }
     public MutationOutcome? MutationResult { get; set; }
+    public string? RequestId { get; set; }
 }
 
 /// <summary>

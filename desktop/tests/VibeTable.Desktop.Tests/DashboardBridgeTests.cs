@@ -216,7 +216,7 @@ public sealed class DashboardBridgeTests
     [TestMethod]
     public void FeatureOptions_DefaultOffAndExplicitTrueValuesEnable()
     {
-        Assert.IsFalse(DashboardFeatureOptions.FromEnvironment(_ => null).Enabled);
+        Assert.IsTrue(DashboardFeatureOptions.FromEnvironment(_ => null).Enabled);
         Assert.IsFalse(DashboardFeatureOptions.FromEnvironment(_ => "false").Enabled);
         Assert.IsTrue(DashboardFeatureOptions.FromEnvironment(_ => "true").Enabled);
         Assert.IsTrue(DashboardFeatureOptions.FromEnvironment(_ => "1").Enabled);

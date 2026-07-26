@@ -1,8 +1,11 @@
 # ADR 0001：采用 Flow-first 插件平台
 
-- 状态：已接受
+- 状态：已废弃（由 PocketBase 退出架构取代）
 - 日期：2026-07-20
 - 决策者：VibeTable 产品与工程
+
+> 2026-07-24：VibeTable 已移除 Directus/Flow-first 生产路径。本 ADR 仅保留为历史决策记录；现行边界见
+> [`docs/research/2026-07-24-directus-exit-architecture.md`](../research/2026-07-24-directus-exit-architecture.md)。
 
 ## 背景
 

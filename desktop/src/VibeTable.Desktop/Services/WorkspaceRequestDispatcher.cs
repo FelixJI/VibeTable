@@ -45,12 +45,16 @@ namespace VibeTable.Desktop.Services;
 /// </remarks>
 public sealed class WorkspaceRequestDispatcher
 {
+    private static readonly TimeSpan RecoveryReadPollInterval =
+        TimeSpan.FromMilliseconds(25);
+
     private readonly TableWorkspaceService _workspace;
     private readonly IDatabasePicker _picker;
     private readonly IWebReplySink _reply;
     private readonly GridStateCoordinator? _coordinator;
     private readonly DashboardFeatureOptions _dashboardFeatures;
     private readonly TimeSpan _dashboardRequestTimeout;
+    private readonly TimeSpan _readRecoveryTimeout;
     private readonly ConcurrentDictionary<string, DashboardRequestState> _dashboardRequests = new();
     private readonly SemaphoreSlim _dashboardQueryGate = new(6, 6);
     private IProductDataRpcGateway? _productDataGateway;
@@ -64,7 +68,8 @@ public sealed class WorkspaceRequestDispatcher
         IWebReplySink reply,
         GridStateCoordinator? coordinator = null,
         DashboardFeatureOptions? dashboardFeatures = null,
-        TimeSpan? dashboardRequestTimeout = null)
+        TimeSpan? dashboardRequestTimeout = null,
+        TimeSpan? readRecoveryTimeout = null)
     {
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         _picker = picker ?? throw new ArgumentNullException(nameof(picker));
@@ -72,6 +77,8 @@ public sealed class WorkspaceRequestDispatcher
         _coordinator = coordinator;
         _dashboardFeatures = dashboardFeatures ?? DashboardFeatureOptions.Disabled;
         _dashboardRequestTimeout = dashboardRequestTimeout ?? TimeSpan.FromSeconds(60);
+        _readRecoveryTimeout =
+            readRecoveryTimeout ?? TimeSpan.FromSeconds(3);
     }
 
     /// <summary>
@@ -380,7 +387,8 @@ public sealed class WorkspaceRequestDispatcher
             ToObject(oldValue),
             ToObject(newValue),
             schemaRevision,
-            expectedDigest).ConfigureAwait(false);
+            expectedDigest,
+            request.RequestId).ConfigureAwait(false);
     }
 
     private async Task OnInsertRowRequestedAsync(RoutedWebRequest request)
@@ -397,7 +405,11 @@ public sealed class WorkspaceRequestDispatcher
         var values = valuesElement.EnumerateObject().ToDictionary(
             property => property.Name,
             property => ToObject(property.Value));
-        await _workspace.InsertRowAsync(table, values, schemaRevision).ConfigureAwait(false);
+        await _workspace.InsertRowAsync(
+            table,
+            values,
+            schemaRevision,
+            request.RequestId).ConfigureAwait(false);
     }
 
     private async Task OnDeleteRowsRequestedAsync(RoutedWebRequest request)
@@ -422,7 +434,11 @@ public sealed class WorkspaceRequestDispatcher
             }
             rows.Add((ToObject(rowKey)!, TryGetString(element, "expectedDigest")!));
         }
-        await _workspace.DeleteRowsAsync(table, rows, schemaRevision).ConfigureAwait(false);
+        await _workspace.DeleteRowsAsync(
+            table,
+            rows,
+            schemaRevision,
+            request.RequestId).ConfigureAwait(false);
     }
 
     // -------------------------------------------------------------------
@@ -597,8 +613,8 @@ public sealed class WorkspaceRequestDispatcher
             RecordId: TryGetScalarString(request.Payload, "recordId"));
         try
         {
-            var page = await _workspace.Gateway.ReadChangeSetsAsync(
-                parameters, CancellationToken.None).ConfigureAwait(false);
+            var page = await ReadHistoryWithRecoveryAsync(parameters)
+                .ConfigureAwait(false);
             _reply.PostResponse("history.pageLoaded", request.RequestId, page);
         }
         catch (Exception ex)
@@ -679,6 +695,36 @@ public sealed class WorkspaceRequestDispatcher
         Trace.TraceError($"History request failed ({fallbackCode}): {exception}");
         var failure = HistoryErrorMapper.Map(exception, fallbackCode);
         _reply.PostOperationFailed(request.RequestId, failure.Message, failure.Code);
+    }
+
+    private async Task<HistoryPage> ReadHistoryWithRecoveryAsync(
+        ReadChangeSetsParams parameters)
+    {
+        Exception? lastFailure = null;
+        long deadline = Stopwatch.GetTimestamp()
+            + (long)(_readRecoveryTimeout.TotalSeconds * Stopwatch.Frequency);
+        while (true)
+        {
+            try
+            {
+                return await _workspace.Gateway.ReadChangeSetsAsync(
+                    parameters,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+                when (ex is BackendUnavailableException
+                    or ObjectDisposedException)
+            {
+                lastFailure = ex;
+            }
+            if (Stopwatch.GetTimestamp() >= deadline)
+            {
+                throw new BackendUnavailableException(
+                    "The history service did not recover before the read deadline.",
+                    lastFailure);
+            }
+            await Task.Delay(RecoveryReadPollInterval).ConfigureAwait(false);
+        }
     }
 
     private static bool IsHistoryQueryScope(string scope)
@@ -1187,16 +1233,6 @@ public sealed class WorkspaceRequestDispatcher
             _reply.PostOperationFailed(request.RequestId, "Unknown product data request.", "UNKNOWN_TYPE");
             return;
         }
-        IProductDataRpcGateway? productGateway =
-            Volatile.Read(ref _productDataGateway);
-        if (productGateway is null)
-        {
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "本地数据服务尚未就绪。",
-                "BACKEND_UNAVAILABLE");
-            return;
-        }
         if (!endpoint.IsValidPayload(request.Payload))
         {
             _reply.PostOperationFailed(
@@ -1207,8 +1243,23 @@ public sealed class WorkspaceRequestDispatcher
         }
         try
         {
-            JsonElement result = await endpoint.InvokeAsync(
-                productGateway, request.Payload, CancellationToken.None).ConfigureAwait(false);
+            IProductDataRpcGateway? productGateway =
+                Volatile.Read(ref _productDataGateway);
+            JsonElement result = string.Equals(
+                request.Type,
+                "query.page",
+                StringComparison.Ordinal)
+                    ? await InvokeRecoverableProductReadAsync(
+                        endpoint,
+                        request.Payload,
+                        productGateway).ConfigureAwait(false)
+                    : productGateway is null
+                        ? throw new BackendUnavailableException(
+                            "The local data service is not ready.")
+                        : await endpoint.InvokeAsync(
+                            productGateway,
+                            request.Payload,
+                            CancellationToken.None).ConfigureAwait(false);
             _reply.PostResponse(request.Type, request.RequestId, result);
             if (string.Equals(request.Type, "schema.apply", StringComparison.Ordinal))
             {
@@ -1227,12 +1278,72 @@ public sealed class WorkspaceRequestDispatcher
             _reply.PostOperationFailed(request.RequestId, "Invalid request payload.", "BAD_PAYLOAD");
         }
         catch (Exception ex)
+            when (ex is BackendUnavailableException
+                or ObjectDisposedException)
+        {
+            Trace.TraceWarning(
+                $"Product data backend unavailable ({request.Type}): {ex.Message}");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "Local data service is reconnecting.",
+                "BACKEND_UNAVAILABLE");
+        }
+        catch (Exception ex)
         {
             Trace.TraceError($"Product data request failed ({request.Type}): {ex}");
             _reply.PostOperationFailed(
                 request.RequestId,
                 "Product data operation failed.",
                 "PRODUCT_DATA_FAILED");
+        }
+    }
+
+    private async Task<JsonElement> InvokeRecoverableProductReadAsync(
+        ProductDataRpcEndpoint endpoint,
+        JsonElement payload,
+        IProductDataRpcGateway? initialGateway)
+    {
+        IProductDataRpcGateway? attemptedGateway = initialGateway;
+        Exception? lastFailure = null;
+        long deadline = Stopwatch.GetTimestamp()
+            + (long)(_readRecoveryTimeout.TotalSeconds * Stopwatch.Frequency);
+
+        while (true)
+        {
+            if (attemptedGateway is not null)
+            {
+                try
+                {
+                    return await endpoint.InvokeAsync(
+                        attemptedGateway,
+                        payload,
+                        CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                    when (ex is BackendUnavailableException
+                        or ObjectDisposedException)
+                {
+                    lastFailure = ex;
+                }
+            }
+
+            IProductDataRpcGateway? replacement =
+                Volatile.Read(ref _productDataGateway);
+            if (replacement is not null
+                && !ReferenceEquals(replacement, attemptedGateway))
+            {
+                attemptedGateway = replacement;
+                continue;
+            }
+            if (Stopwatch.GetTimestamp() >= deadline)
+            {
+                throw new BackendUnavailableException(
+                    "The local data service did not recover before the read deadline.",
+                    lastFailure ?? new InvalidOperationException(
+                        "No product data gateway is currently available."));
+            }
+            await Task.Delay(RecoveryReadPollInterval)
+                .ConfigureAwait(false);
         }
     }
 
@@ -1257,8 +1368,8 @@ public sealed class WorkspaceRequestDispatcher
         {
             _reply.PostOperationFailed(
                 request.RequestId,
-                "云端资源附件需要记录关系字段，当前入口仅显示工作区文档。",
-                "CLOUD_ATTACHMENT_SCOPE_REQUIRED");
+                "当前入口仅支持本地工作区文档。",
+                "DOCUMENT_AUTHORITY_UNSUPPORTED");
             return;
         }
         if (!TryGetProperty(request.Payload, "scope", out var scope)

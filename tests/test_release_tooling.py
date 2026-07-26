@@ -74,7 +74,8 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
     assert manifest["launch"]["sidecar"] == "sidecar/vibetable-pb.exe"
     assert manifest["assets"]["migrations"] == "sidecar/migrations/manifest.json"
     assert manifest["assets"]["sbom"] == "sidecar/sbom.cdx.json"
-    assert manifest["data"]["rootPolicy"] == "per-user-local-app-data"
+    assert manifest["data"]["rootPolicy"] == "first-run-selected"
+    assert manifest["data"]["relativePath"] == "VibeTableData"
     encoded = json.dumps(manifest).lower()
     assert "".join(["di", "rectus"]) not in encoded
     assert "node_modules" not in encoded
@@ -219,6 +220,7 @@ def test_release_preflight_rejects_dirty_or_untracked_worktree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Result:
+        returncode = 0
         stdout = " M backend/app.py\n?? unexpected.bin\n"
 
     monkeypatch.setattr(

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
+using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -70,6 +71,53 @@ public sealed class HistoryBridgeTests
         Assert.AreEqual("p-7", parameters.RecordId);
         Assert.AreEqual(75, parameters.Limit);
         Assert.AreEqual(150, parameters.Offset);
+    }
+
+    [TestMethod]
+    public async Task Query_RetriesTransientBackendRecoveryWithoutPostingFailure()
+    {
+        var (dispatcher, gateway, sink) = CreateDispatcher();
+        gateway.NextHistoryException = new BackendUnavailableException(
+            "sidecar generation is restarting");
+        var payload = Parse(
+            """{"collection":"projects","scope":"table","limit":50,"offset":0}""");
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "history.queryRequested",
+            "recovering-history",
+            payload,
+            string.Empty));
+
+        FakeWebReplySink.Reply? reply =
+            await sink.WaitForAsync("history.pageLoaded");
+        Assert.IsNotNull(reply);
+        Assert.AreEqual("recovering-history", reply.RequestId);
+        Assert.HasCount(2, gateway.ReadChangeSetsCalls);
+        Assert.IsFalse(sink.Replies.Any(item => item.Type == "operation.failed"));
+    }
+
+    [TestMethod]
+    public async Task Query_RetriesRetiredRpcGenerationWithoutPostingFailure()
+    {
+        var (dispatcher, gateway, sink) = CreateDispatcher();
+        gateway.NextHistoryException = new ObjectDisposedException(
+            "JsonRpcClient",
+            "retired backend generation");
+        var payload = Parse(
+            """{"collection":"projects","scope":"table","limit":50,"offset":0}""");
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "history.queryRequested",
+            "retired-history-client",
+            payload,
+            string.Empty));
+
+        FakeWebReplySink.Reply? reply =
+            await sink.WaitForAsync("history.pageLoaded");
+        Assert.IsNotNull(reply);
+        Assert.AreEqual("retired-history-client", reply.RequestId);
+        Assert.HasCount(2, gateway.ReadChangeSetsCalls);
+        Assert.IsFalse(sink.Replies.Any(item => item.Type == "operation.failed"));
     }
 
     [TestMethod]

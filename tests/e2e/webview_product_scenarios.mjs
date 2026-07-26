@@ -171,6 +171,16 @@ function assertCleanRendererDiagnostics(recorder, consoleEntries, pageErrors, ne
   );
 }
 
+function assertCleanBridgeDiagnostics(recorder, diagnostics) {
+  const failures = diagnostics?.failures ?? [];
+  const pending = diagnostics?.pending ?? [];
+  recorder.check(
+    "bridge completed without unexpected operation.failed or pending requests",
+    failures.length === 0 && pending.length === 0,
+    { failures, pending },
+  );
+}
+
 async function waitForShell(page, recorder) {
   await page.getByTestId("nav-home").waitFor({ state: "visible", timeout: 60_000 });
   await page.getByTestId("home-view").waitFor({ state: "visible" });
@@ -857,6 +867,106 @@ async function rawBridgeRequest(
       }),
     { type, payload, timeout: timeoutMs, responseTypes: expectedResponseTypes },
   );
+}
+
+async function installBridgeDiagnostics(page) {
+  await page.evaluate(() => {
+    if (window.__vibetableE2EBridgeDiagnostics?.installed) return;
+
+    const diagnostics = {
+      installed: true,
+      installedAt: new Date().toISOString(),
+      requests: [],
+      roundTrips: [],
+      failures: [],
+      pending: {},
+    };
+    const webview = window.chrome.webview;
+    const originalPostMessage = webview.postMessage.bind(webview);
+    webview.postMessage = (...args) => {
+      const candidate = args[0];
+      let message = candidate;
+      if (typeof candidate === "string") {
+        try { message = JSON.parse(candidate); } catch { message = null; }
+      }
+      if (message?.requestId && message?.type) {
+        const requestPayload = message.payload;
+        const payloadShape = requestPayload
+          && typeof requestPayload === "object"
+          && !Array.isArray(requestPayload)
+          ? Object.fromEntries(Object.entries(requestPayload).map(([key, value]) => [
+            key,
+            typeof value === "string"
+              ? { kind: "string", length: value.length }
+              : Array.isArray(value)
+                ? { kind: "array", length: value.length }
+                : { kind: value === null ? "null" : typeof value },
+          ]))
+          : null;
+        const request = {
+          requestId: message.requestId,
+          requestType: message.type,
+          payloadShape,
+          startedAt: new Date().toISOString(),
+          startedMonotonicMs: performance.now(),
+        };
+        diagnostics.requests.push(request);
+        diagnostics.pending[message.requestId] = request;
+      }
+      return originalPostMessage(...args);
+    };
+    webview.addEventListener("message", (event) => {
+      let message = event.data;
+      if (typeof message === "string") {
+        try { message = JSON.parse(message); } catch { return; }
+      }
+      const request = message?.requestId
+        ? diagnostics.pending[message.requestId]
+        : null;
+      if (!request) return;
+      const roundTrip = {
+        requestId: request.requestId,
+        requestType: request.requestType,
+        payloadShape: request.payloadShape,
+        responseType: message.type ?? null,
+        code: message.payload?.code ?? null,
+        message: message.payload?.message ?? null,
+        startedAt: request.startedAt,
+        finishedAt: new Date().toISOString(),
+        durationMs: Math.round((performance.now() - request.startedMonotonicMs) * 100) / 100,
+      };
+      diagnostics.roundTrips.push(roundTrip);
+      if (message.type === "operation.failed") diagnostics.failures.push(roundTrip);
+      delete diagnostics.pending[message.requestId];
+    });
+    window.__vibetableE2EBridgeDiagnostics = diagnostics;
+  });
+}
+
+async function readBridgeDiagnostics(page) {
+  return page.evaluate(() => {
+    const diagnostics = window.__vibetableE2EBridgeDiagnostics;
+    if (!diagnostics) return null;
+    const now = performance.now();
+    return {
+      installedAt: diagnostics.installedAt,
+      requests: diagnostics.requests.map((request) => ({
+        requestId: request.requestId,
+        requestType: request.requestType,
+        payloadShape: request.payloadShape,
+        startedAt: request.startedAt,
+      })),
+      roundTrips: diagnostics.roundTrips,
+      failures: diagnostics.failures,
+      pending: Object.values(diagnostics.pending).map((request) => ({
+        requestId: request.requestId,
+        requestType: request.requestType,
+        payloadShape: request.payloadShape,
+        startedAt: request.startedAt,
+        pendingMs: Math.round((now - request.startedMonotonicMs) * 100) / 100,
+      })),
+    };
+  });
 }
 
 async function beginBridgeMessageCapture(page, responseTypes) {
@@ -1843,8 +1953,14 @@ async function scenario07(page, recorder, _network, runtime) {
           && String(change.after ?? "").includes(uploadedFile.storedName)),
     { originalRevision, originalPreviewProbe },
   );
+  const historyDrawerStartedAt = performance.now();
   await page.getByTestId("toolbar-history").click();
   await page.getByTestId("history-timeline").waitFor({ timeout: 30_000 });
+  runtime.recordUiTiming(
+    "history.drawer.initialLoad",
+    performance.now() - historyDrawerStartedAt,
+    { scope: "cell", scenario: "07-attachment-history" },
+  );
   await page.getByTestId(`history-entry-${originalRevision}`).click();
   const restore = page.getByTestId(`history-preview-${originalRevision}`);
   await restore.waitFor();
@@ -2598,8 +2714,14 @@ async function scenario12(page, recorder, _network, runtime) {
       expectedOriginalSize: originalBytes.length,
   });
   await panel.locator("header button").click();
+  const historyDrawerStartedAt = performance.now();
   await page.getByTestId("toolbar-history").click();
   await page.getByTestId("history-timeline").waitFor({ timeout: 30_000 });
+  runtime.recordUiTiming(
+    "history.drawer.initialLoad",
+    performance.now() - historyDrawerStartedAt,
+    { scope: "table", scenario: "12-backup-consistency" },
+  );
   const afterRestoreHistory = await rawBridgeRequest(page, "history.queryRequested", {
     collection: "tbl_e2e_backup_consistency",
     scope: "table",
@@ -2788,6 +2910,7 @@ async function main() {
     console: consoleEntries,
     network,
     pageErrors,
+    uiTimings: [],
   };
   let browser;
   let context;
@@ -2827,15 +2950,25 @@ async function main() {
     context.on("page", observePage);
     page = await locateProductPage(browser);
     observePage(page);
+    await installBridgeDiagnostics(page);
     const implementation = scenarios[args.scenario];
     if (implementation) {
       await implementation(page, recorder, network, {
         evidenceDir,
         controlsDir: path.resolve(args["controls-dir"]),
+        recordUiTiming(name, durationMs, details = {}) {
+          result.uiTimings.push({
+            name,
+            durationMs: Math.round(durationMs * 100) / 100,
+            details,
+          });
+        },
       });
     }
     else throw new Error(`unknown product scenario: ${args.scenario}`);
     await page.waitForTimeout(250);
+    result.bridgeDiagnostics = await readBridgeDiagnostics(page);
+    assertCleanBridgeDiagnostics(recorder, result.bridgeDiagnostics);
     assertCleanRendererDiagnostics(recorder, consoleEntries, pageErrors, network);
     result.status = "passed";
   } catch (error) {
@@ -2850,7 +2983,15 @@ async function main() {
     };
   } finally {
     result.finishedAt = new Date().toISOString();
+    result.durationMs = Date.parse(result.finishedAt) - Date.parse(result.startedAt);
     if (page) {
+      if (!result.bridgeDiagnostics) {
+        try {
+          result.bridgeDiagnostics = await readBridgeDiagnostics(page);
+        } catch (error) {
+          result.bridgeDiagnosticsError = String(error);
+        }
+      }
       try {
         await page.screenshot({
           path: path.join(evidenceDir, `${args.scenario}.png`),

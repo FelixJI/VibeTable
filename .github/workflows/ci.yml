@@ -1,0 +1,178 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python / contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.16"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Version and package metadata
+        run: |
+          uv run python scripts/release.py --check
+          uv run python qa/version_check.py
+          uv run python qa/package_check.py
+
+      - name: Format and lint
+        run: |
+          uv run ruff format --check .
+          uv run ruff check .
+
+      - name: Type check
+        run: |
+          uv run pyright backend
+          uv run mypy backend
+
+      - name: Test with coverage
+        run: >
+          uv run pytest
+          --junitxml=build/ci/python-junit.xml
+          --cov-report=xml:build/ci/python-coverage.xml
+
+      - name: Upload Python reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-quality-reports
+          path: |
+            build/ci/python-junit.xml
+            build/ci/python-coverage.xml
+            htmlcov/
+          if-no-files-found: warn
+          retention-days: 14
+
+  web:
+    name: Web grid
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/web-grid/package-lock.json
+
+      - name: Install locked dependencies
+        working-directory: desktop/web-grid
+        run: npm ci
+
+      - name: Unit tests
+        working-directory: desktop/web-grid
+        run: npm run test
+
+      - name: Typecheck and production build
+        working-directory: desktop/web-grid
+        run: npm run build
+
+  plugin-sdk:
+    name: Plugin / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: sdk
+            path: sdk/plugin
+            test: false
+          - name: data-overview
+            path: examples/plugins/data-overview
+            test: true
+          - name: normalize-text
+            path: examples/plugins/normalize-text
+            test: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ${{ matrix.path }}/package-lock.json
+
+      - name: Install locked dependencies
+        working-directory: ${{ matrix.path }}
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: ${{ matrix.path }}
+        run: npm run typecheck
+
+      - name: Offline tests
+        if: matrix.test
+        working-directory: ${{ matrix.path }}
+        run: npm run test
+
+  sidecar:
+    name: Go sidecar
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: sidecar/go.mod
+          cache-dependency-path: sidecar/go.sum
+
+      - name: Formatting
+        run: python qa/go_format_check.py
+
+      - name: Vet
+        working-directory: sidecar
+        run: go vet ./...
+
+      - name: Tests
+        working-directory: sidecar
+        run: go test ./...
+
+      - name: Build
+        working-directory: sidecar
+        run: go build -trimpath -buildvcs=true ./cmd/vibetable-pb
+
+  dotnet:
+    name: Windows / .NET
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore desktop/VibeTable.Desktop.sln
+
+      - name: Test release configuration with coverage thresholds
+        run: >
+          dotnet test desktop/VibeTable.Desktop.sln
+          --configuration Release
+          --no-restore
+          /p:CollectCoverage=true
+          /p:CoverletOutputFormat=cobertura

@@ -32,7 +32,7 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             JsonRpcClient client = _supervisor.Client
-                ?? throw new InvalidOperationException(
+                ?? throw new BackendUnavailableException(
                     "Product data service is not ready.");
             lock (_gate)
             {

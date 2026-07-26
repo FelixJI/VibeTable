@@ -7,7 +7,7 @@ import shutil
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_registry import PluginRegistry
@@ -322,14 +322,25 @@ class PluginPlatformService:
         resolver = getattr(self._confirmation_adapter, "try_resolve", None)
         if not callable(resolver):
             return InteractionResolveResult(status="expired")
-        result = await resolver(run_id, interaction_id, decision)
+        result = await cast(
+            Callable[
+                [str, str, InteractionDecision],
+                Awaitable[InteractionResolveResult | None],
+            ],
+            resolver,
+        )(run_id, interaction_id, decision)
         return result or InteractionResolveResult(status="expired")
 
     async def resolve_file(self, *, request_id: str, selected_path: str | None) -> bool:
         resolver = getattr(self._file_adapter, "resolve", None)
         if not callable(resolver):
             return False
-        return bool(await resolver(request_id, selected_path))
+        return bool(
+            await cast(
+                Callable[[str, str | None], Awaitable[bool]],
+                resolver,
+            )(request_id, selected_path)
+        )
 
     async def cancel_task(self, *, task_id: str) -> PluginTaskSnapshot:
         return await self._runtime.request_cancel(task_id)

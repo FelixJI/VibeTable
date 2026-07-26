@@ -6,7 +6,6 @@ const entries: readonly DocumentEntry[] = [
   { entryHandle: "a", documentId: "1", displayName: "A.docx", authority: "workspace", availability: "available", capabilities: ["open", "preview", "reveal", "history"] },
   { entryHandle: "b", documentId: "2", displayName: "B.pdf", authority: "workspace", availability: "available", capabilities: ["open", "preview"] },
   { entryHandle: "c", documentId: "3", displayName: "C.xlsx", authority: "workspace", availability: "missing", capabilities: ["relink", "history"] },
-  { entryHandle: "cloud", documentId: "4", displayName: "photo.png", authority: "cloud", availability: "remote", capabilities: ["preview"] },
 ];
 
 describe("documentWorkspaceStore", () => {
@@ -24,12 +23,10 @@ describe("documentWorkspaceStore", () => {
     expect(store.primaryHandle).toBe("a");
   });
 
-  it("separates workspace documents from cloud attachments", () => {
+  it("keeps the workspace list provider-neutral", () => {
     const store = useDocumentWorkspaceStore();
     store.setEntries(entries);
     expect(store.visibleEntries.map((entry) => entry.entryHandle)).toEqual(["a", "b", "c"]);
-    store.setAuthorityFilter("cloud");
-    expect(store.visibleEntries.map((entry) => entry.entryHandle)).toEqual(["cloud"]);
   });
 
   it("keeps stale entries visible while a refresh is in progress", () => {
@@ -37,7 +34,7 @@ describe("documentWorkspaceStore", () => {
     store.setEntries(entries);
     store.beginLoad();
     expect(store.phase).toBe("loading");
-    expect(store.entries).toHaveLength(4);
+    expect(store.entries).toHaveLength(3);
   });
 
   it("retains a typed document failure code until the next load", () => {

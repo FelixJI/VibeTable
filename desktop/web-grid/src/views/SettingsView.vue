@@ -55,7 +55,9 @@ import { formatDateKey, formatMonthKey, parseDateKey, shiftMonthKey } from "@/ca
 import { useWorkCalendarStore } from "@/stores/workCalendarStore";
 import type { WorkCalendarOverrideKind } from "@/calendar/workCalendar";
 import type { BackupEntry } from "@/contracts/backupContracts";
+import type { DataRootStatus } from "@/contracts";
 import { useBackupService } from "@/services/backupService";
+import { useDataRootService } from "@/services/dataRootService";
 
 type Section = "general" | "calendar" | "mapping" | "source" | "backup" | "interaction" | "about";
 
@@ -85,6 +87,11 @@ const backupError = ref<string | null>(null);
 const backupStatus = ref<string | null>(null);
 const restoreTarget = ref<BackupEntry | null>(null);
 const restoreTrigger = ref<HTMLElement | null>(null);
+const dataRootService = useDataRootService();
+const dataRootStatus = ref<DataRootStatus | null>(null);
+const dataRootPhase = ref<"idle" | "loading" | "choosing">("idle");
+const dataRootError = ref<string | null>(null);
+const dataRootMessage = ref<string | null>(null);
 
 function openRestoreConfirmation(backup: BackupEntry, event: MouseEvent): void {
   restoreTrigger.value = event.currentTarget instanceof HTMLElement
@@ -114,10 +121,51 @@ const filteredMappings = computed(() => {
 watch(current, (section) => {
   if (section === "mapping") emit("loadMappings");
   if (section === "backup") void loadBackups();
+  if (section === "source") void loadDataRoot();
 });
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : t("settings.backup.failed");
+}
+
+async function loadDataRoot(): Promise<void> {
+  dataRootPhase.value = "loading";
+  dataRootError.value = null;
+  try {
+    dataRootStatus.value = await dataRootService.getStatus();
+  } catch (error) {
+    dataRootError.value = error instanceof Error
+      ? error.message
+      : t("settings.dataRoot.failed");
+  } finally {
+    dataRootPhase.value = "idle";
+  }
+}
+
+async function chooseDataRootMigration(): Promise<void> {
+  dataRootPhase.value = "choosing";
+  dataRootError.value = null;
+  dataRootMessage.value = null;
+  try {
+    const selection = await dataRootService.chooseMigration();
+    if (!selection.selected) return;
+    dataRootStatus.value = dataRootStatus.value
+      ? {
+          ...dataRootStatus.value,
+          migrationPending: true,
+          pendingDataRoot: selection.targetDataRoot,
+        }
+      : null;
+    dataRootMessage.value = t("settings.dataRoot.pending", {
+      path: selection.targetDataRoot ?? "",
+    });
+  } catch (error) {
+    dataRootError.value = error instanceof Error
+      ? error.message
+      : t("settings.dataRoot.failed");
+  } finally {
+    dataRootPhase.value = "idle";
+  }
 }
 
 async function loadBackups(): Promise<void> {
@@ -504,6 +552,42 @@ function setCalendarName(name: string): void {
               <div><strong>{{ t("settings.source.localService") }}</strong><small>{{ connectionDetail }}</small></div>
               <div class="setting-control--pill"><ConnectionPill @reconnect="emit('reconnect')" /></div>
             </div>
+            <div class="setting-row setting-row--tall">
+              <div class="data-root-copy">
+                <strong>{{ t("settings.dataRoot") }}</strong>
+                <small>{{ t("settings.dataRoot.hint") }}</small>
+                <code data-testid="data-root-path">
+                  {{ dataRootStatus?.dataRoot ?? t("settings.dataRoot.loading") }}
+                </code>
+              </div>
+              <NButton
+                size="small"
+                :loading="dataRootPhase === 'choosing'"
+                :disabled="dataRootPhase !== 'idle'"
+                data-testid="data-root-migrate"
+                @click="chooseDataRootMigration"
+              >
+                {{ t("settings.dataRoot.migrate") }}
+              </NButton>
+            </div>
+            <NAlert
+              v-if="dataRootError"
+              type="error"
+              :title="t('settings.dataRoot.failed')"
+              data-testid="data-root-error"
+            >
+              {{ dataRootError }}
+            </NAlert>
+            <NAlert
+              v-if="dataRootMessage || dataRootStatus?.migrationPending"
+              type="warning"
+              :title="t('settings.dataRoot.restartTitle')"
+              data-testid="data-root-pending"
+            >
+              {{ dataRootMessage ?? t("settings.dataRoot.pending", {
+                path: dataRootStatus?.pendingDataRoot ?? "",
+              }) }}
+            </NAlert>
             <div class="source-note">
               <NIcon :size="17"><Database /></NIcon>
               <p>{{ t("settings.source.automatic") }}</p>
@@ -737,6 +821,17 @@ header p { margin: 0; color: var(--vt-fg-muted); }
    wraps. Pin it to its content width so it stays on one line like the other
    right-aligned controls. */
 .setting-control--pill { flex: none; }
+.data-root-copy { min-width: 0; }
+.data-root-copy code {
+  overflow: hidden;
+  max-width: min(460px, 55vw);
+  margin-top: 5px;
+  color: var(--vt-fg-secondary);
+  font-size: var(--vt-font-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.setting-card > :deep(.n-alert) { margin: 12px 14px; }
 .calendar-workbench { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
 .calendar-toolbar { display: grid; grid-template-columns: 32px auto auto 1fr 32px; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--vt-border); }
 .calendar-toolbar > span { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); text-align: right; }

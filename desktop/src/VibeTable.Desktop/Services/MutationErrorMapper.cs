@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text.Json;
 using VibeTable.Infrastructure.Rpc;
 
@@ -214,8 +215,19 @@ public static class MutationErrorMapper
 
     private static string Localize(string? kind, string expectedKind, string fallback)
     {
-        // Placeholder for the localization layer (Task 6 wires real strings).
-        // For now, return a stable, readable English message.
-        return kind == expectedKind ? fallback : fallback;
+        if (!string.Equals(kind, expectedKind, StringComparison.Ordinal)
+            || !string.Equals(
+                CultureInfo.CurrentUICulture.TwoLetterISOLanguageName,
+                "zh",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return fallback;
+        }
+        return expectedKind switch
+        {
+            "edit_conflict" => "此单元格已被其他会话修改。",
+            "mutation_validation" => "当前值无法保存，请检查后重试。",
+            _ => fallback,
+        };
     }
 }

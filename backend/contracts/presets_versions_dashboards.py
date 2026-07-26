@@ -144,26 +144,30 @@ class CreateVersionParams(CamelModel):
     operation_id: str = Field(min_length=1, max_length=128)
 
 
-class VersionIdParams(CamelModel):
-    """Parameters for reading or deleting a version."""
+class VersionSelectionParams(CamelModel):
+    """Common identity for operations targeting a saved version."""
 
     collection: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=128)
     version_id: str = Field(min_length=1, max_length=128)
-    # ``version.compare`` and ``version.delete`` intentionally share this
-    # registered model. Reads may omit the id; the closed desktop bridge
-    # requires it for the destructive delete command.
+
+
+class VersionIdParams(VersionSelectionParams):
+    """Parameters for reading a version."""
+
+    # Reads may omit the id. Mutating commands use sibling models that make
+    # the replay-protection id mandatory without overriding this field type.
     operation_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
-class SaveVersionParams(VersionIdParams):
+class SaveVersionParams(VersionSelectionParams):
     """Parameters for saving a version working copy."""
 
     values: dict[str, Any] = Field(default_factory=dict)
     operation_id: str = Field(min_length=1, max_length=128)
 
 
-class DeleteVersionParams(VersionIdParams):
+class DeleteVersionParams(VersionSelectionParams):
     """Destructive version removal with optimistic concurrency and replay."""
 
     expected_revision: str = Field(min_length=1, max_length=128)

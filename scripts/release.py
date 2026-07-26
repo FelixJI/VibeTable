@@ -230,6 +230,37 @@ def _replace_file(source: Path, destination: Path) -> None:
         staged.unlink(missing_ok=True)
 
 
+def _run(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    capture_output: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        command,
+        cwd=(cwd or REPO_ROOT),
+        check=False,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=capture_output,
+    )
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, command)
+    return result
+
+
+def _ensure_clean_worktree() -> None:
+    status = _run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        capture_output=True,
+    )
+    if status.stdout.strip():
+        raise ValueError(
+            "release build/commit/tag requires a clean worktree, including untracked files"
+        )
+
+
 def activate_upgrade(
     transaction: UpgradeTransaction,
     *,
@@ -320,45 +351,81 @@ def activate_upgrade(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    action = parser.add_mutually_exclusive_group(required=True)
-    action.add_argument("--major", action="store_true")
-    action.add_argument("--minor", action="store_true")
-    action.add_argument("--patch", action="store_true")
-    action.add_argument("--version")
-    action.add_argument("--check", action="store_true")
-    action.add_argument("--current", action="store_true")
-    action.add_argument("--verify-package", type=Path)
-    action.add_argument("--prepare-upgrade", action="store_true")
-    action.add_argument("--activate-upgrade", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--build", action="store_true")
-    parser.add_argument("--commit", action="store_true")
-    parser.add_argument("--tag", action="store_true")
-    parser.add_argument("--install-dir", type=Path)
-    parser.add_argument("--data-dir", type=Path)
-    parser.add_argument("--current-binary", type=Path)
-    parser.add_argument("--new-binary", type=Path)
-    return parser
-
-
-def _run(command: list[str]) -> None:
-    subprocess.run(command, cwd=REPO_ROOT, check=True)
-
-
-def _ensure_clean_worktree() -> None:
-    process = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+    action = parser.add_mutually_exclusive_group(required=False)
+    action.add_argument("--major", action="store_true", help="bump MAJOR and reset MINOR/PATCH")
+    action.add_argument("--minor", action="store_true", help="bump MINOR and reset PATCH")
+    action.add_argument("--patch", action="store_true", help="bump PATCH")
+    action.add_argument(
+        "--bump",
+        choices=("major", "minor", "patch"),
+        metavar="PART",
+        help="one-step release: bump version then commit/tag (no build)",
     )
-    if process.stdout.strip():
-        raise ValueError(
-            "release build/commit/tag requires a clean worktree, including untracked files"
-        )
+    action.add_argument(
+        "--release",
+        choices=("major", "minor", "patch"),
+        metavar="PART",
+        help="one-step release: bump version then run build/commit/tag",
+    )
+    action.add_argument(
+        "--version",
+        type=validate_version,
+        help="set an explicit version, e.g. 1.2.3",
+    )
+    action.add_argument(
+        "--current",
+        action="store_true",
+        help="print current version and exit",
+    )
+    action.add_argument(
+        "--check",
+        action="store_true",
+        help="verify cross-component version consistency",
+    )
+    parser.add_argument(
+        "--build",
+        action="store_true",
+        help="run build_next --release",
+    )
+    parser.add_argument(
+        "--commit",
+        action="store_true",
+        help="commit version file changes",
+    )
+    parser.add_argument(
+        "--tag",
+        action="store_true",
+        help="create annotated tag v<version> after commit",
+    )
+    parser.add_argument(
+        "--push",
+        action="store_true",
+        help="push HEAD and tags after successful commit/tag",
+    )
+    parser.add_argument(
+        "--remote",
+        default="origin",
+        help="git remote for --push (default: origin)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print changed version files only",
+    )
+    parser.add_argument(
+        "--verify-package",
+        type=Path,
+        help="run qa/package_check.py against package path",
+    )
+
+    upgrade = parser.add_argument_group("sidecar upgrade")
+    upgrade.add_argument("--prepare-upgrade", action="store_true")
+    upgrade.add_argument("--activate-upgrade", action="store_true")
+    upgrade.add_argument("--install-dir", type=Path)
+    upgrade.add_argument("--data-dir", type=Path)
+    upgrade.add_argument("--current-binary", type=Path)
+    upgrade.add_argument("--new-binary", type=Path)
+    return parser
 
 
 def _check() -> int:
@@ -370,9 +437,17 @@ def _check() -> int:
     return 0
 
 
+def _version_action_requested(args: argparse.Namespace) -> bool:
+    return bool(args.major or args.minor or args.patch or args.bump or args.release or args.version)
+
+
 def _target(args: argparse.Namespace, current: str) -> str:
     if args.version:
         return validate_version(args.version)
+    if args.bump:
+        return bump_version(current, args.bump)
+    if args.release:
+        return bump_version(current, args.release)
     for part in ("major", "minor", "patch"):
         if getattr(args, part):
             return bump_version(current, part)
@@ -382,6 +457,42 @@ def _target(args: argparse.Namespace, current: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    has_version_action = _version_action_requested(args)
+    if not (
+        has_version_action
+        or args.current
+        or args.check
+        or args.build
+        or args.commit
+        or args.tag
+        or args.prepare_upgrade
+        or args.activate_upgrade
+    ):
+        parser.error(
+            "an operation is required: --major/--minor/--patch/--bump/--release/--version/"
+            "--current/--check/--build/--prepare-upgrade/--activate-upgrade"
+        )
+    if args.release and not args.dry_run:
+        args.build = True
+        args.commit = True
+        args.tag = True
+    if args.bump and not args.dry_run:
+        args.commit = True
+        args.tag = True
+    if args.tag and not args.commit:
+        parser.error("--tag requires --commit")
+    if args.push and not args.commit:
+        parser.error("--push requires --commit")
+    if (args.commit or args.tag) and not has_version_action:
+        parser.error(
+            "--commit/--tag requires a version target (--major/--minor/"
+            "--patch/--bump/--release/--version)"
+        )
+    if args.dry_run and not has_version_action:
+        parser.error("--dry-run requires a version target")
+    if args.current and (args.check or args.build or args.commit or args.tag or has_version_action):
+        parser.error("--current cannot be combined with version operations")
+
     if args.verify_package:
         return subprocess.run(
             [sys.executable, "qa/package_check.py", str(args.verify_package)],
@@ -415,21 +526,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.check:
         return _check()
-    if args.tag and not args.commit:
-        parser.error("--tag requires --commit")
     if args.dry_run and (args.build or args.commit or args.tag):
         parser.error("--dry-run cannot be combined with build/commit/tag")
     try:
         if args.build or args.commit or args.tag:
             _ensure_clean_worktree()
-        target = _target(args, current)
-        changed = update_versions(REPO_ROOT, target, dry_run=args.dry_run)
-        if args.dry_run:
-            for path in changed:
-                print(path.relative_to(REPO_ROOT))
-            return 0
-        if _check():
-            return 1
+        target = current
+        changed: list[Path] = []
+        if has_version_action:
+            target = _target(args, current)
+            changed = update_versions(REPO_ROOT, target, dry_run=args.dry_run)
+            if args.dry_run:
+                for path in changed:
+                    print(path.relative_to(REPO_ROOT))
+                return 0
+            if not changed:
+                raise ValueError(f"version {target} is already current")
+            if _check():
+                return 1
         if args.build:
             _run([sys.executable, "scripts/build_next.py", "--release"])
             _run(
@@ -440,6 +554,8 @@ def main(argv: list[str] | None = None) -> int:
                 ]
             )
         if args.commit:
+            if not changed:
+                raise ValueError("nothing to commit: no version files changed")
             _run(
                 [
                     "git",
@@ -450,6 +566,9 @@ def main(argv: list[str] | None = None) -> int:
             _run(["git", "commit", "-m", f"chore: release v{target}"])
         if args.tag:
             _run(["git", "tag", "-a", f"v{target}", "-m", f"VibeTable v{target}"])
+        if args.push:
+            _run(["git", "push", args.remote, "HEAD"])
+            _run(["git", "push", args.remote, "--tags"])
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"release failed: {exc}", file=sys.stderr)
         return 1

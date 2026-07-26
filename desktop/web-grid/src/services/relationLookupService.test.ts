@@ -32,6 +32,25 @@ describe("relationLookupService", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("omits a blank optional relation search query instead of sending invalid params", async () => {
+    request.mockResolvedValue({ items: [], total: 0 });
+
+    await useRelationLookupService().searchTargets({
+      relationId: "orders.contract",
+      query: "",
+      collection: null,
+      offset: 0,
+      limit: 50,
+    });
+
+    expect(request).toHaveBeenCalledWith("relation.searchTargets", {
+      relationId: "orders.contract",
+      collection: null,
+      offset: 0,
+      limit: 50,
+    });
+  });
+
   it("loads an authoritative Lookup dataset through backend-bounded pages", async () => {
     const store = useRelationLookupStore();
     const generation = store.beginContext("orders");

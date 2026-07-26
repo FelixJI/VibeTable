@@ -284,9 +284,11 @@ def render_manifest(
             "sbom": "sidecar/sbom.cdx.json",
         },
         "data": {
-            "rootPolicy": "per-user-local-app-data",
-            "relativePath": "VibeTable/data",
-            "backupRelativePath": "VibeTable/backups",
+            "rootPolicy": "first-run-selected",
+            "defaultBase": "program-directory",
+            "fallbackBase": "per-user-local-app-data",
+            "relativePath": "VibeTableData",
+            "backupRelativePath": "backups",
             "preserveOnUninstall": True,
         },
     }

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { NIcon } from "naive-ui";
 import {
-  Cloud,
   File,
   FileArchive,
   FileImage,
@@ -29,7 +28,6 @@ const emit = defineEmits<{
 }>();
 
 function iconFor(entry: DocumentEntry): Component {
-  if (entry.authority === "cloud") return Cloud;
   const mime = entry.mimeType ?? "";
   if (mime.startsWith("image/")) return FileImage;
   if (mime.includes("spreadsheet") || mime.includes("excel") || /\.(csv|xlsx?)$/i.test(entry.displayName)) return FileSpreadsheet;
@@ -48,9 +46,7 @@ function availabilityLabel(entry: DocumentEntry): string {
   if (entry.availability === "unmounted") return t("files.unmounted");
   if (entry.availability === "unmanaged") return t("files.unmanaged");
   if (entry.availability === "unsafe") return t("files.unsafe");
-  return entry.authority === "workspace"
-    ? t("files.authority.workspace")
-    : t("files.authority.cloud");
+  return t("files.authority.workspace");
 }
 
 function onKeydown(event: KeyboardEvent, entry: DocumentEntry, index: number): void {

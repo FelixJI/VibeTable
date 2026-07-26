@@ -70,6 +70,8 @@ public sealed class WebMessageRouter
         "data.importSourceRequested",
         "data.exportTargetRequested",
         "dailyQuote.fetch",
+        "dataRoot.get",
+        "dataRoot.chooseMigrationRequested",
         // G1 history query + two-phase safe restore.
         "history.queryRequested",
         "history.previewRestoreRequested",
@@ -154,6 +156,8 @@ public sealed class WebMessageRouter
         "data.importSourceRequested",
         "data.exportTargetRequested",
         "dailyQuote.fetch",
+        "dataRoot.get",
+        "dataRoot.chooseMigrationRequested",
         // G1 history query + two-phase safe restore outcomes.
         "history.pageLoaded",
         "history.restorePreviewReady",

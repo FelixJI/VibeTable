@@ -109,7 +109,12 @@ export function useRelationLookupService() {
   }
 
   async function searchTargets(params: RelationSearchParams): Promise<RelationSearchResult> {
-    return await bridge.request("relation.searchTargets", params) as RelationSearchResult;
+    const { query, ...rest } = params;
+    const normalizedQuery = query?.trim();
+    const request = normalizedQuery
+      ? { ...rest, query: normalizedQuery }
+      : rest;
+    return await bridge.request("relation.searchTargets", request) as RelationSearchResult;
   }
 
   async function describeCollection(collection: string): Promise<SchemaSnapshot> {

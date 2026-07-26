@@ -14,8 +14,9 @@ import json
 import os
 import re
 import shutil
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from backend.contracts.data_profile import collection_profile_from_definition
 from backend.contracts.plugin import (
@@ -367,7 +368,13 @@ class NodePluginWorkerAdapter:
             raise PluginWorkerError("data.read cursor is invalid")
         legacy_read = getattr(self._client, "read_items_with_fields", None)
         if callable(legacy_read):
-            items, _meta, _plan = await legacy_read(
+            items, _meta, _plan = await cast(
+                Callable[
+                    [Any, TableQuery, list[str]],
+                    Awaitable[tuple[list[dict[str, Any]], Any, Any]],
+                ],
+                legacy_read,
+            )(
                 profile,
                 TableQuery(offset=offset, limit=page_size),
                 fields,

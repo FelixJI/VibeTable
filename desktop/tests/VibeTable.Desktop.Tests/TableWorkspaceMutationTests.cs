@@ -58,7 +58,13 @@ public sealed class TableWorkspaceMutationTests
         workspace.Notification += n => notifications.Add(n);
 
         var ok = await workspace.UpdateCellAsync(
-            "contracts", 1, "amount", 999.0, 50.0, "rev1");
+            "contracts",
+            1,
+            "amount",
+            999.0,
+            50.0,
+            "rev1",
+            requestId: "req-conflict");
 
         Assert.IsFalse(ok);
         Assert.AreEqual(1, notifications.Count);
@@ -67,6 +73,7 @@ public sealed class TableWorkspaceMutationTests
         Assert.AreEqual(MutationErrorKind.EditConflict, error.Kind);
         Assert.IsNotNull(error.CurrentRow);
         Assert.IsTrue(error.CurrentRow!.ContainsKey("amount"));
+        Assert.AreEqual("req-conflict", notifications[0].RequestId);
     }
 
     [TestMethod]

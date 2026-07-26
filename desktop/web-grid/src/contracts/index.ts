@@ -1355,6 +1355,19 @@ export interface DailyQuoteFetchResult {
   readonly url: string;
 }
 
+export interface DataRootStatus {
+  readonly dataRoot: string;
+  readonly defaultDataRoot: string;
+  readonly migrationPending: boolean;
+  readonly pendingDataRoot: string | null;
+}
+
+export interface DataRootMigrationSelection {
+  readonly selected: boolean;
+  readonly targetDataRoot: string | null;
+  readonly requiresRestart: boolean;
+}
+
 /**
  * Outbound (web -> host) message types produced by this layer.
  * The bridge never forwards arbitrary types; this is a closed whitelist.
@@ -1423,6 +1436,8 @@ export type WebMessageType =
   | "task.cancel"
   | "task.status"
   | "dailyQuote.fetch"
+  | "dataRoot.get"
+  | "dataRoot.chooseMigrationRequested"
   // Revision audit + two-phase safe restore requests.
   | "history.queryRequested"
   | "history.previewRestoreRequested"
@@ -1494,6 +1509,8 @@ export type HostMessageType =
   | "task.cancel"
   | "task.status"
   | "dailyQuote.fetch"
+  | "dataRoot.get"
+  | "dataRoot.chooseMigrationRequested"
   | "schema.getTable"
   | "schema.validate"
   | "schema.apply"
@@ -1721,6 +1738,8 @@ export interface HostPayloadMap {
   "task.cancel": DataTaskStatus;
   "task.status": DataTaskStatus;
   "dailyQuote.fetch": DailyQuoteFetchResult;
+  "dataRoot.get": DataRootStatus;
+  "dataRoot.chooseMigrationRequested": DataRootMigrationSelection;
   "schema.getTable": ProductTableDefinition;
   "schema.validate": Readonly<Record<string, unknown>>;
   "schema.apply": ProductTableDefinition;
@@ -1941,6 +1960,8 @@ export interface WebPayloadMap {
   "task.cancel": { readonly taskId: string };
   "task.status": { readonly taskId: string };
   "dailyQuote.fetch": DailyQuoteFetchRequest;
+  "dataRoot.get": Record<string, never>;
+  "dataRoot.chooseMigrationRequested": Record<string, never>;
   // Revision audit + two-phase safe restore requests.
   "history.queryRequested": HistoryQueryPayload;
   "history.previewRestoreRequested": HistoryPreviewRestorePayload;
@@ -2292,7 +2313,7 @@ export type DocumentBridgeScope =
 
 export interface DocumentListRequestedPayload {
   readonly scope: DocumentBridgeScope;
-  readonly authority: "workspace" | "cloud";
+  readonly authority: "workspace";
 }
 
 export interface DocumentImportRequestedPayload {

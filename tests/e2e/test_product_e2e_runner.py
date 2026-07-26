@@ -74,6 +74,78 @@ def test_aggregate_reports_failures_without_skips(tmp_path: Path) -> None:
     )
 
 
+def test_performance_summary_reports_scenarios_bridge_percentiles_and_failures() -> None:
+    summary = runner.summarize_performance(
+        [
+            {
+                "scenario": "07-attachment-history",
+                "status": "passed",
+                "durationMs": 9_500,
+                "uiTimings": [{"name": "history.drawer.initialLoad", "durationMs": 125}],
+                "bridgeDiagnostics": {
+                    "pending": [],
+                    "roundTrips": [
+                        {
+                            "requestType": "history.queryRequested",
+                            "responseType": "history.pageLoaded",
+                            "durationMs": 20,
+                        },
+                        {
+                            "requestType": "history.queryRequested",
+                            "responseType": "history.pageLoaded",
+                            "durationMs": 80,
+                        },
+                    ],
+                },
+            },
+            {
+                "scenario": "10-sse-reconnect",
+                "status": "passed",
+                "durationMs": 8_000,
+                "bridgeDiagnostics": {
+                    "pending": [{"requestType": "query.page"}],
+                    "roundTrips": [
+                        {
+                            "requestType": "query.page",
+                            "responseType": "operation.failed",
+                            "code": "BACKEND_UNAVAILABLE",
+                            "durationMs": 3_000,
+                        }
+                    ],
+                },
+            },
+        ]
+    )
+
+    assert summary["assessment"] == {
+        "historyQuery": "within-budget",
+        "historyDrawer": "within-budget",
+        "pendingRequests": 1,
+        "bridgeFailures": 1,
+    }
+    assert summary["scenarios"][0]["durationMs"] == 9_500
+    assert summary["byUiAction"] == [
+        {
+            "name": "history.drawer.initialLoad",
+            "count": 1,
+            "p50Ms": 125.0,
+            "p95Ms": 125.0,
+            "maxMs": 125.0,
+        }
+    ]
+    history = next(
+        item for item in summary["byOperation"] if item["requestType"] == "history.queryRequested"
+    )
+    assert history == {
+        "requestType": "history.queryRequested",
+        "count": 2,
+        "failures": 0,
+        "p50Ms": 20.0,
+        "p95Ms": 80.0,
+        "maxMs": 80.0,
+    }
+
+
 def test_node_runner_only_attaches_to_existing_webview2() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
 
@@ -97,6 +169,8 @@ def test_node_runner_enforces_closed_history_and_no_external_http() -> None:
     assert '["127.0.0.1", "::1", "localhost"]' in source
     assert "process-network-observations.json" in source
     assert "unexpectedProductNonLoopback.length === 0" in source
+    assert "assertCleanBridgeDiagnostics(recorder" in source
+    assert "failures.length === 0 && pending.length === 0" in source
 
 
 def test_invalid_formula_assertion_matches_structured_schema_validation_contract() -> None:

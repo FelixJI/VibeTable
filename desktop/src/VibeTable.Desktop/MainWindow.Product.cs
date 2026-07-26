@@ -44,6 +44,7 @@ public partial class MainWindow : Window
     private readonly ILocalDocumentFilePicker _documentFilePicker;
     private readonly ILocalDocumentPreview _attachmentPreview;
     private readonly string _attachmentPreviewRoot;
+    private readonly string _productDataRoot;
     private readonly DashboardFeatureOptions _dashboardFeatures;
     private readonly MainWindowViewModel _viewModel;
     private readonly TestModeReadinessWriter? _readiness;
@@ -71,7 +72,7 @@ public partial class MainWindow : Window
             : null;
         _dashboardFeatures = DashboardFeatureOptions.FromEnvironment();
         _backendOptions = BackendLaunchOptions.ResolveForHost();
-        string? isolatedDataRoot = null;
+        string? runtimeDataRoot = null;
         bool developmentDataRootRequested =
             !string.IsNullOrWhiteSpace(startup.DevelopmentDataRoot);
         if (startup.TestMode && developmentDataRootRequested)
@@ -85,7 +86,7 @@ public partial class MainWindow : Window
                 Environment.SpecialFolder.LocalApplicationData));
         if (startup.TestMode && !string.IsNullOrWhiteSpace(startup.ReadinessDir))
         {
-            isolatedDataRoot = Path.GetFullPath(
+            runtimeDataRoot = Path.GetFullPath(
                 Path.Combine(startup.ReadinessDir, "local-data"));
         }
         else if (developmentDataRootRequested)
@@ -95,26 +96,31 @@ public partial class MainWindow : Window
                 throw new InvalidOperationException(
                     "--dev-data-root is available only from a source layout.");
             }
-            isolatedDataRoot = Path.GetFullPath(startup.DevelopmentDataRoot!);
+            runtimeDataRoot = Path.GetFullPath(startup.DevelopmentDataRoot!);
         }
-        if (isolatedDataRoot is not null)
+        else if (!startup.TestMode)
+        {
+            runtimeDataRoot = ProductDataRootManager.Resolve(
+                AppContext.BaseDirectory);
+        }
+        if (runtimeDataRoot is not null)
         {
             sidecarOptions = PocketBaseHostOptions.WithRuntimeDataRoot(
                 sidecarOptions,
-                isolatedDataRoot);
-            _backendOptions.Environment["LOCALAPPDATA"] = isolatedDataRoot;
-            _backendOptions.Environment["VIBETABLE_STATE_DIR"] =
-                Path.Combine(isolatedDataRoot, "VibeTable", "state");
-            _backendOptions.LogPath =
-                Path.Combine(isolatedDataRoot, "logs", "backend.log");
+                runtimeDataRoot);
+            ProductDataRootManager.ConfigureProcessEnvironment(
+                _backendOptions.Environment,
+                runtimeDataRoot);
+            _backendOptions.LogPath = ProductDataRootManager.ResolveSidecarLogPath(
+                runtimeDataRoot);
         }
-        string previewBase = isolatedDataRoot
+        _productDataRoot = runtimeDataRoot
             ?? Path.Combine(
                 Environment.GetFolderPath(
                     Environment.SpecialFolder.LocalApplicationData),
                 "VibeTable");
         _attachmentPreviewRoot = Path.Combine(
-            previewBase,
+            _productDataRoot,
             "attachment-preview",
             $"p{Environment.ProcessId}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_attachmentPreviewRoot);
@@ -140,10 +146,10 @@ public partial class MainWindow : Window
             _pluginResources,
             _readiness,
             OnRendererProcessFailed,
-            developmentDataRootRequested
-                ? Path.Combine(isolatedDataRoot!, "webview2-user-data")
+            runtimeDataRoot is not null
+                ? Path.Combine(runtimeDataRoot, "webview2-user-data")
                 : null,
-            stableIsolatedUserDataRoot: developmentDataRootRequested);
+            stableIsolatedUserDataRoot: runtimeDataRoot is not null);
 
         IPluginPackageSourcePicker pluginPackagePicker =
             _e2eControlsDir is null
@@ -156,7 +162,7 @@ public partial class MainWindow : Window
             _pluginResources,
             new WindowsPluginFilePicker());
         _dailyQuotes = new DailyQuoteHostClient();
-        _workspaceMounts = new WorkspaceMountStore(isolatedDataRoot);
+        _workspaceMounts = new WorkspaceMountStore(runtimeDataRoot);
         _documentFilePicker = new WindowsLocalDocumentFilePicker();
 
         _tableGateway = new LazyProductTableGateway(backend);
@@ -331,6 +337,54 @@ public partial class MainWindow : Window
         if (request.Type == "dailyQuote.fetch")
         {
             _ = FetchDailyQuoteAsync(request);
+            return;
+        }
+        if (request.Type == "dataRoot.get")
+        {
+            if (!HasEmptyObjectPayload(request))
+            {
+                _webBridge.PostOperationFailed(
+                    request.RequestId,
+                    "The data-root status request is invalid.",
+                    "DATA_ROOT_BAD_PAYLOAD");
+                return;
+            }
+            _webBridge.PostResponse(
+                request.Type,
+                request.RequestId,
+                ProductDataRootManager.GetStatus(
+                    _productDataRoot,
+                    AppContext.BaseDirectory));
+            return;
+        }
+        if (request.Type == "dataRoot.chooseMigrationRequested")
+        {
+            if (!HasEmptyObjectPayload(request))
+            {
+                _webBridge.PostOperationFailed(
+                    request.RequestId,
+                    "The data-root migration request is invalid.",
+                    "DATA_ROOT_BAD_PAYLOAD");
+                return;
+            }
+            try
+            {
+                _webBridge.PostResponse(
+                    request.Type,
+                    request.RequestId,
+                    ProductDataRootManager.ChooseAndScheduleMigration(
+                        _productDataRoot));
+            }
+            catch (Exception exception)
+            {
+                _readiness?.Trace(
+                    $"Data-root migration selection failed; " +
+                    $"exception={exception.GetType().Name}");
+                _webBridge.PostOperationFailed(
+                    request.RequestId,
+                    exception.Message,
+                    "DATA_ROOT_MIGRATION_REJECTED");
+            }
             return;
         }
         if (request.Type == "document.importRequested")
@@ -568,6 +622,10 @@ public partial class MainWindow : Window
                 "DAILY_QUOTE_UNAVAILABLE");
         }
     }
+
+    private static bool HasEmptyObjectPayload(RoutedWebRequest request)
+        => request.Payload.ValueKind == JsonValueKind.Object
+            && !request.Payload.EnumerateObject().Any();
 
     private IReadOnlyList<string> PickAttachmentPaths(bool multiselect)
     {
@@ -966,7 +1024,17 @@ public partial class MainWindow : Window
             object? mutationPayload = notification.MutationResult.Success
                 ? notification.MutationResult.Result
                 : ToWebMutationError(notification.MutationResult.Error);
-            _webBridge.PostNotification(notification.Type, mutationPayload);
+            if (string.IsNullOrWhiteSpace(notification.RequestId))
+            {
+                _webBridge.PostNotification(notification.Type, mutationPayload);
+            }
+            else
+            {
+                _webBridge.PostResponse(
+                    notification.Type,
+                    notification.RequestId,
+                    mutationPayload);
+            }
             return;
         }
         _webBridge.PostNotification(

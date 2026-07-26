@@ -1,7 +1,7 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 
-export type DocumentAuthority = "workspace" | "cloud";
+export type DocumentAuthority = "workspace";
 export type DocumentAvailability =
   | "available"
   | "missing"

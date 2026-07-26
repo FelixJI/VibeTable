@@ -43,6 +43,21 @@ describe("SettingsView", () => {
           integrityValid: true,
         };
       }
+      if (type === "dataRoot.get") {
+        return {
+          dataRoot: "C:\\VibeTable\\VibeTableData",
+          defaultDataRoot: "C:\\VibeTable\\VibeTableData",
+          migrationPending: false,
+          pendingDataRoot: null,
+        };
+      }
+      if (type === "dataRoot.chooseMigrationRequested") {
+        return {
+          selected: true,
+          targetDataRoot: "D:\\Data\\VibeTableData",
+          requiresRestart: true,
+        };
+      }
       return { status: "restarting" };
     });
     setHostBridgeForTesting({
@@ -156,6 +171,25 @@ describe("SettingsView", () => {
     expect(sourceRow!.find(".setting-control--pill").exists()).toBe(true);
     expect(sourceRow!.findComponent(ConnectionPill).exists()).toBe(true);
     expect(wrapper.find('[data-testid="preset-version-panel"]').exists()).toBe(true);
+  });
+
+  it("shows the active data root and schedules native migration for restart", async () => {
+    const wrapper = mount(SettingsView);
+    await wrapper.get('[data-testid="settings-nav-source"]').trigger("click");
+    await flushPromises();
+
+    expect(backupRequest).toHaveBeenCalledWith("dataRoot.get", {});
+    expect(wrapper.get('[data-testid="data-root-path"]').text())
+      .toContain("VibeTableData");
+
+    await wrapper.get('[data-testid="data-root-migrate"]').trigger("click");
+    await flushPromises();
+    expect(backupRequest).toHaveBeenCalledWith(
+      "dataRoot.chooseMigrationRequested",
+      {},
+    );
+    expect(wrapper.get('[data-testid="data-root-pending"]').text())
+      .toContain("重启");
   });
 
   it("manages manual holidays and adjusted workdays from the shared calendar", async () => {
