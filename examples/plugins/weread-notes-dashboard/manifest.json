@@ -1,0 +1,61 @@
+{
+  "$schema": "vibetable.plugin-manifest.v1",
+  "pluginId": "com.vibetable.examples.weread-notes-dashboard",
+  "version": "1.0.0",
+  "displayName": {
+    "zh-CN": "微信读书可视化看板",
+    "en": "WeRead Notes Dashboard"
+  },
+  "description": {
+    "zh-CN": "基于微信读书导出/同步的数据与笔记字段，生成阅读趋势、分类、书籍与高频标签可视化。",
+    "en": "Generate reading trends, category distribution, book ranking and tag insights from WeRead exported note datasets."
+  },
+  "compatibility": {
+    "minHostVersion": "1.0.0",
+    "pluginApi": "1.x"
+  },
+  "permissions": {
+    "data": [
+      {
+        "collection": "$active",
+        "operations": ["read"],
+        "fields": ["$configured"]
+      }
+    ],
+    "files": ["pickWrite"],
+    "privateStorage": true,
+    "network": {
+      "domains": [],
+      "methods": ["GET"]
+    }
+  },
+  "actions": [
+    {
+      "actionId": "analyze-weread-notes",
+      "displayName": {
+        "zh-CN": "生成微信读书可视化",
+        "en": "Build WeRead Dashboard"
+      },
+      "mode": "local",
+      "risk": "read",
+      "invocation": "manual",
+      "placements": ["table.toolbar"],
+      "workerEntry": "dist/workers/weread-insights.js",
+      "inputSchema": "schemas/action-input.v1.json",
+      "outputSchema": "schemas/action-output.v1.json"
+    }
+  ],
+  "ui": {
+    "customViews": [
+      {
+        "viewId": "weread-notes-overview",
+        "actionId": "analyze-weread-notes",
+        "displayName": {
+          "zh-CN": "阅读与笔记可视化",
+          "en": "Reading & Notes Visualization"
+        },
+        "entry": "dist/views/weread-overview/index.html"
+      }
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+﻿{
+    "algorithm":  "sha256",
+    "files":  {
+                  "dist/views/weread-overview/index.css":  "eaead4479a1678d5405ac9c3ac64cd14fad93d4394e7956cb33adbefdc4aba85",
+                  "README.md":  "44c9f118ad85bdf0266ca446189c082ac98d721ffddf22b5f5e5783e53966094",
+                  "dist/workers/weread-insights.js":  "f3c97719aa643810a9d35a828bab607422942b669d855a6f812f3bba3f89ffbb",
+                  "manifest.json":  "42afe21e9fdb0ab2696407f7a9383550451b41c5aff383a21b770142b2782166",
+                  "schemas/action-output.v1.json":  "13ac6db5cc1d713206b4043994aa97ff003c80e13b90d59512326ab23c9eabd6",
+                  "dist/views/weread-overview/index.html":  "009bc2134728d31a17033577917a49c9754e77d3b71689ddfc555524f1dadbf9",
+                  "dist/views/weread-overview/index.js":  "1a4d9e347ce408b2fe0701201d7cf1fcb28770ba3359ad819af8492aaeb233fb",
+                  "schemas/action-input.v1.json":  "569d875f55b790513b415d0cc975c1460e4b85b8847aa1669658a7adf6b66ff2"
+              }
+}
