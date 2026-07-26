@@ -81,7 +81,7 @@ func registerAdminRoutes(event *core.ServeEvent) {
 				"default-src 'none'; script-src 'unsafe-inline'",
 			)
 			return request.HTML(http.StatusOK, fmt.Sprintf(
-				`<!doctype html><meta charset="utf-8"><title>VibeTable Data Management</title><script>localStorage.setItem("pocketbase_auth",%s);location.replace("/_/");</script>`,
+				`<!doctype html><meta charset="utf-8"><title>VibeTable Data Management</title><script>localStorage.setItem("__pb_superusers__/_",%s);location.replace("/_/");</script>`,
 				javascriptValue,
 			))
 		},
