@@ -34,8 +34,18 @@ public sealed class PocketBaseSupervisorTests
             request.Environment["VIBETABLE_SIDECAR_SESSION_SECRET"],
             health.Requests.Single().SessionSecret);
         Assert.AreEqual(PocketBaseState.Ready, supervisor.GetStatus().State);
-        Assert.IsFalse(supervisor.GetStatus().AdminAvailable);
-        Assert.IsNull(supervisor.GetAdminUri());
+        Assert.IsTrue(supervisor.GetStatus().AdminAvailable);
+        Assert.AreEqual(
+            new Uri("http://127.0.0.1:43125/_/"),
+            supervisor.GetAdminUri());
+        PocketBaseAdminContext? admin = supervisor.GetAdminContext();
+        Assert.IsNotNull(admin);
+        Assert.AreEqual(
+            new Uri("http://127.0.0.1:43125/api/vibetable/v1/admin/bootstrap"),
+            admin.BootstrapUri);
+        Assert.AreEqual(
+            request.Environment["VIBETABLE_SIDECAR_SESSION_SECRET"],
+            admin.SessionSecret);
     }
 
     [TestMethod]

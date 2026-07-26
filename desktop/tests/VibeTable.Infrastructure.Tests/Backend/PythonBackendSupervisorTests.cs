@@ -36,6 +36,7 @@ namespace VibeTable.Infrastructure.Tests.Backend;
 /// </para>
 /// </remarks>
 [TestClass]
+[DoNotParallelize]
 public sealed class PythonBackendSupervisorTests
 {
     private static readonly string RepoRoot =
@@ -160,7 +161,7 @@ public sealed class PythonBackendSupervisorTests
     public async Task StartAsync_HandshakeDelaysPastStartupTimeout_TransitionsToFaulted()
     {
         await using var supervisor = new PythonBackendSupervisor(FakeOptions(
-            configure: o => o.StartupTimeout = TimeSpan.FromMilliseconds(400),
+            configure: o => o.StartupTimeout = TimeSpan.FromSeconds(1),
             env: new Dictionary<string, string>
             {
                 ["__VIBETABLE_HANDSHAKE_DELAY_SECONDS"] = "5",

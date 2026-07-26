@@ -63,6 +63,14 @@ describe("HomeView", () => {
     expect(wrapper.find(".calendar-card").exists()).toBe(false);
   });
 
+  it("falls back to viewport width when matchMedia is unavailable", async () => {
+    expect(window.matchMedia).toBeUndefined();
+    const wrapper = mount(HomeView);
+    await nextTick();
+    expect(wrapper.find(".home-main").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   it("refreshes the quote whenever Home is entered and on explicit request", async () => {
     const ui = useUiStore();
     const wrapper = mount(HomeView);

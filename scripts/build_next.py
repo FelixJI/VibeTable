@@ -36,7 +36,10 @@ WEBVIEW2_SDK = "1.0.4078.44"
 TABULATOR_VERSION = "6.5.2"
 HOST_EXE_NAME = "VibeTable.Next.exe"
 BACKEND_EXE_NAME = "vibetable-backend.exe"
-SIDECAR_EXE_NAME = "vibetable-pb.exe" if os.name == "nt" else "vibetable-pb"
+# The published product is a Windows desktop package even when source-contract
+# checks run on Linux. Keep the manifest target-platform deterministic instead
+# of letting the CI host silently rewrite package paths.
+SIDECAR_EXE_NAME = "vibetable-pb.exe"
 PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
 BACKEND_HIDDEN_IMPORTS = (
     "pydantic",

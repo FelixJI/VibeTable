@@ -956,8 +956,8 @@ public sealed class DocumentWorkspaceHostServiceTests
         Assert.AreEqual("R2", result.CurrentRevision);
         Assert.IsNull(result.SchemeHandle);
         string json = JsonSerializer.Serialize(result);
-        Assert.IsFalse(json.Contains("doc-1", StringComparison.Ordinal));
-        Assert.IsFalse(json.Contains("scheme-1", StringComparison.Ordinal));
+        Assert.IsFalse(json.Contains("\"doc-1\"", StringComparison.Ordinal));
+        Assert.IsFalse(json.Contains("\"scheme-1\"", StringComparison.Ordinal));
         var current = new RefStore(fixture.BackupRoot, new AtomicJsonStore())
             .Read("doc-1", "scheme-1");
         Assert.IsNotNull(current);
@@ -1126,8 +1126,11 @@ public sealed class DocumentWorkspaceHostServiceTests
             StringComparison.Ordinal));
         Assert.IsFalse(created.Scheme.Archived);
         string payloadJson = JsonSerializer.Serialize(created);
-        Assert.IsFalse(payloadJson.Contains("scheme-1", StringComparison.Ordinal));
-        Assert.IsFalse(payloadJson.Contains("doc-1", StringComparison.Ordinal));
+        // Handles deliberately use doc-/scheme- prefixes. Assert that an
+        // internal identifier is not serialized as a complete JSON value;
+        // substring checks would fail randomly when a GUID starts with "1".
+        Assert.IsFalse(payloadJson.Contains("\"scheme-1\"", StringComparison.Ordinal));
+        Assert.IsFalse(payloadJson.Contains("\"doc-1\"", StringComparison.Ordinal));
 
         var renamed = await fixture.Service.RenameSchemeAsync(
             entryHandle,

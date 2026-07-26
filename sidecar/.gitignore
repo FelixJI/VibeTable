@@ -1,5 +1,5 @@
 .cache/
 .codex-go-cache/
 .codex-test-tmp/
-vibetable-pb
-vibetable-pb.exe
+/vibetable-pb
+/vibetable-pb.exe

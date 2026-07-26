@@ -120,7 +120,11 @@ const continueCardStyle = computed(() =>
 );
 
 function syncContinueHeight(): void {
-  if (!window.matchMedia("(min-width: 901px)").matches) {
+  const wideLayout =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia("(min-width: 901px)").matches
+      : window.innerWidth >= 901;
+  if (!wideLayout) {
     syncedContinueHeight.value = 0;
     return;
   }
