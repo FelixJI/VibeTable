@@ -16,7 +16,7 @@ VibeTable 同时包含 Python、Vue/TypeScript、Go 和 Windows/.NET。门禁按
 | `Go sidecar` | gofmt、vet、全量普通测试、可发布入口构建 |
 | `Windows / .NET` | Windows runner 上的 Release solution 测试与各项目覆盖率阈值 |
 
-CI 使用最小 `contents: read` 权限、按 workflow/ref 取消过期运行、锁文件安装、明确超时，并保留 Python JUnit/coverage 报告 14 天。
+CI 使用最小 `contents: read` 权限、按 workflow/ref 取消过期运行、锁文件安装、明确超时，并保留 Python JUnit/coverage 报告 14 天。Ubuntu 的 Python job 只排除 `tests/e2e/test_next_readonly_smoke.py`：该测试会启动 WPF/WebView2，必须在完整 Windows 桌面会话下运行，并由下述重型门禁的 `smoke` 阶段继续强制执行；其余可移植 Python 测试仍由 PR 门禁自动发现和覆盖。
 
 ## 重型发布门禁
 

@@ -50,6 +50,7 @@ jobs:
         run: |
           mkdir -p build/ci
           uv run pytest \
+            --ignore=tests/e2e/test_next_readonly_smoke.py \
             --junitxml=build/ci/python-junit.xml \
             --cov-report=xml:build/ci/python-coverage.xml
 

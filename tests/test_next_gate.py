@@ -37,6 +37,21 @@ def test_ci_gate_runs_go_and_real_sidecar_before_desktop_stacks() -> None:
     )
 
 
+def test_ubuntu_ci_excludes_only_windows_desktop_smoke() -> None:
+    workflow = (next_gate.REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    python_job = workflow.split("\n  web:\n", maxsplit=1)[0]
+
+    assert "runs-on: ubuntu-latest" in python_job
+    assert "--ignore=tests/e2e/test_next_readonly_smoke.py" in python_job
+    assert python_job.count("--ignore=tests/e2e/") == 1
+
+    command, cwd = next_gate.stage_command("smoke")
+    assert str(next_gate.E2E_SMOKE) in command
+    assert Path(cwd) == next_gate.REPO_ROOT
+
+
 def test_go_commands_target_sidecar_module() -> None:
     command, cwd = next_gate.stage_command("go-fmt")
     assert command == [next_gate.sys.executable, str(next_gate.GO_FORMAT_CHECK)]
