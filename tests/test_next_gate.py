@@ -85,13 +85,26 @@ def test_go_commands_target_sidecar_module() -> None:
     assert Path(cwd) == next_gate.REPO_ROOT
 
 
-def test_windows_race_gate_resolves_repository_local_mingw_when_available() -> None:
+def test_windows_race_gate_resolves_an_existing_gcc_executable() -> None:
     if next_gate.os.name != "nt":
         return
     compiler = Path(next_gate._resolve("gcc"))
-    assert compiler.name == "gcc.exe"
+    assert compiler.name.casefold() == "gcc.exe"
     assert compiler.is_file()
-    assert next_gate.REPO_ROOT / ".tools" in compiler.parents
+
+
+def test_windows_race_gate_prefers_repository_local_mingw_when_available(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    if next_gate.os.name != "nt":
+        return
+    compiler = tmp_path / ".tools" / "w64devkit" / "bin" / "gcc.exe"
+    compiler.parent.mkdir(parents=True)
+    compiler.touch()
+    monkeypatch.setattr(next_gate, "REPO_ROOT", tmp_path)
+
+    assert Path(next_gate._resolve("gcc")) == compiler
 
 
 def test_windows_race_stage_enables_cgo_with_the_resolved_compiler(
