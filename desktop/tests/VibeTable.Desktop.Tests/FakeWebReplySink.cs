@@ -21,6 +21,7 @@ internal sealed class FakeWebReplySink : IWebReplySink
 
     private readonly List<Reply> _replies = [];
     private readonly object _gate = new();
+    private TaskCompletionSource<bool> _replyAdded = CreateReplySignal();
 
     public List<Reply> Replies
     {
@@ -51,27 +52,32 @@ internal sealed class FakeWebReplySink : IWebReplySink
             requestId,
             new { message, code }));
 
-    public Task<Reply?> WaitForAsync(
+    public async Task<Reply?> WaitForAsync(
         string type,
         int timeoutMs = 2000)
     {
-        DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-        lock (_gate)
+        using var timeout = new CancellationTokenSource(timeoutMs);
+        while (true)
         {
-            while (true)
+            Task replyAdded;
+            lock (_gate)
             {
                 Reply? match = _replies.FirstOrDefault(
                     reply => reply.Type == type);
                 if (match is not null)
                 {
-                    return Task.FromResult<Reply?>(match);
+                    return match;
                 }
-                TimeSpan remaining = deadline - DateTime.UtcNow;
-                if (remaining <= TimeSpan.Zero)
-                {
-                    return Task.FromResult<Reply?>(null);
-                }
-                Monitor.Wait(_gate, remaining);
+                replyAdded = _replyAdded.Task;
+            }
+
+            try
+            {
+                await replyAdded.WaitAsync(timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                return null;
             }
         }
     }
@@ -81,10 +87,16 @@ internal sealed class FakeWebReplySink : IWebReplySink
 
     private void Add(Reply reply)
     {
+        TaskCompletionSource<bool> replyAdded;
         lock (_gate)
         {
             _replies.Add(reply);
-            Monitor.PulseAll(_gate);
+            replyAdded = _replyAdded;
+            _replyAdded = CreateReplySignal();
         }
+        replyAdded.TrySetResult(true);
     }
+
+    private static TaskCompletionSource<bool> CreateReplySignal()
+        => new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
