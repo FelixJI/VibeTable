@@ -1,6 +1,6 @@
 [project]
 name = "VibeTable"
-version = "0.1.0"
+dynamic = ["version"]
 description = "VibeTable — 通用建表与文件管理桌面工具"
 license = "MIT"
 requires-python = ">=3.11"
@@ -34,8 +34,11 @@ build = [
 [tool.setuptools.packages.find]
 include = ["backend*"]
 
+[tool.setuptools.dynamic]
+version = {attr = "backend._version.__version__"}
+
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=82.0.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 # ---- 代码质量工具 ----

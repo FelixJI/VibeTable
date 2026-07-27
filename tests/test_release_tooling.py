@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -49,10 +50,37 @@ def test_version_dry_run_no_longer_targets_provider_extensions() -> None:
     original = read_project_version(REPO_ROOT)
     changed = update_versions(REPO_ROOT, "9.8.7", dry_run=True)
     relative = {path.relative_to(REPO_ROOT).as_posix() for path in changed}
-    assert "pyproject.toml" in relative
-    assert "desktop/publish-layout.json" in relative
+    assert relative == {"backend/_version.py", "desktop/publish-layout.json"}
     assert all(removed_provider not in item.lower() for item in relative)
     assert read_project_version(REPO_ROOT) == original
+
+
+def test_application_version_has_one_editable_source() -> None:
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    package = json.loads((REPO_ROOT / "desktop/web-grid/package.json").read_text(encoding="utf-8"))
+    lock = json.loads(
+        (REPO_ROOT / "desktop/web-grid/package-lock.json").read_text(encoding="utf-8")
+    )
+    props = (REPO_ROOT / "desktop/Directory.Build.props").read_text(encoding="utf-8")
+    with (REPO_ROOT / "uv.lock").open("rb") as stream:
+        uv_lock = tomllib.load(stream)
+
+    assert "version" not in pyproject["project"]
+    assert pyproject["project"]["dynamic"] == ["version"]
+    assert pyproject["tool"]["setuptools"]["dynamic"]["version"] == {
+        "attr": "backend._version.__version__"
+    }
+    assert "version" not in package
+    assert "version" not in lock
+    assert "version" not in lock["packages"][""]
+    editable_package = next(
+        package
+        for package in uv_lock["package"]
+        if package["name"] == "vibetable" and package.get("source", {}).get("editable") == "."
+    )
+    assert "version" not in editable_package
+    assert r"backend\_version.py" in props
+    assert read_project_version(REPO_ROOT) == collect_release_versions(REPO_ROOT).app
 
 
 def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -> None:
@@ -276,6 +304,12 @@ def test_release_workflow_supports_scheduled_and_manual_patch_releases() -> None
     assert "needs.prepare.outputs.should_release == 'true'" in workflow
     assert "has no tag yet; publishing it without an extra bump" in workflow
     assert 'if ($bump -notin @("patch", "minor", "major"))' in workflow
+    assert "scripts/changelog.py --write" in workflow
+    assert "scripts/changelog.py --check" in workflow
+    assert "Retrying unpublished release $tag without another version bump." in workflow
+    assert "steps.identity.outputs.tag_exists != 'true'" in workflow
+    assert "--notes-file CHANGELOG.md" in workflow
+    assert "--generate-notes" not in workflow
     assert "RELEASE_TAG: ${{ steps.identity.outputs.tag }}" in workflow
     assert "git push --atomic origin HEAD:main" in workflow
     assert workflow.index("Build release package") < workflow.index(

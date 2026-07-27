@@ -38,6 +38,7 @@
     "desktop/src",
     "desktop/tests",
     "desktop/web-grid",
+    "CHANGELOG.md",
     "desktop/Directory.Build.props",
     "desktop/publish-layout.json",
     "desktop/VibeTable.Desktop.sln",
@@ -188,7 +189,9 @@
       "contracts/v1/fixtures/managed-attachment-ref.json"
     ],
     "RELEASE": [
-      "desktop/publish-layout.json"
+      "desktop/publish-layout.json",
+      "desktop/web-grid/src/generated/changelog.json",
+      "CHANGELOG.md"
     ],
     "DELETE": []
   }

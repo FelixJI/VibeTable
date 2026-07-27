@@ -412,6 +412,10 @@ export const messages: Record<string, string> = {
   "settings.about.pocketBaseVersion": "PocketBase version",
   "settings.about.memory": "Current memory usage",
   "settings.about.dataServiceState": "Local data-service state",
+  "settings.about.changelog": "What changed",
+  "settings.about.changelogHint": "Generated from the Git commits included in this version.",
+  "settings.about.changelogEmpty": "No user-visible changes in this version.",
+  "settings.about.commit": "Commit",
 
   "status.databaseOpening": "Connecting to database…",
   "status.databaseOpened": "Connected, {count} collections",

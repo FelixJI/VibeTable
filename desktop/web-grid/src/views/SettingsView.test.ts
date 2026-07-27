@@ -58,6 +58,19 @@ describe("SettingsView", () => {
           requiresRestart: true,
         };
       }
+      if (type === "diagnostics.get") {
+        return {
+          currentDirectory: "C:\\VibeTable",
+          programDirectory: "C:\\VibeTable",
+          dataDirectory: "C:\\VibeTable\\VibeTableData",
+          operatingSystem: "Windows 11",
+          programVersion: "0.1.0",
+          dotnetVersion: "10.0.0",
+          pocketBaseVersion: "0.39.9",
+          memoryBytes: 64 * 1024 * 1024,
+          dataServiceState: "ready",
+        };
+      }
       return { status: "restarting" };
     });
     setHostBridgeForTesting({
@@ -72,6 +85,19 @@ describe("SettingsView", () => {
     expect(wrapper.findAll(".settings-nav button")).toHaveLength(7);
     expect(wrapper.text()).toContain("界面语言");
     expect(wrapper.text()).toContain("启动页面");
+  });
+
+  it("shows the assembly version and generated changelog in About", async () => {
+    const wrapper = mount(SettingsView);
+    await wrapper.get('[data-testid="settings-nav-about"]').trigger("click");
+    await flushPromises();
+
+    expect(backupRequest).toHaveBeenCalledWith("diagnostics.get", {});
+    expect(wrapper.text()).toContain("v0.1.0");
+    expect(wrapper.get('[data-testid="about-changelog"]').text())
+      .toContain("初始化项目");
+    expect(wrapper.get('[data-testid="about-changelog"]').text())
+      .not.toMatch(/\bMerge\b|合并/i);
   });
 
   it("lists and creates integrity-checked local backups", async () => {

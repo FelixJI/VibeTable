@@ -137,9 +137,12 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           RELEASE_BUMP: ${{ needs.prepare.outputs.bump }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          $tagAlreadyExists = $false
           if ($env:EVENT_NAME -eq "push") {
             uv run python scripts/release.py --check
+            uv run python scripts/changelog.py --check
             $version = (uv run python scripts/release.py --current).Trim()
             $tag = $env:REF_NAME
             if ($tag -ne "v$version") {
@@ -151,39 +154,50 @@ jobs:
             $tag = "v$version"
 
             if (git rev-parse --verify --quiet "refs/tags/$tag") {
-              $bump = $env:RELEASE_BUMP
-              if ($bump -notin @("patch", "minor", "major")) {
-                throw "Unsupported version bump: $bump"
+              $tagCommit = (git rev-list -n 1 $tag).Trim()
+              $headCommit = (git rev-parse HEAD).Trim()
+              gh release view $tag *> $null
+              $releaseExists = $LASTEXITCODE -eq 0
+              if ($tagCommit -eq $headCommit -and -not $releaseExists) {
+                $tagAlreadyExists = $true
+                Write-Host "Retrying unpublished release $tag without another version bump."
+              } else {
+                $bump = $env:RELEASE_BUMP
+                if ($bump -notin @("patch", "minor", "major")) {
+                  throw "Unsupported version bump: $bump"
+                }
+                uv run python scripts/release.py "--$bump"
+                $version = (uv run python scripts/release.py --current).Trim()
+                $tag = "v$version"
+                if (git rev-parse --verify --quiet "refs/tags/$tag") {
+                  throw "Release tag $tag already exists"
+                }
               }
-              uv run python scripts/release.py "--$bump"
-              $version = (uv run python scripts/release.py --current).Trim()
-              $tag = "v$version"
-              if (git rev-parse --verify --quiet "refs/tags/$tag") {
-                throw "Release tag $tag already exists"
-              }
+            } else {
+              Write-Host "Version $version has no tag yet; publishing it without an extra bump."
+            }
 
+            if ($tagAlreadyExists) {
+              uv run python scripts/changelog.py --check
+            } else {
+              uv run python scripts/changelog.py --write
               git config user.name "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
               git add `
-                pyproject.toml `
-                desktop/web-grid/package.json `
-                desktop/web-grid/package-lock.json `
+                backend/_version.py `
                 desktop/publish-layout.json `
-                backend/contracts/system.py `
-                desktop/src/VibeTable.Infrastructure/Backend/PythonBackendSupervisor.cs `
-                desktop/Directory.Build.props
+                desktop/web-grid/src/generated/changelog.json `
+                CHANGELOG.md
               git diff --cached --quiet
-              if ($LASTEXITCODE -eq 0) {
-                throw "Version bump produced no staged changes"
+              if ($LASTEXITCODE -ne 0) {
+                git commit -m "chore: release $tag"
               }
-              git commit -m "chore: release $tag"
-            } else {
-              Write-Host "Version $version has no tag yet; publishing it without an extra bump."
             }
           }
 
           "version=$version" >> $env:GITHUB_OUTPUT
           "tag=$tag" >> $env:GITHUB_OUTPUT
+          "tag_exists=$($tagAlreadyExists.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "### Release identity`n`n$tag" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Verify Python, contracts, and release tooling
@@ -233,7 +247,7 @@ jobs:
           retention-days: 30
 
       - name: Publish version commit and tag
-        if: github.event_name != 'push'
+        if: github.event_name != 'push' && steps.identity.outputs.tag_exists != 'true'
         shell: pwsh
         env:
           RELEASE_TAG: ${{ steps.identity.outputs.tag }}
@@ -250,7 +264,8 @@ jobs:
         run: |
           $tag = $env:RELEASE_TAG
           if (gh release view $tag 2>$null) {
+            gh release edit $tag --notes-file CHANGELOG.md --title "VibeTable $tag"
             gh release upload $tag dist/VibeTable.Next.zip dist/VibeTable.Next.zip.sha256 --clobber
           } else {
-            gh release create $tag dist/VibeTable.Next.zip dist/VibeTable.Next.zip.sha256 --verify-tag --generate-notes --title "VibeTable $tag"
+            gh release create $tag dist/VibeTable.Next.zip dist/VibeTable.Next.zip.sha256 --verify-tag --notes-file CHANGELOG.md --title "VibeTable $tag"
           }

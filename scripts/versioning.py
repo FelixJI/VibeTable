@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+VERSION_SOURCE = Path("backend/_version.py")
 
 
 class VersionError(ValueError):
@@ -44,11 +45,14 @@ def validate_version(value: str) -> str:
 
 
 def read_project_version(repo_root: Path) -> str:
-    with (repo_root / "pyproject.toml").open("rb") as stream:
-        value = tomllib.load(stream).get("project", {}).get("version")
-    if not isinstance(value, str):
-        raise VersionError("pyproject.toml is missing [project].version")
-    return validate_version(value)
+    source = (repo_root / VERSION_SOURCE).read_text(encoding="utf-8")
+    return validate_version(
+        _extract(
+            r'^__version__\s*=\s*"([^"]+)"',
+            source,
+            "backend._version.__version__",
+        )
+    )
 
 
 def _json(path: Path) -> dict:
@@ -98,11 +102,43 @@ def collect_release_versions(repo_root: Path) -> ReleaseVersions:
 
 def collect_versions(repo_root: Path) -> VersionSnapshot:
     expected = read_project_version(repo_root)
-    web_package = _json(repo_root / "desktop" / "web-grid" / "package.json")
-    web_lock = _json(repo_root / "desktop" / "web-grid" / "package-lock.json")
     layout = _json(repo_root / "desktop" / "publish-layout.json")
     components = layout.get("components", {})
-    backend = (repo_root / "backend" / "contracts" / "system.py").read_text(encoding="utf-8")
+    actual = {
+        "layout host": str(components.get("host", {}).get("version", "")),
+        "layout backend": str(components.get("backend", {}).get("version", "")),
+        "layout web": str(components.get("web", {}).get("version", "")),
+        "layout sidecar": str(components.get("sidecar", {}).get("version", "")),
+    }
+    return VersionSnapshot(expected=expected, actual=actual)
+
+
+def check_versions(repo_root: Path) -> list[str]:
+    snapshot = collect_versions(repo_root)
+    errors = [
+        f"{name}: {actual!r}, expected {snapshot.expected!r}"
+        for name, actual in snapshot.mismatches.items()
+    ]
+    pyproject = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    if 'dynamic = ["version"]' not in pyproject or (
+        'version = {attr = "backend._version.__version__"}' not in pyproject
+    ):
+        errors.append("pyproject.toml must derive version from backend._version.__version__")
+    backend_contract = (repo_root / "backend" / "contracts" / "system.py").read_text(
+        encoding="utf-8"
+    )
+    if (
+        "from backend._version import __version__" not in backend_contract
+        or "BACKEND_VERSION: Final[str] = __version__" not in backend_contract
+    ):
+        errors.append("backend handshake must derive version from backend._version")
+    props = (repo_root / "desktop" / "Directory.Build.props").read_text(encoding="utf-8")
+    if (
+        "backend\\_version.py" not in props
+        or "System.Text.RegularExpressions.Regex" not in props
+        or re.search(r"<Version>\d+\.\d+\.\d+</Version>", props)
+    ):
+        errors.append("desktop assembly must derive version from backend/_version.py")
     supervisor = (
         repo_root
         / "desktop"
@@ -111,40 +147,32 @@ def collect_versions(repo_root: Path) -> VersionSnapshot:
         / "Backend"
         / "PythonBackendSupervisor.cs"
     ).read_text(encoding="utf-8")
-    props = (repo_root / "desktop" / "Directory.Build.props").read_text(encoding="utf-8")
-    actual = {
-        "web/package.json": str(web_package.get("version", "")),
-        "web/package-lock.json": str(web_lock.get("version", "")),
-        "web/package-lock root": str(web_lock.get("packages", {}).get("", {}).get("version", "")),
-        "layout host": str(components.get("host", {}).get("version", "")),
-        "layout backend": str(components.get("backend", {}).get("version", "")),
-        "layout web": str(components.get("web", {}).get("version", "")),
-        "layout sidecar": str(components.get("sidecar", {}).get("version", "")),
-        "backend handshake": _extract(
-            r'^BACKEND_VERSION:\s*Final\[str\]\s*=\s*"([^"]+)"',
-            backend,
-            "backend handshake",
+    if "ApplicationVersion.FromAssembly" not in supervisor:
+        errors.append("desktop backend handshake must use assembly informational version")
+    for relative in (
+        Path("desktop/web-grid/package.json"),
+        Path("desktop/web-grid/package-lock.json"),
+    ):
+        package = _json(repo_root / relative)
+        if "version" in package or (
+            relative.name == "package-lock.json"
+            and "version" in package.get("packages", {}).get("", {})
+        ):
+            errors.append(f"{relative.as_posix()} must not duplicate the application version")
+    with (repo_root / "uv.lock").open("rb") as stream:
+        uv_lock = tomllib.load(stream)
+    editable_package = next(
+        (
+            package
+            for package in uv_lock.get("package", [])
+            if package.get("name") == "vibetable"
+            and package.get("source", {}).get("editable") == "."
         ),
-        "desktop handshake": _extract(
-            r'^\s*private const string ClientVersion\s*=\s*"([^"]+)";',
-            supervisor,
-            "desktop handshake",
-        ),
-        "desktop assembly": _extract(
-            r"<Version>([^<]+)</Version>",
-            props,
-            "desktop assembly",
-        ),
-    }
-    return VersionSnapshot(expected=expected, actual=actual)
-
-
-def check_versions(repo_root: Path) -> list[str]:
-    snapshot = collect_versions(repo_root)
-    return [
-        f"{name}: {actual!r}, expected {snapshot.expected!r}"
-        for name, actual in snapshot.mismatches.items()
-    ]
+        None,
+    )
+    if editable_package is None or "version" in editable_package:
+        errors.append("uv.lock editable package must derive the dynamic application version")
+    return errors
 
 
 def bump_version(current: str, part: str) -> str:
@@ -178,26 +206,13 @@ def _render_json(value: dict) -> str:
 def _updated_contents(repo_root: Path, version: str) -> dict[Path, str]:
     version = validate_version(version)
     changes: dict[Path, str] = {}
-    pyproject = repo_root / "pyproject.toml"
-    source = pyproject.read_text(encoding="utf-8")
-    changes[pyproject] = _replace_once(
-        source,
-        r'^(version\s*=\s*)"[^"]+"',
+    version_source = repo_root / VERSION_SOURCE
+    changes[version_source] = _replace_once(
+        version_source.read_text(encoding="utf-8"),
+        r'^(__version__\s*=\s*)"[^"]+"',
         rf'\g<1>"{version}"',
-        "pyproject version",
+        "application version source",
     )
-    for path in (
-        repo_root / "desktop" / "web-grid" / "package.json",
-        repo_root / "desktop" / "web-grid" / "package-lock.json",
-    ):
-        value = _json(path)
-        value["version"] = version
-        if path.name == "package-lock.json":
-            root_package = value.get("packages", {}).get("")
-            if not isinstance(root_package, dict):
-                raise VersionError(f"{path} is missing packages['']")
-            root_package["version"] = version
-        changes[path] = _render_json(value)
     layout_path = repo_root / "desktop" / "publish-layout.json"
     layout = _json(layout_path)
     components = layout.setdefault("components", {})
@@ -206,51 +221,6 @@ def _updated_contents(repo_root: Path, version: str) -> dict[Path, str]:
     sidecar = components.setdefault("sidecar", {})
     sidecar["version"] = version
     changes[layout_path] = _render_json(layout)
-    backend_path = repo_root / "backend" / "contracts" / "system.py"
-    changes[backend_path] = _replace_once(
-        backend_path.read_text(encoding="utf-8"),
-        r'^(BACKEND_VERSION:\s*Final\[str\]\s*=\s*)"[^"]+"',
-        rf'\g<1>"{version}"',
-        "backend handshake",
-    )
-    supervisor = (
-        repo_root
-        / "desktop"
-        / "src"
-        / "VibeTable.Infrastructure"
-        / "Backend"
-        / "PythonBackendSupervisor.cs"
-    )
-    changes[supervisor] = _replace_once(
-        supervisor.read_text(encoding="utf-8"),
-        r'^(\s*private const string ClientVersion\s*=\s*)"[^"]+";',
-        rf'\g<1>"{version}";',
-        "desktop handshake",
-    )
-    props = repo_root / "desktop" / "Directory.Build.props"
-    value = props.read_text(encoding="utf-8")
-    value = _replace_once(
-        value,
-        r"<Version>[^<]+</Version>",
-        f"<Version>{version}</Version>",
-        "desktop version",
-    )
-    value = re.sub(
-        r"<AssemblyVersion>[^<]+</AssemblyVersion>",
-        f"<AssemblyVersion>{version}.0</AssemblyVersion>",
-        value,
-    )
-    value = re.sub(
-        r"<FileVersion>[^<]+</FileVersion>",
-        f"<FileVersion>{version}.0</FileVersion>",
-        value,
-    )
-    value = re.sub(
-        r"<InformationalVersion>[^<]+</InformationalVersion>",
-        f"<InformationalVersion>{version}</InformationalVersion>",
-        value,
-    )
-    changes[props] = value
     return changes
 
 

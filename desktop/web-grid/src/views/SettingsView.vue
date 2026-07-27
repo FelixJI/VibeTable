@@ -38,6 +38,7 @@ import {
   X,
 } from "lucide-vue-next";
 import brandIconUrl from "@/assets/brand/vibetable.png";
+import changelog from "@/generated/changelog.json";
 import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import { QUOTE_STYLES_BY_SOURCE, useUiStore } from "@/stores/uiStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
@@ -101,6 +102,7 @@ const diagnosticsService = useRuntimeDiagnosticsService();
 const diagnostics = ref<RuntimeDiagnostics | null>(null);
 const diagnosticsPhase = ref<"idle" | "loading">("idle");
 const diagnosticsError = ref<string | null>(null);
+const changelogEntries = changelog.entries;
 
 function openRestoreConfirmation(backup: BackupEntry, event: MouseEvent): void {
   restoreTrigger.value = event.currentTarget instanceof HTMLElement
@@ -855,7 +857,26 @@ function setCalendarName(name: string): void {
           <section class="about-card">
             <img class="about-logo" :src="brandIconUrl" alt="" aria-hidden="true" />
             <div><strong>VibeTable</strong><small>{{ t("settings.about.tagline") }}</small></div>
-            <span class="desktop-badge">{{ t("settings.about.desktop") }}</span>
+            <div class="about-badges">
+              <span class="desktop-badge">{{ t("settings.about.desktop") }}</span>
+              <span v-if="diagnostics" class="version-badge">v{{ diagnostics.programVersion }}</span>
+            </div>
+          </section>
+          <section class="changelog-card" data-testid="about-changelog">
+            <div class="changelog-heading">
+              <strong>{{ t("settings.about.changelog") }}</strong>
+              <small>{{ t("settings.about.changelogHint") }}</small>
+            </div>
+            <ol v-if="changelogEntries.length" class="changelog-list">
+              <li v-for="entry in changelogEntries" :key="entry.commit ?? entry.subject">
+                <span class="changelog-marker" aria-hidden="true"></span>
+                <span class="changelog-subject">{{ entry.subject }}</span>
+                <code v-if="entry.commit" :aria-label="t('settings.about.commit')">
+                  {{ entry.commit }}
+                </code>
+              </li>
+            </ol>
+            <p v-else class="changelog-empty">{{ t("settings.about.changelogEmpty") }}</p>
           </section>
           <section class="diagnostics-card">
             <div class="diagnostics-heading">
@@ -1142,6 +1163,17 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .about-card > div:nth-child(2) { display: flex; flex: 1; flex-direction: column; }
 .about-card small { color: var(--vt-fg-muted); }
 .about-logo { width: 40px; height: 40px; border-radius: 10px; object-fit: cover; box-shadow: 0 5px 16px rgba(36, 89, 211, .2); }
+.about-badges { display: flex; align-items: center; gap: 8px; }
+.version-badge { color: var(--vt-color-primary-700); font-family: Consolas, monospace; font-size: var(--vt-font-caption); }
+.changelog-card { margin-top: 16px; padding: 18px 20px 8px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: linear-gradient(145deg, var(--vt-bg) 0%, var(--vt-bg-subtle) 100%); }
+.changelog-heading { display: flex; flex-direction: column; gap: 3px; margin-bottom: 14px; }
+.changelog-heading small, .changelog-empty { color: var(--vt-fg-muted); }
+.changelog-list { margin: 0; padding: 0; list-style: none; }
+.changelog-list li { position: relative; display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 42px; padding: 8px 0; border-top: 1px solid var(--vt-border); }
+.changelog-marker { width: 7px; height: 7px; border: 2px solid var(--vt-color-primary-500); border-radius: 50%; background: var(--vt-bg); box-shadow: 0 0 0 3px color-mix(in srgb, var(--vt-color-primary-500) 12%, transparent); }
+.changelog-subject { min-width: 0; overflow-wrap: anywhere; }
+.changelog-list code { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
+.changelog-empty { margin: 0; padding: 6px 0 16px; }
 .diagnostics-card { margin-top: 16px; overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); }
 .diagnostics-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 16px; border-bottom: 1px solid var(--vt-border); }
 .diagnostics-heading > div { display: flex; min-width: 0; flex-direction: column; }
@@ -1166,6 +1198,10 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   .calendar-rule-options { grid-template-columns: 1fr; }
   .diagnostics-grid { grid-template-columns: 1fr; }
   .diagnostics-grid > div:nth-child(odd) { border-right: 0; }
+  .about-card { align-items: flex-start; }
+  .about-badges { align-items: flex-end; flex-direction: column; }
+  .changelog-list li { grid-template-columns: 12px minmax(0, 1fr); }
+  .changelog-list code { grid-column: 2; }
 }
 @media (max-width: 560px) {
   .settings-content { padding: 24px 14px; }

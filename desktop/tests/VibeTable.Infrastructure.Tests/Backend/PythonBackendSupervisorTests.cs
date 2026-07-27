@@ -93,7 +93,10 @@ public sealed class PythonBackendSupervisorTests
                 HandshakeParams,
                 HandshakeResult>(
                 "system.handshake",
-                new HandshakeParams(ClientVersion: "0.1.0", ProtocolVersion: "1.0"),
+                new HandshakeParams(
+                    ClientVersion: ApplicationVersion.FromAssembly(
+                        typeof(PythonBackendSupervisor).Assembly),
+                    ProtocolVersion: "1.0"),
                 CancellationToken.None);
             Assert.AreEqual("1.0", result.ProtocolVersion);
             CollectionAssert.AreEquivalent(
@@ -378,7 +381,10 @@ public sealed class PythonBackendSupervisorTests
                 HandshakeParams,
                 HandshakeResult>(
                 "system.handshake",
-                new HandshakeParams(ClientVersion: "0.1.0", ProtocolVersion: "1.0"),
+                new HandshakeParams(
+                    ClientVersion: ApplicationVersion.FromAssembly(
+                        typeof(PythonBackendSupervisor).Assembly),
+                    ProtocolVersion: "1.0"),
                 CancellationToken.None);
             Assert.AreEqual("1.0", result.ProtocolVersion);
             CollectionAssert.AreEquivalent(

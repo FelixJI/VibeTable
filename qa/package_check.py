@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.build_next import BuildError, RepoPaths, render_manifest, sha256_file
+from scripts.changelog import check_changelog
 from scripts.versioning import check_versions, collect_release_versions
 
 FORBIDDEN_LEGACY_PROVIDER = "".join(["di", "rectus"])
@@ -39,18 +40,22 @@ def _inside(root: Path, candidate: Path) -> bool:
 def check_source(root: Path = PROJECT_ROOT) -> list[str]:
     errors = check_versions(root)
     required = (
+        root / "backend" / "_version.py",
+        root / "CHANGELOG.md",
         root / "pyproject.toml",
         root / "sidecar" / "go.mod",
         root / "sidecar" / "go.sum",
         root / "sidecar" / "migrations" / "manifest.json",
         root / "sidecar" / "internal" / "buildinfo" / "info.go",
         root / "desktop" / "publish-layout.json",
+        root / "desktop" / "web-grid" / "src" / "generated" / "changelog.json",
     )
     errors.extend(
         f"missing package input: {path.relative_to(root)}"
         for path in required
         if not path.is_file()
     )
+    errors.extend(check_changelog(root, collect_release_versions(root).app))
     layout_path = root / "desktop" / "publish-layout.json"
     if layout_path.is_file():
         committed = json.loads(layout_path.read_text(encoding="utf-8"))

@@ -397,8 +397,8 @@ public partial class MainWindow : Window
                     programDirectory = AppContext.BaseDirectory,
                     dataDirectory = _productDataRoot,
                     operatingSystem = RuntimeInformation.OSDescription,
-                    programVersion = typeof(MainWindow).Assembly
-                        .GetName().Version?.ToString() ?? "unknown",
+                    programVersion = ApplicationVersion.FromAssembly(
+                        typeof(MainWindow).Assembly),
                     dotnetVersion = Environment.Version.ToString(),
                     pocketBaseVersion = _pocketBaseVersion,
                     memoryBytes = process.WorkingSet64,

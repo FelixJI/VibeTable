@@ -412,6 +412,10 @@ export const messages: Record<string, string> = {
   "settings.about.pocketBaseVersion": "PocketBase 版本",
   "settings.about.memory": "当前内存占用",
   "settings.about.dataServiceState": "本地数据服务状态",
+  "settings.about.changelog": "版本更新",
+  "settings.about.changelogHint": "根据当前版本的 Git 提交记录自动整理。",
+  "settings.about.changelogEmpty": "此版本暂无用户可见变更。",
+  "settings.about.commit": "提交",
 
   "status.databaseOpening": "正在连接数据库…",
   "status.databaseOpened": "已连接，共 {count} 个集合",

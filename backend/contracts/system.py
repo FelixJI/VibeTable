@@ -13,12 +13,14 @@ from typing import Final
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
+from backend._version import __version__
+
 #: Protocol version negotiated by the ``system.handshake`` method. Both sides
 #: must agree on this value before any other RPC method is allowed.
 PROTOCOL_VERSION: Final[str] = "1.0"
 
 #: Backend (Python) implementation version reported by ``system.handshake``.
-BACKEND_VERSION: Final[str] = "0.1.0"
+BACKEND_VERSION: Final[str] = __version__
 
 
 class HandshakeParams(BaseModel):
