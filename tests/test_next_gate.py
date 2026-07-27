@@ -37,15 +37,27 @@ def test_ci_gate_runs_go_and_real_sidecar_before_desktop_stacks() -> None:
     )
 
 
-def test_ubuntu_ci_excludes_only_windows_desktop_smoke() -> None:
-    workflow = (next_gate.REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-        encoding="utf-8"
-    )
-    python_job = workflow.split("\n  web:\n", maxsplit=1)[0]
+def test_github_workflows_are_windows_only_and_keep_desktop_smoke_heavy() -> None:
+    workflow_dir = next_gate.REPO_ROOT / ".github" / "workflows"
+    workflow_paths = sorted([*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")])
+    workflows = {path.name: path.read_text(encoding="utf-8") for path in workflow_paths}
+    assert workflows
+    for workflow in workflows.values():
+        runner_lines = [
+            line.strip() for line in workflow.splitlines() if line.strip().startswith("runs-on:")
+        ]
+        assert runner_lines
+        assert set(runner_lines) == {"runs-on: windows-latest"}
+        assert "ubuntu-latest" not in workflow
+        assert "macos-" not in workflow
+        assert "\ndefaults:\n  run:\n    shell: pwsh\n" in workflow
 
-    assert "runs-on: ubuntu-latest" in python_job
+    ci_workflow = workflows["ci.yml"]
+    python_job = ci_workflow.split("\n  web:\n", maxsplit=1)[0]
     assert "--ignore=tests/e2e/test_next_readonly_smoke.py" in python_job
-    assert python_job.count("--ignore=tests/e2e/") == 1
+    assert ci_workflow.count("--ignore=tests/e2e/") == 1
+    assert "mkdir -p" not in ci_workflow
+    assert "build/ci/vibetable-pb.exe" in ci_workflow
 
     command, cwd = next_gate.stage_command("smoke")
     assert str(next_gate.E2E_SMOKE) in command
@@ -309,6 +321,7 @@ def test_run_command_timeout_terminates_process_tree(
 def test_stage_report_is_never_release_eligible(
     monkeypatch,
     tmp_path: Path,
+    capsys,
 ) -> None:
     identity = {"sidecar": "a" * 64}
     monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
@@ -335,8 +348,8 @@ def test_stage_report_is_never_release_eligible(
             command=["test"],
             returncode=0,
             elapsed=0.01,
-            stdout="",
-            stderr="",
+            stdout="stage stdout\n",
+            stderr="stage stderr\n",
             cwd=str(next_gate.REPO_ROOT),
         ),
     )
@@ -349,6 +362,9 @@ def test_stage_report_is_never_release_eligible(
     assert payload["commit"] == "c" * 40
     assert payload["artifactHashes"] == identity
     assert payload["sourceHash"] == "s" * 64
+    captured = capsys.readouterr()
+    assert captured.out == "stage stdout\n"
+    assert captured.err == "stage stderr\n"
 
 
 def test_full_ci_report_is_release_eligible_only_when_identity_stays_stable(

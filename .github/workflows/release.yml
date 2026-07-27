@@ -12,6 +12,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: pwsh
+
 jobs:
   publish:
     name: Build and publish Windows package
@@ -77,8 +81,7 @@ jobs:
         run: npm run test
 
       - name: Verify sidecar
-        working-directory: sidecar
-        run: go test ./...
+        run: uv run python qa/next.py --stage go-test
 
       - name: Verify .NET release configuration
         run: dotnet test desktop/VibeTable.Desktop.sln --configuration Release

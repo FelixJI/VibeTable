@@ -13,10 +13,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: pwsh
+
 jobs:
   python:
     name: Python / contracts
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -48,11 +52,8 @@ jobs:
 
       - name: Test with coverage
         run: |
-          mkdir -p build/ci
-          uv run pytest \
-            --ignore=tests/e2e/test_next_readonly_smoke.py \
-            --junitxml=build/ci/python-junit.xml \
-            --cov-report=xml:build/ci/python-coverage.xml
+          New-Item -ItemType Directory -Force build/ci | Out-Null
+          uv run pytest --ignore=tests/e2e/test_next_readonly_smoke.py --junitxml=build/ci/python-junit.xml --cov-report=xml:build/ci/python-coverage.xml
 
       - name: Upload Python reports
         if: always()
@@ -68,7 +69,7 @@ jobs:
 
   web:
     name: Web grid
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -93,7 +94,7 @@ jobs:
 
   plugin-sdk:
     name: Plugin / ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -132,7 +133,7 @@ jobs:
 
   sidecar:
     name: Go sidecar
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -142,6 +143,10 @@ jobs:
           go-version-file: sidecar/go.mod
           cache-dependency-path: sidecar/go.sum
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Formatting
         run: python qa/go_format_check.py
 
@@ -150,12 +155,13 @@ jobs:
         run: go vet ./...
 
       - name: Tests
-        working-directory: sidecar
-        run: go test ./...
+        run: python qa/next.py --stage go-test
 
       - name: Build
         working-directory: sidecar
-        run: go build -trimpath -buildvcs=true ./cmd/vibetable-pb
+        run: |
+          New-Item -ItemType Directory -Force ../build/ci | Out-Null
+          go build -trimpath -buildvcs=true -o ../build/ci/vibetable-pb.exe ./cmd/vibetable-pb
 
   dotnet:
     name: Windows / .NET

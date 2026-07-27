@@ -1,6 +1,6 @@
 # 质量门禁
 
-VibeTable 同时包含 Python、Vue/TypeScript、Go 和 Windows/.NET。门禁按反馈速度和运行环境分层，避免把耗时且依赖桌面会话的场景塞进每个 PR，也避免只测前端和 Python 就误判为可发布。
+VibeTable 是仅支持 Windows 10/11 的桌面产品，同时包含 Python、Vue/TypeScript、Go 和 Windows/.NET。所有 GitHub 门禁统一在 Windows runner 上执行；门禁仍按反馈速度和桌面会话要求分层，避免把耗时且依赖完整交互式桌面的场景塞进每个 PR，也避免只测前端和 Python 就误判为可发布。
 
 ## PR 必需门禁
 
@@ -16,7 +16,7 @@ VibeTable 同时包含 Python、Vue/TypeScript、Go 和 Windows/.NET。门禁按
 | `Go sidecar` | gofmt、vet、全量普通测试、可发布入口构建 |
 | `Windows / .NET` | Windows runner 上的 Release solution 测试与各项目覆盖率阈值 |
 
-CI 使用最小 `contents: read` 权限、按 workflow/ref 取消过期运行、锁文件安装、明确超时，并保留 Python JUnit/coverage 报告 14 天。Ubuntu 的 Python job 只排除 `tests/e2e/test_next_readonly_smoke.py`：该测试会启动 WPF/WebView2，必须在完整 Windows 桌面会话下运行，并由下述重型门禁的 `smoke` 阶段继续强制执行；其余可移植 Python 测试仍由 PR 门禁自动发现和覆盖。
+CI 使用 `windows-latest`、最小 `contents: read` 权限、PowerShell、按 workflow/ref 取消过期运行、锁文件安装和明确超时，并保留 Python JUnit/coverage 报告 14 天。普通 Python job 只排除 `tests/e2e/test_next_readonly_smoke.py`：该测试会启动发布包中的 WPF/WebView2，依赖完整桌面会话，并由下述重型门禁的 `smoke` 阶段继续强制执行；其余 Python 测试仍由 PR 门禁自动发现和覆盖。
 
 ## 重型发布门禁
 

@@ -2,6 +2,8 @@
 
 VibeTable 是一款离线优先的通用建表与文件管理桌面工具。它把 WPF/WebView2 界面、Python BFF 和固定版本的 PocketBase sidecar 一起打包，在本机完成数据存储、实时更新、文档版本管理与插件执行，不依赖在线数据库。
 
+**支持平台：Windows 10/11（x64）。项目不提供 Linux 或 macOS 客户端，也不把非 Windows 平台纳入产品兼容性承诺。**
+
 ## 实际界面
 
 下图由仓库的 WPF/WebView2 产品 E2E 从当前发布包直接截取，使用真实 PocketBase sidecar 和 Python 后端，不是设计稿或静态 mock。
@@ -102,7 +104,7 @@ uv run python qa/package_check.py dist/VibeTable.Next
 uv run python scripts/release.py --bump patch --push
 ```
 
-`.github/workflows/ci.yml` 在 PR 和 `main` push 上分别验证 Python/契约、Web、插件 SDK、Go sidecar 和 Windows/.NET。`.github/workflows/release.yml` 只响应与仓库版本一致的 `vX.Y.Z` tag，重新验证并构建 ZIP、SHA-256 与包内 SBOM，然后发布 GitHub Release。
+`.github/workflows/ci.yml` 在 Windows runner 上分别验证 Python/契约、Web、插件 SDK、Go sidecar 和 Windows/.NET。`.github/workflows/release.yml` 只响应与仓库版本一致的 `vX.Y.Z` tag，在 Windows 上重新验证并构建 ZIP、SHA-256 与包内 SBOM，然后发布 GitHub Release。
 
 ## 版本管理
 

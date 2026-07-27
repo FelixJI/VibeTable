@@ -584,6 +584,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.stage:
         result = run_stage(args.stage)
         results = [result]
+        _write_console_text(sys.stdout, result.stdout)
+        _write_console_text(sys.stderr, result.stderr)
         code = result.returncode
     elif args.ci:
         code, results = run_ci()
