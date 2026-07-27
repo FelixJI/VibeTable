@@ -17,7 +17,7 @@ func TestCompilerMatchesGoldenOperatorsAndParameterizesValues(t *testing.T) {
 			{Field: "name", Operator: query.OperatorContains, Value: "abc", Logic: query.LogicAnd},
 			{Field: "amount", Operator: query.OperatorGreater, Value: float64(100), Logic: query.LogicAnd},
 			{Field: "status", Operator: query.OperatorIn, Value: []any{"draft", "open"}, Logic: query.LogicOr},
-			{Field: "created_at", Operator: query.OperatorBetween, Value: []any{"2026-01-01", "2026-12-31"}, Logic: query.LogicAnd},
+			{Field: "created_at", Operator: query.OperatorBetween, Value: []any{"2026-01-01T00:00:00Z", "2026-12-31T23:59:59Z"}, Logic: query.LogicAnd},
 			{Field: "notes", Operator: query.OperatorIsNull, Logic: query.LogicAnd},
 		},
 		Sorts:  []query.SortCondition{{Field: "amount", Direction: query.SortDescending, NullsLast: boolPtr(true)}},
@@ -37,6 +37,55 @@ func TestCompilerMatchesGoldenOperatorsAndParameterizesValues(t *testing.T) {
 	}
 	if !strings.Contains(plan.SQL, `ORDER BY "amount" IS NULL ASC, "amount" DESC, "id" ASC`) {
 		t.Fatalf("stable sort is missing: %s", plan.SQL)
+	}
+}
+
+func TestCompilerNormalizesDateTimeOffsetsToPocketBaseUTC(t *testing.T) {
+	plan, err := query.Compile(autoDateDescriptorFixture(), query.TableQuery{
+		Filters: []query.FilterExpression{
+			{
+				Field: "created_at", Operator: query.OperatorEqual,
+				Value: "2026-07-24T14:30:00+02:00", Logic: query.LogicAnd,
+			},
+			{
+				Field: "created_at", Operator: query.OperatorBetween,
+				Value: []any{
+					"2026-07-24T12:30:00Z",
+					"2026-07-24T12:30:00.000Z",
+				},
+				Logic: query.LogicAnd,
+			},
+		},
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("Compile(): %v", err)
+	}
+	var timestampCount int
+	for _, value := range plan.Params {
+		if value == "2026-07-24 12:30:00.000Z" {
+			timestampCount++
+		}
+	}
+	if timestampCount != 3 {
+		t.Fatalf("normalized timestamp params = %#v", plan.Params)
+	}
+}
+
+func TestCompilerRejectsInvalidDateFilterText(t *testing.T) {
+	for _, value := range []string{
+		"not-a-date",
+		"2026-07-24",
+		"2026-07-24 12:30:00.000Z",
+	} {
+		_, err := query.Compile(autoDateDescriptorFixture(), query.TableQuery{
+			Filters: []query.FilterExpression{{
+				Field: "created_at", Operator: query.OperatorEqual,
+				Value: value, Logic: query.LogicAnd,
+			}},
+			Limit: 10,
+		})
+		assertProductError(t, err, "query.filter.invalid_value")
 	}
 }
 
@@ -361,14 +410,25 @@ func descriptorFixture() query.TableDescriptor {
 	return query.TableDescriptor{
 		TableID: "orders", PhysicalName: "orders", PrimaryKey: "id",
 		Fields: map[string]query.FieldDescriptor{
-			"id":         {PhysicalName: "id", Type: query.FieldTypeText},
-			"name":       {PhysicalName: "name", Type: query.FieldTypeText, Searchable: true},
-			"amount":     {PhysicalName: "amount", Type: query.FieldTypeNumber},
-			"status":     {PhysicalName: "status", Type: query.FieldTypeText},
-			"created_at": {PhysicalName: "created_at", Type: query.FieldTypeDate},
-			"notes":      {PhysicalName: "notes", Type: query.FieldTypeText},
+			"id":     {PhysicalName: "id", Type: query.FieldTypeText},
+			"name":   {PhysicalName: "name", Type: query.FieldTypeText, Searchable: true},
+			"amount": {PhysicalName: "amount", Type: query.FieldTypeNumber},
+			"status": {PhysicalName: "status", Type: query.FieldTypeText},
+			"created_at": {
+				PhysicalName: "created_at",
+				Type:         query.FieldTypeDate,
+			},
+			"notes": {PhysicalName: "notes", Type: query.FieldTypeText},
 		},
 	}
+}
+
+func autoDateDescriptorFixture() query.TableDescriptor {
+	descriptor := descriptorFixture()
+	field := descriptor.Fields["created_at"]
+	field.AutoDate = true
+	descriptor.Fields["created_at"] = field
+	return descriptor
 }
 
 func boolPtr(value bool) *bool { return &value }

@@ -27,6 +27,22 @@ describe("dataSourceViewState", () => {
     expect(JSON.stringify(view)).not.toContain("rows");
   });
 
+  it("does not read Tabulator runtime state before tableBuilt", () => {
+    const getSorters = vi.fn();
+    const getHeaderFilters = vi.fn();
+    const view = captureDataSourceView({
+      initialized: false,
+      getColumns: () => [],
+      getSorters,
+      getHeaderFilters,
+    });
+
+    expect(getSorters).not.toHaveBeenCalled();
+    expect(getHeaderFilters).not.toHaveBeenCalled();
+    expect(view.sorts).toEqual([]);
+    expect(view.filters).toEqual([]);
+  });
+
   it("applies column layout, sort and supported equality filters", async () => {
     const setColumnLayout = vi.fn();
     const setSort = vi.fn();

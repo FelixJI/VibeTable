@@ -46,6 +46,8 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 		Definition: baseTable("attachment_notes", "attachment_notes", []schema.FieldDefinition{
 			field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText),
 			fileField,
+			autoDateField("created_at", schema.AutoDateRoleCreatedAt),
+			autoDateField("updated_at", schema.AutoDateRoleUpdatedAt),
 		}),
 		ExpectedRevision: 0,
 	})
@@ -100,15 +102,26 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 			Actor:      mutation.Actor{Type: "user", ID: "local-user"},
 		})
 	}
-	if _, err := apply("insert", mutation.Operation{
+	insertReceipt, err := apply("insert", mutation.Operation{
 		Kind: mutation.OperationInsert, RecordID: &recordID,
 		Values: map[string]any{"title": "with files"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	if err := manager.Stage("upload_one", `C:\unsafe\first.txt`, []byte("first file")); err != nil {
 		t.Fatal(err)
+	}
+	insertUpdated, err := time.Parse(
+		time.RFC3339Nano,
+		insertReceipt.ComputedFields[recordID]["updated_at"].(string),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for !time.Now().UTC().After(insertUpdated.Add(time.Millisecond)) {
+		time.Sleep(time.Millisecond)
 	}
 	receipt, err := apply("upload_one", mutation.Operation{
 		Kind: mutation.OperationSetAttachments, RecordID: &recordID,
@@ -122,6 +135,21 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	if len(receipt.AffectedRows) != 1 ||
 		receipt.AffectedRows[0].Operation != mutation.OperationSetAttachments {
 		t.Fatalf("attachment receipt %#v", receipt)
+	}
+	insertTimes := insertReceipt.ComputedFields[recordID]
+	attachmentTimes := receipt.ComputedFields[recordID]
+	attachmentUpdated, parseErr := time.Parse(
+		time.RFC3339Nano,
+		attachmentTimes["updated_at"].(string),
+	)
+	if insertTimes["created_at"] == nil ||
+		attachmentTimes["created_at"] != insertTimes["created_at"] ||
+		parseErr != nil || !attachmentUpdated.After(insertUpdated) {
+		t.Fatalf(
+			"attachment Save autoDate receipt insert=%#v attachment=%#v",
+			insertTimes,
+			attachmentTimes,
+		)
 	}
 	collection, _ := app.FindCollectionByNameOrId("attachment_notes")
 	record, err := app.FindRecordById(collection, recordID)

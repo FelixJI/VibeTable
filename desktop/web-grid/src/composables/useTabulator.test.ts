@@ -603,6 +603,10 @@ describe("useTabulator", () => {
     lastMock!.getHeaderFilters.mockReturnValue([{ field: "status", value: "signed" }]);
     const sorted = lastMock!.on.mock.calls.find((call) => call[0] === "dataSorted")?.[1] as () => void;
     sorted();
+    expect(onViewQueryChanged).not.toHaveBeenCalled();
+    const tableBuilt = lastMock!.on.mock.calls.find((call) => call[0] === "tableBuilt")?.[1] as () => void;
+    tableBuilt();
+    sorted();
     expect(onViewQueryChanged).toHaveBeenLastCalledWith({
       filters: [{ field: "status", operator: "eq", value: "signed", logic: "AND" }],
       sorts: [{ field: "price", direction: "desc", nullsLast: true }],

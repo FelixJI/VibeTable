@@ -11,6 +11,7 @@ describe("tableAdminStore", () => {
     expect(s.form.name).toBe("");
     expect(s.form.fields).toEqual([]);
     expect(s.form.indexes).toEqual([]);
+    expect(s.autoDateProducerEnabled).toBe(false);
     expect(s.canSubmit).toBe(false);
   });
 
@@ -19,6 +20,8 @@ describe("tableAdminStore", () => {
     s.openCreate();
     expect(s.phase).toBe("creating");
     expect(s.form.fields).toHaveLength(1);
+    expect(s.form.includeCreatedAt).toBe(true);
+    expect(s.form.includeUpdatedAt).toBe(true);
   });
 
   it("addField appends an empty field", () => {

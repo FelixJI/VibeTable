@@ -50,7 +50,10 @@ function makeShimBridge(): {
 }
 
 describe("tableAdminService", () => {
-  beforeEach(() => setActivePinia(createPinia()));
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    useTableAdminStore().setAutoDateProducerEnabled(true);
+  });
 
   // CRITICAL: `useHostBridge` is a module singleton. Reset to null after each
   // test so the fake bridge does not leak into other test files (matches the
@@ -80,6 +83,27 @@ describe("tableAdminService", () => {
     expect(admin.phase).toBe("idle");
     expect(admin.form.name).toBe("");
     expect(ui.createModalOpen).toBe(false);
+  });
+
+  it("keeps the autoDate producer behind the host kill switch", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const admin = useTableAdminStore();
+    useTableAdminService().init();
+
+    emit("database.opened", {
+      tables: [],
+      views: [],
+      features: { dashboards: false, autoDateFields: true },
+    } as DatabaseOpenedPayload);
+    expect(admin.autoDateProducerEnabled).toBe(true);
+
+    emit("database.opened", {
+      tables: [],
+      views: [],
+      features: { dashboards: false, autoDateFields: false },
+    } as DatabaseOpenedPayload);
+    expect(admin.autoDateProducerEnabled).toBe(false);
   });
 
   it("transitions phase deleting -> idle AND closes the delete modal on collectionsChanged", () => {
@@ -200,7 +224,7 @@ describe("tableAdminService", () => {
     admin.addField("formula");
     admin.updateField(2, { name: "总额", formulaSource: "quantity * unit_price" });
     admin.addField("dateTime");
-    admin.updateField(3, { name: "created_at" });
+    admin.updateField(3, { name: "event_time" });
     admin.addField("file");
     admin.updateField(4, {
       name: "photos",
@@ -245,7 +269,7 @@ describe("tableAdminService", () => {
       { name: "idx_status", fieldIds: ["fld_status"], unique: false },
       {
         name: "uidx_status_created",
-        fieldIds: ["fld_status", "fld_created_at"],
+        fieldIds: ["fld_status", "fld_event_time"],
         unique: true,
       },
     ]);
@@ -272,6 +296,22 @@ describe("tableAdminService", () => {
         { value: true, displayName: "已复核" },
       ],
     });
+    expect(validatedDefinition.fields.slice(-2)).toEqual([
+      expect.objectContaining({
+        physicalName: "created_at",
+        dataType: "autoDate",
+        autoDate: { role: "createdAt" },
+        nullable: false,
+        readOnly: true,
+      }),
+      expect.objectContaining({
+        physicalName: "updated_at",
+        dataType: "autoDate",
+        autoDate: { role: "updatedAt" },
+        nullable: false,
+        readOnly: true,
+      }),
+    ]);
     expect((request.mock.calls[1]?.[1] as SchemaChangePayload).definition)
       .toEqual(validatedDefinition);
     const serialized = JSON.stringify(request.mock.calls[0]?.[1]);
@@ -308,5 +348,45 @@ describe("tableAdminService", () => {
     expect(admin.serverFieldErrors["fields[0].constraints.scale"])
       .toContain("scale 不能大于 precision");
     expect(ui.createModalOpen).toBe(true);
+  });
+
+  it("rejects a user field that collides with an enabled system time name", async () => {
+    const request = vi.fn();
+    setHostBridgeForTesting({
+      request,
+      on: vi.fn(() => vi.fn()),
+    } as unknown as HostBridge);
+    const admin = useTableAdminStore();
+    admin.openCreate();
+    admin.form.name = "Collision";
+    admin.updateField(0, { name: "created_at" });
+
+    await useTableAdminService().createTable();
+
+    expect(request).not.toHaveBeenCalled();
+    expect(admin.phase).toBe("failed");
+    expect(admin.serverFieldErrors["fields[0].physicalName"])
+      .toContain("created_at");
+  });
+
+  it("localizes the non-empty autoDate backfill error", async () => {
+    setHostBridgeForTesting({
+      request: vi.fn(async () => ({
+        error: {
+          code: "schema.field.autodate_backfill_required",
+          path: "fields",
+          message: "provider message",
+        },
+      })),
+      on: vi.fn(() => vi.fn()),
+    } as unknown as HostBridge);
+    const admin = useTableAdminStore();
+    admin.openCreate();
+    admin.form.name = "Backfill";
+    admin.updateField(0, { name: "title" });
+
+    await useTableAdminService().createTable();
+
+    expect(admin.error).toBe("现有记录没有可信历史时间，非空表不能直接新增该字段。");
   });
 });

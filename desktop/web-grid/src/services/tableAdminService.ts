@@ -10,7 +10,9 @@ import type {
   SchemaChangePayload,
 } from "@/contracts";
 import { buildProductFieldDefinition } from "./schemaFieldDraft";
+import { createSchemaFieldDraft } from "./schemaFieldDraft";
 import { buildProductIndexDefinitions } from "./schemaIndexDraft";
+import { t } from "@/i18n";
 
 /**
  * Translate the wire-level `database.opened` payload (separate `tables`/
@@ -94,6 +96,7 @@ export function useTableAdminService(): {
   function init(): void {
     bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
       store.setCollections(toCollections(payload));
+      store.setAutoDateProducerEnabled(payload.features?.autoDateFields === true);
       // A `database.opened` after a create/delete also implies success: the
       // host re-announces the full collection list once the new schema lands.
       resolveIfPending();
@@ -109,6 +112,34 @@ export function useTableAdminService(): {
     store.beginSubmit();
     const fields = store.form.fields.map((field, index) =>
       buildProductFieldDefinition(field, index));
+    if (store.autoDateProducerEnabled && store.form.includeCreatedAt) {
+      const conflictIndex = fields.findIndex(({ physicalName }) =>
+        physicalName === "created_at");
+      if (conflictIndex >= 0) {
+        store.fail(
+          t("schema.autoDate.physicalNameConflict", { name: "created_at" }),
+          `fields[${conflictIndex}].physicalName`,
+        );
+        return;
+      }
+      const createdAt = createSchemaFieldDraft("autoDate", "createdAt");
+      createdAt.name = t("schema.autoDate.createdAt");
+      fields.push(buildProductFieldDefinition(createdAt, fields.length));
+    }
+    if (store.autoDateProducerEnabled && store.form.includeUpdatedAt) {
+      const conflictIndex = fields.findIndex(({ physicalName }) =>
+        physicalName === "updated_at");
+      if (conflictIndex >= 0) {
+        store.fail(
+          t("schema.autoDate.physicalNameConflict", { name: "updated_at" }),
+          `fields[${conflictIndex}].physicalName`,
+        );
+        return;
+      }
+      const updatedAt = createSchemaFieldDraft("autoDate", "updatedAt");
+      updatedAt.name = t("schema.autoDate.updatedAt");
+      fields.push(buildProductFieldDefinition(updatedAt, fields.length));
+    }
     const definition = buildProductTableDefinition(
       store.form.name,
       fields,
@@ -119,7 +150,7 @@ export function useTableAdminService(): {
       const validation = await bridge.request("schema.validate", change);
       const validationError = productError(validation);
       if (validationError) {
-        store.fail(validationError.message, validationError.path);
+        store.fail(localizedSchemaError(validationError), validationError.path);
         return;
       }
       const normalized = (
@@ -131,7 +162,7 @@ export function useTableAdminService(): {
       });
       const applyError = productError(applied);
       if (applyError) {
-        store.fail(applyError.message, applyError.path);
+        store.fail(localizedSchemaError(applyError), applyError.path);
         return;
       }
       store.succeed();
@@ -157,6 +188,13 @@ export function useTableAdminService(): {
   }
 
   return { init, createTable, deleteTable, openAdmin };
+}
+
+function localizedSchemaError(error: ProductErrorPayload): string {
+  if (error.code === "schema.field.autodate_backfill_required") {
+    return t("schema.autoDate.backfillRequired");
+  }
+  return error.message;
 }
 
 export function buildProductTableDefinition(

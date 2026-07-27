@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -216,6 +218,37 @@ def test_upgrade_backup_is_outside_install_and_failure_keeps_old_binary(
     assert os.path.commonpath([install, transaction.backup_dir]) != str(install)
 
 
+def test_direct_release_script_can_prepare_an_upgrade(tmp_path: Path) -> None:
+    install = tmp_path / "install"
+    data = tmp_path / "user-data"
+    install.mkdir()
+    data.mkdir()
+    current = install / "vibetable-pb.exe"
+    current.write_bytes(b"current")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "release.py"),
+            "--prepare-upgrade",
+            "--install-dir",
+            str(install),
+            "--data-dir",
+            str(data),
+            "--current-binary",
+            str(current),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()).is_dir()
+
+
 def test_release_preflight_rejects_dirty_or_untracked_worktree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -230,6 +263,24 @@ def test_release_preflight_rejects_dirty_or_untracked_worktree(
 
     with pytest.raises(ValueError, match="clean worktree"):
         _ensure_clean_worktree()
+
+
+def test_release_workflow_supports_scheduled_and_manual_patch_releases() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    assert 'cron: "30 15 * * *"' in workflow
+    assert 'timezone: "Asia/Shanghai"' in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "Detect unreleased main commits" in workflow
+    assert 'git rev-list --count "$latestTag..HEAD"' in workflow
+    assert "needs.prepare.outputs.should_release == 'true'" in workflow
+    assert "has no tag yet; publishing it without an extra bump" in workflow
+    assert 'if ($bump -notin @("patch", "minor", "major"))' in workflow
+    assert "RELEASE_TAG: ${{ steps.identity.outputs.tag }}" in workflow
+    assert "git push --atomic origin HEAD:main" in workflow
+    assert workflow.index("Build release package") < workflow.index(
+        "Publish version commit and tag"
+    )
 
 
 def test_upgrade_validates_migration_copy_then_atomically_activates(

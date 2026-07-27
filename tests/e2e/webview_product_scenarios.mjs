@@ -202,7 +202,7 @@ async function selectNValue(page, testId, value) {
     file: /^(托管附件|Managed attachment)$/u,
     relation: /^(关联|Relation)$/u,
     lookup: /^(查找引用|Lookup)$/u,
-    autoDate: /^(自动日期|Automatic date)$/u,
+    autoDate: /^(系统时间|System time)$/u,
   };
   const localizedSearch = {
     shortText: { zh: "短文本", en: "Short text" },
@@ -214,7 +214,7 @@ async function selectNValue(page, testId, value) {
     file: { zh: "托管附件", en: "Managed attachment" },
     relation: { zh: "关联", en: "Relation" },
     lookup: { zh: "查找引用", en: "Lookup" },
-    autoDate: { zh: "自动日期", en: "Automatic date" },
+    autoDate: { zh: "系统时间", en: "System time" },
   };
   // Keep the selectors ASCII-stable even if a Windows editor rewrites the
   // surrounding legacy fixture text with the wrong code page.
@@ -228,7 +228,7 @@ async function selectNValue(page, testId, value) {
     file: /^(?:\u6258\u7ba1\u9644\u4ef6|Managed attachment)$/u,
     relation: /^(?:\u5173\u8054|Relation)$/u,
     lookup: /^(?:\u67e5\u627e\u5f15\u7528|Lookup)$/u,
-    autoDate: /^(?:\u81ea\u52a8\u65e5\u671f|Automatic date)$/u,
+    autoDate: /^(?:\u7cfb\u7edf\u65f6\u95f4|System time)$/u,
   });
   Object.assign(localizedSearch, {
     shortText: { zh: "\u77ed\u6587\u672c", en: "Short text" },
@@ -240,7 +240,7 @@ async function selectNValue(page, testId, value) {
     file: { zh: "\u6258\u7ba1\u9644\u4ef6", en: "Managed attachment" },
     relation: { zh: "\u5173\u8054", en: "Relation" },
     lookup: { zh: "\u67e5\u627e\u5f15\u7528", en: "Lookup" },
-    autoDate: { zh: "\u81ea\u52a8\u65e5\u671f", en: "Automatic date" },
+    autoDate: { zh: "\u7cfb\u7edf\u65f6\u95f4", en: "System time" },
   });
   const label = exactLabels[value];
   const search = localizedSearch[value];
@@ -471,7 +471,6 @@ async function scenario02(page, recorder, _network, runtime) {
     ["attachments", "file"],
     ["parent", "relation"],
     ["parent_label", "lookup"],
-    ["created_at", "autoDate"],
     ["tags", "multiSelect"],
   ];
   for (let index = 0; index < fields.length; index += 1) {
@@ -480,6 +479,12 @@ async function scenario02(page, recorder, _network, runtime) {
     await fillNInput(page, `create-table-field-name-${index}`, name);
     await selectNValue(page, `create-table-field-type-${index}`, type);
   }
+  recorder.check(
+    "new table enables both immutable system time presets by default",
+    await page.getByTestId("create-table-include-created-at").isChecked()
+      && await page.getByTestId("create-table-include-updated-at").isChecked()
+      && await page.locator('section[data-field-type="autoDate"]').count() === 0,
+  );
 
   const scalar = page.locator('section[data-field-type="integer"]');
   await scalar.locator('.toggles input[type="checkbox"]').nth(0).check();
@@ -538,16 +543,16 @@ async function scenario02(page, recorder, _network, runtime) {
     .selectOption("first");
   await page.getByTestId("field-lookup-output-type-7").selectOption("shortText");
 
-  await page.getByTestId("field-enum-option-value-9-0").fill("true");
-  await page.getByTestId("field-enum-option-display-9-0").fill("Enabled");
-  await page.getByTestId("field-enum-add-option-9").click();
-  await page.getByTestId("field-enum-option-value-9-1").fill("2");
-  await page.getByTestId("field-enum-option-display-9-1").fill("Priority two");
-  await page.getByTestId("field-enum-add-option-9").click();
-  await page.getByTestId("field-enum-option-value-9-2").fill('"done"');
-  await page.getByTestId("field-enum-option-display-9-2").fill("Done");
-  await page.getByTestId("field-enum-min-selected-9").fill("1");
-  await page.getByTestId("field-enum-max-selected-9").fill("2");
+  await page.getByTestId("field-enum-option-value-8-0").fill("true");
+  await page.getByTestId("field-enum-option-display-8-0").fill("Enabled");
+  await page.getByTestId("field-enum-add-option-8").click();
+  await page.getByTestId("field-enum-option-value-8-1").fill("2");
+  await page.getByTestId("field-enum-option-display-8-1").fill("Priority two");
+  await page.getByTestId("field-enum-add-option-8").click();
+  await page.getByTestId("field-enum-option-value-8-2").fill('"done"');
+  await page.getByTestId("field-enum-option-display-8-2").fill("Done");
+  await page.getByTestId("field-enum-min-selected-8").fill("1");
+  await page.getByTestId("field-enum-max-selected-8").fill("2");
 
   await page.getByTestId("create-table-add-index")
     .evaluate((node) => node.click());
@@ -613,6 +618,7 @@ async function scenario02(page, recorder, _network, runtime) {
   const parent = persistedFields.get("parent");
   const parentLabel = persistedFields.get("parent_label");
   const createdAt = persistedFields.get("created_at");
+  const updatedAt = persistedFields.get("updated_at");
   const quantityRange = findConstraint("quantity", "range");
   const titleLength = findConstraint("title", "length");
   const titlePattern = findConstraint("title", "pattern");
@@ -667,6 +673,13 @@ async function scenario02(page, recorder, _network, runtime) {
       && createdAt?.dataType === "autoDate"
       && createdAt?.kind === "system"
       && createdAt?.readOnly === true
+      && createdAt?.nullable === false
+      && createdAt?.autoDate?.role === "createdAt"
+      && updatedAt?.dataType === "autoDate"
+      && updatedAt?.kind === "system"
+      && updatedAt?.readOnly === true
+      && updatedAt?.nullable === false
+      && updatedAt?.autoDate?.role === "updatedAt"
       && tagsEnum?.multiple === true
       && tagsEnum?.minSelected === 1
       && tagsEnum?.maxSelected === 2
@@ -694,8 +707,12 @@ async function scenario02(page, recorder, _network, runtime) {
       .filter((field) => field && field !== "__vt_row_number"));
   recorder.check(
     "applied schema renders every configured product field",
-    fields.every(([name]) => appliedFields.includes(name)),
-    { expectedFields: fields.map(([name]) => name), appliedFields },
+    [...fields.map(([name]) => name), "created_at", "updated_at"]
+      .every((name) => appliedFields.includes(name)),
+    {
+      expectedFields: [...fields.map(([name]) => name), "created_at", "updated_at"],
+      appliedFields,
+    },
   );
   const emptyState = page.locator(".tabulator-placeholder:visible");
   await emptyState.waitFor({ timeout: 10_000 });
@@ -734,8 +751,97 @@ async function scenario02(page, recorder, _network, runtime) {
   recorder.check(
     "typed boolean and number enum values committed through mutation.apply",
     typedEnumMutation.type === "mutation.apply"
-      && typedEnumMutation.payload?.status === "applied",
+      && typedEnumMutation.payload?.status === "applied"
+      && typedEnumMutation.payload?.affectedRows?.length === 1,
     { typedEnumMutation },
+  );
+  const typedEnumRecordId = typedEnumMutation.payload?.affectedRows?.[0]?.recordId;
+  const insertedAutoDates = typedEnumMutation.payload?.computedFields?.[typedEnumRecordId];
+  const parsePocketBaseDate = (value) => Date.parse(
+    typeof value === "string" ? value : "",
+  );
+  recorder.check(
+    "insert receipt returns authoritative UTC values for both system time roles",
+    typeof insertedAutoDates?.created_at === "string"
+      && typeof insertedAutoDates?.updated_at === "string"
+      && Number.isFinite(parsePocketBaseDate(insertedAutoDates.created_at))
+      && Number.isFinite(parsePocketBaseDate(insertedAutoDates.updated_at)),
+    { typedEnumRecordId, insertedAutoDates },
+  );
+  let updatedAutoDates = null;
+  let updatedTypedEnumTitle = "Typed Enum Row";
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const nextTitle = `Typed Enum Row ${attempt}`;
+    const updated = await rawBridgeRequest(page, "mutation.apply", {
+      contractVersion: "1.0",
+      requestId: `e2e-autodate-update-${attempt}`,
+      idempotencyKey: `e2e-autodate-update-${attempt}`,
+      tableId: definition.tableId,
+      schemaRevision: definition.schemaRevision,
+      operations: [{
+        kind: "update",
+        recordId: typedEnumRecordId,
+        values: { title: nextTitle },
+      }],
+      actor: { type: "user", id: "e2e-schema", displayName: "E2E schema" },
+      expectedRevision: null,
+      expectedDigest: null,
+    });
+    updatedAutoDates = updated.payload?.computedFields?.[typedEnumRecordId] ?? null;
+    if (updated.payload?.status === "applied") updatedTypedEnumTitle = nextTitle;
+    if (parsePocketBaseDate(updatedAutoDates?.updated_at)
+        > parsePocketBaseDate(insertedAutoDates?.updated_at)) break;
+  }
+  recorder.check(
+    "successful save preserves createdAt and advances updatedAt without a fixed delay",
+    updatedAutoDates?.created_at === insertedAutoDates?.created_at
+      && parsePocketBaseDate(updatedAutoDates?.updated_at)
+        > parsePocketBaseDate(insertedAutoDates?.updated_at),
+    { insertedAutoDates, updatedAutoDates },
+  );
+  const autoDateQuery = await rawBridgeRequest(page, "query.page", {
+    tableId: definition.tableId,
+    query: {
+      filters: [{
+        field: "updated_at",
+        operator: "gte",
+        value: insertedAutoDates?.updated_at,
+        logic: "AND",
+      }],
+      sorts: [{ field: "updated_at", direction: "desc", nullsLast: true }],
+      offset: 0,
+      limit: 100,
+    },
+  });
+  recorder.check(
+    "system timestamps support authoritative range filtering and sorting",
+    autoDateQuery.type === "query.page"
+      && autoDateQuery.payload?.rows?.some((row) => row.id === typedEnumRecordId),
+    { autoDateQuery },
+  );
+  const forgedAutoDate = await rawBridgeRequest(page, "mutation.apply", {
+    contractVersion: "1.0",
+    requestId: "e2e-autodate-forgery",
+    idempotencyKey: "e2e-autodate-forgery",
+    tableId: definition.tableId,
+    schemaRevision: definition.schemaRevision,
+    operations: [{
+      kind: "update",
+      recordId: typedEnumRecordId,
+      values: {
+        title: "Forged Row",
+        updated_at: "2000-01-01T00:00:00Z",
+      },
+    }],
+    actor: { type: "user", id: "e2e-schema", displayName: "E2E schema" },
+    expectedRevision: null,
+    expectedDigest: null,
+  });
+  recorder.check(
+    "forged system time rejects the whole mutation with the stable read-only error",
+    forgedAutoDate.type === "mutation.apply"
+      && forgedAutoDate.payload?.error?.code === "mutation.field.read_only",
+    { forgedAutoDate },
   );
   const typedEnumQuery = await rawBridgeRequest(page, "query.page", {
     tableId: definition.tableId,
@@ -751,7 +857,8 @@ async function scenario02(page, recorder, _network, runtime) {
     "query.page filtered and returned typed enum values without string collapse",
     typedEnumQuery.type === "query.page"
       && typedEnumQuery.payload?.rows?.length === 1
-      && typedEnumRow?.title === "Typed Enum Row"
+      && typedEnumRow?.title === updatedTypedEnumTitle
+      && typedEnumRow?.title !== "Forged Row"
       && Array.isArray(typedEnumRow?.tags)
       && typedEnumRow.tags.length === 2
       && typedEnumRow.tags[0] === true
@@ -790,6 +897,39 @@ async function scenario02(page, recorder, _network, runtime) {
       lookupCatalogProbe,
       authoritativeLookupQuery,
     },
+  );
+  const autoDateRestart = await requestSidecarKill(
+    runtime,
+    "verify autoDate roles and values survive sidecar restart",
+  );
+  await waitForActiveTableBackend(page, definition.tableId, 1);
+  const restartedDefinition = await rawBridgeRequest(page, "schema.getTable", {
+    tableId: definition.tableId,
+  });
+  const restartedQuery = await rawBridgeRequest(page, "query.page", {
+    tableId: definition.tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const restartedFields = restartedDefinition.payload?.fields ?? [];
+  const restartedRow = restartedQuery.payload?.rows?.find(
+    (row) => row.id === typedEnumRecordId,
+  );
+  recorder.check(
+    "autoDate roles, field IDs, values, and read-only attributes survive restart",
+    autoDateRestart.processName === "vibetable-pb.exe"
+      && restartedDefinition.type === "schema.getTable"
+      && restartedFields.some((field) =>
+        field.fieldId === "fld_created_at"
+          && field.autoDate?.role === "createdAt"
+          && field.readOnly === true)
+      && restartedFields.some((field) =>
+        field.fieldId === "fld_updated_at"
+          && field.autoDate?.role === "updatedAt"
+          && field.readOnly === true)
+      && restartedRow?.created_at === typedEnumRow?.created_at
+      && restartedRow?.updated_at === typedEnumRow?.updated_at
+      && restartedRow?.title === updatedTypedEnumTitle,
+    { autoDateRestart, restartedDefinition, restartedRow, typedEnumRow },
   );
   await page.waitForTimeout(100);
   const unexpectedErrorMessages = await page.locator(".n-message--error-type:visible").allInnerTexts();

@@ -136,4 +136,6 @@ public sealed record DashboardManifestBundle(
     DashboardQueryLimits QueryLimits);
 
 /// <summary>Runtime host capabilities sent with database.opened.</summary>
-public sealed record HostFeatureFlags(bool Dashboards = false);
+public sealed record HostFeatureFlags(
+    bool Dashboards = false,
+    bool AutoDateFields = false);

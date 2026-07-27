@@ -11,6 +11,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
+	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
@@ -54,6 +55,18 @@ func registerSchemaRoutes(
 			}
 		}
 		return request.JSON(http.StatusOK, definition)
+	})
+
+	r.GET("/api/vibetable/v1/schema/autodate-diagnostics", func(request *core.RequestEvent) error {
+		diagnostics, err := catalog.InspectAutoDates(request.Request.Context())
+		if err != nil {
+			return writeSchemaError(request, err)
+		}
+		return request.JSON(http.StatusOK, map[string]any{
+			"diagnostics": diagnostics,
+			"metrics":     autodateobs.Snapshot(),
+			"scanCounts":  autoDateScanCounts(diagnostics),
+		})
 	})
 
 	r.POST("/api/vibetable/v1/schema/validate", func(request *core.RequestEvent) error {
@@ -103,6 +116,21 @@ func registerSchemaRoutes(
 		}
 		return request.JSON(http.StatusOK, result)
 	})
+}
+
+func autoDateScanCounts(
+	diagnostics []schemaapi.AutoDateDiagnostic,
+) map[string]int {
+	counts := map[string]int{}
+	for _, diagnostic := range diagnostics {
+		key := fmt.Sprintf(
+			"onCreate_%t_onUpdate_%t",
+			diagnostic.OnCreate,
+			diagnostic.OnUpdate,
+		)
+		counts[key]++
+	}
+	return counts
 }
 
 func definitionNeedsBackfill(definition schema.TableDefinition) bool {

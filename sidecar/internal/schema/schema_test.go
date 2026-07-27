@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 )
 
@@ -51,7 +52,7 @@ func TestFrozenTableDefinitionFixtureDecodesAndRoundTripsExactly(t *testing.T) {
 		t.Fatalf("wire header mismatch: %#v", definition)
 	}
 	if definition.ArchivePolicy.Mode != schema.ArchiveModeStatus ||
-		len(definition.Fields) != 10 ||
+		len(definition.Fields) != 11 ||
 		definition.Fields[5].Relation.Cardinality != "one" ||
 		definition.Fields[6].Lookup.RelationFieldID != "fld_product" ||
 		definition.Fields[7].Formula.Status != "ready" ||
@@ -116,6 +117,9 @@ func TestFrozenTableDefinitionRejectsUnknownPropertiesAtEveryNestedShape(t *test
 		"attachment policy": func(value map[string]any) {
 			value["fields"].([]any)[8].(map[string]any)["attachmentPolicy"].(map[string]any)["typo"] = true
 		},
+		"auto date": func(value map[string]any) {
+			value["fields"].([]any)[9].(map[string]any)["autoDate"].(map[string]any)["typo"] = true
+		},
 		"index": func(value map[string]any) {
 			value["indexes"].([]any)[0].(map[string]any)["typo"] = true
 		},
@@ -136,6 +140,33 @@ func TestFrozenTableDefinitionRejectsUnknownPropertiesAtEveryNestedShape(t *test
 				t.Fatal("unknown property was silently accepted")
 			}
 		})
+	}
+}
+
+func TestAutoDateSpecStrictlyRoundTripsAndRejectsUnknownProperties(t *testing.T) {
+	field := autoDateField("created_at", schema.AutoDateRoleCreatedAt)
+	raw, err := json.Marshal(field)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTripped schema.FieldDefinition
+	if err := json.Unmarshal(raw, &roundTripped); err != nil {
+		t.Fatal(err)
+	}
+	if roundTripped.AutoDate == nil ||
+		roundTripped.AutoDate.Role != schema.AutoDateRoleCreatedAt {
+		t.Fatalf("autoDate round trip = %#v", roundTripped.AutoDate)
+	}
+	var invalid schema.FieldDefinition
+	if err := json.Unmarshal([]byte(`{
+		"fieldId":"created_at","physicalName":"created_at","displayName":"Created",
+		"kind":"system","dataType":"autoDate","storageType":"autodate",
+		"nullable":false,"defaultValue":null,"constraints":[],
+		"editor":{"kind":"readonly","config":{}},"readOnly":true,
+		"autoDate":{"role":"createdAt","unexpected":true},
+		"formula":null,"relation":null,"lookup":null,"attachmentPolicy":null
+	}`), &invalid); err == nil {
+		t.Fatal("unknown autoDate property was accepted")
 	}
 }
 
@@ -438,6 +469,125 @@ func TestValidateReportsEmptyFormulaAtTheSourcePath(t *testing.T) {
 	}
 }
 
+func TestAutoDateRolesValidateAndCompileToPocketBaseTruthTable(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		role     schema.AutoDateRole
+		onCreate bool
+		onUpdate bool
+	}{
+		{
+			name: "created at", role: schema.AutoDateRoleCreatedAt,
+			onCreate: true, onUpdate: false,
+		},
+		{
+			name: "updated at", role: schema.AutoDateRoleUpdatedAt,
+			onCreate: true, onUpdate: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			field := autoDateField("timestamp", test.role)
+			definition := validDefinition()
+			definition.Fields = []schema.FieldDefinition{field}
+			if err := schema.Validate(definition); err != nil {
+				t.Fatalf("Validate() = %v", err)
+			}
+			compiled, err := schema.CompileField(field, nil)
+			if err != nil {
+				t.Fatalf("CompileField() = %v", err)
+			}
+			actual, ok := compiled.(*core.AutodateField)
+			if !ok {
+				t.Fatalf("CompileField() type = %T", compiled)
+			}
+			if actual.OnCreate != test.onCreate ||
+				actual.OnUpdate != test.onUpdate ||
+				actual.System {
+				t.Fatalf(
+					"compiled autoDate = onCreate:%t onUpdate:%t system:%t",
+					actual.OnCreate, actual.OnUpdate, actual.System,
+				)
+			}
+		})
+	}
+}
+
+func TestAutoDateValidationReportsStableErrors(t *testing.T) {
+	cases := []struct {
+		name     string
+		mutate   func(*schema.TableDefinition)
+		wantCode string
+	}{
+		{
+			name: "missing role",
+			mutate: func(definition *schema.TableDefinition) {
+				definition.Fields = []schema.FieldDefinition{autoDateField("created", "")}
+				definition.Fields[0].AutoDate = nil
+			},
+			wantCode: "schema.field.autodate_role_required",
+		},
+		{
+			name: "unknown role",
+			mutate: func(definition *schema.TableDefinition) {
+				definition.Fields = []schema.FieldDefinition{autoDateField("created", "later")}
+			},
+			wantCode: "schema.field.autodate_role_invalid",
+		},
+		{
+			name: "duplicate role",
+			mutate: func(definition *schema.TableDefinition) {
+				definition.Fields = []schema.FieldDefinition{
+					autoDateField("created", schema.AutoDateRoleCreatedAt),
+					autoDateField("also_created", schema.AutoDateRoleCreatedAt),
+				}
+			},
+			wantCode: "schema.field.autodate_role_duplicate",
+		},
+		{
+			name: "config on another field",
+			mutate: func(definition *schema.TableDefinition) {
+				definition.Fields[0].AutoDate = &schema.AutoDateSpec{
+					Role: schema.AutoDateRoleCreatedAt,
+				}
+			},
+			wantCode: "schema.field.autodate_config_forbidden",
+		},
+		{
+			name: "nullable",
+			mutate: func(definition *schema.TableDefinition) {
+				definition.Fields = []schema.FieldDefinition{
+					autoDateField("created", schema.AutoDateRoleCreatedAt),
+				}
+				definition.Fields[0].Nullable = true
+			},
+			wantCode: "schema.field.autodate_nullable_forbidden",
+		},
+		{
+			name: "constraints",
+			mutate: func(definition *schema.TableDefinition) {
+				definition.Fields = []schema.FieldDefinition{
+					autoDateField("created", schema.AutoDateRoleCreatedAt),
+				}
+				definition.Fields[0].Constraints = []schema.FieldConstraint{{
+					Kind: schema.ConstraintRequired, Value: true,
+				}}
+			},
+			wantCode: "schema.field.autodate_constraints_forbidden",
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			definition := validDefinition()
+			test.mutate(&definition)
+			err := schema.Validate(definition)
+			var productErr *schema.ProductError
+			if !errors.As(err, &productErr) || productErr.Code != test.wantCode {
+				t.Fatalf("Validate() = %#v, want %s", err, test.wantCode)
+			}
+		})
+	}
+}
+
 func TestValidateRejectsMisappliedDuplicateAndBrokenIndexConstraints(t *testing.T) {
 	one, five := 1.0, 5.0
 	cases := []struct {
@@ -521,5 +671,19 @@ func validDefinition() schema.TableDefinition {
 			Editor:      schema.EditorDefinition{Kind: "text", Config: map[string]any{}},
 		}},
 		Indexes: []schema.IndexDefinition{},
+	}
+}
+
+func autoDateField(
+	name string,
+	role schema.AutoDateRole,
+) schema.FieldDefinition {
+	return schema.FieldDefinition{
+		FieldID: name, PhysicalName: name, DisplayName: name,
+		Kind: schema.FieldKindSystem, DataType: schema.DataTypeAutoDate,
+		StorageType: schema.StorageAutodate, Nullable: false, ReadOnly: true,
+		Constraints: []schema.FieldConstraint{},
+		Editor:      schema.EditorDefinition{Kind: "readonly", Config: map[string]any{}},
+		AutoDate:    &schema.AutoDateSpec{Role: role},
 	}
 }

@@ -177,6 +177,7 @@ export function useTabulator(
   let currentOnCellEdited: CellEditedHandler | undefined = options?.onCellEdited;
   let currentOnRangeSelectionChanged = options?.onRangeSelectionChanged;
   let rangeChangedHandler: ((range: unknown) => void) | null = null;
+  let tableBuiltHandler: (() => void) | null = null;
   let viewQueryHandler: (() => void) | null = null;
   let groupChangedHandler: ((groups: unknown) => void) | null = null;
   let cellEditingHandler: (() => void) | null = null;
@@ -187,6 +188,7 @@ export function useTabulator(
   let applyingRows: Promise<void> | null = null;
   let activeGroups: LookupGroup[] = [];
   let lastViewQuerySignature = "";
+  let gridReady = false;
 
   /**
    * Holder for the latest `onValidationError` callback. Same rationale as
@@ -274,6 +276,10 @@ export function useTabulator(
         currentOnRangeSelectionChanged?.({ rowKeys, fields });
       };
       eventGrid.on?.("rangeChanged", rangeChangedHandler);
+      tableBuiltHandler = () => {
+        gridReady = true;
+      };
+      eventGrid.on?.("tableBuilt", tableBuiltHandler);
       viewQueryHandler = () => emitViewQuery(eventGrid);
       groupChangedHandler = (rawGroups: unknown) => {
         activeGroups = collectGroupFields(rawGroups);
@@ -421,6 +427,7 @@ export function useTabulator(
     const eventGrid = tabulator.value as unknown as {
       off?: (event: string, handler: (...args: unknown[]) => void) => void;
     } | null;
+    if (tableBuiltHandler) eventGrid?.off?.("tableBuilt", tableBuiltHandler);
     if (viewQueryHandler) {
       eventGrid?.off?.("dataSorted", viewQueryHandler);
       eventGrid?.off?.("dataFiltered", viewQueryHandler);
@@ -519,6 +526,7 @@ export function useTabulator(
     getSorters?: () => Array<{ field: string; dir: "asc" | "desc" }>;
     getHeaderFilters?: () => Array<{ field: string; value: unknown }>;
   }): void {
+    if (!gridReady) return;
     const query = buildQuery({
       sorters: grid.getSorters?.() ?? [],
       headerFilters: grid.getHeaderFilters?.() ?? [],

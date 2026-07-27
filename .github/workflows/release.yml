@@ -4,12 +4,26 @@ on:
   push:
     tags:
       - "v*.*.*"
+  schedule:
+    - cron: "30 15 * * *"
+      timezone: "Asia/Shanghai"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version part to bump for this release
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: release-${{ github.repository }}
   cancel-in-progress: false
 
 defaults:
@@ -17,8 +31,66 @@ defaults:
     shell: pwsh
 
 jobs:
+  prepare:
+    name: Check whether a release is needed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      should_release: ${{ steps.gate.outputs.should_release }}
+      bump: ${{ steps.gate.outputs.bump }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'push' && github.ref || 'main' }}
+
+      - name: Detect unreleased main commits
+        id: gate
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_BUMP: ${{ inputs.bump }}
+        run: |
+          $shouldRelease = $true
+          $bump = "patch"
+          $reason = "tag push"
+
+          if ($env:EVENT_NAME -eq "workflow_dispatch") {
+            $bump = $env:MANUAL_BUMP
+            if ($bump -notin @("patch", "minor", "major")) {
+              throw "Unsupported version bump: $bump"
+            }
+            $reason = "manual $bump release"
+          } elseif ($env:EVENT_NAME -eq "schedule") {
+            $latestTag = git tag --merged HEAD --list "v[0-9]*.[0-9]*.[0-9]*" --sort=-version:refname |
+              Select-Object -First 1
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to inspect release tags"
+            }
+            if ($latestTag) {
+              $commitCount = [int](git rev-list --count "$latestTag..HEAD")
+              if ($LASTEXITCODE -ne 0) {
+                throw "Unable to inspect commits after $latestTag"
+              }
+              $shouldRelease = $commitCount -gt 0
+              $reason = if ($shouldRelease) {
+                "$commitCount commit(s) after $latestTag"
+              } else {
+                "main is already released as $latestTag"
+              }
+            } else {
+              $reason = "no existing semantic release tag"
+            }
+          }
+
+          "should_release=$($shouldRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "bump=$bump" >> $env:GITHUB_OUTPUT
+          "### Release gate`n`n$reason" >> $env:GITHUB_STEP_SUMMARY
+
   publish:
     name: Build and publish Windows package
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: windows-latest
     timeout-minutes: 60
     environment: release
@@ -28,6 +100,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'push' && github.ref || 'main' }}
 
       - uses: actions/setup-node@v6
         with:
@@ -57,14 +130,61 @@ jobs:
         working-directory: desktop/web-grid
         run: npm ci
 
-      - name: Validate tag and release identity
+      - name: Prepare release identity
+        id: identity
         shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_BUMP: ${{ needs.prepare.outputs.bump }}
         run: |
-          uv run python scripts/release.py --check
-          $version = (uv run python scripts/release.py --current).Trim()
-          if ("${{ github.ref_name }}" -ne "v$version") {
-            throw "Tag ${{ github.ref_name }} does not match repository version v$version"
+          if ($env:EVENT_NAME -eq "push") {
+            uv run python scripts/release.py --check
+            $version = (uv run python scripts/release.py --current).Trim()
+            $tag = $env:REF_NAME
+            if ($tag -ne "v$version") {
+              throw "Tag $tag does not match repository version v$version"
+            }
+          } else {
+            uv run python scripts/release.py --check
+            $version = (uv run python scripts/release.py --current).Trim()
+            $tag = "v$version"
+
+            if (git rev-parse --verify --quiet "refs/tags/$tag") {
+              $bump = $env:RELEASE_BUMP
+              if ($bump -notin @("patch", "minor", "major")) {
+                throw "Unsupported version bump: $bump"
+              }
+              uv run python scripts/release.py "--$bump"
+              $version = (uv run python scripts/release.py --current).Trim()
+              $tag = "v$version"
+              if (git rev-parse --verify --quiet "refs/tags/$tag") {
+                throw "Release tag $tag already exists"
+              }
+
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add `
+                pyproject.toml `
+                desktop/web-grid/package.json `
+                desktop/web-grid/package-lock.json `
+                desktop/publish-layout.json `
+                backend/contracts/system.py `
+                desktop/src/VibeTable.Infrastructure/Backend/PythonBackendSupervisor.cs `
+                desktop/Directory.Build.props
+              git diff --cached --quiet
+              if ($LASTEXITCODE -eq 0) {
+                throw "Version bump produced no staged changes"
+              }
+              git commit -m "chore: release $tag"
+            } else {
+              Write-Host "Version $version has no tag yet; publishing it without an extra bump."
+            }
           }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "### Release identity`n`n$tag" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Verify Python, contracts, and release tooling
         run: >
@@ -105,19 +225,30 @@ jobs:
       - name: Upload immutable workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: VibeTable-${{ github.ref_name }}
+          name: VibeTable-${{ steps.identity.outputs.tag }}
           path: |
             dist/VibeTable.Next.zip
             dist/VibeTable.Next.zip.sha256
           if-no-files-found: error
           retention-days: 30
 
+      - name: Publish version commit and tag
+        if: github.event_name != 'push'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          git tag -a $tag -m "VibeTable $tag"
+          git push --atomic origin HEAD:main "refs/tags/$tag"
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.identity.outputs.tag }}
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = $env:RELEASE_TAG
           if (gh release view $tag 2>$null) {
             gh release upload $tag dist/VibeTable.Next.zip dist/VibeTable.Next.zip.sha256 --clobber
           } else {

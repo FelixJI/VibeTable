@@ -165,6 +165,7 @@ export interface DatabaseOpenedPayload {
 export interface HostFeatureFlags {
   readonly [key: string]: unknown;
   readonly dashboards: boolean;
+  readonly autoDateFields?: boolean;
 }
 
 /** Payload produced by the web layer for `database.openRequested`. */
@@ -715,6 +716,9 @@ export interface ProductFieldDefinition {
     readonly config: Readonly<Record<string, unknown>>;
   };
   readonly readOnly: boolean;
+  readonly autoDate?: {
+    readonly role: "createdAt" | "updatedAt";
+  };
   readonly formula: FormulaDefinition | null;
   readonly relation: Readonly<Record<string, unknown>> | null;
   readonly lookup: Readonly<Record<string, unknown>> | null;

@@ -127,6 +127,7 @@ func (source *Source) describeField(
 	result := query.FieldDescriptor{
 		PhysicalName: field.PhysicalName,
 		Type:         fieldType,
+		AutoDate:     field.DataType == schema.DataTypeAutoDate,
 		Searchable:   isSearchable(field),
 	}
 	if field.DataType == schema.DataTypeSelect ||
@@ -172,6 +173,7 @@ func (source *Source) describeField(
 		targetFields[targetField.PhysicalName] = query.FieldDescriptor{
 			PhysicalName: targetField.PhysicalName,
 			Type:         targetType,
+			AutoDate:     targetField.DataType == schema.DataTypeAutoDate,
 			Searchable:   isSearchable(targetField),
 		}
 		if targetField.DataType == schema.DataTypeSelect ||

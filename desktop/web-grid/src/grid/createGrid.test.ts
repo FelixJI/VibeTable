@@ -156,10 +156,19 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
     ) => HTMLElement;
     const dateTimeFormatter = columns[1]?.formatter as (
       cell: { getValue(): unknown },
+      params?: { readonly timeZone?: string },
     ) => HTMLElement;
     expect(dateFormatter({ getValue: () => dateValue }).textContent).toBe(dateValue);
-    expect(dateTimeFormatter({ getValue: () => dateTimeValue }).textContent)
-      .toBe("2026-07-25 08:30:45.123Z");
+    const utc = dateTimeFormatter(
+      { getValue: () => dateTimeValue },
+      { timeZone: "UTC" },
+    );
+    expect(utc.textContent).toBe("2026-07-25 08:30:45.123");
+    expect(utc.title).toBe(dateTimeValue);
+    expect(dateTimeFormatter(
+      { getValue: () => dateTimeValue },
+      { timeZone: "Asia/Shanghai" },
+    ).textContent).toBe("2026-07-25 16:30:45.123");
   });
 
   it("derives decimal display precision from the column's scale", () => {
@@ -394,6 +403,32 @@ function editCol(
 }
 
 describe("buildColumns (with editSchema — Task M3)", () => {
+  it("keeps system timestamps read-only even when edit schema advertises an editor", () => {
+    const page: TablePage = {
+      table: "orders",
+      columns: [{
+        name: "updated_at",
+        title: "最后更新时间",
+        dataType: "datetime",
+        kind: "system",
+        editable: true,
+        nullable: false,
+      }],
+      rows: [],
+      offset: 0,
+      limit: 100,
+      totalRows: 0,
+      mode: "client",
+    };
+
+    const column = buildColumns(
+      page,
+      [editCol("updated_at", { kind: "text" }, true)],
+    )[0] as GridColumnDefinition;
+    expect(column.editable).toBe(false);
+    expect(column.editor).toBeUndefined();
+  });
+
   it("keeps managed attachments on the native panel when edit schema advertises text editing", () => {
     const onAttachmentOpenRequested = vi.fn();
     const page: TablePage = {

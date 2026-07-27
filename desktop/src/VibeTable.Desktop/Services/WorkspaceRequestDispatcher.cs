@@ -53,6 +53,7 @@ public sealed class WorkspaceRequestDispatcher
     private readonly IWebReplySink _reply;
     private readonly GridStateCoordinator? _coordinator;
     private readonly DashboardFeatureOptions _dashboardFeatures;
+    private readonly AutoDateFeatureOptions _autoDateFeatures;
     private readonly TimeSpan _dashboardRequestTimeout;
     private readonly TimeSpan _readRecoveryTimeout;
     private readonly ConcurrentDictionary<string, DashboardRequestState> _dashboardRequests = new();
@@ -69,13 +70,15 @@ public sealed class WorkspaceRequestDispatcher
         GridStateCoordinator? coordinator = null,
         DashboardFeatureOptions? dashboardFeatures = null,
         TimeSpan? dashboardRequestTimeout = null,
-        TimeSpan? readRecoveryTimeout = null)
+        TimeSpan? readRecoveryTimeout = null,
+        AutoDateFeatureOptions? autoDateFeatures = null)
     {
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         _picker = picker ?? throw new ArgumentNullException(nameof(picker));
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _coordinator = coordinator;
         _dashboardFeatures = dashboardFeatures ?? DashboardFeatureOptions.Disabled;
+        _autoDateFeatures = autoDateFeatures ?? AutoDateFeatureOptions.Disabled;
         _dashboardRequestTimeout = dashboardRequestTimeout ?? TimeSpan.FromSeconds(60);
         _readRecoveryTimeout =
             readRecoveryTimeout ?? TimeSpan.FromSeconds(3);
@@ -295,7 +298,9 @@ public sealed class WorkspaceRequestDispatcher
                 tables = Array.Empty<string>(),
                 views = Array.Empty<string>(),
                 displayNames = new Dictionary<string, string>(),
-                features = new HostFeatureFlags(_dashboardFeatures.Enabled),
+                features = new HostFeatureFlags(
+                    _dashboardFeatures.Enabled,
+                    _autoDateFeatures.Enabled),
             });
             return;
         }
@@ -306,7 +311,9 @@ public sealed class WorkspaceRequestDispatcher
             tables = result.Tables,
             views = result.Views,
             displayNames = result.DisplayNames,
-            features = new HostFeatureFlags(_dashboardFeatures.Enabled),
+            features = new HostFeatureFlags(
+                _dashboardFeatures.Enabled,
+                _autoDateFeatures.Enabled),
         });
     }
 

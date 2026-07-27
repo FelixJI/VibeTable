@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+
+	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
 )
 
 var physicalNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
@@ -65,6 +67,7 @@ func Validate(definition TableDefinition) error {
 	}
 
 	fieldNames := make(map[string]struct{}, len(definition.Fields))
+	autoDateRoles := make(map[AutoDateRole]int, 2)
 	for index, field := range definition.Fields {
 		prefix := fmt.Sprintf("fields[%d]", index)
 		if !physicalNamePattern.MatchString(field.PhysicalName) {
@@ -89,6 +92,24 @@ func Validate(definition TableDefinition) error {
 		}
 		if err := validateFieldKind(field, prefix); err != nil {
 			return err
+		}
+		if err := validateAutoDate(field, prefix); err != nil {
+			return err
+		}
+		if field.AutoDate != nil {
+			if previousIndex, exists := autoDateRoles[field.AutoDate.Role]; exists {
+				autodateobs.Increment(autodateobs.RoleDuplicate)
+				return productError(
+					"schema.field.autodate_role_duplicate",
+					prefix+".autoDate.role",
+					"automatic date roles must be unique within a table",
+					map[string]any{
+						"role":          field.AutoDate.Role,
+						"previousIndex": previousIndex,
+					},
+				)
+			}
+			autoDateRoles[field.AutoDate.Role] = index
 		}
 		if effectiveDataType(field) == DataTypeDecimal {
 			return unsupported(prefix+".dataType", "exact decimal storage is not supported by PocketBase number fields")
@@ -148,6 +169,56 @@ func Validate(definition TableDefinition) error {
 		if _, ok := fieldIDs[*definition.ArchivePolicy.FieldID]; !ok {
 			return productError("schema.table.invalid_archive_policy", "archivePolicy.fieldId", "archive field does not exist", nil)
 		}
+	}
+	return nil
+}
+
+func validateAutoDate(field FieldDefinition, prefix string) error {
+	if field.DataType != DataTypeAutoDate {
+		if field.AutoDate != nil {
+			return productError(
+				"schema.field.autodate_config_forbidden",
+				prefix+".autoDate",
+				"automatic date configuration is only valid for autoDate fields",
+				nil,
+			)
+		}
+		return nil
+	}
+	if field.AutoDate == nil || field.AutoDate.Role == "" {
+		autodateobs.Increment(autodateobs.RoleRequired)
+		return productError(
+			"schema.field.autodate_role_required",
+			prefix+".autoDate.role",
+			"automatic date role is required",
+			nil,
+		)
+	}
+	switch field.AutoDate.Role {
+	case AutoDateRoleCreatedAt, AutoDateRoleUpdatedAt:
+	default:
+		return productError(
+			"schema.field.autodate_role_invalid",
+			prefix+".autoDate.role",
+			"automatic date role must be createdAt or updatedAt",
+			map[string]any{"role": field.AutoDate.Role},
+		)
+	}
+	if field.Nullable {
+		return productError(
+			"schema.field.autodate_nullable_forbidden",
+			prefix+".nullable",
+			"automatic date fields cannot be nullable",
+			nil,
+		)
+	}
+	if len(field.Constraints) != 0 {
+		return productError(
+			"schema.field.autodate_constraints_forbidden",
+			prefix+".constraints",
+			"automatic date fields cannot define constraints",
+			nil,
+		)
 	}
 	return nil
 }

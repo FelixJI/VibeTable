@@ -42,6 +42,10 @@ except ModuleNotFoundError:  # pragma: no cover - direct execution
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _ignore_transient_pocketbase_files(_, names: list[str]) -> set[str]:
+    return {name for name in names if name.casefold().startswith("auxiliary.db-shm")}
+
+
 @dataclass(frozen=True)
 class UpgradeTransaction:
     backup_dir: Path
@@ -577,7 +581,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-def _ignore_transient_pocketbase_files(_, names: list[str]) -> set[str]:
-    return {name for name in names if name.casefold().startswith("auxiliary.db-shm")}

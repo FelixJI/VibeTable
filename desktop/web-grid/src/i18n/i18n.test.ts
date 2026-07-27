@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { t, setLocale, getLocale } from "./index";
 import { TABLE_FIELD_TYPES } from "@/contracts";
+import { messages as zhCN } from "./locales/zh-CN";
+import { messages as enUS } from "./locales/en-US";
 
 describe("i18n", () => {
   beforeEach(() => {
@@ -45,6 +47,23 @@ describe("i18n", () => {
       }
     },
   );
+
+  it("keeps locale key sets identical and translates autoDate semantics explicitly", () => {
+    expect(Object.keys(enUS).sort()).toEqual(Object.keys(zhCN).sort());
+    for (const locale of ["zh-CN", "en-US"] as const) {
+      setLocale(locale);
+      for (const key of [
+        "schema.autoDate.createdAt",
+        "schema.autoDate.createdAt.help",
+        "schema.autoDate.updatedAt",
+        "schema.autoDate.updatedAt.help",
+        "schema.autoDate.readOnly",
+        "schema.autoDate.backfillRequired",
+      ]) {
+        expect(t(key), `${locale}:${key}`).not.toBe(key);
+      }
+    }
+  });
 
   it.each([
     ["zh-CN", "确定移除“收据.pdf”吗？此更改会立即保存。"],

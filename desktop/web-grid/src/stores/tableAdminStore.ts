@@ -50,12 +50,15 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
   const pendingDelete = ref<string | null>(null);
   const error = ref<string | null>(null);
   const serverFieldErrors = ref<Readonly<Record<string, string>>>({});
+  const autoDateProducerEnabled = ref(false);
 
   // Form state lives in the store, NOT in the DOM (architecture fix #3).
   const form = reactive({
     name: "" as string,
     fields: [] as FieldRow[],
     indexes: [] as SchemaIndexDraft[],
+    includeCreatedAt: true,
+    includeUpdatedAt: true,
   });
 
   /**
@@ -85,11 +88,17 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
     collections.value = cols;
   }
 
+  function setAutoDateProducerEnabled(enabled: boolean): void {
+    autoDateProducerEnabled.value = enabled;
+  }
+
   function openCreate(): void {
     phase.value = "creating";
     form.name = "";
     form.fields = [emptyField()];
     form.indexes = [];
+    form.includeCreatedAt = true;
+    form.includeUpdatedAt = true;
     error.value = null;
     serverFieldErrors.value = {};
   }
@@ -142,6 +151,8 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
     form.name = "";
     form.fields = [];
     form.indexes = [];
+    form.includeCreatedAt = true;
+    form.includeUpdatedAt = true;
     pendingDelete.value = null;
     error.value = null;
     serverFieldErrors.value = {};
@@ -166,11 +177,13 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
     pendingDelete,
     error,
     serverFieldErrors,
+    autoDateProducerEnabled,
     form,
     canSubmit,
     localFieldErrors,
     localIndexErrors,
     setCollections,
+    setAutoDateProducerEnabled,
     openCreate,
     addField,
     updateField,

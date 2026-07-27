@@ -42,6 +42,7 @@ describe("CreateTableModal", () => {
     document.body.innerHTML = "";
     setActivePinia(createPinia());
     setLocale("zh-CN");
+    useTableAdminStore().setAutoDateProducerEnabled(true);
   });
 
   it("does not render the modal body when createModalOpen is false", async () => {
@@ -61,6 +62,26 @@ describe("CreateTableModal", () => {
     mountModal();
     await flushPromises();
     expect(bodyFieldRowCount()).toBe(2);
+  });
+
+  it("defaults both immutable system time presets on and lets either be disabled", async () => {
+    const ui = useUiStore();
+    const admin = useTableAdminStore();
+    admin.openCreate();
+    ui.openCreate();
+    const wrapper = mountModal();
+    await flushPromises();
+
+    expect(admin.form.includeCreatedAt).toBe(true);
+    expect(admin.form.includeUpdatedAt).toBe(true);
+    const options = wrapper.findAllComponents(NSelect)[0]!.props("options") as
+      readonly { readonly value: string }[];
+    expect(options.some(({ value }) => value === "autoDate")).toBe(false);
+
+    await bodyEl("create-table-include-created-at").click();
+    await flushPromises();
+    expect(admin.form.includeCreatedAt).toBe(false);
+    expect(admin.form.includeUpdatedAt).toBe(true);
   });
 
   it("the add-field button appends a new field row through the store", async () => {

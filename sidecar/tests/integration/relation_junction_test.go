@@ -120,6 +120,7 @@ func TestJunctionAndM2ADeltaUseMutationKernelAuditReplayAndRollback(t *testing.T
 	orders, err := catalog.ApplyChange(ctx, schemaapi.Change{
 		Definition: baseTable("delta_orders", "delta_orders", []schema.FieldDefinition{
 			field("number_id", "number", schema.FieldKindScalar, schema.DataTypeShortText),
+			autoDateField("updated_at", schema.AutoDateRoleUpdatedAt),
 		}),
 		ExpectedRevision: 0,
 	})
@@ -250,6 +251,12 @@ func TestJunctionAndM2ADeltaUseMutationKernelAuditReplayAndRollback(t *testing.T
 			t.Fatal(applyErr)
 		}
 	}
+	orderCollection, _ := app.FindCollectionByNameOrId("delta_orders")
+	orderBeforeDelta, err := app.FindRecordById(orderCollection, orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedBeforeDelta := orderBeforeDelta.GetString("updated_at")
 	sourceQuery, err := queryschema.New(app.DataDir())
 	if err != nil {
 		t.Fatal(err)
@@ -279,6 +286,15 @@ func TestJunctionAndM2ADeltaUseMutationKernelAuditReplayAndRollback(t *testing.T
 		fmt.Sprint(applied.Current[0].JunctionValues["quantity"]) != "2" {
 		t.Fatalf("junction add = %#v, err=%v", applied, err)
 	}
+	orderAfterDelta, err := app.FindRecordById(orderCollection, orderID)
+	if err != nil || orderAfterDelta.GetString("updated_at") != updatedBeforeDelta {
+		t.Fatalf(
+			"junction-only delta touched source updatedAt: before=%q after=%q err=%v",
+			updatedBeforeDelta,
+			orderAfterDelta.GetString("updated_at"),
+			err,
+		)
+	}
 	replayed, err := service.ApplyDelta(ctx, add)
 	if err != nil || replayed.Receipt.Status != mutation.StatusReplayed {
 		t.Fatalf("junction replay = %#v, err=%v", replayed, err)
@@ -307,7 +323,6 @@ func TestJunctionAndM2ADeltaUseMutationKernelAuditReplayAndRollback(t *testing.T
 		m2aResult.Current[0].TableID != "delta_services" {
 		t.Fatalf("m2a add = %#v, err=%v", m2aResult, err)
 	}
-	orderCollection, _ := app.FindCollectionByNameOrId("delta_orders")
 	orderRecord, err := app.FindRecordById(orderCollection, orderID)
 	if err != nil {
 		t.Fatal(err)

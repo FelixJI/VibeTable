@@ -12,6 +12,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/security"
+	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 )
 
@@ -323,6 +324,9 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 			}
 			if field.ReadOnly || field.Kind == schema.FieldKindFormula ||
 				field.Kind == schema.FieldKindLookup || field.Kind == schema.FieldKindSystem {
+				if field.Kind == schema.FieldKindSystem {
+					autodateobs.Increment(autodateobs.ClientWriteRejected)
+				}
 				return PreviewResult{}, mutationError(
 					"mutation.field.read_only", stringPointer(path+".values."+key),
 					"field is read-only", map[string]any{"fieldId": field.FieldID}, false,

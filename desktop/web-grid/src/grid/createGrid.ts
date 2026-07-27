@@ -34,7 +34,7 @@ import type {
 import { tabulatorEditor, validateLocally } from "./editorFactory";
 import type { CalendarDateEditor } from "./calendarDateEditor";
 import { lookupFormatter, relationFormatter } from "./relationLookupRenderer";
-import { t } from "@/i18n";
+import { getLocale, t } from "@/i18n";
 
 /**
  * The hidden `rowKey` field name in the host/WebView contract.
@@ -219,6 +219,9 @@ export function buildColumns(
   );
   const dataColumns = page.columns.map((col) => {
     const def = toColumnDef(col, relationLookup);
+    // System fields (including createdAt/updatedAt) are server-owned even if
+    // a stale or malicious edit schema advertises a scalar editor.
+    if (col.kind === "system") return { ...def, editable: false };
     // Managed attachments are edited exclusively through the native File
     // boundary in WorkspaceView.  The host edit schema describes their
     // underlying storage as text, but that must never replace the attachment
@@ -498,13 +501,13 @@ export function jsonValueFormatter(cell: { getValue(): unknown }): HTMLElement {
 /**
  * Render date/date-time values without Tabulator's optional Luxon dependency.
  *
- * The formatter deliberately preserves the provider's timezone and precision
- * instead of round-tripping through `Date`, which could silently shift values
- * into the workstation timezone. It only normalizes the ISO `T` separator for
- * compact table readability and never changes the underlying cell value.
+ * Date-only values remain calendar dates. Timestamp values are parsed as
+ * instants and displayed in the workstation timezone with millisecond
+ * precision. The underlying cell value and raw-value tooltip remain unchanged.
  */
 export function temporalValueFormatter(
   cell: { getValue(): unknown },
+  params: { readonly timeZone?: string } = {},
 ): HTMLElement {
   const value = cell.getValue();
   const element = document.createElement("span");
@@ -515,10 +518,39 @@ export function temporalValueFormatter(
     return element;
   }
   const raw = String(value);
-  element.textContent = raw.replace(
-    /^(\d{4}-\d{2}-\d{2})T(?=\d{2}:\d{2})/u,
-    "$1 ",
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(raw)) {
+    element.textContent = raw;
+    element.title = raw;
+    return element;
+  }
+  const candidate = raw.replace(
+    /^(\d{4}-\d{2}-\d{2}) (?=\d{2}:\d{2})/u,
+    "$1T",
   );
+  const instant = new Date(candidate);
+  if (Number.isNaN(instant.getTime())) {
+    element.textContent = raw;
+    element.title = raw;
+    return element;
+  }
+  const formatter = new Intl.DateTimeFormat(getLocale(), {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    fractionalSecondDigits: 3,
+    hourCycle: "h23",
+    ...(params.timeZone ? { timeZone: params.timeZone } : {}),
+  });
+  const parts = Object.fromEntries(
+    formatter.formatToParts(instant)
+      .filter(({ type }) => type !== "literal")
+      .map(({ type, value: partValue }) => [type, partValue]),
+  );
+  element.textContent = `${parts.year}-${parts.month}-${parts.day} `
+    + `${parts.hour}:${parts.minute}:${parts.second}.${parts.fractionalSecond}`;
   element.title = raw;
   return element;
 }

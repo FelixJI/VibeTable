@@ -39,6 +39,38 @@ describe("schemaFieldDraft", () => {
     expect(buildProductFieldDefinition(tags, 2).storageType).toBe("select");
   });
 
+  it("builds fixed createdAt and updatedAt system presets", () => {
+    for (const role of ["createdAt", "updatedAt"] as const) {
+      const draft = createSchemaFieldDraft("autoDate", role);
+      draft.name = role;
+      Object.assign(draft, {
+        nullable: true,
+        required: true,
+        unique: true,
+        defaultText: '"forged"',
+      });
+
+      expect(buildProductFieldDefinition(draft, 0)).toEqual({
+        fieldId: role === "createdAt" ? "fld_created_at" : "fld_updated_at",
+        physicalName: role === "createdAt" ? "created_at" : "updated_at",
+        displayName: role,
+        kind: "system",
+        dataType: "autoDate",
+        storageType: "autodate",
+        nullable: false,
+        defaultValue: null,
+        constraints: [],
+        editor: { kind: "readonly", config: {} },
+        readOnly: true,
+        autoDate: { role },
+        formula: null,
+        relation: null,
+        lookup: null,
+        attachmentPolicy: null,
+      });
+    }
+  });
+
   it("returns an exact field path when decimal scale exceeds precision", () => {
     const draft = createSchemaFieldDraft("decimal");
     draft.name = "amount";

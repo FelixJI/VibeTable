@@ -101,6 +101,229 @@ func TestSchemaCatalogFreshMigrationApplyAlterConflictAndRestart(t *testing.T) {
 	}
 }
 
+func TestSchemaCatalogAutoDateRolesRequireAnEmptyTableAndRemainStable(t *testing.T) {
+	app := bootstrapApp(t, t.TempDir())
+	defer resetApp(t, app)
+	ctx := context.Background()
+	catalog := schemaapi.New(app)
+
+	created, err := catalog.ApplyChange(ctx, schemaapi.Change{
+		Definition: baseTable("autodate_notes", "autodate_notes", []schema.FieldDefinition{
+			field("title", "title", schema.FieldKindScalar, schema.DataTypeShortText),
+		}),
+		ExpectedRevision: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collection, err := app.FindCollectionByNameOrId("autodate_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := core.NewRecord(collection)
+	record.Set("title", "existing")
+	if err := app.Save(record); err != nil {
+		t.Fatal(err)
+	}
+
+	withCreatedAt := created
+	withCreatedAt.Fields = append(
+		append([]schema.FieldDefinition(nil), created.Fields...),
+		autoDateField("created_at", schema.AutoDateRoleCreatedAt),
+	)
+	_, err = catalog.ApplyChange(ctx, schemaapi.Change{
+		Definition: withCreatedAt, ExpectedRevision: 1,
+	})
+	var productErr *schema.ProductError
+	if !errors.As(err, &productErr) ||
+		productErr.Code != "schema.field.autodate_backfill_required" ||
+		productErr.Details["recordCount"] != int64(1) {
+		t.Fatalf("non-empty autoDate alter = %#v", err)
+	}
+	current, describeErr := catalog.Describe(ctx, created.TableID)
+	if describeErr != nil || current.SchemaRevision != "schema_0001" ||
+		len(current.Fields) != 1 {
+		t.Fatalf("failed alter left schema state: %#v, err=%v", current, describeErr)
+	}
+	collection, err = app.FindCollectionByNameOrId("autodate_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if collection.Fields.GetByName("created_at") != nil {
+		t.Fatal("failed alter left a PocketBase field behind")
+	}
+
+	if err := app.Delete(record); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := catalog.ApplyChange(ctx, schemaapi.Change{
+		Definition: withCreatedAt, ExpectedRevision: 1,
+	})
+	if err != nil {
+		t.Fatalf("empty-table autoDate alter: %v", err)
+	}
+	if applied.SchemaRevision != "schema_0002" {
+		t.Fatalf("schema revision = %q", applied.SchemaRevision)
+	}
+	collection, err = app.FindCollectionByNameOrId("autodate_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pbField, ok := collection.Fields.GetByName("created_at").(*core.AutodateField)
+	if !ok || !pbField.OnCreate || pbField.OnUpdate || pbField.System {
+		t.Fatalf("compiled createdAt = %#v", pbField)
+	}
+
+	switched := applied
+	switched.Fields = append([]schema.FieldDefinition(nil), applied.Fields...)
+	switched.Fields[1].AutoDate = &schema.AutoDateSpec{
+		Role: schema.AutoDateRoleUpdatedAt,
+	}
+	_, err = catalog.ApplyChange(ctx, schemaapi.Change{
+		Definition: switched, ExpectedRevision: 2,
+	})
+	if !errors.As(err, &productErr) ||
+		productErr.Code != "schema.field.autodate_role_immutable" {
+		t.Fatalf("role switch = %#v", err)
+	}
+
+	diagnostics, err := catalog.InspectAutoDates(ctx)
+	if err != nil || len(diagnostics) != 1 ||
+		diagnostics[0].Status != "configured" ||
+		diagnostics[0].SuggestedRole != schema.AutoDateRoleCreatedAt {
+		t.Fatalf("configured diagnostics = %#v, err=%v", diagnostics, err)
+	}
+	legacy := applied
+	legacy.Fields = append([]schema.FieldDefinition(nil), applied.Fields...)
+	legacy.Fields[1].AutoDate = nil
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := app.FindFirstRecordByFilter(
+		"vibetable_tables", "table_id='autodate_notes'",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.Set("definition_json", types.JSONRaw(raw))
+	if err := app.Save(meta); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err = catalog.InspectAutoDates(ctx)
+	if err != nil || len(diagnostics) != 1 ||
+		diagnostics[0].Status != "legacy" ||
+		diagnostics[0].DeclaredRole != "" ||
+		diagnostics[0].SuggestedRole != schema.AutoDateRoleCreatedAt {
+		t.Fatalf("legacy diagnostics = %#v, err=%v", diagnostics, err)
+	}
+	completed, err := catalog.ApplyChange(ctx, schemaapi.Change{
+		Definition: applied, ExpectedRevision: 2,
+	})
+	if err != nil || completed.SchemaRevision != "schema_0003" {
+		t.Fatalf("clean legacy metadata completion = %#v, err=%v", completed, err)
+	}
+
+	collection, err = app.FindCollectionByNameOrId("autodate_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pbField = collection.Fields.GetByName("created_at").(*core.AutodateField)
+	for _, testCase := range []struct {
+		name       string
+		onCreate   bool
+		onUpdate   bool
+		wantStatus string
+	}{
+		{name: "true true conflict", onCreate: true, onUpdate: true, wantStatus: "conflict"},
+		{name: "false true legacy", onCreate: false, onUpdate: true, wantStatus: "legacyUpdateOnly"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			pbField.OnCreate = testCase.onCreate
+			pbField.OnUpdate = testCase.onUpdate
+			if err := app.Save(collection); err != nil {
+				t.Fatal(err)
+			}
+			report, inspectErr := catalog.InspectAutoDates(ctx)
+			if inspectErr != nil || len(report) != 1 ||
+				report[0].Status != testCase.wantStatus {
+				t.Fatalf("diagnostics = %#v, err=%v", report, inspectErr)
+			}
+		})
+	}
+	_, err = catalog.ApplyChange(ctx, schemaapi.Change{
+		Definition: completed, ExpectedRevision: 3,
+	})
+	var conflict *schema.ProductError
+	if !errors.As(err, &conflict) ||
+		conflict.Code != "schema.field.autodate_role_conflict" {
+		t.Fatalf("conflicting physical switches were silently repaired: %#v", err)
+	}
+
+	collection.Fields.Add(&core.AutodateField{
+		Name: "untracked_clock", OnCreate: true, OnUpdate: false, System: false,
+	})
+	if err := app.Save(collection); err != nil {
+		t.Fatal(err)
+	}
+	report, err := catalog.InspectAutoDates(ctx)
+	foundUntracked := false
+	for _, diagnostic := range report {
+		if diagnostic.PhysicalName == "untracked_clock" &&
+			diagnostic.Status == "untrackedPhysicalField" &&
+			diagnostic.SuggestedRole == schema.AutoDateRoleCreatedAt {
+			foundUntracked = true
+		}
+	}
+	if err != nil || !foundUntracked {
+		t.Fatalf("untracked physical autoDate report = %#v, err=%v", report, err)
+	}
+}
+
+func TestSchemaCatalogProducerGateBlocksOnlyNewAutoDateMetadata(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	t.Setenv("VIBETABLE_AUTODATE_FIELDS_ENABLED", "true")
+	created, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
+		Definition: baseTable("producer_gate", "producer_gate", []schema.FieldDefinition{
+			field("title", "title", schema.FieldKindScalar, schema.DataTypeShortText),
+			autoDateField("created_at", schema.AutoDateRoleCreatedAt),
+		}),
+		ExpectedRevision: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("VIBETABLE_AUTODATE_FIELDS_ENABLED", "false")
+	disabled := schemaapi.New(app)
+	unrelated := created
+	unrelated.Fields = append(unrelated.Fields, field(
+		"notes", "notes", schema.FieldKindScalar, schema.DataTypeShortText,
+	))
+	updated, err := disabled.ApplyChange(ctx, schemaapi.Change{
+		Definition: unrelated, ExpectedRevision: 1,
+	})
+	if err != nil || updated.SchemaRevision != "schema_0002" {
+		t.Fatalf("reader-preserving unrelated edit = %#v, err=%v", updated, err)
+	}
+
+	withNewRole := updated
+	withNewRole.Fields = append(
+		withNewRole.Fields,
+		autoDateField("updated_at", schema.AutoDateRoleUpdatedAt),
+	)
+	_, err = disabled.ApplyChange(ctx, schemaapi.Change{
+		Definition: withNewRole, ExpectedRevision: 2,
+	})
+	var productErr *schema.ProductError
+	if !errors.As(err, &productErr) ||
+		productErr.Code != "schema.field.autodate_producer_disabled" {
+		t.Fatalf("disabled producer accepted new autoDate = %#v", err)
+	}
+}
+
 func TestSchemaCatalogOperationIDDurableReplayConflictAndExpiry(
 	t *testing.T,
 ) {
@@ -820,6 +1043,17 @@ func field(id, name string, kind schema.FieldKind, dataType schema.DataType) sch
 		Kind: kind, DataType: dataType, StorageType: capability.Storage, Nullable: true,
 		Constraints: []schema.FieldConstraint{},
 		Editor:      schema.EditorDefinition{Kind: editorKind, Config: map[string]any{}},
+	}
+}
+
+func autoDateField(id string, role schema.AutoDateRole) schema.FieldDefinition {
+	return schema.FieldDefinition{
+		FieldID: id, PhysicalName: id, DisplayName: id,
+		Kind: schema.FieldKindSystem, DataType: schema.DataTypeAutoDate,
+		StorageType: schema.StorageAutodate, Nullable: false, ReadOnly: true,
+		Constraints: []schema.FieldConstraint{},
+		Editor:      schema.EditorDefinition{Kind: "readonly", Config: map[string]any{}},
+		AutoDate:    &schema.AutoDateSpec{Role: role},
 	}
 }
 

@@ -24,3 +24,25 @@ func TestValidateStoredDataRevisionRejectsMissingNegativeAndFractionalValues(t *
 		}
 	}
 }
+
+func TestValidateCompatibleAlterRejectsAutoDateRoleChanges(t *testing.T) {
+	previous := schema.TableDefinition{
+		Kind: schema.TableKindBase,
+		Fields: []schema.FieldDefinition{{
+			FieldID: "timestamp", Kind: schema.FieldKindSystem,
+			DataType: schema.DataTypeAutoDate, StorageType: schema.StorageAutodate,
+			AutoDate: &schema.AutoDateSpec{Role: schema.AutoDateRoleCreatedAt},
+		}},
+	}
+	next := previous
+	next.Fields = append([]schema.FieldDefinition(nil), previous.Fields...)
+	next.Fields[0].AutoDate = &schema.AutoDateSpec{Role: schema.AutoDateRoleUpdatedAt}
+
+	err := validateCompatibleAlter(previous, next)
+	var productErr *schema.ProductError
+	if !errors.As(err, &productErr) ||
+		productErr.Code != "schema.field.autodate_role_immutable" ||
+		productErr.Path != "fields[0].autoDate.role" {
+		t.Fatalf("validateCompatibleAlter() = %#v", err)
+	}
+}

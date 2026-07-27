@@ -7,6 +7,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
+
+	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 )
 
 const (
@@ -459,6 +462,17 @@ func (c *compiler) compilePredicate(
 	); err != nil {
 		return "", err
 	}
+	if field.descriptor.Type == FieldTypeDate {
+		normalized, normalizeErr := normalizeDateFilterValue(
+			filter.Value,
+			path,
+			field.descriptor.AutoDate,
+		)
+		if normalizeErr != nil {
+			return "", normalizeErr
+		}
+		filter.Value = normalized
+	}
 	if field.descriptor.Type == fieldTypeJSONScalar {
 		return c.compileJSONScalar(field, filter, path)
 	}
@@ -522,6 +536,67 @@ func (c *compiler) compilePredicate(
 	default:
 		return "", productError("query.operator.unknown", path+".operator", "unknown filter operator", nil)
 	}
+}
+
+func normalizeDateFilterValue(
+	value any,
+	path string,
+	requireTimestamp bool,
+) (any, error) {
+	if values, ok := asSlice(value); ok {
+		normalized := make([]any, len(values))
+		for index, item := range values {
+			text, textOK := item.(string)
+			if !textOK {
+				return nil, productError(
+					"query.filter.invalid_value",
+					fmt.Sprintf("%s.value[%d]", path, index),
+					"date comparison value must be a string",
+					nil,
+				)
+			}
+			normalizedValue, err := normalizeDateFilterText(
+				text,
+				path,
+				requireTimestamp,
+			)
+			if err != nil {
+				return nil, err
+			}
+			normalized[index] = normalizedValue
+		}
+		return normalized, nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return value, nil
+	}
+	return normalizeDateFilterText(text, path, requireTimestamp)
+}
+
+func normalizeDateFilterText(
+	value string,
+	path string,
+	requireTimestamp bool,
+) (string, error) {
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed.UTC().Format(pbtypes.DefaultDateLayout), nil
+	}
+	if requireTimestamp {
+		return "", invalidValue(
+			path,
+			"automatic date comparison value must be an RFC 3339 timestamp",
+		)
+	}
+	if parsed, err := time.Parse(pbtypes.DefaultDateLayout, value); err == nil {
+		return parsed.UTC().Format(pbtypes.DefaultDateLayout), nil
+	}
+	if _, err := time.Parse(time.DateOnly, value); err == nil {
+		// Preserve the existing date-only prefix semantics for product date
+		// fields while normalizing timestamp/autoDate instants.
+		return value, nil
+	}
+	return "", invalidValue(path, "date comparison value must be an ISO 8601 date or timestamp")
 }
 
 func (c *compiler) compileEnumPredicate(

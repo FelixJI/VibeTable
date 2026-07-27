@@ -163,10 +163,32 @@ type FieldDefinition struct {
 	Constraints      []FieldConstraint `json:"constraints"`
 	Editor           EditorDefinition  `json:"editor"`
 	ReadOnly         bool              `json:"readOnly"`
+	AutoDate         *AutoDateSpec     `json:"autoDate,omitempty"`
 	Formula          *FormulaSpec      `json:"formula"`
 	Relation         *RelationSpec     `json:"relation"`
 	Lookup           *LookupSpec       `json:"lookup"`
 	AttachmentPolicy *AttachmentPolicy `json:"attachmentPolicy"`
+}
+
+type AutoDateRole string
+
+const (
+	AutoDateRoleCreatedAt AutoDateRole = "createdAt"
+	AutoDateRoleUpdatedAt AutoDateRole = "updatedAt"
+)
+
+type AutoDateSpec struct {
+	Role AutoDateRole `json:"role"`
+}
+
+func (value *AutoDateSpec) UnmarshalJSON(raw []byte) error {
+	type wire AutoDateSpec
+	var decoded wire
+	if err := strictDecode(raw, &decoded); err != nil {
+		return err
+	}
+	*value = AutoDateSpec(decoded)
+	return nil
 }
 
 type EditorDefinition struct {

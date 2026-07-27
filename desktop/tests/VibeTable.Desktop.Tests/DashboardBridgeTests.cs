@@ -220,6 +220,9 @@ public sealed class DashboardBridgeTests
         Assert.IsFalse(DashboardFeatureOptions.FromEnvironment(_ => "false").Enabled);
         Assert.IsTrue(DashboardFeatureOptions.FromEnvironment(_ => "true").Enabled);
         Assert.IsTrue(DashboardFeatureOptions.FromEnvironment(_ => "1").Enabled);
+        Assert.IsTrue(AutoDateFeatureOptions.FromEnvironment(_ => null).Enabled);
+        Assert.IsFalse(AutoDateFeatureOptions.FromEnvironment(_ => "off").Enabled);
+        Assert.IsTrue(AutoDateFeatureOptions.FromEnvironment(_ => "yes").Enabled);
     }
 
     private static (WorkspaceRequestDispatcher Dispatcher, FakeDashboardGateway Gateway, FakeWebReplySink Sink)

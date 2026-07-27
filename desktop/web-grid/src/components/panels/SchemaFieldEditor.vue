@@ -84,10 +84,19 @@ watch(
 
 <template>
   <section class="field-config" :data-field-type="field.type">
-    <div class="toggles">
+    <div v-if="field.type !== 'autoDate'" class="toggles">
       <label><input v-model="field.required" type="checkbox" /> {{ t("schema.required") }}</label>
       <label><input v-model="field.nullable" type="checkbox" /> {{ t("schema.nullable") }}</label>
       <label><input v-model="field.unique" type="checkbox" /> {{ t("schema.unique") }}</label>
+    </div>
+    <div
+      v-else
+      class="autodate-summary"
+      :data-testid="`field-autodate-summary-${index}`"
+    >
+      <strong>{{ t(`schema.autoDate.${field.autoDateRole}`) }}</strong>
+      <span>{{ t(`schema.autoDate.${field.autoDateRole}.help`) }}</span>
+      <small>{{ t("schema.autoDate.readOnly") }}</small>
     </div>
     <div v-if="text" class="config-grid">
       <label>{{ t("schema.minLength") }}<input v-model.number="field.minLength" type="number" min="0" /></label>
@@ -318,6 +327,13 @@ watch(
   color: var(--vt-fg-secondary);
   font-size: var(--vt-font-caption);
 }
+.autodate-summary {
+  display: grid;
+  gap: 4px;
+  color: var(--vt-fg-secondary);
+}
+.autodate-summary strong { color: var(--vt-fg); }
+.autodate-summary small { color: var(--vt-fg-muted); }
 .config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .enum-config {
   display: grid;

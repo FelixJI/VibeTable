@@ -10,10 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 
+	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
 )
 
@@ -411,6 +414,23 @@ func decodeValue(value any, fieldType FieldType) any {
 }
 
 func decodeFieldValue(value any, field FieldDescriptor) any {
+	if field.AutoDate && value != nil {
+		var raw string
+		switch typed := value.(type) {
+		case string:
+			raw = typed
+		case []byte:
+			raw = string(typed)
+		}
+		if raw != "" {
+			parsed, err := time.Parse(pbtypes.DefaultDateLayout, raw)
+			if err != nil {
+				autodateobs.Increment(autodateobs.ReadParseFailed)
+				return value
+			}
+			value = parsed.UTC().Format(time.RFC3339Nano)
+		}
+	}
 	return decodeEnumValue(field.Enum, decodeValue(value, field.Type))
 }
 

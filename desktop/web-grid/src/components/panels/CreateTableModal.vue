@@ -15,7 +15,9 @@
  * validation rules in `tableAdminValidation`).
  */
 import { computed } from "vue";
-import { NModal, NForm, NFormItem, NInput, NButton, NSpace, NSelect } from "naive-ui";
+import {
+  NModal, NForm, NFormItem, NInput, NButton, NSpace, NSelect, NCheckbox,
+} from "naive-ui";
 import { Plus, Trash2 } from "lucide-vue-next";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -48,7 +50,7 @@ const emit = defineEmits<{
 
 const fieldTypeOptions = computed(() =>
   TABLE_FIELD_TYPES
-    .filter((type) => type !== "decimal")
+    .filter((type) => type !== "decimal" && type !== "autoDate")
     .map((type) => ({
       label: t(`createTable.fieldType.${type}`),
       value: type,
@@ -96,6 +98,34 @@ function changeFieldType(index: number, type: TableFieldType): void {
           data-testid="create-table-name-input"
         />
       </NFormItem>
+      <section
+        v-if="admin.autoDateProducerEnabled"
+        class="system-fields"
+        aria-labelledby="create-table-system-fields-title"
+      >
+        <div>
+          <h3 id="create-table-system-fields-title">{{ t("schema.autoDate.systemFields") }}</h3>
+          <p>{{ t("schema.autoDate.systemFieldsHelp") }}</p>
+        </div>
+        <NCheckbox
+          v-model:checked="admin.form.includeCreatedAt"
+          data-testid="create-table-include-created-at"
+        >
+          <span class="system-field-option">
+            <strong>{{ t("schema.autoDate.createdAt") }}</strong>
+            <small>{{ t("schema.autoDate.createdAt.help") }}</small>
+          </span>
+        </NCheckbox>
+        <NCheckbox
+          v-model:checked="admin.form.includeUpdatedAt"
+          data-testid="create-table-include-updated-at"
+        >
+          <span class="system-field-option">
+            <strong>{{ t("schema.autoDate.updatedAt") }}</strong>
+            <small>{{ t("schema.autoDate.updatedAt.help") }}</small>
+          </span>
+        </NCheckbox>
+      </section>
       <div
         v-for="(field, idx) in admin.form.fields"
         :key="field.clientId"
@@ -253,6 +283,36 @@ function changeFieldType(index: number, type: TableFieldType): void {
   margin: var(--vt-space-3) 0 0;
   color: var(--vt-text-secondary);
   font-size: 12px;
+}
+
+.system-fields {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--vt-border-subtle);
+  border-radius: var(--vt-radius-md);
+  background: var(--vt-bg-subtle);
+}
+.system-fields h3,
+.system-fields p { margin: 0; }
+.system-fields h3 { font-size: 14px; }
+.system-fields p {
+  margin-top: 3px;
+  color: var(--vt-fg-muted);
+  font-size: var(--vt-font-caption);
+}
+.system-field-option {
+  display: inline-grid;
+  gap: 2px;
+  max-width: 260px;
+  vertical-align: top;
+}
+.system-field-option small {
+  color: var(--vt-fg-muted);
+  font-size: var(--vt-font-caption);
 }
 
 .index-section {

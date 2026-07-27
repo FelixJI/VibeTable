@@ -35,6 +35,13 @@ func TestQueryFieldTypeMapsProductStorageWithoutProviderNames(t *testing.T) {
 		{schema.FieldDefinition{DataType: schema.DataTypeDateTime}, query.FieldTypeDate},
 		{
 			schema.FieldDefinition{
+				DataType: schema.DataTypeAutoDate,
+				AutoDate: &schema.AutoDateSpec{Role: schema.AutoDateRoleUpdatedAt},
+			},
+			query.FieldTypeDate,
+		},
+		{
+			schema.FieldDefinition{
 				DataType: schema.DataTypeRelation,
 				Relation: &schema.RelationSpec{Cardinality: "many"},
 			},

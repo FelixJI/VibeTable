@@ -99,4 +99,17 @@ describe("SchemaFieldEditor", () => {
 
     expect(field.lookupOutputType).toBe("integer");
   });
+
+  it("shows an immutable autoDate role without editable constraints", () => {
+    const field = reactive(createSchemaFieldDraft("autoDate", "updatedAt"));
+    field.name = "最后更新时间";
+    const wrapper = mount(SchemaFieldEditor, {
+      props: { field, index: 4, serverErrors: {} },
+    });
+
+    expect(wrapper.get('[data-testid="field-autodate-summary-4"]').text())
+      .toContain("最后成功保存");
+    expect(wrapper.find('input[type="checkbox"]').exists()).toBe(false);
+    expect(wrapper.find('input[type="text"]').exists()).toBe(false);
+  });
 });

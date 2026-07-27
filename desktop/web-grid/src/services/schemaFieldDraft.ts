@@ -10,6 +10,7 @@ export interface SchemaFieldDraft {
   clientId: string;
   name: string;
   type: TableFieldType;
+  autoDateRole: "createdAt" | "updatedAt";
   nullable: boolean;
   required: boolean;
   unique: boolean;
@@ -65,11 +66,15 @@ export function createSchemaEnumOptionDraft(): SchemaEnumOptionDraft {
   };
 }
 
-export function createSchemaFieldDraft(type: TableFieldType = "shortText"): SchemaFieldDraft {
+export function createSchemaFieldDraft(
+  type: TableFieldType = "shortText",
+  autoDateRole: SchemaFieldDraft["autoDateRole"] = "createdAt",
+): SchemaFieldDraft {
   return {
     clientId: `field-draft-${++nextDraftId}`,
     name: "",
     type,
+    autoDateRole,
     nullable: type !== "autoDate",
     required: false,
     unique: false,
@@ -297,8 +302,30 @@ export function buildProductFieldDefinition(
   draft: SchemaFieldDraft,
   index: number,
 ): ProductFieldDefinition {
-  const physicalName = slug(draft.name) || `field_${index + 1}`;
+  const physicalName = draft.type === "autoDate"
+    ? draft.autoDateRole === "createdAt" ? "created_at" : "updated_at"
+    : slug(draft.name) || `field_${index + 1}`;
   const kind = fieldKind(draft.type);
+  if (draft.type === "autoDate") {
+    return {
+      fieldId: `fld_${physicalName}`,
+      physicalName,
+      displayName: draft.name.trim(),
+      kind: "system",
+      dataType: "autoDate",
+      storageType: "autodate",
+      nullable: false,
+      defaultValue: null,
+      constraints: [],
+      editor: { kind: "readonly", config: {} },
+      readOnly: true,
+      autoDate: { role: draft.autoDateRole },
+      formula: null,
+      relation: null,
+      lookup: null,
+      attachmentPolicy: null,
+    };
+  }
   const constraints: Readonly<Record<string, unknown>>[] = [];
   if (draft.required) constraints.push({ kind: "required", value: true });
   if (draft.unique) constraints.push({ kind: "unique", value: true });

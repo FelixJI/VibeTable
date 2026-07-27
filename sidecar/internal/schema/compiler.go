@@ -76,7 +76,31 @@ func CompileField(definition FieldDefinition, resolveRelation RelationCollection
 	case DataTypeDate, DataTypeDateTime:
 		return &core.DateField{Name: name, Required: required}, nil
 	case DataTypeAutoDate:
-		return &core.AutodateField{Name: name, OnCreate: true, OnUpdate: true}, nil
+		if definition.AutoDate == nil {
+			return nil, productError(
+				"schema.field.autodate_role_required",
+				"autoDate.role",
+				"automatic date role is required",
+				nil,
+			)
+		}
+		switch definition.AutoDate.Role {
+		case AutoDateRoleCreatedAt:
+			return &core.AutodateField{
+				Name: name, OnCreate: true, OnUpdate: false, System: false,
+			}, nil
+		case AutoDateRoleUpdatedAt:
+			return &core.AutodateField{
+				Name: name, OnCreate: true, OnUpdate: true, System: false,
+			}, nil
+		default:
+			return nil, productError(
+				"schema.field.autodate_role_invalid",
+				"autoDate.role",
+				"automatic date role must be createdAt or updatedAt",
+				map[string]any{"role": definition.AutoDate.Role},
+			)
+		}
 	case DataTypeEmail:
 		return &core.EmailField{Name: name, Required: required}, nil
 	case DataTypeURL:

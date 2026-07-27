@@ -213,6 +213,32 @@ def test_fixtures_validate_and_round_trip_without_shape_changes() -> None:
         assert json.loads(wire) == payload
 
 
+def test_autodate_roles_are_closed_and_fixture_covers_both_roles() -> None:
+    schema = _load(SCHEMA_PATH)
+    table = _load(FIXTURES / "table-definition.json")
+    auto_dates = [field for field in table["fields"] if field["dataType"] == "autoDate"]
+    assert {field["autoDate"]["role"] for field in auto_dates} == {
+        "createdAt",
+        "updatedAt",
+    }
+
+    valid = auto_dates[0]
+    _validate(valid, schema["$defs"]["FieldDefinition"], schema)
+    for invalid_auto_date in (
+        {},
+        {"role": "later"},
+        {"role": "createdAt", "unexpected": True},
+    ):
+        candidate = dict(valid)
+        candidate["autoDate"] = invalid_auto_date
+        try:
+            _validate(candidate, schema["$defs"]["FieldDefinition"], schema)
+        except SchemaMismatchError:
+            pass
+        else:
+            raise AssertionError(f"invalid autoDate config was accepted: {invalid_auto_date!r}")
+
+
 def test_view_definition_is_a_typed_source_projection_without_raw_sql() -> None:
     schema = _load(SCHEMA_PATH)
     table = _load(FIXTURES / "table-definition.json")

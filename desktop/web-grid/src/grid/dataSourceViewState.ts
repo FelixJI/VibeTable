@@ -9,6 +9,7 @@ interface ViewColumn {
 }
 
 export interface DataSourceViewGrid {
+  readonly initialized?: boolean;
   getColumns(): readonly ViewColumn[];
   getSorters?(): readonly { field: string; dir: "asc" | "desc" }[];
   getHeaderFilters?(): readonly { field: string; value: unknown }[];
@@ -43,10 +44,11 @@ export function captureDataSourceView(
       frozen: column.getDefinition?.().frozen ?? false,
     }))
     .filter((column) => isDataField(column.name));
-  const sorts = (grid?.getSorters?.() ?? [])
+  const canReadRuntimeState = grid?.initialized !== false;
+  const sorts = (canReadRuntimeState ? grid?.getSorters?.() ?? [] : [])
     .filter((sorter) => isDataField(sorter.field))
     .map((sorter) => ({ field: sorter.field, direction: sorter.dir }));
-  const filters = (grid?.getHeaderFilters?.() ?? [])
+  const filters = (canReadRuntimeState ? grid?.getHeaderFilters?.() ?? [] : [])
     .filter((filter) => isDataField(filter.field))
     .map((filter) => ({ field: filter.field, operator: "eq", value: filter.value }));
 

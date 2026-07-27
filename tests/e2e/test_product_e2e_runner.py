@@ -340,6 +340,15 @@ def test_schema_scenario_reads_back_constraints_from_authoritative_definition() 
     assert 'field: "tags", operator: "contains", value: true' in scenario
     assert "typedEnumRow.tags[0] === true" in scenario
     assert "typedEnumRow.tags[1] === 2" in scenario
+    assert 'createdAt?.autoDate?.role === "createdAt"' in scenario
+    assert 'updatedAt?.autoDate?.role === "updatedAt"' in scenario
+    assert '"e2e-autodate-forgery"' in scenario
+    assert 'forgedAutoDate.payload?.error?.code === "mutation.field.read_only"' in scenario
+    assert "updatedAutoDates?.created_at === insertedAutoDates?.created_at" in scenario
+    assert "successful save preserves createdAt and advances updatedAt" in scenario
+    assert 'field: "updated_at"' in scenario
+    assert 'operator: "gte"' in scenario
+    assert "system timestamps support authoritative range filtering and sorting" in scenario
 
 
 def test_schema_scenario_waits_for_submit_completion_without_a_fixed_delay() -> None:

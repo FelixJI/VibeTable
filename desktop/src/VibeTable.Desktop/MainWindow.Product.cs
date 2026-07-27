@@ -49,6 +49,7 @@ public partial class MainWindow : Window
     private readonly string _pocketBaseDataDirectory;
     private readonly string _pocketBaseVersion;
     private readonly DashboardFeatureOptions _dashboardFeatures;
+    private readonly AutoDateFeatureOptions _autoDateFeatures;
     private readonly MainWindowViewModel _viewModel;
     private readonly TestModeReadinessWriter? _readiness;
     private readonly string? _e2eControlsDir;
@@ -74,6 +75,7 @@ public partial class MainWindow : Window
             ? new TestModeReadinessWriter(startup.ReadinessDir)
             : null;
         _dashboardFeatures = DashboardFeatureOptions.FromEnvironment();
+        _autoDateFeatures = AutoDateFeatureOptions.FromEnvironment();
         _backendOptions = BackendLaunchOptions.ResolveForHost();
         string? runtimeDataRoot = null;
         bool developmentDataRootRequested =
@@ -182,7 +184,8 @@ public partial class MainWindow : Window
             new FixedProductSourcePicker(),
             _webBridge,
             _coordinator,
-            _dashboardFeatures);
+            _dashboardFeatures,
+            autoDateFeatures: _autoDateFeatures);
 
         _runtime.ClientReady += OnRuntimeClientReady;
         _runtime.RecoveryFailed += OnRuntimeRecoveryFailed;
@@ -1239,7 +1242,9 @@ public partial class MainWindow : Window
                     },
                     hostVersion = typeof(MainWindow).Assembly
                         .GetName().Version?.ToString() ?? "unknown",
-                    features = new HostFeatureFlags(_dashboardFeatures.Enabled),
+                    features = new HostFeatureFlags(
+                        _dashboardFeatures.Enabled,
+                        _autoDateFeatures.Enabled),
                 });
         }
         catch (Exception exception)

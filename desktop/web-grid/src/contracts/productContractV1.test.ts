@@ -125,6 +125,15 @@ describe("product contract v1 golden fixtures", () => {
     }
   });
 
+  it("carries both immutable autoDate roles in the shared table fixture", () => {
+    const table = readFixture("table-definition.json") as unknown as ProductTableDefinition;
+    const roles = table.fields
+      .filter((field) => field.dataType === "autoDate")
+      .map((field) => field.autoDate?.role)
+      .sort();
+    expect(roles).toEqual(["createdAt", "updatedAt"]);
+  });
+
   it("pins event topics and the mutation receipt's required fields", () => {
     expect(readFixture("data-changed-event.json").topic).toBe("data.changed");
     expect(readFixture("task-changed-event.json").topic).toBe("task.changed");

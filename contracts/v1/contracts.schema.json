@@ -458,6 +458,17 @@
         }
       }
     },
+    "AutoDateSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["createdAt", "updatedAt"]
+        }
+      }
+    },
     "FieldDefinition": {
       "type": "object",
       "additionalProperties": false,
@@ -529,6 +540,7 @@
         },
         "editor": {"$ref": "#/$defs/EditorDefinition"},
         "readOnly": {"type": "boolean"},
+        "autoDate": {"$ref": "#/$defs/AutoDateSpec"},
         "formula": {
           "oneOf": [
             {"type": "null"},

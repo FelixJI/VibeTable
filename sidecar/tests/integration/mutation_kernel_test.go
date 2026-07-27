@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,8 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/query"
+	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	"github.com/vibetable/vibetable/sidecar/internal/realtime"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -153,6 +156,180 @@ func TestMutationKernelAppliesInsertAtomicallyAndReplaysIdempotently(t *testing.
 	}
 	assertRecordCount(t, app, "vibetable_audit_events", 1)
 	assertRecordCount(t, app, "vibetable_outbox", 1)
+}
+
+func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
+		Definition: baseTable("autodate_receipts", "autodate_receipts", []schema.FieldDefinition{
+			field("title", "title", schema.FieldKindScalar, schema.DataTypeShortText),
+			autoDateField("created_at", schema.AutoDateRoleCreatedAt),
+			autoDateField("updated_at", schema.AutoDateRoleUpdatedAt),
+		}),
+		ExpectedRevision: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel := mutation.New(app, mutation.MetadataSchemaSource{})
+	recordID := "autodaterecord1"
+	insertRequest := mutationRequest(
+		definition.TableID, definition.SchemaRevision, "autodate-insert",
+		mutation.Operation{
+			Kind: mutation.OperationInsert, RecordID: &recordID,
+			Values: map[string]any{"title": "first"},
+		},
+	)
+	inserted, err := kernel.Apply(ctx, insertRequest)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	serverValues := inserted.ComputedFields[recordID]
+	createdRaw, createdOK := serverValues["created_at"].(string)
+	updatedRaw, updatedOK := serverValues["updated_at"].(string)
+	createdAt, createdErr := time.Parse(time.RFC3339Nano, createdRaw)
+	updatedAt, updatedErr := time.Parse(time.RFC3339Nano, updatedRaw)
+	if !createdOK || !updatedOK || createdErr != nil || updatedErr != nil ||
+		createdAt.IsZero() || updatedAt.IsZero() ||
+		createdAt.Location() != time.UTC || updatedAt.Location() != time.UTC {
+		t.Fatalf("authoritative autoDate values = %#v", serverValues)
+	}
+
+	replayed, err := kernel.Apply(ctx, insertRequest)
+	if err != nil || replayed.Status != mutation.StatusReplayed ||
+		!reflect.DeepEqual(replayed.ComputedFields, inserted.ComputedFields) {
+		t.Fatalf("idempotent replay = %#v, err=%v", replayed, err)
+	}
+
+	var updated mutation.Receipt
+	lastTitle := "first"
+	deadline := time.Now().Add(2 * time.Second)
+	for attempt := 0; ; attempt++ {
+		nextTitle := fmt.Sprintf("updated-%d", attempt)
+		updated, err = kernel.Apply(ctx, mutationRequest(
+			definition.TableID,
+			definition.SchemaRevision,
+			fmt.Sprintf("autodate-update-%d", attempt),
+			mutation.Operation{
+				Kind: mutation.OperationUpdate, RecordID: &recordID,
+				Values: map[string]any{"title": nextTitle},
+			},
+		))
+		if err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		lastTitle = nextTitle
+		candidate, parseErr := time.Parse(
+			time.RFC3339Nano,
+			updated.ComputedFields[recordID]["updated_at"].(string),
+		)
+		if parseErr == nil && candidate.After(updatedAt) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("updatedAt did not advance: %#v", updated.ComputedFields)
+		}
+	}
+	if updated.ComputedFields[recordID]["created_at"] != createdRaw {
+		t.Fatalf("createdAt changed: %#v", updated.ComputedFields[recordID])
+	}
+	querySource, err := queryschema.New(app.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := query.NewPort(
+		app, querySource,
+		[]byte("0123456789abcdef0123456789abcdef"),
+	)
+	offsetValue := createdAt.In(time.FixedZone("UTC+8", 8*60*60)).
+		Format(time.RFC3339Nano)
+	page, err := port.QueryPage(ctx, definition.TableID, query.TableQuery{
+		Filters: []query.FilterExpression{{
+			Field: "created_at", Operator: query.OperatorEqual,
+			Value: offsetValue, Logic: query.LogicAnd,
+		}},
+		Limit: 10,
+	})
+	if err != nil || len(page.Rows) != 1 ||
+		page.Rows[0]["created_at"] != createdRaw {
+		t.Fatalf("autoDate RFC equality/read = %#v, err=%v", page, err)
+	}
+	lastUpdatedRaw := updated.ComputedFields[recordID]["updated_at"].(string)
+	lastUpdatedAt, _ := time.Parse(time.RFC3339Nano, lastUpdatedRaw)
+	deadline = time.Now().Add(2 * time.Second)
+	for attempt := 0; ; attempt++ {
+		sameValue, sameErr := kernel.Apply(ctx, mutationRequest(
+			definition.TableID,
+			definition.SchemaRevision,
+			fmt.Sprintf("autodate-same-value-%d", attempt),
+			mutation.Operation{
+				Kind: mutation.OperationUpdate, RecordID: &recordID,
+				Values: map[string]any{"title": lastTitle},
+			},
+		))
+		if sameErr != nil {
+			t.Fatalf("same-value save: %v", sameErr)
+		}
+		candidate, parseErr := time.Parse(
+			time.RFC3339Nano,
+			sameValue.ComputedFields[recordID]["updated_at"].(string),
+		)
+		if parseErr == nil && candidate.After(lastUpdatedAt) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("same-value Save did not advance updatedAt: %#v", sameValue)
+		}
+	}
+
+	collection, _ := app.FindCollectionByNameOrId(definition.PhysicalName)
+	beforeFailed, err := app.FindRecordById(collection, recordID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeCreated := beforeFailed.GetString("created_at")
+	beforeUpdated := beforeFailed.GetString("updated_at")
+	forged := mutationRequest(
+		definition.TableID, definition.SchemaRevision, "autodate-forged",
+		mutation.Operation{
+			Kind: mutation.OperationUpdate, RecordID: &recordID,
+			Values: map[string]any{
+				"title":      "forged",
+				"updated_at": "2000-01-01T00:00:00Z",
+			},
+		},
+	)
+	_, err = kernel.Apply(ctx, forged)
+	var productErr *mutation.ProductError
+	if !errors.As(err, &productErr) ||
+		productErr.Code != "mutation.field.read_only" {
+		t.Fatalf("forged autoDate = %#v", err)
+	}
+	record, err := app.FindRecordById(collection, recordID)
+	if err != nil || record.GetString("title") == "forged" ||
+		record.GetString("created_at") != beforeCreated ||
+		record.GetString("updated_at") != beforeUpdated {
+		t.Fatalf("forged mutation was partially applied: %#v, err=%v", record, err)
+	}
+	pbUpdated := collection.Fields.GetByName("updated_at").(*core.AutodateField)
+	pbUpdated.OnCreate = true
+	pbUpdated.OnUpdate = false
+	if err := app.Save(collection); err != nil {
+		t.Fatal(err)
+	}
+	_, err = kernel.Apply(ctx, mutationRequest(
+		definition.TableID, definition.SchemaRevision, "autodate-corrupt",
+		mutation.Operation{
+			Kind: mutation.OperationUpdate, RecordID: &recordID,
+			Values: map[string]any{"title": "must not write"},
+		},
+	))
+	if !errors.As(err, &productErr) ||
+		productErr.Code != "mutation.schema.autodate_invalid" {
+		t.Fatalf("corrupt autoDate schema mutation = %#v", err)
+	}
 }
 
 func TestMutationKernelGeneratedRecordIDPassesPocketBaseValidation(t *testing.T) {
@@ -407,7 +584,11 @@ func TestMutationKernelArchiveRestoreAndDeleteUseAuditHistory(t *testing.T) {
 			{Value: "archived", DisplayName: "Archived"},
 		},
 	}}
-	definition := baseTable("archivable", "archivable", []schema.FieldDefinition{status})
+	definition := baseTable("archivable", "archivable", []schema.FieldDefinition{
+		status,
+		autoDateField("created_at", schema.AutoDateRoleCreatedAt),
+		autoDateField("updated_at", schema.AutoDateRoleUpdatedAt),
+	})
 	definition.ArchivePolicy = schema.ArchivePolicy{
 		Mode: schema.ArchiveModeStatus, FieldID: stringAddress("status_id"),
 		ArchivedValue: "archived",
@@ -445,7 +626,14 @@ func TestMutationKernelArchiveRestoreAndDeleteUseAuditHistory(t *testing.T) {
 		{"restore-2", mutation.Operation{Kind: mutation.OperationRestore, RecordID: &recordID}, "row_0006", "paused"},
 		{"delete", mutation.Operation{Kind: mutation.OperationDelete, RecordID: &recordID}, "row_0007", ""},
 	}
+	var createdValue any
+	var previousUpdated time.Time
 	for _, step := range steps {
+		if !previousUpdated.IsZero() && step.key != "delete" {
+			for !time.Now().UTC().After(previousUpdated.Add(time.Millisecond)) {
+				time.Sleep(time.Millisecond)
+			}
+		}
 		currentTime = currentTime.Add(time.Minute)
 		receipt, err := kernel.Apply(ctx, mutationRequest(
 			"archivable", applied.SchemaRevision, step.key, step.operation,
@@ -455,6 +643,21 @@ func TestMutationKernelArchiveRestoreAndDeleteUseAuditHistory(t *testing.T) {
 		}
 		if receipt.AffectedRows[0].Revision != step.revision {
 			t.Fatalf("%s revision = %q", step.key, receipt.AffectedRows[0].Revision)
+		}
+		if step.key != "delete" {
+			values := receipt.ComputedFields[recordID]
+			if createdValue == nil {
+				createdValue = values["created_at"]
+			}
+			nextUpdated, parseErr := time.Parse(
+				time.RFC3339Nano,
+				values["updated_at"].(string),
+			)
+			if values["created_at"] != createdValue || parseErr != nil ||
+				(!previousUpdated.IsZero() && !nextUpdated.After(previousUpdated)) {
+				t.Fatalf("%s autoDate receipt = %#v", step.key, values)
+			}
+			previousUpdated = nextUpdated
 		}
 		if step.restored != "" {
 			collection, _ := app.FindCollectionByNameOrId("archivable")
@@ -810,6 +1013,8 @@ func TestMutationKernelFormulaUsesTransactionAndPublisherFailureDoesNotRollback(
 		Definition: baseTable("formula_notes", "formula_notes", []schema.FieldDefinition{
 			field("fld_title", "title", schema.FieldKindScalar, schema.DataTypeShortText),
 			computed,
+			autoDateField("created_at", schema.AutoDateRoleCreatedAt),
+			autoDateField("updated_at", schema.AutoDateRoleUpdatedAt),
 		}),
 		ExpectedRevision: 0,
 	})
@@ -839,16 +1044,49 @@ func TestMutationKernelFormulaUsesTransactionAndPublisherFailureDoesNotRollback(
 	if got := receipt.ComputedFields[recordID]["computed"]; got != "HELLO" {
 		t.Fatalf("computed receipt value = %#v", got)
 	}
+	firstCreated := receipt.ComputedFields[recordID]["created_at"]
+	firstUpdated, parseErr := time.Parse(
+		time.RFC3339Nano,
+		receipt.ComputedFields[recordID]["updated_at"].(string),
+	)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	for !time.Now().UTC().After(firstUpdated.Add(time.Millisecond)) {
+		time.Sleep(time.Millisecond)
+	}
+	updatedReceipt, err := kernel.Apply(ctx, mutationRequest(
+		"formula_notes", definition.SchemaRevision, "formula-update",
+		mutation.Operation{
+			Kind: mutation.OperationUpdate, RecordID: &recordID,
+			Values: map[string]any{"title": "world"},
+		},
+	))
+	if err != nil {
+		t.Fatalf("formula update: %#v", err)
+	}
+	updatedAt, parseErr := time.Parse(
+		time.RFC3339Nano,
+		updatedReceipt.ComputedFields[recordID]["updated_at"].(string),
+	)
+	if parseErr != nil ||
+		updatedReceipt.ComputedFields[recordID]["computed"] != "WORLD" ||
+		updatedReceipt.ComputedFields[recordID]["created_at"] != firstCreated ||
+		!updatedAt.After(firstUpdated) {
+		t.Fatalf("formula Save autoDate receipt = %#v", updatedReceipt)
+	}
 	collection, _ := app.FindCollectionByNameOrId("formula_notes")
 	record, err := app.FindRecordById(collection, recordID)
-	if err != nil || record.GetString("computed") != "HELLO" {
+	if err != nil || record.GetString("computed") != "WORLD" {
 		t.Fatalf("stored computed field = %#v, %v", record, err)
 	}
-	assertRecordCount(t, app, "vibetable_outbox", 1)
-	assertRecordCount(t, app, "vibetable_idempotency_keys", 1)
+	assertRecordCount(t, app, "vibetable_outbox", 2)
+	assertRecordCount(t, app, "vibetable_idempotency_keys", 2)
 	outbox, _ := app.FindAllRecords("vibetable_outbox")
-	if len(outbox) != 1 || outbox[0].GetString("status") != "pending" ||
-		outbox[0].GetFloat("attempts") != 0 {
+	if len(outbox) != 2 || outbox[0].GetString("status") != "pending" ||
+		outbox[0].GetFloat("attempts") != 0 ||
+		outbox[1].GetString("status") != "pending" ||
+		outbox[1].GetFloat("attempts") != 0 {
 		t.Fatalf("publisher failure changed durable outbox = %#v", outbox)
 	}
 	if len(receipt.Warnings) != 1 ||

@@ -207,6 +207,7 @@ type EnumDescriptor struct {
 type FieldDescriptor struct {
 	PhysicalName string              `json:"physicalName"`
 	Type         FieldType           `json:"type"`
+	AutoDate     bool                `json:"autoDate,omitempty"`
 	Searchable   bool                `json:"searchable,omitempty"`
 	Relation     *RelationDescriptor `json:"relation,omitempty"`
 	Enum         *EnumDescriptor     `json:"enum,omitempty"`

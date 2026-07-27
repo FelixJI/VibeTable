@@ -17,6 +17,7 @@ import (
 	validation "github.com/pocketbase/ozzo-validation/v4"
 	"github.com/pocketbase/pocketbase/core"
 	pbtypes "github.com/pocketbase/pocketbase/tools/types"
+	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
@@ -505,7 +506,66 @@ func (kernel *Kernel) applyOperation(
 		}
 	}
 	_ = before
-	return productRow(definition, record), nil
+	saved := productRow(definition, record)
+	serverFields := map[string]any{}
+	for _, field := range definition.Fields {
+		if field.Kind == schema.FieldKindSystem {
+			serverValue, valueErr := systemWireValue(field, saved[field.PhysicalName])
+			if valueErr != nil {
+				return nil, valueErr
+			}
+			serverFields[field.PhysicalName] = serverValue
+		}
+	}
+	if len(serverFields) != 0 {
+		computedFields[record.Id] = mergeMaps(
+			computedFields[record.Id],
+			serverFields,
+		)
+	}
+	return saved, nil
+}
+
+func systemWireValue(field schema.FieldDefinition, value any) (any, error) {
+	normalized := wireValue(value)
+	if field.DataType != schema.DataTypeAutoDate {
+		return normalized, nil
+	}
+	text, ok := normalized.(string)
+	if !ok {
+		autodateobs.Increment(autodateobs.ReadParseFailed)
+		return nil, mutationError(
+			"mutation.system.autodate_invalid",
+			stringPointer(field.PhysicalName),
+			"saved automatic date is not a timestamp",
+			map[string]any{"fieldId": field.FieldID},
+			false,
+		)
+	}
+	parsed, _ := pbtypes.ParseDateTime(text)
+	if parsed.IsZero() {
+		autodateobs.Increment(autodateobs.ReadParseFailed)
+		return nil, mutationError(
+			"mutation.system.autodate_invalid",
+			stringPointer(field.PhysicalName),
+			"saved automatic date is not a valid timestamp",
+			map[string]any{"fieldId": field.FieldID},
+			false,
+		)
+	}
+	return parsed.Time().UTC().Format(time.RFC3339Nano), nil
+}
+
+func wireValue(value any) any {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var normalized any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return value
+	}
+	return normalized
 }
 
 func storageValidationFailure(err error) *ProductError {

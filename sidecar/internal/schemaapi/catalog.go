@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
+	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 )
@@ -48,6 +50,7 @@ type ValidationResult struct {
 type SchemaCatalog interface {
 	List(ctx context.Context) ([]schema.TableDefinition, error)
 	Describe(ctx context.Context, tableID string) (schema.TableDefinition, error)
+	InspectAutoDates(ctx context.Context) ([]AutoDateDiagnostic, error)
 	ValidateChange(ctx context.Context, change Change) (ValidationResult, error)
 	ApplyChange(ctx context.Context, change Change) (schema.TableDefinition, error)
 	DeleteTable(ctx context.Context, tableID string, expectedRevision int64) (DeleteResult, error)
@@ -55,12 +58,30 @@ type SchemaCatalog interface {
 	GetDataRevision(ctx context.Context, tableID string) (int64, error)
 }
 
+type AutoDateDiagnostic struct {
+	TableID       string              `json:"tableId"`
+	FieldID       string              `json:"fieldId"`
+	PhysicalName  string              `json:"physicalName"`
+	DisplayName   string              `json:"displayName"`
+	OnCreate      bool                `json:"onCreate"`
+	OnUpdate      bool                `json:"onUpdate"`
+	DeclaredRole  schema.AutoDateRole `json:"declaredRole,omitempty"`
+	SuggestedRole schema.AutoDateRole `json:"suggestedRole,omitempty"`
+	Status        string              `json:"status"`
+}
+
 type Catalog struct {
-	app core.App
+	app                     core.App
+	autoDateProducerEnabled bool
 }
 
 func New(app core.App) *Catalog {
-	return &Catalog{app: app}
+	raw, configured := os.LookupEnv("VIBETABLE_AUTODATE_FIELDS_ENABLED")
+	enabled := !configured || strings.EqualFold(strings.TrimSpace(raw), "true") ||
+		strings.TrimSpace(raw) == "1" ||
+		strings.EqualFold(strings.TrimSpace(raw), "yes") ||
+		strings.EqualFold(strings.TrimSpace(raw), "on")
+	return &Catalog{app: app, autoDateProducerEnabled: enabled}
 }
 
 func (catalog *Catalog) List(ctx context.Context) ([]schema.TableDefinition, error) {
@@ -108,6 +129,127 @@ func (catalog *Catalog) Describe(
 	return definition, err
 }
 
+// InspectAutoDates reports the actual PocketBase switch combination for every
+// normalized autoDate field. It is intentionally read-only: callers can
+// review legacy and conflicting fields before any metadata migration.
+func (catalog *Catalog) InspectAutoDates(
+	ctx context.Context,
+) ([]AutoDateDiagnostic, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	records, err := catalog.app.FindAllRecords(tablesCollection)
+	if err != nil {
+		return nil, storageError(err)
+	}
+	result := []AutoDateDiagnostic{}
+	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		definition, _, decodeErr := decodeStoredTable(record)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		collection, findErr := catalog.app.FindCollectionByNameOrId(
+			record.GetString("collection_id"),
+		)
+		if findErr != nil {
+			return nil, storageError(findErr)
+		}
+		defined := make(map[string]schema.FieldDefinition)
+		for _, field := range definition.Fields {
+			if field.DataType == schema.DataTypeAutoDate {
+				defined[field.PhysicalName] = field
+			}
+		}
+		seen := make(map[string]struct{})
+		for _, physical := range collection.Fields {
+			pbField, ok := physical.(*core.AutodateField)
+			if !ok || pbField.GetSystem() {
+				continue
+			}
+			field, tracked := defined[pbField.GetName()]
+			diagnostic := AutoDateDiagnostic{
+				TableID:      definition.TableID,
+				FieldID:      pbField.GetId(),
+				PhysicalName: pbField.GetName(),
+				DisplayName:  pbField.GetName(),
+			}
+			if tracked {
+				seen[field.PhysicalName] = struct{}{}
+				diagnostic.FieldID = field.FieldID
+				diagnostic.DisplayName = field.DisplayName
+			}
+			if tracked && field.AutoDate != nil {
+				diagnostic.DeclaredRole = field.AutoDate.Role
+			}
+			diagnostic.OnCreate = pbField.OnCreate
+			diagnostic.OnUpdate = pbField.OnUpdate
+			switch {
+			case pbField.OnCreate && !pbField.OnUpdate:
+				diagnostic.SuggestedRole = schema.AutoDateRoleCreatedAt
+			case pbField.OnCreate && pbField.OnUpdate:
+				diagnostic.SuggestedRole = schema.AutoDateRoleUpdatedAt
+			case !pbField.OnCreate && pbField.OnUpdate:
+				diagnostic.Status = "legacyUpdateOnly"
+			default:
+				diagnostic.Status = "invalid"
+			}
+			if diagnostic.Status == "" {
+				switch {
+				case !tracked:
+					diagnostic.Status = "untrackedPhysicalField"
+				case diagnostic.DeclaredRole == "":
+					diagnostic.Status = "legacy"
+				case diagnostic.DeclaredRole != diagnostic.SuggestedRole:
+					diagnostic.Status = "conflict"
+				default:
+					diagnostic.Status = "configured"
+				}
+			}
+			result = append(result, diagnostic)
+		}
+		for physicalName, field := range defined {
+			if _, ok := seen[physicalName]; ok {
+				continue
+			}
+			declaredRole := schema.AutoDateRole("")
+			if field.AutoDate != nil {
+				declaredRole = field.AutoDate.Role
+			}
+			result = append(result, AutoDateDiagnostic{
+				TableID: definition.TableID, FieldID: field.FieldID,
+				PhysicalName: field.PhysicalName, DisplayName: field.DisplayName,
+				DeclaredRole: declaredRole, Status: "missingPhysicalField",
+			})
+		}
+	}
+	byRole := map[string][]int{}
+	for index, diagnostic := range result {
+		if diagnostic.SuggestedRole == "" {
+			continue
+		}
+		key := diagnostic.TableID + "\x00" + string(diagnostic.SuggestedRole)
+		byRole[key] = append(byRole[key], index)
+	}
+	for _, indexes := range byRole {
+		if len(indexes) < 2 {
+			continue
+		}
+		for _, index := range indexes {
+			result[index].Status = "duplicateRole"
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].TableID == result[j].TableID {
+			return result[i].FieldID < result[j].FieldID
+		}
+		return result[i].TableID < result[j].TableID
+	})
+	return result, nil
+}
+
 func (catalog *Catalog) ValidateChange(
 	ctx context.Context,
 	change Change,
@@ -117,6 +259,9 @@ func (catalog *Catalog) ValidateChange(
 	}
 	normalized, err := normalize(change.Definition)
 	if err != nil {
+		return ValidationResult{}, err
+	}
+	if err := catalog.validateAutoDateProducerGate(normalized); err != nil {
 		return ValidationResult{}, err
 	}
 	if err := catalog.validateRelationReferences(ctx, normalized); err != nil {
@@ -159,6 +304,44 @@ func (catalog *Catalog) ValidateChange(
 		capabilities[field.DataType] = capability
 	}
 	return ValidationResult{Definition: normalized, Capabilities: capabilities}, nil
+}
+
+func (catalog *Catalog) validateAutoDateProducerGate(
+	next schema.TableDefinition,
+) error {
+	if catalog.autoDateProducerEnabled {
+		return nil
+	}
+	previous := schema.TableDefinition{}
+	record, err := catalog.findTable(catalog.app, next.TableID)
+	if err == nil {
+		decoded, _, decodeErr := decodeStoredTable(record)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		previous = decoded
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return storageError(err)
+	}
+	previousRoles := make(map[string]schema.AutoDateRole)
+	for _, field := range previous.Fields {
+		if field.DataType == schema.DataTypeAutoDate && field.AutoDate != nil {
+			previousRoles[field.FieldID] = field.AutoDate.Role
+		}
+	}
+	for index, field := range next.Fields {
+		if field.DataType != schema.DataTypeAutoDate || field.AutoDate == nil {
+			continue
+		}
+		if previousRoles[field.FieldID] != field.AutoDate.Role {
+			return &schema.ProductError{
+				Code:    "schema.field.autodate_producer_disabled",
+				Path:    fmt.Sprintf("fields[%d].autoDate", index),
+				Message: "automatic date field creation is disabled for this release",
+			}
+		}
+	}
+	return nil
 }
 
 func (catalog *Catalog) validateViewReference(
@@ -685,6 +868,7 @@ func (catalog *Catalog) ApplyChange(
 	}
 	definition := validation.Definition
 	requestHash := ""
+	schemaCreateStarted := false
 	if change.OperationID != "" {
 		raw, marshalErr := json.Marshal(struct {
 			Definition       schema.TableDefinition `json:"definition"`
@@ -749,6 +933,7 @@ func (catalog *Catalog) ApplyChange(
 		}
 
 		currentRevision := int64(0)
+		var previousDefinition schema.TableDefinition
 		if !isCreate {
 			storedDefinition, _, decodeErr := decodeStoredTable(existing)
 			if decodeErr != nil {
@@ -758,6 +943,7 @@ func (catalog *Catalog) ApplyChange(
 			if compatibilityErr := validateCompatibleAlter(storedDefinition, definition); compatibilityErr != nil {
 				return compatibilityErr
 			}
+			previousDefinition = storedDefinition
 		}
 		if currentRevision != change.ExpectedRevision {
 			return &schema.ProductError{
@@ -789,6 +975,28 @@ func (catalog *Catalog) ApplyChange(
 			if findErr != nil {
 				return storageError(findErr)
 			}
+			if metadataErr := validateAutoDateMetadataCompletion(
+				previousDefinition,
+				definition,
+				collection,
+			); metadataErr != nil {
+				return metadataErr
+			}
+			if hasNewAutoDateField(previousDefinition, definition) {
+				recordCount, countErr := txApp.CountRecords(collection)
+				if countErr != nil {
+					return storageError(countErr)
+				}
+				if recordCount != 0 {
+					autodateobs.Increment(autodateobs.BackfillRequired)
+					return &schema.ProductError{
+						Code:    "schema.field.autodate_backfill_required",
+						Path:    "fields",
+						Message: "automatic date fields require a trustworthy backfill for existing records",
+						Details: map[string]any{"recordCount": recordCount},
+					}
+				}
+			}
 			collection.Name = definition.PhysicalName
 			if definition.Kind == schema.TableKindBase {
 				preservedFieldIDs, findErr = catalog.fieldIDsByProductID(txApp, definition.TableID, collection)
@@ -807,6 +1015,7 @@ func (catalog *Catalog) ApplyChange(
 			// Persist the collection shell first so PocketBase can resolve a
 			// relation whose target is this same collection. The surrounding
 			// transaction keeps the two-phase create atomic.
+			schemaCreateStarted = true
 			if saveErr := txApp.Save(collection); saveErr != nil {
 				return storageError(saveErr)
 			}
@@ -905,6 +1114,9 @@ func (catalog *Catalog) ApplyChange(
 		return nil
 	})
 	if err != nil {
+		if schemaCreateStarted {
+			autodateobs.Increment(autodateobs.SchemaCreateRollback)
+		}
 		return schema.TableDefinition{}, err
 	}
 	return definition, nil
@@ -1850,6 +2062,18 @@ func validateCompatibleAlter(
 				old.Relation.TargetTableID != field.Relation.TargetTableID ||
 				old.Relation.Cardinality != field.Relation.Cardinality
 		}
+		if !incompatible && field.DataType == schema.DataTypeAutoDate {
+			if field.AutoDate == nil ||
+				(old.AutoDate != nil && old.AutoDate.Role != field.AutoDate.Role) {
+				autodateobs.Increment(autodateobs.RoleImmutable)
+				return &schema.ProductError{
+					Code:    "schema.field.autodate_role_immutable",
+					Path:    fmt.Sprintf("fields[%d].autoDate.role", index),
+					Message: "changing an automatic date role requires an explicit data migration",
+					Details: map[string]any{"fieldId": field.FieldID},
+				}
+			}
+		}
 		if incompatible {
 			return &schema.ProductError{
 				Code:    "schema.field.type_change_unsupported",
@@ -1866,4 +2090,86 @@ func validateCompatibleAlter(
 		}
 	}
 	return nil
+}
+
+func validateAutoDateMetadataCompletion(
+	previous schema.TableDefinition,
+	next schema.TableDefinition,
+	collection *core.Collection,
+) error {
+	previousByID := make(map[string]schema.FieldDefinition, len(previous.Fields))
+	for _, field := range previous.Fields {
+		previousByID[field.FieldID] = field
+	}
+	for index, field := range next.Fields {
+		old, exists := previousByID[field.FieldID]
+		if !exists || old.DataType != schema.DataTypeAutoDate ||
+			field.AutoDate == nil {
+			continue
+		}
+		pbField, ok := collection.Fields.GetByName(
+			field.PhysicalName,
+		).(*core.AutodateField)
+		if !ok {
+			return &schema.ProductError{
+				Code:    "schema.field.autodate_role_conflict",
+				Path:    fmt.Sprintf("fields[%d].autoDate.role", index),
+				Message: "legacy automatic date field is missing from PocketBase",
+				Details: map[string]any{"fieldId": field.FieldID},
+			}
+		}
+		var actual schema.AutoDateRole
+		switch {
+		case pbField.OnCreate && !pbField.OnUpdate:
+			actual = schema.AutoDateRoleCreatedAt
+		case pbField.OnCreate && pbField.OnUpdate:
+			actual = schema.AutoDateRoleUpdatedAt
+		default:
+			return &schema.ProductError{
+				Code:    "schema.field.autodate_role_conflict",
+				Path:    fmt.Sprintf("fields[%d].autoDate.role", index),
+				Message: "legacy automatic date switches do not map to a supported role",
+				Details: map[string]any{
+					"fieldId":  field.FieldID,
+					"onCreate": pbField.OnCreate,
+					"onUpdate": pbField.OnUpdate,
+				},
+			}
+		}
+		expected := field.AutoDate.Role
+		if old.AutoDate != nil {
+			expected = old.AutoDate.Role
+		}
+		if expected != actual {
+			return &schema.ProductError{
+				Code:    "schema.field.autodate_role_conflict",
+				Path:    fmt.Sprintf("fields[%d].autoDate.role", index),
+				Message: "declared automatic date role conflicts with PocketBase switches",
+				Details: map[string]any{
+					"fieldId":      field.FieldID,
+					"actualRole":   actual,
+					"declaredRole": expected,
+				},
+			}
+		}
+	}
+	return nil
+}
+
+func hasNewAutoDateField(
+	previous schema.TableDefinition,
+	next schema.TableDefinition,
+) bool {
+	previousIDs := make(map[string]struct{}, len(previous.Fields))
+	for _, field := range previous.Fields {
+		previousIDs[field.FieldID] = struct{}{}
+	}
+	for _, field := range next.Fields {
+		if field.DataType == schema.DataTypeAutoDate {
+			if _, exists := previousIDs[field.FieldID]; !exists {
+				return true
+			}
+		}
+	}
+	return false
 }
