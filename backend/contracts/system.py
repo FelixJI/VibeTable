@@ -18,7 +18,7 @@ from pydantic.alias_generators import to_camel
 PROTOCOL_VERSION: Final[str] = "1.0"
 
 #: Backend (Python) implementation version reported by ``system.handshake``.
-BACKEND_VERSION: Final[str] = "1.0.0"
+BACKEND_VERSION: Final[str] = "0.1.0"
 
 
 class HandshakeParams(BaseModel):

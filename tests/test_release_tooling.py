@@ -97,7 +97,7 @@ def test_sidecar_build_is_trimmed_reproducible_and_version_stamped() -> None:
     assert "-buildvcs=true" in command
     assert "-ldflags" in command
     ldflags = command[command.index("-ldflags") + 1]
-    assert "buildinfo.Version=1.0.0" in ldflags
+    assert f"buildinfo.Version={read_project_version(REPO_ROOT)}" in ldflags
     assert "buildinfo.Commit=abc123" in ldflags
     assert command[-1] == "./cmd/vibetable-pb"
 
@@ -115,7 +115,7 @@ def test_stage_release_assets_records_binary_hash_build_info_and_sbom(
     binary.parent.mkdir(parents=True)
     binary.write_bytes(b"fixed-sidecar")
     build_info = {
-        "version": "1.0.0",
+        "version": read_project_version(REPO_ROOT),
         "pocketBaseVersion": "0.39.9",
         "celVersion": "0.26.1",
         "contractVersion": "v1",
@@ -171,7 +171,7 @@ def test_package_verifier_rejects_tampered_sidecar(tmp_path: Path) -> None:
     build_next.stage_sidecar_assets(
         stage,
         build_info={
-            "version": "1.0.0",
+            "version": read_project_version(REPO_ROOT),
             "pocketBaseVersion": "0.39.9",
             "celVersion": "0.26.1",
             "contractVersion": "v1",

@@ -66,7 +66,7 @@ public sealed class PythonBackendSupervisor : IAsyncDisposable
     /// </summary>
     public const int ForcedKillExitCode = -1;
 
-    private const string ClientVersion = "1.0.0";
+    private const string ClientVersion = "0.1.0";
     private const string ProtocolVersion = "1.0";
 
     private readonly BackendLaunchOptions _options;

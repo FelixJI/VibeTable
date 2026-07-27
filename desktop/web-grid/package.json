@@ -1,7 +1,7 @@
 {
   "name": "vibetable-web-grid",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.1.0",
   "type": "module",
   "engines": {
     "node": ">=24 <25"
