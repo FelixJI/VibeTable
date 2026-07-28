@@ -409,6 +409,20 @@ def test_recovery_tool_versions_and_sums_have_one_committed_lock() -> None:
     assert "version" not in dependency_manifest["dependencies"]["age"]
 
 
+def test_release_build_prefers_the_exact_versioned_go_toolchain(
+    tmp_path: Path,
+) -> None:
+    suffix = "go.exe" if os.name == "nt" else "go"
+    exact = tmp_path / ".tools" / f"go-{build_next.RECOVERY_GO_VERSION}" / "go" / "bin" / suffix
+    stale = tmp_path / ".tools" / "go-full" / "go" / "bin" / suffix
+    exact.parent.mkdir(parents=True)
+    stale.parent.mkdir(parents=True)
+    exact.write_bytes(b"exact")
+    stale.write_bytes(b"stale")
+
+    assert build_next.resolve_go(tmp_path) == str(exact)
+
+
 def test_release_candidate_report_binds_the_exact_package_tree_and_archive(
     tmp_path: Path,
 ) -> None:

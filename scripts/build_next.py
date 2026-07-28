@@ -210,13 +210,17 @@ def _resolve_executable(name: str) -> str:
 def resolve_go(repo_root: Path) -> str:
     suffix = "go.exe" if os.name == "nt" else "go"
     candidates = (
-        repo_root / ".tools" / "go-full" / "go" / "bin" / suffix,
+        repo_root / ".tools" / f"go-{RECOVERY_GO_VERSION}" / "go" / "bin" / suffix,
         repo_root / ".tools" / "go" / "bin" / suffix,
     )
-    return next(
-        (str(path) for path in candidates if path.is_file()),
-        shutil.which("go") or "go",
-    )
+    local = next((str(path) for path in candidates if path.is_file()), None)
+    if local is not None:
+        return local
+    on_path = shutil.which("go")
+    if on_path is not None:
+        return on_path
+    legacy = repo_root / ".tools" / "go-full" / "go" / "bin" / suffix
+    return str(legacy) if legacy.is_file() else "go"
 
 
 def build_npm_build_command(_paths: RepoPaths) -> list[str]:
