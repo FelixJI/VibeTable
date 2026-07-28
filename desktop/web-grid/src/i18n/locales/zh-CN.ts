@@ -1030,7 +1030,7 @@ export const messages: Record<string, string> = {
   "workspaceV2.conflict.local": "保留本机版本",
   "workspaceV2.conflict.replica": "保留副本版本",
   "workspaceV2.conflict.both": "两者都保留",
-  "workspaceV2.conflict.bothHint": "保留当前文档，并把另一版本作为独立副本导入",
+  "workspaceV2.conflict.bothHint": "保留当前文档，并把另一版本保存在可恢复快照中",
   "workspaceV2.conflict.dependencies": "依赖闭包诊断",
   "workspaceV2.conflict.noDependencies": "未发现需要连带处理的依赖。",
   "workspaceV2.conflict.recovery": "未选中的一侧会保存在恢复快照中，不会静默丢弃。",

@@ -32,24 +32,26 @@ import (
 )
 
 type Options struct {
-	App                   core.App
-	DataDir               string
-	WorkspaceID           string
-	SessionEpoch          uint64
-	FenceEpoch            uint64
-	ClaimID               string
-	Ledger                *auditledger.Ledger
-	RequestShutdown       func()
-	ReplicaRemote         replica.VerifiedRemote
-	ReplicaRemoteFactory  func(context.Context) (replica.VerifiedRemote, error)
-	ReplicaRoot           string
-	ReplicaDeviceID       string
-	ReplicaPublicationKey []byte
-	DisableReplicaWorker  bool
+	App                      core.App
+	DataDir                  string
+	WorkspaceID              string
+	SessionEpoch             uint64
+	FenceEpoch               uint64
+	ClaimID                  string
+	Ledger                   *auditledger.Ledger
+	RequestShutdown          func()
+	ReplicaRemote            replica.VerifiedRemote
+	ReplicaRemoteFactory     func(context.Context) (replica.VerifiedRemote, error)
+	ReplicaRoot              string
+	ReplicaDeviceID          string
+	ReplicaPublicationKey    []byte
+	ReplicaDependencyScanner replica.ConflictDependencyScanner
+	DisableReplicaWorker     bool
 }
 
 type Runtime struct {
 	app                      core.App
+	paths                    workspacePaths
 	manifest                 contractsv2.WorkspaceManifest
 	dispatcher               *protocolv2.Dispatcher
 	state                    *stateStore
@@ -72,6 +74,7 @@ type Runtime struct {
 	fileAuditDrainer         *auditledger.Drainer
 	packageStagingRoot       string
 	snapshots                *snapshot.Coordinator
+	frozenSource             *frozenSource
 	scheduler                *snapshot.Scheduler
 	schedulerCancel          context.CancelFunc
 	schedulerWG              sync.WaitGroup
@@ -123,6 +126,7 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 
 	result := &Runtime{
 		app:             options.App,
+		paths:           paths,
 		manifest:        manifest,
 		ledger:          options.Ledger,
 		requestShutdown: options.RequestShutdown,
@@ -299,6 +303,7 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 		repository:      result.repository,
 		history:         result.history,
 	}
+	result.frozenSource = source
 	barrier, err := snapshot.NewCoordinatedBarrier(
 		result.coordinator,
 		token,
@@ -452,6 +457,13 @@ func (runtime *Runtime) CoordinateBusinessWrite(
 			return apply(bound)
 		},
 	)
+	if err == nil && runtime.replicaConflict != nil {
+		// A successful canonical commit must become durably visible as
+		// unsynchronized immediately. Waiting for the idle snapshot scheduler
+		// leaves a data-loss window in which Desktop could mistake an empty
+		// replica queue for a fully replicated workspace.
+		err = runtime.replicaConflict.markLocalMutationPending()
+	}
 	return err
 }
 

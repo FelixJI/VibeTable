@@ -107,12 +107,13 @@ func openProductionReplicaConflict(
 		PublicationPath: joinCoordination(
 			paths, "replica-publications.db",
 		),
-		PublicationKey: append([]byte(nil), options.ReplicaPublicationKey...),
-		Remote:         options.ReplicaRemote,
-		Catalog:        runtime.catalog,
-		Repository:     runtime.repository,
-		Authority:      runtimeReplicaAuthority{runtime: runtime},
-		Conflicts:      conflicts,
+		PublicationKey:    append([]byte(nil), options.ReplicaPublicationKey...),
+		Remote:            options.ReplicaRemote,
+		Catalog:           runtime.catalog,
+		Repository:        runtime.repository,
+		Authority:         runtimeReplicaAuthority{runtime: runtime},
+		Conflicts:         conflicts,
+		DependencyScanner: options.ReplicaDependencyScanner,
 		DestructiveSafe: func(ctx context.Context) error {
 			return runtime.retention.store.EnsureIntegrityHealthy(ctx)
 		},
@@ -381,6 +382,22 @@ func (owner *productionReplicaConflict) markPending(reason string) error {
 	return nil
 }
 
+func (owner *productionReplicaConflict) markLocalMutationPending() error {
+	if err := owner.markPending(
+		"replica.local_mutation_not_snapshotted",
+	); err != nil {
+		return err
+	}
+	// markPending uses "failed" for actual remote failures. A newly committed
+	// local mutation is healthy but necessarily pending until a snapshot is
+	// captured and its authenticated checkpoint is reopened.
+	return owner.persistCurrentStatus(
+		context.Background(),
+		"pending",
+		true,
+	)
+}
+
 func (owner *productionReplicaConflict) clearPending() error {
 	if owner == nil || owner.pendingPath == "" {
 		return nil
@@ -617,6 +634,26 @@ type listConflictParams struct {
 	Limit  int     `json:"limit"`
 }
 
+type conflictSummaryProjection struct {
+	ConflictID string `json:"conflictId"`
+	State      string `json:"state"`
+	CreatedAt  string `json:"createdAt"`
+	ItemCount  int    `json:"itemCount"`
+}
+
+type conflictItemProjection struct {
+	ConflictID     string   `json:"conflictId"`
+	ItemID         string   `json:"itemId"`
+	Kind           string   `json:"kind"`
+	Path           string   `json:"path"`
+	State          string   `json:"state"`
+	LocalSummary   string   `json:"localSummary"`
+	ReplicaSummary string   `json:"replicaSummary"`
+	BaseSummary    string   `json:"baseSummary"`
+	Dependencies   []string `json:"dependencies"`
+	Selected       *string  `json:"selected"`
+}
+
 func (owner *productionReplicaConflict) listConflicts(
 	ctx context.Context,
 	_ json.RawMessage,
@@ -635,19 +672,18 @@ func (owner *productionReplicaConflict) listConflicts(
 	if err != nil {
 		return nil, err
 	}
-	items := make([]map[string]any, 0, len(sets))
+	items := make([]conflictSummaryProjection, 0, len(sets))
 	for _, set := range sets {
-		items = append(items, map[string]any{
-			"conflictId": set.ConflictID,
-			"state":      string(set.State),
-			"createdAt": set.CreatedAt.UTC().Format(
-				"2006-01-02T15:04:05.999999999Z07:00",
+		plan := conflictresolution.BuildPlan(
+			set.Base, set.Local, set.Replica,
+		)
+		items = append(items, conflictSummaryProjection{
+			ConflictID: set.ConflictID,
+			State:      conflictProjectionState(set.State),
+			CreatedAt: set.CreatedAt.UTC().Format(
+				time.RFC3339Nano,
 			),
-			"itemCount": len(
-				conflictresolution.BuildPlan(
-					set.Base, set.Local, set.Replica,
-				).Files,
-			),
+			ItemCount: len(plan.Files) + len(plan.Tables),
 		})
 	}
 	return map[string]any{
@@ -679,20 +715,107 @@ func (owner *productionReplicaConflict) inspectConflict(
 	plan := conflictresolution.BuildPlan(
 		set.Base, set.Local, set.Replica,
 	)
-	items := make([]map[string]any, 0, len(plan.Files))
+	items := make(
+		[]conflictItemProjection,
+		0,
+		len(plan.Files)+len(plan.Tables),
+	)
 	for _, item := range plan.Files {
-		items = append(items, map[string]any{
-			"documentId": item.DocumentID,
-			"base":       item.Base,
-			"local":      item.Local,
-			"replica":    item.Replica,
+		items = append(items, conflictItemProjection{
+			ConflictID:     set.ConflictID,
+			ItemID:         item.DocumentID,
+			Kind:           string(conflictresolution.FileItem),
+			Path:           conflictFilePath(item),
+			State:          conflictProjectionState(set.State),
+			LocalSummary:   conflictFileSummary(item.Local),
+			ReplicaSummary: conflictFileSummary(item.Replica),
+			BaseSummary:    conflictFileSummary(item.Base),
+			Dependencies: append(
+				[]string(nil),
+				set.Dependencies.Edges[item.DocumentID]...,
+			),
+			Selected: nil,
+		})
+	}
+	for _, item := range plan.Tables {
+		items = append(items, conflictItemProjection{
+			ConflictID:     set.ConflictID,
+			ItemID:         item.TableID,
+			Kind:           string(conflictresolution.TableItem),
+			Path:           conflictTableName(item),
+			State:          conflictProjectionState(set.State),
+			LocalSummary:   conflictTableSummary(item.Local),
+			ReplicaSummary: conflictTableSummary(item.Replica),
+			BaseSummary:    conflictTableSummary(item.Base),
+			Dependencies: append(
+				[]string(nil),
+				set.Dependencies.Edges[item.TableID]...,
+			),
+			Selected: nil,
 		})
 	}
 	return map[string]any{
 		"conflictId": set.ConflictID,
-		"state":      string(set.State),
+		"state":      conflictProjectionState(set.State),
 		"items":      items,
 	}, nil
+}
+
+func conflictProjectionState(state conflictresolution.State) string {
+	switch state {
+	case conflictresolution.StatePending:
+		return "pending"
+	case conflictresolution.StateApplying:
+		return "validating"
+	case conflictresolution.StateApplied:
+		return "ready"
+	default:
+		return "failed"
+	}
+}
+
+func conflictFilePath(item conflictresolution.FileConflict) string {
+	for _, path := range []string{
+		item.Local.Path, item.Replica.Path, item.Base.Path,
+	} {
+		if strings.TrimSpace(path) != "" {
+			return path
+		}
+	}
+	return item.DocumentID
+}
+
+func conflictFileSummary(state conflictresolution.FileState) string {
+	if state.Deleted {
+		return "deleted"
+	}
+	if strings.TrimSpace(state.Path) == "" {
+		return "missing"
+	}
+	return state.Path + " · " + state.ContentID
+}
+
+func conflictTableName(item conflictresolution.TableConflict) string {
+	for _, name := range []string{
+		item.Local.DisplayName,
+		item.Replica.DisplayName,
+		item.Base.DisplayName,
+	} {
+		if strings.TrimSpace(name) != "" {
+			return name
+		}
+	}
+	return item.TableID
+}
+
+func conflictTableSummary(state conflictresolution.TableState) string {
+	if state.Deleted {
+		return "deleted"
+	}
+	if strings.TrimSpace(state.DisplayName) == "" {
+		return "missing"
+	}
+	return state.DisplayName + " · schema/records/views/attachments"
 }
 
 type previewConflictParams struct {
@@ -923,6 +1046,17 @@ func (appender *workspaceConflictAppender) Stage(
 		[]filehistory.ConflictSelection, 0, len(changes),
 	)
 	for _, change := range changes {
+		kind := change.Kind
+		if kind == "" && change.DocumentID != "" {
+			kind = conflictresolution.FileItem
+		}
+		if kind != conflictresolution.FileItem {
+			// Whole-table publication needs the PocketBase candidate database
+			// adapter. Until that production adapter can prove an atomic
+			// schema/records/views/attachments install, fail closed.
+			return conflictresolution.ApplyStage{},
+				conflictresolution.ErrApplyUnproven
+		}
 		selections = append(selections, filehistory.ConflictSelection{
 			DocumentID:       change.DocumentID,
 			ExpectedPath:     change.Previous.Path,

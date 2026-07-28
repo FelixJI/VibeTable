@@ -153,6 +153,55 @@ func TestProductionConflictRejectsIncompleteDependencyClosure(t *testing.T) {
 	}
 }
 
+func TestProductionConflictRequiresCompleteTypedChoicesAndAcceptsFileBoth(t *testing.T) {
+	engine, err := OpenEngine(filepath.Join(t.TempDir(), "conflicts.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	set := productionSet(true)
+	set.ConflictID = "conflict-typed-both"
+	set.Base.Files["doc-2"] = FileState{
+		DocumentID: "doc-2", Path: "b.txt", ContentID: "base-2",
+	}
+	set.Local.Files["doc-2"] = FileState{
+		DocumentID: "doc-2", Path: "b.txt", ContentID: "local-2",
+	}
+	set.Replica.Files["doc-2"] = FileState{
+		DocumentID: "doc-2", Path: "b.txt", ContentID: "replica-2",
+	}
+	set.Dependencies.Edges["doc-2"] = []string{}
+	if err := engine.Add(context.Background(), set); err != nil {
+		t.Fatal(err)
+	}
+
+	partial, err := engine.Preview(
+		context.Background(),
+		set.ConflictID,
+		[]Choice{{ItemID: "doc", Kind: FileItem, Side: Both}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if partial.Valid ||
+		len(partial.Diagnostics) != 1 ||
+		partial.Diagnostics[0] != "conflict.choice_missing" {
+		t.Fatalf("partial preview = %#v", partial)
+	}
+
+	preview, err := engine.Preview(
+		context.Background(),
+		set.ConflictID,
+		[]Choice{
+			{ItemID: "doc", Kind: FileItem, Side: Both},
+			{ItemID: "doc-2", Kind: FileItem, Side: Replica},
+		},
+	)
+	if err != nil || !preview.Valid || len(preview.Diagnostics) != 0 {
+		t.Fatalf("typed keep-both preview = %#v, %v", preview, err)
+	}
+}
+
 func TestInvalidPreviewReceiptSurvivesRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conflicts.db")
 	engine, err := OpenEngine(path)

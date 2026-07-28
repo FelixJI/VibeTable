@@ -21,6 +21,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
 	"github.com/vibetable/vibetable/sidecar/internal/replica"
+	"github.com/vibetable/vibetable/sidecar/internal/retention"
 )
 
 const (
@@ -245,6 +246,22 @@ func TestRepositoryLimitPausesOnlyAutomaticSnapshotsAndProjectsRealReasons(
 		protection.Quota.Warning != "snapshot.repository_limit_reached" {
 		t.Fatalf("durable quota status = %#v, %v", protection, err)
 	}
+	if runtime.retention.cancel != nil {
+		runtime.retention.cancel()
+		runtime.retention.wg.Wait()
+		runtime.retention.cancel = nil
+	}
+	maintenanceFailureAt := time.Date(
+		2026, 7, 29, 11, 0, 0, 0, time.UTC,
+	)
+	if err := runtime.retention.store.RecordMaintenanceFailure(
+		ctx,
+		retention.MaintenanceSweep,
+		"injected background maintenance failure",
+		maintenanceFailureAt,
+	); err != nil {
+		t.Fatal(err)
+	}
 	statusResponse := dispatch(
 		t,
 		runtime,
@@ -263,7 +280,15 @@ func TestRepositoryLimitPausesOnlyAutomaticSnapshotsAndProjectsRealReasons(
 		!status.AutomaticSnapshotsPaused ||
 		status.WarningCode == nil ||
 		*status.WarningCode != "snapshot.repository_limit_reached" ||
-		status.IntegrityStatus == "" {
+		status.IntegrityStatus == "" ||
+		status.MaintenanceFailure == nil ||
+		*status.MaintenanceFailure !=
+			"injected background maintenance failure" ||
+		status.MaintenanceFailureStage == nil ||
+		*status.MaintenanceFailureStage != "sweep" ||
+		status.LastMaintenanceFailureAt == nil ||
+		*status.LastMaintenanceFailureAt !=
+			maintenanceFailureAt.Format(time.RFC3339Nano) {
 		t.Fatalf("retention.status result = %#v", statusResponse.Result)
 	}
 	token, _ := runtime.coordinator.Current()
@@ -700,6 +725,21 @@ func TestRuntimeRegistersReplicaAndConflictOnlyForVerifiedRemote(t *testing.T) {
 	status := response.Result.(map[string]any)
 	if status["coordinationStrength"] != "advisory" {
 		t.Fatalf("advisory mislabeled: %#v", status)
+	}
+	if err := runtime.replicaConflict.markLocalMutationPending(); err != nil {
+		t.Fatal(err)
+	}
+	pendingResponse := dispatch(t, runtime, 2, "replica.status", `{}`)
+	if pendingResponse.Error != nil {
+		t.Fatalf(
+			"pending replica.status error = %#v",
+			pendingResponse.Error,
+		)
+	}
+	pending := pendingResponse.Result.(map[string]any)
+	if pending["syncState"] != "pending" ||
+		pending["pendingSync"] != true {
+		t.Fatalf("local mutation was not immediately pending: %#v", pending)
 	}
 }
 

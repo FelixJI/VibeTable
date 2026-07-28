@@ -86,6 +86,87 @@ describe("workspace v2 pending external file changes", () => {
   });
 });
 
+describe("workspace v2 conflict projections", () => {
+  it("parses non-empty list summaries independently from typed detail items", () => {
+    const conflictId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const listed = parseWorkspaceV2Reply({
+      ...reply,
+      method: "conflict.list",
+      result: {
+        conflicts: [{
+          conflictId,
+          state: "pending",
+          createdAt: "2026-07-28T09:00:00Z",
+          itemCount: 2,
+        }],
+        nextCursor: null,
+      },
+    });
+    expect(listed.ok).toBe(true);
+    if (listed.ok && listed.method === "conflict.list") {
+      expect(listed.result.conflicts[0]).toMatchObject({ conflictId, itemCount: 2 });
+    }
+
+    const inspected = parseWorkspaceV2Reply({
+      ...reply,
+      method: "conflict.inspect",
+      result: {
+        conflictId,
+        state: "pending",
+        items: [
+          {
+            conflictId,
+            itemId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            path: "Projects",
+            kind: "table",
+            state: "pending",
+            localSummary: "Local table",
+            replicaSummary: "Replica table",
+            baseSummary: "Base table",
+            dependencies: ["relation:Customers", "automation:Notify", "plugin:Calendar"],
+            selected: "local",
+          },
+          {
+            conflictId,
+            itemId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            path: "files/brief.docx",
+            kind: "file",
+            state: "pending",
+            localSummary: "Local file",
+            replicaSummary: "Replica file",
+            baseSummary: "Base file",
+            dependencies: [],
+            selected: "both",
+          },
+        ],
+      },
+    });
+    expect(inspected.ok).toBe(true);
+    if (inspected.ok && inspected.method === "conflict.inspect") {
+      expect(inspected.result.items.map((item) => [item.kind, item.selected]))
+        .toEqual([["table", "local"], ["file", "both"]]);
+      expect(inspected.result.items[0]?.dependencies).toHaveLength(3);
+    }
+  });
+
+  it("rejects list items that masquerade as detail projections", () => {
+    expect(() => parseWorkspaceV2Reply({
+      ...reply,
+      method: "conflict.list",
+      result: {
+        conflicts: [{
+          conflictId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          state: "pending",
+          createdAt: "2026-07-28T09:00:00Z",
+          itemCount: 1,
+          path: "must-not-appear-in-summary",
+        }],
+        nextCursor: null,
+      },
+    })).toThrow("conflict summary has unknown or missing fields");
+  });
+});
+
 describe("workspace v2 repository and extraction replies", () => {
   it("strictly parses an extraction plan", () => {
     const parsed = parseWorkspaceV2Reply({
@@ -132,6 +213,9 @@ describe("workspace v2 retention protection status", () => {
       integrityFailure: null,
       lastIncrementalCheckAt: "2026-07-28T09:00:00Z",
       lastFullCheckAt: "2026-07-01T09:00:00Z",
+      maintenanceFailure: "retention repository temporarily unavailable",
+      maintenanceFailureStage: "sweep",
+      lastMaintenanceFailureAt: "2026-07-29T09:00:00Z",
     },
   } as const;
 
@@ -141,6 +225,7 @@ describe("workspace v2 retention protection status", () => {
     if (parsed.ok && parsed.method === "retention.status") {
       expect(parsed.result.automaticSnapshotsPaused).toBe(true);
       expect(parsed.result.integrityStatus).toBe("verified");
+      expect(parsed.result.maintenanceFailureStage).toBe("sweep");
     }
   });
 
@@ -163,6 +248,16 @@ describe("workspace v2 retention protection status", () => {
       },
     };
     expect(() => parseWorkspaceV2Reply(corrupt))
+      .toThrow("retention status is inconsistent");
+
+    const incompleteMaintenance = {
+      ...statusReply,
+      result: {
+        ...statusReply.result,
+        maintenanceFailureStage: null,
+      },
+    };
+    expect(() => parseWorkspaceV2Reply(incompleteMaintenance))
       .toThrow("retention status is inconsistent");
   });
 });

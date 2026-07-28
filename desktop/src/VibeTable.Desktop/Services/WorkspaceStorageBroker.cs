@@ -712,17 +712,28 @@ public sealed class WorkspaceStorageBroker
             WorkspaceStorageMaintenanceLease.Acquire(
                 runtimeRoot,
                 plan.WorkspaceId);
-        if (_sessions.Current.WorkspaceId == plan.WorkspaceId)
+        bool closedActiveSession =
+            _sessions.Current.WorkspaceId == plan.WorkspaceId;
+        ulong? expectedMutationRevision = null;
+        if (closedActiveSession)
+        {
             _ = await _sessions.CloseAsync(
                     "workspace-storage-release-cache",
-                    cancellationToken)
+                    cancellationToken,
+                    synchronizeReplica: true)
                 .ConfigureAwait(false);
+            expectedMutationRevision =
+                _sessions.LastProtectionMutationRevision
+                ?? throw new WorkspaceRegistryException(
+                    "workspace.replica_high_watermark_missing",
+                    "The synchronized protection high-watermark is unavailable.");
+        }
         await maintenance.AcquireWriterFenceAsync(
                 runtimeRoot,
                 cancellationToken)
             .ConfigureAwait(false);
         current = RequiredWorkspace(plan.WorkspaceId);
-        if (current.PendingSync)
+        if (!closedActiveSession && current.PendingSync)
             throw new WorkspaceRegistryException(
                 "workspace.release_cache_unsafe",
                 "Synchronize the workspace before releasing its activity cache.");
@@ -753,6 +764,11 @@ public sealed class WorkspaceStorageBroker
         {
             throw StalePlan();
         }
+        if (expectedMutationRevision is ulong expected &&
+            receipt.MutationRevision < expected)
+            throw new WorkspaceRegistryException(
+                "workspace.release_cache_unsafe",
+                "The verified replica checkpoint does not cover the local mutation high-watermark.");
         var context = new ReleaseActivityCacheContext(
             SessionClosed: _sessions.Current.WorkspaceId != plan.WorkspaceId,
             ReplicaComplete: true,

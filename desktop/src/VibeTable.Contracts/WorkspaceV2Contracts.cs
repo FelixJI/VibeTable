@@ -533,8 +533,97 @@ public sealed record RpcGoldenCaseV2 : IWorkspaceV2Contract
             !schema.TryGetProperty("type", out var type) ||
             type.GetString() != "object" ||
             !schema.TryGetProperty("additionalProperties", out var additional) ||
-            additional.ValueKind != JsonValueKind.False)
+            additional.ValueKind != JsonValueKind.False ||
+            !ValidateSchemaNode(schema))
             throw new JsonException("RPC params/result schema must be a closed object.");
+    }
+
+    private static bool ValidateSchemaNode(JsonElement schema)
+    {
+        if (schema.ValueKind != JsonValueKind.Object ||
+            !schema.TryGetProperty("type", out JsonElement type))
+            return false;
+        if (type.ValueKind == JsonValueKind.Array)
+        {
+            if (!HasOnlySchemaKeys(schema, "type", "enum"))
+                return false;
+            string[] allowed =
+                ["string", "integer", "number", "boolean", "null"];
+            JsonElement[] values = type.EnumerateArray().ToArray();
+            return values.Length > 0 &&
+                values.All(item =>
+                    item.ValueKind == JsonValueKind.String &&
+                    allowed.Contains(
+                        item.GetString(),
+                        StringComparer.Ordinal));
+        }
+        if (type.ValueKind != JsonValueKind.String)
+            return false;
+        switch (type.GetString())
+        {
+            case "object":
+                if (!HasOnlySchemaKeys(
+                        schema,
+                        "type",
+                        "additionalProperties",
+                        "required",
+                        "properties") ||
+                    !schema.TryGetProperty(
+                        "additionalProperties",
+                        out JsonElement additional) ||
+                    additional.ValueKind != JsonValueKind.False ||
+                    !schema.TryGetProperty(
+                        "properties",
+                        out JsonElement properties) ||
+                    properties.ValueKind != JsonValueKind.Object ||
+                    !schema.TryGetProperty(
+                        "required",
+                        out JsonElement required) ||
+                    required.ValueKind != JsonValueKind.Array)
+                    return false;
+                string[] propertyNames = properties.EnumerateObject()
+                    .Select(property => property.Name)
+                    .ToArray();
+                string?[] requiredNames = required.EnumerateArray()
+                    .Select(item =>
+                        item.ValueKind == JsonValueKind.String
+                            ? item.GetString()
+                            : null)
+                    .ToArray();
+                return requiredNames.All(name => name is not null) &&
+                    requiredNames.Distinct(StringComparer.Ordinal).Count() ==
+                        requiredNames.Length &&
+                    requiredNames.Length == propertyNames.Length &&
+                    requiredNames!
+                        .Cast<string>()
+                        .ToHashSet(StringComparer.Ordinal)
+                        .SetEquals(propertyNames) &&
+                    properties.EnumerateObject().All(
+                        property => ValidateSchemaNode(property.Value));
+            case "array":
+                return HasOnlySchemaKeys(schema, "type", "items") &&
+                    schema.TryGetProperty(
+                        "items",
+                        out JsonElement items) &&
+                    ValidateSchemaNode(items);
+            case "string":
+            case "integer":
+            case "number":
+            case "boolean":
+            case "null":
+                return HasOnlySchemaKeys(schema, "type", "enum");
+            default:
+                return false;
+        }
+    }
+
+    private static bool HasOnlySchemaKeys(
+        JsonElement schema,
+        params string[] allowed)
+    {
+        HashSet<string> names = allowed.ToHashSet(StringComparer.Ordinal);
+        return schema.EnumerateObject().All(
+            property => names.Contains(property.Name));
     }
 
     private static void RequireExact(JsonElement value, IReadOnlyCollection<string> expected)

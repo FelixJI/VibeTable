@@ -1265,8 +1265,29 @@ public sealed class WorkspaceRequestDispatcher
             epochLease?.Dispose();
             return;
         }
+        if (endpoint.MutatesWorkspace &&
+            _sessionEnvelopeFilter?.Current.OpenMode ==
+                WorkspaceOpenMode.ReadOnly)
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "The workspace is open read-only.",
+                "WORKSPACE_READ_ONLY");
+            epochLease?.Dispose();
+            return;
+        }
         try
         {
+            if (endpoint.RequiresProtectionSnapshot &&
+                _sessionEnvelopeFilter is not null)
+            {
+                await _sessionEnvelopeFilter.ProtectCurrentAsync(
+                    $"before-{request.Type}",
+                    epochLease?.CancellationToken
+                        ?? CancellationToken.None).ConfigureAwait(false);
+                if (!IsRequestCurrent(epochLease))
+                    return;
+            }
             IProductDataRpcGateway? productGateway =
                 Volatile.Read(ref _productDataGateway);
             JsonElement result = string.Equals(

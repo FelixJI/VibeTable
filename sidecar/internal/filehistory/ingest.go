@@ -98,9 +98,17 @@ func (ConservativeIdentityResolver) Resolve(
 		sourcePath = change.TargetPath
 	}
 	if sourcePath != "" {
+		sourceKey, err := windowsPathKey(sourcePath)
+		if err != nil {
+			return IdentityResolution{}, err
+		}
 		var matches []string
 		for _, document := range documents {
-			if document.RelativePath == sourcePath {
+			documentKey, keyErr := windowsPathKey(document.RelativePath)
+			if keyErr != nil {
+				return IdentityResolution{}, keyErr
+			}
+			if documentKey == sourceKey {
 				matches = append(matches, document.DocumentID)
 			}
 		}

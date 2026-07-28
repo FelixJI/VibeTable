@@ -2,12 +2,18 @@ package workspacev2
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
+	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
@@ -55,10 +61,8 @@ func (runtime *Runtime) previewSnapshotRestore(
 	} else if !valid {
 		return nil, errors.New("snapshot.integrity_failed")
 	}
-	if _, err := runtime.snapshotFileHistoryRoot(
-		ctx,
-		record.ObjectMap,
-	); err != nil {
+	preview, err := runtime.buildSnapshotRestorePreview(ctx, record)
+	if err != nil {
 		return nil, err
 	}
 	_, counters := runtime.coordinator.Current()
@@ -68,13 +72,14 @@ func (runtime *Runtime) previewSnapshotRestore(
 		SnapshotID:       record.SnapshotID,
 		CatalogRevision:  record.CatalogRevision,
 		MutationRevision: counters.MutationRevision,
+		DiffHash:         preview.Hash,
 		TargetMode:       params.TargetMode,
 		ExpiresAt:        expiresAt.Format(time.RFC3339Nano),
 	}
 	result := map[string]any{
 		"planId":             plan.PlanID,
 		"protectionRequired": true,
-		"changes":            []string{},
+		"changes":            preview.Changes,
 	}
 	var putErr error
 	if operation, dispatched := protocolv2.OperationFromContext(ctx); dispatched {
@@ -151,13 +156,14 @@ func (runtime *Runtime) applySnapshotRestore(
 	} else if !valid {
 		return nil, errors.New("snapshot.integrity_failed")
 	}
-	historyRoot, err := runtime.snapshotFileHistoryRoot(
-		ctx,
-		record.ObjectMap,
-	)
+	preview, err := runtime.buildSnapshotRestorePreview(ctx, record)
 	if err != nil {
 		return nil, err
 	}
+	if preview.Hash != plan.DiffHash {
+		return nil, errors.New("restore.plan_stale")
+	}
+	historyRoot := preview.HistoryRoot
 	protection, err := runtime.protectionSnapshotForOperation(
 		ctx,
 		token,
@@ -221,4 +227,112 @@ func (runtime *Runtime) applySnapshotRestore(
 	runtime.dispatcher.SuspendWorkspace()
 	runtime.requestShutdown()
 	return result, nil
+}
+
+type snapshotRestorePreview struct {
+	Changes     []string
+	Hash        string
+	HistoryRoot objectrepo.ManifestID
+}
+
+func (runtime *Runtime) buildSnapshotRestorePreview(
+	ctx context.Context,
+	record snapshot.Record,
+) (snapshotRestorePreview, error) {
+	if runtime == nil || runtime.frozenSource == nil ||
+		runtime.history == nil {
+		return snapshotRestorePreview{},
+			errors.New("restore.preview_unavailable")
+	}
+	historyRoot, err := runtime.snapshotFileHistoryRoot(
+		ctx,
+		record.ObjectMap,
+	)
+	if err != nil {
+		return snapshotRestorePreview{}, err
+	}
+	fileDiff, err := runtime.history.PreviewSnapshotRestore(
+		ctx,
+		historyRoot,
+	)
+	if err != nil {
+		return snapshotRestorePreview{}, err
+	}
+	database, err := runtime.frozenSource.snapshotDatabase(ctx)
+	if err != nil {
+		return snapshotRestorePreview{}, err
+	}
+	settings, err := runtime.frozenSource.workspaceSettings()
+	if err != nil {
+		return snapshotRestorePreview{}, err
+	}
+	currentDatabaseID := contentIDReplicaOneShot(database)
+	currentSettingsID := contentIDReplicaOneShot(settings)
+	targetDatabaseID := record.ObjectMap["database"]
+	targetSettingsID := record.ObjectMap["workspace-settings"]
+	if targetDatabaseID == "" || targetSettingsID == "" {
+		return snapshotRestorePreview{},
+			errors.New("restore.snapshot_incomplete")
+	}
+	changes := make([]string, 0, 4)
+	if currentDatabaseID != targetDatabaseID {
+		changes = append(changes, "database:replace")
+	}
+	if len(fileDiff.EffectivePointerPaths) != 0 {
+		changes = append(
+			changes,
+			fmt.Sprintf(
+				"files:effective-pointers:%d",
+				len(fileDiff.EffectivePointerPaths),
+			),
+		)
+	}
+	if len(fileDiff.AddedAfterSnapshot) != 0 {
+		changes = append(
+			changes,
+			fmt.Sprintf(
+				"files:added-after-snapshot:%d",
+				len(fileDiff.AddedAfterSnapshot),
+			),
+		)
+	}
+	if currentSettingsID != targetSettingsID {
+		changes = append(changes, "workspace-settings:replace")
+	}
+	sort.Strings(changes)
+	binding := struct {
+		SnapshotID            string                `json:"snapshotId"`
+		CatalogRevision       uint64                `json:"catalogRevision"`
+		TargetDatabaseID      objectrepo.ObjectID   `json:"targetDatabaseId"`
+		CurrentDatabaseID     objectrepo.ObjectID   `json:"currentDatabaseId"`
+		TargetHistoryRoot     objectrepo.ManifestID `json:"targetHistoryRoot"`
+		CurrentHistoryRoot    objectrepo.ManifestID `json:"currentHistoryRoot"`
+		EffectivePointerPaths []string              `json:"effectivePointerPaths"`
+		AddedAfterSnapshot    []string              `json:"addedAfterSnapshot"`
+		TargetSettingsID      objectrepo.ObjectID   `json:"targetSettingsId"`
+		CurrentSettingsID     objectrepo.ObjectID   `json:"currentSettingsId"`
+		Changes               []string              `json:"changes"`
+	}{
+		SnapshotID:            record.SnapshotID,
+		CatalogRevision:       record.CatalogRevision,
+		TargetDatabaseID:      targetDatabaseID,
+		CurrentDatabaseID:     currentDatabaseID,
+		TargetHistoryRoot:     historyRoot,
+		CurrentHistoryRoot:    runtime.history.Root(),
+		EffectivePointerPaths: fileDiff.EffectivePointerPaths,
+		AddedAfterSnapshot:    fileDiff.AddedAfterSnapshot,
+		TargetSettingsID:      targetSettingsID,
+		CurrentSettingsID:     currentSettingsID,
+		Changes:               changes,
+	}
+	raw, err := json.Marshal(binding)
+	if err != nil {
+		return snapshotRestorePreview{}, err
+	}
+	sum := sha256.Sum256(raw)
+	return snapshotRestorePreview{
+		Changes:     changes,
+		Hash:        "sha256:" + hex.EncodeToString(sum[:]),
+		HistoryRoot: historyRoot,
+	}, nil
 }

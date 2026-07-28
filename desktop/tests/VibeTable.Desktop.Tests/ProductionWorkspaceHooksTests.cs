@@ -89,16 +89,22 @@ public sealed class ProductionWorkspaceHooksTests
         {
             operationId = operationId.ToString("D"),
             state = "ready",
+            snapshotId = Guid.NewGuid().ToString("D"),
+            mutationRevision = 7,
         });
         JsonElement queued = JsonSerializer.SerializeToElement(new
         {
             operationId = operationId.ToString("D"),
             state = "queued",
+            snapshotId = Guid.NewGuid().ToString("D"),
+            mutationRevision = 7,
         });
 
-        SidecarWorkspaceProtectionHook.EnsureProtectionCompleted(
+        ProtectionSnapshotReceipt receipt =
+            SidecarWorkspaceProtectionHook.EnsureProtectionCompleted(
             ready,
             operationId);
+        Assert.AreEqual(7UL, receipt.MutationRevision);
         WorkspaceRegistryException error =
             Assert.ThrowsExactly<WorkspaceRegistryException>(() =>
                 SidecarWorkspaceProtectionHook.EnsureProtectionCompleted(

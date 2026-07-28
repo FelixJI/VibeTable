@@ -95,6 +95,45 @@ public sealed class WorkspaceV2ContractTests
     }
 
     [TestMethod]
+    public void RpcCatalogRejectsUnclosedArrayItemSchemas()
+    {
+        foreach (string mutation in new[]
+                 {
+                     "untyped-items",
+                     "open-item",
+                     "missing-required",
+                 })
+        {
+            JsonObject catalog =
+                JsonNode.Parse(ReadFixture("rpc-catalog.json"))!.AsObject();
+            JsonObject conflict = catalog["rpcCases"]!.AsArray()
+                .Select(item => item!.AsObject())
+                .Single(item =>
+                    item["method"]!.GetValue<string>() ==
+                    "conflict.inspect");
+            JsonObject array = conflict["resultSchema"]!["properties"]![
+                "items"]!.AsObject();
+            JsonObject item = array["items"]!.AsObject();
+            switch (mutation)
+            {
+                case "untyped-items":
+                    array["items"] = new JsonObject();
+                    break;
+                case "open-item":
+                    item["additionalProperties"] = true;
+                    break;
+                case "missing-required":
+                    item["required"]!.AsArray().RemoveAt(0);
+                    break;
+            }
+            Assert.ThrowsExactly<JsonException>(
+                () => WorkspaceV2Json.DeserializeStrict<RpcContractCatalogV2>(
+                    catalog.ToJsonString()),
+                mutation);
+        }
+    }
+
+    [TestMethod]
     public void WorkspaceScopeRejectsLateEpochAndSequence()
     {
         var scope = new WorkspaceWireScope

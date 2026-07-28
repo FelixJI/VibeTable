@@ -116,7 +116,7 @@ func (remote *productionRemote) ReplicateCheckpoint(
 		ReplicaID:       checkpoint.ReplicaID,
 		SnapshotID:      checkpoint.SnapshotID,
 		CatalogRevision: checkpoint.CatalogRevision,
-		CheckpointID:    "checkpoint-1",
+		CheckpointID:    "sha256:" + strings.Repeat("c", 64),
 		RootDigest:      checkpoint.RootDigest,
 		CommittedAt: time.Date(
 			2026, 7, 28, 0, 1, 0, 0, time.UTC,
@@ -629,6 +629,13 @@ func TestQueueSynchronizePersistsWithoutRunningRemoteIO(t *testing.T) {
 	if remote.replications != 1 {
 		t.Fatalf("worker drain replications = %d", remote.replications)
 	}
+	if len(remote.publications) != 1 ||
+		remote.publications[0].Claim.Mode != Provisional {
+		t.Fatalf(
+			"advisory publication is not provisional: %#v",
+			remote.publications,
+		)
+	}
 }
 
 func TestProductionSyncFailsClosedOnInvalidIndependentVerification(t *testing.T) {
@@ -975,5 +982,79 @@ func TestProductionTakeoverJournalRecoversEveryRemoteCASKillWindow(t *testing.T)
 				)
 			}
 		})
+	}
+}
+
+type productionDependencyScanner struct {
+	graph conflictresolution.DependencyGraph
+	err   error
+}
+
+func (scanner productionDependencyScanner) ScanConflictDependencies(
+	context.Context,
+	conflictresolution.Candidate,
+	conflictresolution.Candidate,
+	conflictresolution.Candidate,
+) (conflictresolution.DependencyGraph, error) {
+	return scanner.graph, scanner.err
+}
+
+func TestConflictDependencyScanFailsClosedWithoutBusinessScanner(t *testing.T) {
+	manager := &Manager{}
+	table := conflictresolution.TableState{
+		TableID: "table-a", SchemaObjectID: "schema",
+		RecordsObjectID: "records", ViewsObjectID: "views",
+		AttachmentsObjectID: "attachments",
+	}
+	graph, err := manager.scanConflictDependencies(
+		context.Background(),
+		conflictresolution.Candidate{
+			BusinessDatabaseObjectID: "database-base",
+			Tables:                   map[string]conflictresolution.TableState{"table-a": table},
+		},
+		conflictresolution.Candidate{
+			BusinessDatabaseObjectID: "database-local",
+			Tables:                   map[string]conflictresolution.TableState{"table-a": table},
+		},
+		conflictresolution.Candidate{
+			BusinessDatabaseObjectID: "database-replica",
+			Tables:                   map[string]conflictresolution.TableState{"table-a": table},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if graph.Complete {
+		t.Fatalf("missing production scanner fabricated completeness: %#v", graph)
+	}
+	if _, ok := graph.Edges["table-a"]; !ok {
+		t.Fatalf("typed table omitted from incomplete graph: %#v", graph)
+	}
+}
+
+func TestConflictDependencyScanUsesProvenRelationAutomationAndPluginClosure(t *testing.T) {
+	expected := conflictresolution.DependencyGraph{
+		Complete: true,
+		Edges: map[string][]string{
+			"table-a":           {"relation:table-b", "automation:notify", "plugin:calendar"},
+			"relation:table-b":  {},
+			"automation:notify": {},
+			"plugin:calendar":   {},
+		},
+	}
+	manager := &Manager{dependencyScanner: productionDependencyScanner{graph: expected}}
+	graph, err := manager.scanConflictDependencies(
+		context.Background(),
+		conflictresolution.Candidate{},
+		conflictresolution.Candidate{},
+		conflictresolution.Candidate{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !graph.Complete ||
+		len(graph.Edges["table-a"]) != 3 ||
+		graph.Edges["table-a"][2] != "plugin:calendar" {
+		t.Fatalf("scanner closure was not preserved: %#v", graph)
 	}
 }

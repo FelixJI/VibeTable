@@ -349,6 +349,7 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
             ["replicaId"] = Guid.NewGuid().ToString("D"),
             ["snapshotId"] = Guid.NewGuid().ToString("D"),
             ["catalogRevision"] = 1UL,
+            ["mutationRevision"] = 1UL,
             ["checkpointId"] = "sha256:" + new string('b', 64),
             ["receiptHash"] = "sha256:" + new string('a', 64),
             ["verifiedAt"] = DateTimeOffset.UtcNow.ToString("O"),

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -18,17 +19,21 @@ import (
 )
 
 type productionRetention struct {
-	store      *retention.Store
-	production *retention.Production
-	source     *workspaceRetentionInventory
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	sweepMu    sync.Mutex
+	store               *retention.Store
+	production          *retention.Production
+	source              *workspaceRetentionInventory
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
+	sweepMu             sync.Mutex
+	backgroundIntegrity func(context.Context, time.Time) error
+	backgroundSweep     func(context.Context) (retention.MaintenanceResult, error)
+	logf                func(string, ...any)
 }
 
 type RetentionProtectionStatus struct {
-	Quota     retention.QuotaState
-	Integrity retention.IntegrityState
+	Quota       retention.QuotaState
+	Integrity   retention.IntegrityState
+	Maintenance retention.MaintenanceState
 }
 
 // RetentionProtectionStatus is a production status seam for the UI/RPC
@@ -50,8 +55,12 @@ func (runtime *Runtime) RetentionProtectionStatus(
 	if err != nil {
 		return RetentionProtectionStatus{}, err
 	}
+	maintenance, err := runtime.retention.store.MaintenanceState(ctx)
+	if err != nil {
+		return RetentionProtectionStatus{}, err
+	}
 	return RetentionProtectionStatus{
-		Quota: quota, Integrity: integrity,
+		Quota: quota, Integrity: integrity, Maintenance: maintenance,
 	}, nil
 }
 
@@ -122,11 +131,7 @@ func (composition *productionRetention) start() {
 		defer composition.wg.Done()
 		// Integrity cadence is durable. Startup and hourly ticks only run work
 		// that is due, so restart never duplicates the daily/monthly check.
-		if err := composition.runIntegrityIfDue(
-			ctx, time.Now().UTC(),
-		); err == nil {
-			_, _ = composition.sweep(ctx)
-		}
+		composition.runBackgroundMaintenance(ctx, time.Now().UTC())
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
 		for {
@@ -134,14 +139,94 @@ func (composition *productionRetention) start() {
 			case <-ctx.Done():
 				return
 			case now := <-ticker.C:
-				if err := composition.runIntegrityIfDue(
-					ctx, now.UTC(),
-				); err == nil {
-					_, _ = composition.sweep(ctx)
-				}
+				composition.runBackgroundMaintenance(ctx, now.UTC())
 			}
 		}
 	}()
+}
+
+func (composition *productionRetention) runBackgroundMaintenance(
+	ctx context.Context,
+	now time.Time,
+) {
+	integrity := composition.runIntegrityIfDue
+	if composition.backgroundIntegrity != nil {
+		integrity = composition.backgroundIntegrity
+	}
+	if err := integrity(ctx, now); err != nil {
+		if ctx.Err() == nil {
+			composition.recordBackgroundFailure(
+				ctx,
+				retention.MaintenanceIntegrity,
+				err,
+				now,
+			)
+		}
+		return
+	}
+	sweep := composition.sweep
+	if composition.backgroundSweep != nil {
+		sweep = composition.backgroundSweep
+	}
+	if _, err := sweep(ctx); err != nil {
+		if ctx.Err() == nil {
+			composition.recordBackgroundFailure(
+				ctx,
+				retention.MaintenanceSweep,
+				err,
+				now,
+			)
+		}
+		return
+	}
+	if err := composition.store.RecordMaintenanceSuccess(
+		context.WithoutCancel(ctx),
+	); err != nil {
+		composition.logBackground(
+			"workspace retention background status clear failed: %v",
+			err,
+		)
+	}
+}
+
+func (composition *productionRetention) recordBackgroundFailure(
+	ctx context.Context,
+	stage retention.MaintenanceStage,
+	failure error,
+	at time.Time,
+) {
+	persistErr := composition.store.RecordMaintenanceFailure(
+		context.WithoutCancel(ctx),
+		stage,
+		failure.Error(),
+		at,
+	)
+	if persistErr != nil {
+		composition.logBackground(
+			"workspace retention background %s failed: %v; "+
+				"status persistence failed: %v",
+			stage,
+			failure,
+			persistErr,
+		)
+		return
+	}
+	composition.logBackground(
+		"workspace retention background %s failed: %v",
+		stage,
+		failure,
+	)
+}
+
+func (composition *productionRetention) logBackground(
+	format string,
+	arguments ...any,
+) {
+	if composition.logf != nil {
+		composition.logf(format, arguments...)
+		return
+	}
+	log.Printf(format, arguments...)
 }
 
 func (composition *productionRetention) runIntegrityIfDue(

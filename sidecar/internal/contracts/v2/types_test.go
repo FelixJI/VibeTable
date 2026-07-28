@@ -73,6 +73,58 @@ func TestGoldenFixturesDecodeStrictly(t *testing.T) {
 	}
 }
 
+func TestRPCCatalogRejectsUnclosedArrayItemSchemas(t *testing.T) {
+	for _, mutation := range []string{
+		"untyped-items",
+		"open-item",
+		"missing-required",
+	} {
+		t.Run(mutation, func(t *testing.T) {
+			raw, err := os.ReadFile(
+				filepath.Join(fixturesDir(t), "rpc-catalog.json"),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document map[string]any
+			if err := json.Unmarshal(raw, &document); err != nil {
+				t.Fatal(err)
+			}
+			var target map[string]any
+			for _, rawCase := range document["rpcCases"].([]any) {
+				candidate := rawCase.(map[string]any)
+				if candidate["method"] == "conflict.inspect" {
+					target = candidate
+					break
+				}
+			}
+			if target == nil {
+				t.Fatal("conflict.inspect fixture missing")
+			}
+			schema := target["resultSchema"].(map[string]any)
+			properties := schema["properties"].(map[string]any)
+			array := properties["items"].(map[string]any)
+			item := array["items"].(map[string]any)
+			switch mutation {
+			case "untyped-items":
+				array["items"] = map[string]any{}
+			case "open-item":
+				item["additionalProperties"] = true
+			case "missing-required":
+				required := item["required"].([]any)
+				item["required"] = required[1:]
+			}
+			mutated, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := DecodeStrict[RPCContractCatalog](mutated); err == nil {
+				t.Fatal("unclosed array item schema was accepted")
+			}
+		})
+	}
+}
+
 func TestSharedNegativeFixtureCorpusFailsClosed(t *testing.T) {
 	type negativeCase struct {
 		Name      string   `json:"name"`

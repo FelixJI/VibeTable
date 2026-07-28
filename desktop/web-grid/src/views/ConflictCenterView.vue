@@ -27,13 +27,14 @@ const session = useWorkspaceSessionStore();
 const selectedId = ref<string | null>(null);
 const focusedId = ref<string | null>(null);
 
-const selected = computed(() =>
-  protection.conflicts.find((conflict) => conflict.conflictId === selectedId.value) ?? null);
+const conflictSets = computed(() => protection.conflictSets);
+const selectedItems = computed(() =>
+  protection.conflicts.filter((conflict) => conflict.conflictId === selectedId.value));
 const selectedPlan = computed(() =>
   selectedId.value ? protection.conflictPlans[selectedId.value] ?? null : null);
 const advisory = computed(() => session.activeWorkspace?.coordinationStrength === "advisory");
 
-watch(() => protection.conflicts, (conflicts) => {
+watch(conflictSets, (conflicts) => {
   if (!conflicts.some((conflict) => conflict.conflictId === selectedId.value)) {
     selectedId.value = conflicts[0]?.conflictId ?? null;
   }
@@ -43,7 +44,7 @@ watch(() => protection.conflicts, (conflicts) => {
 }, { immediate: true });
 
 function focusItem(index: number): void {
-  const conflict = protection.conflicts[index];
+  const conflict = conflictSets.value[index];
   if (!conflict) return;
   focusedId.value = conflict.conflictId;
   selectedId.value = conflict.conflictId;
@@ -52,30 +53,37 @@ function focusItem(index: number): void {
 }
 
 function onListKeydown(event: KeyboardEvent, index: number): void {
-  if (event.key === "ArrowDown") focusItem(Math.min(protection.conflicts.length - 1, index + 1));
+  if (event.key === "ArrowDown") focusItem(Math.min(conflictSets.value.length - 1, index + 1));
   else if (event.key === "ArrowUp") focusItem(Math.max(0, index - 1));
   else if (event.key === "Home") focusItem(0);
-  else if (event.key === "End") focusItem(protection.conflicts.length - 1);
+  else if (event.key === "End") focusItem(conflictSets.value.length - 1);
   else return;
   event.preventDefault();
 }
 
 function preview(): void {
-  if (!selected.value?.selected) return;
+  if (!selectedId.value || !selectedItems.value.length ||
+      selectedItems.value.some((item) => !item.selected)) return;
   emit("action", {
     method: "conflict.preview",
     params: {
-      conflictId: selected.value.conflictId,
-      choices: [{ item: selected.value.path, side: selected.value.selected }],
+      conflictId: selectedId.value,
+      choices: selectedItems.value.map((item) => ({
+        itemId: item.itemId,
+        kind: item.kind,
+        side: item.selected!,
+      })),
     },
   });
 }
 
-function chooseSelected(value: "local" | "replica" | "both"): void {
-  if (selected.value) {
-    protection.chooseConflict(selected.value.conflictId, value);
-    protection.setConflictPlan(selected.value.conflictId, null);
-  }
+function chooseSelected(
+  itemId: string,
+  value: "local" | "replica" | "both",
+): void {
+  if (!selectedId.value) return;
+  protection.chooseConflict(selectedId.value, itemId, value);
+  protection.setConflictPlan(selectedId.value, null);
 }
 
 function inspect(conflictId: string): void {
@@ -118,14 +126,14 @@ function inspect(conflictId: string): void {
       </template>
     </NAlert>
 
-    <div v-if="protection.conflicts.length" class="conflict-workbench">
+    <div v-if="conflictSets.length" class="conflict-workbench">
       <section
         class="conflict-list"
         role="listbox"
         :aria-label="t('workspaceV2.conflict.list')"
       >
         <button
-          v-for="(conflict, index) in protection.conflicts"
+          v-for="(conflict, index) in conflictSets"
           :key="conflict.conflictId"
           class="conflict-row"
           :class="{ selected: selectedId === conflict.conflictId }"
@@ -140,58 +148,61 @@ function inspect(conflictId: string): void {
             <AlertTriangle :size="15" />
           </span>
           <span>
-            <strong>{{ conflict.path }}</strong>
-            <small>{{ conflict.kind === "file" ? t("workspaceV2.conflict.file") : t("workspaceV2.conflict.table") }}</small>
+            <strong>{{ conflict.itemCount }} {{ t("workspaceV2.conflict.choice") }}</strong>
+            <small>{{ conflict.createdAt }}</small>
           </span>
-          <NTag size="small" :type="conflict.selected ? 'success' : 'warning'">
-            {{ conflict.selected ? t("workspaceV2.conflict.chosen") : t("workspaceV2.conflict.pending") }}
+          <NTag size="small" :type="conflict.state === 'ready' ? 'success' : 'warning'">
+            {{ conflict.state === "ready" ? t("workspaceV2.conflict.chosen") : t("workspaceV2.conflict.pending") }}
           </NTag>
         </button>
       </section>
 
-      <section v-if="selected" class="conflict-detail">
+      <section v-if="selectedItems.length" class="conflict-detail">
         <header>
-          <div><small>{{ selected.kind.toLocaleUpperCase() }}</small><strong>{{ selected.path }}</strong></div>
-          <NTag :type="selected.state === 'failed' ? 'error' : selected.state === 'ready' ? 'success' : 'warning'">
-            {{ t(`workspaceV2.conflict.state.${selected.state}`) }}
-          </NTag>
+          <div><small>CONFLICT SET</small><strong>{{ selectedItems.length }} {{ t("workspaceV2.conflict.choice") }}</strong></div>
         </header>
 
-        <div class="base-line">
-          <span>{{ t("workspaceV2.conflict.base") }}</span>
-          <p>{{ selected.baseSummary }}</p>
-        </div>
-
-        <NRadioGroup
-          :value="selected.selected"
-          class="choice-grid"
-          :aria-label="t('workspaceV2.conflict.choice')"
-          @update:value="chooseSelected"
-        >
-          <NRadioButton value="local" class="choice-card">
-            <span>{{ t("workspaceV2.conflict.local") }}</span>
-            <strong>{{ selected.localSummary }}</strong>
-          </NRadioButton>
-          <NRadioButton value="replica" class="choice-card">
-            <span>{{ t("workspaceV2.conflict.replica") }}</span>
-            <strong>{{ selected.replicaSummary }}</strong>
-          </NRadioButton>
-          <NRadioButton v-if="selected.kind === 'file'" value="both" class="choice-card">
-            <span>{{ t("workspaceV2.conflict.both") }}</span>
-            <strong>{{ t("workspaceV2.conflict.bothHint") }}</strong>
-          </NRadioButton>
-        </NRadioGroup>
-
-        <section class="dependency-panel">
-          <div>
-            <ShieldAlert :size="16" />
-            <strong>{{ t("workspaceV2.conflict.dependencies") }}</strong>
+        <article v-for="item in selectedItems" :key="item.itemId" class="conflict-item">
+          <header>
+            <div><small>{{ item.kind.toLocaleUpperCase() }}</small><strong>{{ item.path }}</strong></div>
+            <NTag :type="item.state === 'failed' ? 'error' : item.state === 'ready' ? 'success' : 'warning'">
+              {{ t(`workspaceV2.conflict.state.${item.state}`) }}
+            </NTag>
+          </header>
+          <div class="base-line">
+            <span>{{ t("workspaceV2.conflict.base") }}</span>
+            <p>{{ item.baseSummary }}</p>
           </div>
-          <p v-if="!selected.dependencies.length">{{ t("workspaceV2.conflict.noDependencies") }}</p>
-          <ul v-else>
-            <li v-for="dependency in selected.dependencies" :key="dependency">{{ dependency }}</li>
-          </ul>
-        </section>
+          <NRadioGroup
+            :value="item.selected"
+            class="choice-grid"
+            :aria-label="`${t('workspaceV2.conflict.choice')}: ${item.path}`"
+            @update:value="chooseSelected(item.itemId, $event as 'local' | 'replica' | 'both')"
+          >
+            <NRadioButton value="local" class="choice-card">
+              <span>{{ t("workspaceV2.conflict.local") }}</span>
+              <strong>{{ item.localSummary }}</strong>
+            </NRadioButton>
+            <NRadioButton value="replica" class="choice-card">
+              <span>{{ t("workspaceV2.conflict.replica") }}</span>
+              <strong>{{ item.replicaSummary }}</strong>
+            </NRadioButton>
+            <NRadioButton v-if="item.kind === 'file'" value="both" class="choice-card">
+              <span>{{ t("workspaceV2.conflict.both") }}</span>
+              <strong>{{ t("workspaceV2.conflict.bothHint") }}</strong>
+            </NRadioButton>
+          </NRadioGroup>
+          <section class="dependency-panel">
+            <div>
+              <ShieldAlert :size="16" />
+              <strong>{{ t("workspaceV2.conflict.dependencies") }}</strong>
+            </div>
+            <p v-if="!item.dependencies.length">{{ t("workspaceV2.conflict.noDependencies") }}</p>
+            <ul v-else>
+              <li v-for="dependency in item.dependencies" :key="dependency">{{ dependency }}</li>
+            </ul>
+          </section>
+        </article>
 
         <NAlert
           v-if="selectedPlan"
@@ -208,7 +219,7 @@ function inspect(conflictId: string): void {
           <div>
             <NButton
               size="small"
-              :disabled="!selected.selected"
+              :disabled="selectedItems.some((item) => !item.selected)"
               data-testid="conflict-preview"
               @click="preview"
             >

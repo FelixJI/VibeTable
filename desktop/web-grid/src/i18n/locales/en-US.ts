@@ -1030,7 +1030,7 @@ export const messages: Record<string, string> = {
   "workspaceV2.conflict.local": "Keep local",
   "workspaceV2.conflict.replica": "Keep replica",
   "workspaceV2.conflict.both": "Keep both",
-  "workspaceV2.conflict.bothHint": "Keep the current document and import the other version as a separate copy",
+  "workspaceV2.conflict.bothHint": "Keep the current document and preserve the other version in a recovery snapshot",
   "workspaceV2.conflict.dependencies": "Dependency closure diagnostics",
   "workspaceV2.conflict.noDependencies": "No related dependencies need coordinated handling.",
   "workspaceV2.conflict.recovery": "The unselected side is retained in a recovery snapshot and is never silently discarded.",

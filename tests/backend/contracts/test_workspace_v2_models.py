@@ -66,6 +66,27 @@ def test_v2_models_reject_unknown_and_missing_fields(
         model.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["untyped-items", "open-item", "missing-required"],
+)
+def test_rpc_catalog_rejects_unclosed_array_item_schemas(
+    mutation: str,
+) -> None:
+    payload = json.loads((FIXTURES / "rpc-catalog.json").read_text(encoding="utf-8"))
+    case = next(item for item in payload["rpcCases"] if item["method"] == "conflict.inspect")
+    items = case["resultSchema"]["properties"]["items"]["items"]
+    if mutation == "untyped-items":
+        case["resultSchema"]["properties"]["items"]["items"] = {}
+    elif mutation == "open-item":
+        items["additionalProperties"] = True
+    else:
+        items["required"].remove("itemId")
+
+    with pytest.raises(ValidationError, match="closed object"):
+        RpcContractCatalog.model_validate(payload)
+
+
 def test_file_revision_kind_invariants_are_closed() -> None:
     payload = json.loads((FIXTURES / "file-revision.json").read_text(encoding="utf-8"))
     payload["kind"] = "autosave"

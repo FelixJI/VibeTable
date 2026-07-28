@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Runtime.ExceptionServices;
 using VibeTable.Contracts;
 using VibeTable.Infrastructure.Workspace;
 
@@ -33,6 +34,20 @@ public interface IWorkspaceProtectionHook
         ulong sessionEpoch,
         string reason,
         CancellationToken cancellationToken);
+
+    async Task<ulong> ProtectAndSynchronizeAsync(
+        Guid workspaceId,
+        ulong sessionEpoch,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        await ProtectAsync(
+            workspaceId,
+            sessionEpoch,
+            reason,
+            cancellationToken);
+        return 0;
+    }
 }
 
 public interface IWorkspaceLeaseHook
@@ -87,6 +102,7 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
     }
 
     public WorkspaceSessionV2 Current => _current;
+    public ulong? LastProtectionMutationRevision { get; private set; }
 
     public event EventHandler<WorkspaceSessionChangedEventArgs>? Changed;
 
@@ -146,26 +162,32 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
                 Publish(_current with
                 {
                     State = WorkspaceSessionState.Switching,
-                    Phase = WorkspaceSessionPhase.Protecting,
+                    Phase = WorkspaceSessionPhase.Draining,
                     Writable = false,
                 });
-                if (previousMode == WorkspaceOpenMode.Writable)
+                await _requestDrain.DrainAsync(
+                    previousEntry.WorkspaceId,
+                    previousEpoch,
+                    cancellationToken);
+                if (previousMode != WorkspaceOpenMode.ReadOnly)
                 {
+                    Publish(_current with
+                    {
+                        Phase = WorkspaceSessionPhase.Protecting,
+                    });
                     await _protection.ProtectAsync(
                         previousEntry.WorkspaceId,
                         previousEpoch,
                         "workspace-switch",
                         cancellationToken);
                 }
-            Publish(_current with { Phase = WorkspaceSessionPhase.Draining });
-                await _requestDrain.DrainAsync(
-                    previousEntry.WorkspaceId,
-                    previousEpoch,
-                    cancellationToken);
+                Publish(_current with
+                {
+                    Phase = WorkspaceSessionPhase.Draining,
+                });
                 await _runtime.DrainAsync(cancellationToken);
                 Publish(_current with { Phase = WorkspaceSessionPhase.Stopping });
-                await StopAndDisposeCurrentAsync(cancellationToken);
-                await _lease.ReleaseAsync(
+                await StopDisposeAndReleaseCurrentAsync(
                     previousEntry.WorkspaceId,
                     previousEpoch,
                     cancellationToken);
@@ -263,7 +285,8 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
 
     public async Task<WorkspaceSessionV2> CloseAsync(
         string reason,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool synchronizeReplica = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
         await _gate.WaitAsync(cancellationToken);
@@ -277,20 +300,6 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
             WorkspaceOpenMode previousMode = _current.OpenMode;
             try
             {
-                if (_current.Writable)
-                {
-                    Publish(_current with
-                    {
-                        State = WorkspaceSessionState.Switching,
-                        Phase = WorkspaceSessionPhase.Protecting,
-                        Writable = false,
-                    });
-                    await _protection.ProtectAsync(
-                        workspaceId,
-                        epoch,
-                        reason,
-                        cancellationToken);
-                }
                 Publish(_current with
                 {
                     State = WorkspaceSessionState.Switching,
@@ -301,16 +310,49 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
                     workspaceId,
                     epoch,
                     cancellationToken);
+                if (previousMode != WorkspaceOpenMode.ReadOnly ||
+                    synchronizeReplica)
+                {
+                    Publish(_current with
+                    {
+                        Phase = WorkspaceSessionPhase.Protecting,
+                    });
+                    if (synchronizeReplica)
+                    {
+                        ulong revision =
+                            await _protection.ProtectAndSynchronizeAsync(
+                                workspaceId,
+                                epoch,
+                                reason,
+                                cancellationToken);
+                        if (revision == 0)
+                            throw new WorkspaceRegistryException(
+                                "workspace.replica_high_watermark_missing",
+                                "Replica synchronization did not return a mutation high-watermark.");
+                        LastProtectionMutationRevision = revision;
+                    }
+                    else
+                    {
+                        await _protection.ProtectAsync(
+                            workspaceId,
+                            epoch,
+                            reason,
+                            cancellationToken);
+                    }
+                    Publish(_current with
+                    {
+                        Phase = WorkspaceSessionPhase.Draining,
+                    });
+                }
                 await _runtime.DrainAsync(cancellationToken);
                 Publish(_current with
                 {
                     Phase = WorkspaceSessionPhase.Stopping,
                 });
-                await StopAndDisposeCurrentAsync(cancellationToken);
-                await _lease.ReleaseAsync(
+                await StopDisposeAndReleaseCurrentAsync(
                     workspaceId,
                     epoch,
-                    CancellationToken.None);
+                    cancellationToken);
                 Publish(ClosedSession(epoch));
                 return _current;
             }
@@ -399,8 +441,7 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
                 workspaceId,
                 sessionEpoch,
                 cancellationToken);
-            await StopAndDisposeCurrentAsync(CancellationToken.None);
-            await _lease.ReleaseAsync(
+            await StopDisposeAndReleaseCurrentAsync(
                 workspaceId,
                 sessionEpoch,
                 CancellationToken.None);
@@ -459,20 +500,10 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
             {
                 Guid workspaceId = _runtime.WorkspaceId;
                 ulong sessionEpoch = _runtime.SessionEpoch;
-                try
-                {
-                    await _runtime.StopAsync(CancellationToken.None);
-                }
-                finally
-                {
-                    await _runtime.DisposeAsync();
-                    _runtime = null;
-                    _currentEntry = null;
-                    await _lease.ReleaseAsync(
-                        workspaceId,
-                        sessionEpoch,
-                        CancellationToken.None);
-                }
+                await StopDisposeAndReleaseCurrentAsync(
+                    workspaceId,
+                    sessionEpoch,
+                    CancellationToken.None);
             }
             Publish(ClosedSession(_current.SessionEpoch));
         }
@@ -490,6 +521,7 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         var epoch = NextEpoch();
+        LastProtectionMutationRevision = null;
         await _preOpen.PrepareAsync(entry, cancellationToken);
         var grantedMode = await _lease.AcquireAsync(
             entry,
@@ -558,36 +590,98 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
             });
             return _current;
         }
-        catch
+        catch (Exception openError)
         {
-            await StopAndDisposeCurrentAsync(CancellationToken.None);
             try
             {
-                await _lease.ReleaseAsync(entry.WorkspaceId, epoch, CancellationToken.None);
+                await StopDisposeAndReleaseCurrentAsync(
+                    entry.WorkspaceId,
+                    epoch,
+                    CancellationToken.None);
             }
-            catch
+            catch (Exception cleanupError)
             {
-                // Preserve the original open failure; lease cleanup is retried on startup.
+                throw new AggregateException(openError, cleanupError);
             }
+            ExceptionDispatchInfo.Capture(openError).Throw();
             throw;
         }
     }
 
-    private async Task StopAndDisposeCurrentAsync(CancellationToken cancellationToken)
+    public async Task ProtectCurrentAsync(
+        string reason,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            ThrowIfDisposed();
+            if (_runtime is null ||
+                _current.WorkspaceId is not Guid workspaceId ||
+                _current.OpenMode == WorkspaceOpenMode.ReadOnly ||
+                _current.State is not (
+                    WorkspaceSessionState.OpenedWritable or
+                    WorkspaceSessionState.OpenedProvisional) ||
+                _current.Phase != WorkspaceSessionPhase.Idle)
+                throw new WorkspaceRegistryException(
+                    "workspace.protection_not_writable",
+                    "The current workspace session cannot run a protection snapshot.");
+            await _protection.ProtectAsync(
+                workspaceId,
+                _current.SessionEpoch,
+                reason,
+                cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private async Task StopDisposeAndReleaseCurrentAsync(
+        Guid workspaceId,
+        ulong sessionEpoch,
+        CancellationToken cancellationToken)
     {
         var runtime = _runtime;
         _runtime = null;
         _currentEntry = null;
-        if (runtime is null)
-            return;
+        List<Exception> failures = [];
+        if (runtime is not null)
+        {
+            try
+            {
+                await runtime.StopAsync(cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+            }
+            try
+            {
+                await runtime.DisposeAsync();
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+            }
+        }
         try
         {
-            await runtime.StopAsync(cancellationToken);
+            await _lease.ReleaseAsync(
+                workspaceId,
+                sessionEpoch,
+                CancellationToken.None);
         }
-        finally
+        catch (Exception exception)
         {
-            await runtime.DisposeAsync();
+            failures.Add(exception);
         }
+        if (failures.Count == 1)
+            ExceptionDispatchInfo.Capture(failures[0]).Throw();
+        if (failures.Count > 1)
+            throw new AggregateException(failures);
     }
 
     private WorkspaceRegistryEntryV2 FindEntry(Guid workspaceId) =>

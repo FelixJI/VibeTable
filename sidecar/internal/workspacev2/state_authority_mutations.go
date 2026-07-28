@@ -140,12 +140,13 @@ func (store *stateStore) putSnapshotRestorePlanWithOperationReceipt(
 			_, err := transaction.ExecContext(ctx, `
 				INSERT INTO snapshot_restore_plans (
 					plan_id, snapshot_id, catalog_revision,
-					mutation_revision, target_mode, expires_at
-				) VALUES (?, ?, ?, ?, ?, ?)`,
+					mutation_revision, diff_hash, target_mode, expires_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				plan.PlanID,
 				plan.SnapshotID,
 				plan.CatalogRevision,
 				plan.MutationRevision,
+				plan.DiffHash,
 				plan.TargetMode,
 				plan.ExpiresAt,
 			)

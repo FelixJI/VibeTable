@@ -37,6 +37,13 @@ public sealed class WorkspaceSessionEnvelopeFilter :
         _sessions.Changed += OnSessionChanged;
     }
 
+    public WorkspaceSessionV2 Current => _sessions.Current;
+
+    public Task ProtectCurrentAsync(
+        string reason,
+        CancellationToken cancellationToken)
+        => _sessions.ProtectCurrentAsync(reason, cancellationToken);
+
     public bool TryCapture(
         WorkspaceWireScope? scope,
         out WorkspaceRequestEpochLease? lease)

@@ -556,6 +556,9 @@ type RetentionStatus struct {
 	IntegrityFailure         *string `json:"integrityFailure"`
 	LastIncrementalCheckAt   *string `json:"lastIncrementalCheckAt"`
 	LastFullCheckAt          *string `json:"lastFullCheckAt"`
+	MaintenanceFailure       *string `json:"maintenanceFailure"`
+	MaintenanceFailureStage  *string `json:"maintenanceFailureStage"`
+	LastMaintenanceFailureAt *string `json:"lastMaintenanceFailureAt"`
 }
 
 func (value RetentionStatus) Validate() error {
@@ -575,9 +578,23 @@ func (value RetentionStatus) Validate() error {
 		(value.IntegrityFailure != nil) {
 		return errors.New("integrity failure state is inconsistent")
 	}
+	maintenanceFailure := value.MaintenanceFailure != nil
+	if maintenanceFailure != (value.MaintenanceFailureStage != nil) ||
+		maintenanceFailure != (value.LastMaintenanceFailureAt != nil) {
+		return errors.New("maintenance failure state is inconsistent")
+	}
+	if value.MaintenanceFailure != nil && *value.MaintenanceFailure == "" {
+		return errors.New("maintenance failure must not be empty")
+	}
+	if value.MaintenanceFailureStage != nil &&
+		*value.MaintenanceFailureStage != "integrity" &&
+		*value.MaintenanceFailureStage != "sweep" {
+		return errors.New("maintenance failure stage is invalid")
+	}
 	for _, raw := range []*string{
 		value.LastIncrementalCheckAt,
 		value.LastFullCheckAt,
+		value.LastMaintenanceFailureAt,
 	} {
 		if raw == nil {
 			continue
@@ -697,7 +714,92 @@ func (value RPCContractCatalog) Validate() error {
 }
 
 func closedSchema(value map[string]any) bool {
-	return value["type"] == "object" && value["additionalProperties"] == false
+	return value["type"] == "object" &&
+		value["additionalProperties"] == false &&
+		validRPCSchemaNode(value)
+}
+
+func validRPCSchemaNode(value any) bool {
+	node, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	switch nodeType := node["type"].(type) {
+	case []any:
+		if len(nodeType) == 0 || !onlyRPCSchemaKeys(node, "type", "enum") {
+			return false
+		}
+		for _, item := range nodeType {
+			name, ok := item.(string)
+			if !ok || !oneOf(
+				name,
+				"string", "integer", "number", "boolean", "null",
+			) {
+				return false
+			}
+		}
+		return true
+	case string:
+		switch nodeType {
+		case "object":
+			if !onlyRPCSchemaKeys(
+				node,
+				"type",
+				"additionalProperties",
+				"required",
+				"properties",
+			) || node["additionalProperties"] != false {
+				return false
+			}
+			properties, ok := node["properties"].(map[string]any)
+			if !ok {
+				return false
+			}
+			required, ok := node["required"].([]any)
+			if !ok || len(required) != len(properties) {
+				return false
+			}
+			seen := make(map[string]bool, len(required))
+			for _, item := range required {
+				name, ok := item.(string)
+				if !ok || seen[name] {
+					return false
+				}
+				if _, found := properties[name]; !found {
+					return false
+				}
+				seen[name] = true
+			}
+			for _, property := range properties {
+				if !validRPCSchemaNode(property) {
+					return false
+				}
+			}
+			return true
+		case "array":
+			return onlyRPCSchemaKeys(node, "type", "items") &&
+				validRPCSchemaNode(node["items"])
+		case "string", "integer", "number", "boolean", "null":
+			return onlyRPCSchemaKeys(node, "type", "enum")
+		}
+	}
+	return false
+}
+
+func onlyRPCSchemaKeys(value map[string]any, allowed ...string) bool {
+	if len(value) == 0 {
+		return false
+	}
+	expected := make(map[string]bool, len(allowed))
+	for _, name := range allowed {
+		expected[name] = true
+	}
+	for name := range value {
+		if !expected[name] {
+			return false
+		}
+	}
+	return true
 }
 
 func (value WorkspaceEvent) Validate() error {

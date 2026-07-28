@@ -43,18 +43,19 @@ type ReplicaOneShotOptions struct {
 // ReplicaOneShotReceipt is the single strict JSON document emitted by each
 // replica one-shot command.
 type ReplicaOneShotReceipt struct {
-	ActivityRoot    *string `json:"activityRoot"`
-	CatalogRevision uint64  `json:"catalogRevision"`
-	CheckpointID    string  `json:"checkpointId"`
-	ContractVersion string  `json:"contractVersion"`
-	Healthy         *bool   `json:"healthy,omitempty"`
-	Operation       string  `json:"operation"`
-	ReceiptHash     string  `json:"receiptHash"`
-	ReplicaID       string  `json:"replicaId"`
-	Restored        *bool   `json:"restored,omitempty"`
-	SnapshotID      string  `json:"snapshotId"`
-	VerifiedAt      string  `json:"verifiedAt"`
-	WorkspaceID     string  `json:"workspaceId"`
+	ActivityRoot     *string `json:"activityRoot"`
+	CatalogRevision  uint64  `json:"catalogRevision"`
+	CheckpointID     string  `json:"checkpointId"`
+	ContractVersion  string  `json:"contractVersion"`
+	Healthy          *bool   `json:"healthy,omitempty"`
+	MutationRevision uint64  `json:"mutationRevision"`
+	Operation        string  `json:"operation"`
+	ReceiptHash      string  `json:"receiptHash"`
+	ReplicaID        string  `json:"replicaId"`
+	Restored         *bool   `json:"restored,omitempty"`
+	SnapshotID       string  `json:"snapshotId"`
+	VerifiedAt       string  `json:"verifiedAt"`
+	WorkspaceID      string  `json:"workspaceId"`
 }
 
 type replicaOneShotSelection struct {
@@ -1157,12 +1158,13 @@ func buildReplicaOneShotReceipt(
 ) (ReplicaOneShotReceipt, error) {
 	healthy := true
 	receipt := ReplicaOneShotReceipt{
-		CatalogRevision: selection.publication.CatalogRevision,
-		CheckpointID:    selection.publication.CheckpointID,
-		ContractVersion: contractsv2.ContractVersion,
-		Operation:       operation,
-		ReplicaID:       selection.identity.ReplicaID,
-		SnapshotID:      selection.publication.SnapshotID,
+		CatalogRevision:  selection.publication.CatalogRevision,
+		CheckpointID:     selection.publication.CheckpointID,
+		ContractVersion:  contractsv2.ContractVersion,
+		MutationRevision: selection.bundle.Snapshot.MutationRevision,
+		Operation:        operation,
+		ReplicaID:        selection.identity.ReplicaID,
+		SnapshotID:       selection.publication.SnapshotID,
 		VerifiedAt: selection.verifiedAt.Format(
 			"2006-01-02T15:04:05.0000000Z07:00",
 		),

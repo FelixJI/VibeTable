@@ -18,6 +18,13 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 ) {
 	ctx := context.Background()
 	root := createWorkspace(t, testWorkspaceID)
+	if err := os.WriteFile(
+		filepath.Join(root, ".vibetable", "settings.json"),
+		[]byte(`{"theme":"system"}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
 	dataDir := filepath.Join(root, ".vibetable", "data")
 	app := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir: dataDir, HideStartBanner: true,
@@ -91,6 +98,21 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 	); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := runtime.history.Save(
+		ctx,
+		filehistory.SaveRequest{
+			Token:      token,
+			DocumentID: "33333333-3333-4333-8333-333333333333",
+			Path:       "plans/added-after-snapshot.txt",
+			Kind:       filehistory.RevisionFormal,
+			Content:    []byte("newer"),
+			MimeType:   "text/plain",
+			CreatedBy:  "test",
+			DeviceID:   testClaimID,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
 	previewRaw, _ := json.Marshal(previewSnapshotRestoreParams{
 		SnapshotID: target.SnapshotID,
 		TargetMode: "currentWorkspace",
@@ -101,7 +123,16 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 	}
 	previewMap := preview.(map[string]any)
 	changes, ok := previewMap["changes"].([]string)
-	if !ok || changes == nil || len(changes) != 0 {
+	if !ok || len(changes) < 2 ||
+		!containsRestorePreviewChange(changes, "database:replace") ||
+		!containsRestorePreviewPrefix(
+			changes,
+			"files:effective-pointers:",
+		) ||
+		!containsRestorePreviewPrefix(
+			changes,
+			"files:added-after-snapshot:",
+		) {
 		t.Fatalf("restore preview changes is not string[]: %#v", previewMap)
 	}
 	planID := previewMap["planId"].(string)
@@ -126,6 +157,36 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 	applyRaw, _ := json.Marshal(applySnapshotRestoreParams{
 		PlanID: planID, Confirmed: true,
 	})
+	settingsPath := filepath.Join(
+		root,
+		".vibetable",
+		"settings.json",
+	)
+	originalSettings, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		settingsPath,
+		[]byte(`{"changedAfterPreview":true}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.applySnapshotRestore(
+		ctx,
+		wire,
+		applyRaw,
+	); err == nil || err.Error() != "restore.plan_stale" {
+		t.Fatalf("unbound settings change was accepted: %v", err)
+	}
+	if err := os.WriteFile(
+		settingsPath,
+		originalSettings,
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := runtime.applySnapshotRestore(ctx, wire, applyRaw); err != nil {
 		t.Fatal(err)
 	}
@@ -222,6 +283,24 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 	)); !os.IsNotExist(err) {
 		t.Fatalf("committed restore left journal: %v", err)
 	}
+}
+
+func containsRestorePreviewChange(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func containsRestorePreviewPrefix(values []string, prefix string) bool {
+	for _, value := range values {
+		if len(value) >= len(prefix) && value[:len(prefix)] == prefix {
+			return true
+		}
+	}
+	return false
 }
 
 func TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness(

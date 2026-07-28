@@ -615,13 +615,6 @@ func (remote *FilesystemRemote) DiscoverConflicts(
 					publication.CanonicalHash,
 			),
 		).String()
-		edges := make(
-			map[string][]string,
-			len(replicaCandidate.Files),
-		)
-		for documentID := range replicaCandidate.Files {
-			edges[documentID] = []string{}
-		}
 		checkpoint := stored.Checkpoint
 		result = append(result, IncomingConflict{
 			Set: conflictresolution.Set{
@@ -637,8 +630,8 @@ func (remote *FilesystemRemote) DiscoverConflicts(
 				},
 				Replica: replicaCandidate,
 				Dependencies: conflictresolution.DependencyGraph{
-					Complete: true,
-					Edges:    edges,
+					Complete: false,
+					Edges:    map[string][]string{},
 				},
 				CreatedAt: publication.CreatedAt.UTC(),
 			},
@@ -781,8 +774,12 @@ func filesystemConflictCandidate(
 	}
 	candidate := conflictresolution.Candidate{
 		SnapshotID: bundle.Snapshot.SnapshotID,
-		Revision:   bundle.Snapshot.CatalogRevision,
-		Files:      map[string]conflictresolution.FileState{},
+		BusinessDatabaseObjectID: string(
+			bundle.Snapshot.ObjectMap["database"],
+		),
+		Revision: bundle.Snapshot.CatalogRevision,
+		Files:    map[string]conflictresolution.FileState{},
+		Tables:   map[string]conflictresolution.TableState{},
 	}
 	for _, document := range root.Documents {
 		state := conflictresolution.FileState{

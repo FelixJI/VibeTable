@@ -79,7 +79,92 @@
         "properties": {
           "workspaces": {
             "type": "array",
-            "items": {}
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "contractVersion",
+                "workspaceId",
+                "displayName",
+                "selectedRoot",
+                "activityRoot",
+                "storageKind",
+                "coordinationStrength",
+                "lastOpenedAt",
+                "lastKnownHealth",
+                "lastSnapshotAt",
+                "lastSyncAt",
+                "pendingSync"
+              ],
+              "properties": {
+                "contractVersion": {
+                  "type": "string"
+                },
+                "workspaceId": {
+                  "type": "string"
+                },
+                "displayName": {
+                  "type": "string"
+                },
+                "selectedRoot": {
+                  "type": "string"
+                },
+                "activityRoot": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "storageKind": {
+                  "type": "string",
+                  "enum": [
+                    "fixed",
+                    "network",
+                    "removable",
+                    "registeredCloud",
+                    "userMarkedSync"
+                  ]
+                },
+                "coordinationStrength": {
+                  "type": "string",
+                  "enum": [
+                    "strong",
+                    "advisory"
+                  ]
+                },
+                "lastOpenedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastKnownHealth": {
+                  "type": "string",
+                  "enum": [
+                    "healthy",
+                    "offline",
+                    "degraded",
+                    "corrupt",
+                    "unknown"
+                  ]
+                },
+                "lastSnapshotAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastSyncAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pendingSync": {
+                  "type": "boolean"
+                }
+              }
+            }
           }
         }
       },
@@ -103,7 +188,22 @@
           "sequence": 1
         },
         "result": {
-          "workspaces": []
+          "workspaces": [
+            {
+              "contractVersion": "2.0",
+              "workspaceId": "11111111-1111-4111-8111-111111111111",
+              "displayName": "季度规划",
+              "selectedRoot": "E:\\Workspaces\\Quarter",
+              "activityRoot": null,
+              "storageKind": "fixed",
+              "coordinationStrength": "strong",
+              "lastOpenedAt": null,
+              "lastKnownHealth": "healthy",
+              "lastSnapshotAt": null,
+              "lastSyncAt": null,
+              "pendingSync": false
+            }
+          ]
         }
       },
       "error": {
@@ -1275,7 +1375,9 @@
         "additionalProperties": false,
         "required": [
           "operationId",
-          "state"
+          "state",
+          "snapshotId",
+          "mutationRevision"
         ],
         "properties": {
           "operationId": {
@@ -1283,6 +1385,12 @@
           },
           "state": {
             "type": "string"
+          },
+          "snapshotId": {
+            "type": "string"
+          },
+          "mutationRevision": {
+            "type": "integer"
           }
         }
       },
@@ -1314,7 +1422,9 @@
         },
         "result": {
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "state": "queued"
+          "state": "ready",
+          "snapshotId": "77777777-7777-4777-8777-777777777777",
+          "mutationRevision": 42
         }
       },
       "error": {
@@ -1371,7 +1481,101 @@
         "properties": {
           "snapshots": {
             "type": "array",
-            "items": {}
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "snapshotId",
+                "createdAt",
+                "state",
+                "trigger",
+                "integrity",
+                "syncState",
+                "pinned",
+                "retentionReasons",
+                "logicalSize",
+                "physicalSize",
+                "note",
+                "catalogRevision"
+              ],
+              "properties": {
+                "snapshotId": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "queued",
+                    "barrier",
+                    "captured",
+                    "chunking",
+                    "verifying",
+                    "published",
+                    "syncing",
+                    "ready",
+                    "failed",
+                    "corrupt",
+                    "repairing"
+                  ]
+                },
+                "trigger": {
+                  "type": "string",
+                  "enum": [
+                    "automatic",
+                    "manual",
+                    "protection",
+                    "import",
+                    "restore"
+                  ]
+                },
+                "integrity": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "verified",
+                    "corrupt",
+                    "repairing"
+                  ]
+                },
+                "syncState": {
+                  "type": "string",
+                  "enum": [
+                    "localOnly",
+                    "pending",
+                    "syncing",
+                    "replicated",
+                    "failed"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                },
+                "retentionReasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "logicalSize": {
+                  "type": "integer"
+                },
+                "physicalSize": {
+                  "type": "integer"
+                },
+                "note": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "catalogRevision": {
+                  "type": "integer"
+                }
+              }
+            }
           },
           "nextCursor": {
             "type": [
@@ -1408,7 +1612,24 @@
           "sessionEpoch": 7
         },
         "result": {
-          "snapshots": [],
+          "snapshots": [
+            {
+              "snapshotId": "77777777-7777-4777-8777-777777777777",
+              "createdAt": "2026-07-28T10:00:00Z",
+              "state": "ready",
+              "trigger": "manual",
+              "integrity": "verified",
+              "syncState": "replicated",
+              "pinned": false,
+              "retentionReasons": [
+                "value"
+              ],
+              "logicalSize": 4096,
+              "physicalSize": 2048,
+              "note": null,
+              "catalogRevision": 1
+            }
+          ],
           "nextCursor": null
         }
       },
@@ -1656,7 +1877,9 @@
           },
           "changes": {
             "type": "array",
-            "items": {}
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -1689,7 +1912,9 @@
         "result": {
           "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           "protectionRequired": true,
-          "changes": []
+          "changes": [
+            "value"
+          ]
         }
       },
       "error": {
@@ -2445,7 +2670,9 @@
           },
           "corruptSnapshotIds": {
             "type": "array",
-            "items": {}
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -2476,7 +2703,9 @@
           "state": "verified",
           "snapshotCount": 1,
           "objectCount": 7,
-          "corruptSnapshotIds": []
+          "corruptSnapshotIds": [
+            "value"
+          ]
         }
       },
       "error": {
@@ -3503,7 +3732,95 @@
           },
           "revisions": {
             "type": "array",
-            "items": {}
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "contractVersion",
+                "revisionId",
+                "documentId",
+                "parentRevisionId",
+                "revisionOrdinal",
+                "formalVersion",
+                "kind",
+                "objectId",
+                "contentHash",
+                "size",
+                "mimeType",
+                "createdAt",
+                "createdBy",
+                "deviceId",
+                "comment",
+                "restoredFromRevisionId"
+              ],
+              "properties": {
+                "contractVersion": {
+                  "type": "string"
+                },
+                "revisionId": {
+                  "type": "string"
+                },
+                "documentId": {
+                  "type": "string"
+                },
+                "parentRevisionId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "revisionOrdinal": {
+                  "type": "integer"
+                },
+                "formalVersion": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "autosave",
+                    "formal",
+                    "restore"
+                  ]
+                },
+                "objectId": {
+                  "type": "string"
+                },
+                "contentHash": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "integer"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "createdBy": {
+                  "type": "string"
+                },
+                "deviceId": {
+                  "type": "string"
+                },
+                "comment": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "restoredFromRevisionId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
           }
         }
       },
@@ -3535,7 +3852,26 @@
         "result": {
           "documentId": "22222222-2222-4222-8222-222222222222",
           "effectiveRevisionId": "33333333-3333-4333-8333-333333333333",
-          "revisions": []
+          "revisions": [
+            {
+              "contractVersion": "2.0",
+              "revisionId": "88888888-8888-4888-8888-888888888888",
+              "documentId": "99999999-9999-4999-8999-999999999999",
+              "parentRevisionId": null,
+              "revisionOrdinal": 1,
+              "formalVersion": null,
+              "kind": "autosave",
+              "objectId": "obj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "contentHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "size": 128,
+              "mimeType": "text/csv",
+              "createdAt": "2026-07-28T10:00:00Z",
+              "createdBy": "user",
+              "deviceId": "66666666-6666-4666-8666-666666666666",
+              "comment": null,
+              "restoredFromRevisionId": null
+            }
+          ]
         }
       },
       "error": {
@@ -3992,7 +4328,10 @@
           "integrityStatus",
           "integrityFailure",
           "lastIncrementalCheckAt",
-          "lastFullCheckAt"
+          "lastFullCheckAt",
+          "maintenanceFailure",
+          "maintenanceFailureStage",
+          "lastMaintenanceFailureAt"
         ],
         "properties": {
           "repositoryUsageBytes": {
@@ -4038,6 +4377,29 @@
               "string",
               "null"
             ]
+          },
+          "maintenanceFailure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "maintenanceFailureStage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "integrity",
+              "sweep",
+              null
+            ]
+          },
+          "lastMaintenanceFailureAt": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -4072,7 +4434,10 @@
           "integrityStatus": "verified",
           "integrityFailure": null,
           "lastIncrementalCheckAt": "2026-07-28T00:00:00Z",
-          "lastFullCheckAt": "2026-07-01T00:00:00Z"
+          "lastFullCheckAt": "2026-07-01T00:00:00Z",
+          "maintenanceFailure": null,
+          "maintenanceFailureStage": null,
+          "lastMaintenanceFailureAt": null
         }
       },
       "error": {
@@ -4317,7 +4682,9 @@
           },
           "blockedReasons": {
             "type": "array",
-            "items": {}
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -4347,7 +4714,9 @@
         "result": {
           "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           "reclaimableBytes": 0,
-          "blockedReasons": []
+          "blockedReasons": [
+            "value"
+          ]
         }
       },
       "error": {
@@ -4730,7 +5099,36 @@
         "properties": {
           "conflicts": {
             "type": "array",
-            "items": {}
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "conflictId",
+                "state",
+                "createdAt",
+                "itemCount"
+              ],
+              "properties": {
+                "conflictId": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "validating",
+                    "ready",
+                    "failed"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "itemCount": {
+                  "type": "integer"
+                }
+              }
+            }
           },
           "nextCursor": {
             "type": [
@@ -4767,7 +5165,14 @@
           "sessionEpoch": 7
         },
         "result": {
-          "conflicts": [],
+          "conflicts": [
+            {
+              "conflictId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              "state": "pending",
+              "createdAt": "2026-07-28T10:00:00Z",
+              "itemCount": 2
+            }
+          ],
           "nextCursor": null
         }
       },
@@ -4821,11 +5226,86 @@
             "type": "string"
           },
           "state": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "pending",
+              "validating",
+              "ready",
+              "failed"
+            ]
           },
           "items": {
             "type": "array",
-            "items": {}
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "conflictId",
+                "itemId",
+                "path",
+                "kind",
+                "state",
+                "localSummary",
+                "replicaSummary",
+                "baseSummary",
+                "dependencies",
+                "selected"
+              ],
+              "properties": {
+                "conflictId": {
+                  "type": "string"
+                },
+                "itemId": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "table"
+                  ]
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "validating",
+                    "ready",
+                    "failed"
+                  ]
+                },
+                "localSummary": {
+                  "type": "string"
+                },
+                "replicaSummary": {
+                  "type": "string"
+                },
+                "baseSummary": {
+                  "type": "string"
+                },
+                "dependencies": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "selected": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "local",
+                    "replica",
+                    "both",
+                    null
+                  ]
+                }
+              }
+            }
           }
         }
       },
@@ -4857,7 +5337,22 @@
         "result": {
           "conflictId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           "state": "pending",
-          "items": []
+          "items": [
+            {
+              "conflictId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              "itemId": "document:99999999-9999-4999-8999-999999999999",
+              "path": "files/report.csv",
+              "kind": "file",
+              "state": "pending",
+              "localSummary": "local",
+              "replicaSummary": "replica",
+              "baseSummary": "base",
+              "dependencies": [
+                "value"
+              ],
+              "selected": null
+            }
+          ]
         }
       },
       "error": {
@@ -4898,7 +5393,35 @@
           },
           "choices": {
             "type": "array",
-            "items": {}
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "itemId",
+                "kind",
+                "side"
+              ],
+              "properties": {
+                "itemId": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "table"
+                  ]
+                },
+                "side": {
+                  "type": "string",
+                  "enum": [
+                    "local",
+                    "replica",
+                    "both"
+                  ]
+                }
+              }
+            }
           }
         }
       },
@@ -4916,7 +5439,9 @@
           },
           "diagnostics": {
             "type": "array",
-            "items": {}
+            "items": {
+              "type": "string"
+            }
           },
           "valid": {
             "type": "boolean"
@@ -4936,7 +5461,13 @@
         },
         "params": {
           "conflictId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "choices": []
+          "choices": [
+            {
+              "itemId": "document:99999999-9999-4999-8999-999999999999",
+              "kind": "file",
+              "side": "local"
+            }
+          ]
         }
       },
       "success": {
@@ -4951,7 +5482,9 @@
         },
         "result": {
           "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "diagnostics": [],
+          "diagnostics": [
+            "value"
+          ],
           "valid": true
         }
       },
@@ -5009,7 +5542,9 @@
           },
           "recoverySnapshotIds": {
             "type": "array",
-            "items": {}
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -5041,7 +5576,9 @@
         "result": {
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           "state": "applied",
-          "recoverySnapshotIds": []
+          "recoverySnapshotIds": [
+            "value"
+          ]
         }
       },
       "error": {

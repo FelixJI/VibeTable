@@ -56,6 +56,45 @@ def nullable_enum_string(example: str | None, *values: str) -> ContractValue:
     )
 
 
+def _schema_from_example(value: Any) -> dict[str, Any]:
+    if isinstance(value, ContractValue):
+        return value.schema
+    if isinstance(value, dict):
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(value),
+            "properties": {key: _schema_from_example(item) for key, item in value.items()},
+        }
+    if isinstance(value, list):
+        if not value:
+            raise ValueError("empty arrays require typed_array()/string_array()")
+        return {
+            "type": "array",
+            "items": _schema_from_example(value[0]),
+        }
+    if value is None:
+        return {"type": "null"}
+    if isinstance(value, bool):
+        return {"type": "boolean"}
+    if isinstance(value, int):
+        return {"type": "integer"}
+    if isinstance(value, float):
+        return {"type": "number"}
+    return {"type": "string"}
+
+
+def typed_array(item_example: Any) -> ContractValue:
+    return ContractValue(
+        [item_example],
+        {"type": "array", "items": _schema_from_example(item_example)},
+    )
+
+
+def string_array() -> ContractValue:
+    return typed_array("value")
+
+
 RPC_REGISTRY: tuple[Rpc, ...] = (
     Rpc(
         "workspace.list",
@@ -63,7 +102,38 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         "ListWorkspacesParams",
         "WorkspaceListResult",
         {},
-        {"workspaces": []},
+        {
+            "workspaces": typed_array(
+                {
+                    "contractVersion": "2.0",
+                    "workspaceId": WORKSPACE_ID,
+                    "displayName": "季度规划",
+                    "selectedRoot": "E:\\Workspaces\\Quarter",
+                    "activityRoot": nullable_string(),
+                    "storageKind": enum_string(
+                        "fixed",
+                        "fixed",
+                        "network",
+                        "removable",
+                        "registeredCloud",
+                        "userMarkedSync",
+                    ),
+                    "coordinationStrength": enum_string("strong", "strong", "advisory"),
+                    "lastOpenedAt": nullable_string(),
+                    "lastKnownHealth": enum_string(
+                        "healthy",
+                        "healthy",
+                        "offline",
+                        "degraded",
+                        "corrupt",
+                        "unknown",
+                    ),
+                    "lastSnapshotAt": nullable_string(),
+                    "lastSyncAt": nullable_string(),
+                    "pendingSync": False,
+                }
+            )
+        },
     ),
     Rpc(
         "workspace.create",
@@ -226,7 +296,12 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         "RequestSnapshotParams",
         "SnapshotOperationResult",
         {"trigger": "manual", "urgency": "foreground"},
-        {"operationId": OPERATION_ID, "state": "queued"},
+        {
+            "operationId": OPERATION_ID,
+            "state": "ready",
+            "snapshotId": "77777777-7777-4777-8777-777777777777",
+            "mutationRevision": 42,
+        },
     ),
     Rpc(
         "snapshot.list",
@@ -234,7 +309,58 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         "ListSnapshotsParams",
         "SnapshotListResult",
         {"cursor": nullable_string(), "limit": 50},
-        {"snapshots": [], "nextCursor": nullable_string()},
+        {
+            "snapshots": typed_array(
+                {
+                    "snapshotId": "77777777-7777-4777-8777-777777777777",
+                    "createdAt": "2026-07-28T10:00:00Z",
+                    "state": enum_string(
+                        "ready",
+                        "queued",
+                        "barrier",
+                        "captured",
+                        "chunking",
+                        "verifying",
+                        "published",
+                        "syncing",
+                        "ready",
+                        "failed",
+                        "corrupt",
+                        "repairing",
+                    ),
+                    "trigger": enum_string(
+                        "manual",
+                        "automatic",
+                        "manual",
+                        "protection",
+                        "import",
+                        "restore",
+                    ),
+                    "integrity": enum_string(
+                        "verified",
+                        "pending",
+                        "verified",
+                        "corrupt",
+                        "repairing",
+                    ),
+                    "syncState": enum_string(
+                        "replicated",
+                        "localOnly",
+                        "pending",
+                        "syncing",
+                        "replicated",
+                        "failed",
+                    ),
+                    "pinned": False,
+                    "retentionReasons": string_array(),
+                    "logicalSize": 4096,
+                    "physicalSize": 2048,
+                    "note": nullable_string(),
+                    "catalogRevision": 1,
+                }
+            ),
+            "nextCursor": nullable_string(),
+        },
     ),
     Rpc(
         "snapshot.inspect",
@@ -270,7 +396,11 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         "PreviewSnapshotRestoreParams",
         "RestorePlanResult",
         {"snapshotId": "77777777-7777-4777-8777-777777777777", "targetMode": "currentWorkspace"},
-        {"planId": OPERATION_ID, "protectionRequired": True, "changes": []},
+        {
+            "planId": OPERATION_ID,
+            "protectionRequired": True,
+            "changes": string_array(),
+        },
     ),
     Rpc(
         "snapshot.applyRestore",
@@ -379,7 +509,7 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
             "state": "verified",
             "snapshotCount": 1,
             "objectCount": 7,
-            "corruptSnapshotIds": [],
+            "corruptSnapshotIds": string_array(),
         },
     ),
     Rpc(
@@ -546,7 +676,26 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         {
             "documentId": "22222222-2222-4222-8222-222222222222",
             "effectiveRevisionId": nullable_string("33333333-3333-4333-8333-333333333333"),
-            "revisions": [],
+            "revisions": typed_array(
+                {
+                    "contractVersion": "2.0",
+                    "revisionId": "88888888-8888-4888-8888-888888888888",
+                    "documentId": "99999999-9999-4999-8999-999999999999",
+                    "parentRevisionId": nullable_string(),
+                    "revisionOrdinal": 1,
+                    "formalVersion": nullable_integer(),
+                    "kind": enum_string("autosave", "autosave", "formal", "restore"),
+                    "objectId": "obj_" + "a" * 64,
+                    "contentHash": "sha256:" + "b" * 64,
+                    "size": 128,
+                    "mimeType": "text/csv",
+                    "createdAt": "2026-07-28T10:00:00Z",
+                    "createdBy": "user",
+                    "deviceId": "66666666-6666-4666-8666-666666666666",
+                    "comment": nullable_string(),
+                    "restoredFromRevisionId": nullable_string(),
+                }
+            ),
         },
     ),
     Rpc(
@@ -624,6 +773,13 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
             "integrityFailure": nullable_string(),
             "lastIncrementalCheckAt": nullable_string("2026-07-28T00:00:00Z"),
             "lastFullCheckAt": nullable_string("2026-07-01T00:00:00Z"),
+            "maintenanceFailure": nullable_string(),
+            "maintenanceFailureStage": nullable_enum_string(
+                None,
+                "integrity",
+                "sweep",
+            ),
+            "lastMaintenanceFailureAt": nullable_string(),
         },
     ),
     Rpc(
@@ -660,7 +816,11 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         "PlanRetentionParams",
         "CleanupPlanResult",
         {},
-        {"planId": OPERATION_ID, "reclaimableBytes": 0, "blockedReasons": []},
+        {
+            "planId": OPERATION_ID,
+            "reclaimableBytes": 0,
+            "blockedReasons": string_array(),
+        },
     ),
     Rpc(
         "retention.apply",
@@ -700,7 +860,23 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         "ListConflictsParams",
         "ConflictListResult",
         {"cursor": nullable_string(), "limit": 50},
-        {"conflicts": [], "nextCursor": nullable_string()},
+        {
+            "conflicts": typed_array(
+                {
+                    "conflictId": OPERATION_ID,
+                    "state": enum_string(
+                        "pending",
+                        "pending",
+                        "validating",
+                        "ready",
+                        "failed",
+                    ),
+                    "createdAt": "2026-07-28T10:00:00Z",
+                    "itemCount": 2,
+                }
+            ),
+            "nextCursor": nullable_string(),
+        },
     ),
     Rpc(
         "conflict.inspect",
@@ -708,15 +884,51 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         "InspectConflictParams",
         "ConflictSetResult",
         {"conflictId": OPERATION_ID},
-        {"conflictId": OPERATION_ID, "state": "pending", "items": []},
+        {
+            "conflictId": OPERATION_ID,
+            "state": enum_string("pending", "pending", "validating", "ready", "failed"),
+            "items": typed_array(
+                {
+                    "conflictId": OPERATION_ID,
+                    "itemId": "document:99999999-9999-4999-8999-999999999999",
+                    "path": "files/report.csv",
+                    "kind": enum_string("file", "file", "table"),
+                    "state": enum_string(
+                        "pending",
+                        "pending",
+                        "validating",
+                        "ready",
+                        "failed",
+                    ),
+                    "localSummary": "local",
+                    "replicaSummary": "replica",
+                    "baseSummary": "base",
+                    "dependencies": string_array(),
+                    "selected": nullable_enum_string(None, "local", "replica", "both"),
+                }
+            ),
+        },
     ),
     Rpc(
         "conflict.preview",
         "workspace",
         "PreviewConflictParams",
         "ConflictPlanResult",
-        {"conflictId": OPERATION_ID, "choices": []},
-        {"planId": OPERATION_ID, "diagnostics": [], "valid": True},
+        {
+            "conflictId": OPERATION_ID,
+            "choices": typed_array(
+                {
+                    "itemId": "document:99999999-9999-4999-8999-999999999999",
+                    "kind": enum_string("file", "file", "table"),
+                    "side": enum_string("local", "local", "replica", "both"),
+                }
+            ),
+        },
+        {
+            "planId": OPERATION_ID,
+            "diagnostics": string_array(),
+            "valid": True,
+        },
     ),
     Rpc(
         "conflict.apply",
@@ -724,7 +936,11 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         "ApplyConflictParams",
         "ConflictResolutionResult",
         {"planId": OPERATION_ID},
-        {"operationId": OPERATION_ID, "state": "applied", "recoverySnapshotIds": []},
+        {
+            "operationId": OPERATION_ID,
+            "state": "applied",
+            "recoverySnapshotIds": string_array(),
+        },
     ),
 )
 
@@ -770,29 +986,7 @@ def _error_code(method: str) -> str:
 
 
 def _closed_schema(value: Any) -> dict[str, Any]:
-    if isinstance(value, ContractValue):
-        return value.schema
-    if isinstance(value, dict):
-        return {
-            "type": "object",
-            "additionalProperties": False,
-            "required": list(value),
-            "properties": {key: _closed_schema(item) for key, item in value.items()},
-        }
-    if isinstance(value, list):
-        return {
-            "type": "array",
-            "items": _closed_schema(value[0]) if value else {},
-        }
-    if value is None:
-        return {"type": "null"}
-    if isinstance(value, bool):
-        return {"type": "boolean"}
-    if isinstance(value, int):
-        return {"type": "integer"}
-    if isinstance(value, float):
-        return {"type": "number"}
-    return {"type": "string"}
+    return _schema_from_example(value)
 
 
 def _example(value: Any) -> Any:

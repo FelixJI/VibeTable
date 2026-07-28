@@ -289,7 +289,7 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     } else if (method === "replica.status") {
       applyReplicaStorageState(result.syncState, result.pendingSync);
     } else if (method === "conflict.list") {
-      protection.setConflicts(result.conflicts);
+      protection.setConflictSets(result.conflicts);
     } else if (method === "conflict.inspect") {
       protection.setConflicts(result.items);
     } else if (method === "conflict.preview" && action?.method === method) {

@@ -14,6 +14,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
+	"github.com/vibetable/vibetable/sidecar/internal/retention"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
@@ -141,6 +142,108 @@ func TestRetentionPolicyMapsOnlyEnabledSnapshotBuckets(t *testing.T) {
 		converted.TrashGrace != 90*24*time.Hour ||
 		converted.MinimumRecent != 50 {
 		t.Fatalf("converted policy = %#v", converted)
+	}
+}
+
+func TestBackgroundRetentionPersistsReportsAndClearsMaintenanceFailures(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	storePath := filepath.Join(t.TempDir(), "retention.db")
+	composition, err := openProductionRetentionStore(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	integrityFailure := errors.New("injected background integrity failure")
+	sweepFailure := errors.New("injected background sweep failure")
+	var (
+		logs       []string
+		sweepCalls int
+	)
+	composition.logf = func(format string, arguments ...any) {
+		logs = append(logs, fmt.Sprintf(format, arguments...))
+	}
+	composition.backgroundIntegrity = func(
+		context.Context,
+		time.Time,
+	) error {
+		return integrityFailure
+	}
+	composition.backgroundSweep = func(
+		context.Context,
+	) (retention.MaintenanceResult, error) {
+		sweepCalls++
+		return retention.MaintenanceResult{}, nil
+	}
+	composition.runBackgroundMaintenance(ctx, now)
+	if sweepCalls != 0 {
+		t.Fatal("sweep ran after background integrity failure")
+	}
+	state, err := composition.store.MaintenanceState(ctx)
+	if err != nil ||
+		state.Failure != integrityFailure.Error() ||
+		state.Stage != retention.MaintenanceIntegrity ||
+		state.FailedAt == nil ||
+		!state.FailedAt.Equal(now) {
+		t.Fatalf("integrity maintenance state = %#v, %v", state, err)
+	}
+	if err := composition.close(); err != nil {
+		t.Fatal(err)
+	}
+
+	composition, err = openProductionRetentionStore(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer composition.close()
+	state, err = composition.store.MaintenanceState(ctx)
+	if err != nil ||
+		state.Failure != integrityFailure.Error() ||
+		state.Stage != retention.MaintenanceIntegrity {
+		t.Fatalf("reopened maintenance state = %#v, %v", state, err)
+	}
+	composition.logf = func(format string, arguments ...any) {
+		logs = append(logs, fmt.Sprintf(format, arguments...))
+	}
+	composition.backgroundIntegrity = func(
+		context.Context,
+		time.Time,
+	) error {
+		return nil
+	}
+	composition.backgroundSweep = func(
+		context.Context,
+	) (retention.MaintenanceResult, error) {
+		sweepCalls++
+		return retention.MaintenanceResult{}, sweepFailure
+	}
+	composition.runBackgroundMaintenance(ctx, now.Add(time.Hour))
+	state, err = composition.store.MaintenanceState(ctx)
+	if err != nil ||
+		state.Failure != sweepFailure.Error() ||
+		state.Stage != retention.MaintenanceSweep {
+		t.Fatalf("sweep maintenance state = %#v, %v", state, err)
+	}
+
+	composition.backgroundSweep = func(
+		context.Context,
+	) (retention.MaintenanceResult, error) {
+		sweepCalls++
+		return retention.MaintenanceResult{}, nil
+	}
+	composition.runBackgroundMaintenance(ctx, now.Add(2*time.Hour))
+	state, err = composition.store.MaintenanceState(ctx)
+	if err != nil ||
+		state.Failure != "" ||
+		state.Stage != "" ||
+		state.FailedAt != nil {
+		t.Fatalf("cleared maintenance state = %#v, %v", state, err)
+	}
+	if len(logs) != 2 ||
+		!strings.Contains(logs[0], integrityFailure.Error()) ||
+		!strings.Contains(logs[1], sweepFailure.Error()) {
+		t.Fatalf("background maintenance logs = %#v", logs)
 	}
 }
 

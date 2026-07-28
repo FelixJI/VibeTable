@@ -56,8 +56,13 @@ type Set struct {
 }
 
 type Choice struct {
-	DocumentID string `json:"documentId"`
-	Side       Side   `json:"side"`
+	ItemID string   `json:"itemId"`
+	Kind   ItemKind `json:"kind"`
+	Side   Side     `json:"side"`
+
+	// DocumentID keeps source-level compatibility for internal callers while
+	// the wire contract uses the itemId+kind discriminated choice above.
+	DocumentID string `json:"-"`
 }
 
 type Preview struct {
@@ -760,24 +765,43 @@ func validateChoices(
 			ErrDependencyIncomplete.Error(),
 		}
 	}
-	conflicts := make(map[string]struct{}, len(plan.Files))
+	conflicts := make(
+		map[string]ItemKind,
+		len(plan.Files)+len(plan.Tables),
+	)
 	for _, item := range plan.Files {
-		conflicts[item.DocumentID] = struct{}{}
+		conflicts[item.DocumentID] = FileItem
+	}
+	for _, item := range plan.Tables {
+		if _, duplicate := conflicts[item.TableID]; duplicate {
+			return Resolution{}, []string{"conflict.item_id_collision"}
+		}
+		conflicts[item.TableID] = TableItem
 	}
 	resolution := Resolution{Choices: map[string]Side{}}
 	for _, choice := range choices {
-		if _, exists := conflicts[choice.DocumentID]; !exists ||
-			(choice.Side != Local && choice.Side != Replica) {
+		itemID := choice.ItemID
+		if itemID == "" {
+			itemID = choice.DocumentID
+		}
+		expectedKind, exists := conflicts[itemID]
+		kind := choice.Kind
+		if kind == "" && choice.DocumentID != "" {
+			kind = FileItem
+		}
+		sideValid := choice.Side == Local || choice.Side == Replica ||
+			(choice.Side == Both && expectedKind == FileItem)
+		if !exists || kind != expectedKind || !sideValid {
 			return Resolution{}, []string{
 				"conflict.choice_invalid",
 			}
 		}
-		if _, duplicate := resolution.Choices[choice.DocumentID]; duplicate {
+		if _, duplicate := resolution.Choices[itemID]; duplicate {
 			return Resolution{}, []string{
 				"conflict.choice_duplicate",
 			}
 		}
-		resolution.Choices[choice.DocumentID] = choice.Side
+		resolution.Choices[itemID] = choice.Side
 	}
 	if len(resolution.Choices) != len(conflicts) {
 		return Resolution{}, []string{

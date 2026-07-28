@@ -119,6 +119,18 @@ type ConflictSink interface {
 	Inspect(context.Context, string) (conflictresolution.Set, error)
 }
 
+// ConflictDependencyScanner owns the production relation/automation/plugin
+// dependency scan. It must set Complete only after all three immutable
+// candidates, including every whole-table component, were inspected.
+type ConflictDependencyScanner interface {
+	ScanConflictDependencies(
+		context.Context,
+		conflictresolution.Candidate,
+		conflictresolution.Candidate,
+		conflictresolution.Candidate,
+	) (conflictresolution.DependencyGraph, error)
+}
+
 type AuthorityState struct {
 	WorkspaceID string
 	FenceEpoch  uint64
@@ -131,19 +143,20 @@ type AuthorityTransfer interface {
 }
 
 type ManagerOptions struct {
-	WorkspaceID     string
-	DeviceID        string
-	QueuePath       string
-	StatePath       string
-	PublicationPath string
-	PublicationKey  []byte
-	Remote          VerifiedRemote
-	Catalog         SnapshotCatalog
-	Repository      objectrepo.Repository
-	Authority       AuthorityTransfer
-	Conflicts       ConflictSink
-	DestructiveSafe func(context.Context) error
-	Now             func() time.Time
+	WorkspaceID       string
+	DeviceID          string
+	QueuePath         string
+	StatePath         string
+	PublicationPath   string
+	PublicationKey    []byte
+	Remote            VerifiedRemote
+	Catalog           SnapshotCatalog
+	Repository        objectrepo.Repository
+	Authority         AuthorityTransfer
+	Conflicts         ConflictSink
+	DependencyScanner ConflictDependencyScanner
+	DestructiveSafe   func(context.Context) error
+	Now               func() time.Time
 }
 
 type Status struct {
@@ -154,22 +167,23 @@ type Status struct {
 }
 
 type Manager struct {
-	mu              sync.Mutex
-	workspace       string
-	device          string
-	identity        RemoteIdentity
-	remote          VerifiedRemote
-	catalog         SnapshotCatalog
-	repository      objectrepo.Repository
-	authority       AuthorityTransfer
-	conflicts       ConflictSink
-	conflictRemote  ConflictRemote
-	destructiveSafe func(context.Context) error
-	queue           *Queue
-	state           *productionState
-	strong          *StrongLease
-	advisory        *AdvisoryDAG
-	now             func() time.Time
+	mu                sync.Mutex
+	workspace         string
+	device            string
+	identity          RemoteIdentity
+	remote            VerifiedRemote
+	catalog           SnapshotCatalog
+	repository        objectrepo.Repository
+	authority         AuthorityTransfer
+	conflicts         ConflictSink
+	conflictRemote    ConflictRemote
+	dependencyScanner ConflictDependencyScanner
+	destructiveSafe   func(context.Context) error
+	queue             *Queue
+	state             *productionState
+	strong            *StrongLease
+	advisory          *AdvisoryDAG
+	now               func() time.Time
 }
 
 func OpenManager(ctx context.Context, options ManagerOptions) (_ *Manager, err error) {
@@ -205,18 +219,19 @@ func OpenManager(ctx context.Context, options ManagerOptions) (_ *Manager, err e
 		return nil, err
 	}
 	manager := &Manager{
-		workspace:       options.WorkspaceID,
-		device:          options.DeviceID,
-		identity:        identity,
-		remote:          options.Remote,
-		catalog:         options.Catalog,
-		repository:      options.Repository,
-		authority:       options.Authority,
-		conflicts:       options.Conflicts,
-		destructiveSafe: options.DestructiveSafe,
-		queue:           queue,
-		state:           state,
-		now:             options.Now,
+		workspace:         options.WorkspaceID,
+		device:            options.DeviceID,
+		identity:          identity,
+		remote:            options.Remote,
+		catalog:           options.Catalog,
+		repository:        options.Repository,
+		authority:         options.Authority,
+		conflicts:         options.Conflicts,
+		dependencyScanner: options.DependencyScanner,
+		destructiveSafe:   options.DestructiveSafe,
+		queue:             queue,
+		state:             state,
+		now:               options.Now,
 	}
 	if manager.now == nil {
 		manager.now = func() time.Time { return time.Now().UTC() }
@@ -486,21 +501,15 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 			}
 			set.Local = localCandidate
 		}
-		if len(set.Dependencies.Edges) == 0 {
-			set.Dependencies.Edges = map[string][]string{}
-		}
-		for _, source := range []conflictresolution.Candidate{
+		set.Dependencies, err = manager.scanConflictDependencies(
+			ctx,
 			set.Base,
 			set.Local,
 			set.Replica,
-		} {
-			for documentID := range source.Files {
-				if _, exists := set.Dependencies.Edges[documentID]; !exists {
-					set.Dependencies.Edges[documentID] = []string{}
-				}
-			}
+		)
+		if err != nil {
+			return err
 		}
-		set.Dependencies.Complete = true
 		if set.WorkspaceID != manager.workspace ||
 			set.State != conflictresolution.StatePending ||
 			set.Base.SnapshotID == "" ||
@@ -601,6 +610,49 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (manager *Manager) scanConflictDependencies(
+	ctx context.Context,
+	base conflictresolution.Candidate,
+	local conflictresolution.Candidate,
+	remote conflictresolution.Candidate,
+) (conflictresolution.DependencyGraph, error) {
+	if manager.dependencyScanner != nil {
+		graph, err := manager.dependencyScanner.ScanConflictDependencies(
+			ctx, base, local, remote,
+		)
+		if err != nil {
+			return conflictresolution.DependencyGraph{}, err
+		}
+		return graph, nil
+	}
+	// File-only candidates have no table relation/automation/plugin closure to
+	// discover. Any database or typed table divergence requires the production
+	// scanner and therefore remains explicitly incomplete.
+	databaseChanged :=
+		base.BusinessDatabaseObjectID != local.BusinessDatabaseObjectID ||
+			base.BusinessDatabaseObjectID != remote.BusinessDatabaseObjectID
+	hasTables := len(base.Tables)+len(local.Tables)+len(remote.Tables) > 0
+	graph := conflictresolution.DependencyGraph{
+		Complete: !databaseChanged && !hasTables,
+		Edges:    map[string][]string{},
+	}
+	for _, candidate := range []conflictresolution.Candidate{
+		base, local, remote,
+	} {
+		for documentID := range candidate.Files {
+			if _, exists := graph.Edges[documentID]; !exists {
+				graph.Edges[documentID] = []string{}
+			}
+		}
+		for tableID := range candidate.Tables {
+			if _, exists := graph.Edges[tableID]; !exists {
+				graph.Edges[tableID] = []string{}
+			}
+		}
+	}
+	return graph, nil
 }
 
 func (manager *Manager) installRecoveryBundle(
@@ -1225,7 +1277,11 @@ func (manager *Manager) publishAdvisory(
 			FenceEpoch:  authority.FenceEpoch,
 			Nonce:       replication.CheckpointID,
 			Strength:    Advisory,
-			Mode:        Writable,
+			// Filesystem/advisory replicas can never prove exclusive
+			// ownership. Their publications carry a provisional identity and
+			// device-local mutation serial until conflict resolution selects a
+			// canonical branch.
+			Mode:        Provisional,
 			IssuedAt:    now,
 			HeartbeatAt: now,
 			ExpiresAt:   now.Add(365 * 24 * time.Hour),

@@ -218,7 +218,8 @@ export interface WorkspaceV2RpcParams {
   readonly "conflict.preview": {
     readonly conflictId: string;
     readonly choices: readonly {
-      readonly item: string;
+      readonly itemId: string;
+      readonly kind: "file" | "table";
       readonly side: "local" | "replica" | "both";
     }[];
   };
@@ -295,8 +296,16 @@ export interface WorkspaceStoragePlan {
   readonly verificationReceiptId: string | null;
 }
 
+export interface WorkspaceConflictSummary {
+  readonly conflictId: string;
+  readonly state: "pending" | "validating" | "ready" | "failed";
+  readonly createdAt: string;
+  readonly itemCount: number;
+}
+
 export interface WorkspaceConflictItem {
   readonly conflictId: string;
+  readonly itemId: string;
   readonly path: string;
   readonly kind: "file" | "table";
   readonly state: "pending" | "validating" | "ready" | "failed";
@@ -394,6 +403,9 @@ export interface RetentionProtectionStatus {
   readonly integrityFailure: string | null;
   readonly lastIncrementalCheckAt: string | null;
   readonly lastFullCheckAt: string | null;
+  readonly maintenanceFailure: string | null;
+  readonly maintenanceFailureStage: "integrity" | "sweep" | null;
+  readonly lastMaintenanceFailureAt: string | null;
 }
 
 export interface WorkspaceV2RpcResultMap {
@@ -413,7 +425,10 @@ export interface WorkspaceV2RpcResultMap {
     readonly status: "applied";
     readonly storage: WorkspaceStorageProjection;
   };
-  readonly "snapshot.request": OperationResult;
+  readonly "snapshot.request": OperationResult & {
+    readonly snapshotId: string;
+    readonly mutationRevision: number;
+  };
   readonly "snapshot.list": {
     readonly snapshots: readonly SnapshotTimelineItem[];
     readonly nextCursor: string | null;
@@ -472,7 +487,7 @@ export interface WorkspaceV2RpcResultMap {
     readonly mode: "provisional";
   };
   readonly "conflict.list": {
-    readonly conflicts: readonly WorkspaceConflictItem[];
+    readonly conflicts: readonly WorkspaceConflictSummary[];
     readonly nextCursor: string | null;
   };
   readonly "conflict.inspect": {
@@ -716,7 +731,7 @@ function parseStorage(value: unknown): WorkspaceStorageProjection {
 function parseConflict(value: unknown): WorkspaceConflictItem {
   const source = object(value, "conflict projection");
   exact(source, [
-    "conflictId", "path", "kind", "state", "localSummary", "replicaSummary",
+    "conflictId", "itemId", "path", "kind", "state", "localSummary", "replicaSummary",
     "baseSummary", "dependencies", "selected",
   ], "conflict projection");
   const selected: "local" | "replica" | "both" | null = source.selected === null
@@ -724,6 +739,7 @@ function parseConflict(value: unknown): WorkspaceConflictItem {
     : oneOf(source.selected, ["local", "replica", "both"] as const, "conflict selection");
   return {
     conflictId: text(source.conflictId, "conflictId"),
+    itemId: text(source.itemId, "itemId"),
     path: text(source.path, "conflict path"),
     kind: oneOf(source.kind, ["file", "table"], "conflict kind"),
     state: oneOf(source.state, ["pending", "validating", "ready", "failed"], "conflict state"),
@@ -732,6 +748,19 @@ function parseConflict(value: unknown): WorkspaceConflictItem {
     baseSummary: text(source.baseSummary, "base summary"),
     dependencies: stringList(source.dependencies, "conflict dependencies"),
     selected,
+  };
+}
+
+function parseConflictSummary(value: unknown): WorkspaceConflictSummary {
+  const source = object(value, "conflict summary");
+  exact(source, [
+    "conflictId", "state", "createdAt", "itemCount",
+  ], "conflict summary");
+  return {
+    conflictId: text(source.conflictId, "conflictId"),
+    state: oneOf(source.state, ["pending", "validating", "ready", "failed"], "conflict state"),
+    createdAt: text(source.createdAt, "createdAt"),
+    itemCount: integer(source.itemCount, "itemCount", 0),
   };
 }
 
@@ -1075,6 +1104,9 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
       "integrityFailure",
       "lastIncrementalCheckAt",
       "lastFullCheckAt",
+      "maintenanceFailure",
+      "maintenanceFailureStage",
+      "lastMaintenanceFailureAt",
     ], `${method} result`);
     const paused = bool(
       source.automaticSnapshotsPaused,
@@ -1090,8 +1122,25 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
       source.integrityFailure,
       "integrityFailure",
     );
+    const maintenanceFailure = nullableText(
+      source.maintenanceFailure,
+      "maintenanceFailure",
+    );
+    const maintenanceFailureStage = source.maintenanceFailureStage === null
+      ? null
+      : oneOf(
+        source.maintenanceFailureStage,
+        ["integrity", "sweep"] as const,
+        "maintenanceFailureStage",
+      );
+    const lastMaintenanceFailureAt = nullableText(
+      source.lastMaintenanceFailureAt,
+      "lastMaintenanceFailureAt",
+    );
     if (paused !== (warningCode !== null)
-      || (integrityStatus === "corrupt") !== (integrityFailure !== null)) {
+      || (integrityStatus === "corrupt") !== (integrityFailure !== null)
+      || (maintenanceFailure !== null) !== (maintenanceFailureStage !== null)
+      || (maintenanceFailure !== null) !== (lastMaintenanceFailureAt !== null)) {
       throw new Error("retention status is inconsistent");
     }
     parsed = {
@@ -1114,6 +1163,9 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
         source.lastFullCheckAt,
         "lastFullCheckAt",
       ),
+      maintenanceFailure,
+      maintenanceFailureStage,
+      lastMaintenanceFailureAt,
     };
   } else if (method === "retention.plan") {
     exact(source, ["planId", "reclaimableBytes", "blockedReasons"], `${method} result`);
@@ -1146,7 +1198,7 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
     exact(source, ["conflicts", "nextCursor"], `${method} result`);
     if (!Array.isArray(source.conflicts)) throw new Error("conflicts must be an array");
     parsed = {
-      conflicts: source.conflicts.map(parseConflict),
+      conflicts: source.conflicts.map(parseConflictSummary),
       nextCursor: nullableText(source.nextCursor, "nextCursor"),
     };
   } else if (method === "conflict.inspect") {
@@ -1171,6 +1223,18 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
       operationId: text(source.operationId, "operationId"),
       state: "applied",
       recoverySnapshotIds: stringList(source.recoverySnapshotIds, "recoverySnapshotIds"),
+    };
+  } else if (method === "snapshot.request") {
+    exact(
+      source,
+      ["operationId", "state", "snapshotId", "mutationRevision"],
+      `${method} result`,
+    );
+    parsed = {
+      operationId: text(source.operationId, "operationId"),
+      state: text(source.state, "operation state"),
+      snapshotId: text(source.snapshotId, "snapshotId"),
+      mutationRevision: integer(source.mutationRevision, "mutationRevision", 1),
     };
   } else {
     exact(source, ["operationId", "state"], `${method} result`);

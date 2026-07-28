@@ -56,6 +56,19 @@ type QuotaState struct {
 	UpdatedAt                time.Time
 }
 
+type MaintenanceStage string
+
+const (
+	MaintenanceIntegrity MaintenanceStage = "integrity"
+	MaintenanceSweep     MaintenanceStage = "sweep"
+)
+
+type MaintenanceState struct {
+	Failure  string
+	Stage    MaintenanceStage
+	FailedAt *time.Time
+}
+
 type Store struct {
 	db *sql.DB
 }
@@ -154,6 +167,17 @@ func OpenStore(path string) (*Store, error) {
 			singleton, usage_bytes, limit_bytes,
 			automatic_snapshots_paused, warning, updated_at
 		) VALUES (1, 0, NULL, 0, '', '1970-01-01T00:00:00Z');
+		CREATE TABLE IF NOT EXISTS retention_maintenance_state (
+			singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+			failure TEXT NOT NULL,
+			stage TEXT NOT NULL CHECK(stage IN (
+				'', 'integrity', 'sweep'
+			)),
+			failed_at TEXT
+		);
+		INSERT OR IGNORE INTO retention_maintenance_state (
+			singleton, failure, stage, failed_at
+		) VALUES (1, '', '', NULL);
 	`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize retention store: %w", err)
@@ -376,6 +400,86 @@ func (store *Store) EnsureIntegrityHealthy(ctx context.Context) error {
 		return errors.New("retention.integrity_corrupt")
 	}
 	return nil
+}
+
+func (store *Store) MaintenanceState(
+	ctx context.Context,
+) (MaintenanceState, error) {
+	if store == nil || store.db == nil {
+		return MaintenanceState{}, errors.New("retention.store_closed")
+	}
+	var (
+		result      MaintenanceState
+		stage       string
+		failedAtRaw sql.NullString
+	)
+	err := store.db.QueryRowContext(ctx, `
+		SELECT failure, stage, failed_at
+		FROM retention_maintenance_state WHERE singleton = 1`,
+	).Scan(&result.Failure, &stage, &failedAtRaw)
+	if err != nil {
+		return MaintenanceState{}, err
+	}
+	result.Stage = MaintenanceStage(stage)
+	if result.Failure == "" {
+		if result.Stage != "" || failedAtRaw.Valid {
+			return MaintenanceState{},
+				errors.New("retention.maintenance_state_corrupt")
+		}
+		return result, nil
+	}
+	if (result.Stage != MaintenanceIntegrity &&
+		result.Stage != MaintenanceSweep) ||
+		!failedAtRaw.Valid {
+		return MaintenanceState{},
+			errors.New("retention.maintenance_state_corrupt")
+	}
+	failedAt, parseErr := time.Parse(time.RFC3339Nano, failedAtRaw.String)
+	if parseErr != nil {
+		return MaintenanceState{},
+			errors.New("retention.maintenance_state_corrupt")
+	}
+	result.FailedAt = &failedAt
+	return result, nil
+}
+
+func (store *Store) RecordMaintenanceFailure(
+	ctx context.Context,
+	stage MaintenanceStage,
+	failure string,
+	at time.Time,
+) error {
+	if store == nil || store.db == nil ||
+		(stage != MaintenanceIntegrity && stage != MaintenanceSweep) ||
+		failure == "" ||
+		at.IsZero() {
+		return errors.New("retention.maintenance_result_invalid")
+	}
+	const maximumFailureBytes = 4 << 10
+	if len(failure) > maximumFailureBytes {
+		failure = failure[:maximumFailureBytes]
+	}
+	_, err := store.db.ExecContext(ctx, `
+		UPDATE retention_maintenance_state
+		SET failure = ?, stage = ?, failed_at = ?
+		WHERE singleton = 1`,
+		failure,
+		string(stage),
+		at.UTC().Format(time.RFC3339Nano),
+	)
+	return err
+}
+
+func (store *Store) RecordMaintenanceSuccess(ctx context.Context) error {
+	if store == nil || store.db == nil {
+		return errors.New("retention.store_closed")
+	}
+	_, err := store.db.ExecContext(ctx, `
+		UPDATE retention_maintenance_state
+		SET failure = '', stage = '', failed_at = NULL
+		WHERE singleton = 1`,
+	)
+	return err
 }
 
 func (store *Store) Close() error {

@@ -287,6 +287,60 @@ func TestRenameDeletePreserveIdentityHistoryAndReservePath(t *testing.T) {
 	}
 }
 
+func TestWin32PathsRejectAliasesReservedNamesAndInvalidComponents(
+	t *testing.T,
+) {
+	for _, candidate := range []string{
+		"foo/foo.",
+		"foo/foo ",
+		"CON",
+		"NUL",
+		"nested/con.txt",
+		"nested/COM1.csv",
+		"nested/LPT².log",
+		"bad?.csv",
+	} {
+		t.Run(candidate, func(t *testing.T) {
+			if _, err := normalizePath(candidate); !errors.Is(err, ErrPathInvalid) {
+				t.Fatalf("normalizePath(%q) error = %v", candidate, err)
+			}
+		})
+	}
+
+	documents := map[string]Document{
+		testDocumentOne: {
+			DocumentID: testDocumentOne, RelativePath: "Report.csv",
+		},
+		testDocumentTwo: {
+			DocumentID: testDocumentTwo, RelativePath: "report.csv",
+		},
+	}
+	if err := validatePaths(documents); !errors.Is(err, ErrPathConflict) {
+		t.Fatalf("case-insensitive validatePaths error = %v", err)
+	}
+
+	fixture := newHistoryFixture(t)
+	ctx := context.Background()
+	if _, err := fixture.save(ctx, SaveRequest{
+		Token: fixture.token, DocumentID: testDocumentOne, Path: "Report.csv",
+		Kind: RevisionFormal, Content: []byte("first"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.save(ctx, SaveRequest{
+		Token: fixture.token, DocumentID: testDocumentOne, Path: "report.csv",
+		Kind: RevisionAutosave, Content: []byte("updated"),
+	}); err != nil {
+		t.Fatalf("equivalent path save error = %v", err)
+	}
+	if _, err := fixture.save(ctx, SaveRequest{
+		Token: fixture.token, DocumentID: testDocumentTwo, Path: "report.csv",
+		Kind: RevisionFormal, Content: []byte("second"),
+	}); !errors.Is(err, ErrPathConflict) {
+		t.Fatalf("case-insensitive save conflict error = %v", err)
+	}
+}
+
 func TestOpenRejectsCyclicRevisionGraphEvenWhenEffectiveRevisionIsALeaf(t *testing.T) {
 	fixture := newHistoryFixture(t)
 	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)

@@ -233,7 +233,14 @@ func (watcher *Watcher) Rescan(ctx context.Context) error {
 	activeByPath := make(map[string]Document, len(documents))
 	for _, document := range documents {
 		if document.Status == DocumentActive {
-			activeByPath[document.RelativePath] = document
+			key, keyErr := windowsPathKey(document.RelativePath)
+			if keyErr != nil {
+				return keyErr
+			}
+			if _, exists := activeByPath[key]; exists {
+				return ErrPathConflict
+			}
+			activeByPath[key] = document
 		}
 	}
 	paths := make([]string, 0, len(onDisk))
@@ -244,9 +251,13 @@ func (watcher *Watcher) Rescan(ctx context.Context) error {
 	token := watcher.token()
 	for _, relative := range paths {
 		content := onDisk[relative]
-		document, tracked := activeByPath[relative]
+		key, keyErr := windowsPathKey(relative)
+		if keyErr != nil {
+			return keyErr
+		}
+		document, tracked := activeByPath[key]
 		if tracked {
-			delete(activeByPath, relative)
+			delete(activeByPath, key)
 			effective := revisionByID(
 				document, document.EffectiveRevisionID,
 			)
@@ -291,15 +302,16 @@ func (watcher *Watcher) Rescan(ctx context.Context) error {
 			watcher.emit(WatchEvent{Path: relative, Mutated: true})
 		}
 	}
-	missing := make([]string, 0, len(activeByPath))
-	for relative := range activeByPath {
-		missing = append(missing, relative)
+	missing := make([]Document, 0, len(activeByPath))
+	for _, document := range activeByPath {
+		missing = append(missing, document)
 	}
-	sort.Strings(missing)
-	for _, relative := range missing {
-		document := activeByPath[relative]
+	sort.Slice(missing, func(left, right int) bool {
+		return missing[left].RelativePath < missing[right].RelativePath
+	})
+	for _, document := range missing {
 		watcher.emit(WatchEvent{
-			Path:    relative,
+			Path:    document.RelativePath,
 			Missing: true,
 			Confirmation: &IdentityConfirmation{
 				Reason: "tracked file is missing; delete, rename, or move " +

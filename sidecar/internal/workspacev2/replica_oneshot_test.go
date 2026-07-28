@@ -66,6 +66,7 @@ func TestReplicaOneShotReceiptHasStrictDesktopShape(t *testing.T) {
 			"catalogRevision",
 			"checkpointId",
 			"contractVersion",
+			"mutationRevision",
 			"operation",
 			"receiptHash",
 			"replicaId",

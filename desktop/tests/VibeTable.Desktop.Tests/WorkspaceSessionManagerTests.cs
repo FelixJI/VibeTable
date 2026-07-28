@@ -114,6 +114,42 @@ public sealed class WorkspaceSessionManagerTests
     }
 
     [TestMethod]
+    public async Task RuntimeStopFailureStillReleasesWriterLease()
+    {
+        using var fixture = new SessionFixture();
+        var first = fixture.AddWorkspace("一号", "One");
+        await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.Writable);
+        fixture.RuntimeFactory.FailNextStopFor = first.WorkspaceId;
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => fixture.Manager.CloseAsync("injected-stop-failure"));
+
+        Assert.AreEqual(0, fixture.Lease.Active);
+        Assert.AreEqual(0, fixture.RuntimeFactory.Active);
+        Assert.AreEqual(WorkspaceSessionState.Closed, fixture.Manager.Current.State);
+    }
+
+    [TestMethod]
+    public async Task ProvisionalCloseCreatesProtectionSnapshot()
+    {
+        using var fixture = new SessionFixture();
+        var first = fixture.AddWorkspace("一号", "One");
+        fixture.Lease.GrantedMode = WorkspaceOpenMode.Provisional;
+        await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.Writable);
+
+        await fixture.Manager.CloseAsync("provisional-close");
+
+        Assert.HasCount(1, fixture.Protection.Calls);
+        Assert.AreEqual(
+            "provisional-close",
+            fixture.Protection.Calls[0].Reason);
+    }
+
+    [TestMethod]
     public async Task RestoreRestartStopsAndVerifiesSameWorkspaceWithNewEpoch()
     {
         using var fixture = new SessionFixture();
@@ -255,6 +291,7 @@ public sealed class WorkspaceSessionManagerTests
         public int Created { get; private set; }
         public Guid? FailNextStartFor { get; set; }
         public Guid? FailNextDrainFor { get; set; }
+        public Guid? FailNextStopFor { get; set; }
         public ulong BoundSessionEpoch { get; private set; }
 
         public IWorkspaceRuntime Create(WorkspaceRegistryEntryV2 workspace, ulong sessionEpoch)
@@ -305,6 +342,12 @@ public sealed class WorkspaceSessionManagerTests
                     _started = false;
                     owner.Active--;
                 }
+                if (owner.FailNextStopFor == WorkspaceId)
+                {
+                    owner.FailNextStopFor = null;
+                    throw new InvalidOperationException(
+                        "injected stop failure");
+                }
                 return Task.CompletedTask;
             }
 
@@ -330,6 +373,7 @@ public sealed class WorkspaceSessionManagerTests
     private sealed class FakeLeaseHook : IWorkspaceLeaseHook
     {
         public int Active { get; private set; }
+        public WorkspaceOpenMode? GrantedMode { get; set; }
 
         public Task<WorkspaceOpenMode> AcquireAsync(
             WorkspaceRegistryEntryV2 workspace,
@@ -338,7 +382,7 @@ public sealed class WorkspaceSessionManagerTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Active++;
-            return Task.FromResult(requestedMode);
+            return Task.FromResult(GrantedMode ?? requestedMode);
         }
 
         public Task ReleaseAsync(

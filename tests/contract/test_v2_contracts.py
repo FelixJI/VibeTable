@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import subprocess
@@ -109,6 +110,16 @@ def test_v2_catalog_is_generated_and_workspace_scopes_are_complete() -> None:
         wire = case["request"]["wire"]
         assert case["success"]["wire"] == wire == case["error"]["wire"]
         assert case["request"]["method"] == case["method"]
+        _validate(
+            case["request"]["params"],
+            case["paramsSchema"],
+            case["paramsSchema"],
+        )
+        _validate(
+            case["success"]["result"],
+            case["resultSchema"],
+            case["resultSchema"],
+        )
         if case["scope"] == "workspace":
             assert set(wire) == {
                 "scope",
@@ -120,6 +131,40 @@ def test_v2_catalog_is_generated_and_workspace_scopes_are_complete() -> None:
         else:
             assert set(wire) == {"scope", "operationId", "sequence"}
     assert {case["topic"] for case in catalog["eventCases"]} == set(catalog["eventTopics"])
+
+
+def test_v2_catalog_nonempty_array_items_fail_closed() -> None:
+    catalog = _load(FIXTURES / "rpc-catalog.json")
+    assert isinstance(catalog, dict)
+    case = next(item for item in catalog["rpcCases"] if item["method"] == "conflict.inspect")
+    assert case["success"]["result"]["items"]
+    schema = case["resultSchema"]
+    for mutate in ("unknown", "enum", "required"):
+        result = copy.deepcopy(case["success"]["result"])
+        item = result["items"][0]
+        if mutate == "unknown":
+            item["unexpected"] = True
+        elif mutate == "enum":
+            item["kind"] = "row"
+        else:
+            item.pop("itemId")
+        try:
+            _validate(result, schema, schema)
+        except SchemaMismatchError:
+            continue
+        raise AssertionError(f"nested conflict item {mutate} was accepted")
+
+    def assert_typed_items(node: object) -> None:
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "array":
+            assert node.get("items"), "array schema has untyped items"
+        for value in node.values():
+            assert_typed_items(value)
+
+    for rpc_case in catalog["rpcCases"]:
+        assert_typed_items(rpc_case["paramsSchema"])
+        assert_typed_items(rpc_case["resultSchema"])
 
 
 def test_v1_contract_bytes_remain_frozen() -> None:

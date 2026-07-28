@@ -320,6 +320,7 @@ func activeLeaves(
 	documents map[string]Document,
 ) (map[string]materializedLeaf, error) {
 	result := make(map[string]materializedLeaf)
+	seen := make(map[string]struct{})
 	for _, document := range documents {
 		if document.Status != DocumentActive {
 			continue
@@ -332,9 +333,14 @@ func activeLeaves(
 		if revision == nil {
 			return nil, ErrStateCorrupt
 		}
-		if _, exists := result[relative]; exists {
+		key, err := windowsPathKey(relative)
+		if err != nil {
+			return nil, ErrUnsafeFilePath
+		}
+		if _, exists := seen[key]; exists {
 			return nil, ErrPathConflict
 		}
+		seen[key] = struct{}{}
 		result[relative] = materializedLeaf{
 			ObjectID: revision.ObjectID, ContentHash: revision.ContentHash,
 			Size: revision.Size,

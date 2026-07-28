@@ -148,6 +148,11 @@ type StagedSnapshotRestore struct {
 	Audit        auditledger.Envelope
 }
 
+type SnapshotRestoreDiff struct {
+	EffectivePointerPaths []string
+	AddedAfterSnapshot    []string
+}
+
 type rootPayload struct {
 	FormatVersion int        `json:"formatVersion"`
 	WorkspaceID   string     `json:"workspaceId"`
@@ -438,9 +443,20 @@ func (service *Service) Save(
 				if err := requireExpected(document, request.ExpectedEffectiveRevision); err != nil {
 					return err
 				}
-				if request.Path != "" &&
-					request.Path != document.RelativePath {
-					return ErrPathConflict
+				if request.Path != "" {
+					requestKey, keyErr := windowsPathKey(request.Path)
+					if keyErr != nil {
+						return keyErr
+					}
+					documentKey, keyErr := windowsPathKey(
+						document.RelativePath,
+					)
+					if keyErr != nil {
+						return keyErr
+					}
+					if requestKey != documentKey {
+						return ErrPathConflict
+					}
 				}
 			}
 			if err := pathAvailable(
@@ -769,6 +785,76 @@ func (service *Service) Root() objectrepo.ManifestID {
 	service.mu.RLock()
 	defer service.mu.RUnlock()
 	return service.root
+}
+
+// PreviewSnapshotRestore compares the immutable snapshot root with the
+// current authoritative file-history projection without creating repository
+// objects or changing the published head.
+func (service *Service) PreviewSnapshotRestore(
+	ctx context.Context,
+	sourceRoot objectrepo.ManifestID,
+) (SnapshotRestoreDiff, error) {
+	if sourceRoot == "" {
+		return SnapshotRestoreDiff{}, ErrStateCorrupt
+	}
+	source, err := loadDocumentsFromRoot(
+		ctx,
+		service.repository,
+		service.coordinatorWorkspaceID(),
+		sourceRoot,
+	)
+	if err != nil {
+		return SnapshotRestoreDiff{}, err
+	}
+	service.mu.RLock()
+	current := cloneDocuments(service.documents)
+	service.mu.RUnlock()
+	result := SnapshotRestoreDiff{}
+	for documentID, live := range current {
+		target, exists := source[documentID]
+		if !exists {
+			if live.Status == DocumentActive {
+				result.AddedAfterSnapshot = append(
+					result.AddedAfterSnapshot,
+					live.RelativePath,
+				)
+				result.EffectivePointerPaths = append(
+					result.EffectivePointerPaths,
+					live.RelativePath,
+				)
+			}
+			continue
+		}
+		if live.Status != target.Status ||
+			live.EffectiveRevisionID != target.EffectiveRevisionID ||
+			live.RelativePath != target.RelativePath {
+			path := live.RelativePath
+			if path == "" {
+				path = target.RelativePath
+			}
+			result.EffectivePointerPaths = append(
+				result.EffectivePointerPaths,
+				path,
+			)
+		}
+		delete(source, documentID)
+	}
+	for _, target := range source {
+		if target.Status == DocumentActive {
+			result.EffectivePointerPaths = append(
+				result.EffectivePointerPaths,
+				target.RelativePath,
+			)
+		}
+	}
+	sort.Strings(result.EffectivePointerPaths)
+	sort.Strings(result.AddedAfterSnapshot)
+	return result, nil
+}
+
+func (service *Service) coordinatorWorkspaceID() string {
+	token, _ := service.coordinator.Current()
+	return token.WorkspaceID
 }
 
 func (service *Service) StageSnapshotRestore(
@@ -1336,7 +1422,57 @@ func normalizePath(value string) (string, error) {
 		normalized != value {
 		return "", ErrPathInvalid
 	}
+	for _, component := range strings.Split(normalized, "/") {
+		if !validWindowsPathComponent(component) {
+			return "", ErrPathInvalid
+		}
+	}
 	return normalized, nil
+}
+
+func validWindowsPathComponent(component string) bool {
+	if component == "" ||
+		strings.HasSuffix(component, ".") ||
+		strings.HasSuffix(component, " ") {
+		return false
+	}
+	for _, character := range component {
+		if character < 32 || strings.ContainsRune(`<>:"|?*`, character) {
+			return false
+		}
+	}
+	device := component
+	if separator := strings.IndexByte(device, '.'); separator >= 0 {
+		device = device[:separator]
+	}
+	device = strings.ToUpper(strings.TrimRight(device, " "))
+	switch device {
+	case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$":
+		return false
+	}
+	if len(device) == 4 &&
+		(device[:3] == "COM" || device[:3] == "LPT") &&
+		device[3] >= '1' && device[3] <= '9' {
+		return false
+	}
+	if len(device) == 5 &&
+		(device[:3] == "COM" || device[:3] == "LPT") &&
+		(device[3:] == "¹" || device[3:] == "²" || device[3:] == "³") {
+		return false
+	}
+	return true
+}
+
+func windowsPathKey(value string) (string, error) {
+	normalized, err := normalizePath(value)
+	if err != nil {
+		return "", err
+	}
+	components := strings.Split(normalized, "/")
+	for index := range components {
+		components[index] = strings.ToUpper(components[index])
+	}
+	return strings.Join(components, "/"), nil
 }
 
 func pathAvailable(
@@ -1344,8 +1480,16 @@ func pathAvailable(
 	documentID string,
 	candidate string,
 ) error {
+	candidateKey, err := windowsPathKey(candidate)
+	if err != nil {
+		return err
+	}
 	for id, document := range documents {
-		if id != documentID && document.RelativePath == candidate {
+		documentKey, keyErr := windowsPathKey(document.RelativePath)
+		if keyErr != nil {
+			return keyErr
+		}
+		if id != documentID && documentKey == candidateKey {
 			return ErrPathConflict
 		}
 	}
@@ -1355,15 +1499,15 @@ func pathAvailable(
 func validatePaths(documents map[string]Document) error {
 	seen := map[string]string{}
 	for id, document := range documents {
-		normalized, err := normalizePath(document.RelativePath)
-		if err != nil || normalized != document.RelativePath {
+		key, err := windowsPathKey(document.RelativePath)
+		if err != nil {
 			return ErrPathInvalid
 		}
-		if other, exists := seen[document.RelativePath]; exists &&
+		if other, exists := seen[key]; exists &&
 			other != id {
 			return ErrPathConflict
 		}
-		seen[document.RelativePath] = id
+		seen[key] = id
 	}
 	return nil
 }

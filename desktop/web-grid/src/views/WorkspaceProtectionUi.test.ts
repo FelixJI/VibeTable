@@ -829,24 +829,55 @@ describe("workspace protection UI capability gates", () => {
       params: { planId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
     });
 
-    protection.setConflicts([{
-      conflictId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-      path: "projects/table.json",
-      kind: "table",
+    const conflictId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const tableItemId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const fileItemId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    protection.setConflictSets([{
+      conflictId,
       state: "pending",
-      localSummary: "Local",
-      replicaSummary: "Replica",
-      baseSummary: "Base",
-      dependencies: [],
-      selected: "local",
+      createdAt: "2026-07-28T09:00:00Z",
+      itemCount: 2,
     }]);
+    protection.setConflicts([
+      {
+        conflictId,
+        itemId: tableItemId,
+        path: "Projects",
+        kind: "table",
+        state: "pending",
+        localSummary: "Local table",
+        replicaSummary: "Replica table",
+        baseSummary: "Base table",
+        dependencies: ["relation:Customers", "automation:Notify", "plugin:Calendar"],
+        selected: "local",
+      },
+      {
+        conflictId,
+        itemId: fileItemId,
+        path: "files/brief.docx",
+        kind: "file",
+        state: "pending",
+        localSummary: "Local file",
+        replicaSummary: "Replica file",
+        baseSummary: "Base file",
+        dependencies: [],
+        selected: null,
+      },
+    ]);
     const conflicts = mount(ConflictCenterView);
+    expect(conflicts.get('[data-testid="conflict-preview"]').attributes("disabled"))
+      .toBeDefined();
+    protection.chooseConflict(conflictId, fileItemId, "replica");
+    await conflicts.vm.$nextTick();
     await conflicts.get('[data-testid="conflict-preview"]').trigger("click");
     expect(conflicts.emitted("action")?.[0]?.[0]).toMatchObject({
       method: "conflict.preview",
       params: {
-        conflictId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-        choices: [{ item: "projects/table.json", side: "local" }],
+        conflictId,
+        choices: [
+          { itemId: tableItemId, kind: "table", side: "local" },
+          { itemId: fileItemId, kind: "file", side: "replica" },
+        ],
       },
     });
     protection.setConflictPlan("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", {
@@ -879,6 +910,9 @@ describe("workspace protection UI capability gates", () => {
       integrityFailure: "repository.object_corrupt",
       lastIncrementalCheckAt: "2026-07-28T09:00:00Z",
       lastFullCheckAt: "2026-07-01T09:00:00Z",
+      maintenanceFailure: null,
+      maintenanceFailureStage: null,
+      lastMaintenanceFailureAt: null,
     });
 
     const settings = mount(WorkspaceProtectionSettings, {
@@ -892,8 +926,17 @@ describe("workspace protection UI capability gates", () => {
 
   it("offers keep-both only for file conflicts and previews it as a strict choice", async () => {
     const protection = useWorkspaceProtectionStore();
+    const conflictId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const itemId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    protection.setConflictSets([{
+      conflictId,
+      state: "pending",
+      createdAt: "2026-07-28T09:00:00Z",
+      itemCount: 1,
+    }]);
     protection.setConflicts([{
-      conflictId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      conflictId,
+      itemId,
       path: "files/quarterly-plan.docx",
       kind: "file",
       state: "pending",
@@ -909,8 +952,8 @@ describe("workspace protection UI capability gates", () => {
     expect(conflicts.emitted("action")?.[0]?.[0]).toEqual({
       method: "conflict.preview",
       params: {
-        conflictId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-        choices: [{ item: "files/quarterly-plan.docx", side: "both" }],
+        conflictId,
+        choices: [{ itemId, kind: "file", side: "both" }],
       },
     });
   });

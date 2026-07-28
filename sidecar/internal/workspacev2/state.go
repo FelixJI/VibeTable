@@ -135,6 +135,7 @@ func openStateStore(path string) (*stateStore, error) {
 			snapshot_id TEXT NOT NULL,
 			catalog_revision INTEGER NOT NULL,
 			mutation_revision INTEGER NOT NULL,
+			diff_hash TEXT NOT NULL,
 			target_mode TEXT NOT NULL,
 			expires_at TEXT NOT NULL
 		);
@@ -177,6 +178,10 @@ func openStateStore(path string) (*stateStore, error) {
 		"snapshot_buckets_json",
 		`TEXT NOT NULL DEFAULT '["hourly","daily","weekly","monthly"]'`,
 	); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureSnapshotRestoreDiffHashColumn(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -575,6 +580,7 @@ type snapshotRestorePlan struct {
 	SnapshotID       string
 	CatalogRevision  uint64
 	MutationRevision uint64
+	DiffHash         string
 	TargetMode       string
 	ExpiresAt        string
 }
@@ -586,12 +592,13 @@ func (store *stateStore) putSnapshotRestorePlan(
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO snapshot_restore_plans (
 			plan_id, snapshot_id, catalog_revision, mutation_revision,
-			target_mode, expires_at
-		) VALUES (?, ?, ?, ?, ?, ?)`,
+			diff_hash, target_mode, expires_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		plan.PlanID,
 		plan.SnapshotID,
 		plan.CatalogRevision,
 		plan.MutationRevision,
+		plan.DiffHash,
 		plan.TargetMode,
 		plan.ExpiresAt,
 	)
@@ -605,7 +612,7 @@ func (store *stateStore) snapshotRestorePlan(
 	var plan snapshotRestorePlan
 	err := store.db.QueryRowContext(ctx, `
 		SELECT plan_id, snapshot_id, catalog_revision, mutation_revision,
-		       target_mode, expires_at
+		       diff_hash, target_mode, expires_at
 		FROM snapshot_restore_plans WHERE plan_id = ?`,
 		planID,
 	).Scan(
@@ -613,6 +620,7 @@ func (store *stateStore) snapshotRestorePlan(
 		&plan.SnapshotID,
 		&plan.CatalogRevision,
 		&plan.MutationRevision,
+		&plan.DiffHash,
 		&plan.TargetMode,
 		&plan.ExpiresAt,
 	)
@@ -744,6 +752,45 @@ func ensureRetentionColumn(db *sql.DB, name string, definition string) error {
 	}
 	_, err = db.Exec(
 		`ALTER TABLE retention_policy ADD COLUMN ` + name + ` ` + definition,
+	)
+	return err
+}
+
+func ensureSnapshotRestoreDiffHashColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(snapshot_restore_plans)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			index      int
+			columnName string
+			columnType string
+			notNull    int
+			defaultSQL sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(
+			&index,
+			&columnName,
+			&columnType,
+			&notNull,
+			&defaultSQL,
+			&primaryKey,
+		); err != nil {
+			return err
+		}
+		if columnName == "diff_hash" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(
+		`ALTER TABLE snapshot_restore_plans
+		 ADD COLUMN diff_hash TEXT NOT NULL DEFAULT 'legacy-unbound'`,
 	)
 	return err
 }

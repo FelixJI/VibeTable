@@ -247,8 +247,10 @@ func (runtime *Runtime) requestSnapshot(
 		captureContext, err = snapshot.WithOperationReceiptBuilder(
 			ctx,
 			func(
-				snapshot.Record,
+				record snapshot.Record,
 			) (protocolv2.OperationReceipt, error) {
+				result["snapshotId"] = record.SnapshotID
+				result["mutationRevision"] = record.MutationRevision
 				return protocolv2.BuildContextOperationReceipt(ctx, result)
 			},
 		)
@@ -268,6 +270,8 @@ func (runtime *Runtime) requestSnapshot(
 	if err != nil {
 		return nil, err
 	}
+	result["snapshotId"] = record.SnapshotID
+	result["mutationRevision"] = record.MutationRevision
 	if runtime.scheduler != nil {
 		runtime.scheduler.Succeeded(
 			time.Now().UTC(),
@@ -609,6 +613,16 @@ func (runtime *Runtime) getRetentionStatus(
 	if status.Integrity.LastFullAt != nil {
 		value := status.Integrity.LastFullAt.UTC().Format(time.RFC3339Nano)
 		result.LastFullCheckAt = &value
+	}
+	if status.Maintenance.Failure != "" {
+		failure := status.Maintenance.Failure
+		stage := string(status.Maintenance.Stage)
+		failedAt := status.Maintenance.FailedAt.UTC().Format(
+			time.RFC3339Nano,
+		)
+		result.MaintenanceFailure = &failure
+		result.MaintenanceFailureStage = &stage
+		result.LastMaintenanceFailureAt = &failedAt
 	}
 	if err := result.Validate(); err != nil {
 		return nil, errors.Join(

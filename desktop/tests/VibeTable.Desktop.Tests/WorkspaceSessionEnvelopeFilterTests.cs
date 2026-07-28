@@ -11,7 +11,7 @@ namespace VibeTable.Desktop.Tests;
 public sealed class WorkspaceSessionEnvelopeFilterTests
 {
     [TestMethod]
-    public async Task PhaseChangesKeepLeaseAliveButSwitchCancelsIt()
+    public async Task SwitchDrainsInflightRequestBeforeProtectionSnapshot()
     {
         using var fixture = new SessionFixture(blockProtection: true);
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -20,6 +20,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             first.WorkspaceId,
             WorkspaceOpenMode.Writable);
         using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        fixture.Manager.SetRequestDrainHook(filter);
         WorkspaceWireScope scope = ScopeFor(opened, sequence: 3);
 
         Assert.IsTrue(filter.TryCapture(scope, out WorkspaceRequestEpochLease? lease));
@@ -29,12 +30,14 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         Task<WorkspaceSessionV2> switchTask = fixture.Manager.SwitchAsync(
             second.WorkspaceId,
             WorkspaceOpenMode.Writable);
-        await fixture.Protection.Entered.WaitAsync(TimeSpan.FromSeconds(2));
-
-        Assert.IsFalse(lease.CancellationToken.IsCancellationRequested);
-        Assert.IsTrue(filter.IsCurrent(lease));
+        await WaitUntilAsync(
+            () => lease.CancellationToken.IsCancellationRequested);
 
         fixture.Protection.Release();
+        Assert.IsFalse(fixture.Protection.Entered.IsCompleted);
+        Assert.IsFalse(switchTask.IsCompleted);
+        lease.Dispose();
+        await fixture.Protection.Entered.WaitAsync(TimeSpan.FromSeconds(2));
         await switchTask;
 
         Assert.IsTrue(lease.CancellationToken.IsCancellationRequested);
@@ -235,6 +238,68 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             reply => reply.RequestId == "stale-retry"));
     }
 
+    [TestMethod]
+    public async Task ReadOnlySessionRejectsProductMutationBeforeGateway()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.ReadOnly);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var transport = new ControlledQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var sink = new FakeWebReplySink();
+        var dispatcher = CreateDispatcher(sink, filter);
+        dispatcher.SetProductDataGateway(gateway);
+        using var payload = JsonDocument.Parse(
+            """{"tableId":"tbl_records","operations":[]}""");
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "mutation.apply",
+            "read-only-write",
+            payload.RootElement.Clone(),
+            string.Empty,
+            ScopeFor(opened, 1)));
+
+        FakeWebReplySink.Reply? failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        StringAssert.Contains(
+            JsonSerializer.Serialize(failed.Payload),
+            @"""code"":""WORKSPACE_READ_ONLY""");
+        Assert.AreEqual(0, transport.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task DangerousProductMutationProtectsBeforeGatewayWrite()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var transport = new ControlledQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var sink = new FakeWebReplySink();
+        var dispatcher = CreateDispatcher(sink, filter);
+        dispatcher.SetProductDataGateway(gateway);
+        using var payload = JsonDocument.Parse(
+            """{"definition":{},"expectedRevision":0}""");
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "schema.apply",
+            "protected-schema",
+            payload.RootElement.Clone(),
+            string.Empty,
+            ScopeFor(opened, 1)));
+
+        await transport.WaitForWriteAsync();
+        Assert.AreEqual(1, fixture.Protection.CallCount);
+    }
+
     private static WorkspaceRequestDispatcher CreateDispatcher(
         FakeWebReplySink sink,
         WorkspaceSessionEnvelopeFilter filter)
@@ -401,6 +466,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Task Entered => _entered.Task;
+        public int CallCount { get; private set; }
 
         public async Task ProtectAsync(
             Guid workspaceId,
@@ -408,6 +474,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             string reason,
             CancellationToken cancellationToken)
         {
+            CallCount++;
             _entered.TrySetResult(true);
             if (blocked)
                 await _release.Task.WaitAsync(cancellationToken);

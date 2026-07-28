@@ -36,6 +36,40 @@ public sealed class ProductDataRpcRegistryTests
     }
 
     [TestMethod]
+    public void MutatorsAndDangerousOperationsHaveExplicitAdmissionMetadata()
+    {
+        foreach (string type in new[]
+                 {
+                     "schema.apply", "mutation.apply", "data.applyImport",
+                     "task.create", "task.cancel", "preset.save",
+                     "preset.delete", "version.create", "version.save",
+                     "version.promote", "version.delete",
+                 })
+        {
+            Assert.IsTrue(ProductDataRpcRegistry.TryGet(type, out var endpoint));
+            Assert.IsTrue(endpoint.MutatesWorkspace, type);
+        }
+        foreach (string type in new[]
+                 {
+                     "schema.apply", "data.applyImport", "task.create",
+                     "version.promote",
+                 })
+        {
+            Assert.IsTrue(ProductDataRpcRegistry.TryGet(type, out var endpoint));
+            Assert.IsTrue(endpoint.RequiresProtectionSnapshot, type);
+        }
+        foreach (string type in new[]
+                 {
+                     "schema.validate", "mutation.preview", "query.page",
+                     "data.previewImport", "data.export", "task.status",
+                 })
+        {
+            Assert.IsTrue(ProductDataRpcRegistry.TryGet(type, out var endpoint));
+            Assert.IsFalse(endpoint.MutatesWorkspace, type);
+        }
+    }
+
+    [TestMethod]
     public void SchemaGetTableAcceptsOnlyAClosedProductTableIdentity()
     {
         Assert.IsTrue(ProductDataRpcRegistry.TryGet("schema.getTable", out var endpoint));

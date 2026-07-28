@@ -384,9 +384,44 @@ class RpcGoldenCase(V2Model):
         ):
             raise ValueError("rpc wire fixture mismatch")
         for schema in (self.params_schema, self.result_schema):
-            if schema.get("type") != "object" or schema.get("additionalProperties") is not False:
+            if (
+                schema.get("type") != "object"
+                or schema.get("additionalProperties") is not False
+                or not _valid_rpc_schema_node(schema)
+            ):
                 raise ValueError("rpc schema must be a closed object")
         return self
+
+
+def _valid_rpc_schema_node(schema: Any) -> bool:
+    if not isinstance(schema, dict):
+        return False
+    node_type = schema.get("type")
+    if isinstance(node_type, list):
+        return (
+            bool(node_type)
+            and all(
+                item in {"string", "integer", "number", "boolean", "null"} for item in node_type
+            )
+            and set(schema).issubset({"type", "enum"})
+        )
+    if node_type == "object":
+        properties = schema.get("properties")
+        required = schema.get("required")
+        return (
+            schema.get("additionalProperties") is False
+            and isinstance(properties, dict)
+            and isinstance(required, list)
+            and len(required) == len(set(required))
+            and set(required) == set(properties)
+            and set(schema) == {"type", "additionalProperties", "required", "properties"}
+            and all(_valid_rpc_schema_node(item) for item in properties.values())
+        )
+    if node_type == "array":
+        return set(schema) == {"type", "items"} and _valid_rpc_schema_node(schema.get("items"))
+    return node_type in {"string", "integer", "number", "boolean", "null"} and set(schema).issubset(
+        {"type", "enum"}
+    )
 
 
 class RpcContractCatalog(V2Model):

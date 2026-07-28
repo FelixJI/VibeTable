@@ -14,6 +14,7 @@ import type {
   SnapshotPackagePlan,
   SnapshotTimelineItem,
   WorkspaceConflictItem,
+  WorkspaceConflictSummary,
   WorkspaceStoragePlan,
   WorkspaceStorageProjection,
 } from "@/contracts/workspaceV2Bridge";
@@ -23,6 +24,7 @@ export type {
   FileRevisionTreeProjection,
   SnapshotTimelineItem,
   WorkspaceConflictItem,
+  WorkspaceConflictSummary,
   WorkspaceStorageProjection,
 } from "@/contracts/workspaceV2Bridge";
 
@@ -49,6 +51,7 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
   const retentionHydrated = ref(false);
   const retentionStatus = ref<RetentionProtectionStatus | null>(null);
   const conflicts = ref<readonly WorkspaceConflictItem[]>([]);
+  const conflictSets = ref<readonly WorkspaceConflictSummary[]>([]);
   const fileTrees = ref<Readonly<Record<string, FileRevisionTreeProjection>>>({});
   const pendingFileChanges = ref<readonly PendingFileChange[]>([]);
   const documents = ref<readonly FileDocumentV2[]>([]);
@@ -65,7 +68,7 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
   const selectedSnapshot = computed(() =>
     snapshots.value.find((snapshot) => snapshot.snapshotId === selectedSnapshotId.value) ?? null);
   const pendingConflictCount = computed(() =>
-    conflicts.value.filter((conflict) => conflict.state !== "ready").length);
+    conflictSets.value.filter((conflict) => conflict.state !== "ready").length);
 
   registerWorkspaceEpochReset("workspace-protection-v2", () => {
     snapshots.value = [];
@@ -76,6 +79,7 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
     retentionHydrated.value = false;
     retentionStatus.value = null;
     conflicts.value = [];
+    conflictSets.value = [];
     fileTrees.value = {};
     pendingFileChanges.value = [];
     documents.value = [];
@@ -130,11 +134,43 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
 
   function setConflicts(next: readonly WorkspaceConflictItem[]): void {
     conflicts.value = [...next];
+    if (!next.length) return;
+    const summaries = new Map(
+      conflictSets.value.map((summary) => [summary.conflictId, summary]),
+    );
+    const grouped = new Map<string, WorkspaceConflictItem[]>();
+    for (const item of next) {
+      const items = grouped.get(item.conflictId) ?? [];
+      items.push(item);
+      grouped.set(item.conflictId, items);
+    }
+    for (const [conflictId, items] of grouped) {
+      const existing = summaries.get(conflictId);
+      summaries.set(conflictId, {
+        conflictId,
+        state: items[0]!.state,
+        createdAt: existing?.createdAt ?? "—",
+        itemCount: items.length,
+      });
+    }
+    conflictSets.value = [...summaries.values()];
   }
 
-  function chooseConflict(conflictId: string, choice: "local" | "replica" | "both"): void {
+  function setConflictSets(next: readonly WorkspaceConflictSummary[]): void {
+    conflictSets.value = [...next];
+    const current = new Set(next.map((item) => item.conflictId));
+    conflicts.value = conflicts.value.filter((item) => current.has(item.conflictId));
+  }
+
+  function chooseConflict(
+    conflictId: string,
+    itemId: string,
+    choice: "local" | "replica" | "both",
+  ): void {
     conflicts.value = conflicts.value.map((conflict) =>
-      conflict.conflictId === conflictId ? { ...conflict, selected: choice } : conflict);
+      conflict.conflictId === conflictId && conflict.itemId === itemId
+        ? { ...conflict, selected: choice }
+        : conflict);
   }
 
   function setFileTree(next: FileRevisionTreeProjection): void {
@@ -210,6 +246,7 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
     retentionHydrated,
     retentionStatus,
     conflicts,
+    conflictSets,
     pendingConflictCount,
     fileTrees,
     pendingFileChanges,
@@ -231,6 +268,7 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
     setRetention,
     setRetentionStatus,
     setConflicts,
+    setConflictSets,
     chooseConflict,
     setFileTree,
     setPendingFileChanges,
