@@ -26,6 +26,35 @@ type productionRetention struct {
 	sweepMu    sync.Mutex
 }
 
+type RetentionProtectionStatus struct {
+	Quota     retention.QuotaState
+	Integrity retention.IntegrityState
+}
+
+// RetentionProtectionStatus is a production status seam for the UI/RPC
+// contract. Both quota pauses and integrity failures survive process restarts.
+func (runtime *Runtime) RetentionProtectionStatus(
+	ctx context.Context,
+) (RetentionProtectionStatus, error) {
+	if runtime == nil ||
+		runtime.retention == nil ||
+		runtime.retention.store == nil {
+		return RetentionProtectionStatus{},
+			errors.New("retention.production_unavailable")
+	}
+	quota, err := runtime.retention.store.QuotaState(ctx)
+	if err != nil {
+		return RetentionProtectionStatus{}, err
+	}
+	integrity, err := runtime.retention.store.IntegrityState(ctx)
+	if err != nil {
+		return RetentionProtectionStatus{}, err
+	}
+	return RetentionProtectionStatus{
+		Quota: quota, Integrity: integrity,
+	}, nil
+}
+
 func openProductionRetentionStore(path string) (*productionRetention, error) {
 	store, err := retention.OpenStore(path)
 	if err != nil {
@@ -91,21 +120,113 @@ func (composition *productionRetention) start() {
 	composition.wg.Add(1)
 	go func() {
 		defer composition.wg.Done()
-		// Startup recovery handles tombstones whose grace period elapsed while
-		// the application was stopped. Subsequent hourly checks bound cleanup
-		// latency without coupling normal workspace writes to maintenance.
-		_, _ = composition.sweep(ctx)
+		// Integrity cadence is durable. Startup and hourly ticks only run work
+		// that is due, so restart never duplicates the daily/monthly check.
+		if err := composition.runIntegrityIfDue(
+			ctx, time.Now().UTC(),
+		); err == nil {
+			_, _ = composition.sweep(ctx)
+		}
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
-				_, _ = composition.sweep(ctx)
+			case now := <-ticker.C:
+				if err := composition.runIntegrityIfDue(
+					ctx, now.UTC(),
+				); err == nil {
+					_, _ = composition.sweep(ctx)
+				}
 			}
 		}
 	}()
+}
+
+func (composition *productionRetention) runIntegrityIfDue(
+	ctx context.Context,
+	now time.Time,
+) error {
+	composition.sweepMu.Lock()
+	defer composition.sweepMu.Unlock()
+	mode, due, err := composition.store.IntegrityDue(ctx, now)
+	if err != nil || !due {
+		return err
+	}
+	records, err := composition.source.runtime.catalog.List(
+		ctx,
+		composition.source.runtime.manifest.WorkspaceID,
+	)
+	if err != nil {
+		return err
+	}
+	state, err := composition.store.IntegrityState(ctx)
+	if err != nil {
+		return err
+	}
+	var latestSequence uint64
+	for _, record := range records {
+		if record.SnapshotSequence > latestSequence {
+			latestSequence = record.SnapshotSequence
+		}
+		if mode == retention.IntegrityIncremental &&
+			record.SnapshotSequence <= state.LastSnapshotSequence {
+			continue
+		}
+		valid, verifyErr := composition.source.runtime.snapshotIntegrity(
+			ctx,
+			record,
+		)
+		if verifyErr != nil {
+			if errors.Is(verifyErr, objectrepo.ErrCorrupt) ||
+				errors.Is(verifyErr, objectrepo.ErrNotFound) {
+				_ = composition.store.RecordIntegrityFailure(
+					context.WithoutCancel(ctx),
+					mode,
+					verifyErr.Error(),
+				)
+			}
+			return verifyErr
+		}
+		if !valid {
+			corruptErr := errors.New("retention.integrity_corrupt")
+			if recordErr := composition.store.RecordIntegrityFailure(
+				context.WithoutCancel(ctx),
+				mode,
+				corruptErr.Error(),
+			); recordErr != nil {
+				return errors.Join(corruptErr, recordErr)
+			}
+			return corruptErr
+		}
+	}
+	if mode == retention.IntegrityFull {
+		inventory, inventoryErr := composition.source.Inventory(ctx)
+		if inventoryErr != nil {
+			return inventoryErr
+		}
+		if inventory.PendingPublication {
+			return errors.New("retention.integrity_pending_publication")
+		}
+		if inventory.UnknownManifest || inventory.CorruptIndex {
+			corruptErr := errors.New("retention.integrity_corrupt")
+			if recordErr := composition.store.RecordIntegrityFailure(
+				context.WithoutCancel(ctx),
+				mode,
+				corruptErr.Error(),
+			); recordErr != nil {
+				return errors.Join(corruptErr, recordErr)
+			}
+			return corruptErr
+		}
+	}
+	return composition.store.RecordIntegritySuccess(
+		context.WithoutCancel(ctx),
+		mode,
+		latestSequence,
+		now,
+	)
 }
 
 func (composition *productionRetention) register(runtime *Runtime) {

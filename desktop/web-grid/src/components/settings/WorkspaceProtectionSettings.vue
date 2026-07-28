@@ -88,6 +88,18 @@ const retentionDraft = ref({
   fileRevisionDays: protection.retention.fileRevisionDays,
   fileRevisionCount: protection.retention.fileRevisionCount,
   fileRevisionBuckets: [...protection.retention.fileRevisionBuckets] as RetentionBucket[],
+  repositoryLimitBytes: protection.retention.repositoryLimitBytes,
+});
+const gibibyte = 1024 ** 3;
+const repositoryLimitGiB = computed<number | null>({
+  get: () => retentionDraft.value.repositoryLimitBytes === null
+    ? null
+    : retentionDraft.value.repositoryLimitBytes / gibibyte,
+  set: (value) => {
+    retentionDraft.value.repositoryLimitBytes = value === null
+      ? null
+      : Math.round(value * gibibyte);
+  },
 });
 
 watch(
@@ -100,6 +112,7 @@ watch(
       fileRevisionDays: next.fileRevisionDays,
       fileRevisionCount: next.fileRevisionCount,
       fileRevisionBuckets: [...next.fileRevisionBuckets],
+      repositoryLimitBytes: next.repositoryLimitBytes,
     };
   },
   { deep: true },
@@ -131,7 +144,8 @@ const retentionDirty = computed(() =>
   || retentionDraft.value.snapshotBuckets.join(",") !== protection.retention.snapshotBuckets.join(",")
   || retentionDraft.value.fileRevisionDays !== protection.retention.fileRevisionDays
   || retentionDraft.value.fileRevisionCount !== protection.retention.fileRevisionCount
-  || retentionDraft.value.fileRevisionBuckets.join(",") !== protection.retention.fileRevisionBuckets.join(",")));
+  || retentionDraft.value.fileRevisionBuckets.join(",") !== protection.retention.fileRevisionBuckets.join(",")
+  || retentionDraft.value.repositoryLimitBytes !== protection.retention.repositoryLimitBytes));
 const retentionBucketOptions = computed(() =>
   (["hourly", "daily", "weekly", "monthly"] as const).map((value) => ({
     value,
@@ -345,7 +359,6 @@ function saveRetention(): void {
     params: {
       expectedRevision: protection.retention.policyRevision,
       ...retentionDraft.value,
-      repositoryLimitBytes: protection.retention.repositoryLimitBytes,
     },
   });
 }
@@ -391,6 +404,37 @@ function previewStorageRelocation(): void {
       action: "relocate",
       targetMode: "direct",
       selectedRootGrant: HOST_WORKSPACE_ROOT_GRANT,
+    },
+  });
+}
+
+function previewStorageTopologyConversion(): void {
+  const workspaceId = session.activeWorkspaceId;
+  const currentMode = protection.storage?.mode;
+  if (!workspaceId || !currentMode) return;
+  protection.setStoragePlan(null);
+  emit("action", {
+    method: "workspace.storage.preview",
+    params: {
+      workspaceId,
+      action: "convertTopology",
+      targetMode: currentMode === "direct" ? "mirrored" : "direct",
+      selectedRootGrant: HOST_WORKSPACE_ROOT_GRANT,
+    },
+  });
+}
+
+function previewActivityCacheRelease(): void {
+  const workspaceId = session.activeWorkspaceId;
+  if (!workspaceId) return;
+  protection.setStoragePlan(null);
+  emit("action", {
+    method: "workspace.storage.preview",
+    params: {
+      workspaceId,
+      action: "releaseActivityCache",
+      targetMode: null,
+      selectedRootGrant: null,
     },
   });
 }
@@ -806,6 +850,35 @@ function applyStoragePlan(): void {
         <div><strong>{{ t("workspaceV2.storage.mode") }}</strong><small>{{ t("workspaceV2.storage.modeHint") }}</small></div>
         <NTag>{{ protection.storage?.mode === "mirrored" ? t("workspaceV2.storage.mirrored") : t("workspaceV2.storage.direct") }}</NTag>
       </div>
+      <div
+        v-if="session.capabilities.includes('workspace.storage.topology.v2')
+          || session.capabilities.includes('workspace.storage.release-cache.v2')"
+        class="storage-mode-actions"
+      >
+        <NButton
+          v-if="session.capabilities.includes('workspace.storage.topology.v2')"
+          size="small"
+          :disabled="busy || session.isTransitioning"
+          data-testid="workspace-storage-convert-preview"
+          @click="previewStorageTopologyConversion"
+        >
+          {{ protection.storage?.mode === "mirrored"
+            ? t("workspaceV2.storage.convertToDirect")
+            : t("workspaceV2.storage.convertToMirrored") }}
+        </NButton>
+        <NButton
+          v-if="session.capabilities.includes('workspace.storage.release-cache.v2')
+            && protection.storage?.mode === 'mirrored'"
+          size="small"
+          :disabled="busy || session.isTransitioning
+            || protection.storage?.pendingSync || !protection.storage?.remoteVerified"
+          :title="t('workspaceV2.storage.releaseBlocked')"
+          data-testid="workspace-storage-release-cache-preview"
+          @click="previewActivityCacheRelease"
+        >
+          {{ t("workspaceV2.storage.releaseCache") }}
+        </NButton>
+      </div>
       <div class="policy-heading">
         <div><strong>{{ t("workspaceV2.storage.encryption") }}</strong><small>{{ t("workspaceV2.storage.encryptionHint") }}</small></div>
         <NTag>{{ t(`workspaceV2.storage.encryption.${protection.storage?.encryption ?? "none"}`) }}</NTag>
@@ -878,6 +951,42 @@ function applyStoragePlan(): void {
         type="info"
         :title="t('workspaceV2.retention.loading')"
       />
+      <NAlert
+        v-if="protection.retentionStatus?.automaticSnapshotsPaused"
+        type="warning"
+        data-testid="retention-automatic-paused"
+        :title="t('workspaceV2.retention.automaticPaused')"
+      >
+        {{ t("workspaceV2.retention.automaticPausedDetail", {
+          usage: formatBytes(protection.retentionStatus.repositoryUsageBytes),
+          limit: protection.retentionStatus.repositoryLimitBytes === null
+            ? t("workspaceV2.retention.unlimited")
+            : formatBytes(protection.retentionStatus.repositoryLimitBytes),
+        }) }}
+      </NAlert>
+      <NAlert
+        v-if="protection.retentionStatus?.integrityStatus === 'corrupt'"
+        type="error"
+        data-testid="retention-integrity-corrupt"
+        :title="t('workspaceV2.retention.integrityCorrupt')"
+      >
+        {{ t("workspaceV2.retention.integrityCorruptDetail") }}
+      </NAlert>
+      <NAlert
+        v-else-if="protection.retentionStatus"
+        :type="protection.retentionStatus.integrityStatus === 'verified' ? 'success' : 'info'"
+        data-testid="retention-integrity-status"
+        :title="t(`workspaceV2.retention.integrity.${protection.retentionStatus.integrityStatus}`)"
+      >
+        {{ t("workspaceV2.retention.integrityChecks", {
+          incremental: protection.retentionStatus.lastIncrementalCheckAt
+            ? formatDate(protection.retentionStatus.lastIncrementalCheckAt)
+            : "—",
+          full: protection.retentionStatus.lastFullCheckAt
+            ? formatDate(protection.retentionStatus.lastFullCheckAt)
+            : "—",
+        }) }}
+      </NAlert>
       <div class="retention-grid">
         <label><span>{{ t("workspaceV2.retention.snapshotDays") }}</span><NInputNumber v-model:value="retentionDraft.snapshotDays" :min="1" :disabled="!protection.retentionHydrated" /></label>
         <label><span>{{ t("workspaceV2.retention.snapshotCount") }}</span><NInputNumber v-model:value="retentionDraft.snapshotCount" :min="1" :disabled="!protection.retentionHydrated" /></label>
@@ -885,7 +994,26 @@ function applyStoragePlan(): void {
         <label><span>{{ t("workspaceV2.retention.fileDays") }}</span><NInputNumber v-model:value="retentionDraft.fileRevisionDays" :min="1" :disabled="!protection.retentionHydrated" /></label>
         <label><span>{{ t("workspaceV2.retention.fileCount") }}</span><NInputNumber v-model:value="retentionDraft.fileRevisionCount" :min="1" :disabled="!protection.retentionHydrated" /></label>
         <label class="bucket-field"><span>{{ t("workspaceV2.retention.fileBuckets") }}</span><NSelect v-model:value="retentionDraft.fileRevisionBuckets" multiple :options="retentionBucketOptions" :disabled="!protection.retentionHydrated" /></label>
+        <label>
+          <span>{{ t("workspaceV2.retention.repositoryLimitGiB") }}</span>
+          <NInputNumber
+            v-model:value="repositoryLimitGiB"
+            :min="1"
+            :precision="1"
+            clearable
+            :placeholder="t('workspaceV2.retention.unlimited')"
+            :disabled="!protection.retentionHydrated"
+            data-testid="retention-repository-limit"
+          />
+        </label>
       </div>
+      <NAlert
+        v-if="repositoryLimitGiB !== null"
+        type="info"
+        :title="t('workspaceV2.retention.limitActive', { size: `${repositoryLimitGiB.toFixed(1)} GiB` })"
+      >
+        {{ t("workspaceV2.retention.limitBehavior") }}
+      </NAlert>
       <NAlert
         v-if="protection.retentionPlan"
         :type="protection.retentionPlan.blockedReasons.length ? 'warning' : 'info'"

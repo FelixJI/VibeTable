@@ -44,6 +44,8 @@ const emit = defineEmits<{
 const ui = useUiStore();
 const session = useWorkspaceSessionStore();
 const protection = useWorkspaceProtectionStore();
+const mirroredCreationEnabled = computed(() =>
+  session.capabilities.includes("workspace.storage.mirrored-create.v2"));
 const flow = ref<"create" | "connect" | null>(null);
 const flowTrigger = ref<HTMLElement | null>(null);
 const displayName = ref("");
@@ -406,9 +408,13 @@ watch(
               <strong>{{ t("workspaceV2.storage.direct") }}</strong>
               <small>{{ t("workspaceV2.center.directHint") }}</small>
             </NRadioButton>
-            <NRadioButton value="mirrored">
+            <NRadioButton value="mirrored" :disabled="!mirroredCreationEnabled">
               <strong>{{ t("workspaceV2.storage.mirrored") }}</strong>
-              <small>{{ t("workspaceV2.center.mirroredHint") }}</small>
+              <small>
+                {{ mirroredCreationEnabled
+                  ? t("workspaceV2.center.mirroredHint")
+                  : t("workspaceV2.center.mirroredUnavailable") }}
+              </small>
             </NRadioButton>
           </NRadioGroup>
         </fieldset>

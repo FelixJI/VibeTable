@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	conflictresolution "github.com/vibetable/vibetable/sidecar/internal/conflict"
 	contractsv2 "github.com/vibetable/vibetable/sidecar/internal/contracts/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
@@ -17,10 +21,20 @@ import (
 )
 
 type productionReplicaConflict struct {
-	runtime   *Runtime
-	manager   *replica.Manager
-	conflicts *conflictresolution.Engine
-	applier   *filehistory.ConflictApplier
+	runtime               *Runtime
+	managerMu             sync.RWMutex
+	manager               *replica.Manager
+	managerOptions        replica.ManagerOptions
+	remoteFactory         func(context.Context) (replica.VerifiedRemote, error)
+	conflicts             *conflictresolution.Engine
+	applier               *filehistory.ConflictApplier
+	pendingPath           string
+	selectedRoot          string
+	activityFilesRoot     string
+	selectedFilesBasePath string
+	cancel                context.CancelFunc
+	wg                    sync.WaitGroup
+	wake                  chan struct{}
 }
 
 func openProductionReplicaConflict(
@@ -29,7 +43,8 @@ func openProductionReplicaConflict(
 	paths workspacePaths,
 	options Options,
 ) (_ *productionReplicaConflict, err error) {
-	if options.ReplicaRemote == nil {
+	if options.ReplicaRemote == nil &&
+		options.ReplicaRemoteFactory == nil {
 		return nil, nil
 	}
 	if runtime == nil ||
@@ -58,6 +73,18 @@ func openProductionReplicaConflict(
 		runtime:   runtime,
 		conflicts: conflicts,
 		applier:   applier,
+		pendingPath: joinCoordination(
+			paths,
+			"replica-pending.json",
+		),
+		remoteFactory:     options.ReplicaRemoteFactory,
+		selectedRoot:      options.ReplicaRoot,
+		activityFilesRoot: paths.files,
+		selectedFilesBasePath: joinCoordination(
+			paths,
+			"replica-selected-files-base.json",
+		),
+		wake: make(chan struct{}, 1),
 	}
 	defer func() {
 		if err != nil {
@@ -68,37 +95,53 @@ func openProductionReplicaConflict(
 	if deviceID == "" {
 		deviceID = options.ClaimID
 	}
-	result.manager, err = replica.OpenManager(
-		ctx,
-		replica.ManagerOptions{
-			WorkspaceID: options.WorkspaceID,
-			DeviceID:    deviceID,
-			QueuePath: joinCoordination(
-				paths, "replica-queue.db",
-			),
-			StatePath: joinCoordination(
-				paths, "replica-state.db",
-			),
-			PublicationPath: joinCoordination(
-				paths, "replica-publications.db",
-			),
-			PublicationKey: append([]byte(nil), options.ReplicaPublicationKey...),
-			Remote:         options.ReplicaRemote,
-			Catalog:        runtime.catalog,
-			Repository:     runtime.repository,
-			Authority:      runtimeReplicaAuthority{runtime: runtime},
-			Conflicts:      conflicts,
+	result.managerOptions = replica.ManagerOptions{
+		WorkspaceID: options.WorkspaceID,
+		DeviceID:    deviceID,
+		QueuePath: joinCoordination(
+			paths, "replica-queue.db",
+		),
+		StatePath: joinCoordination(
+			paths, "replica-state.db",
+		),
+		PublicationPath: joinCoordination(
+			paths, "replica-publications.db",
+		),
+		PublicationKey: append([]byte(nil), options.ReplicaPublicationKey...),
+		Remote:         options.ReplicaRemote,
+		Catalog:        runtime.catalog,
+		Repository:     runtime.repository,
+		Authority:      runtimeReplicaAuthority{runtime: runtime},
+		Conflicts:      conflicts,
+		DestructiveSafe: func(ctx context.Context) error {
+			return runtime.retention.store.EnsureIntegrityHealthy(ctx)
 		},
-	)
-	if err != nil {
-		if errors.Is(err, replica.ErrReplicationUnavailable) {
-			// Replica protection is optional. An unavailable or unverifiable
-			// remote must remove the capability, not prevent the local
-			// workspace from reopening and accepting durable local writes.
-			_ = result.close()
-			return nil, nil
+	}
+	if options.ReplicaRemote != nil {
+		result.managerOptions.Remote = options.ReplicaRemote
+		result.manager, err = replica.OpenManager(ctx, result.managerOptions)
+		if err != nil && !errors.Is(err, replica.ErrReplicationUnavailable) {
+			return nil, err
 		}
-		return nil, err
+	}
+	if result.manager == nil {
+		if err := result.markPending("replica.remote_unavailable"); err != nil {
+			return nil, err
+		}
+	} else {
+		status, statusErr := result.manager.Status(ctx)
+		if statusErr != nil {
+			if err := result.markPending(statusErr.Error()); err != nil {
+				return nil, err
+			}
+		} else if err := result.persistStatus(
+			ctx,
+			status.CoordinationStrength,
+			status.SyncState,
+			status.PendingSync,
+		); err != nil {
+			return nil, err
+		}
 	}
 	if err := result.conflicts.Recover(
 		ctx,
@@ -113,8 +156,244 @@ func joinCoordination(paths workspacePaths, name string) string {
 	return filepath.Join(paths.coordination, name)
 }
 
+func (owner *productionReplicaConflict) startWorker() {
+	if owner == nil || owner.cancel != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	owner.cancel = cancel
+	owner.wg.Add(1)
+	go owner.runWorker(ctx)
+	owner.signalWorker()
+}
+
+func (owner *productionReplicaConflict) runWorker(ctx context.Context) {
+	defer owner.wg.Done()
+	delay := time.Second
+	for {
+		err := owner.synchronizeOnce(ctx)
+		if err == nil {
+			delay = time.Second
+		} else {
+			_ = owner.markPending(err.Error())
+			if delay < time.Minute {
+				delay *= 2
+				if delay > time.Minute {
+					delay = time.Minute
+				}
+			}
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-owner.wake:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			delay = time.Second
+		case <-timer.C:
+		}
+	}
+}
+
+func (owner *productionReplicaConflict) synchronizeOnce(
+	ctx context.Context,
+) error {
+	manager, err := owner.ensureManager(ctx)
+	if err != nil {
+		return err
+	}
+	if err := owner.persistCurrentStatus(
+		context.WithoutCancel(ctx),
+		"syncing",
+		true,
+	); err != nil {
+		return err
+	}
+	if err := owner.scanSelectedFiles(ctx); err != nil {
+		return err
+	}
+	if err := manager.Synchronize(ctx); err != nil {
+		return err
+	}
+	status, err := manager.Status(ctx)
+	if err != nil {
+		return err
+	}
+	if err := owner.clearPending(); err != nil {
+		return err
+	}
+	return owner.persistStatus(
+		context.WithoutCancel(ctx),
+		status.CoordinationStrength,
+		status.SyncState,
+		status.PendingSync,
+	)
+}
+
+func (owner *productionReplicaConflict) ensureManager(
+	ctx context.Context,
+) (*replica.Manager, error) {
+	owner.managerMu.RLock()
+	manager := owner.manager
+	owner.managerMu.RUnlock()
+	if manager != nil {
+		return manager, nil
+	}
+	if owner.remoteFactory == nil {
+		return nil, replica.ErrReplicationUnavailable
+	}
+	remote, err := owner.remoteFactory(ctx)
+	if err != nil {
+		return nil, err
+	}
+	options := owner.managerOptions
+	options.Remote = remote
+	opened, err := replica.OpenManager(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	owner.managerMu.Lock()
+	if owner.manager == nil {
+		owner.manager = opened
+		manager = opened
+	} else {
+		manager = owner.manager
+	}
+	owner.managerMu.Unlock()
+	if manager != opened {
+		_ = opened.Close()
+	}
+	return manager, nil
+}
+
+func (owner *productionReplicaConflict) withManager(
+	fn func(*replica.Manager) error,
+) error {
+	if owner == nil {
+		return replica.ErrReplicationUnavailable
+	}
+	owner.managerMu.RLock()
+	defer owner.managerMu.RUnlock()
+	if owner.manager == nil {
+		return replica.ErrRemoteUnavailable
+	}
+	return fn(owner.manager)
+}
+
+func (owner *productionReplicaConflict) signalWorker() {
+	if owner == nil || owner.wake == nil {
+		return
+	}
+	select {
+	case owner.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (owner *productionReplicaConflict) queuePublishedSnapshots(
+	ctx context.Context,
+) error {
+	err := owner.withManager(func(manager *replica.Manager) error {
+		return manager.QueuePublishedSnapshots(ctx)
+	})
+	if errors.Is(err, replica.ErrRemoteUnavailable) {
+		if markerErr := owner.markPending(
+			"replica.remote_unavailable",
+		); markerErr != nil {
+			return markerErr
+		}
+		owner.signalWorker()
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := owner.persistCurrentStatus(
+		context.WithoutCancel(ctx),
+		"pending",
+		true,
+	); err != nil {
+		return err
+	}
+	owner.signalWorker()
+	return nil
+}
+
+func (owner *productionReplicaConflict) markPending(reason string) error {
+	if owner == nil || owner.pendingPath == "" {
+		return replica.ErrReplicationUnavailable
+	}
+	if err := owner.persistCurrentStatus(
+		context.Background(),
+		"failed",
+		true,
+	); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(struct {
+		Pending   bool      `json:"pending"`
+		Reason    string    `json:"reason"`
+		UpdatedAt time.Time `json:"updatedAt"`
+	}{
+		Pending: true, Reason: reason, UpdatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		return err
+	}
+	temp := filepath.Join(
+		filepath.Dir(owner.pendingPath),
+		"."+filepath.Base(owner.pendingPath)+"."+uuid.NewString()+".tmp",
+	)
+	file, err := os.OpenFile(
+		temp,
+		os.O_CREATE|os.O_EXCL|os.O_WRONLY,
+		0o600,
+	)
+	if err != nil {
+		return err
+	}
+	remove := true
+	defer func() {
+		if remove {
+			_ = os.Remove(temp)
+		}
+	}()
+	if _, err := file.Write(raw); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := replaceGrantedFile(temp, owner.pendingPath); err != nil {
+		return err
+	}
+	remove = false
+	return nil
+}
+
+func (owner *productionReplicaConflict) clearPending() error {
+	if owner == nil || owner.pendingPath == "" {
+		return nil
+	}
+	err := os.Remove(owner.pendingPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 func (owner *productionReplicaConflict) register() {
-	if owner == nil || owner.manager == nil ||
+	if owner == nil ||
 		owner.conflicts == nil || owner.applier == nil {
 		return
 	}
@@ -126,7 +405,8 @@ func (owner *productionReplicaConflict) register() {
 		{"replica.synchronize", owner.synchronize},
 		{"replica.forceTakeover", owner.forceTakeover},
 	}
-	if owner.manager.ConflictReady() {
+	if owner.remoteFactory != nil ||
+		(owner.manager != nil && owner.manager.ConflictReady()) {
 		methods = append(methods,
 			struct {
 				name    string
@@ -163,12 +443,26 @@ func (owner *productionReplicaConflict) status(
 	if _, err := decodeStrict[struct{}](paramsRaw); err != nil {
 		return nil, errors.New("replica.request_invalid")
 	}
-	status, err := owner.manager.Status(ctx)
+	status, found, err := owner.runtime.state.replicaStatus(ctx)
 	if err != nil {
 		return nil, err
 	}
+	if !found {
+		return nil, errors.New("replica.status_projection_missing")
+	}
+	if _, markerErr := os.Stat(owner.pendingPath); markerErr == nil &&
+		(!status.PendingSync || status.SyncState == "replicated") {
+		status.PendingSync = true
+		status.SyncState = "failed"
+		status.UpdatedAt = time.Now().UTC()
+		if err := owner.runtime.state.putReplicaStatus(ctx, status); err != nil {
+			return nil, err
+		}
+	} else if markerErr != nil && !errors.Is(markerErr, os.ErrNotExist) {
+		return nil, markerErr
+	}
 	return map[string]any{
-		"coordinationStrength": string(status.CoordinationStrength),
+		"coordinationStrength": status.CoordinationStrength,
 		"syncState":            status.SyncState,
 		"pendingSync":          status.PendingSync,
 	}, nil
@@ -196,10 +490,80 @@ func (owner *productionReplicaConflict) synchronize(
 	if err != nil {
 		return nil, err
 	}
-	if err := owner.manager.QueueSynchronize(ctx, receipt); err != nil {
+	token, _ := owner.runtime.coordinator.Current()
+	if err := owner.runtime.state.commitOperationReceipt(
+		context.WithoutCancel(ctx),
+		protocolv2.Session{
+			WorkspaceID: token.WorkspaceID,
+			Epoch:       token.SessionEpoch,
+			Sequence:    wire.Sequence,
+		},
+		receipt,
+	); err != nil {
 		return nil, err
 	}
+	err = owner.withManager(func(manager *replica.Manager) error {
+		return manager.QueueSynchronize(ctx, receipt)
+	})
+	if errors.Is(err, replica.ErrRemoteUnavailable) {
+		if err := owner.markPending("replica.remote_unavailable"); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	if err := owner.persistCurrentStatus(
+		context.WithoutCancel(ctx),
+		"pending",
+		true,
+	); err != nil {
+		return nil, err
+	}
+	owner.signalWorker()
 	return result, nil
+}
+
+func (owner *productionReplicaConflict) persistStatus(
+	ctx context.Context,
+	strength replica.CoordinationStrength,
+	syncState string,
+	pending bool,
+) error {
+	if owner == nil || owner.runtime == nil || owner.runtime.state == nil {
+		return errors.New("replica.status_projection_unavailable")
+	}
+	if strength != replica.Strong && strength != replica.Advisory {
+		return errors.New("replica.status_projection_invalid")
+	}
+	return owner.runtime.state.putReplicaStatus(
+		ctx,
+		replicaStatusProjection{
+			CoordinationStrength: string(strength),
+			SyncState:            syncState,
+			PendingSync:          pending,
+			UpdatedAt:            time.Now().UTC(),
+		},
+	)
+}
+
+func (owner *productionReplicaConflict) persistCurrentStatus(
+	ctx context.Context,
+	syncState string,
+	pending bool,
+) error {
+	strength := replica.Advisory
+	if owner != nil && owner.runtime != nil && owner.runtime.state != nil {
+		current, found, err := owner.runtime.state.replicaStatus(ctx)
+		if err != nil {
+			return err
+		}
+		if found {
+			strength = replica.CoordinationStrength(
+				current.CoordinationStrength,
+			)
+		}
+	}
+	return owner.persistStatus(ctx, strength, syncState, pending)
 }
 
 type forceTakeoverParams struct {
@@ -217,22 +581,27 @@ func (owner *productionReplicaConflict) forceTakeover(
 			params.Mode != "provisional") {
 		return nil, errors.New("replica.request_invalid")
 	}
-	claim, err := owner.manager.ForceTakeoverWithReceipt(
-		ctx,
-		replica.ClaimMode(params.Mode),
-		func(
-			claim replica.Claim,
-		) (protocolv2.OperationReceipt, error) {
-			return protocolv2.BuildContextOperationReceipt(
-				ctx,
-				map[string]any{
-					"fenceEpoch": claim.FenceEpoch,
-					"claimId":    claim.ClaimID,
-					"mode":       string(claim.Mode),
-				},
-			)
-		},
-	)
+	var claim replica.Claim
+	err = owner.withManager(func(manager *replica.Manager) error {
+		var takeoverErr error
+		claim, takeoverErr = manager.ForceTakeoverWithReceipt(
+			ctx,
+			replica.ClaimMode(params.Mode),
+			func(
+				claim replica.Claim,
+			) (protocolv2.OperationReceipt, error) {
+				return protocolv2.BuildContextOperationReceipt(
+					ctx,
+					map[string]any{
+						"fenceEpoch": claim.FenceEpoch,
+						"claimId":    claim.ClaimID,
+						"mode":       string(claim.Mode),
+					},
+				)
+			},
+		)
+		return takeoverErr
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -414,10 +783,23 @@ func (owner *productionReplicaConflict) loadOperationReceipt(
 		string,
 		string,
 	) (protocolv2.OperationReceipt, bool, error){
-		owner.manager.LoadOperationReceipt,
 		owner.conflicts.LoadOperationReceipt,
 		owner.applier.LoadOperationReceipt,
 	}
+	owner.managerMu.RLock()
+	if owner.manager != nil {
+		loaders = append(
+			[]func(
+				context.Context,
+				string,
+				string,
+			) (protocolv2.OperationReceipt, bool, error){
+				owner.manager.LoadOperationReceipt,
+			},
+			loaders...,
+		)
+	}
+	defer owner.managerMu.RUnlock()
 	var result protocolv2.OperationReceipt
 	foundAny := false
 	for _, load := range loaders {
@@ -445,10 +827,17 @@ func (owner *productionReplicaConflict) close() error {
 		return nil
 	}
 	var errs []error
+	if owner.cancel != nil {
+		owner.cancel()
+		owner.wg.Wait()
+		owner.cancel = nil
+	}
+	owner.managerMu.Lock()
 	if owner.manager != nil {
 		errs = append(errs, owner.manager.Close())
 		owner.manager = nil
 	}
+	owner.managerMu.Unlock()
 	if owner.conflicts != nil {
 		errs = append(errs, owner.conflicts.Close())
 		owner.conflicts = nil

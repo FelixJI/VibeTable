@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,6 +28,8 @@ type Publication struct {
 	Claim                   Claim     `json:"claim"`
 	PreviousPublicationHash string    `json:"previousPublicationHash,omitempty"`
 	SnapshotID              string    `json:"snapshotId"`
+	CatalogRevision         uint64    `json:"catalogRevision"`
+	CheckpointID            string    `json:"checkpointId"`
 	CreatedAt               time.Time `json:"createdAt"`
 	CanonicalHash           string    `json:"canonicalHash"`
 	MAC                     string    `json:"mac"`
@@ -97,7 +100,12 @@ func SealPublication(
 	publication.Claim.IssuedAt = publication.Claim.IssuedAt.UTC()
 	publication.Claim.HeartbeatAt = publication.Claim.HeartbeatAt.UTC()
 	publication.Claim.ExpiresAt = publication.Claim.ExpiresAt.UTC()
-	expectedID := publication.Claim.ClaimID + "/" + publication.SnapshotID
+	expectedID := fmt.Sprintf(
+		"%s/%s/%020d",
+		publication.Claim.ClaimID,
+		publication.SnapshotID,
+		publication.CatalogRevision,
+	)
 	if publication.PublicationID == "" {
 		publication.PublicationID = expectedID
 	} else if publication.PublicationID != expectedID {
@@ -262,6 +270,8 @@ func (dag *AdvisoryDAG) verify(publication Publication) error {
 		Claim:                   publication.Claim,
 		PreviousPublicationHash: publication.PreviousPublicationHash,
 		SnapshotID:              publication.SnapshotID,
+		CatalogRevision:         publication.CatalogRevision,
+		CheckpointID:            publication.CheckpointID,
 		CreatedAt:               publication.CreatedAt,
 	}, dag.macKey)
 	if err != nil {
@@ -284,8 +294,16 @@ func canonicalPublicationPayload(publication Publication) ([]byte, error) {
 		!validSHA256(publication.PreviousPublicationHash, true) {
 		return nil, ErrPublicationTampered
 	}
-	if publication.PublicationID !=
-		publication.Claim.ClaimID+"/"+publication.SnapshotID ||
+	expectedID := fmt.Sprintf(
+		"%s/%s/%020d",
+		publication.Claim.ClaimID,
+		publication.SnapshotID,
+		publication.CatalogRevision,
+	)
+	if publication.PublicationID != expectedID ||
+		publication.CatalogRevision == 0 ||
+		!validSHA256(publication.CheckpointID, false) ||
+		publication.Claim.Nonce != publication.CheckpointID ||
 		publication.CreatedAt.Before(publication.Claim.IssuedAt) ||
 		publication.CreatedAt.After(publication.Claim.ExpiresAt) {
 		return nil, ErrPublicationTampered
@@ -302,6 +320,8 @@ func canonicalPublicationPayload(publication Publication) ([]byte, error) {
 		Claim                   Claim     `json:"claim"`
 		PreviousPublicationHash string    `json:"previousPublicationHash,omitempty"`
 		SnapshotID              string    `json:"snapshotId"`
+		CatalogRevision         uint64    `json:"catalogRevision"`
+		CheckpointID            string    `json:"checkpointId"`
 		CreatedAt               time.Time `json:"createdAt"`
 	}{
 		PublicationID:           publication.PublicationID,
@@ -309,6 +329,8 @@ func canonicalPublicationPayload(publication Publication) ([]byte, error) {
 		Claim:                   publication.Claim,
 		PreviousPublicationHash: publication.PreviousPublicationHash,
 		SnapshotID:              publication.SnapshotID,
+		CatalogRevision:         publication.CatalogRevision,
+		CheckpointID:            publication.CheckpointID,
 		CreatedAt:               publication.CreatedAt.UTC(),
 	})
 }

@@ -17,6 +17,7 @@ func (runtime *Runtime) loadAuthorityOperationReceipt(
 		string,
 		string,
 	) (protocolv2.OperationReceipt, bool, error){
+		runtime.state.loadOperationReceipt,
 		runtime.state.loadExternalFileOperationReceipt,
 		runtime.headStore.LoadOperationReceipt,
 		runtime.catalog.LoadOperationReceipt,

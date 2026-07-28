@@ -45,6 +45,17 @@ def nullable_integer(example: int | None = None) -> ContractValue:
     return ContractValue(example, {"type": ["integer", "null"]})
 
 
+def enum_string(example: str, *values: str) -> ContractValue:
+    return ContractValue(example, {"type": "string", "enum": list(values)})
+
+
+def nullable_enum_string(example: str | None, *values: str) -> ContractValue:
+    return ContractValue(
+        example,
+        {"type": ["string", "null"], "enum": [*values, None]},
+    )
+
+
 RPC_REGISTRY: tuple[Rpc, ...] = (
     Rpc(
         "workspace.list",
@@ -145,14 +156,28 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         "WorkspaceStoragePlan",
         {
             "workspaceId": WORKSPACE_ID,
-            "action": "relocate",
-            "targetMode": "direct",
-            "selectedRootGrant": "grant_storage_target_1",
+            "action": enum_string(
+                "relocate",
+                "relocate",
+                "convertTopology",
+                "releaseActivityCache",
+            ),
+            "targetMode": nullable_enum_string(
+                "direct",
+                "direct",
+                "mirrored",
+            ),
+            "selectedRootGrant": nullable_string("grant_storage_target_1"),
         },
         {
             "planId": OPERATION_ID,
             "workspaceId": WORKSPACE_ID,
-            "action": "relocate",
+            "action": enum_string(
+                "relocate",
+                "relocate",
+                "convertTopology",
+                "releaseActivityCache",
+            ),
             "source": {
                 "selectedRoot": "D:\\Workspaces\\Quarter",
                 "activityRoot": nullable_string(),
@@ -577,6 +602,28 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
             "fileRevisionBuckets": ["daily", "weekly", "monthly"],
             "trashMonths": 3,
             "repositoryLimitBytes": nullable_integer(),
+        },
+    ),
+    Rpc(
+        "retention.status",
+        "workspace",
+        "GetRetentionStatusParams",
+        "RetentionStatusResult",
+        {},
+        {
+            "repositoryUsageBytes": 1048576,
+            "repositoryLimitBytes": nullable_integer(1048576),
+            "automaticSnapshotsPaused": True,
+            "warningCode": nullable_string("snapshot.repository_limit_reached"),
+            "integrityStatus": enum_string(
+                "verified",
+                "unknown",
+                "verified",
+                "corrupt",
+            ),
+            "integrityFailure": nullable_string(),
+            "lastIncrementalCheckAt": nullable_string("2026-07-28T00:00:00Z"),
+            "lastFullCheckAt": nullable_string("2026-07-01T00:00:00Z"),
         },
     ),
     Rpc(

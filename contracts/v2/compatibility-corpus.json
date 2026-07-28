@@ -12,22 +12,22 @@
       "artifacts": [
         {
           "path": "fixtures/workspace-manifest.json",
-          "sha256": "2a3f53c658c8c84079c5e8021d7ae7b2646c83f5b85fa699171f6f86d5fc83b5",
+          "sha256": "d0bd6a69757df06f649433acb970e90237d1a0049db6dd55085dac985073fd3f",
           "expected": "read"
         },
         {
           "path": "fixtures/snapshot-manifest.json",
-          "sha256": "648c5cc511b7ad331b95e97e68e000ff45a71d50ae9eb8329e3972b1dc64b565",
+          "sha256": "a2fe69932c2a698bfb63426a484f2c9214835ced542debc024e3bbea3f3b430e",
           "expected": "read"
         },
         {
           "path": "fixtures/retention-policy.json",
-          "sha256": "cc6a8d3891db864930ae87f63cac806b50f2c8932723eba4f9fc1cabe863bf90",
+          "sha256": "48f870f86053a97546d37a7228fe563b1f91a24a65e351b6b65dfe0d25c5fa47",
           "expected": "read"
         },
         {
           "path": "fixtures/snapshot-package-v2.vtsnapshot",
-          "sha256": "e93ebf70345e34f3417887d6b4a7c890705e20394c2ae715784d744c5d54d349",
+          "sha256": "85388ca583698f452232b9a0291190aeb98ec94e314ca8eccb2cf35a438aebc2",
           "expected": "read"
         }
       ]

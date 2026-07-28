@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -210,20 +211,132 @@ func productionManagerFixture(
 	); err != nil {
 		t.Fatal(err)
 	}
+	headCommit, err := repository.Commit(
+		context.Background(),
+		objectrepo.CommitRequest{
+			Authority: authorityValue,
+			Manifests: []objectrepo.ManifestInput{
+				{
+					Name: "topology-head",
+					Labels: map[string]string{
+						"type": "topology-head", "workspaceId": workspaceID,
+					},
+					Payload: json.RawMessage(`{"formatVersion":1}`),
+				},
+				{
+					Name: "file-state-head",
+					Labels: map[string]string{
+						"type": "file-state-head", "workspaceId": workspaceID,
+					},
+					Payload: json.RawMessage(`{"formatVersion":1}`),
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database := []byte("durable root")
+	topologyRoot, err := json.Marshal(map[string]any{
+		"manifestId": headCommit.Manifests["topology-head"],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileStateRoot, err := json.Marshal(map[string]any{
+		"formatVersion": 1,
+		"sourceRoot":    headCommit.Manifests["file-state-head"],
+		"files":         map[string]objectrepo.ObjectID{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := []byte("{}")
+	audit := []byte("{}")
+	snapshotID := "44444444-4444-4444-8444-444444444444"
+	manifest := snapshot.Manifest{
+		FormatVersion:             2,
+		SnapshotID:                snapshotID,
+		WorkspaceID:               workspaceID,
+		FenceEpoch:                authorityValue.FenceEpoch,
+		ClaimID:                   authorityValue.ClaimID,
+		MutationRevision:          7,
+		SnapshotSequence:          7,
+		Trigger:                   snapshot.TriggerAutomatic,
+		CreatedAt:                 now,
+		CreatedByDevice:           "33333333-3333-4333-8333-333333333333",
+		BusinessDatabaseObjectID:  filesystemObjectID(database),
+		TopologyRootObjectID:      filesystemObjectID(topologyRoot),
+		FileStateRootObjectID:     filesystemObjectID(fileStateRoot),
+		WorkspaceSettingsObjectID: filesystemObjectID(settings),
+		AuditPrefixObjectID:       filesystemObjectID(audit),
+		MinimumAppVersion:         "2.0.0",
+	}
+	manifestRaw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
 	commit, err := repository.Commit(
 		context.Background(),
 		objectrepo.CommitRequest{
 			Authority: authorityValue,
-			Objects: []objectrepo.ObjectInput{{
-				Name:    "root",
-				Content: []byte("durable root"),
+			Objects: []objectrepo.ObjectInput{
+				{Name: "database", Content: database},
+				{Name: "topology-root", Content: topologyRoot},
+				{Name: "file-state-root", Content: fileStateRoot},
+				{Name: "workspace-settings", Content: settings},
+				{Name: "audit-prefix", Content: audit},
+			},
+			Manifests: []objectrepo.ManifestInput{{
+				Name: "snapshot",
+				Labels: map[string]string{
+					"type": "snapshot", "workspaceId": workspaceID,
+					"snapshotId": snapshotID,
+				},
+				Payload: manifestRaw,
 			}},
 		},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := commit.Objects["root"]
+	manifestDigest := sha256.Sum256(manifestRaw)
+	sealRaw, err := json.Marshal(snapshot.Seal{
+		FormatVersion:    2,
+		SnapshotID:       snapshotID,
+		ManifestHash:     "sha256:" + hex.EncodeToString(manifestDigest[:]),
+		RepositoryFormat: "kopia-v3",
+		FenceEpoch:       authorityValue.FenceEpoch,
+		ClaimID:          authorityValue.ClaimID,
+		MutationRevision: 7,
+		SnapshotSequence: 7,
+		Verified:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealCommit, err := repository.Commit(
+		context.Background(),
+		objectrepo.CommitRequest{
+			Authority: authorityValue,
+			Manifests: []objectrepo.ManifestInput{{
+				Name: "snapshot-seal",
+				Labels: map[string]string{
+					"type": "snapshot-seal", "workspaceId": workspaceID,
+					"snapshotId": snapshotID,
+				},
+				Payload: sealRaw,
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := make([]objectrepo.ObjectID, 0, len(commit.Objects))
+	for _, id := range commit.Objects {
+		roots = append(roots, id)
+	}
+	root := commit.Objects["database"]
 	directory := t.TempDir()
 	options := ManagerOptions{
 		WorkspaceID:     workspaceID,
@@ -234,13 +347,19 @@ func productionManagerFixture(
 		PublicationKey:  publicationKey(),
 		Remote:          remote,
 		Catalog: productionCatalog{records: []snapshot.Record{{
-			SnapshotID:       "44444444-4444-4444-8444-444444444444",
+			SnapshotID:       snapshotID,
 			WorkspaceID:      workspaceID,
+			ManifestID:       commit.Manifests["snapshot"],
+			SealID:           sealCommit.Manifests["snapshot-seal"],
 			CatalogRevision:  7,
 			SnapshotSequence: 7,
 			FenceEpoch:       1,
 			ClaimID:          claimID,
-			Objects:          []objectrepo.ObjectID{root},
+			MutationRevision: 7,
+			Trigger:          snapshot.TriggerAutomatic,
+			CreatedAt:        now,
+			Objects:          roots,
+			ObjectMap:        commit.Objects,
 		}}},
 		Repository: repository,
 		Authority: &productionAuthority{
@@ -393,6 +512,13 @@ func TestProductionStrongSyncPersistsVerifiedReceiptAndReleasesPin(t *testing.T)
 		status.LastVerifiedAt == nil {
 		t.Fatalf("status = %#v", status)
 	}
+	syncState, err := manager.SnapshotSyncState(
+		context.Background(),
+		options.Catalog.(productionCatalog).records[0],
+	)
+	if err != nil || syncState != "replicated" {
+		t.Fatalf("snapshot sync state = %q, %v", syncState, err)
+	}
 	pins, err := repository.ListPins(context.Background())
 	if err != nil || len(pins) != 0 {
 		t.Fatalf("pins=%#v err=%v", pins, err)
@@ -410,6 +536,98 @@ func TestProductionStrongSyncPersistsVerifiedReceiptAndReleasesPin(t *testing.T)
 	}
 	if remote.replications != 1 {
 		t.Fatalf("restart duplicated replication: %d", remote.replications)
+	}
+}
+
+func TestProductionStrongMirrorPausesWhenIntegrityIsCorrupt(t *testing.T) {
+	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	store := newMemoryLeaseStore()
+	lease, err := NewStrongLeaseWithStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.now = func() time.Time { return now }
+	claim, err := lease.Acquire(Claim{
+		WorkspaceID: "11111111-1111-4111-8111-111111111111",
+		DeviceID:    "33333333-3333-4333-8333-333333333333",
+		ClaimID:     "22222222-2222-4222-8222-222222222222",
+		Nonce:       "nonce",
+		Strength:    Strong,
+		Mode:        Writable,
+		ExpiresAt:   now.Add(time.Hour),
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := &productionRemote{
+		identity: RemoteIdentity{
+			WorkspaceID: claim.WorkspaceID,
+			ReplicaID:   "replica-a",
+			Strength:    Strong,
+		},
+		store: store,
+	}
+	options, _, _ := productionManagerFixture(t, remote, now)
+	integrityErr := errors.New("retention.integrity_corrupt")
+	options.DestructiveSafe = func(context.Context) error {
+		return integrityErr
+	}
+	manager, err := OpenManager(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	if err := manager.Synchronize(
+		context.Background(),
+	); !errors.Is(err, integrityErr) {
+		t.Fatalf("Synchronize error = %v", err)
+	}
+	if remote.replications != 0 {
+		t.Fatalf("corrupt mirror replicated %d checkpoints", remote.replications)
+	}
+}
+
+func TestQueueSynchronizePersistsWithoutRunningRemoteIO(t *testing.T) {
+	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	remote := &productionRemote{
+		identity: RemoteIdentity{
+			WorkspaceID: "11111111-1111-4111-8111-111111111111",
+			ReplicaID:   "replica-a",
+			Strength:    Advisory,
+		},
+	}
+	options, _, _ := productionManagerFixture(t, remote, now)
+	manager, err := OpenManager(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	receipt := protocolv2.OperationReceipt{
+		OperationID: "77777777-7777-4777-8777-777777777777",
+		WorkspaceID: options.WorkspaceID,
+		Method:      "replica.synchronize",
+		Scope:       protocolv2.WorkspaceScope,
+		RequestHash: "sha256:" + strings.Repeat("a", 64),
+		Result:      json.RawMessage(`{"state":"queued"}`),
+	}
+	if err := manager.QueueSynchronize(
+		context.Background(),
+		receipt,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if remote.replications != 0 {
+		t.Fatalf("queue call performed remote IO: %d", remote.replications)
+	}
+	status, err := manager.Status(context.Background())
+	if err != nil || !status.PendingSync {
+		t.Fatalf("queued status = %#v, %v", status, err)
+	}
+	if err := manager.Synchronize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if remote.replications != 1 {
+		t.Fatalf("worker drain replications = %d", remote.replications)
 	}
 }
 

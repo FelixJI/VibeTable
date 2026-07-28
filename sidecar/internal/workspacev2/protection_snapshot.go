@@ -116,5 +116,6 @@ func (runtime *Runtime) protectionSnapshotForOperation(
 			err,
 		)
 	}
+	runtime.enqueueReplicaSnapshots(ctx)
 	return record, nil
 }

@@ -131,12 +131,17 @@ public sealed class WorkspaceCoordinationLeaseHook :
         cancellationToken.ThrowIfCancellationRequested();
         if (requestedMode != WorkspaceOpenMode.Writable)
             return Task.FromResult(requestedMode);
-        if (workspace.CoordinationStrength ==
-            WorkspaceCoordinationStrength.Advisory)
+        // A separate activity root is the device-local marker for mirrored
+        // storage. Filesystem replicas are advisory even when the selected
+        // sync folder happens to reside on a fixed local volume.
+        if (!string.IsNullOrWhiteSpace(workspace.ActivityRoot) ||
+            workspace.CoordinationStrength ==
+                WorkspaceCoordinationStrength.Advisory)
             return Task.FromResult(WorkspaceOpenMode.Provisional);
 
         string runtimeRoot =
             ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace);
+        WorkspaceStorageMaintenanceLease.EnsureNoIntent(runtimeRoot);
         string coordination = WorkspaceLayout.Paths(runtimeRoot).Coordination;
         string leasePath = Path.Combine(coordination, LeaseFileName);
         lock (_gate)
@@ -149,15 +154,27 @@ public sealed class WorkspaceCoordinationLeaseHook :
             try
             {
                 Directory.CreateDirectory(coordination);
-                _held.Add(
-                    workspace.WorkspaceId,
-                    new FileStream(
+                FileStream acquired = new(
                         leasePath,
                         FileMode.OpenOrCreate,
                         FileAccess.ReadWrite,
                         FileShare.None,
                         bufferSize: 1,
-                        FileOptions.WriteThrough));
+                        FileOptions.WriteThrough);
+                try
+                {
+                    // A maintenance intent may have been published after the
+                    // first check but before this process obtained the writer
+                    // lock. Never let that race create a writer during copy.
+                    WorkspaceStorageMaintenanceLease.EnsureNoIntent(
+                        runtimeRoot);
+                    _held.Add(workspace.WorkspaceId, acquired);
+                }
+                catch
+                {
+                    acquired.Dispose();
+                    throw;
+                }
             }
             catch (IOException)
             {

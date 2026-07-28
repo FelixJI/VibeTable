@@ -262,6 +262,14 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             ["VIBETABLE_WORKSPACE_CLAIM_ID"] =
                 authority.ClaimId.ToString("D").ToLowerInvariant(),
         };
+        if (!string.IsNullOrWhiteSpace(workspace.ActivityRoot))
+        {
+            // The activity root remains the only writable runtime root. The
+            // selected mirrored root is a separate, trusted host binding used
+            // by the Sidecar's independently reopened replica adapter.
+            environment["VIBETABLE_REPLICA_ROOT"] =
+                Path.GetFullPath(workspace.SelectedRoot);
+        }
         return new PocketBaseLaunchOptions
         {
             ExecutablePath = sidecarTemplate.ExecutablePath,

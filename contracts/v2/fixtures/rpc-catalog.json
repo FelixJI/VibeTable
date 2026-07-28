@@ -39,6 +39,7 @@
     "fileHistory.upgrade",
     "fileHistory.activateLeaf",
     "retention.get",
+    "retention.status",
     "retention.update",
     "retention.plan",
     "retention.apply",
@@ -905,13 +906,29 @@
             "type": "string"
           },
           "action": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "relocate",
+              "convertTopology",
+              "releaseActivityCache"
+            ]
           },
           "targetMode": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "direct",
+              "mirrored",
+              null
+            ]
           },
           "selectedRootGrant": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -938,7 +955,12 @@
             "type": "string"
           },
           "action": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "relocate",
+              "convertTopology",
+              "releaseActivityCache"
+            ]
           },
           "source": {
             "type": "object",
@@ -3949,6 +3971,131 @@
       }
     },
     {
+      "method": "retention.status",
+      "scope": "workspace",
+      "paramsModel": "GetRetentionStatusParams",
+      "resultModel": "RetentionStatusResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repositoryUsageBytes",
+          "repositoryLimitBytes",
+          "automaticSnapshotsPaused",
+          "warningCode",
+          "integrityStatus",
+          "integrityFailure",
+          "lastIncrementalCheckAt",
+          "lastFullCheckAt"
+        ],
+        "properties": {
+          "repositoryUsageBytes": {
+            "type": "integer"
+          },
+          "repositoryLimitBytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "automaticSnapshotsPaused": {
+            "type": "boolean"
+          },
+          "warningCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "integrityStatus": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "verified",
+              "corrupt"
+            ]
+          },
+          "integrityFailure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastIncrementalCheckAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastFullCheckAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-039",
+        "method": "retention.status",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 39,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {}
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-039",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 39,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "repositoryUsageBytes": 1048576,
+          "repositoryLimitBytes": 1048576,
+          "automaticSnapshotsPaused": true,
+          "warningCode": "snapshot.repository_limit_reached",
+          "integrityStatus": "verified",
+          "integrityFailure": null,
+          "lastIncrementalCheckAt": "2026-07-28T00:00:00Z",
+          "lastFullCheckAt": "2026-07-01T00:00:00Z"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-039",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 39,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "retention.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
       "method": "retention.update",
       "scope": "workspace",
       "paramsModel": "UpdateRetentionParams",
@@ -4061,12 +4208,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-039",
+        "id": "v2-040",
         "method": "retention.update",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 39,
+          "sequence": 40,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4092,11 +4239,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-039",
+        "id": "v2-040",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 39,
+          "sequence": 40,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4124,11 +4271,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-039",
+        "id": "v2-040",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 39,
+          "sequence": 40,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4176,12 +4323,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-040",
+        "id": "v2-041",
         "method": "retention.plan",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 40,
+          "sequence": 41,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4189,11 +4336,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-040",
+        "id": "v2-041",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 40,
+          "sequence": 41,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4205,11 +4352,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-040",
+        "id": "v2-041",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 40,
+          "sequence": 41,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4258,12 +4405,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-041",
+        "id": "v2-042",
         "method": "retention.apply",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 41,
+          "sequence": 42,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4273,11 +4420,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-041",
+        "id": "v2-042",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 41,
+          "sequence": 42,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4288,11 +4435,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-041",
+        "id": "v2-042",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 41,
+          "sequence": 42,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4339,12 +4486,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-042",
+        "id": "v2-043",
         "method": "replica.status",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 42,
+          "sequence": 43,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4352,11 +4499,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-042",
+        "id": "v2-043",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 42,
+          "sequence": 43,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4368,11 +4515,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-042",
+        "id": "v2-043",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 42,
+          "sequence": 43,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4415,12 +4562,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-043",
+        "id": "v2-044",
         "method": "replica.synchronize",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 43,
+          "sequence": 44,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4428,11 +4575,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-043",
+        "id": "v2-044",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 43,
+          "sequence": 44,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4443,11 +4590,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-043",
+        "id": "v2-044",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 43,
+          "sequence": 44,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4500,12 +4647,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-044",
+        "id": "v2-045",
         "method": "replica.forceTakeover",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 44,
+          "sequence": 45,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4515,11 +4662,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-044",
+        "id": "v2-045",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 44,
+          "sequence": 45,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4531,11 +4678,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-044",
+        "id": "v2-045",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 44,
+          "sequence": 45,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4595,12 +4742,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-045",
+        "id": "v2-046",
         "method": "conflict.list",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 45,
+          "sequence": 46,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4611,11 +4758,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-045",
+        "id": "v2-046",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 45,
+          "sequence": 46,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4626,11 +4773,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-045",
+        "id": "v2-046",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 45,
+          "sequence": 46,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4684,12 +4831,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-046",
+        "id": "v2-047",
         "method": "conflict.inspect",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 46,
+          "sequence": 47,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4699,11 +4846,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-046",
+        "id": "v2-047",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 46,
+          "sequence": 47,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4715,11 +4862,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-046",
+        "id": "v2-047",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 46,
+          "sequence": 47,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4778,12 +4925,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-047",
+        "id": "v2-048",
         "method": "conflict.preview",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 47,
+          "sequence": 48,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4794,11 +4941,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-047",
+        "id": "v2-048",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 47,
+          "sequence": 48,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4810,11 +4957,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-047",
+        "id": "v2-048",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 47,
+          "sequence": 48,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4868,12 +5015,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-048",
+        "id": "v2-049",
         "method": "conflict.apply",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 48,
+          "sequence": 49,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4883,11 +5030,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-048",
+        "id": "v2-049",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 48,
+          "sequence": 49,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4899,11 +5046,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-048",
+        "id": "v2-049",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 48,
+          "sequence": 49,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },

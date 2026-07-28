@@ -34,8 +34,10 @@ public partial class MainWindow : Window
     private readonly WorkspaceRegistry _workspaceRegistry;
     private readonly WorkspaceSessionManager _workspaceSessions;
     private readonly WorkspaceSessionEnvelopeFilter _workspaceSessionFilter;
+    private readonly WorkspaceReplicaStatusMonitor _replicaStatusMonitor;
     private readonly WorkspaceProviderPolicy _providerPolicy;
     private readonly WorkspaceRepositoryOnboardingService _repositoryOnboarding;
+    private readonly WorkspaceReplicaRecoveryService _replicaRecovery;
     private readonly IWorkspaceRepositoryRecoveryUi _repositoryRecoveryUi;
     private readonly WorkspacePathGrantStore _workspacePathGrants;
     private readonly SnapshotPackageBroker _snapshotPackages;
@@ -151,6 +153,9 @@ public partial class MainWindow : Window
         _repositoryOnboarding = new WorkspaceRepositoryOnboardingService(
             sidecarOptionsFactory,
             _runtime.PrepareRepositoryOnboarding);
+        _replicaRecovery = new WorkspaceReplicaRecoveryService(
+            sidecarOptionsFactory,
+            _runtime.PrepareRepositoryOnboarding);
         _repositoryRecoveryUi = new WorkspaceRepositoryRecoveryUi();
         _providerPolicy = WorkspaceProviderPolicy.Load(AppContext.BaseDirectory);
         _workspacePathGrants = new WorkspacePathGrantStore(
@@ -169,13 +174,16 @@ public partial class MainWindow : Window
                     ?? throw new InvalidOperationException(
                         "Workspace request envelope filter is not bound.")),
             new WorkspaceCoordinationLeaseHook(),
-            new WorkspaceKeyRotationPreOpenHook(
+            new WorkspaceReplicaPreOpenHook(
+                _replicaRecovery,
                 _repositoryOnboarding,
                 _repositoryRecoveryUi));
         _workspaceSessionFilter = new WorkspaceSessionEnvelopeFilter(
             _workspaceSessions);
         productionEnvelopeFilter = _workspaceSessionFilter;
         _workspaceSessions.SetRequestDrainHook(_workspaceSessionFilter);
+        _replicaStatusMonitor = new WorkspaceReplicaStatusMonitor(
+            RefreshReplicaStatusAsync);
         _snapshotPackages = new SnapshotPackageBroker(
             sidecarOptionsFactory,
             () => BackendLaunchOptions.ResolveForHost(),
@@ -187,7 +195,8 @@ public partial class MainWindow : Window
             _workspaceRegistry,
             _workspaceSessions,
             _providerPolicy,
-            _productDataRoot);
+            _productDataRoot,
+            replicas: _replicaRecovery);
         _databasePicker = new SessionProductSourcePicker(_workspaceSessions);
 
         IPluginPackageSourcePicker pluginPackagePicker =
@@ -717,10 +726,16 @@ public partial class MainWindow : Window
                         requestToken);
                     break;
                 case "workspace.register":
-                    result = RegisterWorkspace(parameters, operationId);
+                    result = await RegisterWorkspaceAsync(
+                        parameters,
+                        operationId,
+                        requestToken);
                     break;
                 case "workspace.relink":
-                    result = RelinkWorkspace(parameters, operationId);
+                    result = await RelinkWorkspaceAsync(
+                        parameters,
+                        operationId,
+                        requestToken);
                     break;
                 case "workspace.open":
                     result = ToSessionResult(
@@ -822,7 +837,7 @@ public partial class MainWindow : Window
                     string? action = ReadString(parameters, "action");
                     string? selectedRoot = null;
                     JsonElement storageParameters = parameters;
-                    if (action == "relocate")
+                    if (action is "relocate" or "convertTopology")
                     {
                         storageParameters =
                             _workspacePathGrants.MaterializeSentinels(
@@ -927,6 +942,16 @@ public partial class MainWindow : Window
                             error = (object?)null,
                         },
                         forwarded.Wire);
+                    if (request.V2Method is
+                            "replica.synchronize" or
+                            "replica.forceTakeover" &&
+                        request.Scope is not null)
+                    {
+                        await _replicaStatusMonitor.RefreshNowAsync(
+                            request.Scope.WorkspaceId,
+                            request.Scope.SessionEpoch,
+                            requestToken);
+                    }
                     if (request.V2Method == "snapshot.applyRestore"
                         && IsPreparedRestoreResult(forwarded.Result)
                         && request.Scope is not null)
@@ -1185,24 +1210,47 @@ public partial class MainWindow : Window
                 ? layout.ActivityRoot
                 : null,
             StorageKind = selectedStorage.StorageKind,
-            CoordinationStrength = selectedStorage.CoordinationStrength,
+            CoordinationStrength = storageMode == WorkspaceStorageMode.Mirrored
+                ? WorkspaceCoordinationStrength.Advisory
+                : selectedStorage.CoordinationStrength,
             LastOpenedAt = null,
             LastKnownHealth = WorkspaceHealth.Healthy,
             LastSnapshotAt = null,
             LastSyncAt = null,
             PendingSync = false,
         };
-        WorkspaceRepositoryInitialization repository =
-            await _repositoryOnboarding.InitializeAsync(
-                entry,
-                cancellationToken);
-        if (repository.RecoveryKey is not null)
+        try
         {
-            _repositoryRecoveryUi.ConfirmRecoveryKey(
-                entry.DisplayName,
-                repository.RecoveryKey);
+            WorkspaceRepositoryInitialization repository =
+                await _repositoryOnboarding.InitializeAsync(
+                    entry,
+                    cancellationToken);
+            if (repository.RecoveryKey is not null)
+            {
+                _repositoryRecoveryUi.ConfirmRecoveryKey(
+                    entry.DisplayName,
+                    repository.RecoveryKey);
+            }
+            if (storageMode == WorkspaceStorageMode.Mirrored)
+            {
+                WorkspaceReplicaReceipt receipt =
+                    await _replicaRecovery.InitializeAsync(
+                        entry,
+                        cancellationToken);
+                entry = entry with
+                {
+                    LastSnapshotAt = receipt.VerifiedAt,
+                    LastSyncAt = receipt.VerifiedAt,
+                    PendingSync = false,
+                };
+            }
+            _workspaceRegistry.Register(entry);
         }
-        _workspaceRegistry.Register(entry);
+        catch
+        {
+            TryRollbackUnregisteredLayout(layout);
+            throw;
+        }
         return new
         {
             workspaceId = layout.Manifest.WorkspaceId.ToString("D"),
@@ -1210,9 +1258,10 @@ public partial class MainWindow : Window
         };
     }
 
-    private object RegisterWorkspace(
+    private async Task<object> RegisterWorkspaceAsync(
         JsonElement parameters,
-        Guid operationId)
+        Guid operationId,
+        CancellationToken cancellationToken)
     {
         JsonElement materialized = _workspacePathGrants.MaterializeSentinels(
             "workspace.register",
@@ -1239,11 +1288,8 @@ public partial class MainWindow : Window
                 "workspace-activity",
                 manifest.WorkspaceId.ToString("D"));
             _ = ProbeCreateTarget(_providerPolicy, activityRoot);
-            WorkspaceLayout.CreateActivityRoot(
-                selectedRoot,
-                activityRoot);
         }
-        _workspaceRegistry.Register(new WorkspaceRegistryEntryV2
+        var entry = new WorkspaceRegistryEntryV2
         {
             ContractVersion = WorkspaceV2Json.ContractVersion,
             WorkspaceId = manifest.WorkspaceId,
@@ -1251,13 +1297,30 @@ public partial class MainWindow : Window
             SelectedRoot = Path.GetFullPath(selectedRoot),
             ActivityRoot = activityRoot,
             StorageKind = selectedStorage.StorageKind,
-            CoordinationStrength = selectedStorage.CoordinationStrength,
+            CoordinationStrength =
+                manifest.StorageMode == WorkspaceStorageMode.Mirrored
+                    ? WorkspaceCoordinationStrength.Advisory
+                    : selectedStorage.CoordinationStrength,
             LastOpenedAt = null,
             LastKnownHealth = WorkspaceHealth.Healthy,
             LastSnapshotAt = null,
             LastSyncAt = null,
-            PendingSync = false,
-        });
+            PendingSync = manifest.StorageMode == WorkspaceStorageMode.Mirrored,
+        };
+        if (manifest.StorageMode == WorkspaceStorageMode.Mirrored)
+        {
+            WorkspaceReplicaReceipt receipt =
+                await _replicaRecovery.RecoverAndPublishAsync(
+                    entry,
+                    cancellationToken);
+            entry = entry with
+            {
+                LastSnapshotAt = receipt.VerifiedAt,
+                LastSyncAt = receipt.VerifiedAt,
+                PendingSync = false,
+            };
+        }
+        _workspaceRegistry.Register(entry);
         return new
         {
             workspaceId = manifest.WorkspaceId.ToString("D"),
@@ -1265,9 +1328,10 @@ public partial class MainWindow : Window
         };
     }
 
-    private object RelinkWorkspace(
+    private async Task<object> RelinkWorkspaceAsync(
         JsonElement parameters,
-        Guid operationId)
+        Guid operationId,
+        CancellationToken cancellationToken)
     {
         Guid workspaceId = ReadRequiredGuid(parameters, "workspaceId");
         if (_workspaceSessions.Current.WorkspaceId == workspaceId)
@@ -1287,13 +1351,71 @@ public partial class MainWindow : Window
             "workspace.relink",
             operationId,
             "workspace-root");
-        _ = RelinkWorkspaceEntry(
-            _workspaceRegistry,
-            _providerPolicy,
-            _productDataRoot,
-            _workspaceSessions.Current.WorkspaceId,
-            workspaceId,
-            selectedRoot);
+        WorkspaceRegistryEntryV2 current = _workspaceRegistry.List()
+            .SingleOrDefault(entry => entry.WorkspaceId == workspaceId)
+            ?? throw new WorkspaceRegistryException(
+                "workspace.not_registered",
+                "Workspace is not registered on this device.");
+        WorkspaceManifestV2 selectedManifest =
+            WorkspaceLayout.ReadManifest(selectedRoot);
+        if (selectedManifest.WorkspaceId != workspaceId)
+            throw new WorkspaceRegistryException(
+                "workspace.identity_mismatch",
+                "Selected path contains a different workspace UUID.");
+        EnsureRelinkTopology(current, selectedManifest);
+        if (selectedManifest.StorageMode == WorkspaceStorageMode.Mirrored)
+        {
+            WorkspaceStorageObservation selectedStorage =
+                _providerPolicy.ProbeAndEnsureSupported(selectedRoot);
+            string activityRoot = string.IsNullOrWhiteSpace(current.ActivityRoot)
+                ? Path.Combine(
+                    _productDataRoot,
+                    "workspace-activity",
+                    workspaceId.ToString("D"))
+                : current.ActivityRoot;
+            var candidate = current with
+            {
+                SelectedRoot = Path.GetFullPath(selectedRoot),
+                ActivityRoot = activityRoot,
+                StorageKind = selectedStorage.StorageKind,
+                CoordinationStrength = WorkspaceCoordinationStrength.Advisory,
+                PendingSync = true,
+            };
+            WorkspaceReplicaReceipt receipt =
+                _replicaRecovery.RequiresRecovery(candidate)
+                    ? await _replicaRecovery.RecoverAndPublishAsync(
+                        candidate,
+                        cancellationToken)
+                    : await _replicaRecovery.VerifyAsync(
+                        candidate,
+                        cancellationToken);
+            _workspaceRegistry.Relink(
+                workspaceId,
+                selectedRoot,
+                activityRoot,
+                selectedStorage with
+                {
+                    CoordinationStrength =
+                        WorkspaceCoordinationStrength.Advisory,
+                });
+            _workspaceRegistry.UpdateHealth(
+                workspaceId,
+                new WorkspaceHealthObservation(
+                    Health: WorkspaceHealth.Healthy,
+                    PendingSync: false,
+                    LastSnapshotAt: receipt.VerifiedAt,
+                    LastSyncAt: receipt.VerifiedAt));
+        }
+        else
+        {
+            _ = RelinkWorkspaceEntry(
+                _workspaceRegistry,
+                _providerPolicy,
+                _productDataRoot,
+                _workspaceSessions.Current.WorkspaceId,
+                workspaceId,
+                selectedRoot);
+        }
         PostWorkspaceV2Bootstrap();
         return new
         {
@@ -1332,6 +1454,7 @@ public partial class MainWindow : Window
             throw new WorkspaceRegistryException(
                 "workspace.identity_mismatch",
                 "Selected path contains a different workspace UUID.");
+        EnsureRelinkTopology(current, manifest);
 
         string? activityRoot = null;
         if (manifest.StorageMode == WorkspaceStorageMode.Mirrored)
@@ -1344,10 +1467,9 @@ public partial class MainWindow : Window
                 : current.ActivityRoot;
             if (!Directory.Exists(activityRoot))
             {
-                _ = ProbeCreateTarget(providerPolicy, activityRoot);
-                WorkspaceLayout.CreateActivityRoot(
-                    selectedRoot,
-                    activityRoot);
+                throw new WorkspaceRegistryException(
+                    "workspace.replica_recovery_required",
+                    "Mirrored relink requires verified activity-root recovery.");
             }
             else
             {
@@ -1364,7 +1486,50 @@ public partial class MainWindow : Window
             workspaceId,
             selectedRoot,
             activityRoot,
-            selectedStorage);
+            manifest.StorageMode == WorkspaceStorageMode.Mirrored
+                ? selectedStorage with
+                {
+                    CoordinationStrength =
+                        WorkspaceCoordinationStrength.Advisory,
+                }
+                : selectedStorage);
+    }
+
+    private static void EnsureRelinkTopology(
+        WorkspaceRegistryEntryV2 current,
+        WorkspaceManifestV2 manifest)
+    {
+        WorkspaceStorageMode registeredMode =
+            string.IsNullOrWhiteSpace(current.ActivityRoot)
+                ? WorkspaceStorageMode.Direct
+                : WorkspaceStorageMode.Mirrored;
+        if (manifest.StorageMode != registeredMode)
+            throw new WorkspaceRegistryException(
+                "workspace.storage_topology_mismatch",
+                "Relinking cannot change storage topology; use a storage conversion plan.");
+    }
+
+    private static void TryRollbackUnregisteredLayout(
+        WorkspaceLayoutResult layout)
+    {
+        foreach (string root in new[] { layout.ActivityRoot, layout.SelectedRoot }
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                WorkspaceLayout.DeleteWorkspaceRoot(
+                    root,
+                    layout.Manifest.WorkspaceId);
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                    or UnauthorizedAccessException
+                    or WorkspaceRegistryException)
+            {
+                // Preserve unexpected state for diagnosis. Registration was
+                // never published, so no product path can open it.
+            }
+        }
     }
 
     private static WorkspaceStorageObservation ProbeCreateTarget(
@@ -1444,9 +1609,152 @@ public partial class MainWindow : Window
         object? sender,
         WorkspaceSessionChangedEventArgs args)
     {
+        ConfigureReplicaStatusPolling(args.Session);
         if (Volatile.Read(ref _closing) != 0 || !_router.IsReady)
             return;
         Dispatcher.BeginInvoke(PostWorkspaceV2Bootstrap);
+    }
+
+    private void ConfigureReplicaStatusPolling(WorkspaceSessionV2 session)
+    {
+        bool opened = session.State is
+            WorkspaceSessionState.OpenedReadOnly or
+            WorkspaceSessionState.OpenedWritable or
+            WorkspaceSessionState.OpenedProvisional;
+        WorkspaceRegistryEntryV2? workspace = _runtime.CurrentWorkspace;
+        bool enabled =
+            Volatile.Read(ref _closing) == 0 &&
+            opened &&
+            session.WorkspaceId is Guid workspaceId &&
+            workspaceId != Guid.Empty &&
+            session.SessionEpoch > 0 &&
+            workspace?.WorkspaceId == workspaceId &&
+            !string.IsNullOrWhiteSpace(workspace.ActivityRoot) &&
+            _runtime.CurrentCapabilities?.RpcMethods.Contains(
+                "replica.status",
+                StringComparer.Ordinal) == true;
+        _replicaStatusMonitor.Bind(
+            enabled ? session.WorkspaceId!.Value : Guid.Empty,
+            enabled ? session.SessionEpoch : 0,
+            enabled);
+    }
+
+    private async Task<WorkspaceReplicaStatus> RefreshReplicaStatusAsync(
+        Guid workspaceId,
+        ulong sessionEpoch,
+        CancellationToken cancellationToken)
+    {
+        WorkspaceSessionV2 session = _workspaceSessions.Current;
+        WorkspaceRegistryEntryV2 workspace =
+            _runtime.CurrentWorkspace
+            ?? throw new InvalidOperationException(
+                "Replica status requires an active workspace runtime.");
+        WorkspaceV2HttpGateway gateway =
+            _runtime.CurrentV2Gateway
+            ?? throw new InvalidOperationException(
+                "Replica status requires an active Sidecar gateway.");
+        if (session.WorkspaceId != workspaceId ||
+            session.SessionEpoch != sessionEpoch ||
+            session.State is not (
+                WorkspaceSessionState.OpenedReadOnly or
+                WorkspaceSessionState.OpenedWritable or
+                WorkspaceSessionState.OpenedProvisional) ||
+            workspace.WorkspaceId != workspaceId ||
+            string.IsNullOrWhiteSpace(workspace.ActivityRoot) ||
+            _runtime.CurrentCapabilities?.RpcMethods.Contains(
+                "replica.status",
+                StringComparer.Ordinal) != true)
+            throw new InvalidOperationException(
+                "Replica status session is no longer current.");
+
+        Guid operationId = Guid.NewGuid();
+        ulong sequence = _workspaceSessionFilter.ReserveHostSequence(
+            workspaceId,
+            sessionEpoch);
+        JsonElement wire = JsonSerializer.SerializeToElement(new
+        {
+            scope = "workspace",
+            workspaceId = workspaceId.ToString("D"),
+            sessionEpoch,
+            operationId = operationId.ToString("D"),
+            sequence,
+        });
+        WorkspaceV2ForwardResult forwarded = await gateway.ForwardAsync(
+            "desktop-replica-status-" + operationId.ToString("N"),
+            "replica.status",
+            wire,
+            JsonSerializer.SerializeToElement(new { }),
+            pathGrant: null,
+            cancellationToken).ConfigureAwait(false);
+        if (forwarded.Error is not null)
+            throw new WorkspaceRegistryException(
+                forwarded.Error.Code,
+                "The Sidecar could not read durable replica status.");
+        WorkspaceReplicaStatus status =
+            WorkspaceReplicaStatusMonitor.Parse(
+                forwarded.Result
+                ?? throw new InvalidOperationException(
+                    "Sidecar replica.status returned no result."));
+
+        session = _workspaceSessions.Current;
+        if (session.WorkspaceId != workspaceId ||
+            session.SessionEpoch != sessionEpoch ||
+            session.State is not (
+                WorkspaceSessionState.OpenedReadOnly or
+                WorkspaceSessionState.OpenedWritable or
+                WorkspaceSessionState.OpenedProvisional))
+            throw new InvalidOperationException(
+                "Replica status response belongs to a retired session.");
+
+        WorkspaceRegistryEntryV2 current = _workspaceRegistry.List()
+            .SingleOrDefault(entry => entry.WorkspaceId == workspaceId)
+            ?? throw new WorkspaceRegistryException(
+                "workspace.not_registered",
+                "Workspace is not registered on this device.");
+        WorkspaceHealthObservation observation =
+            WorkspaceReplicaStatusMonitor.ProjectHealth(
+                current,
+                status,
+                DateTimeOffset.UtcNow);
+        bool registryChanged =
+            current.LastKnownHealth != observation.Health ||
+            current.PendingSync != observation.PendingSync ||
+            (observation.LastSyncAt is not null &&
+             current.LastSyncAt != observation.LastSyncAt);
+        if (registryChanged)
+            _ = _workspaceRegistry.UpdateHealth(workspaceId, observation);
+
+        var payloadSchema = new
+        {
+            type = "object",
+            additionalProperties = false,
+            required = new[] { "syncState", "pendingSync" },
+            properties = new
+            {
+                syncState = new { type = "string" },
+                pendingSync = new { type = "boolean" },
+            },
+        };
+        _webBridge.PostWorkspaceV2Event(
+            new
+            {
+                contractVersion = WorkspaceV2Json.ContractVersion,
+                topic = "replica.changed",
+                wire = forwarded.Wire,
+                payloadModel = "ReplicaChangedEvent",
+                payloadSchema,
+                payload = new
+                {
+                    syncState = status.SyncState,
+                    pendingSync = status.PendingSync,
+                },
+            },
+            forwarded.Wire);
+        if (registryChanged &&
+            Volatile.Read(ref _closing) == 0 &&
+            _router.IsReady)
+            _ = Dispatcher.BeginInvoke(PostWorkspaceV2Bootstrap);
+        return status;
     }
 
     private void PostWorkspaceV2Bootstrap()
@@ -1470,7 +1778,10 @@ public partial class MainWindow : Window
         {
             "workspace.session.v2",
             "snapshot.package.v2",
+            "workspace.storage.mirrored-create.v2",
             "workspace.storage.relocate.v2",
+            "workspace.storage.topology.v2",
+            "workspace.storage.release-cache.v2",
         };
         if (ContainsEvery(
                 methods,
@@ -1504,6 +1815,7 @@ public partial class MainWindow : Window
         if (ContainsEvery(
                 methods,
                 "retention.get",
+                "retention.status",
                 "retention.update",
                 "retention.plan",
                 "retention.apply")
@@ -2595,6 +2907,15 @@ public partial class MainWindow : Window
         _attachmentPreview.Dispose();
         _documentWorkspace?.Dispose();
         _tableGateway.Dispose();
+        try
+        {
+            _replicaStatusMonitor.DisposeAsync().AsTask()
+                .Wait(TimeSpan.FromSeconds(2));
+        }
+        catch
+        {
+            // Session-bound status polling is best-effort at shutdown.
+        }
         _workspaceSessionFilter.Dispose();
         try
         {

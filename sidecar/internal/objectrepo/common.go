@@ -66,6 +66,21 @@ func manifestID(content []byte) ManifestID {
 	return ManifestID("manifest_" + hex.EncodeToString(sum[:]))
 }
 
+// VerifyManifestRecord validates a public manifest without requiring access to
+// the repository that originally stored it. Replica and export adapters use it
+// to independently attest copied manifest artifacts.
+func VerifyManifestRecord(record ManifestRecord) error {
+	canonical, err := canonicalManifest(ManifestInput{
+		Name:    record.Name,
+		Labels:  record.Labels,
+		Payload: record.Payload,
+	})
+	if err != nil || manifestID(canonical) != record.ID {
+		return ErrCorrupt
+	}
+	return nil
+}
+
 func authorityEqual(left, right Authority) bool {
 	return left.WorkspaceID == right.WorkspaceID &&
 		left.FenceEpoch == right.FenceEpoch &&

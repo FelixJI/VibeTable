@@ -13,6 +13,7 @@ import (
 	"time"
 
 	kopiarepo "github.com/kopia/kopia/repo"
+	kopiablob "github.com/kopia/kopia/repo/blob"
 	"github.com/kopia/kopia/repo/blob/filesystem"
 	kopiacontent "github.com/kopia/kopia/repo/content"
 	kopiaformat "github.com/kopia/kopia/repo/format"
@@ -395,6 +396,44 @@ func (repository *KopiaRepository) StorageInventory(
 	result.ObjectCount = uint64(len(seenObjects))
 	result.UniqueContentCount = uint64(len(seenContents))
 	return result, nil
+}
+
+func (repository *KopiaRepository) RepositoryUsage(
+	ctx context.Context,
+) (uint64, error) {
+	repository.mu.Lock()
+	kopia := repository.repository
+	repository.mu.Unlock()
+	if kopia == nil {
+		return 0, errors.New("repository.closed")
+	}
+	direct, ok := kopia.(kopiarepo.DirectRepository)
+	if !ok {
+		return 0, errors.New("repository.usage_reader_unavailable")
+	}
+	var total uint64
+	err := direct.BlobReader().ListBlobs(
+		ctx,
+		kopiablob.ID(""),
+		func(metadata kopiablob.Metadata) error {
+			if metadata.Length < 0 {
+				return ErrCorrupt
+			}
+			size := uint64(metadata.Length)
+			if size > ^uint64(0)-total {
+				return errors.New("repository.usage_size_overflow")
+			}
+			total += size
+			return nil
+		},
+	)
+	if err != nil {
+		return 0, errors.Join(
+			errors.New("repository.usage_failed"),
+			err,
+		)
+	}
+	return total, nil
 }
 
 func (repository *KopiaRepository) Pin(

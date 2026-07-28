@@ -24,6 +24,10 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
         "vibetable.snapshot-package-target.v1";
     private const string TransferOwnershipKind =
         "vibetable.snapshot-package-transfer.v1";
+    private static readonly TimeSpan OwnershipLeaseDuration =
+        TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan OwnershipHeartbeatInterval =
+        TimeSpan.FromMinutes(1);
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Func<PocketBaseLaunchOptions> _sidecarOptions;
     private readonly Func<BackendLaunchOptions> _backendOptions;
@@ -81,14 +85,17 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
             target = await CreateTargetAsync(cancellationToken)
                 .ConfigureAwait(false);
             WorkspaceV2ForwardResult forwarded =
-                await RunTransientAsync(
+                await RunWithOwnershipHeartbeatAsync(
                     target,
-                    (gateway, token) => gateway.ForwardAsync(
-                        requestId,
-                        "snapshot.inspectPackage",
-                        wire,
-                        parameters,
-                        sourceGrant,
+                    token => RunTransientAsync(
+                        target,
+                        (gateway, transientToken) => gateway.ForwardAsync(
+                            requestId,
+                            "snapshot.inspectPackage",
+                            wire,
+                            parameters,
+                            sourceGrant,
+                            transientToken),
                         token),
                     cancellationToken).ConfigureAwait(false);
             JsonElement result = RequireSuccessResult(forwarded);
@@ -195,12 +202,15 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
             JsonElement result;
             try
             {
-                result = await ImportRestoreAndVerifyAsync(
-                        requestId,
-                        wire,
-                        rewritten,
+                result = await RunWithOwnershipHeartbeatAsync(
                         plan.Target,
-                        operationId,
+                        token => ImportRestoreAndVerifyAsync(
+                            requestId,
+                            wire,
+                            rewritten,
+                            plan.Target,
+                            operationId,
+                            token),
                         cancellationToken)
                     .ConfigureAwait(false);
                 Guid sourceWorkspaceId = RequiredGuid(
@@ -504,8 +514,9 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
                 _sidecarOptions,
                 factory.PrepareRepositoryOnboarding);
             WorkspaceRepositoryInitialization initialized =
-                await onboarding.InitializeAsync(
+                await RunWithOwnershipHeartbeatAsync(
                     entry,
+                    token => onboarding.InitializeAsync(entry, token),
                     cancellationToken).ConfigureAwait(false);
             if (initialized.RecoveryKey is not null)
                 throw new WorkspaceRegistryException(
@@ -552,6 +563,120 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
         {
             await runtime.StopAsync(CancellationToken.None)
                 .ConfigureAwait(false);
+        }
+    }
+
+    private async Task<T> RunWithOwnershipHeartbeatAsync<T>(
+        WorkspaceRegistryEntryV2 target,
+        Func<CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken)
+    {
+        using Process process = Process.GetCurrentProcess();
+        int ownerProcessId = process.Id;
+        DateTimeOffset ownerStartedAt =
+            process.StartTime.ToUniversalTime();
+        if (!RenewOwnershipMarker(
+                target.SelectedRoot,
+                target.WorkspaceId,
+                DateTimeOffset.UtcNow,
+                OwnershipLeaseDuration,
+                ownerProcessId,
+                ownerStartedAt))
+        {
+            throw new WorkspaceRegistryException(
+                "snapshot.package_ownership_lost",
+                "The package target ownership lease could not be established.");
+        }
+
+        using var heartbeatStop = new CancellationTokenSource();
+        using var operationStop =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task heartbeat = MaintainOwnershipHeartbeatAsync(
+            target,
+            ownerProcessId,
+            ownerStartedAt,
+            heartbeatStop.Token);
+        Task<T> work;
+        try
+        {
+            work = operation(operationStop.Token)
+                ?? throw new InvalidOperationException(
+                    "The owned package operation returned no task.");
+        }
+        catch
+        {
+            heartbeatStop.Cancel();
+            try
+            {
+                await heartbeat.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Normal shutdown after synchronous operation setup failed.
+            }
+            throw;
+        }
+        Task completed = await Task.WhenAny(work, heartbeat)
+            .ConfigureAwait(false);
+        if (completed == heartbeat)
+        {
+            operationStop.Cancel();
+            Exception? heartbeatFailure = null;
+            try
+            {
+                await heartbeat.ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                heartbeatFailure = exception;
+            }
+            try
+            {
+                _ = await work.ConfigureAwait(false);
+            }
+            catch when (heartbeatFailure is not null)
+            {
+                // The ownership failure is the primary safety boundary.
+            }
+            if (heartbeatFailure is not null)
+                throw heartbeatFailure;
+            return await work.ConfigureAwait(false);
+        }
+
+        heartbeatStop.Cancel();
+        try
+        {
+            await heartbeat.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown after the owned operation completed.
+        }
+        return await work.ConfigureAwait(false);
+    }
+
+    private static async Task MaintainOwnershipHeartbeatAsync(
+        WorkspaceRegistryEntryV2 target,
+        int ownerProcessId,
+        DateTimeOffset ownerStartedAt,
+        CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(OwnershipHeartbeatInterval);
+        while (await timer.WaitForNextTickAsync(cancellationToken)
+                   .ConfigureAwait(false))
+        {
+            if (!RenewOwnershipMarker(
+                    target.SelectedRoot,
+                    target.WorkspaceId,
+                    DateTimeOffset.UtcNow,
+                    OwnershipLeaseDuration,
+                    ownerProcessId,
+                    ownerStartedAt))
+            {
+                throw new WorkspaceRegistryException(
+                    "snapshot.package_ownership_lost",
+                    "The package target ownership lease could not be renewed.");
+            }
         }
     }
 
@@ -879,7 +1004,10 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
                         transferId,
                         out BrokerOwnershipMarker ownership,
                         TransferOwnershipKind)
-                    || IsMarkerOwnerAlive(ownership))
+                    || ShouldPreserveOwnership(
+                        ownership,
+                        DateTimeOffset.UtcNow,
+                        ProbeOwnerLiveness))
                 {
                     continue;
                 }
@@ -1030,9 +1158,21 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
     internal static void CleanupOwnedOrphans(
         string managedRoot,
         IReadOnlySet<Guid> registeredWorkspaceIds)
+        => CleanupOwnedOrphans(
+            managedRoot,
+            registeredWorkspaceIds,
+            DateTimeOffset.UtcNow,
+            ProbeOwnerLiveness);
+
+    internal static void CleanupOwnedOrphans(
+        string managedRoot,
+        IReadOnlySet<Guid> registeredWorkspaceIds,
+        DateTimeOffset now,
+        Func<int, DateTimeOffset, BrokerOwnerLiveness> probeOwnerLiveness)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(managedRoot);
         ArgumentNullException.ThrowIfNull(registeredWorkspaceIds);
+        ArgumentNullException.ThrowIfNull(probeOwnerLiveness);
         if (!Directory.Exists(managedRoot))
             return;
         foreach (string journal in Directory.EnumerateFiles(
@@ -1052,8 +1192,12 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
                     || !TryReadOwnershipRecord(
                         journal,
                         workspaceId,
-                        out BrokerOwnershipMarker ownership)
-                    || IsMarkerOwnerAlive(ownership))
+                        out BrokerOwnershipMarker ownership,
+                        now)
+                    || ShouldPreserveOwnership(
+                        ownership,
+                        now,
+                        probeOwnerLiveness))
                 {
                     continue;
                 }
@@ -1102,8 +1246,12 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
                 if (!TryReadOwnershipMarker(
                         candidate,
                         workspaceId,
-                        out BrokerOwnershipMarker? ownership)
-                    || IsMarkerOwnerAlive(ownership))
+                        out BrokerOwnershipMarker? ownership,
+                        now)
+                    || ShouldPreserveOwnership(
+                        ownership,
+                        now,
+                        probeOwnerLiveness))
                 {
                     continue;
                 }
@@ -1139,6 +1287,53 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
             ownerStartedAt);
     }
 
+    internal static bool RenewOwnershipMarker(
+        string root,
+        Guid workspaceId,
+        DateTimeOffset renewedAt,
+        TimeSpan leaseDuration,
+        int ownerProcessId,
+        DateTimeOffset ownerStartedAt)
+    {
+        if (workspaceId == Guid.Empty
+            || leaseDuration <= TimeSpan.Zero
+            || ownerProcessId <= 0)
+        {
+            return false;
+        }
+        string markerPath = OwnershipMarkerPath(root);
+        try
+        {
+            if (!TryReadOwnershipRecord(
+                    markerPath,
+                    workspaceId,
+                    out BrokerOwnershipMarker ownership,
+                    renewedAt)
+                || ownership.OwnerProcessId != ownerProcessId
+                || ownership.OwnerStartedAt != ownerStartedAt)
+            {
+                return false;
+            }
+            DurableJsonFile.Write(
+                markerPath,
+                ownership with
+                {
+                    HeartbeatAt = renewedAt,
+                    ExpiresAt = renewedAt.Add(leaseDuration),
+                },
+                WorkspaceV2Json.StrictOptions);
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or JsonException
+                or ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+    }
+
     private static void WriteOwnershipRecord(
         string marker,
         Guid workspaceId,
@@ -1148,13 +1343,15 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
         string kind = OwnershipKind)
     {
         using Process process = Process.GetCurrentProcess();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
         DurableJsonFile.Write(
             marker,
             new BrokerOwnershipMarker
             {
                 Kind = kind,
                 WorkspaceId = workspaceId,
-                CreatedAt = DateTimeOffset.UtcNow,
+                CreatedAt = now,
+                HeartbeatAt = now,
                 ExpiresAt = expiresAt,
                 OwnerProcessId = ownerProcessId ?? process.Id,
                 OwnerStartedAt = ownerStartedAt
@@ -1172,10 +1369,34 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
             workspaceId,
             out ownership);
 
+    private static bool TryReadOwnershipMarker(
+        string root,
+        Guid workspaceId,
+        out BrokerOwnershipMarker ownership,
+        DateTimeOffset now)
+        => TryReadOwnershipRecord(
+            OwnershipMarkerPath(root),
+            workspaceId,
+            out ownership,
+            now);
+
     private static bool TryReadOwnershipRecord(
         string marker,
         Guid workspaceId,
         out BrokerOwnershipMarker ownership,
+        string expectedKind = OwnershipKind)
+        => TryReadOwnershipRecord(
+            marker,
+            workspaceId,
+            out ownership,
+            DateTimeOffset.UtcNow,
+            expectedKind);
+
+    private static bool TryReadOwnershipRecord(
+        string marker,
+        Guid workspaceId,
+        out BrokerOwnershipMarker ownership,
+        DateTimeOffset now,
         string expectedKind = OwnershipKind)
     {
         ownership = null!;
@@ -1189,8 +1410,12 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
             || value.Kind != expectedKind
             || value.WorkspaceId != workspaceId
             || value.OwnerProcessId <= 0
-            || value.CreatedAt > DateTimeOffset.UtcNow.AddMinutes(1)
+            || value.CreatedAt > now.AddMinutes(1)
             || value.OwnerStartedAt > value.CreatedAt.AddMinutes(1)
+            || value.HeartbeatAt is DateTimeOffset heartbeatAt
+                && (heartbeatAt < value.CreatedAt
+                    || heartbeatAt > now.AddMinutes(1)
+                    || value.ExpiresAt <= heartbeatAt)
             || value.ExpiresAt <= value.CreatedAt)
         {
             return false;
@@ -1199,31 +1424,44 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
         return true;
     }
 
-    private static bool IsMarkerOwnerAlive(BrokerOwnershipMarker marker)
+    private static bool ShouldPreserveOwnership(
+        BrokerOwnershipMarker marker,
+        DateTimeOffset now,
+        Func<int, DateTimeOffset, BrokerOwnerLiveness> probeOwnerLiveness)
     {
-        if (marker.ExpiresAt <= DateTimeOffset.UtcNow)
-            return false;
+        BrokerOwnerLiveness liveness = probeOwnerLiveness(
+            marker.OwnerProcessId,
+            marker.OwnerStartedAt);
+        return liveness == BrokerOwnerLiveness.Alive
+               || liveness == BrokerOwnerLiveness.Unknown
+               && marker.ExpiresAt > now;
+    }
+
+    internal static BrokerOwnerLiveness ProbeOwnerLiveness(
+        int ownerProcessId,
+        DateTimeOffset ownerStartedAt)
+    {
         try
         {
             using Process process =
-                Process.GetProcessById(marker.OwnerProcessId);
+                Process.GetProcessById(ownerProcessId);
             DateTimeOffset started = process.StartTime.ToUniversalTime();
-            return Math.Abs(
-                       (started - marker.OwnerStartedAt).TotalSeconds)
-                   < 2;
+            return started == ownerStartedAt
+                ? BrokerOwnerLiveness.Alive
+                : BrokerOwnerLiveness.Dead;
         }
         catch (ArgumentException)
         {
-            return false;
+            return BrokerOwnerLiveness.Dead;
         }
         catch (InvalidOperationException)
         {
-            return false;
+            return BrokerOwnerLiveness.Dead;
         }
         catch (System.ComponentModel.Win32Exception)
         {
-            // Access denial cannot prove that the owner is dead.
-            return true;
+            // Access denial cannot prove that the owner is alive or dead.
+            return BrokerOwnerLiveness.Unknown;
         }
     }
 
@@ -1396,9 +1634,17 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
         public required string Kind { get; init; }
         public required Guid WorkspaceId { get; init; }
         public required DateTimeOffset CreatedAt { get; init; }
+        public DateTimeOffset? HeartbeatAt { get; init; }
         public required DateTimeOffset ExpiresAt { get; init; }
         public required int OwnerProcessId { get; init; }
         public required DateTimeOffset OwnerStartedAt { get; init; }
+    }
+
+    internal enum BrokerOwnerLiveness
+    {
+        Alive,
+        Dead,
+        Unknown,
     }
 }
 

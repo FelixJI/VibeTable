@@ -94,3 +94,13 @@ func (scheduler *Scheduler) Failed(now time.Time) time.Time {
 	scheduler.nextAttemptAt = now.Add(delay)
 	return scheduler.nextAttemptAt
 }
+
+func (scheduler *Scheduler) Deferred(now time.Time, delay time.Duration) time.Time {
+	scheduler.mu.Lock()
+	defer scheduler.mu.Unlock()
+	if delay <= 0 {
+		delay = time.Hour
+	}
+	scheduler.nextAttemptAt = now.Add(delay)
+	return scheduler.nextAttemptAt
+}

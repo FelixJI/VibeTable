@@ -27,6 +27,13 @@ public sealed record ReleaseActivityCacheContext(
 
 public sealed class WorkspaceStorageManager
 {
+    private static readonly HashSet<string> DeviceLocalLockFiles =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".vibetable/coordination/desktop-writer.lock",
+            ".vibetable/coordination/storage-maintenance.lock",
+        };
+
     private readonly TimeProvider _timeProvider;
 
     public WorkspaceStorageManager(TimeProvider? timeProvider = null)
@@ -195,6 +202,10 @@ public sealed class WorkspaceStorageManager
         {
             if ((file.Attributes & FileAttributes.ReparsePoint) != 0)
                 throw ReparsePointError();
+            string relativePath = Path.GetRelativePath(root, file.FullName)
+                .Replace('\\', '/');
+            if (DeviceLocalLockFiles.Contains(relativePath))
+                continue;
             using var stream = new FileStream(
                 file.FullName,
                 FileMode.Open,
@@ -213,8 +224,7 @@ public sealed class WorkspaceStorageManager
                     "Workspace changed while it was inventoried.");
             }
             inventory.Add(new InventoryEntry(
-                Path.GetRelativePath(root, file.FullName)
-                    .Replace('\\', '/'),
+                relativePath,
                 length,
                 sha256));
         }
@@ -251,9 +261,14 @@ public sealed class WorkspaceStorageManager
         {
             if ((source.Attributes & FileAttributes.ReparsePoint) != 0)
                 throw ReparsePointError();
+            string relativePath =
+                Path.GetRelativePath(sourceRoot, source.FullName)
+                    .Replace('\\', '/');
+            if (DeviceLocalLockFiles.Contains(relativePath))
+                continue;
             var target = Path.Combine(
                 targetRoot,
-                Path.GetRelativePath(sourceRoot, source.FullName));
+                relativePath.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             File.Copy(source.FullName, target, overwrite: false);
             using var stream = new FileStream(

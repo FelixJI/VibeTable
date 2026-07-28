@@ -149,6 +149,52 @@ func run(args []string) int {
 		}
 		return 0
 	}
+	if cfg.InitializeWorkspaceReplica ||
+		cfg.RecoverWorkspaceReplica ||
+		cfg.VerifyWorkspaceReplica {
+		options := workspacev2.ReplicaOneShotOptions{
+			DataDir:      cfg.DataDir,
+			ActivityRoot: cfg.ActivityRoot,
+			ReplicaRoot:  cfg.ReplicaRoot,
+			WorkspaceID:  cfg.WorkspaceV2.WorkspaceID,
+			SessionEpoch: cfg.WorkspaceV2.SessionEpoch,
+			FenceEpoch:   cfg.WorkspaceV2.FenceEpoch,
+			ClaimID:      cfg.WorkspaceV2.ClaimID,
+		}
+		var receipt workspacev2.ReplicaOneShotReceipt
+		switch {
+		case cfg.InitializeWorkspaceReplica:
+			receipt, err = workspacev2.InitializeWorkspaceReplica(
+				context.Background(),
+				options,
+			)
+		case cfg.RecoverWorkspaceReplica:
+			receipt, err = workspacev2.RecoverWorkspaceReplica(
+				context.Background(),
+				options,
+			)
+		default:
+			receipt, err = workspacev2.VerifyWorkspaceReplica(
+				context.Background(),
+				options,
+			)
+		}
+		if err != nil {
+			logError("workspace replica one-shot", err)
+			return 1
+		}
+		raw, err := json.Marshal(receipt)
+		if err != nil {
+			logError("encode workspace replica receipt", err)
+			return 1
+		}
+		raw = append(raw, '\n')
+		if _, err := os.Stdout.Write(raw); err != nil {
+			logError("write workspace replica receipt", err)
+			return 1
+		}
+		return 0
+	}
 
 	logger := newLogger(cfg.Dev)
 	if err := startup.CheckDataDirectory(cfg.DataDir); err != nil {
@@ -211,6 +257,7 @@ func run(args []string) int {
 			SessionEpoch: cfg.WorkspaceV2.SessionEpoch,
 			FenceEpoch:   cfg.WorkspaceV2.FenceEpoch,
 			ClaimID:      cfg.WorkspaceV2.ClaimID,
+			ReplicaRoot:  cfg.ReplicaRoot,
 		}
 	}
 	application, err := sidecarapp.New(appOptions)

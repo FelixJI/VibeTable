@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -30,6 +31,29 @@ type Tombstone struct {
 	TombstonedAt time.Time
 	GraceUntil   time.Time
 	MaintainedAt *time.Time
+}
+
+type IntegrityMode string
+
+const (
+	IntegrityIncremental IntegrityMode = "incremental"
+	IntegrityFull        IntegrityMode = "full"
+)
+
+type IntegrityState struct {
+	LastIncrementalAt    *time.Time
+	LastFullAt           *time.Time
+	LastSnapshotSequence uint64
+	Status               string
+	Failure              string
+}
+
+type QuotaState struct {
+	UsageBytes               uint64
+	LimitBytes               *uint64
+	AutomaticSnapshotsPaused bool
+	Warning                  string
+	UpdatedAt                time.Time
 }
 
 type Store struct {
@@ -102,11 +126,256 @@ func OpenStore(path string) (*Store, error) {
 			created_at TEXT NOT NULL,
 			PRIMARY KEY (workspace_id, operation_id)
 		);
+		CREATE TABLE IF NOT EXISTS retention_integrity_state (
+			singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+			last_incremental_at TEXT,
+			last_full_at TEXT,
+			last_snapshot_sequence INTEGER NOT NULL,
+			status TEXT NOT NULL CHECK(status IN (
+				'unknown', 'verified', 'corrupt'
+			)),
+			failure TEXT NOT NULL
+		);
+		INSERT OR IGNORE INTO retention_integrity_state (
+			singleton, last_incremental_at, last_full_at,
+			last_snapshot_sequence, status, failure
+		) VALUES (1, NULL, NULL, 0, 'unknown', '');
+		CREATE TABLE IF NOT EXISTS retention_quota_state (
+			singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+			usage_bytes INTEGER NOT NULL CHECK(usage_bytes >= 0),
+			limit_bytes INTEGER CHECK(limit_bytes >= 0),
+			automatic_snapshots_paused INTEGER NOT NULL CHECK(
+				automatic_snapshots_paused IN (0, 1)
+			),
+			warning TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		INSERT OR IGNORE INTO retention_quota_state (
+			singleton, usage_bytes, limit_bytes,
+			automatic_snapshots_paused, warning, updated_at
+		) VALUES (1, 0, NULL, 0, '', '1970-01-01T00:00:00Z');
 	`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize retention store: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+func (store *Store) QuotaState(ctx context.Context) (QuotaState, error) {
+	if store == nil || store.db == nil {
+		return QuotaState{}, errors.New("retention.store_closed")
+	}
+	var (
+		result  QuotaState
+		usage   int64
+		limit   sql.NullInt64
+		paused  int
+		updated string
+	)
+	err := store.db.QueryRowContext(ctx, `
+		SELECT usage_bytes, limit_bytes, automatic_snapshots_paused,
+		       warning, updated_at
+		FROM retention_quota_state WHERE singleton = 1`,
+	).Scan(
+		&usage,
+		&limit,
+		&paused,
+		&result.Warning,
+		&updated,
+	)
+	if err != nil || usage < 0 ||
+		(limit.Valid && limit.Int64 < 0) ||
+		(paused != 0 && paused != 1) {
+		if err != nil {
+			return QuotaState{}, err
+		}
+		return QuotaState{}, errors.New("retention.quota_state_corrupt")
+	}
+	at, err := time.Parse(time.RFC3339Nano, updated)
+	if err != nil {
+		return QuotaState{}, errors.New("retention.quota_state_corrupt")
+	}
+	result.UsageBytes = uint64(usage)
+	if limit.Valid {
+		value := uint64(limit.Int64)
+		result.LimitBytes = &value
+	}
+	result.AutomaticSnapshotsPaused = paused == 1
+	result.UpdatedAt = at
+	return result, nil
+}
+
+func (store *Store) RecordQuotaState(
+	ctx context.Context,
+	usage uint64,
+	limit *uint64,
+	paused bool,
+	warning string,
+	at time.Time,
+) error {
+	if store == nil || store.db == nil ||
+		usage > math.MaxInt64 ||
+		(limit != nil && *limit > math.MaxInt64) ||
+		at.IsZero() {
+		return errors.New("retention.quota_result_invalid")
+	}
+	const maximumWarningBytes = 4 << 10
+	if len(warning) > maximumWarningBytes {
+		warning = warning[:maximumWarningBytes]
+	}
+	var storedLimit any
+	if limit != nil {
+		storedLimit = int64(*limit)
+	}
+	pausedValue := 0
+	if paused {
+		pausedValue = 1
+	}
+	_, err := store.db.ExecContext(ctx, `
+		UPDATE retention_quota_state
+		SET usage_bytes = ?, limit_bytes = ?,
+		    automatic_snapshots_paused = ?, warning = ?,
+		    updated_at = ?
+		WHERE singleton = 1`,
+		int64(usage),
+		storedLimit,
+		pausedValue,
+		warning,
+		at.UTC().Format(time.RFC3339Nano),
+	)
+	return err
+}
+
+func (store *Store) IntegrityState(
+	ctx context.Context,
+) (IntegrityState, error) {
+	if store == nil || store.db == nil {
+		return IntegrityState{}, errors.New("retention.store_closed")
+	}
+	var (
+		result         IntegrityState
+		incrementalRaw sql.NullString
+		fullRaw        sql.NullString
+	)
+	err := store.db.QueryRowContext(ctx, `
+		SELECT last_incremental_at, last_full_at,
+		       last_snapshot_sequence, status, failure
+		FROM retention_integrity_state WHERE singleton = 1`,
+	).Scan(
+		&incrementalRaw,
+		&fullRaw,
+		&result.LastSnapshotSequence,
+		&result.Status,
+		&result.Failure,
+	)
+	if err != nil {
+		return IntegrityState{}, err
+	}
+	if incrementalRaw.Valid {
+		value, parseErr := time.Parse(time.RFC3339Nano, incrementalRaw.String)
+		if parseErr != nil {
+			return IntegrityState{}, errors.New(
+				"retention.integrity_state_corrupt",
+			)
+		}
+		result.LastIncrementalAt = &value
+	}
+	if fullRaw.Valid {
+		value, parseErr := time.Parse(time.RFC3339Nano, fullRaw.String)
+		if parseErr != nil {
+			return IntegrityState{}, errors.New(
+				"retention.integrity_state_corrupt",
+			)
+		}
+		result.LastFullAt = &value
+	}
+	return result, nil
+}
+
+func (store *Store) IntegrityDue(
+	ctx context.Context,
+	now time.Time,
+) (IntegrityMode, bool, error) {
+	state, err := store.IntegrityState(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	now = now.UTC()
+	if state.LastFullAt == nil ||
+		!now.Before(state.LastFullAt.AddDate(0, 1, 0)) {
+		return IntegrityFull, true, nil
+	}
+	if state.LastIncrementalAt == nil ||
+		!now.Before(state.LastIncrementalAt.Add(24*time.Hour)) {
+		return IntegrityIncremental, true, nil
+	}
+	return "", false, nil
+}
+
+func (store *Store) RecordIntegritySuccess(
+	ctx context.Context,
+	mode IntegrityMode,
+	snapshotSequence uint64,
+	at time.Time,
+) error {
+	if store == nil || store.db == nil ||
+		(mode != IntegrityIncremental && mode != IntegrityFull) {
+		return errors.New("retention.integrity_result_invalid")
+	}
+	atRaw := at.UTC().Format(time.RFC3339Nano)
+	fullRaw := any(nil)
+	if mode == IntegrityFull {
+		fullRaw = atRaw
+	}
+	_, err := store.db.ExecContext(ctx, `
+		UPDATE retention_integrity_state
+		SET last_incremental_at = ?,
+		    last_full_at = COALESCE(?, last_full_at),
+		    last_snapshot_sequence = MAX(
+				last_snapshot_sequence, ?
+			),
+		    status = 'verified',
+		    failure = ''
+		WHERE singleton = 1`,
+		atRaw,
+		fullRaw,
+		snapshotSequence,
+	)
+	return err
+}
+
+func (store *Store) RecordIntegrityFailure(
+	ctx context.Context,
+	mode IntegrityMode,
+	failure string,
+) error {
+	if store == nil || store.db == nil ||
+		(mode != IntegrityIncremental && mode != IntegrityFull) ||
+		failure == "" {
+		return errors.New("retention.integrity_result_invalid")
+	}
+	const maximumFailureBytes = 4 << 10
+	if len(failure) > maximumFailureBytes {
+		failure = failure[:maximumFailureBytes]
+	}
+	_, err := store.db.ExecContext(ctx, `
+		UPDATE retention_integrity_state
+		SET status = 'corrupt', failure = ?
+		WHERE singleton = 1`,
+		failure,
+	)
+	return err
+}
+
+func (store *Store) EnsureIntegrityHealthy(ctx context.Context) error {
+	state, err := store.IntegrityState(ctx)
+	if err != nil {
+		return err
+	}
+	if state.Status == "corrupt" {
+		return errors.New("retention.integrity_corrupt")
+	}
+	return nil
 }
 
 func (store *Store) Close() error {

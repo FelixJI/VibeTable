@@ -93,6 +93,67 @@ public sealed class WorkspaceStorageManagerTests
             error.Code);
     }
 
+    [TestMethod]
+    public void MoveExcludesOnlyDeviceLocalCoordinationLocks()
+    {
+        using var fixture = new StorageFixture();
+        string source = Path.Combine(fixture.Root, "source");
+        string target = Path.Combine(fixture.Root, "target");
+        WorkspaceLayout.Create(
+            source,
+            "Active workspace",
+            WorkspaceStorageMode.Direct,
+            WorkspaceEncryptionMode.Convenient);
+        string coordination = WorkspaceLayout.Paths(source).Coordination;
+        string writerLock = Path.Combine(
+            coordination,
+            "desktop-writer.lock");
+        using var heldWriter = new FileStream(
+            writerLock,
+            FileMode.OpenOrCreate,
+            FileAccess.ReadWrite,
+            FileShare.None);
+        File.WriteAllText(
+            Path.Combine(source, "files", "business.txt"),
+            "preserved");
+        var manager = new WorkspaceStorageManager();
+
+        WorkspaceStoragePlan plan = manager.PreviewMove(source, target);
+        manager.ApplyMove(plan);
+
+        Assert.AreEqual(
+            "preserved",
+            File.ReadAllText(Path.Combine(target, "files", "business.txt")));
+        Assert.IsFalse(
+            File.Exists(Path.Combine(
+                WorkspaceLayout.Paths(target).Coordination,
+                "desktop-writer.lock")));
+    }
+
+    [TestMethod]
+    public void MoveDoesNotExcludeLockedBusinessFiles()
+    {
+        using var fixture = new StorageFixture();
+        string source = Path.Combine(fixture.Root, "source");
+        string target = Path.Combine(fixture.Root, "target");
+        WorkspaceLayout.Create(
+            source,
+            "Locked business file",
+            WorkspaceStorageMode.Direct,
+            WorkspaceEncryptionMode.Convenient);
+        string business = Path.Combine(source, "files", "business.txt");
+        File.WriteAllText(business, "must be fingerprinted");
+        using var heldBusinessFile = new FileStream(
+            business,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None);
+        var manager = new WorkspaceStorageManager();
+
+        Assert.ThrowsExactly<IOException>(
+            () => manager.PreviewMove(source, target));
+    }
+
     private sealed class StorageFixture : IDisposable
     {
         public StorageFixture()

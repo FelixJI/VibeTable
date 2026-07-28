@@ -96,6 +96,9 @@ func (production *Production) plan(
 	if err := production.validate(); err != nil {
 		return PlanResult{}, err
 	}
+	if err := production.store.EnsureIntegrityHealthy(ctx); err != nil {
+		return PlanResult{}, err
+	}
 	source := &tombstoneInventorySource{
 		source: production.source,
 		store:  production.store,
@@ -174,6 +177,9 @@ func (production *Production) apply(
 	if err := production.validate(); err != nil {
 		return ApplyResult{}, err
 	}
+	if err := production.store.EnsureIntegrityHealthy(ctx); err != nil {
+		return ApplyResult{}, err
+	}
 	var mutation *MutationIdentity
 	if len(mutations) > 1 {
 		return ApplyResult{}, errors.New("retention.mutation_identity_invalid")
@@ -250,6 +256,9 @@ func (production *Production) Sweep(
 	policy Policy,
 ) (MaintenanceResult, error) {
 	if err := production.validate(); err != nil {
+		return MaintenanceResult{}, err
+	}
+	if err := production.store.EnsureIntegrityHealthy(ctx); err != nil {
 		return MaintenanceResult{}, err
 	}
 	if err := validatePolicy(policy); err != nil {

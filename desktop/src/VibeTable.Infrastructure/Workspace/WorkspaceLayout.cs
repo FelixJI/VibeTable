@@ -170,6 +170,59 @@ public static class WorkspaceLayout
         return updated;
     }
 
+    internal static WorkspaceManifestV2 RewriteStorageMode(
+        string root,
+        Guid expectedWorkspaceId,
+        WorkspaceStorageMode storageMode)
+    {
+        string normalized = Path.GetFullPath(root);
+        WorkspaceManifestV2 current = ReadManifest(normalized);
+        if (current.WorkspaceId != expectedWorkspaceId)
+            throw new WorkspaceRegistryException(
+                "workspace.identity_mismatch",
+                "Workspace storage target contains a different UUID.");
+        WorkspaceManifestV2 updated = current with { StorageMode = storageMode };
+        updated.Validate();
+        DurableJsonFile.Write(
+            Path.Combine(
+                normalized,
+                MetadataDirectoryName,
+                ManifestFileName),
+            updated,
+            WorkspaceV2Json.StrictOptions);
+        return updated;
+    }
+
+    internal static WorkspaceLayoutResult CreateReplicaRoot(
+        string selectedRoot,
+        string activityRoot,
+        Guid expectedWorkspaceId)
+    {
+        string selected = Path.GetFullPath(selectedRoot);
+        string activity = Path.GetFullPath(activityRoot);
+        EnsureCreateTarget(selected);
+        WorkspaceManifestV2 current = ReadManifest(activity);
+        if (current.WorkspaceId != expectedWorkspaceId)
+            throw new WorkspaceRegistryException(
+                "workspace.identity_mismatch",
+                "Workspace activity root contains a different UUID.");
+        WorkspaceManifestV2 mirrored = current with
+        {
+            StorageMode = WorkspaceStorageMode.Mirrored,
+        };
+        mirrored.Validate();
+        try
+        {
+            CreateRoot(selected, mirrored, ReplicaMetadataDirectories);
+        }
+        catch
+        {
+            TryDeleteFreshRoot(selected, expectedWorkspaceId);
+            throw;
+        }
+        return new WorkspaceLayoutResult(mirrored, selected, activity);
+    }
+
     /// <summary>
     /// Creates the device-local direct-layout activity root for an existing
     /// mirrored workspace replica. The selected replica is read-only during

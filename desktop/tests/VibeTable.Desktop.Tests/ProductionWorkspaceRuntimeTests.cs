@@ -69,6 +69,8 @@ public sealed class ProductionWorkspaceRuntimeTests
                 runtime.DataDirectory);
             AssertAuthority(runtime.SidecarEnvironment, entry.WorkspaceId, 7);
             AssertAuthority(runtime.BackendEnvironment, entry.WorkspaceId, 7);
+            Assert.IsFalse(runtime.SidecarEnvironment.ContainsKey(
+                "VIBETABLE_REPLICA_ROOT"));
             Assert.AreEqual(
                 runtime.SidecarEnvironment[
                     "VIBETABLE_WORKSPACE_CLAIM_ID"],
@@ -78,6 +80,56 @@ public sealed class ProductionWorkspaceRuntimeTests
         finally
         {
             TryDelete(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task MirroredRuntimeBindsSelectedReplicaRootOnlyToSidecar()
+    {
+        string container = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-mirrored-runtime-" + Guid.NewGuid().ToString("N"));
+        string selectedRoot = Path.Combine(container, "replica");
+        string activityRoot = Path.Combine(container, "activity");
+        WorkspaceLayoutResult layout = WorkspaceLayout.Create(
+            selectedRoot,
+            "Mirrored runtime",
+            WorkspaceStorageMode.Mirrored,
+            WorkspaceEncryptionMode.Convenient,
+            activityRoot);
+        var entry = new WorkspaceRegistryEntryV2
+        {
+            ContractVersion = WorkspaceV2Json.ContractVersion,
+            WorkspaceId = layout.Manifest.WorkspaceId,
+            DisplayName = layout.Manifest.DisplayName,
+            SelectedRoot = selectedRoot,
+            ActivityRoot = activityRoot,
+            StorageKind = WorkspaceStorageKind.Fixed,
+            CoordinationStrength = WorkspaceCoordinationStrength.Advisory,
+            LastOpenedAt = null,
+            LastKnownHealth = WorkspaceHealth.Healthy,
+            LastSnapshotAt = null,
+            LastSyncAt = null,
+            PendingSync = false,
+        };
+        try
+        {
+            await using var factory = Factory();
+            await using var runtime = (ProductionWorkspaceRuntime)
+                factory.Create(entry, 3);
+
+            Assert.AreEqual(
+                Path.GetFullPath(selectedRoot),
+                runtime.SidecarEnvironment["VIBETABLE_REPLICA_ROOT"]);
+            Assert.IsFalse(runtime.BackendEnvironment.ContainsKey(
+                "VIBETABLE_REPLICA_ROOT"));
+            Assert.AreEqual(
+                Path.Combine(activityRoot, ".vibetable", "data"),
+                runtime.DataDirectory);
+        }
+        finally
+        {
+            TryDelete(container);
         }
     }
 

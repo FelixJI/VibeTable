@@ -984,6 +984,11 @@ public sealed class WorkspaceRequestDispatcher
         if (_dashboardRequests.TryGetValue(targetRequestId, out var state))
         {
             state.MarkCancelledByRenderer();
+            // Publish cancellation only after the token is observably
+            // cancelled. Otherwise a renderer unblocked by the reply can make
+            // an ignored backend task fail before TryCancel runs, producing a
+            // second, generic operation.failed response.
+            state.TryCancel();
             if (state.TryMarkCancellationReply())
             {
                 _reply.PostOperationFailed(
@@ -991,7 +996,6 @@ public sealed class WorkspaceRequestDispatcher
                     "仪表盘请求已取消。",
                     "DASHBOARD_CANCELLED");
             }
-            state.TryCancel();
         }
     }
 
@@ -1065,7 +1069,7 @@ public sealed class WorkspaceRequestDispatcher
             // exception after its token has already been cancelled. Preserve
             // the original cancel/timeout semantics and suppress duplicate
             // late failures in that case.
-            if (cancellation.IsCancellationRequested)
+            if (state.CancelledByRenderer || cancellation.IsCancellationRequested)
             {
                 bool timeout = !state.CancelledByRenderer
                     && !_dashboardSessionToken.IsCancellationRequested;

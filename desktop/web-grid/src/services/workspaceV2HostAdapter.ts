@@ -162,6 +162,7 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     }
     if (session.policyEnabled) {
       actions.push({ method: "retention.get", params: {} });
+      actions.push({ method: "retention.status", params: {} });
     }
     if (session.capabilities.includes("repository.settings.v2")) {
       actions.push({ method: "replica.status", params: {} });
@@ -277,18 +278,16 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
       }
     } else if (method === "retention.get" || method === "retention.update") {
       protection.setRetention(result);
+    } else if (method === "retention.status") {
+      protection.setRetentionStatus(result);
     } else if (method === "retention.plan") {
       protection.setRetentionPlan(result);
     } else if (method === "retention.apply") {
       protection.setRetentionPlan(null);
       void port.request({ method: "retention.get", params: {} });
+      void port.request({ method: "retention.status", params: {} });
     } else if (method === "replica.status") {
-      if (protection.storage) {
-        protection.setStorage({
-          ...protection.storage,
-          pendingSync: result.pendingSync,
-        });
-      }
+      applyReplicaStorageState(result.syncState, result.pendingSync);
     } else if (method === "conflict.list") {
       protection.setConflicts(result.conflicts);
     } else if (method === "conflict.inspect") {
@@ -357,6 +356,24 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     return value;
   }
 
+  function applyReplicaStorageState(
+    syncState: "localOnly" | "pending" | "syncing" | "replicated" | "failed",
+    pendingSync: boolean,
+  ): void {
+    if (!protection.storage) return;
+    const health = syncState === "replicated" || syncState === "syncing"
+      ? "healthy"
+      : syncState === "pending" || syncState === "failed"
+        ? "attention"
+        : protection.storage.health;
+    protection.setStorage({
+      ...protection.storage,
+      health,
+      pendingSync,
+      remoteVerified: syncState === "replicated" && !pendingSync,
+    });
+  }
+
   function projectEvent(raw: unknown): void {
     const event = parseWorkspaceV2Event(raw);
     if (!session.acceptEnvelope(event.wire)) return;
@@ -383,10 +400,11 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
         integrity: eventText(payload, "integrity"),
       });
     } else if (event.topic === "replica.changed" && protection.storage) {
-      protection.setStorage({
-        ...protection.storage,
-        pendingSync: eventBoolean(payload, "pendingSync"),
-      });
+      applyReplicaStorageState(
+        eventText(payload, "syncState") as
+          | "localOnly" | "pending" | "syncing" | "replicated" | "failed",
+        eventBoolean(payload, "pendingSync"),
+      );
     } else if (event.topic === "conflict.changed") {
       const conflictId = eventText(payload, "conflictId");
       const state = eventText(payload, "state");

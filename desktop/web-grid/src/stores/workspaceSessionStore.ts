@@ -9,7 +9,10 @@ import type { WorkspaceDeletePlan } from "@/contracts/workspaceV2Bridge";
 
 export type WorkspaceV2Capability =
   | "workspace.session.v2"
+  | "workspace.storage.mirrored-create.v2"
   | "workspace.storage.relocate.v2"
+  | "workspace.storage.topology.v2"
+  | "workspace.storage.release-cache.v2"
   | "snapshot.timeline.v2"
   | "snapshot.package.v2"
   | "snapshot.open-as-new.v2"
@@ -85,7 +88,10 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
     const accepted = next.filter((capability): capability is WorkspaceV2Capability =>
       [
         "workspace.session.v2",
+        "workspace.storage.mirrored-create.v2",
         "workspace.storage.relocate.v2",
+        "workspace.storage.topology.v2",
+        "workspace.storage.release-cache.v2",
         "snapshot.timeline.v2",
         "snapshot.package.v2",
         "snapshot.open-as-new.v2",

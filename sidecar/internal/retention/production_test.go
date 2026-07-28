@@ -271,6 +271,132 @@ func TestProductionFailsClosedForUnsafeRepositoryEvidence(t *testing.T) {
 	}
 }
 
+func TestIntegrityCadencePersistsAndCorruptionBlocksDestructiveWork(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "retention.db")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	mode, due, err := store.IntegrityDue(ctx, now)
+	if err != nil || !due || mode != IntegrityFull {
+		t.Fatalf("initial due=%v mode=%q err=%v", due, mode, err)
+	}
+	if err := store.RecordIntegritySuccess(
+		ctx,
+		IntegrityFull,
+		9,
+		now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if mode, due, err = store.IntegrityDue(
+		ctx,
+		now.Add(time.Hour),
+	); err != nil || due || mode != "" {
+		t.Fatalf("restart duplicated due=%v mode=%q err=%v", due, mode, err)
+	}
+	if mode, due, err = store.IntegrityDue(
+		ctx,
+		now.Add(25*time.Hour),
+	); err != nil || !due || mode != IntegrityIncremental {
+		t.Fatalf("daily due=%v mode=%q err=%v", due, mode, err)
+	}
+	if err := store.RecordIntegrityFailure(
+		ctx,
+		IntegrityIncremental,
+		"repository.corrupt",
+	); err != nil {
+		t.Fatal(err)
+	}
+	source := &productionInventory{value: Inventory{
+		Revision: 1,
+		Nodes:    map[objectrepo.ObjectID]Node{},
+	}}
+	production := newProductionFixture(
+		source,
+		&recordingMaintainer{source: source},
+		store,
+		&now,
+	)
+	if _, err := production.Plan(
+		ctx,
+		Policy{TrashGrace: time.Hour},
+	); err == nil || err.Error() != "retention.integrity_corrupt" {
+		t.Fatalf("corrupt retention Plan error = %v", err)
+	}
+	if err := store.RecordIntegritySuccess(
+		ctx,
+		IntegrityIncremental,
+		10,
+		now.Add(25*time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := production.Plan(
+		ctx,
+		Policy{TrashGrace: time.Hour},
+	); err != nil {
+		t.Fatalf("verified retention remained blocked: %v", err)
+	}
+	if mode, due, err = store.IntegrityDue(
+		ctx,
+		now.AddDate(0, 1, 0),
+	); err != nil || !due || mode != IntegrityFull {
+		t.Fatalf("monthly due=%v mode=%q err=%v", due, mode, err)
+	}
+}
+
+func TestQuotaPauseStatePersistsAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "retention.db")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := uint64(1024)
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	if err := store.RecordQuotaState(
+		ctx,
+		2048,
+		&limit,
+		true,
+		"snapshot.repository_limit_reached",
+		now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	state, err := store.QuotaState(ctx)
+	if err != nil ||
+		state.UsageBytes != 2048 ||
+		state.LimitBytes == nil ||
+		*state.LimitBytes != limit ||
+		!state.AutomaticSnapshotsPaused ||
+		state.Warning != "snapshot.repository_limit_reached" ||
+		!state.UpdatedAt.Equal(now) {
+		t.Fatalf("restarted quota state = %#v, %v", state, err)
+	}
+}
+
 func TestApplyPersistsSnapshotTombstoneAndCoordinatorReceiptAtomically(
 	t *testing.T,
 ) {

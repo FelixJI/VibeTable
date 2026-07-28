@@ -5,6 +5,8 @@ package workspacev2
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -39,8 +41,11 @@ type Options struct {
 	Ledger                *auditledger.Ledger
 	RequestShutdown       func()
 	ReplicaRemote         replica.VerifiedRemote
+	ReplicaRemoteFactory  func(context.Context) (replica.VerifiedRemote, error)
+	ReplicaRoot           string
 	ReplicaDeviceID       string
 	ReplicaPublicationKey []byte
+	DisableReplicaWorker  bool
 }
 
 type Runtime struct {
@@ -227,6 +232,39 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 	if err := result.retention.bind(result); err != nil {
 		return nil, err
 	}
+	if manifest.StorageMode == "mirrored" &&
+		options.ReplicaRemote == nil {
+		if strings.TrimSpace(options.ReplicaRoot) == "" {
+			return nil, errors.New("replica.selected_root_required")
+		}
+		options.ReplicaPublicationKey, err = deriveReplicaPublicationKey(
+			ctx,
+			manifest,
+		)
+		if err != nil {
+			return nil, err
+		}
+		options.ReplicaRemoteFactory = func(
+			openCtx context.Context,
+		) (replica.VerifiedRemote, error) {
+			return replica.OpenFilesystemRemote(
+				openCtx,
+				options.ReplicaRoot,
+				options.WorkspaceID,
+				result.repository,
+			)
+		}
+		options.ReplicaRemote, err = options.ReplicaRemoteFactory(ctx)
+		if err != nil {
+			if errors.Is(err, replica.ErrRemoteIdentityInvalid) {
+				return nil, err
+			}
+			// A healthy local activity root remains authoritative while its
+			// selected replica is offline. The production replica owner keeps
+			// a durable pending marker and reconnects in the background.
+			options.ReplicaRemote = nil
+		}
+	}
 	result.replicaConflict, err = openProductionReplicaConflict(
 		ctx, result, paths, options,
 	)
@@ -348,7 +386,36 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 	)
 	result.registerHandlers()
 	result.retention.start()
+	if result.replicaConflict != nil && !options.DisableReplicaWorker {
+		// The replica worker can capture a protection snapshot while
+		// reconciling selected files. Start it only after every Runtime
+		// dependency (snapshot coordinator, ingestor, watcher and dispatcher)
+		// is fully initialized.
+		result.replicaConflict.startWorker()
+	}
 	return result, nil
+}
+
+func deriveReplicaPublicationKey(
+	ctx context.Context,
+	manifest contractsv2.WorkspaceManifest,
+) ([]byte, error) {
+	keys, err := objectrepo.NewKeyProvider(
+		objectrepo.WindowsCredentialVault{},
+	).Open(
+		ctx,
+		manifest.WorkspaceID,
+		objectrepo.EncryptionMode(manifest.EncryptionMode),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer clearBytes(keys.Password)
+	authenticator := hmac.New(sha256.New, keys.Password)
+	_, _ = authenticator.Write([]byte(
+		"VibeTable replica publication v2\x00" + manifest.WorkspaceID,
+	))
+	return authenticator.Sum(nil), nil
 }
 
 func (runtime *Runtime) Dispatcher() *protocolv2.Dispatcher {
@@ -469,16 +536,16 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 		closeErrors = append(closeErrors, runtime.watcher.Close())
 		runtime.watcher = nil
 	}
-	if runtime.retention != nil {
-		closeErrors = append(closeErrors, runtime.retention.close())
-		runtime.retention = nil
-	}
 	if runtime.replicaConflict != nil {
 		closeErrors = append(
 			closeErrors,
 			runtime.replicaConflict.close(),
 		)
 		runtime.replicaConflict = nil
+	}
+	if runtime.retention != nil {
+		closeErrors = append(closeErrors, runtime.retention.close())
+		runtime.retention = nil
 	}
 	if runtime.headStore != nil {
 		// The watcher is stopped first so the outbox has a stable tail. Drain
@@ -556,6 +623,13 @@ func (runtime *Runtime) runSnapshotScheduler(ctx context.Context) {
 			if !runtime.scheduler.Due(now.UTC()).Due {
 				continue
 			}
+			if err := runtime.ensureAutomaticSnapshotWithinLimit(
+				ctx,
+			); err != nil {
+				runtime.scheduler.Deferred(now.UTC(), time.Hour)
+				runtime.recordWatchEvent(filehistory.WatchEvent{Err: err})
+				continue
+			}
 			record, _, err := runtime.snapshots.Capture(
 				ctx,
 				snapshot.CaptureRequest{
@@ -576,8 +650,83 @@ func (runtime *Runtime) runSnapshotScheduler(ctx context.Context) {
 				time.Now().UTC(),
 				record.MutationRevision,
 			)
+			runtime.enqueueReplicaSnapshots(ctx)
 		}
 	}
+}
+
+func (runtime *Runtime) enqueueReplicaSnapshots(ctx context.Context) {
+	if runtime == nil || runtime.replicaConflict == nil {
+		return
+	}
+	if err := runtime.replicaConflict.queuePublishedSnapshots(
+		context.WithoutCancel(ctx),
+	); err != nil {
+		runtime.recordWatchEvent(filehistory.WatchEvent{Err: err})
+	}
+}
+
+func (runtime *Runtime) ensureAutomaticSnapshotWithinLimit(
+	ctx context.Context,
+) error {
+	policy, _, err := runtime.state.retention(ctx)
+	if err != nil {
+		return err
+	}
+	if policy.RepositoryLimitBytes == nil {
+		return runtime.retention.store.RecordQuotaState(
+			context.WithoutCancel(ctx),
+			0,
+			nil,
+			false,
+			"",
+			time.Now().UTC(),
+		)
+	}
+	source, ok := any(runtime.repository).(objectrepo.RepositoryUsageSource)
+	if !ok {
+		err := errors.New("snapshot.repository_usage_unavailable")
+		recordErr := runtime.retention.store.RecordQuotaState(
+			context.WithoutCancel(ctx),
+			0,
+			policy.RepositoryLimitBytes,
+			true,
+			err.Error(),
+			time.Now().UTC(),
+		)
+		return errors.Join(err, recordErr)
+	}
+	usage, err := source.RepositoryUsage(ctx)
+	if err != nil {
+		recordErr := runtime.retention.store.RecordQuotaState(
+			context.WithoutCancel(ctx),
+			0,
+			policy.RepositoryLimitBytes,
+			true,
+			"snapshot.repository_usage_failed: "+err.Error(),
+			time.Now().UTC(),
+		)
+		return errors.Join(err, recordErr)
+	}
+	paused := usage >= *policy.RepositoryLimitBytes
+	warning := ""
+	if paused {
+		warning = "snapshot.repository_limit_reached"
+	}
+	if err := runtime.retention.store.RecordQuotaState(
+		context.WithoutCancel(ctx),
+		usage,
+		policy.RepositoryLimitBytes,
+		paused,
+		warning,
+		time.Now().UTC(),
+	); err != nil {
+		return err
+	}
+	if paused {
+		return errors.New(warning)
+	}
+	return nil
 }
 
 func (runtime *Runtime) recordWatchEvent(event filehistory.WatchEvent) {

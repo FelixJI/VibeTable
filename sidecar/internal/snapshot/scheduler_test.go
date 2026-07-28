@@ -35,3 +35,22 @@ func TestSchedulerSkipsUnchangedRevisionAndBacksOffFailures(t *testing.T) {
 		t.Fatal("failure backoff ignored")
 	}
 }
+
+func TestSchedulerDefersQuotaWarningWithoutMarkingRevisionCaptured(t *testing.T) {
+	start := time.Date(2026, 7, 28, 9, 0, 0, 0, time.UTC)
+	scheduler := NewScheduler()
+	scheduler.Changed(start, 1)
+	dueAt := start.Add(5 * time.Minute)
+	if !scheduler.Due(dueAt).Due {
+		t.Fatal("automatic snapshot never became due")
+	}
+	retryAt := scheduler.Deferred(dueAt, time.Hour)
+	if decision := scheduler.Due(
+		dueAt.Add(30 * time.Minute),
+	); decision.Due {
+		t.Fatalf("quota deferral ignored: %#v", decision)
+	}
+	if !scheduler.Due(retryAt).Due {
+		t.Fatal("deferred automatic snapshot was marked captured")
+	}
+}

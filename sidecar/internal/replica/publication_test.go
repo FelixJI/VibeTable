@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -26,18 +27,21 @@ func testPublication(
 	now time.Time,
 ) Publication {
 	t.Helper()
+	checkpointID := "sha256:" + strings.Repeat("a", 64)
 	sealed, err := SealPublication(Publication{
 		WorkspaceID: "workspace-1",
 		Claim: testClaim(
 			"workspace-1",
 			device,
 			id,
-			"nonce-"+device,
+			checkpointID,
 			Advisory,
 			now,
 		),
 		PreviousPublicationHash: previous,
 		SnapshotID:              snapshot,
+		CatalogRevision:         1,
+		CheckpointID:            checkpointID,
 		CreatedAt:               now,
 	}, publicationKey())
 	if err != nil {

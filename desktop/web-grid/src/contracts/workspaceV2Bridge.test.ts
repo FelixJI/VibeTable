@@ -119,6 +119,54 @@ describe("workspace v2 repository and extraction replies", () => {
   });
 });
 
+describe("workspace v2 retention protection status", () => {
+  const statusReply = {
+    ...reply,
+    method: "retention.status",
+    result: {
+      repositoryUsageBytes: 3 * 1024 ** 3,
+      repositoryLimitBytes: 2 * 1024 ** 3,
+      automaticSnapshotsPaused: true,
+      warningCode: "snapshot.repository_limit_reached",
+      integrityStatus: "verified",
+      integrityFailure: null,
+      lastIncrementalCheckAt: "2026-07-28T09:00:00Z",
+      lastFullCheckAt: "2026-07-01T09:00:00Z",
+    },
+  } as const;
+
+  it("parses durable quota and integrity evidence", () => {
+    const parsed = parseWorkspaceV2Reply(statusReply);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok && parsed.method === "retention.status") {
+      expect(parsed.result.automaticSnapshotsPaused).toBe(true);
+      expect(parsed.result.integrityStatus).toBe("verified");
+    }
+  });
+
+  it("rejects inconsistent warning and corruption states", () => {
+    const invalid = {
+      ...statusReply,
+      result: {
+        ...statusReply.result,
+        automaticSnapshotsPaused: false,
+      },
+    };
+    expect(() => parseWorkspaceV2Reply(invalid))
+      .toThrow("retention status is inconsistent");
+
+    const corrupt = {
+      ...statusReply,
+      result: {
+        ...statusReply.result,
+        integrityStatus: "corrupt",
+      },
+    };
+    expect(() => parseWorkspaceV2Reply(corrupt))
+      .toThrow("retention status is inconsistent");
+  });
+});
+
 describe("workspace v2 snapshot import reply", () => {
   const importReply = {
     ...reply,
@@ -267,5 +315,42 @@ describe("workspace v2 storage relocation replies", () => {
         verificationReceiptId: null,
       },
     })).toThrow("storage plan must require a closed session");
+  });
+
+  it("accepts topology and cache actions but rejects unknown storage actions", () => {
+    const makeReply = (action: string) => ({
+      ...reply,
+      method: "workspace.storage.preview",
+      wire: {
+        scope: "global",
+        operationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        sequence: 20,
+      },
+      result: {
+        planId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        action,
+        source: {
+          selectedRoot: "E:\\Replica\\Quarter",
+          activityRoot: "C:\\Activity\\Quarter",
+          mode: "mirrored",
+        },
+        target: {
+          selectedRoot: "E:\\Replica\\Quarter",
+          activityRoot: null,
+          mode: "mirrored",
+        },
+        bytesToCopy: 0,
+        requiresClosedSession: true,
+        warnings: [],
+        expiresAt: "2026-07-28T10:10:00Z",
+        verificationReceiptId: "verify-1",
+      },
+    });
+    expect(parseWorkspaceV2Reply(makeReply("convertTopology")).ok).toBe(true);
+    expect(parseWorkspaceV2Reply(makeReply("releaseActivityCache")).ok).toBe(true);
+    expect(() => parseWorkspaceV2Reply(makeReply("overwriteInPlace"))).toThrow(
+      "storage action is invalid",
+    );
   });
 });

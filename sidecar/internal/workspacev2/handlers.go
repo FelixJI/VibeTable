@@ -7,11 +7,14 @@ import (
 	"errors"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	contractsv2 "github.com/vibetable/vibetable/sidecar/internal/contracts/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
+	"github.com/vibetable/vibetable/sidecar/internal/replica"
+	"github.com/vibetable/vibetable/sidecar/internal/retention"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
@@ -57,6 +60,11 @@ func (runtime *Runtime) registerHandlers() {
 		"retention.get",
 		protocolv2.WorkspaceScope,
 		runtime.getRetention,
+	)
+	runtime.dispatcher.Register(
+		"retention.status",
+		protocolv2.WorkspaceScope,
+		runtime.getRetentionStatus,
 	)
 	runtime.dispatcher.Register(
 		"retention.update",
@@ -221,6 +229,11 @@ func (runtime *Runtime) requestSnapshot(
 	default:
 		return nil, errors.New("workspace.request_invalid")
 	}
+	if trigger == snapshot.TriggerAutomatic {
+		if err := runtime.ensureAutomaticSnapshotWithinLimit(ctx); err != nil {
+			return nil, err
+		}
+	}
 	if params.Urgency != "foreground" && params.Urgency != "background" {
 		return nil, errors.New("workspace.request_invalid")
 	}
@@ -261,6 +274,7 @@ func (runtime *Runtime) requestSnapshot(
 			record.MutationRevision,
 		)
 	}
+	runtime.enqueueReplicaSnapshots(ctx)
 	return result, nil
 }
 
@@ -293,6 +307,19 @@ func (runtime *Runtime) listSnapshots(
 	if err != nil {
 		return nil, err
 	}
+	policy, _, err := runtime.state.retention(ctx)
+	if err != nil {
+		return nil, err
+	}
+	inventory, err := runtime.retention.source.Inventory(ctx)
+	if err != nil {
+		return nil, err
+	}
+	retentionReasons := retention.SnapshotRetentionReasons(
+		inventory,
+		retentionPolicy(policy),
+		time.Now().UTC(),
+	)
 	items := make([]map[string]any, 0, params.Limit)
 	var nextCursor *string
 	for index := len(records) - 1; index >= 0; index-- {
@@ -311,7 +338,11 @@ func (runtime *Runtime) listSnapshots(
 			nextCursor = &value
 			break
 		}
-		projection, err := runtime.snapshotProjection(ctx, record)
+		projection, err := runtime.snapshotProjection(
+			ctx,
+			record,
+			retentionReasons[record.SnapshotID],
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -370,6 +401,7 @@ func (runtime *Runtime) inspectSnapshot(
 func (runtime *Runtime) snapshotProjection(
 	ctx context.Context,
 	record snapshot.Record,
+	retentionReasons []string,
 ) (map[string]any, error) {
 	valid, err := runtime.snapshotIntegrity(ctx, record)
 	if err != nil {
@@ -384,27 +416,45 @@ func (runtime *Runtime) snapshotProjection(
 	case snapshot.TriggerRestore:
 		trigger = "restore"
 	}
-	reasons := []string{}
-	if record.Pinned {
-		reasons = append(reasons, "pinned")
+	syncState := "localOnly"
+	if runtime.replicaConflict != nil {
+		err = runtime.replicaConflict.withManager(
+			func(manager *replica.Manager) error {
+				var stateErr error
+				syncState, stateErr = manager.SnapshotSyncState(
+					ctx,
+					record,
+				)
+				return stateErr
+			},
+		)
+		if errors.Is(err, replica.ErrRemoteUnavailable) {
+			syncState, err = "pending", nil
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	state, integrity := "ready", "verified"
 	if !valid {
 		state, integrity = "corrupt", "corrupt"
 	}
 	return map[string]any{
-		"snapshotId":       record.SnapshotID,
-		"createdAt":        record.CreatedAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"),
-		"state":            state,
-		"trigger":          trigger,
-		"integrity":        integrity,
-		"syncState":        "localOnly",
-		"pinned":           record.Pinned,
-		"retentionReasons": reasons,
-		"logicalSize":      record.LogicalSize,
-		"physicalSize":     record.PhysicalSize,
-		"note":             nil,
-		"catalogRevision":  record.CatalogRevision,
+		"snapshotId": record.SnapshotID,
+		"createdAt":  record.CreatedAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"),
+		"state":      state,
+		"trigger":    trigger,
+		"integrity":  integrity,
+		"syncState":  syncState,
+		"pinned":     record.Pinned,
+		"retentionReasons": append(
+			[]string(nil),
+			retentionReasons...,
+		),
+		"logicalSize":     record.LogicalSize,
+		"physicalSize":    record.PhysicalSize,
+		"note":            nil,
+		"catalogRevision": record.CatalogRevision,
 	}, nil
 }
 
@@ -519,6 +569,54 @@ func (runtime *Runtime) getRetention(
 	}
 	policy, _, err := runtime.state.retention(ctx)
 	return policy, err
+}
+
+func (runtime *Runtime) getRetentionStatus(
+	ctx context.Context,
+	_ json.RawMessage,
+	paramsRaw json.RawMessage,
+) (any, error) {
+	if _, err := decodeStrict[struct{}](paramsRaw); err != nil {
+		return nil, errors.New("workspace.request_invalid")
+	}
+	status, err := runtime.RetentionProtectionStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := contractsv2.RetentionStatus{
+		RepositoryUsageBytes:     status.Quota.UsageBytes,
+		RepositoryLimitBytes:     status.Quota.LimitBytes,
+		AutomaticSnapshotsPaused: status.Quota.AutomaticSnapshotsPaused,
+		IntegrityStatus:          status.Integrity.Status,
+	}
+	if status.Quota.Warning != "" {
+		code := status.Quota.Warning
+		if separator := strings.IndexByte(code, ':'); separator >= 0 {
+			code = code[:separator]
+		}
+		result.WarningCode = &code
+	}
+	if status.Integrity.Failure != "" {
+		failure := status.Integrity.Failure
+		result.IntegrityFailure = &failure
+	}
+	if status.Integrity.LastIncrementalAt != nil {
+		value := status.Integrity.LastIncrementalAt.UTC().Format(
+			time.RFC3339Nano,
+		)
+		result.LastIncrementalCheckAt = &value
+	}
+	if status.Integrity.LastFullAt != nil {
+		value := status.Integrity.LastFullAt.UTC().Format(time.RFC3339Nano)
+		result.LastFullCheckAt = &value
+	}
+	if err := result.Validate(); err != nil {
+		return nil, errors.Join(
+			errors.New("retention.status_invalid"),
+			err,
+		)
+	}
+	return result, nil
 }
 
 type updateRetentionParams struct {

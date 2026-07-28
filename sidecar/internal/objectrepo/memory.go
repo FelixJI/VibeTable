@@ -239,6 +239,32 @@ func (repository *MemoryRepository) StorageInventory(
 	return result, nil
 }
 
+func (repository *MemoryRepository) RepositoryUsage(
+	_ context.Context,
+) (uint64, error) {
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	var total uint64
+	for id, content := range repository.objects {
+		if objectID(content) != id {
+			return 0, ErrCorrupt
+		}
+		size := uint64(len(content))
+		if size > ^uint64(0)-total {
+			return 0, errors.New("repository.usage_size_overflow")
+		}
+		total += size
+	}
+	for _, manifest := range repository.manifests {
+		size := uint64(len(manifest.Payload))
+		if size > ^uint64(0)-total {
+			return 0, errors.New("repository.usage_size_overflow")
+		}
+		total += size
+	}
+	return total, nil
+}
+
 func (repository *MemoryRepository) Pin(
 	_ context.Context,
 	authority Authority,

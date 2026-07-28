@@ -240,3 +240,40 @@ func TestReachabilityPropertyNeverTombstonesProtectedClosure(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSnapshotRetentionReasonsMatchActualRuleUnion(t *testing.T) {
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	inventory := Inventory{
+		Snapshots: []Snapshot{
+			{
+				SnapshotID: "newest",
+				Root:       "newest",
+				CreatedAt:  now.Add(-time.Hour),
+			},
+			{
+				SnapshotID: "pinned-old",
+				Root:       "pinned-old",
+				CreatedAt:  now.Add(-90 * 24 * time.Hour),
+				Pinned:     true,
+			},
+		},
+	}
+	policy := Policy{
+		KeepDailyFor:  30 * 24 * time.Hour,
+		MinimumRecent: 1,
+		TrashGrace:    time.Hour,
+	}
+	reasons := SnapshotRetentionReasons(inventory, policy, now)
+	if got := reasons["newest"]; !equalStrings(
+		got,
+		[]string{"recent", "daily"},
+	) {
+		t.Fatalf("newest reasons = %#v", got)
+	}
+	if got := reasons["pinned-old"]; !equalStrings(
+		got,
+		[]string{"pinned"},
+	) {
+		t.Fatalf("pinned reasons = %#v", got)
+	}
+}

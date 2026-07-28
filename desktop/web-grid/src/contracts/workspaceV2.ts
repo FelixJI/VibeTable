@@ -710,10 +710,29 @@ function parsePropertySchema(value: unknown, label: string): JsonRecord {
   const property = record(value, label);
   if (Object.keys(property).length === 0) return property;
   if (property.type === "object") return parseClosedSchema(property, label);
-  const allowed = property.type === "array" ? ["type", "items"] : ["type"];
+  const allowed = property.type === "array"
+    ? ["type", "items"]
+    : "enum" in property
+      ? ["type", "enum"]
+      : ["type"];
   exact(property, allowed, label);
   const types = schemaPropertyTypes(property.type, `${label}.type`);
   if (types.length === 0) throw new Error(`${label}.type is invalid`);
+  if ("enum" in property) {
+    if (
+      !Array.isArray(property.enum)
+      || property.enum.length === 0
+      || new Set(property.enum).size !== property.enum.length
+    ) {
+      throw new Error(`${label}.enum is invalid`);
+    }
+    for (const candidate of property.enum) {
+      const candidateType = candidate === null ? "null" : typeof candidate;
+      if (!types.includes(candidateType)) {
+        throw new Error(`${label}.enum is invalid`);
+      }
+    }
+  }
   if (property.type === "array") {
     parsePropertySchema(property.items, `${label}.items`);
   }
@@ -748,6 +767,9 @@ function validateSchemaValue(
     return;
   }
   const types = schemaPropertyTypes(schema.type, `${label}.schema.type`);
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {
+    throw new Error(`${label} does not match its enum schema`);
+  }
   const valid = types.some((type) =>
     type === "string"
       ? typeof value === "string"

@@ -6,31 +6,37 @@ using VibeTable.Infrastructure.Workspace;
 namespace VibeTable.Desktop.Services;
 
 /// <summary>
-/// Durable Desktop producer for storage changes. The released implementation
-/// supports fixed-provider direct-root relocation. Topology conversion and
-/// activity-cache release remain fail-closed until an independent Sidecar
-/// reopen receipt can be verified.
+/// Durable Desktop producer for relocation, topology conversion and safe
+/// activity-cache release. Mirrored mutations remain fail-closed until an
+/// independent Sidecar reopen-and-roots verification receipt is persisted.
 /// </summary>
 public sealed class WorkspaceStorageBroker
 {
-    private const int PlanFormatVersion = 1;
+    private const int PlanFormatVersion = 2;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly WorkspaceRegistry _registry;
     private readonly WorkspaceSessionManager _sessions;
     private readonly WorkspaceProviderPolicy _providerPolicy;
     private readonly WorkspaceStorageManager _storage = new();
+    private readonly IWorkspaceReplicaRecoveryService? _replicas;
+    private readonly IWorkspaceStorageFailureInjector _failureInjector;
     private readonly string _plansRoot;
 
     public WorkspaceStorageBroker(
         WorkspaceRegistry registry,
         WorkspaceSessionManager sessions,
         WorkspaceProviderPolicy providerPolicy,
-        string productDataRoot)
+        string productDataRoot,
+        IWorkspaceStorageFailureInjector? failureInjector = null,
+        IWorkspaceReplicaRecoveryService? replicas = null)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
         _providerPolicy = providerPolicy
             ?? throw new ArgumentNullException(nameof(providerPolicy));
+        _replicas = replicas;
+        _failureInjector = failureInjector
+            ?? NoopWorkspaceStorageFailureInjector.Instance;
         ArgumentException.ThrowIfNullOrWhiteSpace(productDataRoot);
         _plansRoot = Path.Combine(
             Path.GetFullPath(productDataRoot),
@@ -54,13 +60,142 @@ public sealed class WorkspaceStorageBroker
                 "selectedRootGrant");
             Guid workspaceId = RequiredGuid(parameters, "workspaceId");
             string action = RequiredString(parameters, "action");
-            if (action is "convertTopology" or "releaseActivityCache")
-                throw VerificationUnavailable();
+            JsonElement targetModeValue =
+                parameters.GetProperty("targetMode");
+            JsonElement selectedRootGrantValue =
+                parameters.GetProperty("selectedRootGrant");
+            if (action == "convertTopology")
+            {
+                if (_replicas is null)
+                    throw ReplicaCapabilityUnavailable();
+                WorkspaceRegistryEntryV2 topologyWorkspace =
+                    RequiredWorkspace(workspaceId);
+                string expectedTargetMode =
+                    topologyWorkspace.ActivityRoot is null
+                        ? "mirrored"
+                        : "direct";
+                if (targetModeValue.ValueKind != JsonValueKind.String
+                    || targetModeValue.GetString() != expectedTargetMode
+                    || selectedRootGrantValue.ValueKind
+                        != JsonValueKind.String
+                    || string.IsNullOrWhiteSpace(selectedRoot)
+                    || string.IsNullOrWhiteSpace(
+                        selectedRootGrantValue.GetString()))
+                {
+                    throw InvalidRequest();
+                }
+                string conversionTarget = Path.GetFullPath(selectedRoot);
+                WorkspaceStorageObservation conversionStorage =
+                    _providerPolicy.ProbeCreateTargetAndEnsureSupported(
+                        conversionTarget);
+                WorkspaceStoragePlan? conversionCopyPlan = null;
+                string sourceMode = topologyWorkspace.ActivityRoot is null
+                    ? "direct"
+                    : "mirrored";
+                string? targetActivityRoot;
+                if (expectedTargetMode == "mirrored")
+                {
+                    targetActivityRoot = topologyWorkspace.SelectedRoot;
+                }
+                else
+                {
+                    if (conversionStorage.StorageKind !=
+                            WorkspaceStorageKind.Fixed ||
+                        conversionStorage.CoordinationStrength !=
+                            WorkspaceCoordinationStrength.Strong)
+                        throw new WorkspaceRegistryException(
+                            "workspace.storage_conversion_unsupported",
+                            "A direct workspace target must use fixed storage with strong coordination.");
+                    targetActivityRoot = null;
+                    // The activity root can still contain live SQLite handles
+                    // during preview. Seal the exact copy inventory only after
+                    // protection, drain and writer-fence acquisition.
+                }
+                DateTimeOffset expiresAt =
+                    DateTimeOffset.UtcNow.AddMinutes(10);
+                var conversion = new DurableStoragePlan
+                {
+                    FormatVersion = PlanFormatVersion,
+                    PlanId = conversionCopyPlan?.PlanId ?? Guid.NewGuid(),
+                    WorkspaceId = workspaceId,
+                    DisplayName = topologyWorkspace.DisplayName,
+                    Action = action,
+                    SourceSelectedRoot = topologyWorkspace.SelectedRoot,
+                    SourceActivityRoot = topologyWorkspace.ActivityRoot,
+                    SourceMode = sourceMode,
+                    TargetSelectedRoot = conversionTarget,
+                    TargetActivityRoot = targetActivityRoot,
+                    TargetMode = expectedTargetMode,
+                    TargetStorageKind = conversionStorage.StorageKind,
+                    TargetCoordinationStrength =
+                        expectedTargetMode == "mirrored"
+                            ? WorkspaceCoordinationStrength.Advisory
+                            : conversionStorage.CoordinationStrength,
+                    CopyPlan = conversionCopyPlan,
+                    ReplicaReceipt = null,
+                    Phase = "previewed",
+                    ExpiresAt = expiresAt,
+                };
+                WritePlan(conversion);
+                return PlanProjection(
+                    conversion,
+                    expectedTargetMode == "direct"
+                        ? MainWindow.MeasureWorkspaceStorage(topologyWorkspace)
+                            .PhysicalSize
+                        : 0,
+                    "Topology conversion is published only after independent replica verification.");
+            }
+            if (action == "releaseActivityCache")
+            {
+                if (_replicas is null)
+                    throw ReplicaCapabilityUnavailable();
+                if (targetModeValue.ValueKind != JsonValueKind.Null
+                    || selectedRootGrantValue.ValueKind != JsonValueKind.Null)
+                    throw InvalidRequest();
+                WorkspaceRegistryEntryV2 cacheWorkspace =
+                    RequiredWorkspace(workspaceId);
+                if (cacheWorkspace.ActivityRoot is null)
+                {
+                    throw new WorkspaceRegistryException(
+                        "workspace.release_cache_not_applicable",
+                        "Only mirrored workspaces have a local activity cache.");
+                }
+                var release = new DurableStoragePlan
+                {
+                    FormatVersion = PlanFormatVersion,
+                    PlanId = Guid.NewGuid(),
+                    WorkspaceId = workspaceId,
+                    DisplayName = cacheWorkspace.DisplayName,
+                    Action = action,
+                    SourceSelectedRoot = cacheWorkspace.SelectedRoot,
+                    SourceActivityRoot = cacheWorkspace.ActivityRoot,
+                    SourceMode = "mirrored",
+                    TargetSelectedRoot = cacheWorkspace.SelectedRoot,
+                    TargetActivityRoot = cacheWorkspace.ActivityRoot,
+                    TargetMode = "mirrored",
+                    TargetStorageKind = cacheWorkspace.StorageKind,
+                    TargetCoordinationStrength =
+                        WorkspaceCoordinationStrength.Advisory,
+                    CopyPlan = null,
+                    ReplicaReceipt = null,
+                    Phase = "previewed",
+                    ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5),
+                };
+                WritePlan(release);
+                return PlanProjection(
+                    release,
+                    MainWindow.MeasureWorkspaceStorage(cacheWorkspace)
+                        .PhysicalSize,
+                    "The activity cache is deleted only after an authenticated independent replica reopen.");
+            }
             if (action != "relocate")
                 throw InvalidRequest();
-            if (RequiredString(parameters, "targetMode") != "direct"
-                || parameters.GetProperty("selectedRootGrant").ValueKind
+            if (targetModeValue.ValueKind != JsonValueKind.String
+                || targetModeValue.GetString() != "direct"
+                || selectedRootGrantValue.ValueKind
                     != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(
+                    selectedRootGrantValue.GetString())
                 || string.IsNullOrWhiteSpace(selectedRoot))
             {
                 throw InvalidRequest();
@@ -113,6 +248,8 @@ public sealed class WorkspaceStorageBroker
                 TargetCoordinationStrength =
                     targetStorage.CoordinationStrength,
                 CopyPlan = copyPlan,
+                ReplicaReceipt = null,
+                Phase = "previewed",
                 ExpiresAt = copyPlan.ExpiresAt,
             };
             WritePlan(durable);
@@ -160,10 +297,21 @@ public sealed class WorkspaceStorageBroker
             Guid planId = RequiredGuid(parameters, "planId");
             string confirmation = RequiredString(parameters, "confirmation");
             DurableStoragePlan plan = ReadPlan(planId);
+            if (plan.Action == "convertTopology")
+                return await ApplyConversionAsync(
+                    plan,
+                    confirmation,
+                    cancellationToken).ConfigureAwait(false);
+            if (plan.Action == "releaseActivityCache")
+                return await ApplyReleaseAsync(
+                    plan,
+                    confirmation,
+                    cancellationToken).ConfigureAwait(false);
             if (plan.ExpiresAt <= DateTimeOffset.UtcNow
                 || plan.Action != "relocate"
-                || plan.CopyPlan.PlanId != plan.PlanId
-                || plan.CopyPlan.WorkspaceId != plan.WorkspaceId)
+                || plan.CopyPlan is null
+                || plan.CopyPlan.WorkspaceId != plan.WorkspaceId
+                || plan.Phase is not ("previewed" or "sealed"))
             {
                 throw StalePlan();
             }
@@ -175,15 +323,6 @@ public sealed class WorkspaceStorageBroker
                 throw new WorkspaceRegistryException(
                     "workspace.storage_confirmation_mismatch",
                     "Type the workspace display name to apply this storage plan.");
-            }
-            if (_sessions.Current.WorkspaceId == plan.WorkspaceId)
-            {
-                // Apply owns the normal protection/drain/stop transition. A
-                // close failure aborts before any target copy is published.
-                _ = await _sessions.CloseAsync(
-                        "workspace-storage-relocate",
-                        cancellationToken)
-                    .ConfigureAwait(false);
             }
             WorkspaceRegistryEntryV2 current =
                 RequiredWorkspace(plan.WorkspaceId);
@@ -197,6 +336,20 @@ public sealed class WorkspaceStorageBroker
                 StringComparison.OrdinalIgnoreCase);
             if (!sourceStillRegistered && !targetAlreadyRegistered)
                 throw StalePlan();
+            if (targetAlreadyRegistered)
+            {
+                WorkspaceManifestV2 targetManifest =
+                    WorkspaceLayout.ReadManifest(plan.TargetSelectedRoot);
+                if (targetManifest.WorkspaceId != plan.WorkspaceId)
+                    throw StalePlan();
+                TryDeletePlan(plan.PlanId);
+                return JsonSerializer.SerializeToElement(new
+                {
+                    workspaceId = plan.WorkspaceId.ToString("D"),
+                    status = "applied",
+                    storage = BuildStorageProjection(current),
+                });
+            }
 
             WorkspaceStorageObservation targetStorage =
                 _providerPolicy.ProbeCreateTargetAndEnsureSupported(
@@ -208,12 +361,73 @@ public sealed class WorkspaceStorageBroker
             {
                 throw StalePlan();
             }
+
+            string runtimeRoot =
+                ProductionWorkspaceRuntimeFactory.RuntimeRoot(current);
+            await using WorkspaceStorageMaintenanceLease maintenance =
+                WorkspaceStorageMaintenanceLease.Acquire(
+                    runtimeRoot,
+                    plan.WorkspaceId);
+            if (_sessions.Current.WorkspaceId == plan.WorkspaceId)
+            {
+                // The maintenance intent is already visible to other Desktop
+                // processes before protection/drain releases the writer lock.
+                _ = await _sessions.CloseAsync(
+                        "workspace-storage-relocate",
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            await maintenance.AcquireWriterFenceAsync(
+                    runtimeRoot,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            current = RequiredWorkspace(plan.WorkspaceId);
+            if (!string.Equals(
+                    Path.GetFullPath(current.SelectedRoot),
+                    Path.GetFullPath(plan.SourceSelectedRoot),
+                    StringComparison.OrdinalIgnoreCase))
+                throw StalePlan();
+            targetStorage =
+                _providerPolicy.ProbeCreateTargetAndEnsureSupported(
+                    plan.TargetSelectedRoot);
+            if (targetStorage.StorageKind != plan.TargetStorageKind
+                || targetStorage.CoordinationStrength
+                    != plan.TargetCoordinationStrength
+                || targetStorage.StorageKind != WorkspaceStorageKind.Fixed)
+                throw StalePlan();
+            if (plan.Phase == "previewed")
+            {
+                // Protection is allowed to create a snapshot. Seal the copy
+                // fingerprint only after protection/drain/stop and while the
+                // cross-process writer fence is held.
+                WorkspaceStoragePlan sealedCopy = _storage.PreviewMove(
+                    plan.SourceSelectedRoot,
+                    plan.TargetSelectedRoot);
+                plan = plan with
+                {
+                    CopyPlan = sealedCopy,
+                    Phase = "sealed",
+                };
+                WritePlan(plan);
+                _failureInjector.Checkpoint("after-seal");
+            }
             _storage.ApplyMove(plan.CopyPlan);
+            _failureInjector.Checkpoint("after-copy");
+            WorkspaceStorageObservation publishStorage =
+                _providerPolicy.ProbeAndEnsureSupported(
+                    plan.TargetSelectedRoot);
+            if (publishStorage.StorageKind != plan.TargetStorageKind
+                || publishStorage.CoordinationStrength
+                    != plan.TargetCoordinationStrength
+                || publishStorage.StorageKind != WorkspaceStorageKind.Fixed)
+                throw StalePlan();
             WorkspaceRegistryEntryV2 updated = _registry.Relink(
                 plan.WorkspaceId,
                 plan.TargetSelectedRoot,
                 activityRoot: null,
-                targetStorage);
+                publishStorage);
+            _failureInjector.Checkpoint("after-registry-publish");
             TryDeletePlan(plan.PlanId);
             return JsonSerializer.SerializeToElement(new
             {
@@ -227,6 +441,468 @@ public sealed class WorkspaceStorageBroker
             _gate.Release();
         }
     }
+
+    private async Task<JsonElement> ApplyConversionAsync(
+        DurableStoragePlan plan,
+        string confirmation,
+        CancellationToken cancellationToken)
+    {
+        if (_replicas is null ||
+            plan.ExpiresAt <= DateTimeOffset.UtcNow ||
+            plan.SourceMode == plan.TargetMode)
+            throw StalePlan();
+        RequireConfirmation(confirmation, plan.DisplayName);
+        WorkspaceRegistryEntryV2 current = RequiredWorkspace(plan.WorkspaceId);
+        JsonElement? completed = CompletePublishedConversion(plan, current);
+        if (completed is not null)
+            return completed.Value;
+        RequireSourceStillCurrent(plan, current);
+        string runtimeRoot =
+            ProductionWorkspaceRuntimeFactory.RuntimeRoot(current);
+        await using WorkspaceStorageMaintenanceLease maintenance =
+            WorkspaceStorageMaintenanceLease.Acquire(
+                runtimeRoot,
+                plan.WorkspaceId);
+        if (_sessions.Current.WorkspaceId == plan.WorkspaceId)
+            _ = await _sessions.CloseAsync(
+                    "workspace-storage-convert",
+                    cancellationToken)
+                .ConfigureAwait(false);
+        await maintenance.AcquireWriterFenceAsync(
+                runtimeRoot,
+                cancellationToken)
+            .ConfigureAwait(false);
+        current = RequiredWorkspace(plan.WorkspaceId);
+        if (plan.SourceMode == "direct" && plan.TargetMode == "mirrored")
+        {
+            if (current.ActivityRoot is not null ||
+                !SamePath(current.SelectedRoot, plan.SourceSelectedRoot))
+                throw StalePlan();
+            bool topologyPublished = false;
+            try
+            {
+                if (plan.Phase == "previewed")
+                {
+                    WorkspaceLayout.RewriteStorageMode(
+                        current.SelectedRoot,
+                        current.WorkspaceId,
+                        WorkspaceStorageMode.Mirrored);
+                    if (!Directory.Exists(plan.TargetSelectedRoot) ||
+                        !Directory.EnumerateFileSystemEntries(
+                            plan.TargetSelectedRoot).Any())
+                    {
+                        WorkspaceLayout.CreateReplicaRoot(
+                            plan.TargetSelectedRoot,
+                            current.SelectedRoot,
+                            current.WorkspaceId);
+                    }
+                    else
+                    {
+                        WorkspaceManifestV2 prepared =
+                            WorkspaceLayout.ReadManifest(
+                                plan.TargetSelectedRoot);
+                        if (prepared.WorkspaceId != current.WorkspaceId ||
+                            prepared.StorageMode !=
+                                WorkspaceStorageMode.Mirrored)
+                            throw StalePlan();
+                    }
+                    plan = plan with
+                    {
+                        Phase = "replicaPrepared",
+                        ReplicaReceipt = null,
+                    };
+                    WritePlan(plan);
+                    _failureInjector.Checkpoint("after-replica-prepare");
+                }
+                else if (plan.Phase is not (
+                             "replicaPrepared" or "replicaVerified"))
+                {
+                    throw StalePlan();
+                }
+                if (WorkspaceLayout.ReadManifest(current.SelectedRoot)
+                        .StorageMode != WorkspaceStorageMode.Mirrored ||
+                    WorkspaceLayout.ReadManifest(plan.TargetSelectedRoot)
+                        .StorageMode != WorkspaceStorageMode.Mirrored)
+                    throw StalePlan();
+                var candidate = current with
+                {
+                    SelectedRoot = plan.TargetSelectedRoot,
+                    ActivityRoot = current.SelectedRoot,
+                    StorageKind = plan.TargetStorageKind,
+                    CoordinationStrength =
+                        WorkspaceCoordinationStrength.Advisory,
+                    PendingSync = true,
+                };
+                WorkspaceReplicaReceipt receipt = plan.Phase == "replicaVerified"
+                    ? await _replicas.VerifyAsync(
+                        candidate,
+                        cancellationToken).ConfigureAwait(false)
+                    : await _replicas.InitializeAsync(
+                        candidate,
+                        cancellationToken).ConfigureAwait(false);
+                plan = plan with
+                {
+                    Phase = "replicaVerified",
+                    ReplicaReceipt = receipt,
+                };
+                WritePlan(plan);
+                _failureInjector.Checkpoint("after-replica-verify");
+                WorkspaceStorageObservation storage =
+                    _providerPolicy.ProbeAndEnsureSupported(
+                        plan.TargetSelectedRoot);
+                WorkspaceRegistryEntryV2 updated = _registry.Relink(
+                    plan.WorkspaceId,
+                    plan.TargetSelectedRoot,
+                    current.SelectedRoot,
+                    storage with
+                    {
+                        CoordinationStrength =
+                            WorkspaceCoordinationStrength.Advisory,
+                    });
+                topologyPublished = true;
+                _failureInjector.Checkpoint(
+                    "after-conversion-registry-publish");
+                updated = _registry.UpdateHealth(
+                    plan.WorkspaceId,
+                    new WorkspaceHealthObservation(
+                        WorkspaceHealth.Healthy,
+                        PendingSync: false,
+                        LastSnapshotAt: receipt.VerifiedAt,
+                        LastSyncAt: receipt.VerifiedAt));
+                TryDeletePlan(plan.PlanId);
+                return AppliedProjection(updated);
+            }
+            catch
+            {
+                if (topologyPublished)
+                    throw;
+                WorkspaceLayout.RewriteStorageMode(
+                    current.SelectedRoot,
+                    current.WorkspaceId,
+                    WorkspaceStorageMode.Direct);
+                try
+                {
+                    WorkspaceLayout.DeleteWorkspaceRoot(
+                        plan.TargetSelectedRoot,
+                        current.WorkspaceId);
+                }
+                catch (Exception exception) when (
+                    exception is IOException
+                        or UnauthorizedAccessException
+                        or WorkspaceRegistryException)
+                {
+                    // Preserve unexpected target state for diagnosis.
+                }
+                plan = plan with
+                {
+                    Phase = "previewed",
+                    ReplicaReceipt = null,
+                };
+                WritePlan(plan);
+                throw;
+            }
+        }
+        if (plan.SourceMode == "mirrored" && plan.TargetMode == "direct")
+        {
+            if (current.ActivityRoot is null ||
+                !SamePath(current.SelectedRoot, plan.SourceSelectedRoot))
+                throw StalePlan();
+            if (current.PendingSync)
+                throw new WorkspaceRegistryException(
+                    "workspace.storage_pending_sync",
+                    "Synchronize the workspace before converting it to direct storage.");
+            WorkspaceReplicaReceipt receipt =
+                await _replicas.VerifyAsync(
+                    current,
+                    cancellationToken).ConfigureAwait(false);
+            plan = plan with { ReplicaReceipt = receipt };
+            WritePlan(plan);
+            WorkspaceStoragePlan sealedCopy;
+            if (plan.Phase == "previewed")
+            {
+                sealedCopy = _storage.PreviewMove(
+                    current.ActivityRoot,
+                    plan.TargetSelectedRoot);
+                plan = plan with { CopyPlan = sealedCopy, Phase = "sealed" };
+                WritePlan(plan);
+                _failureInjector.Checkpoint("after-conversion-seal");
+            }
+            else
+            {
+                sealedCopy = plan.CopyPlan ?? throw StalePlan();
+            }
+            if (plan.Phase == "sealed")
+            {
+                _storage.ApplyMove(sealedCopy);
+                plan = plan with { Phase = "copied" };
+                WritePlan(plan);
+                _failureInjector.Checkpoint("after-conversion-copy");
+            }
+            if (plan.Phase == "copied")
+            {
+                WorkspaceLayout.RewriteStorageMode(
+                    plan.TargetSelectedRoot,
+                    current.WorkspaceId,
+                    WorkspaceStorageMode.Direct);
+                plan = plan with { Phase = "modeUpdated" };
+                WritePlan(plan);
+                _failureInjector.Checkpoint("after-conversion-mode");
+            }
+            if (plan.Phase != "modeUpdated")
+                throw StalePlan();
+            WorkspaceStorageObservation storage =
+                _providerPolicy.ProbeAndEnsureSupported(
+                    plan.TargetSelectedRoot);
+            WorkspaceRegistryEntryV2 updated = _registry.Relink(
+                plan.WorkspaceId,
+                plan.TargetSelectedRoot,
+                activityRoot: null,
+                storage);
+            _failureInjector.Checkpoint("after-conversion-registry-publish");
+            updated = _registry.UpdateHealth(
+                plan.WorkspaceId,
+                new WorkspaceHealthObservation(
+                    WorkspaceHealth.Healthy,
+                    PendingSync: false,
+                    LastSnapshotAt: receipt.VerifiedAt,
+                    LastSyncAt: receipt.VerifiedAt));
+            TryDeletePlan(plan.PlanId);
+            return AppliedProjection(updated);
+        }
+        throw StalePlan();
+    }
+
+    private async Task<JsonElement> ApplyReleaseAsync(
+        DurableStoragePlan plan,
+        string confirmation,
+        CancellationToken cancellationToken)
+    {
+        if (_replicas is null ||
+            plan.ExpiresAt <= DateTimeOffset.UtcNow)
+            throw StalePlan();
+        RequireConfirmation(confirmation, plan.DisplayName);
+        WorkspaceRegistryEntryV2 current = RequiredWorkspace(plan.WorkspaceId);
+        if (current.ActivityRoot is null ||
+            !SamePath(current.SelectedRoot, plan.SourceSelectedRoot) ||
+            !SamePath(current.ActivityRoot, plan.SourceActivityRoot!))
+            throw StalePlan();
+        if (!Directory.Exists(current.ActivityRoot))
+        {
+            WorkspaceReplicaReceipt completedReceipt =
+                RequirePlanReceipt(plan);
+            if (plan.Phase is not ("replicaVerified" or "cacheDeleted"))
+                throw StalePlan();
+            if (plan.Phase != "cacheDeleted")
+            {
+                plan = plan with { Phase = "cacheDeleted" };
+                WritePlan(plan);
+            }
+            WorkspaceRegistryEntryV2 completed = _registry.UpdateHealth(
+                plan.WorkspaceId,
+                new WorkspaceHealthObservation(
+                    WorkspaceHealth.Offline,
+                    PendingSync: false,
+                    LastSnapshotAt: completedReceipt.VerifiedAt,
+                    LastSyncAt: completedReceipt.VerifiedAt));
+            TryDeletePlan(plan.PlanId);
+            return AppliedProjection(completed);
+        }
+        string runtimeRoot = current.ActivityRoot;
+        await using WorkspaceStorageMaintenanceLease maintenance =
+            WorkspaceStorageMaintenanceLease.Acquire(
+                runtimeRoot,
+                plan.WorkspaceId);
+        if (_sessions.Current.WorkspaceId == plan.WorkspaceId)
+            _ = await _sessions.CloseAsync(
+                    "workspace-storage-release-cache",
+                    cancellationToken)
+                .ConfigureAwait(false);
+        await maintenance.AcquireWriterFenceAsync(
+                runtimeRoot,
+                cancellationToken)
+            .ConfigureAwait(false);
+        current = RequiredWorkspace(plan.WorkspaceId);
+        if (current.PendingSync)
+            throw new WorkspaceRegistryException(
+                "workspace.release_cache_unsafe",
+                "Synchronize the workspace before releasing its activity cache.");
+        WorkspaceReplicaReceipt receipt;
+        if (plan.Phase == "previewed")
+        {
+            receipt = await _replicas.VerifyAsync(
+                    current,
+                    cancellationToken).ConfigureAwait(false);
+            plan = plan with
+            {
+                Phase = "replicaVerified",
+                ReplicaReceipt = receipt,
+            };
+            WritePlan(plan);
+            _failureInjector.Checkpoint("after-release-replica-verify");
+        }
+        else if (plan.Phase == "replicaVerified")
+        {
+            _ = RequirePlanReceipt(plan);
+            receipt = await _replicas.VerifyAsync(
+                    current,
+                    cancellationToken).ConfigureAwait(false);
+            plan = plan with { ReplicaReceipt = receipt };
+            WritePlan(plan);
+        }
+        else
+        {
+            throw StalePlan();
+        }
+        var context = new ReleaseActivityCacheContext(
+            SessionClosed: _sessions.Current.WorkspaceId != plan.WorkspaceId,
+            ReplicaComplete: true,
+            HasPendingSync: current.PendingSync,
+            ReplicaReopenVerified: true);
+        WorkspaceStoragePlan release = _storage.PreviewReleaseActivityCache(
+            current.ActivityRoot!,
+            context);
+        maintenance.ReleaseWriterFenceForDeletion();
+        _storage.ApplyReleaseActivityCache(release, context);
+        plan = plan with { Phase = "cacheDeleted" };
+        WritePlan(plan);
+        _failureInjector.Checkpoint("after-release-cache-delete");
+        WorkspaceRegistryEntryV2 updated = _registry.UpdateHealth(
+            plan.WorkspaceId,
+            new WorkspaceHealthObservation(
+                WorkspaceHealth.Offline,
+                PendingSync: false,
+                LastSnapshotAt: receipt.VerifiedAt,
+                LastSyncAt: receipt.VerifiedAt));
+        TryDeletePlan(plan.PlanId);
+        return AppliedProjection(updated);
+    }
+
+    private JsonElement? CompletePublishedConversion(
+        DurableStoragePlan plan,
+        WorkspaceRegistryEntryV2 current)
+    {
+        if (!SamePath(current.SelectedRoot, plan.TargetSelectedRoot))
+            return null;
+        WorkspaceReplicaReceipt receipt = RequirePlanReceipt(plan);
+        WorkspaceManifestV2 manifest =
+            WorkspaceLayout.ReadManifest(plan.TargetSelectedRoot);
+        if (manifest.WorkspaceId != plan.WorkspaceId ||
+            !string.Equals(
+                manifest.StorageMode.ToString(),
+                plan.TargetMode,
+                StringComparison.OrdinalIgnoreCase))
+            throw StalePlan();
+        if (plan.TargetMode == "mirrored" &&
+            (current.ActivityRoot is null ||
+             !SamePath(current.ActivityRoot, plan.SourceSelectedRoot) ||
+             current.CoordinationStrength !=
+                WorkspaceCoordinationStrength.Advisory))
+            throw StalePlan();
+        if (plan.TargetMode == "direct" && current.ActivityRoot is not null)
+            throw StalePlan();
+        WorkspaceRegistryEntryV2 updated = _registry.UpdateHealth(
+            plan.WorkspaceId,
+            new WorkspaceHealthObservation(
+                WorkspaceHealth.Healthy,
+                PendingSync: false,
+                LastSnapshotAt: receipt.VerifiedAt,
+                LastSyncAt: receipt.VerifiedAt));
+        TryDeletePlan(plan.PlanId);
+        return AppliedProjection(updated);
+    }
+
+    private static void RequireConfirmation(
+        string confirmation,
+        string displayName)
+    {
+        if (!string.Equals(
+                confirmation,
+                displayName,
+                StringComparison.Ordinal))
+            throw new WorkspaceRegistryException(
+                "workspace.storage_confirmation_mismatch",
+                "Type the workspace display name to apply this storage plan.");
+    }
+
+    private static void RequireSourceStillCurrent(
+        DurableStoragePlan plan,
+        WorkspaceRegistryEntryV2 current)
+    {
+        if (!SamePath(current.SelectedRoot, plan.SourceSelectedRoot) ||
+            !string.Equals(
+                NormalizeNullable(current.ActivityRoot),
+                NormalizeNullable(plan.SourceActivityRoot),
+                StringComparison.OrdinalIgnoreCase))
+            throw StalePlan();
+    }
+
+    private static WorkspaceReplicaReceipt RequirePlanReceipt(
+        DurableStoragePlan plan)
+    {
+        WorkspaceReplicaReceipt receipt =
+            plan.ReplicaReceipt ?? throw StalePlan();
+        if (receipt.WorkspaceId != plan.WorkspaceId ||
+            receipt.ReplicaId == Guid.Empty ||
+            receipt.SnapshotId == Guid.Empty ||
+            receipt.CatalogRevision == 0 ||
+            string.IsNullOrWhiteSpace(receipt.CheckpointId) ||
+            !receipt.ReceiptHash.StartsWith(
+                "sha256:",
+                StringComparison.Ordinal) ||
+            receipt.ReceiptHash.Length != 71 ||
+            receipt.ReceiptHash.AsSpan(7).IndexOfAnyExcept(
+                "0123456789abcdef") >= 0)
+            throw StalePlan();
+        return receipt;
+    }
+
+    private static JsonElement PlanProjection(
+        DurableStoragePlan plan,
+        long bytesToCopy,
+        string warning)
+        => JsonSerializer.SerializeToElement(new
+        {
+            planId = plan.PlanId.ToString("D"),
+            workspaceId = plan.WorkspaceId.ToString("D"),
+            action = plan.Action,
+            source = new
+            {
+                selectedRoot = plan.SourceSelectedRoot,
+                activityRoot = plan.SourceActivityRoot,
+                mode = plan.SourceMode,
+            },
+            target = new
+            {
+                selectedRoot = plan.TargetSelectedRoot,
+                activityRoot = plan.TargetActivityRoot,
+                mode = plan.TargetMode,
+            },
+            bytesToCopy,
+            requiresClosedSession = true,
+            warnings = new[] { warning },
+            expiresAt = plan.ExpiresAt,
+            verificationReceiptId = (string?)null,
+        });
+
+    private static JsonElement AppliedProjection(
+        WorkspaceRegistryEntryV2 updated)
+        => JsonSerializer.SerializeToElement(new
+        {
+            workspaceId = updated.WorkspaceId.ToString("D"),
+            status = "applied",
+            storage = BuildStorageProjection(updated),
+        });
+
+    private static bool SamePath(string left, string right)
+        => string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            StringComparison.OrdinalIgnoreCase);
+
+    private static string? NormalizeNullable(string? path)
+        => string.IsNullOrWhiteSpace(path)
+            ? null
+            : Path.GetFullPath(path);
 
     private WorkspaceRegistryEntryV2 RequiredWorkspace(Guid workspaceId)
         => _registry.List().SingleOrDefault(
@@ -335,12 +1011,18 @@ public sealed class WorkspaceStorageBroker
             location = workspace.SelectedRoot,
             activityRoot =
                 ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace),
-            mode = "direct",
-            provider = workspace.StorageKind == WorkspaceStorageKind.Fixed
-                ? "fixed"
-                : throw new WorkspaceRegistryException(
-                    "workspace.storage_plan_stale",
-                    "The applied provider no longer matches the plan."),
+            mode = manifest.StorageMode == WorkspaceStorageMode.Direct
+                ? "direct"
+                : "mirrored",
+            provider = workspace.StorageKind switch
+            {
+                WorkspaceStorageKind.Fixed => "fixed",
+                WorkspaceStorageKind.Network => "network",
+                WorkspaceStorageKind.Removable => "removable",
+                WorkspaceStorageKind.RegisteredCloud => "registeredCloud",
+                WorkspaceStorageKind.UserMarkedSync => "userMarkedSync",
+                _ => throw new ArgumentOutOfRangeException(),
+            },
             health = workspace.LastKnownHealth switch
             {
                 WorkspaceHealth.Healthy => "healthy",
@@ -360,7 +1042,10 @@ public sealed class WorkspaceStorageBroker
             keyVersion = manifest.EncryptionMode
                 == WorkspaceEncryptionMode.None ? 0 : 1,
             pendingSync = workspace.PendingSync,
-            remoteVerified = true,
+            remoteVerified =
+                manifest.StorageMode == WorkspaceStorageMode.Direct ||
+                (!workspace.PendingSync &&
+                 workspace.LastSyncAt is not null),
         };
     }
 
@@ -397,10 +1082,10 @@ public sealed class WorkspaceStorageBroker
             "workspace.storage_plan_stale",
             "Storage plan is missing, expired, or no longer current.");
 
-    private static WorkspaceRegistryException VerificationUnavailable()
+    private static WorkspaceRegistryException ReplicaCapabilityUnavailable()
         => new(
-            "workspace.storage_verification_unavailable",
-            "This storage action requires an independent Sidecar reopen verification receipt.");
+            "workspace.storage_replica_capability_unavailable",
+            "A real remote replica with independent reopen-and-roots verification is not available on this device.");
 
     private sealed record DurableStoragePlan
     {
@@ -418,7 +1103,29 @@ public sealed class WorkspaceStorageBroker
         public required WorkspaceStorageKind TargetStorageKind { get; init; }
         public required WorkspaceCoordinationStrength
             TargetCoordinationStrength { get; init; }
-        public required WorkspaceStoragePlan CopyPlan { get; init; }
+        public required WorkspaceStoragePlan? CopyPlan { get; init; }
+        public required WorkspaceReplicaReceipt? ReplicaReceipt { get; init; }
+        public required string Phase { get; init; }
         public required DateTimeOffset ExpiresAt { get; init; }
+    }
+}
+
+public interface IWorkspaceStorageFailureInjector
+{
+    void Checkpoint(string checkpoint);
+}
+
+internal sealed class NoopWorkspaceStorageFailureInjector :
+    IWorkspaceStorageFailureInjector
+{
+    public static NoopWorkspaceStorageFailureInjector Instance { get; } =
+        new();
+
+    private NoopWorkspaceStorageFailureInjector()
+    {
+    }
+
+    public void Checkpoint(string checkpoint)
+    {
     }
 }

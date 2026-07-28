@@ -21,6 +21,8 @@ const (
 	SessionEpochEnv  = "VIBETABLE_WORKSPACE_SESSION_EPOCH"
 	FenceEpochEnv    = "VIBETABLE_WORKSPACE_FENCE_EPOCH"
 	ClaimIDEnv       = "VIBETABLE_WORKSPACE_CLAIM_ID"
+	ReplicaRootEnv   = "VIBETABLE_REPLICA_ROOT"
+	ActivityRootEnv  = "VIBETABLE_ACTIVITY_ROOT"
 )
 
 type WorkspaceIdentity struct {
@@ -37,8 +39,13 @@ type Config struct {
 	InitializeWorkspaceRepository bool
 	UnlockWorkspaceRepository     bool
 	RotateWorkspaceRepository     bool
+	InitializeWorkspaceReplica    bool
+	RecoverWorkspaceReplica       bool
+	VerifyWorkspaceReplica        bool
 	Session                       auth.Secret
 	WorkspaceV2                   *WorkspaceIdentity
+	ReplicaRoot                   string
+	ActivityRoot                  string
 }
 
 func Parse(args []string, getenv func(string) string) (Config, error) {
@@ -71,6 +78,24 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		false,
 		"rotate a protected repository key and exit",
 	)
+	flags.BoolVar(
+		&result.InitializeWorkspaceReplica,
+		"initialize-workspace-replica",
+		false,
+		"initialize and verify the bound workspace replica and exit",
+	)
+	flags.BoolVar(
+		&result.RecoverWorkspaceReplica,
+		"recover-workspace-replica",
+		false,
+		"recover a new activity root from the bound workspace replica and exit",
+	)
+	flags.BoolVar(
+		&result.VerifyWorkspaceReplica,
+		"verify-workspace-replica",
+		false,
+		"read-only verify the bound workspace replica and exit",
+	)
 	if err := flags.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -83,6 +108,9 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		result.InitializeWorkspaceRepository,
 		result.UnlockWorkspaceRepository,
 		result.RotateWorkspaceRepository,
+		result.InitializeWorkspaceReplica,
+		result.RecoverWorkspaceReplica,
+		result.VerifyWorkspaceReplica,
 	} {
 		if enabled {
 			modeCount++
@@ -108,9 +136,22 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	result.WorkspaceV2 = workspace
-	if result.InitializeWorkspaceRepository ||
+	replicaRoot := strings.TrimSpace(getenv(ReplicaRootEnv))
+	if replicaRoot != "" {
+		if workspace == nil {
+			return Config{}, errors.New(
+				"replica configuration requires workspace v2 identity",
+			)
+		}
+		result.ReplicaRoot = replicaRoot
+	}
+	repositoryOneShot := result.InitializeWorkspaceRepository ||
 		result.UnlockWorkspaceRepository ||
-		result.RotateWorkspaceRepository {
+		result.RotateWorkspaceRepository
+	replicaOneShot := result.InitializeWorkspaceReplica ||
+		result.RecoverWorkspaceReplica ||
+		result.VerifyWorkspaceReplica
+	if repositoryOneShot {
 		if strings.TrimSpace(getenv(DataDirEnv)) == "" ||
 			result.WorkspaceV2 == nil {
 			return Config{}, errors.New(
@@ -125,6 +166,48 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 				)
 			}
 		}
+	}
+	if replicaOneShot {
+		if strings.TrimSpace(getenv(DataDirEnv)) == "" ||
+			result.WorkspaceV2 == nil {
+			return Config{}, errors.New(
+				"replica one-shot requires env dataDir and workspace identity",
+			)
+		}
+		for _, argument := range args {
+			if argument == "--data-dir" ||
+				strings.HasPrefix(argument, "--data-dir=") {
+				return Config{}, errors.New(
+					"replica one-shot dataDir must come from the environment",
+				)
+			}
+		}
+		if result.ReplicaRoot == "" {
+			return Config{}, errors.New(
+				"replica one-shot requires env replica root",
+			)
+		}
+		for _, argument := range args {
+			if argument == "--replica-root" ||
+				strings.HasPrefix(argument, "--replica-root=") {
+				return Config{}, errors.New(
+					"replica root must come from the environment",
+				)
+			}
+		}
+	}
+	activityRoot := strings.TrimSpace(getenv(ActivityRootEnv))
+	if result.RecoverWorkspaceReplica {
+		if activityRoot == "" {
+			return Config{}, errors.New(
+				"replica recovery requires env activity root",
+			)
+		}
+		result.ActivityRoot = activityRoot
+	} else if activityRoot != "" {
+		return Config{}, errors.New(
+			"activity root is valid only for replica recovery",
+		)
 	}
 	return result, nil
 }

@@ -8,6 +8,7 @@ import type {
   PendingFileChange,
   RepositoryKeyRotationPlan,
   RepositoryVerificationResult,
+  RetentionProtectionStatus,
   RestorePlanResult,
   SnapshotExtractPlan,
   SnapshotPackagePlan,
@@ -46,6 +47,7 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
   const storagePlan = ref<WorkspaceStoragePlan | null>(null);
   const retention = ref<RetentionPolicyV2>(DEFAULT_RETENTION);
   const retentionHydrated = ref(false);
+  const retentionStatus = ref<RetentionProtectionStatus | null>(null);
   const conflicts = ref<readonly WorkspaceConflictItem[]>([]);
   const fileTrees = ref<Readonly<Record<string, FileRevisionTreeProjection>>>({});
   const pendingFileChanges = ref<readonly PendingFileChange[]>([]);
@@ -72,6 +74,7 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
     storagePlan.value = null;
     retention.value = DEFAULT_RETENTION;
     retentionHydrated.value = false;
+    retentionStatus.value = null;
     conflicts.value = [];
     fileTrees.value = {};
     pendingFileChanges.value = [];
@@ -119,6 +122,10 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
   function setRetention(next: RetentionPolicyV2): void {
     retention.value = next;
     retentionHydrated.value = true;
+  }
+
+  function setRetentionStatus(next: RetentionProtectionStatus | null): void {
+    retentionStatus.value = next;
   }
 
   function setConflicts(next: readonly WorkspaceConflictItem[]): void {
@@ -201,6 +208,7 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
     storagePlan,
     retention,
     retentionHydrated,
+    retentionStatus,
     conflicts,
     pendingConflictCount,
     fileTrees,
@@ -221,6 +229,7 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
     setStorage,
     setStoragePlan,
     setRetention,
+    setRetentionStatus,
     setConflicts,
     chooseConflict,
     setFileTree,

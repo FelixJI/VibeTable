@@ -68,6 +68,14 @@ type StorageInventorySource interface {
 	StorageInventory(context.Context, []ObjectID) (StorageInventory, error)
 }
 
+// RepositoryUsageSource reports the real bytes occupied by every blob in the
+// repository, including pack/index/format overhead. It is intentionally
+// separate from StorageInventory, whose physical size can be an estimate for
+// a selected root set.
+type RepositoryUsageSource interface {
+	RepositoryUsage(context.Context) (uint64, error)
+}
+
 type RootPin struct {
 	PinID       string     `json:"pinId"`
 	WorkspaceID string     `json:"workspaceId"`

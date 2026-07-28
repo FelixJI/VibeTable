@@ -68,6 +68,31 @@ func TestParseWorkspaceV2IdentityIsTrustedAllOrNone(t *testing.T) {
 	}
 }
 
+func TestReplicaRootRequiresWorkspaceIdentity(t *testing.T) {
+	env := map[string]string{
+		SessionSecretEnv: strings.Repeat("01", 32),
+		WorkspaceIDEnv:   "11111111-1111-4111-8111-111111111111",
+		SessionEpochEnv:  "7",
+		FenceEpochEnv:    "3",
+		ClaimIDEnv:       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		ReplicaRootEnv:   `C:\replica`,
+	}
+	getenv := func(key string) string { return env[key] }
+	cfg, err := Parse(nil, getenv)
+	if err != nil || cfg.ReplicaRoot != env[ReplicaRootEnv] {
+		t.Fatalf("config=%#v err=%v", cfg, err)
+	}
+	delete(env, WorkspaceIDEnv)
+	delete(env, SessionEpochEnv)
+	delete(env, FenceEpochEnv)
+	delete(env, ClaimIDEnv)
+	if _, err := Parse(nil, getenv); err == nil ||
+		err.Error() !=
+			"replica configuration requires workspace v2 identity" {
+		t.Fatalf("replica root without workspace error = %v", err)
+	}
+}
+
 func TestParseWorkspaceV2IdentityNeverDefaultsOrAcceptsPartial(t *testing.T) {
 	base := map[string]string{
 		SessionSecretEnv: strings.Repeat("01", 32),
@@ -146,5 +171,67 @@ func TestRepositoryOnboardingRequiresTrustedEnvironmentAndExclusiveMode(t *testi
 		getenv,
 	); err == nil {
 		t.Fatal("unlock accepted missing trusted dataDir")
+	}
+}
+
+func TestReplicaOneShotModesRequireTrustedExclusivePaths(t *testing.T) {
+	env := map[string]string{
+		SessionSecretEnv: strings.Repeat("01", 32),
+		DataDirEnv:       `C:\activity\.vibetable\data`,
+		WorkspaceIDEnv:   "11111111-1111-4111-8111-111111111111",
+		SessionEpochEnv:  "7",
+		FenceEpochEnv:    "3",
+		ClaimIDEnv:       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		ReplicaRootEnv:   `C:\replica`,
+	}
+	getenv := func(key string) string { return env[key] }
+	initialize, err := Parse(
+		[]string{"--initialize-workspace-replica"},
+		getenv,
+	)
+	if err != nil || !initialize.InitializeWorkspaceReplica ||
+		initialize.ReplicaRoot != env[ReplicaRootEnv] {
+		t.Fatalf("initialize config=%#v err=%v", initialize, err)
+	}
+	verify, err := Parse(
+		[]string{"--verify-workspace-replica"},
+		getenv,
+	)
+	if err != nil || !verify.VerifyWorkspaceReplica {
+		t.Fatalf("verify config=%#v err=%v", verify, err)
+	}
+	env[ActivityRootEnv] = `C:\staging`
+	recover, err := Parse(
+		[]string{"--recover-workspace-replica"},
+		getenv,
+	)
+	if err != nil || !recover.RecoverWorkspaceReplica ||
+		recover.ActivityRoot != env[ActivityRootEnv] {
+		t.Fatalf("recover config=%#v err=%v", recover, err)
+	}
+	if _, err := Parse(
+		[]string{
+			"--initialize-workspace-replica",
+			"--recover-workspace-replica",
+		},
+		getenv,
+	); err == nil {
+		t.Fatal("mutually exclusive replica modes accepted")
+	}
+	delete(env, ActivityRootEnv)
+	if _, err := Parse(
+		[]string{"--recover-workspace-replica"},
+		getenv,
+	); err == nil ||
+		err.Error() != "replica recovery requires env activity root" {
+		t.Fatalf("missing activity root error = %v", err)
+	}
+	delete(env, ReplicaRootEnv)
+	if _, err := Parse(
+		[]string{"--verify-workspace-replica"},
+		getenv,
+	); err == nil ||
+		err.Error() != "replica one-shot requires env replica root" {
+		t.Fatalf("missing replica root error = %v", err)
 	}
 }

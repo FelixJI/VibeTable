@@ -18,6 +18,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	contractsv2 "github.com/vibetable/vibetable/sidecar/internal/contracts/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
+	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
 	"github.com/vibetable/vibetable/sidecar/internal/replica"
 )
@@ -181,6 +182,150 @@ func TestRuntimeCompositionPersistsSequencePolicyAndSnapshots(t *testing.T) {
 		len(policy.FileRevisionBuckets) != 2 ||
 		policy.FileRevisionBuckets[1] != "monthly" {
 		t.Fatalf("restarted policy = %#v", policy)
+	}
+}
+
+func TestRepositoryLimitPausesOnlyAutomaticSnapshotsAndProjectsRealReasons(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	root := createWorkspace(t, testWorkspaceID)
+	dataDir := filepath.Join(root, ".vibetable", "data")
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir: dataDir, HideStartBanner: true,
+	})
+	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	createAuditOutbox(t, app)
+	defer app.ResetBootstrapState()
+	ledger, err := auditledger.Open(
+		filepath.Join(root, ".vibetable", "audit"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledger.Close()
+	runtime, err := Open(ctx, Options{
+		App: app, DataDir: dataDir,
+		WorkspaceID: testWorkspaceID, SessionEpoch: 7,
+		FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close(ctx)
+	policy, _, err := runtime.state.retention(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := uint64(1)
+	policy.PolicyRevision++
+	policy.RepositoryLimitBytes = &limit
+	if err := runtime.state.updateRetention(
+		ctx,
+		1,
+		policy,
+		1,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ensureAutomaticSnapshotWithinLimit(
+		ctx,
+	); err == nil ||
+		err.Error() != "snapshot.repository_limit_reached" {
+		t.Fatalf("automatic quota error = %v", err)
+	}
+	protection, err := runtime.RetentionProtectionStatus(ctx)
+	if err != nil ||
+		!protection.Quota.AutomaticSnapshotsPaused ||
+		protection.Quota.LimitBytes == nil ||
+		*protection.Quota.LimitBytes != limit ||
+		protection.Quota.UsageBytes < limit ||
+		protection.Quota.Warning != "snapshot.repository_limit_reached" {
+		t.Fatalf("durable quota status = %#v, %v", protection, err)
+	}
+	statusResponse := dispatch(
+		t,
+		runtime,
+		1,
+		"retention.status",
+		`{}`,
+	)
+	if statusResponse.Error != nil {
+		t.Fatalf("retention.status = %#v", statusResponse.Error)
+	}
+	status, ok := statusResponse.Result.(contractsv2.RetentionStatus)
+	if !ok ||
+		status.RepositoryUsageBytes < limit ||
+		status.RepositoryLimitBytes == nil ||
+		*status.RepositoryLimitBytes != limit ||
+		!status.AutomaticSnapshotsPaused ||
+		status.WarningCode == nil ||
+		*status.WarningCode != "snapshot.repository_limit_reached" ||
+		status.IntegrityStatus == "" {
+		t.Fatalf("retention.status result = %#v", statusResponse.Result)
+	}
+	token, _ := runtime.coordinator.Current()
+	if _, err := runtime.history.Save(
+		ctx,
+		filehistory.SaveRequest{
+			Token:      token,
+			DocumentID: "22222222-2222-4222-8222-222222222222",
+			Path:       "quota-still-writable.txt",
+			Kind:       filehistory.RevisionFormal,
+			Content:    []byte("normal writes remain available"),
+			MimeType:   "text/plain",
+			CreatedBy:  "test",
+			DeviceID:   testClaimID,
+		},
+	); err != nil {
+		t.Fatalf("repository quota blocked normal write: %v", err)
+	}
+	automatic := dispatch(
+		t,
+		runtime,
+		2,
+		"snapshot.request",
+		`{"trigger":"automatic","urgency":"background"}`,
+	)
+	if automatic.Error == nil ||
+		automatic.Error.Code != "snapshot.repository_limit_reached" {
+		t.Fatalf("automatic snapshot response = %#v", automatic)
+	}
+	insertAuditOutbox(t, app)
+	manual := dispatch(
+		t,
+		runtime,
+		3,
+		"snapshot.request",
+		`{"trigger":"manual","urgency":"foreground"}`,
+	)
+	if manual.Error != nil {
+		t.Fatalf("manual snapshot blocked by quota: %#v", manual.Error)
+	}
+	listed := dispatch(
+		t,
+		runtime,
+		4,
+		"snapshot.list",
+		`{"cursor":null,"limit":50}`,
+	)
+	if listed.Error != nil {
+		t.Fatal(listed.Error)
+	}
+	items := listed.Result.(map[string]any)["snapshots"].([]map[string]any)
+	if len(items) != 1 ||
+		items[0]["syncState"] != "localOnly" ||
+		!containsString(
+			items[0]["retentionReasons"].([]string),
+			"pinned",
+		) ||
+		!containsString(
+			items[0]["retentionReasons"].([]string),
+			"recent",
+		) {
+		t.Fatalf("snapshot projection = %#v", items)
 	}
 }
 
@@ -591,18 +736,153 @@ func TestRuntimeKeepsLocalWorkspaceAvailableWhenReplicaIsOffline(t *testing.T) {
 		t.Fatalf("offline replica blocked local runtime: %v", err)
 	}
 	defer runtime.Close(context.Background())
+	methods := map[string]bool{}
 	for _, method := range runtime.Capabilities().RPCMethods {
-		if strings.HasPrefix(method, "replica.") ||
-			strings.HasPrefix(method, "conflict.") {
-			t.Fatalf("offline replica method advertised: %s", method)
+		methods[method] = true
+	}
+	for _, method := range []string{
+		"replica.status",
+		"replica.synchronize",
+		"replica.forceTakeover",
+	} {
+		if !methods[method] {
+			t.Fatalf("offline replica method missing: %s", method)
 		}
 	}
+	for method := range methods {
+		if strings.HasPrefix(method, "conflict.") {
+			t.Fatalf("unverified conflict method advertised: %s", method)
+		}
+	}
+	offlineStatus := dispatch(t, runtime, 1, "replica.status", `{}`)
+	if offlineStatus.Error != nil {
+		t.Fatalf("offline replica.status = %#v", offlineStatus.Error)
+	}
+	status := offlineStatus.Result.(map[string]any)
+	if status["coordinationStrength"] != "advisory" ||
+		status["syncState"] != "failed" ||
+		status["pendingSync"] != true {
+		t.Fatalf("offline status = %#v", status)
+	}
+	queued := dispatch(t, runtime, 2, "replica.synchronize", `{}`)
+	if queued.Error != nil ||
+		queued.Result.(map[string]any)["state"] != "queued" {
+		if queued.Error != nil {
+			t.Fatalf("offline queue error = %#v", *queued.Error)
+		}
+		t.Fatalf("offline queue result = %#v", queued)
+	}
+	if _, err := os.Stat(filepath.Join(
+		root,
+		".vibetable",
+		"coordination",
+		"replica-pending.json",
+	)); err != nil {
+		t.Fatalf("durable pending marker missing: %v", err)
+	}
 	response := dispatch(
-		t, runtime, 1, "snapshot.list",
+		t, runtime, 3, "snapshot.list",
 		`{"cursor":null,"limit":50}`,
 	)
 	if response.Error != nil {
 		t.Fatalf("local method unavailable: %#v", response.Error)
+	}
+}
+
+func TestMirroredRuntimeRequiresAndComposesVerifiedFilesystemReplica(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	root := createWorkspace(t, testWorkspaceID)
+	manifestPath := filepath.Join(root, ".vibetable", "workspace.json")
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest contractsv2.WorkspaceManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.StorageMode = "mirrored"
+	raw, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	selectedRoot := t.TempDir()
+	if err := os.MkdirAll(
+		filepath.Join(selectedRoot, ".vibetable"),
+		0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(selectedRoot, ".vibetable", "workspace.json"),
+		raw,
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(root, ".vibetable", "data")
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir: dataDir, HideStartBanner: true,
+	})
+	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	createAuditOutbox(t, app)
+	defer app.ResetBootstrapState()
+	ledger, err := auditledger.Open(
+		filepath.Join(root, ".vibetable", "audit"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledger.Close()
+	options := Options{
+		App: app, DataDir: dataDir,
+		WorkspaceID: testWorkspaceID, SessionEpoch: 7,
+		FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+	}
+	if _, err := Open(
+		ctx,
+		options,
+	); err == nil ||
+		err.Error() != "replica.selected_root_required" {
+		t.Fatalf("mirrored runtime without root error = %v", err)
+	}
+	options.ReplicaRoot = selectedRoot
+	if _, err := replica.CreateFilesystemRemote(
+		ctx,
+		selectedRoot,
+		testWorkspaceID,
+		objectrepo.NewMemory(),
+	); err != nil {
+		t.Fatalf("initialize filesystem replica: %v", err)
+	}
+	runtime, err := Open(ctx, options)
+	if err != nil {
+		t.Fatalf("verified filesystem replica composition: %v", err)
+	}
+	defer runtime.Close(ctx)
+	methods := map[string]bool{}
+	for _, method := range runtime.Capabilities().RPCMethods {
+		methods[method] = true
+	}
+	for _, method := range []string{
+		"replica.status",
+		"replica.synchronize",
+		"replica.forceTakeover",
+		"conflict.list",
+		"conflict.inspect",
+		"conflict.preview",
+		"conflict.apply",
+	} {
+		if !methods[method] {
+			t.Fatalf("filesystem replica method missing: %s", method)
+		}
 	}
 }
 

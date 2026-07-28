@@ -153,6 +153,18 @@ func openStateStore(path string) (*stateStore, error) {
 			catalog_revision INTEGER NOT NULL,
 			expires_at TEXT NOT NULL
 		);
+		CREATE TABLE IF NOT EXISTS replica_status_projection (
+			singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+			coordination_strength TEXT NOT NULL
+				CHECK(coordination_strength IN ('strong', 'advisory')),
+			sync_state TEXT NOT NULL
+				CHECK(sync_state IN (
+					'localOnly', 'pending', 'syncing',
+					'replicated', 'failed'
+				)),
+			pending_sync INTEGER NOT NULL CHECK(pending_sync IN (0, 1)),
+			updated_at TEXT NOT NULL
+		);
 	`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize workspace v2 state: %w", err)
@@ -191,6 +203,91 @@ func openStateStore(path string) (*stateStore, error) {
 		return nil, err
 	}
 	return store, nil
+}
+
+type replicaStatusProjection struct {
+	CoordinationStrength string
+	SyncState            string
+	PendingSync          bool
+	UpdatedAt            time.Time
+}
+
+func (store *stateStore) putReplicaStatus(
+	ctx context.Context,
+	status replicaStatusProjection,
+) error {
+	if store == nil || store.db == nil ||
+		(status.CoordinationStrength != "strong" &&
+			status.CoordinationStrength != "advisory") ||
+		(status.SyncState != "localOnly" &&
+			status.SyncState != "pending" &&
+			status.SyncState != "syncing" &&
+			status.SyncState != "replicated" &&
+			status.SyncState != "failed") ||
+		status.UpdatedAt.IsZero() {
+		return errors.New("replica.status_projection_invalid")
+	}
+	pending := 0
+	if status.PendingSync {
+		pending = 1
+	}
+	_, err := store.db.ExecContext(ctx, `
+		INSERT INTO replica_status_projection (
+			singleton, coordination_strength, sync_state,
+			pending_sync, updated_at
+		) VALUES (1, ?, ?, ?, ?)
+		ON CONFLICT(singleton) DO UPDATE SET
+			coordination_strength = excluded.coordination_strength,
+			sync_state = excluded.sync_state,
+			pending_sync = excluded.pending_sync,
+			updated_at = excluded.updated_at
+	`, status.CoordinationStrength, status.SyncState, pending,
+		status.UpdatedAt.UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (store *stateStore) replicaStatus(
+	ctx context.Context,
+) (replicaStatusProjection, bool, error) {
+	if store == nil || store.db == nil {
+		return replicaStatusProjection{}, false,
+			errors.New("workspace.v2.state_unavailable")
+	}
+	var result replicaStatusProjection
+	var pending int
+	var updatedAt string
+	err := store.db.QueryRowContext(ctx, `
+		SELECT coordination_strength, sync_state,
+			pending_sync, updated_at
+		FROM replica_status_projection
+		WHERE singleton = 1
+	`).Scan(
+		&result.CoordinationStrength,
+		&result.SyncState,
+		&pending,
+		&updatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return replicaStatusProjection{}, false, nil
+	}
+	if err != nil {
+		return replicaStatusProjection{}, false, err
+	}
+	result.PendingSync = pending == 1
+	result.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil ||
+		(result.CoordinationStrength != "strong" &&
+			result.CoordinationStrength != "advisory") ||
+		(result.SyncState != "localOnly" &&
+			result.SyncState != "pending" &&
+			result.SyncState != "syncing" &&
+			result.SyncState != "replicated" &&
+			result.SyncState != "failed") ||
+		(pending != 0 && pending != 1) {
+		return replicaStatusProjection{}, false,
+			errors.New("replica.status_projection_corrupt")
+	}
+	return result, true, nil
 }
 
 type repositoryKeyRotationPlan struct {

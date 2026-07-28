@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -47,6 +48,8 @@ type Checkpoint struct {
 	ClaimID         string
 	Roots           []objectrepo.ObjectID
 	RootDigest      string
+	Snapshot        snapshot.Record
+	Manifests       []objectrepo.ManifestRecord
 }
 
 type ReplicationReceipt struct {
@@ -101,6 +104,7 @@ type IncomingConflict struct {
 	ReplicaSnapshot snapshot.Record
 	Roots           []objectrepo.ObjectID
 	Verification    VerificationReceipt
+	RecoveryBundle  *FilesystemRecoveryBundle
 }
 
 type ConflictRemote interface {
@@ -138,6 +142,7 @@ type ManagerOptions struct {
 	Repository      objectrepo.Repository
 	Authority       AuthorityTransfer
 	Conflicts       ConflictSink
+	DestructiveSafe func(context.Context) error
 	Now             func() time.Time
 }
 
@@ -149,21 +154,22 @@ type Status struct {
 }
 
 type Manager struct {
-	mu             sync.Mutex
-	workspace      string
-	device         string
-	identity       RemoteIdentity
-	remote         VerifiedRemote
-	catalog        SnapshotCatalog
-	repository     objectrepo.Repository
-	authority      AuthorityTransfer
-	conflicts      ConflictSink
-	conflictRemote ConflictRemote
-	queue          *Queue
-	state          *productionState
-	strong         *StrongLease
-	advisory       *AdvisoryDAG
-	now            func() time.Time
+	mu              sync.Mutex
+	workspace       string
+	device          string
+	identity        RemoteIdentity
+	remote          VerifiedRemote
+	catalog         SnapshotCatalog
+	repository      objectrepo.Repository
+	authority       AuthorityTransfer
+	conflicts       ConflictSink
+	conflictRemote  ConflictRemote
+	destructiveSafe func(context.Context) error
+	queue           *Queue
+	state           *productionState
+	strong          *StrongLease
+	advisory        *AdvisoryDAG
+	now             func() time.Time
 }
 
 func OpenManager(ctx context.Context, options ManagerOptions) (_ *Manager, err error) {
@@ -174,6 +180,11 @@ func OpenManager(ctx context.Context, options ManagerOptions) (_ *Manager, err e
 		options.Repository == nil ||
 		options.Authority == nil {
 		return nil, ErrReplicationUnavailable
+	}
+	if receiver, ok := options.Remote.(interface {
+		setPublicationKey([]byte)
+	}); ok {
+		receiver.setPublicationKey(options.PublicationKey)
 	}
 	identity, err := options.Remote.VerifyIdentity(ctx)
 	if err != nil {
@@ -194,17 +205,18 @@ func OpenManager(ctx context.Context, options ManagerOptions) (_ *Manager, err e
 		return nil, err
 	}
 	manager := &Manager{
-		workspace:  options.WorkspaceID,
-		device:     options.DeviceID,
-		identity:   identity,
-		remote:     options.Remote,
-		catalog:    options.Catalog,
-		repository: options.Repository,
-		authority:  options.Authority,
-		conflicts:  options.Conflicts,
-		queue:      queue,
-		state:      state,
-		now:        options.Now,
+		workspace:       options.WorkspaceID,
+		device:          options.DeviceID,
+		identity:        identity,
+		remote:          options.Remote,
+		catalog:         options.Catalog,
+		repository:      options.Repository,
+		authority:       options.Authority,
+		conflicts:       options.Conflicts,
+		destructiveSafe: options.DestructiveSafe,
+		queue:           queue,
+		state:           state,
+		now:             options.Now,
 	}
 	if manager.now == nil {
 		manager.now = func() time.Time { return time.Now().UTC() }
@@ -306,6 +318,34 @@ func (manager *Manager) Synchronize(ctx context.Context) error {
 	if _, err := manager.verifyIdentity(ctx); err != nil {
 		return err
 	}
+	if err := manager.ensureDestructiveSafe(ctx); err != nil {
+		return err
+	}
+	if err := manager.queuePublishedSnapshots(ctx); err != nil {
+		return err
+	}
+	if err := manager.queue.Drain(ctx, manager); err != nil {
+		return err
+	}
+	return manager.discoverConflicts(ctx)
+}
+
+// QueuePublishedSnapshots durably pins and enqueues every unpublished local
+// snapshot without performing remote I/O. It is safe on request and capture
+// paths that must not block on network availability.
+func (manager *Manager) QueuePublishedSnapshots(ctx context.Context) error {
+	if manager == nil {
+		return ErrReplicationUnavailable
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if err := manager.ensureDestructiveSafe(ctx); err != nil {
+		return err
+	}
+	return manager.queuePublishedSnapshots(ctx)
+}
+
+func (manager *Manager) queuePublishedSnapshots(ctx context.Context) error {
 	records, err := manager.catalog.List(ctx, manager.workspace)
 	if err != nil {
 		return err
@@ -368,10 +408,7 @@ func (manager *Manager) Synchronize(ctx context.Context) error {
 			return err
 		}
 	}
-	if err := manager.queue.Drain(ctx, manager); err != nil {
-		return err
-	}
-	return manager.discoverConflicts(ctx)
+	return nil
 }
 
 func (manager *Manager) ConflictReady() bool {
@@ -414,8 +451,56 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 		known[record.SnapshotID] = record
 	}
 	authority := manager.authority.CurrentAuthority()
-	for index, candidate := range incoming {
+	for _, candidate := range incoming {
 		set := candidate.Set
+		if candidate.RecoveryBundle != nil {
+			if err := manager.installRecoveryBundle(
+				ctx,
+				*candidate.RecoveryBundle,
+				authority,
+			); err != nil {
+				return err
+			}
+		}
+		baseRecord, baseExists := known[set.Base.SnapshotID]
+		if !baseExists {
+			return ErrVerificationInvalid
+		}
+		if len(set.Base.Files) == 0 {
+			baseCandidate, err := manager.snapshotConflictCandidate(
+				ctx,
+				baseRecord,
+			)
+			if err != nil {
+				return err
+			}
+			set.Base = baseCandidate
+		}
+		if len(set.Local.Files) == 0 {
+			localCandidate, err := manager.snapshotConflictCandidate(
+				ctx,
+				local,
+			)
+			if err != nil {
+				return err
+			}
+			set.Local = localCandidate
+		}
+		if len(set.Dependencies.Edges) == 0 {
+			set.Dependencies.Edges = map[string][]string{}
+		}
+		for _, source := range []conflictresolution.Candidate{
+			set.Base,
+			set.Local,
+			set.Replica,
+		} {
+			for documentID := range source.Files {
+				if _, exists := set.Dependencies.Edges[documentID]; !exists {
+					set.Dependencies.Edges[documentID] = []string{}
+				}
+			}
+		}
+		set.Dependencies.Complete = true
 		if set.WorkspaceID != manager.workspace ||
 			set.State != conflictresolution.StatePending ||
 			set.Base.SnapshotID == "" ||
@@ -424,8 +509,7 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 				candidate.ReplicaSnapshot.SnapshotID ||
 			candidate.ReplicaSnapshot.WorkspaceID !=
 				manager.workspace ||
-			candidate.ReplicaSnapshot.SnapshotSequence !=
-				local.SnapshotSequence+1+uint64(index) ||
+			candidate.ReplicaSnapshot.SnapshotSequence == 0 ||
 			candidate.Verification.WorkspaceID !=
 				manager.workspace ||
 			candidate.Verification.ReplicaID !=
@@ -519,6 +603,109 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 	return nil
 }
 
+func (manager *Manager) installRecoveryBundle(
+	ctx context.Context,
+	bundle FilesystemRecoveryBundle,
+	authority AuthorityState,
+) error {
+	objects := make(
+		[]objectrepo.ObjectInput,
+		0,
+		len(bundle.Objects),
+	)
+	for id, content := range bundle.Objects {
+		objects = append(objects, objectrepo.ObjectInput{
+			Name:    "replica:" + string(id),
+			Content: append([]byte(nil), content...),
+		})
+	}
+	sort.Slice(objects, func(i, j int) bool {
+		return objects[i].Name < objects[j].Name
+	})
+	manifests := make(
+		[]objectrepo.ManifestInput,
+		0,
+		len(bundle.Manifests),
+	)
+	for _, manifest := range bundle.Manifests {
+		manifests = append(manifests, objectrepo.ManifestInput{
+			Name:    manifest.Name,
+			Labels:  manifest.Labels,
+			Payload: append(json.RawMessage(nil), manifest.Payload...),
+		})
+	}
+	sort.Slice(manifests, func(i, j int) bool {
+		if manifests[i].Name != manifests[j].Name {
+			return manifests[i].Name < manifests[j].Name
+		}
+		return string(manifests[i].Payload) < string(manifests[j].Payload)
+	})
+	receipt, err := manager.repository.Commit(
+		ctx,
+		objectrepo.CommitRequest{
+			Authority: objectrepo.Authority{
+				WorkspaceID: authority.WorkspaceID,
+				FenceEpoch:  authority.FenceEpoch,
+				ClaimID:     authority.ClaimID,
+			},
+			Objects:   objects,
+			Manifests: manifests,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	for id := range bundle.Objects {
+		if receipt.Objects["replica:"+string(id)] != id {
+			return ErrVerificationInvalid
+		}
+	}
+	for id, manifest := range bundle.Manifests {
+		if receipt.Manifests[manifest.Name] != id {
+			return ErrVerificationInvalid
+		}
+	}
+	return nil
+}
+
+func (manager *Manager) snapshotConflictCandidate(
+	ctx context.Context,
+	record snapshot.Record,
+) (conflictresolution.Candidate, error) {
+	_, fileHeadID, err := snapshotReferencedManifestIDs(
+		ctx,
+		manager.repository,
+		record,
+	)
+	if err != nil {
+		return conflictresolution.Candidate{}, err
+	}
+	fileHead, err := manager.repository.GetManifest(ctx, fileHeadID)
+	if err != nil {
+		return conflictresolution.Candidate{}, err
+	}
+	var reference struct {
+		HistoryRoot objectrepo.ManifestID `json:"historyRoot"`
+	}
+	if err := json.Unmarshal(fileHead.Payload, &reference); err != nil ||
+		reference.HistoryRoot == "" {
+		return conflictresolution.Candidate{}, ErrVerificationInvalid
+	}
+	history, err := manager.repository.GetManifest(
+		ctx,
+		reference.HistoryRoot,
+	)
+	if err != nil {
+		return conflictresolution.Candidate{}, err
+	}
+	return filesystemConflictCandidate(FilesystemRecoveryBundle{
+		Snapshot: record,
+		Manifests: map[objectrepo.ManifestID]objectrepo.ManifestRecord{
+			history.ID: history,
+		},
+	})
+}
+
 // QueueSynchronize makes the RPC promise ("queued") durable together with its
 // exact operation receipt before network work begins. Deterministic task IDs
 // make replay after a crash safe.
@@ -533,10 +720,13 @@ func (manager *Manager) QueueSynchronize(
 		len(receipt.Result) == 0 {
 		return errors.New("replica.operation_receipt_invalid")
 	}
+	if err := manager.ensureDestructiveSafe(ctx); err != nil {
+		return err
+	}
 	if err := manager.state.storeOperationReceipt(ctx, receipt); err != nil {
 		return err
 	}
-	return manager.Synchronize(ctx)
+	return manager.QueuePublishedSnapshots(ctx)
 }
 
 func (manager *Manager) Sync(ctx context.Context, task SyncTask) error {
@@ -548,11 +738,21 @@ func (manager *Manager) Sync(ctx context.Context, task SyncTask) error {
 	if err != nil {
 		return err
 	}
+	if err := validateSnapshotClosure(
+		ctx,
+		manager.repository,
+		record,
+	); err != nil {
+		return err
+	}
 	authority := manager.authority.CurrentAuthority()
 	if authority.WorkspaceID != manager.workspace {
 		return ErrWorkspaceMismatch
 	}
 	if identity.Strength == Strong {
+		if err := manager.ensureDestructiveSafe(ctx); err != nil {
+			return err
+		}
 		current, found, err := manager.strong.store.Load(ctx, manager.workspace)
 		if err != nil {
 			return err
@@ -564,7 +764,15 @@ func (manager *Manager) Sync(ctx context.Context, task SyncTask) error {
 			return ErrStaleClaim
 		}
 	}
-	checkpoint := makeCheckpoint(identity, record)
+	checkpoint, err := makeCheckpoint(
+		ctx,
+		identity,
+		manager.repository,
+		record,
+	)
+	if err != nil {
+		return err
+	}
 	replication, err := manager.remote.ReplicateCheckpoint(ctx, checkpoint)
 	if err != nil {
 		return err
@@ -698,6 +906,9 @@ func (manager *Manager) forceTakeover(
 	}
 	if identity.Strength != Strong {
 		return Claim{}, ErrTakeoverUnsafe
+	}
+	if err := manager.ensureDestructiveSafe(ctx); err != nil {
+		return Claim{}, err
 	}
 	next := Claim{
 		WorkspaceID:     manager.workspace,
@@ -853,6 +1064,60 @@ func (manager *Manager) LoadOperationReceipt(
 	)
 }
 
+func (manager *Manager) SnapshotSyncState(
+	ctx context.Context,
+	record snapshot.Record,
+) (string, error) {
+	if manager == nil || manager.state == nil || manager.queue == nil {
+		return "localOnly", nil
+	}
+	verified, err := manager.state.isVerified(
+		ctx,
+		record.SnapshotID,
+		record.CatalogRevision,
+	)
+	if err != nil {
+		return "", err
+	}
+	if verified {
+		return "replicated", nil
+	}
+	taskID := deterministicTaskID(
+		manager.identity.ReplicaID,
+		record.SnapshotID,
+		record.CatalogRevision,
+	)
+	tasks, err := manager.queue.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, task := range tasks {
+		if task.TaskID != taskID {
+			continue
+		}
+		switch {
+		case task.Completed:
+			return "failed", nil
+		case task.LastError != "":
+			return "failed", nil
+		case task.InFlight:
+			return "syncing", nil
+		default:
+			return "pending", nil
+		}
+	}
+	return "localOnly", nil
+}
+
+func (manager *Manager) ensureDestructiveSafe(ctx context.Context) error {
+	if manager == nil ||
+		manager.identity.Strength != Strong ||
+		manager.destructiveSafe == nil {
+		return nil
+	}
+	return manager.destructiveSafe(ctx)
+}
+
 func (manager *Manager) cleanupVerifiedPins(ctx context.Context) error {
 	pending, err := manager.state.verifiedPendingPins(ctx)
 	if err != nil {
@@ -967,6 +1232,8 @@ func (manager *Manager) publishAdvisory(
 		},
 		PreviousPublicationHash: previous,
 		SnapshotID:              record.SnapshotID,
+		CatalogRevision:         record.CatalogRevision,
+		CheckpointID:            replication.CheckpointID,
 		CreatedAt:               now,
 	}, manager.advisory.macKey)
 	if err != nil {
@@ -1023,11 +1290,110 @@ func (manager *Manager) refreshAdvisory(ctx context.Context) error {
 }
 
 func makeCheckpoint(
+	ctx context.Context,
 	identity RemoteIdentity,
+	repository objectrepo.Repository,
 	record snapshot.Record,
-) Checkpoint {
-	roots := append([]objectrepo.ObjectID(nil), record.Objects...)
-	sort.Slice(roots, func(i, j int) bool { return roots[i] < roots[j] })
+) (Checkpoint, error) {
+	if err := validateSnapshotClosure(ctx, repository, record); err != nil {
+		return Checkpoint{}, err
+	}
+	if err := validateIncomingSnapshot(
+		ctx,
+		repository,
+		record,
+		record.Objects,
+	); err != nil {
+		return Checkpoint{}, err
+	}
+	topologyManifestID, fileManifestID, err :=
+		snapshotReferencedManifestIDs(ctx, repository, record)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	manifestIDs := []objectrepo.ManifestID{
+		record.ManifestID,
+		record.SealID,
+		topologyManifestID,
+		fileManifestID,
+	}
+	fileHead, err := repository.GetManifest(ctx, fileManifestID)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	var fileHeadState struct {
+		HistoryRoot objectrepo.ManifestID `json:"historyRoot"`
+	}
+	if err := json.Unmarshal(
+		fileHead.Payload,
+		&fileHeadState,
+	); err != nil {
+		return Checkpoint{}, ErrVerificationInvalid
+	}
+	historyObjects := []objectrepo.ObjectID{}
+	if fileHeadState.HistoryRoot != "" {
+		history, err := repository.GetManifest(
+			ctx,
+			fileHeadState.HistoryRoot,
+		)
+		if err != nil || history.Name != "filehistory-root" {
+			return Checkpoint{}, ErrVerificationInvalid
+		}
+		manifestIDs = append(manifestIDs, fileHeadState.HistoryRoot)
+		var root struct {
+			FormatVersion int    `json:"formatVersion"`
+			WorkspaceID   string `json:"workspaceId"`
+			Documents     []struct {
+				Revisions []struct {
+					ObjectID objectrepo.ObjectID `json:"objectId"`
+				} `json:"revisions"`
+			} `json:"documents"`
+		}
+		if err := json.Unmarshal(history.Payload, &root); err != nil ||
+			root.FormatVersion != 2 ||
+			root.WorkspaceID != record.WorkspaceID {
+			return Checkpoint{}, ErrVerificationInvalid
+		}
+		for _, document := range root.Documents {
+			for _, revision := range document.Revisions {
+				if revision.ObjectID == "" {
+					return Checkpoint{}, ErrVerificationInvalid
+				}
+				historyObjects = append(
+					historyObjects,
+					revision.ObjectID,
+				)
+			}
+		}
+	}
+	seen := make(map[objectrepo.ManifestID]struct{}, len(manifestIDs))
+	manifests := make(
+		[]objectrepo.ManifestRecord,
+		0,
+		len(manifestIDs),
+	)
+	for _, id := range manifestIDs {
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		stored, err := repository.GetManifest(ctx, id)
+		if err != nil {
+			return Checkpoint{}, err
+		}
+		if err := objectrepo.VerifyManifestRecord(stored); err != nil {
+			return Checkpoint{}, err
+		}
+		seen[id] = struct{}{}
+		manifests = append(manifests, stored)
+	}
+	sort.Slice(manifests, func(i, j int) bool {
+		return manifests[i].ID < manifests[j].ID
+	})
+	roots := unionRoots(record.Objects, historyObjects)
+	report, err := repository.Verify(ctx, roots)
+	if err != nil || !report.Valid {
+		return Checkpoint{}, ErrVerificationInvalid
+	}
 	return Checkpoint{
 		WorkspaceID:     identity.WorkspaceID,
 		ReplicaID:       identity.ReplicaID,
@@ -1037,7 +1403,111 @@ func makeCheckpoint(
 		ClaimID:         record.ClaimID,
 		Roots:           roots,
 		RootDigest:      rootsDigest(roots),
+		Snapshot:        record,
+		Manifests:       manifests,
+	}, nil
+}
+
+func validateSnapshotClosure(
+	ctx context.Context,
+	repository objectrepo.Repository,
+	record snapshot.Record,
+) error {
+	objects := make(
+		map[objectrepo.ObjectID]struct{},
+		len(record.Objects),
+	)
+	for _, id := range record.Objects {
+		objects[id] = struct{}{}
 	}
+	for _, id := range record.ObjectMap {
+		if _, exists := objects[id]; !exists {
+			return ErrVerificationInvalid
+		}
+	}
+	fileStateRoot := record.ObjectMap["file-state-root"]
+	if fileStateRoot == "" {
+		// Legacy/internal test records have no typed root map. Their complete
+		// flat root set is still independently verified by the remote.
+		return nil
+	}
+	reader, err := repository.Open(ctx, fileStateRoot)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	decoder := json.NewDecoder(io.LimitReader(reader, 64<<20))
+	decoder.DisallowUnknownFields()
+	var state struct {
+		FormatVersion uint64                         `json:"formatVersion"`
+		SourceRoot    string                         `json:"sourceRoot"`
+		Files         map[string]objectrepo.ObjectID `json:"files"`
+	}
+	if err := decoder.Decode(&state); err != nil ||
+		decoder.Decode(&struct{}{}) != io.EOF ||
+		state.FormatVersion != 1 ||
+		state.Files == nil {
+		return ErrVerificationInvalid
+	}
+	for _, child := range state.Files {
+		if _, exists := objects[child]; !exists {
+			return ErrVerificationInvalid
+		}
+	}
+	return nil
+}
+
+func snapshotReferencedManifestIDs(
+	ctx context.Context,
+	repository objectrepo.Repository,
+	record snapshot.Record,
+) (objectrepo.ManifestID, objectrepo.ManifestID, error) {
+	topologyRoot := record.ObjectMap["topology-root"]
+	fileStateRoot := record.ObjectMap["file-state-root"]
+	if topologyRoot == "" || fileStateRoot == "" {
+		return "", "", ErrVerificationInvalid
+	}
+	topologyReader, err := repository.Open(ctx, topologyRoot)
+	if err != nil {
+		return "", "", err
+	}
+	var topology struct {
+		ManifestID objectrepo.ManifestID `json:"manifestId"`
+	}
+	err = decodeReplicaObject(topologyReader, &topology)
+	if err != nil || topology.ManifestID == "" {
+		return "", "", ErrVerificationInvalid
+	}
+	fileReader, err := repository.Open(ctx, fileStateRoot)
+	if err != nil {
+		return "", "", err
+	}
+	var files struct {
+		FormatVersion uint64                         `json:"formatVersion"`
+		SourceRoot    objectrepo.ManifestID          `json:"sourceRoot"`
+		Files         map[string]objectrepo.ObjectID `json:"files"`
+	}
+	err = decodeReplicaObject(fileReader, &files)
+	if err != nil ||
+		files.FormatVersion != 1 ||
+		files.SourceRoot == "" ||
+		files.Files == nil {
+		return "", "", ErrVerificationInvalid
+	}
+	return topology.ManifestID, files.SourceRoot, nil
+}
+
+func decodeReplicaObject(reader io.ReadCloser, target any) error {
+	defer reader.Close()
+	decoder := json.NewDecoder(io.LimitReader(reader, 64<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return ErrVerificationInvalid
+	}
+	return nil
 }
 
 func rootsDigest(roots []objectrepo.ObjectID) string {
@@ -1103,10 +1573,17 @@ func validateIncomingSnapshot(
 		record.ManifestID == "" ||
 		record.SealID == "" ||
 		record.SnapshotSequence == 0 ||
-		record.CatalogRevision == 0 ||
-		rootsDigest(sortedRoots(record.Objects)) !=
-			rootsDigest(sortedRoots(roots)) {
+		record.CatalogRevision == 0 {
 		return ErrVerificationInvalid
+	}
+	rootSet := make(map[objectrepo.ObjectID]struct{}, len(roots))
+	for _, root := range roots {
+		rootSet[root] = struct{}{}
+	}
+	for _, root := range record.Objects {
+		if _, exists := rootSet[root]; !exists {
+			return ErrVerificationInvalid
+		}
 	}
 	report, err := repository.Verify(ctx, roots)
 	if err != nil {

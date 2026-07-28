@@ -1,3 +1,4 @@
+using System.Text.Json;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 using VibeTable.Infrastructure.Workspace;
@@ -53,6 +54,36 @@ public sealed class WorkspaceRelinkTests
                     other.SelectedRoot));
 
         Assert.AreEqual("workspace.identity_mismatch", error.Code);
+        Assert.AreEqual(
+            original.SelectedRoot,
+            fixture.Registry.List().Single().SelectedRoot);
+    }
+
+    [TestMethod]
+    public void RelinkCannotBypassStorageTopologyConversionPlan()
+    {
+        using var fixture = new RelinkFixture();
+        WorkspaceRegistryEntryV2 original = fixture.AddWorkspace("Topology");
+        string relocated = Path.Combine(fixture.Root, "MirroredClone");
+        Directory.Move(original.SelectedRoot, relocated);
+        WorkspaceManifestV2 manifest = WorkspaceLayout.ReadManifest(relocated);
+        File.WriteAllText(
+            Path.Combine(relocated, ".vibetable", "workspace.json"),
+            JsonSerializer.Serialize(
+                manifest with { StorageMode = WorkspaceStorageMode.Mirrored },
+                WorkspaceV2Json.StrictOptions));
+
+        WorkspaceRegistryException error =
+            Assert.ThrowsExactly<WorkspaceRegistryException>(() =>
+                MainWindow.RelinkWorkspaceEntry(
+                    fixture.Registry,
+                    fixture.Policy,
+                    fixture.Root,
+                    activeWorkspaceId: null,
+                    original.WorkspaceId,
+                    relocated));
+
+        Assert.AreEqual("workspace.storage_topology_mismatch", error.Code);
         Assert.AreEqual(
             original.SelectedRoot,
             fixture.Registry.List().Single().SelectedRoot);

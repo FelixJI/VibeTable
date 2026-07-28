@@ -57,6 +57,10 @@ describe("workspace protection UI capability gates", () => {
 
     await wrapper.get('[data-testid="workspace-create"]').trigger("click");
     expect(document.body.textContent).toContain("固定公开口令：password");
+    expect(document.body.textContent).toContain("当前设备尚未提供经独立重开验证的镜像位置");
+    expect(document.body.querySelector<HTMLInputElement>(
+      'input[value="mirrored"]',
+    )?.disabled).toBe(true);
     const input = document.body.querySelector<HTMLInputElement>(".workspace-flow-modal input");
     expect(input).not.toBeNull();
     input!.value = "设计档案";
@@ -692,6 +696,84 @@ describe("workspace protection UI capability gates", () => {
     wrapper.unmount();
   });
 
+  it("only exposes verified topology/cache actions and emits their closed params", async () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities([
+      "workspace.session.v2",
+      "workspace.storage.topology.v2",
+      "workspace.storage.release-cache.v2",
+      "repository.settings.v2",
+    ]);
+    session.setWorkspaces([{
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      displayName: "季度规划",
+      selectedRoot: "E:\\Replica\\Quarter",
+      activityRoot: "C:\\VibeTable\\Activity\\Quarter",
+      storageKind: "fixed",
+      coordinationStrength: "strong",
+      lastOpenedAt: "2026-07-28T08:00:00Z",
+      lastKnownHealth: "healthy",
+      lastSnapshotAt: "2026-07-28T07:30:00Z",
+      lastSyncAt: "2026-07-28T07:35:00Z",
+      pendingSync: false,
+    }]);
+    session.applySession({
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      sessionEpoch: 7,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+    const protection = useWorkspaceProtectionStore();
+    protection.setStorage({
+      location: "E:\\Replica\\Quarter",
+      activityRoot: "C:\\VibeTable\\Activity\\Quarter",
+      mode: "mirrored",
+      provider: "fixed",
+      health: "healthy",
+      logicalSize: 4096,
+      physicalSize: 2048,
+      reclaimableSize: 0,
+      encryption: "protected",
+      keyVersion: 2,
+      pendingSync: false,
+      remoteVerified: true,
+    });
+    const wrapper = mount(WorkspaceProtectionSettings, {
+      props: { mode: "storage" },
+      attachTo: document.body,
+    });
+
+    await wrapper.get('[data-testid="workspace-storage-convert-preview"]').trigger("click");
+    await wrapper.get('[data-testid="workspace-storage-release-cache-preview"]').trigger("click");
+    expect(wrapper.emitted("action")?.map((event) => event[0])).toEqual([
+      {
+        method: "workspace.storage.preview",
+        params: {
+          workspaceId: "11111111-1111-4111-8111-111111111111",
+          action: "convertTopology",
+          targetMode: "direct",
+          selectedRootGrant: "host-picker://workspace-root",
+        },
+      },
+      {
+        method: "workspace.storage.preview",
+        params: {
+          workspaceId: "11111111-1111-4111-8111-111111111111",
+          action: "releaseActivityCache",
+          targetMode: null,
+          selectedRootGrant: null,
+        },
+      },
+    ]);
+    wrapper.unmount();
+  });
+
   it("applies retention and conflict plans by planId", async () => {
     const protection = useWorkspaceProtectionStore();
     protection.setRetentionPlan({
@@ -722,8 +804,27 @@ describe("workspace protection UI capability gates", () => {
     expect(settings.get('[data-testid="retention-plan-preview"]').attributes("disabled")).toBeUndefined();
     expect(settings.get('[data-testid="retention-plan-apply"]').attributes("disabled")).toBeUndefined();
     expect(settings.get('[data-testid="retention-save"]').attributes("disabled")).toBeDefined();
-    await settings.get('[data-testid="retention-plan-apply"]').trigger("click");
+    const limitInput = settings.get('[data-testid="retention-repository-limit"] input');
+    await limitInput.setValue("2.5");
+    await limitInput.trigger("change");
+    await limitInput.trigger("blur");
+    await settings.vm.$nextTick();
+    await settings.get('[data-testid="retention-save"]').trigger("click");
     expect(settings.emitted("action")?.[0]?.[0]).toEqual({
+      method: "retention.update",
+      params: {
+        expectedRevision: 7,
+        snapshotDays: 60,
+        snapshotCount: 80,
+        snapshotBuckets: ["hourly", "daily", "weekly", "monthly"],
+        fileRevisionDays: 45,
+        fileRevisionCount: 150,
+        fileRevisionBuckets: ["daily", "weekly", "monthly"],
+        repositoryLimitBytes: 2.5 * 1024 ** 3,
+      },
+    });
+    await settings.get('[data-testid="retention-plan-apply"]').trigger("click");
+    expect(settings.emitted("action")?.[1]?.[0]).toEqual({
       method: "retention.apply",
       params: { planId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
     });
@@ -759,6 +860,34 @@ describe("workspace protection UI capability gates", () => {
       method: "conflict.apply",
       params: { planId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
     });
+  });
+
+  it("explains durable quota pauses and integrity failures", async () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities([
+      "workspace.session.v2",
+      "retention.policy.v2",
+      "repository.settings.v2",
+    ]);
+    const protection = useWorkspaceProtectionStore();
+    protection.setRetentionStatus({
+      repositoryUsageBytes: 3 * 1024 ** 3,
+      repositoryLimitBytes: 2 * 1024 ** 3,
+      automaticSnapshotsPaused: true,
+      warningCode: "snapshot.repository_limit_reached",
+      integrityStatus: "corrupt",
+      integrityFailure: "repository.object_corrupt",
+      lastIncrementalCheckAt: "2026-07-28T09:00:00Z",
+      lastFullCheckAt: "2026-07-01T09:00:00Z",
+    });
+
+    const settings = mount(WorkspaceProtectionSettings, {
+      props: { mode: "storage" },
+    });
+    expect(settings.get('[data-testid="retention-automatic-paused"]').text())
+      .toContain("3.0 GB");
+    expect(settings.get('[data-testid="retention-integrity-corrupt"]').text())
+      .toContain("清理和覆盖性同步已停止");
   });
 
   it("offers keep-both only for file conflicts and previews it as a strict choice", async () => {

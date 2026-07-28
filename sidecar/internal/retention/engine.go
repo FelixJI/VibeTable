@@ -261,27 +261,11 @@ func retentionRoots(
 	for _, root := range inventory.PinnedRoots {
 		rootSet[root] = struct{}{}
 	}
-	snapshots := append([]Snapshot(nil), inventory.Snapshots...)
-	sort.Slice(snapshots, func(left, right int) bool {
-		if snapshots[left].CreatedAt.Equal(snapshots[right].CreatedAt) {
-			return snapshots[left].SnapshotID < snapshots[right].SnapshotID
-		}
-		return snapshots[left].CreatedAt.After(snapshots[right].CreatedAt)
-	})
-	selected := map[string]Snapshot{}
-	for _, snapshot := range snapshots {
-		if snapshot.Pinned {
-			selected[snapshot.SnapshotID] = snapshot
-		}
-	}
-	for index := 0; index < len(snapshots) && index < policy.MinimumRecent; index++ {
-		selected[snapshots[index].SnapshotID] = snapshots[index]
-	}
-	selectBuckets(selected, snapshots, now, policy.KeepHourlyFor, hourlyBucket)
-	selectBuckets(selected, snapshots, now, policy.KeepDailyFor, dailyBucket)
-	selectBuckets(selected, snapshots, now, policy.KeepWeeklyFor, weeklyBucket)
-	selectBuckets(selected, snapshots, now, policy.KeepMonthlyFor, monthlyBucket)
-
+	selected, _ := retentionSnapshotSelections(
+		inventory.Snapshots,
+		policy,
+		now,
+	)
 	retained := make([]string, 0, len(selected))
 	for id, snapshot := range selected {
 		retained = append(retained, id)
@@ -296,12 +280,76 @@ func retentionRoots(
 	return roots, retained
 }
 
+func SnapshotRetentionReasons(
+	inventory Inventory,
+	policy Policy,
+	now time.Time,
+) map[string][]string {
+	_, reasonSets := retentionSnapshotSelections(
+		inventory.Snapshots,
+		policy,
+		now,
+	)
+	order := []string{
+		"pinned", "recent", "hourly", "daily", "weekly", "monthly",
+	}
+	result := make(map[string][]string, len(reasonSets))
+	for snapshotID, reasons := range reasonSets {
+		for _, reason := range order {
+			if _, exists := reasons[reason]; exists {
+				result[snapshotID] = append(
+					result[snapshotID],
+					reason,
+				)
+			}
+		}
+	}
+	return result
+}
+
+func retentionSnapshotSelections(
+	values []Snapshot,
+	policy Policy,
+	now time.Time,
+) (map[string]Snapshot, map[string]map[string]struct{}) {
+	snapshots := append([]Snapshot(nil), values...)
+	sort.Slice(snapshots, func(left, right int) bool {
+		if snapshots[left].CreatedAt.Equal(snapshots[right].CreatedAt) {
+			return snapshots[left].SnapshotID < snapshots[right].SnapshotID
+		}
+		return snapshots[left].CreatedAt.After(snapshots[right].CreatedAt)
+	})
+	selected := map[string]Snapshot{}
+	reasons := map[string]map[string]struct{}{}
+	add := func(snapshot Snapshot, reason string) {
+		selected[snapshot.SnapshotID] = snapshot
+		if reasons[snapshot.SnapshotID] == nil {
+			reasons[snapshot.SnapshotID] = map[string]struct{}{}
+		}
+		reasons[snapshot.SnapshotID][reason] = struct{}{}
+	}
+	for _, snapshot := range snapshots {
+		if snapshot.Pinned {
+			add(snapshot, "pinned")
+		}
+	}
+	for index := 0; index < len(snapshots) && index < policy.MinimumRecent; index++ {
+		add(snapshots[index], "recent")
+	}
+	selectBuckets(add, snapshots, now, policy.KeepHourlyFor, hourlyBucket, "hourly")
+	selectBuckets(add, snapshots, now, policy.KeepDailyFor, dailyBucket, "daily")
+	selectBuckets(add, snapshots, now, policy.KeepWeeklyFor, weeklyBucket, "weekly")
+	selectBuckets(add, snapshots, now, policy.KeepMonthlyFor, monthlyBucket, "monthly")
+	return selected, reasons
+}
+
 func selectBuckets(
-	selected map[string]Snapshot,
+	add func(Snapshot, string),
 	snapshots []Snapshot,
 	now time.Time,
 	window time.Duration,
 	bucket func(time.Time) string,
+	reason string,
 ) {
 	if window == 0 {
 		return
@@ -317,7 +365,7 @@ func selectBuckets(
 			continue
 		}
 		seen[key] = struct{}{}
-		selected[snapshot.SnapshotID] = snapshot
+		add(snapshot, reason)
 	}
 }
 

@@ -547,6 +547,48 @@ func (value RetentionPolicy) Validate() error {
 	return validateBuckets(value.FileRevisionBuckets)
 }
 
+type RetentionStatus struct {
+	RepositoryUsageBytes     uint64  `json:"repositoryUsageBytes"`
+	RepositoryLimitBytes     *uint64 `json:"repositoryLimitBytes"`
+	AutomaticSnapshotsPaused bool    `json:"automaticSnapshotsPaused"`
+	WarningCode              *string `json:"warningCode"`
+	IntegrityStatus          string  `json:"integrityStatus"`
+	IntegrityFailure         *string `json:"integrityFailure"`
+	LastIncrementalCheckAt   *string `json:"lastIncrementalCheckAt"`
+	LastFullCheckAt          *string `json:"lastFullCheckAt"`
+}
+
+func (value RetentionStatus) Validate() error {
+	if value.RepositoryLimitBytes != nil &&
+		*value.RepositoryLimitBytes == 0 {
+		return errors.New("repository limit must be positive")
+	}
+	if value.AutomaticSnapshotsPaused != (value.WarningCode != nil) {
+		return errors.New("retention warning state is inconsistent")
+	}
+	if value.IntegrityStatus != "unknown" &&
+		value.IntegrityStatus != "verified" &&
+		value.IntegrityStatus != "corrupt" {
+		return errors.New("integrity status is invalid")
+	}
+	if (value.IntegrityStatus == "corrupt") !=
+		(value.IntegrityFailure != nil) {
+		return errors.New("integrity failure state is inconsistent")
+	}
+	for _, raw := range []*string{
+		value.LastIncrementalCheckAt,
+		value.LastFullCheckAt,
+	} {
+		if raw == nil {
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339Nano, *raw); err != nil {
+			return errors.New("integrity check timestamp is invalid")
+		}
+	}
+	return nil
+}
+
 type WorkspaceEvent struct {
 	ContractVersion string             `json:"contractVersion"`
 	Topic           string             `json:"topic"`

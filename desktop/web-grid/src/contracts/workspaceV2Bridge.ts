@@ -57,6 +57,7 @@ export const WORKSPACE_V2_RPC_METHODS = [
   "fileHistory.upgrade",
   "fileHistory.activateLeaf",
   "retention.get",
+  "retention.status",
   "retention.update",
   "retention.plan",
   "retention.apply",
@@ -101,9 +102,9 @@ export interface WorkspaceV2RpcParams {
   };
   readonly "workspace.storage.preview": {
     readonly workspaceId: string;
-    readonly action: "relocate";
-    readonly targetMode: "direct";
-    readonly selectedRootGrant: string;
+    readonly action: "relocate" | "convertTopology" | "releaseActivityCache";
+    readonly targetMode: WorkspaceStorageMode | null;
+    readonly selectedRootGrant: string | null;
   };
   readonly "workspace.storage.apply": {
     readonly planId: string;
@@ -196,6 +197,7 @@ export interface WorkspaceV2RpcParams {
     readonly targetLeafRevisionId: string;
   };
   readonly "retention.get": Readonly<Record<string, never>>;
+  readonly "retention.status": Readonly<Record<string, never>>;
   readonly "retention.update": {
     readonly expectedRevision: number;
     readonly snapshotDays: number;
@@ -283,7 +285,7 @@ export interface WorkspaceStorageLocation {
 export interface WorkspaceStoragePlan {
   readonly planId: string;
   readonly workspaceId: string;
-  readonly action: "relocate";
+  readonly action: "relocate" | "convertTopology" | "releaseActivityCache";
   readonly source: WorkspaceStorageLocation;
   readonly target: WorkspaceStorageLocation;
   readonly bytesToCopy: number;
@@ -383,6 +385,17 @@ export interface WorkspaceDeletePlan {
 
 export type WorkspaceDeletePlanResult = Omit<WorkspaceDeletePlan, "workspaceId">;
 
+export interface RetentionProtectionStatus {
+  readonly repositoryUsageBytes: number;
+  readonly repositoryLimitBytes: number | null;
+  readonly automaticSnapshotsPaused: boolean;
+  readonly warningCode: string | null;
+  readonly integrityStatus: "unknown" | "verified" | "corrupt";
+  readonly integrityFailure: string | null;
+  readonly lastIncrementalCheckAt: string | null;
+  readonly lastFullCheckAt: string | null;
+}
+
 export interface WorkspaceV2RpcResultMap {
   readonly "workspace.list": { readonly workspaces: readonly WorkspaceRegistryEntryV2[] };
   readonly "workspace.create": WorkspaceOperationResult;
@@ -440,6 +453,7 @@ export interface WorkspaceV2RpcResultMap {
     readonly effective: true;
   };
   readonly "retention.get": RetentionPolicyV2;
+  readonly "retention.status": RetentionProtectionStatus;
   readonly "retention.update": RetentionPolicyV2;
   readonly "retention.plan": CleanupPlanResult;
   readonly "retention.apply": {
@@ -841,7 +855,11 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
     parsed = {
       planId: text(source.planId, "planId"),
       workspaceId: text(source.workspaceId, "workspaceId"),
-      action: oneOf(source.action, ["relocate"], "storage action"),
+      action: oneOf(
+        source.action,
+        ["relocate", "convertTopology", "releaseActivityCache"],
+        "storage action",
+      ),
       source: parseLocation(source.source, "storage source"),
       target: parseLocation(source.target, "storage target"),
       bytesToCopy: integer(source.bytesToCopy, "bytesToCopy"),
@@ -1047,6 +1065,56 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
     };
   } else if (method === "retention.get" || method === "retention.update") {
     parsed = parseRetentionPolicyV2(source);
+  } else if (method === "retention.status") {
+    exact(source, [
+      "repositoryUsageBytes",
+      "repositoryLimitBytes",
+      "automaticSnapshotsPaused",
+      "warningCode",
+      "integrityStatus",
+      "integrityFailure",
+      "lastIncrementalCheckAt",
+      "lastFullCheckAt",
+    ], `${method} result`);
+    const paused = bool(
+      source.automaticSnapshotsPaused,
+      "automaticSnapshotsPaused",
+    );
+    const warningCode = nullableText(source.warningCode, "warningCode");
+    const integrityStatus = oneOf(
+      source.integrityStatus,
+      ["unknown", "verified", "corrupt"],
+      "integrityStatus",
+    );
+    const integrityFailure = nullableText(
+      source.integrityFailure,
+      "integrityFailure",
+    );
+    if (paused !== (warningCode !== null)
+      || (integrityStatus === "corrupt") !== (integrityFailure !== null)) {
+      throw new Error("retention status is inconsistent");
+    }
+    parsed = {
+      repositoryUsageBytes: integer(
+        source.repositoryUsageBytes,
+        "repositoryUsageBytes",
+      ),
+      repositoryLimitBytes: source.repositoryLimitBytes === null
+        ? null
+        : integer(source.repositoryLimitBytes, "repositoryLimitBytes", 1),
+      automaticSnapshotsPaused: paused,
+      warningCode,
+      integrityStatus,
+      integrityFailure,
+      lastIncrementalCheckAt: nullableText(
+        source.lastIncrementalCheckAt,
+        "lastIncrementalCheckAt",
+      ),
+      lastFullCheckAt: nullableText(
+        source.lastFullCheckAt,
+        "lastFullCheckAt",
+      ),
+    };
   } else if (method === "retention.plan") {
     exact(source, ["planId", "reclaimableBytes", "blockedReasons"], `${method} result`);
     parsed = {

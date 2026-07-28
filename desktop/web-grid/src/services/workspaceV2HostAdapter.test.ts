@@ -321,6 +321,67 @@ describe("workspace v2 production host adapter", () => {
       .toBe("E:\\Workspaces\\Quarter");
   });
 
+  it("projects replica.changed into live storage health and verification", () => {
+    const fake = fakeBridge();
+    createWorkspaceV2HostAdapter(fake.bridge);
+    fake.handlers.get("workspace.v2.bootstrap")!({
+      ...bootstrap(),
+      storage: {
+        location: "D:\\Workspaces\\Quarter",
+        activityRoot: "C:\\VibeTable\\Activity\\Quarter",
+        mode: "mirrored",
+        provider: "fixed",
+        health: "healthy",
+        logicalSize: 4096,
+        physicalSize: 2048,
+        reclaimableSize: 0,
+        encryption: "convenient",
+        keyVersion: 1,
+        pendingSync: false,
+        remoteVerified: true,
+      },
+    });
+    const event = (
+      sequence: number,
+      syncState: "pending" | "replicated",
+      pendingSync: boolean,
+    ) => ({
+      contractVersion: "2.0",
+      topic: "replica.changed",
+      wire: {
+        scope: "workspace",
+        workspaceId: WORKSPACE_ID,
+        sessionEpoch: 7,
+        operationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        sequence,
+      },
+      payloadModel: "ReplicaChangedEvent",
+      payloadSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          syncState: { type: "string" },
+          pendingSync: { type: "boolean" },
+        },
+        required: ["syncState", "pendingSync"],
+      },
+      payload: { syncState, pendingSync },
+    });
+
+    fake.handlers.get("workspace.v2.event")!(event(1, "pending", true));
+    expect(useWorkspaceProtectionStore().storage).toMatchObject({
+      health: "attention",
+      pendingSync: true,
+      remoteVerified: false,
+    });
+    fake.handlers.get("workspace.v2.event")!(event(2, "replicated", false));
+    expect(useWorkspaceProtectionStore().storage).toMatchObject({
+      health: "healthy",
+      pendingSync: false,
+      remoteVerified: true,
+    });
+  });
+
   it("rejects an event whose payload values violate its closed schema", () => {
     const fake = fakeBridge();
     createWorkspaceV2HostAdapter(fake.bridge);

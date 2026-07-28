@@ -60,6 +60,7 @@ type WorkspaceV2Options struct {
 	SessionEpoch uint64
 	FenceEpoch   uint64
 	ClaimID      string
+	ReplicaRoot  string
 }
 
 func New(options Options) (*pocketbase.PocketBase, error) {
@@ -310,6 +311,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 					ClaimID:         options.WorkspaceV2.ClaimID,
 					Ledger:          ledger,
 					RequestShutdown: requestShutdown,
+					ReplicaRoot:     options.WorkspaceV2.ReplicaRoot,
 				},
 			)
 			if err != nil {

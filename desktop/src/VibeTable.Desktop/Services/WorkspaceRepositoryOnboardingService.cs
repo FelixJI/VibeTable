@@ -214,7 +214,10 @@ public sealed class WorkspaceRepositoryOnboardingService
         if (oneShotFlag is not (
                 "--initialize-workspace-repository" or
                 "--unlock-workspace-repository" or
-                "--rotate-workspace-repository"))
+                "--rotate-workspace-repository" or
+                "--initialize-workspace-replica" or
+                "--recover-workspace-replica" or
+                "--verify-workspace-replica"))
             throw new ArgumentOutOfRangeException(nameof(oneShotFlag));
         var start = new ProcessStartInfo
         {
