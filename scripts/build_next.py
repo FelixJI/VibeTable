@@ -916,6 +916,7 @@ def stage_workspace_contracts(paths: RepoPaths) -> None:
         paths.repo_root / "contracts" / "v2",
         paths.publish_root / "contracts" / "v2",
         ignore=shutil.ignore_patterns(*CONTRACT_COPY_IGNORES),
+        dirs_exist_ok=True,
     )
 
 

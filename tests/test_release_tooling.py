@@ -325,7 +325,16 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
         build_info=_release_build_info(),
         modules=modules,
     )
+    desktop_contracts = stage.publish_root / "contracts" / "v2"
+    desktop_contracts.mkdir(parents=True)
+    (desktop_contracts / "provider-support.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
     build_next.stage_workspace_contracts(stage)
+    assert (desktop_contracts / "provider-support.json").read_bytes() == (
+        REPO_ROOT / "contracts" / "v2" / "provider-support.json"
+    ).read_bytes()
     shutil.copy2(
         REPO_ROOT / "docs" / "RECOVERY.md",
         stage.publish_root / "RECOVERY.md",
