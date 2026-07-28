@@ -49,6 +49,7 @@ const mirroredCreationEnabled = computed(() =>
 const flow = ref<"create" | "connect" | null>(null);
 const flowTrigger = ref<HTMLElement | null>(null);
 const displayName = ref("");
+const locationPolicy = ref<"managedDefault" | "other">("managedDefault");
 const storageMode = ref<"direct" | "mirrored">("direct");
 const encryptionMode = ref<"none" | "convenient" | "protected">("convenient");
 const convenientPasswordCopied = ref(false);
@@ -96,6 +97,7 @@ function openFlow(kind: "create" | "connect", event?: MouseEvent): void {
   flow.value = kind;
   if (kind === "create") {
     displayName.value = "";
+    locationPolicy.value = "managedDefault";
     storageMode.value = "direct";
     encryptionMode.value = "convenient";
   }
@@ -125,7 +127,10 @@ function confirmFlow(): void {
       method: "workspace.create",
       params: {
         displayName: name,
-        selectedRootGrant: HOST_WORKSPACE_ROOT_GRANT,
+        locationPolicy: locationPolicy.value,
+        selectedRootGrant: locationPolicy.value === "other"
+          ? HOST_WORKSPACE_ROOT_GRANT
+          : null,
         storageMode: storageMode.value,
         encryptionMode: encryptionMode.value,
       },
@@ -402,6 +407,23 @@ watch(
           <NInput v-model:value="displayName" autofocus :placeholder="t('workspaceV2.center.namePlaceholder')" />
         </label>
         <fieldset>
+          <legend>{{ t("workspaceV2.center.locationPolicy") }}</legend>
+          <NRadioGroup
+            v-model:value="locationPolicy"
+            class="flow-options"
+            data-testid="workspace-location-policy"
+          >
+            <NRadioButton value="managedDefault">
+              <strong>{{ t("workspaceV2.center.locationManaged") }}</strong>
+              <small>{{ t("workspaceV2.center.locationManagedHint") }}</small>
+            </NRadioButton>
+            <NRadioButton value="other">
+              <strong>{{ t("workspaceV2.center.locationOther") }}</strong>
+              <small>{{ t("workspaceV2.center.locationOtherHint") }}</small>
+            </NRadioButton>
+          </NRadioGroup>
+        </fieldset>
+        <fieldset>
           <legend>{{ t("workspaceV2.center.storageMode") }}</legend>
           <NRadioGroup v-model:value="storageMode" class="flow-options">
             <NRadioButton value="direct">
@@ -446,7 +468,9 @@ watch(
           </NButton>
         </NAlert>
         <NAlert type="info" :title="t('workspaceV2.center.locationTitle')">
-          {{ t("workspaceV2.center.locationHint") }}
+          {{ t(locationPolicy === "managedDefault"
+            ? "workspaceV2.center.locationManagedSummary"
+            : "workspaceV2.center.locationHint") }}
         </NAlert>
       </div>
       <div v-else class="workspace-flow">
@@ -464,7 +488,11 @@ watch(
             data-testid="workspace-flow-confirm"
             @click="confirmFlow"
           >
-            {{ flow === "create" ? t("workspaceV2.center.chooseLocation") : t("workspaceV2.center.chooseFolder") }}
+            {{ flow === "create"
+              ? t(locationPolicy === "managedDefault"
+                ? "workspaceV2.center.createManaged"
+                : "workspaceV2.center.chooseLocation")
+              : t("workspaceV2.center.chooseFolder") }}
           </NButton>
         </div>
       </template>

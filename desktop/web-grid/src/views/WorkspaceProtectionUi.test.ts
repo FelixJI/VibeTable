@@ -57,6 +57,8 @@ describe("workspace protection UI capability gates", () => {
 
     await wrapper.get('[data-testid="workspace-create"]').trigger("click");
     expect(document.body.textContent).toContain("固定公开口令：password");
+    expect(document.body.textContent).toContain("程序管理的默认位置");
+    expect(document.body.textContent).toContain("不使用程序安装目录");
     expect(document.body.textContent).toContain("当前设备尚未提供经独立重开验证的镜像位置");
     expect(document.body.querySelector<HTMLInputElement>(
       'input[value="mirrored"]',
@@ -74,6 +76,38 @@ describe("workspace protection UI capability gates", () => {
       method: "workspace.create",
       params: {
         displayName: "设计档案",
+        locationPolicy: "managedDefault",
+        selectedRootGrant: null,
+        storageMode: "direct",
+        encryptionMode: "convenient",
+      },
+    });
+    wrapper.unmount();
+  });
+
+  it("offers an explicit other-location picker for workspace creation", async () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    const wrapper = mount(WorkspaceCenter, { attachTo: document.body });
+
+    await wrapper.get('[data-testid="workspace-create"]').trigger("click");
+    const name = document.body.querySelector<HTMLInputElement>(".workspace-flow-modal input");
+    name!.value = "自选位置";
+    name!.dispatchEvent(new Event("input", { bubbles: true }));
+    document.body.querySelector<HTMLInputElement>(
+      '[data-testid="workspace-location-policy"] input[value="other"]',
+    )!.click();
+    await wrapper.vm.$nextTick();
+    document.body.querySelector<HTMLButtonElement>(
+      '[data-testid="workspace-flow-confirm"]',
+    )!.click();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted("action")?.[0]?.[0]).toEqual({
+      method: "workspace.create",
+      params: {
+        displayName: "自选位置",
+        locationPolicy: "other",
         selectedRootGrant: "host-picker://workspace-root",
         storageMode: "direct",
         encryptionMode: "convenient",

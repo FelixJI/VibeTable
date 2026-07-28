@@ -71,9 +71,10 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 	}
 	historyCommit, err := repository.Commit(ctx, objectrepo.CommitRequest{
 		Authority: authority,
-		Objects: []objectrepo.ObjectInput{{
-			Name: "historical", Content: historicalContent,
-		}},
+		Objects: []objectrepo.ObjectInput{
+			{Name: "historical", Content: historicalContent},
+			{Name: "current", Content: childContent},
+		},
 		Manifests: []objectrepo.ManifestInput{{
 			Name: "filehistory-root",
 			Labels: map[string]string{
@@ -85,168 +86,24 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	topologyPayload := []byte(
-		`{"formatVersion":1,"workspaceId":"` + workspaceID +
-			`","topologySchemaVersion":1,"businessSchemaVersion":1}`,
-	)
-	fileHeadPayload := []byte(
-		`{"formatVersion":1,"workspaceId":"` + workspaceID +
-			`","historyRoot":"` +
-			string(historyCommit.Manifests["filehistory-root"]) +
-			`","fileRevision":1}`,
-	)
-	headCommit, err := repository.Commit(ctx, objectrepo.CommitRequest{
-		Authority: authority,
-		Manifests: []objectrepo.ManifestInput{
-			{
-				Name: "topology-head",
-				Labels: map[string]string{
-					"type": "topology-head", "workspaceId": workspaceID,
-				},
-				Payload: topologyPayload,
-			},
-			{
-				Name: "file-state-head",
-				Labels: map[string]string{
-					"type": "file-state-head", "workspaceId": workspaceID,
-				},
-				Payload: fileHeadPayload,
-			},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	topologyRootContent, err := json.Marshal(map[string]any{
-		"manifestId": headCommit.Manifests["topology-head"],
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rootContent, err := json.Marshal(map[string]any{
-		"formatVersion": 1,
-		"sourceRoot":    headCommit.Manifests["file-state-head"],
-		"files": map[string]objectrepo.ObjectID{
-			"table.csv": childID,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	databaseContent := []byte("sqlite database")
-	settingsContent := []byte(`{"locale":"zh-CN"}`)
-	auditContent := []byte(
-		`{"epoch":1,"sequence":1,"chainHash":"sha256:` +
-			strings.Repeat("1", 64) + `"}`,
+	record := strictSnapshotFixture(
+		t,
+		repository,
+		authority,
+		1,
+		1,
+		databaseContent,
+		map[string][]byte{"table.csv": childContent},
+		historyCommit.Manifests["filehistory-root"],
 	)
-	snapshotID := "33333333-3333-4333-8333-333333333333"
-	createdAt := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
-	manifest := snapshot.Manifest{
-		FormatVersion:             2,
-		SnapshotID:                snapshotID,
-		WorkspaceID:               workspaceID,
-		FenceEpoch:                authority.FenceEpoch,
-		ClaimID:                   authority.ClaimID,
-		MutationRevision:          1,
-		SnapshotSequence:          1,
-		Trigger:                   snapshot.TriggerAutomatic,
-		CreatedAt:                 createdAt,
-		CreatedByDevice:           authority.ClaimID,
-		BusinessDatabaseObjectID:  filesystemObjectID(databaseContent),
-		TopologyRootObjectID:      filesystemObjectID(topologyRootContent),
-		FileStateRootObjectID:     filesystemObjectID(rootContent),
-		WorkspaceSettingsObjectID: filesystemObjectID(settingsContent),
-		AuditAnchor: snapshot.AuditAnchor{
-			Epoch:     1,
-			Sequence:  1,
-			ChainHash: "sha256:" + strings.Repeat("1", 64),
-		},
-		AuditPrefixObjectID: filesystemObjectID(auditContent),
-		MinimumAppVersion:   "2.0.0",
-	}
-	manifestPayload, err := json.Marshal(manifest)
+	strictBundle, err := snapshot.LoadSnapshotBundle(ctx, repository, record)
 	if err != nil {
 		t.Fatal(err)
 	}
-	commit, err := repository.Commit(ctx, objectrepo.CommitRequest{
-		Authority: authority,
-		Objects: []objectrepo.ObjectInput{
-			{Name: "database", Content: databaseContent},
-			{Name: "topology-root", Content: topologyRootContent},
-			{Name: "file-state-root", Content: rootContent},
-			{Name: "workspace-settings", Content: settingsContent},
-			{Name: "audit-prefix", Content: auditContent},
-			{Name: "file:table.csv", Content: childContent},
-		},
-		Manifests: []objectrepo.ManifestInput{{
-			Name: "snapshot",
-			Labels: map[string]string{
-				"type": "snapshot", "workspaceId": workspaceID,
-				"snapshotId": snapshotID,
-			},
-			Payload: manifestPayload,
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifestHash := sha256.Sum256(manifestPayload)
-	sealPayload, err := json.Marshal(snapshot.Seal{
-		FormatVersion:     1,
-		SnapshotID:        snapshotID,
-		ManifestHash:      "sha256:" + hex.EncodeToString(manifestHash[:]),
-		DatabaseHash:      "sha256:" + strings.Repeat("2", 64),
-		FileStateRootHash: "sha256:" + strings.Repeat("3", 64),
-		AuditAnchorHash:   "sha256:" + strings.Repeat("4", 64),
-		RepositoryFormat:  "kopia-v3",
-		FenceEpoch:        authority.FenceEpoch,
-		ClaimID:           authority.ClaimID,
-		MutationRevision:  1,
-		SnapshotSequence:  1,
-		Verified:          true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sealCommit, err := repository.Commit(ctx, objectrepo.CommitRequest{
-		Authority: authority,
-		Manifests: []objectrepo.ManifestInput{{
-			Name: "snapshot-seal",
-			Labels: map[string]string{
-				"type": "snapshot-seal", "workspaceId": workspaceID,
-				"snapshotId": snapshotID,
-			},
-			Payload: sealPayload,
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	roots := make([]objectrepo.ObjectID, 0, len(commit.Objects))
-	for _, id := range commit.Objects {
-		roots = append(roots, id)
-	}
-	record := snapshot.Record{
-		SnapshotID:       snapshotID,
-		WorkspaceID:      workspaceID,
-		ManifestID:       commit.Manifests["snapshot"],
-		SealID:           sealCommit.Manifests["snapshot-seal"],
-		SnapshotSequence: 1,
-		FenceEpoch:       authority.FenceEpoch,
-		ClaimID:          authority.ClaimID,
-		MutationRevision: 1,
-		SchemaRevision:   1,
-		FileRevision:     1,
-		AuditRevision:    1,
-		AuditAnchor:      manifest.AuditAnchor.ChainHash,
-		Trigger:          snapshot.TriggerAutomatic,
-		CreatedAt:        createdAt,
-		Objects:          roots,
-		ObjectMap:        commit.Objects,
-		RootPinID:        "test-pin",
-		CatalogRevision:  1,
-		LogicalSize:      uint64(len(databaseContent) + len(childContent)),
-	}
+	topologyPayload := append([]byte(nil), strictBundle.TopologyHead.Payload...)
+	fileHeadPayload := append([]byte(nil), strictBundle.FileStateHead.Payload...)
+	snapshotID := record.SnapshotID
 	remote, err := CreateFilesystemRemote(
 		ctx,
 		selectedRoot,

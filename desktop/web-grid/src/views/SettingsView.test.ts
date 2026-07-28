@@ -47,7 +47,24 @@ describe("SettingsView", () => {
     const wrapper = mount(SettingsView);
     expect(wrapper.findAll(".settings-nav button")).toHaveLength(7);
     expect(wrapper.text()).toContain("界面语言");
+    expect(wrapper.text()).toContain("启动时进入");
+    expect(wrapper.text()).toContain("上次使用的工作区");
     expect(wrapper.text()).toContain("启动页面");
+  });
+
+  it("persists the device-level Workspace Center startup preference", async () => {
+    const wrapper = mount(SettingsView);
+    const startup = wrapper.findAllComponents(NSelect)
+      .find((select) =>
+        select.attributes("data-testid") === "workspace-startup-policy-select");
+    expect(startup).toBeDefined();
+
+    startup!.vm.$emit("update:value", "workspaceCenter");
+    await wrapper.vm.$nextTick();
+
+    const ui = useUiStore();
+    expect(ui.workspaceStartupPolicy).toBe("workspaceCenter");
+    expect(localStorage.getItem("vt:workspace-startup-policy")).toBe("workspaceCenter");
   });
 
   it("shows the assembly version and generated changelog in About", async () => {

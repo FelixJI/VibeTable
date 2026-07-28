@@ -1,9 +1,11 @@
 package workspacev2
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
+	"github.com/vibetable/vibetable/sidecar/internal/snapshotpkg"
 )
 
 func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
@@ -67,6 +70,50 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	entries, packageManifest, err := runtime.snapshotPackageEntries(
+		ctx, record,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	databaseEntry := "objects/" + base64.RawURLEncoding.EncodeToString(
+		[]byte("database"),
+	)
+	if err := validateImportedSQLite(ctx, entries[databaseEntry]); err != nil {
+		t.Fatalf("captured database failed import validation: %v", err)
+	}
+	metadata := snapshotpkg.Metadata{
+		FormatVersion:     2,
+		WorkspaceID:       record.WorkspaceID,
+		SnapshotID:        record.SnapshotID,
+		WriterVersion:     "2.0.0",
+		MinimumAppVersion: packageManifest.MinimumAppVersion,
+	}
+	tamperedEntries := make(map[string][]byte, len(entries))
+	for name, raw := range entries {
+		tamperedEntries[name] = append([]byte(nil), raw...)
+	}
+	tamperedEntries[databaseEntry][len(tamperedEntries[databaseEntry])-1] ^= 0xff
+	var tamperedPackage bytes.Buffer
+	if err := snapshotpkg.Export(
+		&tamperedPackage, metadata, tamperedEntries, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	outerInspection, err := snapshotpkg.Inspect(
+		bytes.NewReader(tamperedPackage.Bytes()),
+		int64(tamperedPackage.Len()),
+		snapshotpkg.DefaultLimits(),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("outer package hashes should be self-consistent: %v", err)
+	}
+	if _, err := decodeImportedSnapshot(
+		ctx, tamperedEntries, outerInspection,
+	); !errors.Is(err, snapshotpkg.ErrInvalidPackage) {
+		t.Fatalf("inner snapshot tamper error = %v", err)
 	}
 	packagePath := filepath.Join(t.TempDir(), "workspace.vtsnapshot")
 	exportGrantID := "host-path-grant://cccccccc-cccc-4ccc-8ccc-cccccccccccc"

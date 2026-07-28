@@ -234,6 +234,7 @@
         "additionalProperties": false,
         "required": [
           "displayName",
+          "locationPolicy",
           "selectedRootGrant",
           "storageMode",
           "encryptionMode"
@@ -242,8 +243,18 @@
           "displayName": {
             "type": "string"
           },
+          "locationPolicy": {
+            "type": "string",
+            "enum": [
+              "managedDefault",
+              "other"
+            ]
+          },
           "selectedRootGrant": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "storageMode": {
             "type": "string"
@@ -280,7 +291,8 @@
         },
         "params": {
           "displayName": "季度规划",
-          "selectedRootGrant": "grant_create_1",
+          "locationPolicy": "managedDefault",
+          "selectedRootGrant": null,
           "storageMode": "direct",
           "encryptionMode": "convenient"
         }

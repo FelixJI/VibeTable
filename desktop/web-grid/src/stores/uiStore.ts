@@ -5,6 +5,7 @@ import { getLocale, setLocale, type Locale } from "@/i18n";
 export type ThemeMode = "light" | "dark" | "system";
 export type AppView = "home" | "tables" | "dashboard" | "files" | "conflicts" | "plugins" | "settings";
 export type StartupPage = "home" | "tables";
+export type WorkspaceStartupPolicy = "lastWorkspace" | "workspaceCenter";
 export type DensityMode = "comfortable" | "compact";
 export type DailyQuoteSource = "hitokoto" | "jinrishici" | "quotable" | "builtin";
 export type DailyQuoteStyle = "mixed" | "inspiring" | "literary" | "philosophy" | "poetry" | "lighthearted";
@@ -23,6 +24,7 @@ export interface RecentTable {
 
 const THEME_KEY = "vt:theme";
 const STARTUP_KEY = "vt:startup-page";
+const WORKSPACE_STARTUP_POLICY_KEY = "vt:workspace-startup-policy";
 const QUOTE_KEY = "vt:show-daily-quote";
 const QUOTE_SOURCE_KEY = "vt:daily-quote-source";
 const QUOTE_STYLE_KEY = "vt:daily-quote-style";
@@ -58,6 +60,12 @@ function writeStorage(key: string, value: string): void {
 
 function loadStartupPage(): StartupPage {
   return readStorage(STARTUP_KEY) === "tables" ? "tables" : "home";
+}
+
+function loadWorkspaceStartupPolicy(): WorkspaceStartupPolicy {
+  return readStorage(WORKSPACE_STARTUP_POLICY_KEY) === "workspaceCenter"
+    ? "workspaceCenter"
+    : "lastWorkspace";
 }
 
 function loadDensity(): DensityMode {
@@ -111,6 +119,9 @@ export const useUiStore = defineStore("ui", () => {
   const shortcutsOpen = ref(false);
   const themeMode = ref<ThemeMode>(loadThemeMode());
   const startupPage = ref<StartupPage>(loadStartupPage());
+  const workspaceStartupPolicy = ref<WorkspaceStartupPolicy>(
+    loadWorkspaceStartupPolicy(),
+  );
   const activeView = ref<AppView>(startupPage.value);
   const showDailyQuote = ref(readStorage(QUOTE_KEY) !== "false");
   const dailyQuoteSource = ref<DailyQuoteSource>(loadQuoteSource());
@@ -160,6 +171,10 @@ export const useUiStore = defineStore("ui", () => {
   function setStartupPage(page: StartupPage): void {
     startupPage.value = page;
     writeStorage(STARTUP_KEY, page);
+  }
+  function setWorkspaceStartupPolicy(policy: WorkspaceStartupPolicy): void {
+    workspaceStartupPolicy.value = policy;
+    writeStorage(WORKSPACE_STARTUP_POLICY_KEY, policy);
   }
   function setShowDailyQuote(show: boolean): void {
     showDailyQuote.value = show;
@@ -222,6 +237,7 @@ export const useUiStore = defineStore("ui", () => {
     shortcutsOpen,
     themeMode,
     startupPage,
+    workspaceStartupPolicy,
     activeView,
     showDailyQuote,
     dailyQuoteSource,
@@ -245,6 +261,7 @@ export const useUiStore = defineStore("ui", () => {
     setThemeMode,
     navigate,
     setStartupPage,
+    setWorkspaceStartupPolicy,
     setShowDailyQuote,
     setDailyQuoteSource,
     setDailyQuoteStyle,

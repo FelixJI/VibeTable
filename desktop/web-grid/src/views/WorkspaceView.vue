@@ -115,6 +115,7 @@ import {
   requestWorkspaceV2UiAction,
   type WorkspaceV2UiAction,
 } from "@/services/workspaceV2UiPort";
+import { decideWorkspaceStartup } from "@/services/workspaceStartupPolicy";
 import { ROW_NUMBER_FIELD } from "@/grid/createGrid";
 import {
   applyDataSourceView,
@@ -1405,6 +1406,25 @@ async function cancelPluginTask(): Promise<void> {
 
 let viewMounted = false;
 let businessConsumersInitialized = false;
+let startupWorkspaceDecisionMade = false;
+
+function applyWorkspaceStartupPolicy(): void {
+  if (!viewMounted || startupWorkspaceDecisionMade) return;
+  const decision = decideWorkspaceStartup(
+    workspaceSession.enabled,
+    workspaceSession.hasOpenWorkspace,
+    ui.workspaceStartupPolicy,
+    workspaceSession.workspaces,
+  );
+  if (decision.kind === "wait") return;
+  startupWorkspaceDecisionMade = true;
+  if (decision.kind === "open") {
+    showWorkspaceCenter.value = false;
+    void openWorkspace(decision.workspaceId);
+    return;
+  }
+  showWorkspaceCenter.value = decision.kind === "workspaceCenter";
+}
 
 function initializeBusinessConsumers(): void {
   if (
@@ -1440,10 +1460,20 @@ watch(
   () => [workspaceSession.enabled, workspaceSession.hasOpenWorkspace] as const,
   initializeBusinessConsumers,
 );
+watch(
+  () => [
+    workspaceSession.enabled,
+    workspaceSession.hasOpenWorkspace,
+    workspaceSession.workspaces,
+    ui.workspaceStartupPolicy,
+  ] as const,
+  applyWorkspaceStartupPolicy,
+);
 
 onMounted(() => {
   viewMounted = true;
   window.addEventListener("beforeunload", onBeforeUnload);
+  applyWorkspaceStartupPolicy();
   initializeBusinessConsumers();
 });
 
@@ -1738,37 +1768,43 @@ const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
   },
 );
 
-async function handleWorkspaceV2Action(action: WorkspaceV2UiAction): Promise<void> {
-  if (!workspaceSession.enabled || !workspaceProtection.beginOperation(action.method)) return;
+async function handleWorkspaceV2Action(action: WorkspaceV2UiAction): Promise<boolean> {
+  if (!workspaceSession.enabled || !workspaceProtection.beginOperation(action.method)) return false;
   try {
     await requestWorkspaceV2UiAction(action);
     workspaceProtection.finishOperation();
+    return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     workspaceProtection.finishOperation(message);
     if (action.method === "workspace.open" || action.method === "workspace.switch") {
       workspaceSession.failSwitch(message);
     }
+    return false;
   }
 }
 
-function openWorkspace(workspaceId: string): void {
+async function openWorkspace(workspaceId: string): Promise<boolean> {
   if (workspaceId === workspaceSession.activeWorkspaceId) {
     showWorkspaceCenter.value = false;
-    return;
+    return true;
   }
   if (!workspaceSession.isTransitioning) workspaceSession.beginSwitch(workspaceId);
   showWorkspaceCenter.value = false;
   if (workspaceSession.activeWorkspaceId) {
-    void handleWorkspaceV2Action({
+    const opened = await handleWorkspaceV2Action({
       method: "workspace.switch",
       params: { targetWorkspaceId: workspaceId, openMode: "writable" },
     });
+    if (!opened) showWorkspaceCenter.value = true;
+    return opened;
   } else {
-    void handleWorkspaceV2Action({
+    const opened = await handleWorkspaceV2Action({
       method: "workspace.open",
       params: { workspaceId, openMode: "writable" },
     });
+    if (!opened) showWorkspaceCenter.value = true;
+    return opened;
   }
 }
 

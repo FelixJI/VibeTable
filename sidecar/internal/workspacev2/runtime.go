@@ -73,7 +73,6 @@ type Runtime struct {
 	auditDrainMu             sync.Mutex
 	businessAuditOutbox      *auditledger.PocketBaseOutbox
 	fileAuditDrainer         *auditledger.Drainer
-	packageStagingRoot       string
 	snapshots                *snapshot.Coordinator
 	frozenSource             *frozenSource
 	scheduler                *snapshot.Scheduler
@@ -131,12 +130,6 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 		manifest:        manifest,
 		ledger:          options.Ledger,
 		requestShutdown: options.RequestShutdown,
-		packageStagingRoot: filepath.Join(
-			paths.temp, "snapshot-packages",
-		),
-	}
-	if err := os.MkdirAll(result.packageStagingRoot, 0o700); err != nil {
-		return nil, err
 	}
 	defer func() {
 		if err != nil {

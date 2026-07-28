@@ -466,51 +466,13 @@ func (runtime *Runtime) snapshotIntegrity(
 	ctx context.Context,
 	record snapshot.Record,
 ) (bool, error) {
-	report, err := runtime.repository.Verify(ctx, record.Objects)
-	if err != nil {
-		return false, err
-	}
-	if !report.Valid {
+	err := snapshot.ValidateSnapshotBundle(ctx, runtime.repository, record)
+	if errors.Is(err, snapshot.ErrBundleInvalid) ||
+		errors.Is(err, objectrepo.ErrNotFound) ||
+		errors.Is(err, objectrepo.ErrCorrupt) {
 		return false, nil
 	}
-	manifestRecord, err := runtime.repository.GetManifest(
-		ctx,
-		record.ManifestID,
-	)
-	if errors.Is(err, objectrepo.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	sealRecord, err := runtime.repository.GetManifest(ctx, record.SealID)
-	if errors.Is(err, objectrepo.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	manifest, err := decodeStrict[snapshot.Manifest](manifestRecord.Payload)
-	if err != nil {
-		return false, nil
-	}
-	seal, err := decodeStrict[snapshot.Seal](sealRecord.Payload)
-	if err != nil {
-		return false, nil
-	}
-	return manifestRecord.Name == "snapshot" &&
-		sealRecord.Name == "snapshot-seal" &&
-		manifest.SnapshotID == record.SnapshotID &&
-		manifest.WorkspaceID == record.WorkspaceID &&
-		manifest.FenceEpoch == record.FenceEpoch &&
-		manifest.ClaimID == record.ClaimID &&
-		manifest.SnapshotSequence == record.SnapshotSequence &&
-		seal.SnapshotID == record.SnapshotID &&
-		seal.ManifestHash == digestBytes(manifestRecord.Payload) &&
-		seal.FenceEpoch == record.FenceEpoch &&
-		seal.ClaimID == record.ClaimID &&
-		seal.SnapshotSequence == record.SnapshotSequence &&
-		seal.Verified, nil
+	return err == nil, err
 }
 
 type readFileTreeParams struct {

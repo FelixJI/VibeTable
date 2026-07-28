@@ -2,8 +2,6 @@ package replica
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -211,132 +209,17 @@ func productionManagerFixture(
 	); err != nil {
 		t.Fatal(err)
 	}
-	headCommit, err := repository.Commit(
-		context.Background(),
-		objectrepo.CommitRequest{
-			Authority: authorityValue,
-			Manifests: []objectrepo.ManifestInput{
-				{
-					Name: "topology-head",
-					Labels: map[string]string{
-						"type": "topology-head", "workspaceId": workspaceID,
-					},
-					Payload: json.RawMessage(`{"formatVersion":1}`),
-				},
-				{
-					Name: "file-state-head",
-					Labels: map[string]string{
-						"type": "file-state-head", "workspaceId": workspaceID,
-					},
-					Payload: json.RawMessage(`{"formatVersion":1}`),
-				},
-			},
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	database := []byte("durable root")
-	topologyRoot, err := json.Marshal(map[string]any{
-		"manifestId": headCommit.Manifests["topology-head"],
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	fileStateRoot, err := json.Marshal(map[string]any{
-		"formatVersion": 1,
-		"sourceRoot":    headCommit.Manifests["file-state-head"],
-		"files":         map[string]objectrepo.ObjectID{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings := []byte("{}")
-	audit := []byte("{}")
-	snapshotID := "44444444-4444-4444-8444-444444444444"
-	manifest := snapshot.Manifest{
-		FormatVersion:             2,
-		SnapshotID:                snapshotID,
-		WorkspaceID:               workspaceID,
-		FenceEpoch:                authorityValue.FenceEpoch,
-		ClaimID:                   authorityValue.ClaimID,
-		MutationRevision:          7,
-		SnapshotSequence:          7,
-		Trigger:                   snapshot.TriggerAutomatic,
-		CreatedAt:                 now,
-		CreatedByDevice:           "33333333-3333-4333-8333-333333333333",
-		BusinessDatabaseObjectID:  filesystemObjectID(database),
-		TopologyRootObjectID:      filesystemObjectID(topologyRoot),
-		FileStateRootObjectID:     filesystemObjectID(fileStateRoot),
-		WorkspaceSettingsObjectID: filesystemObjectID(settings),
-		AuditPrefixObjectID:       filesystemObjectID(audit),
-		MinimumAppVersion:         "2.0.0",
-	}
-	manifestRaw, err := json.Marshal(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	commit, err := repository.Commit(
-		context.Background(),
-		objectrepo.CommitRequest{
-			Authority: authorityValue,
-			Objects: []objectrepo.ObjectInput{
-				{Name: "database", Content: database},
-				{Name: "topology-root", Content: topologyRoot},
-				{Name: "file-state-root", Content: fileStateRoot},
-				{Name: "workspace-settings", Content: settings},
-				{Name: "audit-prefix", Content: audit},
-			},
-			Manifests: []objectrepo.ManifestInput{{
-				Name: "snapshot",
-				Labels: map[string]string{
-					"type": "snapshot", "workspaceId": workspaceID,
-					"snapshotId": snapshotID,
-				},
-				Payload: manifestRaw,
-			}},
-		},
+	strictRecord := strictSnapshotFixture(
+		t,
+		repository,
+		authorityValue,
+		7,
+		7,
+		database,
+		nil,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifestDigest := sha256.Sum256(manifestRaw)
-	sealRaw, err := json.Marshal(snapshot.Seal{
-		FormatVersion:    2,
-		SnapshotID:       snapshotID,
-		ManifestHash:     "sha256:" + hex.EncodeToString(manifestDigest[:]),
-		RepositoryFormat: "kopia-v3",
-		FenceEpoch:       authorityValue.FenceEpoch,
-		ClaimID:          authorityValue.ClaimID,
-		MutationRevision: 7,
-		SnapshotSequence: 7,
-		Verified:         true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sealCommit, err := repository.Commit(
-		context.Background(),
-		objectrepo.CommitRequest{
-			Authority: authorityValue,
-			Manifests: []objectrepo.ManifestInput{{
-				Name: "snapshot-seal",
-				Labels: map[string]string{
-					"type": "snapshot-seal", "workspaceId": workspaceID,
-					"snapshotId": snapshotID,
-				},
-				Payload: sealRaw,
-			}},
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	roots := make([]objectrepo.ObjectID, 0, len(commit.Objects))
-	for _, id := range commit.Objects {
-		roots = append(roots, id)
-	}
-	root := commit.Objects["database"]
+	root := strictRecord.ObjectMap["database"]
 	directory := t.TempDir()
 	options := ManagerOptions{
 		WorkspaceID:     workspaceID,
@@ -346,22 +229,8 @@ func productionManagerFixture(
 		PublicationPath: filepath.Join(directory, "publications.db"),
 		PublicationKey:  publicationKey(),
 		Remote:          remote,
-		Catalog: productionCatalog{records: []snapshot.Record{{
-			SnapshotID:       snapshotID,
-			WorkspaceID:      workspaceID,
-			ManifestID:       commit.Manifests["snapshot"],
-			SealID:           sealCommit.Manifests["snapshot-seal"],
-			CatalogRevision:  7,
-			SnapshotSequence: 7,
-			FenceEpoch:       1,
-			ClaimID:          claimID,
-			MutationRevision: 7,
-			Trigger:          snapshot.TriggerAutomatic,
-			CreatedAt:        now,
-			Objects:          roots,
-			ObjectMap:        commit.Objects,
-		}}},
-		Repository: repository,
+		Catalog:         productionCatalog{records: []snapshot.Record{strictRecord}},
+		Repository:      repository,
 		Authority: &productionAuthority{
 			value: AuthorityState{
 				WorkspaceID: workspaceID,
@@ -379,90 +248,17 @@ func incomingSnapshot(
 	t *testing.T,
 	repository *objectrepo.MemoryRepository,
 	authority objectrepo.Authority,
-	root objectrepo.ObjectID,
 ) snapshot.Record {
 	t.Helper()
-	snapshotID := "55555555-5555-4555-8555-555555555555"
-	manifest := snapshot.Manifest{
-		FormatVersion:    2,
-		SnapshotID:       snapshotID,
-		WorkspaceID:      authority.WorkspaceID,
-		FenceEpoch:       authority.FenceEpoch,
-		ClaimID:          authority.ClaimID,
-		MutationRevision: 8,
-		SnapshotSequence: 8,
-		Trigger:          snapshot.TriggerAutomatic,
-		CreatedAt: time.Date(
-			2026, 7, 28, 0, 3, 0, 0, time.UTC,
-		),
-		CreatedByDevice:           "33333333-3333-4333-8333-333333333333",
-		BusinessDatabaseObjectID:  root,
-		TopologyRootObjectID:      root,
-		FileStateRootObjectID:     root,
-		WorkspaceSettingsObjectID: root,
-		AuditPrefixObjectID:       root,
-		MinimumAppVersion:         "0.1.0",
-	}
-	manifestRaw, err := json.Marshal(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest := sha256.Sum256(manifestRaw)
-	sealRaw, err := json.Marshal(snapshot.Seal{
-		FormatVersion: 2,
-		SnapshotID:    snapshotID,
-		ManifestHash: "sha256:" +
-			hex.EncodeToString(digest[:]),
-		RepositoryFormat: "kopia-v3",
-		FenceEpoch:       authority.FenceEpoch,
-		ClaimID:          authority.ClaimID,
-		MutationRevision: 8,
-		SnapshotSequence: 8,
-		Verified:         true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	receipt, err := repository.Commit(
-		context.Background(),
-		objectrepo.CommitRequest{
-			Authority: authority,
-			Manifests: []objectrepo.ManifestInput{
-				{
-					Name:    "snapshot",
-					Labels:  map[string]string{"type": "snapshot"},
-					Payload: manifestRaw,
-				},
-				{
-					Name: "snapshot-seal",
-					Labels: map[string]string{
-						"type": "snapshot-seal",
-					},
-					Payload: sealRaw,
-				},
-			},
-		},
+	return strictSnapshotFixture(
+		t,
+		repository,
+		authority,
+		8,
+		8,
+		[]byte("incoming durable root"),
+		nil,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return snapshot.Record{
-		SnapshotID:       snapshotID,
-		WorkspaceID:      authority.WorkspaceID,
-		ManifestID:       receipt.Manifests["snapshot"],
-		SealID:           receipt.Manifests["snapshot-seal"],
-		SnapshotSequence: 8,
-		FenceEpoch:       authority.FenceEpoch,
-		ClaimID:          authority.ClaimID,
-		MutationRevision: 8,
-		Trigger:          snapshot.TriggerAutomatic,
-		CreatedAt:        manifest.CreatedAt,
-		Objects:          []objectrepo.ObjectID{root},
-		ObjectMap: map[string]objectrepo.ObjectID{
-			"file-state-root": root,
-		},
-		CatalogRevision: 8,
-	}
 }
 
 func TestProductionStrongSyncPersistsVerifiedReceiptAndReleasesPin(t *testing.T) {
@@ -764,9 +560,12 @@ func TestProductionSyncPersistsVerifiedThreeWayCandidatesAndPinsRecovery(t *test
 			FenceEpoch:  claim.FenceEpoch,
 			ClaimID:     claim.ClaimID,
 		},
-		remoteRoot,
 	)
 	localSnapshot := options.Catalog.(productionCatalog).records[0]
+	replicaRoots := unionRoots(
+		replicaRecord.Objects,
+		[]objectrepo.ObjectID{remoteRoot},
+	)
 	conflictID := "66666666-6666-4666-8666-666666666666"
 	documentID := "77777777-7777-4777-8777-777777777777"
 	remote.incoming = []IncomingConflict{{
@@ -815,16 +614,14 @@ func TestProductionSyncPersistsVerifiedThreeWayCandidatesAndPinsRecovery(t *test
 			CreatedAt: now,
 		},
 		ReplicaSnapshot: replicaRecord,
-		Roots:           []objectrepo.ObjectID{remoteRoot},
+		Roots:           replicaRoots,
 		Verification: VerificationReceipt{
-			WorkspaceID:     claim.WorkspaceID,
-			ReplicaID:       remote.identity.ReplicaID,
-			SnapshotID:      replicaRecord.SnapshotID,
-			CatalogRevision: replicaRecord.CatalogRevision,
-			CheckpointID:    "incoming-checkpoint",
-			RootDigest: rootsDigest(
-				[]objectrepo.ObjectID{remoteRoot},
-			),
+			WorkspaceID:      claim.WorkspaceID,
+			ReplicaID:        remote.identity.ReplicaID,
+			SnapshotID:       replicaRecord.SnapshotID,
+			CatalogRevision:  replicaRecord.CatalogRevision,
+			CheckpointID:     "incoming-checkpoint",
+			RootDigest:       rootsDigest(replicaRoots),
 			Reopened:         true,
 			AllRootsReadable: true,
 			VerifiedAt:       now,

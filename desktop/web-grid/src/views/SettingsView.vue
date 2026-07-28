@@ -43,6 +43,7 @@ import type {
   DensityMode,
   StartupPage,
   ThemeMode,
+  WorkspaceStartupPolicy,
 } from "@/stores/uiStore";
 import type { Locale } from "@/i18n";
 import { t } from "@/i18n";
@@ -191,6 +192,16 @@ const startupOptions = computed(() => [
   { label: t("nav.home"), value: "home" },
   { label: t("nav.tables"), value: "tables" },
 ]);
+const workspaceStartupOptions = computed(() => [
+  {
+    label: t("settings.workspaceStartup.lastWorkspace"),
+    value: "lastWorkspace",
+  },
+  {
+    label: t("settings.workspaceStartup.workspaceCenter"),
+    value: "workspaceCenter",
+  },
+]);
 const quoteSourceOptions = computed(() => (["hitokoto", "jinrishici", "quotable", "builtin"] as const)
   .map((value) => ({ label: t(`settings.quote.source.${value}`), value })));
 const quoteStyleOptions = computed(() => QUOTE_STYLES_BY_SOURCE[ui.dailyQuoteSource]
@@ -271,6 +282,20 @@ function setCalendarName(name: string): void {
                 class="setting-control"
                 data-testid="theme-select"
                 @update:value="ui.setThemeMode($event as ThemeMode)"
+              />
+            </div>
+            <div class="setting-row">
+              <div>
+                <strong>{{ t("settings.workspaceStartup") }}</strong>
+                <small>{{ t("settings.workspaceStartup.hint") }}</small>
+              </div>
+              <NSelect
+                :value="ui.workspaceStartupPolicy"
+                :aria-label="t('settings.workspaceStartup')"
+                :options="workspaceStartupOptions"
+                class="setting-control"
+                data-testid="workspace-startup-policy-select"
+                @update:value="ui.setWorkspaceStartupPolicy($event as WorkspaceStartupPolicy)"
               />
             </div>
             <div class="setting-row">

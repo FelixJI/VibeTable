@@ -133,6 +133,29 @@ def test_v2_catalog_is_generated_and_workspace_scopes_are_complete() -> None:
     assert {case["topic"] for case in catalog["eventCases"]} == set(catalog["eventTopics"])
 
 
+def test_workspace_create_location_policy_is_strict_and_grant_is_explicit() -> None:
+    catalog = _load(FIXTURES / "rpc-catalog.json")
+    create = next(case for case in catalog["rpcCases"] if case["method"] == "workspace.create")
+    params = create["request"]["params"]
+    schema = create["paramsSchema"]
+    assert params["locationPolicy"] == "managedDefault"
+    assert params["selectedRootGrant"] is None
+    assert schema["properties"]["locationPolicy"]["enum"] == [
+        "managedDefault",
+        "other",
+    ]
+    for invalid in (
+        {**params, "locationPolicy": "remote"},
+        {key: value for key, value in params.items() if key != "selectedRootGrant"},
+        {**params, "unexpected": True},
+    ):
+        try:
+            _validate(invalid, schema, schema)
+        except SchemaMismatchError:
+            continue
+        raise AssertionError(f"invalid workspace.create params were accepted: {invalid}")
+
+
 def test_v2_catalog_nonempty_array_items_fail_closed() -> None:
     catalog = _load(FIXTURES / "rpc-catalog.json")
     assert isinstance(catalog, dict)

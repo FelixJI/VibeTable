@@ -1702,43 +1702,7 @@ func validateIncomingSnapshot(
 	if !report.Valid {
 		return ErrVerificationInvalid
 	}
-	manifestRecord, err := repository.GetManifest(
-		ctx, record.ManifestID,
-	)
-	if err != nil {
-		return err
-	}
-	sealRecord, err := repository.GetManifest(ctx, record.SealID)
-	if err != nil {
-		return err
-	}
-	if manifestRecord.Name != "snapshot" ||
-		sealRecord.Name != "snapshot-seal" {
-		return ErrVerificationInvalid
-	}
-	var manifest snapshot.Manifest
-	var seal snapshot.Seal
-	if err := json.Unmarshal(
-		manifestRecord.Payload, &manifest,
-	); err != nil {
-		return ErrVerificationInvalid
-	}
-	if err := json.Unmarshal(sealRecord.Payload, &seal); err != nil {
-		return ErrVerificationInvalid
-	}
-	manifestDigest := sha256.Sum256(manifestRecord.Payload)
-	if manifest.SnapshotID != record.SnapshotID ||
-		manifest.WorkspaceID != record.WorkspaceID ||
-		manifest.FenceEpoch != record.FenceEpoch ||
-		manifest.ClaimID != record.ClaimID ||
-		manifest.SnapshotSequence != record.SnapshotSequence ||
-		seal.SnapshotID != record.SnapshotID ||
-		seal.FenceEpoch != record.FenceEpoch ||
-		seal.ClaimID != record.ClaimID ||
-		seal.SnapshotSequence != record.SnapshotSequence ||
-		seal.ManifestHash != "sha256:"+
-			hex.EncodeToString(manifestDigest[:]) ||
-		!seal.Verified {
+	if err := snapshot.ValidateSnapshotBundle(ctx, repository, record); err != nil {
 		return ErrVerificationInvalid
 	}
 	return nil

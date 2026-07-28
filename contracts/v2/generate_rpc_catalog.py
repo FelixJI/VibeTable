@@ -142,7 +142,12 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         "WorkspaceOperationResult",
         {
             "displayName": "季度规划",
-            "selectedRootGrant": "grant_create_1",
+            "locationPolicy": enum_string(
+                "managedDefault",
+                "managedDefault",
+                "other",
+            ),
+            "selectedRootGrant": nullable_string(),
             "storageMode": "direct",
             "encryptionMode": "convenient",
         },

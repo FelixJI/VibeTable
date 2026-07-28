@@ -76,7 +76,8 @@ export interface WorkspaceV2RpcParams {
   readonly "workspace.list": Readonly<Record<string, never>>;
   readonly "workspace.create": {
     readonly displayName: string;
-    readonly selectedRootGrant: string;
+    readonly locationPolicy: "managedDefault" | "other";
+    readonly selectedRootGrant: string | null;
     readonly storageMode: WorkspaceStorageMode;
     readonly encryptionMode: WorkspaceEncryptionMode;
   };

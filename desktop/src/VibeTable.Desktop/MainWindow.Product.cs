@@ -1144,29 +1144,23 @@ public partial class MainWindow : Window
         Guid operationId,
         CancellationToken cancellationToken)
     {
-        JsonElement materialized = _workspacePathGrants.MaterializeSentinels(
-            "workspace.create",
+        Guid workspaceId = Guid.NewGuid();
+        string selectedRoot = ResolveWorkspaceCreateRoot(
+            parameters,
             operationId,
-            parameters);
-        string grant = ReadString(materialized, "selectedRootGrant")
-            ?? throw new WorkspaceRegistryException(
-                "workspace.request_invalid",
-                "Missing selectedRootGrant.");
-        string selectedRoot = _workspacePathGrants.Consume(
-            grant,
-            "workspace.create",
-            operationId,
-            "workspace-root");
+            _workspacePathGrants,
+            _productDataRoot,
+            workspaceId);
         WorkspaceStorageObservation selectedStorage =
             ProbeCreateTarget(_providerPolicy, selectedRoot);
-        string displayName = ReadString(materialized, "displayName")?.Trim()
+        string displayName = ReadString(parameters, "displayName")?.Trim()
             ?? string.Empty;
         if (displayName.Length is < 1 or > 120)
             throw new WorkspaceRegistryException(
                 "workspace.request_invalid",
                 "Workspace display name is invalid.");
         WorkspaceStorageMode storageMode =
-            ReadString(materialized, "storageMode") switch
+            ReadString(parameters, "storageMode") switch
             {
                 "direct" => WorkspaceStorageMode.Direct,
                 "mirrored" => WorkspaceStorageMode.Mirrored,
@@ -1175,7 +1169,7 @@ public partial class MainWindow : Window
                     "Workspace storage mode is invalid."),
             };
         WorkspaceEncryptionMode encryptionMode =
-            ReadString(materialized, "encryptionMode") switch
+            ReadString(parameters, "encryptionMode") switch
             {
                 "none" => WorkspaceEncryptionMode.None,
                 "convenient" => WorkspaceEncryptionMode.Convenient,
@@ -1184,7 +1178,6 @@ public partial class MainWindow : Window
                     "workspace.request_invalid",
                     "Workspace encryption mode is invalid."),
             };
-        Guid workspaceId = Guid.NewGuid();
         string? activityRoot = storageMode == WorkspaceStorageMode.Mirrored
             ? Path.Combine(
                 _productDataRoot,
@@ -1256,6 +1249,80 @@ public partial class MainWindow : Window
             workspaceId = layout.Manifest.WorkspaceId.ToString("D"),
             status = "created",
         };
+    }
+
+    internal static string ResolveWorkspaceCreateRoot(
+        JsonElement parameters,
+        Guid operationId,
+        WorkspacePathGrantStore pathGrants,
+        string productDataRoot,
+        Guid workspaceId)
+    {
+        ArgumentNullException.ThrowIfNull(pathGrants);
+        ArgumentException.ThrowIfNullOrWhiteSpace(productDataRoot);
+        if (operationId == Guid.Empty || workspaceId == Guid.Empty)
+            throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                "Workspace creation requires non-empty operation and workspace ids.");
+        if (!SnapshotPackageBroker.HasExactProperties(
+                parameters,
+                "displayName",
+                "locationPolicy",
+                "selectedRootGrant",
+                "storageMode",
+                "encryptionMode"))
+        {
+            throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                "Workspace create params contain missing or unknown fields.");
+        }
+        if (!parameters.TryGetProperty(
+                "selectedRootGrant",
+                out JsonElement selectedRootGrant))
+        {
+            throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                "Missing selectedRootGrant.");
+        }
+
+        return ReadString(parameters, "locationPolicy") switch
+        {
+            "managedDefault" when selectedRootGrant.ValueKind == JsonValueKind.Null =>
+                Path.Combine(
+                    Path.GetFullPath(productDataRoot),
+                    "workspaces",
+                    workspaceId.ToString("D")),
+            "managedDefault" => throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                "The managed default location must not include a path grant."),
+            "other" => ResolveGrantedWorkspaceCreateRoot(
+                parameters,
+                operationId,
+                pathGrants),
+            _ => throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                "Workspace locationPolicy is invalid."),
+        };
+    }
+
+    private static string ResolveGrantedWorkspaceCreateRoot(
+        JsonElement parameters,
+        Guid operationId,
+        WorkspacePathGrantStore pathGrants)
+    {
+        JsonElement materialized = pathGrants.MaterializeSentinels(
+            "workspace.create",
+            operationId,
+            parameters);
+        string grant = ReadString(materialized, "selectedRootGrant")
+            ?? throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                "The other location requires a selectedRootGrant.");
+        return pathGrants.Consume(
+            grant,
+            "workspace.create",
+            operationId,
+            "workspace-root");
     }
 
     private async Task<object> RegisterWorkspaceAsync(

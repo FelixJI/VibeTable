@@ -5,13 +5,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -222,46 +225,14 @@ func (runtime *Runtime) exportAgeSnapshot(
 	recipients []string,
 	credential string,
 ) error {
-	plaintext, err := os.CreateTemp(
-		runtime.packageStagingRoot, "snapshot-export-*.zip",
+	return streamAgeSnapshotPackage(
+		io.MultiWriter(output, hasher),
+		metadata,
+		entries,
+		key,
+		recipients,
+		credential,
 	)
-	if err != nil {
-		return err
-	}
-	plaintextPath := plaintext.Name()
-	defer os.Remove(plaintextPath)
-	if err := plaintext.Chmod(0o600); err != nil {
-		_ = plaintext.Close()
-		return err
-	}
-	exportErr := snapshotpkg.Export(
-		plaintext, metadata, entries, key,
-	)
-	syncErr := plaintext.Sync()
-	closeErr := plaintext.Close()
-	if err := errors.Join(exportErr, syncErr, closeErr); err != nil {
-		return err
-	}
-	input, err := os.Open(plaintextPath)
-	if err != nil {
-		return err
-	}
-	var encryptErr error
-	if len(recipients) > 0 {
-		encryptErr = (snapshotpkg.AgeNative{}).EncryptRecipients(
-			recipients,
-			input,
-			io.MultiWriter(output, hasher),
-		)
-	} else {
-		encryptErr = (snapshotpkg.AgeNative{}).EncryptPassphrase(
-			credential,
-			input,
-			io.MultiWriter(output, hasher),
-		)
-	}
-	closeErr = input.Close()
-	return errors.Join(encryptErr, closeErr)
 }
 
 func decodeNullableCredential(
@@ -301,100 +272,6 @@ func validateExportTarget(target string) error {
 		)
 	}
 	return nil
-}
-
-func (runtime *Runtime) prepareSnapshotPackage(
-	source string,
-	credential *string,
-) (string, bool, func(), error) {
-	file, err := os.Open(source)
-	if err != nil {
-		return "", false, nil, err
-	}
-	prefix := make([]byte, len("age-encryption.org/v1"))
-	count, readErr := io.ReadFull(file, prefix)
-	closeErr := file.Close()
-	if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) {
-		return "", false, nil, errors.Join(readErr, closeErr)
-	}
-	if closeErr != nil {
-		return "", false, nil, closeErr
-	}
-	encrypted := count == len(prefix) &&
-		string(prefix) == "age-encryption.org/v1"
-	if !encrypted {
-		if credential != nil {
-			return "", false, nil, errors.New(
-				"snapshot.credential_not_applicable",
-			)
-		}
-		return source, false, nil, nil
-	}
-	if credential == nil || strings.TrimSpace(*credential) == "" {
-		return "", true, nil, errors.New(
-			"snapshot.credential_required",
-		)
-	}
-	input, err := os.Open(source)
-	if err != nil {
-		return "", true, nil, err
-	}
-	output, err := os.CreateTemp(
-		runtime.packageStagingRoot, "snapshot-import-*.zip",
-	)
-	if err != nil {
-		_ = input.Close()
-		return "", true, nil, err
-	}
-	outputPath := output.Name()
-	cleanup := func() { _ = os.Remove(outputPath) }
-	if err := output.Chmod(0o600); err != nil {
-		_ = input.Close()
-		_ = output.Close()
-		cleanup()
-		return "", true, nil, err
-	}
-	writer := &boundedPackageWriter{
-		writer: output,
-		limit:  maxSnapshotWorkingSet,
-	}
-	var decryptErr error
-	if strings.HasPrefix(
-		strings.TrimSpace(*credential), "AGE-SECRET-KEY-",
-	) {
-		decryptErr = (snapshotpkg.AgeNative{}).Decrypt(
-			strings.TrimSpace(*credential), input, writer,
-		)
-	} else {
-		decryptErr = (snapshotpkg.AgeNative{}).DecryptPassphrase(
-			*credential, input, writer,
-		)
-	}
-	inputErr := input.Close()
-	syncErr := output.Sync()
-	outputErr := output.Close()
-	if err := errors.Join(
-		decryptErr, inputErr, syncErr, outputErr,
-	); err != nil {
-		cleanup()
-		return "", true, nil, err
-	}
-	return outputPath, true, cleanup, nil
-}
-
-type boundedPackageWriter struct {
-	writer io.Writer
-	limit  int64
-	wrote  int64
-}
-
-func (writer *boundedPackageWriter) Write(raw []byte) (int, error) {
-	if int64(len(raw)) > writer.limit-writer.wrote {
-		return 0, snapshotpkg.ErrResourceLimit
-	}
-	count, err := writer.writer.Write(raw)
-	writer.wrote += int64(count)
-	return count, err
 }
 
 type inspectSnapshotPackageParams struct {
@@ -465,12 +342,9 @@ func (runtime *Runtime) inspectSnapshotPackage(
 		}
 		return runtime.state.putSnapshotImportPlan(ctx, plan)
 	}
-	plaintext, encrypted, cleanup, err := runtime.prepareSnapshotPackage(
+	prepared, encrypted, err := prepareSnapshotPackageSource(
 		source, credentialPointer,
 	)
-	if cleanup != nil {
-		defer cleanup()
-	}
 	if err != nil {
 		if encrypted && credentialPointer == nil {
 			result := map[string]any{
@@ -490,12 +364,13 @@ func (runtime *Runtime) inspectSnapshotPackage(
 		}
 		return nil, err
 	}
+	defer prepared.Close()
 	key, err := runtime.snapshotPackageKey(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer clearBytes(key)
-	inspection, _, err := inspectPackageFile(plaintext, key, false)
+	inspection, _, err := inspectPreparedPackage(prepared, key, false)
 	if err != nil {
 		return nil, err
 	}
@@ -580,21 +455,19 @@ func (runtime *Runtime) importSnapshotPackage(
 		)
 	}
 	sourcePath := plan.SourcePath
-	plaintext, _, cleanup, err := runtime.prepareSnapshotPackage(
+	prepared, _, err := prepareSnapshotPackageSource(
 		sourcePath, credentialPointer,
 	)
-	if cleanup != nil {
-		defer cleanup()
-	}
 	if err != nil {
 		return nil, err
 	}
+	defer prepared.Close()
 	key, err := runtime.snapshotPackageKey(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer clearBytes(key)
-	inspection, entries, err := inspectPackageFile(plaintext, key, true)
+	inspection, entries, err := inspectPreparedPackage(prepared, key, true)
 	if err != nil {
 		return nil, err
 	}
@@ -617,7 +490,7 @@ func (runtime *Runtime) importSnapshotPackage(
 			return nil, snapshotpkg.ErrWorkspaceConflict
 		}
 	}
-	source, err := decodeImportedSnapshot(entries, inspection)
+	source, err := decodeImportedSnapshot(ctx, entries, inspection)
 	if err != nil {
 		return nil, err
 	}
@@ -729,103 +602,56 @@ func (runtime *Runtime) snapshotPackageEntries(
 	ctx context.Context,
 	record snapshot.Record,
 ) (map[string][]byte, snapshot.Manifest, error) {
-	if valid, err := runtime.snapshotIntegrity(ctx, record); err != nil {
-		return nil, snapshot.Manifest{}, err
-	} else if !valid {
-		return nil, snapshot.Manifest{}, errors.New("snapshot.integrity_failed")
-	}
-	manifestRecord, err := runtime.repository.GetManifest(ctx, record.ManifestID)
+	bundle, err := snapshot.LoadSnapshotBundle(
+		ctx, runtime.repository, record,
+	)
 	if err != nil {
 		return nil, snapshot.Manifest{}, err
 	}
-	sealRecord, err := runtime.repository.GetManifest(ctx, record.SealID)
-	if err != nil {
-		return nil, snapshot.Manifest{}, err
-	}
-	manifest, err := decodeStrict[snapshot.Manifest](manifestRecord.Payload)
+	manifest, err := decodeStrict[snapshot.Manifest](bundle.Manifest.Payload)
 	if err != nil {
 		return nil, snapshot.Manifest{}, err
 	}
 	entries := map[string][]byte{
 		"snapshot/catalog.json":  append([]byte(nil), mustJSON(record)...),
-		"snapshot/manifest.json": append([]byte(nil), manifestRecord.Payload...),
-		"snapshot/seal.json":     append([]byte(nil), sealRecord.Payload...),
+		"snapshot/manifest.json": append([]byte(nil), bundle.Manifest.Payload...),
+		"snapshot/seal.json":     append([]byte(nil), bundle.Seal.Payload...),
+		"roots/topology-head.json": append(
+			[]byte(nil), bundle.TopologyHead.Payload...,
+		),
+		"roots/file-state-head.json": append(
+			[]byte(nil), bundle.FileStateHead.Payload...,
+		),
 	}
 	var total int64
-	objects := make(map[string][]byte, len(record.ObjectMap))
-	for name, id := range record.ObjectMap {
-		reader, err := runtime.repository.Open(ctx, id)
-		if err != nil {
-			return nil, snapshot.Manifest{}, err
-		}
-		content, readErr := io.ReadAll(io.LimitReader(
-			reader,
-			maxSnapshotWorkingSet-total+1,
-		))
-		closeErr := reader.Close()
-		if err := errors.Join(readErr, closeErr); err != nil {
-			return nil, snapshot.Manifest{}, err
-		}
+	for name, content := range bundle.Objects {
 		total += int64(len(content))
 		if total > maxSnapshotWorkingSet {
 			return nil, snapshot.Manifest{}, errors.New(
 				"snapshot.package_resource_limit",
 			)
 		}
-		objects[name] = content
 		entries["objects/"+base64.RawURLEncoding.EncodeToString(
 			[]byte(name),
 		)] = content
 	}
-	topologyRoot, fileRoot, err := referencedSnapshotRoots(objects)
-	if err != nil {
-		return nil, snapshot.Manifest{}, err
+	if bundle.HistoryRoot != nil {
+		entries["roots/filehistory-root.json"] = append(
+			[]byte(nil), bundle.HistoryRoot.Payload...,
+		)
 	}
-	topology, err := runtime.repository.GetManifest(ctx, topologyRoot)
-	if err != nil {
-		return nil, snapshot.Manifest{}, err
+	for id, content := range bundle.HistoryObjects {
+		total += int64(len(content))
+		if total > maxSnapshotWorkingSet {
+			return nil, snapshot.Manifest{}, errors.New(
+				"snapshot.package_resource_limit",
+			)
+		}
+		entries[historyObjectPackageEntry(id)] = append(
+			[]byte(nil), content...,
+		)
 	}
-	files, err := runtime.repository.GetManifest(ctx, fileRoot)
-	if err != nil {
-		return nil, snapshot.Manifest{}, err
-	}
-	entries["roots/topology-head.json"] = append(
-		[]byte(nil),
-		topology.Payload...,
-	)
-	entries["roots/file-state-head.json"] = append(
-		[]byte(nil),
-		files.Payload...,
-	)
 	return entries, manifest, nil
-}
-
-func referencedSnapshotRoots(
-	objects map[string][]byte,
-) (objectrepo.ManifestID, objectrepo.ManifestID, error) {
-	topology, ok := objects["topology-root"]
-	if !ok {
-		return "", "", errors.New("snapshot.topology_root_missing")
-	}
-	fileState, ok := objects["file-state-root"]
-	if !ok {
-		return "", "", errors.New("snapshot.file_root_missing")
-	}
-	var topologyRef struct {
-		ManifestID objectrepo.ManifestID `json:"manifestId"`
-	}
-	var fileRef struct {
-		SourceRoot objectrepo.ManifestID `json:"sourceRoot"`
-	}
-	if err := json.Unmarshal(topology, &topologyRef); err != nil ||
-		topologyRef.ManifestID == "" {
-		return "", "", errors.New("snapshot.topology_root_invalid")
-	}
-	if err := json.Unmarshal(fileState, &fileRef); err != nil ||
-		fileRef.SourceRoot == "" {
-		return "", "", errors.New("snapshot.file_root_invalid")
-	}
-	return topologyRef.ManifestID, fileRef.SourceRoot, nil
 }
 
 func (runtime *Runtime) snapshotPackageKey(
@@ -850,25 +676,21 @@ func clearBytes(value []byte) {
 	}
 }
 
-func inspectPackageFile(
-	path string,
+func inspectPreparedPackage(
+	prepared *preparedSnapshotPackage,
 	key []byte,
 	readEntries bool,
 ) (snapshotpkg.Inspection, map[string][]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return snapshotpkg.Inspection{}, nil, err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+	if prepared == nil ||
+		prepared.ReaderAt() == nil ||
+		prepared.Size() <= 0 {
 		return snapshotpkg.Inspection{}, nil, errors.New(
 			"snapshot.package_invalid",
 		)
 	}
 	inspection, err := snapshotpkg.Inspect(
-		file,
-		info.Size(),
+		prepared.ReaderAt(),
+		prepared.Size(),
 		snapshotpkg.DefaultLimits(),
 		key,
 	)
@@ -888,7 +710,10 @@ func inspectPackageFile(
 	); err != nil {
 		return snapshotpkg.Inspection{}, nil, err
 	}
-	archive, err := zip.NewReader(file, info.Size())
+	archive, err := zip.NewReader(
+		prepared.ReaderAt(),
+		prepared.Size(),
+	)
 	if err != nil {
 		return snapshotpkg.Inspection{}, nil, snapshotpkg.ErrInvalidPackage
 	}
@@ -974,14 +799,18 @@ type importedSnapshotSource struct {
 	manifest          snapshot.Manifest
 	database          []byte
 	files             map[string][]byte
+	attachments       map[string][]byte
 	settings          []byte
 	auditPrefix       []byte
 	topologyPayload   []byte
 	filePayload       []byte
+	historyPayload    []byte
+	historyObjects    map[objectrepo.ObjectID][]byte
 	repository        objectrepo.Repository
 }
 
 func decodeImportedSnapshot(
+	ctx context.Context,
 	entries map[string][]byte,
 	inspection snapshotpkg.Inspection,
 ) (importedSnapshotSource, error) {
@@ -1033,14 +862,115 @@ func decodeImportedSnapshot(
 		}
 	}
 	files := map[string][]byte{}
+	attachments := map[string][]byte{}
 	for name, raw := range objects {
 		if strings.HasPrefix(name, "file:") {
 			files[strings.TrimPrefix(name, "file:")] = raw
+		}
+		if strings.HasPrefix(name, "attachment:") {
+			attachments[strings.TrimPrefix(name, "attachment:")] = raw
 		}
 	}
 	topologyPayload := entries["roots/topology-head.json"]
 	filePayload := entries["roots/file-state-head.json"]
 	if len(topologyPayload) == 0 || len(filePayload) == 0 {
+		return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
+	}
+	var topologyReference struct {
+		ManifestID objectrepo.ManifestID `json:"manifestId"`
+	}
+	var fileReference struct {
+		SourceRoot objectrepo.ManifestID `json:"sourceRoot"`
+	}
+	var fileHead struct {
+		HistoryRoot objectrepo.ManifestID `json:"historyRoot"`
+	}
+	if err := json.Unmarshal(
+		objects["topology-root"], &topologyReference,
+	); err != nil || topologyReference.ManifestID == "" {
+		return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
+	}
+	if err := json.Unmarshal(
+		objects["file-state-root"], &fileReference,
+	); err != nil || fileReference.SourceRoot == "" {
+		return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
+	}
+	if err := json.Unmarshal(filePayload, &fileHead); err != nil {
+		return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
+	}
+	historyPayload := entries["roots/filehistory-root.json"]
+	historyObjects := map[objectrepo.ObjectID][]byte{}
+	var historyRecord *objectrepo.ManifestRecord
+	if fileHead.HistoryRoot != "" {
+		if len(historyPayload) == 0 {
+			return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
+		}
+		ids, err := snapshot.FileHistoryObjectIDs(historyPayload)
+		if err != nil {
+			return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
+		}
+		for _, id := range ids {
+			if _, alreadyCurrent := objectBytesByID(
+				record.ObjectMap, objects, id,
+			); alreadyCurrent {
+				continue
+			}
+			raw, ok := entries[historyObjectPackageEntry(id)]
+			if !ok {
+				return importedSnapshotSource{},
+					snapshotpkg.ErrInvalidPackage
+			}
+			historyObjects[id] = raw
+		}
+		value := snapshot.NewPackageManifestRecord(
+			fileHead.HistoryRoot,
+			"filehistory-root",
+			record.WorkspaceID,
+			"",
+			historyPayload,
+		)
+		historyRecord = &value
+	} else if len(historyPayload) != 0 {
+		return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
+	}
+	bundle := snapshot.SnapshotBundle{
+		Record: record,
+		Manifest: snapshot.NewPackageManifestRecord(
+			record.ManifestID,
+			"snapshot",
+			record.WorkspaceID,
+			record.SnapshotID,
+			entries["snapshot/manifest.json"],
+		),
+		Seal: snapshot.NewPackageManifestRecord(
+			record.SealID,
+			"snapshot-seal",
+			record.WorkspaceID,
+			record.SnapshotID,
+			entries["snapshot/seal.json"],
+		),
+		Objects: objects,
+		TopologyHead: snapshot.NewPackageManifestRecord(
+			topologyReference.ManifestID,
+			"topology-head",
+			record.WorkspaceID,
+			"",
+			topologyPayload,
+		),
+		FileStateHead: snapshot.NewPackageManifestRecord(
+			fileReference.SourceRoot,
+			"file-state-head",
+			record.WorkspaceID,
+			"",
+			filePayload,
+		),
+		HistoryRoot:    historyRecord,
+		HistoryObjects: historyObjects,
+	}
+	if err := snapshot.ValidateSnapshotBundleData(bundle); err != nil {
+		return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
+	}
+	if err := validateImportedSQLite(ctx, objects["database"]); err != nil {
 		return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
 	}
 	return importedSnapshotSource{
@@ -1054,11 +984,84 @@ func decodeImportedSnapshot(
 			objects["database"]...,
 		),
 		files:           files,
+		attachments:     attachments,
 		settings:        append([]byte(nil), objects["workspace-settings"]...),
 		auditPrefix:     append([]byte(nil), objects["audit-prefix"]...),
 		topologyPayload: append([]byte(nil), topologyPayload...),
 		filePayload:     append([]byte(nil), filePayload...),
+		historyPayload:  append([]byte(nil), historyPayload...),
+		historyObjects:  cloneHistoryObjects(historyObjects),
 	}, nil
+}
+
+type sqliteDeserializer interface {
+	Deserialize([]byte) error
+}
+
+func validateImportedSQLite(ctx context.Context, raw []byte) error {
+	if len(raw) == 0 {
+		return snapshotpkg.ErrInvalidPackage
+	}
+	database, err := sql.Open("sqlite", "file::memory:")
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	deserializeConnection, err := database.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer deserializeConnection.Close()
+	if err := deserializeConnection.Raw(func(driverConnection any) error {
+		deserializer, ok := driverConnection.(sqliteDeserializer)
+		if !ok {
+			return errors.New("snapshot.sqlite_deserialize_unavailable")
+		}
+		return deserializer.Deserialize(raw)
+	}); err != nil {
+		return err
+	}
+	var quickCheck string
+	if err := deserializeConnection.QueryRowContext(
+		ctx, "PRAGMA quick_check",
+	).Scan(&quickCheck); err != nil || quickCheck != "ok" {
+		return fmt.Errorf(
+			"%w: sqlite quick_check=%q: %v",
+			snapshotpkg.ErrInvalidPackage,
+			quickCheck,
+			err,
+		)
+	}
+	foreignKeys, err := deserializeConnection.QueryContext(
+		ctx, "PRAGMA foreign_key_check",
+	)
+	if err != nil {
+		return err
+	}
+	defer foreignKeys.Close()
+	if foreignKeys.Next() {
+		return fmt.Errorf(
+			"%w: sqlite foreign_key_check failed",
+			snapshotpkg.ErrInvalidPackage,
+		)
+	}
+	if err := foreignKeys.Err(); err != nil {
+		return err
+	}
+	var collectionTable int
+	if err := deserializeConnection.QueryRowContext(
+		ctx,
+		`SELECT count(*) FROM sqlite_schema
+		 WHERE type = 'table' AND name = '_collections'`,
+	).Scan(&collectionTable); err != nil || collectionTable != 1 {
+		return fmt.Errorf(
+			"%w: PocketBase _collections table count=%d: %v",
+			snapshotpkg.ErrInvalidPackage,
+			collectionTable,
+			err,
+		)
+	}
+	return nil
 }
 
 func (source *importedSnapshotSource) Freeze(
@@ -1068,6 +1071,65 @@ func (source *importedSnapshotSource) Freeze(
 	if source.repository == nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{},
 			errors.New("snapshot.import_repository_required")
+	}
+	filePayload := append([]byte(nil), source.filePayload...)
+	if len(source.historyPayload) != 0 {
+		objectIDs := make(
+			[]objectrepo.ObjectID, 0, len(source.historyObjects),
+		)
+		for id := range source.historyObjects {
+			objectIDs = append(objectIDs, id)
+		}
+		sort.Slice(objectIDs, func(i, j int) bool {
+			return objectIDs[i] < objectIDs[j]
+		})
+		inputs := make([]objectrepo.ObjectInput, 0, len(objectIDs))
+		for _, id := range objectIDs {
+			inputs = append(inputs, objectrepo.ObjectInput{
+				Name: "history:" + string(id),
+				Content: append(
+					[]byte(nil), source.historyObjects[id]...,
+				),
+			})
+		}
+		historyReceipt, err := source.repository.Commit(
+			ctx,
+			objectrepo.CommitRequest{
+				Authority: intent.Token.Authority(),
+				Objects:   inputs,
+				Manifests: []objectrepo.ManifestInput{{
+					Name: "filehistory-root",
+					Labels: map[string]string{
+						"type":        "filehistory-root",
+						"workspaceId": source.workspaceID,
+					},
+					Payload: source.historyPayload,
+				}},
+			},
+		)
+		if err != nil {
+			return snapshot.BarrierView{}, writecoordinator.FrozenRoots{},
+				err
+		}
+		historyRoot := historyReceipt.Manifests["filehistory-root"]
+		if !historyReceipt.Durable || historyRoot == "" {
+			return snapshot.BarrierView{}, writecoordinator.FrozenRoots{},
+				errors.New("snapshot.import_history_receipt_invalid")
+		}
+		for _, id := range objectIDs {
+			if historyReceipt.Objects["history:"+string(id)] != id {
+				return snapshot.BarrierView{},
+					writecoordinator.FrozenRoots{},
+					errors.New("snapshot.import_history_receipt_invalid")
+			}
+		}
+		filePayload, err = replaceHistoryRoot(
+			filePayload, historyRoot,
+		)
+		if err != nil {
+			return snapshot.BarrierView{}, writecoordinator.FrozenRoots{},
+				err
+		}
 	}
 	receipt, err := source.repository.Commit(ctx, objectrepo.CommitRequest{
 		Authority: intent.Token.Authority(),
@@ -1084,7 +1146,7 @@ func (source *importedSnapshotSource) Freeze(
 				Labels: map[string]string{
 					"type": "file-state-head", "workspaceId": source.workspaceID,
 				},
-				Payload: source.filePayload,
+				Payload: filePayload,
 			},
 		},
 	})
@@ -1106,6 +1168,7 @@ func (source *importedSnapshotSource) Freeze(
 			AuditSequence:     source.manifest.AuditAnchor.Sequence,
 			Database:          append([]byte(nil), source.database...),
 			Files:             cloneFiles(source.files),
+			Attachments:       cloneFiles(source.attachments),
 			WorkspaceSettings: append([]byte(nil), source.settings...),
 			AuditPrefix:       append([]byte(nil), source.auditPrefix...),
 			CreatedByDevice:   intent.Token.ClaimID,
@@ -1141,6 +1204,14 @@ func (source *importedSnapshotSource) rewriteWorkspace(
 	)
 	if err != nil {
 		return err
+	}
+	if len(source.historyPayload) != 0 {
+		source.historyPayload, err = rewriteWorkspaceJSON(
+			source.historyPayload, from, to,
+		)
+		if err != nil {
+			return err
+		}
 	}
 	source.settings, err = rewriteWorkspaceJSON(
 		source.settings, from, to,
@@ -1208,6 +1279,62 @@ func cloneFiles(source map[string][]byte) map[string][]byte {
 		result[name] = append([]byte(nil), content...)
 	}
 	return result
+}
+
+func historyObjectPackageEntry(id objectrepo.ObjectID) string {
+	return "history-objects/" + base64.RawURLEncoding.EncodeToString(
+		[]byte(id),
+	)
+}
+
+func objectBytesByID(
+	objectMap map[string]objectrepo.ObjectID,
+	objects map[string][]byte,
+	target objectrepo.ObjectID,
+) ([]byte, bool) {
+	for name, id := range objectMap {
+		if id == target {
+			raw, found := objects[name]
+			return raw, found
+		}
+	}
+	return nil, false
+}
+
+func cloneHistoryObjects(
+	source map[objectrepo.ObjectID][]byte,
+) map[objectrepo.ObjectID][]byte {
+	result := make(map[objectrepo.ObjectID][]byte, len(source))
+	for id, content := range source {
+		result[id] = append([]byte(nil), content...)
+	}
+	return result
+}
+
+func replaceHistoryRoot(
+	raw []byte,
+	historyRoot objectrepo.ManifestID,
+) ([]byte, error) {
+	var head struct {
+		FormatVersion uint64                `json:"formatVersion"`
+		WorkspaceID   string                `json:"workspaceId"`
+		HistoryRoot   objectrepo.ManifestID `json:"historyRoot"`
+		FileRevision  uint64                `json:"fileRevision"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&head); err != nil ||
+		head.FormatVersion == 0 ||
+		head.WorkspaceID == "" ||
+		historyRoot == "" {
+		return nil, snapshotpkg.ErrInvalidPackage
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, snapshotpkg.ErrInvalidPackage
+	}
+	head.HistoryRoot = historyRoot
+	return json.Marshal(head)
 }
 
 func mustJSON(value any) []byte {
