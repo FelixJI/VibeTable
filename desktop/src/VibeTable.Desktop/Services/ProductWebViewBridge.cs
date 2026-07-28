@@ -79,6 +79,15 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
     public void PostResponse(string type, string? requestId, object? payload)
         => PostEnvelope(type, requestId, payload);
 
+    public void PostWorkspaceV2Response(
+        string? requestId,
+        object? payload,
+        JsonElement wire)
+        => PostEnvelope("workspace.v2.response", requestId, payload, wire);
+
+    public void PostWorkspaceV2Event(object? payload, JsonElement wire)
+        => PostEnvelope("workspace.v2.event", requestId: null, payload, wire);
+
     public void PostOperationFailed(
         string? requestId,
         string message,
@@ -403,7 +412,11 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         return new NativeFileIngressInspection(paths, count, null, null);
     }
 
-    private void PostEnvelope(string type, string? requestId, object? payload)
+    private void PostEnvelope(
+        string type,
+        string? requestId,
+        object? payload,
+        JsonElement wire = default)
     {
         if (!_router.IsHostNotificationAllowed(type))
         {
@@ -416,8 +429,16 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
                 $"Bridge response posted; type={type}; " +
                 $"requestIdPresent={!string.IsNullOrWhiteSpace(requestId)}");
         }
+        var envelope = new Dictionary<string, object?>
+        {
+            ["type"] = type,
+            ["requestId"] = requestId,
+            ["payload"] = payload,
+        };
+        if (wire.ValueKind != JsonValueKind.Undefined)
+            envelope["wire"] = wire;
         string json = JsonSerializer.Serialize(
-            new { type, requestId, payload },
+            envelope,
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
         _owner.Dispatcher.BeginInvoke(() =>
         {
@@ -429,19 +450,22 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         CoreWebView2 core,
         HostReplyMessage reply)
     {
+        var envelope = new Dictionary<string, object?>
+        {
+            ["type"] = reply.Type,
+            ["requestId"] = reply.RequestId,
+            ["payload"] = reply.Payload is null
+                ? null
+                : new
+                {
+                    message = reply.Payload.Message,
+                    code = reply.Payload.Code,
+                },
+        };
+        if (reply.Wire.ValueKind != JsonValueKind.Undefined)
+            envelope["wire"] = reply.Wire;
         string json = JsonSerializer.Serialize(
-            new
-            {
-                type = reply.Type,
-                requestId = reply.RequestId,
-                payload = reply.Payload is null
-                    ? null
-                    : new
-                    {
-                        message = reply.Payload.Message,
-                        code = reply.Payload.Code,
-                    },
-            },
+            envelope,
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
         core.PostWebMessageAsString(json);
     }

@@ -8,17 +8,22 @@ import {
   Home,
   LayoutDashboard,
   Blocks,
+  GitCompareArrows,
   Settings,
   Table2,
 } from "lucide-vue-next";
 import type { AppView } from "@/stores/uiStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useDashboardStore } from "@/stores/dashboardStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
+import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";
 import { t } from "@/i18n";
 import brandIconUrl from "@/assets/brand/vibetable.png";
 
 const ui = useUiStore();
 const dashboards = useDashboardStore();
+const workspaceSession = useWorkspaceSessionStore();
+const protection = useWorkspaceProtectionStore();
 const emit = defineEmits<{
   navigate: [view: AppView];
   openAdmin: [];
@@ -30,6 +35,11 @@ const primary = computed(() => [
   { view: "tables" as const, icon: Table2, label: "nav.tables" },
   ...(dashboards.featureEnabled ? [{ view: "dashboard" as const, icon: LayoutDashboard, label: "nav.dashboard" }] : []),
   { view: "files" as const, icon: Files, label: "nav.files" },
+  ...(workspaceSession.conflictEnabled ? [{
+    view: "conflicts" as const,
+    icon: GitCompareArrows,
+    label: "workspaceV2.nav.conflicts",
+  }] : []),
   { view: "plugins" as const, icon: Blocks, label: "nav.plugins" },
 ]);
 
@@ -55,6 +65,13 @@ function navigate(view: AppView) {
             @click="navigate(item.view)"
           >
             <template #icon><NIcon :size="19"><component :is="item.icon" /></NIcon></template>
+            <span
+              v-if="item.view === 'conflicts' && protection.pendingConflictCount"
+              class="nav-badge"
+              :aria-label="t('workspaceV2.conflict.count', { count: protection.pendingConflictCount })"
+            >
+              {{ Math.min(99, protection.pendingConflictCount) }}
+            </span>
           </NButton>
         </template>
         {{ t(item.label) }}
@@ -140,10 +157,28 @@ function navigate(view: AppView) {
   margin-top: auto;
 }
 .nav-button {
+  position: relative;
   width: 40px;
   height: 36px;
   color: var(--vt-fg-muted);
   border-radius: var(--vt-radius-md);
+}
+.nav-badge {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  display: grid;
+  min-width: 15px;
+  height: 15px;
+  place-items: center;
+  padding: 0 3px;
+  color: white;
+  border: 2px solid var(--vt-bg);
+  border-radius: 999px;
+  background: var(--vt-color-danger-500);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
 }
 .nav-button:hover {
   color: var(--vt-fg);

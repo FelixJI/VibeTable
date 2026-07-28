@@ -23,7 +23,6 @@ public sealed class ProductDataRpcRegistryTests
             "preset.list", "preset.save", "preset.delete",
             "version.list", "version.create", "version.save", "version.compare",
             "version.promote", "version.delete",
-            "backup.list", "backup.create", "backup.delete", "backup.restore",
         ];
 
         CollectionAssert.AreEquivalent(expected, ProductDataRpcRegistry.RequestTypes.ToArray());
@@ -46,39 +45,6 @@ public sealed class ProductDataRpcRegistryTests
             JsonDocument.Parse("""{"tableId":"tbl_orders","sessionSecret":"nope"}""").RootElement));
         Assert.IsFalse(endpoint.IsValidPayload(
             JsonDocument.Parse("""{"tableId":7}""").RootElement));
-    }
-
-    [TestMethod]
-    public void BackupValidatorsAcceptOnlyClosedSafeArchivePayloads()
-    {
-        Assert.IsTrue(ProductDataRpcRegistry.TryGet("backup.list", out var list));
-        Assert.IsTrue(ProductDataRpcRegistry.TryGet("backup.create", out var create));
-        Assert.IsTrue(ProductDataRpcRegistry.TryGet("backup.delete", out var delete));
-        Assert.IsTrue(ProductDataRpcRegistry.TryGet("backup.restore", out var restore));
-
-        Assert.IsTrue(list.IsValidPayload(JsonDocument.Parse("{}").RootElement));
-        Assert.IsFalse(list.IsValidPayload(
-            JsonDocument.Parse("""{"url":"http://127.0.0.1"}""").RootElement));
-
-        Assert.IsTrue(create.IsValidPayload(
-            JsonDocument.Parse("""{"name":"manual_20260724_101500.zip"}""").RootElement));
-        Assert.IsFalse(create.IsValidPayload(
-            JsonDocument.Parse("""{"name":"../data.db.zip"}""").RootElement));
-        Assert.IsFalse(create.IsValidPayload(
-            JsonDocument.Parse("""{"name":"safe.zip","path":"C:\\private"}""").RootElement));
-
-        Assert.IsTrue(delete.IsValidPayload(
-            JsonDocument.Parse("""{"name":"manual_20260724_101500.zip"}""").RootElement));
-        Assert.IsFalse(delete.IsValidPayload(
-            JsonDocument.Parse("""{"name":"../data.db.zip"}""").RootElement));
-
-        Assert.IsTrue(restore.IsValidPayload(JsonDocument.Parse(
-            """{"name":"manual_20260724_101500.zip","confirmed":true}""").RootElement));
-        Assert.IsFalse(restore.IsValidPayload(JsonDocument.Parse(
-            """{"name":"manual_20260724_101500.zip","confirmed":false}""").RootElement));
-        Assert.IsFalse(restore.IsValidPayload(JsonDocument.Parse(
-            """{"name":"manual_20260724_101500.zip","confirmed":true,"sessionSecret":"x"}"""
-        ).RootElement));
     }
 
     [TestMethod]

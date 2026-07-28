@@ -2,6 +2,8 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +26,7 @@ func registerSchemaRoutes(
 	r *router.Router[*core.RequestEvent],
 	catalog schemaapi.SchemaCatalog,
 	jobService *jobs.Service,
+	gates ...businessWriteGate,
 ) {
 	r.GET("/api/vibetable/v1/schema/tables", func(request *core.RequestEvent) error {
 		definitions, err := catalog.List(request.Request.Context())
@@ -86,7 +89,18 @@ func registerSchemaRoutes(
 		if err := decodeSchemaRequest(request.Request.Body, &change); err != nil {
 			return writeSchemaError(request, err)
 		}
-		definition, err := catalog.ApplyChange(request.Request.Context(), change)
+		var definition schema.TableDefinition
+		err := runBusinessWrite(
+			request.Request.Context(),
+			gates,
+			"schema.apply",
+			schemaChangeIdentity(change),
+			func(ctx context.Context) error {
+				var applyErr error
+				definition, applyErr = catalog.ApplyChange(ctx, change)
+				return applyErr
+			},
+		)
 		if err != nil {
 			return writeSchemaError(request, err)
 		}
@@ -108,14 +122,41 @@ func registerSchemaRoutes(
 				Message: err.Error(),
 			})
 		}
-		result, err := catalog.DeleteTable(
-			request.Request.Context(), body.TableID, expectedRevision,
+		var result schemaapi.DeleteResult
+		err = runBusinessWrite(
+			request.Request.Context(),
+			gates,
+			"schema.delete",
+			fmt.Sprintf("%s:%d", body.TableID, expectedRevision),
+			func(ctx context.Context) error {
+				var deleteErr error
+				result, deleteErr = catalog.DeleteTable(
+					ctx,
+					body.TableID,
+					expectedRevision,
+				)
+				return deleteErr
+			},
 		)
 		if err != nil {
 			return writeSchemaError(request, err)
 		}
 		return request.JSON(http.StatusOK, result)
 	})
+}
+
+func schemaChangeIdentity(change schemaapi.Change) string {
+	if change.OperationID != "" {
+		return change.OperationID
+	}
+	raw, _ := json.Marshal(struct {
+		Definition       schema.TableDefinition `json:"definition"`
+		ExpectedRevision int64                  `json:"expectedRevision"`
+	}{
+		Definition:       change.Definition,
+		ExpectedRevision: change.ExpectedRevision,
+	})
+	return fmt.Sprintf("derived:%x", sha256.Sum256(raw))
 }
 
 func autoDateScanCounts(

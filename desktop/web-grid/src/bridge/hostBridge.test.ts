@@ -96,6 +96,49 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it("allows only the closed workspace v2 request type and correlates its reply", async () => {
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "workspace-v2-1",
+    });
+    bridge.start();
+    const wire = {
+      scope: "global" as const,
+      operationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      sequence: 1,
+    };
+    const pending = bridge.request("workspace.v2.request", {
+      method: "workspace.list",
+      params: {},
+      wire,
+    });
+    expect(webview.postMessage).toHaveBeenCalledWith({
+      type: "workspace.v2.request",
+      requestId: "workspace-v2-1",
+      payload: {
+        method: "workspace.list",
+        params: {},
+        wire,
+      },
+    });
+
+    const reply = {
+      method: "workspace.list",
+      wire,
+      ok: true,
+      result: { workspaces: [] },
+      error: null,
+    };
+    webview.emit({
+      type: "workspace.v2.response",
+      requestId: "workspace-v2-1",
+      payload: reply,
+    });
+    await expect(pending).resolves.toEqual(reply);
+    bridge.stop();
+  });
+
   it("uses a fresh requestId per request and does NOT cross-resolve a sibling", async () => {
     let counter = 0;
     const bridge = createHostBridge({
@@ -173,33 +216,6 @@ describe("HostBridge", () => {
       code: "ENOENT",
     });
 
-    bridge.stop();
-  });
-
-  it("correlates document requests with their distinct host outcomes", async () => {
-    const bridge = createHostBridge({
-      webview,
-      timeoutMs: 1000,
-      generateRequestId: () => "document-version-1",
-    });
-    bridge.start();
-
-    const pending = bridge.request("document.commitRevisionRequested", {
-      entryHandle: "entry-opaque",
-      note: "checkpoint",
-    });
-    webview.emit({
-      type: "document.versionCommitted",
-      requestId: "document-version-1",
-      payload: {
-        entryHandle: "entry-opaque",
-        revisionHandle: "revision-opaque",
-        currentRevision: "R2",
-        schemeHandle: null,
-      },
-    });
-
-    await expect(pending).resolves.toMatchObject({ currentRevision: "R2" });
     bridge.stop();
   });
 

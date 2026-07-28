@@ -15,7 +15,6 @@
     <ProjectReference Include="..\VibeTable.Infrastructure\VibeTable.Infrastructure.csproj" />
     <ProjectReference Include="..\VibeTable.PreviewHost\VibeTable.PreviewHost.csproj"
                       ReferenceOutputAssembly="false" />
-    <ProjectReference Include="..\VibeTable.Workspace\VibeTable.Workspace.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -25,6 +24,10 @@
   <ItemGroup>
     <None Remove="Assets\Brand\VibeTable.png" />
     <Resource Include="Assets\Brand\VibeTable.png" />
+    <Content Include="..\..\..\contracts\v2\provider-support.json"
+             Link="contracts\v2\provider-support.json"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <Target Name="CopyPreviewHostOutput"

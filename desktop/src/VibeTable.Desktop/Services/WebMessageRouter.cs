@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Services;
 
@@ -70,9 +71,6 @@ public sealed class WebMessageRouter
         "data.importSourceRequested",
         "data.exportTargetRequested",
         "dailyQuote.fetch",
-        "dataRoot.get",
-        "dataRoot.chooseMigrationRequested",
-        "backup.openFolder",
         "diagnostics.get",
         // G1 history query + two-phase safe restore.
         "history.queryRequested",
@@ -100,17 +98,7 @@ public sealed class WebMessageRouter
         "document.openRequested",
         "document.previewRequested",
         "document.revealRequested",
-        "document.historyRequested",
         "document.relinkRequested",
-        "document.commitRevisionRequested",
-        "document.promoteVersionRequested",
-        "document.revisionPreviewRequested",
-        "document.revisionRestoreRequested",
-        "document.schemeListRequested",
-        "document.schemeCreateRequested",
-        "document.schemeRenameRequested",
-        "document.schemeArchiveRequested",
-        "document.schemeActivateRequested",
         // Native-file attachment actions. File paths arrive only as WebView2
         // AdditionalObjects and are never accepted in renderer JSON.
         "file.uploadRequested",
@@ -137,6 +125,8 @@ public sealed class WebMessageRouter
         "plugin.surface.event",
         // Open the embedded data administration surface in this webview.
         "admin.openRequested",
+        // Single closed bridge for the generated workspace-v2 RPC catalog.
+        "workspace.v2.request",
     };
 
     /// <summary>
@@ -167,9 +157,6 @@ public sealed class WebMessageRouter
         "data.importSourceRequested",
         "data.exportTargetRequested",
         "dailyQuote.fetch",
-        "dataRoot.get",
-        "dataRoot.chooseMigrationRequested",
-        "backup.openFolder",
         "diagnostics.get",
         // G1 history query + two-phase safe restore outcomes.
         "history.pageLoaded",
@@ -185,14 +172,9 @@ public sealed class WebMessageRouter
         "dashboard.saved",
         "dashboard.deleted",
         "document.listLoaded",
-        "document.historyLoaded",
         "document.actionCompleted",
         "document.operationFailed",
         "document.workspaceChanged",
-        "document.versionCommitted",
-        "document.revisionPreviewCompleted",
-        "document.schemeListLoaded",
-        "document.schemeMutationCompleted",
         // Correlated native attachment action acknowledgements.
         "file.uploadRequested",
         "file.replaceRequested",
@@ -218,7 +200,63 @@ public sealed class WebMessageRouter
         "plugin.task.cancel",
         "plugin.task.get",
         "plugin.surface.event",
+        "workspace.v2.response",
+        "workspace.v2.bootstrap",
+        "workspace.v2.event",
     };
+
+    private static readonly IReadOnlyDictionary<string, string> WorkspaceV2Methods =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["workspace.list"] = "global",
+            ["workspace.create"] = "global",
+            ["workspace.register"] = "global",
+            ["workspace.relink"] = "global",
+            ["workspace.open"] = "global",
+            ["workspace.switch"] = "workspace",
+            ["workspace.close"] = "workspace",
+            ["workspace.remove"] = "global",
+            ["workspace.planDelete"] = "global",
+            ["workspace.applyDelete"] = "global",
+            ["workspace.storage.preview"] = "global",
+            ["workspace.storage.apply"] = "global",
+            ["snapshot.request"] = "workspace",
+            ["snapshot.list"] = "workspace",
+            ["snapshot.inspect"] = "workspace",
+            ["snapshot.update"] = "workspace",
+            ["snapshot.previewRestore"] = "workspace",
+            ["snapshot.applyRestore"] = "workspace",
+            ["snapshot.openAsNewWorkspace"] = "workspace",
+            ["snapshot.previewExtract"] = "workspace",
+            ["snapshot.applyExtract"] = "workspace",
+            ["snapshot.export"] = "workspace",
+            ["snapshot.inspectPackage"] = "global",
+            ["snapshot.import"] = "global",
+            ["repository.verify"] = "workspace",
+            ["repository.previewKeyRotation"] = "workspace",
+            ["repository.applyKeyRotation"] = "workspace",
+            ["fileHistory.listDocuments"] = "workspace",
+            ["fileHistory.listPendingChanges"] = "workspace",
+            ["fileHistory.import"] = "workspace",
+            ["fileHistory.relink"] = "workspace",
+            ["fileHistory.unlink"] = "workspace",
+            ["fileHistory.readTree"] = "workspace",
+            ["fileHistory.restore"] = "workspace",
+            ["fileHistory.upgrade"] = "workspace",
+            ["fileHistory.activateLeaf"] = "workspace",
+            ["fileHistory.applyPendingChange"] = "workspace",
+            ["retention.get"] = "workspace",
+            ["retention.update"] = "workspace",
+            ["retention.plan"] = "workspace",
+            ["retention.apply"] = "workspace",
+            ["replica.status"] = "workspace",
+            ["replica.synchronize"] = "workspace",
+            ["replica.forceTakeover"] = "workspace",
+            ["conflict.list"] = "workspace",
+            ["conflict.inspect"] = "workspace",
+            ["conflict.preview"] = "workspace",
+            ["conflict.apply"] = "workspace",
+        };
 
     static WebMessageRouter()
     {
@@ -323,7 +361,79 @@ public sealed class WebMessageRouter
                 ? payloadEl.Clone()
                 : default;
 
-            _dispatch(new RoutedWebRequest(type, requestId, payload, raw));
+            WorkspaceWireScope? scope = null;
+            JsonElement wire = default;
+            string? v2Method = null;
+            if (root.TryGetProperty("scope", out JsonElement scopeElement))
+            {
+                if (scopeElement.ValueKind != JsonValueKind.Object)
+                    return BuildOperationFailed(
+                        requestId,
+                        "Workspace scope must be an object.",
+                        "BAD_WORKSPACE_SCOPE");
+                try
+                {
+                    scope = WorkspaceV2Json.DeserializeStrict<WorkspaceWireScope>(
+                        scopeElement.GetRawText());
+                    scope.Validate();
+                }
+                catch (Exception exception) when (
+                    exception is JsonException or InvalidOperationException)
+                {
+                    return BuildOperationFailed(
+                        requestId,
+                        "Workspace scope is invalid.",
+                        "BAD_WORKSPACE_SCOPE");
+                }
+            }
+            if (string.Equals(type, "workspace.v2.request", StringComparison.Ordinal))
+            {
+                if (payload.ValueKind != JsonValueKind.Object
+                    || !payload.TryGetProperty("method", out JsonElement methodElement)
+                    || methodElement.ValueKind != JsonValueKind.String
+                    || !WorkspaceV2Methods.TryGetValue(
+                        methodElement.GetString() ?? string.Empty,
+                        out string? expectedScope))
+                {
+                    return BuildOperationFailed(
+                        requestId,
+                        "Workspace v2 method is not in the closed catalog.",
+                        "UNKNOWN_V2_METHOD");
+                }
+                v2Method = methodElement.GetString();
+                if (!root.TryGetProperty("wire", out JsonElement wireElement)
+                    || wireElement.ValueKind != JsonValueKind.Object)
+                    return BuildOperationFailed(
+                        requestId,
+                        "Workspace v2 wire envelope is required.",
+                        "BAD_WORKSPACE_WIRE");
+                try
+                {
+                    if (expectedScope == "workspace")
+                    {
+                        scope = WorkspaceV2Json.DeserializeStrict<WorkspaceWireScope>(
+                            wireElement.GetRawText());
+                        scope.Validate();
+                    }
+                    else
+                    {
+                        var global = WorkspaceV2Json.DeserializeStrict<GlobalWireScope>(
+                            wireElement.GetRawText());
+                        global.Validate();
+                    }
+                    wire = wireElement.Clone();
+                }
+                catch (JsonException)
+                {
+                    return BuildOperationFailed(
+                        requestId,
+                        "Workspace v2 wire envelope is invalid for this method.",
+                        "BAD_WORKSPACE_WIRE");
+                }
+            }
+
+            _dispatch(new RoutedWebRequest(
+                type, requestId, payload, raw, scope, wire, v2Method));
             return null;
         }
     }
@@ -385,7 +495,10 @@ public sealed record RoutedWebRequest(
     string Type,
     string? RequestId,
     JsonElement Payload,
-    string Raw);
+    string Raw,
+    WorkspaceWireScope? Scope = null,
+    JsonElement Wire = default,
+    string? V2Method = null);
 
 /// <summary>
 /// Host -&gt; web reply envelope. <see cref="Type"/> is one of the Phase A
@@ -396,7 +509,8 @@ public sealed record RoutedWebRequest(
 public sealed record HostReplyMessage(
     string Type,
     string? RequestId,
-    OperationFailedPayload? Payload);
+    OperationFailedPayload? Payload,
+    JsonElement Wire = default);
 
 /// <summary>
 /// Payload for the <c>operation.failed</c> notification. Mirrors

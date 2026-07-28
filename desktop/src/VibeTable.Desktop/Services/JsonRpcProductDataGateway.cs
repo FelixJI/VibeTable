@@ -67,10 +67,6 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
     public Task<JsonElement> CompareVersionAsync(JsonElement p, CancellationToken t) => Invoke("version.compare", p, t);
     public Task<JsonElement> PromoteVersionAsync(JsonElement p, CancellationToken t) => Invoke("version.promote", p, t);
     public Task<JsonElement> DeleteVersionAsync(JsonElement p, CancellationToken t) => Invoke("version.delete", p, t);
-    public Task<JsonElement> ListBackupsAsync(JsonElement p, CancellationToken t) => Invoke("backup.list", p, t);
-    public Task<JsonElement> CreateBackupAsync(JsonElement p, CancellationToken t) => Invoke("backup.create", p, t);
-    public Task<JsonElement> DeleteBackupAsync(JsonElement p, CancellationToken t) => Invoke("backup.delete", p, t);
-    public Task<JsonElement> RestoreBackupAsync(JsonElement p, CancellationToken t) => Invoke("backup.restore", p, t);
     public Task<JsonElement> RegisterImportSourceAsync(JsonElement p, CancellationToken t) => Invoke("path.registerImportSource", p, t);
     public Task<JsonElement> RegisterExportTargetAsync(JsonElement p, CancellationToken t) => Invoke("path.registerExportTarget", p, t);
     public Task<JsonElement> PreviewImportAsync(JsonElement p, CancellationToken t) => Invoke("data.previewImport", p, t);

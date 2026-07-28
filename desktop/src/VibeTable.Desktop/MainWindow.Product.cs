@@ -27,12 +27,20 @@ namespace VibeTable.Desktop;
 /// </summary>
 public partial class MainWindow : Window
 {
-    private readonly BackendLaunchOptions _backendOptions;
-    private readonly PocketBaseSupervisor _sidecar;
-    private readonly LocalDataService _localData;
-    private readonly ProductRuntimeService _runtime;
+    private readonly ProductionWorkspaceRuntimeFactory _runtime;
     private readonly WebMessageRouter _router;
     private readonly ProductWebViewBridge _webBridge;
+    private readonly ShellBootstrap _shellBootstrap;
+    private readonly WorkspaceRegistry _workspaceRegistry;
+    private readonly WorkspaceSessionManager _workspaceSessions;
+    private readonly WorkspaceSessionEnvelopeFilter _workspaceSessionFilter;
+    private readonly WorkspaceProviderPolicy _providerPolicy;
+    private readonly WorkspaceRepositoryOnboardingService _repositoryOnboarding;
+    private readonly IWorkspaceRepositoryRecoveryUi _repositoryRecoveryUi;
+    private readonly WorkspacePathGrantStore _workspacePathGrants;
+    private readonly SnapshotPackageBroker _snapshotPackages;
+    private readonly WorkspaceStorageBroker _workspaceStorage;
+    private readonly IDatabasePicker _databasePicker;
     private readonly LazyProductTableGateway _tableGateway;
     private readonly TableWorkspaceService _workspace;
     private readonly GridStateCoordinator _coordinator;
@@ -41,13 +49,9 @@ public partial class MainWindow : Window
     private readonly PluginWebViewResourceHost _pluginResources;
     private readonly PluginRequestDispatcher _pluginDispatcher;
     private readonly DailyQuoteHostClient _dailyQuotes;
-    private readonly WorkspaceMountStore _workspaceMounts;
-    private readonly ILocalDocumentFilePicker _documentFilePicker;
     private readonly ILocalDocumentPreview _attachmentPreview;
     private readonly string _attachmentPreviewRoot;
     private readonly string _productDataRoot;
-    private readonly string _pocketBaseDataDirectory;
-    private readonly string _pocketBaseVersion;
     private readonly DashboardFeatureOptions _dashboardFeatures;
     private readonly AutoDateFeatureOptions _autoDateFeatures;
     private readonly MainWindowViewModel _viewModel;
@@ -58,8 +62,10 @@ public partial class MainWindow : Window
 
     private JsonRpcProductDataGateway? _productGateway;
     private JsonRpcPluginGateway? _pluginGateway;
-    private DocumentWorkspaceHostService? _documentWorkspace;
+    private WorkspaceDocumentOsAdapter? _documentWorkspace;
     private DatabaseOpenResult? _workspaceSnapshot;
+    private ShellBootstrapResult? _shellBootstrapResult;
+    private readonly Dictionary<Guid, WorkspaceDeletePlan> _workspaceDeletePlans = [];
     private int _closing;
 
     public MainWindow()
@@ -76,7 +82,6 @@ public partial class MainWindow : Window
             : null;
         _dashboardFeatures = DashboardFeatureOptions.FromEnvironment();
         _autoDateFeatures = AutoDateFeatureOptions.FromEnvironment();
-        _backendOptions = BackendLaunchOptions.ResolveForHost();
         string? runtimeDataRoot = null;
         bool developmentDataRootRequested =
             !string.IsNullOrWhiteSpace(startup.DevelopmentDataRoot);
@@ -85,10 +90,6 @@ public partial class MainWindow : Window
             throw new InvalidOperationException(
                 "--dev-data-root cannot be combined with --test-mode.");
         }
-        PocketBaseLaunchOptions sidecarOptions = PocketBaseHostOptions.Resolve(
-            AppContext.BaseDirectory,
-            Environment.GetFolderPath(
-                Environment.SpecialFolder.LocalApplicationData));
         if (startup.TestMode && !string.IsNullOrWhiteSpace(startup.ReadinessDir))
         {
             runtimeDataRoot = Path.GetFullPath(
@@ -96,51 +97,20 @@ public partial class MainWindow : Window
         }
         else if (developmentDataRootRequested)
         {
-            if (!sidecarOptions.DevelopmentMode)
-            {
-                throw new InvalidOperationException(
-                    "--dev-data-root is available only from a source layout.");
-            }
             runtimeDataRoot = Path.GetFullPath(startup.DevelopmentDataRoot!);
-        }
-        else if (!startup.TestMode)
-        {
-            runtimeDataRoot = ProductDataRootManager.Resolve(
-                AppContext.BaseDirectory);
-        }
-        if (runtimeDataRoot is not null)
-        {
-            sidecarOptions = PocketBaseHostOptions.WithRuntimeDataRoot(
-                sidecarOptions,
-                runtimeDataRoot);
-            ProductDataRootManager.ConfigureProcessEnvironment(
-                _backendOptions.Environment,
-                runtimeDataRoot);
-            _backendOptions.LogPath = ProductDataRootManager.ResolveSidecarLogPath(
-                runtimeDataRoot);
         }
         _productDataRoot = runtimeDataRoot
             ?? Path.Combine(
                 Environment.GetFolderPath(
                     Environment.SpecialFolder.LocalApplicationData),
-                "VibeTable");
-        _pocketBaseDataDirectory = sidecarOptions.DataDirectory;
-        _pocketBaseVersion = sidecarOptions.ExpectedIdentity?.PocketBaseVersion
-            ?? "unknown";
+                "VibeTable",
+                "shell");
         _attachmentPreviewRoot = Path.Combine(
             _productDataRoot,
             "attachment-preview",
             $"p{Environment.ProcessId}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_attachmentPreviewRoot);
         _attachmentPreview = new ShellDocumentPreview();
-        _sidecar = new PocketBaseSupervisor(sidecarOptions);
-        _localData = new LocalDataService(_sidecar);
-        var backend = new PythonBackendSupervisor(_backendOptions);
-        _runtime = new ProductRuntimeService(
-            _localData,
-            _sidecar,
-            backend,
-            _backendOptions);
 
         _pluginSurfaces = new PluginSurfaceSessionManager();
         _pluginResources = new PluginWebViewResourceHost(
@@ -158,6 +128,67 @@ public partial class MainWindow : Window
                 ? Path.Combine(runtimeDataRoot, "webview2-user-data")
                 : null,
             stableIsolatedUserDataRoot: runtimeDataRoot is not null);
+        _workspaceRegistry = new WorkspaceRegistry(
+            startup.TestMode ? runtimeDataRoot : null);
+        IReadOnlyList<WorkspaceRegistryEntryV2> knownWorkspaces;
+        try
+        {
+            knownWorkspaces = _workspaceRegistry.List();
+        }
+        catch (WorkspaceRegistryException)
+        {
+            knownWorkspaces = [];
+        }
+        Func<PocketBaseLaunchOptions> sidecarOptionsFactory =
+            () => PocketBaseHostOptions.Resolve(
+                AppContext.BaseDirectory,
+                Environment.GetFolderPath(
+                    Environment.SpecialFolder.LocalApplicationData));
+        _runtime = new ProductionWorkspaceRuntimeFactory(
+            sidecarOptionsFactory,
+            () => BackendLaunchOptions.ResolveForHost(),
+            knownWorkspaces);
+        _repositoryOnboarding = new WorkspaceRepositoryOnboardingService(
+            sidecarOptionsFactory,
+            _runtime.PrepareRepositoryOnboarding);
+        _repositoryRecoveryUi = new WorkspaceRepositoryRecoveryUi();
+        _providerPolicy = WorkspaceProviderPolicy.Load(AppContext.BaseDirectory);
+        _workspacePathGrants = new WorkspacePathGrantStore(
+            new WindowsWorkspacePathPicker());
+        _shellBootstrap = new ShellBootstrap(_workspaceRegistry, _webBridge);
+        WorkspaceSessionEnvelopeFilter? productionEnvelopeFilter = null;
+        _workspaceSessions = new WorkspaceSessionManager(
+            _workspaceRegistry,
+            _runtime,
+            new SidecarWorkspaceProtectionHook(
+                _runtime,
+                (workspaceId, sessionEpoch) =>
+                    productionEnvelopeFilter?.ReserveHostSequence(
+                        workspaceId,
+                        sessionEpoch)
+                    ?? throw new InvalidOperationException(
+                        "Workspace request envelope filter is not bound.")),
+            new WorkspaceCoordinationLeaseHook(),
+            new WorkspaceKeyRotationPreOpenHook(
+                _repositoryOnboarding,
+                _repositoryRecoveryUi));
+        _workspaceSessionFilter = new WorkspaceSessionEnvelopeFilter(
+            _workspaceSessions);
+        productionEnvelopeFilter = _workspaceSessionFilter;
+        _workspaceSessions.SetRequestDrainHook(_workspaceSessionFilter);
+        _snapshotPackages = new SnapshotPackageBroker(
+            sidecarOptionsFactory,
+            () => BackendLaunchOptions.ResolveForHost(),
+            _providerPolicy,
+            _workspaceRegistry,
+            _workspaceSessions,
+            _productDataRoot);
+        _workspaceStorage = new WorkspaceStorageBroker(
+            _workspaceRegistry,
+            _workspaceSessions,
+            _providerPolicy,
+            _productDataRoot);
+        _databasePicker = new SessionProductSourcePicker(_workspaceSessions);
 
         IPluginPackageSourcePicker pluginPackagePicker =
             _e2eControlsDir is null
@@ -170,10 +201,7 @@ public partial class MainWindow : Window
             _pluginResources,
             new WindowsPluginFilePicker());
         _dailyQuotes = new DailyQuoteHostClient();
-        _workspaceMounts = new WorkspaceMountStore(runtimeDataRoot);
-        _documentFilePicker = new WindowsLocalDocumentFilePicker();
-
-        _tableGateway = new LazyProductTableGateway(backend);
+        _tableGateway = new LazyProductTableGateway();
         _workspace = new TableWorkspaceService(_tableGateway);
         _workspace.Notification += OnWorkspaceNotification;
         _coordinator = new GridStateCoordinator(
@@ -181,14 +209,17 @@ public partial class MainWindow : Window
             OnWorkspaceNotification);
         _dispatcher = new WorkspaceRequestDispatcher(
             _workspace,
-            new FixedProductSourcePicker(),
+            _databasePicker,
             _webBridge,
             _coordinator,
             _dashboardFeatures,
-            autoDateFeatures: _autoDateFeatures);
+            autoDateFeatures: _autoDateFeatures,
+            sessionEnvelopeFilter: _workspaceSessionFilter);
 
         _runtime.ClientReady += OnRuntimeClientReady;
         _runtime.RecoveryFailed += OnRuntimeRecoveryFailed;
+        _runtime.BindingChanged += OnRuntimeBindingChanged;
+        _workspaceSessions.Changed += OnWorkspaceSessionChanged;
         _viewModel = new MainWindowViewModel(_runtime, _webBridge);
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         DataContext = _viewModel;
@@ -201,11 +232,24 @@ public partial class MainWindow : Window
     {
         try
         {
-            _readiness?.Trace("MainWindow: starting product runtime");
+            _readiness?.Trace("MainWindow: starting global shell");
+            _shellBootstrapResult = await _shellBootstrap.StartAsync();
+            _viewModel.MarkShellLoaded();
+            _readiness?.Trace("MainWindow: loading shell renderer");
             await _viewModel.StartAsync();
             if (_viewModel.State == StartupState.Faulted)
             {
                 Exception? error = _viewModel.LastStartupError;
+                _webBridge.PostNotification(
+                    "host.startupStateChanged",
+                    new
+                    {
+                        phase = "faulted",
+                        stage = "runtime",
+                        detail = "全局界面加载失败，可重试。",
+                        canRetry = true,
+                        canCancel = false,
+                    });
                 _readiness?.WriteError(
                     error is null
                         ? "Product runtime startup failed."
@@ -227,7 +271,11 @@ public partial class MainWindow : Window
 
     private void ConfigureRpcGateways()
     {
-        JsonRpcClient client = _runtime.Backend.Client
+        PythonBackendSupervisor backend = _runtime.CurrentBackend
+            ?? throw new InvalidOperationException(
+                "No workspace runtime is bound.");
+        _tableGateway.Bind(backend);
+        JsonRpcClient client = backend.Client
             ?? throw new InvalidOperationException(
                 "The product RPC client is not ready.");
 
@@ -252,20 +300,54 @@ public partial class MainWindow : Window
         _pluginDispatcher.SetGateway(_pluginGateway);
 
         _documentWorkspace?.Dispose();
-        _documentWorkspace = new DocumentWorkspaceHostService(
-            new JsonRpcDocumentWorkspaceGateway(client),
-            _workspaceMounts,
+        _documentWorkspace = new WorkspaceDocumentOsAdapter(
+            CurrentWorkspaceDocumentBinding,
             new DocumentCapabilityStore(),
             new WindowsLocalDocumentActions(),
-            filePicker: _documentFilePicker,
-            partitionKey: "local:default|user:local");
+            new ShellDocumentPreview(),
+            new WindowsLocalDocumentFilePicker());
         _dispatcher.SetDocumentWorkspace(_documentWorkspace);
 
         _workspaceSnapshot = null;
         if (_router.IsReady)
         {
+            PostRuntimeReady();
             _ = OpenProductWorkspaceAsync();
         }
+    }
+
+    private WorkspaceDocumentBinding? CurrentWorkspaceDocumentBinding()
+    {
+        WorkspaceRegistryEntryV2? workspace = _runtime.CurrentWorkspace;
+        WorkspaceV2HttpGateway? gateway = _runtime.CurrentV2Gateway;
+        WorkspaceV2SidecarCapabilities? capabilities =
+            _runtime.CurrentCapabilities;
+        WorkspaceSessionV2 session = _workspaceSessions.Current;
+        if (workspace is null || gateway is null || capabilities is null ||
+            session.WorkspaceId != workspace.WorkspaceId ||
+            session.SessionEpoch == 0)
+            return null;
+        return new WorkspaceDocumentBinding(
+            workspace.WorkspaceId,
+            session.SessionEpoch,
+            session.Writable,
+            ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace),
+            gateway,
+            capabilities.RpcMethods);
+    }
+
+    private void PostRuntimeReady()
+    {
+        _webBridge.PostNotification(
+            "host.startupStateChanged",
+            new
+            {
+                phase = "ready",
+                stage = "runtime",
+                detail = "本地数据服务已就绪。",
+                canRetry = false,
+                canCancel = false,
+            });
     }
 
     private void OnRuntimeRecoveryFailed(Exception exception)
@@ -274,6 +356,16 @@ public partial class MainWindow : Window
             $"Local data recovery failed: {exception.GetType().Name}");
         Dispatcher.BeginInvoke(() =>
         {
+            _webBridge.PostNotification(
+                "host.startupStateChanged",
+                new
+                {
+                    phase = "faulted",
+                    stage = "runtime",
+                    detail = "本地数据服务恢复失败，可重试或切换工作区。",
+                    canRetry = true,
+                    canCancel = false,
+                });
             if (_viewModel.State is StartupState.LoadingWeb or StartupState.Ready)
             {
                 _viewModel.MoveToFaulted("Local data recovery failed.");
@@ -281,8 +373,38 @@ public partial class MainWindow : Window
         });
     }
 
+    private void OnRuntimeBindingChanged()
+    {
+        if (Volatile.Read(ref _closing) != 0)
+            return;
+        Dispatcher.BeginInvoke(() =>
+        {
+            PythonBackendSupervisor? backend = _runtime.CurrentBackend;
+            if (backend is not null)
+            {
+                _tableGateway.Bind(backend);
+                return;
+            }
+            _tableGateway.Unbind();
+            if (_productGateway is not null)
+            {
+                _dispatcher.ClearProductDataGateway(_productGateway);
+                _productGateway.DataChanged -= OnProductDataChanged;
+                _productGateway.TaskChanged -= OnProductTaskChanged;
+                _productGateway.Dispose();
+                _productGateway = null;
+            }
+            _pluginGateway?.Dispose();
+            _pluginGateway = null;
+            _documentWorkspace?.Dispose();
+            _documentWorkspace = null;
+            _workspaceSnapshot = null;
+        });
+    }
+
     private void OnRendererProcessFailed(string reason)
     {
+        _viewModel.MarkShellUnavailable();
         if (_viewModel.State is StartupState.LoadingWeb or StartupState.Ready)
         {
             _viewModel.MoveToFaulted(reason);
@@ -302,18 +424,34 @@ public partial class MainWindow : Window
             _router.IsReady = true;
             _dispatcher.RotateDocumentCapabilityEpoch();
             _pluginResources.CloseAllSurfaces();
-            _webBridge.PostNotification(
-                "host.startupStateChanged",
-                new
-                {
-                    phase = "ready",
-                    title = "已就绪",
-                    detail = "本地数据服务已就绪。",
-                    canRetry = false,
-                    canCancel = false,
-                });
-            _ = OpenProductWorkspaceAsync();
+            PostWorkspaceV2Bootstrap();
+            if (_runtime.CurrentBackend?.State == BackendState.Ready
+                && _productGateway is not null)
+            {
+                PostRuntimeReady();
+                _ = OpenProductWorkspaceAsync();
+            }
+            else
+            {
+                _webBridge.PostNotification(
+                    "host.startupStateChanged",
+                    new
+                    {
+                        phase = "starting",
+                        stage = "shell",
+                        detail = _shellBootstrapResult?.RegistryErrorCode is null
+                            ? "工作区中心已就绪，请选择或创建工作区。"
+                            : "工作区列表需要修复。",
+                        canRetry = false,
+                        canCancel = false,
+                    });
+            }
             TryWriteReadiness();
+            return;
+        }
+        if (request.Type == "workspace.v2.request")
+        {
+            _ = HandleWorkspaceV2RequestAsync(request);
             return;
         }
         if (request.Type == "host.startupCancelRequested")
@@ -343,40 +481,6 @@ public partial class MainWindow : Window
             }
             return;
         }
-        if (request.Type == "backup.openFolder")
-        {
-            if (!HasEmptyObjectPayload(request))
-            {
-                _webBridge.PostOperationFailed(
-                    request.RequestId,
-                    "The backup-folder request is invalid.",
-                    "BACKUP_FOLDER_BAD_PAYLOAD");
-                return;
-            }
-            try
-            {
-                string backupDirectory = Path.Combine(
-                    _pocketBaseDataDirectory,
-                    "backups");
-                Directory.CreateDirectory(backupDirectory);
-                Process.Start(new ProcessStartInfo(backupDirectory)
-                {
-                    UseShellExecute = true,
-                });
-                _webBridge.PostResponse(
-                    request.Type,
-                    request.RequestId,
-                    new { status = "opened" });
-            }
-            catch (Exception exception)
-            {
-                _webBridge.PostOperationFailed(
-                    request.RequestId,
-                    exception.Message,
-                    "BACKUP_FOLDER_OPEN_FAILED");
-            }
-            return;
-        }
         if (request.Type == "diagnostics.get")
         {
             if (!HasEmptyObjectPayload(request))
@@ -400,63 +504,18 @@ public partial class MainWindow : Window
                     programVersion = ApplicationVersion.FromAssembly(
                         typeof(MainWindow).Assembly),
                     dotnetVersion = Environment.Version.ToString(),
-                    pocketBaseVersion = _pocketBaseVersion,
+                    pocketBaseVersion =
+                        _runtime.CurrentPocketBaseVersion ?? "not-started",
                     memoryBytes = process.WorkingSet64,
-                    dataServiceState = _localData.GetStatus().State.ToString(),
+                    dataServiceState =
+                        _runtime.CurrentSidecar?.GetStatus().State.ToString()
+                        ?? "Stopped",
                 });
             return;
         }
         if (request.Type == "dailyQuote.fetch")
         {
             _ = FetchDailyQuoteAsync(request);
-            return;
-        }
-        if (request.Type == "dataRoot.get")
-        {
-            if (!HasEmptyObjectPayload(request))
-            {
-                _webBridge.PostOperationFailed(
-                    request.RequestId,
-                    "The data-root status request is invalid.",
-                    "DATA_ROOT_BAD_PAYLOAD");
-                return;
-            }
-            _webBridge.PostResponse(
-                request.Type,
-                request.RequestId,
-                ProductDataRootManager.GetStatus(
-                    _productDataRoot,
-                    AppContext.BaseDirectory));
-            return;
-        }
-        if (request.Type == "dataRoot.chooseMigrationRequested")
-        {
-            if (!HasEmptyObjectPayload(request))
-            {
-                _webBridge.PostOperationFailed(
-                    request.RequestId,
-                    "The data-root migration request is invalid.",
-                    "DATA_ROOT_BAD_PAYLOAD");
-                return;
-            }
-            try
-            {
-                _webBridge.PostResponse(
-                    request.Type,
-                    request.RequestId,
-                    ProductDataRootManager.ChooseAndScheduleMigration(
-                        _productDataRoot));
-            }
-            catch (Exception exception)
-            {
-                _readiness?.Trace(
-                    $"Data-root migration selection failed; " +
-                    $"exception={exception.GetType().Name}");
-                _webBridge.PostOperationFailed(
-                    request.RequestId,
-                    exception.Message,
-                    "DATA_ROOT_MIGRATION_REJECTED");
-            }
             return;
         }
         if (request.Type == "document.importRequested")
@@ -496,20 +555,6 @@ public partial class MainWindow : Window
         if (request.Type == "document.dragOutRequested")
         {
             DragDocumentOut(request.Payload);
-            return;
-        }
-        if (request.Type is
-            "document.commitRevisionRequested"
-            or "document.promoteVersionRequested"
-            or "document.revisionPreviewRequested"
-            or "document.revisionRestoreRequested"
-            or "document.schemeListRequested"
-            or "document.schemeCreateRequested"
-            or "document.schemeRenameRequested"
-            or "document.schemeArchiveRequested"
-            or "document.schemeActivateRequested")
-        {
-            _ = HandleDocumentVersionRequestAsync(request);
             return;
         }
         if (request.Type == "file.uploadRequested")
@@ -621,172 +666,1167 @@ public partial class MainWindow : Window
         _dispatcher.Dispatch(request);
     }
 
-    private async Task HandleDocumentVersionRequestAsync(RoutedWebRequest request)
+    private async Task HandleWorkspaceV2RequestAsync(RoutedWebRequest request)
     {
-        if (_documentWorkspace is null)
-        {
-            _webBridge.PostOperationFailed(
-                request.RequestId,
-                "The document workspace is not connected.",
-                "DOCUMENT_WORKSPACE_UNAVAILABLE");
-            return;
-        }
-
+        WorkspaceRequestEpochLease? epochLease = null;
         try
         {
-            object result;
-            string responseType;
-            string? changedReason = null;
-            switch (request.Type)
+            bool lifecycleRequest = request.V2Method is
+                "workspace.switch" or "workspace.close";
+            bool admitted = request.Scope is null ||
+                (lifecycleRequest
+                    ? _workspaceSessionFilter.TryAdmitLifecycleRequest(
+                        request.Scope)
+                    : _workspaceSessionFilter.TryCapture(
+                        request.Scope,
+                        out epochLease));
+            if (!admitted)
             {
-                case "document.commitRevisionRequested":
+                throw new WorkspaceRegistryException(
+                    "workspace.session_stale",
+                    "The workspace request does not belong to the active session.");
+            }
+            using CancellationTokenSource? requestCancellation =
+                epochLease is null
+                    ? null
+                    : CancellationTokenSource.CreateLinkedTokenSource(
+                        _session.Token,
+                        epochLease.CancellationToken);
+            CancellationToken requestToken =
+                requestCancellation?.Token ?? _session.Token;
+            JsonElement parameters = request.Payload.TryGetProperty(
+                "params", out JsonElement value)
+                    ? value
+                    : default;
+            Guid operationId = ReadOperationId(request.Wire);
+            object result;
+            switch (request.V2Method)
+            {
+                case "workspace.list":
+                    result = new
+                    {
+                        workspaces = _workspaceRegistry.List()
+                            .Select(ToWorkspaceProjection)
+                            .ToArray(),
+                    };
+                    break;
+                case "workspace.create":
+                    result = await CreateWorkspaceAsync(
+                        parameters,
+                        operationId,
+                        requestToken);
+                    break;
+                case "workspace.register":
+                    result = RegisterWorkspace(parameters, operationId);
+                    break;
+                case "workspace.relink":
+                    result = RelinkWorkspace(parameters, operationId);
+                    break;
+                case "workspace.open":
+                    result = ToSessionResult(
+                        await OpenWorkspaceWithRecoveryAsync(
+                            ReadRequiredGuid(parameters, "workspaceId"),
+                            ReadOpenMode(parameters),
+                            switching: false,
+                            requestToken));
+                    break;
+                case "workspace.switch":
+                    result = ToSessionResult(
+                        await OpenWorkspaceWithRecoveryAsync(
+                            ReadRequiredGuid(parameters, "targetWorkspaceId"),
+                            ReadOpenMode(parameters),
+                            switching: true,
+                            requestToken));
+                    break;
+                case "workspace.close":
+                    result = ToSessionResult(
+                        await _workspaceSessions.CloseAsync(
+                            ReadString(parameters, "reason") ?? "user",
+                            requestToken));
+                    break;
+                case "workspace.remove":
+                    result = RemoveWorkspace(parameters);
+                    break;
+                case "workspace.planDelete":
+                    result = PlanWorkspaceDelete(parameters);
+                    break;
+                case "workspace.applyDelete":
+                    result = ApplyWorkspaceDelete(parameters);
+                    break;
+                case "snapshot.inspectPackage":
                 {
-                    var payload = ReadDocumentPayload<DocumentCommitRevisionRequestedPayload>(
-                        request.Payload);
-                    result = await _documentWorkspace.CommitRevisionAsync(
-                        payload.EntryHandle,
-                        payload.Note,
-                        payload.SchemeHandle,
-                        _session.Token).ConfigureAwait(false);
-                    responseType = "document.versionCommitted";
-                    changedReason = "revision";
+                    JsonElement packageParameters =
+                        _workspacePathGrants.MaterializeSentinels(
+                            request.V2Method!,
+                            operationId,
+                            parameters);
+                    WorkspaceSidecarPathGrant sourceGrant =
+                        _workspacePathGrants.ConsumeForSidecar(
+                            packageParameters,
+                            request.V2Method!,
+                            operationId)
+                        ?? throw new WorkspacePathGrantException(
+                            "workspace.path_grant_invalid",
+                            "Snapshot package inspection requires a native source grant.");
+                    result = await _snapshotPackages.InspectAsync(
+                        request.RequestId ?? operationId.ToString("D"),
+                        request.Wire,
+                        packageParameters,
+                        sourceGrant,
+                        requestToken);
                     break;
                 }
-                case "document.promoteVersionRequested":
+                case "snapshot.import":
+                    result = await _snapshotPackages.ImportAsync(
+                        request.RequestId ?? operationId.ToString("D"),
+                        request.Wire,
+                        parameters,
+                        requestToken);
+                    break;
+                case "snapshot.openAsNewWorkspace":
                 {
-                    var payload = ReadDocumentPayload<DocumentPromoteVersionRequestedPayload>(
-                        request.Payload);
-                    result = await _documentWorkspace.PromoteVersionAsync(
-                        payload.EntryHandle,
-                        payload.VersionLabel,
-                        payload.Note,
-                        payload.SchemeHandle,
-                        _session.Token).ConfigureAwait(false);
-                    responseType = "document.versionCommitted";
-                    changedReason = "revision";
+                    WorkspaceV2HttpGateway sourceGateway =
+                        _runtime.CurrentV2Gateway
+                        ?? throw new WorkspaceRegistryException(
+                            "workspace.session_required",
+                            "Opening a snapshot as a new workspace requires an active source workspace.");
+                    if (_runtime.CurrentCapabilities?.RpcMethods.Contains(
+                            "snapshot.export",
+                            StringComparer.Ordinal) != true)
+                    {
+                        throw new WorkspaceRegistryException(
+                            "workspace.capability_unavailable",
+                            "The source runtime cannot export this snapshot.");
+                    }
+                    SnapshotOpenAsNewPlan plan =
+                        await _snapshotPackages.StageOpenAsNewAsync(
+                            sourceGateway,
+                            request.RequestId ?? operationId.ToString("D"),
+                            request.Wire,
+                            parameters,
+                            requestToken);
+                    // The package is now staged independently of the source
+                    // epoch. Release this request before switching sessions so
+                    // the source drain cannot wait on its own broker request.
+                    epochLease?.Dispose();
+                    epochLease = null;
+                    result = ToSessionResult(
+                        await _snapshotPackages.CompleteOpenAsNewAsync(
+                            plan,
+                            request.RequestId ?? operationId.ToString("D"),
+                            _session.Token));
                     break;
                 }
-                case "document.revisionPreviewRequested":
+                case "workspace.storage.preview":
                 {
-                    var payload = ReadDocumentPayload<DocumentRevisionHandleRequest>(
-                        request.Payload);
-                    result = _documentWorkspace.PreviewRevision(
-                        payload.EntryHandle,
-                        payload.RevisionHandle);
-                    responseType = "document.revisionPreviewCompleted";
+                    string? action = ReadString(parameters, "action");
+                    string? selectedRoot = null;
+                    JsonElement storageParameters = parameters;
+                    if (action == "relocate")
+                    {
+                        storageParameters =
+                            _workspacePathGrants.MaterializeSentinels(
+                                request.V2Method!,
+                                operationId,
+                                parameters);
+                        string grantId =
+                            ReadString(
+                                storageParameters,
+                                "selectedRootGrant")
+                            ?? throw new WorkspacePathGrantException(
+                                "workspace.path_grant_invalid",
+                                "Storage relocation requires a native target grant.");
+                        selectedRoot = _workspacePathGrants.Consume(
+                            grantId,
+                            request.V2Method!,
+                            operationId,
+                            "workspace-root");
+                    }
+                    result = await _workspaceStorage.PreviewAsync(
+                        storageParameters,
+                        selectedRoot,
+                        requestToken);
                     break;
                 }
-                case "document.revisionRestoreRequested":
-                {
-                    var payload = ReadDocumentPayload<DocumentRevisionHandleRequest>(
-                        request.Payload);
-                    result = await _documentWorkspace.RestoreRevisionAsync(
-                        payload.EntryHandle,
-                        payload.RevisionHandle,
-                        _session.Token).ConfigureAwait(false);
-                    responseType = "document.versionCommitted";
-                    changedReason = "restore";
+                case "workspace.storage.apply":
+                    result = await _workspaceStorage.ApplyAsync(
+                        parameters,
+                        requestToken);
+                    _ = Dispatcher.BeginInvoke(PostWorkspaceV2Bootstrap);
                     break;
-                }
-                case "document.schemeListRequested":
-                {
-                    var payload = ReadDocumentPayload<DocumentEntryHandleRequest>(
-                        request.Payload);
-                    result = _documentWorkspace.ListSchemes(payload.EntryHandle);
-                    responseType = "document.schemeListLoaded";
-                    break;
-                }
-                case "document.schemeCreateRequested":
-                {
-                    var payload = ReadDocumentPayload<DocumentSchemeCreateRequestedPayload>(
-                        request.Payload);
-                    result = await _documentWorkspace.CreateSchemeAsync(
-                        payload.EntryHandle,
-                        payload.Name,
-                        payload.BaseRevisionHandle,
-                        _session.Token).ConfigureAwait(false);
-                    responseType = "document.schemeMutationCompleted";
-                    changedReason = "scheme";
-                    break;
-                }
-                case "document.schemeRenameRequested":
-                {
-                    var payload = ReadDocumentPayload<DocumentSchemeRenameRequestedPayload>(
-                        request.Payload);
-                    result = await _documentWorkspace.RenameSchemeAsync(
-                        payload.EntryHandle,
-                        payload.SchemeHandle,
-                        payload.Name,
-                        _session.Token).ConfigureAwait(false);
-                    responseType = "document.schemeMutationCompleted";
-                    changedReason = "scheme";
-                    break;
-                }
-                case "document.schemeArchiveRequested":
-                {
-                    var payload = ReadDocumentPayload<DocumentSchemeHandleRequest>(
-                        request.Payload);
-                    result = await _documentWorkspace.ArchiveSchemeAsync(
-                        payload.EntryHandle,
-                        payload.SchemeHandle,
-                        _session.Token).ConfigureAwait(false);
-                    responseType = "document.schemeMutationCompleted";
-                    changedReason = "scheme";
-                    break;
-                }
-                case "document.schemeActivateRequested":
-                    _ = ReadDocumentPayload<DocumentSchemeHandleRequest>(
-                        request.Payload);
-                    throw new DocumentFileOperationException(
-                        "Activating a scheme is not supported because the workspace has no persistent active-scheme model.",
-                        "NOT_SUPPORTED");
                 default:
+                    if (IsWorkspaceMutation(request.V2Method!)
+                        && !_workspaceSessions.Current.Writable)
+                    {
+                        throw new WorkspaceRegistryException(
+                            "workspace.read_only",
+                            "This workspace session is read-only.");
+                    }
+                    WorkspaceV2HttpGateway gateway =
+                        _runtime.CurrentV2Gateway
+                        ?? throw new WorkspaceRegistryException(
+                            "workspace.session_required",
+                            "This operation requires an active workspace session.");
+                    if (_runtime.CurrentCapabilities?.RpcMethods.Contains(
+                            request.V2Method!,
+                            StringComparer.Ordinal) != true)
+                    {
+                        throw new WorkspaceRegistryException(
+                            "workspace.capability_unavailable",
+                            "This workspace v2 capability is not connected in this build.");
+                    }
+                    JsonElement materialized =
+                        _workspacePathGrants.MaterializeSentinels(
+                            request.V2Method!,
+                            operationId,
+                            parameters);
+                    WorkspaceSidecarPathGrant? sidecarPathGrant =
+                        _workspacePathGrants.ConsumeForSidecar(
+                            materialized,
+                            request.V2Method!,
+                            operationId);
+                    WorkspaceV2ForwardResult forwarded =
+                        await gateway.ForwardAsync(
+                            request.RequestId ?? operationId.ToString("D"),
+                            request.V2Method!,
+                            request.Wire,
+                            materialized,
+                            sidecarPathGrant,
+                            requestToken);
+                    if (epochLease is not null &&
+                        !_workspaceSessionFilter.IsCurrent(epochLease))
+                        return;
+                    if (forwarded.Error is not null)
+                    {
+                        _webBridge.PostWorkspaceV2Response(
+                            request.RequestId,
+                            new
+                            {
+                                method = request.V2Method,
+                                wire = forwarded.Wire,
+                                ok = false,
+                                result = (object?)null,
+                                error = new
+                                {
+                                    code = forwarded.Error.Code,
+                                    message = forwarded.Error.Message,
+                                    retryable = forwarded.Error.Retryable,
+                                },
+                            },
+                            forwarded.Wire);
+                        return;
+                    }
+                    _webBridge.PostWorkspaceV2Response(
+                        request.RequestId,
+                        new
+                        {
+                            method = request.V2Method,
+                            wire = forwarded.Wire,
+                            ok = true,
+                            result = forwarded.Result,
+                            error = (object?)null,
+                        },
+                        forwarded.Wire);
+                    if (request.V2Method == "snapshot.applyRestore"
+                        && IsPreparedRestoreResult(forwarded.Result)
+                        && request.Scope is not null)
+                    {
+                        // The prepared response must reach the old epoch
+                        // before it is rotated. Go has suspended the workspace
+                        // and requested shutdown; Desktop owns the explicit
+                        // stop/reopen/verify/bootstrap sequence.
+                        epochLease?.Dispose();
+                        epochLease = null;
+                        try
+                        {
+                            _ = await _workspaceSessions
+                                .RestartAfterRestoreAsync(
+                                    request.Scope.WorkspaceId,
+                                    request.Scope.SessionEpoch,
+                                    _session.Token);
+                            PostWorkspaceV2Bootstrap();
+                        }
+                        catch (Exception restartError)
+                        {
+                            _readiness?.WriteError(
+                                $"Restored workspace restart failed: {restartError.GetType().Name}");
+                            PostWorkspaceV2Bootstrap();
+                        }
+                    }
+                    else if (request.V2Method
+                                 == "repository.applyKeyRotation"
+                             && IsKeyRotationRestartResult(
+                                 forwarded.Result)
+                             && request.Scope is not null)
+                    {
+                        epochLease?.Dispose();
+                        epochLease = null;
+                        try
+                        {
+                            _ = await _workspaceSessions
+                                .RestartAfterHostMaintenanceAsync(
+                                    request.Scope.WorkspaceId,
+                                    request.Scope.SessionEpoch,
+                                    _session.Token);
+                            PostWorkspaceV2Bootstrap();
+                        }
+                        catch (Exception restartError)
+                        {
+                            _readiness?.WriteError(
+                                $"Repository key rotation restart failed: {restartError.GetType().Name}");
+                            PostWorkspaceV2Bootstrap();
+                        }
+                    }
                     return;
             }
-
-            _webBridge.PostResponse(responseType, request.RequestId, result);
-            if (changedReason is not null)
-                PostDocumentWorkspaceChanged(changedReason, 1);
+            _webBridge.PostWorkspaceV2Response(
+                request.RequestId,
+                new
+                {
+                    method = request.V2Method,
+                    wire = request.Wire,
+                    ok = true,
+                    result,
+                    error = (object?)null,
+                },
+                request.Wire);
         }
-        catch (OperationCanceledException) when (_session.IsCancellationRequested)
+        catch (OperationCanceledException)
+            when (epochLease?.CancellationToken.IsCancellationRequested == true)
         {
+            // Draining invalidated this epoch. Never post a late response into
+            // a new workspace session.
         }
         catch (Exception exception)
         {
-            DocumentOperationFailedPayload failure = exception switch
-            {
-                DocumentFileOperationException value =>
-                    new DocumentOperationFailedPayload(value.Message, value.Code),
-                DocumentCapabilityException value =>
-                    new DocumentOperationFailedPayload(value.Message, value.Code),
-                _ => new DocumentOperationFailedPayload(
-                    "The document version operation did not complete.",
-                    "DOCUMENT_VERSION_OPERATION_FAILED"),
-            };
-            _webBridge.PostOperationFailed(
+            string code = exception is WorkspaceRegistryException registry
+                ? registry.Code
+                : exception is WorkspacePathGrantException grant
+                    ? grant.Code
+                : "workspace.operation_failed";
+            _webBridge.PostWorkspaceV2Response(
                 request.RequestId,
-                failure.Message,
-                failure.Code);
-            PostDocumentFailure(
-                failure.Message,
-                failure.Code ?? "DOCUMENT_VERSION_OPERATION_FAILED");
+                new
+                {
+                    method = request.V2Method,
+                    wire = request.Wire,
+                    ok = false,
+                    result = (object?)null,
+                    error = new
+                    {
+                        code,
+                        message = exception.Message,
+                        retryable = false,
+                    },
+                },
+                request.Wire);
+        }
+        finally
+        {
+            epochLease?.Dispose();
         }
     }
 
-    private static T ReadDocumentPayload<T>(JsonElement payload)
-        where T : class
+    private async Task<WorkspaceSessionV2> OpenWorkspaceWithRecoveryAsync(
+        Guid workspaceId,
+        WorkspaceOpenMode mode,
+        bool switching,
+        CancellationToken cancellationToken)
     {
         try
         {
-            return payload.Deserialize<T>()
-                ?? throw new JsonException("Document request payload is empty.");
+            return switching
+                ? await _workspaceSessions.SwitchAsync(
+                    workspaceId,
+                    mode,
+                    cancellationToken)
+                : await _workspaceSessions.OpenAsync(
+                    workspaceId,
+                    mode,
+                    cancellationToken);
         }
-        catch (JsonException)
+        catch (Exception exception) when (RequiresRepositoryRecovery(exception))
         {
-            throw new DocumentFileOperationException(
-                "The document request payload is invalid.",
-                "BAD_PAYLOAD");
+            WorkspaceRegistryEntryV2 workspace = _workspaceRegistry.List()
+                .Single(entry => entry.WorkspaceId == workspaceId);
+            string? recoveryKey = _repositoryRecoveryUi.PromptRecoveryKey(
+                workspace.DisplayName);
+            if (string.IsNullOrWhiteSpace(recoveryKey))
+                throw new WorkspaceRegistryException(
+                    "repository.recovery_cancelled",
+                    "Workspace recovery was cancelled.");
+            await _repositoryOnboarding.UnlockAsync(
+                workspace,
+                recoveryKey,
+                cancellationToken);
+            return switching
+                ? await _workspaceSessions.SwitchAsync(
+                    workspaceId,
+                    mode,
+                    cancellationToken)
+                : await _workspaceSessions.OpenAsync(
+                    workspaceId,
+                    mode,
+                    cancellationToken);
         }
+    }
+
+    private static bool RequiresRepositoryRecovery(Exception exception)
+    {
+        for (Exception? current = exception;
+             current is not null;
+             current = current.InnerException)
+        {
+            if (current is WorkspaceRegistryException registry &&
+                registry.Code == "repository.key_missing")
+                return true;
+            if (current.Message.Contains(
+                    "repository.key_missing",
+                    StringComparison.Ordinal))
+                return true;
+            if (current is AggregateException aggregate &&
+                aggregate.InnerExceptions.Any(RequiresRepositoryRecovery))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool IsPreparedRestoreResult(JsonElement? result)
+        => result is JsonElement value
+            && value.ValueKind == JsonValueKind.Object
+            && value.TryGetProperty("state", out JsonElement state)
+            && state.ValueKind == JsonValueKind.String
+            && state.GetString() == "prepared";
+
+    private static bool IsKeyRotationRestartResult(JsonElement? result)
+        => result is JsonElement value
+            && value.ValueKind == JsonValueKind.Object
+            && value.EnumerateObject().Count() == 3
+            && value.TryGetProperty("operationId", out JsonElement operation)
+            && operation.ValueKind == JsonValueKind.String
+            && Guid.TryParse(operation.GetString(), out Guid operationId)
+            && operationId != Guid.Empty
+            && value.TryGetProperty("state", out JsonElement state)
+            && state.ValueKind == JsonValueKind.String
+            && state.GetString() == "hostRestartRequired"
+            && value.TryGetProperty(
+                "newRecoveryKeyAvailable",
+                out JsonElement available)
+            && available.ValueKind == JsonValueKind.False;
+
+    private async Task<object> CreateWorkspaceAsync(
+        JsonElement parameters,
+        Guid operationId,
+        CancellationToken cancellationToken)
+    {
+        JsonElement materialized = _workspacePathGrants.MaterializeSentinels(
+            "workspace.create",
+            operationId,
+            parameters);
+        string grant = ReadString(materialized, "selectedRootGrant")
+            ?? throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                "Missing selectedRootGrant.");
+        string selectedRoot = _workspacePathGrants.Consume(
+            grant,
+            "workspace.create",
+            operationId,
+            "workspace-root");
+        WorkspaceStorageObservation selectedStorage =
+            ProbeCreateTarget(_providerPolicy, selectedRoot);
+        string displayName = ReadString(materialized, "displayName")?.Trim()
+            ?? string.Empty;
+        if (displayName.Length is < 1 or > 120)
+            throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                "Workspace display name is invalid.");
+        WorkspaceStorageMode storageMode =
+            ReadString(materialized, "storageMode") switch
+            {
+                "direct" => WorkspaceStorageMode.Direct,
+                "mirrored" => WorkspaceStorageMode.Mirrored,
+                _ => throw new WorkspaceRegistryException(
+                    "workspace.request_invalid",
+                    "Workspace storage mode is invalid."),
+            };
+        WorkspaceEncryptionMode encryptionMode =
+            ReadString(materialized, "encryptionMode") switch
+            {
+                "none" => WorkspaceEncryptionMode.None,
+                "convenient" => WorkspaceEncryptionMode.Convenient,
+                "protected" => WorkspaceEncryptionMode.Protected,
+                _ => throw new WorkspaceRegistryException(
+                    "workspace.request_invalid",
+                    "Workspace encryption mode is invalid."),
+            };
+        Guid workspaceId = Guid.NewGuid();
+        string? activityRoot = storageMode == WorkspaceStorageMode.Mirrored
+            ? Path.Combine(
+                _productDataRoot,
+                "workspace-activity",
+                workspaceId.ToString("D"))
+            : null;
+        if (activityRoot is not null)
+            _ = ProbeCreateTarget(_providerPolicy, activityRoot);
+        WorkspaceLayoutResult layout = WorkspaceLayout.Create(
+            selectedRoot,
+            displayName,
+            storageMode,
+            encryptionMode,
+            activityRoot,
+            workspaceId);
+        var entry = new WorkspaceRegistryEntryV2
+        {
+            ContractVersion = WorkspaceV2Json.ContractVersion,
+            WorkspaceId = layout.Manifest.WorkspaceId,
+            DisplayName = layout.Manifest.DisplayName,
+            SelectedRoot = layout.SelectedRoot,
+            ActivityRoot = storageMode == WorkspaceStorageMode.Mirrored
+                ? layout.ActivityRoot
+                : null,
+            StorageKind = selectedStorage.StorageKind,
+            CoordinationStrength = selectedStorage.CoordinationStrength,
+            LastOpenedAt = null,
+            LastKnownHealth = WorkspaceHealth.Healthy,
+            LastSnapshotAt = null,
+            LastSyncAt = null,
+            PendingSync = false,
+        };
+        WorkspaceRepositoryInitialization repository =
+            await _repositoryOnboarding.InitializeAsync(
+                entry,
+                cancellationToken);
+        if (repository.RecoveryKey is not null)
+        {
+            _repositoryRecoveryUi.ConfirmRecoveryKey(
+                entry.DisplayName,
+                repository.RecoveryKey);
+        }
+        _workspaceRegistry.Register(entry);
+        return new
+        {
+            workspaceId = layout.Manifest.WorkspaceId.ToString("D"),
+            status = "created",
+        };
+    }
+
+    private object RegisterWorkspace(
+        JsonElement parameters,
+        Guid operationId)
+    {
+        JsonElement materialized = _workspacePathGrants.MaterializeSentinels(
+            "workspace.register",
+            operationId,
+            parameters);
+        string grant = ReadString(materialized, "selectedRootGrant")
+            ?? throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                "Missing selectedRootGrant.");
+        string selectedRoot = _workspacePathGrants.Consume(
+            grant,
+            "workspace.register",
+            operationId,
+            "workspace-root");
+        WorkspaceStorageObservation selectedStorage =
+            _providerPolicy.ProbeAndEnsureSupported(selectedRoot);
+        WorkspaceManifestV2 manifest = WorkspaceLayout.ReadManifest(
+            selectedRoot);
+        string? activityRoot = null;
+        if (manifest.StorageMode == WorkspaceStorageMode.Mirrored)
+        {
+            activityRoot = Path.Combine(
+                _productDataRoot,
+                "workspace-activity",
+                manifest.WorkspaceId.ToString("D"));
+            _ = ProbeCreateTarget(_providerPolicy, activityRoot);
+            WorkspaceLayout.CreateActivityRoot(
+                selectedRoot,
+                activityRoot);
+        }
+        _workspaceRegistry.Register(new WorkspaceRegistryEntryV2
+        {
+            ContractVersion = WorkspaceV2Json.ContractVersion,
+            WorkspaceId = manifest.WorkspaceId,
+            DisplayName = manifest.DisplayName,
+            SelectedRoot = Path.GetFullPath(selectedRoot),
+            ActivityRoot = activityRoot,
+            StorageKind = selectedStorage.StorageKind,
+            CoordinationStrength = selectedStorage.CoordinationStrength,
+            LastOpenedAt = null,
+            LastKnownHealth = WorkspaceHealth.Healthy,
+            LastSnapshotAt = null,
+            LastSyncAt = null,
+            PendingSync = false,
+        });
+        return new
+        {
+            workspaceId = manifest.WorkspaceId.ToString("D"),
+            status = "registered",
+        };
+    }
+
+    private object RelinkWorkspace(
+        JsonElement parameters,
+        Guid operationId)
+    {
+        Guid workspaceId = ReadRequiredGuid(parameters, "workspaceId");
+        if (_workspaceSessions.Current.WorkspaceId == workspaceId)
+            throw new WorkspaceRegistryException(
+                "workspace.session_open",
+                "Close the workspace before changing its location.");
+        JsonElement materialized = _workspacePathGrants.MaterializeSentinels(
+            "workspace.relink",
+            operationId,
+            parameters);
+        string grant = ReadString(materialized, "selectedRootGrant")
+            ?? throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                "Missing selectedRootGrant.");
+        string selectedRoot = _workspacePathGrants.Consume(
+            grant,
+            "workspace.relink",
+            operationId,
+            "workspace-root");
+        _ = RelinkWorkspaceEntry(
+            _workspaceRegistry,
+            _providerPolicy,
+            _productDataRoot,
+            _workspaceSessions.Current.WorkspaceId,
+            workspaceId,
+            selectedRoot);
+        PostWorkspaceV2Bootstrap();
+        return new
+        {
+            workspaceId = workspaceId.ToString("D"),
+            status = "relinked",
+        };
+    }
+
+    internal static WorkspaceRegistryEntryV2 RelinkWorkspaceEntry(
+        WorkspaceRegistry registry,
+        WorkspaceProviderPolicy providerPolicy,
+        string productDataRoot,
+        Guid? activeWorkspaceId,
+        Guid workspaceId,
+        string selectedRoot)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(providerPolicy);
+        ArgumentException.ThrowIfNullOrWhiteSpace(productDataRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(selectedRoot);
+        if (activeWorkspaceId == workspaceId)
+            throw new WorkspaceRegistryException(
+                "workspace.session_open",
+                "Close the workspace before changing its location.");
+
+        WorkspaceRegistryEntryV2 current = registry.List()
+            .SingleOrDefault(entry => entry.WorkspaceId == workspaceId)
+            ?? throw new WorkspaceRegistryException(
+                "workspace.not_registered",
+                "Workspace is not registered on this device.");
+        WorkspaceStorageObservation selectedStorage =
+            providerPolicy.ProbeAndEnsureSupported(selectedRoot);
+        WorkspaceManifestV2 manifest = WorkspaceLayout.ReadManifest(
+            selectedRoot);
+        if (manifest.WorkspaceId != workspaceId)
+            throw new WorkspaceRegistryException(
+                "workspace.identity_mismatch",
+                "Selected path contains a different workspace UUID.");
+
+        string? activityRoot = null;
+        if (manifest.StorageMode == WorkspaceStorageMode.Mirrored)
+        {
+            activityRoot = string.IsNullOrWhiteSpace(current.ActivityRoot)
+                ? Path.Combine(
+                    productDataRoot,
+                    "workspace-activity",
+                    workspaceId.ToString("D"))
+                : current.ActivityRoot;
+            if (!Directory.Exists(activityRoot))
+            {
+                _ = ProbeCreateTarget(providerPolicy, activityRoot);
+                WorkspaceLayout.CreateActivityRoot(
+                    selectedRoot,
+                    activityRoot);
+            }
+            else
+            {
+                _ = providerPolicy.ProbeAndEnsureSupported(activityRoot);
+                WorkspaceManifestV2 activityManifest =
+                    WorkspaceLayout.ReadManifest(activityRoot);
+                if (activityManifest.WorkspaceId != workspaceId)
+                    throw new WorkspaceRegistryException(
+                        "workspace.identity_mismatch",
+                        "Activity path contains a different workspace UUID.");
+            }
+        }
+        return registry.Relink(
+            workspaceId,
+            selectedRoot,
+            activityRoot,
+            selectedStorage);
+    }
+
+    private static WorkspaceStorageObservation ProbeCreateTarget(
+        WorkspaceProviderPolicy providerPolicy,
+        string root)
+        => providerPolicy.ProbeCreateTargetAndEnsureSupported(root);
+
+    private object RemoveWorkspace(JsonElement parameters)
+    {
+        Guid workspaceId = ReadRequiredGuid(parameters, "workspaceId");
+        if (_workspaceSessions.Current.WorkspaceId == workspaceId)
+            throw new WorkspaceRegistryException(
+                "workspace.session_open",
+                "Close the workspace before removing it from this device.");
+        _workspaceRegistry.Unregister(workspaceId);
+        return new { workspaceId = workspaceId.ToString("D"), status = "removed" };
+    }
+
+    private object PlanWorkspaceDelete(JsonElement parameters)
+    {
+        Guid workspaceId = ReadRequiredGuid(parameters, "workspaceId");
+        if (_workspaceSessions.Current.WorkspaceId == workspaceId)
+            throw new WorkspaceRegistryException(
+                "workspace.session_open",
+                "Close the workspace before deleting it.");
+        WorkspaceDeletePlan plan =
+            _workspaceRegistry.PlanPermanentDelete(workspaceId);
+        _workspaceDeletePlans[plan.PlanId] = plan;
+        return new
+        {
+            planId = plan.PlanId.ToString("D"),
+            displayName = plan.DisplayName,
+            requiresTypedName = true,
+        };
+    }
+
+    private object ApplyWorkspaceDelete(JsonElement parameters)
+    {
+        Guid planId = ReadRequiredGuid(parameters, "planId");
+        string confirmation = ReadString(parameters, "confirmation")
+            ?? string.Empty;
+        if (!_workspaceDeletePlans.Remove(
+                planId,
+                out WorkspaceDeletePlan? plan))
+        {
+            throw new WorkspaceRegistryException(
+                "workspace.delete_plan_stale",
+                "Workspace delete plan is missing or expired.");
+        }
+        _workspaceRegistry.ApplyPermanentDelete(plan, confirmation);
+        return new
+        {
+            workspaceId = plan.WorkspaceId.ToString("D"),
+            status = "deleted",
+        };
+    }
+
+    private static Guid ReadOperationId(JsonElement wire)
+    {
+        string? raw = ReadString(wire, "operationId");
+        return Guid.TryParse(raw, out Guid operationId)
+            && operationId != Guid.Empty
+                ? operationId
+                : throw new WorkspaceRegistryException(
+                    "workspace.request_invalid",
+                    "Workspace operationId is invalid.");
+    }
+
+    private static object ToSessionResult(WorkspaceSessionV2 session) => new
+    {
+        workspaceId = session.WorkspaceId?.ToString("D"),
+        sessionEpoch = session.SessionEpoch,
+        state = SessionStateName(session.State),
+    };
+
+    private void OnWorkspaceSessionChanged(
+        object? sender,
+        WorkspaceSessionChangedEventArgs args)
+    {
+        if (Volatile.Read(ref _closing) != 0 || !_router.IsReady)
+            return;
+        Dispatcher.BeginInvoke(PostWorkspaceV2Bootstrap);
+    }
+
+    private void PostWorkspaceV2Bootstrap()
+    {
+        if (!_router.IsReady)
+            return;
+        IReadOnlyList<WorkspaceRegistryEntryV2> workspaces;
+        try
+        {
+            workspaces = _workspaceRegistry.List();
+        }
+        catch (WorkspaceRegistryException)
+        {
+            workspaces = [];
+        }
+        WorkspaceV2SidecarCapabilities? sidecar =
+            _runtime.CurrentCapabilities;
+        HashSet<string> methods = sidecar?.RpcMethods.ToHashSet(
+            StringComparer.Ordinal) ?? [];
+        var capabilities = new List<string>
+        {
+            "workspace.session.v2",
+            "snapshot.package.v2",
+            "workspace.storage.relocate.v2",
+        };
+        if (ContainsEvery(
+                methods,
+                "snapshot.request",
+                "snapshot.list",
+                "snapshot.inspect",
+                "snapshot.update",
+                "snapshot.previewRestore",
+                "snapshot.applyRestore",
+                "snapshot.previewExtract",
+                "snapshot.applyExtract",
+                "snapshot.export",
+                "repository.verify"))
+        {
+            capabilities.Add("snapshot.timeline.v2");
+            capabilities.Add("snapshot.open-as-new.v2");
+        }
+        if (ContainsEvery(
+                methods,
+                "fileHistory.listDocuments",
+                "fileHistory.listPendingChanges",
+                "fileHistory.import",
+                "fileHistory.relink",
+                "fileHistory.unlink",
+                "fileHistory.readTree",
+                "fileHistory.restore",
+                "fileHistory.upgrade",
+                "fileHistory.activateLeaf",
+                "fileHistory.applyPendingChange"))
+            capabilities.Add("fileHistory.tree.v2");
+        if (ContainsEvery(
+                methods,
+                "retention.get",
+                "retention.update",
+                "retention.plan",
+                "retention.apply")
+            && ContainsEvery(
+                methods,
+                "replica.status",
+                "replica.synchronize",
+                "replica.forceTakeover"))
+        {
+            capabilities.Add("retention.policy.v2");
+            capabilities.Add("repository.settings.v2");
+        }
+        if (ContainsEvery(
+                methods,
+                "repository.previewKeyRotation",
+                "repository.applyKeyRotation"))
+        {
+            capabilities.Add("repository.key-rotation.v2");
+        }
+        if (ContainsEvery(
+                methods,
+                "conflict.list",
+                "conflict.inspect",
+                "conflict.preview",
+                "conflict.apply"))
+        {
+            capabilities.Add("conflict.center.v2");
+        }
+        WorkspaceSessionV2 session = _workspaceSessions.Current;
+        _webBridge.PostNotification(
+            "workspace.v2.bootstrap",
+            new
+            {
+                contractVersion = WorkspaceV2Json.ContractVersion,
+                capabilities,
+                workspaces = workspaces
+                    .Select(ToWorkspaceProjection)
+                    .ToArray(),
+                session = ToSessionProjection(session),
+                snapshots = Array.Empty<object>(),
+                storage = BuildStorageProjection(
+                    _runtime.CurrentWorkspace,
+                    capabilities.Contains(
+                        "repository.settings.v2",
+                        StringComparer.Ordinal)),
+                retention = new
+                {
+                    contractVersion = WorkspaceV2Json.ContractVersion,
+                    policyRevision = 1,
+                    snapshotDays = 30,
+                    snapshotCount = 50,
+                    snapshotBuckets =
+                        new[] { "hourly", "daily", "weekly", "monthly" },
+                    fileRevisionDays = 30,
+                    fileRevisionCount = 100,
+                    fileRevisionBuckets =
+                        new[] { "daily", "weekly", "monthly" },
+                    trashMonths = 3,
+                    repositoryLimitBytes = (long?)null,
+                },
+                conflicts = Array.Empty<object>(),
+                fileTrees = Array.Empty<object>(),
+            });
+    }
+
+    private static object ToWorkspaceProjection(
+        WorkspaceRegistryEntryV2 workspace) => new
+    {
+        contractVersion = workspace.ContractVersion,
+        workspaceId = workspace.WorkspaceId.ToString("D"),
+        displayName = workspace.DisplayName,
+        selectedRoot = workspace.SelectedRoot,
+        activityRoot = workspace.ActivityRoot,
+        storageKind = workspace.StorageKind switch
+        {
+            WorkspaceStorageKind.Fixed => "fixed",
+            WorkspaceStorageKind.Network => "network",
+            WorkspaceStorageKind.Removable => "removable",
+            WorkspaceStorageKind.RegisteredCloud => "registeredCloud",
+            WorkspaceStorageKind.UserMarkedSync => "userMarkedSync",
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(workspace.StorageKind)),
+        },
+        coordinationStrength = workspace.CoordinationStrength
+            == WorkspaceCoordinationStrength.Strong
+                ? "strong"
+                : "advisory",
+        lastOpenedAt = workspace.LastOpenedAt,
+        lastKnownHealth = workspace.LastKnownHealth switch
+        {
+            WorkspaceHealth.Healthy => "healthy",
+            WorkspaceHealth.Offline => "offline",
+            WorkspaceHealth.Degraded => "degraded",
+            WorkspaceHealth.Corrupt => "corrupt",
+            WorkspaceHealth.Unknown => "unknown",
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(workspace.LastKnownHealth)),
+        },
+        lastSnapshotAt = workspace.LastSnapshotAt,
+        lastSyncAt = workspace.LastSyncAt,
+        pendingSync = workspace.PendingSync,
+    };
+
+    private static object ToSessionProjection(WorkspaceSessionV2 session)
+        => new
+        {
+            contractVersion = session.ContractVersion,
+            workspaceId = session.WorkspaceId?.ToString("D"),
+            sessionEpoch = session.SessionEpoch,
+            state = SessionStateName(session.State),
+            openMode = session.OpenMode switch
+            {
+                WorkspaceOpenMode.ReadOnly => "readOnly",
+                WorkspaceOpenMode.Writable => "writable",
+                WorkspaceOpenMode.Provisional => "provisional",
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(session.OpenMode)),
+            },
+            writable = session.Writable,
+            provisional = session.Provisional,
+            phase = session.Phase switch
+            {
+                WorkspaceSessionPhase.Idle => "idle",
+                WorkspaceSessionPhase.Protecting => "protecting",
+                WorkspaceSessionPhase.Draining => "draining",
+                WorkspaceSessionPhase.Stopping => "stopping",
+                WorkspaceSessionPhase.Starting => "starting",
+                WorkspaceSessionPhase.Binding => "binding",
+                WorkspaceSessionPhase.Verifying => "verifying",
+                WorkspaceSessionPhase.RollingBack => "rollingBack",
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(session.Phase)),
+            },
+            errorCode = session.ErrorCode,
+        };
+
+    private static object? BuildStorageProjection(
+        WorkspaceRegistryEntryV2? workspace,
+        bool enabled)
+    {
+        if (!enabled || workspace is null)
+            return null;
+        string root = ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace);
+        WorkspaceManifestV2 manifest = WorkspaceLayout.ReadManifest(root);
+        (long logicalSize, long physicalSize) =
+            MeasureWorkspaceStorage(workspace);
+        return new
+        {
+            location = workspace.SelectedRoot,
+            activityRoot = root,
+            mode = manifest.StorageMode == WorkspaceStorageMode.Direct
+                ? "direct"
+                : "mirrored",
+            provider = workspace.StorageKind switch
+            {
+                WorkspaceStorageKind.Fixed => "fixed",
+                WorkspaceStorageKind.Network => "network",
+                WorkspaceStorageKind.Removable => "removable",
+                WorkspaceStorageKind.RegisteredCloud => "registeredCloud",
+                WorkspaceStorageKind.UserMarkedSync => "userMarkedSync",
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(workspace.StorageKind)),
+            },
+            health = workspace.LastKnownHealth switch
+            {
+                WorkspaceHealth.Healthy => "healthy",
+                WorkspaceHealth.Offline => "offline",
+                _ => "attention",
+            },
+            logicalSize,
+            physicalSize,
+            // Reclaimability is an authority-owned retention-plan result.
+            // Bootstrap never guesses it; the retention UI replaces this
+            // neutral value after retention.plan completes.
+            reclaimableSize = 0L,
+            encryption = manifest.EncryptionMode switch
+            {
+                WorkspaceEncryptionMode.None => "none",
+                WorkspaceEncryptionMode.Convenient => "convenient",
+                WorkspaceEncryptionMode.Protected => "protected",
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(manifest.EncryptionMode)),
+            },
+            keyVersion = manifest.EncryptionMode
+                == WorkspaceEncryptionMode.None ? 0 : 1,
+            pendingSync = workspace.PendingSync,
+            remoteVerified =
+                manifest.StorageMode == WorkspaceStorageMode.Direct,
+        };
+    }
+
+    internal static (long LogicalSize, long PhysicalSize)
+        MeasureWorkspaceStorage(WorkspaceRegistryEntryV2 workspace)
+    {
+        ArgumentNullException.ThrowIfNull(workspace);
+        string activityRoot =
+            ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace);
+        WorkspacePaths activity = WorkspaceLayout.Paths(activityRoot);
+        long logical = AddSaturating(
+            MeasureDirectoryBytes(activity.Data),
+            MeasureDirectoryBytes(activity.Files));
+
+        string selectedRoot = Path.GetFullPath(workspace.SelectedRoot);
+        long physical = 0;
+        foreach (string root in new[] { selectedRoot, activityRoot }
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            physical = AddSaturating(
+                physical,
+                MeasureDirectoryBytes(root));
+        }
+        return (logical, physical);
+    }
+
+    private static long MeasureDirectoryBytes(string root)
+    {
+        if (!Directory.Exists(root))
+            return 0;
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            ReturnSpecialDirectories = false,
+            AttributesToSkip = FileAttributes.ReparsePoint,
+        };
+        long total = 0;
+        try
+        {
+            foreach (string path in Directory.EnumerateFiles(
+                         root,
+                         "*",
+                         options))
+            {
+                try
+                {
+                    total = AddSaturating(
+                        total,
+                        new FileInfo(path).Length);
+                }
+                catch (Exception exception) when (
+                    exception is IOException or
+                        UnauthorizedAccessException)
+                {
+                    // The live workspace may rotate files while metrics are
+                    // sampled. Skip only that file and keep the projection.
+                }
+            }
+        }
+        catch (Exception exception) when (
+            exception is IOException or
+                UnauthorizedAccessException)
+        {
+            // A provider may disconnect during bootstrap. Health remains the
+            // authoritative signal; never follow a fallback path.
+        }
+        return total;
+    }
+
+    private static long AddSaturating(long left, long right)
+        => left > long.MaxValue - right
+            ? long.MaxValue
+            : left + right;
+
+    private static string SessionStateName(
+        WorkspaceSessionState state) => state switch
+    {
+        WorkspaceSessionState.Closed => "closed",
+        WorkspaceSessionState.Opening => "opening",
+        WorkspaceSessionState.OpenedReadOnly => "openedReadOnly",
+        WorkspaceSessionState.OpenedWritable => "openedWritable",
+        WorkspaceSessionState.OpenedProvisional => "openedProvisional",
+        WorkspaceSessionState.Switching => "switching",
+        WorkspaceSessionState.Failed => "failed",
+        _ => throw new ArgumentOutOfRangeException(nameof(state)),
+    };
+
+    internal static bool IsWorkspaceMutation(string method)
+        => method is
+            "snapshot.request"
+            or "snapshot.update"
+            or "snapshot.applyRestore"
+            or "snapshot.import"
+            or "repository.applyKeyRotation"
+            or "fileHistory.import"
+            or "fileHistory.relink"
+            or "fileHistory.unlink"
+            or "fileHistory.restore"
+            or "fileHistory.upgrade"
+            or "fileHistory.activateLeaf"
+            or "fileHistory.applyPendingChange"
+            or "retention.update"
+            or "retention.apply"
+            or "replica.synchronize"
+            or "replica.forceTakeover"
+            or "conflict.apply";
+
+    private static bool ContainsEvery(
+        HashSet<string> methods,
+        params string[] required)
+        => required.All(methods.Contains);
+
+    private static Guid ReadRequiredGuid(JsonElement value, string name)
+    {
+        string? raw = ReadString(value, name);
+        return Guid.TryParse(raw, out Guid parsed) && parsed != Guid.Empty
+            ? parsed
+            : throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                $"Missing or invalid '{name}'.");
+    }
+
+    private static WorkspaceOpenMode ReadOpenMode(JsonElement value)
+    {
+        string? raw = ReadString(value, "openMode");
+        return raw switch
+        {
+            "writable" => WorkspaceOpenMode.Writable,
+            "readOnly" => WorkspaceOpenMode.ReadOnly,
+            "provisional" => WorkspaceOpenMode.Provisional,
+            _ => throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                "Missing or invalid 'openMode'."),
+        };
     }
 
     private async Task ApplyAttachmentChangeAsync(
@@ -1222,8 +2262,11 @@ public partial class MainWindow : Window
         if (!await _workspaceOpenGate.WaitAsync(0)) return;
         try
         {
+            string? source = await _databasePicker.PickDatabaseAsync();
+            if (source is null)
+                return;
             DatabaseOpenResult result = _workspaceSnapshot
-                ?? await _workspace.OpenDatabaseAsync("local://default");
+                ?? await _workspace.OpenDatabaseAsync(source);
             _workspaceSnapshot = result;
             _coordinator.SetDatabase("local");
             _webBridge.PostNotification(
@@ -1338,9 +2381,8 @@ public partial class MainWindow : Window
         }
         try
         {
-            DocumentImportRequest request = CreateDocumentImportRequest(payload);
-            DocumentImportResult? result = await _documentWorkspace
-                .ImportFromPickerAsync(request, _session.Token);
+            WorkspaceDocumentImportResult? result = await _documentWorkspace
+                .ImportFromPickerAsync(_session.Token);
             if (result is not null)
             {
                 PostDocumentWorkspaceChanged("import", 1);
@@ -1367,11 +2409,9 @@ public partial class MainWindow : Window
         int imported = 0;
         try
         {
-            DocumentImportRequest request = CreateDocumentImportRequest(payload);
             foreach (string path in paths.Take(100))
             {
                 await _documentWorkspace.ImportFromHostPathAsync(
-                    request,
                     path,
                     _session.Token);
                 imported++;
@@ -1409,8 +2449,8 @@ public partial class MainWindow : Window
         }
         try
         {
-            DocumentRelinkResult? result = await _documentWorkspace
-                .RelinkMissingFromPickerAsync(handle, _session.Token);
+            WorkspaceDocumentRelinkResult? result = await _documentWorkspace
+                .RelinkFromPickerAsync(handle, _session.Token);
             if (result is not null)
             {
                 PostDocumentWorkspaceChanged("relink", 1);
@@ -1449,43 +2489,6 @@ public partial class MainWindow : Window
         {
             PostDocumentFailure(exception, "DOCUMENT_DRAG_OUT_FAILED");
         }
-    }
-
-    private DocumentImportRequest CreateDocumentImportRequest(JsonElement payload)
-    {
-        var selection = new ManagedWorkspaceProvisioner(
-            _workspaceMounts,
-            "local:default|user:local").EnsurePreferred();
-        JsonElement scope = payload.ValueKind == JsonValueKind.Object
-            && payload.TryGetProperty("scope", out JsonElement value)
-                ? value
-                : default;
-        string kind = ReadString(scope, "kind") ?? "global";
-        if (kind == "global")
-        {
-            return new DocumentImportRequest(selection.WorkspaceId, FolderId: null);
-        }
-        if (kind != "record")
-        {
-            throw new DocumentFileOperationException(
-                "未知文件范围。",
-                "BAD_PAYLOAD");
-        }
-        string? collection = ReadString(scope, "collection");
-        string? itemId = ReadScalar(scope, "itemId");
-        if (string.IsNullOrWhiteSpace(collection)
-            || string.IsNullOrWhiteSpace(itemId))
-        {
-            throw new DocumentFileOperationException(
-                "记录文件范围缺少必要信息。",
-                "BAD_PAYLOAD");
-        }
-        return new DocumentImportRequest(
-            selection.WorkspaceId,
-            FolderId: null,
-            ItemCollection: collection,
-            ItemId: itemId,
-            LinkType: "attachment");
     }
 
     private void PostDocumentWorkspaceChanged(string reason, int affectedCount)
@@ -1561,8 +2564,7 @@ public partial class MainWindow : Window
 
     private void TryWriteReadiness()
     {
-        if (_runtime.Backend.State == BackendState.Ready
-            && _viewModel.State == StartupState.Ready
+        if (_viewModel.State == StartupState.Ready
             && _router.IsReady)
         {
             _readiness?.WriteShellReady();
@@ -1576,6 +2578,8 @@ public partial class MainWindow : Window
         _router.IsReady = false;
         _runtime.ClientReady -= OnRuntimeClientReady;
         _runtime.RecoveryFailed -= OnRuntimeRecoveryFailed;
+        _runtime.BindingChanged -= OnRuntimeBindingChanged;
+        _workspaceSessions.Changed -= OnWorkspaceSessionChanged;
         _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
         if (_productGateway is not null)
         {
@@ -1591,6 +2595,23 @@ public partial class MainWindow : Window
         _attachmentPreview.Dispose();
         _documentWorkspace?.Dispose();
         _tableGateway.Dispose();
+        _workspaceSessionFilter.Dispose();
+        try
+        {
+            _snapshotPackages.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(8));
+        }
+        catch
+        {
+            // Transient package runtime cleanup is best-effort at shutdown.
+        }
+        try
+        {
+            _workspaceSessions.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
+        }
+        catch
+        {
+            // Session teardown is best-effort during WPF shutdown.
+        }
         try
         {
             _runtime.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(8));
@@ -1616,9 +2637,13 @@ public partial class MainWindow : Window
         }
     }
 
-    private sealed class FixedProductSourcePicker : IDatabasePicker
+    private sealed class SessionProductSourcePicker(
+        WorkspaceSessionManager sessions) : IDatabasePicker
     {
         public Task<string?> PickDatabaseAsync()
-            => Task.FromResult<string?>("local://default");
+            => Task.FromResult(
+                sessions.Current.WorkspaceId is Guid workspaceId
+                    ? $"local://workspace/{workspaceId:D}"
+                    : null);
     }
 }

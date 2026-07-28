@@ -56,12 +56,13 @@ public sealed class WorkspaceRequestDispatcher
     private readonly AutoDateFeatureOptions _autoDateFeatures;
     private readonly TimeSpan _dashboardRequestTimeout;
     private readonly TimeSpan _readRecoveryTimeout;
+    private readonly WorkspaceSessionEnvelopeFilter? _sessionEnvelopeFilter;
     private readonly ConcurrentDictionary<string, DashboardRequestState> _dashboardRequests = new();
     private readonly SemaphoreSlim _dashboardQueryGate = new(6, 6);
     private IProductDataRpcGateway? _productDataGateway;
     private IDashboardRpcGateway? _dashboardGateway;
     private CancellationToken _dashboardSessionToken;
-    private DocumentWorkspaceHostService? _documents;
+    private WorkspaceDocumentOsAdapter? _documents;
 
     public WorkspaceRequestDispatcher(
         TableWorkspaceService workspace,
@@ -71,7 +72,8 @@ public sealed class WorkspaceRequestDispatcher
         DashboardFeatureOptions? dashboardFeatures = null,
         TimeSpan? dashboardRequestTimeout = null,
         TimeSpan? readRecoveryTimeout = null,
-        AutoDateFeatureOptions? autoDateFeatures = null)
+        AutoDateFeatureOptions? autoDateFeatures = null,
+        WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null)
     {
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         _picker = picker ?? throw new ArgumentNullException(nameof(picker));
@@ -82,6 +84,7 @@ public sealed class WorkspaceRequestDispatcher
         _dashboardRequestTimeout = dashboardRequestTimeout ?? TimeSpan.FromSeconds(60);
         _readRecoveryTimeout =
             readRecoveryTimeout ?? TimeSpan.FromSeconds(3);
+        _sessionEnvelopeFilter = sessionEnvelopeFilter;
     }
 
     /// <summary>
@@ -117,7 +120,7 @@ public sealed class WorkspaceRequestDispatcher
         _dashboardSessionToken = sessionToken;
     }
 
-    public void SetDocumentWorkspace(DocumentWorkspaceHostService documents)
+    public void SetDocumentWorkspace(WorkspaceDocumentOsAdapter documents)
         => _documents = documents ?? throw new ArgumentNullException(nameof(documents));
 
     /// <summary>
@@ -248,9 +251,6 @@ public sealed class WorkspaceRequestDispatcher
                 break;
             case "document.listRequested":
                 await OnDocumentListRequestedAsync(request).ConfigureAwait(false);
-                break;
-            case "document.historyRequested":
-                await OnDocumentHistoryRequestedAsync(request).ConfigureAwait(false);
                 break;
             case "document.openRequested":
                 OnDocumentOpenRequested(request);
@@ -1235,9 +1235,21 @@ public sealed class WorkspaceRequestDispatcher
 
     private async Task OnProductDataRequestAsync(RoutedWebRequest request)
     {
+        WorkspaceRequestEpochLease? epochLease = null;
+        if (_sessionEnvelopeFilter is not null
+            && !_sessionEnvelopeFilter.TryCapture(request.Scope, out epochLease))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "Workspace request belongs to a stale or invalid session.",
+                "BAD_WORKSPACE_SCOPE");
+            return;
+        }
+
         if (!ProductDataRpcRegistry.TryGet(request.Type, out var endpoint))
         {
             _reply.PostOperationFailed(request.RequestId, "Unknown product data request.", "UNKNOWN_TYPE");
+            epochLease?.Dispose();
             return;
         }
         if (!endpoint.IsValidPayload(request.Payload))
@@ -1246,6 +1258,7 @@ public sealed class WorkspaceRequestDispatcher
                 request.RequestId,
                 $"{request.Type} has an invalid payload.",
                 "BAD_PAYLOAD");
+            epochLease?.Dispose();
             return;
         }
         try
@@ -1259,35 +1272,51 @@ public sealed class WorkspaceRequestDispatcher
                     ? await InvokeRecoverableProductReadAsync(
                         endpoint,
                         request.Payload,
-                        productGateway).ConfigureAwait(false)
+                        productGateway,
+                        epochLease).ConfigureAwait(false)
                     : productGateway is null
                         ? throw new BackendUnavailableException(
                             "The local data service is not ready.")
                         : await endpoint.InvokeAsync(
                             productGateway,
                             request.Payload,
-                            CancellationToken.None).ConfigureAwait(false);
+                            epochLease?.CancellationToken
+                                ?? CancellationToken.None).ConfigureAwait(false);
+            if (!IsRequestCurrent(epochLease))
+                return;
             _reply.PostResponse(request.Type, request.RequestId, result);
             if (string.Equals(request.Type, "schema.apply", StringComparison.Ordinal))
             {
                 await RefreshCollectionListAsync().ConfigureAwait(false);
             }
         }
+        catch (OperationCanceledException)
+            when (epochLease?.CancellationToken.IsCancellationRequested == true)
+        {
+            // A workspace switch invalidated the request. The old response
+            // must not leak into the newly active renderer session.
+        }
         catch (RpcRemoteException ex)
             when (ex.ErrorData is JsonElement data
                 && ProductRpcErrorMapper.TryMap(data, out _))
         {
+            if (!IsRequestCurrent(epochLease))
+                return;
             ProductRpcErrorMapper.TryMap(ex.ErrorData!.Value, out var mapped);
             _reply.PostResponse(request.Type, request.RequestId, mapped);
         }
         catch (RpcRemoteException ex) when (ex.Code == -32602)
         {
+            if (!IsRequestCurrent(epochLease))
+                return;
             _reply.PostOperationFailed(request.RequestId, "Invalid request payload.", "BAD_PAYLOAD");
         }
         catch (Exception ex)
             when (ex is BackendUnavailableException
                 or ObjectDisposedException)
         {
+            if (!IsRequestCurrent(epochLease))
+                return;
             Trace.TraceWarning(
                 $"Product data backend unavailable ({request.Type}): {ex.Message}");
             _reply.PostOperationFailed(
@@ -1297,18 +1326,25 @@ public sealed class WorkspaceRequestDispatcher
         }
         catch (Exception ex)
         {
+            if (!IsRequestCurrent(epochLease))
+                return;
             Trace.TraceError($"Product data request failed ({request.Type}): {ex}");
             _reply.PostOperationFailed(
                 request.RequestId,
                 "Product data operation failed.",
                 "PRODUCT_DATA_FAILED");
         }
+        finally
+        {
+            epochLease?.Dispose();
+        }
     }
 
     private async Task<JsonElement> InvokeRecoverableProductReadAsync(
         ProductDataRpcEndpoint endpoint,
         JsonElement payload,
-        IProductDataRpcGateway? initialGateway)
+        IProductDataRpcGateway? initialGateway,
+        WorkspaceRequestEpochLease? epochLease)
     {
         IProductDataRpcGateway? attemptedGateway = initialGateway;
         Exception? lastFailure = null;
@@ -1317,14 +1353,25 @@ public sealed class WorkspaceRequestDispatcher
 
         while (true)
         {
+            epochLease?.CancellationToken.ThrowIfCancellationRequested();
+            if (!IsRequestCurrent(epochLease))
+                throw new OperationCanceledException(
+                    epochLease?.CancellationToken ?? CancellationToken.None);
+
             if (attemptedGateway is not null)
             {
                 try
                 {
-                    return await endpoint.InvokeAsync(
+                    JsonElement result = await endpoint.InvokeAsync(
                         attemptedGateway,
                         payload,
-                        CancellationToken.None).ConfigureAwait(false);
+                        epochLease?.CancellationToken
+                            ?? CancellationToken.None).ConfigureAwait(false);
+                    if (!IsRequestCurrent(epochLease))
+                        throw new OperationCanceledException(
+                            epochLease?.CancellationToken
+                                ?? CancellationToken.None);
+                    return result;
                 }
                 catch (Exception ex)
                     when (ex is BackendUnavailableException
@@ -1349,10 +1396,17 @@ public sealed class WorkspaceRequestDispatcher
                     lastFailure ?? new InvalidOperationException(
                         "No product data gateway is currently available."));
             }
-            await Task.Delay(RecoveryReadPollInterval)
+            await Task.Delay(
+                    RecoveryReadPollInterval,
+                    epochLease?.CancellationToken
+                        ?? CancellationToken.None)
                 .ConfigureAwait(false);
         }
     }
+
+    private bool IsRequestCurrent(WorkspaceRequestEpochLease? epochLease)
+        => epochLease is null
+            || _sessionEnvelopeFilter?.IsCurrent(epochLease) == true;
 
     private async Task RefreshCollectionListAsync()
     {
@@ -1407,7 +1461,7 @@ public sealed class WorkspaceRequestDispatcher
                         "BAD_PAYLOAD");
                     return;
                 }
-                result = await _documents!.ListAsync(
+                result = await _documents!.ListRecordAsync(
                     collection,
                     itemId,
                     CancellationToken.None).ConfigureAwait(false);
@@ -1422,30 +1476,6 @@ public sealed class WorkspaceRequestDispatcher
         catch (Exception ex)
         {
             PostDocumentFailure(request, ex, "DOCUMENT_LIST_FAILED");
-        }
-    }
-
-    private async Task OnDocumentHistoryRequestedAsync(RoutedWebRequest request)
-    {
-        if (!TryRequireDocuments(request)) return;
-        string? handle = TryGetString(request.Payload, "entryHandle");
-        if (string.IsNullOrWhiteSpace(handle))
-        {
-            _reply.PostOperationFailed(request.RequestId, "缺少文档授权。", "BAD_PAYLOAD");
-            return;
-        }
-        try
-        {
-            var result = await _documents!.ReadHistoryAsync(
-                handle,
-                TryGetInt(request.Payload, "limit", 50),
-                TryGetInt(request.Payload, "offset", 0),
-                CancellationToken.None).ConfigureAwait(false);
-            _reply.PostResponse("document.historyLoaded", request.RequestId, result);
-        }
-        catch (Exception ex)
-        {
-            PostDocumentFailure(request, ex, "DOCUMENT_HISTORY_FAILED");
         }
     }
 

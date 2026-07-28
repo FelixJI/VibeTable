@@ -401,13 +401,6 @@ public sealed class PythonBackendSupervisorTests
                     "task.cancel",
                     "task.create",
                     "task.status",
-                    "workspace.linkDocument",
-                    "workspace.publishIndexBatch",
-                    "workspace.readDocumentHistory",
-                    "workspace.readDocuments",
-                    "workspace.readFolder",
-                    "workspace.registerDocument",
-                    "workspace.unlinkDocument",
                 },
                 result.Capabilities);
         }

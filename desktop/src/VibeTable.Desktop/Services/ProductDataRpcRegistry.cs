@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -21,10 +20,6 @@ internal static class ProductDataRpcRegistry
 {
     private const int MaxPayloadDepth = 32;
     private const int MaxPayloadNodes = 10_000;
-    private static readonly Regex BackupNamePattern = new(
-        @"^[a-z0-9][a-z0-9_-]{0,62}\.zip$",
-        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
-
     private static readonly ProductDataRpcEndpoint[] RegisteredEndpoints =
     [
         new("schema.getTable", p => Safe(p) && HasExactProperties(p, "tableId") && HasString(p, "tableId"),
@@ -79,15 +74,6 @@ internal static class ProductDataRpcRegistry
             (g, p, t) => g.PromoteVersionAsync(p, t)),
         new("version.delete", p => Safe(p) && HasStrings(p, "collection", "itemId", "versionId", "expectedRevision", "operationId"),
             (g, p, t) => g.DeleteVersionAsync(p, t)),
-        new("backup.list", p => Safe(p) && HasExactProperties(p),
-            (g, p, t) => g.ListBackupsAsync(p, t)),
-        new("backup.create", p => Safe(p) && HasExactProperties(p, "name") && HasBackupName(p),
-            (g, p, t) => g.CreateBackupAsync(p, t)),
-        new("backup.delete", p => Safe(p) && HasExactProperties(p, "name") && HasBackupName(p),
-            (g, p, t) => g.DeleteBackupAsync(p, t)),
-        new("backup.restore", p => Safe(p) && HasExactProperties(p, "name", "confirmed")
-            && HasBackupName(p) && HasTrue(p, "confirmed"),
-            (g, p, t) => g.RestoreBackupAsync(p, t)),
     ];
 
     private static readonly IReadOnlyDictionary<string, ProductDataRpcEndpoint> ByType =
@@ -158,10 +144,6 @@ internal static class ProductDataRpcRegistry
         => payload.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Object;
     private static bool HasTrue(JsonElement payload, string name)
         => payload.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
-    private static bool HasBackupName(JsonElement payload)
-        => payload.TryGetProperty("name", out var value)
-            && value.ValueKind == JsonValueKind.String
-            && BackupNamePattern.IsMatch(value.GetString()!);
     private static bool HasExactProperties(JsonElement payload, params string[] names)
     {
         var expected = new HashSet<string>(names, StringComparer.Ordinal);

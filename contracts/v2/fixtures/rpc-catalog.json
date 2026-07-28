@@ -1,0 +1,5088 @@
+{
+  "contractVersion": "2.0",
+  "rpcMethods": [
+    "workspace.list",
+    "workspace.create",
+    "workspace.register",
+    "workspace.relink",
+    "workspace.open",
+    "workspace.switch",
+    "workspace.close",
+    "workspace.remove",
+    "workspace.planDelete",
+    "workspace.applyDelete",
+    "workspace.storage.preview",
+    "workspace.storage.apply",
+    "snapshot.request",
+    "snapshot.list",
+    "snapshot.inspect",
+    "snapshot.update",
+    "snapshot.previewRestore",
+    "snapshot.applyRestore",
+    "snapshot.openAsNewWorkspace",
+    "snapshot.previewExtract",
+    "snapshot.applyExtract",
+    "snapshot.export",
+    "snapshot.inspectPackage",
+    "snapshot.import",
+    "repository.verify",
+    "repository.previewKeyRotation",
+    "repository.applyKeyRotation",
+    "fileHistory.import",
+    "fileHistory.listDocuments",
+    "fileHistory.listPendingChanges",
+    "fileHistory.applyPendingChange",
+    "fileHistory.unlink",
+    "fileHistory.relink",
+    "fileHistory.readTree",
+    "fileHistory.restore",
+    "fileHistory.upgrade",
+    "fileHistory.activateLeaf",
+    "retention.get",
+    "retention.update",
+    "retention.plan",
+    "retention.apply",
+    "replica.status",
+    "replica.synchronize",
+    "replica.forceTakeover",
+    "conflict.list",
+    "conflict.inspect",
+    "conflict.preview",
+    "conflict.apply"
+  ],
+  "eventTopics": [
+    "workspace.session.changed",
+    "snapshot.changed",
+    "replica.changed",
+    "lease.changed",
+    "conflict.changed"
+  ],
+  "rpcCases": [
+    {
+      "method": "workspace.list",
+      "scope": "global",
+      "paramsModel": "ListWorkspacesParams",
+      "resultModel": "WorkspaceListResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaces"
+        ],
+        "properties": {
+          "workspaces": {
+            "type": "array",
+            "items": {}
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-001",
+        "method": "workspace.list",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 1
+        },
+        "params": {}
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-001",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 1
+        },
+        "result": {
+          "workspaces": []
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-001",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 1
+        },
+        "error": {
+          "code": "workspace.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspace.create",
+      "scope": "global",
+      "paramsModel": "CreateWorkspaceParams",
+      "resultModel": "WorkspaceOperationResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "displayName",
+          "selectedRootGrant",
+          "storageMode",
+          "encryptionMode"
+        ],
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "selectedRootGrant": {
+            "type": "string"
+          },
+          "storageMode": {
+            "type": "string"
+          },
+          "encryptionMode": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId",
+          "status"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-002",
+        "method": "workspace.create",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 2
+        },
+        "params": {
+          "displayName": "季度规划",
+          "selectedRootGrant": "grant_create_1",
+          "storageMode": "direct",
+          "encryptionMode": "convenient"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-002",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 2
+        },
+        "result": {
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "status": "created"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-002",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 2
+        },
+        "error": {
+          "code": "workspace.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspace.register",
+      "scope": "global",
+      "paramsModel": "RegisterWorkspaceParams",
+      "resultModel": "WorkspaceOperationResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "selectedRootGrant"
+        ],
+        "properties": {
+          "selectedRootGrant": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId",
+          "status"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-003",
+        "method": "workspace.register",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 3
+        },
+        "params": {
+          "selectedRootGrant": "grant_register_1"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-003",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 3
+        },
+        "result": {
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "status": "registered"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-003",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 3
+        },
+        "error": {
+          "code": "workspace.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspace.relink",
+      "scope": "global",
+      "paramsModel": "RelinkWorkspaceParams",
+      "resultModel": "WorkspaceOperationResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId",
+          "selectedRootGrant"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "selectedRootGrant": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId",
+          "status"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-004",
+        "method": "workspace.relink",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 4
+        },
+        "params": {
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "selectedRootGrant": "grant_relink_workspace_1"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-004",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 4
+        },
+        "result": {
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "status": "relinked"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-004",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 4
+        },
+        "error": {
+          "code": "workspace.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspace.open",
+      "scope": "global",
+      "paramsModel": "OpenWorkspaceParams",
+      "resultModel": "WorkspaceSessionResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId",
+          "openMode"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "openMode": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId",
+          "sessionEpoch",
+          "state"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "sessionEpoch": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-005",
+        "method": "workspace.open",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 5
+        },
+        "params": {
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "openMode": "writable"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-005",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 5
+        },
+        "result": {
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7,
+          "state": "openedWritable"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-005",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 5
+        },
+        "error": {
+          "code": "workspace.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspace.switch",
+      "scope": "workspace",
+      "paramsModel": "SwitchWorkspaceParams",
+      "resultModel": "WorkspaceSessionResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "targetWorkspaceId",
+          "openMode"
+        ],
+        "properties": {
+          "targetWorkspaceId": {
+            "type": "string"
+          },
+          "openMode": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId",
+          "sessionEpoch",
+          "state"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "sessionEpoch": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-006",
+        "method": "workspace.switch",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 6,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "targetWorkspaceId": "99999999-9999-4999-8999-999999999999",
+          "openMode": "writable"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-006",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 6,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "workspaceId": "99999999-9999-4999-8999-999999999999",
+          "sessionEpoch": 8,
+          "state": "openedWritable"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-006",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 6,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "workspace.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspace.close",
+      "scope": "workspace",
+      "paramsModel": "CloseWorkspaceParams",
+      "resultModel": "WorkspaceSessionResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId",
+          "sessionEpoch",
+          "state"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sessionEpoch": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-007",
+        "method": "workspace.close",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 7,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "reason": "user"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-007",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 7,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "workspaceId": null,
+          "sessionEpoch": 8,
+          "state": "closed"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-007",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 7,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "workspace.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspace.remove",
+      "scope": "global",
+      "paramsModel": "RemoveWorkspaceParams",
+      "resultModel": "WorkspaceOperationResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId",
+          "status"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-008",
+        "method": "workspace.remove",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 8
+        },
+        "params": {
+          "workspaceId": "11111111-1111-4111-8111-111111111111"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-008",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 8
+        },
+        "result": {
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "status": "removed"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-008",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 8
+        },
+        "error": {
+          "code": "workspace.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspace.planDelete",
+      "scope": "global",
+      "paramsModel": "PlanWorkspaceDeleteParams",
+      "resultModel": "WorkspaceDeletePlan",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "displayName",
+          "requiresTypedName"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "requiresTypedName": {
+            "type": "boolean"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-009",
+        "method": "workspace.planDelete",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 9
+        },
+        "params": {
+          "workspaceId": "11111111-1111-4111-8111-111111111111"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-009",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 9
+        },
+        "result": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "displayName": "季度规划",
+          "requiresTypedName": true
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-009",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 9
+        },
+        "error": {
+          "code": "workspace.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspace.applyDelete",
+      "scope": "global",
+      "paramsModel": "ApplyWorkspaceDeleteParams",
+      "resultModel": "WorkspaceOperationResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "confirmation"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "confirmation": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId",
+          "status"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-010",
+        "method": "workspace.applyDelete",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 10
+        },
+        "params": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "confirmation": "季度规划"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-010",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 10
+        },
+        "result": {
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "status": "deleted"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-010",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 10
+        },
+        "error": {
+          "code": "workspace.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspace.storage.preview",
+      "scope": "global",
+      "paramsModel": "PreviewWorkspaceStorageParams",
+      "resultModel": "WorkspaceStoragePlan",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId",
+          "action",
+          "targetMode",
+          "selectedRootGrant"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "targetMode": {
+            "type": "string"
+          },
+          "selectedRootGrant": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "workspaceId",
+          "action",
+          "source",
+          "target",
+          "bytesToCopy",
+          "requiresClosedSession",
+          "warnings",
+          "expiresAt",
+          "verificationReceiptId"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "selectedRoot",
+              "activityRoot",
+              "mode"
+            ],
+            "properties": {
+              "selectedRoot": {
+                "type": "string"
+              },
+              "activityRoot": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "mode": {
+                "type": "string"
+              }
+            }
+          },
+          "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "selectedRoot",
+              "activityRoot",
+              "mode"
+            ],
+            "properties": {
+              "selectedRoot": {
+                "type": "string"
+              },
+              "activityRoot": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "mode": {
+                "type": "string"
+              }
+            }
+          },
+          "bytesToCopy": {
+            "type": "integer"
+          },
+          "requiresClosedSession": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "verificationReceiptId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-011",
+        "method": "workspace.storage.preview",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 11
+        },
+        "params": {
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "action": "relocate",
+          "targetMode": "direct",
+          "selectedRootGrant": "grant_storage_target_1"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-011",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 11
+        },
+        "result": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "action": "relocate",
+          "source": {
+            "selectedRoot": "D:\\Workspaces\\Quarter",
+            "activityRoot": null,
+            "mode": "direct"
+          },
+          "target": {
+            "selectedRoot": "E:\\Workspaces\\Quarter",
+            "activityRoot": null,
+            "mode": "direct"
+          },
+          "bytesToCopy": 4096,
+          "requiresClosedSession": true,
+          "warnings": [
+            "The verified source copy is retained after relocation."
+          ],
+          "expiresAt": "2026-07-28T10:10:00Z",
+          "verificationReceiptId": null
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-011",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 11
+        },
+        "error": {
+          "code": "workspace.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspace.storage.apply",
+      "scope": "global",
+      "paramsModel": "ApplyWorkspaceStorageParams",
+      "resultModel": "WorkspaceStorageResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "confirmation"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "confirmation": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId",
+          "status",
+          "storage"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "storage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "location",
+              "activityRoot",
+              "mode",
+              "provider",
+              "health",
+              "logicalSize",
+              "physicalSize",
+              "reclaimableSize",
+              "encryption",
+              "keyVersion",
+              "pendingSync",
+              "remoteVerified"
+            ],
+            "properties": {
+              "location": {
+                "type": "string"
+              },
+              "activityRoot": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "health": {
+                "type": "string"
+              },
+              "logicalSize": {
+                "type": "integer"
+              },
+              "physicalSize": {
+                "type": "integer"
+              },
+              "reclaimableSize": {
+                "type": "integer"
+              },
+              "encryption": {
+                "type": "string"
+              },
+              "keyVersion": {
+                "type": "integer"
+              },
+              "pendingSync": {
+                "type": "boolean"
+              },
+              "remoteVerified": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-012",
+        "method": "workspace.storage.apply",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 12
+        },
+        "params": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "confirmation": "季度规划"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-012",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 12
+        },
+        "result": {
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "status": "applied",
+          "storage": {
+            "location": "E:\\Workspaces\\Quarter",
+            "activityRoot": "E:\\Workspaces\\Quarter",
+            "mode": "direct",
+            "provider": "fixed",
+            "health": "healthy",
+            "logicalSize": 4096,
+            "physicalSize": 2048,
+            "reclaimableSize": 0,
+            "encryption": "convenient",
+            "keyVersion": 1,
+            "pendingSync": false,
+            "remoteVerified": true
+          }
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-012",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 12
+        },
+        "error": {
+          "code": "workspace.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "snapshot.request",
+      "scope": "workspace",
+      "paramsModel": "RequestSnapshotParams",
+      "resultModel": "SnapshotOperationResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "trigger",
+          "urgency"
+        ],
+        "properties": {
+          "trigger": {
+            "type": "string"
+          },
+          "urgency": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operationId",
+          "state"
+        ],
+        "properties": {
+          "operationId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-013",
+        "method": "snapshot.request",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 13,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "trigger": "manual",
+          "urgency": "foreground"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-013",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 13,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "state": "queued"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-013",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 13,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "snapshot.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "snapshot.list",
+      "scope": "workspace",
+      "paramsModel": "ListSnapshotsParams",
+      "resultModel": "SnapshotListResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cursor",
+          "limit"
+        ],
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "snapshots",
+          "nextCursor"
+        ],
+        "properties": {
+          "snapshots": {
+            "type": "array",
+            "items": {}
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-014",
+        "method": "snapshot.list",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 14,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "cursor": null,
+          "limit": 50
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-014",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 14,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "snapshots": [],
+          "nextCursor": null
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-014",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 14,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "snapshot.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "snapshot.inspect",
+      "scope": "workspace",
+      "paramsModel": "InspectSnapshotParams",
+      "resultModel": "SnapshotDetails",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "snapshotId"
+        ],
+        "properties": {
+          "snapshotId": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "snapshotId",
+          "state",
+          "integrity"
+        ],
+        "properties": {
+          "snapshotId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "integrity": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-015",
+        "method": "snapshot.inspect",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 15,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "snapshotId": "77777777-7777-4777-8777-777777777777"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-015",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 15,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "snapshotId": "77777777-7777-4777-8777-777777777777",
+          "state": "ready",
+          "integrity": "verified"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-015",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 15,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "snapshot.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "snapshot.update",
+      "scope": "workspace",
+      "paramsModel": "UpdateSnapshotParams",
+      "resultModel": "SnapshotDetails",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "snapshotId",
+          "action",
+          "expectedCatalogRevision"
+        ],
+        "properties": {
+          "snapshotId": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "expectedCatalogRevision": {
+            "type": "integer"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "snapshotId",
+          "state",
+          "integrity"
+        ],
+        "properties": {
+          "snapshotId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "integrity": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-016",
+        "method": "snapshot.update",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 16,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "snapshotId": "77777777-7777-4777-8777-777777777777",
+          "action": "pin",
+          "expectedCatalogRevision": 3
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-016",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 16,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "snapshotId": "77777777-7777-4777-8777-777777777777",
+          "state": "ready",
+          "integrity": "verified"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-016",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 16,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "snapshot.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "snapshot.previewRestore",
+      "scope": "workspace",
+      "paramsModel": "PreviewSnapshotRestoreParams",
+      "resultModel": "RestorePlanResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "snapshotId",
+          "targetMode"
+        ],
+        "properties": {
+          "snapshotId": {
+            "type": "string"
+          },
+          "targetMode": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "protectionRequired",
+          "changes"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "protectionRequired": {
+            "type": "boolean"
+          },
+          "changes": {
+            "type": "array",
+            "items": {}
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-017",
+        "method": "snapshot.previewRestore",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 17,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "snapshotId": "77777777-7777-4777-8777-777777777777",
+          "targetMode": "currentWorkspace"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-017",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 17,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "protectionRequired": true,
+          "changes": []
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-017",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 17,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "snapshot.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "snapshot.applyRestore",
+      "scope": "workspace",
+      "paramsModel": "ApplySnapshotRestoreParams",
+      "resultModel": "RestoreOperationResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "confirmed"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "confirmed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operationId",
+          "state"
+        ],
+        "properties": {
+          "operationId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-018",
+        "method": "snapshot.applyRestore",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 18,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "confirmed": true
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-018",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 18,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "state": "prepared"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-018",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 18,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "snapshot.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "snapshot.openAsNewWorkspace",
+      "scope": "workspace",
+      "paramsModel": "OpenSnapshotAsNewWorkspaceParams",
+      "resultModel": "WorkspaceSessionResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "snapshotId"
+        ],
+        "properties": {
+          "snapshotId": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspaceId",
+          "sessionEpoch",
+          "state"
+        ],
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "sessionEpoch": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-019",
+        "method": "snapshot.openAsNewWorkspace",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 19,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "snapshotId": "77777777-7777-4777-8777-777777777777"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-019",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 19,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "workspaceId": "99999999-9999-4999-8999-999999999999",
+          "sessionEpoch": 8,
+          "state": "openedWritable"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-019",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 19,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "snapshot.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "snapshot.previewExtract",
+      "scope": "workspace",
+      "paramsModel": "PreviewSnapshotExtractParams",
+      "resultModel": "SnapshotExtractPlan",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "snapshotId",
+          "documentId"
+        ],
+        "properties": {
+          "snapshotId": {
+            "type": "string"
+          },
+          "documentId": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "displayName",
+          "size",
+          "expiresAt"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "expiresAt": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-020",
+        "method": "snapshot.previewExtract",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 20,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "snapshotId": "77777777-7777-4777-8777-777777777777",
+          "documentId": "22222222-2222-4222-8222-222222222222"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-020",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 20,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "displayName": "季度规划.docx",
+          "size": 1024,
+          "expiresAt": "2026-07-28T10:10:00Z"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-020",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 20,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "snapshot.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "snapshot.applyExtract",
+      "scope": "workspace",
+      "paramsModel": "ApplySnapshotExtractParams",
+      "resultModel": "SnapshotOperationResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "pathGrant"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "pathGrant": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operationId",
+          "state"
+        ],
+        "properties": {
+          "operationId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-021",
+        "method": "snapshot.applyExtract",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 21,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "pathGrant": "grant_extract_1"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-021",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 21,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "state": "completed"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-021",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 21,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "snapshot.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "snapshot.export",
+      "scope": "workspace",
+      "paramsModel": "ExportSnapshotParams",
+      "resultModel": "SnapshotPackageReceipt",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "snapshotId",
+          "pathGrant",
+          "encryption",
+          "recipients",
+          "credential"
+        ],
+        "properties": {
+          "snapshotId": {
+            "type": "string"
+          },
+          "pathGrant": {
+            "type": "string"
+          },
+          "encryption": {
+            "type": "string"
+          },
+          "recipients": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "credential": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "displayName",
+          "sha256"
+        ],
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-022",
+        "method": "snapshot.export",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 22,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "snapshotId": "77777777-7777-4777-8777-777777777777",
+          "pathGrant": "grant_export_1",
+          "encryption": "age",
+          "recipients": [
+            "age1examplepublicrecipient"
+          ],
+          "credential": null
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-022",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 22,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "displayName": "季度规划.vtsnapshot.age",
+          "sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-022",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 22,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "snapshot.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "snapshot.inspectPackage",
+      "scope": "global",
+      "paramsModel": "InspectSnapshotPackageParams",
+      "resultModel": "SnapshotPackageInfo",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pathGrant",
+          "credential"
+        ],
+        "properties": {
+          "pathGrant": {
+            "type": "string"
+          },
+          "credential": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "trusted",
+          "workspaceId",
+          "sourceSnapshotId",
+          "snapshotCount",
+          "encrypted",
+          "verified",
+          "expiresAt"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "trusted": {
+            "type": "boolean"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "sourceSnapshotId": {
+            "type": "string"
+          },
+          "snapshotCount": {
+            "type": "integer"
+          },
+          "encrypted": {
+            "type": "boolean"
+          },
+          "verified": {
+            "type": "boolean"
+          },
+          "expiresAt": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-023",
+        "method": "snapshot.inspectPackage",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 23
+        },
+        "params": {
+          "pathGrant": "grant_import_1",
+          "credential": null
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-023",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 23
+        },
+        "result": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "trusted": false,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sourceSnapshotId": "77777777-7777-4777-8777-777777777777",
+          "snapshotCount": 1,
+          "encrypted": false,
+          "verified": true,
+          "expiresAt": "2026-07-28T10:10:00Z"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-023",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 23
+        },
+        "error": {
+          "code": "snapshot.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "snapshot.import",
+      "scope": "global",
+      "paramsModel": "ImportSnapshotPackageParams",
+      "resultModel": "SnapshotImportResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "credential",
+          "targetMode",
+          "targetWorkspaceId"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "credential": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "targetMode": {
+            "type": "string"
+          },
+          "targetWorkspaceId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operationId",
+          "snapshotId",
+          "sourceWorkspaceId",
+          "sourceSnapshotId",
+          "state"
+        ],
+        "properties": {
+          "operationId": {
+            "type": "string"
+          },
+          "snapshotId": {
+            "type": "string"
+          },
+          "sourceWorkspaceId": {
+            "type": "string"
+          },
+          "sourceSnapshotId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-024",
+        "method": "snapshot.import",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 24
+        },
+        "params": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "credential": null,
+          "targetMode": "newWorkspace",
+          "targetWorkspaceId": null
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-024",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 24
+        },
+        "result": {
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "snapshotId": "77777777-7777-4777-8777-777777777777",
+          "sourceWorkspaceId": "11111111-1111-4111-8111-111111111111",
+          "sourceSnapshotId": "88888888-8888-4888-8888-888888888888",
+          "state": "restoreRequired"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-024",
+        "wire": {
+          "scope": "global",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 24
+        },
+        "error": {
+          "code": "snapshot.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "repository.verify",
+      "scope": "workspace",
+      "paramsModel": "VerifyRepositoryParams",
+      "resultModel": "RepositoryVerificationResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "snapshotCount",
+          "objectCount",
+          "corruptSnapshotIds"
+        ],
+        "properties": {
+          "state": {
+            "type": "string"
+          },
+          "snapshotCount": {
+            "type": "integer"
+          },
+          "objectCount": {
+            "type": "integer"
+          },
+          "corruptSnapshotIds": {
+            "type": "array",
+            "items": {}
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-025",
+        "method": "repository.verify",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 25,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {}
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-025",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 25,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "state": "verified",
+          "snapshotCount": 1,
+          "objectCount": 7,
+          "corruptSnapshotIds": []
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-025",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 25,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "repository.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "repository.previewKeyRotation",
+      "scope": "workspace",
+      "paramsModel": "PreviewRepositoryKeyRotationParams",
+      "resultModel": "RepositoryKeyRotationPlan",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "expiresAt",
+          "protectionRequired"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "protectionRequired": {
+            "type": "boolean"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-026",
+        "method": "repository.previewKeyRotation",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 26,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {}
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-026",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 26,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "expiresAt": "2026-07-28T10:10:00Z",
+          "protectionRequired": true
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-026",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 26,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "repository.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "repository.applyKeyRotation",
+      "scope": "workspace",
+      "paramsModel": "ApplyRepositoryKeyRotationParams",
+      "resultModel": "RepositoryKeyRotationResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "confirmed"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "confirmed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operationId",
+          "state",
+          "newRecoveryKeyAvailable"
+        ],
+        "properties": {
+          "operationId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "newRecoveryKeyAvailable": {
+            "type": "boolean"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-027",
+        "method": "repository.applyKeyRotation",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 27,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "confirmed": true
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-027",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 27,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "state": "hostRestartRequired",
+          "newRecoveryKeyAvailable": false
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-027",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 27,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "repository.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "fileHistory.import",
+      "scope": "workspace",
+      "paramsModel": "ImportFileDocumentParams",
+      "resultModel": "FileDocumentResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pathGrant",
+          "relativePath",
+          "mimeType"
+        ],
+        "properties": {
+          "pathGrant": {
+            "type": "string"
+          },
+          "relativePath": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contractVersion",
+          "documentId",
+          "workspaceId",
+          "relativePath",
+          "status",
+          "effectiveRevisionId",
+          "nextRevisionOrdinal",
+          "nextFormalVersion"
+        ],
+        "properties": {
+          "contractVersion": {
+            "type": "string"
+          },
+          "documentId": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "relativePath": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "effectiveRevisionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nextRevisionOrdinal": {
+            "type": "integer"
+          },
+          "nextFormalVersion": {
+            "type": "integer"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-028",
+        "method": "fileHistory.import",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 28,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "pathGrant": "grant_document_import_1",
+          "relativePath": "季度规划.docx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-028",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 28,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "contractVersion": "2.0",
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "relativePath": "季度规划.docx",
+          "status": "active",
+          "effectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+          "nextRevisionOrdinal": 2,
+          "nextFormalVersion": 2
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-028",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 28,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "file_history.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "fileHistory.listDocuments",
+      "scope": "workspace",
+      "paramsModel": "ListFileDocumentsParams",
+      "resultModel": "FileDocumentListResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "includeDeleted"
+        ],
+        "properties": {
+          "includeDeleted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "documents"
+        ],
+        "properties": {
+          "documents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "contractVersion",
+                "documentId",
+                "workspaceId",
+                "relativePath",
+                "status",
+                "effectiveRevisionId",
+                "nextRevisionOrdinal",
+                "nextFormalVersion"
+              ],
+              "properties": {
+                "contractVersion": {
+                  "type": "string"
+                },
+                "documentId": {
+                  "type": "string"
+                },
+                "workspaceId": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "effectiveRevisionId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "nextRevisionOrdinal": {
+                  "type": "integer"
+                },
+                "nextFormalVersion": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-029",
+        "method": "fileHistory.listDocuments",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 29,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "includeDeleted": false
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-029",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 29,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "documents": [
+            {
+              "contractVersion": "2.0",
+              "documentId": "22222222-2222-4222-8222-222222222222",
+              "workspaceId": "11111111-1111-4111-8111-111111111111",
+              "relativePath": "季度规划.docx",
+              "status": "active",
+              "effectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+              "nextRevisionOrdinal": 4,
+              "nextFormalVersion": 4
+            }
+          ]
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-029",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 29,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "file_history.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "fileHistory.listPendingChanges",
+      "scope": "workspace",
+      "paramsModel": "ListPendingFileChangesParams",
+      "resultModel": "PendingFileChangeListResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "changes"
+        ],
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "changeId",
+                "relativePath",
+                "missing",
+                "observedHash",
+                "observedSize",
+                "reason",
+                "candidateDocumentIds",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "changeId": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                },
+                "missing": {
+                  "type": "boolean"
+                },
+                "observedHash": {
+                  "type": "string"
+                },
+                "observedSize": {
+                  "type": "integer"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "candidateDocumentIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-030",
+        "method": "fileHistory.listPendingChanges",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 30,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {}
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-030",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 30,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "changes": [
+            {
+              "changeId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              "relativePath": "季度规划.docx",
+              "missing": false,
+              "observedHash": "sha256:abababababababababababababababababababababababababababababababab",
+              "observedSize": 1024,
+              "reason": "same content may be a copy, rename, or move",
+              "candidateDocumentIds": [
+                "22222222-2222-4222-8222-222222222222"
+              ],
+              "createdAt": "2026-07-28T09:00:00Z",
+              "updatedAt": "2026-07-28T09:00:00Z"
+            }
+          ]
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-030",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 30,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "file_history.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "fileHistory.applyPendingChange",
+      "scope": "workspace",
+      "paramsModel": "ApplyPendingFileChangeParams",
+      "resultModel": "PendingFileChangeResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "changeId",
+          "action",
+          "documentId",
+          "expectedEffectiveRevisionId"
+        ],
+        "properties": {
+          "changeId": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "documentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expectedEffectiveRevisionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "changeId",
+          "state",
+          "document"
+        ],
+        "properties": {
+          "changeId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "document": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "contractVersion",
+              "documentId",
+              "workspaceId",
+              "relativePath",
+              "status",
+              "effectiveRevisionId",
+              "nextRevisionOrdinal",
+              "nextFormalVersion"
+            ],
+            "properties": {
+              "contractVersion": {
+                "type": "string"
+              },
+              "documentId": {
+                "type": "string"
+              },
+              "workspaceId": {
+                "type": "string"
+              },
+              "relativePath": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "effectiveRevisionId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "nextRevisionOrdinal": {
+                "type": "integer"
+              },
+              "nextFormalVersion": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-031",
+        "method": "fileHistory.applyPendingChange",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 31,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "changeId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "action": "move",
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "expectedEffectiveRevisionId": "33333333-3333-4333-8333-333333333333"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-031",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 31,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "changeId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "state": "applied",
+          "document": {
+            "contractVersion": "2.0",
+            "documentId": "22222222-2222-4222-8222-222222222222",
+            "workspaceId": "11111111-1111-4111-8111-111111111111",
+            "relativePath": "季度规划.docx",
+            "status": "active",
+            "effectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+            "nextRevisionOrdinal": 4,
+            "nextFormalVersion": 4
+          }
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-031",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 31,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "file_history.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "fileHistory.unlink",
+      "scope": "workspace",
+      "paramsModel": "UnlinkFileDocumentParams",
+      "resultModel": "FileDocumentResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "documentId",
+          "expectedEffectiveRevisionId"
+        ],
+        "properties": {
+          "documentId": {
+            "type": "string"
+          },
+          "expectedEffectiveRevisionId": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contractVersion",
+          "documentId",
+          "workspaceId",
+          "relativePath",
+          "status",
+          "effectiveRevisionId",
+          "nextRevisionOrdinal",
+          "nextFormalVersion"
+        ],
+        "properties": {
+          "contractVersion": {
+            "type": "string"
+          },
+          "documentId": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "relativePath": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "effectiveRevisionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nextRevisionOrdinal": {
+            "type": "integer"
+          },
+          "nextFormalVersion": {
+            "type": "integer"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-032",
+        "method": "fileHistory.unlink",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 32,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "expectedEffectiveRevisionId": "33333333-3333-4333-8333-333333333333"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-032",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 32,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "contractVersion": "2.0",
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "relativePath": "季度规划.docx",
+          "status": "deleted",
+          "effectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+          "nextRevisionOrdinal": 4,
+          "nextFormalVersion": 4
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-032",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 32,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "file_history.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "fileHistory.relink",
+      "scope": "workspace",
+      "paramsModel": "RelinkFileDocumentParams",
+      "resultModel": "FileDocumentResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "documentId",
+          "expectedEffectiveRevisionId",
+          "pathGrant"
+        ],
+        "properties": {
+          "documentId": {
+            "type": "string"
+          },
+          "expectedEffectiveRevisionId": {
+            "type": "string"
+          },
+          "pathGrant": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contractVersion",
+          "documentId",
+          "workspaceId",
+          "relativePath",
+          "status",
+          "effectiveRevisionId",
+          "nextRevisionOrdinal",
+          "nextFormalVersion"
+        ],
+        "properties": {
+          "contractVersion": {
+            "type": "string"
+          },
+          "documentId": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "relativePath": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "effectiveRevisionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nextRevisionOrdinal": {
+            "type": "integer"
+          },
+          "nextFormalVersion": {
+            "type": "integer"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-033",
+        "method": "fileHistory.relink",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 33,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "expectedEffectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+          "pathGrant": "grant_relink_1"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-033",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 33,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "contractVersion": "2.0",
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "relativePath": "季度规划.docx",
+          "status": "active",
+          "effectiveRevisionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "nextRevisionOrdinal": 5,
+          "nextFormalVersion": 5
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-033",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 33,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "file_history.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "fileHistory.readTree",
+      "scope": "workspace",
+      "paramsModel": "ReadFileTreeParams",
+      "resultModel": "FileRevisionTreeResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "documentId"
+        ],
+        "properties": {
+          "documentId": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "documentId",
+          "effectiveRevisionId",
+          "revisions"
+        ],
+        "properties": {
+          "documentId": {
+            "type": "string"
+          },
+          "effectiveRevisionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revisions": {
+            "type": "array",
+            "items": {}
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-034",
+        "method": "fileHistory.readTree",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 34,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "documentId": "22222222-2222-4222-8222-222222222222"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-034",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 34,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "effectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+          "revisions": []
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-034",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 34,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "file_history.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "fileHistory.restore",
+      "scope": "workspace",
+      "paramsModel": "RestoreFileRevisionParams",
+      "resultModel": "FileRevisionResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "documentId",
+          "expectedEffectiveRevisionId",
+          "historicalRevisionId"
+        ],
+        "properties": {
+          "documentId": {
+            "type": "string"
+          },
+          "expectedEffectiveRevisionId": {
+            "type": "string"
+          },
+          "historicalRevisionId": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revisionId",
+          "formalVersion"
+        ],
+        "properties": {
+          "revisionId": {
+            "type": "string"
+          },
+          "formalVersion": {
+            "type": "integer"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-035",
+        "method": "fileHistory.restore",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 35,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "expectedEffectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+          "historicalRevisionId": "66666666-6666-4666-8666-666666666666"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-035",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 35,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "revisionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "formalVersion": 4
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-035",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 35,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "file_history.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "fileHistory.upgrade",
+      "scope": "workspace",
+      "paramsModel": "UpgradeFileRevisionParams",
+      "resultModel": "FileRevisionResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "documentId",
+          "revisionId",
+          "pathGrant"
+        ],
+        "properties": {
+          "documentId": {
+            "type": "string"
+          },
+          "revisionId": {
+            "type": "string"
+          },
+          "pathGrant": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revisionId",
+          "formalVersion"
+        ],
+        "properties": {
+          "revisionId": {
+            "type": "string"
+          },
+          "formalVersion": {
+            "type": "integer"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-036",
+        "method": "fileHistory.upgrade",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 36,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "revisionId": "66666666-6666-4666-8666-666666666666",
+          "pathGrant": "grant_upgrade_1"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-036",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 36,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "revisionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "formalVersion": 4
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-036",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 36,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "file_history.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "fileHistory.activateLeaf",
+      "scope": "workspace",
+      "paramsModel": "ActivateFileLeafParams",
+      "resultModel": "FileActivationResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "documentId",
+          "expectedEffectiveRevisionId",
+          "targetLeafRevisionId"
+        ],
+        "properties": {
+          "documentId": {
+            "type": "string"
+          },
+          "expectedEffectiveRevisionId": {
+            "type": "string"
+          },
+          "targetLeafRevisionId": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revisionId",
+          "effective"
+        ],
+        "properties": {
+          "revisionId": {
+            "type": "string"
+          },
+          "effective": {
+            "type": "boolean"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-037",
+        "method": "fileHistory.activateLeaf",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 37,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "expectedEffectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+          "targetLeafRevisionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-037",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 37,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "revisionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "effective": true
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-037",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 37,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "file_history.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "retention.get",
+      "scope": "workspace",
+      "paramsModel": "GetRetentionParams",
+      "resultModel": "RetentionPolicyResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contractVersion",
+          "policyRevision",
+          "snapshotDays",
+          "snapshotCount",
+          "snapshotBuckets",
+          "fileRevisionDays",
+          "fileRevisionCount",
+          "fileRevisionBuckets",
+          "trashMonths",
+          "repositoryLimitBytes"
+        ],
+        "properties": {
+          "contractVersion": {
+            "type": "string"
+          },
+          "policyRevision": {
+            "type": "integer"
+          },
+          "snapshotDays": {
+            "type": "integer"
+          },
+          "snapshotCount": {
+            "type": "integer"
+          },
+          "snapshotBuckets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fileRevisionDays": {
+            "type": "integer"
+          },
+          "fileRevisionCount": {
+            "type": "integer"
+          },
+          "fileRevisionBuckets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "trashMonths": {
+            "type": "integer"
+          },
+          "repositoryLimitBytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-038",
+        "method": "retention.get",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 38,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {}
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-038",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 38,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "contractVersion": "2.0",
+          "policyRevision": 1,
+          "snapshotDays": 30,
+          "snapshotCount": 50,
+          "snapshotBuckets": [
+            "hourly",
+            "daily",
+            "weekly",
+            "monthly"
+          ],
+          "fileRevisionDays": 30,
+          "fileRevisionCount": 100,
+          "fileRevisionBuckets": [
+            "daily",
+            "weekly",
+            "monthly"
+          ],
+          "trashMonths": 3,
+          "repositoryLimitBytes": null
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-038",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 38,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "retention.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "retention.update",
+      "scope": "workspace",
+      "paramsModel": "UpdateRetentionParams",
+      "resultModel": "RetentionPolicyResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedRevision",
+          "snapshotDays",
+          "snapshotCount",
+          "snapshotBuckets",
+          "fileRevisionDays",
+          "fileRevisionCount",
+          "fileRevisionBuckets",
+          "repositoryLimitBytes"
+        ],
+        "properties": {
+          "expectedRevision": {
+            "type": "integer"
+          },
+          "snapshotDays": {
+            "type": "integer"
+          },
+          "snapshotCount": {
+            "type": "integer"
+          },
+          "snapshotBuckets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fileRevisionDays": {
+            "type": "integer"
+          },
+          "fileRevisionCount": {
+            "type": "integer"
+          },
+          "fileRevisionBuckets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "repositoryLimitBytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contractVersion",
+          "policyRevision",
+          "snapshotDays",
+          "snapshotCount",
+          "snapshotBuckets",
+          "fileRevisionDays",
+          "fileRevisionCount",
+          "fileRevisionBuckets",
+          "trashMonths",
+          "repositoryLimitBytes"
+        ],
+        "properties": {
+          "contractVersion": {
+            "type": "string"
+          },
+          "policyRevision": {
+            "type": "integer"
+          },
+          "snapshotDays": {
+            "type": "integer"
+          },
+          "snapshotCount": {
+            "type": "integer"
+          },
+          "snapshotBuckets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fileRevisionDays": {
+            "type": "integer"
+          },
+          "fileRevisionCount": {
+            "type": "integer"
+          },
+          "fileRevisionBuckets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "trashMonths": {
+            "type": "integer"
+          },
+          "repositoryLimitBytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-039",
+        "method": "retention.update",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 39,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "expectedRevision": 1,
+          "snapshotDays": 30,
+          "snapshotCount": 50,
+          "snapshotBuckets": [
+            "hourly",
+            "daily",
+            "weekly",
+            "monthly"
+          ],
+          "fileRevisionDays": 30,
+          "fileRevisionCount": 100,
+          "fileRevisionBuckets": [
+            "daily",
+            "weekly",
+            "monthly"
+          ],
+          "repositoryLimitBytes": null
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-039",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 39,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "contractVersion": "2.0",
+          "policyRevision": 2,
+          "snapshotDays": 30,
+          "snapshotCount": 50,
+          "snapshotBuckets": [
+            "hourly",
+            "daily",
+            "weekly",
+            "monthly"
+          ],
+          "fileRevisionDays": 30,
+          "fileRevisionCount": 100,
+          "fileRevisionBuckets": [
+            "daily",
+            "weekly",
+            "monthly"
+          ],
+          "trashMonths": 3,
+          "repositoryLimitBytes": null
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-039",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 39,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "retention.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "retention.plan",
+      "scope": "workspace",
+      "paramsModel": "PlanRetentionParams",
+      "resultModel": "CleanupPlanResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "reclaimableBytes",
+          "blockedReasons"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "reclaimableBytes": {
+            "type": "integer"
+          },
+          "blockedReasons": {
+            "type": "array",
+            "items": {}
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-040",
+        "method": "retention.plan",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 40,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {}
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-040",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 40,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "reclaimableBytes": 0,
+          "blockedReasons": []
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-040",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 40,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "retention.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "retention.apply",
+      "scope": "workspace",
+      "paramsModel": "ApplyRetentionParams",
+      "resultModel": "CleanupResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "deletedObjects",
+          "reclaimedBytes"
+        ],
+        "properties": {
+          "deletedObjects": {
+            "type": "integer"
+          },
+          "reclaimedBytes": {
+            "type": "integer"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-041",
+        "method": "retention.apply",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 41,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-041",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 41,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "deletedObjects": 0,
+          "reclaimedBytes": 0
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-041",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 41,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "retention.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "replica.status",
+      "scope": "workspace",
+      "paramsModel": "ReplicaStatusParams",
+      "resultModel": "ReplicaStatusResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "coordinationStrength",
+          "syncState",
+          "pendingSync"
+        ],
+        "properties": {
+          "coordinationStrength": {
+            "type": "string"
+          },
+          "syncState": {
+            "type": "string"
+          },
+          "pendingSync": {
+            "type": "boolean"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-042",
+        "method": "replica.status",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 42,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {}
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-042",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 42,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "coordinationStrength": "strong",
+          "syncState": "localOnly",
+          "pendingSync": false
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-042",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 42,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "replica.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "replica.synchronize",
+      "scope": "workspace",
+      "paramsModel": "SynchronizeReplicaParams",
+      "resultModel": "ReplicaOperationResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operationId",
+          "state"
+        ],
+        "properties": {
+          "operationId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-043",
+        "method": "replica.synchronize",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 43,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {}
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-043",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 43,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "state": "queued"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-043",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 43,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "replica.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "replica.forceTakeover",
+      "scope": "workspace",
+      "paramsModel": "ForceTakeoverParams",
+      "resultModel": "LeaseResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "fenceEpoch",
+          "claimId",
+          "mode"
+        ],
+        "properties": {
+          "fenceEpoch": {
+            "type": "integer"
+          },
+          "claimId": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-044",
+        "method": "replica.forceTakeover",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 44,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "mode": "provisional"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-044",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 44,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "fenceEpoch": 2,
+          "claimId": "88888888-8888-4888-8888-888888888888",
+          "mode": "provisional"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-044",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 44,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "replica.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "conflict.list",
+      "scope": "workspace",
+      "paramsModel": "ListConflictsParams",
+      "resultModel": "ConflictListResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cursor",
+          "limit"
+        ],
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conflicts",
+          "nextCursor"
+        ],
+        "properties": {
+          "conflicts": {
+            "type": "array",
+            "items": {}
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-045",
+        "method": "conflict.list",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 45,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "cursor": null,
+          "limit": 50
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-045",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 45,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "conflicts": [],
+          "nextCursor": null
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-045",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 45,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "conflict.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "conflict.inspect",
+      "scope": "workspace",
+      "paramsModel": "InspectConflictParams",
+      "resultModel": "ConflictSetResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conflictId"
+        ],
+        "properties": {
+          "conflictId": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conflictId",
+          "state",
+          "items"
+        ],
+        "properties": {
+          "conflictId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {}
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-046",
+        "method": "conflict.inspect",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 46,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "conflictId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-046",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 46,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "conflictId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "state": "pending",
+          "items": []
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-046",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 46,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "conflict.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "conflict.preview",
+      "scope": "workspace",
+      "paramsModel": "PreviewConflictParams",
+      "resultModel": "ConflictPlanResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conflictId",
+          "choices"
+        ],
+        "properties": {
+          "conflictId": {
+            "type": "string"
+          },
+          "choices": {
+            "type": "array",
+            "items": {}
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId",
+          "diagnostics",
+          "valid"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {}
+          },
+          "valid": {
+            "type": "boolean"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-047",
+        "method": "conflict.preview",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 47,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "conflictId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "choices": []
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-047",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 47,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "diagnostics": [],
+          "valid": true
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-047",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 47,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "conflict.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "conflict.apply",
+      "scope": "workspace",
+      "paramsModel": "ApplyConflictParams",
+      "resultModel": "ConflictResolutionResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "planId"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string"
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operationId",
+          "state",
+          "recoverySnapshotIds"
+        ],
+        "properties": {
+          "operationId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "recoverySnapshotIds": {
+            "type": "array",
+            "items": {}
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-048",
+        "method": "conflict.apply",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 48,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-048",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 48,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "state": "applied",
+          "recoverySnapshotIds": []
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-048",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 48,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "conflict.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    }
+  ],
+  "eventCases": [
+    {
+      "contractVersion": "2.0",
+      "topic": "workspace.session.changed",
+      "wire": {
+        "scope": "workspace",
+        "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "sequence": 100,
+        "workspaceId": "11111111-1111-4111-8111-111111111111",
+        "sessionEpoch": 7
+      },
+      "payloadModel": "WorkspaceSessionChangedEvent",
+      "payloadSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "phase"
+        ],
+        "properties": {
+          "state": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          }
+        }
+      },
+      "payload": {
+        "state": "openedWritable",
+        "phase": "idle"
+      }
+    },
+    {
+      "contractVersion": "2.0",
+      "topic": "snapshot.changed",
+      "wire": {
+        "scope": "workspace",
+        "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "sequence": 101,
+        "workspaceId": "11111111-1111-4111-8111-111111111111",
+        "sessionEpoch": 7
+      },
+      "payloadModel": "SnapshotChangedEvent",
+      "payloadSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "snapshotId",
+          "state",
+          "integrity"
+        ],
+        "properties": {
+          "snapshotId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "integrity": {
+            "type": "string"
+          }
+        }
+      },
+      "payload": {
+        "snapshotId": "77777777-7777-4777-8777-777777777777",
+        "state": "ready",
+        "integrity": "verified"
+      }
+    },
+    {
+      "contractVersion": "2.0",
+      "topic": "replica.changed",
+      "wire": {
+        "scope": "workspace",
+        "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "sequence": 102,
+        "workspaceId": "11111111-1111-4111-8111-111111111111",
+        "sessionEpoch": 7
+      },
+      "payloadModel": "ReplicaChangedEvent",
+      "payloadSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "syncState",
+          "pendingSync"
+        ],
+        "properties": {
+          "syncState": {
+            "type": "string"
+          },
+          "pendingSync": {
+            "type": "boolean"
+          }
+        }
+      },
+      "payload": {
+        "syncState": "replicated",
+        "pendingSync": false
+      }
+    },
+    {
+      "contractVersion": "2.0",
+      "topic": "lease.changed",
+      "wire": {
+        "scope": "workspace",
+        "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "sequence": 103,
+        "workspaceId": "11111111-1111-4111-8111-111111111111",
+        "sessionEpoch": 7
+      },
+      "payloadModel": "LeaseChangedEvent",
+      "payloadSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode",
+          "coordinationStrength"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string"
+          },
+          "coordinationStrength": {
+            "type": "string"
+          }
+        }
+      },
+      "payload": {
+        "mode": "writable",
+        "coordinationStrength": "strong"
+      }
+    },
+    {
+      "contractVersion": "2.0",
+      "topic": "conflict.changed",
+      "wire": {
+        "scope": "workspace",
+        "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "sequence": 104,
+        "workspaceId": "11111111-1111-4111-8111-111111111111",
+        "sessionEpoch": 7
+      },
+      "payloadModel": "ConflictChangedEvent",
+      "payloadSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conflictId",
+          "state"
+        ],
+        "properties": {
+          "conflictId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
+      "payload": {
+        "conflictId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "state": "pending"
+      }
+    }
+  ]
+}

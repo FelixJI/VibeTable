@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Fail-closed PocketBase fault-injection release gate.
+"""Fail-closed workspace/snapshot v2 fault-injection release gate.
 
 The gate requires explicit named tests to pass. A successful command that ran
-zero matching tests is treated as a failure. The final scenario drives the real
-packaged WPF/WebView2 product, kills only its child sidecar, and verifies
-recovery without duplicate realtime application.
+zero matching tests is treated as a failure. The Go slice covers the durable
+workspace v2 snapshot, restore, retention, package, write-coordination and
+replica boundaries. The final scenario drives the real packaged WPF/WebView2
+product, kills only its child sidecar, and verifies recovery without duplicate
+realtime application.
 """
 
 from __future__ import annotations
@@ -43,13 +45,41 @@ GO_TESTS = (
     "TestFaultGatePortOccupiedReturnsStableActionableError",
     "TestFaultGateCorruptMigrationStopsBeforeStartup",
     "TestFaultGateRealWritableProbeDoesNotLeaveSentinel",
-    "TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete",
-    "TestManagedAttachmentsMultiFileMidwayFailureRollsBackAtomically",
-    "TestManagedAttachmentsCommittedDBCleanupFailureIsReportedAndRecoverable",
-    "TestManagedAttachmentsProcessExitDuringUploadLeavesNoDurableState",
-    "TestManagedAttachmentsProcessExitDuringCommitReportsAndRecoversOrphans",
-    "TestManagedAttachmentsProcessExitDuringCleanupReportsAndRecoversOrphans",
-    "TestManagedAttachmentsWholeBackupRestorePreservesReferencesHashesContentAndAudit",
+    "TestCatalogFailureNeverPublishesPartialRecord",
+    "TestDurableCatalogPublishesAtomicallyAndReopens",
+    "TestStaleAuthorityCannotCapture",
+    "TestSchedulerDebouncesIdleButCapsContinuousEditing",
+    "TestSchedulerSkipsUnchangedRevisionAndBacksOffFailures",
+    "TestJournalPersistenceFailureAfterMutationRollsBack",
+    "TestFailedHealthRollsBackWithoutMixedState",
+    "TestStageVerifiedPersistenceFailureStopsBeforeRollback",
+    "TestRecoverRejectsUnknownJournalStageWithoutMutatingWorkspace",
+    "TestApplyRejectsStalePlanAndUnsafeInventory",
+    "TestPreviewFailsClosedForMissingRootOrChild",
+    "TestApplyRejectsSameRevisionInventoryDigestDrift",
+    "TestInspectRejectsTraversalDuplicateAndResourceBomb",
+    "TestInspectRejectsExcessivePathAndCompressionRatio",
+    "TestImporterFailsBeforeStagingForCorruptOrUntrustedCurrentPackage",
+    "TestImporterAbortsStagingWhenPublicationReceiptIsInvalid",
+    "TestFenceTransferInvalidatesOldAuthorityWithoutChangingOtherCounters",
+    "TestPersistentCoordinatorFailsClosedUntilPreparedMutationResolved",
+    "TestPersistentQueueRetriesIdempotentlyAcrossRestart",
+    "TestPersistentQueueRecoversExpiredInflightLeaseAfterRestart",
+    "TestPersistentStrongLeaseCASAllowsOnlyOneConcurrentOwner",
+    "TestPersistentStrongLeaseFailsClosedOnDiskTampering",
+    "TestPersistentAdvisoryPublicationReopensAndDetectsDiskTampering",
+    "TestPersistentAdvisoryConditionalCreateCannotRaceOverwrite",
+    "TestRuntimeFailsClosedForIdentityParamsAndEpoch",
+)
+GO_PACKAGES = (
+    "./internal/startup",
+    "./internal/snapshot",
+    "./internal/restore",
+    "./internal/retention",
+    "./internal/snapshotpkg",
+    "./internal/writecoordinator",
+    "./internal/replica",
+    "./internal/workspacev2",
 )
 DOTNET_TEST = (
     "VibeTable.Infrastructure.Tests.PocketBase.PocketBaseSupervisorTests."
@@ -178,8 +208,7 @@ def _run_go(run_root: Path) -> CaseResult:
         _resolve("go"),
         "test",
         "-json",
-        "./internal/startup",
-        "./tests/integration",
+        *GO_PACKAGES,
         "-run",
         pattern,
         "-count=1",
@@ -205,7 +234,7 @@ def _run_go(run_root: Path) -> CaseResult:
     elif missing:
         error = "required tests did not pass: " + ", ".join(missing)
     return CaseResult(
-        name="go-stable-storage-migration-and-orphan-faults",
+        name="go-workspace-v2-durability-faults",
         status="passed" if error is None else "failed",
         elapsed=elapsed,
         command=command,

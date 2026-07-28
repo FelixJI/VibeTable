@@ -10,10 +10,19 @@ func TestCurrentContainsPinnedDependencies(t *testing.T) {
 	if info.CELVersion != "0.26.1" {
 		t.Fatalf("CEL version = %q", info.CELVersion)
 	}
-	if info.SchemaVersion != "4" {
+	if info.SchemaVersion != "5" {
 		t.Fatalf("schema version = %q", info.SchemaVersion)
 	}
 	if info.MigrationHash != "abc123" {
 		t.Fatalf("migration hash = %q", info.MigrationHash)
+	}
+	if info.ProtocolV2Version != "2.0" ||
+		info.WorkspaceFormat != "1" ||
+		info.RepositoryFormat != "kopia-v3" ||
+		info.SnapshotFormat != "2" ||
+		info.PackageFormat != "2" ||
+		info.KopiaVersion != "v0.23.1" ||
+		info.AgeVersion != "v1.3.1" {
+		t.Fatalf("workspace release metadata is incomplete: %#v", info)
 	}
 }

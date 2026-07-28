@@ -117,6 +117,25 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Install pinned Windows race toolchain
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "w64devkit-x64-2.8.0.7z.exe"
+          $destination = Join-Path $PWD ".tools\w64devkit"
+          $expected = "6252bf34fe2231a55ac7f03d482b36d2c7c58697990551bba508102cfb3f342e"
+          Invoke-WebRequest `
+            -Uri "https://github.com/skeeto/w64devkit/releases/download/v2.8.0/w64devkit-x64-2.8.0.7z.exe" `
+            -OutFile $archive
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "w64devkit checksum mismatch: expected $expected, got $actual"
+          }
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          7z x $archive "-o$destination" -y
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path "$destination\w64devkit\bin\gcc.exe")) {
+            throw "w64devkit extraction did not produce the pinned gcc.exe"
+          }
+
       - name: Set up uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -214,11 +233,17 @@ jobs:
         working-directory: desktop/web-grid
         run: npm run test
 
-      - name: Verify sidecar
-        run: uv run python qa/next.py --stage go-test
+      - name: Run complete release eligibility gate
+        run: >
+          uv run python qa/next.py --ci
+          --json-report build/qa/release-eligibility.json
 
-      - name: Verify .NET release configuration
-        run: dotnet test desktop/VibeTable.Desktop.sln --configuration Release
+      - name: Upload release eligibility evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-eligibility-${{ steps.identity.outputs.tag }}
+          path: build/qa/release-eligibility.json
+          if-no-files-found: error
 
       - name: Build release package
         run: uv run python scripts/build_next.py --release

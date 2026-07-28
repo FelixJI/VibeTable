@@ -25,16 +25,27 @@ import "./design-tokens/tokens.css";
 import "./components/calendar/work-calendar.css";
 import { initLocale } from "@/i18n";
 import { useHostBridge } from "@/services/bridgeContext";
+import { createWorkspaceV2HostAdapter } from "@/services/workspaceV2HostAdapter";
+import { setWorkspaceV2UiPort } from "@/services/workspaceV2UiPort";
 import App from "./App.vue";
 
 initLocale();
 
 const app = createApp(App);
 app.use(createPinia());
+const bridge = useHostBridge();
+const workspaceV2Adapter = createWorkspaceV2HostAdapter(bridge);
+setWorkspaceV2UiPort(workspaceV2Adapter.port);
 app.mount("#app");
 
 // Start the host bridge and notify the .NET host that the renderer is ready.
 // This happens AFTER mount so the startup-state subscription is registered.
-const bridge = useHostBridge();
 bridge.start();
 bridge.notify("app.ready", {});
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    workspaceV2Adapter.dispose();
+    setWorkspaceV2UiPort(null);
+  });
+}

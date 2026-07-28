@@ -16,11 +16,11 @@ export type DocumentCapability =
   | "history"
   | "relink"
   | "dragOut"
-  | "commitRevision"
-  | "promoteVersion"
-  | "schemes";
+  | "unlink";
 
 export interface DocumentEntry {
+  /** Stable canonical UUID used only by the workspace FileHistory authority. */
+  readonly documentId: string;
   /** Opaque, session-bound capability. It is never a local path. */
   readonly entryHandle: string;
   readonly displayName: string;
@@ -30,28 +30,12 @@ export interface DocumentEntry {
   readonly size?: number;
   readonly modifiedAt?: string;
   readonly versionLabel?: string;
+  readonly effectiveRevisionId?: string;
   readonly capabilities: readonly DocumentCapability[];
 }
 
-export interface DocumentRevision {
-  readonly revisionHandle: string;
-  readonly label: string;
-  readonly createdAt: string;
-  readonly size?: number;
-  readonly author?: string;
-}
-
-export interface DocumentScheme {
-  readonly schemeHandle: string;
-  readonly name: string;
-  readonly currentRevisionHandle: string | null;
-  readonly currentRevisionLabel: string | null;
-  readonly archived: boolean;
-  readonly active: boolean;
-}
-
 export type DocumentWorkspacePhase = "idle" | "loading" | "ready" | "failed";
-export type InspectorTab = "preview" | "history" | "schemes";
+export type InspectorTab = "preview" | "history";
 
 export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => {
   const phase = ref<DocumentWorkspacePhase>("idle");
@@ -64,11 +48,6 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   const lastErrorCode = ref<string | null>(null);
   const query = ref("");
   const authorityFilter = ref<DocumentAuthority>("workspace");
-  const revisions = ref<Readonly<Record<string, readonly DocumentRevision[]>>>({});
-  const historyLoadingFor = ref<string | null>(null);
-  const schemes = ref<Readonly<Record<string, readonly DocumentScheme[]>>>({});
-  const schemesLoadingFor = ref<string | null>(null);
-  const activeOperation = ref<string | null>(null);
 
   const visibleEntries = computed(() => {
     const needle = query.value.trim().toLocaleLowerCase();
@@ -106,9 +85,6 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     phase.value = "failed";
     lastError.value = message;
     lastErrorCode.value = code;
-    historyLoadingFor.value = null;
-    schemesLoadingFor.value = null;
-    activeOperation.value = null;
   }
 
   function setQuery(next: string): void {
@@ -160,51 +136,10 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     inspectorTab.value = tab;
   }
 
-  function beginHistory(entryHandle: string): void {
-    historyLoadingFor.value = entryHandle;
-    inspectorTab.value = "history";
-  }
-
-  function setHistory(entryHandle: string, next: readonly DocumentRevision[]): void {
-    revisions.value = { ...revisions.value, [entryHandle]: next };
-    if (historyLoadingFor.value === entryHandle) historyLoadingFor.value = null;
-  }
-
-  function beginSchemes(entryHandle: string): void {
-    schemesLoadingFor.value = entryHandle;
-    inspectorTab.value = "schemes";
-  }
-
-  function setSchemes(entryHandle: string, next: readonly DocumentScheme[]): void {
-    schemes.value = { ...schemes.value, [entryHandle]: next };
-    if (schemesLoadingFor.value === entryHandle) schemesLoadingFor.value = null;
-  }
-
-  function beginOperation(operation: string): void {
-    activeOperation.value = operation;
-    lastError.value = null;
-    lastErrorCode.value = null;
-  }
-
-  function finishOperation(): void {
-    activeOperation.value = null;
-  }
-
-  function updateCurrentRevision(entryHandle: string, label: string): void {
-    entries.value = entries.value.map((entry) =>
-      entry.entryHandle === entryHandle ? { ...entry, versionLabel: label } : entry,
-    );
-  }
-
   function clear(): void {
     phase.value = "idle";
     entries.value = [];
     query.value = "";
-    revisions.value = {};
-    schemes.value = {};
-    historyLoadingFor.value = null;
-    schemesLoadingFor.value = null;
-    activeOperation.value = null;
     lastError.value = null;
     lastErrorCode.value = null;
     clearSelection();
@@ -221,11 +156,6 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     lastErrorCode,
     query,
     authorityFilter,
-    revisions,
-    historyLoadingFor,
-    schemes,
-    schemesLoadingFor,
-    activeOperation,
     visibleEntries,
     beginLoad,
     setEntries,
@@ -236,13 +166,6 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     selectAllVisible,
     clearSelection,
     showInspector,
-    beginHistory,
-    setHistory,
-    beginSchemes,
-    setSchemes,
-    beginOperation,
-    finishOperation,
-    updateCurrentRevision,
     clear,
   };
 });

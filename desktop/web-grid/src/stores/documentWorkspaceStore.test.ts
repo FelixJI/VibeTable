@@ -3,9 +3,9 @@ import { createPinia, setActivePinia } from "pinia";
 import { useDocumentWorkspaceStore, type DocumentEntry } from "./documentWorkspaceStore";
 
 const entries: readonly DocumentEntry[] = [
-  { entryHandle: "a", displayName: "A.docx", authority: "workspace", availability: "available", capabilities: ["open", "preview", "reveal", "history"] },
-  { entryHandle: "b", displayName: "B.pdf", authority: "workspace", availability: "available", capabilities: ["open", "preview"] },
-  { entryHandle: "c", displayName: "C.xlsx", authority: "workspace", availability: "missing", capabilities: ["relink", "history"] },
+  { documentId: "11111111-1111-4111-8111-111111111111", entryHandle: "a", displayName: "A.docx", authority: "workspace", availability: "available", capabilities: ["open", "preview", "reveal", "history"] },
+  { documentId: "22222222-2222-4222-8222-222222222222", entryHandle: "b", displayName: "B.pdf", authority: "workspace", availability: "available", capabilities: ["open", "preview"] },
+  { documentId: "33333333-3333-4333-8333-333333333333", entryHandle: "c", displayName: "C.xlsx", authority: "workspace", availability: "missing", capabilities: ["relink", "history"] },
 ];
 
 describe("documentWorkspaceStore", () => {
@@ -52,25 +52,5 @@ describe("documentWorkspaceStore", () => {
     expect(wire).not.toContain("pocketbase");
     expect(wire).not.toContain("pb_data");
     expect(wire).not.toMatch(/[a-z]:\\\\/);
-  });
-
-  it("tracks schemes and operations by opaque handles", () => {
-    const store = useDocumentWorkspaceStore();
-    store.setEntries(entries);
-    store.beginSchemes("a");
-    store.setSchemes("a", [{
-      schemeHandle: "scheme-opaque",
-      name: "方案 A",
-      currentRevisionHandle: "revision-opaque",
-      currentRevisionLabel: "A1",
-      archived: false,
-      active: true,
-    }]);
-    expect(store.inspectorTab).toBe("schemes");
-    expect(store.schemes.a?.[0]?.currentRevisionHandle).toBe("revision-opaque");
-    store.beginOperation("document.commitRevisionRequested");
-    expect(store.activeOperation).toBe("document.commitRevisionRequested");
-    store.finishOperation();
-    expect(store.activeOperation).toBeNull();
   });
 });

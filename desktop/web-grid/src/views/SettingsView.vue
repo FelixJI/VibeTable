@@ -1,13 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   NButton,
   NAlert,
   NDynamicTags,
   NIcon,
   NInput,
-  NModal,
-  NPopconfirm,
   NRadioButton,
   NRadioGroup,
   NSelect,
@@ -25,7 +23,6 @@ import {
   HelpCircle,
   Database,
   Download,
-  FolderOpen,
   Info,
   Keyboard,
   Copy,
@@ -34,14 +31,11 @@ import {
   RefreshCw,
   Search,
   Tags,
-  Trash2,
   X,
 } from "lucide-vue-next";
 import brandIconUrl from "@/assets/brand/vibetable.png";
 import changelog from "@/generated/changelog.json";
-import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import { QUOTE_STYLES_BY_SOURCE, useUiStore } from "@/stores/uiStore";
-import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useIdentifierMappingStore } from "@/stores/identifierMappingStore";
 import type {
   DailyQuoteSource,
@@ -57,17 +51,15 @@ import MonthNavigator from "@/components/calendar/MonthNavigator.vue";
 import { formatDateKey, formatMonthKey, parseDateKey, shiftMonthKey } from "@/calendar/workCalendar";
 import { useWorkCalendarStore } from "@/stores/workCalendarStore";
 import type { WorkCalendarOverrideKind } from "@/calendar/workCalendar";
-import type { BackupEntry } from "@/contracts/backupContracts";
 import type { RuntimeDiagnostics } from "@/contracts/runtimeDiagnosticsContracts";
-import type { DataRootStatus } from "@/contracts";
-import { useBackupService } from "@/services/backupService";
-import { useDataRootService } from "@/services/dataRootService";
 import { useRuntimeDiagnosticsService } from "@/services/runtimeDiagnosticsService";
+import WorkspaceProtectionSettings, {
+  type WorkspaceProtectionAction,
+} from "@/components/settings/WorkspaceProtectionSettings.vue";
 
-type Section = "general" | "calendar" | "mapping" | "source" | "backup" | "interaction" | "about";
+type Section = "general" | "calendar" | "mapping" | "storage" | "versions" | "interaction" | "about";
 
 const ui = useUiStore();
-const workspace = useWorkspaceStore();
 const mappings = useIdentifierMappingStore();
 const workCalendar = useWorkCalendarStore();
 const current = ref<Section>("general");
@@ -78,6 +70,7 @@ const emit = defineEmits<{
   loadMappings: [];
   saveMappingAliases: [mappingId: string, aliases: readonly string[]];
   reconcileMappings: [];
+  workspaceV2Action: [action: WorkspaceProtectionAction];
 }>();
 const mappingQuery = ref("");
 const editingMappingId = ref<string | null>(null);
@@ -85,40 +78,11 @@ const aliasDraft = ref<string[]>([]);
 const transferMessage = ref<string | null>(null);
 const calendarMonth = ref(formatMonthKey(new Date()));
 const selectedCalendarDate = ref(formatDateKey(new Date()));
-const backupService = useBackupService();
-const backups = ref<readonly BackupEntry[]>([]);
-const backupPhase = ref<"idle" | "loading" | "creating" | "deleting" | "restoring">("idle");
-const backupError = ref<string | null>(null);
-const backupStatus = ref<string | null>(null);
-let backupStatusTimer: number | null = null;
-const restoreTarget = ref<BackupEntry | null>(null);
-const restoreTrigger = ref<HTMLElement | null>(null);
-const dataRootService = useDataRootService();
-const dataRootStatus = ref<DataRootStatus | null>(null);
-const dataRootPhase = ref<"idle" | "loading" | "choosing">("idle");
-const dataRootError = ref<string | null>(null);
-const dataRootMessage = ref<string | null>(null);
 const diagnosticsService = useRuntimeDiagnosticsService();
 const diagnostics = ref<RuntimeDiagnostics | null>(null);
 const diagnosticsPhase = ref<"idle" | "loading">("idle");
 const diagnosticsError = ref<string | null>(null);
 const changelogEntries = changelog.entries;
-
-function openRestoreConfirmation(backup: BackupEntry, event: MouseEvent): void {
-  restoreTrigger.value = event.currentTarget instanceof HTMLElement
-    ? event.currentTarget
-    : null;
-  restoreTarget.value = backup;
-}
-
-function closeRestoreConfirmation(): void {
-  restoreTarget.value = null;
-  const trigger = restoreTrigger.value;
-  restoreTrigger.value = null;
-  void nextTick(() => {
-    window.setTimeout(() => trigger?.focus(), 0);
-  });
-}
 
 const filteredMappings = computed(() => {
   const needle = mappingQuery.value.trim().toLocaleLowerCase();
@@ -131,145 +95,8 @@ const filteredMappings = computed(() => {
 
 watch(current, (section) => {
   if (section === "mapping") emit("loadMappings");
-  if (section === "backup") void loadBackups();
-  if (section === "source") void loadDataRoot();
   if (section === "about") void loadDiagnostics();
 });
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : t("settings.backup.failed");
-}
-
-async function loadDataRoot(): Promise<void> {
-  dataRootPhase.value = "loading";
-  dataRootError.value = null;
-  try {
-    dataRootStatus.value = await dataRootService.getStatus();
-  } catch (error) {
-    dataRootError.value = error instanceof Error
-      ? error.message
-      : t("settings.dataRoot.failed");
-  } finally {
-    dataRootPhase.value = "idle";
-  }
-}
-
-async function chooseDataRootMigration(): Promise<void> {
-  dataRootPhase.value = "choosing";
-  dataRootError.value = null;
-  dataRootMessage.value = null;
-  try {
-    const selection = await dataRootService.chooseMigration();
-    if (!selection.selected) return;
-    dataRootStatus.value = dataRootStatus.value
-      ? {
-          ...dataRootStatus.value,
-          migrationPending: true,
-          pendingDataRoot: selection.targetDataRoot,
-        }
-      : null;
-    dataRootMessage.value = t("settings.dataRoot.pending", {
-      path: selection.targetDataRoot ?? "",
-    });
-  } catch (error) {
-    dataRootError.value = error instanceof Error
-      ? error.message
-      : t("settings.dataRoot.failed");
-  } finally {
-    dataRootPhase.value = "idle";
-  }
-}
-
-async function loadBackups(): Promise<void> {
-  backupPhase.value = "loading";
-  backupError.value = null;
-  clearBackupStatus();
-  try {
-    backups.value = (await backupService.listBackups()).backups;
-  } catch (error) {
-    backupError.value = errorMessage(error);
-  } finally {
-    backupPhase.value = "idle";
-  }
-}
-
-function clearBackupStatus(): void {
-  if (backupStatusTimer !== null) {
-    window.clearTimeout(backupStatusTimer);
-    backupStatusTimer = null;
-  }
-  backupStatus.value = null;
-}
-
-function setBackupStatus(message: string, autoClearMs = 0): void {
-  clearBackupStatus();
-  backupStatus.value = message;
-  if (autoClearMs > 0) {
-    backupStatusTimer = window.setTimeout(clearBackupStatus, autoClearMs);
-  }
-}
-
-async function createBackup(): Promise<void> {
-  backupPhase.value = "creating";
-  backupError.value = null;
-  setBackupStatus(t("settings.backup.creating"));
-  try {
-    const result = await backupService.createBackup();
-    backups.value = [
-      result.backup,
-      ...backups.value.filter((item) => item.name !== result.backup.name),
-    ];
-    setBackupStatus(t("settings.backup.created", { name: result.backup.name }), 5000);
-  } catch (error) {
-    backupStatus.value = null;
-    backupError.value = errorMessage(error);
-  } finally {
-    backupPhase.value = "idle";
-  }
-}
-
-async function deleteBackup(backup: BackupEntry): Promise<void> {
-  backupPhase.value = "deleting";
-  backupError.value = null;
-  setBackupStatus(t("settings.backup.deleting", { name: backup.name }));
-  try {
-    await backupService.deleteBackup(backup.name);
-    backups.value = backups.value.filter((item) => item.name !== backup.name);
-    setBackupStatus(t("settings.backup.deleted", { name: backup.name }), 5000);
-  } catch (error) {
-    clearBackupStatus();
-    backupError.value = errorMessage(error);
-  } finally {
-    backupPhase.value = "idle";
-  }
-}
-
-async function openBackupFolder(): Promise<void> {
-  backupError.value = null;
-  try {
-    await backupService.openBackupFolder();
-    setBackupStatus(t("settings.backup.folderOpened"), 3500);
-  } catch (error) {
-    backupError.value = errorMessage(error);
-  }
-}
-
-async function confirmRestore(): Promise<void> {
-  const target = restoreTarget.value;
-  if (!target) return;
-  restoreTarget.value = null;
-  backupPhase.value = "restoring";
-  backupError.value = null;
-  setBackupStatus(t("settings.backup.restoring"));
-  try {
-    await backupService.restoreBackup(target.name, true);
-    setBackupStatus(t("settings.backup.restarting"));
-  } catch (error) {
-    backupStatus.value = null;
-    backupError.value = errorMessage(error);
-    backupPhase.value = "idle";
-  }
-}
 
 async function loadDiagnostics(): Promise<void> {
   diagnosticsPhase.value = "loading";
@@ -287,21 +114,6 @@ async function loadDiagnostics(): Promise<void> {
 
 function formatMemory(size: number): string {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-onBeforeUnmount(clearBackupStatus);
-
-function formatBackupSize(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatBackupDate(value: string): string {
-  return new Intl.DateTimeFormat(ui.locale, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
 }
 
 function beginAliasEdit(mappingId: string, aliases: readonly string[]): void {
@@ -348,15 +160,23 @@ function exportMappings(): void {
   transferMessage.value = t("settings.mapping.exported");
 }
 
-const sections = [
+const sections = computed(() => [
   { key: "general" as const, icon: Palette, label: "settings.general" },
   { key: "calendar" as const, icon: CalendarDays, label: "settings.workCalendar" },
   { key: "mapping" as const, icon: Braces, label: "settings.mapping" },
-  { key: "source" as const, icon: Database, label: "settings.source" },
-  { key: "backup" as const, icon: ArchiveRestore, label: "settings.backup" },
+  {
+    key: "storage" as const,
+    icon: Database,
+    label: "workspaceV2.settings.storage",
+  },
+  {
+    key: "versions" as const,
+    icon: ArchiveRestore,
+    label: "workspaceV2.settings.versions",
+  },
   { key: "interaction" as const, icon: SlidersHorizontal, label: "settings.interaction" },
   { key: "about" as const, icon: Info, label: "settings.about" },
-];
+]);
 
 const themeOptions = computed(() => [
   { label: t("toolbar.theme.system"), value: "system" },
@@ -375,15 +195,6 @@ const quoteSourceOptions = computed(() => (["hitokoto", "jinrishici", "quotable"
   .map((value) => ({ label: t(`settings.quote.source.${value}`), value })));
 const quoteStyleOptions = computed(() => QUOTE_STYLES_BY_SOURCE[ui.dailyQuoteSource]
   .map((value) => ({ label: t(`settings.quote.style.${value}`), value })));
-
-const connectionDetail = computed(() => {
-  if (workspace.phase === "opened") {
-    return t("settings.source.connectedDetail", { count: workspace.collections.length });
-  }
-  if (workspace.phase === "failed") return workspace.lastError || t("connection.failed");
-  if (workspace.phase === "opening") return t("connection.connecting");
-  return t("connection.waiting");
-});
 
 const selectedCalendarOverride = computed(() => workCalendar.getOverride(selectedCalendarDate.value));
 const selectedCalendarRule = computed(() => selectedCalendarOverride.value?.kind ?? "default");
@@ -432,7 +243,11 @@ function setCalendarName(name: string): void {
     </aside>
 
     <main class="settings-content">
-      <div class="settings-inner">
+      <div
+        class="settings-inner"
+        :class="{ 'settings-inner--workspace-v2':
+          current === 'storage' || current === 'versions' }"
+      >
         <template v-if="current === 'general'">
           <header><h1>{{ t("settings.general") }}</h1><p>{{ t("settings.general.description") }}</p></header>
           <section class="setting-card">
@@ -620,209 +435,18 @@ function setCalendarName(name: string): void {
           </section>
         </template>
 
-        <template v-else-if="current === 'source'">
-          <header><h1>{{ t("settings.source") }}</h1><p>{{ t("settings.source.description") }}</p></header>
-          <section class="setting-card">
-            <div class="setting-row setting-row--tall">
-              <div><strong>{{ t("settings.source.localService") }}</strong><small>{{ connectionDetail }}</small></div>
-              <div class="setting-control--pill"><ConnectionPill @reconnect="emit('reconnect')" /></div>
-            </div>
-            <div class="setting-row setting-row--tall">
-              <div class="data-root-copy">
-                <strong>{{ t("settings.dataRoot") }}</strong>
-                <small>{{ t("settings.dataRoot.hint") }}</small>
-                <code data-testid="data-root-path">
-                  {{ dataRootStatus?.dataRoot ?? t("settings.dataRoot.loading") }}
-                </code>
-              </div>
-              <NButton
-                size="small"
-                :loading="dataRootPhase === 'choosing'"
-                :disabled="dataRootPhase !== 'idle'"
-                data-testid="data-root-migrate"
-                @click="chooseDataRootMigration"
-              >
-                {{ t("settings.dataRoot.migrate") }}
-              </NButton>
-            </div>
-            <NAlert
-              v-if="dataRootError"
-              type="error"
-              :title="t('settings.dataRoot.failed')"
-              data-testid="data-root-error"
-            >
-              {{ dataRootError }}
-            </NAlert>
-            <NAlert
-              v-if="dataRootMessage || dataRootStatus?.migrationPending"
-              type="warning"
-              :title="t('settings.dataRoot.restartTitle')"
-              data-testid="data-root-pending"
-            >
-              {{ dataRootMessage ?? t("settings.dataRoot.pending", {
-                path: dataRootStatus?.pendingDataRoot ?? "",
-              }) }}
-            </NAlert>
-            <div class="source-note">
-              <NIcon :size="17"><Database /></NIcon>
-              <p>{{ t("settings.source.automatic") }}</p>
-            </div>
-          </section>
+        <template v-else-if="current === 'storage'">
+          <WorkspaceProtectionSettings
+            mode="storage"
+            @action="emit('workspaceV2Action', $event)"
+          />
         </template>
 
-        <template v-else-if="current === 'backup'">
-          <header>
-            <h1>{{ t("settings.backup") }}</h1>
-            <p>{{ t("settings.backup.description") }}</p>
-          </header>
-          <section class="backup-workbench">
-            <div class="backup-toolbar">
-              <div>
-                <strong>{{ t("settings.backup.local") }}</strong>
-                <small>{{ t("settings.backup.localHint") }}</small>
-              </div>
-              <div class="backup-actions">
-                <NButton
-                  size="small"
-                  :disabled="backupPhase !== 'idle'"
-                  data-testid="backup-open-folder"
-                  @click="openBackupFolder"
-                >
-                  <template #icon><NIcon><FolderOpen /></NIcon></template>
-                  {{ t("settings.backup.openFolder") }}
-                </NButton>
-                <NButton
-                  size="small"
-                  quaternary
-                  :loading="backupPhase === 'loading'"
-                  :disabled="backupPhase !== 'idle'"
-                  data-testid="backup-refresh"
-                  @click="loadBackups"
-                >
-                  {{ t("settings.backup.refresh") }}
-                </NButton>
-                <NButton
-                  size="small"
-                  type="primary"
-                  :loading="backupPhase === 'creating'"
-                  :disabled="backupPhase !== 'idle'"
-                  data-testid="backup-create"
-                  @click="createBackup"
-                >
-                  {{ t("settings.backup.create") }}
-                </NButton>
-              </div>
-            </div>
-
-            <NAlert
-              v-if="backupError"
-              type="error"
-              :title="t('settings.backup.failed')"
-              data-testid="backup-error"
-            >
-              {{ backupError }}
-            </NAlert>
-            <NAlert
-              v-if="backupStatus"
-              :type="backupPhase === 'restoring' || backupPhase === 'deleting' ? 'warning' : 'success'"
-              :title="t('settings.backup.status')"
-              closable
-              data-testid="backup-status"
-              @close="clearBackupStatus"
-            >
-              {{ backupStatus }}
-            </NAlert>
-
-            <div v-if="backupPhase === 'loading'" class="backup-empty">
-              {{ t("settings.backup.loading") }}
-            </div>
-            <div v-else-if="backups.length === 0" class="backup-empty">
-              <strong>{{ t("settings.backup.empty") }}</strong>
-              <small>{{ t("settings.backup.emptyHint") }}</small>
-            </div>
-            <div v-else class="backup-list">
-              <article v-for="backup in backups" :key="backup.name" class="backup-entry">
-                <div class="backup-entry-mark"><ArchiveRestore :size="17" /></div>
-                <div class="backup-entry-copy">
-                  <strong>{{ backup.name }}</strong>
-                  <span>{{ formatBackupDate(backup.modified) }} · {{ formatBackupSize(backup.size) }}</span>
-                  <code :title="backup.sha256">SHA-256 {{ backup.sha256.slice(0, 12) }}…</code>
-                </div>
-                <div class="backup-entry-actions">
-                  <NButton
-                    size="small"
-                    secondary
-                    type="warning"
-                    :disabled="backupPhase !== 'idle'"
-                    :data-testid="`backup-restore-${backup.name}`"
-                    @click="openRestoreConfirmation(backup, $event)"
-                  >
-                    {{ t("settings.backup.restore") }}
-                  </NButton>
-                  <NPopconfirm
-                    :positive-text="t('settings.backup.deleteConfirm')"
-                    :negative-text="t('settings.backup.cancel')"
-                    @positive-click="deleteBackup(backup)"
-                  >
-                    <template #trigger>
-                      <NButton
-                        size="small"
-                        quaternary
-                        type="error"
-                        :disabled="backupPhase !== 'idle'"
-                        :data-testid="`backup-delete-${backup.name}`"
-                      >
-                        <template #icon><NIcon><Trash2 /></NIcon></template>
-                        {{ t("settings.backup.delete") }}
-                      </NButton>
-                    </template>
-                    {{ t("settings.backup.deleteMessage", { name: backup.name }) }}
-                  </NPopconfirm>
-                </div>
-              </article>
-            </div>
-
-            <NModal
-              :show="!!restoreTarget"
-              preset="card"
-              :title="t('settings.backup.confirmTitle')"
-              class="backup-confirmation-modal"
-              :auto-focus="true"
-              :trap-focus="true"
-              :close-on-esc="true"
-              :mask-closable="false"
-              aria-modal="true"
-              :aria-label="t('settings.backup.confirmTitle')"
-              data-testid="backup-restore-confirmation"
-              @update:show="show => { if (!show) closeRestoreConfirmation() }"
-            >
-              <div v-if="restoreTarget" class="backup-confirmation">
-                <p>{{ t("settings.backup.confirmMessage", { name: restoreTarget.name }) }}</p>
-                <small>{{ t("settings.backup.confirmSafety") }}</small>
-                <div class="backup-confirmation-actions">
-                  <NButton
-                    size="small"
-                    data-testid="backup-restore-cancel"
-                    @click="closeRestoreConfirmation"
-                  >
-                    {{ t("settings.backup.cancel") }}
-                  </NButton>
-                  <NButton
-                    size="small"
-                    type="error"
-                    data-testid="backup-restore-confirm"
-                    @click="confirmRestore"
-                  >
-                    {{ t("settings.backup.confirm") }}
-                  </NButton>
-                </div>
-              </div>
-            </NModal>
-
-            <footer class="backup-safety-note">
-              {{ t("settings.backup.safety") }}
-            </footer>
-          </section>
+        <template v-else-if="current === 'versions'">
+          <WorkspaceProtectionSettings
+            mode="versions"
+            @action="emit('workspaceV2Action', $event)"
+          />
         </template>
 
         <template v-else-if="current === 'interaction'">
@@ -942,6 +566,7 @@ function setCalendarName(name: string): void {
 :root.dark .settings-nav button.active { background: rgba(91, 139, 255, 0.14); }
 .settings-content { flex: 1; min-width: 0; overflow: auto; padding: 36px clamp(28px, 6vw, 72px); }
 .settings-inner { max-width: 760px; }
+.settings-inner--workspace-v2 { max-width: 1080px; }
 header { margin-bottom: 22px; }
 h1 { margin: 0 0 5px; font-size: 22px; font-weight: 650; letter-spacing: -0.015em; }
 header p { margin: 0; color: var(--vt-fg-muted); }
@@ -967,21 +592,6 @@ header p { margin: 0; color: var(--vt-fg-muted); }
    the density radio buttons share the fixed 170px column side-by-side. */
 .setting-control.setting-control--radio { display: flex; flex-direction: row; width: 170px; }
 .setting-control--radio :deep(.n-radio-button) { flex: 1 1 0; }
-/* The connection pill is intrinsically wider than a single line of text; in the
-   tall source row `justify-content: space-between` shrinks it until its content
-   wraps. Pin it to its content width so it stays on one line like the other
-   right-aligned controls. */
-.setting-control--pill { flex: none; }
-.data-root-copy { min-width: 0; }
-.data-root-copy code {
-  overflow: hidden;
-  max-width: min(460px, 55vw);
-  margin-top: 5px;
-  color: var(--vt-fg-secondary);
-  font-size: var(--vt-font-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .setting-card > :deep(.n-alert) { margin: 12px 14px; }
 .calendar-workbench { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
 .calendar-toolbar { display: grid; grid-template-columns: 32px auto auto 1fr 32px; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--vt-border); }
@@ -1055,93 +665,6 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .metric { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .source-note { display: flex; gap: 9px; margin: 16px; padding: 12px; color: var(--vt-fg-muted); border-radius: var(--vt-radius-md); background: var(--vt-bg-subtle); }
 .source-note p { margin: 0; }
-.backup-workbench {
-  overflow: hidden;
-  border: 1px solid var(--vt-border);
-  border-radius: var(--vt-radius-lg);
-  background: var(--vt-bg);
-}
-.backup-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--vt-border);
-}
-.backup-toolbar > div:first-child,
-.backup-empty,
-.backup-entry-copy {
-  display: flex;
-  flex-direction: column;
-}
-.backup-toolbar small,
-.backup-entry-copy span,
-.backup-entry-copy code,
-.backup-empty small,
-.backup-confirmation small {
-  color: var(--vt-fg-muted);
-  font-size: var(--vt-font-caption);
-}
-.backup-actions,
-.backup-entry-actions,
-.backup-confirmation-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.backup-workbench :deep(.n-alert) { margin: 12px 14px 0; }
-.backup-list { border-top: 0; }
-.backup-entry {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 11px;
-  min-height: 72px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--vt-border);
-}
-.backup-entry-mark {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  color: var(--vt-color-primary-500);
-  border-radius: var(--vt-radius-md);
-  background: var(--vt-color-primary-50);
-}
-.backup-entry-copy { min-width: 0; gap: 2px; }
-.backup-entry-copy strong,
-.backup-entry-copy code {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.backup-entry-copy strong { font-weight: 550; }
-.backup-entry-actions { justify-content: flex-end; }
-.backup-empty {
-  align-items: center;
-  gap: 4px;
-  padding: 42px 18px;
-  text-align: center;
-}
-.backup-confirmation {
-  display: grid;
-  gap: 14px;
-}
-.backup-confirmation p { margin: 4px 0; }
-.backup-confirmation-actions { flex: none; justify-content: flex-end; }
-.backup-confirmation-modal {
-  width: min(500px, calc(100vw - 32px));
-  border-top: 3px solid var(--vt-color-danger-500);
-}
-.backup-safety-note {
-  padding: 10px 14px;
-  color: var(--vt-fg-muted);
-  font-size: var(--vt-font-caption);
-  border-top: 1px solid var(--vt-border);
-  background: var(--vt-bg-subtle);
-}
 .setting-action {
   display: grid;
   grid-template-columns: 34px 1fr auto;
@@ -1209,12 +732,5 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   .setting-row > .setting-control { width: 100%; }
   .calendar-layout { padding: 12px; }
   .mapping-footer { align-items: flex-start; flex-direction: column; }
-  .backup-toolbar,
-  .backup-confirmation { align-items: stretch; flex-direction: column; }
-  .backup-actions,
-  .backup-entry-actions,
-  .backup-confirmation-actions { justify-content: flex-end; }
-  .backup-entry { grid-template-columns: 34px minmax(0, 1fr); }
-  .backup-entry-actions { grid-column: 1 / -1; }
 }
 </style>

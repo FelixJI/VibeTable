@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -10,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from qa import fault_injection
+from qa.package_check import check_package
 from scripts import build_next
 from scripts.release import (
     _ensure_clean_worktree,
@@ -27,13 +30,38 @@ from scripts.versioning import (
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _write_recovery_tools(paths: build_next.RepoPaths) -> None:
+    for tool in (paths.kopia_binary, paths.age_binary, paths.age_keygen_binary):
+        tool.parent.mkdir(parents=True, exist_ok=True)
+        tool.write_bytes(f"fixture:{tool.name}".encode())
+
+
+def _release_build_info() -> dict[str, str]:
+    versions = collect_release_versions(REPO_ROOT)
+    return {
+        "version": versions.app,
+        "pocketBaseVersion": versions.pocketbase,
+        "celVersion": versions.cel,
+        "contractVersion": versions.contract,
+        "schemaVersion": versions.schema,
+        "migrationHash": versions.migration_hash,
+        "protocolV2Version": "2.0",
+        "workspaceFormat": "1",
+        "repositoryFormat": "kopia-v3",
+        "snapshotFormat": "2",
+        "packageFormat": "2",
+        "kopiaVersion": build_next.KOPIA_VERSION,
+        "ageVersion": build_next.AGE_VERSION,
+    }
+
+
 def test_repository_versions_are_consistent() -> None:
     assert check_versions(REPO_ROOT) == []
     versions = collect_release_versions(REPO_ROOT)
     assert versions.pocketbase == "0.39.9"
     assert versions.cel == "0.26.1"
     assert versions.contract == "v1"
-    assert versions.schema == "4"
+    assert versions.schema == "5"
     assert len(versions.migration_hash) == 64
 
 
@@ -96,8 +124,8 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
         "version": version,
         "pocketBaseVersion": "0.39.9",
         "celVersion": "0.26.1",
-        "contractVersion": "v1",
-        "schemaVersion": "4",
+        "contractVersion": "2.0",
+        "schemaVersion": "5",
         "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
         "sha256": digest,
     }
@@ -105,7 +133,27 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
     assert manifest["assets"]["migrations"] == "sidecar/migrations/manifest.json"
     assert manifest["assets"]["sbom"] == "sidecar/sbom.cdx.json"
     assert manifest["data"]["rootPolicy"] == "first-run-selected"
-    assert manifest["data"]["relativePath"] == "VibeTableData"
+    assert manifest["data"] == {
+        "rootPolicy": "first-run-selected",
+        "defaultBase": "per-user-local-app-data",
+        "fallbackBase": "user-selected",
+        "relativePath": "VibeTable/Workspaces",
+        "preserveOnUninstall": True,
+    }
+    assert manifest["assets"]["recoveryGuide"] == "RECOVERY.md"
+    assert manifest["assets"]["workspaceContracts"] == "contracts/v2"
+    assert manifest["assets"]["recoveryTools"] == {
+        "kopia": "sidecar/tools/kopia.exe",
+        "age": "sidecar/tools/age.exe",
+        "ageKeygen": "sidecar/tools/age-keygen.exe",
+    }
+    assert manifest["formats"] == {
+        "workspace": 1,
+        "repository": "kopia-v3",
+        "snapshot": 2,
+        "package": 2,
+        "contracts": "2.0",
+    }
     encoded = json.dumps(manifest).lower()
     assert "".join(["di", "rectus"]) not in encoded
     assert "node_modules" not in encoded
@@ -142,14 +190,8 @@ def test_stage_release_assets_records_binary_hash_build_info_and_sbom(
     binary = paths.sidecar_binary
     binary.parent.mkdir(parents=True)
     binary.write_bytes(b"fixed-sidecar")
-    build_info = {
-        "version": read_project_version(REPO_ROOT),
-        "pocketBaseVersion": "0.39.9",
-        "celVersion": "0.26.1",
-        "contractVersion": "v1",
-        "schemaVersion": "4",
-        "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
-    }
+    _write_recovery_tools(paths)
+    build_info = _release_build_info()
     license_dir = tmp_path / "pocketbase-module"
     license_dir.mkdir()
     (license_dir / "LICENSE").write_text(
@@ -190,6 +232,7 @@ def test_package_verifier_rejects_tampered_sidecar(tmp_path: Path) -> None:
     ).staging_mirror()
     stage.sidecar_binary.parent.mkdir(parents=True)
     stage.sidecar_binary.write_bytes(b"sidecar")
+    _write_recovery_tools(stage)
     license_dir = tmp_path / "dependency-module"
     license_dir.mkdir()
     (license_dir / "LICENSE").write_text(
@@ -198,14 +241,7 @@ def test_package_verifier_rejects_tampered_sidecar(tmp_path: Path) -> None:
     )
     build_next.stage_sidecar_assets(
         stage,
-        build_info={
-            "version": read_project_version(REPO_ROOT),
-            "pocketBaseVersion": "0.39.9",
-            "celVersion": "0.26.1",
-            "contractVersion": "v1",
-            "schemaVersion": "4",
-            "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
-        },
+        build_info=_release_build_info(),
         modules=[
             {
                 "path": "example.invalid/dependency",
@@ -220,6 +256,90 @@ def test_package_verifier_rejects_tampered_sidecar(tmp_path: Path) -> None:
 
     with pytest.raises(build_next.BuildError, match="SHA-256"):
         build_next.verify_sidecar_package(stage)
+
+
+def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
+    tmp_path: Path,
+) -> None:
+    defaults = build_next.RepoPaths.default(REPO_ROOT)
+    stage = defaults.with_output_roots(
+        staging_root=tmp_path / "staging",
+        scratch_root=tmp_path / "scratch",
+        publish_root=tmp_path / "publish",
+    ).staging_mirror()
+    stage.host_exe.parent.mkdir(parents=True)
+    stage.host_exe.write_bytes(b"host")
+    backend = stage.backend_dir / build_next.BACKEND_EXE_NAME
+    backend.parent.mkdir()
+    backend.write_bytes(b"backend")
+    stage.web_grid_publish_dir.mkdir()
+    (stage.web_grid_publish_dir / "index.html").write_text(
+        "<!doctype html>",
+        encoding="utf-8",
+    )
+    stage.sidecar_binary.parent.mkdir()
+    stage.sidecar_binary.write_bytes(b"sidecar")
+    _write_recovery_tools(stage)
+    license_dir = tmp_path / "dependency-module"
+    license_dir.mkdir()
+    (license_dir / "LICENSE").write_text(
+        "Mozilla Public License Version 2.0\n",
+        encoding="utf-8",
+    )
+    modules = [
+        {
+            "path": name,
+            "version": version,
+            "license": "MPL-2.0",
+            "dir": str(license_dir),
+        }
+        for name, version in (
+            ("github.com/pocketbase/pocketbase", "v0.39.9"),
+            ("github.com/google/cel-go", "v0.26.1"),
+            ("github.com/kopia/kopia", build_next.KOPIA_VERSION),
+            ("filippo.io/age", build_next.AGE_VERSION),
+        )
+    ]
+    build_next.stage_sidecar_assets(
+        stage,
+        build_info=_release_build_info(),
+        modules=modules,
+    )
+    build_next.stage_workspace_contracts(stage)
+    shutil.copy2(
+        REPO_ROOT / "docs" / "RECOVERY.md",
+        stage.publish_root / "RECOVERY.md",
+    )
+    build_next.write_manifest(stage)
+
+    assert not any(
+        path.name == "__pycache__" or path.suffix == ".pyc"
+        for path in (stage.publish_root / "contracts" / "v2").rglob("*")
+    )
+    assert check_package(stage.publish_root) == []
+
+    layout = json.loads(stage.manifest_path.read_text(encoding="utf-8"))
+    layout["formats"]["package"] = 1
+    stage.manifest_path.write_text(
+        json.dumps(layout),
+        encoding="utf-8",
+    )
+    cache = stage.publish_root / "contracts" / "v2" / "__pycache__"
+    cache.mkdir()
+    (cache / "generator.pyc").write_bytes(b"cache")
+    errors = check_package(stage.publish_root)
+    assert "package format versions do not match workspace v2" in errors
+    assert any("packaged build cache is forbidden" in error for error in errors)
+
+    sbom = json.loads(stage.sidecar_sbom.read_text(encoding="utf-8"))
+    next(item for item in sbom["components"] if item["name"] == "github.com/kopia/kopia")[
+        "version"
+    ] = "v0.0.0"
+    stage.sidecar_sbom.write_text(json.dumps(sbom), encoding="utf-8")
+    assert any(
+        "SBOM dependency version mismatch: github.com/kopia/kopia" in error
+        for error in check_package(stage.publish_root)
+    )
 
 
 def test_upgrade_backup_is_outside_install_and_failure_keeps_old_binary(
@@ -312,9 +432,95 @@ def test_release_workflow_supports_scheduled_and_manual_patch_releases() -> None
     assert "--generate-notes" not in workflow
     assert "RELEASE_TAG: ${{ steps.identity.outputs.tag }}" in workflow
     assert "git push --atomic origin HEAD:main" in workflow
-    assert workflow.index("Build release package") < workflow.index(
-        "Publish version commit and tag"
+    assert "w64devkit-x64-2.8.0.7z.exe" in workflow
+    assert "6252bf34fe2231a55ac7f03d482b36d2c7c58697990551bba508102cfb3f342e" in workflow
+    assert '7z x $archive "-o$destination" -y' in workflow
+    assert workflow.index("Install pinned Windows race toolchain") < workflow.index(
+        "Run complete release eligibility gate"
     )
+    assert "qa/next.py --ci" in workflow
+    assert "--json-report build/qa/release-eligibility.json" in workflow
+    assert "Upload release eligibility evidence" in workflow
+    assert workflow.index("Run complete release eligibility gate") < workflow.index(
+        "Build release package"
+    )
+    assert workflow.index("Build release package") < workflow.index("Verify package")
+    assert workflow.index("Verify package") < workflow.index("Publish version commit and tag")
+
+
+def test_fault_gate_targets_workspace_v2_durability_without_whole_backup() -> None:
+    tests = set(fault_injection.GO_TESTS)
+    packages = set(fault_injection.GO_PACKAGES)
+
+    assert "WholeBackup" not in "\n".join(tests)
+    assert {
+        "TestCatalogFailureNeverPublishesPartialRecord",
+        "TestJournalPersistenceFailureAfterMutationRollsBack",
+        "TestApplyRejectsStalePlanAndUnsafeInventory",
+        "TestInspectRejectsExcessivePathAndCompressionRatio",
+        "TestPersistentCoordinatorFailsClosedUntilPreparedMutationResolved",
+        "TestPersistentQueueRetriesIdempotentlyAcrossRestart",
+        "TestRuntimeFailsClosedForIdentityParamsAndEpoch",
+    } <= tests
+    assert {
+        "./internal/snapshot",
+        "./internal/restore",
+        "./internal/retention",
+        "./internal/snapshotpkg",
+        "./internal/writecoordinator",
+        "./internal/replica",
+        "./internal/workspacev2",
+    } <= packages
+
+
+def test_packaged_sidecar_matrix_smokes_v2_snapshot_package() -> None:
+    matrix = (REPO_ROOT / "tests" / "integration" / "packaged_sidecar_matrix.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/api/vibetable/v1/backups" not in matrix
+    assert "backup+restore" not in matrix
+    assert "/api/vibetable/v2/capabilities" in matrix
+    assert "workspace.v1_write_disabled" in matrix
+    assert '"snapshot.request"' in matrix
+    assert '"snapshot.export"' in matrix
+    assert "snapshot-package-v2.vtsnapshot" in matrix
+    assert 'data_dir = run_root / "data"' in matrix
+    assert "matrix requires a fresh audit directory" in matrix
+
+
+def test_handoff_dependencies_preserve_core_and_add_workspace_v2_evidence() -> None:
+    dependencies = json.loads(
+        (REPO_ROOT / "qa" / "handoff_dependencies.json").read_text(encoding="utf-8")
+    )
+    capabilities = [
+        capability
+        for stage in dependencies["sequence"]
+        for capability in dependencies["capabilities"][stage]
+    ]
+
+    assert "release.workspace-snapshot-v2" in capabilities
+    assert {
+        "schema.catalog.v1",
+        "query.port.v1",
+        "mutation.kernel.v1",
+        "formula.cel-v1",
+        "relation.lookup.v1",
+        "plugin.local-worker.v1",
+    } <= set(capabilities)
+    assert "release.backup-restore.v1" not in capabilities
+    assert {
+        "legacy.backup.absent.v2",
+        "legacy.scheme-main-adoption.absent.v2",
+        "legacy.global-data-root.absent.v2",
+    } <= set(capabilities)
+    assert dependencies["artifactFiles"]["schema"] == [
+        "contracts/v1/contracts.schema.json",
+        "contracts/v2/contracts.schema.json",
+    ]
+    for fixtures in dependencies["fixtures"].values():
+        for relative in fixtures:
+            assert (REPO_ROOT / relative).is_file(), relative
 
 
 def test_upgrade_validates_migration_copy_then_atomically_activates(

@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from backend.adapters.pocketbase.backup import PocketBaseBackupService
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
 from backend.adapters.pocketbase.internal_metadata import PocketBaseInternalMetadataPort
@@ -24,7 +23,6 @@ from backend.adapters.pocketbase.realtime import (
     StdlibSSEConnector,
 )
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
-from backend.application.document_workspace_service import DocumentWorkspaceService
 from backend.application.grid_state_service import GridStateService
 from backend.application.identifier_mapping_service import (
     IdentifierManagementService,
@@ -42,26 +40,11 @@ from backend.application.product_data_service import (
 from backend.application.settings_command_service import SettingsCommandService
 from backend.application.system_service import SystemService
 from backend.application.task_service import build_task_service
-from backend.contracts.backup import (
-    CreateBackupParams,
-    DeleteBackupParams,
-    ListBackupsParams,
-    RestoreBackupParams,
-)
 from backend.contracts.data_io import (
     ApplyImportParams,
     ExportParams,
     GenerateTemplateParams,
     PreviewImportParams,
-)
-from backend.contracts.document_workspace import (
-    LinkDocumentParams,
-    PublishIndexBatchParams,
-    ReadDocumentHistoryParams,
-    ReadDocumentsParams,
-    ReadFolderParams,
-    RegisterDocumentParams,
-    UnlinkDocumentParams,
 )
 from backend.contracts.grid_state import GridStateGetParams, GridStateSaveParams
 from backend.contracts.paste import ApplyPasteParams, PreviewPasteParams
@@ -205,46 +188,6 @@ def _product_runtime() -> tuple[
     )
 
 
-def _build_document_workspace_service(
-    client: PocketBaseClient | None,
-) -> DocumentWorkspaceService:
-    """Wire workspace record links to the authenticated product data authority."""
-
-    if client is None:
-        return DocumentWorkspaceService(collection_catalog={})
-
-    async def load_collection_catalog() -> dict[str, dict[str, Any]]:
-        payload = await client.list_tables()
-        raw_tables = payload.get("tables")
-        if not isinstance(raw_tables, list):
-            raise ValueError("PocketBase returned an invalid workspace collection catalog")
-
-        collection_catalog: dict[str, dict[str, Any]] = {}
-        for table in raw_tables:
-            if not isinstance(table, dict):
-                raise ValueError("PocketBase returned an invalid workspace collection catalog")
-            table_id = table.get("tableId")
-            if not isinstance(table_id, str) or not table_id or table_id != table_id.strip():
-                raise ValueError("PocketBase returned an invalid workspace collection id")
-            if table_id in collection_catalog:
-                raise ValueError("PocketBase returned a duplicate workspace collection id")
-            collection_catalog[table_id] = table
-        return collection_catalog
-
-    async def record_exists(collection: str, item_id: str) -> bool:
-        rows = await client.read_rows(table_id=collection, row_ids=[item_id])
-        # A single authoritative primary-key lookup must resolve to exactly one
-        # active product row. Empty, duplicate, archived, or malformed results
-        # all fail closed.
-        return len(rows) == 1
-
-    return DocumentWorkspaceService(
-        collection_catalog={},
-        collection_catalog_loader=load_collection_catalog,
-        record_exists=record_exists,
-    )
-
-
 def _build_pocketbase_product_service() -> PocketBaseProductDataService | None:
     return _product_runtime()[0]
 
@@ -296,20 +239,6 @@ def _register_pocketbase_product_methods(
         dispatcher.register(method, handler, PRODUCT_PARAM_MODELS[method])
 
 
-def _register_backup_methods(
-    dispatcher: RpcDispatcher,
-    service: PocketBaseBackupService,
-) -> None:
-    """Register the fixed backup product operations."""
-    from backend.rpc.dispatcher import register_pocketbase_product_errors
-
-    register_pocketbase_product_errors()
-    dispatcher.register("backup.list", service.list_backups, ListBackupsParams)
-    dispatcher.register("backup.create", service.create_backup, CreateBackupParams)
-    dispatcher.register("backup.delete", service.delete_backup, DeleteBackupParams)
-    dispatcher.register("backup.restore", service.restore_backup, RestoreBackupParams)
-
-
 def _configure_pocketbase_data_io(
     dispatcher: RpcDispatcher,
     *,
@@ -334,31 +263,6 @@ def _configure_pocketbase_data_io(
         GenerateTemplateParams,
     )
     return runtime
-
-
-def _register_document_workspace_methods(
-    dispatcher: RpcDispatcher,
-    service: DocumentWorkspaceService,
-) -> None:
-    dispatcher.register("workspace.readFolder", service.read_folder, ReadFolderParams)
-    dispatcher.register("workspace.readDocuments", service.read_documents, ReadDocumentsParams)
-    dispatcher.register(
-        "workspace.registerDocument",
-        service.register_document,
-        RegisterDocumentParams,
-    )
-    dispatcher.register(
-        "workspace.publishIndexBatch",
-        service.publish_index_batch,
-        PublishIndexBatchParams,
-    )
-    dispatcher.register("workspace.linkDocument", service.link_document, LinkDocumentParams)
-    dispatcher.register("workspace.unlinkDocument", service.unlink_document, UnlinkDocumentParams)
-    dispatcher.register(
-        "workspace.readDocumentHistory",
-        service.read_document_history,
-        ReadDocumentHistoryParams,
-    )
 
 
 def _register_settings_methods(
@@ -499,7 +403,6 @@ def _start_realtime(
 
 async def _build_server() -> tuple[
     RpcServer,
-    DocumentWorkspaceService,
     PluginPlatformService | None,
     _RealtimeRuntime | None,
 ]:
@@ -610,13 +513,9 @@ async def _build_server() -> tuple[
     dispatcher.register("path.resolveGrant", task_service.resolve_grant, ResolveGrantParams)
 
     product_service, client, config = _product_runtime()
-    workspace = _build_document_workspace_service(client)
-    _register_document_workspace_methods(dispatcher, workspace)
-
     plugin_service: PluginPlatformService | None = None
     if product_service is not None and client is not None:
         _register_pocketbase_product_methods(dispatcher, product_service)
-        _register_backup_methods(dispatcher, PocketBaseBackupService(client))
         data_io = _configure_pocketbase_data_io(
             dispatcher,
             client=client,
@@ -765,24 +664,21 @@ async def _build_server() -> tuple[
                 await server.notify(method, event)
 
         plugin_service.set_notification_sink(notify_plugin)
-    return server, workspace, plugin_service, _start_realtime(server, config, client)
+    return server, plugin_service, _start_realtime(server, config, client)
 
 
 async def _main() -> None:
     _configure_logging()
-    workspace: DocumentWorkspaceService | None = None
     plugin_service: PluginPlatformService | None = None
     realtime: _RealtimeRuntime | None = None
     try:
-        server, workspace, plugin_service, realtime = await _build_server()
+        server, plugin_service, realtime = await _build_server()
         await server.serve()
     finally:
         if realtime is not None:
             await realtime.close()
         if plugin_service is not None:
             await plugin_service.close()
-        if workspace is not None:
-            workspace.close()
 
 
 if __name__ == "__main__":

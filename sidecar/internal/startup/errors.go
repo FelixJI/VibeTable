@@ -93,14 +93,14 @@ func ValidateMigrationManifest(load func() error) error {
 	if load == nil {
 		return &Error{
 			Code:    CodeMigrationCorrupt,
-			Message: "reinstall the matching application package or restore a known-good backup",
+			Message: "reinstall the matching application package or restore a known-good Snapshot",
 			Cause:   errors.New("migration manifest loader is required"),
 		}
 	}
 	if err := load(); err != nil {
 		return &Error{
 			Code:    CodeMigrationCorrupt,
-			Message: "reinstall the matching application package or restore a known-good backup",
+			Message: "reinstall the matching application package or restore a known-good Snapshot",
 			Cause:   err,
 		}
 	}
@@ -156,7 +156,7 @@ func Classify(operation string, err error) error {
 		strings.Contains(lower, "incompatible schema"):
 		return &Error{
 			Code:    CodeMigrationCorrupt,
-			Message: "reinstall the matching application package or restore a known-good backup",
+			Message: "reinstall the matching application package or restore a known-good Snapshot",
 			Cause:   err,
 		}
 	default:

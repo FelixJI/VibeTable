@@ -8,7 +8,7 @@ let singleton: HostBridge | null = null;
 
 export function useHostBridge(): HostBridge {
   if (!singleton) {
-    // Native file hashing, backup restore, and plugin package verification can
+    // Native file hashing, Snapshot package operations, and plugin package verification can
     // legitimately exceed the bridge's unit-test-oriented 10 second default
     // on a cold Windows/antivirus path. Keep production requests bounded while
     // allowing those host-owned operations to complete.

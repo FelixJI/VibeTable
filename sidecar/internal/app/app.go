@@ -9,7 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"runtime"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -18,8 +18,8 @@ import (
 	"github.com/pocketbase/pocketbase/tools/hook"
 	"github.com/vibetable/vibetable/sidecar/internal/attachments"
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
+	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/auth"
-	"github.com/vibetable/vibetable/sidecar/internal/backup"
 	"github.com/vibetable/vibetable/sidecar/internal/buildinfo"
 	"github.com/vibetable/vibetable/sidecar/internal/computed"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
@@ -34,6 +34,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/realtime"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/workspacev2"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
 
@@ -44,12 +45,21 @@ const (
 )
 
 type Options struct {
-	DataDir          string
-	Dev              bool
-	Session          auth.Secret
-	Logger           *slog.Logger
-	ReadyWriter      io.Writer
-	OnBootstrapReady func() error
+	DataDir            string
+	Dev                bool
+	Session            auth.Secret
+	Logger             *slog.Logger
+	ReadyWriter        io.Writer
+	OnBootstrapReady   func() error
+	OnWorkspaceV2Ready func(*workspacev2.Runtime) error
+	WorkspaceV2        *WorkspaceV2Options
+}
+
+type WorkspaceV2Options struct {
+	WorkspaceID  string
+	SessionEpoch uint64
+	FenceEpoch   uint64
+	ClaimID      string
 }
 
 func New(options Options) (*pocketbase.PocketBase, error) {
@@ -64,6 +74,17 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 	}
 	if options.ReadyWriter == nil {
 		return nil, errors.New("ready writer is required")
+	}
+	if options.WorkspaceV2 != nil {
+		if err := workspacev2.ValidateStartupBinding(
+			options.DataDir,
+			options.WorkspaceV2.WorkspaceID,
+			options.WorkspaceV2.SessionEpoch,
+			options.WorkspaceV2.FenceEpoch,
+			options.WorkspaceV2.ClaimID,
+		); err != nil {
+			return nil, err
+		}
 	}
 	if err := formula.ValidateRuntime(); err != nil {
 		return nil, err
@@ -97,7 +118,6 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		DefaultDev:      options.Dev,
 		HideStartBanner: true,
 	})
-	backupService := backup.New(pb, attachmentManager)
 	migrations.Register(pb)
 	queryPort := query.NewPort(pb, querySource, snapshotKey)
 	realtimeHub := realtime.New(pb)
@@ -139,12 +159,53 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		jobService.Shutdown()
 		return nil, err
 	}
+	ledgerRoot := filepath.Join(filepath.Dir(options.DataDir), "audit")
+	ledger, err := auditledger.Open(ledgerRoot)
+	if err != nil {
+		jobService.Shutdown()
+		return nil, err
+	}
+	auditDrainer, err := auditledger.NewDrainer(ledger, 256)
+	if err != nil {
+		_ = ledger.Close()
+		jobService.Shutdown()
+		return nil, err
+	}
+	auditOutbox, err := auditledger.NewPocketBaseOutbox(pb)
+	if err != nil {
+		_ = ledger.Close()
+		jobService.Shutdown()
+		return nil, err
+	}
 	relationService := relation.New(pb, queryPort, mutationKernel)
 	startedAt := time.Now().UTC()
+	var workspaceRuntime *workspacev2.Runtime
 	pb.OnServe().BindFunc(func(event *core.ServeEvent) error {
 		// VibeTable owns the local data lifecycle. Never expose PocketBase's
 		// first-run superuser installer to the desktop user.
 		event.InstallerFunc = nil
+		var shutdownOnce sync.Once
+		requestShutdown := func() {
+			shutdownOnce.Do(func() {
+				go func() {
+					// Let the accepted RPC response leave the socket before
+					// closing the listener and runtime.
+					time.Sleep(50 * time.Millisecond)
+					ctx, cancel := context.WithTimeout(
+						context.Background(),
+						10*time.Second,
+					)
+					defer cancel()
+					if err := event.Server.Shutdown(ctx); err != nil {
+						options.Logger.Error(
+							"graceful shutdown failed",
+							"error",
+							err,
+						)
+					}
+				}()
+			})
+		}
 
 		if options.OnBootstrapReady != nil {
 			if err := options.OnBootstrapReady(); err != nil {
@@ -170,6 +231,28 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				return request.Next()
 			},
 		})
+		if options.WorkspaceV2 != nil {
+			bindWorkspaceV2WriteBoundary(event)
+		}
+		businessGate := businessWriteGate(func(
+			ctx context.Context,
+			kind string,
+			identity string,
+			apply func(context.Context) error,
+		) error {
+			if options.WorkspaceV2 == nil {
+				return apply(ctx)
+			}
+			if workspaceRuntime == nil {
+				return errors.New("workspace.business_write_unavailable")
+			}
+			return workspaceRuntime.CoordinateBusinessWrite(
+				ctx,
+				kind,
+				identity,
+				apply,
+			)
+		})
 
 		event.Router.GET(healthPath, func(request *core.RequestEvent) error {
 			snapshot, status := health.Check(
@@ -190,65 +273,67 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		event.Router.GET(buildInfoPath, func(request *core.RequestEvent) error {
 			return request.JSON(http.StatusOK, buildinfo.Current(migrations.Hash()))
 		})
-		registerAdminRoutes(event)
-		registerSchemaRoutes(event.Router, schemaapi.New(pb), jobService)
+		if options.WorkspaceV2 == nil {
+			registerAdminRoutes(event)
+		}
+		registerSchemaRoutes(event.Router, schemaapi.New(pb), jobService, businessGate)
 		registerQueryRoutes(event.Router, queryPort)
 		registerFormulaRoutes(event.Router, formulaCompiler)
 		registerJobRoutes(event.Router, jobService)
-		registerMutationRoutes(event.Router, mutationKernel, attachmentManager)
+		registerMutationRoutes(event.Router, mutationKernel, attachmentManager, businessGate)
 		registerAttachmentRoutes(event.Router, attachmentManager)
 		registerAuditRoutes(event.Router, auditService)
-		registerRelationRoutes(event.Router, relationService)
+		registerRelationRoutes(event.Router, relationService, businessGate)
 		registerRealtimeRoutes(
 			event.Router, realtimeHub, schemaapi.New(pb),
 		)
-		if runtime.GOOS == "windows" {
-			// PocketBase's app.Restart uses execve and explicitly returns an
-			// error on Windows. The desktop supervisor already owns process
-			// restart, so a restore stages its marker and then exits cleanly;
-			// the next launch applies and commits the two-phase restore before
-			// readiness is announced.
-			backupService.WithRestart(func() error {
-				go func() {
-					// Let the 202 response leave the socket before initiating
-					// shutdown. The marker is already durable at this point.
-					time.Sleep(50 * time.Millisecond)
-					ctx, cancel := context.WithTimeout(
-						context.Background(), 10*time.Second,
-					)
-					defer cancel()
-					if err := event.Server.Shutdown(ctx); err != nil {
-						options.Logger.Error(
-							"backup restore shutdown failed", "error", err,
-						)
-					}
-				}()
-				return nil
-			})
-		}
-		registerBackupRoutes(event.Router, backupService)
 		registerMetadataRoutes(event.Router, metadata.New(pb))
-		if err := jobService.ResumePending(jobService.Context()); err != nil {
+		if options.WorkspaceV2 == nil {
+			if err := jobService.ResumePending(jobService.Context()); err != nil {
+				_ = rawListener.Close()
+				return fmt.Errorf("resume durable jobs: %w", err)
+			}
+		}
+		if _, err := auditDrainer.Drain(context.Background(), auditOutbox); err != nil {
 			_ = rawListener.Close()
-			return fmt.Errorf("resume durable jobs: %w", err)
+			return fmt.Errorf("drain audit outbox before readiness: %w", err)
+		}
+		if options.WorkspaceV2 != nil {
+			workspaceRuntime, err = workspacev2.Open(
+				context.Background(),
+				workspacev2.Options{
+					App:             pb,
+					DataDir:         options.DataDir,
+					WorkspaceID:     options.WorkspaceV2.WorkspaceID,
+					SessionEpoch:    options.WorkspaceV2.SessionEpoch,
+					FenceEpoch:      options.WorkspaceV2.FenceEpoch,
+					ClaimID:         options.WorkspaceV2.ClaimID,
+					Ledger:          ledger,
+					RequestShutdown: requestShutdown,
+				},
+			)
+			if err != nil {
+				_ = rawListener.Close()
+				return fmt.Errorf("open workspace v2 runtime: %w", err)
+			}
+			if options.OnWorkspaceV2Ready != nil {
+				if err := options.OnWorkspaceV2Ready(
+					workspaceRuntime,
+				); err != nil {
+					_ = rawListener.Close()
+					return err
+				}
+			}
+			registerWorkspaceV2Routes(event.Router, workspaceRuntime)
 		}
 
-		var shutdownOnce sync.Once
 		event.Router.POST(shutdownPath, func(request *core.RequestEvent) error {
 			if err := request.JSON(http.StatusAccepted, map[string]any{
 				"status": "stopping",
 			}); err != nil {
 				return err
 			}
-			shutdownOnce.Do(func() {
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					if err := event.Server.Shutdown(ctx); err != nil {
-						options.Logger.Error("graceful shutdown failed", "error", err)
-					}
-				}()
-			})
+			requestShutdown()
 			return nil
 		})
 
@@ -281,8 +366,27 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 
 	pb.OnTerminate().BindFunc(func(event *core.TerminateEvent) error {
 		jobService.Shutdown()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		workspaceCloseErr := workspaceRuntime.Close(ctx)
+		workspaceRuntime = nil
+		_, drainErr := auditDrainer.Drain(ctx, auditOutbox)
+		closeErr := ledger.Close()
 		options.Logger.Info("sidecar graceful shutdown", "restart", event.IsRestart)
-		return event.Next()
+		terminateErr := errors.Join(
+			workspaceCloseErr,
+			drainErr,
+			closeErr,
+			event.Next(),
+		)
+		if terminateErr != nil {
+			options.Logger.Error(
+				"sidecar graceful shutdown failed",
+				"error",
+				terminateErr,
+			)
+		}
+		return terminateErr
 	})
 
 	// PocketBase owns the serve command and its graceful shutdown. The custom

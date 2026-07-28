@@ -14,7 +14,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 )
 
-const expectedMigrationManifestHash = "ad8d44046cf3b330c6d7491bc0fdc9f98a0b182fe6618435607860be95b36c7f"
+const expectedMigrationManifestHash = "e6f8ac33dda85f14a4b8bd409ab1943210e87eaccde79f45fd7a24a22e6e157f"
 
 type legacyMetadataFixture struct {
 	upgrade metadataCollectionUpgrade
@@ -225,10 +225,10 @@ func TestMigrationManifestHashIsPinnedAndRepeatable(t *testing.T) {
 		t.Fatalf("LoadManifest(): %v", err)
 	}
 	last := manifest.Migrations[len(manifest.Migrations)-1]
-	if last.ID != 2026072404 ||
-		last.Source != "2026072404_realtime_outbox_retention.go" ||
-		last.SHA256 != "66fd5dc13a70c97ed794e52a8b460255512cf62bb1cb4fc88421e9885f1c7ce8" {
-		t.Fatalf("unexpected pinned v4 migration entry: %#v", last)
+	if last.ID != 2026072805 ||
+		last.Source != "2026072805_audit_outbox.go" ||
+		last.SHA256 != "1d53794ee64f9b746caf0aee638ee872ac92b5918257ca77d631c2b14f291de8" {
+		t.Fatalf("unexpected pinned v5 migration entry: %#v", last)
 	}
 }
 

@@ -43,6 +43,9 @@ import FileWorkspaceView from "@/views/FileWorkspaceView.vue";
 import PluginCenterView from "@/views/PluginCenterView.vue";
 import PluginActionPanel from "@/components/plugins/PluginActionPanel.vue";
 import PluginSurfaceHost from "@/components/plugins/PluginSurfaceHost.vue";
+import WorkspaceCenter from "@/components/workspace/WorkspaceCenter.vue";
+import WorkspaceSwitcher from "@/components/workspace/WorkspaceSwitcher.vue";
+import ConflictCenterView from "@/views/ConflictCenterView.vue";
 import RevisionHistoryDrawer from "@/components/history/RevisionHistoryDrawer.vue";
 import ManagedAttachmentCell from "@/components/attachments/ManagedAttachmentCell.vue";
 import JsonValueEditor from "@/components/editors/JsonValueEditor.vue";
@@ -102,6 +105,16 @@ import { useDashboardDraftStore, useDashboardStore } from "@/stores/dashboardSto
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
+import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
+import {
+  registerWorkspaceEpochReset,
+  useWorkspaceSessionStore,
+} from "@/stores/workspaceSessionStore";
+import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";
+import {
+  requestWorkspaceV2UiAction,
+  type WorkspaceV2UiAction,
+} from "@/services/workspaceV2UiPort";
 import { ROW_NUMBER_FIELD } from "@/grid/createGrid";
 import {
   applyDataSourceView,
@@ -168,6 +181,10 @@ const dashboards = useDashboardStore();
 const dashboardDraft = useDashboardDraftStore();
 const realtime = useRealtimeStore();
 const presetViews = usePresetVersionStore();
+const documentWorkspace = useDocumentWorkspaceStore();
+const workspaceSession = useWorkspaceSessionStore();
+const workspaceProtection = useWorkspaceProtectionStore();
+const showWorkspaceCenter = ref(false);
 const editRejection = ref<MutationErrorPayload | null>(null);
 const shouldShowNotification = createNotificationDeduper();
 const editRejectionText = computed(() =>
@@ -256,7 +273,12 @@ function confirmDashboardNavigation(): boolean {
 }
 
 function onNavigate(view: AppView): void {
-  if (view === ui.activeView || !confirmDashboardNavigation()) return;
+  if (view === ui.activeView) {
+    showWorkspaceCenter.value = false;
+    return;
+  }
+  if (!confirmDashboardNavigation()) return;
+  showWorkspaceCenter.value = false;
   dashboardDraft.stop();
   ui.navigate(view);
 }
@@ -1381,7 +1403,18 @@ async function cancelPluginTask(): Promise<void> {
   }
 }
 
-onMounted(() => {
+let viewMounted = false;
+let businessConsumersInitialized = false;
+
+function initializeBusinessConsumers(): void {
+  if (
+    businessConsumersInitialized
+    || !viewMounted
+    || (workspaceSession.enabled && !workspaceSession.hasOpenWorkspace)
+  ) {
+    return;
+  }
+  businessConsumersInitialized = true;
   // Subscribe each service to its inbound host events. Idempotent across
   // strict-mode double-mount in dev because each bridge.on replaces prior
   // handlers for the same key (see hostBridge).
@@ -1396,15 +1429,27 @@ onMounted(() => {
   errorRouter.init();
   pluginService.init();
   dashboardService.init();
-  window.addEventListener("beforeunload", onBeforeUnload);
   void pluginService.list().catch(() => undefined);
   // App.vue gates this workspace until the host runtime is ready. Re-announce
   // app.ready only after all business subscriptions are installed so the host
   // replays database.opened that may have completed while StartupGate was shown.
   hostBridge.notify("app.ready", {});
+}
+
+watch(
+  () => [workspaceSession.enabled, workspaceSession.hasOpenWorkspace] as const,
+  initializeBusinessConsumers,
+);
+
+onMounted(() => {
+  viewMounted = true;
+  window.addEventListener("beforeunload", onBeforeUnload);
+  initializeBusinessConsumers();
 });
 
 onBeforeUnmount(() => {
+  viewMounted = false;
+  unregisterWorkspaceEpochReset();
   formulaPreviewCoordinator.dispose();
   tableService.dispose();
   relationLookupService.dispose();
@@ -1668,8 +1713,64 @@ const pageTitle = computed(() => {
   if (ui.activeView === "files") return t("nav.files");
   if (ui.activeView === "plugins") return t("nav.plugins");
   if (ui.activeView === "dashboard") return t("nav.dashboard");
+  if (ui.activeView === "conflicts") return t("workspaceV2.nav.conflicts");
   return t("nav.tables");
 });
+
+const showWorkspaceCenterScreen = computed(() =>
+  workspaceSession.enabled
+  && (showWorkspaceCenter.value || !workspaceSession.hasOpenWorkspace));
+
+const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
+  "workspace-view-v1-consumers",
+  ({ nextWorkspaceId }) => {
+    workspace.clear();
+    tableStore.reset();
+    history.clear();
+    documentWorkspace.clear();
+    revisionHistory.reset();
+    relationLookup.reset();
+    dashboards.reset();
+    dashboardDraft.stop();
+    presetViews.clearPresets();
+    realtime.reset();
+    ui.setWorkspaceNamespace(nextWorkspaceId);
+  },
+);
+
+async function handleWorkspaceV2Action(action: WorkspaceV2UiAction): Promise<void> {
+  if (!workspaceSession.enabled || !workspaceProtection.beginOperation(action.method)) return;
+  try {
+    await requestWorkspaceV2UiAction(action);
+    workspaceProtection.finishOperation();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    workspaceProtection.finishOperation(message);
+    if (action.method === "workspace.open" || action.method === "workspace.switch") {
+      workspaceSession.failSwitch(message);
+    }
+  }
+}
+
+function openWorkspace(workspaceId: string): void {
+  if (workspaceId === workspaceSession.activeWorkspaceId) {
+    showWorkspaceCenter.value = false;
+    return;
+  }
+  if (!workspaceSession.isTransitioning) workspaceSession.beginSwitch(workspaceId);
+  showWorkspaceCenter.value = false;
+  if (workspaceSession.activeWorkspaceId) {
+    void handleWorkspaceV2Action({
+      method: "workspace.switch",
+      params: { targetWorkspaceId: workspaceId, openMode: "writable" },
+    });
+  } else {
+    void handleWorkspaceV2Action({
+      method: "workspace.open",
+      params: { workspaceId, openMode: "writable" },
+    });
+  }
+}
 
 /** Sidebar: ask the user to confirm deleting a table. */
 function onRequestDelete(name: string) {
@@ -1937,20 +2038,30 @@ useKeyboard({
     <section class="app-surface" :class="`density-${ui.density}`">
       <header class="app-header">
         <div class="app-title">
-          <span>VibeTable</span>
+          <WorkspaceSwitcher
+            v-if="workspaceSession.enabled"
+            @switch="openWorkspace"
+            @center="showWorkspaceCenter = true"
+          />
+          <span v-else>VibeTable</span>
           <i></i>
           <strong>{{ pageTitle }}</strong>
         </div>
-        <ConnectionPill @reconnect="openDatabaseWithGuard" />
+        <ConnectionPill v-if="!workspaceSession.enabled" @reconnect="openDatabaseWithGuard" />
       </header>
       <div class="view-stack">
+        <WorkspaceCenter
+          v-if="showWorkspaceCenterScreen"
+          @action="handleWorkspaceV2Action"
+          @open="openWorkspace($event.workspaceId)"
+        />
         <HomeView
-          v-show="ui.activeView === 'home'"
+          v-show="!showWorkspaceCenterScreen && ui.activeView === 'home'"
           @open-table="onOpenTableFromHome"
           @new-table="onNewTable"
           @open-admin="onOpenAdmin"
         />
-        <div v-show="ui.activeView === 'tables'" class="tables-view">
+        <div v-show="!showWorkspaceCenterScreen && ui.activeView === 'tables'" class="tables-view">
           <AppSidebar
             @select="onSelect"
             @new-table="onNewTable"
@@ -2064,21 +2175,27 @@ useKeyboard({
             </div>
           </main>
         </div>
-        <DashboardWorkspaceView v-if="ui.activeView === 'dashboard' && dashboards.featureEnabled" />
+        <DashboardWorkspaceView v-if="!showWorkspaceCenterScreen && ui.activeView === 'dashboard' && dashboards.featureEnabled" />
         <SettingsView
-          v-show="ui.activeView === 'settings'"
+          v-show="!showWorkspaceCenterScreen && ui.activeView === 'settings'"
           @reconnect="openDatabaseWithGuard"
           @open-help="ui.openShortcuts"
           @open-admin="onOpenAdmin"
           @load-mappings="identifierMappingService.load()"
           @save-mapping-aliases="identifierMappingService.updateAliases"
           @reconcile-mappings="identifierMappingService.reconcile"
+          @workspace-v2-action="handleWorkspaceV2Action"
         />
         <FileWorkspaceView
-          v-if="ui.activeView === 'files'"
+          v-if="!showWorkspaceCenterScreen && ui.activeView === 'files'"
           @intent="documentWorkspaceService.dispatch"
+          @workspace-v2-action="handleWorkspaceV2Action"
         />
-        <PluginCenterView v-if="ui.activeView === 'plugins'" />
+        <ConflictCenterView
+          v-if="!showWorkspaceCenterScreen && ui.activeView === 'conflicts' && workspaceSession.conflictEnabled"
+          @action="handleWorkspaceV2Action"
+        />
+        <PluginCenterView v-if="!showWorkspaceCenterScreen && ui.activeView === 'plugins'" />
       </div>
     </section>
     <RelationEditorPanel

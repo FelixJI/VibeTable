@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "dependencies": {
+    "kopia": {
+      "version": "v0.23.1",
+      "license": "Apache-2.0",
+      "source": "https://github.com/kopia/kopia",
+      "integration": "public CLI and public repo.RepositoryWriter surface only"
+    },
+    "age": {
+      "version": "v1.3.1",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/FiloSottile/age",
+      "integration": "public Go API with bundled official CLI interoperability"
+    },
+    "sqlite": {
+      "module": "modernc.org/sqlite",
+      "version": "v1.54.0",
+      "license": "BSD-3-Clause",
+      "integration": "fixed read view and online backup spike"
+    }
+  }
+}

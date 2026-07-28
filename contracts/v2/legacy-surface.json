@@ -1,0 +1,234 @@
+{
+  "schemaVersion": 1,
+  "description": "Exact retirement contract for the pre-v2 backup and multi-scheme file-history product surfaces.",
+  "forbiddenPaths": [
+    "backend/contracts/backup.py",
+    "backend/contracts/document_workspace.py",
+    "backend/adapters/pocketbase/backup.py",
+    "backend/application/workspace_index.py",
+    "backend/application/document_workspace_service.py",
+    "sidecar/internal/backup",
+    "sidecar/internal/app/backup_routes.go",
+    "sidecar/internal/app/backup_routes_test.go",
+    "desktop/src/VibeTable.Workspace/Domain/WorkspaceManifest.cs",
+    "desktop/src/VibeTable.Workspace/Services/SchemeService.cs",
+    "desktop/src/VibeTable.Workspace/Services/SchemeAdoptionService.cs",
+    "desktop/src/VibeTable.Workspace/Services/WorkspaceVersionService.cs",
+    "desktop/src/VibeTable.Workspace/Storage/RevisionStore.cs",
+    "desktop/src/VibeTable.Workspace/Storage/RefStore.cs",
+    "desktop/src/VibeTable.Workspace/Storage/DocumentCatalogStore.cs",
+    "desktop/src/VibeTable.Desktop/Services/DocumentWorkspaceHostService.cs",
+    "desktop/src/VibeTable.Desktop/Services/IDocumentWorkspaceRpcGateway.cs",
+    "desktop/src/VibeTable.Desktop/Services/JsonRpcDocumentWorkspaceGateway.cs",
+    "desktop/web-grid/src/contracts/backupContracts.ts",
+    "desktop/web-grid/src/services/backupService.ts",
+    "desktop/web-grid/src/services/backupService.test.ts",
+    "desktop/web-grid/src/bridge/backupBridge.test.ts",
+    "desktop/web-grid/src/services/dataRootService.ts",
+    "desktop/web-grid/src/services/dataRootService.test.ts"
+  ],
+  "forbiddenRpcMethods": [
+    "backup.list",
+    "backup.create",
+    "backup.delete",
+    "backup.restore",
+    "backup.openFolder",
+    "workspace.linkDocument",
+    "workspace.publishIndexBatch",
+    "workspace.readDocumentHistory",
+    "workspace.readDocuments",
+    "workspace.readFolder",
+    "workspace.registerDocument",
+    "workspace.unlinkDocument",
+    "dataRoot.get",
+    "dataRoot.chooseMigrationRequested"
+  ],
+  "forbiddenDtoFields": [
+    "mainHead",
+    "mainHash",
+    "schemeId",
+    "schemeName"
+  ],
+  "forbiddenSourceLiterals": [
+    {
+      "path": "sidecar/internal/app/app.go",
+      "literals": [
+        "internal/backup",
+        "registerBackupRoutes"
+      ]
+    },
+    {
+      "path": "sidecar/cmd/vibetable-pb/main.go",
+      "literals": [
+        "ApplyPendingRestore"
+      ]
+    },
+    {
+      "path": "sidecar/internal/startup/errors.go",
+      "literals": [
+        "known-good backup"
+      ]
+    },
+    {
+      "path": "backend/__main__.py",
+      "literals": [
+        "_register_backup_methods",
+        "_register_workspace_methods"
+      ]
+    },
+    {
+      "path": "backend/adapters/pocketbase/client.py",
+      "literals": [
+        "BACKUP_PATH",
+        "BACKUP_RESTORE_PATH",
+        "list_backups",
+        "create_backup",
+        "delete_backup",
+        "restore_backup",
+        "/api/vibetable/v1/backups"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Infrastructure/LaunchPaths.cs",
+      "literals": [
+        "ResolveBackupRoot"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/ProductDataRootManager.cs",
+      "literals": [
+        "MigrateLegacyDataRoot",
+        "Path.Combine(legacyRoot, \"backups\")"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/ProductDataRpcRegistry.cs",
+      "literals": [
+        "\"backup.list\"",
+        "\"backup.create\"",
+        "\"backup.delete\"",
+        "\"backup.restore\"",
+        "\"dataRoot.get\"",
+        "\"dataRoot.chooseMigrationRequested\""
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/ManagedWorkspaceProvisioner.cs",
+      "literals": [
+        "\".backup\""
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/WebMessageRouter.cs",
+      "literals": [
+        "\"backup.openFolder\"",
+        "\"document.schemeListRequested\"",
+        "\"document.schemeCreateRequested\"",
+        "\"document.schemeRenameRequested\"",
+        "\"document.schemeArchiveRequested\"",
+        "\"document.schemeActivateRequested\""
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/bridge/hostBridge.ts",
+      "literals": [
+        "\"backup.list\"",
+        "\"backup.create\"",
+        "\"backup.delete\"",
+        "\"backup.restore\"",
+        "\"dataRoot.get\"",
+        "\"dataRoot.chooseMigrationRequested\""
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/contracts/index.ts",
+      "literals": [
+        "readonly taskType: \"formulaBackfill\" | \"import\" | \"export\" | \"reconcile\" | \"backup\" | \"restore\";"
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/i18n/locales/en-US.ts",
+      "literals": [
+        "\"realtime.task.backup\"",
+        "\"realtime.task.restore\""
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/i18n/locales/zh-CN.ts",
+      "literals": [
+        "\"realtime.task.backup\"",
+        "\"realtime.task.restore\""
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/services/bridgeContext.ts",
+      "literals": [
+        "backup restore"
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/views/SettingsView.vue",
+      "literals": [
+        "backup.list",
+        "backup.create",
+        "backup.delete",
+        "backup.restore"
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/components/files/DocumentInspector.vue",
+      "literals": [
+        "schemeId",
+        "schemeName",
+        "adoption"
+      ]
+    }
+  ],
+  "forbiddenJsonValues": [
+    {
+      "path": "qa/handoff_dependencies.json",
+      "pointer": "/capabilities/RELEASE",
+      "values": [
+        "release.backup-restore.v1"
+      ]
+    }
+  ],
+  "forbiddenJsonMembers": [
+    {
+      "path": "desktop/publish-layout.json",
+      "pointer": "/components/sidecar",
+      "members": [
+        "legacyProductDataContractVersion"
+      ]
+    }
+  ],
+  "currentCatalogs": [
+    "contracts/v2/fixtures/rpc-catalog.json"
+  ],
+  "allowedDetectionPrimitives": [
+    {
+      "path": "contracts/v1",
+      "purpose": "Frozen byte-for-byte v1 compatibility evidence; never registered or advertised by the v2 runtime."
+    },
+    {
+      "path": "contracts/v2/v1-frozen.sha256",
+      "purpose": "Detect accidental mutation of the frozen v1 corpus."
+    },
+    {
+      "path": "scripts/release.py",
+      "purpose": "Installer upgrade safety copy and rollback primitive outside the product Snapshot model."
+    },
+    {
+      "path": "sidecar/internal/workspacemigrator",
+      "purpose": "Read-only old-format detection and staged workspace-format upgrade."
+    },
+    {
+      "path": "sidecar/internal/filehistory/materializer.go",
+      "purpose": "Internal transaction rollback copies for file materialization; never a user-visible recovery point or product Backup."
+    },
+    {
+      "path": "desktop/src/VibeTable.Infrastructure/Workspace/WorkspaceLayout.cs",
+      "purpose": "Fail-closed detection and rejection of the retired .backup workspace layout."
+    }
+  ]
+}

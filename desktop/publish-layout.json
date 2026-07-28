@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "1.0",
+  "protocolVersion": "2.0",
   "components": {
     "host": {
       "version": "0.1.0"
@@ -14,9 +14,9 @@
       "version": "0.1.0",
       "pocketBaseVersion": "0.39.9",
       "celVersion": "0.26.1",
-      "contractVersion": "v1",
-      "schemaVersion": "4",
-      "migrationHash": "ad8d44046cf3b330c6d7491bc0fdc9f98a0b182fe6618435607860be95b36c7f",
+      "contractVersion": "2.0",
+      "schemaVersion": "5",
+      "migrationHash": "e6f8ac33dda85f14a4b8bd409ab1943210e87eaccde79f45fd7a24a22e6e157f",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     }
   },
@@ -37,14 +37,27 @@
     "buildInfo": "sidecar/build-info.json",
     "sidecarChecksum": "sidecar/vibetable-pb.exe.sha256",
     "licenses": "sidecar/THIRD_PARTY_LICENSES.txt",
-    "sbom": "sidecar/sbom.cdx.json"
+    "sbom": "sidecar/sbom.cdx.json",
+    "recoveryGuide": "RECOVERY.md",
+    "workspaceContracts": "contracts/v2",
+    "recoveryTools": {
+      "kopia": "sidecar/tools/kopia.exe",
+      "age": "sidecar/tools/age.exe",
+      "ageKeygen": "sidecar/tools/age-keygen.exe"
+    }
+  },
+  "formats": {
+    "workspace": 1,
+    "repository": "kopia-v3",
+    "snapshot": 2,
+    "package": 2,
+    "contracts": "2.0"
   },
   "data": {
     "rootPolicy": "first-run-selected",
-    "defaultBase": "program-directory",
-    "fallbackBase": "per-user-local-app-data",
-    "relativePath": "VibeTableData",
-    "backupRelativePath": "backups",
+    "defaultBase": "per-user-local-app-data",
+    "fallbackBase": "user-selected",
+    "relativePath": "VibeTable/Workspaces",
     "preserveOnUninstall": true
   }
 }

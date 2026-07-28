@@ -19,6 +19,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 const (
@@ -879,7 +880,16 @@ func (catalog *Catalog) ApplyChange(
 		}
 		requestHash = fmt.Sprintf("%x", sha256.Sum256(raw))
 	}
-	err = catalog.app.RunInTransaction(func(txApp core.App) error {
+	err = catalog.app.RunInTransaction(func(txApp core.App) (transactionErr error) {
+		defer func() {
+			if transactionErr == nil {
+				transactionErr = writecoordinator.PersistPocketBaseReceipt(
+					ctx,
+					txApp,
+					time.Now().UTC(),
+				)
+			}
+		}()
 		if change.OperationID != "" {
 			stored, findErr := txApp.FindFirstRecordByFilter(
 				"vibetable_idempotency_keys",
@@ -1188,7 +1198,16 @@ func (catalog *Catalog) DeleteTable(
 			Message: "tableId is required",
 		}
 	}
-	err := catalog.app.RunInTransaction(func(txApp core.App) error {
+	err := catalog.app.RunInTransaction(func(txApp core.App) (transactionErr error) {
+		defer func() {
+			if transactionErr == nil {
+				transactionErr = writecoordinator.PersistPocketBaseReceipt(
+					ctx,
+					txApp,
+					time.Now().UTC(),
+				)
+			}
+		}()
 		record, findErr := catalog.findTable(txApp, tableID)
 		if findErr != nil {
 			if errors.Is(findErr, sql.ErrNoRows) {

@@ -1,28 +1,99 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { NButton, NIcon, NInput } from "naive-ui";
-import { FilePlus2, Files, RefreshCw, Search } from "lucide-vue-next";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { NAlert, NButton, NIcon, NInput, NModal, NSelect } from "naive-ui";
+import { FileQuestion, FilePlus2, Files, RefreshCw, Search } from "lucide-vue-next";
 import DocumentList from "@/components/files/DocumentList.vue";
 import DocumentContextMenu from "@/components/files/DocumentContextMenu.vue";
 import DocumentInspector from "@/components/files/DocumentInspector.vue";
 import { createDocumentWorkspaceService, type DocumentWorkspaceIntent, type DocumentWorkspaceScope } from "@/services/documentWorkspaceService";
 import { useDocumentWorkspaceStore, type DocumentCapability, type DocumentEntry } from "@/stores/documentWorkspaceStore";
+import type { FileRevisionV2 } from "@/contracts/workspaceV2";
+import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";
 import { t } from "@/i18n";
+import type {
+  PendingFileChange,
+  WorkspaceV2UiAction,
+} from "@/contracts/workspaceV2Bridge";
+import { HOST_FILE_UPGRADE_GRANT } from "@/services/workspaceV2HostAdapter";
 
 const props = withDefaults(defineProps<{ scope?: DocumentWorkspaceScope }>(), {
   scope: () => ({ kind: "global" as const }),
 });
-const emit = defineEmits<{ intent: [intent: DocumentWorkspaceIntent] }>();
+type WorkspaceFileHistoryAction = WorkspaceV2UiAction<
+  | "fileHistory.readTree"
+  | "fileHistory.restore"
+  | "fileHistory.upgrade"
+  | "fileHistory.activateLeaf"
+  | "fileHistory.unlink"
+  | "fileHistory.listPendingChanges"
+  | "fileHistory.applyPendingChange"
+>;
+const emit = defineEmits<{
+  intent: [intent: DocumentWorkspaceIntent];
+  workspaceV2Action: [action: WorkspaceFileHistoryAction];
+}>();
 const store = useDocumentWorkspaceStore();
+const protection = useWorkspaceProtectionStore();
 const service = createDocumentWorkspaceService((intent) => emit("intent", intent));
 const menu = ref<{ entry: DocumentEntry; x: number; y: number } | null>(null);
+const unlinkTarget = ref<DocumentEntry | null>(null);
+const pendingChangesOpen = ref(false);
+const pendingCandidates = ref<Record<string, string>>({});
 const dropDepth = ref(0);
 const dropActive = ref(false);
 const dropFeedback = ref(false);
 let dropFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 const selectedCount = computed(() => store.selectedHandles.length);
-const currentRevisions = computed(() => store.primaryHandle ? store.revisions[store.primaryHandle] ?? [] : []);
-const currentSchemes = computed(() => store.primaryHandle ? store.schemes[store.primaryHandle] ?? [] : []);
+const currentRevisionTree = computed(() =>
+  store.primaryEntry ? protection.fileTrees[store.primaryEntry.documentId] ?? null : null);
+
+function pendingCandidateEntries(change: PendingFileChange): readonly DocumentEntry[] {
+  const ids = new Set(change.candidateDocumentIds);
+  return store.entries.filter((entry) =>
+    ids.has(entry.documentId) && Boolean(entry.effectiveRevisionId));
+}
+
+function selectedPendingCandidate(change: PendingFileChange): DocumentEntry | null {
+  const candidates = pendingCandidateEntries(change);
+  const selected = pendingCandidates.value[change.changeId];
+  return candidates.find((entry) => entry.documentId === selected)
+    ?? candidates[0]
+    ?? null;
+}
+
+function openPendingChanges(): void {
+  pendingCandidates.value = Object.fromEntries(
+    protection.pendingFileChanges.flatMap((change) => {
+      const candidate = pendingCandidateEntries(change)[0];
+      return candidate ? [[change.changeId, candidate.documentId]] : [];
+    }),
+  );
+  pendingChangesOpen.value = true;
+}
+
+function applyPendingChange(
+  change: PendingFileChange,
+  action: "new" | "move" | "copy" | "delete" | "dismiss",
+): void {
+  const needsIdentity = action === "move" || action === "copy" || action === "delete";
+  const candidate = needsIdentity ? selectedPendingCandidate(change) : null;
+  if (needsIdentity && (!candidate?.effectiveRevisionId)) return;
+  emit("workspaceV2Action", {
+    method: "fileHistory.applyPendingChange",
+    params: {
+      changeId: change.changeId,
+      action,
+      documentId: candidate?.documentId ?? null,
+      expectedEffectiveRevisionId: candidate?.effectiveRevisionId ?? null,
+    },
+  });
+}
+
+function formatPendingSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function requestList(): void {
   store.setAuthorityFilter("workspace");
@@ -36,18 +107,17 @@ function select(index: number, options: { toggle: boolean; range: boolean }): vo
 }
 
 function history(entry: DocumentEntry): void {
-  store.beginHistory(entry.entryHandle);
-  service.history(entry.entryHandle);
-}
-
-function schemes(entry: DocumentEntry): void {
-  store.beginSchemes(entry.entryHandle);
-  service.listSchemes(entry.entryHandle);
+  store.showInspector("history");
+  emit("workspaceV2Action", {
+    method: "fileHistory.readTree",
+    params: { documentId: entry.documentId },
+  });
 }
 
 function onAction(action: DocumentCapability, entry: DocumentEntry): void {
   menu.value = null;
   if (action === "history") history(entry);
+  else if (action === "unlink") unlinkTarget.value = entry;
   else if (
     action === "open" ||
     action === "preview" ||
@@ -57,6 +127,56 @@ function onAction(action: DocumentCapability, entry: DocumentEntry): void {
   ) {
     service[action](entry.entryHandle);
   }
+}
+
+function confirmUnlink(): void {
+  const entry = unlinkTarget.value;
+  if (!entry?.effectiveRevisionId) return;
+  emit("workspaceV2Action", {
+    method: "fileHistory.unlink",
+    params: {
+      documentId: entry.documentId,
+      expectedEffectiveRevisionId: entry.effectiveRevisionId,
+    },
+  });
+  unlinkTarget.value = null;
+}
+
+function restoreFileRevision(revision: FileRevisionV2): void {
+  const effectiveRevisionId = currentRevisionTree.value?.effectiveRevisionId;
+  if (!effectiveRevisionId) return;
+  emit("workspaceV2Action", {
+    method: "fileHistory.restore",
+    params: {
+      documentId: revision.documentId,
+      expectedEffectiveRevisionId: effectiveRevisionId,
+      historicalRevisionId: revision.revisionId,
+    },
+  });
+}
+
+function upgradeFileRevision(revision: FileRevisionV2): void {
+  emit("workspaceV2Action", {
+    method: "fileHistory.upgrade",
+    params: {
+      documentId: revision.documentId,
+      revisionId: revision.revisionId,
+      pathGrant: HOST_FILE_UPGRADE_GRANT,
+    },
+  });
+}
+
+function activateFileRevision(revision: FileRevisionV2): void {
+  const effectiveRevisionId = currentRevisionTree.value?.effectiveRevisionId;
+  if (!effectiveRevisionId) return;
+  emit("workspaceV2Action", {
+    method: "fileHistory.activateLeaf",
+    params: {
+      documentId: revision.documentId,
+      expectedEffectiveRevisionId: effectiveRevisionId,
+      targetLeafRevisionId: revision.revisionId,
+    },
+  });
 }
 
 function isExternalFileDrag(event: DragEvent): boolean {
@@ -102,6 +222,12 @@ onMounted(requestList);
 onBeforeUnmount(() => {
   if (dropFeedbackTimer) clearTimeout(dropFeedbackTimer);
 });
+watch(
+  () => protection.pendingFileChanges.length,
+  (count) => {
+    if (count === 0) pendingChangesOpen.value = false;
+  },
+);
 </script>
 
 <template>
@@ -128,6 +254,24 @@ onBeforeUnmount(() => {
     <div v-if="dropFeedback" class="drop-feedback" role="status" data-testid="drop-feedback">
       {{ t("files.drop.forwarded") }}
     </div>
+    <NAlert
+      v-if="protection.pendingFileChanges.length"
+      type="warning"
+      class="pending-change-alert"
+      :show-icon="true"
+      data-testid="pending-file-change-alert"
+    >
+      <div class="pending-change-alert-content">
+        <span>
+          {{ t("files.pending.summary", {
+            count: protection.pendingFileChanges.length,
+          }) }}
+        </span>
+        <NButton size="tiny" @click="openPendingChanges">
+          {{ t("files.pending.review") }}
+        </NButton>
+      </div>
+    </NAlert>
 
     <div class="file-body">
       <div v-if="dropActive" class="external-drop-zone" data-testid="external-drop-zone">
@@ -163,27 +307,144 @@ onBeforeUnmount(() => {
       <DocumentInspector
         :entry="store.primaryEntry"
         :active-tab="store.inspectorTab"
-        :revisions="currentRevisions"
-        :schemes="currentSchemes"
-        :history-loading="store.historyLoadingFor === store.primaryHandle"
-        :schemes-loading="store.schemesLoadingFor === store.primaryHandle"
-        :busy="store.activeOperation !== null"
+        :busy="protection.busyOperation !== null"
+        :revision-tree="currentRevisionTree"
         @tab="store.showInspector"
         @preview="service.preview($event.entryHandle)"
         @history="history"
-        @schemes="schemes"
         @relink="service.relink($event.entryHandle)"
-        @commit="(entry, note, schemeHandle) => service.commitRevision(entry.entryHandle, note, schemeHandle)"
-        @promote="(entry, label, note, schemeHandle) => service.promoteVersion(entry.entryHandle, label, note, schemeHandle)"
-        @preview-revision="(entry, revision) => service.previewRevision(entry.entryHandle, revision.revisionHandle)"
-        @restore-revision="(entry, revision) => service.restoreRevision(entry.entryHandle, revision.revisionHandle)"
-        @create-scheme="(entry, name, base) => service.createScheme(entry.entryHandle, name, base)"
-        @rename-scheme="(entry, scheme, name) => service.renameScheme(entry.entryHandle, scheme.schemeHandle, name)"
-        @archive-scheme="(entry, scheme) => service.archiveScheme(entry.entryHandle, scheme.schemeHandle)"
+        @restore-file-revision="(_entry, revision) => restoreFileRevision(revision)"
+        @upgrade-file-revision="(_entry, revision) => upgradeFileRevision(revision)"
+        @activate-file-revision="(_entry, revision) => activateFileRevision(revision)"
       />
     </div>
 
     <DocumentContextMenu v-if="menu" :entry="menu.entry" :x="menu.x" :y="menu.y" @action="onAction" @close="menu = null" />
+    <NModal
+      :show="unlinkTarget !== null"
+      preset="card"
+      :title="t('files.unlink.title')"
+      class="unlink-modal"
+      @update:show="value => { if (!value) unlinkTarget = null; }"
+    >
+      <NAlert type="warning" :show-icon="true">
+        {{ t("files.unlink.hint") }}
+      </NAlert>
+      <template #footer>
+        <div class="modal-actions">
+          <NButton @click="unlinkTarget = null">{{ t("common.cancel") }}</NButton>
+          <NButton
+            type="error"
+            data-testid="document-unlink-confirm"
+            :disabled="!unlinkTarget?.effectiveRevisionId"
+            @click="confirmUnlink"
+          >
+            {{ t("files.unlink.confirm") }}
+          </NButton>
+        </div>
+      </template>
+    </NModal>
+    <NModal
+      :show="pendingChangesOpen"
+      preset="card"
+      :title="t('files.pending.title')"
+      class="pending-changes-modal"
+      :trap-focus="true"
+      :auto-focus="true"
+      @update:show="value => { pendingChangesOpen = value; }"
+    >
+      <NAlert type="info" :show-icon="true">
+        {{ t("files.pending.hint") }}
+      </NAlert>
+      <div class="pending-change-list">
+        <article
+          v-for="change in protection.pendingFileChanges"
+          :key="change.changeId"
+          class="pending-change-card"
+          :data-testid="`pending-change-${change.changeId}`"
+        >
+          <span class="pending-change-icon" aria-hidden="true">
+            <NIcon :size="18"><FileQuestion /></NIcon>
+          </span>
+          <div class="pending-change-copy">
+            <strong>{{ change.relativePath }}</strong>
+            <small>
+              {{ change.missing
+                ? t("files.pending.missing")
+                : t("files.pending.observed", { size: formatPendingSize(change.observedSize) }) }}
+            </small>
+            <NSelect
+              v-if="pendingCandidateEntries(change).length"
+              :value="selectedPendingCandidate(change)?.documentId ?? null"
+              size="small"
+              :aria-label="t('files.pending.candidate')"
+              :options="pendingCandidateEntries(change).map(entry => ({
+                label: entry.displayName,
+                value: entry.documentId,
+              }))"
+              @update:value="value => {
+                if (typeof value === 'string') {
+                  pendingCandidates = { ...pendingCandidates, [change.changeId]: value };
+                }
+              }"
+            />
+          </div>
+          <div class="pending-change-actions">
+            <NButton
+              v-if="!change.missing"
+              size="tiny"
+              :disabled="protection.busyOperation !== null"
+              :data-testid="`pending-new-${change.changeId}`"
+              @click="applyPendingChange(change, 'new')"
+            >
+              {{ t("files.pending.new") }}
+            </NButton>
+            <NButton
+              v-if="!change.missing && pendingCandidateEntries(change).length"
+              size="tiny"
+              :disabled="protection.busyOperation !== null"
+              :data-testid="`pending-move-${change.changeId}`"
+              @click="applyPendingChange(change, 'move')"
+            >
+              {{ t("files.pending.move") }}
+            </NButton>
+            <NButton
+              v-if="!change.missing && pendingCandidateEntries(change).length"
+              size="tiny"
+              :disabled="protection.busyOperation !== null"
+              :data-testid="`pending-copy-${change.changeId}`"
+              @click="applyPendingChange(change, 'copy')"
+            >
+              {{ t("files.pending.copy") }}
+            </NButton>
+            <NButton
+              v-if="change.missing && pendingCandidateEntries(change).length"
+              size="tiny"
+              type="error"
+              :disabled="protection.busyOperation !== null"
+              :data-testid="`pending-delete-${change.changeId}`"
+              @click="applyPendingChange(change, 'delete')"
+            >
+              {{ t("files.pending.delete") }}
+            </NButton>
+            <NButton
+              size="tiny"
+              quaternary
+              :disabled="protection.busyOperation !== null"
+              :data-testid="`pending-dismiss-${change.changeId}`"
+              @click="applyPendingChange(change, 'dismiss')"
+            >
+              {{ t("files.pending.dismiss") }}
+            </NButton>
+          </div>
+        </article>
+      </div>
+      <template #footer>
+        <div class="modal-actions">
+          <NButton @click="pendingChangesOpen = false">{{ t("common.close") }}</NButton>
+        </div>
+      </template>
+    </NModal>
   </section>
 </template>
 
@@ -194,6 +455,8 @@ onBeforeUnmount(() => {
 .selection-count { margin-left: auto; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .file-body { position: relative; display: flex; flex: 1; min-height: 0; }
 .drop-feedback { min-height: 32px; padding: 6px 12px; color: var(--vt-fg-accent); font-size: var(--vt-font-caption); border-bottom: 1px solid var(--vt-color-primary-100); background: var(--vt-color-primary-50); }
+.pending-change-alert { margin: 8px 10px 0; }
+.pending-change-alert-content { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .external-drop-zone { position: absolute; z-index: 80; inset: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--vt-fg-accent); border: 2px dashed var(--vt-color-primary-200); border-radius: 12px; background: color-mix(in srgb, var(--vt-color-primary-50) 92%, var(--vt-bg)); box-shadow: inset 0 0 0 1px rgba(255,255,255,.7); pointer-events: none; }
 .external-drop-zone span { display: grid; place-items: center; width: 48px; height: 48px; margin-bottom: 10px; border-radius: 50%; background: var(--vt-bg); box-shadow: var(--vt-shadow-1); }
 .external-drop-zone strong { font-size: var(--vt-font-label); font-weight: 600; }
@@ -207,6 +470,17 @@ onBeforeUnmount(() => {
 .file-empty p { max-width: 380px; margin: 4px 0 14px; font-size: var(--vt-font-caption); }
 .file-skeleton { padding: 33px 12px 0; }
 .file-skeleton i { display: block; height: 40px; border-bottom: 1px solid var(--vt-border); background: linear-gradient(90deg, transparent 0%, var(--vt-bg-subtle) 30%, var(--vt-bg-sunken) 50%, var(--vt-bg-subtle) 70%, transparent 100%); background-size: 240% 100%; animation: shimmer 1.4s infinite; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+:global(.unlink-modal) { width: min(500px, calc(100vw - 28px)); }
+:global(.pending-changes-modal) { width: min(760px, calc(100vw - 28px)); }
+.pending-change-list { display: grid; gap: 9px; max-height: min(58vh, 560px); margin-top: 12px; overflow: auto; }
+.pending-change-card { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg-subtle); }
+.pending-change-icon { display: grid; place-items: center; width: 32px; height: 32px; color: var(--vt-color-warning); border-radius: 9px; background: color-mix(in srgb, var(--vt-color-warning) 10%, var(--vt-bg)); }
+.pending-change-copy { display: grid; min-width: 0; gap: 4px; }
+.pending-change-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending-change-copy small { color: var(--vt-fg-muted); }
+.pending-change-copy :deep(.n-select) { max-width: 280px; margin-top: 3px; }
+.pending-change-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 @keyframes shimmer { to { background-position: -140% 0; } }
 @media (max-width: 920px) { .file-search { width: 180px; } :deep(.document-inspector) { flex-basis: 360px; } }
 @media (max-width: 680px) {
@@ -215,5 +489,7 @@ onBeforeUnmount(() => {
   .selection-count { margin-left: 0; }
   .file-body { flex-direction: column; overflow: auto; }
   .file-list-pane { min-height: 260px; }
+  .pending-change-card { grid-template-columns: 32px minmax(0, 1fr); }
+  .pending-change-actions { grid-column: 1 / -1; justify-content: flex-start; }
 }
 </style>

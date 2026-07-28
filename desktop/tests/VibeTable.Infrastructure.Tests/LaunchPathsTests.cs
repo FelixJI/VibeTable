@@ -8,17 +8,15 @@ namespace VibeTable.Infrastructure.Tests;
 public sealed class LaunchPathsTests
 {
     [TestMethod]
-    public void ProductDataAndBackupsLiveOutsideInstall()
+    public void ProductDataLivesOutsideInstall()
     {
         string local = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         string install = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
 
         string data = LaunchPaths.ResolveDataRoot(local);
-        string backup = LaunchPaths.ResolveBackupRoot(local);
         LaunchPaths.EnsureInstallAndDataAreSeparated(install, data);
 
         StringAssert.EndsWith(data, Path.Combine("VibeTable", "data"));
-        StringAssert.EndsWith(backup, Path.Combine("VibeTable", "backups"));
     }
 
     [TestMethod]

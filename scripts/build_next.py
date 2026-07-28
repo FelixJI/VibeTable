@@ -31,7 +31,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
         read_project_version,
     )
 
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION = "2.0"
 WEBVIEW2_SDK = "1.0.4078.44"
 TABULATOR_VERSION = "6.5.2"
 HOST_EXE_NAME = "VibeTable.Next.exe"
@@ -40,6 +40,13 @@ BACKEND_EXE_NAME = "vibetable-backend.exe"
 # checks run on Linux. Keep the manifest target-platform deterministic instead
 # of letting the CI host silently rewrite package paths.
 SIDECAR_EXE_NAME = "vibetable-pb.exe"
+KOPIA_EXE_NAME = "kopia.exe"
+AGE_EXE_NAME = "age.exe"
+AGE_KEYGEN_EXE_NAME = "age-keygen.exe"
+KOPIA_VERSION = "v0.23.1"
+AGE_VERSION = "v1.3.1"
+RECOVERY_TOOL_SIZE_LIMIT = 220 * 1024 * 1024
+CONTRACT_COPY_IGNORES = ("__pycache__", ".pytest_cache", "*.pyc", "*.pyo")
 PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
 BACKEND_HIDDEN_IMPORTS = (
     "pydantic",
@@ -81,6 +88,9 @@ class RepoPaths:
     sidecar_build_info: Path = field(init=False)
     sidecar_sbom: Path = field(init=False)
     sidecar_licenses: Path = field(init=False)
+    kopia_binary: Path = field(init=False)
+    age_binary: Path = field(init=False)
+    age_keygen_binary: Path = field(init=False)
     manifest_path: Path = field(init=False)
 
     def __post_init__(self) -> None:
@@ -93,6 +103,9 @@ class RepoPaths:
         self.sidecar_build_info = self.sidecar_assets_dir / "build-info.json"
         self.sidecar_sbom = self.sidecar_assets_dir / "sbom.cdx.json"
         self.sidecar_licenses = self.sidecar_assets_dir / "THIRD_PARTY_LICENSES.txt"
+        self.kopia_binary = self.sidecar_assets_dir / "tools" / KOPIA_EXE_NAME
+        self.age_binary = self.sidecar_assets_dir / "tools" / AGE_EXE_NAME
+        self.age_keygen_binary = self.sidecar_assets_dir / "tools" / AGE_KEYGEN_EXE_NAME
         self.manifest_path = self.publish_root / "publish-layout.json"
 
     @classmethod
@@ -265,7 +278,7 @@ def render_manifest(
                 "version": versions.app,
                 "pocketBaseVersion": versions.pocketbase,
                 "celVersion": versions.cel,
-                "contractVersion": versions.contract,
+                "contractVersion": "2.0",
                 "schemaVersion": versions.schema,
                 "migrationHash": versions.migration_hash,
                 "sha256": digest,
@@ -285,13 +298,26 @@ def render_manifest(
             "sidecarChecksum": f"sidecar/{SIDECAR_EXE_NAME}.sha256",
             "licenses": "sidecar/THIRD_PARTY_LICENSES.txt",
             "sbom": "sidecar/sbom.cdx.json",
+            "recoveryGuide": "RECOVERY.md",
+            "workspaceContracts": "contracts/v2",
+            "recoveryTools": {
+                "kopia": "sidecar/tools/kopia.exe",
+                "age": "sidecar/tools/age.exe",
+                "ageKeygen": "sidecar/tools/age-keygen.exe",
+            },
+        },
+        "formats": {
+            "workspace": 1,
+            "repository": "kopia-v3",
+            "snapshot": 2,
+            "package": 2,
+            "contracts": "2.0",
         },
         "data": {
             "rootPolicy": "first-run-selected",
-            "defaultBase": "program-directory",
-            "fallbackBase": "per-user-local-app-data",
-            "relativePath": "VibeTableData",
-            "backupRelativePath": "backups",
+            "defaultBase": "per-user-local-app-data",
+            "fallbackBase": "user-selected",
+            "relativePath": "VibeTable/Workspaces",
             "preserveOnUninstall": True,
         },
     }
@@ -330,7 +356,8 @@ def _classify_licenses(text: str) -> set[str]:
         detected.add("Apache-2.0")
     if (
         "permission is hereby granted, free of charge" in normalized
-        and 'the software is provided "as is"' in normalized
+        and "software is provided" in normalized
+        and "as is" in normalized
     ):
         detected.add("MIT")
     if "redistribution and use in source and binary forms" in normalized:
@@ -345,6 +372,8 @@ def _classify_licenses(text: str) -> set[str]:
         detected.add("ISC")
     if "this is free and unencumbered software released into the public domain" in normalized:
         detected.add("Unlicense")
+    if "cc0 1.0 universal" in normalized:
+        detected.add("CC0-1.0")
     if (
         "zlib license" in normalized
         and "altered source versions must be plainly marked" in normalized
@@ -474,6 +503,13 @@ def stage_sidecar_assets(
         _third_party_license_text(modules),
         encoding="utf-8",
     )
+    for tool in (paths.kopia_binary, paths.age_binary, paths.age_keygen_binary):
+        if not tool.is_file():
+            raise BuildError(f"missing recovery tool: {tool}")
+        tool.with_suffix(tool.suffix + ".sha256").write_text(
+            sha256_file(tool) + "\n",
+            encoding="utf-8",
+        )
     if os.name != "nt":
         paths.sidecar_binary.chmod(
             paths.sidecar_binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
@@ -487,11 +523,26 @@ def verify_sidecar_package(paths: RepoPaths) -> None:
         paths.sidecar_build_info,
         paths.sidecar_sbom,
         paths.sidecar_licenses,
+        paths.kopia_binary,
+        paths.age_binary,
+        paths.age_keygen_binary,
+        paths.kopia_binary.with_suffix(paths.kopia_binary.suffix + ".sha256"),
+        paths.age_binary.with_suffix(paths.age_binary.suffix + ".sha256"),
+        paths.age_keygen_binary.with_suffix(paths.age_keygen_binary.suffix + ".sha256"),
         paths.sidecar_assets_dir / "migrations" / "manifest.json",
     )
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise BuildError("missing sidecar package assets: " + ", ".join(missing))
+    recovery_tools = (paths.kopia_binary, paths.age_binary, paths.age_keygen_binary)
+    if sum(path.stat().st_size for path in recovery_tools) > RECOVERY_TOOL_SIZE_LIMIT:
+        raise BuildError("bundled Kopia/age recovery tools exceed the size threshold")
+    for tool in recovery_tools:
+        expected_tool_hash = (
+            tool.with_suffix(tool.suffix + ".sha256").read_text(encoding="utf-8").strip()
+        )
+        if sha256_file(tool) != expected_tool_hash:
+            raise BuildError(f"recovery tool SHA-256 mismatch: {tool.name}")
     expected = paths.sidecar_checksum.read_text(encoding="utf-8").strip()
     actual = sha256_file(paths.sidecar_binary)
     if expected != actual:
@@ -505,6 +556,13 @@ def verify_sidecar_package(paths: RepoPaths) -> None:
         "contractVersion": versions.contract,
         "schemaVersion": versions.schema,
         "migrationHash": versions.migration_hash,
+        "protocolV2Version": "2.0",
+        "workspaceFormat": "1",
+        "repositoryFormat": "kopia-v3",
+        "snapshotFormat": "2",
+        "packageFormat": "2",
+        "kopiaVersion": KOPIA_VERSION,
+        "ageVersion": AGE_VERSION,
     }
     for key, value in expected_info.items():
         if info.get(key) != value:
@@ -532,6 +590,14 @@ def verify_sidecar_package(paths: RepoPaths) -> None:
             raise BuildError("sidecar SBOM contains an unresolved license")
         if f"===== {name} " not in license_bundle:
             raise BuildError(f"sidecar license bundle is missing module: {name}")
+
+
+def stage_workspace_contracts(paths: RepoPaths) -> None:
+    shutil.copytree(
+        paths.repo_root / "contracts" / "v2",
+        paths.publish_root / "contracts" / "v2",
+        ignore=shutil.ignore_patterns(*CONTRACT_COPY_IGNORES),
+    )
 
 
 def _run(
@@ -618,12 +684,51 @@ def _build_sidecar(paths: RepoPaths, *, skip: bool) -> None:
         ),
         cwd=paths.sidecar_source_dir,
     )
+    paths.kopia_binary.parent.mkdir(parents=True, exist_ok=True)
+    tool_module = paths.scratch_root / "recovery-tools-go"
+    if tool_module.exists():
+        shutil.rmtree(tool_module)
+    tool_module.mkdir(parents=True)
+    (tool_module / "go.mod").write_text(
+        "\n".join(
+            (
+                "module vibetable.local/recovery-tools",
+                "",
+                "go 1.25.8",
+                "",
+                "require (",
+                f"\tfilippo.io/age {AGE_VERSION}",
+                f"\tgithub.com/kopia/kopia {KOPIA_VERSION}",
+                ")",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    for package, output in (
+        ("github.com/kopia/kopia", paths.kopia_binary),
+        ("filippo.io/age/cmd/age", paths.age_binary),
+        ("filippo.io/age/cmd/age-keygen", paths.age_keygen_binary),
+    ):
+        _run(
+            [
+                resolve_go(paths.repo_root),
+                "build",
+                "-mod=mod",
+                "-trimpath",
+                "-buildvcs=false",
+                "-o",
+                str(output),
+                package,
+            ],
+            cwd=tool_module,
+        )
     build_info_result = _run(
         [str(paths.sidecar_binary), "--build-info"],
         cwd=paths.sidecar_assets_dir,
         capture=True,
     )
-    packages_result = _run(
+    sidecar_packages_result = _run(
         [
             resolve_go(paths.repo_root),
             "list",
@@ -634,7 +739,26 @@ def _build_sidecar(paths: RepoPaths, *, skip: bool) -> None:
         cwd=paths.sidecar_source_dir,
         capture=True,
     )
-    modules = _modules_from_packages(_json_stream(packages_result.stdout))
+    package_metadata = sidecar_packages_result.stdout
+    for package in (
+        "github.com/kopia/kopia",
+        "filippo.io/age/cmd/age",
+        "filippo.io/age/cmd/age-keygen",
+    ):
+        packages_result = _run(
+            [
+                resolve_go(paths.repo_root),
+                "list",
+                "-mod=mod",
+                "-deps",
+                "-json",
+                package,
+            ],
+            cwd=tool_module,
+            capture=True,
+        )
+        package_metadata += packages_result.stdout
+    modules = _modules_from_packages(_json_stream(package_metadata))
     stage_sidecar_assets(
         paths,
         build_info=json.loads(build_info_result.stdout),
@@ -767,6 +891,8 @@ def run_build(paths: RepoPaths, args: argparse.Namespace) -> int:
     _build_desktop(stage, skip=args.skip_desktop)
     if not args.skip_sidecar:
         verify_sidecar_package(stage)
+    shutil.copy2(paths.repo_root / "docs" / "RECOVERY.md", stage.publish_root / "RECOVERY.md")
+    stage_workspace_contracts(stage)
     write_manifest(stage)
     _atomic_swap(paths.staging_root, paths.publish_root)
     if not args.keep_staging:

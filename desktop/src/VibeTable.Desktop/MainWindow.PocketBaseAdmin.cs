@@ -9,7 +9,8 @@ public partial class MainWindow
 {
     private bool OpenPocketBaseAdmin()
     {
-        PocketBaseAdminContext? context = _sidecar.GetAdminContext();
+        PocketBaseAdminContext? context =
+            _runtime.CurrentSidecar?.GetAdminContext();
         if (context is null) return false;
 
         foreach (Window candidate in Application.Current.Windows)

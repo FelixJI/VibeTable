@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"io"
 	"net/http"
 
@@ -16,6 +17,7 @@ const maxRelationRequestBytes = 1 << 20
 func registerRelationRoutes(
 	r *router.Router[*core.RequestEvent],
 	service *relation.Service,
+	gates ...businessWriteGate,
 ) {
 	r.GET("/api/vibetable/v1/relations/describe", func(request *core.RequestEvent) error {
 		query := request.Request.URL.Query()
@@ -82,7 +84,18 @@ func registerRelationRoutes(
 		if err := decodeRelationBody(request, &input); err != nil {
 			return writeMutationError(request, err)
 		}
-		result, err := service.ApplyDelta(request.Request.Context(), input)
+		var result relation.DeltaResult
+		err := runBusinessWrite(
+			request.Request.Context(),
+			gates,
+			"relation.apply-delta",
+			input.IdempotencyKey,
+			func(ctx context.Context) error {
+				var applyErr error
+				result, applyErr = service.ApplyDelta(ctx, input)
+				return applyErr
+			},
+		)
 		if err != nil {
 			return writeMutationError(request, err)
 		}

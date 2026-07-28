@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import shutil
 from pathlib import Path
@@ -197,9 +198,42 @@ async def test_inspect_and_commit_recheck_and_retain_immutable_package(
     assert Path(revisions[0].local_path).is_file()
     assert Path(revisions[0].local_path).is_relative_to(tmp_path / "cache")
     assert Path(revisions[0].local_path).parent == tmp_path / "cache"
-    assert Path(revisions[0].local_path).name == (
-        f"{plan.package_hash.removeprefix('sha256:')}.vtplugin"
+    digest = bytes.fromhex(plan.package_hash.removeprefix("sha256:"))
+    compact = base64.b32encode(digest).rstrip(b"=").decode("ascii").lower()
+    assert Path(revisions[0].local_path).name == f"{compact}.vtplugin"
+
+
+@pytest.mark.asyncio
+async def test_retained_package_compacts_digest_for_deep_windows_cache_path(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "reader"
+    _write_plugin(source)
+    cache = tmp_path
+    while len(str(cache.resolve())) + len("\\deep") <= 195:
+        cache /= "deep"
+    remaining = 195 - len(str(cache.resolve())) - 1
+    if remaining > 0:
+        cache /= "x" * remaining
+    service = _service(InMemoryPluginStore(), package_cache=cache)
+
+    plan = await service.inspect_install(
+        project_key="local:default",
+        project_revision="project-r1",
+        source_location=str(source),
     )
+    await service.commit_install(
+        plan_id=plan.plan_id,
+        project_revision="project-r1",
+    )
+
+    digest = bytes.fromhex(plan.package_hash.removeprefix("sha256:"))
+    compact = base64.b32encode(digest).rstrip(b"=").decode("ascii").lower()
+    retained = cache / f"{compact}.vtplugin"
+    assert len(compact) == 52
+    assert len(str((cache / ("f" * 64 + ".vtplugin")).resolve())) > 260
+    assert len(str(retained.resolve())) <= 260
+    assert retained.is_file()
 
 
 @pytest.mark.asyncio

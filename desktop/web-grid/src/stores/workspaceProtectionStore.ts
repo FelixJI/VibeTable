@@ -1,0 +1,240 @@
+import { computed, ref } from "vue";
+import { defineStore } from "pinia";
+import type { FileDocumentV2, RetentionPolicyV2 } from "@/contracts/workspaceV2";
+import type {
+  CleanupPlanResult,
+  ConflictPlanResult,
+  FileRevisionTreeProjection,
+  PendingFileChange,
+  RepositoryKeyRotationPlan,
+  RepositoryVerificationResult,
+  RestorePlanResult,
+  SnapshotExtractPlan,
+  SnapshotPackagePlan,
+  SnapshotTimelineItem,
+  WorkspaceConflictItem,
+  WorkspaceStoragePlan,
+  WorkspaceStorageProjection,
+} from "@/contracts/workspaceV2Bridge";
+import { registerWorkspaceEpochReset } from "@/stores/workspaceSessionStore";
+
+export type {
+  FileRevisionTreeProjection,
+  SnapshotTimelineItem,
+  WorkspaceConflictItem,
+  WorkspaceStorageProjection,
+} from "@/contracts/workspaceV2Bridge";
+
+// Display-only ADR fixture. Mutations stay gated by retentionHydrated until the host supplies the policy.
+const DEFAULT_RETENTION: RetentionPolicyV2 = {
+  contractVersion: "2.0",
+  policyRevision: 1,
+  snapshotDays: 30,
+  snapshotCount: 50,
+  snapshotBuckets: ["hourly", "daily", "weekly", "monthly"],
+  fileRevisionDays: 30,
+  fileRevisionCount: 100,
+  fileRevisionBuckets: ["daily", "weekly", "monthly"],
+  trashMonths: 3,
+  repositoryLimitBytes: null,
+};
+
+export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2", () => {
+  const snapshots = ref<readonly SnapshotTimelineItem[]>([]);
+  const selectedSnapshotId = ref<string | null>(null);
+  const storage = ref<WorkspaceStorageProjection | null>(null);
+  const storagePlan = ref<WorkspaceStoragePlan | null>(null);
+  const retention = ref<RetentionPolicyV2>(DEFAULT_RETENTION);
+  const retentionHydrated = ref(false);
+  const conflicts = ref<readonly WorkspaceConflictItem[]>([]);
+  const fileTrees = ref<Readonly<Record<string, FileRevisionTreeProjection>>>({});
+  const pendingFileChanges = ref<readonly PendingFileChange[]>([]);
+  const documents = ref<readonly FileDocumentV2[]>([]);
+  const restorePlan = ref<RestorePlanResult | null>(null);
+  const extractPlan = ref<SnapshotExtractPlan | null>(null);
+  const repositoryVerification = ref<RepositoryVerificationResult | null>(null);
+  const keyRotationPlan = ref<RepositoryKeyRotationPlan | null>(null);
+  const retentionPlan = ref<CleanupPlanResult | null>(null);
+  const conflictPlans = ref<Readonly<Record<string, ConflictPlanResult>>>({});
+  const snapshotPackagePlan = ref<SnapshotPackagePlan | null>(null);
+  const busyOperation = ref<string | null>(null);
+  const operationError = ref<string | null>(null);
+
+  const selectedSnapshot = computed(() =>
+    snapshots.value.find((snapshot) => snapshot.snapshotId === selectedSnapshotId.value) ?? null);
+  const pendingConflictCount = computed(() =>
+    conflicts.value.filter((conflict) => conflict.state !== "ready").length);
+
+  registerWorkspaceEpochReset("workspace-protection-v2", () => {
+    snapshots.value = [];
+    selectedSnapshotId.value = null;
+    storage.value = null;
+    storagePlan.value = null;
+    retention.value = DEFAULT_RETENTION;
+    retentionHydrated.value = false;
+    conflicts.value = [];
+    fileTrees.value = {};
+    pendingFileChanges.value = [];
+    documents.value = [];
+    restorePlan.value = null;
+    extractPlan.value = null;
+    repositoryVerification.value = null;
+    keyRotationPlan.value = null;
+    retentionPlan.value = null;
+    conflictPlans.value = {};
+    snapshotPackagePlan.value = null;
+    busyOperation.value = null;
+    operationError.value = null;
+  });
+
+  function setSnapshots(next: readonly SnapshotTimelineItem[]): void {
+    snapshots.value = [...next];
+    if (
+      selectedSnapshotId.value
+      && !snapshots.value.some((snapshot) => snapshot.snapshotId === selectedSnapshotId.value)
+    ) {
+      selectedSnapshotId.value = null;
+    }
+  }
+
+  function upsertSnapshot(next: SnapshotTimelineItem): void {
+    const index = snapshots.value.findIndex((item) => item.snapshotId === next.snapshotId);
+    snapshots.value = index < 0
+      ? [next, ...snapshots.value]
+      : snapshots.value.map((item) => item.snapshotId === next.snapshotId ? next : item);
+  }
+
+  function selectSnapshot(snapshotId: string | null): void {
+    selectedSnapshotId.value = snapshotId;
+  }
+
+  function setStorage(next: WorkspaceStorageProjection | null): void {
+    storage.value = next;
+  }
+
+  function setStoragePlan(next: WorkspaceStoragePlan | null): void {
+    storagePlan.value = next;
+  }
+
+  function setRetention(next: RetentionPolicyV2): void {
+    retention.value = next;
+    retentionHydrated.value = true;
+  }
+
+  function setConflicts(next: readonly WorkspaceConflictItem[]): void {
+    conflicts.value = [...next];
+  }
+
+  function chooseConflict(conflictId: string, choice: "local" | "replica" | "both"): void {
+    conflicts.value = conflicts.value.map((conflict) =>
+      conflict.conflictId === conflictId ? { ...conflict, selected: choice } : conflict);
+  }
+
+  function setFileTree(next: FileRevisionTreeProjection): void {
+    fileTrees.value = { ...fileTrees.value, [next.documentId]: next };
+  }
+
+  function setPendingFileChanges(next: readonly PendingFileChange[]): void {
+    pendingFileChanges.value = [...next];
+  }
+
+  function setDocuments(next: readonly FileDocumentV2[]): void {
+    documents.value = [...next];
+  }
+
+  function removePendingFileChange(changeId: string): void {
+    pendingFileChanges.value = pendingFileChanges.value.filter(
+      (change) => change.changeId !== changeId,
+    );
+  }
+
+  function setRestorePlan(next: RestorePlanResult | null): void {
+    restorePlan.value = next;
+  }
+
+  function setExtractPlan(next: SnapshotExtractPlan | null): void {
+    extractPlan.value = next;
+  }
+
+  function setRepositoryVerification(
+    next: RepositoryVerificationResult | null,
+  ): void {
+    repositoryVerification.value = next;
+  }
+
+  function setKeyRotationPlan(next: RepositoryKeyRotationPlan | null): void {
+    keyRotationPlan.value = next;
+  }
+
+  function setRetentionPlan(next: CleanupPlanResult | null): void {
+    retentionPlan.value = next;
+  }
+
+  function setConflictPlan(conflictId: string, next: ConflictPlanResult | null): void {
+    const plans = { ...conflictPlans.value };
+    if (next) plans[conflictId] = next;
+    else delete plans[conflictId];
+    conflictPlans.value = plans;
+  }
+
+  function setSnapshotPackagePlan(next: SnapshotPackagePlan | null): void {
+    snapshotPackagePlan.value = next;
+  }
+
+  function beginOperation(operation: string): boolean {
+    if (busyOperation.value) return false;
+    busyOperation.value = operation;
+    operationError.value = null;
+    return true;
+  }
+
+  function finishOperation(error?: string): void {
+    busyOperation.value = null;
+    operationError.value = error ?? null;
+  }
+
+  return {
+    snapshots,
+    selectedSnapshotId,
+    selectedSnapshot,
+    storage,
+    storagePlan,
+    retention,
+    retentionHydrated,
+    conflicts,
+    pendingConflictCount,
+    fileTrees,
+    pendingFileChanges,
+    documents,
+    restorePlan,
+    extractPlan,
+    repositoryVerification,
+    keyRotationPlan,
+    retentionPlan,
+    conflictPlans,
+    snapshotPackagePlan,
+    busyOperation,
+    operationError,
+    setSnapshots,
+    upsertSnapshot,
+    selectSnapshot,
+    setStorage,
+    setStoragePlan,
+    setRetention,
+    setConflicts,
+    chooseConflict,
+    setFileTree,
+    setPendingFileChanges,
+    setDocuments,
+    removePendingFileChange,
+    setRestorePlan,
+    setExtractPlan,
+    setRepositoryVerification,
+    setKeyRotationPlan,
+    setRetentionPlan,
+    setConflictPlan,
+    setSnapshotPackagePlan,
+    beginOperation,
+    finishOperation,
+  };
+});

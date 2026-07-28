@@ -72,7 +72,6 @@ internal static class ProductDataRootManager
 
         string selected = PromptForFirstRunRoot(defaultRoot);
         EnsureWritableRoot(selected);
-        MigrateLegacyDataRoot(selected);
         WritePreference(selected);
         return selected;
     }
@@ -288,58 +287,6 @@ internal static class ProductDataRootManager
         }
     }
 
-    private static void MigrateLegacyDataRoot(string targetRoot)
-    {
-        string legacyRoot = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "VibeTable");
-        if (!Directory.Exists(legacyRoot)
-            || Directory.EnumerateFileSystemEntries(legacyRoot).All(
-                path => string.Equals(
-                    Path.GetFileName(path),
-                    "desktop",
-                    StringComparison.OrdinalIgnoreCase)))
-        {
-            return;
-        }
-
-        string stage = StagePath(targetRoot);
-        Directory.CreateDirectory(stage);
-        try
-        {
-            CopyContentsIfPresent(Path.Combine(legacyRoot, "data"), stage);
-            CopyDirectoryIfPresent(
-                Path.Combine(legacyRoot, "state"),
-                Path.Combine(stage, "state"));
-            CopyDirectoryIfPresent(
-                Path.Combine(legacyRoot, "backups"),
-                Path.Combine(stage, "backups"));
-            CopyDirectoryIfPresent(
-                Path.Combine(legacyRoot, "webview2-udd"),
-                Path.Combine(stage, "webview2-user-data"));
-
-            string compatibilityRoot = Path.Combine(stage, "VibeTable");
-            CopyDirectoryIfPresent(
-                Path.Combine(legacyRoot, "workspaces"),
-                Path.Combine(compatibilityRoot, "workspaces"));
-            CopyFileIfPresent(
-                Path.Combine(legacyRoot, "workspace-mounts.json"),
-                Path.Combine(compatibilityRoot, "workspace-mounts.json"));
-
-            if (!Directory.EnumerateFileSystemEntries(stage).Any())
-            {
-                Directory.Delete(stage);
-                return;
-            }
-            ActivateStage(stage, targetRoot, legacyRoot);
-        }
-        catch
-        {
-            TryDeleteDirectory(stage);
-            throw;
-        }
-    }
-
     internal static void MigrateDirectoryTransactional(
         string sourceRoot,
         string targetRoot)
@@ -390,38 +337,6 @@ internal static class ProductDataRootManager
             Directory.Delete(target);
         }
         Directory.Move(stage, target);
-    }
-
-    private static void CopyContentsIfPresent(string source, string destination)
-    {
-        if (!Directory.Exists(source)) return;
-        Directory.CreateDirectory(destination);
-        foreach (string directory in Directory.GetDirectories(source))
-        {
-            CopyDirectory(
-                directory,
-                Path.Combine(destination, Path.GetFileName(directory)));
-        }
-        foreach (string file in Directory.GetFiles(source))
-        {
-            CopyFile(file, Path.Combine(destination, Path.GetFileName(file)));
-        }
-    }
-
-    private static void CopyDirectoryIfPresent(string source, string destination)
-    {
-        if (Directory.Exists(source))
-        {
-            CopyDirectory(source, destination);
-        }
-    }
-
-    private static void CopyFileIfPresent(string source, string destination)
-    {
-        if (File.Exists(source))
-        {
-            CopyFile(source, destination);
-        }
     }
 
     private static void CopyDirectory(string source, string destination)

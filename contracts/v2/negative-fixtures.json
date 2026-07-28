@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "workspace-manifest-top-level-unknown",
+      "fixture": "workspace-manifest.json",
+      "operation": "add",
+      "path": ["unexpected"],
+      "value": true,
+      "expected": "reject"
+    },
+    {
+      "name": "workspace-manifest-required-field-missing",
+      "fixture": "workspace-manifest.json",
+      "operation": "remove",
+      "path": ["formatVersion"],
+      "value": null,
+      "expected": "reject"
+    },
+    {
+      "name": "workspace-manifest-enum-invalid",
+      "fixture": "workspace-manifest.json",
+      "operation": "replace",
+      "path": ["storageMode"],
+      "value": "remote",
+      "expected": "reject"
+    },
+    {
+      "name": "workspace-event-nested-wire-unknown",
+      "fixture": "workspace-event.json",
+      "operation": "add",
+      "path": ["wire", "unexpected"],
+      "value": true,
+      "expected": "reject"
+    },
+    {
+      "name": "workspace-manifest-trailing-json",
+      "fixture": "workspace-manifest.json",
+      "operation": "appendRaw",
+      "path": [],
+      "value": " {}",
+      "expected": "reject"
+    }
+  ]
+}

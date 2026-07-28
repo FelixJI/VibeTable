@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import hashlib
 import json
 import os
 import queue
@@ -22,14 +23,19 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PUBLISH_ROOT = REPO_ROOT / "dist" / "VibeTable.Next"
 SIDECAR_NAME = "vibetable-pb.exe" if os.name == "nt" else "vibetable-pb"
 SESSION_HEADER = "X-VibeTable-Session"
+WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
+CLAIM_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+SESSION_EPOCH = 7
+FENCE_EPOCH = 3
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
@@ -135,9 +141,16 @@ class Response:
 
 
 class Sidecar:
-    def __init__(self, binary: Path, data_dir: Path) -> None:
+    def __init__(
+        self,
+        binary: Path,
+        data_dir: Path,
+        *,
+        workspace_identity: dict[str, str] | None = None,
+    ) -> None:
         self.binary = binary
         self.data_dir = data_dir
+        self.workspace_identity = workspace_identity
         self.secret = uuid.uuid4().hex + uuid.uuid4().hex
         self.process: subprocess.Popen[str] | None = None
         self.address = ""
@@ -147,6 +160,8 @@ class Sidecar:
         environment = os.environ.copy()
         environment["VIBETABLE_SIDECAR_SESSION_SECRET"] = self.secret
         environment["VIBETABLE_SIDECAR_DATA_DIR"] = str(self.data_dir)
+        if self.workspace_identity is not None:
+            environment.update(self.workspace_identity)
         self.process = subprocess.Popen(
             [str(self.binary)],
             cwd=self.binary.parent,
@@ -195,10 +210,12 @@ class Sidecar:
         json_body: dict[str, Any] | None = None,
         body: bytes | None = None,
         content_type: str | None = None,
+        request_headers: dict[str, str] | None = None,
         expected: int = 200,
         timeout: float = 20,
     ) -> Response:
         headers = {SESSION_HEADER: self.secret}
+        headers.update(request_headers or {})
         if json_body is not None:
             body = json.dumps(json_body, separators=(",", ":")).encode()
             content_type = "application/json"
@@ -276,6 +293,262 @@ class Sidecar:
             process.stderr.close()
         self.process = None
         self.address = ""
+
+
+def _create_v2_workspace(root: Path) -> Path:
+    metadata = root / ".vibetable"
+    for name in (
+        "data",
+        "topology",
+        "objects",
+        "audit",
+        "snapshots",
+        "coordination",
+        "quarantine",
+        "temp",
+    ):
+        (metadata / name).mkdir(parents=True)
+    manifest = {
+        "contractVersion": "2.0",
+        "formatVersion": 1,
+        "workspaceId": WORKSPACE_ID,
+        "displayName": "Packaged sidecar v2 matrix",
+        "createdAt": "2026-07-28T08:00:00Z",
+        "storageMode": "direct",
+        "encryptionMode": "convenient",
+        "repositoryFormat": "kopia-v3",
+        "topologySchemaVersion": 1,
+        "businessSchemaVersion": 1,
+        "importedFromWorkspaceId": None,
+        "sourceSnapshotId": None,
+    }
+    (metadata / "workspace.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return metadata / "data"
+
+
+def _workspace_v2_request(
+    sequence: int,
+    method: str,
+    params: dict[str, Any],
+    *,
+    operation_id: str | None = None,
+) -> dict[str, Any]:
+    operation_id = operation_id or str(uuid.uuid4())
+    return {
+        "jsonrpc": "2.0",
+        "id": f"release-matrix-v2-{sequence}",
+        "method": method,
+        "wire": {
+            "scope": "workspace",
+            "workspaceId": WORKSPACE_ID,
+            "sessionEpoch": SESSION_EPOCH,
+            "operationId": operation_id,
+            "sequence": sequence,
+        },
+        "params": params,
+    }
+
+
+def _path_grant_header(
+    grant_id: str,
+    method: str,
+    operation_id: str,
+    purpose: str,
+    path: Path,
+) -> dict[str, str]:
+    envelope = {
+        "grantId": grant_id,
+        "method": method,
+        "operationId": operation_id,
+        "purpose": purpose,
+        "path": str(path.resolve()),
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(envelope, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    return {"X-VibeTable-Path-Grant": encoded.rstrip("=")}
+
+
+def _assert_snapshot_package(
+    path: Path,
+    *,
+    required_entries: set[str] | None = None,
+) -> dict[str, Any]:
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist()
+        names = {item.filename for item in infos}
+        assert len(names) == len(infos), archive.namelist()
+        for item in infos:
+            archive_path = PurePosixPath(item.filename)
+            assert not archive_path.is_absolute()
+            assert ".." not in archive_path.parts
+            assert "\\" not in item.filename
+            assert ((item.external_attr >> 16) & 0o170000) != 0o120000
+        required = {"manifest.json"} | (required_entries or set())
+        assert required <= names, sorted(names)
+        manifest = json.loads(archive.read("manifest.json"))
+        metadata = manifest["metadata"]
+        assert metadata["formatVersion"] == 2
+        assert metadata["workspaceId"]
+        assert metadata["snapshotId"]
+        entries = manifest["entries"]
+        assert set(entries) == names - {"manifest.json"}
+        for name, expected in entries.items():
+            assert hashlib.sha256(archive.read(name)).hexdigest() == expected
+        return manifest
+
+
+def _run_workspace_v2_smoke(
+    binary: Path,
+    workspace_root: Path,
+    package_root: Path,
+) -> dict[str, str]:
+    build_info_result = subprocess.run(
+        [str(binary), "--build-info"],
+        cwd=binary.parent,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    build_info = json.loads(build_info_result.stdout)
+    assert build_info["protocolV2Version"] == "2.0"
+    assert build_info["workspaceFormat"] == "1"
+    assert build_info["repositoryFormat"] == "kopia-v3"
+    assert build_info["snapshotFormat"] == "2"
+    assert build_info["packageFormat"] == "2"
+    assert build_info["kopiaVersion"]
+    assert build_info["ageVersion"]
+
+    data_dir = _create_v2_workspace(workspace_root)
+    sidecar = Sidecar(
+        binary,
+        data_dir,
+        workspace_identity={
+            "VIBETABLE_WORKSPACE_ID": WORKSPACE_ID,
+            "VIBETABLE_WORKSPACE_SESSION_EPOCH": str(SESSION_EPOCH),
+            "VIBETABLE_WORKSPACE_FENCE_EPOCH": str(FENCE_EPOCH),
+            "VIBETABLE_WORKSPACE_CLAIM_ID": CLAIM_ID,
+        },
+    )
+    try:
+        sidecar.start()
+        capabilities = sidecar.request(
+            "GET",
+            "/api/vibetable/v2/capabilities",
+        ).json()
+        assert capabilities["contractVersion"] == "2.0"
+        assert capabilities["workspaceId"] == WORKSPACE_ID
+        expected_methods = {
+            "snapshot.request",
+            "snapshot.list",
+            "snapshot.inspect",
+            "snapshot.export",
+            "snapshot.inspectPackage",
+            "snapshot.import",
+            "retention.get",
+            "retention.update",
+            "fileHistory.readTree",
+        }
+        assert expected_methods <= set(capabilities["rpcMethods"])
+        registrations = {item["method"]: item["scope"] for item in capabilities["registrations"]}
+        assert registrations["snapshot.export"] == "workspace"
+        assert registrations["snapshot.inspectPackage"] == "global"
+        assert registrations["snapshot.import"] == "global"
+
+        rejected = sidecar.request(
+            "POST",
+            "/api/vibetable/v1/history/restore-apply",
+            json_body={},
+            expected=423,
+        ).json()
+        assert rejected["code"] == "workspace.v1_write_disabled"
+
+        captured = sidecar.request(
+            "POST",
+            "/api/vibetable/v2/rpc",
+            json_body=_workspace_v2_request(
+                1,
+                "snapshot.request",
+                {"trigger": "manual", "urgency": "foreground"},
+            ),
+        ).json()
+        assert "error" not in captured, captured
+        assert captured["result"]["state"] == "ready"
+
+        listed = sidecar.request(
+            "POST",
+            "/api/vibetable/v2/rpc",
+            json_body=_workspace_v2_request(
+                2,
+                "snapshot.list",
+                {"cursor": None, "limit": 50},
+            ),
+        ).json()
+        assert "error" not in listed, listed
+        snapshots = listed["result"]["snapshots"]
+        assert len(snapshots) == 1, snapshots
+        snapshot_id = snapshots[0]["snapshotId"]
+
+        exported_path = workspace_root / "release-matrix.vtsnapshot"
+        operation_id = str(uuid.uuid4())
+        grant_id = "host-path-grant://" + str(uuid.uuid4())
+        exported = sidecar.request(
+            "POST",
+            "/api/vibetable/v2/rpc",
+            json_body=_workspace_v2_request(
+                3,
+                "snapshot.export",
+                {
+                    "snapshotId": snapshot_id,
+                    "pathGrant": grant_id,
+                    "encryption": "none",
+                    "recipients": [],
+                    "credential": None,
+                },
+                operation_id=operation_id,
+            ),
+            request_headers=_path_grant_header(
+                grant_id,
+                "snapshot.export",
+                operation_id,
+                "snapshot-export",
+                exported_path,
+            ),
+        ).json()
+        assert "error" not in exported, exported
+        exported_digest = "sha256:" + hashlib.sha256(exported_path.read_bytes()).hexdigest()
+        assert exported["result"]["sha256"] == exported_digest
+        exported_manifest = _assert_snapshot_package(
+            exported_path,
+            required_entries={
+                "snapshot/catalog.json",
+                "snapshot/manifest.json",
+                "snapshot/seal.json",
+                "roots/topology-head.json",
+                "roots/file-state-head.json",
+            },
+        )
+        assert exported_manifest["metadata"]["workspaceId"] == WORKSPACE_ID
+        assert exported_manifest["metadata"]["snapshotId"] == snapshot_id
+
+        fixture_path = (
+            package_root / "contracts" / "v2" / "fixtures" / "snapshot-package-v2.vtsnapshot"
+        )
+        assert fixture_path.is_file(), fixture_path
+        fixture_manifest = _assert_snapshot_package(fixture_path)
+        assert fixture_manifest["metadata"]["formatVersion"] == 2
+        return {
+            "workspace-v2-build-info": "passed",
+            "workspace-v2-capabilities": "passed",
+            "workspace-v2-legacy-write-rejection": "passed",
+            "workspace-v2-snapshot-package": "passed",
+        }
+    finally:
+        sidecar.stop()
 
 
 def _page(sidecar: Sidecar, table_id: str) -> dict[str, Any]:
@@ -725,37 +998,6 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
         assert _page(sidecar, "matrix_orders")["rows"][0]["title"] == "updated"
         coverage["process-restart"] = "passed"
 
-        backup = sidecar.request(
-            "POST",
-            "/api/vibetable/v1/backups",
-            json_body={"name": "release_matrix.zip"},
-            expected=201,
-        ).json()
-        assert backup["backup"]["name"] == "release_matrix.zip"
-        listed = sidecar.request("GET", "/api/vibetable/v1/backups").json()
-        assert any(item["name"] == "release_matrix.zip" for item in listed["backups"])
-        _apply(
-            sidecar,
-            "matrix_orders",
-            orders["schemaRevision"],
-            "after-backup",
-            [{"kind": "update", "recordId": order_id, "values": {"title": "after backup"}}],
-        )
-        sidecar.request(
-            "POST",
-            "/api/vibetable/v1/backups/restore",
-            json_body={"name": "release_matrix.zip"},
-            expected=202,
-        )
-        process = sidecar.process
-        assert process is not None
-        assert process.wait(timeout=20) == 0
-        sidecar.process = None
-        sidecar.address = ""
-        sidecar.start()
-        assert _page(sidecar, "matrix_orders")["rows"][0]["title"] == "updated"
-        coverage["backup+restore"] = "passed"
-
         _apply(
             sidecar,
             "matrix_orders",
@@ -765,6 +1007,16 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
         )
         assert _page(sidecar, "matrix_orders")["totalRows"] == 0
         coverage["record-delete"] = "passed"
+        sidecar.stop()
+        workspace_root = data_dir.parent / f"{data_dir.name}-workspace-v2"
+        assert not workspace_root.exists(), workspace_root
+        coverage.update(
+            _run_workspace_v2_smoke(
+                binary,
+                workspace_root,
+                binary.parent.parent,
+            )
+        )
         return coverage
     finally:
         sidecar.stop()
@@ -811,8 +1063,12 @@ def main(argv: list[str] | None = None) -> int:
         package_root = args.package_root.resolve()
     data_dir = args.data_dir
     if data_dir is None:
-        data_dir = REPO_ROOT / "build" / "qa" / ("packaged-sidecar-matrix-" + uuid.uuid4().hex)
+        run_root = REPO_ROOT / "build" / "qa" / ("packaged-sidecar-matrix-" + uuid.uuid4().hex)
+        assert not run_root.exists(), f"matrix requires a fresh run root: {run_root}"
+        data_dir = run_root / "data"
     assert not data_dir.exists(), f"matrix requires a fresh data directory: {data_dir}"
+    audit_dir = data_dir.parent / "audit"
+    assert not audit_dir.exists(), f"matrix requires a fresh audit directory: {audit_dir}"
     data_dir.mkdir(parents=True)
     binary = package_root / "sidecar" / SIDECAR_NAME
     coverage = run_matrix(binary, data_dir)

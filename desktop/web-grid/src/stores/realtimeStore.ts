@@ -64,6 +64,15 @@ export const useRealtimeStore = defineStore("realtime", () => {
     reconcileError.value = null;
   }
 
+  function reset(): void {
+    latestTask.value = null;
+    tasksById.value = {};
+    receiptOrderByTask.value = {};
+    nextReceiptOrder = 0;
+    reconcileError.value = null;
+    lastInvalidation.value = null;
+  }
+
   return {
     latestTask,
     tasksById,
@@ -75,5 +84,6 @@ export const useRealtimeStore = defineStore("realtime", () => {
     markInvalidated,
     failReconcile,
     clearReconcileError,
+    reset,
   };
 });

@@ -1,0 +1,13 @@
+{
+  "contractVersion": "2.0",
+  "snapshotId": "77777777-7777-4777-8777-777777777777",
+  "state": "ready",
+  "pinned": true,
+  "retentionReasons": ["manual", "pinned"],
+  "integrity": "verified",
+  "syncState": "localOnly",
+  "logicalSize": 1048576,
+  "physicalSize": 262144,
+  "note": "月末确认",
+  "catalogRevision": 3
+}

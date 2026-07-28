@@ -1,0 +1,25 @@
+{
+  "contractVersion": "2.0",
+  "topic": "workspace.session.changed",
+  "wire": {
+    "scope": "workspace",
+    "workspaceId": "11111111-1111-4111-8111-111111111111",
+    "sessionEpoch": 7,
+    "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "sequence": 12
+  },
+  "payloadModel": "WorkspaceSessionChangedEvent",
+  "payloadSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["state", "phase"],
+    "properties": {
+      "state": {"type": "string"},
+      "phase": {"type": "string"}
+    }
+  },
+  "payload": {
+    "state": "openedWritable",
+    "phase": "idle"
+  }
+}
