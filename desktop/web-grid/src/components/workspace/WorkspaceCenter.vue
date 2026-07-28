@@ -51,6 +51,8 @@ const flowTrigger = ref<HTMLElement | null>(null);
 const displayName = ref("");
 const locationPolicy = ref<"managedDefault" | "other">("managedDefault");
 const storageMode = ref<"direct" | "mirrored">("direct");
+const mirroredCreationAvailable = computed(() =>
+  locationPolicy.value === "other" && mirroredCreationEnabled.value);
 const encryptionMode = ref<"none" | "convenient" | "protected">("convenient");
 const convenientPasswordCopied = ref(false);
 const deleteWorkspaceId = ref<string | null>(null);
@@ -123,16 +125,23 @@ function confirmFlow(): void {
   if (flow.value === "create") {
     const name = displayName.value.trim();
     if (!name) return;
+    const topology = locationPolicy.value === "managedDefault"
+      ? {
+          locationPolicy: "managedDefault" as const,
+          selectedRootGrant: null,
+          storageMode: "direct" as const,
+        }
+      : {
+          locationPolicy: "other" as const,
+          selectedRootGrant: HOST_WORKSPACE_ROOT_GRANT,
+          storageMode: storageMode.value,
+        };
     emit("action", {
       method: "workspace.create",
       params: {
         displayName: name,
-        locationPolicy: locationPolicy.value,
-        selectedRootGrant: locationPolicy.value === "other"
-          ? HOST_WORKSPACE_ROOT_GRANT
-          : null,
-        storageMode: storageMode.value,
         encryptionMode: encryptionMode.value,
+        ...topology,
       },
     });
   } else if (flow.value === "connect") {
@@ -213,6 +222,9 @@ function applyPackageImport(): void {
 
 watch(deletePlan, (plan) => {
   if (plan) deleteConfirmation.value = "";
+});
+watch(locationPolicy, (policy) => {
+  if (policy === "managedDefault") storageMode.value = "direct";
 });
 watch(
   () => protection.snapshotPackagePlan,
@@ -430,12 +442,14 @@ watch(
               <strong>{{ t("workspaceV2.storage.direct") }}</strong>
               <small>{{ t("workspaceV2.center.directHint") }}</small>
             </NRadioButton>
-            <NRadioButton value="mirrored" :disabled="!mirroredCreationEnabled">
+            <NRadioButton value="mirrored" :disabled="!mirroredCreationAvailable">
               <strong>{{ t("workspaceV2.storage.mirrored") }}</strong>
               <small>
-                {{ mirroredCreationEnabled
-                  ? t("workspaceV2.center.mirroredHint")
-                  : t("workspaceV2.center.mirroredUnavailable") }}
+                {{ locationPolicy === "managedDefault"
+                  ? t("workspaceV2.center.mirroredManagedUnavailable")
+                  : mirroredCreationEnabled
+                    ? t("workspaceV2.center.mirroredHint")
+                    : t("workspaceV2.center.mirroredUnavailable") }}
               </small>
             </NRadioButton>
           </NRadioGroup>

@@ -458,10 +458,18 @@ func (applier *ConflictApplier) CommitWith(
 		if err := validatePaths(next); err != nil {
 			return err
 		}
+		for _, document := range next {
+			if err := validateDocument(document); err != nil {
+				return err
+			}
+		}
 		payload := rootPayload{
 			FormatVersion: rootFormatVersion,
 			WorkspaceID:   intent.Token.WorkspaceID,
 			Documents:     sortedDocuments(next),
+		}
+		if err := validateRootResourceLimits(payload); err != nil {
+			return err
 		}
 		raw, err := json.Marshal(payload)
 		if err != nil {

@@ -765,7 +765,6 @@ func installReplicaRecovery(
 			_ = catalog.Close()
 			return err
 		}
-		recovered.Objects = allRoots
 		recovered.RootPinID = pin.PinID
 		recovered.CatalogSessionEpoch = options.SessionEpoch
 		recovered.CatalogFenceEpoch = options.FenceEpoch

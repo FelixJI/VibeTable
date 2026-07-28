@@ -148,7 +148,7 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
                 "other",
             ),
             "selectedRootGrant": nullable_string(),
-            "storageMode": "direct",
+            "storageMode": enum_string("direct", "direct", "mirrored"),
             "encryptionMode": "convenient",
         },
         {"workspaceId": WORKSPACE_ID, "status": "created"},

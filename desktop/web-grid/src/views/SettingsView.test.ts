@@ -25,7 +25,7 @@ describe("SettingsView", () => {
         return {
           currentDirectory: "C:\\VibeTable",
           programDirectory: "C:\\VibeTable",
-          dataDirectory: "C:\\VibeTable\\VibeTableData",
+          dataDirectory: "C:\\VibeTable\\shell",
           operatingSystem: "Windows 11",
           programVersion: "0.1.0",
           dotnetVersion: "10.0.0",

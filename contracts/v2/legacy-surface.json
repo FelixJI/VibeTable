@@ -20,6 +20,10 @@
     "desktop/src/VibeTable.Desktop/Services/DocumentWorkspaceHostService.cs",
     "desktop/src/VibeTable.Desktop/Services/IDocumentWorkspaceRpcGateway.cs",
     "desktop/src/VibeTable.Desktop/Services/JsonRpcDocumentWorkspaceGateway.cs",
+    "desktop/src/VibeTable.Desktop/Services/ProductDataRootManager.cs",
+    "desktop/src/VibeTable.Infrastructure/Workspace/WorkspaceMountStore.cs",
+    "desktop/tests/VibeTable.Desktop.Tests/ProductDataRootManagerTests.cs",
+    "desktop/tests/VibeTable.Infrastructure.Tests/Workspace/WorkspaceMountStoreTests.cs",
     "desktop/web-grid/src/contracts/backupContracts.ts",
     "desktop/web-grid/src/services/backupService.ts",
     "desktop/web-grid/src/services/backupService.test.ts",
@@ -92,13 +96,6 @@
       "path": "desktop/src/VibeTable.Infrastructure/LaunchPaths.cs",
       "literals": [
         "ResolveBackupRoot"
-      ]
-    },
-    {
-      "path": "desktop/src/VibeTable.Desktop/Services/ProductDataRootManager.cs",
-      "literals": [
-        "MigrateLegacyDataRoot",
-        "Path.Combine(legacyRoot, \"backups\")"
       ]
     },
     {
@@ -199,6 +196,16 @@
       "pointer": "/components/sidecar",
       "members": [
         "legacyProductDataContractVersion"
+      ]
+    },
+    {
+      "path": "desktop/publish-layout.json",
+      "pointer": "/data",
+      "members": [
+        "rootPolicy",
+        "defaultBase",
+        "fallbackBase",
+        "relativePath"
       ]
     }
   ],

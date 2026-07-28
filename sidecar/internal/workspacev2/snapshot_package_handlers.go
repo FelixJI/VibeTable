@@ -5,13 +5,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -97,11 +96,19 @@ func (runtime *Runtime) exportSnapshot(
 		return nil, err
 	}
 	token, _ := runtime.coordinator.Current()
+	reachabilityRoots, err := snapshot.ReachabilityObjectIDs(
+		ctx,
+		runtime.repository,
+		record,
+	)
+	if err != nil {
+		return nil, err
+	}
 	exportPinExpiry := time.Now().UTC().Add(2 * time.Hour)
 	exportPin, err := runtime.repository.Pin(
 		ctx,
 		token.Authority(),
-		record.Objects,
+		reachabilityRoots,
 		"snapshot-export:"+wire.OperationID,
 		&exportPinExpiry,
 	)
@@ -172,6 +179,9 @@ func (runtime *Runtime) exportSnapshot(
 	outputInfo, err := os.Stat(outputPath)
 	if err != nil {
 		return nil, err
+	}
+	if outputInfo.Size() > maxSnapshotPackageContainer {
+		return nil, snapshotpkg.ErrResourceLimit
 	}
 	contentHash := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
 	result := map[string]any{
@@ -312,17 +322,21 @@ func (runtime *Runtime) inspectSnapshotPackage(
 	if err != nil {
 		return nil, err
 	}
-	sourceHash, _, err := hashRestoreFile(source)
+	openedSource, err := openSnapshotPackageSource(source)
 	if err != nil {
 		return nil, err
 	}
+	defer openedSource.Close()
+	sourceBinding := openedSource.Binding()
 	planID := uuid.NewString()
 	expiresAt := time.Now().UTC().Add(10 * time.Minute)
 	plan := snapshotImportPlan{
-		PlanID:     planID,
-		SourcePath: source,
-		SourceHash: sourceHash,
-		ExpiresAt:  expiresAt.Format(time.RFC3339Nano),
+		PlanID:         planID,
+		SourcePath:     source,
+		SourceHash:     sourceBinding.Hash,
+		SourceSize:     sourceBinding.Size,
+		SourceIdentity: sourceBinding.Identity,
+		ExpiresAt:      expiresAt.Format(time.RFC3339Nano),
 	}
 	persistPlan := func(result any) error {
 		if operation, dispatched :=
@@ -342,11 +356,15 @@ func (runtime *Runtime) inspectSnapshotPackage(
 		}
 		return runtime.state.putSnapshotImportPlan(ctx, plan)
 	}
-	prepared, encrypted, err := prepareSnapshotPackageSource(
-		source, credentialPointer,
+	prepared, err := openedSource.prepare(
+		credentialPointer,
+		maxSnapshotWorkingSet,
 	)
 	if err != nil {
-		if encrypted && credentialPointer == nil {
+		if openedSource.Encrypted() && credentialPointer == nil {
+			if unchangedErr := openedSource.VerifyUnchanged(); unchangedErr != nil {
+				return nil, unchangedErr
+			}
 			result := map[string]any{
 				"planId":           planID,
 				"trusted":          false,
@@ -374,13 +392,16 @@ func (runtime *Runtime) inspectSnapshotPackage(
 	if err != nil {
 		return nil, err
 	}
+	if err := openedSource.VerifyUnchanged(); err != nil {
+		return nil, err
+	}
 	result := map[string]any{
 		"planId":           planID,
 		"trusted":          inspection.TrustedForOriginalWorkspace,
 		"workspaceId":      inspection.Manifest.Metadata.WorkspaceID,
 		"sourceSnapshotId": inspection.Manifest.Metadata.SnapshotID,
 		"snapshotCount":    1,
-		"encrypted":        encrypted,
+		"encrypted":        openedSource.Encrypted(),
 		"verified":         true,
 		"expiresAt":        expiresAt.Format(time.RFC3339),
 	}
@@ -447,16 +468,29 @@ func (runtime *Runtime) importSnapshotPackage(
 		filepath.Clean(plan.SourcePath) != plan.SourcePath {
 		return nil, errors.New("snapshot.import_plan_corrupt")
 	}
-	sourceHash, _, err := hashRestoreFile(plan.SourcePath)
-	if err != nil || sourceHash != plan.SourceHash {
+	if plan.SourceSize <= 0 ||
+		strings.TrimSpace(plan.SourceHash) == "" ||
+		strings.TrimSpace(plan.SourceIdentity) == "" {
+		return nil, errors.New("snapshot.import_plan_corrupt")
+	}
+	openedSource, err := openSnapshotPackageSource(plan.SourcePath)
+	if err != nil {
 		return nil, errors.Join(
 			errors.New("snapshot.import_plan_stale"),
 			err,
 		)
 	}
-	sourcePath := plan.SourcePath
-	prepared, _, err := prepareSnapshotPackageSource(
-		sourcePath, credentialPointer,
+	defer openedSource.Close()
+	if openedSource.Binding() != (snapshotPackageSourceBinding{
+		Hash:     plan.SourceHash,
+		Size:     plan.SourceSize,
+		Identity: plan.SourceIdentity,
+	}) {
+		return nil, errors.New("snapshot.import_plan_stale")
+	}
+	prepared, err := openedSource.prepare(
+		credentialPointer,
+		maxSnapshotWorkingSet,
 	)
 	if err != nil {
 		return nil, err
@@ -470,6 +504,18 @@ func (runtime *Runtime) importSnapshotPackage(
 	inspection, entries, err := inspectPreparedPackage(prepared, key, true)
 	if err != nil {
 		return nil, err
+	}
+	entriesOwned := true
+	defer func() {
+		if entriesOwned {
+			clearSnapshotPackageEntries(entries)
+		}
+	}()
+	if err := openedSource.VerifyUnchanged(); err != nil {
+		return nil, errors.Join(
+			errors.New("snapshot.import_plan_stale"),
+			err,
+		)
 	}
 	sourceWorkspaceID := inspection.Manifest.Metadata.WorkspaceID
 	sourceSnapshotID := inspection.Manifest.Metadata.SnapshotID
@@ -492,6 +538,16 @@ func (runtime *Runtime) importSnapshotPackage(
 	}
 	source, err := decodeImportedSnapshot(ctx, entries, inspection)
 	if err != nil {
+		return nil, err
+	}
+	source.packageEntries = entries
+	entriesOwned = false
+	entries = nil
+	defer source.clearSensitive()
+	if err := errors.Join(
+		prepared.Close(),
+		openedSource.Close(),
+	); err != nil {
 		return nil, err
 	}
 	source.repository = runtime.repository
@@ -612,44 +668,61 @@ func (runtime *Runtime) snapshotPackageEntries(
 	if err != nil {
 		return nil, snapshot.Manifest{}, err
 	}
-	entries := map[string][]byte{
-		"snapshot/catalog.json":  append([]byte(nil), mustJSON(record)...),
-		"snapshot/manifest.json": append([]byte(nil), bundle.Manifest.Payload...),
-		"snapshot/seal.json":     append([]byte(nil), bundle.Seal.Payload...),
-		"roots/topology-head.json": append(
-			[]byte(nil), bundle.TopologyHead.Payload...,
-		),
-		"roots/file-state-head.json": append(
-			[]byte(nil), bundle.FileStateHead.Payload...,
-		),
-	}
+	entries := map[string][]byte{}
 	var total int64
-	for name, content := range bundle.Objects {
-		total += int64(len(content))
-		if total > maxSnapshotWorkingSet {
-			return nil, snapshot.Manifest{}, errors.New(
-				"snapshot.package_resource_limit",
-			)
+	addEntry := func(name string, content []byte) error {
+		// snapshotpkg.Export always adds manifest.json. Reserve that final
+		// entry so every package we emit is accepted by the same importer.
+		if len(entries) >= snapshotpkg.DefaultLimits().MaxEntries-1 {
+			return snapshotpkg.ErrResourceLimit
 		}
-		entries["objects/"+base64.RawURLEncoding.EncodeToString(
-			[]byte(name),
-		)] = content
+		if len(name) > snapshotpkg.DefaultLimits().MaxPathBytes {
+			return snapshotpkg.ErrResourceLimit
+		}
+		size := int64(len(content))
+		if size > maxSnapshotPackagePayloadBytes-total {
+			return snapshotpkg.ErrResourceLimit
+		}
+		total += size
+		entries[name] = content
+		return nil
+	}
+	for name, content := range map[string][]byte{
+		"snapshot/catalog.json":      mustJSON(record),
+		"snapshot/manifest.json":     bundle.Manifest.Payload,
+		"snapshot/seal.json":         bundle.Seal.Payload,
+		"roots/topology-head.json":   bundle.TopologyHead.Payload,
+		"roots/file-state-head.json": bundle.FileStateHead.Payload,
+	} {
+		if err := addEntry(name, append([]byte(nil), content...)); err != nil {
+			return nil, snapshot.Manifest{}, err
+		}
+	}
+	for name, content := range bundle.Objects {
+		if err := addEntry(
+			"objects/"+base64.RawURLEncoding.EncodeToString(
+				[]byte(name),
+			),
+			content,
+		); err != nil {
+			return nil, snapshot.Manifest{}, err
+		}
 	}
 	if bundle.HistoryRoot != nil {
-		entries["roots/filehistory-root.json"] = append(
-			[]byte(nil), bundle.HistoryRoot.Payload...,
-		)
+		if err := addEntry(
+			"roots/filehistory-root.json",
+			append([]byte(nil), bundle.HistoryRoot.Payload...),
+		); err != nil {
+			return nil, snapshot.Manifest{}, err
+		}
 	}
 	for id, content := range bundle.HistoryObjects {
-		total += int64(len(content))
-		if total > maxSnapshotWorkingSet {
-			return nil, snapshot.Manifest{}, errors.New(
-				"snapshot.package_resource_limit",
-			)
+		if err := addEntry(
+			historyObjectPackageEntry(id),
+			append([]byte(nil), content...),
+		); err != nil {
+			return nil, snapshot.Manifest{}, err
 		}
-		entries[historyObjectPackageEntry(id)] = append(
-			[]byte(nil), content...,
-		)
 	}
 	return entries, manifest, nil
 }
@@ -688,16 +761,39 @@ func inspectPreparedPackage(
 			"snapshot.package_invalid",
 		)
 	}
+	availablePayload := maxSnapshotWorkingSet -
+		prepared.workingSetBytes -
+		maxSnapshotPackageMetadata
+	if availablePayload <= 0 {
+		return snapshotpkg.Inspection{}, nil, snapshotpkg.ErrResourceLimit
+	}
+	payloadBudget := min(
+		availablePayload,
+		maxSnapshotPackagePayloadBytes,
+	)
+	limits := snapshotpkg.DefaultLimits()
+	limits.MaxUncompressedBytes = min(
+		limits.MaxUncompressedBytes,
+		payloadBudget+limits.MaxManifestBytes,
+	)
+	limits.MaxEntryBytes = min(limits.MaxEntryBytes, payloadBudget)
+	// Workspace packages have a strict 240 MiB decompressed payload cap, so a
+	// compression-ratio heuristic would only reject legitimate packages
+	// emitted by this exporter without improving the absolute memory bound.
+	limits.MaxCompressionRatio = math.MaxFloat64
 	inspection, err := snapshotpkg.Inspect(
 		prepared.ReaderAt(),
 		prepared.Size(),
-		snapshotpkg.DefaultLimits(),
+		limits,
 		key,
 	)
-	if err != nil || !readEntries {
-		if err != nil {
-			return inspection, nil, err
-		}
+	if err != nil {
+		return inspection, nil, err
+	}
+	if inspection.PayloadBytes > payloadBudget {
+		return snapshotpkg.Inspection{}, nil, snapshotpkg.ErrResourceLimit
+	}
+	if !readEntries {
 		if err := validatePackageCompatibility(
 			inspection.Manifest.Metadata,
 		); err != nil {
@@ -718,13 +814,22 @@ func inspectPreparedPackage(
 		return snapshotpkg.Inspection{}, nil, snapshotpkg.ErrInvalidPackage
 	}
 	entries := make(map[string][]byte, len(archive.File))
+	keepEntries := false
+	defer func() {
+		if keepEntries {
+			return
+		}
+		for _, raw := range entries {
+			clearBytes(raw)
+		}
+	}()
 	var total int64
 	for _, item := range archive.File {
 		if item.Name == "manifest.json" {
 			continue
 		}
 		total += int64(item.UncompressedSize64)
-		if total > maxSnapshotWorkingSet {
+		if total > payloadBudget {
 			return snapshotpkg.Inspection{}, nil,
 				snapshotpkg.ErrResourceLimit
 		}
@@ -733,18 +838,21 @@ func inspectPreparedPackage(
 			return snapshotpkg.Inspection{}, nil,
 				snapshotpkg.ErrInvalidPackage
 		}
-		raw, readErr := io.ReadAll(io.LimitReader(
-			reader,
-			int64(item.UncompressedSize64)+1,
-		))
+		raw := make([]byte, int(item.UncompressedSize64))
+		count, readErr := io.ReadFull(reader, raw)
+		var extra [1]byte
+		extraCount, tailErr := reader.Read(extra[:])
 		closeErr := reader.Close()
-		if readErr != nil || closeErr != nil ||
-			len(raw) != int(item.UncompressedSize64) {
+		if readErr != nil || count != len(raw) ||
+			extraCount != 0 || !errors.Is(tailErr, io.EOF) ||
+			closeErr != nil {
+			clearBytes(raw)
 			return snapshotpkg.Inspection{}, nil,
 				snapshotpkg.ErrInvalidPackage
 		}
 		entries[item.Name] = raw
 	}
+	keepEntries = true
 	return inspection, entries, nil
 }
 
@@ -792,21 +900,67 @@ func comparePackageVersion(left, right [3]uint64) int {
 }
 
 type importedSnapshotSource struct {
-	workspaceID       string
-	sourceWorkspaceID string
-	sourceSnapshotID  string
-	record            snapshot.Record
-	manifest          snapshot.Manifest
-	database          []byte
-	files             map[string][]byte
-	attachments       map[string][]byte
-	settings          []byte
-	auditPrefix       []byte
-	topologyPayload   []byte
-	filePayload       []byte
-	historyPayload    []byte
-	historyObjects    map[objectrepo.ObjectID][]byte
-	repository        objectrepo.Repository
+	workspaceID           string
+	sourceWorkspaceID     string
+	sourceSnapshotID      string
+	record                snapshot.Record
+	manifest              snapshot.Manifest
+	database              []byte
+	files                 map[string][]byte
+	attachments           map[string][]byte
+	settings              []byte
+	auditPrefix           []byte
+	topologyPayload       []byte
+	businessSchemaVersion uint64
+	filePayload           []byte
+	historyPayload        []byte
+	historyObjects        map[objectrepo.ObjectID][]byte
+	repository            objectrepo.Repository
+	packageEntries        map[string][]byte
+}
+
+func clearSnapshotPackageEntries(entries map[string][]byte) {
+	for _, raw := range entries {
+		clearBytes(raw)
+	}
+	clear(entries)
+}
+
+func (source *importedSnapshotSource) clearSensitive() {
+	if source == nil {
+		return
+	}
+	clearSnapshotPackageEntries(source.packageEntries)
+	for _, collection := range []map[string][]byte{
+		source.files,
+		source.attachments,
+	} {
+		clearSnapshotPackageEntries(collection)
+	}
+	for _, raw := range source.historyObjects {
+		clearBytes(raw)
+	}
+	clear(source.historyObjects)
+	for _, raw := range [][]byte{
+		source.database,
+		source.settings,
+		source.auditPrefix,
+		source.topologyPayload,
+		source.filePayload,
+		source.historyPayload,
+	} {
+		clearBytes(raw)
+	}
+	source.packageEntries = nil
+	source.database = nil
+	source.files = nil
+	source.attachments = nil
+	source.settings = nil
+	source.auditPrefix = nil
+	source.topologyPayload = nil
+	source.filePayload = nil
+	source.historyPayload = nil
+	source.historyObjects = nil
 }
 
 func decodeImportedSnapshot(
@@ -876,6 +1030,13 @@ func decodeImportedSnapshot(
 	if len(topologyPayload) == 0 || len(filePayload) == 0 {
 		return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
 	}
+	var topologyHead struct {
+		BusinessSchemaVersion uint64 `json:"businessSchemaVersion"`
+	}
+	if err := json.Unmarshal(topologyPayload, &topologyHead); err != nil ||
+		topologyHead.BusinessSchemaVersion == 0 {
+		return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
+	}
 	var topologyReference struct {
 		ManifestID objectrepo.ManifestID `json:"manifestId"`
 	}
@@ -905,8 +1066,15 @@ func decodeImportedSnapshot(
 		if len(historyPayload) == 0 {
 			return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
 		}
-		ids, err := snapshot.FileHistoryObjectIDs(historyPayload)
+		ids, err := snapshot.FileHistoryObjectIDs(
+			historyPayload,
+			record.WorkspaceID,
+		)
 		if err != nil {
+			if errors.Is(err, snapshot.ErrBundleResourceLimit) {
+				return importedSnapshotSource{},
+					snapshotpkg.ErrResourceLimit
+			}
 			return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
 		}
 		for _, id := range ids {
@@ -967,101 +1135,32 @@ func decodeImportedSnapshot(
 		HistoryRoot:    historyRecord,
 		HistoryObjects: historyObjects,
 	}
-	if err := snapshot.ValidateSnapshotBundleData(bundle); err != nil {
-		return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
-	}
-	if err := validateImportedSQLite(ctx, objects["database"]); err != nil {
+	if err := snapshot.ValidateSnapshotBundleData(ctx, bundle); err != nil {
+		if errors.Is(err, snapshot.ErrBundleResourceLimit) {
+			return importedSnapshotSource{}, snapshotpkg.ErrResourceLimit
+		}
+		if !errors.Is(err, snapshot.ErrBundleInvalid) {
+			return importedSnapshotSource{}, err
+		}
 		return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
 	}
 	return importedSnapshotSource{
-		workspaceID:       record.WorkspaceID,
-		sourceWorkspaceID: inspection.Manifest.Metadata.WorkspaceID,
-		sourceSnapshotID:  inspection.Manifest.Metadata.SnapshotID,
-		record:            record,
-		manifest:          manifest,
-		database: append(
-			[]byte(nil),
-			objects["database"]...,
-		),
-		files:           files,
-		attachments:     attachments,
-		settings:        append([]byte(nil), objects["workspace-settings"]...),
-		auditPrefix:     append([]byte(nil), objects["audit-prefix"]...),
-		topologyPayload: append([]byte(nil), topologyPayload...),
-		filePayload:     append([]byte(nil), filePayload...),
-		historyPayload:  append([]byte(nil), historyPayload...),
-		historyObjects:  cloneHistoryObjects(historyObjects),
+		workspaceID:           record.WorkspaceID,
+		sourceWorkspaceID:     inspection.Manifest.Metadata.WorkspaceID,
+		sourceSnapshotID:      inspection.Manifest.Metadata.SnapshotID,
+		record:                record,
+		manifest:              manifest,
+		database:              objects["database"],
+		files:                 files,
+		attachments:           attachments,
+		settings:              objects["workspace-settings"],
+		auditPrefix:           objects["audit-prefix"],
+		topologyPayload:       topologyPayload,
+		businessSchemaVersion: topologyHead.BusinessSchemaVersion,
+		filePayload:           filePayload,
+		historyPayload:        historyPayload,
+		historyObjects:        historyObjects,
 	}, nil
-}
-
-type sqliteDeserializer interface {
-	Deserialize([]byte) error
-}
-
-func validateImportedSQLite(ctx context.Context, raw []byte) error {
-	if len(raw) == 0 {
-		return snapshotpkg.ErrInvalidPackage
-	}
-	database, err := sql.Open("sqlite", "file::memory:")
-	if err != nil {
-		return err
-	}
-	defer database.Close()
-	deserializeConnection, err := database.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer deserializeConnection.Close()
-	if err := deserializeConnection.Raw(func(driverConnection any) error {
-		deserializer, ok := driverConnection.(sqliteDeserializer)
-		if !ok {
-			return errors.New("snapshot.sqlite_deserialize_unavailable")
-		}
-		return deserializer.Deserialize(raw)
-	}); err != nil {
-		return err
-	}
-	var quickCheck string
-	if err := deserializeConnection.QueryRowContext(
-		ctx, "PRAGMA quick_check",
-	).Scan(&quickCheck); err != nil || quickCheck != "ok" {
-		return fmt.Errorf(
-			"%w: sqlite quick_check=%q: %v",
-			snapshotpkg.ErrInvalidPackage,
-			quickCheck,
-			err,
-		)
-	}
-	foreignKeys, err := deserializeConnection.QueryContext(
-		ctx, "PRAGMA foreign_key_check",
-	)
-	if err != nil {
-		return err
-	}
-	defer foreignKeys.Close()
-	if foreignKeys.Next() {
-		return fmt.Errorf(
-			"%w: sqlite foreign_key_check failed",
-			snapshotpkg.ErrInvalidPackage,
-		)
-	}
-	if err := foreignKeys.Err(); err != nil {
-		return err
-	}
-	var collectionTable int
-	if err := deserializeConnection.QueryRowContext(
-		ctx,
-		`SELECT count(*) FROM sqlite_schema
-		 WHERE type = 'table' AND name = '_collections'`,
-	).Scan(&collectionTable); err != nil || collectionTable != 1 {
-		return fmt.Errorf(
-			"%w: PocketBase _collections table count=%d: %v",
-			snapshotpkg.ErrInvalidPackage,
-			collectionTable,
-			err,
-		)
-	}
-	return nil
 }
 
 func (source *importedSnapshotSource) Freeze(
@@ -1073,6 +1172,7 @@ func (source *importedSnapshotSource) Freeze(
 			errors.New("snapshot.import_repository_required")
 	}
 	filePayload := append([]byte(nil), source.filePayload...)
+	defer clearBytes(filePayload)
 	if len(source.historyPayload) != 0 {
 		objectIDs := make(
 			[]objectrepo.ObjectID, 0, len(source.historyObjects),
@@ -1092,6 +1192,11 @@ func (source *importedSnapshotSource) Freeze(
 				),
 			})
 		}
+		defer func() {
+			for index := range inputs {
+				clearBytes(inputs[index].Content)
+			}
+		}()
 		historyReceipt, err := source.repository.Commit(
 			ctx,
 			objectrepo.CommitRequest{
@@ -1160,21 +1265,22 @@ func (source *importedSnapshotSource) Freeze(
 			errors.New("snapshot.import_root_receipt_invalid")
 	}
 	return snapshot.BarrierView{
-			SchemaRevision:    source.record.SchemaRevision,
-			FileRevision:      source.record.FileRevision,
-			AuditRevision:     source.record.AuditRevision,
-			AuditAnchor:       source.manifest.AuditAnchor.ChainHash,
-			AuditEpoch:        source.manifest.AuditAnchor.Epoch,
-			AuditSequence:     source.manifest.AuditAnchor.Sequence,
-			Database:          append([]byte(nil), source.database...),
-			Files:             cloneFiles(source.files),
-			Attachments:       cloneFiles(source.attachments),
-			WorkspaceSettings: append([]byte(nil), source.settings...),
-			AuditPrefix:       append([]byte(nil), source.auditPrefix...),
-			CreatedByDevice:   intent.Token.ClaimID,
-			MinimumAppVersion: source.manifest.MinimumAppVersion,
-			SourceWorkspaceID: source.sourceWorkspaceID,
-			SourceSnapshotID:  source.sourceSnapshotID,
+			SchemaRevision:        source.record.SchemaRevision,
+			BusinessSchemaVersion: source.businessSchemaVersion,
+			FileRevision:          source.record.FileRevision,
+			AuditRevision:         source.record.AuditRevision,
+			AuditAnchor:           source.manifest.AuditAnchor.ChainHash,
+			AuditEpoch:            source.manifest.AuditAnchor.Epoch,
+			AuditSequence:         source.manifest.AuditAnchor.Sequence,
+			Database:              append([]byte(nil), source.database...),
+			Files:                 cloneFiles(source.files),
+			Attachments:           cloneFiles(source.attachments),
+			WorkspaceSettings:     append([]byte(nil), source.settings...),
+			AuditPrefix:           append([]byte(nil), source.auditPrefix...),
+			CreatedByDevice:       intent.Token.ClaimID,
+			MinimumAppVersion:     source.manifest.MinimumAppVersion,
+			SourceWorkspaceID:     source.sourceWorkspaceID,
+			SourceSnapshotID:      source.sourceSnapshotID,
 		},
 		writecoordinator.FrozenRoots{
 			DatabaseView: "import:" + digestBytes(source.database),

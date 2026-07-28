@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,10 +16,11 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/retention"
+	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
-func TestFileHistoryRetentionRootsPreserveFormalEffectiveForkAndRestoreSource(
+func TestFileHistoryRetentionRootsPreserveEntirePublishedRootClosure(
 	t *testing.T,
 ) {
 	t.Parallel()
@@ -76,6 +78,7 @@ func TestFileHistoryRetentionRootsPreserveFormalEffectiveForkAndRestoreSource(
 		"obj_branch",
 		"obj_effective",
 		"obj_formal",
+		"obj_parent",
 		"obj_restore_source",
 	}
 	if len(roots) != len(want) {
@@ -567,6 +570,302 @@ func TestProductionRetentionHandlersUseRepositoryInventoryAndCoordinator(
 	}
 }
 
+func TestRetainedSnapshotProtectsHistoryOnlyObjectsThroughMaintenance(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	root := createWorkspace(t, testWorkspaceID)
+	dataDir := filepath.Join(root, ".vibetable", "data")
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir:  dataDir,
+		HideStartBanner: true,
+	})
+	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	createAuditOutbox(t, app)
+	defer app.ResetBootstrapState()
+	ledger, err := auditledger.Open(
+		filepath.Join(root, ".vibetable", "audit"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledger.Close()
+	runtime, err := Open(ctx, Options{
+		App: app, DataDir: dataDir,
+		WorkspaceID: testWorkspaceID, SessionEpoch: 7,
+		FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close(ctx)
+	if runtime.retention.cancel != nil {
+		runtime.retention.cancel()
+		runtime.retention.wg.Wait()
+		runtime.retention.cancel = nil
+	}
+	token, _ := runtime.coordinator.Current()
+	documentID := "22222222-2222-4222-8222-222222222222"
+	save := func(
+		content string,
+		expected *string,
+	) filehistory.SaveResult {
+		t.Helper()
+		result, err := runtime.history.Save(
+			ctx,
+			filehistory.SaveRequest{
+				Token:                     token,
+				DocumentID:                documentID,
+				Path:                      "history-protected.txt",
+				ExpectedEffectiveRevision: expected,
+				Kind:                      filehistory.RevisionAutosave,
+				Content:                   []byte(content),
+				MimeType:                  "text/plain",
+				CreatedBy:                 "retention-test",
+				DeviceID:                  testClaimID,
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	first := save("history-only-before-snapshot", nil)
+	second := save(
+		"effective-at-snapshot",
+		&first.Revision.RevisionID,
+	)
+	record, created, err := runtime.snapshots.Capture(
+		ctx,
+		snapshot.CaptureRequest{
+			WorkspaceID: testWorkspaceID,
+			Authority:   token.Authority(),
+			Trigger:     snapshot.TriggerManual,
+		},
+	)
+	if err != nil || !created {
+		t.Fatalf("snapshot capture = %#v, %v, %v", record, created, err)
+	}
+	if err := snapshot.ValidateSnapshotBundle(
+		ctx,
+		runtime.repository,
+		record,
+	); err != nil {
+		t.Fatalf("fresh snapshot failed validation: %v", err)
+	}
+	historyOnly := first.Revision.ObjectID
+	if containsRetentionObjectID(record.Objects, historyOnly) {
+		t.Fatalf(
+			"fixture object unexpectedly remained a catalog root: %s",
+			historyOnly,
+		)
+	}
+	historyIDs, err := snapshot.HistoryObjectIDs(
+		ctx,
+		runtime.repository,
+		record,
+	)
+	if err != nil ||
+		!containsRetentionObjectID(historyIDs, historyOnly) {
+		t.Fatalf("snapshot history roots = %#v, %v", historyIDs, err)
+	}
+	assertPinContains := func(pinID string) {
+		t.Helper()
+		pins, err := runtime.repository.ListPins(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, pin := range pins {
+			if pin.PinID == pinID &&
+				containsRetentionObjectID(pin.Roots, historyOnly) {
+				return
+			}
+		}
+		t.Fatalf(
+			"snapshot pin %q omitted history object %s: %#v",
+			pinID,
+			historyOnly,
+			pins,
+		)
+	}
+	assertPinContains(record.RootPinID)
+	pinned := dispatch(
+		t,
+		runtime,
+		1,
+		"snapshot.update",
+		fmt.Sprintf(
+			`{"snapshotId":%q,"action":"pin",`+
+				`"expectedCatalogRevision":%d}`,
+			record.SnapshotID,
+			record.CatalogRevision,
+		),
+	)
+	if pinned.Error != nil {
+		t.Fatalf("snapshot.update pin = %#v", pinned.Error)
+	}
+	record, err = runtime.snapshotRecord(ctx, record.SnapshotID)
+	if err != nil || !record.Pinned {
+		t.Fatalf("pinned snapshot = %#v, %v", record, err)
+	}
+	assertPinContains(record.RootPinID)
+	// Simulate the end of the replacement reader pin. From this
+	// point onward, only the retained Snapshot graph may protect its closure.
+	token, _ = runtime.coordinator.Current()
+	if err := runtime.repository.ReleasePin(
+		ctx,
+		token.Authority(),
+		record.RootPinID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	third := save(
+		"effective-after-snapshot",
+		&second.Revision.RevisionID,
+	)
+	fourth := save(
+		"second-autosave-after-snapshot",
+		&third.Revision.RevisionID,
+	)
+	inventory, err := runtime.retention.source.Inventory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotRoot := record.ObjectMap["file-state-root"]
+	if !containsRetentionObjectID(
+		inventory.Nodes[snapshotRoot].Children,
+		historyOnly,
+	) {
+		t.Fatalf(
+			"snapshot retention graph omitted %s: %#v",
+			historyOnly,
+			inventory.Nodes[snapshotRoot],
+		)
+	}
+	for _, liveRoot := range []objectrepo.ObjectID{
+		third.Revision.ObjectID,
+		fourth.Revision.ObjectID,
+	} {
+		if !containsRetentionObjectID(inventory.Roots, liveRoot) {
+			t.Fatalf(
+				"live FileHistory root omitted revision %s: %#v",
+				liveRoot,
+				inventory.Roots,
+			)
+		}
+	}
+	update := dispatch(
+		t,
+		runtime,
+		2,
+		"retention.update",
+		`{"expectedRevision":1,"snapshotDays":1,"snapshotCount":1,`+
+			`"snapshotBuckets":[],"fileRevisionDays":1,`+
+			`"fileRevisionCount":1,"fileRevisionBuckets":[],`+
+			`"repositoryLimitBytes":null}`,
+	)
+	if update.Error != nil {
+		t.Fatalf("retention.update = %#v", update.Error)
+	}
+	token, _ = runtime.coordinator.Current()
+	garbageContent := []byte("maintenance-garbage")
+	garbageCommit, err := runtime.repository.Commit(
+		ctx,
+		objectrepo.CommitRequest{
+			Authority: token.Authority(),
+			Objects: []objectrepo.ObjectInput{{
+				Name:    "maintenance-garbage",
+				Content: garbageContent,
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	garbage := garbageCommit.Objects["maintenance-garbage"]
+	planned := dispatch(t, runtime, 3, "retention.plan", `{}`)
+	if planned.Error != nil {
+		t.Fatalf("retention.plan = %#v", planned.Error)
+	}
+	plan := planned.Result.(map[string]any)
+	if plan["reclaimableBytes"].(int64) != int64(len(garbageContent)) {
+		t.Fatalf(
+			"tightened policy reclaimed protected history: %#v",
+			plan,
+		)
+	}
+	applied := dispatch(
+		t,
+		runtime,
+		4,
+		"retention.apply",
+		`{"planId":"`+plan["planId"].(string)+`"}`,
+	)
+	if applied.Error != nil {
+		t.Fatalf("retention.apply = %#v", applied.Error)
+	}
+	retentionDB, err := sql.Open(
+		"sqlite",
+		filepath.Join(
+			root,
+			".vibetable",
+			"coordination",
+			"retention.db",
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := retentionDB.ExecContext(
+		ctx,
+		`UPDATE retention_tombstones SET grace_until = ?
+		  WHERE object_id = ?`,
+		time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano),
+		string(garbage),
+	); err != nil {
+		_ = retentionDB.Close()
+		t.Fatal(err)
+	}
+	if err := retentionDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	maintenance, err := runtime.retention.sweep(ctx)
+	if err != nil ||
+		maintenance.DeletedObjects != 1 ||
+		!maintenance.VerificationRun {
+		t.Fatalf("retention maintenance = %#v, %v", maintenance, err)
+	}
+	if err := snapshot.ValidateSnapshotBundle(
+		ctx,
+		runtime.repository,
+		record,
+	); err != nil {
+		t.Fatalf("old snapshot failed validation after cleanup: %v", err)
+	}
+	reader, err := runtime.repository.Open(ctx, historyOnly)
+	if err != nil {
+		t.Fatalf("history object missing after maintenance: %v", err)
+	}
+	raw, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if err := errors.Join(readErr, closeErr); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "history-only-before-snapshot" {
+		t.Fatalf("history object content = %q", raw)
+	}
+	if _, err := filehistory.Open(
+		ctx,
+		runtime.repository,
+		runtime.coordinator,
+		runtime.history.Root(),
+	); err != nil {
+		t.Fatalf("current FileHistory root failed to reopen: %v", err)
+	}
+}
+
 func retentionOperationID(sequence uint64) string {
 	return fmt.Sprintf("bbbbbbbb-bbbb-4bbb-8bbb-%012d", sequence)
 }
@@ -590,4 +889,16 @@ func retentionRequestJSON(
 
 func uint64PointerForRetentionTest(value uint64) *uint64 {
 	return &value
+}
+
+func containsRetentionObjectID(
+	values []objectrepo.ObjectID,
+	target objectrepo.ObjectID,
+) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

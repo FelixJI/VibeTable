@@ -125,10 +125,18 @@ func (runtime *Runtime) updateSnapshot(
 		expiry := time.Now().UTC().Add(24 * time.Hour)
 		pinExpiry = &expiry
 	}
+	reachabilityRoots, err := snapshot.ReachabilityObjectIDs(
+		ctx,
+		runtime.repository,
+		current,
+	)
+	if err != nil {
+		return nil, err
+	}
 	replacementPin, err := runtime.repository.Pin(
 		ctx,
 		token.Authority(),
-		current.Objects,
+		reachabilityRoots,
 		"snapshot:"+current.SnapshotID,
 		pinExpiry,
 	)

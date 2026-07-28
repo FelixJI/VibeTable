@@ -143,6 +143,8 @@ func openStateStore(path string) (*stateStore, error) {
 			plan_id TEXT PRIMARY KEY,
 			source_path TEXT NOT NULL,
 			source_hash TEXT NOT NULL,
+			source_size INTEGER NOT NULL,
+			source_identity TEXT NOT NULL,
 			expires_at TEXT NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS repository_key_rotation_plans (
@@ -182,6 +184,10 @@ func openStateStore(path string) (*stateStore, error) {
 		return nil, err
 	}
 	if err := ensureSnapshotRestoreDiffHashColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureSnapshotImportBindingColumns(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -520,10 +526,12 @@ func (store *stateStore) withOperationReceiptTransaction(
 }
 
 type snapshotImportPlan struct {
-	PlanID     string
-	SourcePath string
-	SourceHash string
-	ExpiresAt  string
+	PlanID         string
+	SourcePath     string
+	SourceHash     string
+	SourceSize     int64
+	SourceIdentity string
+	ExpiresAt      string
 }
 
 func (store *stateStore) putSnapshotImportPlan(
@@ -532,11 +540,14 @@ func (store *stateStore) putSnapshotImportPlan(
 ) error {
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO snapshot_import_plans (
-			plan_id, source_path, source_hash, expires_at
-		) VALUES (?, ?, ?, ?)`,
+			plan_id, source_path, source_hash, source_size,
+			source_identity, expires_at
+		) VALUES (?, ?, ?, ?, ?, ?)`,
 		plan.PlanID,
 		plan.SourcePath,
 		plan.SourceHash,
+		plan.SourceSize,
+		plan.SourceIdentity,
 		plan.ExpiresAt,
 	)
 	return err
@@ -548,13 +559,16 @@ func (store *stateStore) snapshotImportPlan(
 ) (snapshotImportPlan, error) {
 	var plan snapshotImportPlan
 	err := store.db.QueryRowContext(ctx, `
-		SELECT plan_id, source_path, source_hash, expires_at
+		SELECT plan_id, source_path, source_hash, source_size,
+		       source_identity, expires_at
 		FROM snapshot_import_plans WHERE plan_id = ?`,
 		planID,
 	).Scan(
 		&plan.PlanID,
 		&plan.SourcePath,
 		&plan.SourceHash,
+		&plan.SourceSize,
+		&plan.SourceIdentity,
 		&plan.ExpiresAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -793,6 +807,56 @@ func ensureSnapshotRestoreDiffHashColumn(db *sql.DB) error {
 		 ADD COLUMN diff_hash TEXT NOT NULL DEFAULT 'legacy-unbound'`,
 	)
 	return err
+}
+
+func ensureSnapshotImportBindingColumns(db *sql.DB) error {
+	columns := map[string]bool{}
+	rows, err := db.Query(`PRAGMA table_info(snapshot_import_plans)`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var (
+			index      int
+			columnName string
+			columnType string
+			notNull    int
+			defaultSQL sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(
+			&index,
+			&columnName,
+			&columnType,
+			&notNull,
+			&defaultSQL,
+			&primaryKey,
+		); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		columns[columnName] = true
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	if !columns["source_size"] {
+		if _, err := db.Exec(`
+			ALTER TABLE snapshot_import_plans
+			ADD COLUMN source_size INTEGER NOT NULL DEFAULT -1
+		`); err != nil {
+			return err
+		}
+	}
+	if !columns["source_identity"] {
+		if _, err := db.Exec(`
+			ALTER TABLE snapshot_import_plans
+			ADD COLUMN source_identity TEXT NOT NULL DEFAULT ''
+		`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (store *stateStore) sequence(

@@ -257,7 +257,11 @@
             ]
           },
           "storageMode": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "direct",
+              "mirrored"
+            ]
           },
           "encryptionMode": {
             "type": "string"

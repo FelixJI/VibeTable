@@ -51,9 +51,19 @@ def test_manifest_lists_every_required_legacy_surface_category() -> None:
         "ResolveBackupRoot"
         in forbidden_sources["desktop/src/VibeTable.Infrastructure/LaunchPaths.cs"]
     )
-    assert (
-        "MigrateLegacyDataRoot"
-        in forbidden_sources["desktop/src/VibeTable.Desktop/Services/ProductDataRootManager.cs"]
+    assert {
+        "desktop/src/VibeTable.Desktop/Services/ProductDataRootManager.cs",
+        "desktop/src/VibeTable.Infrastructure/Workspace/WorkspaceMountStore.cs",
+        "desktop/tests/VibeTable.Desktop.Tests/ProductDataRootManagerTests.cs",
+        "desktop/tests/VibeTable.Infrastructure.Tests/Workspace/WorkspaceMountStoreTests.cs",
+    } <= set(manifest["forbiddenPaths"])
+    publish_layout_members = {
+        entry["pointer"]: set(entry["members"])
+        for entry in manifest["forbiddenJsonMembers"]
+        if entry["path"] == "desktop/publish-layout.json"
+    }
+    assert {"rootPolicy", "defaultBase", "fallbackBase", "relativePath"} <= (
+        publish_layout_members["/data"]
     )
     allowed_paths = {entry["path"] for entry in manifest["allowedDetectionPrimitives"]}
     assert {
@@ -99,7 +109,7 @@ def test_checker_is_precise_and_respects_detection_allowlist(tmp_path: Path) -> 
     )
     (tmp_path / "desktop").mkdir(exist_ok=True)
     (tmp_path / "desktop/publish-layout.json").write_text(
-        '{"components":{"sidecar":{"contractVersion":"2.0"}}}\n',
+        '{"components":{"sidecar":{"contractVersion":"2.0"}},"data":{}}\n',
         encoding="utf-8",
     )
     manifest = _manifest()
@@ -120,6 +130,17 @@ def test_checker_is_precise_and_respects_detection_allowlist(tmp_path: Path) -> 
     ]
     catalog.write_text(
         '{"methods":["snapshot.list"],"fixtures":[]}\n',
+        encoding="utf-8",
+    )
+    publish_layout = tmp_path / "desktop/publish-layout.json"
+    publish_layout.write_text(
+        '{"components":{"sidecar":{"contractVersion":"2.0"}},"data":{"rootPolicy":"global"}}\n',
+        encoding="utf-8",
+    )
+    errors = legacy_surface_check.check(tmp_path, manifest_path)
+    assert any("desktop/publish-layout.json" in error and "rootPolicy" in error for error in errors)
+    publish_layout.write_text(
+        '{"components":{"sidecar":{"contractVersion":"2.0"}},"data":{}}\n',
         encoding="utf-8",
     )
 

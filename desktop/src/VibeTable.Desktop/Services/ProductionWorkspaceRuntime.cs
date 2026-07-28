@@ -307,7 +307,7 @@ public sealed class ProductionWorkspaceRuntimeFactory :
         };
         foreach ((string key, string value) in backendTemplate.Environment)
             result.Environment[key] = value;
-        ProductDataRootManager.ConfigureProcessEnvironment(
+        WorkspaceProcessEnvironment.Configure(
             result.Environment,
             paths.Data);
         result.Environment["VIBETABLE_WORKSPACE_ID"] =

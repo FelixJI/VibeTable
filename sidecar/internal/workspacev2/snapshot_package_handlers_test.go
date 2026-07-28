@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -26,6 +27,19 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 		DefaultDataDir: dataDir, HideStartBanner: true,
 	})
 	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.DB().NewQuery(`
+		CREATE TABLE IF NOT EXISTS _vibetable_sidecar_meta (
+			key TEXT PRIMARY KEY NOT NULL,
+			value TEXT NOT NULL,
+			updated TEXT DEFAULT (
+				strftime('%Y-%m-%d %H:%M:%fZ')
+			) NOT NULL
+		);
+		INSERT OR IGNORE INTO _vibetable_sidecar_meta (key, value)
+		VALUES ('schema_version', '1');
+	`).Execute(); err != nil {
 		t.Fatal(err)
 	}
 	createAuditOutbox(t, app)
@@ -80,9 +94,6 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 	databaseEntry := "objects/" + base64.RawURLEncoding.EncodeToString(
 		[]byte("database"),
 	)
-	if err := validateImportedSQLite(ctx, entries[databaseEntry]); err != nil {
-		t.Fatalf("captured database failed import validation: %v", err)
-	}
 	metadata := snapshotpkg.Metadata{
 		FormatVersion:     2,
 		WorkspaceID:       record.WorkspaceID,
@@ -223,6 +234,13 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 	if !validUUID(planID) {
 		t.Fatalf("inspect planId = %q", planID)
 	}
+	durablePlan, err := targetRuntime.state.snapshotImportPlan(ctx, planID)
+	if err != nil ||
+		durablePlan.SourceSize <= 0 ||
+		durablePlan.SourceHash == "" ||
+		durablePlan.SourceIdentity == "" {
+		t.Fatalf("durable import binding=%#v err=%v", durablePlan, err)
+	}
 	importWire := json.RawMessage(`{
 		"scope":"global",
 		"sequence":3,
@@ -234,6 +252,30 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 		TargetMode:        "newWorkspace",
 		TargetWorkspaceID: &targetWorkspaceID,
 	})
+	packageBytes, err := os.ReadFile(packagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPath := packagePath + ".inspected-original"
+	if err := os.Rename(packagePath, originalPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(packagePath, packageBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := targetRuntime.importSnapshotPackage(
+		ctx,
+		importWire,
+		importParams,
+	); err == nil || err.Error() != "snapshot.import_plan_stale" {
+		t.Fatalf("replacement import error=%v", err)
+	}
+	if err := os.Remove(packagePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(originalPath, packagePath); err != nil {
+		t.Fatal(err)
+	}
 	imported, err := targetRuntime.importSnapshotPackage(
 		ctx,
 		importWire,

@@ -114,11 +114,14 @@ func (store *stateStore) putSnapshotImportPlanWithOperationReceipt(
 		func(transaction *sql.Tx) error {
 			_, err := transaction.ExecContext(ctx, `
 				INSERT INTO snapshot_import_plans (
-					plan_id, source_path, source_hash, expires_at
-				) VALUES (?, ?, ?, ?)`,
+					plan_id, source_path, source_hash, source_size,
+					source_identity, expires_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
 				plan.PlanID,
 				plan.SourcePath,
 				plan.SourceHash,
+				plan.SourceSize,
+				plan.SourceIdentity,
 				plan.ExpiresAt,
 			)
 			return err

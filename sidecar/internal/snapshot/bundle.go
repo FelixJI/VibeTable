@@ -13,23 +13,34 @@ import (
 	"strings"
 
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
+	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
+	"github.com/vibetable/vibetable/sidecar/internal/workspacedb"
 )
 
-var ErrBundleInvalid = errors.New("snapshot.bundle_invalid")
+const (
+	MaxBundleMaterializedBytes int64 = 512 << 20
+	maxBundleEntries                 = 10_000
+)
+
+var (
+	ErrBundleInvalid       = errors.New("snapshot.bundle_invalid")
+	ErrBundleResourceLimit = errors.New("snapshot.bundle_resource_limit")
+)
 
 // SnapshotBundle is the complete, repository-independent closure required to
 // prove that a catalog record, immutable manifest, seal, current objects and
 // file-history root all describe the same capture intent.
 type SnapshotBundle struct {
-	Record         Record
-	Manifest       objectrepo.ManifestRecord
-	Seal           objectrepo.ManifestRecord
-	Objects        map[string][]byte
-	TopologyHead   objectrepo.ManifestRecord
-	FileStateHead  objectrepo.ManifestRecord
-	HistoryRoot    *objectrepo.ManifestRecord
-	HistoryObjects map[objectrepo.ObjectID][]byte
+	Record          Record
+	Manifest        objectrepo.ManifestRecord
+	Seal            objectrepo.ManifestRecord
+	Objects         map[string][]byte
+	TopologyHead    objectrepo.ManifestRecord
+	FileStateHead   objectrepo.ManifestRecord
+	HistoryRoot     *objectrepo.ManifestRecord
+	HistoryObjects  map[objectrepo.ObjectID][]byte
+	HistoryMetadata []filehistory.RevisionObject
 }
 
 type topologyRootReference struct {
@@ -58,16 +69,6 @@ type fileStateHeadPayload struct {
 	FileRevision  uint64                `json:"fileRevision"`
 }
 
-type fileHistoryRootPayload struct {
-	FormatVersion uint64            `json:"formatVersion"`
-	WorkspaceID   string            `json:"workspaceId"`
-	Documents     []json.RawMessage `json:"documents"`
-}
-
-type fileHistoryRevision struct {
-	ObjectID objectrepo.ObjectID `json:"objectId"`
-}
-
 // LoadSnapshotBundle reads and validates the complete closure from a
 // repository. Callers receive the already-validated bytes so export and
 // restore do not have to perform a second, weaker interpretation.
@@ -79,26 +80,45 @@ func LoadSnapshotBundle(
 	if repository == nil {
 		return SnapshotBundle{}, ErrBundleInvalid
 	}
+	if len(record.ObjectMap) > maxBundleEntries ||
+		len(record.Objects) > maxBundleEntries {
+		return SnapshotBundle{}, ErrBundleResourceLimit
+	}
+	budget := bundleReadBudget{remaining: MaxBundleMaterializedBytes}
 	manifest, err := repository.GetManifest(ctx, record.ManifestID)
 	if err != nil {
-		return SnapshotBundle{}, fmt.Errorf(
-			"%w: load snapshot manifest: %w", ErrBundleInvalid, err,
+		return SnapshotBundle{}, classifyBundleLoadError(
+			"load snapshot manifest", err,
 		)
+	}
+	if err := budget.consume(manifest.Payload); err != nil {
+		return SnapshotBundle{}, err
 	}
 	seal, err := repository.GetManifest(ctx, record.SealID)
 	if err != nil {
-		return SnapshotBundle{}, fmt.Errorf(
-			"%w: load snapshot seal: %w", ErrBundleInvalid, err,
+		return SnapshotBundle{}, classifyBundleLoadError(
+			"load snapshot seal", err,
 		)
 	}
+	if err := budget.consume(seal.Payload); err != nil {
+		return SnapshotBundle{}, err
+	}
 	objects := make(map[string][]byte, len(record.ObjectMap))
+	objectCache := make(
+		map[objectrepo.ObjectID][]byte,
+		len(record.ObjectMap),
+	)
 	for name, id := range record.ObjectMap {
-		raw, err := readBundleObject(ctx, repository, id)
-		if err != nil {
-			return SnapshotBundle{}, fmt.Errorf(
-				"%w: load snapshot object %q: %w",
-				ErrBundleInvalid, name, err,
-			)
+		raw, found := objectCache[id]
+		if !found {
+			raw, err = budget.readObject(ctx, repository, id)
+			if err != nil {
+				return SnapshotBundle{}, classifyBundleLoadError(
+					fmt.Sprintf("load snapshot object %q", name),
+					err,
+				)
+			}
+			objectCache[id] = raw
 		}
 		objects[name] = raw
 	}
@@ -112,9 +132,12 @@ func LoadSnapshotBundle(
 		ctx, topologyReference.ManifestID,
 	)
 	if err != nil {
-		return SnapshotBundle{}, fmt.Errorf(
-			"%w: load topology head: %w", ErrBundleInvalid, err,
+		return SnapshotBundle{}, classifyBundleLoadError(
+			"load topology head", err,
 		)
+	}
+	if err := budget.consume(topologyHead.Payload); err != nil {
+		return SnapshotBundle{}, err
 	}
 	fileReference, err := decodeStrictBundle[fileStateRootReference](
 		objects["file-state-root"],
@@ -124,9 +147,12 @@ func LoadSnapshotBundle(
 	}
 	fileStateHead, err := repository.GetManifest(ctx, fileReference.SourceRoot)
 	if err != nil {
-		return SnapshotBundle{}, fmt.Errorf(
-			"%w: load file-state head: %w", ErrBundleInvalid, err,
+		return SnapshotBundle{}, classifyBundleLoadError(
+			"load file-state head", err,
 		)
+	}
+	if err := budget.consume(fileStateHead.Payload); err != nil {
+		return SnapshotBundle{}, err
 	}
 	fileHead, err := decodeStrictBundle[fileStateHeadPayload](
 		fileStateHead.Payload,
@@ -136,46 +162,62 @@ func LoadSnapshotBundle(
 	}
 	var historyRoot *objectrepo.ManifestRecord
 	historyObjects := map[objectrepo.ObjectID][]byte{}
+	var historyMetadata []filehistory.RevisionObject
 	if fileHead.HistoryRoot != "" {
 		value, err := repository.GetManifest(ctx, fileHead.HistoryRoot)
 		if err != nil {
-			return SnapshotBundle{}, fmt.Errorf(
-				"%w: load file-history root: %w", ErrBundleInvalid, err,
+			return SnapshotBundle{}, classifyBundleLoadError(
+				"load file-history root", err,
 			)
 		}
-		historyRoot = &value
-		history, err := decodeStrictBundle[fileHistoryRootPayload](
-			value.Payload,
-		)
-		if err != nil {
-			return SnapshotBundle{}, ErrBundleInvalid
-		}
-		ids, err := historyObjectIDs(history)
-		if err != nil {
+		if err := budget.consume(value.Payload); err != nil {
 			return SnapshotBundle{}, err
 		}
-		for _, id := range ids {
-			raw, err := readBundleObject(ctx, repository, id)
+		historyRoot = &value
+		historyMetadata, err = filehistory.ValidateRootPayload(
+			value.Payload, record.WorkspaceID,
+		)
+		if err != nil {
+			if errors.Is(err, filehistory.ErrResourceLimit) {
+				return SnapshotBundle{}, ErrBundleResourceLimit
+			}
+			return SnapshotBundle{}, ErrBundleInvalid
+		}
+		if len(historyMetadata) > maxBundleEntries {
+			return SnapshotBundle{}, ErrBundleResourceLimit
+		}
+		for _, metadata := range historyMetadata {
+			if _, found := objectCache[metadata.ObjectID]; found {
+				continue
+			}
+			raw, err := budget.readObject(
+				ctx, repository, metadata.ObjectID,
+			)
 			if err != nil {
-				return SnapshotBundle{}, fmt.Errorf(
-					"%w: load file-history object %q: %w",
-					ErrBundleInvalid, id, err,
+				return SnapshotBundle{}, classifyBundleLoadError(
+					fmt.Sprintf(
+						"load file-history object %q",
+						metadata.ObjectID,
+					),
+					err,
 				)
 			}
-			historyObjects[id] = raw
+			objectCache[metadata.ObjectID] = raw
+			historyObjects[metadata.ObjectID] = raw
 		}
 	}
 	bundle := SnapshotBundle{
-		Record:         record,
-		Manifest:       manifest,
-		Seal:           seal,
-		Objects:        objects,
-		TopologyHead:   topologyHead,
-		FileStateHead:  fileStateHead,
-		HistoryRoot:    historyRoot,
-		HistoryObjects: historyObjects,
+		Record:          record,
+		Manifest:        manifest,
+		Seal:            seal,
+		Objects:         objects,
+		TopologyHead:    topologyHead,
+		FileStateHead:   fileStateHead,
+		HistoryRoot:     historyRoot,
+		HistoryObjects:  historyObjects,
+		HistoryMetadata: historyMetadata,
 	}
-	if err := ValidateSnapshotBundleData(bundle); err != nil {
+	if err := ValidateSnapshotBundleData(ctx, bundle); err != nil {
 		return SnapshotBundle{}, err
 	}
 	return bundle, nil
@@ -192,14 +234,24 @@ func ValidateSnapshotBundle(
 
 // ValidateSnapshotBundleData applies the same strict validation to exported
 // package material before any object or snapshot is published.
-func ValidateSnapshotBundleData(bundle SnapshotBundle) error {
+func ValidateSnapshotBundleData(
+	ctx context.Context,
+	bundle SnapshotBundle,
+) error {
+	if err := validateBundleMaterializedSize(bundle); err != nil {
+		return err
+	}
 	record := bundle.Record
 	if record.SnapshotID == "" ||
 		record.WorkspaceID == "" ||
 		record.ManifestID == "" ||
 		record.SealID == "" ||
 		record.SnapshotSequence == 0 ||
+		record.FenceEpoch == 0 ||
+		strings.TrimSpace(record.ClaimID) == "" ||
 		record.CatalogRevision == 0 ||
+		(record.SourceWorkspaceID == "") !=
+			(record.SourceSnapshotID == "") ||
 		len(record.ObjectMap) == 0 ||
 		len(bundle.Objects) != len(record.ObjectMap) {
 		return ErrBundleInvalid
@@ -237,6 +289,13 @@ func ValidateSnapshotBundleData(bundle SnapshotBundle) error {
 		manifest.ClaimID != record.ClaimID ||
 		manifest.MutationRevision != record.MutationRevision ||
 		manifest.SnapshotSequence != record.SnapshotSequence ||
+		manifest.Trigger != record.Trigger ||
+		!manifest.CreatedAt.Equal(record.CreatedAt) ||
+		manifest.AuditAnchor.ChainHash != record.AuditAnchor ||
+		manifestSourceSnapshotID(manifest) != record.SourceSnapshotID ||
+		!validBundleTrigger(manifest.Trigger) ||
+		manifest.CreatedAt.IsZero() ||
+		strings.TrimSpace(manifest.CreatedByDevice) == "" ||
 		manifest.BusinessDatabaseObjectID != record.ObjectMap["database"] ||
 		manifest.TopologyRootObjectID != record.ObjectMap["topology-root"] ||
 		manifest.FileStateRootObjectID != record.ObjectMap["file-state-root"] ||
@@ -285,7 +344,7 @@ func ValidateSnapshotBundleData(bundle SnapshotBundle) error {
 	if err := validateJSONMap(bundle.Objects["workspace-settings"]); err != nil {
 		return err
 	}
-	return validateBundleRoots(bundle, manifest)
+	return validateBundleRoots(ctx, bundle, manifest)
 }
 
 func validateBundleObjects(
@@ -318,7 +377,11 @@ func validateBundleObjects(
 	return nil
 }
 
-func validateBundleRoots(bundle SnapshotBundle, manifest Manifest) error {
+func validateBundleRoots(
+	ctx context.Context,
+	bundle SnapshotBundle,
+	manifest Manifest,
+) error {
 	topologyReference, err := decodeStrictBundle[topologyRootReference](
 		bundle.Objects["topology-root"],
 	)
@@ -344,6 +407,16 @@ func validateBundleRoots(bundle SnapshotBundle, manifest Manifest) error {
 		topology.BusinessDatabaseHash !=
 			digestBundle(bundle.Objects["database"]) {
 		return ErrBundleInvalid
+	}
+	if err := workspacedb.ValidateSnapshot(
+		ctx,
+		bundle.Objects["database"],
+		topology.BusinessSchemaVersion,
+	); err != nil {
+		if errors.Is(err, workspacedb.ErrSnapshotDatabaseInvalid) {
+			return errors.Join(ErrBundleInvalid, err)
+		}
+		return err
 	}
 	fileReference, err := decodeStrictBundle[fileStateRootReference](
 		bundle.Objects["file-state-root"],
@@ -420,7 +493,8 @@ func validateHistoryClosure(
 	if fileHead.HistoryRoot == "" {
 		if bundle.Record.FileRevision != 0 ||
 			bundle.HistoryRoot != nil ||
-			len(bundle.HistoryObjects) != 0 {
+			len(bundle.HistoryObjects) != 0 ||
+			len(bundle.HistoryMetadata) != 0 {
 			return ErrBundleInvalid
 		}
 		return nil
@@ -439,33 +513,44 @@ func validateHistoryClosure(
 	); err != nil {
 		return err
 	}
-	history, err := decodeStrictBundle[fileHistoryRootPayload](
+	required, err := filehistory.ValidateRootPayload(
 		bundle.HistoryRoot.Payload,
+		bundle.Record.WorkspaceID,
 	)
-	if err != nil ||
-		history.FormatVersion != 2 ||
-		history.WorkspaceID != bundle.Record.WorkspaceID {
+	if err != nil {
+		if errors.Is(err, filehistory.ErrResourceLimit) {
+			return ErrBundleResourceLimit
+		}
 		return ErrBundleInvalid
 	}
-	required, err := historyObjectIDs(history)
-	if err != nil {
-		return err
+	if len(required) > maxBundleEntries {
+		return ErrBundleResourceLimit
+	}
+	if len(bundle.HistoryMetadata) != 0 &&
+		!equalHistoryMetadata(bundle.HistoryMetadata, required) {
+		return ErrBundleInvalid
 	}
 	objectValues := map[objectrepo.ObjectID][]byte{}
 	for name, id := range bundle.Record.ObjectMap {
 		objectValues[id] = bundle.Objects[name]
 	}
-	for _, id := range required {
-		raw, found := objectValues[id]
+	requiredIDs := make(map[objectrepo.ObjectID]struct{}, len(required))
+	for _, metadata := range required {
+		requiredIDs[metadata.ObjectID] = struct{}{}
+		raw, found := objectValues[metadata.ObjectID]
 		if !found {
-			raw, found = bundle.HistoryObjects[id]
+			raw, found = bundle.HistoryObjects[metadata.ObjectID]
 		}
-		if !found || objectIDBundle(raw) != id {
+		if !found ||
+			objectIDBundle(raw) != metadata.ObjectID ||
+			digestBundle(raw) != metadata.ContentHash ||
+			int64(len(raw)) != metadata.Size {
 			return ErrBundleInvalid
 		}
 	}
 	for id, raw := range bundle.HistoryObjects {
-		if objectIDBundle(raw) != id {
+		if _, required := requiredIDs[id]; !required ||
+			objectIDBundle(raw) != id {
 			return ErrBundleInvalid
 		}
 	}
@@ -491,43 +576,13 @@ func validateManifestArtifact(
 	return nil
 }
 
-func historyObjectIDs(
-	history fileHistoryRootPayload,
-) ([]objectrepo.ObjectID, error) {
-	seen := map[objectrepo.ObjectID]struct{}{}
-	for _, raw := range history.Documents {
-		var document struct {
-			Revisions []fileHistoryRevision `json:"revisions"`
-		}
-		if err := json.Unmarshal(raw, &document); err != nil {
-			return nil, ErrBundleInvalid
-		}
-		for _, revision := range document.Revisions {
-			if revision.ObjectID == "" {
-				return nil, ErrBundleInvalid
-			}
-			seen[revision.ObjectID] = struct{}{}
-		}
-	}
-	result := make([]objectrepo.ObjectID, 0, len(seen))
-	for id := range seen {
-		result = append(result, id)
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
-	return result, nil
-}
-
 func readBundleObject(
 	ctx context.Context,
 	repository objectrepo.Repository,
 	id objectrepo.ObjectID,
 ) ([]byte, error) {
-	reader, err := repository.Open(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	raw, readErr := io.ReadAll(reader)
-	return raw, errors.Join(readErr, reader.Close())
+	budget := bundleReadBudget{remaining: MaxBundleMaterializedBytes}
+	return budget.readObject(ctx, repository, id)
 }
 
 func decodeStrictBundle[T any](raw []byte) (T, error) {
@@ -562,6 +617,139 @@ func digestBundle(raw []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+type bundleReadBudget struct {
+	remaining int64
+}
+
+func (budget *bundleReadBudget) consume(raw []byte) error {
+	size := int64(len(raw))
+	if size > budget.remaining {
+		return ErrBundleResourceLimit
+	}
+	budget.remaining -= size
+	return nil
+}
+
+func (budget *bundleReadBudget) readObject(
+	ctx context.Context,
+	repository objectrepo.Repository,
+	id objectrepo.ObjectID,
+) ([]byte, error) {
+	if budget.remaining < 0 {
+		return nil, ErrBundleResourceLimit
+	}
+	reader, err := repository.Open(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(reader, budget.remaining+1))
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil {
+		return nil, errors.Join(readErr, closeErr)
+	}
+	if err := budget.consume(raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+func classifyBundleLoadError(stage string, err error) error {
+	if errors.Is(err, ErrBundleResourceLimit) {
+		return ErrBundleResourceLimit
+	}
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%s: %w", stage, err)
+	}
+	if errors.Is(err, objectrepo.ErrNotFound) ||
+		errors.Is(err, objectrepo.ErrCorrupt) {
+		return fmt.Errorf("%w: %s: %w", ErrBundleInvalid, stage, err)
+	}
+	return fmt.Errorf("%s: %w", stage, err)
+}
+
+func validateBundleMaterializedSize(bundle SnapshotBundle) error {
+	if len(bundle.Record.ObjectMap) > maxBundleEntries ||
+		len(bundle.Record.Objects) > maxBundleEntries ||
+		len(bundle.Objects) > maxBundleEntries ||
+		len(bundle.HistoryObjects) > maxBundleEntries ||
+		len(bundle.HistoryMetadata) > maxBundleEntries {
+		return ErrBundleResourceLimit
+	}
+	total := int64(0)
+	add := func(raw []byte) bool {
+		size := int64(len(raw))
+		if size > MaxBundleMaterializedBytes-total {
+			return false
+		}
+		total += size
+		return true
+	}
+	if !add(bundle.Manifest.Payload) ||
+		!add(bundle.Seal.Payload) ||
+		!add(bundle.TopologyHead.Payload) ||
+		!add(bundle.FileStateHead.Payload) {
+		return ErrBundleResourceLimit
+	}
+	if bundle.HistoryRoot != nil && !add(bundle.HistoryRoot.Payload) {
+		return ErrBundleResourceLimit
+	}
+	for _, raw := range bundle.Objects {
+		if !add(raw) {
+			return ErrBundleResourceLimit
+		}
+	}
+	for _, raw := range bundle.HistoryObjects {
+		if !add(raw) {
+			return ErrBundleResourceLimit
+		}
+	}
+	return nil
+}
+
+func validBundleTrigger(trigger Trigger) bool {
+	switch trigger {
+	case TriggerAutomatic,
+		TriggerManual,
+		TriggerProtection,
+		TriggerRestore,
+		TriggerImport:
+		return true
+	default:
+		return false
+	}
+}
+
+func manifestSourceSnapshotID(manifest Manifest) string {
+	if manifest.SourceSnapshotID == nil {
+		return ""
+	}
+	return *manifest.SourceSnapshotID
+}
+
+func equalHistoryMetadata(
+	left []filehistory.RevisionObject,
+	right []filehistory.RevisionObject,
+) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	leftCopy := append([]filehistory.RevisionObject(nil), left...)
+	rightCopy := append([]filehistory.RevisionObject(nil), right...)
+	sort.Slice(leftCopy, func(i, j int) bool {
+		return leftCopy[i].ObjectID < leftCopy[j].ObjectID
+	})
+	sort.Slice(rightCopy, func(i, j int) bool {
+		return rightCopy[i].ObjectID < rightCopy[j].ObjectID
+	})
+	for index := range leftCopy {
+		if leftCopy[index] != rightCopy[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func NewPackageManifestRecord(
 	id objectrepo.ManifestID,
 	name string,
@@ -584,10 +772,23 @@ func NewPackageManifestRecord(
 	}
 }
 
-func FileHistoryObjectIDs(payload []byte) ([]objectrepo.ObjectID, error) {
-	history, err := decodeStrictBundle[fileHistoryRootPayload](payload)
+func FileHistoryObjectIDs(
+	payload []byte,
+	workspaceID string,
+) ([]objectrepo.ObjectID, error) {
+	history, err := filehistory.ValidateRootPayload(payload, workspaceID)
 	if err != nil {
+		if errors.Is(err, filehistory.ErrResourceLimit) {
+			return nil, ErrBundleResourceLimit
+		}
 		return nil, fmt.Errorf("%w: history root", ErrBundleInvalid)
 	}
-	return historyObjectIDs(history)
+	if len(history) > maxBundleEntries {
+		return nil, ErrBundleResourceLimit
+	}
+	result := make([]objectrepo.ObjectID, 0, len(history))
+	for _, revision := range history {
+		result = append(result, revision.ObjectID)
+	}
+	return result, nil
 }

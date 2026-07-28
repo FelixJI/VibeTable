@@ -18,7 +18,11 @@ public sealed class WorkspaceRegistry
     {
         var root = localAppData
             ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        _storePath = Path.Combine(root, "VibeTable", "workspace-registry-v2.json");
+        _storePath = Path.Combine(
+            root,
+            "VibeTable",
+            "shell",
+            "workspace-registry-v2.json");
     }
 
     public IReadOnlyList<WorkspaceRegistryEntryV2> List()

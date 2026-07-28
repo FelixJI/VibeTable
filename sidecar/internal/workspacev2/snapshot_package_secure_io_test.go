@@ -15,6 +15,23 @@ import (
 
 const secureSnapshotPackageWorkspaceID = "11111111-1111-4111-8111-111111111111"
 
+func TestSnapshotPackageBudgetsKeepExportAndImportMemoryCompatible(
+	t *testing.T,
+) {
+	if maxSnapshotPackagePayloadBytes >= maxSnapshotPackageContainer ||
+		maxSnapshotPackageContainer+
+			maxSnapshotPackagePayloadBytes+
+			maxSnapshotPackageMetadata > maxSnapshotWorkingSet {
+		t.Fatalf(
+			"payload=%d container=%d metadata=%d workingSet=%d",
+			maxSnapshotPackagePayloadBytes,
+			maxSnapshotPackageContainer,
+			maxSnapshotPackageMetadata,
+			maxSnapshotWorkingSet,
+		)
+	}
+}
+
 func TestPrepareSnapshotPackageSourceKeepsPlainPackageOnGrantedFile(t *testing.T) {
 	metadata, entries := secureSnapshotPackageFixture()
 	var archive bytes.Buffer
@@ -32,6 +49,13 @@ func TestPrepareSnapshotPackageSourceKeepsPlainPackageOnGrantedFile(t *testing.T
 	}
 	if prepared.Size() != int64(archive.Len()) {
 		t.Fatalf("size=%d want=%d", prepared.Size(), archive.Len())
+	}
+	if prepared.workingSetBytes != int64(archive.Len()) {
+		t.Fatalf(
+			"working set=%d want=%d",
+			prepared.workingSetBytes,
+			archive.Len(),
+		)
 	}
 	inspection, err := snapshotpkg.Inspect(
 		prepared.ReaderAt(),
@@ -55,6 +79,129 @@ func TestPrepareSnapshotPackageSourceKeepsPlainPackageOnGrantedFile(t *testing.T
 		&credential,
 	); err == nil || err.Error() != "snapshot.credential_not_applicable" {
 		t.Fatalf("credential on plaintext error=%v", err)
+	}
+}
+
+func TestSnapshotPackageSourceBindingDistinguishesIdenticalReplacement(
+	t *testing.T,
+) {
+	metadata, entries := secureSnapshotPackageFixture()
+	var archive bytes.Buffer
+	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+		t.Fatal(err)
+	}
+	var agePackage bytes.Buffer
+	const passphrase = "identity is independent of encryption"
+	if err := (snapshotpkg.AgeNative{}).EncryptPassphrase(
+		passphrase,
+		bytes.NewReader(archive.Bytes()),
+		&agePackage,
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name      string
+		raw       []byte
+		encrypted bool
+	}{
+		{name: "plain", raw: archive.Bytes()},
+		{name: "age", raw: agePackage.Bytes(), encrypted: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "package")
+			if err := os.WriteFile(path, test.raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			original, err := openSnapshotPackageSource(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalBinding := original.Binding()
+			if original.Encrypted() != test.encrypted {
+				t.Fatalf("encrypted=%t", original.Encrypted())
+			}
+			if err := original.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(path, path+".original"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, test.raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			replacement, err := openSnapshotPackageSource(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer replacement.Close()
+			replacementBinding := replacement.Binding()
+			if replacementBinding.Hash != originalBinding.Hash ||
+				replacementBinding.Size != originalBinding.Size ||
+				replacementBinding.Identity == originalBinding.Identity {
+				t.Fatalf(
+					"original=%#v replacement=%#v",
+					originalBinding,
+					replacementBinding,
+				)
+			}
+		})
+	}
+}
+
+func TestSnapshotPackageSourceReadsFromImmutableStaging(
+	t *testing.T,
+) {
+	metadata, entries := secureSnapshotPackageFixture()
+	var archive bytes.Buffer
+	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "snapshot.zip")
+	if err := os.WriteFile(path, archive.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := openSnapshotPackageSource(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap(source.staged) != len(source.staged) {
+		t.Fatalf(
+			"staging capacity=%d want exact size=%d",
+			cap(source.staged),
+			len(source.staged),
+		)
+	}
+	staged := source.staged
+	defer source.Close()
+
+	replacement := bytes.Repeat([]byte{'x'}, archive.Len())
+	if err := os.WriteFile(path, replacement, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := source.prepare(nil, maxSnapshotWorkingSet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Close()
+	if _, err := snapshotpkg.Inspect(
+		prepared.ReaderAt(),
+		prepared.Size(),
+		snapshotpkg.DefaultLimits(),
+		nil,
+	); err != nil {
+		t.Fatalf("immutable staged package was not retained: %v", err)
+	}
+	if err := source.VerifyUnchanged(); err == nil {
+		t.Fatal("source mutation was not detected")
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for index, value := range staged {
+		if value != 0 {
+			t.Fatalf("staged byte %d was not cleared", index)
+		}
 	}
 }
 
@@ -93,13 +240,34 @@ func TestPrepareSnapshotPackageSourceDecryptsOnlyIntoClearableMemory(t *testing.
 		)
 	}
 	if prepared.Size() != int64(archive.Len()) ||
-		len(prepared.plaintext) != archive.Len() {
+		len(prepared.plaintext) != archive.Len() ||
+		prepared.workingSetBytes != int64(archive.Len()) {
 		t.Fatalf(
 			"prepared size=%d plaintext=%d want=%d",
 			prepared.Size(),
 			len(prepared.plaintext),
 			archive.Len(),
 		)
+	}
+	if opened, err := openSnapshotPackageSource(source); err != nil {
+		t.Fatal(err)
+	} else {
+		encryptedPrepared, prepareErr := opened.prepare(
+			snapshotPackageCredential(passphrase),
+			maxSnapshotWorkingSet,
+		)
+		if prepareErr != nil {
+			t.Fatal(prepareErr)
+		}
+		if len(opened.staged) != 0 {
+			t.Fatal("encrypted ciphertext staging was not released after decrypt")
+		}
+		if err := encryptedPrepared.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := opened.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := snapshotpkg.Inspect(
 		prepared.ReaderAt(),
@@ -121,6 +289,109 @@ func TestPrepareSnapshotPackageSourceDecryptsOnlyIntoClearableMemory(t *testing.
 	after := directoryEntryNames(t, root)
 	if !slices.Equal(before, after) {
 		t.Fatalf("prepare left disk artifacts: before=%v after=%v", before, after)
+	}
+}
+
+func TestInspectPreparedPackageRejectsAggregateWorkingSetOverflow(
+	t *testing.T,
+) {
+	metadata, entries := secureSnapshotPackageFixture()
+	var archive bytes.Buffer
+	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+		t.Fatal(err)
+	}
+	prepared := &preparedSnapshotPackage{
+		readerAt:        bytes.NewReader(archive.Bytes()),
+		size:            int64(archive.Len()),
+		workingSetBytes: maxSnapshotWorkingSet,
+	}
+	if _, _, err := inspectPreparedPackage(
+		prepared,
+		nil,
+		true,
+	); !errors.Is(err, snapshotpkg.ErrResourceLimit) {
+		t.Fatalf("aggregate budget error = %v", err)
+	}
+}
+
+func TestInspectPreparedPackageBoundsDecompressionByRemainingWorkingSet(
+	t *testing.T,
+) {
+	metadata, entries := secureSnapshotPackageFixture()
+	var archive bytes.Buffer
+	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+		t.Fatal(err)
+	}
+	prepared := &preparedSnapshotPackage{
+		readerAt: bytes.NewReader(archive.Bytes()),
+		size:     int64(archive.Len()),
+		// Leave one byte available. Inspect must pass that remaining budget
+		// into the ZIP reader instead of using its much larger defaults.
+		workingSetBytes: maxSnapshotWorkingSet - 1,
+	}
+	if _, _, err := inspectPreparedPackage(
+		prepared,
+		nil,
+		true,
+	); !errors.Is(err, snapshotpkg.ErrResourceLimit) {
+		t.Fatalf("remaining working-set budget error = %v", err)
+	}
+}
+
+func TestInspectPreparedPackageAllocatesEntriesAtVerifiedSize(t *testing.T) {
+	metadata, fixtureEntries := secureSnapshotPackageFixture()
+	var archive bytes.Buffer
+	if err := snapshotpkg.Export(
+		&archive,
+		metadata,
+		fixtureEntries,
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	prepared := &preparedSnapshotPackage{
+		readerAt:        bytes.NewReader(archive.Bytes()),
+		size:            int64(archive.Len()),
+		workingSetBytes: int64(archive.Len()),
+	}
+	_, entries, err := inspectPreparedPackage(prepared, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range entries {
+		if cap(raw) != len(raw) {
+			t.Fatalf(
+				"entry %q capacity=%d want exact size=%d",
+				name,
+				cap(raw),
+				len(raw),
+			)
+		}
+	}
+}
+
+func TestInspectPreparedPackageAcceptsBoundedHighlyCompressiblePayload(
+	t *testing.T,
+) {
+	metadata, entries := secureSnapshotPackageFixture()
+	entries["objects/compressible"] = bytes.Repeat([]byte{0}, 1<<20)
+	var archive bytes.Buffer
+	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+		t.Fatal(err)
+	}
+	prepared := &preparedSnapshotPackage{
+		readerAt:        bytes.NewReader(archive.Bytes()),
+		size:            int64(archive.Len()),
+		workingSetBytes: int64(archive.Len()),
+	}
+	if _, decoded, err := inspectPreparedPackage(
+		prepared,
+		nil,
+		true,
+	); err != nil {
+		t.Fatalf("bounded compressible package rejected: %v", err)
+	} else {
+		clearSnapshotPackageEntries(decoded)
 	}
 }
 

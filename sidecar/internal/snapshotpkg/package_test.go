@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -111,6 +112,15 @@ func TestRoundTripVerifiesHashesAndWorkspaceMAC(t *testing.T) {
 	if err != nil || !inspection.TrustedForOriginalWorkspace {
 		t.Fatalf("inspection failed: %#v %v", inspection, err)
 	}
+	if inspection.PayloadBytes != int64(len("content")+len("hello")) {
+		t.Fatalf("payload bytes = %d", inspection.PayloadBytes)
+	}
+	if inspection.UncompressedBytes <= inspection.PayloadBytes {
+		t.Fatalf(
+			"manifest was not included in uncompressed bytes: %#v",
+			inspection,
+		)
+	}
 	if err := RequireOriginalWorkspaceTrust(inspection); err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +197,109 @@ func TestInspectRejectsExcessivePathAndCompressionRatio(t *testing.T) {
 			t.Fatalf("compression bomb was accepted: %v", err)
 		}
 	})
+}
+
+func TestExportAppliesImporterStructuralLimits(t *testing.T) {
+	metadata := Metadata{
+		FormatVersion: 2,
+		WorkspaceID:   "w",
+		SnapshotID:    "s",
+	}
+	t.Run("path", func(t *testing.T) {
+		err := Export(
+			io.Discard,
+			metadata,
+			map[string][]byte{
+				strings.Repeat("a", DefaultLimits().MaxPathBytes+1): nil,
+			},
+			nil,
+		)
+		if !errors.Is(err, ErrResourceLimit) {
+			t.Fatalf("long export path error = %v", err)
+		}
+	})
+	t.Run("entry-count", func(t *testing.T) {
+		entries := make(map[string][]byte, DefaultLimits().MaxEntries)
+		for index := range DefaultLimits().MaxEntries {
+			entries[fmt.Sprintf("objects/%05d", index)] = nil
+		}
+		if err := Export(
+			io.Discard,
+			metadata,
+			entries,
+			nil,
+		); !errors.Is(err, ErrResourceLimit) {
+			t.Fatalf("entry-count export error = %v", err)
+		}
+	})
+	t.Run("manifest-size", func(t *testing.T) {
+		const entriesCount = 9000
+		entries := make(map[string][]byte, entriesCount)
+		for index := range entriesCount {
+			name := fmt.Sprintf(
+				"objects/%04d-%s",
+				index,
+				strings.Repeat("a", 940),
+			)
+			entries[name] = nil
+		}
+		if err := Export(
+			io.Discard,
+			metadata,
+			entries,
+			nil,
+		); !errors.Is(err, ErrResourceLimit) {
+			t.Fatalf("manifest-size export error = %v", err)
+		}
+	})
+}
+
+func TestInspectClassifiesChecksumCorruptionAsInvalidPackage(t *testing.T) {
+	var output bytes.Buffer
+	if err := Export(&output, Metadata{
+		FormatVersion: 2,
+		WorkspaceID:   "w",
+		SnapshotID:    "s",
+	}, map[string][]byte{"objects/a": []byte("content")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	const centralDirectorySignature = "PK\x01\x02"
+	for _, test := range []struct {
+		name  string
+		index int
+	}{
+		{name: "manifest", index: 0},
+		{name: "payload", index: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			raw := append([]byte(nil), output.Bytes()...)
+			offset := -1
+			searchFrom := 0
+			for occurrence := 0; occurrence <= test.index; occurrence++ {
+				found := bytes.Index(
+					raw[searchFrom:],
+					[]byte(centralDirectorySignature),
+				)
+				if found < 0 {
+					t.Fatal("central directory entry not found")
+				}
+				offset = searchFrom + found
+				searchFrom = offset + len(centralDirectorySignature)
+			}
+			// CRC-32 starts at byte 16 of the central-directory header.
+			raw[offset+16] ^= 0xff
+			_, err := Inspect(
+				bytes.NewReader(raw),
+				int64(len(raw)),
+				DefaultLimits(),
+				nil,
+			)
+			if !errors.Is(err, ErrInvalidPackage) ||
+				errors.Is(err, ErrResourceLimit) {
+				t.Fatalf("checksum corruption error = %v", err)
+			}
+		})
+	}
 }
 
 func TestTamperedEntryFailsBeforeImport(t *testing.T) {

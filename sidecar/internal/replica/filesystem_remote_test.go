@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,6 +42,8 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 	childID := filesystemObjectID(childContent)
 	historicalContent := []byte("historical child")
 	historicalID := filesystemObjectID(historicalContent)
+	createdAt := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	parentRevisionID := "77777777-7777-4777-8777-777777777777"
 	historyPayload, err := json.Marshal(map[string]any{
 		"formatVersion": 2,
 		"workspaceId":   workspaceID,
@@ -56,12 +59,36 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 			"nextFormalVersion":   3,
 			"revisions": []map[string]any{
 				{
-					"revisionId": "77777777-7777-4777-8777-777777777777",
-					"objectId":   historicalID,
+					"contractVersion":  "2.0",
+					"revisionId":       parentRevisionID,
+					"documentId":       "66666666-6666-4666-8666-666666666666",
+					"parentRevisionId": nil,
+					"kind":             "formal",
+					"revisionOrdinal":  1,
+					"formalVersion":    1,
+					"objectId":         historicalID,
+					"contentHash":      filesystemDigest(historicalContent),
+					"size":             len(historicalContent),
+					"mimeType":         "text/csv",
+					"createdAt":        createdAt,
+					"createdBy":        "fixture",
+					"deviceId":         authority.ClaimID,
 				},
 				{
-					"revisionId": "88888888-8888-4888-8888-888888888888",
-					"objectId":   childID,
+					"contractVersion":  "2.0",
+					"revisionId":       "88888888-8888-4888-8888-888888888888",
+					"documentId":       "66666666-6666-4666-8666-666666666666",
+					"parentRevisionId": parentRevisionID,
+					"kind":             "formal",
+					"revisionOrdinal":  2,
+					"formalVersion":    2,
+					"objectId":         childID,
+					"contentHash":      filesystemDigest(childContent),
+					"size":             len(childContent),
+					"mimeType":         "text/csv",
+					"createdAt":        createdAt.Add(time.Second),
+					"createdBy":        "fixture",
+					"deviceId":         authority.ClaimID,
 				},
 			},
 		}},
@@ -86,7 +113,7 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	databaseContent := []byte("sqlite database")
+	databaseContent := strictSnapshotDatabase(t, "sqlite database")
 	record := strictSnapshotFixture(
 		t,
 		repository,
@@ -357,6 +384,88 @@ func TestFilesystemRemoteOpenRequiresExistingIdentity(t *testing.T) {
 		t.Fatalf("duplicate identity create error = %v", err)
 	}
 	_ = created
+}
+
+func TestFilesystemRecoveryReadBudgetRejectsBeforeReadingPastLimit(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	if err := os.WriteFile(first, []byte("123456"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	budget := filesystemRecoveryReadBudget{remaining: 8}
+	raw, err := budget.readFile(context.Background(), first)
+	if err != nil || string(raw) != "123456" || budget.remaining != 2 {
+		t.Fatalf(
+			"first read raw=%q remaining=%d err=%v",
+			raw,
+			budget.remaining,
+			err,
+		)
+	}
+	if _, err := budget.readFile(
+		context.Background(),
+		second,
+	); !errors.Is(err, snapshot.ErrBundleResourceLimit) ||
+		!errors.Is(err, ErrVerificationInvalid) ||
+		budget.remaining != 2 {
+		t.Fatalf(
+			"over-budget read remaining=%d err=%v",
+			budget.remaining,
+			err,
+		)
+	}
+}
+
+func TestFilesystemRecoveryEntryLimitsRejectBeforeMapAllocation(
+	t *testing.T,
+) {
+	tests := map[string]func(*Checkpoint){
+		"roots": func(checkpoint *Checkpoint) {
+			checkpoint.Roots = make(
+				[]objectrepo.ObjectID,
+				maxFilesystemRecoveryEntries+1,
+			)
+		},
+		"manifests": func(checkpoint *Checkpoint) {
+			checkpoint.Manifests = make(
+				[]objectrepo.ManifestRecord,
+				maxFilesystemRecoveryEntries+1,
+			)
+		},
+		"catalog objects": func(checkpoint *Checkpoint) {
+			checkpoint.Snapshot.Objects = make(
+				[]objectrepo.ObjectID,
+				maxFilesystemRecoveryEntries+1,
+			)
+		},
+		"object map": func(checkpoint *Checkpoint) {
+			checkpoint.Snapshot.ObjectMap = make(
+				map[string]objectrepo.ObjectID,
+				maxFilesystemRecoveryEntries+1,
+			)
+			for index := 0; index <= maxFilesystemRecoveryEntries; index++ {
+				checkpoint.Snapshot.ObjectMap[fmt.Sprintf("root-%d", index)] =
+					objectrepo.ObjectID(fmt.Sprintf("obj_%064x", index))
+			}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			checkpoint := Checkpoint{}
+			mutate(&checkpoint)
+			err := validateFilesystemRecoveryEntryLimits(checkpoint)
+			if !errors.Is(err, snapshot.ErrBundleResourceLimit) ||
+				!errors.Is(err, ErrVerificationInvalid) {
+				t.Fatalf("entry limit error = %v", err)
+			}
+		})
+	}
 }
 
 func TestWriteImmutableConcurrentDifferentContentNeverOverwrites(

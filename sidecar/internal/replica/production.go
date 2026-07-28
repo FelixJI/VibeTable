@@ -389,6 +389,14 @@ func (manager *Manager) queuePublishedSnapshots(ctx context.Context) error {
 			if authority.WorkspaceID != manager.workspace {
 				return ErrWorkspaceMismatch
 			}
+			reachabilityRoots, err := snapshot.ReachabilityObjectIDs(
+				ctx,
+				manager.repository,
+				record,
+			)
+			if err != nil {
+				return err
+			}
 			pin, err := manager.repository.Pin(
 				ctx,
 				objectrepo.Authority{
@@ -396,7 +404,7 @@ func (manager *Manager) queuePublishedSnapshots(ctx context.Context) error {
 					FenceEpoch:  authority.FenceEpoch,
 					ClaimID:     authority.ClaimID,
 				},
-				record.Objects,
+				reachabilityRoots,
 				"pending-replica:"+taskID,
 				nil,
 			)
@@ -565,11 +573,23 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 		); err != nil {
 			return err
 		}
-		pinRoots := unionRoots(
-			known[set.Base.SnapshotID].Objects,
-			local.Objects,
-			candidate.Roots,
+		baseRoots, err := snapshot.ReachabilityObjectIDs(
+			ctx,
+			manager.repository,
+			known[set.Base.SnapshotID],
 		)
+		if err != nil {
+			return err
+		}
+		localRoots, err := snapshot.ReachabilityObjectIDs(
+			ctx,
+			manager.repository,
+			known[set.Local.SnapshotID],
+		)
+		if err != nil {
+			return err
+		}
+		pinRoots := unionRoots(baseRoots, localRoots, candidate.Roots)
 		protected := make(map[objectrepo.ObjectID]struct{}, len(pinRoots))
 		for _, root := range pinRoots {
 			protected[root] = struct{}{}
@@ -1703,7 +1723,10 @@ func validateIncomingSnapshot(
 		return ErrVerificationInvalid
 	}
 	if err := snapshot.ValidateSnapshotBundle(ctx, repository, record); err != nil {
-		return ErrVerificationInvalid
+		if errors.Is(err, snapshot.ErrBundleInvalid) {
+			return ErrVerificationInvalid
+		}
+		return err
 	}
 	return nil
 }

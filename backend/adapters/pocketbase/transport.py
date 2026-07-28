@@ -173,7 +173,9 @@ class StdlibPocketBaseTransport:
                         code="sidecar.unexpected_status",
                     )
         except HTTPError as exc:
-            raise _http_error(exc.code, exc.read(_MAX_RESPONSE_BYTES + 1)) from None
+            with exc:
+                error_body = exc.read(_MAX_RESPONSE_BYTES + 1)
+            raise _http_error(exc.code, error_body) from None
         except (URLError, TimeoutError, OSError):
             raise PocketBaseTransportError("PocketBase sidecar is unavailable") from None
         if not raw:
@@ -323,9 +325,11 @@ class StdlibPocketBaseTransport:
                         output.flush()
                         os.fsync(output.fileno())
                 except HTTPError as exc:
+                    with exc:
+                        error_body = exc.read(_MAX_RESPONSE_BYTES + 1)
                     raise _http_error(
                         exc.code,
-                        exc.read(_MAX_RESPONSE_BYTES + 1),
+                        error_body,
                     ) from None
                 except PocketBaseTransportError:
                     raise
@@ -378,9 +382,11 @@ class StdlibPocketBaseTransport:
                         code="sidecar.unexpected_status",
                     )
         except HTTPError as exc:
+            with exc:
+                error_body = exc.read(_MAX_RESPONSE_BYTES + 1)
             raise _http_error(
                 exc.code,
-                exc.read(_MAX_RESPONSE_BYTES + 1),
+                error_body,
             ) from None
         except PocketBaseTransportError:
             raise

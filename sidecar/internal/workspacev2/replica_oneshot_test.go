@@ -650,6 +650,35 @@ func TestReplicaOneShotInitializeVerifyRecoverRoundTrip(t *testing.T) {
 		if _, expected := expectedSnapshots[record.SnapshotID]; !expected {
 			t.Fatalf("unexpected recovered snapshot: %#v", record)
 		}
+		currentObjects := make(
+			map[objectrepo.ObjectID]struct{},
+			len(record.ObjectMap),
+		)
+		for _, id := range record.ObjectMap {
+			currentObjects[id] = struct{}{}
+		}
+		recoveredObjects := make(
+			map[objectrepo.ObjectID]struct{},
+			len(record.Objects),
+		)
+		for _, id := range record.Objects {
+			recoveredObjects[id] = struct{}{}
+		}
+		if len(recoveredObjects) != len(currentObjects) {
+			t.Fatalf(
+				"recovered catalog expanded current objects: %#v",
+				record,
+			)
+		}
+		for id := range currentObjects {
+			if _, exists := recoveredObjects[id]; !exists {
+				t.Fatalf(
+					"recovered catalog lost current object %s: %#v",
+					id,
+					record,
+				)
+			}
+		}
 		delete(expectedSnapshots, record.SnapshotID)
 	}
 	if len(expectedSnapshots) != 0 {

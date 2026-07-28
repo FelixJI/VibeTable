@@ -23,7 +23,11 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 )
 
-const filesystemReplicaFormat = 1
+const (
+	filesystemReplicaFormat        = 1
+	maxFilesystemRecoveryEntries   = 10_000
+	maxFilesystemRecoveryReadBytes = snapshot.MaxBundleMaterializedBytes
+)
 
 type filesystemReplicaIdentity struct {
 	FormatVersion uint64               `json:"formatVersion"`
@@ -373,16 +377,23 @@ func (remote *FilesystemRemote) recoverCheckpoint(
 		return FilesystemRecoveryBundle{}, filesystemCheckpoint{}, err
 	}
 	path := remote.checkpointPathParts(snapshotID, catalogRevision)
-	raw, err := os.ReadFile(path)
+	budget := filesystemRecoveryReadBudget{
+		remaining: maxFilesystemRecoveryReadBytes,
+	}
+	raw, err := budget.readFile(ctx, path)
 	if err != nil {
-		return FilesystemRecoveryBundle{}, filesystemCheckpoint{},
-			errors.Join(ErrRemoteUnavailable, err)
+		return FilesystemRecoveryBundle{}, filesystemCheckpoint{}, err
 	}
 	var stored filesystemCheckpoint
 	if err := decodeFilesystemJSON(raw, &stored); err != nil ||
 		stored.FormatVersion != filesystemReplicaFormat {
 		return FilesystemRecoveryBundle{}, filesystemCheckpoint{},
 			ErrVerificationInvalid
+	}
+	if err := validateFilesystemRecoveryEntryLimits(
+		stored.Checkpoint,
+	); err != nil {
+		return FilesystemRecoveryBundle{}, filesystemCheckpoint{}, err
 	}
 	rawCheckpoint, err := json.Marshal(stored.Checkpoint)
 	if err != nil ||
@@ -402,10 +413,9 @@ func (remote *FilesystemRemote) recoverCheckpoint(
 		if err != nil {
 			return FilesystemRecoveryBundle{}, filesystemCheckpoint{}, err
 		}
-		content, err := os.ReadFile(objectPath)
+		content, err := budget.readFile(ctx, objectPath)
 		if err != nil {
-			return FilesystemRecoveryBundle{}, filesystemCheckpoint{},
-				errors.Join(ErrRemoteUnavailable, err)
+			return FilesystemRecoveryBundle{}, filesystemCheckpoint{}, err
 		}
 		if filesystemObjectID(content) != root {
 			return FilesystemRecoveryBundle{}, filesystemCheckpoint{},
@@ -428,10 +438,9 @@ func (remote *FilesystemRemote) recoverCheckpoint(
 		if err != nil {
 			return FilesystemRecoveryBundle{}, filesystemCheckpoint{}, err
 		}
-		raw, err := os.ReadFile(manifestPath)
+		raw, err := budget.readFile(ctx, manifestPath)
 		if err != nil {
-			return FilesystemRecoveryBundle{}, filesystemCheckpoint{},
-				errors.Join(ErrRemoteUnavailable, err)
+			return FilesystemRecoveryBundle{}, filesystemCheckpoint{}, err
 		}
 		var actual objectrepo.ManifestRecord
 		if err := decodeFilesystemJSON(raw, &actual); err != nil ||
@@ -449,6 +458,7 @@ func (remote *FilesystemRemote) recoverCheckpoint(
 		manifests[actual.ID] = actual
 	}
 	if err := validateFilesystemSnapshotMetadata(
+		ctx,
 		stored.Checkpoint,
 		objects,
 		manifests,
@@ -1104,17 +1114,18 @@ func validateFilesystemRecoveryClosure(
 }
 
 func validateFilesystemSnapshotMetadata(
+	ctx context.Context,
 	checkpoint Checkpoint,
 	objects map[objectrepo.ObjectID][]byte,
 	manifests map[objectrepo.ManifestID]objectrepo.ManifestRecord,
 ) error {
 	record := checkpoint.Snapshot
 	snapshotRecord, exists := manifests[record.ManifestID]
-	if !exists || snapshotRecord.Name != "snapshot" {
+	if !exists {
 		return ErrVerificationInvalid
 	}
 	sealRecord, exists := manifests[record.SealID]
-	if !exists || sealRecord.Name != "snapshot-seal" {
+	if !exists {
 		return ErrVerificationInvalid
 	}
 	var topologyRef struct {
@@ -1137,53 +1148,25 @@ func validateFilesystemSnapshotMetadata(
 		&fileRef,
 	); err != nil ||
 		fileRef.FormatVersion != 1 ||
-		fileRef.SourceRoot == "" {
+		fileRef.SourceRoot == "" ||
+		fileRef.Files == nil {
 		return ErrVerificationInvalid
 	}
 	topology, exists := manifests[topologyRef.ManifestID]
-	if !exists || topology.Name != "topology-head" {
+	if !exists {
 		return ErrVerificationInvalid
 	}
 	files, exists := manifests[fileRef.SourceRoot]
-	if !exists || files.Name != "file-state-head" {
+	if !exists {
 		return ErrVerificationInvalid
 	}
 	var fileHead struct {
-		HistoryRoot objectrepo.ManifestID `json:"historyRoot"`
+		FormatVersion uint64                `json:"formatVersion"`
+		WorkspaceID   string                `json:"workspaceId"`
+		HistoryRoot   objectrepo.ManifestID `json:"historyRoot"`
+		FileRevision  uint64                `json:"fileRevision"`
 	}
-	if err := json.Unmarshal(files.Payload, &fileHead); err != nil {
-		return ErrVerificationInvalid
-	}
-	var manifest snapshot.Manifest
-	var seal snapshot.Seal
-	if err := decodeFilesystemJSON(
-		snapshotRecord.Payload,
-		&manifest,
-	); err != nil {
-		return ErrVerificationInvalid
-	}
-	if err := decodeFilesystemJSON(sealRecord.Payload, &seal); err != nil {
-		return ErrVerificationInvalid
-	}
-	manifestHash := sha256.Sum256(snapshotRecord.Payload)
-	if manifest.SnapshotID != record.SnapshotID ||
-		manifest.WorkspaceID != record.WorkspaceID ||
-		manifest.FenceEpoch != record.FenceEpoch ||
-		manifest.ClaimID != record.ClaimID ||
-		manifest.SnapshotSequence != record.SnapshotSequence ||
-		manifest.BusinessDatabaseObjectID != record.ObjectMap["database"] ||
-		manifest.TopologyRootObjectID != record.ObjectMap["topology-root"] ||
-		manifest.FileStateRootObjectID != record.ObjectMap["file-state-root"] ||
-		manifest.WorkspaceSettingsObjectID !=
-			record.ObjectMap["workspace-settings"] ||
-		manifest.AuditPrefixObjectID != record.ObjectMap["audit-prefix"] ||
-		seal.SnapshotID != record.SnapshotID ||
-		seal.FenceEpoch != record.FenceEpoch ||
-		seal.ClaimID != record.ClaimID ||
-		seal.SnapshotSequence != record.SnapshotSequence ||
-		seal.ManifestHash != "sha256:"+
-			hex.EncodeToString(manifestHash[:]) ||
-		!seal.Verified {
+	if err := decodeFilesystemJSON(files.Payload, &fileHead); err != nil {
 		return ErrVerificationInvalid
 	}
 	required := map[objectrepo.ManifestID]struct{}{
@@ -1192,34 +1175,37 @@ func validateFilesystemSnapshotMetadata(
 		topologyRef.ManifestID: {},
 		fileRef.SourceRoot:     {},
 	}
+	var historyRoot *objectrepo.ManifestRecord
+	historyObjects := map[objectrepo.ObjectID][]byte{}
 	if fileHead.HistoryRoot != "" {
 		history, exists := manifests[fileHead.HistoryRoot]
-		if !exists || history.Name != "filehistory-root" {
+		if !exists {
 			return ErrVerificationInvalid
 		}
-		var historyRoot struct {
-			FormatVersion int    `json:"formatVersion"`
-			WorkspaceID   string `json:"workspaceId"`
-			Documents     []struct {
-				Revisions []struct {
-					ObjectID objectrepo.ObjectID `json:"objectId"`
-				} `json:"revisions"`
-			} `json:"documents"`
-		}
-		if err := json.Unmarshal(
+		historyRoot = &history
+		historyIDs, err := snapshot.FileHistoryObjectIDs(
 			history.Payload,
-			&historyRoot,
-		); err != nil ||
-			historyRoot.FormatVersion != 2 ||
-			historyRoot.WorkspaceID != record.WorkspaceID {
-			return ErrVerificationInvalid
+			record.WorkspaceID,
+		)
+		if err != nil {
+			return errors.Join(ErrVerificationInvalid, err)
 		}
-		for _, document := range historyRoot.Documents {
-			for _, revision := range document.Revisions {
-				if _, exists := objects[revision.ObjectID]; !exists {
-					return ErrVerificationInvalid
-				}
+		current := make(
+			map[objectrepo.ObjectID]struct{},
+			len(record.ObjectMap),
+		)
+		for _, id := range record.ObjectMap {
+			current[id] = struct{}{}
+		}
+		for _, id := range historyIDs {
+			if _, isCurrent := current[id]; isCurrent {
+				continue
 			}
+			raw, exists := objects[id]
+			if !exists {
+				return ErrVerificationInvalid
+			}
+			historyObjects[id] = raw
 		}
 		required[fileHead.HistoryRoot] = struct{}{}
 	}
@@ -1231,7 +1217,90 @@ func validateFilesystemSnapshotMetadata(
 			return ErrVerificationInvalid
 		}
 	}
+	currentObjects := make(map[string][]byte, len(record.ObjectMap))
+	for name, id := range record.ObjectMap {
+		raw, exists := objects[id]
+		if !exists {
+			return ErrVerificationInvalid
+		}
+		currentObjects[name] = raw
+	}
+	if err := snapshot.ValidateSnapshotBundleData(
+		ctx,
+		snapshot.SnapshotBundle{
+			Record:         record,
+			Manifest:       snapshotRecord,
+			Seal:           sealRecord,
+			Objects:        currentObjects,
+			TopologyHead:   topology,
+			FileStateHead:  files,
+			HistoryRoot:    historyRoot,
+			HistoryObjects: historyObjects,
+		},
+	); err != nil {
+		if errors.Is(err, snapshot.ErrBundleInvalid) ||
+			errors.Is(err, snapshot.ErrBundleResourceLimit) {
+			return errors.Join(ErrVerificationInvalid, err)
+		}
+		return err
+	}
 	return nil
+}
+
+func validateFilesystemRecoveryEntryLimits(checkpoint Checkpoint) error {
+	if len(checkpoint.Roots) > maxFilesystemRecoveryEntries ||
+		len(checkpoint.Manifests) > maxFilesystemRecoveryEntries ||
+		len(checkpoint.Snapshot.ObjectMap) > maxFilesystemRecoveryEntries ||
+		len(checkpoint.Snapshot.Objects) > maxFilesystemRecoveryEntries {
+		return errors.Join(
+			ErrVerificationInvalid,
+			snapshot.ErrBundleResourceLimit,
+		)
+	}
+	return nil
+}
+
+type filesystemRecoveryReadBudget struct {
+	remaining int64
+}
+
+func (budget *filesystemRecoveryReadBudget) readFile(
+	ctx context.Context,
+	path string,
+) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, errors.Join(ErrRemoteUnavailable, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, errors.Join(ErrRemoteUnavailable, err)
+	}
+	size := info.Size()
+	if size < 0 || size > budget.remaining {
+		return nil, errors.Join(
+			ErrVerificationInvalid,
+			snapshot.ErrBundleResourceLimit,
+		)
+	}
+	raw := make([]byte, int(size))
+	if _, err := io.ReadFull(file, raw); err != nil {
+		return nil, errors.Join(ErrRemoteUnavailable, err)
+	}
+	var trailing [1]byte
+	read, err := file.Read(trailing[:])
+	if read != 0 || !errors.Is(err, io.EOF) {
+		return nil, ErrVerificationInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	budget.remaining -= size
+	return raw, nil
 }
 
 func filesystemDigest(content []byte) string {

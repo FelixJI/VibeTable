@@ -159,12 +159,11 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
     assert manifest["launch"]["sidecar"] == "sidecar/vibetable-pb.exe"
     assert manifest["assets"]["migrations"] == "sidecar/migrations/manifest.json"
     assert manifest["assets"]["sbom"] == "sidecar/sbom.cdx.json"
-    assert manifest["data"]["rootPolicy"] == "first-run-selected"
     assert manifest["data"] == {
-        "rootPolicy": "first-run-selected",
-        "defaultBase": "per-user-local-app-data",
-        "fallbackBase": "user-selected",
-        "relativePath": "VibeTable/Workspaces",
+        "shellRoot": "%LOCALAPPDATA%/VibeTable/shell",
+        "managedWorkspaceRoot": ("%LOCALAPPDATA%/VibeTable/shell/workspaces/<workspaceId>"),
+        "mirroredActivityRoot": ("%LOCALAPPDATA%/VibeTable/activity/<workspaceId>"),
+        "workspaceIdentity": "manifest-uuid",
         "preserveOnUninstall": True,
     }
     assert manifest["assets"]["recoveryGuide"] == "RECOVERY.md"

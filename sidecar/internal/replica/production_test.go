@@ -209,7 +209,7 @@ func productionManagerFixture(
 	); err != nil {
 		t.Fatal(err)
 	}
-	database := []byte("durable root")
+	database := strictSnapshotDatabase(t, "durable root")
 	strictRecord := strictSnapshotFixture(
 		t,
 		repository,
@@ -256,7 +256,7 @@ func incomingSnapshot(
 		authority,
 		8,
 		8,
-		[]byte("incoming durable root"),
+		strictSnapshotDatabase(t, "incoming durable root"),
 		nil,
 	)
 }

@@ -18,6 +18,7 @@ import (
 	conflictresolution "github.com/vibetable/vibetable/sidecar/internal/conflict"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
+	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 )
 
 const selectedFilesBaseFormat = 1
@@ -528,7 +529,14 @@ func (owner *productionReplicaConflict) persistSelectedConflict(
 	if err != nil {
 		return err
 	}
-	roots := append([]objectrepo.ObjectID(nil), protection.Objects...)
+	roots, err := snapshot.ReachabilityObjectIDs(
+		ctx,
+		owner.runtime.repository,
+		protection,
+	)
+	if err != nil {
+		return err
+	}
 	if base.ObjectID != "" {
 		roots = append(roots, base.ObjectID)
 	}

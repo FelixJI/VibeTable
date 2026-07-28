@@ -140,10 +140,12 @@ def test_workspace_create_location_policy_is_strict_and_grant_is_explicit() -> N
     schema = create["paramsSchema"]
     assert params["locationPolicy"] == "managedDefault"
     assert params["selectedRootGrant"] is None
+    assert params["storageMode"] == "direct"
     assert schema["properties"]["locationPolicy"]["enum"] == [
         "managedDefault",
         "other",
     ]
+    assert schema["properties"]["storageMode"]["enum"] == ["direct", "mirrored"]
     for invalid in (
         {**params, "locationPolicy": "remote"},
         {key: value for key, value in params.items() if key != "selectedRootGrant"},

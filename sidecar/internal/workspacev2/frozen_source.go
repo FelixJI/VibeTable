@@ -23,7 +23,12 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
-const maxSnapshotWorkingSet = int64(512 << 20)
+const (
+	maxSnapshotWorkingSet          = int64(512 << 20)
+	maxSnapshotPackageContainer    = int64(256 << 20)
+	maxSnapshotPackagePayloadBytes = int64(240 << 20)
+	maxSnapshotPackageMetadata     = int64(16 << 20)
+)
 
 type frozenSource struct {
 	app             core.App
@@ -129,19 +134,20 @@ func (source *frozenSource) Freeze(
 			errors.New("snapshot.root_receipt_invalid")
 	}
 	view := snapshot.BarrierView{
-		SchemaRevision:    source.manifest.TopologySchemaVersion,
-		FileRevision:      fileRevision,
-		AuditRevision:     anchor.LedgerSequence,
-		AuditAnchor:       anchor.Hash,
-		AuditEpoch:        1,
-		AuditSequence:     anchor.SourceSequence,
-		Database:          database,
-		Files:             files,
-		Attachments:       attachments,
-		WorkspaceSettings: settings,
-		AuditPrefix:       auditPrefix,
-		CreatedByDevice:   intent.Token.ClaimID,
-		MinimumAppVersion: "2.0.0",
+		SchemaRevision:        source.manifest.TopologySchemaVersion,
+		BusinessSchemaVersion: source.manifest.BusinessSchemaVersion,
+		FileRevision:          fileRevision,
+		AuditRevision:         anchor.LedgerSequence,
+		AuditAnchor:           anchor.Hash,
+		AuditEpoch:            1,
+		AuditSequence:         anchor.SourceSequence,
+		Database:              database,
+		Files:                 files,
+		Attachments:           attachments,
+		WorkspaceSettings:     settings,
+		AuditPrefix:           auditPrefix,
+		CreatedByDevice:       intent.Token.ClaimID,
+		MinimumAppVersion:     "2.0.0",
 	}
 	return view, writecoordinator.FrozenRoots{
 		DatabaseView: "sqlite-vacuum:" + databaseHash,

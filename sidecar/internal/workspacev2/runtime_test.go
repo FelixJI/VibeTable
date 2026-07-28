@@ -1169,7 +1169,9 @@ func createAuditOutbox(t *testing.T, app *pocketbase.PocketBase) {
 			payload_hash TEXT NOT NULL,
 			payload_json BLOB NOT NULL,
 			occurred_at TEXT NOT NULL,
-			status TEXT NOT NULL
+			status TEXT NOT NULL,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(source_epoch, source_sequence)
 		)
 	`).Execute(); err != nil {
 		t.Fatal(err)

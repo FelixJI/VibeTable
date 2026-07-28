@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
+	"github.com/vibetable/vibetable/sidecar/internal/workspacedb"
 )
 
 var (
@@ -21,25 +22,26 @@ var (
 )
 
 type BarrierView struct {
-	MutationRevision  uint64
-	SnapshotSequence  uint64
-	SchemaRevision    uint64
-	FileRevision      uint64
-	AuditRevision     uint64
-	AuditAnchor       string
-	AuditEpoch        uint64
-	AuditSequence     uint64
-	TopologyRoot      string
-	FileRoot          string
-	Database          []byte
-	Files             map[string][]byte
-	Attachments       map[string][]byte
-	WorkspaceSettings []byte
-	AuditPrefix       []byte
-	CreatedByDevice   string
-	MinimumAppVersion string
-	SourceWorkspaceID string
-	SourceSnapshotID  string
+	MutationRevision      uint64
+	SnapshotSequence      uint64
+	SchemaRevision        uint64
+	BusinessSchemaVersion uint64
+	FileRevision          uint64
+	AuditRevision         uint64
+	AuditAnchor           string
+	AuditEpoch            uint64
+	AuditSequence         uint64
+	TopologyRoot          string
+	FileRoot              string
+	Database              []byte
+	Files                 map[string][]byte
+	Attachments           map[string][]byte
+	WorkspaceSettings     []byte
+	AuditPrefix           []byte
+	CreatedByDevice       string
+	MinimumAppVersion     string
+	SourceWorkspaceID     string
+	SourceSnapshotID      string
 }
 
 type Barrier interface {
@@ -54,7 +56,7 @@ const (
 	TriggerProtection Trigger = "protection"
 	TriggerSwitch     Trigger = "workspace-switch"
 	TriggerRestore    Trigger = "restore"
-	TriggerImport     Trigger = "bulk-import"
+	TriggerImport     Trigger = "import"
 )
 
 type CaptureRequest struct {
@@ -205,6 +207,13 @@ func (coordinator *Coordinator) Capture(
 		return Record{}, false, err
 	}
 	view = normalized
+	if err := workspacedb.ValidateSnapshot(
+		ctx,
+		view.Database,
+		view.BusinessSchemaVersion,
+	); err != nil {
+		return Record{}, false, err
+	}
 	inputs, manifest, seal, err := buildSnapshot(
 		request, view, snapshotID, createdAt,
 	)
@@ -235,6 +244,16 @@ func (coordinator *Coordinator) Capture(
 		return Record{}, false, err
 	}
 	roots := objectRoots(receipt.Objects)
+	historyRoots, err := FileHistoryObjectIDsForHead(
+		ctx,
+		coordinator.repository,
+		request.WorkspaceID,
+		objectrepo.ManifestID(view.FileRoot),
+	)
+	if err != nil {
+		return Record{}, false, err
+	}
+	reachabilityRoots := mergeSnapshotObjectIDs(roots, historyRoots)
 	pinned := request.Pinned || isProtectionTrigger(request.Trigger)
 	expiry := createdAt.Add(24 * time.Hour)
 	var pinExpiry *time.Time
@@ -242,7 +261,11 @@ func (coordinator *Coordinator) Capture(
 		pinExpiry = &expiry
 	}
 	pin, err := coordinator.repository.Pin(
-		ctx, request.Authority, roots, "snapshot:"+snapshotID, pinExpiry,
+		ctx,
+		request.Authority,
+		reachabilityRoots,
+		"snapshot:"+snapshotID,
+		pinExpiry,
 	)
 	if err != nil {
 		return Record{}, false, err
@@ -252,7 +275,7 @@ func (coordinator *Coordinator) Capture(
 			context.WithoutCancel(ctx), request.Authority, pin.PinID,
 		)
 	}
-	report, err := coordinator.repository.Verify(ctx, roots)
+	report, err := coordinator.repository.Verify(ctx, reachabilityRoots)
 	if err != nil {
 		releasePin()
 		return Record{}, false, err
@@ -301,7 +324,7 @@ func (coordinator *Coordinator) Capture(
 			"snapshot.storage_inventory_unavailable",
 		)
 	}
-	inventory, err := inventorySource.StorageInventory(ctx, roots)
+	inventory, err := inventorySource.StorageInventory(ctx, reachabilityRoots)
 	if err != nil {
 		releasePin()
 		return Record{}, false, err
@@ -318,7 +341,7 @@ func (coordinator *Coordinator) Capture(
 		FileRevision:          view.FileRevision,
 		AuditRevision:         view.AuditRevision,
 		AuditAnchor:           view.AuditAnchor,
-		Trigger:               request.Trigger,
+		Trigger:               manifest.Trigger,
 		Pinned:                pinned,
 		CreatedAt:             createdAt,
 		Objects:               roots,
@@ -382,6 +405,11 @@ func normalizeBarrierView(view BarrierView) (BarrierView, error) {
 	}
 	if view.MinimumAppVersion == "" {
 		view.MinimumAppVersion = "2.0.0"
+	}
+	if view.BusinessSchemaVersion == 0 {
+		return BarrierView{}, errors.New(
+			"snapshot.business_schema_version_invalid",
+		)
 	}
 	if view.CreatedByDevice == "" {
 		view.CreatedByDevice = "00000000-0000-4000-8000-000000000000"
@@ -518,8 +546,6 @@ func manifestTrigger(trigger Trigger) Trigger {
 	switch trigger {
 	case TriggerSwitch:
 		return TriggerProtection
-	case TriggerImport:
-		return "import"
 	default:
 		return trigger
 	}

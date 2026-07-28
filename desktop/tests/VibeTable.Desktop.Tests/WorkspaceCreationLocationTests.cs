@@ -123,6 +123,35 @@ public sealed class WorkspaceCreationLocationTests
     }
 
     [TestMethod]
+    public void ManagedDefaultRejectsMirroredStorageMode()
+    {
+        using JsonDocument document = JsonDocument.Parse(
+            """
+            {
+              "displayName": "Invalid mirror",
+              "locationPolicy": "managedDefault",
+              "selectedRootGrant": null,
+              "storageMode": "mirrored",
+              "encryptionMode": "convenient"
+            }
+            """);
+
+        WorkspaceRegistryException error = Assert.ThrowsExactly<WorkspaceRegistryException>(
+            () => MainWindow.ResolveWorkspaceCreateRoot(
+                document.RootElement,
+                Guid.NewGuid(),
+                new WorkspacePathGrantStore(
+                    new RecordingPicker(Path.GetTempPath())),
+                Path.GetTempPath(),
+                Guid.NewGuid()));
+
+        Assert.AreEqual("workspace.request_invalid", error.Code);
+        Assert.AreEqual(
+            "The managed default location requires direct storage mode.",
+            error.Message);
+    }
+
+    [TestMethod]
     public void CreateLocationParamsRejectUnknownFields()
     {
         using JsonDocument document = JsonDocument.Parse(

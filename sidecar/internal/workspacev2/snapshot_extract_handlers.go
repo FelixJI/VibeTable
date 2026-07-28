@@ -15,6 +15,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
+	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 )
 
 const snapshotExtractPlanTTL = 10 * time.Minute
@@ -389,7 +390,16 @@ func (runtime *Runtime) verifyRepository(
 			continue
 		}
 		snapshotCount++
-		for _, id := range record.Objects {
+		reachabilityRoots, reachabilityErr :=
+			snapshot.ReachabilityObjectIDs(
+				ctx,
+				runtime.repository,
+				record,
+			)
+		if reachabilityErr != nil {
+			return nil, reachabilityErr
+		}
+		for _, id := range reachabilityRoots {
 			objects[id] = struct{}{}
 		}
 		valid, verifyErr := runtime.snapshotIntegrity(ctx, record)

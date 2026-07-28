@@ -59,7 +59,7 @@ describe("workspace protection UI capability gates", () => {
     expect(document.body.textContent).toContain("固定公开口令：password");
     expect(document.body.textContent).toContain("程序管理的默认位置");
     expect(document.body.textContent).toContain("不使用程序安装目录");
-    expect(document.body.textContent).toContain("当前设备尚未提供经独立重开验证的镜像位置");
+    expect(document.body.textContent).toContain("程序管理的默认位置使用直接模式");
     expect(document.body.querySelector<HTMLInputElement>(
       'input[value="mirrored"]',
     )?.disabled).toBe(true);
@@ -111,6 +111,63 @@ describe("workspace protection UI capability gates", () => {
         selectedRootGrant: "host-picker://workspace-root",
         storageMode: "direct",
         encryptionMode: "convenient",
+      },
+    });
+    wrapper.unmount();
+  });
+
+  it("forces direct mode when creation returns to the managed default", async () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities([
+      "workspace.session.v2",
+      "workspace.storage.mirrored-create.v2",
+    ]);
+    const wrapper = mount(WorkspaceCenter, { attachTo: document.body });
+
+    await wrapper.get('[data-testid="workspace-create"]').trigger("click");
+    const locationGroup = document.body.querySelector(
+      '[data-testid="workspace-location-policy"]',
+    )!;
+    const other = locationGroup.querySelector<HTMLInputElement>('input[value="other"]')!;
+    const managed = locationGroup.querySelector<HTMLInputElement>(
+      'input[value="managedDefault"]',
+    )!;
+    const storageInput = (value: "direct" | "mirrored") =>
+      document.body.querySelector<HTMLInputElement>(`input[value="${value}"]`)!;
+
+    expect(storageInput("mirrored").disabled).toBe(true);
+    expect(document.body.textContent).toContain("程序管理的默认位置使用直接模式");
+    other.click();
+    await wrapper.vm.$nextTick();
+    expect(storageInput("mirrored").disabled).toBe(false);
+    storageInput("mirrored").click();
+    await wrapper.vm.$nextTick();
+    expect(storageInput("mirrored").checked).toBe(true);
+
+    managed.click();
+    await wrapper.vm.$nextTick();
+    expect(storageInput("mirrored").disabled).toBe(true);
+    expect(storageInput("direct").checked).toBe(true);
+
+    const name = document.body.querySelector<HTMLInputElement>(
+      '.workspace-flow-modal input[type="text"]',
+    )!;
+    name.value = "受管直连";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await wrapper.vm.$nextTick();
+    const confirm = document.body.querySelector<HTMLButtonElement>(
+      '[data-testid="workspace-flow-confirm"]',
+    )!;
+    expect(confirm.disabled).toBe(false);
+    confirm.click();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted("action")?.[0]?.[0]).toMatchObject({
+      method: "workspace.create",
+      params: {
+        locationPolicy: "managedDefault",
+        selectedRootGrant: null,
+        storageMode: "direct",
       },
     });
     wrapper.unmount();
@@ -195,7 +252,7 @@ describe("workspace protection UI capability gates", () => {
     });
     await wrapper.vm.$nextTick();
     const input = document.body.querySelector<HTMLInputElement>(
-      ".workspace-flow-modal input",
+      '.workspace-flow-modal input[type="text"]',
     )!;
     input.value = "季度规划";
     input.dispatchEvent(new Event("input", { bubbles: true }));

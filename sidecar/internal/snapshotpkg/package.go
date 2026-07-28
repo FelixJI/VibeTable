@@ -78,17 +78,30 @@ type Inspection struct {
 	Manifest                    Manifest `json:"manifest"`
 	TrustedForOriginalWorkspace bool     `json:"trustedForOriginalWorkspace"`
 	UncompressedBytes           int64    `json:"uncompressedBytes"`
+	// PayloadBytes excludes manifest.json so callers can apply the same
+	// application payload budget used by Export.
+	PayloadBytes int64 `json:"-"`
 }
 
 func Export(writer io.Writer, metadata Metadata, entries map[string][]byte, workspaceKey []byte) error {
 	if metadata.FormatVersion != 2 || metadata.WorkspaceID == "" || metadata.SnapshotID == "" {
 		return ErrInvalidPackage
 	}
+	limits := DefaultLimits()
+	// Export writes manifest.json in addition to the caller-provided entries.
+	// Apply the same structural limits as Inspect so every emitted package is
+	// eligible for inspection by the matching implementation.
+	if len(entries) >= limits.MaxEntries {
+		return ErrResourceLimit
+	}
 	hashes := make(map[string]string, len(entries))
 	names := make([]string, 0, len(entries))
 	for name, content := range entries {
 		if !safeName(name) || name == "manifest.json" {
 			return fmt.Errorf("%w: unsafe entry %q", ErrInvalidPackage, name)
+		}
+		if len(name) > limits.MaxPathBytes {
+			return ErrResourceLimit
 		}
 		sum := sha256.Sum256(content)
 		hashes[name] = hex.EncodeToString(sum[:])
@@ -102,6 +115,9 @@ func Export(writer io.Writer, metadata Metadata, entries map[string][]byte, work
 	manifestRaw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
+	}
+	if int64(len(manifestRaw)) > limits.MaxManifestBytes {
+		return ErrResourceLimit
 	}
 	archive := zip.NewWriter(writer)
 	for _, name := range append([]string{"manifest.json"}, names...) {
@@ -135,6 +151,7 @@ func Inspect(reader io.ReaderAt, size int64, limits Limits, workspaceKey []byte)
 	actual := map[string]string{}
 	var manifest Manifest
 	var total int64
+	var payloadTotal int64
 	for _, file := range archive.File {
 		if !safeName(file.Name) || len(file.Name) > limits.MaxPathBytes ||
 			seen[file.Name] || file.FileInfo().Mode()&0o120000 != 0 {
@@ -160,8 +177,11 @@ func Inspect(reader io.ReaderAt, size int64, limits Limits, workspaceKey []byte)
 		if file.Name == "manifest.json" {
 			content, err := io.ReadAll(io.LimitReader(stream, limits.MaxManifestBytes+1))
 			closeErr := stream.Close()
-			if err != nil || closeErr != nil || int64(len(content)) > limits.MaxManifestBytes {
+			if int64(len(content)) > limits.MaxManifestBytes {
 				return Inspection{}, ErrResourceLimit
+			}
+			if err != nil || closeErr != nil {
+				return Inspection{}, ErrInvalidPackage
 			}
 			decoder := json.NewDecoder(bytes.NewReader(content))
 			decoder.DisallowUnknownFields()
@@ -173,12 +193,16 @@ func Inspect(reader io.ReaderAt, size int64, limits Limits, workspaceKey []byte)
 			}
 			continue
 		}
+		payloadTotal += int64(file.UncompressedSize64)
 		hasher := sha256.New()
 		written, copyErr := io.Copy(hasher, io.LimitReader(stream, limits.MaxEntryBytes+1))
 		closeErr := stream.Close()
-		if copyErr != nil || closeErr != nil || written > limits.MaxEntryBytes ||
-			written != int64(file.UncompressedSize64) {
+		if written > limits.MaxEntryBytes {
 			return Inspection{}, ErrResourceLimit
+		}
+		if copyErr != nil || closeErr != nil ||
+			written != int64(file.UncompressedSize64) {
+			return Inspection{}, ErrInvalidPackage
 		}
 		actual[file.Name] = hex.EncodeToString(hasher.Sum(nil))
 	}
@@ -194,7 +218,12 @@ func Inspect(reader io.ReaderAt, size int64, limits Limits, workspaceKey []byte)
 	}
 	trusted := len(workspaceKey) > 0 && manifest.WorkspaceMAC != "" &&
 		hmac.Equal([]byte(manifest.WorkspaceMAC), []byte(computeMAC(manifest.Metadata, manifest.Entries, workspaceKey)))
-	return Inspection{Manifest: manifest, TrustedForOriginalWorkspace: trusted, UncompressedBytes: total}, nil
+	return Inspection{
+		Manifest:                    manifest,
+		TrustedForOriginalWorkspace: trusted,
+		UncompressedBytes:           total,
+		PayloadBytes:                payloadTotal,
+	}, nil
 }
 
 func RequireOriginalWorkspaceTrust(inspection Inspection) error {

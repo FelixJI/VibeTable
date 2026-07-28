@@ -2,6 +2,8 @@ package workspacev2
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -13,18 +15,35 @@ import (
 
 const agePackageHeader = "age-encryption.org/v1"
 
+type snapshotPackageSourceBinding struct {
+	Hash     string
+	Size     int64
+	Identity string
+}
+
+type snapshotPackageSource struct {
+	file      *os.File
+	binding   snapshotPackageSourceBinding
+	staged    []byte
+	encrypted bool
+	closeOnce sync.Once
+	closeErr  error
+}
+
 // preparedSnapshotPackage gives ZIP inspection code the random-access view it
 // needs without ever materializing decrypted package plaintext on disk.
 //
-// Unencrypted packages retain the caller-granted source file. Encrypted
-// packages retain a bounded in-memory plaintext buffer which Close clears.
+// Both package forms are parsed from a bounded immutable in-memory staging
+// copy. Encrypted packages additionally retain their decrypted ZIP buffer.
+// Close clears every plaintext/ciphertext staging buffer.
 type preparedSnapshotPackage struct {
-	readerAt  io.ReaderAt
-	size      int64
-	plaintext []byte
-	close     func() error
-	closeOnce sync.Once
-	closeErr  error
+	readerAt        io.ReaderAt
+	size            int64
+	workingSetBytes int64
+	plaintext       []byte
+	close           func() error
+	closeOnce       sync.Once
+	closeErr        error
 }
 
 func (prepared *preparedSnapshotPackage) ReaderAt() io.ReaderAt {
@@ -73,75 +92,220 @@ func prepareSnapshotPackageSourceWithLimit(
 	if plaintextLimit <= 0 {
 		return nil, false, snapshotpkg.ErrResourceLimit
 	}
-	input, err := os.Open(source)
+	opened, err := openSnapshotPackageSource(source)
 	if err != nil {
 		return nil, false, err
 	}
+	prepared, err := opened.prepare(credential, plaintextLimit)
+	if err != nil {
+		return nil, opened.encrypted, errors.Join(err, opened.Close())
+	}
+	prepared.close = opened.Close
+	return prepared, opened.encrypted, nil
+}
+
+func openSnapshotPackageSource(
+	path string,
+) (*snapshotPackageSource, error) {
+	input, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
 	info, err := input.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
-		return nil, false, errors.Join(
+		return nil, errors.Join(
 			errors.New("snapshot.package_invalid"),
 			err,
 			input.Close(),
 		)
 	}
-	prefix := make([]byte, len(agePackageHeader))
-	count, readErr := input.ReadAt(prefix, 0)
-	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		return nil, false, errors.Join(readErr, input.Close())
+	if info.Size() > maxSnapshotPackageContainer {
+		return nil, errors.Join(snapshotpkg.ErrResourceLimit, input.Close())
 	}
-	encrypted := count == len(prefix) &&
-		string(prefix) == agePackageHeader
-	if !encrypted {
-		if credential != nil {
-			return nil, false, errors.Join(
-				errors.New("snapshot.credential_not_applicable"),
-				input.Close(),
-			)
-		}
-		return &preparedSnapshotPackage{
-			readerAt: input,
-			size:     info.Size(),
-			close:    input.Close,
-		}, false, nil
+	identity, err := snapshotSourceFileIdentity(input, info)
+	if err != nil {
+		return nil, errors.Join(err, input.Close())
 	}
-	if credential == nil || strings.TrimSpace(*credential) == "" {
-		return nil, true, errors.Join(
-			errors.New("snapshot.credential_required"),
+	binding, err := snapshotPackageBinding(input, info.Size(), identity)
+	if err != nil {
+		return nil, errors.Join(err, input.Close())
+	}
+	staged := make([]byte, int(info.Size()))
+	count, readErr := io.ReadFull(
+		io.NewSectionReader(input, 0, info.Size()),
+		staged,
+	)
+	if readErr != nil || int64(count) != info.Size() {
+		zeroSnapshotPackageBytes(staged)
+		return nil, errors.Join(
+			errors.New("snapshot.package_source_changed"),
+			readErr,
 			input.Close(),
 		)
 	}
+	stagedHash := sha256.Sum256(staged)
+	if binding.Hash != "sha256:"+hex.EncodeToString(stagedHash[:]) {
+		zeroSnapshotPackageBytes(staged)
+		return nil, errors.Join(
+			errors.New("snapshot.package_source_changed"),
+			input.Close(),
+		)
+	}
+	return &snapshotPackageSource{
+		file:    input,
+		binding: binding,
+		staged:  staged,
+		encrypted: len(staged) >= len(agePackageHeader) &&
+			string(staged[:len(agePackageHeader)]) == agePackageHeader,
+	}, nil
+}
 
+func (source *snapshotPackageSource) Binding() snapshotPackageSourceBinding {
+	if source == nil {
+		return snapshotPackageSourceBinding{}
+	}
+	return source.binding
+}
+
+func (source *snapshotPackageSource) Encrypted() bool {
+	return source != nil && source.encrypted
+}
+
+func (source *snapshotPackageSource) VerifyUnchanged() error {
+	if source == nil || source.file == nil {
+		return errors.New("snapshot.package_source_closed")
+	}
+	info, err := source.file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		return errors.Join(errors.New("snapshot.package_source_changed"), err)
+	}
+	identity, err := snapshotSourceFileIdentity(source.file, info)
+	if err != nil {
+		return err
+	}
+	binding, err := snapshotPackageBinding(source.file, info.Size(), identity)
+	if err != nil {
+		return err
+	}
+	if binding != source.binding {
+		return errors.New("snapshot.package_source_changed")
+	}
+	return nil
+}
+
+func (source *snapshotPackageSource) Close() error {
+	if source == nil {
+		return nil
+	}
+	source.closeOnce.Do(func() {
+		source.clearStaged()
+		if source.file != nil {
+			source.closeErr = source.file.Close()
+		}
+	})
+	return source.closeErr
+}
+
+func (source *snapshotPackageSource) prepare(
+	credential *string,
+	plaintextLimit int64,
+) (*preparedSnapshotPackage, error) {
+	if source == nil || source.file == nil {
+		return nil, errors.New("snapshot.package_source_closed")
+	}
+	if plaintextLimit <= 0 {
+		return nil, snapshotpkg.ErrResourceLimit
+	}
+	if !source.encrypted {
+		if credential != nil {
+			return nil, errors.New("snapshot.credential_not_applicable")
+		}
+		return &preparedSnapshotPackage{
+			readerAt:        bytes.NewReader(source.staged),
+			size:            source.binding.Size,
+			workingSetBytes: int64(len(source.staged)),
+		}, nil
+	}
+	if credential == nil || strings.TrimSpace(*credential) == "" {
+		return nil, errors.New("snapshot.credential_required")
+	}
 	var plaintext bytes.Buffer
+	decryptionLimit := min(plaintextLimit, maxSnapshotPackageContainer)
+	// age adds framing and authentication overhead rather than compressing.
+	// Reserving the smaller of the ciphertext size and the plaintext limit
+	// prevents bytes.Buffer growth from temporarily retaining old and new
+	// plaintext backing arrays alongside the staged ciphertext.
+	plaintext.Grow(int(min(source.binding.Size, decryptionLimit)))
 	writer := &boundedSnapshotPackageBuffer{
 		buffer: &plaintext,
-		limit:  plaintextLimit,
+		limit:  decryptionLimit,
 	}
+	input := bytes.NewReader(source.staged)
 	trimmedCredential := strings.TrimSpace(*credential)
 	if strings.HasPrefix(trimmedCredential, "AGE-SECRET-KEY-") {
-		err = (snapshotpkg.AgeNative{}).Decrypt(
+		err := (snapshotpkg.AgeNative{}).Decrypt(
 			trimmedCredential,
 			input,
 			writer,
 		)
+		if err != nil {
+			zeroSnapshotPackageBytes(plaintext.Bytes())
+			return nil, err
+		}
 	} else {
-		err = (snapshotpkg.AgeNative{}).DecryptPassphrase(
+		err := (snapshotpkg.AgeNative{}).DecryptPassphrase(
 			*credential,
 			input,
 			writer,
 		)
-	}
-	closeErr := input.Close()
-	if err := errors.Join(err, closeErr); err != nil {
-		zeroSnapshotPackageBytes(plaintext.Bytes())
-		return nil, true, err
+		if err != nil {
+			zeroSnapshotPackageBytes(plaintext.Bytes())
+			return nil, err
+		}
 	}
 	raw := plaintext.Bytes()
+	source.clearStaged()
 	return &preparedSnapshotPackage{
-		readerAt:  bytes.NewReader(raw),
-		size:      int64(len(raw)),
-		plaintext: raw,
-	}, true, nil
+		readerAt:        bytes.NewReader(raw),
+		size:            int64(len(raw)),
+		workingSetBytes: int64(len(raw)),
+		plaintext:       raw,
+	}, nil
+}
+
+func (source *snapshotPackageSource) clearStaged() {
+	if source == nil {
+		return
+	}
+	zeroSnapshotPackageBytes(source.staged)
+	source.staged = nil
+}
+
+func snapshotPackageBinding(
+	file *os.File,
+	size int64,
+	identity string,
+) (snapshotPackageSourceBinding, error) {
+	if file == nil || size <= 0 || strings.TrimSpace(identity) == "" {
+		return snapshotPackageSourceBinding{},
+			errors.New("snapshot.package_source_invalid")
+	}
+	hasher := sha256.New()
+	count, err := io.Copy(
+		hasher,
+		io.NewSectionReader(file, 0, size),
+	)
+	if err != nil || count != size {
+		return snapshotPackageSourceBinding{}, errors.Join(
+			errors.New("snapshot.package_source_changed"),
+			err,
+		)
+	}
+	return snapshotPackageSourceBinding{
+		Hash:     "sha256:" + hex.EncodeToString(hasher.Sum(nil)),
+		Size:     size,
+		Identity: identity,
+	}, nil
 }
 
 type boundedSnapshotPackageBuffer struct {

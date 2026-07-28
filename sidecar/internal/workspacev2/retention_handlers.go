@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"sort"
 	"sync"
@@ -568,6 +567,30 @@ func (source *workspaceRetentionInventory) Inventory(
 			}
 			node.Children = appendUniqueObjectID(node.Children, child)
 		}
+		historyObjects, historyErr := snapshot.HistoryObjectIDs(
+			ctx,
+			source.runtime.repository,
+			record,
+		)
+		if historyErr != nil {
+			if errors.Is(historyErr, snapshot.ErrBundleInvalid) ||
+				errors.Is(historyErr, objectrepo.ErrNotFound) ||
+				errors.Is(historyErr, objectrepo.ErrCorrupt) {
+				result.CorruptIndex = true
+				continue
+			}
+			return retention.Inventory{}, historyErr
+		}
+		for _, child := range historyObjects {
+			if child == root {
+				continue
+			}
+			if _, exists := result.Nodes[child]; !exists {
+				result.CorruptIndex = true
+				continue
+			}
+			node.Children = appendUniqueObjectID(node.Children, child)
+		}
 		result.Nodes[root] = node
 		result.Snapshots = append(result.Snapshots, retention.Snapshot{
 			SnapshotID: record.SnapshotID,
@@ -693,65 +716,17 @@ func retentionPolicy(policy RetentionPolicy) retention.Policy {
 
 func fileHistoryRetentionRoots(
 	documents []filehistory.Document,
-	policy RetentionPolicy,
-	now time.Time,
+	_ RetentionPolicy,
+	_ time.Time,
 ) ([]objectrepo.ObjectID, error) {
+	// The published FileHistory root still names every immutable revision and
+	// Open verifies that entire closure. Until retention can transactionally
+	// publish a pruned replacement root, every revision in the live root is a
+	// strong GC root regardless of the user's future pruning policy.
 	var roots []objectrepo.ObjectID
 	for _, document := range documents {
-		children := make(map[string]int, len(document.Revisions))
-		byID := make(
-			map[string]filehistory.Revision,
-			len(document.Revisions),
-		)
 		for _, revision := range document.Revisions {
-			byID[revision.RevisionID] = revision
-			if revision.ParentRevisionID != nil {
-				children[*revision.ParentRevisionID]++
-			}
-		}
-		selected := map[string]struct{}{}
-		for _, revision := range document.Revisions {
-			if revision.RevisionID == document.EffectiveRevisionID ||
-				revision.FormalVersion != nil ||
-				children[revision.RevisionID] == 0 ||
-				children[revision.RevisionID] > 1 {
-				selected[revision.RevisionID] = struct{}{}
-			}
-			if revision.RestoredFromRevisionID != nil {
-				selected[*revision.RestoredFromRevisionID] = struct{}{}
-			}
-		}
-		revisions := append(
-			[]filehistory.Revision(nil),
-			document.Revisions...,
-		)
-		sort.Slice(revisions, func(left, right int) bool {
-			if revisions[left].CreatedAt.Equal(revisions[right].CreatedAt) {
-				return revisions[left].RevisionID < revisions[right].RevisionID
-			}
-			return revisions[left].CreatedAt.After(revisions[right].CreatedAt)
-		})
-		for index := 0; index < len(revisions) &&
-			index < int(policy.FileRevisionCount); index++ {
-			selected[revisions[index].RevisionID] = struct{}{}
-		}
-		selectFileRevisionBuckets(
-			selected,
-			revisions,
-			policy,
-			now,
-		)
-		// Deletion time is not yet present in FileDocument v2. Retain every
-		// revision of deleted documents rather than guessing the three-month
-		// trash deadline and risking data loss.
-		if document.Status == filehistory.DocumentDeleted {
-			for _, revision := range revisions {
-				selected[revision.RevisionID] = struct{}{}
-			}
-		}
-		for revisionID := range selected {
-			revision, found := byID[revisionID]
-			if !found || revision.ObjectID == "" {
+			if revision.ObjectID == "" {
 				return nil, retention.ErrUnsafeInventory
 			}
 			roots = appendUniqueObjectID(roots, revision.ObjectID)
@@ -761,41 +736,6 @@ func fileHistoryRetentionRoots(
 		return roots[left] < roots[right]
 	})
 	return roots, nil
-}
-
-func selectFileRevisionBuckets(
-	selected map[string]struct{},
-	revisions []filehistory.Revision,
-	policy RetentionPolicy,
-	now time.Time,
-) {
-	window := time.Duration(policy.FileRevisionDays) * 24 * time.Hour
-	for _, bucket := range policy.FileRevisionBuckets {
-		seen := map[string]struct{}{}
-		for _, revision := range revisions {
-			age := now.Sub(revision.CreatedAt)
-			if age < 0 || age > window {
-				continue
-			}
-			var key string
-			switch bucket {
-			case "daily":
-				key = revision.CreatedAt.UTC().Format("2006-01-02")
-			case "weekly":
-				year, week := revision.CreatedAt.UTC().ISOWeek()
-				key = fmt.Sprintf("%04d-W%02d", year, week)
-			case "monthly":
-				key = revision.CreatedAt.UTC().Format("2006-01")
-			default:
-				continue
-			}
-			if _, found := seen[key]; found {
-				continue
-			}
-			seen[key] = struct{}{}
-			selected[revision.RevisionID] = struct{}{}
-		}
-	}
 }
 
 func appendUniqueObjectID(

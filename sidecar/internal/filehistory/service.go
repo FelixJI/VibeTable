@@ -27,6 +27,13 @@ import (
 const (
 	rootFormatVersion = 2
 	contractVersion   = "2.0"
+
+	// A FileHistory root is part of the snapshot bundle closure. Keep its
+	// aggregate entry limits aligned with the bundle's 10,000-entry ceiling,
+	// while bounding a single pathological ancestor walk more tightly.
+	MaxRootDocuments      = 10_000
+	MaxRootRevisions      = 10_000
+	MaxRevisionChainDepth = 4_096
 )
 
 var (
@@ -41,6 +48,7 @@ var (
 	ErrPathInvalid     = errors.New("filehistory.path_invalid")
 	ErrPathConflict    = errors.New("filehistory.path_conflict")
 	ErrStateCorrupt    = errors.New("filehistory.state_corrupt")
+	ErrResourceLimit   = errors.New("filehistory.resource_limit")
 	errNoOp            = errors.New("filehistory.no_op")
 )
 
@@ -261,6 +269,9 @@ func Open(
 	if payload.FormatVersion != rootFormatVersion ||
 		payload.WorkspaceID != token.WorkspaceID {
 		return nil, ErrStateCorrupt
+	}
+	if err := validateRootResourceLimits(payload); err != nil {
+		return nil, errors.Join(ErrStateCorrupt, err)
 	}
 	documents := make(map[string]Document, len(payload.Documents))
 	for _, document := range payload.Documents {
@@ -955,6 +966,9 @@ func (service *Service) StageSnapshotRestore(
 		WorkspaceID:   intent.Token.WorkspaceID,
 		Documents:     sortedDocuments(next),
 	}
+	if err := validateRootResourceLimits(payload); err != nil {
+		return StagedSnapshotRestore{}, err
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return StagedSnapshotRestore{}, err
@@ -1131,6 +1145,9 @@ func loadDocumentsFromRoot(
 		payload.WorkspaceID != workspaceID {
 		return nil, errors.Join(ErrStateCorrupt, err)
 	}
+	if err := validateRootResourceLimits(payload); err != nil {
+		return nil, errors.Join(ErrStateCorrupt, err)
+	}
 	documents := make(map[string]Document, len(payload.Documents))
 	for _, document := range payload.Documents {
 		if document.WorkspaceID != workspaceID ||
@@ -1265,6 +1282,9 @@ func (service *Service) commit(
 		FormatVersion: rootFormatVersion,
 		WorkspaceID:   authority.WorkspaceID,
 		Documents:     sortedDocuments(documents),
+	}
+	if err := validateRootResourceLimits(payload); err != nil {
+		return CurrentHead{}, err
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -1559,6 +1579,9 @@ func validateDocument(document Document) error {
 		document.NextFormalVersion == 0 {
 		return ErrStateCorrupt
 	}
+	if len(document.Revisions) > MaxRootRevisions {
+		return errors.Join(ErrStateCorrupt, ErrResourceLimit)
+	}
 	revisions := map[string]Revision{}
 	children := map[string]int{}
 	sequences := map[uint64]struct{}{}
@@ -1653,27 +1676,64 @@ func validateDocument(document Document) error {
 		maxFormal != uint64(len(formalVersions)) {
 		return ErrStateCorrupt
 	}
-	for revisionID := range revisions {
-		seen := map[string]struct{}{}
-		current := revisionID
-		for current != "" {
-			if _, exists := seen[current]; exists {
-				return ErrStateCorrupt
-			}
-			seen[current] = struct{}{}
-			revision := revisions[current]
-			if revision.ParentRevisionID == nil {
-				current = ""
-			} else {
-				current = *revision.ParentRevisionID
-			}
-		}
+	if err := validateRevisionAncestry(revisions); err != nil {
+		return err
 	}
 	if _, exists := revisions[document.EffectiveRevisionID]; !exists ||
 		children[document.EffectiveRevisionID] != 0 ||
 		document.NextRevisionOrdinal != maxSequence+1 ||
 		document.NextFormalVersion != maxFormal+1 {
 		return ErrStateCorrupt
+	}
+	return nil
+}
+
+// validateRevisionAncestry proves every parent chain exactly once. The
+// previous implementation restarted at every revision and was quadratic for
+// a long valid chain. The tri-state walk below memoizes completed depths, so
+// both cycle detection and depth enforcement are O(number of revisions).
+func validateRevisionAncestry(revisions map[string]Revision) error {
+	const (
+		revisionUnvisited uint8 = iota
+		revisionVisiting
+		revisionValidated
+	)
+	states := make(map[string]uint8, len(revisions))
+	depths := make(map[string]int, len(revisions))
+	stack := make([]string, 0, min(len(revisions), MaxRevisionChainDepth))
+	for revisionID := range revisions {
+		if states[revisionID] == revisionValidated {
+			continue
+		}
+		stack = stack[:0]
+		current := revisionID
+		baseDepth := 0
+	walk:
+		for {
+			switch states[current] {
+			case revisionVisiting:
+				return ErrStateCorrupt
+			case revisionValidated:
+				baseDepth = depths[current]
+				break walk
+			}
+			states[current] = revisionVisiting
+			stack = append(stack, current)
+			parent := revisions[current].ParentRevisionID
+			if parent == nil {
+				break walk
+			}
+			current = *parent
+		}
+		for index := len(stack) - 1; index >= 0; index-- {
+			baseDepth++
+			if baseDepth > MaxRevisionChainDepth {
+				return errors.Join(ErrStateCorrupt, ErrResourceLimit)
+			}
+			current = stack[index]
+			depths[current] = baseDepth
+			states[current] = revisionValidated
+		}
 	}
 	return nil
 }

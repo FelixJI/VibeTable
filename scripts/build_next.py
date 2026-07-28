@@ -376,10 +376,10 @@ def render_manifest(
             "contracts": "2.0",
         },
         "data": {
-            "rootPolicy": "first-run-selected",
-            "defaultBase": "per-user-local-app-data",
-            "fallbackBase": "user-selected",
-            "relativePath": "VibeTable/Workspaces",
+            "shellRoot": "%LOCALAPPDATA%/VibeTable/shell",
+            "managedWorkspaceRoot": ("%LOCALAPPDATA%/VibeTable/shell/workspaces/<workspaceId>"),
+            "mirroredActivityRoot": ("%LOCALAPPDATA%/VibeTable/activity/<workspaceId>"),
+            "workspaceIdentity": "manifest-uuid",
             "preserveOnUninstall": True,
         },
     }

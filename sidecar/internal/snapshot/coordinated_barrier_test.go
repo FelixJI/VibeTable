@@ -15,8 +15,9 @@ func (fakeFrozenSource) Freeze(
 	intent writecoordinator.CaptureIntent,
 ) (BarrierView, writecoordinator.FrozenRoots, error) {
 	return BarrierView{
-			Database: []byte("db"),
-			Files:    map[string][]byte{"file": []byte("content")},
+			BusinessSchemaVersion: 1,
+			Database:              []byte("db"),
+			Files:                 map[string][]byte{"file": []byte("content")},
 		}, writecoordinator.FrozenRoots{
 			DatabaseView: "fixed-read-view",
 			TopologyRoot: objectrepo.ManifestID("manifest_topology"),

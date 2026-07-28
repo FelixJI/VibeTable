@@ -729,6 +729,18 @@ func openExternalConflictTestRuntime(
 		&core.TextField{Name: "status", Required: true},
 		&core.NumberField{Name: "attempts"},
 	)
+	outbox.AddIndex(
+		"uniq_vibetable_audit_outbox_event_id",
+		true,
+		"`event_id`",
+		"",
+	)
+	outbox.AddIndex(
+		"uniq_vibetable_audit_outbox_source_epoch_source_sequence",
+		true,
+		"`source_epoch`, `source_sequence`",
+		"",
+	)
 	if err := app.Save(outbox); err != nil {
 		t.Fatal(err)
 	}

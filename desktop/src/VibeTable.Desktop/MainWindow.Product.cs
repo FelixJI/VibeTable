@@ -54,6 +54,7 @@ public partial class MainWindow : Window
     private readonly ILocalDocumentPreview _attachmentPreview;
     private readonly string _attachmentPreviewRoot;
     private readonly string _productDataRoot;
+    private readonly string _activityRootBase;
     private readonly DashboardFeatureOptions _dashboardFeatures;
     private readonly AutoDateFeatureOptions _autoDateFeatures;
     private readonly MainWindowViewModel _viewModel;
@@ -101,12 +102,13 @@ public partial class MainWindow : Window
         {
             runtimeDataRoot = Path.GetFullPath(startup.DevelopmentDataRoot!);
         }
+        string localAppData = Environment.GetFolderPath(
+            Environment.SpecialFolder.LocalApplicationData);
         _productDataRoot = runtimeDataRoot
-            ?? Path.Combine(
-                Environment.GetFolderPath(
-                    Environment.SpecialFolder.LocalApplicationData),
-                "VibeTable",
-                "shell");
+            ?? Path.Combine(localAppData, "VibeTable", "shell");
+        _activityRootBase = runtimeDataRoot is null
+            ? Path.Combine(localAppData, "VibeTable", "activity")
+            : Path.Combine(runtimeDataRoot, "activity");
         _attachmentPreviewRoot = Path.Combine(
             _productDataRoot,
             "attachment-preview",
@@ -1179,10 +1181,7 @@ public partial class MainWindow : Window
                     "Workspace encryption mode is invalid."),
             };
         string? activityRoot = storageMode == WorkspaceStorageMode.Mirrored
-            ? Path.Combine(
-                _productDataRoot,
-                "workspace-activity",
-                workspaceId.ToString("D"))
+            ? ManagedActivityRoot(_activityRootBase, workspaceId)
             : null;
         if (activityRoot is not null)
             _ = ProbeCreateTarget(_providerPolicy, activityRoot);
@@ -1285,7 +1284,16 @@ public partial class MainWindow : Window
                 "Missing selectedRootGrant.");
         }
 
-        return ReadString(parameters, "locationPolicy") switch
+        string? locationPolicy = ReadString(parameters, "locationPolicy");
+        if (locationPolicy == "managedDefault"
+            && ReadString(parameters, "storageMode") == "mirrored")
+        {
+            throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                "The managed default location requires direct storage mode.");
+        }
+
+        return locationPolicy switch
         {
             "managedDefault" when selectedRootGrant.ValueKind == JsonValueKind.Null =>
                 Path.Combine(
@@ -1350,10 +1358,9 @@ public partial class MainWindow : Window
         string? activityRoot = null;
         if (manifest.StorageMode == WorkspaceStorageMode.Mirrored)
         {
-            activityRoot = Path.Combine(
-                _productDataRoot,
-                "workspace-activity",
-                manifest.WorkspaceId.ToString("D"));
+            activityRoot = ManagedActivityRoot(
+                _activityRootBase,
+                manifest.WorkspaceId);
             _ = ProbeCreateTarget(_providerPolicy, activityRoot);
         }
         var entry = new WorkspaceRegistryEntryV2
@@ -1435,10 +1442,7 @@ public partial class MainWindow : Window
             WorkspaceStorageObservation selectedStorage =
                 _providerPolicy.ProbeAndEnsureSupported(selectedRoot);
             string activityRoot = string.IsNullOrWhiteSpace(current.ActivityRoot)
-                ? Path.Combine(
-                    _productDataRoot,
-                    "workspace-activity",
-                    workspaceId.ToString("D"))
+                ? ManagedActivityRoot(_activityRootBase, workspaceId)
                 : current.ActivityRoot;
             var candidate = current with
             {
@@ -1478,7 +1482,7 @@ public partial class MainWindow : Window
             _ = RelinkWorkspaceEntry(
                 _workspaceRegistry,
                 _providerPolicy,
-                _productDataRoot,
+                _activityRootBase,
                 _workspaceSessions.Current.WorkspaceId,
                 workspaceId,
                 selectedRoot);
@@ -1494,14 +1498,14 @@ public partial class MainWindow : Window
     internal static WorkspaceRegistryEntryV2 RelinkWorkspaceEntry(
         WorkspaceRegistry registry,
         WorkspaceProviderPolicy providerPolicy,
-        string productDataRoot,
+        string activityRootBase,
         Guid? activeWorkspaceId,
         Guid workspaceId,
         string selectedRoot)
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(providerPolicy);
-        ArgumentException.ThrowIfNullOrWhiteSpace(productDataRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(activityRootBase);
         ArgumentException.ThrowIfNullOrWhiteSpace(selectedRoot);
         if (activeWorkspaceId == workspaceId)
             throw new WorkspaceRegistryException(
@@ -1527,10 +1531,7 @@ public partial class MainWindow : Window
         if (manifest.StorageMode == WorkspaceStorageMode.Mirrored)
         {
             activityRoot = string.IsNullOrWhiteSpace(current.ActivityRoot)
-                ? Path.Combine(
-                    productDataRoot,
-                    "workspace-activity",
-                    workspaceId.ToString("D"))
+                ? ManagedActivityRoot(activityRootBase, workspaceId)
                 : current.ActivityRoot;
             if (!Directory.Exists(activityRoot))
             {
@@ -1560,6 +1561,20 @@ public partial class MainWindow : Window
                         WorkspaceCoordinationStrength.Advisory,
                 }
                 : selectedStorage);
+    }
+
+    internal static string ManagedActivityRoot(
+        string activityRootBase,
+        Guid workspaceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(activityRootBase);
+        if (workspaceId == Guid.Empty)
+            throw new ArgumentException(
+                "Workspace identity is required.",
+                nameof(workspaceId));
+        return Path.Combine(
+            Path.GetFullPath(activityRootBase),
+            workspaceId.ToString("D"));
     }
 
     private static void EnsureRelinkTopology(

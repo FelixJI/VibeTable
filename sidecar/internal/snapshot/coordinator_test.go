@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
+	"github.com/vibetable/vibetable/sidecar/internal/workspacedb"
 )
 
 type fakeBarrier struct {
@@ -28,8 +29,9 @@ func TestCapturePublishesOnlyVerifiedCompleteSnapshotAndDeduplicatesRevision(t *
 	catalog := NewMemoryCatalog()
 	coordinator := NewCoordinator(repository, fakeBarrier{view: BarrierView{
 		MutationRevision: 11, SnapshotSequence: 1,
-		SchemaRevision: 3, FileRevision: 8, AuditRevision: 13,
-		AuditAnchor: digest([]byte("anchor")), Database: []byte("sqlite-view"),
+		SchemaRevision: 3, BusinessSchemaVersion: 1,
+		FileRevision: 8, AuditRevision: 13,
+		AuditAnchor: digest([]byte("anchor")), Database: snapshotDatabaseForTest(t),
 		Files: map[string][]byte{"b.txt": []byte("b"), "a.txt": []byte("a")},
 	}}, catalog)
 
@@ -85,8 +87,9 @@ func TestCatalogFailureNeverPublishesPartialRecord(t *testing.T) {
 	catalog := NewMemoryCatalog().WithPublishError(errors.New("disk full"))
 	coordinator := NewCoordinator(repository, fakeBarrier{view: BarrierView{
 		MutationRevision: 1, SnapshotSequence: 1,
-		AuditAnchor: digest([]byte("anchor")),
-		Database:    []byte("db"), Files: map[string][]byte{},
+		BusinessSchemaVersion: 1,
+		AuditAnchor:           digest([]byte("anchor")),
+		Database:              snapshotDatabaseForTest(t), Files: map[string][]byte{},
 	}}, catalog)
 	if _, _, err := coordinator.Capture(ctx, CaptureRequest{
 		WorkspaceID: "workspace-1", Authority: authority, Trigger: TriggerAutomatic,
@@ -100,6 +103,46 @@ func TestCatalogFailureNeverPublishesPartialRecord(t *testing.T) {
 	pins, err := repository.ListPins(ctx)
 	if err != nil || len(pins) != 0 {
 		t.Fatalf("failed publication leaked root pin: %#v %v", pins, err)
+	}
+}
+
+func TestCaptureRejectsInvalidDatabaseBeforePinOrCatalogPublish(t *testing.T) {
+	ctx := context.Background()
+	authority := objectrepo.Authority{
+		WorkspaceID: "workspace-1",
+		FenceEpoch:  1,
+		ClaimID:     "claim",
+	}
+	repository := objectrepo.NewMemory()
+	if err := repository.AcceptAuthority(ctx, nil, authority); err != nil {
+		t.Fatal(err)
+	}
+	catalog := NewMemoryCatalog()
+	coordinator := NewCoordinator(
+		repository,
+		fakeBarrier{view: BarrierView{
+			MutationRevision:      1,
+			SnapshotSequence:      1,
+			BusinessSchemaVersion: 1,
+			AuditAnchor:           digest([]byte("anchor")),
+			Database:              []byte("not sqlite"),
+		}},
+		catalog,
+	)
+	if _, _, err := coordinator.Capture(ctx, CaptureRequest{
+		WorkspaceID: "workspace-1",
+		Authority:   authority,
+		Trigger:     TriggerAutomatic,
+	}); !errors.Is(err, workspacedb.ErrSnapshotDatabaseInvalid) {
+		t.Fatalf("invalid database error = %v", err)
+	}
+	records, err := catalog.List(ctx, "workspace-1")
+	if err != nil || len(records) != 0 {
+		t.Fatalf("catalog records = %#v, err=%v", records, err)
+	}
+	pins, err := repository.ListPins(ctx)
+	if err != nil || len(pins) != 0 {
+		t.Fatalf("pins = %#v, err=%v", pins, err)
 	}
 }
 
@@ -122,9 +165,10 @@ func TestManualAndProtectionCapturesDoNotDeduplicateUnchangedMutation(t *testing
 		t.Fatal(err)
 	}
 	barrier := &sequenceBarrier{view: BarrierView{
-		MutationRevision: 1,
-		AuditAnchor:      digest([]byte("anchor")),
-		Database:         []byte("db"),
+		MutationRevision:      1,
+		BusinessSchemaVersion: 1,
+		AuditAnchor:           digest([]byte("anchor")),
+		Database:              snapshotDatabaseForTest(t),
 	}}
 	catalog := NewMemoryCatalog()
 	coordinator := NewCoordinator(repository, barrier, catalog)
@@ -142,6 +186,76 @@ func TestManualAndProtectionCapturesDoNotDeduplicateUnchangedMutation(t *testing
 		protection.SnapshotSequence != manual.SnapshotSequence+1 ||
 		!protection.Pinned {
 		t.Fatalf("protection capture = %#v %v %v", protection, created, err)
+	}
+}
+
+func TestCaptureCanonicalizesCatalogAndManifestTriggers(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		input Trigger
+		want  Trigger
+	}{
+		{name: "workspace switch", input: TriggerSwitch, want: TriggerProtection},
+		{name: "bulk import", input: TriggerImport, want: TriggerImport},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			authority := objectrepo.Authority{
+				WorkspaceID: "workspace-1",
+				FenceEpoch:  1,
+				ClaimID:     "claim",
+			}
+			repository := objectrepo.NewMemory()
+			if err := repository.AcceptAuthority(ctx, nil, authority); err != nil {
+				t.Fatal(err)
+			}
+			coordinator := NewCoordinator(
+				repository,
+				fakeBarrier{view: BarrierView{
+					MutationRevision:      1,
+					SnapshotSequence:      1,
+					BusinessSchemaVersion: 1,
+					AuditAnchor:           digest([]byte("anchor")),
+					Database:              snapshotDatabaseForTest(t),
+				}},
+				NewMemoryCatalog(),
+			)
+			record, created, err := coordinator.Capture(
+				ctx,
+				CaptureRequest{
+					WorkspaceID: "workspace-1",
+					Authority:   authority,
+					Trigger:     test.input,
+				},
+			)
+			if err != nil || !created {
+				t.Fatalf("capture created=%t err=%v", created, err)
+			}
+			manifestRecord, err := repository.GetManifest(
+				ctx,
+				record.ManifestID,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var manifest Manifest
+			if err := json.Unmarshal(
+				manifestRecord.Payload,
+				&manifest,
+			); err != nil {
+				t.Fatal(err)
+			}
+			if record.Trigger != test.want ||
+				manifest.Trigger != test.want ||
+				!validBundleTrigger(record.Trigger) {
+				t.Fatalf(
+					"record trigger=%q manifest trigger=%q want=%q",
+					record.Trigger,
+					manifest.Trigger,
+					test.want,
+				)
+			}
+		})
 	}
 }
 
@@ -186,7 +300,9 @@ func TestStaleAuthorityCannotCapture(t *testing.T) {
 	}
 	coordinator := NewCoordinator(repository, fakeBarrier{view: BarrierView{
 		MutationRevision: 1, SnapshotSequence: 1,
-		AuditAnchor: digest([]byte("anchor")), Database: []byte("db"),
+		BusinessSchemaVersion: 1,
+		AuditAnchor:           digest([]byte("anchor")),
+		Database:              snapshotDatabaseForTest(t),
 	}}, NewMemoryCatalog())
 	_, _, err := coordinator.Capture(ctx, CaptureRequest{
 		WorkspaceID: "workspace-1",
