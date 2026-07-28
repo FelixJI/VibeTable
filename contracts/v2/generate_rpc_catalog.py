@@ -892,7 +892,7 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
                     "conflictId": OPERATION_ID,
                     "itemId": "document:99999999-9999-4999-8999-999999999999",
                     "path": "files/report.csv",
-                    "kind": enum_string("file", "file", "table"),
+                    "kind": enum_string("file", "file", "table", "settings"),
                     "state": enum_string(
                         "pending",
                         "pending",
@@ -919,7 +919,7 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
             "choices": typed_array(
                 {
                     "itemId": "document:99999999-9999-4999-8999-999999999999",
-                    "kind": enum_string("file", "file", "table"),
+                    "kind": enum_string("file", "file", "table", "settings"),
                     "side": enum_string("local", "local", "replica", "both"),
                 }
             ),

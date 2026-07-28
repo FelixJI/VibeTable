@@ -1,14 +1,16 @@
 {
   "schemaVersion": 1,
+  "recoveryToolLock": "tools/recovery-tools/go.mod",
+  "recoveryToolSums": "tools/recovery-tools/go.sum",
   "dependencies": {
     "kopia": {
-      "version": "v0.23.1",
+      "module": "github.com/kopia/kopia",
       "license": "Apache-2.0",
       "source": "https://github.com/kopia/kopia",
       "integration": "public CLI and public repo.RepositoryWriter surface only"
     },
     "age": {
-      "version": "v1.3.1",
+      "module": "filippo.io/age",
       "license": "BSD-3-Clause",
       "source": "https://github.com/FiloSottile/age",
       "integration": "public Go API with bundled official CLI interoperability"

@@ -25,7 +25,7 @@ VibeTable 2 的工作区以稳定 UUID 标识。不要通过创建同名目录�
 
 ## 随包恢复工具
 
-离线发布包已包含锁定版本的 `sidecar/tools/kopia.exe`、`sidecar/tools/age.exe` 和 `sidecar/tools/age-keygen.exe`，无需恢复时再联网安装。每个工具旁都有 `.sha256` 文件；使用前应先核对校验和。工具不会写入系统 `PATH`，也不会替换应用内的恢复编排。
+离线发布包已包含由仓库内 `tools/recovery-tools/go.mod`/`go.sum` 固定源码构建的 `sidecar/tools/kopia.exe`、`sidecar/tools/age.exe` 和 `sidecar/tools/age-keygen.exe`，无需恢复时再联网安装。每个工具旁都有 `.sha256` 文件；`sidecar/recovery-tools.provenance.json` 还记录模块校验和、Go 工具链、Windows amd64/CGO 目标和二进制 SHA-256，`sidecar/sbom.cdx.json` 以产物 component 再次绑定这些信息。使用前应先核对校验和。工具不会写入系统 `PATH`，也不会替换应用内的恢复编排。
 
 例如，可在发布包根目录执行以下命令，将 age 外封装解密为标准 ZIP64 `.vtsnapshot`；口令模式会在终端提示输入口令：
 

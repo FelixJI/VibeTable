@@ -61,6 +61,10 @@ func (source *frozenSource) Freeze(
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
+	attachments, err := source.snapshotAttachments(ctx)
+	if err != nil {
+		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
+	}
 	anchor := source.ledger.Anchor()
 	if anchor.LedgerSequence == 0 || anchor.Hash == "" {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{},
@@ -133,6 +137,7 @@ func (source *frozenSource) Freeze(
 		AuditSequence:     anchor.SourceSequence,
 		Database:          database,
 		Files:             files,
+		Attachments:       attachments,
 		WorkspaceSettings: settings,
 		AuditPrefix:       auditPrefix,
 		CreatedByDevice:   intent.Token.ClaimID,
@@ -144,6 +149,50 @@ func (source *frozenSource) Freeze(
 		FileRoot:     fileRoot,
 		AuditAnchor:  anchor.Hash,
 	}, nil
+}
+
+func (source *frozenSource) snapshotAttachments(
+	ctx context.Context,
+) (map[string][]byte, error) {
+	filesystem, err := source.app.NewFilesystem()
+	if err != nil {
+		return nil, err
+	}
+	defer filesystem.Close()
+	filesystem.SetContext(ctx)
+	objects, err := filesystem.List("")
+	if err != nil {
+		return nil, err
+	}
+	result := map[string][]byte{}
+	var total int64
+	for _, object := range objects {
+		if object == nil || object.IsDir ||
+			strings.TrimSpace(object.Key) == "" {
+			continue
+		}
+		if object.Size < 0 ||
+			object.Size > maxSnapshotWorkingSet-total {
+			return nil, errors.New("snapshot.attachment_state_too_large")
+		}
+		reader, err := filesystem.GetReader(object.Key)
+		if err != nil {
+			return nil, err
+		}
+		content, readErr := io.ReadAll(io.LimitReader(
+			reader, object.Size+1,
+		))
+		closeErr := reader.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return nil, err
+		}
+		if int64(len(content)) != object.Size {
+			return nil, errors.New("snapshot.attachment_state_changed")
+		}
+		result[object.Key] = content
+		total += object.Size
+	}
+	return result, nil
 }
 
 func (source *frozenSource) snapshotDatabase(ctx context.Context) ([]byte, error) {

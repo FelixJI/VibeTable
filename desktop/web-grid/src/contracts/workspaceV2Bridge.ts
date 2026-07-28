@@ -219,7 +219,7 @@ export interface WorkspaceV2RpcParams {
     readonly conflictId: string;
     readonly choices: readonly {
       readonly itemId: string;
-      readonly kind: "file" | "table";
+      readonly kind: "file" | "table" | "settings";
       readonly side: "local" | "replica" | "both";
     }[];
   };
@@ -307,7 +307,7 @@ export interface WorkspaceConflictItem {
   readonly conflictId: string;
   readonly itemId: string;
   readonly path: string;
-  readonly kind: "file" | "table";
+  readonly kind: "file" | "table" | "settings";
   readonly state: "pending" | "validating" | "ready" | "failed";
   readonly localSummary: string;
   readonly replicaSummary: string;
@@ -741,7 +741,7 @@ function parseConflict(value: unknown): WorkspaceConflictItem {
     conflictId: text(source.conflictId, "conflictId"),
     itemId: text(source.itemId, "itemId"),
     path: text(source.path, "conflict path"),
-    kind: oneOf(source.kind, ["file", "table"], "conflict kind"),
+    kind: oneOf(source.kind, ["file", "table", "settings"], "conflict kind"),
     state: oneOf(source.state, ["pending", "validating", "ready", "failed"], "conflict state"),
     localSummary: text(source.localSummary, "local summary"),
     replicaSummary: text(source.replicaSummary, "replica summary"),

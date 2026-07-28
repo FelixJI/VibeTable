@@ -38,12 +38,18 @@
     "sidecarChecksum": "sidecar/vibetable-pb.exe.sha256",
     "licenses": "sidecar/THIRD_PARTY_LICENSES.txt",
     "sbom": "sidecar/sbom.cdx.json",
+    "recoveryToolProvenance": "sidecar/recovery-tools.provenance.json",
     "recoveryGuide": "RECOVERY.md",
     "workspaceContracts": "contracts/v2",
     "recoveryTools": {
       "kopia": "sidecar/tools/kopia.exe",
       "age": "sidecar/tools/age.exe",
       "ageKeygen": "sidecar/tools/age-keygen.exe"
+    },
+    "recoveryToolChecksums": {
+      "kopia": "sidecar/tools/kopia.exe.sha256",
+      "age": "sidecar/tools/age.exe.sha256",
+      "ageKeygen": "sidecar/tools/age-keygen.exe.sha256"
     }
   },
   "formats": {

@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +26,113 @@ type persistentStore struct {
 	db      *sql.DB
 	faultMu sync.RWMutex
 	fault   PersistenceFaultInjector
+}
+
+// ReadPersistentMutationRevision reads the replica-required high-watermark
+// from an existing coordination database without creating or migrating it.
+// Committed revisions come from coordination_state. A prepared intent is
+// conservatively included because its external authoritative apply may have
+// committed before the process failed to finish the coordinator transaction.
+func ReadPersistentMutationRevision(
+	ctx context.Context,
+	databasePath string,
+	workspaceID string,
+) (uint64, error) {
+	if strings.TrimSpace(databasePath) == "" ||
+		strings.TrimSpace(workspaceID) == "" {
+		return 0, ErrInvalidIdentity
+	}
+	absolute, err := filepath.Abs(databasePath)
+	if err != nil {
+		return 0, err
+	}
+	info, err := os.Stat(absolute)
+	if err != nil {
+		return 0, fmt.Errorf("open coordination high-watermark: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return 0, errors.New("workspace.write.database_invalid")
+	}
+	stagedPath, cleanup, err := stageCoordinationDatabaseForRead(absolute)
+	if err != nil {
+		return 0, err
+	}
+	defer cleanup()
+	db, err := sql.Open("sqlite", stagedPath)
+	if err != nil {
+		return 0, err
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `PRAGMA query_only=ON`); err != nil {
+		return 0, err
+	}
+
+	var persistedWorkspaceID string
+	var committedRevision uint64
+	var preparedRevision uint64
+	err = db.QueryRowContext(ctx, `
+		SELECT state.workspace_id,
+		       state.mutation_revision,
+		       COALESCE(MAX(intent.mutation_revision), 0)
+		FROM coordination_state AS state
+		LEFT JOIN mutation_intents AS intent
+		  ON intent.state = 'prepared'
+		WHERE state.singleton = 1
+		GROUP BY state.workspace_id, state.mutation_revision`,
+	).Scan(
+		&persistedWorkspaceID,
+		&committedRevision,
+		&preparedRevision,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("read coordination high-watermark: %w", err)
+	}
+	if persistedWorkspaceID != workspaceID {
+		return 0, ErrInvalidIdentity
+	}
+	if preparedRevision > committedRevision {
+		return preparedRevision, nil
+	}
+	return committedRevision, nil
+}
+
+func stageCoordinationDatabaseForRead(
+	sourcePath string,
+) (string, func(), error) {
+	directory, err := os.MkdirTemp("", "vibetable-coordination-read-*")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(directory) }
+	targetPath := filepath.Join(directory, "coordination.db")
+	for _, suffix := range []string{"", "-wal"} {
+		source, err := os.Open(sourcePath + suffix)
+		if errors.Is(err, os.ErrNotExist) && suffix != "" {
+			continue
+		}
+		if err != nil {
+			cleanup()
+			return "", nil, err
+		}
+		target, targetErr := os.OpenFile(
+			targetPath+suffix,
+			os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+			0o600,
+		)
+		if targetErr == nil {
+			_, targetErr = io.Copy(target, source)
+		}
+		closeErr := source.Close()
+		if target != nil {
+			closeErr = errors.Join(closeErr, target.Close())
+		}
+		if err := errors.Join(targetErr, closeErr); err != nil {
+			cleanup()
+			return "", nil, err
+		}
+	}
+	return targetPath, cleanup, nil
 }
 
 func (store *persistentStore) setFaultInjector(injector PersistenceFaultInjector) {

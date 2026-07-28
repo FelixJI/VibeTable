@@ -39,6 +39,7 @@
     "desktop/tests",
     "desktop/web-grid",
     "CHANGELOG.md",
+    "docs/RECOVERY.md",
     "desktop/Directory.Build.props",
     "desktop/publish-layout.json",
     "desktop/VibeTable.Desktop.sln",
@@ -51,6 +52,8 @@
     "sidecar/go.mod",
     "sidecar/go.sum",
     "tests",
+    "tools/recovery-tools",
+    "tools/workspace-storage-dependencies.json",
     "global.json",
     "pyproject.toml",
     "uv.lock"
@@ -171,7 +174,11 @@
     "sidecar": [
       "sidecar/go.mod",
       "sidecar/go.sum",
-      "sidecar/migrations/manifest.json"
+      "sidecar/migrations/manifest.json",
+      "docs/RECOVERY.md",
+      "tools/recovery-tools/go.mod",
+      "tools/recovery-tools/go.sum",
+      "tools/workspace-storage-dependencies.json"
     ],
     "schema": [
       "contracts/v1/contracts.schema.json",

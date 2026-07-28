@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from qa import fault_injection
+from qa import fault_injection, package_check, release_candidate
 from qa.package_check import check_package
 from scripts import build_next
 from scripts.release import (
@@ -33,7 +33,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 def _write_recovery_tools(paths: build_next.RepoPaths) -> None:
     for tool in (paths.kopia_binary, paths.age_binary, paths.age_keygen_binary):
         tool.parent.mkdir(parents=True, exist_ok=True)
-        tool.write_bytes(f"fixture:{tool.name}".encode())
+        # A structurally valid Windows amd64 PE fixture keeps package tests from
+        # accepting arbitrary bytes. Runtime/Go metadata are injected below;
+        # the real release gate executes and inspects the actual binaries.
+        payload = bytearray(512)
+        payload[:2] = b"MZ"
+        payload[0x3C:0x40] = (0x80).to_bytes(4, "little")
+        payload[0x80:0x84] = b"PE\0\0"
+        payload[0x84:0x86] = (0x8664).to_bytes(2, "little")
+        tool.write_bytes(payload)
 
 
 def _release_build_info() -> dict[str, str]:
@@ -53,6 +61,25 @@ def _release_build_info() -> dict[str, str]:
         "kopiaVersion": build_next.KOPIA_VERSION,
         "ageVersion": build_next.AGE_VERSION,
     }
+
+
+def _release_modules(
+    license_dir: Path,
+    *modules: tuple[str, str],
+) -> list[dict[str, str]]:
+    return [
+        {
+            "path": name,
+            "version": version,
+            "license": "MPL-2.0",
+            "dir": str(license_dir),
+        }
+        for name, version in (
+            *modules,
+            ("github.com/kopia/kopia", build_next.KOPIA_VERSION),
+            ("filippo.io/age", build_next.AGE_VERSION),
+        )
+    ]
 
 
 def test_repository_versions_are_consistent() -> None:
@@ -202,14 +229,10 @@ def test_stage_release_assets_records_binary_hash_build_info_and_sbom(
     build_next.stage_sidecar_assets(
         paths,
         build_info=build_info,
-        modules=[
-            {
-                "path": "github.com/pocketbase/pocketbase",
-                "version": "v0.39.9",
-                "license": "MPL-2.0",
-                "dir": str(license_dir),
-            }
-        ],
+        modules=_release_modules(
+            license_dir,
+            ("github.com/pocketbase/pocketbase", "v0.39.9"),
+        ),
     )
 
     digest = hashlib.sha256(b"fixed-sidecar").hexdigest()
@@ -242,14 +265,10 @@ def test_package_verifier_rejects_tampered_sidecar(tmp_path: Path) -> None:
     build_next.stage_sidecar_assets(
         stage,
         build_info=_release_build_info(),
-        modules=[
-            {
-                "path": "example.invalid/dependency",
-                "version": "v1.0.0",
-                "license": "MPL-2.0",
-                "dir": str(license_dir),
-            }
-        ],
+        modules=_release_modules(
+            license_dir,
+            ("example.invalid/dependency", "v1.0.0"),
+        ),
     )
     build_next.write_manifest(stage)
     stage.sidecar_binary.write_bytes(b"tampered")
@@ -260,6 +279,7 @@ def test_package_verifier_rejects_tampered_sidecar(tmp_path: Path) -> None:
 
 def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     defaults = build_next.RepoPaths.default(REPO_ROOT)
     stage = defaults.with_output_roots(
@@ -311,6 +331,38 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
         stage.publish_root / "RECOVERY.md",
     )
     build_next.write_manifest(stage)
+    lock = build_next.load_recovery_tool_lock(REPO_ROOT)
+
+    def version_output(path: Path) -> str:
+        return (
+            build_next.KOPIA_VERSION
+            if path.name == build_next.KOPIA_EXE_NAME
+            else build_next.AGE_VERSION
+        )
+
+    def go_metadata(_go: str, path: Path) -> dict[str, object]:
+        if path.name == build_next.KOPIA_EXE_NAME:
+            package = module = "github.com/kopia/kopia"
+            version, module_sum = lock.kopia_version, lock.kopia_sum
+        else:
+            package = (
+                "filippo.io/age/cmd/age-keygen"
+                if path.name == build_next.AGE_KEYGEN_EXE_NAME
+                else "filippo.io/age/cmd/age"
+            )
+            module = "filippo.io/age"
+            version, module_sum = lock.age_version, lock.age_sum
+        return {
+            "package": package,
+            "module": module,
+            "version": version,
+            "moduleSum": module_sum,
+            "goVersion": f"go{lock.go_version}",
+            "build": {"GOOS": "windows", "GOARCH": "amd64", "CGO_ENABLED": "0"},
+        }
+
+    monkeypatch.setattr(package_check, "_run_recovery_tool_version", version_output)
+    monkeypatch.setattr(package_check, "go_binary_metadata", go_metadata)
 
     assert not any(
         path.name == "__pycache__" or path.suffix == ".pyc"
@@ -340,6 +392,43 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
         "SBOM dependency version mismatch: github.com/kopia/kopia" in error
         for error in check_package(stage.publish_root)
     )
+
+
+def test_recovery_tool_versions_and_sums_have_one_committed_lock() -> None:
+    lock = build_next.load_recovery_tool_lock(REPO_ROOT)
+    assert lock.go_version == build_next.RECOVERY_GO_VERSION
+    assert lock.kopia_version == build_next.KOPIA_VERSION
+    assert lock.age_version == build_next.AGE_VERSION
+    assert lock.kopia_sum.startswith("h1:")
+    assert lock.age_sum.startswith("h1:")
+    dependency_manifest = json.loads(
+        (REPO_ROOT / "tools" / "workspace-storage-dependencies.json").read_text(encoding="utf-8")
+    )
+    assert dependency_manifest["recoveryToolLock"] == "tools/recovery-tools/go.mod"
+    assert "version" not in dependency_manifest["dependencies"]["kopia"]
+    assert "version" not in dependency_manifest["dependencies"]["age"]
+
+
+def test_release_candidate_report_binds_the_exact_package_tree_and_archive(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "VibeTable.Next"
+    (package_root / "sidecar").mkdir(parents=True)
+    (package_root / "VibeTable.Next.exe").write_bytes(b"host")
+    (package_root / "sidecar" / "vibetable-pb.exe").write_bytes(b"sidecar")
+    archive = tmp_path / "VibeTable.Next.zip"
+
+    evidence = release_candidate.create_archive(package_root, archive)
+    report = tmp_path / "release-eligibility.json"
+    report.write_text(
+        json.dumps({"releaseEligible": True, "releaseCandidate": evidence}),
+        encoding="utf-8",
+    )
+    assert release_candidate.verify_eligibility_report(package_root, archive, report) == evidence
+
+    (package_root / "VibeTable.Next.exe").write_bytes(b"changed")
+    with pytest.raises(release_candidate.CandidateError, match="no longer matches"):
+        release_candidate.verify_eligibility_report(package_root, archive, report)
 
 
 def test_upgrade_backup_is_outside_install_and_failure_keeps_old_binary(
@@ -436,16 +525,27 @@ def test_release_workflow_supports_scheduled_and_manual_patch_releases() -> None
     assert "6252bf34fe2231a55ac7f03d482b36d2c7c58697990551bba508102cfb3f342e" in workflow
     assert '7z x $archive "-o$destination" -y' in workflow
     assert workflow.index("Install pinned Windows race toolchain") < workflow.index(
-        "Run complete release eligibility gate"
+        "Build immutable release candidate"
     )
     assert "qa/next.py --ci" in workflow
+    assert "--package-root dist/VibeTable.Next" in workflow
+    assert "--package-archive dist/VibeTable.Next.zip" in workflow
     assert "--json-report build/qa/release-eligibility.json" in workflow
     assert "Upload release eligibility evidence" in workflow
-    assert workflow.index("Run complete release eligibility gate") < workflow.index(
-        "Build release package"
+    assert workflow.index("Build immutable release candidate") < workflow.index(
+        "Archive immutable release candidate"
     )
-    assert workflow.index("Build release package") < workflow.index("Verify package")
-    assert workflow.index("Verify package") < workflow.index("Publish version commit and tag")
+    assert workflow.index("Archive immutable release candidate") < workflow.index(
+        "Run complete release eligibility gate"
+    )
+    assert workflow.index("Run complete release eligibility gate") < workflow.index(
+        "Verify eligibility is bound to the immutable candidate"
+    )
+    assert workflow.count("scripts/build_next.py --release") == 1
+    assert "Compress-Archive" not in workflow
+    assert workflow.index(
+        "Verify eligibility is bound to the immutable candidate"
+    ) < workflow.index("Publish version commit and tag")
 
 
 def test_fault_gate_targets_workspace_v2_durability_without_whole_backup() -> None:

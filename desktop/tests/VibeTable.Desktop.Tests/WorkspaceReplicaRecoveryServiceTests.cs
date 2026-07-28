@@ -11,6 +11,75 @@ namespace VibeTable.Desktop.Tests;
 public sealed class WorkspaceReplicaRecoveryServiceTests
 {
     [TestMethod]
+    public async Task VerifyUsesLocalActivityDataDirAndReturnsRequiredRevision()
+    {
+        using var fixture = new ReplicaFixture(removeActivity: false);
+        fixture.Runner.Handler = _ => Success(
+            "verify",
+            fixture.Workspace.WorkspaceId,
+            activityRoot: null,
+            state: "healthy",
+            mutationRevision: 7,
+            requiredMutationRevision: 6);
+
+        WorkspaceReplicaReceipt receipt = await fixture.Service.VerifyAsync(
+            fixture.Workspace,
+            CancellationToken.None);
+
+        Assert.AreEqual(7UL, receipt.MutationRevision);
+        Assert.AreEqual(6UL, receipt.RequiredMutationRevision);
+        Assert.AreEqual(
+            WorkspaceLayout.Paths(fixture.Workspace.ActivityRoot!).Data,
+            fixture.Runner.StartInfo!.Environment[
+                "VIBETABLE_SIDECAR_DATA_DIR"]);
+    }
+
+    [TestMethod]
+    public void ReceiptRejectsRemoteMutationBehindRequiredRevision()
+    {
+        Guid workspaceId = Guid.NewGuid();
+        TrustedSidecarProcessResult result = Success(
+            "verify",
+            workspaceId,
+            activityRoot: null,
+            state: "healthy",
+            mutationRevision: 4,
+            requiredMutationRevision: 5);
+
+        WorkspaceRegistryException error =
+            Assert.ThrowsExactly<WorkspaceRegistryException>(() =>
+                WorkspaceReplicaRecoveryService.ParseReceipt(
+                    result.StandardOutput,
+                    workspaceId,
+                    "verify",
+                    expectedActivityRoot: null));
+
+        Assert.AreEqual("workspace.replica_response_invalid", error.Code);
+    }
+
+    [TestMethod]
+    public void ReceiptAllowsZeroRequiredRevision()
+    {
+        Guid workspaceId = Guid.NewGuid();
+        TrustedSidecarProcessResult result = Success(
+            "verify",
+            workspaceId,
+            activityRoot: null,
+            state: "healthy",
+            mutationRevision: 1,
+            requiredMutationRevision: 0);
+
+        WorkspaceReplicaReceipt receipt =
+            WorkspaceReplicaRecoveryService.ParseReceipt(
+                result.StandardOutput,
+                workspaceId,
+                "verify",
+                expectedActivityRoot: null);
+
+        Assert.AreEqual(0UL, receipt.RequiredMutationRevision);
+    }
+
+    [TestMethod]
     public async Task RecoverUsesEnvironmentOnlyAndAtomicallyPublishesActivityRoot()
     {
         using var fixture = new ReplicaFixture(removeActivity: true);
@@ -339,7 +408,9 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
         string operation,
         Guid workspaceId,
         string? activityRoot,
-        string state)
+        string state,
+        ulong mutationRevision = 1,
+        ulong requiredMutationRevision = 1)
     {
         var payload = new Dictionary<string, object?>
         {
@@ -349,7 +420,8 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
             ["replicaId"] = Guid.NewGuid().ToString("D"),
             ["snapshotId"] = Guid.NewGuid().ToString("D"),
             ["catalogRevision"] = 1UL,
-            ["mutationRevision"] = 1UL,
+            ["mutationRevision"] = mutationRevision,
+            ["requiredMutationRevision"] = requiredMutationRevision,
             ["checkpointId"] = "sha256:" + new string('b', 64),
             ["receiptHash"] = "sha256:" + new string('a', 64),
             ["verifiedAt"] = DateTimeOffset.UtcNow.ToString("O"),

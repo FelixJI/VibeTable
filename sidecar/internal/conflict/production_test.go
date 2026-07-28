@@ -14,6 +14,7 @@ import (
 type stagedTestAppender struct {
 	stages       map[string]ApplyStage
 	receipts     map[string]ApplyReceipt
+	stageFault   error
 	commitFault  error
 	commitCount  int
 	visibleCount int
@@ -34,6 +35,9 @@ func (appender *stagedTestAppender) Stage(
 	_ []ResolvedChange,
 	_ Candidate,
 ) (ApplyStage, error) {
+	if appender.stageFault != nil {
+		return ApplyStage{}, appender.stageFault
+	}
 	stage := ApplyStage{
 		StageID:     "stage-" + operationID,
 		OperationID: operationID,
@@ -41,6 +45,92 @@ func (appender *stagedTestAppender) Stage(
 	}
 	appender.stages[operationID] = stage
 	return stage, nil
+}
+
+func TestProductionConflictInvalidStageDiscardsPreparedPlan(t *testing.T) {
+	engine, err := OpenEngine(filepath.Join(t.TempDir(), "conflicts.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	set := productionSet(true)
+	set.ConflictID = "conflict-invalid-stage"
+	if err := engine.Add(context.Background(), set); err != nil {
+		t.Fatal(err)
+	}
+	first, err := engine.Preview(
+		context.Background(),
+		set.ConflictID,
+		[]Choice{{ItemID: "doc", Kind: FileItem, Side: Local}},
+	)
+	if err != nil || !first.Valid {
+		t.Fatalf("first preview = %#v, %v", first, err)
+	}
+	appender := newStagedTestAppender()
+	appender.stageFault = ErrResolutionInvalid
+	if _, err := engine.Apply(
+		context.Background(), first.PlanID, "operation-invalid", appender,
+	); !errors.Is(err, ErrResolutionInvalid) {
+		t.Fatalf("invalid apply error = %v", err)
+	}
+	second, err := engine.Preview(
+		context.Background(),
+		set.ConflictID,
+		[]Choice{{ItemID: "doc", Kind: FileItem, Side: Replica}},
+	)
+	if err != nil || !second.Valid || second.PlanID == first.PlanID {
+		t.Fatalf("replacement preview = %#v, %v", second, err)
+	}
+}
+
+func TestProductionConflictStaleStageRequiresReplanWithoutActivePlan(
+	t *testing.T,
+) {
+	path := filepath.Join(t.TempDir(), "conflicts.db")
+	engine, err := OpenEngine(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := productionSet(true)
+	set.ConflictID = "conflict-stale-stage"
+	if err := engine.Add(context.Background(), set); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := engine.Preview(
+		context.Background(),
+		set.ConflictID,
+		[]Choice{{ItemID: "doc", Kind: FileItem, Side: Local}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appender := newStagedTestAppender()
+	appender.stageFault = ErrStalePlan
+	if _, err := engine.Apply(
+		context.Background(), preview.PlanID, "operation-stale", appender,
+	); !errors.Is(err, ErrStalePlan) {
+		t.Fatalf("stale apply error = %v", err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenEngine(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	current, err := reopened.Inspect(
+		context.Background(), set.ConflictID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.State != StatePending || !current.ReplanRequired {
+		t.Fatalf("stale set = %#v", current)
+	}
+	if err := reopened.Recover(context.Background(), appender); err != nil {
+		t.Fatalf("startup recovery blocked: %v", err)
+	}
 }
 
 func (appender *stagedTestAppender) Commit(
@@ -199,6 +289,60 @@ func TestProductionConflictRequiresCompleteTypedChoicesAndAcceptsFileBoth(t *tes
 	)
 	if err != nil || !preview.Valid || len(preview.Diagnostics) != 0 {
 		t.Fatalf("typed keep-both preview = %#v, %v", preview, err)
+	}
+}
+
+func TestProductionConflictAcceptsIsolatedFileAndSettingsChoices(t *testing.T) {
+	engine, err := OpenEngine(filepath.Join(t.TempDir(), "conflicts.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	set := productionSet(true)
+	set.ConflictID = "conflict-file-settings"
+	set.Base.Settings = SettingsState{ObjectID: "settings-base"}
+	set.Local.Settings = SettingsState{ObjectID: "settings-local"}
+	set.Replica.Settings = SettingsState{ObjectID: "settings-replica"}
+	set.Dependencies.Edges[WorkspaceSettingsItemID] = []string{}
+	if err := engine.Add(context.Background(), set); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := engine.Preview(
+		context.Background(),
+		set.ConflictID,
+		[]Choice{
+			{ItemID: "doc", Kind: FileItem, Side: Local},
+			{
+				ItemID: WorkspaceSettingsItemID,
+				Kind:   SettingsItem,
+				Side:   Replica,
+			},
+		},
+	)
+	if err != nil || !preview.Valid || len(preview.Diagnostics) != 0 {
+		t.Fatalf("file+settings preview = %#v, %v", preview, err)
+	}
+
+	invalid, err := engine.Preview(
+		context.Background(),
+		set.ConflictID,
+		[]Choice{
+			{ItemID: "doc", Kind: FileItem, Side: Local},
+			{
+				ItemID: WorkspaceSettingsItemID,
+				Kind:   SettingsItem,
+				Side:   Both,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalid.Valid ||
+		len(invalid.Diagnostics) != 1 ||
+		invalid.Diagnostics[0] != "conflict.choice_invalid" {
+		t.Fatalf("settings both preview = %#v", invalid)
 	}
 }
 

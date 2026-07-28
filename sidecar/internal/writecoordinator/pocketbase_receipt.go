@@ -2,6 +2,7 @@ package writecoordinator
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,12 @@ import (
 type businessIntentContextKey struct{}
 
 type BusinessIntent struct {
+	WriteIntent
+	Kind     string
+	Identity string
+}
+
+type PocketBaseReceipt struct {
 	WriteIntent
 	Kind     string
 	Identity string
@@ -197,4 +204,51 @@ func HasPocketBaseReceipt(
 		return false, errors.New("workspace.business_receipt_corrupt")
 	}
 	return count == 1, nil
+}
+
+// LoadPocketBaseReceipt returns the exact business identity associated with a
+// prepared coordinator revision. Startup recovery uses it to route conflict
+// publications back to their original durable stage.
+func LoadPocketBaseReceipt(
+	ctx context.Context,
+	app core.App,
+	token Token,
+	revision uint64,
+) (PocketBaseReceipt, bool, error) {
+	if app == nil || revision == 0 || revision > math.MaxInt64 {
+		return PocketBaseReceipt{}, false,
+			errors.New("workspace.business_receipt_invalid")
+	}
+	var receipt PocketBaseReceipt
+	err := app.DB().NewQuery(`
+		SELECT kind, identity
+		FROM workspace_v2_mutation_receipts
+		WHERE mutation_revision = {:revision}
+		  AND workspace_id = {:workspace}
+		  AND session_epoch = {:session}
+		  AND fence_epoch = {:fence}
+		  AND claim_id = {:claim}
+	`).WithContext(ctx).Bind(dbx.Params{
+		"revision":  revision,
+		"workspace": token.WorkspaceID,
+		"session":   token.SessionEpoch,
+		"fence":     token.FenceEpoch,
+		"claim":     token.ClaimID,
+	}).Row(&receipt.Kind, &receipt.Identity)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PocketBaseReceipt{}, false, nil
+	}
+	if err != nil {
+		return PocketBaseReceipt{}, false, err
+	}
+	if strings.TrimSpace(receipt.Kind) == "" ||
+		strings.TrimSpace(receipt.Identity) == "" {
+		return PocketBaseReceipt{}, false,
+			errors.New("workspace.business_receipt_corrupt")
+	}
+	receipt.WriteIntent = WriteIntent{
+		Token:            token,
+		MutationRevision: revision,
+	}
+	return receipt, true, nil
 }

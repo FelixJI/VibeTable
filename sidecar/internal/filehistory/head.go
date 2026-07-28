@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -114,6 +115,106 @@ func (store *memoryHeadStore) CompareAndSwap(
 
 type SQLiteHeadStore struct {
 	db *sql.DB
+}
+
+// ReadPersistentMutationRevision reads an existing file-history head without
+// creating or migrating its SQLite database. It is intended for offline
+// release verification while Desktop holds the workspace writer fence.
+func ReadPersistentMutationRevision(
+	ctx context.Context,
+	path string,
+	workspaceID string,
+) (uint64, error) {
+	if strings.TrimSpace(path) == "" || !validUUID(workspaceID) {
+		return 0, ErrStateCorrupt
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return 0, err
+	}
+	info, err := os.Stat(absolute)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, errors.Join(ErrStateCorrupt, err)
+	}
+	if !info.Mode().IsRegular() {
+		return 0, ErrStateCorrupt
+	}
+	stagedPath, cleanup, err := stageHeadDatabaseForRead(absolute)
+	if err != nil {
+		return 0, errors.Join(ErrStateCorrupt, err)
+	}
+	defer cleanup()
+	db, err := sql.Open("sqlite", stagedPath)
+	if err != nil {
+		return 0, errors.Join(ErrStateCorrupt, err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `PRAGMA query_only=ON`); err != nil {
+		return 0, errors.Join(ErrStateCorrupt, err)
+	}
+
+	var persistedWorkspaceID string
+	var mutationRevision uint64
+	err = db.QueryRowContext(ctx, `
+		SELECT workspace_id, mutation_revision
+		FROM filehistory_heads
+		WHERE workspace_id = ?`,
+		workspaceID,
+	).Scan(&persistedWorkspaceID, &mutationRevision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil ||
+		persistedWorkspaceID != workspaceID ||
+		mutationRevision == 0 {
+		if err == nil {
+			err = ErrStateCorrupt
+		}
+		return 0, errors.Join(ErrStateCorrupt, err)
+	}
+	return mutationRevision, nil
+}
+
+func stageHeadDatabaseForRead(
+	sourcePath string,
+) (string, func(), error) {
+	directory, err := os.MkdirTemp("", "vibetable-filehistory-read-*")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(directory) }
+	targetPath := filepath.Join(directory, "filehistory-head.db")
+	for _, suffix := range []string{"", "-wal"} {
+		source, err := os.Open(sourcePath + suffix)
+		if errors.Is(err, os.ErrNotExist) && suffix != "" {
+			continue
+		}
+		if err != nil {
+			cleanup()
+			return "", nil, err
+		}
+		target, targetErr := os.OpenFile(
+			targetPath+suffix,
+			os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+			0o600,
+		)
+		if targetErr == nil {
+			_, targetErr = io.Copy(target, source)
+		}
+		closeErr := source.Close()
+		if target != nil {
+			closeErr = errors.Join(closeErr, target.Close())
+		}
+		if err := errors.Join(targetErr, closeErr); err != nil {
+			cleanup()
+			return "", nil, err
+		}
+	}
+	return targetPath, cleanup, nil
 }
 
 func OpenPersistentHeadStore(path string) (*SQLiteHeadStore, error) {

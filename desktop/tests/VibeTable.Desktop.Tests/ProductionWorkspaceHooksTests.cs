@@ -82,6 +82,101 @@ public sealed class ProductionWorkspaceHooksTests
     }
 
     [TestMethod]
+    public async Task MirroredProvisionalWriterClaimsLocalActivityFence()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-production-hooks-mirrored-" +
+            Guid.NewGuid().ToString("N"));
+        string selected = Path.Combine(root, "replica");
+        string activity = Path.Combine(root, "activity");
+        try
+        {
+            WorkspaceLayoutResult layout = WorkspaceLayout.Create(
+                selected,
+                "Mirrored hooks",
+                WorkspaceStorageMode.Mirrored,
+                WorkspaceEncryptionMode.None,
+                activity);
+            var workspace = new WorkspaceRegistryEntryV2
+            {
+                ContractVersion = WorkspaceV2Json.ContractVersion,
+                WorkspaceId = layout.Manifest.WorkspaceId,
+                DisplayName = layout.Manifest.DisplayName,
+                SelectedRoot = selected,
+                ActivityRoot = activity,
+                StorageKind = WorkspaceStorageKind.Fixed,
+                CoordinationStrength =
+                    WorkspaceCoordinationStrength.Advisory,
+                LastOpenedAt = null,
+                LastKnownHealth = WorkspaceHealth.Healthy,
+                LastSnapshotAt = null,
+                LastSyncAt = null,
+                PendingSync = false,
+            };
+            using var first = new WorkspaceCoordinationLeaseHook();
+            using var second = new WorkspaceCoordinationLeaseHook();
+
+            Assert.AreEqual(
+                WorkspaceOpenMode.Provisional,
+                await first.AcquireAsync(
+                    workspace,
+                    WorkspaceOpenMode.Writable,
+                    CancellationToken.None));
+            WorkspaceRegistryException writerConflict =
+                await Assert.ThrowsExactlyAsync<WorkspaceRegistryException>(
+                    () => second.AcquireAsync(
+                        workspace,
+                        WorkspaceOpenMode.Writable,
+                        CancellationToken.None));
+            Assert.AreEqual("workspace.lease_conflict", writerConflict.Code);
+
+            await using (WorkspaceStorageMaintenanceLease maintenance =
+                WorkspaceStorageMaintenanceLease.Acquire(
+                    activity,
+                    workspace.WorkspaceId))
+            {
+                WorkspaceRegistryException maintenanceConflict =
+                    await Assert.ThrowsExactlyAsync<WorkspaceRegistryException>(
+                        () => maintenance.AcquireWriterFenceAsync(
+                            activity,
+                            CancellationToken.None));
+                Assert.AreEqual(
+                    "workspace.storage_writer_fence_conflict",
+                    maintenanceConflict.Code);
+
+                await first.ReleaseAsync(
+                    workspace.WorkspaceId,
+                    sessionEpoch: 1,
+                    CancellationToken.None);
+                await maintenance.AcquireWriterFenceAsync(
+                    activity,
+                    CancellationToken.None);
+                WorkspaceRegistryException maintenanceIntentConflict =
+                    await Assert.ThrowsExactlyAsync<WorkspaceRegistryException>(
+                        () => second.AcquireAsync(
+                            workspace,
+                            WorkspaceOpenMode.Writable,
+                            CancellationToken.None));
+                Assert.AreEqual(
+                    "workspace.storage_maintenance_conflict",
+                    maintenanceIntentConflict.Code);
+            }
+
+            Assert.AreEqual(
+                WorkspaceOpenMode.Provisional,
+                await second.AcquireAsync(
+                    workspace,
+                    WorkspaceOpenMode.Writable,
+                    CancellationToken.None));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [TestMethod]
     public void ProtectionRequiresSynchronousReadyResult()
     {
         Guid operationId = Guid.NewGuid();

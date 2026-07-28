@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -35,6 +37,7 @@ type productionReplicaConflict struct {
 	cancel                context.CancelFunc
 	wg                    sync.WaitGroup
 	wake                  chan struct{}
+	conflictApplyFault    func(string) error
 }
 
 func openProductionReplicaConflict(
@@ -118,6 +121,12 @@ func openProductionReplicaConflict(
 			return runtime.retention.store.EnsureIntegrityHealthy(ctx)
 		},
 	}
+	if result.managerOptions.DependencyScanner == nil {
+		result.managerOptions.DependencyScanner =
+			productionConflictDependencyScanner{
+				repository: runtime.repository,
+			}
+	}
 	if options.ReplicaRemote != nil {
 		result.managerOptions.Remote = options.ReplicaRemote
 		result.manager, err = replica.OpenManager(ctx, result.managerOptions)
@@ -148,6 +157,9 @@ func openProductionReplicaConflict(
 		ctx,
 		&workspaceConflictAppender{owner: result},
 	); err != nil {
+		return nil, err
+	}
+	if err := result.releaseTerminalConflictPins(ctx); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -723,7 +735,8 @@ func (owner *productionReplicaConflict) listConflicts(
 			CreatedAt: set.CreatedAt.UTC().Format(
 				time.RFC3339Nano,
 			),
-			ItemCount: len(plan.Files) + len(plan.Tables),
+			ItemCount: len(plan.Files) + len(plan.Tables) +
+				boolCount(plan.Settings != nil),
 		})
 	}
 	return map[string]any{
@@ -758,7 +771,7 @@ func (owner *productionReplicaConflict) inspectConflict(
 	items := make(
 		[]conflictItemProjection,
 		0,
-		len(plan.Files)+len(plan.Tables),
+		len(plan.Files)+len(plan.Tables)+1,
 	)
 	for _, item := range plan.Files {
 		items = append(items, conflictItemProjection{
@@ -792,6 +805,26 @@ func (owner *productionReplicaConflict) inspectConflict(
 				set.Dependencies.Edges[item.TableID]...,
 			),
 			Selected: nil,
+		})
+	}
+	if plan.Settings != nil {
+		selected := string(conflictresolution.Replica)
+		items = append(items, conflictItemProjection{
+			ConflictID:     set.ConflictID,
+			ItemID:         plan.Settings.ItemID,
+			Kind:           string(conflictresolution.SettingsItem),
+			Path:           "workspace settings",
+			State:          conflictProjectionState(set.State),
+			LocalSummary:   conflictSettingsSummary(plan.Settings.Local),
+			ReplicaSummary: conflictSettingsSummary(plan.Settings.Replica),
+			BaseSummary:    conflictSettingsSummary(plan.Settings.Base),
+			Dependencies: append(
+				[]string(nil),
+				set.Dependencies.Edges[plan.Settings.ItemID]...,
+			),
+			// Workspace settings are shared workspace state. Prefer the
+			// verified replica candidate while still requiring preview/apply.
+			Selected: &selected,
 		})
 	}
 	return map[string]any{
@@ -858,6 +891,22 @@ func conflictTableSummary(state conflictresolution.TableState) string {
 	return state.DisplayName + " · schema/records/views/attachments"
 }
 
+func conflictSettingsSummary(
+	state conflictresolution.SettingsState,
+) string {
+	if strings.TrimSpace(state.ObjectID) == "" {
+		return "missing"
+	}
+	return "workspace settings · " + state.ObjectID
+}
+
+func boolCount(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
 type previewConflictParams struct {
 	ConflictID string                      `json:"conflictId"`
 	Choices    []conflictresolution.Choice `json:"choices"`
@@ -920,6 +969,10 @@ func (owner *productionReplicaConflict) applyConflict(
 		owner:   owner,
 		context: ctx,
 	}
+	set, err := owner.conflicts.SetForPlan(ctx, params.PlanID)
+	if err != nil {
+		return nil, err
+	}
 	receipt, err := owner.conflicts.Apply(
 		ctx,
 		params.PlanID,
@@ -927,13 +980,79 @@ func (owner *productionReplicaConflict) applyConflict(
 		appender,
 	)
 	if err != nil {
+		if errors.Is(err, conflictresolution.ErrStalePlan) {
+			if releaseErr := owner.releaseConflictPins(
+				context.WithoutCancel(ctx), set,
+			); releaseErr != nil {
+				return nil, errors.Join(err, releaseErr)
+			}
+		}
 		return nil, err
+	}
+	if err := owner.releaseConflictPins(
+		context.WithoutCancel(ctx), set,
+	); err != nil {
+		owner.signalWorker()
 	}
 	return map[string]any{
 		"operationId":         receipt.OperationID,
 		"state":               receipt.State,
 		"recoverySnapshotIds": receipt.RecoverySnapshotIDs,
 	}, nil
+}
+
+func (owner *productionReplicaConflict) releaseTerminalConflictPins(
+	ctx context.Context,
+) error {
+	var cursor *string
+	for {
+		sets, next, err := owner.conflicts.List(
+			ctx, owner.runtime.manifest.WorkspaceID, cursor, 200,
+		)
+		if err != nil {
+			return err
+		}
+		for _, set := range sets {
+			if set.State != conflictresolution.StateApplied &&
+				!set.ReplanRequired {
+				continue
+			}
+			if err := owner.releaseConflictPins(ctx, set); err != nil {
+				return err
+			}
+		}
+		if next == nil {
+			return nil
+		}
+		cursor = next
+	}
+}
+
+func (owner *productionReplicaConflict) releaseConflictPins(
+	ctx context.Context,
+	set conflictresolution.Set,
+) error {
+	token, _ := owner.runtime.coordinator.Current()
+	for _, pinID := range set.RootPinIDs {
+		if err := owner.runtime.repository.ReleasePin(
+			ctx, token.Authority(), pinID,
+		); err != nil {
+			return err
+		}
+	}
+	if len(set.RootPinIDs) != 0 {
+		if err := owner.conflicts.ClearRootPins(
+			ctx, set.ConflictID,
+		); err != nil {
+			return err
+		}
+	}
+	if set.ReplanRequired {
+		return owner.conflicts.DeleteReplanRequired(
+			ctx, set.ConflictID,
+		)
+	}
+	return nil
 }
 
 func (owner *productionReplicaConflict) loadOperationReceipt(
@@ -1085,15 +1204,47 @@ func (appender *workspaceConflictAppender) Stage(
 	selections := make(
 		[]filehistory.ConflictSelection, 0, len(changes),
 	)
+	var copies []filehistory.ConflictCopy
+	external := workspaceConflictExternalStage{FormatVersion: 1}
+	occupiedPaths := map[string]struct{}{}
+	for _, document := range appender.owner.runtime.history.List() {
+		if document.Status == filehistory.DocumentActive {
+			occupiedPaths[strings.ToLower(document.RelativePath)] = struct{}{}
+		}
+	}
 	for _, change := range changes {
 		kind := change.Kind
 		if kind == "" && change.DocumentID != "" {
 			kind = conflictresolution.FileItem
 		}
+		if kind == conflictresolution.TableItem {
+			table, err := appender.stageConflictTable(
+				ctx, change.TablePrevious, change.TableChosen,
+			)
+			if err != nil {
+				return conflictresolution.ApplyStage{}, err
+			}
+			external.Tables = append(external.Tables, table)
+			continue
+		}
+		if kind == conflictresolution.SettingsItem {
+			settings, err := appender.stageConflictSettings(
+				ctx,
+				change.SettingsPrevious,
+				change.SettingsChosen,
+			)
+			if err != nil {
+				return conflictresolution.ApplyStage{}, err
+			}
+			external.Settings = &settings
+			continue
+		}
 		if kind != conflictresolution.FileItem {
-			// Whole-table publication needs the PocketBase candidate database
-			// adapter. Until that production adapter can prove an atomic
-			// schema/records/views/attachments install, fail closed.
+			return conflictresolution.ApplyStage{},
+				conflictresolution.ErrApplyUnproven
+		}
+		if !change.Chosen.Deleted &&
+			strings.TrimSpace(change.Chosen.MimeType) == "" {
 			return conflictresolution.ApplyStage{},
 				conflictresolution.ErrApplyUnproven
 		}
@@ -1101,11 +1252,35 @@ func (appender *workspaceConflictAppender) Stage(
 			DocumentID:       change.DocumentID,
 			ExpectedPath:     change.Previous.Path,
 			ExpectedObjectID: objectrepo.ObjectID(change.Previous.ContentID),
+			ExpectedMimeType: change.Previous.MimeType,
 			ExpectedDeleted:  change.Previous.Deleted,
 			ChosenPath:       change.Chosen.Path,
 			ChosenObjectID:   objectrepo.ObjectID(change.Chosen.ContentID),
+			ChosenMimeType:   change.Chosen.MimeType,
 			ChosenDeleted:    change.Chosen.Deleted,
 		})
+		if change.Copy != nil {
+			copyPath := nextReplicaConflictPath(
+				change.Copy.Path, occupiedPaths,
+			)
+			copyID := uuid.NewSHA1(
+				uuid.NameSpaceOID,
+				[]byte(
+					"vibetable-conflict-copy:"+
+						operationID+":"+change.DocumentID,
+				),
+			).String()
+			copies = append(copies, filehistory.ConflictCopy{
+				SourceDocumentID: change.DocumentID,
+				DocumentID:       copyID,
+				ChosenPath:       copyPath,
+				ChosenObjectID: objectrepo.ObjectID(
+					change.Copy.ContentID,
+				),
+				ChosenMimeType: change.Copy.MimeType,
+			})
+			occupiedPaths[strings.ToLower(copyPath)] = struct{}{}
+		}
 	}
 	recoveryIDs := uniqueStrings([]string{
 		plan.LocalSnapshot,
@@ -1126,17 +1301,50 @@ func (appender *workspaceConflictAppender) Stage(
 	if err != nil {
 		return conflictresolution.ApplyStage{}, err
 	}
+	var externalRaw json.RawMessage
+	if len(external.Tables) != 0 || external.Settings != nil {
+		if err := appender.validateMixedCandidate(
+			ctx, external,
+		); err != nil {
+			if errors.Is(err, conflictresolution.ErrApplyUnproven) ||
+				errors.Is(
+					err,
+					conflictresolution.ErrDependencyIncomplete,
+				) ||
+				errors.Is(
+					err,
+					conflictresolution.ErrCandidateDatabaseInvalid,
+				) {
+				err = errors.Join(
+					conflictresolution.ErrResolutionInvalid,
+					err,
+				)
+			}
+			return conflictresolution.ApplyStage{}, err
+		}
+		externalRaw, err = json.Marshal(external)
+		if err != nil {
+			return conflictresolution.ApplyStage{}, err
+		}
+	}
 	stage, err := appender.owner.applier.Prepare(
 		ctx,
 		filehistory.ConflictStage{
 			PlanID:              planID,
 			OperationID:         operationID,
 			Selections:          selections,
+			Copies:              copies,
 			RecoverySnapshotIDs: recoveryIDs,
 			OperationReceipt:    receipt,
+			External:            externalRaw,
 		},
 	)
 	if err != nil {
+		if errors.Is(err, filehistory.ErrRevisionConflict) ||
+			errors.Is(err, filehistory.ErrPathConflict) {
+			return conflictresolution.ApplyStage{},
+				errors.Join(conflictresolution.ErrStalePlan, err)
+		}
 		return conflictresolution.ApplyStage{}, err
 	}
 	return conflictresolution.ApplyStage{
@@ -1146,14 +1354,50 @@ func (appender *workspaceConflictAppender) Stage(
 	}, nil
 }
 
+func nextReplicaConflictPath(
+	preferred string,
+	occupied map[string]struct{},
+) string {
+	extension := path.Ext(preferred)
+	base := strings.TrimSuffix(preferred, extension)
+	if strings.TrimSpace(base) == "" {
+		base = "replica document"
+	}
+	for ordinal := 1; ; ordinal++ {
+		suffix := " (replica conflict)"
+		if ordinal > 1 {
+			suffix = fmt.Sprintf(" (replica conflict %d)", ordinal)
+		}
+		candidate := base + suffix + extension
+		if _, exists := occupied[strings.ToLower(candidate)]; !exists {
+			return candidate
+		}
+	}
+}
+
 func (appender *workspaceConflictAppender) Commit(
 	ctx context.Context,
 	stage conflictresolution.ApplyStage,
 ) (conflictresolution.ApplyReceipt, error) {
-	commit, err := appender.owner.applier.Commit(
-		ctx, stage.StageID,
+	commit, err := appender.owner.applier.CommitWith(
+		ctx,
+		stage.StageID,
+		appender.applyExternalStage,
 	)
 	if err != nil {
+		persisted, receiptErr :=
+			appender.hasConflictBusinessReceipt(
+				context.WithoutCancel(ctx),
+				stage.OperationID,
+			)
+		if receiptErr != nil || persisted {
+			appender.requestConflictShutdown()
+		}
+		if errors.Is(err, filehistory.ErrRevisionConflict) ||
+			errors.Is(err, filehistory.ErrPathConflict) {
+			return conflictresolution.ApplyReceipt{},
+				conflictresolution.ErrStalePlan
+		}
 		return conflictresolution.ApplyReceipt{}, err
 	}
 	return conflictresolution.ApplyReceipt{

@@ -9,6 +9,20 @@ from pathlib import Path
 from qa import next as next_gate
 
 
+def _candidate_args(tmp_path: Path) -> list[str]:
+    package_root = tmp_path / "VibeTable.Next"
+    package_root.mkdir()
+    (package_root / "candidate.bin").write_bytes(b"candidate")
+    archive = tmp_path / "VibeTable.Next.zip"
+    next_gate.release_candidate.create_archive(package_root, archive)
+    return [
+        "--package-root",
+        str(package_root),
+        "--package-archive",
+        str(archive),
+    ]
+
+
 def test_console_output_is_safe_on_legacy_windows_code_pages() -> None:
     raw = io.BytesIO()
     stream = io.TextIOWrapper(raw, encoding="ascii", errors="strict", newline="")
@@ -266,9 +280,13 @@ def test_go_test_retries_only_the_narrow_windows_tempdir_cleanup_flake(
     monkeypatch.setattr(
         next_gate,
         "stage_command",
-        lambda _stage: (["go", "test", "./..."], "repo"),
+        lambda _stage, package_root=None: (["go", "test", "./..."], "repo"),
     )
-    monkeypatch.setattr(next_gate, "_stage_environment", lambda _stage, _command: {})
+    monkeypatch.setattr(
+        next_gate,
+        "_stage_environment",
+        lambda _stage, _command, package_root=None: {},
+    )
     calls = 0
 
     def run(*_args, **_kwargs):
@@ -356,7 +374,7 @@ def test_stage_report_is_never_release_eligible(
     monkeypatch.setattr(
         next_gate,
         "run_stage",
-        lambda stage: next_gate.StageResult(
+        lambda stage, package_root=None: next_gate.StageResult(
             stage=stage,
             command=["test"],
             returncode=0,
@@ -397,10 +415,10 @@ def test_full_ci_report_is_release_eligible_only_when_identity_stays_stable(
         "release_source_hash",
         lambda _deps: "s" * 64,
     )
-    monkeypatch.setattr(next_gate, "run_ci", lambda: (0, []))
+    monkeypatch.setattr(next_gate, "run_ci", lambda package_root=None: (0, []))
     report = tmp_path / "ci.json"
 
-    assert next_gate.main(["--ci", "--json-report", str(report)]) == 1
+    assert next_gate.main(["--ci", *_candidate_args(tmp_path), "--json-report", str(report)]) == 1
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["ok"] is False
     assert payload["releaseEligible"] is False
@@ -423,14 +441,72 @@ def test_full_ci_report_rejects_source_change_while_gate_is_running(
         "release_source_hash",
         lambda _deps: next(source_hashes),
     )
-    monkeypatch.setattr(next_gate, "run_ci", lambda: (0, []))
+    monkeypatch.setattr(next_gate, "run_ci", lambda package_root=None: (0, []))
     report = tmp_path / "ci.json"
 
-    assert next_gate.main(["--ci", "--json-report", str(report)]) == 1
+    assert next_gate.main(["--ci", *_candidate_args(tmp_path), "--json-report", str(report)]) == 1
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["ok"] is False
     assert payload["releaseEligible"] is False
     assert payload["sourceHash"] == "b" * 64
+
+
+def test_full_ci_report_is_bound_to_stable_release_candidate(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "artifact_hashes",
+        lambda _deps: {"sidecar": "d" * 64},
+    )
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "release_source_hash",
+        lambda _deps: "s" * 64,
+    )
+    monkeypatch.setattr(next_gate, "run_ci", lambda package_root=None: (0, []))
+    report = tmp_path / "ci.json"
+
+    assert next_gate.main(["--ci", *_candidate_args(tmp_path), "--json-report", str(report)]) == 0
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["schemaVersion"] == 2
+    assert payload["releaseEligible"] is True
+    assert payload["releaseCandidate"]["archive"]["sha256"]
+    assert payload["releaseCandidate"]["packageTreeSha256"]
+
+
+def test_full_ci_report_rejects_candidate_mutation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "artifact_hashes",
+        lambda _deps: {"sidecar": "d" * 64},
+    )
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "release_source_hash",
+        lambda _deps: "s" * 64,
+    )
+    candidate_args = _candidate_args(tmp_path)
+    package_root = Path(candidate_args[1])
+
+    def mutate_candidate(_package_root=None):
+        (package_root / "candidate.bin").write_bytes(b"mutated")
+        return 0, []
+
+    monkeypatch.setattr(next_gate, "run_ci", mutate_candidate)
+    report = tmp_path / "ci.json"
+    assert next_gate.main(["--ci", *candidate_args, "--json-report", str(report)]) == 1
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["releaseEligible"] is False
+    assert payload["releaseCandidate"] is None
 
 
 def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:

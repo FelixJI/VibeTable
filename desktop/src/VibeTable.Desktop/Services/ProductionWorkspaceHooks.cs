@@ -288,10 +288,11 @@ public sealed record ProtectionSnapshotReceipt(
     ulong MutationRevision);
 
 /// <summary>
-/// Production strong/advisory lease policy. Writable strong workspaces hold
-/// an exclusive coordination file handle for the complete session lifetime,
-/// including across Desktop processes. Advisory roots are explicitly
-/// downgraded to provisional and never presented as exclusively writable.
+/// Production strong/advisory lease policy. Writable strong workspaces and
+/// mirrored activity roots hold an exclusive local coordination file handle
+/// for the complete session lifetime, including across Desktop processes.
+/// Advisory remote semantics are still explicitly downgraded to provisional
+/// and are never presented as strongly coordinated.
 /// </summary>
 public sealed class WorkspaceCoordinationLeaseHook :
     IWorkspaceLeaseHook,
@@ -312,11 +313,14 @@ public sealed class WorkspaceCoordinationLeaseHook :
         if (requestedMode != WorkspaceOpenMode.Writable)
             return Task.FromResult(requestedMode);
         // A separate activity root is the device-local marker for mirrored
-        // storage. Filesystem replicas are advisory even when the selected
-        // sync folder happens to reside on a fixed local volume.
-        if (!string.IsNullOrWhiteSpace(workspace.ActivityRoot) ||
+        // storage. Its remote replica remains advisory, but the local activity
+        // database must still have one writer so maintenance can fence every
+        // process before independently verifying and deleting the cache.
+        bool mirrored = !string.IsNullOrWhiteSpace(workspace.ActivityRoot);
+        bool provisional = mirrored ||
             workspace.CoordinationStrength ==
-                WorkspaceCoordinationStrength.Advisory)
+                WorkspaceCoordinationStrength.Advisory;
+        if (provisional && !mirrored)
             return Task.FromResult(WorkspaceOpenMode.Provisional);
 
         string runtimeRoot =
@@ -370,7 +374,10 @@ public sealed class WorkspaceCoordinationLeaseHook :
                     exception);
             }
         }
-        return Task.FromResult(WorkspaceOpenMode.Writable);
+        return Task.FromResult(
+            provisional
+                ? WorkspaceOpenMode.Provisional
+                : WorkspaceOpenMode.Writable);
     }
 
     public Task ReleaseAsync(

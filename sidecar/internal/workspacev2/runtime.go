@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
+	conflictresolution "github.com/vibetable/vibetable/sidecar/internal/conflict"
 	contractsv2 "github.com/vibetable/vibetable/sidecar/internal/contracts/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
@@ -215,23 +216,25 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 		}
 		persistedSessionEpoch++
 	}
-	result.materializer, err = filehistory.OpenMaterializer(
-		paths.files,
-		filepath.Join(paths.coordination, "file-materializer"),
-		result.repository,
-	)
-	if err != nil {
-		return nil, err
-	}
-	result.history, err = filehistory.OpenCurrent(
-		ctx,
-		result.repository,
-		result.coordinator,
-		result.headStore,
-		filehistory.WithMaterializer(result.materializer),
-	)
-	if err != nil {
-		return nil, err
+	if result.history == nil {
+		result.materializer, err = filehistory.OpenMaterializer(
+			paths.files,
+			filepath.Join(paths.coordination, "file-materializer"),
+			result.repository,
+		)
+		if err != nil {
+			return nil, err
+		}
+		result.history, err = filehistory.OpenCurrent(
+			ctx,
+			result.repository,
+			result.coordinator,
+			result.headStore,
+			filehistory.WithMaterializer(result.materializer),
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := result.retention.bind(result); err != nil {
 		return nil, err
@@ -1021,6 +1024,27 @@ func (runtime *Runtime) recoverPreparedMutation(ctx context.Context) error {
 	if recovery.PendingMutationRevision == 0 {
 		return nil
 	}
+	businessReceipt, found, err :=
+		writecoordinator.LoadPocketBaseReceipt(
+			ctx,
+			runtime.app,
+			recovery.Token,
+			recovery.PendingMutationRevision,
+		)
+	if err != nil {
+		return err
+	}
+	if found && businessReceipt.Kind == "conflict.external" {
+		if err := runtime.recoverPreparedExternalConflict(
+			ctx, businessReceipt.Identity,
+		); err != nil {
+			return err
+		}
+		recovery = runtime.coordinator.RecoveryState()
+		if recovery.PendingMutationRevision == 0 {
+			return nil
+		}
+	}
 	_, retentionMutation, err := runtime.state.retention(ctx)
 	if err != nil {
 		return err
@@ -1069,6 +1093,23 @@ func (runtime *Runtime) recoverPreparedMutation(ctx context.Context) error {
 	if businessCommitted {
 		proofs++
 	}
+	if businessCommitted && found &&
+		head.MutationRevision == recovery.PendingMutationRevision {
+		externalConflict, err :=
+			runtime.headStore.HasExternalConflictProof(
+				ctx, recovery.PendingMutationRevision,
+			)
+		if err != nil {
+			return err
+		}
+		if externalConflict {
+			// A conflict external stage deliberately commits its PocketBase
+			// receipt and file-history head as one cross-domain publication.
+			// The correlated head-store proof collapses the two domain
+			// observations into the single expected coordinator proof.
+			proofs--
+		}
+	}
 	if runtime.retention != nil {
 		retentionCommitted, err := runtime.retention.hasCommittedMutation(
 			ctx,
@@ -1092,6 +1133,66 @@ func (runtime *Runtime) recoverPreparedMutation(ctx context.Context) error {
 		recovery.Token,
 		recovery.PendingMutationRevision,
 		proofs == 1,
+	)
+}
+
+func (runtime *Runtime) recoverPreparedExternalConflict(
+	ctx context.Context,
+	operationID string,
+) (err error) {
+	if strings.TrimSpace(operationID) == "" {
+		return errors.New("workspace.conflict_recovery_identity_required")
+	}
+	if runtime.materializer == nil {
+		runtime.materializer, err = filehistory.OpenMaterializer(
+			runtime.paths.files,
+			filepath.Join(
+				runtime.paths.coordination,
+				"file-materializer",
+			),
+			runtime.repository,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	if runtime.history == nil {
+		runtime.history, err =
+			filehistory.OpenCurrentForPreparedRecovery(
+				ctx,
+				runtime.repository,
+				runtime.coordinator,
+				runtime.headStore,
+				filehistory.WithMaterializer(runtime.materializer),
+			)
+		if err != nil {
+			return err
+		}
+	}
+	applier, err := filehistory.NewConflictApplier(
+		runtime.history, runtime.headStore,
+	)
+	if err != nil {
+		return err
+	}
+	engine, err := conflictresolution.OpenEngine(
+		joinCoordination(runtime.paths, "conflicts.db"),
+	)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = errors.Join(err, engine.Close())
+	}()
+	owner := &productionReplicaConflict{
+		runtime:   runtime,
+		conflicts: engine,
+		applier:   applier,
+	}
+	return engine.RecoverOperation(
+		ctx,
+		operationID,
+		&workspaceConflictAppender{owner: owner},
 	)
 }
 

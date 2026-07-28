@@ -764,6 +764,7 @@ func filesystemConflictCandidate(
 			Revisions           []struct {
 				RevisionID string              `json:"revisionId"`
 				ObjectID   objectrepo.ObjectID `json:"objectId"`
+				MimeType   string              `json:"mimeType"`
 			} `json:"revisions"`
 		} `json:"documents"`
 	}
@@ -772,14 +773,60 @@ func filesystemConflictCandidate(
 		root.WorkspaceID != bundle.Snapshot.WorkspaceID {
 		return conflictresolution.Candidate{}, ErrVerificationInvalid
 	}
+	databaseID := bundle.Snapshot.ObjectMap["database"]
+	settingsID := bundle.Snapshot.ObjectMap["workspace-settings"]
+	fileStateRootID := bundle.Snapshot.ObjectMap["file-state-root"]
+	database, databaseExists := bundle.Objects[databaseID]
+	_, settingsExists := bundle.Objects[settingsID]
+	fileStateRoot, fileStateRootExists := bundle.Objects[fileStateRootID]
+	if databaseID == "" || settingsID == "" || fileStateRootID == "" ||
+		!databaseExists || !settingsExists || !fileStateRootExists {
+		return conflictresolution.Candidate{}, ErrVerificationInvalid
+	}
+	var fileState struct {
+		FormatVersion uint64                         `json:"formatVersion"`
+		SourceRoot    objectrepo.ManifestID          `json:"sourceRoot"`
+		Files         map[string]objectrepo.ObjectID `json:"files"`
+		Attachments   map[string]objectrepo.ObjectID `json:"attachments,omitempty"`
+	}
+	if err := decodeFilesystemJSON(fileStateRoot, &fileState); err != nil ||
+		fileState.FormatVersion != 1 ||
+		fileState.SourceRoot == "" ||
+		fileState.Files == nil {
+		return conflictresolution.Candidate{}, ErrVerificationInvalid
+	}
+	attachmentObjects := make(
+		map[string]string, len(fileState.Attachments),
+	)
+	for key, id := range fileState.Attachments {
+		if strings.TrimSpace(key) == "" || id == "" {
+			return conflictresolution.Candidate{}, ErrVerificationInvalid
+		}
+		if _, exists := bundle.Objects[id]; !exists {
+			return conflictresolution.Candidate{}, ErrVerificationInvalid
+		}
+		attachmentObjects[key] = string(id)
+	}
+	projection, err := conflictresolution.ProjectSQLiteDatabase(
+		context.Background(),
+		database,
+		string(databaseID),
+		attachmentObjects,
+	)
+	if err != nil {
+		return conflictresolution.Candidate{},
+			errors.Join(ErrVerificationInvalid, err)
+	}
 	candidate := conflictresolution.Candidate{
-		SnapshotID: bundle.Snapshot.SnapshotID,
-		BusinessDatabaseObjectID: string(
-			bundle.Snapshot.ObjectMap["database"],
-		),
-		Revision: bundle.Snapshot.CatalogRevision,
-		Files:    map[string]conflictresolution.FileState{},
-		Tables:   map[string]conflictresolution.TableState{},
+		SnapshotID:               bundle.Snapshot.SnapshotID,
+		BusinessDatabaseObjectID: string(databaseID),
+		Settings: conflictresolution.SettingsState{
+			ObjectID: string(settingsID),
+		},
+		AttachmentObjects: attachmentObjects,
+		Revision:          bundle.Snapshot.CatalogRevision,
+		Files:             map[string]conflictresolution.FileState{},
+		Tables:            projection.Tables,
 	}
 	for _, document := range root.Documents {
 		state := conflictresolution.FileState{
@@ -790,10 +837,13 @@ func filesystemConflictCandidate(
 		for _, revision := range document.Revisions {
 			if revision.RevisionID == document.EffectiveRevisionID {
 				state.ContentID = string(revision.ObjectID)
+				state.MimeType = revision.MimeType
 				break
 			}
 		}
-		if !state.Deleted && state.ContentID == "" {
+		if !state.Deleted &&
+			(state.ContentID == "" ||
+				strings.TrimSpace(state.MimeType) == "") {
 			return conflictresolution.Candidate{}, ErrVerificationInvalid
 		}
 		candidate.Files[document.DocumentID] = state
@@ -1032,6 +1082,7 @@ func validateFilesystemRecoveryClosure(
 		FormatVersion uint64                         `json:"formatVersion"`
 		SourceRoot    objectrepo.ManifestID          `json:"sourceRoot"`
 		Files         map[string]objectrepo.ObjectID `json:"files"`
+		Attachments   map[string]objectrepo.ObjectID `json:"attachments,omitempty"`
 	}
 	if err := decodeFilesystemJSON(fileRaw, &fileState); err != nil ||
 		fileState.FormatVersion != 1 ||
@@ -1040,6 +1091,11 @@ func validateFilesystemRecoveryClosure(
 		return ErrVerificationInvalid
 	}
 	for _, id := range fileState.Files {
+		if _, exists := roots[id]; !exists {
+			return ErrVerificationInvalid
+		}
+	}
+	for _, id := range fileState.Attachments {
 		if _, exists := roots[id]; !exists {
 			return ErrVerificationInvalid
 		}
@@ -1074,6 +1130,7 @@ func validateFilesystemSnapshotMetadata(
 		FormatVersion uint64                         `json:"formatVersion"`
 		SourceRoot    objectrepo.ManifestID          `json:"sourceRoot"`
 		Files         map[string]objectrepo.ObjectID `json:"files"`
+		Attachments   map[string]objectrepo.ObjectID `json:"attachments,omitempty"`
 	}
 	if err := decodeFilesystemJSON(
 		objects[record.ObjectMap["file-state-root"]],

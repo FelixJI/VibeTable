@@ -33,6 +33,7 @@ type BarrierView struct {
 	FileRoot          string
 	Database          []byte
 	Files             map[string][]byte
+	Attachments       map[string][]byte
 	WorkspaceSettings []byte
 	AuditPrefix       []byte
 	CreatedByDevice   string
@@ -409,6 +410,15 @@ func buildSnapshot(
 	}
 	sort.Strings(fileNames)
 	fileObjects := make(map[string]objectrepo.ObjectID, len(fileNames))
+	attachmentNames := make([]string, 0, len(view.Attachments))
+	for name := range view.Attachments {
+		attachmentNames = append(attachmentNames, name)
+	}
+	sort.Strings(attachmentNames)
+	attachmentObjects := make(
+		map[string]objectrepo.ObjectID,
+		len(attachmentNames),
+	)
 	inputs := []objectrepo.ObjectInput{
 		{Name: "database", Content: view.Database},
 		{Name: "topology-root", Content: topologyRoot},
@@ -422,10 +432,18 @@ func buildSnapshot(
 			Name: "file:" + name, Content: content,
 		})
 	}
+	for _, name := range attachmentNames {
+		content := view.Attachments[name]
+		attachmentObjects[name] = contentObjectID(content)
+		inputs = append(inputs, objectrepo.ObjectInput{
+			Name: "attachment:" + name, Content: content,
+		})
+	}
 	fileStateRoot, err := json.Marshal(map[string]any{
 		"formatVersion": 1,
 		"sourceRoot":    view.FileRoot,
 		"files":         fileObjects,
+		"attachments":   attachmentObjects,
 	})
 	if err != nil {
 		return nil, Manifest{}, Seal{}, err

@@ -19,8 +19,10 @@ from pathlib import Path
 
 try:
     from qa import handoff as handoff_gate
+    from qa import release_candidate
 except ModuleNotFoundError:  # pragma: no cover - direct ``python qa/next.py``
     import handoff as handoff_gate  # type: ignore[no-redef]
+    import release_candidate  # type: ignore[no-redef]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SIDECAR_DIR = REPO_ROOT / "sidecar"
@@ -111,12 +113,15 @@ def _resolve(name: str) -> str:
     return shutil.which(name) or name
 
 
-def stage_command(stage: str) -> tuple[list[str], str]:
+def stage_command(stage: str, package_root: Path | None = None) -> tuple[list[str], str]:
     go = _resolve("go")
     if stage == "version":
         return [sys.executable, "qa/version_check.py"], str(REPO_ROOT)
     if stage == "package":
-        return [sys.executable, "qa/package_check.py"], str(REPO_ROOT)
+        command = [sys.executable, "qa/package_check.py"]
+        if package_root is not None:
+            command.append(str(package_root))
+        return command, str(REPO_ROOT)
     if stage == "go-fmt":
         return [sys.executable, str(GO_FORMAT_CHECK)], str(REPO_ROOT)
     if stage == "go-vet":
@@ -144,12 +149,15 @@ def stage_command(stage: str) -> tuple[list[str], str]:
             "./cmd/vibetable-pb",
         ], str(SIDECAR_DIR)
     if stage == "sidecar-smoke":
-        return [
+        command = [
             sys.executable,
             str(SIDECAR_MATRIX),
             "--json-report",
             str(REPO_ROOT / "build" / "qa" / "packaged-sidecar-matrix.json"),
-        ], str(REPO_ROOT)
+        ]
+        if package_root is not None:
+            command.extend(["--skip-build", "--package-root", str(package_root)])
+        return command, str(REPO_ROOT)
     if stage == "upgrade-smoke":
         return [
             sys.executable,
@@ -221,7 +229,10 @@ def stage_command(stage: str) -> tuple[list[str], str]:
     if stage == "fault-injection":
         return [sys.executable, str(FAULT_INJECTION)], str(REPO_ROOT)
     if stage == "product-e2e":
-        return [sys.executable, "qa/product_acceptance.py"], str(REPO_ROOT)
+        command = [sys.executable, "qa/product_acceptance.py"]
+        if package_root is not None:
+            command.extend(["--package-root", str(package_root)])
+        return command, str(REPO_ROOT)
     if stage == "smoke":
         return [
             sys.executable,
@@ -237,7 +248,11 @@ def stage_command(stage: str) -> tuple[list[str], str]:
     raise ValueError(f"unknown stage: {stage}")
 
 
-def _stage_environment(stage: str, command: list[str]) -> dict[str, str]:
+def _stage_environment(
+    stage: str,
+    command: list[str],
+    package_root: Path | None = None,
+) -> dict[str, str]:
     # Keep every gate invocation isolated. Reusing the parent directory lets
     # pytest discover a stale ``pytest-of-<user>`` folder whose ACL may belong
     # to a previous Windows sandbox account, failing before any test executes.
@@ -268,6 +283,8 @@ def _stage_environment(stage: str, command: list[str]) -> dict[str, str]:
         environment["PATH"] = compiler_dir + os.pathsep + environment.get("PATH", "")
     if stage == "go-build":
         Path(command[command.index("-o") + 1]).parent.mkdir(parents=True, exist_ok=True)
+    if stage == "smoke" and package_root is not None:
+        environment["VIBETABLE_E2E_HOST"] = str(package_root / "VibeTable.Next.exe")
     return environment
 
 
@@ -474,9 +491,9 @@ def _is_windows_tempdir_cleanup_flake(output: str) -> bool:
     return bool(diagnostics) and all(Path(source).name == "testing.go" for source in diagnostics)
 
 
-def run_stage(stage: str) -> StageResult:
-    command, cwd = stage_command(stage)
-    environment = _stage_environment(stage, command)
+def run_stage(stage: str, package_root: Path | None = None) -> StageResult:
+    command, cwd = stage_command(stage, package_root)
+    environment = _stage_environment(stage, command, package_root)
     started = time.monotonic()
     if stage == "go-race":
         returncode, stdout, stderr = _run_go_race(
@@ -547,10 +564,10 @@ def _write_console_text(stream: object, value: str) -> None:
     stream.flush()  # type: ignore[attr-defined]
 
 
-def run_ci() -> tuple[int, list[StageResult]]:
+def run_ci(package_root: Path | None = None) -> tuple[int, list[StageResult]]:
     results: list[StageResult] = []
     for stage in STAGES:
-        result = run_stage(stage)
+        result = run_stage(stage, package_root)
         results.append(result)
         _write_console_text(sys.stdout, result.stdout)
         _write_console_text(sys.stderr, result.stderr)
@@ -565,6 +582,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--ci", action="store_true")
     parser.add_argument("--stage", choices=STAGES)
     parser.add_argument("--json-report", type=Path)
+    parser.add_argument("--package-root", type=Path)
+    parser.add_argument("--package-archive", type=Path)
     return parser
 
 
@@ -581,14 +600,30 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"failed to capture gate identity: {exc}", file=sys.stderr)
         return 2
+    starting_candidate: dict[str, object] | None = None
+    if args.ci:
+        if args.package_root is None or args.package_archive is None:
+            print(
+                "--ci requires --package-root and --package-archive for immutable candidate binding",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            starting_candidate = release_candidate.candidate_evidence(
+                args.package_root,
+                args.package_archive,
+            )
+        except release_candidate.CandidateError as exc:
+            print(f"failed to capture release candidate: {exc}", file=sys.stderr)
+            return 2
     if args.stage:
-        result = run_stage(args.stage)
+        result = run_stage(args.stage, args.package_root)
         results = [result]
         _write_console_text(sys.stdout, result.stdout)
         _write_console_text(sys.stderr, result.stderr)
         code = result.returncode
     elif args.ci:
-        code, results = run_ci()
+        code, results = run_ci(args.package_root)
     else:
         _parser().error("choose --list, --stage, or --ci")
     ending_commit = handoff_gate.git_head_sha()
@@ -606,19 +641,41 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         code = code or 1
-    release_eligible = bool(args.ci and code == 0 and identity_stable)
+    ending_candidate: dict[str, object] | None = None
+    candidate_stable = not args.ci
+    if args.ci and args.package_root is not None and args.package_archive is not None:
+        try:
+            ending_candidate = release_candidate.candidate_evidence(
+                args.package_root,
+                args.package_archive,
+            )
+            candidate_stable = starting_candidate == ending_candidate
+        except release_candidate.CandidateError as exc:
+            print(f"release candidate verification failed: {exc}", file=sys.stderr)
+            candidate_stable = False
+        if not candidate_stable:
+            print("release candidate changed while the gate was running", file=sys.stderr)
+            code = code or 1
+    release_eligible = bool(
+        args.ci
+        and code == 0
+        and identity_stable
+        and candidate_stable
+        and ending_candidate is not None
+    )
     if args.json_report:
         args.json_report.parent.mkdir(parents=True, exist_ok=True)
         args.json_report.write_text(
             json.dumps(
                 {
-                    "schemaVersion": 1,
+                    "schemaVersion": 2,
                     "ok": code == 0,
                     "releaseEligible": release_eligible,
                     "generatedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                     "commit": ending_commit,
                     "artifactHashes": ending_hashes,
                     "sourceHash": ending_source_hash,
+                    "releaseCandidate": ending_candidate,
                     "results": [item.to_dict() for item in results],
                 },
                 ensure_ascii=False,

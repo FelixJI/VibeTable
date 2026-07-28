@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -91,6 +92,82 @@ func TestPersistentHeadReopensCurrentRoot(t *testing.T) {
 		reopened.Root() != saved.Root ||
 		document.EffectiveRevisionID != saved.Revision.RevisionID {
 		t.Fatalf("reopened = %#v root=%s err=%v", document, reopened.Root(), err)
+	}
+}
+
+func TestReadPersistentMutationRevisionIsStrictlyReadOnly(t *testing.T) {
+	fixture := newHistoryFixture(t)
+	path := historySQLitePath(t, "head.db")
+	store, err := OpenPersistentHeadStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := OpenCurrent(
+		context.Background(),
+		fixture.repository,
+		fixture.coordinator,
+		store,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Save(context.Background(), SaveRequest{
+		Token: fixture.token, DocumentID: testDocumentOne,
+		Path: "read-only.txt", Kind: RevisionFormal,
+		Content: []byte("durable"), MimeType: "text/plain",
+		CreatedBy: "test-user", DeviceID: testDeviceID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	head, found, err := store.Load(
+		context.Background(),
+		fixture.token.WorkspaceID,
+	)
+	if err != nil || !found {
+		t.Fatalf("head=%#v found=%v err=%v", head, found, err)
+	}
+	defer store.Close()
+
+	directory := filepath.Dir(path)
+	entryNames := func() []string {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		return names
+	}
+	before := entryNames()
+	if !slices.Contains(before, "head.db-wal") {
+		t.Fatalf("file-history fixture did not retain WAL: %v", before)
+	}
+	revision, err := ReadPersistentMutationRevision(
+		context.Background(),
+		path,
+		fixture.token.WorkspaceID,
+	)
+	if err != nil || revision != head.MutationRevision {
+		t.Fatalf("revision=%d head=%#v err=%v", revision, head, err)
+	}
+	after := entryNames()
+	if !slices.Equal(before, after) {
+		t.Fatalf("read-only reader changed files: before=%v after=%v", before, after)
+	}
+
+	missing := filepath.Join(directory, "missing.db")
+	revision, err = ReadPersistentMutationRevision(
+		context.Background(),
+		missing,
+		fixture.token.WorkspaceID,
+	)
+	if err != nil || revision != 0 {
+		t.Fatalf("missing head revision=%d error=%v", revision, err)
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only reader created missing database: %v", err)
 	}
 }
 

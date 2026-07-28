@@ -5265,7 +5265,8 @@
                   "type": "string",
                   "enum": [
                     "file",
-                    "table"
+                    "table",
+                    "settings"
                   ]
                 },
                 "state": {
@@ -5409,7 +5410,8 @@
                   "type": "string",
                   "enum": [
                     "file",
-                    "table"
+                    "table",
+                    "settings"
                   ]
                 },
                 "side": {

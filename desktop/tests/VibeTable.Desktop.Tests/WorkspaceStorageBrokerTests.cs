@@ -930,6 +930,188 @@ public sealed class WorkspaceStorageBrokerTests
     }
 
     [TestMethod]
+    public async Task InactiveReleaseUsesDurableReceiptInsteadOfRegistryPendingSync()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-storage-inactive-release-high-watermark-" +
+            Guid.NewGuid().ToString("N"));
+        var registry = new WorkspaceRegistry(root);
+        var sessions = new WorkspaceSessionManager(
+            registry,
+            new TestRuntimeFactory());
+        try
+        {
+            string replica = Path.Combine(root, "replica");
+            string activity = Path.Combine(root, "activity");
+            WorkspaceLayoutResult layout = WorkspaceLayout.Create(
+                replica,
+                "崩溃重开释放",
+                WorkspaceStorageMode.Mirrored,
+                WorkspaceEncryptionMode.None,
+                activity);
+            var entry = new WorkspaceRegistryEntryV2
+            {
+                ContractVersion = WorkspaceV2Json.ContractVersion,
+                WorkspaceId = layout.Manifest.WorkspaceId,
+                DisplayName = layout.Manifest.DisplayName,
+                SelectedRoot = replica,
+                ActivityRoot = activity,
+                StorageKind = WorkspaceStorageKind.Fixed,
+                CoordinationStrength = WorkspaceCoordinationStrength.Advisory,
+                LastOpenedAt = null,
+                LastKnownHealth = WorkspaceHealth.Degraded,
+                LastSnapshotAt = DateTimeOffset.UtcNow,
+                LastSyncAt = DateTimeOffset.UtcNow,
+                // Simulates a crash after the authoritative commit but before
+                // the advisory registry projection was refreshed.
+                PendingSync = true,
+            };
+            registry.Register(entry);
+            var replicas = new FakeReplicaRecovery
+            {
+                MutationRevision = 4,
+                RequiredMutationRevision = 5,
+            };
+            var broker = new WorkspaceStorageBroker(
+                registry,
+                sessions,
+                FixedProviderPolicy(),
+                root,
+                replicas: replicas);
+            JsonElement preview = await broker.PreviewAsync(
+                JsonSerializer.SerializeToElement(new
+                {
+                    workspaceId = entry.WorkspaceId.ToString("D"),
+                    action = "releaseActivityCache",
+                    targetMode = (string?)null,
+                    selectedRootGrant = (string?)null,
+                }),
+                selectedRoot: null,
+                CancellationToken.None);
+            JsonElement apply = ApplyParameters(
+                preview.GetProperty("planId").GetString()!,
+                "崩溃重开释放");
+
+            WorkspaceRegistryException unsafeRelease =
+                await Assert.ThrowsExactlyAsync<WorkspaceRegistryException>(
+                    () => broker.ApplyAsync(apply, CancellationToken.None));
+            Assert.AreEqual(
+                "workspace.release_cache_unsafe",
+                unsafeRelease.Code);
+            Assert.IsTrue(Directory.Exists(activity));
+
+            replicas.MutationRevision = 5;
+            _ = await broker.ApplyAsync(apply, CancellationToken.None);
+
+            WorkspaceRegistryEntryV2 current = registry.List().Single();
+            Assert.IsFalse(Directory.Exists(activity));
+            Assert.IsFalse(current.PendingSync);
+            Assert.AreEqual(WorkspaceHealth.Offline, current.LastKnownHealth);
+            Assert.AreEqual(2, replicas.VerifyCalls);
+        }
+        finally
+        {
+            await sessions.DisposeAsync();
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task InactiveReleaseRejectsAnotherProcessMirroredWriter()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-storage-inactive-release-writer-" +
+            Guid.NewGuid().ToString("N"));
+        var registry = new WorkspaceRegistry(root);
+        var sessions = new WorkspaceSessionManager(
+            registry,
+            new TestRuntimeFactory());
+        try
+        {
+            string replica = Path.Combine(root, "replica");
+            string activity = Path.Combine(root, "activity");
+            WorkspaceLayoutResult layout = WorkspaceLayout.Create(
+                replica,
+                "跨进程释放",
+                WorkspaceStorageMode.Mirrored,
+                WorkspaceEncryptionMode.None,
+                activity);
+            var entry = new WorkspaceRegistryEntryV2
+            {
+                ContractVersion = WorkspaceV2Json.ContractVersion,
+                WorkspaceId = layout.Manifest.WorkspaceId,
+                DisplayName = layout.Manifest.DisplayName,
+                SelectedRoot = replica,
+                ActivityRoot = activity,
+                StorageKind = WorkspaceStorageKind.Fixed,
+                CoordinationStrength =
+                    WorkspaceCoordinationStrength.Advisory,
+                LastOpenedAt = null,
+                LastKnownHealth = WorkspaceHealth.Healthy,
+                LastSnapshotAt = DateTimeOffset.UtcNow,
+                LastSyncAt = DateTimeOffset.UtcNow,
+                PendingSync = false,
+            };
+            registry.Register(entry);
+            var replicas = new FakeReplicaRecovery();
+            var broker = new WorkspaceStorageBroker(
+                registry,
+                sessions,
+                FixedProviderPolicy(),
+                root,
+                replicas: replicas);
+            using var competingProcess =
+                new WorkspaceCoordinationLeaseHook();
+            Assert.AreEqual(
+                WorkspaceOpenMode.Provisional,
+                await competingProcess.AcquireAsync(
+                    entry,
+                    WorkspaceOpenMode.Writable,
+                    CancellationToken.None));
+            JsonElement preview = await broker.PreviewAsync(
+                JsonSerializer.SerializeToElement(new
+                {
+                    workspaceId = entry.WorkspaceId.ToString("D"),
+                    action = "releaseActivityCache",
+                    targetMode = (string?)null,
+                    selectedRootGrant = (string?)null,
+                }),
+                selectedRoot: null,
+                CancellationToken.None);
+            JsonElement apply = ApplyParameters(
+                preview.GetProperty("planId").GetString()!,
+                "跨进程释放");
+
+            WorkspaceRegistryException conflict =
+                await Assert.ThrowsExactlyAsync<WorkspaceRegistryException>(
+                    () => broker.ApplyAsync(apply, CancellationToken.None));
+            Assert.AreEqual(
+                "workspace.storage_writer_fence_conflict",
+                conflict.Code);
+            Assert.IsTrue(Directory.Exists(activity));
+            Assert.AreEqual(0, replicas.VerifyCalls);
+
+            await competingProcess.ReleaseAsync(
+                entry.WorkspaceId,
+                sessionEpoch: 1,
+                CancellationToken.None);
+            _ = await broker.ApplyAsync(apply, CancellationToken.None);
+
+            Assert.IsFalse(Directory.Exists(activity));
+            Assert.AreEqual(1, replicas.VerifyCalls);
+        }
+        finally
+        {
+            await sessions.DisposeAsync();
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task MirroredToDirectVerifiesReplicaAndCopiesActivityState()
     {
         string root = Path.Combine(
@@ -1212,6 +1394,7 @@ public sealed class WorkspaceStorageBrokerTests
     {
         public bool FailInitialize { get; set; }
         public ulong MutationRevision { get; set; } = 1;
+        public ulong? RequiredMutationRevision { get; set; }
         public int InitializeCalls { get; private set; }
         public int VerifyCalls { get; private set; }
 
@@ -1256,7 +1439,8 @@ public sealed class WorkspaceStorageBrokerTests
                 "sha256:" + new string('a', 64),
                 DateTimeOffset.UtcNow,
                 operation == "recover" ? workspace.ActivityRoot : null,
-                MutationRevision);
+                MutationRevision,
+                RequiredMutationRevision ?? MutationRevision);
     }
 
     private sealed class SynchronizedProtectionHook(

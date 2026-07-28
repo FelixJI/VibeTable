@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,7 +21,10 @@ from scripts.build_next import (
     KOPIA_VERSION,
     BuildError,
     RepoPaths,
+    go_binary_metadata,
+    load_recovery_tool_lock,
     render_manifest,
+    resolve_go,
     sha256_file,
 )
 from scripts.changelog import check_changelog
@@ -56,6 +60,8 @@ def check_source(root: Path = PROJECT_ROOT) -> list[str]:
         root / "pyproject.toml",
         root / "sidecar" / "go.mod",
         root / "sidecar" / "go.sum",
+        root / "tools" / "recovery-tools" / "go.mod",
+        root / "tools" / "recovery-tools" / "go.sum",
         root / "sidecar" / "migrations" / "manifest.json",
         root / "sidecar" / "internal" / "buildinfo" / "info.go",
         root / "desktop" / "publish-layout.json",
@@ -83,6 +89,42 @@ def check_source(root: Path = PROJECT_ROOT) -> list[str]:
             if forbidden in encoded:
                 errors.append(f"layout contains forbidden runtime asset: {forbidden}")
     return errors
+
+
+def _pe_machine(path: Path) -> int | None:
+    try:
+        with path.open("rb") as stream:
+            if stream.read(2) != b"MZ":
+                return None
+            stream.seek(0x3C)
+            offset = int.from_bytes(stream.read(4), "little")
+            stream.seek(offset)
+            if stream.read(4) != b"PE\0\0":
+                return None
+            return int.from_bytes(stream.read(2), "little")
+    except OSError:
+        return None
+
+
+def _run_recovery_tool_version(path: Path) -> str:
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() in {"SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP"}
+    }
+    environment["PATH"] = ""
+    result = subprocess.run(
+        [str(path), "--version"],
+        cwd=path.parent,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
+    return (result.stdout + result.stderr).strip()
 
 
 def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[str]:
@@ -134,6 +176,7 @@ def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[
         "sidecar checksum": assets.get("sidecarChecksum"),
         "licenses": assets.get("licenses"),
         "SBOM": assets.get("sbom"),
+        "recovery tool provenance": assets.get("recoveryToolProvenance"),
         "recovery guide": assets.get("recoveryGuide"),
     }
     recovery_tools = assets.get("recoveryTools", {})
@@ -145,6 +188,17 @@ def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[
             "Kopia recovery tool": recovery_tools.get("kopia"),
             "age recovery tool": recovery_tools.get("age"),
             "age-keygen recovery tool": recovery_tools.get("ageKeygen"),
+        }
+    )
+    recovery_checksums = assets.get("recoveryToolChecksums", {})
+    if not isinstance(recovery_checksums, dict):
+        errors.append("missing recoveryToolChecksums map")
+        recovery_checksums = {}
+    relative.update(
+        {
+            "Kopia recovery tool checksum": recovery_checksums.get("kopia"),
+            "age recovery tool checksum": recovery_checksums.get("age"),
+            "age-keygen recovery tool checksum": recovery_checksums.get("ageKeygen"),
         }
     )
     resolved: dict[str, Path] = {}
@@ -243,15 +297,108 @@ def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[
     tool_bytes = sum(resolved[label].stat().st_size for label in tool_labels if label in resolved)
     if tool_bytes > 220 * 1024 * 1024:
         errors.append("bundled Kopia/age recovery tools exceed the size threshold")
-    for label in tool_labels:
+    lock = load_recovery_tool_lock(source_root)
+    expected_tools = {
+        "Kopia recovery tool": (
+            "Kopia recovery tool checksum",
+            "kopia.exe",
+            "github.com/kopia/kopia",
+            "github.com/kopia/kopia",
+            lock.kopia_version,
+            lock.kopia_sum,
+        ),
+        "age recovery tool": (
+            "age recovery tool checksum",
+            "age.exe",
+            "filippo.io/age/cmd/age",
+            "filippo.io/age",
+            lock.age_version,
+            lock.age_sum,
+        ),
+        "age-keygen recovery tool": (
+            "age-keygen recovery tool checksum",
+            "age-keygen.exe",
+            "filippo.io/age/cmd/age-keygen",
+            "filippo.io/age",
+            lock.age_version,
+            lock.age_sum,
+        ),
+    }
+    provenance_tools: dict[str, dict[str, object]] = {}
+    provenance_path = resolved.get("recovery tool provenance")
+    if provenance_path is not None:
+        try:
+            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+            provenance_tools = {
+                str(item.get("name")): item
+                for item in provenance.get("tools", [])
+                if isinstance(item, dict)
+            }
+        except (OSError, json.JSONDecodeError, AttributeError):
+            errors.append("recovery tool provenance is invalid")
+    go = resolve_go(source_root)
+    for label, expected_tool in expected_tools.items():
         tool = resolved.get(label)
         if tool is None:
             continue
-        checksum_path = tool.with_suffix(tool.suffix + ".sha256")
-        if not checksum_path.is_file():
-            errors.append(f"missing {label} checksum: {checksum_path.name}")
-        elif checksum_path.read_text(encoding="utf-8").strip() != sha256_file(tool):
+        checksum_label, name, package, module, version, module_sum = expected_tool
+        checksum_path = resolved.get(checksum_label)
+        digest = sha256_file(tool)
+        if (
+            checksum_path is not None
+            and checksum_path.read_text(encoding="utf-8").strip() != digest
+        ):
             errors.append(f"{label} SHA-256 mismatch")
+        if _pe_machine(tool) != 0x8664:
+            errors.append(f"{label} is not a Windows amd64 PE executable")
+        provenance_item = provenance_tools.get(name)
+        expected_provenance = {
+            "path": f"sidecar/tools/{name}",
+            "package": package,
+            "module": module,
+            "version": version,
+            "moduleSum": module_sum,
+            "sha256": digest,
+            "goVersion": f"go{lock.go_version}",
+            "target": {"goos": "windows", "goarch": "amd64", "cgoEnabled": False},
+        }
+        if provenance_item is None:
+            errors.append(f"recovery tool provenance is missing: {name}")
+        else:
+            for key, value in expected_provenance.items():
+                if provenance_item.get(key) != value:
+                    errors.append(f"recovery tool provenance mismatch: {name}.{key}")
+        if os.name == "nt":
+            try:
+                version_output = _run_recovery_tool_version(tool)
+                if not version_output.startswith(version):
+                    errors.append(
+                        f"{label} version mismatch: expected {version}, got {version_output!r}"
+                    )
+            except (OSError, subprocess.SubprocessError) as exc:
+                errors.append(f"{label} failed empty-PATH --version smoke: {exc}")
+        try:
+            metadata = go_binary_metadata(go, tool)
+        except BuildError as exc:
+            errors.append(f"{label} Go build metadata is unreadable: {exc}")
+        else:
+            expected_metadata = {
+                "package": package,
+                "module": module,
+                "version": version,
+                "moduleSum": module_sum,
+                "goVersion": f"go{lock.go_version}",
+            }
+            for key, value in expected_metadata.items():
+                if metadata.get(key) != value:
+                    errors.append(f"{label} Go build metadata mismatch: {key}")
+            if metadata.get("build") != {
+                **metadata.get("build", {}),
+                "GOOS": "windows",
+                "GOARCH": "amd64",
+                "CGO_ENABLED": "0",
+            }:
+                errors.append(f"{label} Go build target mismatch")
     recovery_guide = resolved.get("recovery guide")
     if recovery_guide is not None:
         recovery_text = recovery_guide.read_text(encoding="utf-8", errors="replace")
@@ -337,6 +484,44 @@ def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[
                     f"SBOM dependency version mismatch: {name} "
                     f"(expected {version}, got {actual_version})"
                 )
+        components_by_name = {
+            str(item.get("name")): item for item in components if isinstance(item, dict)
+        }
+        for label, expected_tool in expected_tools.items():
+            tool = resolved.get(label)
+            if tool is None:
+                continue
+            _, name, package, module, version, module_sum = expected_tool
+            component = components_by_name.get(name)
+            if component is None or component.get("type") != "application":
+                errors.append(f"SBOM is missing recovery tool artifact: {name}")
+                continue
+            hashes = {
+                item.get("alg"): item.get("content")
+                for item in component.get("hashes", [])
+                if isinstance(item, dict)
+            }
+            properties = {
+                item.get("name"): item.get("value")
+                for item in component.get("properties", [])
+                if isinstance(item, dict)
+            }
+            expected_properties = {
+                "vibetable:package": package,
+                "vibetable:module": module,
+                "vibetable:moduleSum": module_sum,
+                "vibetable:goVersion": f"go{lock.go_version}",
+                "vibetable:goos": "windows",
+                "vibetable:goarch": "amd64",
+                "vibetable:cgoEnabled": "false",
+                "vibetable:licenseModule": module,
+            }
+            if (
+                component.get("version") != version
+                or hashes.get("SHA-256") != sha256_file(tool)
+                or any(properties.get(key) != value for key, value in expected_properties.items())
+            ):
+                errors.append(f"SBOM recovery tool artifact mismatch: {name}")
         for item in components:
             licenses = item.get("licenses")
             ids = (
@@ -359,8 +544,14 @@ def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[
         if "SBOM" in resolved:
             for item in sbom.get("components", []):
                 name = item.get("name")
-                if isinstance(name, str) and f"===== {name} " not in license_text:
-                    errors.append(f"third-party license bundle is missing module: {name}")
+                properties = {
+                    entry.get("name"): entry.get("value")
+                    for entry in item.get("properties", [])
+                    if isinstance(entry, dict)
+                }
+                license_name = properties.get("vibetable:licenseModule", name)
+                if isinstance(license_name, str) and f"===== {license_name} " not in license_text:
+                    errors.append(f"third-party license bundle is missing module: {license_name}")
     if (root / "data").exists() or (root / "pb_data").exists():
         errors.append("mutable user data must not be stored in the install directory")
     return errors

@@ -335,6 +335,35 @@ func OpenCurrent(
 	headStore HeadStore,
 	options ...Option,
 ) (*Service, error) {
+	return openCurrent(
+		ctx, repository, coordinator, headStore, false, options...,
+	)
+}
+
+// OpenCurrentForPreparedRecovery opens the last committed head while an exact
+// prepared mutation is being rolled forward. It is intentionally separate
+// from OpenCurrent so normal callers continue to fail closed on an unproven
+// pending write.
+func OpenCurrentForPreparedRecovery(
+	ctx context.Context,
+	repository objectrepo.Repository,
+	coordinator *writecoordinator.WorkspaceWriteCoordinator,
+	headStore HeadStore,
+	options ...Option,
+) (*Service, error) {
+	return openCurrent(
+		ctx, repository, coordinator, headStore, true, options...,
+	)
+}
+
+func openCurrent(
+	ctx context.Context,
+	repository objectrepo.Repository,
+	coordinator *writecoordinator.WorkspaceWriteCoordinator,
+	headStore HeadStore,
+	allowPrepared bool,
+	options ...Option,
+) (*Service, error) {
 	if repository == nil || coordinator == nil || headStore == nil {
 		return nil, errors.New("filehistory.head_store_required")
 	}
@@ -358,12 +387,13 @@ func OpenCurrent(
 		}
 	}
 	if recovery.PendingMutationRevision != 0 {
-		if !found ||
-			head.MutationRevision != recovery.PendingMutationRevision ||
-			head.WorkspaceID != recovery.Token.WorkspaceID ||
-			head.SessionEpoch != recovery.Token.SessionEpoch ||
-			head.FenceEpoch != recovery.Token.FenceEpoch ||
-			head.ClaimID != recovery.Token.ClaimID {
+		headProvesPrepared := found &&
+			head.MutationRevision == recovery.PendingMutationRevision &&
+			head.WorkspaceID == recovery.Token.WorkspaceID &&
+			head.SessionEpoch == recovery.Token.SessionEpoch &&
+			head.FenceEpoch == recovery.Token.FenceEpoch &&
+			head.ClaimID == recovery.Token.ClaimID
+		if !headProvesPrepared && !allowPrepared {
 			return nil, fmt.Errorf(
 				"%w: mutationRevision=%d",
 				errors.Join(
@@ -373,14 +403,18 @@ func OpenCurrent(
 				recovery.PendingMutationRevision,
 			)
 		}
-		if err := coordinator.ResolvePreparedMutation(
-			ctx,
-			recovery.Token,
-			recovery.PendingMutationRevision,
-			true,
-		); err != nil {
-			return nil, err
+		if headProvesPrepared {
+			if err := coordinator.ResolvePreparedMutation(
+				ctx,
+				recovery.Token,
+				recovery.PendingMutationRevision,
+				true,
+			); err != nil {
+				return nil, err
+			}
 		}
+		// Do not resolve an older head when allowPrepared is true. The caller
+		// must replay the exact prepared intent through the coordinator.
 	}
 	options = append(options, WithHeadStore(headStore))
 	if !found {

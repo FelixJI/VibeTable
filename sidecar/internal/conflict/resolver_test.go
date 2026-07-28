@@ -77,7 +77,7 @@ func TestConflictPlanRejectsChangedCandidateAndIncludesReplicaOnlyUpdates(t *tes
 	}
 }
 
-func TestResolveChangesRequiresEveryFileChoiceAndSupportsKeepBothRecovery(t *testing.T) {
+func TestResolveChangesRequiresEveryFileChoiceAndCreatesKeepBothDocument(t *testing.T) {
 	base := Candidate{SnapshotID: "base", Files: map[string]FileState{
 		"doc-a": {DocumentID: "doc-a", Path: "a.txt", ContentID: "base-a"},
 		"doc-b": {DocumentID: "doc-b", Path: "b.txt", ContentID: "base-b"},
@@ -111,12 +111,59 @@ func TestResolveChangesRequiresEveryFileChoiceAndSupportsKeepBothRecovery(t *tes
 	}
 	if changes[0].ItemID != "doc-a" ||
 		changes[0].Chosen.ContentID != "local-a" ||
-		changes[0].Reason != "keep-both-recovery" {
+		changes[0].Reason != "keep-both-documents" ||
+		changes[0].Copy == nil ||
+		changes[0].Copy.ContentID != "replica-a" {
 		t.Fatalf("keep-both change = %#v", changes[0])
 	}
 	if changes[1].ItemID != "doc-b" ||
 		changes[1].Chosen.ContentID != "replica-b" {
 		t.Fatalf("replica choice = %#v", changes[1])
+	}
+}
+
+func TestBuildPlanIncludesWorkspaceSettingsAndDefaultsReplicaOnlyChange(t *testing.T) {
+	base := Candidate{
+		SnapshotID: "base",
+		Settings:   SettingsState{ObjectID: "settings-base"},
+		Files:      map[string]FileState{},
+	}
+	local := Candidate{
+		SnapshotID: "local", Revision: 4,
+		Settings: SettingsState{ObjectID: "settings-local"},
+		Files:    map[string]FileState{},
+	}
+	replica := Candidate{
+		SnapshotID: "replica",
+		Settings:   SettingsState{ObjectID: "settings-replica"},
+		Files:      map[string]FileState{},
+	}
+	plan := BuildPlan(base, local, replica)
+	if plan.Settings == nil ||
+		plan.Settings.ItemID != WorkspaceSettingsItemID {
+		t.Fatalf("settings conflict = %#v", plan.Settings)
+	}
+	changes, err := ResolveChanges(plan, local, replica, Resolution{
+		Choices: map[string]Side{WorkspaceSettingsItemID: Replica},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 ||
+		changes[0].Kind != SettingsItem ||
+		changes[0].SettingsChosen.ObjectID != "settings-replica" {
+		t.Fatalf("settings changes = %#v", changes)
+	}
+
+	local.Settings = base.Settings
+	plan = BuildPlan(base, local, replica)
+	if plan.Settings != nil || plan.AutomaticSetting == nil {
+		t.Fatalf("replica-only settings plan = %#v", plan)
+	}
+	changes, err = ResolveChanges(plan, local, replica, Resolution{})
+	if err != nil || len(changes) != 1 ||
+		changes[0].SettingsChosen.ObjectID != "settings-replica" {
+		t.Fatalf("automatic settings changes = %#v, %v", changes, err)
 	}
 }
 

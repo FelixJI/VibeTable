@@ -832,11 +832,12 @@ describe("workspace protection UI capability gates", () => {
     const conflictId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const tableItemId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
     const fileItemId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const settingsItemId = "workspace-settings";
     protection.setConflictSets([{
       conflictId,
       state: "pending",
       createdAt: "2026-07-28T09:00:00Z",
-      itemCount: 2,
+      itemCount: 3,
     }]);
     protection.setConflicts([
       {
@@ -863,6 +864,18 @@ describe("workspace protection UI capability gates", () => {
         dependencies: [],
         selected: null,
       },
+      {
+        conflictId,
+        itemId: settingsItemId,
+        path: "workspace settings",
+        kind: "settings",
+        state: "pending",
+        localSummary: "Local settings",
+        replicaSummary: "Replica settings",
+        baseSummary: "Base settings",
+        dependencies: [],
+        selected: "replica",
+      },
     ]);
     const conflicts = mount(ConflictCenterView);
     expect(conflicts.get('[data-testid="conflict-preview"]').attributes("disabled"))
@@ -877,6 +890,7 @@ describe("workspace protection UI capability gates", () => {
         choices: [
           { itemId: tableItemId, kind: "table", side: "local" },
           { itemId: fileItemId, kind: "file", side: "replica" },
+          { itemId: settingsItemId, kind: "settings", side: "replica" },
         ],
       },
     });
@@ -948,6 +962,7 @@ describe("workspace protection UI capability gates", () => {
     }]);
     const conflicts = mount(ConflictCenterView);
     expect(conflicts.text()).toContain("两者都保留");
+    expect(conflicts.text()).toContain("新的文档身份和无冲突路径");
     await conflicts.get('[data-testid="conflict-preview"]').trigger("click");
     expect(conflicts.emitted("action")?.[0]?.[0]).toEqual({
       method: "conflict.preview",

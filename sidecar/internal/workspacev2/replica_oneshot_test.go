@@ -28,6 +28,11 @@ func TestReplicaOneShotReceiptHasStrictDesktopShape(t *testing.T) {
 		2026, 7, 28, 12, 34, 56, 123456700, time.UTC,
 	)
 	selection := replicaOneShotSelection{
+		bundle: replica.FilesystemRecoveryBundle{
+			Snapshot: snapshot.Record{
+				MutationRevision: 9,
+			},
+		},
 		identity: replica.RemoteIdentity{
 			WorkspaceID: testWorkspaceID,
 			ReplicaID:   "22222222-2222-4222-8222-222222222222",
@@ -49,6 +54,7 @@ func TestReplicaOneShotReceiptHasStrictDesktopShape(t *testing.T) {
 			operation,
 			activity,
 			selection,
+			8,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -70,6 +76,7 @@ func TestReplicaOneShotReceiptHasStrictDesktopShape(t *testing.T) {
 			"operation",
 			"receiptHash",
 			"replicaId",
+			"requiredMutationRevision",
 			"snapshotId",
 			"verifiedAt",
 			"workspaceId",
@@ -458,6 +465,110 @@ func TestReplicaOneShotInitializeVerifyRecoverRoundTrip(t *testing.T) {
 		verified.ReplicaID != initialized.ReplicaID {
 		t.Fatalf("verified=%#v initialized=%#v", verified, initialized)
 	}
+
+	synchronizeLocalHighWatermark := func() ReplicaOneShotReceipt {
+		t.Helper()
+		localRuntime, closeLocalRuntime, err :=
+			openReplicaOneShotRuntime(ctx, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, _ := localRuntime.coordinator.Current()
+		if _, _, err := localRuntime.snapshots.Capture(
+			ctx,
+			snapshot.CaptureRequest{
+				WorkspaceID: testWorkspaceID,
+				Authority:   token.Authority(),
+				Trigger:     snapshot.TriggerProtection,
+				Pinned:      true,
+			},
+		); err != nil {
+			_ = closeLocalRuntime()
+			t.Fatal(err)
+		}
+		localRuntime.replicaConflict.managerMu.RLock()
+		manager := localRuntime.replicaConflict.manager
+		localRuntime.replicaConflict.managerMu.RUnlock()
+		if manager == nil {
+			_ = closeLocalRuntime()
+			t.Fatal("replica manager missing")
+		}
+		if err := manager.Synchronize(ctx); err != nil {
+			_ = closeLocalRuntime()
+			t.Fatal(err)
+		}
+		if err := closeLocalRuntime(); err != nil {
+			t.Fatal(err)
+		}
+		receipt, err := VerifyWorkspaceReplica(ctx, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if receipt.MutationRevision <
+			receipt.RequiredMutationRevision {
+			t.Fatalf("uncovered synchronized receipt=%#v", receipt)
+		}
+		return receipt
+	}
+
+	businessRuntime, closeBusinessRuntime, err :=
+		openReplicaOneShotRuntime(ctx, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := businessRuntime.CoordinateBusinessWrite(
+		ctx,
+		"test.business",
+		"business-after-reopen",
+		func(context.Context) error { return nil },
+	); err != nil {
+		_ = closeBusinessRuntime()
+		t.Fatal(err)
+	}
+	if err := closeBusinessRuntime(); err != nil {
+		t.Fatal(err)
+	}
+	if receipt, err := VerifyWorkspaceReplica(
+		ctx,
+		options,
+	); err == nil {
+		t.Fatalf("unsynchronized business commit verified: %#v", receipt)
+	}
+	verified = synchronizeLocalHighWatermark()
+
+	fileRuntime, closeFileRuntime, err :=
+		openReplicaOneShotRuntime(ctx, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileToken, _ := fileRuntime.coordinator.Current()
+	if _, err := fileRuntime.history.Save(
+		ctx,
+		filehistory.SaveRequest{
+			Token:      fileToken,
+			DocumentID: "22222222-2222-4222-8222-222222222222",
+			Path:       "crash-reopen/file-history.txt",
+			Kind:       filehistory.RevisionFormal,
+			Content:    []byte("file-history-authoritative-commit"),
+			MimeType:   "text/plain",
+			CreatedBy:  "replica-one-shot-test",
+			DeviceID:   testClaimID,
+		},
+	); err != nil {
+		_ = closeFileRuntime()
+		t.Fatal(err)
+	}
+	if err := closeFileRuntime(); err != nil {
+		t.Fatal(err)
+	}
+	if receipt, err := VerifyWorkspaceReplica(
+		ctx,
+		options,
+	); err == nil {
+		t.Fatalf("unsynchronized file-history commit verified: %#v", receipt)
+	}
+	verified = synchronizeLocalHighWatermark()
+
 	readOnlyRemote, err := replica.OpenFilesystemRemoteReadOnly(
 		ctx,
 		selected,

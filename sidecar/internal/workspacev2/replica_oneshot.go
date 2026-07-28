@@ -43,19 +43,20 @@ type ReplicaOneShotOptions struct {
 // ReplicaOneShotReceipt is the single strict JSON document emitted by each
 // replica one-shot command.
 type ReplicaOneShotReceipt struct {
-	ActivityRoot     *string `json:"activityRoot"`
-	CatalogRevision  uint64  `json:"catalogRevision"`
-	CheckpointID     string  `json:"checkpointId"`
-	ContractVersion  string  `json:"contractVersion"`
-	Healthy          *bool   `json:"healthy,omitempty"`
-	MutationRevision uint64  `json:"mutationRevision"`
-	Operation        string  `json:"operation"`
-	ReceiptHash      string  `json:"receiptHash"`
-	ReplicaID        string  `json:"replicaId"`
-	Restored         *bool   `json:"restored,omitempty"`
-	SnapshotID       string  `json:"snapshotId"`
-	VerifiedAt       string  `json:"verifiedAt"`
-	WorkspaceID      string  `json:"workspaceId"`
+	ActivityRoot             *string `json:"activityRoot"`
+	CatalogRevision          uint64  `json:"catalogRevision"`
+	CheckpointID             string  `json:"checkpointId"`
+	ContractVersion          string  `json:"contractVersion"`
+	Healthy                  *bool   `json:"healthy,omitempty"`
+	MutationRevision         uint64  `json:"mutationRevision"`
+	Operation                string  `json:"operation"`
+	ReceiptHash              string  `json:"receiptHash"`
+	ReplicaID                string  `json:"replicaId"`
+	RequiredMutationRevision uint64  `json:"requiredMutationRevision"`
+	Restored                 *bool   `json:"restored,omitempty"`
+	SnapshotID               string  `json:"snapshotId"`
+	VerifiedAt               string  `json:"verifiedAt"`
+	WorkspaceID              string  `json:"workspaceId"`
 }
 
 type replicaOneShotSelection struct {
@@ -191,26 +192,32 @@ func InitializeWorkspaceReplica(
 	if err != nil {
 		return ReplicaOneShotReceipt{}, err
 	}
-	receipt, err := buildReplicaOneShotReceipt(
-		"initialize",
-		"",
-		selection,
-	)
-	if err != nil {
-		return ReplicaOneShotReceipt{}, err
-	}
 	if err := closeRuntime(); err != nil {
 		return ReplicaOneShotReceipt{}, err
 	}
 	closeRuntime = nil
-	return receipt, nil
+	requiredMutationRevision, err := replicaOneShotRequiredMutationRevision(
+		ctx,
+		options,
+	)
+	if err != nil {
+		return ReplicaOneShotReceipt{}, err
+	}
+	return buildReplicaOneShotReceipt(
+		"initialize",
+		"",
+		selection,
+		requiredMutationRevision,
+	)
 }
 
 func VerifyWorkspaceReplica(
 	ctx context.Context,
 	options ReplicaOneShotOptions,
 ) (ReplicaOneShotReceipt, error) {
-	if err := validateReplicaOneShotIdentity(options); err != nil {
+	requiredMutationRevision, err :=
+		replicaOneShotRequiredMutationRevision(ctx, options)
+	if err != nil {
 		return ReplicaOneShotReceipt{}, err
 	}
 	manifest, err := readReplicaManifest(
@@ -242,7 +249,12 @@ func VerifyWorkspaceReplica(
 	if err != nil {
 		return ReplicaOneShotReceipt{}, err
 	}
-	return buildReplicaOneShotReceipt("verify", "", selection)
+	return buildReplicaOneShotReceipt(
+		"verify",
+		"",
+		selection,
+		requiredMutationRevision,
+	)
 }
 
 func RecoverWorkspaceReplica(
@@ -292,11 +304,61 @@ func RecoverWorkspaceReplica(
 	); err != nil {
 		return ReplicaOneShotReceipt{}, err
 	}
+	requiredMutationRevision, err :=
+		replicaOneShotRequiredMutationRevision(ctx, options)
+	if err != nil {
+		return ReplicaOneShotReceipt{}, err
+	}
 	return buildReplicaOneShotReceipt(
 		"recover",
 		activityRoot,
 		selection,
+		requiredMutationRevision,
 	)
+}
+
+func replicaOneShotRequiredMutationRevision(
+	ctx context.Context,
+	options ReplicaOneShotOptions,
+) (uint64, error) {
+	paths, _, err := validateReplicaOneShotLocal(options)
+	if err != nil {
+		return 0, err
+	}
+	coordinatorRevision, err :=
+		writecoordinator.ReadPersistentMutationRevision(
+			ctx,
+			filepath.Join(
+				paths.coordination,
+				"write-coordinator.db",
+			),
+			options.WorkspaceID,
+		)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"read replica-required coordinator high-watermark: %w",
+			err,
+		)
+	}
+	fileHistoryRevision, err :=
+		filehistory.ReadPersistentMutationRevision(
+			ctx,
+			filepath.Join(
+				paths.topology,
+				"filehistory-head.db",
+			),
+			options.WorkspaceID,
+		)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"read replica-required file-history high-watermark: %w",
+			err,
+		)
+	}
+	return maxReplicaOneShot(
+		coordinatorRevision,
+		fileHistoryRevision,
+	), nil
 }
 
 func validateReplicaOneShotLocal(
@@ -787,6 +849,7 @@ func installReplicaDatabaseAndFiles(
 		FormatVersion uint64                         `json:"formatVersion"`
 		SourceRoot    objectrepo.ManifestID          `json:"sourceRoot"`
 		Files         map[string]objectrepo.ObjectID `json:"files"`
+		Attachments   map[string]objectrepo.ObjectID `json:"attachments,omitempty"`
 	}
 	if err := decodeStrictReplicaOneShot(rootRaw, &root); err != nil ||
 		root.FormatVersion != 1 ||
@@ -796,6 +859,22 @@ func installReplicaDatabaseAndFiles(
 	for relative, id := range root.Files {
 		target, err := replicaRecoveryTarget(
 			filepath.Join(metadata, "files"),
+			relative,
+		)
+		if err != nil {
+			return err
+		}
+		content, found := objects[id]
+		if !found {
+			return replica.ErrVerificationInvalid
+		}
+		if err := writeReplicaRecoveryFile(target, content); err != nil {
+			return err
+		}
+	}
+	for relative, id := range root.Attachments {
+		target, err := replicaRecoveryTarget(
+			filepath.Join(metadata, "data", "storage"),
 			relative,
 		)
 		if err != nil {
@@ -1155,16 +1234,23 @@ func buildReplicaOneShotReceipt(
 	operation string,
 	activityRoot string,
 	selection replicaOneShotSelection,
+	requiredMutationRevision uint64,
 ) (ReplicaOneShotReceipt, error) {
+	if selection.bundle.Snapshot.MutationRevision <
+		requiredMutationRevision {
+		return ReplicaOneShotReceipt{},
+			errors.New("replica.required_revision_not_covered")
+	}
 	healthy := true
 	receipt := ReplicaOneShotReceipt{
-		CatalogRevision:  selection.publication.CatalogRevision,
-		CheckpointID:     selection.publication.CheckpointID,
-		ContractVersion:  contractsv2.ContractVersion,
-		MutationRevision: selection.bundle.Snapshot.MutationRevision,
-		Operation:        operation,
-		ReplicaID:        selection.identity.ReplicaID,
-		SnapshotID:       selection.publication.SnapshotID,
+		CatalogRevision:          selection.publication.CatalogRevision,
+		CheckpointID:             selection.publication.CheckpointID,
+		ContractVersion:          contractsv2.ContractVersion,
+		MutationRevision:         selection.bundle.Snapshot.MutationRevision,
+		Operation:                operation,
+		ReplicaID:                selection.identity.ReplicaID,
+		RequiredMutationRevision: requiredMutationRevision,
+		SnapshotID:               selection.publication.SnapshotID,
 		VerifiedAt: selection.verifiedAt.Format(
 			"2006-01-02T15:04:05.0000000Z07:00",
 		),

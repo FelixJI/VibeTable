@@ -733,10 +733,6 @@ public sealed class WorkspaceStorageBroker
                 cancellationToken)
             .ConfigureAwait(false);
         current = RequiredWorkspace(plan.WorkspaceId);
-        if (!closedActiveSession && current.PendingSync)
-            throw new WorkspaceRegistryException(
-                "workspace.release_cache_unsafe",
-                "Synchronize the workspace before releasing its activity cache.");
         WorkspaceReplicaReceipt receipt;
         if (plan.Phase == "previewed")
         {
@@ -764,15 +760,18 @@ public sealed class WorkspaceStorageBroker
         {
             throw StalePlan();
         }
-        if (expectedMutationRevision is ulong expected &&
-            receipt.MutationRevision < expected)
+        if (receipt.MutationRevision <
+                receipt.RequiredMutationRevision ||
+            (expectedMutationRevision is ulong expected &&
+             (receipt.RequiredMutationRevision < expected ||
+              receipt.MutationRevision < expected)))
             throw new WorkspaceRegistryException(
                 "workspace.release_cache_unsafe",
                 "The verified replica checkpoint does not cover the local mutation high-watermark.");
         var context = new ReleaseActivityCacheContext(
             SessionClosed: _sessions.Current.WorkspaceId != plan.WorkspaceId,
             ReplicaComplete: true,
-            HasPendingSync: current.PendingSync,
+            HasPendingSync: false,
             ReplicaReopenVerified: true);
         WorkspaceStoragePlan release = _storage.PreviewReleaseActivityCache(
             current.ActivityRoot!,

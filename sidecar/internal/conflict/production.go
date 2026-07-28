@@ -25,6 +25,7 @@ var (
 	ErrDependencyIncomplete = errors.New("conflict.dependencies_incomplete")
 	ErrPlanNotFound         = errors.New("conflict.plan_not_found")
 	ErrApplyUnproven        = errors.New("conflict.apply_unproven")
+	ErrResolutionInvalid    = errors.New("conflict.resolution_invalid")
 )
 
 type State string
@@ -43,16 +44,17 @@ type DependencyGraph struct {
 }
 
 type Set struct {
-	ConflictID   string          `json:"conflictId"`
-	WorkspaceID  string          `json:"workspaceId"`
-	State        State           `json:"state"`
-	Revision     uint64          `json:"revision"`
-	Base         Candidate       `json:"base"`
-	Local        Candidate       `json:"local"`
-	Replica      Candidate       `json:"replica"`
-	Dependencies DependencyGraph `json:"dependencies"`
-	RootPinIDs   []string        `json:"rootPinIds"`
-	CreatedAt    time.Time       `json:"createdAt"`
+	ConflictID     string          `json:"conflictId"`
+	WorkspaceID    string          `json:"workspaceId"`
+	State          State           `json:"state"`
+	Revision       uint64          `json:"revision"`
+	Base           Candidate       `json:"base"`
+	Local          Candidate       `json:"local"`
+	Replica        Candidate       `json:"replica"`
+	Dependencies   DependencyGraph `json:"dependencies"`
+	RootPinIDs     []string        `json:"rootPinIds"`
+	ReplanRequired bool            `json:"replanRequired,omitempty"`
+	CreatedAt      time.Time       `json:"createdAt"`
 }
 
 type Choice struct {
@@ -513,6 +515,20 @@ func (engine *Engine) Apply(
 		ctx, operationID, planID, plan, changes, set.Replica,
 	)
 	if err != nil {
+		switch {
+		case errors.Is(err, ErrResolutionInvalid):
+			if discardErr := engine.discardPreparedPlan(
+				context.WithoutCancel(ctx), planID, set, false,
+			); discardErr != nil {
+				return ApplyReceipt{}, errors.Join(err, discardErr)
+			}
+		case errors.Is(err, ErrStalePlan):
+			if discardErr := engine.discardPreparedPlan(
+				context.WithoutCancel(ctx), planID, set, true,
+			); discardErr != nil {
+				return ApplyReceipt{}, errors.Join(err, discardErr)
+			}
+		}
 		return ApplyReceipt{}, err
 	}
 	if stage.OperationID != operationID ||
@@ -566,6 +582,52 @@ func (engine *Engine) Apply(
 	return engine.finishApply(ctx, planID, set, stage, appender)
 }
 
+func (engine *Engine) discardPreparedPlan(
+	ctx context.Context,
+	planID string,
+	set Set,
+	replanRequired bool,
+) error {
+	tx, err := engine.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
+		DELETE FROM conflict_plans
+		WHERE plan_id = ? AND state = 'prepared'`,
+		planID,
+	)
+	if err != nil {
+		return err
+	}
+	if err := requireOne(result); err != nil {
+		return err
+	}
+	if replanRequired {
+		set.ReplanRequired = true
+		set.Revision++
+		raw, err := json.Marshal(set)
+		if err != nil {
+			return err
+		}
+		result, err = tx.ExecContext(ctx, `
+			UPDATE conflict_sets
+			SET revision = ?, set_json = ?
+			WHERE conflict_id = ? AND state = 'pending'
+			  AND revision = ?`,
+			set.Revision, raw, set.ConflictID, set.Revision-1,
+		)
+		if err != nil {
+			return err
+		}
+		if err := requireOne(result); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (engine *Engine) Recover(
 	ctx context.Context,
 	appender StagedAppender,
@@ -602,6 +664,51 @@ func (engine *Engine) Recover(
 	return nil
 }
 
+// RecoverOperation resumes exactly one applying operation. It prevents a
+// prepared coordinator revision from being accidentally consumed by another
+// older applying plan during startup recovery.
+func (engine *Engine) RecoverOperation(
+	ctx context.Context,
+	operationID string,
+	appender StagedAppender,
+) error {
+	if strings.TrimSpace(operationID) == "" || appender == nil {
+		return ErrConflictState
+	}
+	rows, err := engine.db.QueryContext(ctx, `
+		SELECT plan_id FROM conflict_plans
+		WHERE state = 'applying' ORDER BY plan_id`)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		_, set, _, _, stage, _, err := engine.loadPlan(ctx, id)
+		if err != nil {
+			return err
+		}
+		if stage.OperationID != operationID {
+			continue
+		}
+		_, err = engine.finishApply(
+			ctx, id, set, stage, appender,
+		)
+		return err
+	}
+	return ErrConflictState
+}
+
 func (engine *Engine) finishApply(
 	ctx context.Context,
 	planID string,
@@ -616,6 +723,13 @@ func (engine *Engine) finishApply(
 	if !found {
 		receipt, err = appender.Commit(ctx, stage)
 		if err != nil {
+			if errors.Is(err, ErrStalePlan) {
+				if discardErr := engine.discardStaleApply(
+					context.WithoutCancel(ctx), planID, set,
+				); discardErr != nil {
+					return ApplyReceipt{}, errors.Join(err, discardErr)
+				}
+			}
 			return ApplyReceipt{}, err
 		}
 	}
@@ -668,6 +782,104 @@ func (engine *Engine) finishApply(
 		return ApplyReceipt{}, err
 	}
 	return receipt, nil
+}
+
+func (engine *Engine) discardStaleApply(
+	ctx context.Context,
+	planID string,
+	set Set,
+) error {
+	tx, err := engine.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM conflict_plans
+		WHERE plan_id = ? AND state = 'applying'`,
+		planID,
+	); err != nil {
+		return err
+	}
+	set.State = StatePending
+	set.ReplanRequired = true
+	set.Revision++
+	raw, err := json.Marshal(set)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE conflict_sets
+		SET state = 'pending', revision = ?, set_json = ?
+		WHERE conflict_id = ? AND state = 'applying'`,
+		set.Revision, raw, set.ConflictID,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (engine *Engine) DeleteReplanRequired(
+	ctx context.Context,
+	conflictID string,
+) error {
+	result, err := engine.db.ExecContext(ctx, `
+		DELETE FROM conflict_sets
+		WHERE conflict_id = ? AND state = 'pending'
+		  AND json_extract(set_json, '$.replanRequired') = 1`,
+		conflictID,
+	)
+	if err != nil {
+		return err
+	}
+	return requireOne(result)
+}
+
+func (engine *Engine) SetForPlan(
+	ctx context.Context,
+	planID string,
+) (Set, error) {
+	var conflictID string
+	err := engine.db.QueryRowContext(ctx, `
+		SELECT conflict_id FROM conflict_plans WHERE plan_id = ?`,
+		planID,
+	).Scan(&conflictID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Set{}, ErrPlanNotFound
+	}
+	if err != nil {
+		return Set{}, err
+	}
+	return engine.Inspect(ctx, conflictID)
+}
+
+func (engine *Engine) ClearRootPins(
+	ctx context.Context,
+	conflictID string,
+) error {
+	set, err := engine.Inspect(ctx, conflictID)
+	if err != nil {
+		return err
+	}
+	if len(set.RootPinIDs) == 0 {
+		return nil
+	}
+	set.RootPinIDs = nil
+	set.Revision++
+	raw, err := json.Marshal(set)
+	if err != nil {
+		return err
+	}
+	result, err := engine.db.ExecContext(ctx, `
+		UPDATE conflict_sets
+		SET revision = ?, set_json = ?
+		WHERE conflict_id = ? AND revision = ?`,
+		set.Revision, raw, conflictID, set.Revision-1,
+	)
+	if err != nil {
+		return err
+	}
+	return requireOne(result)
 }
 
 func (engine *Engine) loadPlan(
@@ -767,7 +979,7 @@ func validateChoices(
 	}
 	conflicts := make(
 		map[string]ItemKind,
-		len(plan.Files)+len(plan.Tables),
+		len(plan.Files)+len(plan.Tables)+1,
 	)
 	for _, item := range plan.Files {
 		conflicts[item.DocumentID] = FileItem
@@ -777,6 +989,12 @@ func validateChoices(
 			return Resolution{}, []string{"conflict.item_id_collision"}
 		}
 		conflicts[item.TableID] = TableItem
+	}
+	if plan.Settings != nil {
+		if _, duplicate := conflicts[plan.Settings.ItemID]; duplicate {
+			return Resolution{}, []string{"conflict.item_id_collision"}
+		}
+		conflicts[plan.Settings.ItemID] = SettingsItem
 	}
 	resolution := Resolution{Choices: map[string]Side{}}
 	for _, choice := range choices {

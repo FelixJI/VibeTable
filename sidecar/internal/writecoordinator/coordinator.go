@@ -19,6 +19,10 @@ var (
 	ErrStaleToken       = errors.New("workspace.write.stale_token")
 	ErrCounterExhausted = errors.New("workspace.write.counter_exhausted")
 	ErrRecoveryRequired = errors.New("workspace.write.recovery_required")
+	// ErrExternalCommitted marks a callback failure after an authoritative
+	// external domain has durably committed. The prepared coordinator intent
+	// must remain pending and be rolled forward at the same revision.
+	ErrExternalCommitted = errors.New("workspace.write.external_committed")
 )
 
 type Token struct {
@@ -250,6 +254,9 @@ func (coordinator *WorkspaceWriteCoordinator) Write(
 		Token:            currentToken,
 		MutationRevision: nextRevision,
 	}); err != nil {
+		if errors.Is(err, ErrExternalCommitted) {
+			return WriteReceipt{}, err
+		}
 		if coordinator.store != nil {
 			if persistErr := coordinator.store.finishMutation(
 				context.WithoutCancel(ctx),
@@ -294,6 +301,76 @@ func (coordinator *WorkspaceWriteCoordinator) Write(
 	}
 	coordinator.mu.Unlock()
 	return receipt, nil
+}
+
+// ResumePreparedMutation re-enters the exact durable mutation intent left
+// prepared by a previous process. It never allocates a new revision. A failed
+// replay deliberately remains pending so startup can retry the same
+// idempotent publication instead of incorrectly declaring it aborted.
+func (coordinator *WorkspaceWriteCoordinator) ResumePreparedMutation(
+	ctx context.Context,
+	token Token,
+	mutationRevision uint64,
+	apply func(context.Context, WriteIntent) error,
+) (WriteReceipt, error) {
+	if coordinator.store == nil {
+		return WriteReceipt{}, errors.New("workspace.write.persistence_disabled")
+	}
+	if apply == nil {
+		return WriteReceipt{}, errors.New("workspace.write.callback_required")
+	}
+	if err := coordinator.acquire(ctx); err != nil {
+		return WriteReceipt{}, err
+	}
+	defer coordinator.release()
+
+	coordinator.mu.RLock()
+	currentToken := coordinator.token
+	pending := coordinator.pendingMutation
+	currentRevision := coordinator.mutationRevision
+	coordinator.mu.RUnlock()
+	if !tokensEqual(currentToken, token) {
+		return WriteReceipt{}, ErrStaleToken
+	}
+	if mutationRevision == 0 || pending != mutationRevision ||
+		mutationRevision != currentRevision+1 {
+		return WriteReceipt{}, fmt.Errorf(
+			"%w: mutationRevision=%d pending=%d",
+			ErrRecoveryRequired,
+			mutationRevision,
+			pending,
+		)
+	}
+	if err := apply(ctx, WriteIntent{
+		Token:            currentToken,
+		MutationRevision: mutationRevision,
+	}); err != nil {
+		return WriteReceipt{}, err
+	}
+
+	coordinator.mu.Lock()
+	defer coordinator.mu.Unlock()
+	if coordinator.pendingMutation != mutationRevision ||
+		coordinator.mutationRevision+1 != mutationRevision ||
+		!tokensEqual(coordinator.token, currentToken) {
+		return WriteReceipt{}, ErrRecoveryRequired
+	}
+	if err := coordinator.store.finishMutation(
+		context.WithoutCancel(ctx),
+		currentToken,
+		mutationRevision,
+		coordinator.snapshotSequence,
+		true,
+		coordinator.now(),
+	); err != nil {
+		return WriteReceipt{}, err
+	}
+	coordinator.mutationRevision = mutationRevision
+	coordinator.pendingMutation = 0
+	return WriteReceipt{
+		Token:            coordinator.token,
+		MutationRevision: mutationRevision,
+	}, nil
 }
 
 func (coordinator *WorkspaceWriteCoordinator) Capture(

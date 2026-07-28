@@ -3,7 +3,9 @@ package writecoordinator
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -254,5 +256,201 @@ func TestPersistentCoordinatorFailsClosedUntilPreparedMutationResolved(t *testin
 		func(context.Context, WriteIntent) error { return nil },
 	); err != nil {
 		t.Fatalf("resolved coordinator remained blocked: %v", err)
+	}
+}
+
+func TestReadPersistentMutationRevisionCoversCommittedApplyBeforeFinish(
+	t *testing.T,
+) {
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "coordination.db")
+	coordinator, err := OpenPersistent(
+		databasePath, "workspace-1", 1, "claim-a", 1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crash := errors.New("simulated process crash before finish")
+	coordinator.WithPersistenceFaultInjector(
+		func(point PersistenceFaultPoint) error {
+			if point == FaultBeforeFinishCommittedMutation {
+				return crash
+			}
+			return nil
+		},
+	)
+	token, _ := coordinator.Current()
+	authoritativeCommitted := false
+	if _, err := coordinator.Write(
+		context.Background(),
+		token,
+		func(context.Context, WriteIntent) error {
+			authoritativeCommitted = true
+			return nil
+		},
+	); !errors.Is(err, crash) {
+		t.Fatalf("write error=%v", err)
+	}
+	if !authoritativeCommitted {
+		t.Fatal("authoritative apply did not commit")
+	}
+	defer coordinator.Close()
+
+	entryNames := func() []string {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		return names
+	}
+	before := entryNames()
+	if !slices.Contains(before, "coordination.db-wal") {
+		t.Fatalf("crash fixture did not retain WAL: %v", before)
+	}
+	required, err := ReadPersistentMutationRevision(
+		context.Background(),
+		databasePath,
+		"workspace-1",
+	)
+	if err != nil || required != 1 {
+		t.Fatalf("required=%d err=%v", required, err)
+	}
+	after := entryNames()
+	if !slices.Equal(before, after) {
+		t.Fatalf("read-only reader changed files: before=%v after=%v", before, after)
+	}
+	if _, err := ReadPersistentMutationRevision(
+		context.Background(),
+		databasePath,
+		"workspace-other",
+	); !errors.Is(err, ErrInvalidIdentity) {
+		t.Fatalf("identity mismatch error=%v", err)
+	}
+
+	missing := filepath.Join(directory, "missing.db")
+	if _, err := ReadPersistentMutationRevision(
+		context.Background(),
+		missing,
+		"workspace-1",
+	); err == nil {
+		t.Fatal("missing coordination database accepted")
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only reader created missing database: %v", err)
+	}
+}
+
+func TestResumePreparedMutationReusesRevisionAndKeepsFailedReplayPending(
+	t *testing.T,
+) {
+	path := filepath.Join(t.TempDir(), "coordination.db")
+	coordinator, err := OpenPersistent(
+		path, "workspace-1", 1, "claim-a", 1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crash := errors.New("crash after authoritative commit")
+	coordinator.WithPersistenceFaultInjector(
+		func(point PersistenceFaultPoint) error {
+			if point == FaultBeforeFinishCommittedMutation {
+				return crash
+			}
+			return nil
+		},
+	)
+	token, _ := coordinator.Current()
+	if _, err := coordinator.Write(
+		context.Background(),
+		token,
+		func(context.Context, WriteIntent) error { return nil },
+	); !errors.Is(err, crash) {
+		t.Fatalf("prepared write error = %v", err)
+	}
+	coordinator.WithPersistenceFaultInjector(nil)
+	replayFailure := errors.New("replay incomplete")
+	if _, err := coordinator.ResumePreparedMutation(
+		context.Background(),
+		token,
+		1,
+		func(_ context.Context, intent WriteIntent) error {
+			if intent.MutationRevision != 1 {
+				t.Fatalf("replay revision = %d", intent.MutationRevision)
+			}
+			return replayFailure
+		},
+	); !errors.Is(err, replayFailure) {
+		t.Fatalf("failed replay error = %v", err)
+	}
+	if pending := coordinator.RecoveryState().PendingMutationRevision; pending != 1 {
+		t.Fatalf("failed replay pending revision = %d", pending)
+	}
+	receipt, err := coordinator.ResumePreparedMutation(
+		context.Background(),
+		token,
+		1,
+		func(_ context.Context, intent WriteIntent) error {
+			if intent.MutationRevision != 1 {
+				t.Fatalf("successful replay revision = %d",
+					intent.MutationRevision,
+				)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.MutationRevision != 1 {
+		t.Fatalf("receipt revision = %d", receipt.MutationRevision)
+	}
+	state := coordinator.RecoveryState()
+	if state.PendingMutationRevision != 0 ||
+		state.Counters.MutationRevision != 1 {
+		t.Fatalf("recovered state = %#v", state)
+	}
+	if err := coordinator.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWriteKeepsPreparedRevisionWhenExternalDomainCommitted(t *testing.T) {
+	coordinator, err := OpenPersistent(
+		filepath.Join(t.TempDir(), "coordination.db"),
+		"workspace-1", 1, "claim-a", 1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	token, _ := coordinator.Current()
+	externalFailure := errors.Join(
+		ErrExternalCommitted,
+		errors.New("filehistory publication failed"),
+	)
+	if _, err := coordinator.Write(
+		context.Background(),
+		token,
+		func(context.Context, WriteIntent) error {
+			return externalFailure
+		},
+	); !errors.Is(err, ErrExternalCommitted) {
+		t.Fatalf("write error = %v", err)
+	}
+	state := coordinator.RecoveryState()
+	if state.PendingMutationRevision != 1 ||
+		state.Counters.MutationRevision != 0 {
+		t.Fatalf("external-committed state = %#v", state)
+	}
+	if _, err := coordinator.Write(
+		context.Background(),
+		token,
+		func(context.Context, WriteIntent) error { return nil },
+	); !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("new revision bypassed prepared recovery: %v", err)
 	}
 }

@@ -164,7 +164,10 @@ function inspect(conflictId: string): void {
 
         <article v-for="item in selectedItems" :key="item.itemId" class="conflict-item">
           <header>
-            <div><small>{{ item.kind.toLocaleUpperCase() }}</small><strong>{{ item.path }}</strong></div>
+            <div>
+              <small>{{ t(`workspaceV2.conflict.${item.kind}`) }}</small>
+              <strong>{{ item.kind === "settings" ? t("workspaceV2.conflict.settingsPath") : item.path }}</strong>
+            </div>
             <NTag :type="item.state === 'failed' ? 'error' : item.state === 'ready' ? 'success' : 'warning'">
               {{ t(`workspaceV2.conflict.state.${item.state}`) }}
             </NTag>

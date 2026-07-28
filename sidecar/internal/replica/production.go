@@ -585,6 +585,11 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 					return ErrVerificationInvalid
 				}
 			}
+			for _, objectID := range source.AttachmentObjects {
+				if _, ok := protected[objectrepo.ObjectID(objectID)]; !ok {
+					return ErrVerificationInvalid
+				}
+			}
 		}
 		pin, err := manager.repository.Pin(
 			ctx,
@@ -750,8 +755,50 @@ func (manager *Manager) snapshotConflictCandidate(
 	if err != nil {
 		return conflictresolution.Candidate{}, err
 	}
+	objects := make(map[objectrepo.ObjectID][]byte, 3)
+	for _, name := range []string{
+		"database", "workspace-settings", "file-state-root",
+	} {
+		id := record.ObjectMap[name]
+		if id == "" {
+			return conflictresolution.Candidate{}, ErrVerificationInvalid
+		}
+		reader, err := manager.repository.Open(ctx, id)
+		if err != nil {
+			return conflictresolution.Candidate{}, err
+		}
+		content, readErr := io.ReadAll(io.LimitReader(reader, 512<<20))
+		closeErr := reader.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return conflictresolution.Candidate{}, err
+		}
+		objects[id] = content
+	}
+	var fileState struct {
+		Attachments map[string]objectrepo.ObjectID `json:"attachments,omitempty"`
+	}
+	fileStateRootID := record.ObjectMap["file-state-root"]
+	if err := json.Unmarshal(objects[fileStateRootID], &fileState); err != nil {
+		return conflictresolution.Candidate{}, ErrVerificationInvalid
+	}
+	for _, id := range fileState.Attachments {
+		if id == "" {
+			return conflictresolution.Candidate{}, ErrVerificationInvalid
+		}
+		reader, err := manager.repository.Open(ctx, id)
+		if err != nil {
+			return conflictresolution.Candidate{}, err
+		}
+		content, readErr := io.ReadAll(io.LimitReader(reader, 512<<20))
+		closeErr := reader.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return conflictresolution.Candidate{}, err
+		}
+		objects[id] = content
+	}
 	return filesystemConflictCandidate(FilesystemRecoveryBundle{
 		Snapshot: record,
+		Objects:  objects,
 		Manifests: map[objectrepo.ManifestID]objectrepo.ManifestRecord{
 			history.ID: history,
 		},
@@ -1498,6 +1545,7 @@ func validateSnapshotClosure(
 		FormatVersion uint64                         `json:"formatVersion"`
 		SourceRoot    string                         `json:"sourceRoot"`
 		Files         map[string]objectrepo.ObjectID `json:"files"`
+		Attachments   map[string]objectrepo.ObjectID `json:"attachments,omitempty"`
 	}
 	if err := decoder.Decode(&state); err != nil ||
 		decoder.Decode(&struct{}{}) != io.EOF ||
@@ -1506,6 +1554,11 @@ func validateSnapshotClosure(
 		return ErrVerificationInvalid
 	}
 	for _, child := range state.Files {
+		if _, exists := objects[child]; !exists {
+			return ErrVerificationInvalid
+		}
+	}
+	for _, child := range state.Attachments {
 		if _, exists := objects[child]; !exists {
 			return ErrVerificationInvalid
 		}
@@ -1542,6 +1595,7 @@ func snapshotReferencedManifestIDs(
 		FormatVersion uint64                         `json:"formatVersion"`
 		SourceRoot    objectrepo.ManifestID          `json:"sourceRoot"`
 		Files         map[string]objectrepo.ObjectID `json:"files"`
+		Attachments   map[string]objectrepo.ObjectID `json:"attachments,omitempty"`
 	}
 	err = decodeReplicaObject(fileReader, &files)
 	if err != nil ||

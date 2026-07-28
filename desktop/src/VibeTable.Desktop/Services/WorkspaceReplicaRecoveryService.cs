@@ -19,7 +19,8 @@ public sealed record WorkspaceReplicaReceipt(
     string ReceiptHash,
     DateTimeOffset VerifiedAt,
     string? ActivityRoot,
-    ulong MutationRevision = 0);
+    ulong MutationRevision = 0,
+    ulong RequiredMutationRevision = 0);
 
 public interface IWorkspaceReplicaRecoveryService
 {
@@ -260,6 +261,7 @@ public sealed class WorkspaceReplicaRecoveryService :
                 "operation",
                 "receiptHash",
                 "replicaId",
+                "requiredMutationRevision",
                 "snapshotId",
                 "mutationRevision",
                 "verifiedAt",
@@ -299,7 +301,13 @@ public sealed class WorkspaceReplicaRecoveryService :
                     "mutationRevision",
                     out JsonElement mutation) ||
                 !mutation.TryGetUInt64(out ulong mutationRevision) ||
-                mutationRevision == 0)
+                mutationRevision == 0 ||
+                !root.TryGetProperty(
+                    "requiredMutationRevision",
+                    out JsonElement requiredMutation) ||
+                !requiredMutation.TryGetUInt64(
+                    out ulong requiredMutationRevision) ||
+                mutationRevision < requiredMutationRevision)
                 throw InvalidOutput();
             string checkpointId = RequiredString(root, "checkpointId");
             string receiptHash = RequiredString(root, "receiptHash");
@@ -335,7 +343,8 @@ public sealed class WorkspaceReplicaRecoveryService :
                 receiptHash,
                 verifiedAt,
                 activity,
-                mutationRevision);
+                mutationRevision,
+                requiredMutationRevision);
         }
         catch (WorkspaceRegistryException)
         {

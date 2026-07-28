@@ -45,6 +45,7 @@ GO_TESTS = (
     "TestFaultGatePortOccupiedReturnsStableActionableError",
     "TestFaultGateCorruptMigrationStopsBeforeStartup",
     "TestFaultGateRealWritableProbeDoesNotLeaveSentinel",
+    "TestCapturePublishesOnlyVerifiedCompleteSnapshotAndDeduplicatesRevision",
     "TestCatalogFailureNeverPublishesPartialRecord",
     "TestDurableCatalogPublishesAtomicallyAndReopens",
     "TestStaleAuthorityCannotCapture",
@@ -70,6 +71,12 @@ GO_TESTS = (
     "TestPersistentAdvisoryPublicationReopensAndDetectsDiskTampering",
     "TestPersistentAdvisoryConditionalCreateCannotRaceOverwrite",
     "TestRuntimeFailsClosedForIdentityParamsAndEpoch",
+    "TestReadPersistentMutationRevisionCoversCommittedApplyBeforeFinish",
+    "TestAuthorityReceiptsCloseFileHistoryAndSnapshotKillWindows",
+    "TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen",
+    "TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness",
+    "TestConflictExternalAttachmentFaultRestoresOldFilesAndTableTransaction",
+    "TestRuntimeReopensAndResumesConflictAtPocketBaseReceiptRevision",
 )
 GO_PACKAGES = (
     "./internal/startup",

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -43,8 +44,8 @@ SIDECAR_EXE_NAME = "vibetable-pb.exe"
 KOPIA_EXE_NAME = "kopia.exe"
 AGE_EXE_NAME = "age.exe"
 AGE_KEYGEN_EXE_NAME = "age-keygen.exe"
-KOPIA_VERSION = "v0.23.1"
-AGE_VERSION = "v1.3.1"
+RECOVERY_TOOLS_RELATIVE_ROOT = Path("tools") / "recovery-tools"
+RECOVERY_PROVENANCE_NAME = "recovery-tools.provenance.json"
 RECOVERY_TOOL_SIZE_LIMIT = 220 * 1024 * 1024
 CONTRACT_COPY_IGNORES = ("__pycache__", ".pytest_cache", "*.pyc", "*.pyo")
 PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
@@ -68,6 +69,55 @@ class BuildError(RuntimeError):
     """A release stage failed before the atomic publish swap."""
 
 
+@dataclass(frozen=True)
+class RecoveryToolLock:
+    go_version: str
+    kopia_version: str
+    kopia_sum: str
+    age_version: str
+    age_sum: str
+
+
+def load_recovery_tool_lock(repo_root: Path) -> RecoveryToolLock:
+    module_root = repo_root / RECOVERY_TOOLS_RELATIVE_ROOT
+    go_mod = (module_root / "go.mod").read_text(encoding="utf-8")
+    go_sum = (module_root / "go.sum").read_text(encoding="utf-8")
+    go_match = re.search(r"(?m)^go\s+(\S+)\s*$", go_mod)
+    requires = dict(
+        re.findall(
+            r"(?m)^\s*(filippo\.io/age|github\.com/kopia/kopia)\s+(v\S+)\s*$",
+            go_mod,
+        )
+    )
+    if go_match is None or set(requires) != {"filippo.io/age", "github.com/kopia/kopia"}:
+        raise BuildError("recovery-tools/go.mod is missing the exact Go, Kopia or age lock")
+
+    def module_sum(module: str, version: str) -> str:
+        match = re.search(
+            rf"(?m)^{re.escape(module)}\s+{re.escape(version)}\s+(h1:\S+)\s*$",
+            go_sum,
+        )
+        if match is None:
+            raise BuildError(f"recovery-tools/go.sum is missing {module} {version}")
+        return match.group(1)
+
+    kopia_version = requires["github.com/kopia/kopia"]
+    age_version = requires["filippo.io/age"]
+    return RecoveryToolLock(
+        go_version=go_match.group(1),
+        kopia_version=kopia_version,
+        kopia_sum=module_sum("github.com/kopia/kopia", kopia_version),
+        age_version=age_version,
+        age_sum=module_sum("filippo.io/age", age_version),
+    )
+
+
+_RECOVERY_TOOL_LOCK = load_recovery_tool_lock(Path(__file__).resolve().parents[1])
+KOPIA_VERSION = _RECOVERY_TOOL_LOCK.kopia_version
+AGE_VERSION = _RECOVERY_TOOL_LOCK.age_version
+RECOVERY_GO_VERSION = _RECOVERY_TOOL_LOCK.go_version
+
+
 @dataclass
 class RepoPaths:
     repo_root: Path
@@ -88,6 +138,7 @@ class RepoPaths:
     sidecar_build_info: Path = field(init=False)
     sidecar_sbom: Path = field(init=False)
     sidecar_licenses: Path = field(init=False)
+    recovery_provenance: Path = field(init=False)
     kopia_binary: Path = field(init=False)
     age_binary: Path = field(init=False)
     age_keygen_binary: Path = field(init=False)
@@ -103,6 +154,7 @@ class RepoPaths:
         self.sidecar_build_info = self.sidecar_assets_dir / "build-info.json"
         self.sidecar_sbom = self.sidecar_assets_dir / "sbom.cdx.json"
         self.sidecar_licenses = self.sidecar_assets_dir / "THIRD_PARTY_LICENSES.txt"
+        self.recovery_provenance = self.sidecar_assets_dir / RECOVERY_PROVENANCE_NAME
         self.kopia_binary = self.sidecar_assets_dir / "tools" / KOPIA_EXE_NAME
         self.age_binary = self.sidecar_assets_dir / "tools" / AGE_EXE_NAME
         self.age_keygen_binary = self.sidecar_assets_dir / "tools" / AGE_KEYGEN_EXE_NAME
@@ -298,12 +350,18 @@ def render_manifest(
             "sidecarChecksum": f"sidecar/{SIDECAR_EXE_NAME}.sha256",
             "licenses": "sidecar/THIRD_PARTY_LICENSES.txt",
             "sbom": "sidecar/sbom.cdx.json",
+            "recoveryToolProvenance": f"sidecar/{RECOVERY_PROVENANCE_NAME}",
             "recoveryGuide": "RECOVERY.md",
             "workspaceContracts": "contracts/v2",
             "recoveryTools": {
                 "kopia": "sidecar/tools/kopia.exe",
                 "age": "sidecar/tools/age.exe",
                 "ageKeygen": "sidecar/tools/age-keygen.exe",
+            },
+            "recoveryToolChecksums": {
+                "kopia": "sidecar/tools/kopia.exe.sha256",
+                "age": "sidecar/tools/age.exe.sha256",
+                "ageKeygen": "sidecar/tools/age-keygen.exe.sha256",
             },
         },
         "formats": {
@@ -441,11 +499,106 @@ def _modules_from_packages(packages: list[dict[str, Any]]) -> list[dict[str, Any
     return [by_path[path] for path in sorted(by_path)]
 
 
+def go_binary_metadata(go: str, binary: Path) -> dict[str, Any]:
+    result = _run(
+        [go, "version", "-m", str(binary)],
+        cwd=binary.parent,
+        capture=True,
+    )
+    metadata: dict[str, Any] = {"dependencies": {}, "build": {}}
+    for raw_line in result.stdout.splitlines()[1:]:
+        fields = raw_line.strip().split("\t")
+        if not fields:
+            continue
+        if fields[0] == "path" and len(fields) >= 2:
+            metadata["package"] = fields[1]
+        elif fields[0] == "mod" and len(fields) >= 4:
+            metadata["module"] = fields[1]
+            metadata["version"] = fields[2]
+            metadata["moduleSum"] = fields[3]
+        elif fields[0] == "dep" and len(fields) >= 4:
+            metadata["dependencies"][fields[1]] = {
+                "version": fields[2],
+                "sum": fields[3],
+            }
+        elif fields[0] == "build" and len(fields) >= 2 and "=" in fields[1]:
+            key, value = fields[1].split("=", 1)
+            metadata["build"][key] = value
+    version_match = re.search(r":\s+(go\S+)\s*$", result.stdout.splitlines()[0])
+    metadata["goVersion"] = version_match.group(1) if version_match else ""
+    return metadata
+
+
+def _verify_recovery_tool_builds(paths: RepoPaths, go: str) -> list[dict[str, Any]]:
+    lock = load_recovery_tool_lock(paths.repo_root)
+    expected_tools = (
+        (
+            paths.kopia_binary,
+            "github.com/kopia/kopia",
+            "github.com/kopia/kopia",
+            lock.kopia_version,
+            lock.kopia_sum,
+        ),
+        (
+            paths.age_binary,
+            "filippo.io/age/cmd/age",
+            "filippo.io/age",
+            lock.age_version,
+            lock.age_sum,
+        ),
+        (
+            paths.age_keygen_binary,
+            "filippo.io/age/cmd/age-keygen",
+            "filippo.io/age",
+            lock.age_version,
+            lock.age_sum,
+        ),
+    )
+    provenance: list[dict[str, Any]] = []
+    for binary, package, module, version, module_sum in expected_tools:
+        metadata = go_binary_metadata(go, binary)
+        expected = {
+            "package": package,
+            "module": module,
+            "version": version,
+            "moduleSum": module_sum,
+            "goVersion": f"go{lock.go_version}",
+        }
+        for key, value in expected.items():
+            if metadata.get(key) != value:
+                raise BuildError(
+                    f"{binary.name} Go build metadata mismatch for {key}: "
+                    f"expected {value!r}, got {metadata.get(key)!r}"
+                )
+        expected_build = {"GOOS": "windows", "GOARCH": "amd64", "CGO_ENABLED": "0"}
+        for key, value in expected_build.items():
+            if metadata["build"].get(key) != value:
+                raise BuildError(
+                    f"{binary.name} target mismatch for {key}: "
+                    f"expected {value!r}, got {metadata['build'].get(key)!r}"
+                )
+        provenance.append(
+            {
+                "name": binary.name,
+                "path": f"sidecar/tools/{binary.name}",
+                "package": package,
+                "module": module,
+                "version": version,
+                "moduleSum": module_sum,
+                "sha256": sha256_file(binary),
+                "goVersion": metadata["goVersion"],
+                "target": {"goos": "windows", "goarch": "amd64", "cgoEnabled": False},
+            }
+        )
+    return provenance
+
+
 def stage_sidecar_assets(
     paths: RepoPaths,
     *,
     build_info: dict[str, Any],
     modules: list[dict[str, Any]],
+    recovery_tool_provenance: list[dict[str, Any]] | None = None,
 ) -> None:
     if not paths.sidecar_binary.is_file():
         raise BuildError(f"missing sidecar binary: {paths.sidecar_binary}")
@@ -465,7 +618,69 @@ def stage_sidecar_assets(
             source.name == "manifest.json" or (source.suffix == ".go" and source.name[:1].isdigit())
         ):
             shutil.copy2(source, migrations / source.name)
-    components = [
+    tool_paths = (paths.kopia_binary, paths.age_binary, paths.age_keygen_binary)
+    for tool in tool_paths:
+        if not tool.is_file():
+            raise BuildError(f"missing recovery tool: {tool}")
+        tool.with_suffix(tool.suffix + ".sha256").write_text(
+            sha256_file(tool) + "\n",
+            encoding="utf-8",
+        )
+    if recovery_tool_provenance is None:
+        lock = load_recovery_tool_lock(paths.repo_root)
+        recovery_tool_provenance = [
+            {
+                "name": tool.name,
+                "path": f"sidecar/tools/{tool.name}",
+                "package": package,
+                "module": module,
+                "version": version,
+                "moduleSum": module_sum,
+                "sha256": sha256_file(tool),
+                "goVersion": f"go{lock.go_version}",
+                "target": {"goos": "windows", "goarch": "amd64", "cgoEnabled": False},
+            }
+            for tool, package, module, version, module_sum in (
+                (
+                    paths.kopia_binary,
+                    "github.com/kopia/kopia",
+                    "github.com/kopia/kopia",
+                    lock.kopia_version,
+                    lock.kopia_sum,
+                ),
+                (
+                    paths.age_binary,
+                    "filippo.io/age/cmd/age",
+                    "filippo.io/age",
+                    lock.age_version,
+                    lock.age_sum,
+                ),
+                (
+                    paths.age_keygen_binary,
+                    "filippo.io/age/cmd/age-keygen",
+                    "filippo.io/age",
+                    lock.age_version,
+                    lock.age_sum,
+                ),
+            )
+        ]
+    paths.recovery_provenance.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "lock": {
+                    "path": f"{RECOVERY_TOOLS_RELATIVE_ROOT.as_posix()}/go.mod",
+                    "goSum": f"{RECOVERY_TOOLS_RELATIVE_ROOT.as_posix()}/go.sum",
+                },
+                "tools": recovery_tool_provenance,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    library_components = [
         {
             "type": "library",
             "name": str(module.get("path", "")),
@@ -477,6 +692,39 @@ def stage_sidecar_assets(
         for module in modules
         if module.get("path")
     ]
+    modules_by_path = {str(module.get("path", "")): module for module in modules}
+    tool_components = []
+    for tool in recovery_tool_provenance:
+        module_name = str(tool["module"])
+        module = modules_by_path.get(module_name)
+        if module is None:
+            raise BuildError(f"recovery tool module is missing from SBOM inputs: {module_name}")
+        tool_components.append(
+            {
+                "type": "application",
+                "name": str(tool["name"]),
+                "version": str(tool["version"]),
+                "purl": f"pkg:golang/{module_name}@{tool['version']}",
+                "hashes": [{"alg": "SHA-256", "content": str(tool["sha256"])}],
+                "licenses": [
+                    {"license": {"id": license_id}} for license_id in _module_licenses(module)
+                ],
+                "properties": [
+                    {"name": "vibetable:package", "value": str(tool["package"])},
+                    {"name": "vibetable:module", "value": module_name},
+                    {"name": "vibetable:moduleSum", "value": str(tool["moduleSum"])},
+                    {"name": "vibetable:goVersion", "value": str(tool["goVersion"])},
+                    {"name": "vibetable:goos", "value": str(tool["target"]["goos"])},
+                    {"name": "vibetable:goarch", "value": str(tool["target"]["goarch"])},
+                    {
+                        "name": "vibetable:cgoEnabled",
+                        "value": str(tool["target"]["cgoEnabled"]).lower(),
+                    },
+                    {"name": "vibetable:licenseModule", "value": module_name},
+                ],
+            }
+        )
+    components = library_components + tool_components
     paths.sidecar_sbom.write_text(
         json.dumps(
             {
@@ -503,13 +751,6 @@ def stage_sidecar_assets(
         _third_party_license_text(modules),
         encoding="utf-8",
     )
-    for tool in (paths.kopia_binary, paths.age_binary, paths.age_keygen_binary):
-        if not tool.is_file():
-            raise BuildError(f"missing recovery tool: {tool}")
-        tool.with_suffix(tool.suffix + ".sha256").write_text(
-            sha256_file(tool) + "\n",
-            encoding="utf-8",
-        )
     if os.name != "nt":
         paths.sidecar_binary.chmod(
             paths.sidecar_binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
@@ -523,6 +764,7 @@ def verify_sidecar_package(paths: RepoPaths) -> None:
         paths.sidecar_build_info,
         paths.sidecar_sbom,
         paths.sidecar_licenses,
+        paths.recovery_provenance,
         paths.kopia_binary,
         paths.age_binary,
         paths.age_keygen_binary,
@@ -543,6 +785,56 @@ def verify_sidecar_package(paths: RepoPaths) -> None:
         )
         if sha256_file(tool) != expected_tool_hash:
             raise BuildError(f"recovery tool SHA-256 mismatch: {tool.name}")
+    lock = load_recovery_tool_lock(paths.repo_root)
+    provenance = json.loads(paths.recovery_provenance.read_text(encoding="utf-8"))
+    provenance_tools = {
+        str(item.get("name")): item
+        for item in provenance.get("tools", [])
+        if isinstance(item, dict)
+    }
+    expected_provenance = {
+        paths.kopia_binary.name: (
+            "github.com/kopia/kopia",
+            "github.com/kopia/kopia",
+            lock.kopia_version,
+            lock.kopia_sum,
+        ),
+        paths.age_binary.name: (
+            "filippo.io/age/cmd/age",
+            "filippo.io/age",
+            lock.age_version,
+            lock.age_sum,
+        ),
+        paths.age_keygen_binary.name: (
+            "filippo.io/age/cmd/age-keygen",
+            "filippo.io/age",
+            lock.age_version,
+            lock.age_sum,
+        ),
+    }
+    for tool in recovery_tools:
+        item = provenance_tools.get(tool.name)
+        package, module, version, module_sum = expected_provenance[tool.name]
+        if item is None:
+            raise BuildError(f"recovery tool provenance is missing: {tool.name}")
+        expected_values = {
+            "path": f"sidecar/tools/{tool.name}",
+            "package": package,
+            "module": module,
+            "version": version,
+            "moduleSum": module_sum,
+            "sha256": sha256_file(tool),
+            "goVersion": f"go{lock.go_version}",
+        }
+        for key, value in expected_values.items():
+            if item.get(key) != value:
+                raise BuildError(f"recovery tool provenance mismatch: {tool.name}.{key}")
+        if item.get("target") != {
+            "goos": "windows",
+            "goarch": "amd64",
+            "cgoEnabled": False,
+        }:
+            raise BuildError(f"recovery tool target mismatch: {tool.name}")
     expected = paths.sidecar_checksum.read_text(encoding="utf-8").strip()
     actual = sha256_file(paths.sidecar_binary)
     if expected != actual:
@@ -588,8 +880,31 @@ def verify_sidecar_package(paths: RepoPaths) -> None:
             or any(not isinstance(value, str) or not value or value == "UNKNOWN" for value in ids)
         ):
             raise BuildError("sidecar SBOM contains an unresolved license")
-        if f"===== {name} " not in license_bundle:
-            raise BuildError(f"sidecar license bundle is missing module: {name}")
+        properties = {
+            item.get("name"): item.get("value")
+            for item in component.get("properties", [])
+            if isinstance(item, dict)
+        }
+        license_name = properties.get("vibetable:licenseModule", name)
+        if f"===== {license_name} " not in license_bundle:
+            raise BuildError(f"sidecar license bundle is missing module: {license_name}")
+    sbom_by_name = {
+        str(component.get("name")): component
+        for component in sbom["components"]
+        if isinstance(component, dict)
+    }
+    for tool in recovery_tools:
+        item = provenance_tools[tool.name]
+        component = sbom_by_name.get(tool.name)
+        if component is None or component.get("type") != "application":
+            raise BuildError(f"SBOM is missing recovery tool artifact: {tool.name}")
+        hashes = {
+            entry.get("alg"): entry.get("content")
+            for entry in component.get("hashes", [])
+            if isinstance(entry, dict)
+        }
+        if hashes.get("SHA-256") != item["sha256"] or component.get("version") != item["version"]:
+            raise BuildError(f"SBOM recovery tool artifact mismatch: {tool.name}")
 
 
 def stage_workspace_contracts(paths: RepoPaths) -> None:
@@ -605,12 +920,14 @@ def _run(
     *,
     cwd: Path,
     capture: bool = False,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     resolved = [_resolve_executable(command[0]), *command[1:]]
     try:
         return subprocess.run(
             resolved,
             cwd=cwd,
+            env=env,
             check=True,
             capture_output=capture,
             text=True,
@@ -685,26 +1002,26 @@ def _build_sidecar(paths: RepoPaths, *, skip: bool) -> None:
         cwd=paths.sidecar_source_dir,
     )
     paths.kopia_binary.parent.mkdir(parents=True, exist_ok=True)
-    tool_module = paths.scratch_root / "recovery-tools-go"
-    if tool_module.exists():
-        shutil.rmtree(tool_module)
-    tool_module.mkdir(parents=True)
-    (tool_module / "go.mod").write_text(
-        "\n".join(
-            (
-                "module vibetable.local/recovery-tools",
-                "",
-                "go 1.25.8",
-                "",
-                "require (",
-                f"\tfilippo.io/age {AGE_VERSION}",
-                f"\tgithub.com/kopia/kopia {KOPIA_VERSION}",
-                ")",
-                "",
-            )
-        ),
-        encoding="utf-8",
-    )
+    tool_module = paths.repo_root / RECOVERY_TOOLS_RELATIVE_ROOT
+    lock = load_recovery_tool_lock(paths.repo_root)
+    go = resolve_go(paths.repo_root)
+    recovery_go_env = {
+        **os.environ,
+        "GOOS": "windows",
+        "GOARCH": "amd64",
+        "CGO_ENABLED": "0",
+        "GOTOOLCHAIN": "local",
+    }
+    go_version = _run(
+        [go, "env", "GOVERSION"],
+        cwd=tool_module,
+        capture=True,
+        env=recovery_go_env,
+    ).stdout.strip()
+    if go_version != f"go{lock.go_version}":
+        raise BuildError(
+            f"recovery tools require Go {lock.go_version}, got {go_version or 'unknown'}"
+        )
     for package, output in (
         ("github.com/kopia/kopia", paths.kopia_binary),
         ("filippo.io/age/cmd/age", paths.age_binary),
@@ -712,9 +1029,9 @@ def _build_sidecar(paths: RepoPaths, *, skip: bool) -> None:
     ):
         _run(
             [
-                resolve_go(paths.repo_root),
+                go,
                 "build",
-                "-mod=mod",
+                "-mod=readonly",
                 "-trimpath",
                 "-buildvcs=false",
                 "-o",
@@ -722,7 +1039,9 @@ def _build_sidecar(paths: RepoPaths, *, skip: bool) -> None:
                 package,
             ],
             cwd=tool_module,
+            env=recovery_go_env,
         )
+    recovery_tool_provenance = _verify_recovery_tool_builds(paths, go)
     build_info_result = _run(
         [str(paths.sidecar_binary), "--build-info"],
         cwd=paths.sidecar_assets_dir,
@@ -747,15 +1066,16 @@ def _build_sidecar(paths: RepoPaths, *, skip: bool) -> None:
     ):
         packages_result = _run(
             [
-                resolve_go(paths.repo_root),
+                go,
                 "list",
-                "-mod=mod",
+                "-mod=readonly",
                 "-deps",
                 "-json",
                 package,
             ],
             cwd=tool_module,
             capture=True,
+            env=recovery_go_env,
         )
         package_metadata += packages_result.stdout
     modules = _modules_from_packages(_json_stream(package_metadata))
@@ -763,6 +1083,7 @@ def _build_sidecar(paths: RepoPaths, *, skip: bool) -> None:
         paths,
         build_info=json.loads(build_info_result.stdout),
         modules=modules,
+        recovery_tool_provenance=recovery_tool_provenance,
     )
 
 
