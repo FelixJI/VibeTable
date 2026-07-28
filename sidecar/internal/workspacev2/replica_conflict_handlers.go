@@ -225,6 +225,46 @@ func (owner *productionReplicaConflict) synchronizeOnce(
 	if err != nil {
 		return err
 	}
+	_, counters := owner.runtime.coordinator.Current()
+	latest, found, err := owner.runtime.catalog.Last(
+		ctx,
+		owner.runtime.manifest.WorkspaceID,
+	)
+	if err != nil {
+		return err
+	}
+	// An empty replica queue only proves that every *published snapshot* was
+	// copied. A canonical write can advance the coordinator before the idle
+	// snapshot scheduler publishes the next snapshot. Keep the durable marker
+	// until a remotely verified snapshot covers that exact mutation high-water
+	// mark; otherwise an advisory workspace could be closed and its activity
+	// cache released while the newest write exists only on this device.
+	if !found || latest.MutationRevision < counters.MutationRevision {
+		return owner.persistStatus(
+			context.WithoutCancel(ctx),
+			status.CoordinationStrength,
+			"pending",
+			true,
+		)
+	}
+	latestState, err := manager.SnapshotSyncState(ctx, latest)
+	if err != nil {
+		return err
+	}
+	if status.PendingSync || latestState != "replicated" {
+		syncState := status.SyncState
+		if latestState == "failed" {
+			syncState = "failed"
+		} else if syncState == "replicated" {
+			syncState = "pending"
+		}
+		return owner.persistStatus(
+			context.WithoutCancel(ctx),
+			status.CoordinationStrength,
+			syncState,
+			true,
+		)
+	}
 	if err := owner.clearPending(); err != nil {
 		return err
 	}

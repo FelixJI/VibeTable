@@ -613,7 +613,7 @@ func (remote *verifiedAdvisoryRemote) ReplicateCheckpoint(
 		ReplicaID:       checkpoint.ReplicaID,
 		SnapshotID:      checkpoint.SnapshotID,
 		CatalogRevision: checkpoint.CatalogRevision,
-		CheckpointID:    "checkpoint",
+		CheckpointID:    "sha256:" + strings.Repeat("c", 64),
 		RootDigest:      checkpoint.RootDigest,
 		CommittedAt:     time.Now().UTC(),
 	}, nil
@@ -726,7 +726,20 @@ func TestRuntimeRegistersReplicaAndConflictOnlyForVerifiedRemote(t *testing.T) {
 	if status["coordinationStrength"] != "advisory" {
 		t.Fatalf("advisory mislabeled: %#v", status)
 	}
-	if err := runtime.replicaConflict.markLocalMutationPending(); err != nil {
+	// Stop the background workers so this test can prove the exact high-water
+	// transitions deterministically instead of racing a fast in-memory remote.
+	runtime.schedulerCancel()
+	runtime.schedulerWG.Wait()
+	runtime.schedulerCancel = nil
+	runtime.replicaConflict.cancel()
+	runtime.replicaConflict.wg.Wait()
+	runtime.replicaConflict.cancel = nil
+	if err := runtime.CoordinateBusinessWrite(
+		context.Background(),
+		"test.local_mutation",
+		"record-1",
+		func(context.Context) error { return nil },
+	); err != nil {
 		t.Fatal(err)
 	}
 	pendingResponse := dispatch(t, runtime, 2, "replica.status", `{}`)
@@ -740,6 +753,42 @@ func TestRuntimeRegistersReplicaAndConflictOnlyForVerifiedRemote(t *testing.T) {
 	if pending["syncState"] != "pending" ||
 		pending["pendingSync"] != true {
 		t.Fatalf("local mutation was not immediately pending: %#v", pending)
+	}
+	if err := runtime.replicaConflict.synchronizeOnce(
+		context.Background(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	stillPendingResponse := dispatch(t, runtime, 3, "replica.status", `{}`)
+	stillPending := stillPendingResponse.Result.(map[string]any)
+	if stillPending["syncState"] != "pending" ||
+		stillPending["pendingSync"] != true {
+		t.Fatalf(
+			"unsnapshotted mutation was incorrectly replicated: %#v",
+			stillPending,
+		)
+	}
+	insertAuditOutbox(t, app)
+	snapshotResponse := dispatch(
+		t,
+		runtime,
+		4,
+		"snapshot.request",
+		`{"trigger":"manual","urgency":"foreground"}`,
+	)
+	if snapshotResponse.Error != nil {
+		t.Fatalf("snapshot.request error = %#v", snapshotResponse.Error)
+	}
+	if err := runtime.replicaConflict.synchronizeOnce(
+		context.Background(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	replicatedResponse := dispatch(t, runtime, 5, "replica.status", `{}`)
+	replicated := replicatedResponse.Result.(map[string]any)
+	if replicated["syncState"] != "replicated" ||
+		replicated["pendingSync"] != false {
+		t.Fatalf("protected mutation was not replicated: %#v", replicated)
 	}
 }
 
