@@ -11,6 +11,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import suppress
 from dataclasses import asdict, dataclass
@@ -73,7 +74,27 @@ RACE_LONG_TESTS = frozenset(
 )
 TIMEOUT_RETURNCODE = 124
 WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS = 3
-QA_RUN_TEMP_DIR = REPO_ROOT / "build" / "qa" / "tmp" / f"run-{os.getpid()}-{time.time_ns()}"
+QA_RUN_TEMP_DIR: Path | None = None
+
+
+def _qa_temp_dir() -> Path:
+    """Return this invocation's secure, short-lived QA workspace."""
+
+    global QA_RUN_TEMP_DIR
+    if QA_RUN_TEMP_DIR is None:
+        # Several real tests add pytest, backup, timestamp and previous-install
+        # segments below this root. A short system location avoids legacy
+        # Windows MAX_PATH failures; mkdtemp also creates it exclusively.
+        QA_RUN_TEMP_DIR = Path(tempfile.mkdtemp(prefix="vtqa-"))
+    return QA_RUN_TEMP_DIR
+
+
+def _cleanup_qa_temp_dir() -> None:
+    global QA_RUN_TEMP_DIR
+    if QA_RUN_TEMP_DIR is None:
+        return
+    shutil.rmtree(QA_RUN_TEMP_DIR)
+    QA_RUN_TEMP_DIR = None
 
 
 @dataclass
@@ -171,6 +192,8 @@ def stage_command(
             "pytest",
             str(UPGRADE_SMOKE),
             "-q",
+            "--basetemp",
+            str(_qa_temp_dir() / "u"),
             "-o",
             "addopts=",
             "-p",
@@ -239,7 +262,7 @@ def stage_command(
             sys.executable,
             "qa/product_acceptance.py",
             "--evidence-root",
-            str(QA_RUN_TEMP_DIR / "product-e2e"),
+            str(_qa_temp_dir() / "product-e2e"),
         ]
         if package_root is not None:
             command.extend(["--package-root", str(package_root)])
@@ -267,7 +290,7 @@ def _stage_environment(
     # Keep every gate invocation isolated. Reusing the parent directory lets
     # pytest discover a stale ``pytest-of-<user>`` folder whose ACL may belong
     # to a previous Windows sandbox account, failing before any test executes.
-    qa_tmp = QA_RUN_TEMP_DIR
+    qa_tmp = _qa_temp_dir()
     qa_tmp.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     environment["TMP"] = str(qa_tmp)
@@ -630,7 +653,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.list:
         print("\n".join(STAGES))
@@ -732,6 +755,25 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
         )
     return code
+
+
+def main(argv: list[str] | None = None) -> int:
+    code: int | None = None
+    try:
+        code = _main(argv)
+        return code
+    finally:
+        if QA_RUN_TEMP_DIR is not None:
+            if code == 0:
+                try:
+                    _cleanup_qa_temp_dir()
+                except OSError as exc:
+                    print(
+                        f"could not clean QA temporary evidence at {QA_RUN_TEMP_DIR}: {exc}",
+                        file=sys.stderr,
+                    )
+            else:
+                print(f"QA failure evidence retained at {QA_RUN_TEMP_DIR}", file=sys.stderr)
 
 
 if __name__ == "__main__":

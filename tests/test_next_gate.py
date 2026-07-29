@@ -6,6 +6,8 @@ import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
+
 from qa import next as next_gate
 
 
@@ -163,14 +165,24 @@ def test_windows_race_stage_enables_cgo_with_the_resolved_compiler(
 
 
 def test_stage_environment_uses_an_invocation_scoped_temp_root() -> None:
+    next_gate._cleanup_qa_temp_dir()
     environment = next_gate._stage_environment("upgrade-smoke", ["pytest"])
 
     temp_root = Path(environment["TEMP"])
     assert environment["TMP"] == environment["TEMP"]
     assert temp_root == next_gate.QA_RUN_TEMP_DIR
-    assert temp_root.parent == next_gate.REPO_ROOT / "build" / "qa" / "tmp"
-    assert temp_root.name.startswith(f"run-{next_gate.os.getpid()}-")
+    assert temp_root.parent == Path(next_gate.tempfile.gettempdir())
+    assert temp_root.name.startswith("vtqa-")
     assert temp_root.is_dir()
+
+
+def test_upgrade_smoke_uses_a_short_explicit_pytest_temp_root() -> None:
+    command, cwd = next_gate.stage_command("upgrade-smoke")
+
+    basetemp_index = command.index("--basetemp")
+    assert next_gate.QA_RUN_TEMP_DIR is not None
+    assert command[basetemp_index + 1] == str(next_gate.QA_RUN_TEMP_DIR / "u")
+    assert Path(cwd) == next_gate.REPO_ROOT
 
 
 def test_packaged_recovery_tools_are_injected_into_go_interoperability_stages(
@@ -434,6 +446,9 @@ def test_stage_report_is_never_release_eligible(
     tmp_path: Path,
     capsys,
 ) -> None:
+    qa_temp = tmp_path / "qa-success"
+    qa_temp.mkdir()
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
     identity = {"sidecar": "a" * 64}
     monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
     monkeypatch.setattr(
@@ -476,12 +491,18 @@ def test_stage_report_is_never_release_eligible(
     captured = capsys.readouterr()
     assert captured.out == "stage stdout\n"
     assert captured.err == "stage stderr\n"
+    assert not qa_temp.exists()
+    assert next_gate.QA_RUN_TEMP_DIR is None
 
 
 def test_full_ci_report_is_release_eligible_only_when_identity_stays_stable(
     monkeypatch,
     tmp_path: Path,
+    capsys,
 ) -> None:
+    qa_temp = tmp_path / "qa-failure"
+    qa_temp.mkdir()
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
     hashes = iter(({"sidecar": "a" * 64}, {"sidecar": "b" * 64}))
     monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
     monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
@@ -506,6 +527,37 @@ def test_full_ci_report_is_release_eligible_only_when_identity_stays_stable(
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["ok"] is False
     assert payload["releaseEligible"] is False
+    assert qa_temp.is_dir()
+    assert f"QA failure evidence retained at {qa_temp}" in capsys.readouterr().err
+
+
+def test_main_reports_retained_evidence_when_a_stage_raises(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    qa_temp = tmp_path / "qa-exception"
+    qa_temp.mkdir()
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(next_gate.handoff_gate, "artifact_hashes", lambda _deps: {})
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "release_source_hash",
+        lambda _deps: "s" * 64,
+    )
+
+    def raise_stage(_stage, _package_root=None):
+        raise RuntimeError("stage exploded")
+
+    monkeypatch.setattr(next_gate, "run_stage", raise_stage)
+
+    with pytest.raises(RuntimeError, match="stage exploded"):
+        next_gate.main(["--stage", "go-test"])
+
+    assert qa_temp.is_dir()
+    assert f"QA failure evidence retained at {qa_temp}" in capsys.readouterr().err
 
 
 def test_full_ci_report_rejects_source_change_while_gate_is_running(
