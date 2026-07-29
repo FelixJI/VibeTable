@@ -301,7 +301,6 @@ public sealed class WorkspaceReplicaRecoveryService :
                     "mutationRevision",
                     out JsonElement mutation) ||
                 !mutation.TryGetUInt64(out ulong mutationRevision) ||
-                mutationRevision == 0 ||
                 !root.TryGetProperty(
                     "requiredMutationRevision",
                     out JsonElement requiredMutation) ||

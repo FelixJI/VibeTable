@@ -1700,6 +1700,14 @@ export interface DataTaskStatus {
 export interface BridgeMessage<P = unknown> {
   readonly type: string;
   readonly requestId?: string;
+  /** Active workspace authority for non-v2 product requests. */
+  readonly scope?: unknown;
+  /**
+   * Workspace v2 requests duplicate their closed RPC wire at the bridge
+   * envelope boundary so the desktop router can validate scope before
+   * dispatching the payload.
+   */
+  readonly wire?: unknown;
   /** True only when sent through WebView2's native AdditionalObjects channel. */
   readonly nativeObjects?: true;
   readonly payload?: P;

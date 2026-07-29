@@ -192,7 +192,6 @@ public sealed class SidecarWorkspaceProtectionHook :
                 "mutationRevision",
                 out JsonElement revision) ||
             !revision.TryGetUInt64(out ulong mutationRevision) ||
-            mutationRevision == 0 ||
             result.EnumerateObject().Count() != 4)
             throw InvalidProtectionResponse();
         return new ProtectionSnapshotReceipt(

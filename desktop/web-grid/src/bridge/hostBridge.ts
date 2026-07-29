@@ -45,9 +45,15 @@ import {
   RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
   RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
 } from "@/contracts/runtimeDiagnosticsContracts";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
+import {
+  configureWorkspaceWire,
+  nextWorkspaceWire,
+} from "@/services/workspaceWireAllocator";
 import type {
   WorkspaceV2HostMessageType,
   WorkspaceV2HostPayloadMap,
+  WorkspaceV2RequestPayload,
   WorkspaceV2WebMessageType,
   WorkspaceV2WebPayloadMap,
 } from "@/contracts/workspaceV2Bridge";
@@ -738,6 +744,57 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     webview().postMessage(env);
   }
 
+  function operationId(): string {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+      return crypto.randomUUID();
+    }
+    const suffix = Math.floor(Math.random() * 0xffff_ffff)
+      .toString(16)
+      .padStart(12, "0");
+    return `00000000-0000-4000-8000-${suffix}`;
+  }
+
+  function activeWorkspaceScope(): ReturnType<typeof nextWorkspaceWire> | undefined {
+    try {
+      const session = useWorkspaceSessionStore();
+      if (
+        !session.hasOpenWorkspace
+        || !session.activeWorkspaceId
+        || session.sessionEpoch < 1
+      ) return undefined;
+      configureWorkspaceWire(session.activeWorkspaceId, session.sessionEpoch);
+      return nextWorkspaceWire(operationId());
+    } catch {
+      // HostBridge is also used in isolated tests without an active Pinia.
+      return undefined;
+    }
+  }
+
+  function outboundEnvelope(
+    type: WebMessageType,
+    payload: unknown,
+    requestId?: string,
+    nativeObjects?: true,
+  ): BridgeMessage {
+    if (type === "workspace.v2.request") {
+      return {
+        type,
+        ...(requestId ? { requestId } : {}),
+        ...(nativeObjects ? { nativeObjects } : {}),
+        payload,
+        wire: (payload as WorkspaceV2RequestPayload).wire,
+      };
+    }
+    const scope = activeWorkspaceScope();
+    return {
+      type,
+      ...(requestId ? { requestId } : {}),
+      ...(nativeObjects ? { nativeObjects } : {}),
+      ...(scope ? { scope } : {}),
+      payload,
+    };
+  }
+
   function request<K extends WebMessageType>(
     type: K,
     payload: WebPayloadMap[K],
@@ -750,7 +807,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     payload: WebPayloadMap[K],
   ): { readonly requestId: string; readonly promise: Promise<unknown> } {
     const requestId = generateRequestId();
-    const env: BridgeMessage = { type, requestId, payload };
+    const env = outboundEnvelope(type, payload, requestId);
     const promise = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (pending.delete(requestId)) {
@@ -779,7 +836,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     type: K,
     payload: WebPayloadMap[K],
   ): void {
-    postEnvelope({ type, payload });
+    postEnvelope(outboundEnvelope(type, payload));
   }
 
   function notifyWithAdditionalObjects<K extends WebMessageType>(
@@ -798,7 +855,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     // travel exclusively in WebView2's native additionalObjects collection.
     try {
       target.postMessageWithAdditionalObjects(
-        { type, nativeObjects: true, payload },
+        outboundEnvelope(type, payload, undefined, true),
         [...additionalObjects],
       );
       return true;
@@ -845,7 +902,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     });
     try {
       target.postMessageWithAdditionalObjects(
-        { type, requestId, nativeObjects: true, payload },
+        outboundEnvelope(type, payload, requestId, true),
         [...additionalObjects],
       );
       return promise;

@@ -325,10 +325,6 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
                                 epoch,
                                 reason,
                                 cancellationToken);
-                        if (revision == 0)
-                            throw new WorkspaceRegistryException(
-                                "workspace.replica_high_watermark_missing",
-                                "Replica synchronization did not return a mutation high-watermark.");
                         LastProtectionMutationRevision = revision;
                     }
                     else

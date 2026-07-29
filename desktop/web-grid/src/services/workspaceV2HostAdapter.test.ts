@@ -223,7 +223,7 @@ describe("workspace v2 production host adapter", () => {
         scope: "workspace",
         workspaceId: WORKSPACE_ID,
         sessionEpoch: 7,
-        sequence: 1,
+        sequence: expect.any(Number),
       },
     });
     expect(useWorkspaceProtectionStore().snapshots[0]).toMatchObject({

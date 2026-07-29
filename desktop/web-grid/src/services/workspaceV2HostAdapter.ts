@@ -14,6 +14,11 @@ import type { WorkspaceSessionV2, WireScopeV2 } from "@/contracts/workspaceV2";
 import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import type { WorkspaceV2UiPort } from "@/services/workspaceV2UiPort";
+import {
+  configureWorkspaceWire,
+  nextWorkspaceWire,
+  observeWorkspaceWire,
+} from "@/services/workspaceWireAllocator";
 
 const GLOBAL_METHODS = new Set<WorkspaceV2RpcMethod>([
   "workspace.list",
@@ -87,7 +92,6 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
   const session = useWorkspaceSessionStore();
   const protection = useWorkspaceProtectionStore();
   let globalSequence = 0;
-  let workspaceSequence = 0;
   const actionContexts = new Map<string, WorkspaceV2UiAction>();
 
   function supportsMethod(method: WorkspaceV2RpcMethod): boolean {
@@ -123,14 +127,8 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
         false,
       );
     }
-    workspaceSequence = Math.max(workspaceSequence, session.lastSequence) + 1;
-    return {
-      scope: "workspace",
-      workspaceId: session.activeWorkspaceId,
-      sessionEpoch: session.sessionEpoch,
-      operationId: id,
-      sequence: workspaceSequence,
-    };
+    configureWorkspaceWire(session.activeWorkspaceId, session.sessionEpoch);
+    return nextWorkspaceWire(id);
   }
 
   function acceptReplyWire(wire: WireScopeV2): boolean {
@@ -195,9 +193,10 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     ) {
       if (method === "workspace.close" || result.state === "closed") {
         session.closeSession();
+        configureWorkspaceWire(null, 0);
       } else {
-        workspaceSequence = 0;
         session.applySession(sessionFromResult(result));
+        configureWorkspaceWire(session.activeWorkspaceId, session.sessionEpoch);
         void hydrateWorkspace();
       }
     } else if (method === "workspace.planDelete" && action?.method === method) {
@@ -311,6 +310,7 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
       throw new Error("workspace.v2_reply_mismatch");
     }
     if (!acceptReplyWire(reply.wire)) throw new Error("workspace.v2_reply_stale");
+    if (reply.wire.scope === "workspace") observeWorkspaceWire(reply.wire);
     const context = actionContexts.get(reply.wire.operationId);
     if (reply.ok) {
       projectSuccessfulReply(reply, context);
@@ -330,6 +330,7 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     session.configureCapabilities(bootstrap.capabilities);
     session.setWorkspaces(bootstrap.workspaces);
     session.applySession(bootstrap.session);
+    configureWorkspaceWire(session.activeWorkspaceId, session.sessionEpoch);
     if (session.snapshotEnabled) protection.setSnapshots(bootstrap.snapshots);
     if (session.capabilities.includes("repository.settings.v2")) {
       protection.setStorage(bootstrap.storage);
@@ -339,7 +340,6 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     if (session.fileHistoryEnabled) {
       for (const tree of bootstrap.fileTrees) protection.setFileTree(tree);
     }
-    workspaceSequence = session.lastSequence;
   }
 
   function eventText(payload: Readonly<Record<string, unknown>>, key: string): string {
@@ -377,6 +377,7 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
   function projectEvent(raw: unknown): void {
     const event = parseWorkspaceV2Event(raw);
     if (!session.acceptEnvelope(event.wire)) return;
+    observeWorkspaceWire(event.wire);
     const payload = event.payload;
     if (event.topic === "workspace.session.changed") {
       const state = eventText(payload, "state") as WorkspaceSessionV2["state"];

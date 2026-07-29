@@ -200,6 +200,18 @@ public sealed class ProductionWorkspaceHooksTests
             ready,
             operationId);
         Assert.AreEqual(7UL, receipt.MutationRevision);
+        JsonElement emptyBaseline = JsonSerializer.SerializeToElement(new
+        {
+            operationId = operationId.ToString("D"),
+            state = "ready",
+            snapshotId = Guid.NewGuid().ToString("D"),
+            mutationRevision = 0,
+        });
+        Assert.AreEqual(
+            0UL,
+            SidecarWorkspaceProtectionHook.EnsureProtectionCompleted(
+                emptyBaseline,
+                operationId).MutationRevision);
         WorkspaceRegistryException error =
             Assert.ThrowsExactly<WorkspaceRegistryException>(() =>
                 SidecarWorkspaceProtectionHook.EnsureProtectionCompleted(

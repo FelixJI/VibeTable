@@ -1407,6 +1407,7 @@ async function cancelPluginTask(): Promise<void> {
 let viewMounted = false;
 let businessConsumersInitialized = false;
 let startupWorkspaceDecisionMade = false;
+let workspaceActivationPending = false;
 
 function applyWorkspaceStartupPolicy(): void {
   if (!viewMounted || startupWorkspaceDecisionMade) return;
@@ -1419,7 +1420,6 @@ function applyWorkspaceStartupPolicy(): void {
   if (decision.kind === "wait") return;
   startupWorkspaceDecisionMade = true;
   if (decision.kind === "open") {
-    showWorkspaceCenter.value = false;
     void openWorkspace(decision.workspaceId);
     return;
   }
@@ -1430,6 +1430,7 @@ function initializeBusinessConsumers(): void {
   if (
     businessConsumersInitialized
     || !viewMounted
+    || workspaceActivationPending
     || (workspaceSession.enabled && !workspaceSession.hasOpenWorkspace)
   ) {
     return;
@@ -1790,22 +1791,23 @@ async function openWorkspace(workspaceId: string): Promise<boolean> {
     return true;
   }
   if (!workspaceSession.isTransitioning) workspaceSession.beginSwitch(workspaceId);
-  showWorkspaceCenter.value = false;
+  workspaceActivationPending = true;
+  let opened: boolean;
   if (workspaceSession.activeWorkspaceId) {
-    const opened = await handleWorkspaceV2Action({
+    opened = await handleWorkspaceV2Action({
       method: "workspace.switch",
       params: { targetWorkspaceId: workspaceId, openMode: "writable" },
     });
-    if (!opened) showWorkspaceCenter.value = true;
-    return opened;
   } else {
-    const opened = await handleWorkspaceV2Action({
+    opened = await handleWorkspaceV2Action({
       method: "workspace.open",
       params: { workspaceId, openMode: "writable" },
     });
-    if (!opened) showWorkspaceCenter.value = true;
-    return opened;
   }
+  workspaceActivationPending = false;
+  showWorkspaceCenter.value = !opened;
+  if (opened) initializeBusinessConsumers();
+  return opened;
 }
 
 /** Sidebar: ask the user to confirm deleting a table. */

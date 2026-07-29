@@ -241,6 +241,14 @@ watch(
 
 <template>
   <main class="workspace-center" data-testid="workspace-center">
+    <NAlert
+      v-if="protection.operationError"
+      type="error"
+      :title="t('workspaceV2.operation.failed')"
+      data-testid="workspace-operation-error"
+    >
+      {{ protection.operationError }}
+    </NAlert>
     <header class="center-hero">
       <div class="hero-mark" aria-hidden="true">
         <HardDrive :size="21" />

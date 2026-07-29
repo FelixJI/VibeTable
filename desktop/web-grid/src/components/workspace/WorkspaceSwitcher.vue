@@ -13,7 +13,7 @@ const emit = defineEmits<{
 
 const session = useWorkspaceSessionStore();
 const announceStage = ref(false);
-const trigger = ref<HTMLElement | null>(null);
+const root = ref<HTMLElement | null>(null);
 const menuOpen = ref(false);
 let stageTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -57,7 +57,11 @@ watch(() => session.isTransitioning, (switching) => {
   if (switching) {
     stageTimer = setTimeout(() => { announceStage.value = true; }, 300);
   } else {
-    requestAnimationFrame(() => trigger.value?.focus({ preventScroll: true }));
+    requestAnimationFrame(() => {
+      root.value
+        ?.querySelector<HTMLButtonElement>(".switcher-trigger")
+        ?.focus({ preventScroll: true });
+    });
   }
 });
 
@@ -76,7 +80,7 @@ function select(key: string | number): void {
 </script>
 
 <template>
-  <div class="workspace-switcher" data-testid="workspace-switcher">
+  <div ref="root" class="workspace-switcher" data-testid="workspace-switcher">
     <NDropdown
       trigger="click"
       placement="bottom-start"
@@ -87,7 +91,6 @@ function select(key: string | number): void {
       @select="select"
     >
       <NButton
-        ref="trigger"
         quaternary
         size="small"
         class="switcher-trigger"

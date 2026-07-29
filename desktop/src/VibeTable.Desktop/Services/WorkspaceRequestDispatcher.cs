@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
 using VibeTable.Infrastructure.Rpc;
+using VibeTable.Infrastructure.Workspace;
 
 namespace VibeTable.Desktop.Services;
 
@@ -1335,6 +1336,15 @@ public sealed class WorkspaceRequestDispatcher
             if (!IsRequestCurrent(epochLease))
                 return;
             _reply.PostOperationFailed(request.RequestId, "Invalid request payload.", "BAD_PAYLOAD");
+        }
+        catch (WorkspaceRegistryException ex)
+        {
+            if (!IsRequestCurrent(epochLease))
+                return;
+            _reply.PostOperationFailed(
+                request.RequestId,
+                ex.Message,
+                ex.Code);
         }
         catch (Exception ex)
             when (ex is BackendUnavailableException

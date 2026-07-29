@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach, type Mock } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
 
 import { createHostBridge } from "./hostBridge";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import type {
   BridgeMessage,
   DatabaseOpenedPayload,
@@ -51,6 +53,7 @@ describe("HostBridge", () => {
   let webview: ReturnType<typeof makeWebview>;
 
   beforeEach(() => {
+    setActivePinia(createPinia());
     webview = makeWebview();
   });
 
@@ -116,6 +119,7 @@ describe("HostBridge", () => {
     expect(webview.postMessage).toHaveBeenCalledWith({
       type: "workspace.v2.request",
       requestId: "workspace-v2-1",
+      wire,
       payload: {
         method: "workspace.list",
         params: {},
@@ -136,6 +140,74 @@ describe("HostBridge", () => {
       payload: reply,
     });
     await expect(pending).resolves.toEqual(reply);
+    bridge.stop();
+  });
+
+  it("adds a strictly scoped workspace envelope to legacy product requests", async () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    session.setWorkspaces([{
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      displayName: "E2E",
+      selectedRoot: "D:\\E2E",
+      activityRoot: null,
+      storageKind: "fixed",
+      coordinationStrength: "strong",
+      lastOpenedAt: null,
+      lastKnownHealth: "healthy",
+      lastSnapshotAt: null,
+      lastSyncAt: null,
+      pendingSync: false,
+    }]);
+    session.applySession({
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      sessionEpoch: 7,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "scoped-legacy-1",
+    });
+    bridge.start();
+    const pending = bridge.request("table.pageRequested", {
+      table: "contracts",
+      offset: 0,
+      limit: 50,
+    });
+    const posted = webview.postMessage.mock.calls[0]![0] as BridgeMessage;
+    expect(posted).toMatchObject({
+      type: "table.pageRequested",
+      requestId: "scoped-legacy-1",
+      scope: {
+        scope: "workspace",
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        sessionEpoch: 7,
+      },
+    });
+    expect((posted.scope as { sequence: number }).sequence).toBeGreaterThan(0);
+
+    webview.emit({
+      type: "table.pageLoaded",
+      requestId: "scoped-legacy-1",
+      payload: {
+        table: "contracts",
+        columns: [],
+        rows: [],
+        offset: 0,
+        limit: 50,
+        totalRows: 0,
+        mode: "client",
+      },
+    });
+    await expect(pending).resolves.toMatchObject({ table: "contracts" });
     bridge.stop();
   });
 

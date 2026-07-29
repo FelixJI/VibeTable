@@ -183,8 +183,41 @@ function assertCleanBridgeDiagnostics(recorder, diagnostics) {
 
 async function waitForShell(page, recorder) {
   await page.getByTestId("nav-home").waitFor({ state: "visible", timeout: 60_000 });
+  const workspaceCenter = page.getByTestId("workspace-center");
+  await workspaceCenter.waitFor({ state: "visible", timeout: 60_000 });
+  recorder.check(
+    "fresh device starts in Workspace Center before product data services",
+    await page.getByTestId("home-view").isHidden(),
+  );
+  await page.getByTestId("workspace-create").click();
+  const createModal = page.getByTestId("workspace-flow-modal");
+  await createModal.waitFor({ state: "visible" });
+  await createModal.locator("input").first().fill("E2E Product Workspace");
+  await page.getByTestId("workspace-flow-confirm").click();
+  const openCreatedWorkspace = workspaceCenter.getByRole("button", {
+    name: /E2E Product Workspace/,
+  });
+  await openCreatedWorkspace.waitFor({ state: "visible", timeout: 60_000 });
+  recorder.check(
+    "fresh-device workspace creation is projected into Workspace Center",
+    await openCreatedWorkspace.isVisible(),
+  );
+  await openCreatedWorkspace.click();
+  const activationOutcome = await Promise.race([
+    workspaceCenter.waitFor({ state: "hidden", timeout: 60_000 })
+      .then(() => ({ kind: "opened" })),
+    page.getByTestId("workspace-operation-error")
+      .waitFor({ state: "visible", timeout: 60_000 })
+      .then(async () => ({
+        kind: "failed",
+        message: await page.getByTestId("workspace-operation-error").innerText(),
+      })),
+  ]);
+  if (activationOutcome.kind === "failed") {
+    throw new Error(`workspace activation failed: ${activationOutcome.message}`);
+  }
   await page.getByTestId("home-view").waitFor({ state: "visible" });
-  await page.getByTestId("connection-pill").waitFor({ state: "visible" });
+  await page.getByTestId("workspace-switcher").waitFor({ state: "visible" });
   recorder.check("real WebView2 renderer reached the home workspace",
     page.url().startsWith("https://app.vibetable.local/"), {
     url: page.url(),
@@ -983,6 +1016,11 @@ async function rawBridgeRequest(
     ({ type: requestType, payload: requestPayload, timeout, responseTypes }) =>
       new Promise((resolve, reject) => {
         const requestId = `e2e-${crypto.randomUUID()}`;
+        const envelope = {
+          type: requestType,
+          requestId,
+          payload: requestPayload,
+        };
         const timer = setTimeout(() => {
           window.chrome.webview.removeEventListener("message", handler);
           reject(new Error(`bridge timeout for ${requestType}`));
@@ -996,14 +1034,18 @@ async function rawBridgeRequest(
           if (!responseTypes.includes(message.type) && message.type !== "operation.failed") return;
           clearTimeout(timer);
           window.chrome.webview.removeEventListener("message", handler);
-          resolve(message);
+          const finishAfterSequenceWindow = () => {
+            const sequence = envelope.scope?.sequence ?? 0;
+            if (Date.now() * 1_000 > sequence) {
+              resolve(message);
+              return;
+            }
+            setTimeout(finishAfterSequenceWindow, 1);
+          };
+          finishAfterSequenceWindow();
         };
         window.chrome.webview.addEventListener("message", handler);
-        window.chrome.webview.postMessage({
-          type: requestType,
-          requestId,
-          payload: requestPayload,
-        });
+        window.chrome.webview.postMessage(envelope);
       }),
     { type, payload, timeout: timeoutMs, responseTypes: expectedResponseTypes },
   );
@@ -1020,6 +1062,8 @@ async function installBridgeDiagnostics(page) {
       roundTrips: [],
       failures: [],
       pending: {},
+      workspaceSession: null,
+      maxWorkspaceSequence: 0,
     };
     const webview = window.chrome.webview;
     const originalPostMessage = webview.postMessage.bind(webview);
@@ -1028,6 +1072,38 @@ async function installBridgeDiagnostics(page) {
       let message = candidate;
       if (typeof candidate === "string") {
         try { message = JSON.parse(candidate); } catch { message = null; }
+      }
+      const existingWire = message?.scope ?? message?.wire ?? message?.payload?.wire;
+      if (
+        existingWire?.scope === "workspace"
+        && Number.isSafeInteger(existingWire.sequence)
+      ) {
+        diagnostics.maxWorkspaceSequence = Math.max(
+          diagnostics.maxWorkspaceSequence,
+          existingWire.sequence,
+        );
+      }
+      if (
+        typeof candidate === "object"
+        && candidate !== null
+        && typeof message?.requestId === "string"
+        && message.requestId.startsWith("e2e-")
+        && message.type !== "workspace.v2.request"
+        && !message.scope
+        && diagnostics.workspaceSession
+      ) {
+        const sequence = Math.max(
+          Date.now() * 1_000,
+          diagnostics.maxWorkspaceSequence + 1,
+        );
+        message.scope = {
+          scope: "workspace",
+          workspaceId: diagnostics.workspaceSession.workspaceId,
+          sessionEpoch: diagnostics.workspaceSession.sessionEpoch,
+          operationId: message.requestId.slice("e2e-".length),
+          sequence,
+        };
+        diagnostics.maxWorkspaceSequence = sequence;
       }
       if (message?.requestId && message?.type) {
         const requestPayload = message.payload;
@@ -1059,6 +1135,28 @@ async function installBridgeDiagnostics(page) {
       let message = event.data;
       if (typeof message === "string") {
         try { message = JSON.parse(message); } catch { return; }
+      }
+      const inboundWire = message?.wire ?? message?.payload?.wire;
+      if (
+        inboundWire?.scope === "workspace"
+        && Number.isSafeInteger(inboundWire.sequence)
+      ) {
+        diagnostics.maxWorkspaceSequence = Math.max(
+          diagnostics.maxWorkspaceSequence,
+          inboundWire.sequence,
+        );
+      }
+      if (message?.type === "workspace.v2.bootstrap") {
+        const session = message.payload?.session;
+        diagnostics.workspaceSession =
+          typeof session?.workspaceId === "string"
+          && Number.isSafeInteger(session?.sessionEpoch)
+          && session.sessionEpoch > 0
+            ? {
+                workspaceId: session.workspaceId,
+                sessionEpoch: session.sessionEpoch,
+              }
+            : null;
       }
       const request = message?.requestId
         ? diagnostics.pending[message.requestId]
@@ -1149,6 +1247,7 @@ async function beginRawBridgeRequest(
       window.__vibetableE2ERawRequests[requestId] = {
         responseTypes,
         message: null,
+        scopeSequence: 0,
       };
       window.chrome.webview.addEventListener("message", function handler(event) {
         let message = event.data;
@@ -1160,11 +1259,14 @@ async function beginRawBridgeRequest(
         window.__vibetableE2ERawRequests[requestId].message = message;
         window.chrome.webview.removeEventListener("message", handler);
       });
-      window.chrome.webview.postMessage({
+      const envelope = {
         type: requestType,
         requestId,
         payload: requestPayload,
-      });
+      };
+      window.chrome.webview.postMessage(envelope);
+      window.__vibetableE2ERawRequests[requestId].scopeSequence =
+        envelope.scope?.sequence ?? 0;
       return requestId;
     },
     {
@@ -1178,11 +1280,20 @@ async function beginRawBridgeRequest(
 async function waitForRawBridgeRequest(page, requestId, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const message = await page.evaluate(
-      (id) => window.__vibetableE2ERawRequests?.[id]?.message ?? null,
+    const result = await page.evaluate(
+      (id) => {
+        const request = window.__vibetableE2ERawRequests?.[id];
+        return request
+          ? {
+              message: request.message,
+              sequenceWindowPassed:
+                Date.now() * 1_000 > (request.scopeSequence ?? 0),
+            }
+          : null;
+      },
       requestId,
     );
-    if (message) return message;
+    if (result?.message && result.sequenceWindowPassed) return result.message;
     await page.waitForTimeout(25);
   }
   throw new Error(`bridge response timeout for ${requestId}`);
