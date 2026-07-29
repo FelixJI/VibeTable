@@ -58,7 +58,7 @@ func realtimeDataEvent(index int) mutation.DataChangedEvent {
 }
 
 func TestRealtimeHubDeliversLiveCatchupAndRejectsUnknownCursor(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -147,7 +147,7 @@ func TestRealtimeHubDeliversLiveCatchupAndRejectsUnknownCursor(t *testing.T) {
 }
 
 func TestRealtimeTaskCancellationAdvancesSequenceAndKeepsIdentity(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	hub := realtime.New(app)
@@ -199,7 +199,7 @@ func TestRealtimeTaskCancellationAdvancesSequenceAndKeepsIdentity(t *testing.T) 
 func TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors(
 	t *testing.T,
 ) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	hub := realtime.New(app)
@@ -249,7 +249,7 @@ func TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors(
 }
 
 func TestRealtimeLiveDrainUsesDurableRowIDOrderWhenLaterPublishWins(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	hub := realtime.New(app)
@@ -288,7 +288,7 @@ func TestRealtimeLiveDrainUsesDurableRowIDOrderWhenLaterPublishWins(t *testing.T
 }
 
 func TestRealtimeResumeAtWindowTailAdvancesLiveHighWater(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	hub := realtime.New(app)

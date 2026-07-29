@@ -1,0 +1,62 @@
+{
+  "logicalType": "number",
+  "generalSettings": ["displayName", "help", "required", "default", "unique"],
+  "advancedSettings": ["range", "onlyInt", "displayScale"],
+  "dangerSettings": ["retire", "purge"],
+  "recommended": {
+    "defaultsVersion": 1,
+    "value": {
+      "required": false,
+      "default": {
+        "enabled": false,
+        "value": null,
+        "source": "recommended",
+        "defaultsVersion": 1
+      },
+      "presence": {"mode": "companion"}
+    },
+    "constraints": {
+      "unique": {"enabled": false, "blankPolicy": "ignoreMissing"},
+      "range": {"min": null, "max": null},
+      "length": {"min": null, "max": null},
+      "pattern": {"enabled": false, "value": ""},
+      "domains": {"only": [], "except": []},
+      "selection": {"min": 0, "max": null}
+    },
+    "storage": {
+      "kind": "pocketbase-number",
+      "options": {
+        "onlyInt": false,
+        "maxSize": 0,
+        "convertURLs": false,
+        "presentable": false
+      }
+    },
+    "display": {
+      "kind": "number",
+      "preset": "number",
+      "displayScale": 2,
+      "scaleMode": "max",
+      "trimTrailingZeros": true,
+      "useGrouping": true,
+      "currency": "CNY",
+      "percentStorage": "ratio",
+      "unit": null,
+      "precision": "minute",
+      "timezone": "system",
+      "mode": "default",
+      "indent": 0,
+      "trueLabel": "是",
+      "falseLabel": "否"
+    }
+  },
+  "supportsRequired": true,
+  "supportsDefault": true,
+  "supportsUnique": true,
+  "needsPresence": true,
+  "displayPresets": ["number", "integer", "currency", "percent", "unit"],
+  "conversionTargets": ["text"],
+  "conversionRules": ["round", "floor", "ceil", "truncate", "block"],
+  "compileStrategy": "pocketbase-number",
+  "userCreatable": true
+}

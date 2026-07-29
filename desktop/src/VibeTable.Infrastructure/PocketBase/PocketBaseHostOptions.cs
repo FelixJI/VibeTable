@@ -47,7 +47,8 @@ public static class PocketBaseHostOptions
     /// </summary>
     public static PocketBaseLaunchOptions WithRuntimeDataRoot(
         PocketBaseLaunchOptions options,
-        string runtimeDataRoot)
+        string runtimeDataRoot,
+        string? logPath = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(runtimeDataRoot);
@@ -63,7 +64,9 @@ public static class PocketBaseHostOptions
             ExecutablePath = options.ExecutablePath,
             WorkingDirectory = options.WorkingDirectory,
             DataDirectory = dataDirectory,
-            LogPath = Path.Combine(dataRoot, "logs", "pocketbase.log"),
+            LogPath = logPath is null
+                ? Path.Combine(dataRoot, "logs", "pocketbase.log")
+                : Path.GetFullPath(logPath),
             DevelopmentMode = options.DevelopmentMode,
             StartupTimeout = options.StartupTimeout,
             StopTimeout = options.StopTimeout,
@@ -78,7 +81,10 @@ public static class PocketBaseHostOptions
     private static IdentityFile ReadIdentity(string baseDirectory)
     {
         string packaged = Path.Combine(
-            baseDirectory, "sidecar", "build-info.json");
+            baseDirectory,
+            "resources",
+            "sidecar",
+            "build-info.json");
         if (File.Exists(packaged))
         {
             IdentityFile? parsed = JsonSerializer.Deserialize<IdentityFile>(
@@ -133,7 +139,8 @@ public static class PocketBaseHostOptions
 
     private static bool IsPackaged(string baseDirectory, string executable) =>
         executable.StartsWith(
-            Path.GetFullPath(Path.Combine(baseDirectory, "sidecar"))
+            Path.GetFullPath(
+                Path.Combine(baseDirectory, "resources", "sidecar"))
                 + Path.DirectorySeparatorChar,
             StringComparison.OrdinalIgnoreCase);
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import date, datetime
+import json
 from pathlib import Path
 from typing import Any
 
@@ -16,10 +16,6 @@ from backend.application.import_service import (
     RelationImportTarget,
     SourceFile,
     auto_map_columns,
-    clean_currency,
-    parse_date,
-    parse_number,
-    validate_choice,
 )
 from backend.application.paste_service import PasteError
 from backend.contracts.data_io import (
@@ -29,6 +25,21 @@ from backend.contracts.data_io import (
 )
 from backend.contracts.data_profile import CollectionProfile, RelationProfile
 from backend.contracts.paste import ApplyPasteResult
+
+FIELD_VALUE_CORPUS_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "contracts"
+    / "schema-v2"
+    / "fixtures"
+    / "field-value-entry-corpus.json"
+)
+
+
+def _field_value_corpus() -> list[dict[str, Any]]:
+    payload = json.loads(FIELD_VALUE_CORPUS_PATH.read_text(encoding="utf-8"))
+    cases = payload["cases"]
+    assert cases
+    return cases
 
 
 class FakeProductMutationPort:
@@ -40,6 +51,46 @@ class FakeProductMutationPort:
             request_id="request-1",
         )
         self.calls: list[dict[str, Any]] = []
+        self.preview_calls: list[dict[str, Any]] = []
+
+    async def preview_import(
+        self,
+        *,
+        collection: str,
+        schema_revision: str,
+        rows: list[dict[str, Any]],
+        row_modes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self.preview_calls.append(
+            {
+                "collection": collection,
+                "schema_revision": schema_revision,
+                "rows": [dict(row) for row in rows],
+                "row_modes": row_modes,
+            }
+        )
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            values = dict(row)
+            diagnostics: list[dict[str, str]] = []
+            if "amount" in values:
+                raw_amount = values["amount"]
+                if raw_amount in (None, ""):
+                    values["amount"] = None
+                else:
+                    try:
+                        values["amount"] = float(str(raw_amount).replace("$", "").replace(",", ""))
+                    except ValueError:
+                        values.pop("amount")
+                        diagnostics.append(
+                            {
+                                "field": "amount",
+                                "code": "field.value.invalid",
+                                "message": "value is not a finite number",
+                            }
+                        )
+            normalized.append({"values": values, "diagnostics": diagnostics})
+        return {"contract": "vibetable.import-preview.v1", "rows": normalized}
 
     async def apply(self, **kwargs: Any) -> ApplyPasteResult:
         self.calls.append(kwargs)
@@ -189,23 +240,6 @@ def _service(
     )
 
 
-def test_normalization_helpers_cover_dates_currency_numbers_and_choices() -> None:
-    assert parse_date("2026-07-14") == (True, "2026-07-14", None)
-    assert parse_date(date(2026, 7, 23)) == (True, "2026-07-23", None)
-    assert parse_date(datetime(2026, 7, 23, 9, 30), date_type="datetime") == (
-        True,
-        "2026-07-23 09:30:00",
-        None,
-    )
-    assert parse_date(46281)[0]
-    assert not parse_date("not-a-date")[0]
-    assert clean_currency("$1,234.50") == "1234.50"
-    assert parse_number("$1,234.50") == (True, 1234.5, None)
-    assert parse_number("12.5", integer=True) == (True, 12, None)
-    assert validate_choice("open", ["open", "closed"]) == (True, "open", None)
-    assert validate_choice("missing", ["open", "closed"])[0] is False
-
-
 def test_import_error_exposes_only_structured_product_data() -> None:
     error = ImportFlowError(
         "internal detail",
@@ -292,7 +326,7 @@ async def test_preview_binds_source_and_normalizes_product_fields(tmp_path: Path
         ["number", "amount", "signed_on", "unused"],
         [["A-1", "$1,234.50", "2026-07-14", "ignored"]],
     )
-    service, _ = _service(path)
+    service, mutation = _service(path)
 
     plan = await service.preview(
         PreviewImportParams(
@@ -311,6 +345,59 @@ async def test_preview_binds_source_and_normalizes_product_fields(tmp_path: Path
     }
     assert plan.unmatched_columns == ["unused"]
     assert plan.token.token
+    assert mutation.preview_calls[0]["rows"] == [
+        {
+            "number": "A-1",
+            "amount": "$1,234.50",
+            "signed_on": "2026-07-14",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_import_forwards_shared_corpus_raw_values_unchanged(tmp_path: Path) -> None:
+    cases = _field_value_corpus()
+    path = tmp_path / "field-value-corpus.csv"
+    _write_csv(
+        path,
+        [case["field"] for case in cases],
+        [[case["rawValue"] for case in cases]],
+    )
+    profile = _profile()
+    profile.fields.extend(case["field"] for case in cases if case["field"] not in profile.fields)
+    profile.create_fields.extend(
+        case["field"] for case in cases if case["field"] not in profile.create_fields
+    )
+    service, mutation = _service(path, profile=profile)
+
+    await service.preview(
+        PreviewImportParams(
+            grant_id="grant-corpus",
+            collection=profile.collection,
+            schema_revision=profile.schema_revision,
+        )
+    )
+
+    assert mutation.preview_calls[0]["rows"] == [
+        {case["field"]: case["rawValue"] for case in cases}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preview_preserves_explicit_blank_cells_as_supplied(tmp_path: Path) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number", "amount"], [["", ""]])
+    service, _ = _service(path)
+
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1",
+            collection="vibetable_demo",
+            schema_revision="schema-1",
+        )
+    )
+
+    assert plan.rows[0].values == {"number": "", "amount": None}
 
 
 @pytest.mark.asyncio

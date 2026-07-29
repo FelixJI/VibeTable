@@ -317,6 +317,13 @@ func (port *Port) queryRows(
 			}
 			row[name] = decodeFieldValue(value, field)
 		}
+		for name := range descriptor.PresenceFields {
+			alias := presenceAlias(name)
+			if !truthyPresence(row[alias]) {
+				row[name] = nil
+			}
+			delete(row, alias)
+		}
 	}
 	// Provider-neutral/query-compiler tests and virtual sources may not have a
 	// PocketBase record collection. Product descriptors always supply
@@ -338,6 +345,11 @@ func (port *Port) queryRows(
 			return nil, err
 		}
 		digestRow := productrow.FromRecord(descriptor.DigestFields, record)
+		for name, presence := range descriptor.PresenceFields {
+			if !record.GetBool(presence) {
+				digestRow[name] = nil
+			}
+		}
 		for name, field := range descriptor.Fields {
 			if value, exists := digestRow[name]; exists {
 				digestRow[name] = decodeFieldValue(value, field)
@@ -350,6 +362,23 @@ func (port *Port) queryRows(
 		row[productrow.DigestField] = digest
 	}
 	return rows, nil
+}
+
+func truthyPresence(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case int64:
+		return typed != 0
+	case float64:
+		return typed != 0
+	case []byte:
+		return string(typed) == "1" || string(typed) == "true"
+	case string:
+		return typed == "1" || typed == "true"
+	default:
+		return false
+	}
 }
 
 type rowsQuery interface {

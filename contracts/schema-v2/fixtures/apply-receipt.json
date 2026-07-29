@@ -1,0 +1,11 @@
+{
+  "contract": "vibetable.schema.v2",
+  "operationId": "operation_01JABCDEFGH",
+  "planId": "plan_01JABCDEFGH",
+  "action": "update",
+  "tableId": "tbl_orders",
+  "fieldId": "fld_01JABCDE",
+  "schemaRevision": "schema_8",
+  "definition": null,
+  "migrationJobId": ""
+}

@@ -16,7 +16,7 @@ import (
 )
 
 func TestSchemaCatalogValidatesJunctionAndM2AReferences(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	catalog := schemaapi.New(app)
@@ -112,7 +112,7 @@ func TestSchemaCatalogValidatesJunctionAndM2AReferences(t *testing.T) {
 }
 
 func TestJunctionAndM2ADeltaUseMutationKernelAuditReplayAndRollback(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	catalog := schemaapi.New(app)

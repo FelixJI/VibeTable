@@ -41,6 +41,7 @@ describe("SettingsView", () => {
             sha256: "b".repeat(64),
           },
           integrityValid: true,
+          receipt: "vbr1.test-receipt",
         };
       }
       if (type === "dataRoot.get") {

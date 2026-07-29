@@ -1,0 +1,81 @@
+{
+  "contract": "vibetable.schema.v2",
+  "identity": {
+    "fieldId": "fld_01JABCDE",
+    "physicalName": "f_01jabcde",
+    "providerFieldId": "pb_01JABCDE"
+  },
+  "displayName": "金额",
+  "help": "",
+  "logicalType": "number",
+  "lifecycle": {
+    "state": "active",
+    "retiredAt": null
+  },
+  "value": {
+    "required": false,
+    "default": {
+      "enabled": false,
+      "value": null,
+      "source": "recommended",
+      "defaultsVersion": 1
+    },
+    "presence": {
+      "mode": "companion",
+      "providerFieldId": "pb_01JPRESEN",
+      "physicalName": "__vt_has_f_01jabcde"
+    }
+  },
+  "constraints": {
+    "unique": {
+      "enabled": false,
+      "blankPolicy": "ignoreMissing"
+    },
+    "range": {
+      "min": null,
+      "max": null
+    },
+    "length": {
+      "min": null,
+      "max": null
+    },
+    "pattern": {
+      "enabled": false,
+      "value": ""
+    },
+    "domains": {
+      "only": [],
+      "except": []
+    },
+    "selection": {
+      "min": 0,
+      "max": null
+    }
+  },
+  "storage": {
+    "kind": "pocketbase-number",
+    "options": {
+      "onlyInt": false,
+      "maxSize": 0,
+      "convertURLs": false,
+      "presentable": false
+    }
+  },
+  "display": {
+    "kind": "number",
+    "preset": "number",
+    "displayScale": 2,
+    "scaleMode": "max",
+    "trimTrailingZeros": true,
+    "useGrouping": true,
+    "currency": "CNY",
+    "percentStorage": "ratio",
+    "unit": null,
+    "precision": "minute",
+    "timezone": "system",
+    "mode": "default",
+    "indent": 0,
+    "trueLabel": "是",
+    "falseLabel": "否"
+  }
+}

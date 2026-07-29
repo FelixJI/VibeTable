@@ -258,7 +258,10 @@ public sealed class TableWorkspaceService
     /// We never rethrow — the superseding selection drives the next fetch.
     /// </remarks>
     private async Task FetchAsync(
-        string table, int generation, CancellationToken token)
+        string table,
+        int generation,
+        CancellationToken token,
+        int consistencyAttempt = 0)
     {
         TablePage firstPage;
         try
@@ -330,6 +333,26 @@ public sealed class TableWorkspaceService
                 return;
             }
 
+            // Independent page queries can straddle a concurrent mutation.
+            // A datasetReady assembled from different product revisions would
+            // not represent any real snapshot, so restart the whole read. The
+            // renderer treats the retry's offset-zero page as a replacement.
+            if (!HaveSameReadRevision(firstPage, page))
+            {
+                const int maxConsistencyAttempts = 3;
+                if (consistencyAttempt + 1 >= maxConsistencyAttempts)
+                {
+                    throw new InvalidOperationException(
+                        "The table changed repeatedly while loading. Refresh and try again.");
+                }
+                await FetchAsync(
+                    table,
+                    generation,
+                    token,
+                    consistencyAttempt + 1).ConfigureAwait(true);
+                return;
+            }
+
             allRows.AddRange(page.Rows);
             loadedRows += page.Rows.Count;
 
@@ -364,6 +387,18 @@ public sealed class TableWorkspaceService
                 LoadedRows = loadedRows,
             });
         }
+    }
+
+    private static bool HaveSameReadRevision(TablePage first, TablePage next)
+    {
+        // Older/custom gateways may not provide product revisions. Preserve
+        // their historical behaviour when both are absent, but never accept a
+        // partially versioned batch.
+        if (first.Revision is null || next.Revision is null)
+        {
+            return first.Revision is null && next.Revision is null;
+        }
+        return first.Revision == next.Revision;
     }
 
     /// <summary>

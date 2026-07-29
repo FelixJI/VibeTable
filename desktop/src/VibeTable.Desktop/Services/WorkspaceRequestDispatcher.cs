@@ -744,18 +744,97 @@ public sealed class WorkspaceRequestDispatcher
         => TryGetString(payload, "table") ?? TryGetString(payload, "collection");
 
     // -------------------------------------------------------------------
-    // Table creation uses the renderer-facing schema.validate/schema.apply
-    // product endpoints directly. The legacy notification remains closed and
-    // fails explicitly so an old renderer cannot bypass normalized schema.
+    // Table creation is one host-owned intent. Generic schema validation and
+    // apply methods are deliberately not exposed to the renderer.
     // -------------------------------------------------------------------
 
     private async Task OnCreateTableRequestedAsync(RoutedWebRequest request)
     {
-        await Task.CompletedTask.ConfigureAwait(false);
-        _reply.PostOperationFailed(
-            request.RequestId,
-            "请刷新界面后通过结构验证流程创建数据表。",
-            code: "SCHEMA_CONTRACT_REQUIRED");
+        string? displayName = TryGetString(request.Payload, "displayName")?.Trim();
+        if (string.IsNullOrWhiteSpace(displayName)
+            || displayName.Length > 128
+            || displayName.Any(char.IsControl))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "创建数据表的请求无效。",
+                code: "BAD_PAYLOAD");
+            return;
+        }
+        IProductDataRpcGateway? gateway = Volatile.Read(ref _productDataGateway);
+        if (gateway is null)
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "本地数据服务尚未就绪。",
+                code: "BACKEND_UNAVAILABLE");
+            return;
+        }
+        try
+        {
+            string opaque = Guid.NewGuid().ToString("N")[..20];
+            JsonElement definition = JsonSerializer.SerializeToElement(new
+            {
+                contractVersion = "1.0",
+                tableId = "tbl_" + opaque,
+                physicalName = "t_" + opaque,
+                displayName,
+                kind = "base",
+                schemaRevision = "schema_0000",
+                archivePolicy = new
+                {
+                    mode = "none",
+                    fieldId = (string?)null,
+                    archivedValue = (object?)null,
+                },
+                fields = Array.Empty<object>(),
+                indexes = Array.Empty<object>(),
+            });
+            const int expectedRevision = 0;
+            JsonElement change = JsonSerializer.SerializeToElement(new
+            {
+                definition,
+                expectedRevision,
+            });
+            JsonElement validation = await gateway.ValidateSchemaAsync(
+                change,
+                CancellationToken.None).ConfigureAwait(false);
+            if (validation.ValueKind == JsonValueKind.Object
+                && validation.TryGetProperty("error", out JsonElement validationError)
+                && validationError.ValueKind != JsonValueKind.Null)
+            {
+                throw new InvalidOperationException(
+                    "Schema validation rejected the table definition.");
+            }
+            JsonElement normalized = validation.ValueKind == JsonValueKind.Object
+                && validation.TryGetProperty("definition", out JsonElement validated)
+                && validated.ValueKind == JsonValueKind.Object
+                    ? validated
+                    : definition;
+            JsonElement applied = await gateway.ApplySchemaAsync(
+                JsonSerializer.SerializeToElement(new
+                {
+                    definition = normalized,
+                    expectedRevision,
+                }),
+                CancellationToken.None).ConfigureAwait(false);
+            if (applied.ValueKind == JsonValueKind.Object
+                && applied.TryGetProperty("error", out JsonElement applyError)
+                && applyError.ValueKind != JsonValueKind.Null)
+            {
+                throw new InvalidOperationException(
+                    "Schema apply rejected the table definition.");
+            }
+            await RefreshCollectionListAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Create table failed: {ex}");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "创建数据表失败。",
+                code: "SCHEMA_APPLY_FAILED");
+        }
     }
 
     private async Task OnDeleteTableRequestedAsync(RoutedWebRequest request)
@@ -1268,7 +1347,8 @@ public sealed class WorkspaceRequestDispatcher
                             request.Payload,
                             CancellationToken.None).ConfigureAwait(false);
             _reply.PostResponse(request.Type, request.RequestId, result);
-            if (string.Equals(request.Type, "schema.apply", StringComparison.Ordinal))
+            if (string.Equals(request.Type, "schema.apply", StringComparison.Ordinal)
+                || string.Equals(request.Type, "field.change.apply", StringComparison.Ordinal))
             {
                 await RefreshCollectionListAsync().ConfigureAwait(false);
             }

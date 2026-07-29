@@ -257,6 +257,12 @@ def _register_pocketbase_product_methods(
 
     register_pocketbase_product_errors()
     methods = {
+        "field.settings.describe": service.describe_field_settings,
+        "field.change.plan": service.plan_field_change,
+        "field.change.apply": service.apply_field_change,
+        "field.change.status": service.field_change_status,
+        "field.change.cancel": service.cancel_field_change,
+        "field.recycleBin.list": service.list_recycled_fields,
         "schema.validate": service.validate_schema,
         "schema.apply": service.apply_schema,
         "schema.delete": service.delete_schema,
@@ -282,13 +288,8 @@ def _register_pocketbase_product_methods(
         "relation.updateSingle": service.update_single_relation,
         "relation.previewDelta": service.preview_relation_delta,
         "relation.applyDelta": service.apply_relation_delta,
-        "table_admin.previewRelationChange": service.preview_relation_change,
-        "table_admin.applyRelationChange": service.apply_relation_change,
         "lookup.list": service.list_lookups,
         "lookup.validate": service.validate_lookup,
-        "lookup.create": service.create_lookup,
-        "lookup.update": service.update_lookup,
-        "lookup.delete": service.delete_lookup,
         "lookup.preview": service.preview_lookup,
         "lookup.query": service.query_lookups,
     }

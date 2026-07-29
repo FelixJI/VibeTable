@@ -52,6 +52,12 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public List<ReadCall> ReadTablePageCalls { get; } = new();
 
     /// <summary>
+    /// Optional scripted read used by consistency/retry tests. The fourth
+    /// argument is the 1-based total read call count.
+    /// </summary>
+    public Func<string, int, int, int, TablePage>? ReadTablePageOverride { get; set; }
+
+    /// <summary>
     /// When set, <see cref="ListTablesAsync"/> returns this instead of falling
     /// back to the first <see cref="DatabaseOpenResults"/> entry. Lets tests
     /// control the refresh result independently of the open result.
@@ -114,6 +120,12 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
         if (token.IsCancellationRequested)
         {
             throw new OperationCanceledException(token);
+        }
+
+        if (ReadTablePageOverride is not null)
+        {
+            return ReadTablePageOverride(
+                table, offset, limit, ReadTablePageCalls.Count);
         }
 
         if (!TablePages.TryGetValue(table, out var pages))

@@ -191,6 +191,32 @@ describe("GridHost history selection", () => {
 
   });
 
+  it("routes a column-header context menu to field settings without selecting a row", async () => {
+    const wrapper = mount(GridHost);
+    const header = document.createElement("div");
+    header.className = "tabulator-col";
+    header.dataset.field = "status";
+    const title = document.createElement("span");
+    title.textContent = "Status";
+    header.append(title);
+    wrapper.get(".tabulator-mount").element.append(header);
+
+    title.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 32,
+      clientY: 48,
+    }));
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted("columnContext")?.[0]).toEqual([{
+      field: "status",
+      x: 32,
+      y: 48,
+    }]);
+    expect(wrapper.emitted("rowContext")).toBeUndefined();
+  });
+
   it("does not collapse an active multi-cell range back to a single click", async () => {
     const rowElements = [document.createElement("div"), document.createElement("div")];
     const cells = rowElements.map((rowElement) => {

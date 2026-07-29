@@ -57,6 +57,10 @@ DEV_SKIP_FLAGS = (
 )
 
 
+def release_package_name(version: str) -> str:
+    return f"VibeTable.Next-v{version}-win-x64"
+
+
 class BuildError(RuntimeError):
     """A release stage failed before the atomic publish swap."""
 
@@ -72,6 +76,8 @@ class RepoPaths:
     staging_root: Path
     scratch_root: Path
     publish_root: Path
+    resources_dir: Path = field(init=False)
+    logs_dir: Path = field(init=False)
     host_exe: Path = field(init=False)
     backend_dir: Path = field(init=False)
     web_grid_publish_dir: Path = field(init=False)
@@ -82,22 +88,27 @@ class RepoPaths:
     sidecar_sbom: Path = field(init=False)
     sidecar_licenses: Path = field(init=False)
     manifest_path: Path = field(init=False)
+    release_manifest: Path = field(init=False)
 
     def __post_init__(self) -> None:
+        self.resources_dir = self.publish_root / "resources"
+        self.logs_dir = self.publish_root / "logs"
         self.host_exe = self.publish_root / HOST_EXE_NAME
-        self.backend_dir = self.publish_root / "backend"
-        self.web_grid_publish_dir = self.publish_root / "web-grid"
-        self.sidecar_assets_dir = self.publish_root / "sidecar"
+        self.backend_dir = self.resources_dir / "backend"
+        self.web_grid_publish_dir = self.resources_dir / "web-grid"
+        self.sidecar_assets_dir = self.resources_dir / "sidecar"
         self.sidecar_binary = self.sidecar_assets_dir / SIDECAR_EXE_NAME
         self.sidecar_checksum = self.sidecar_assets_dir / f"{SIDECAR_EXE_NAME}.sha256"
         self.sidecar_build_info = self.sidecar_assets_dir / "build-info.json"
         self.sidecar_sbom = self.sidecar_assets_dir / "sbom.cdx.json"
         self.sidecar_licenses = self.sidecar_assets_dir / "THIRD_PARTY_LICENSES.txt"
-        self.manifest_path = self.publish_root / "publish-layout.json"
+        self.manifest_path = self.resources_dir / "publish-layout.json"
+        self.release_manifest = self.publish_root / "release.json"
 
     @classmethod
     def default(cls, repo_root: Path) -> RepoPaths:
         root = repo_root.resolve()
+        package_name = release_package_name(read_project_version(root))
         return cls(
             repo_root=root,
             web_grid_dir=root / "desktop" / "web-grid",
@@ -111,9 +122,9 @@ class RepoPaths:
             # Windows but `os.replace(staging, publish)` may then be rejected
             # with WinError 5. A regular sibling name preserves the same
             # atomic same-volume swap without that platform-specific trap.
-            staging_root=root / "dist" / "VibeTable.Next.staging",
+            staging_root=root / "dist" / f"{package_name}.staging",
             scratch_root=root / "build" / "next-scratch",
-            publish_root=root / "dist" / "VibeTable.Next",
+            publish_root=root / "dist" / package_name,
         )
 
     def staging_mirror(self) -> RepoPaths:
@@ -159,18 +170,27 @@ def build_npm_build_command(_paths: RepoPaths) -> list[str]:
 
 
 def build_dotnet_publish_command(
-    paths: RepoPaths, output_dir: str | os.PathLike[str] | None = None
+    paths: RepoPaths,
+    output_dir: str | os.PathLike[str] | None = None,
+    *,
+    project: Path | None = None,
 ) -> list[str]:
     command = [
         "dotnet",
         "publish",
-        str(paths.desktop_csproj),
+        str(project or paths.desktop_csproj),
         "--configuration",
         "Release",
         "--runtime",
         "win-x64",
         "--self-contained",
         "true",
+        "-p:PublishSingleFile=true",
+        "-p:IncludeNativeLibrariesForSelfExtract=true",
+        "-p:EnableCompressionInSingleFile=true",
+        "-p:DebugType=None",
+        "-p:DebugSymbols=false",
+        "-p:SatelliteResourceLanguages=en-US",
     ]
     if output_dir is not None:
         command.extend(["--output", os.fsdecode(Path(output_dir))])
@@ -275,24 +295,33 @@ def render_manifest(
         "webGrid": {"tabulator": TABULATOR_VERSION},
         "launch": {
             "host": HOST_EXE_NAME,
-            "backend": f"backend/{BACKEND_EXE_NAME}",
-            "webGrid": "web-grid",
-            "sidecar": f"sidecar/{SIDECAR_EXE_NAME}",
+            "backend": f"resources/backend/{BACKEND_EXE_NAME}",
+            "webGrid": "resources/web-grid",
+            "sidecar": f"resources/sidecar/{SIDECAR_EXE_NAME}",
+            "previewHost": HOST_EXE_NAME,
         },
         "assets": {
-            "migrations": "sidecar/migrations/manifest.json",
-            "buildInfo": "sidecar/build-info.json",
-            "sidecarChecksum": f"sidecar/{SIDECAR_EXE_NAME}.sha256",
-            "licenses": "sidecar/THIRD_PARTY_LICENSES.txt",
-            "sbom": "sidecar/sbom.cdx.json",
+            "migrations": "resources/sidecar/migrations/manifest.json",
+            "buildInfo": "resources/sidecar/build-info.json",
+            "sidecarChecksum": f"resources/sidecar/{SIDECAR_EXE_NAME}.sha256",
+            "licenses": "resources/sidecar/THIRD_PARTY_LICENSES.txt",
+            "sbom": "resources/sidecar/sbom.cdx.json",
         },
         "data": {
-            "rootPolicy": "first-run-selected",
-            "defaultBase": "program-directory",
+            "rootPolicy": "automatic-documents",
+            "defaultBase": "user-documents",
             "fallbackBase": "per-user-local-app-data",
             "relativePath": "VibeTableData",
             "backupRelativePath": "backups",
             "preserveOnUninstall": True,
+        },
+        "writable": {
+            "cacheBase": "per-user-local-app-data",
+            "cacheRelativePath": "VibeTable/cache",
+            "runtimeBase": "per-user-local-app-data",
+            "runtimeRelativePath": "VibeTable/runtime",
+            "logsBase": "program-directory",
+            "logsRelativePath": "logs",
         },
     }
     return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
@@ -302,6 +331,31 @@ def write_manifest(paths: RepoPaths) -> Path:
     paths.manifest_path.parent.mkdir(parents=True, exist_ok=True)
     paths.manifest_path.write_text(render_manifest(paths), encoding="utf-8")
     return paths.manifest_path
+
+
+def render_release_manifest(paths: RepoPaths) -> str:
+    return (
+        json.dumps(
+            {
+                "product": "VibeTable.Next",
+                "version": read_project_version(paths.repo_root),
+                "platform": "windows",
+                "architecture": "x64",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def write_release_manifest(paths: RepoPaths) -> Path:
+    paths.release_manifest.parent.mkdir(parents=True, exist_ok=True)
+    paths.release_manifest.write_text(
+        render_release_manifest(paths),
+        encoding="utf-8",
+    )
+    return paths.release_manifest
 
 
 _LICENSE_FILE_PREFIXES = ("license", "copying", "notice")
@@ -680,12 +734,8 @@ def _build_desktop(paths: RepoPaths, *, skip: bool) -> None:
     source = output / f"{assembly}.exe"
     if not source.is_file():
         raise BuildError("desktop publish output is missing")
-    for item in output.iterdir():
-        destination = paths.publish_root / (HOST_EXE_NAME if item == source else item.name)
-        if item.is_dir():
-            shutil.copytree(item, destination)
-        else:
-            shutil.copy2(item, destination)
+    paths.host_exe.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, paths.host_exe)
 
 
 def _atomic_swap(staging: Path, publish: Path) -> None:
@@ -767,7 +817,9 @@ def run_build(paths: RepoPaths, args: argparse.Namespace) -> int:
     _build_desktop(stage, skip=args.skip_desktop)
     if not args.skip_sidecar:
         verify_sidecar_package(stage)
+    stage.logs_dir.mkdir(parents=True, exist_ok=True)
     write_manifest(stage)
+    write_release_manifest(stage)
     _atomic_swap(paths.staging_root, paths.publish_root)
     if not args.keep_staging:
         shutil.rmtree(paths.scratch_root, ignore_errors=True)

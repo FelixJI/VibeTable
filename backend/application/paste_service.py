@@ -23,10 +23,10 @@ import asyncio
 import hashlib
 import hmac
 import json
+import re
 import secrets as pysecrets
 import time
 from collections.abc import Callable
-from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
 from backend.contracts.data_profile import CollectionProfile
@@ -78,6 +78,7 @@ class _StoredPlan:
         "idempotency_key",
         "payload_hash",
         "project",
+        "raw_rows",
         "row_revisions",
         "rows",
         "schema_revision",
@@ -96,6 +97,7 @@ class _StoredPlan:
         rows: list[PastePlanRow],
         row_revisions: dict[str | int, str],
         expires_at: float,
+        raw_rows: list[dict[str, Any]] | None = None,
     ) -> None:
         self.user_id = user_id
         self.project = project
@@ -105,6 +107,7 @@ class _StoredPlan:
         self.payload_hash = payload_hash
         self.rows = rows
         self.row_revisions = row_revisions
+        self.raw_rows = list(raw_rows or [{} for _ in rows])
         self.expires_at = expires_at
         self.consumed = False
         self.idempotency_key: str | None = None
@@ -168,6 +171,26 @@ class PasteTokenStore:
 
 
 class PasteMutationPort(Protocol):
+    async def preview_import(
+        self,
+        *,
+        collection: str,
+        schema_revision: str,
+        rows: list[dict[str, Any]],
+        row_modes: list[str] | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def preview_paste(
+        self,
+        *,
+        collection: str,
+        profile: CollectionProfile,
+        rows: list[PastePlanRow],
+        raw_rows: list[dict[str, Any]],
+        row_revisions: dict[str | int, str],
+        schema_revision: str,
+    ) -> None: ...
+
     async def apply(
         self,
         *,
@@ -177,6 +200,7 @@ class PasteMutationPort(Protocol):
         row_revisions: dict[str | int, str],
         idempotency_key: str,
         schema_revision: str | None = None,
+        raw_rows: list[dict[str, Any]] | None = None,
     ) -> ApplyPasteResult: ...
 
 
@@ -189,8 +213,6 @@ class PasteAuthPort(Protocol):
 
 
 class PasteReadPort(Protocol):
-    async def fields(self, profile: CollectionProfile) -> list[dict[str, Any]]: ...
-
     async def readonly_fields(
         self,
         profile: CollectionProfile,
@@ -254,20 +276,22 @@ class PasteService:
                 data={"maxCells": MAX_PASTE_CELLS, "cellCount": total_cells},
             )
         user = await self._auth.current_user()
-        # Fetch the collection's fields once and reuse the same
-        # payload to build the numeric scale/precision map for paste validation.
-        fields_payload = await self._client.fields(profile)
         readonly = await self._client.readonly_fields(profile, refresh=False)
         editable_columns, readonly_columns = self._column_layout(profile, readonly)
         anchor_column_index = _anchor_column_index(params.start_cell, editable_columns)
-        column_schema = _numeric_column_schema(profile, fields_payload)
-        plan_rows, row_revisions = await self._resolve_plan(
+        plan_rows, row_revisions, coordinates = await self._resolve_plan(
             profile=profile,
             params=params,
             editable_columns=editable_columns,
             readonly_columns=readonly_columns,
             anchor_column_index=anchor_column_index,
-            column_schema=column_schema,
+        )
+        raw_rows = await self._apply_authoritative_preview(
+            profile=profile,
+            schema_revision=params.schema_revision,
+            rows=plan_rows,
+            coordinates=coordinates,
+            row_revisions=row_revisions,
         )
         payload_hash = _payload_hash(params.cells)
         expires_at = self._tokens.now + self._tokens.ttl_seconds
@@ -281,6 +305,7 @@ class PasteService:
             rows=plan_rows,
             row_revisions=row_revisions,
             expires_at=expires_at,
+            raw_rows=raw_rows,
         )
         token = self._tokens.mint(stored)
         summary = _summarize(plan_rows)
@@ -323,6 +348,13 @@ class PasteService:
                 "paste token is bound to a different idempotency key",
                 code="paste_idempotency_mismatch",
             )
+        if any(
+            diagnostic.severity == "error" for row in stored.rows for diagnostic in row.diagnostics
+        ):
+            raise PasteError(
+                "paste plan contains validation errors",
+                code="paste_plan_invalid",
+            )
         create_fields = {
             name for row in stored.rows if row.kind == "insert" for name in row.changes
         }
@@ -358,6 +390,7 @@ class PasteService:
             row_revisions=stored.row_revisions,
             idempotency_key=params.idempotency_key,
             schema_revision=stored.schema_revision,
+            raw_rows=stored.raw_rows,
         )
         if result.outcome == "committed":
             self._tokens.consume(stored)
@@ -397,12 +430,16 @@ class PasteService:
         editable_columns: list[str],
         readonly_columns: list[str],
         anchor_column_index: int,
-        column_schema: dict[str, tuple[str | None, int | None, int | None]] | None = None,
-    ) -> tuple[list[PastePlanRow], dict[str | int, str]]:
+    ) -> tuple[
+        list[PastePlanRow],
+        dict[str | int, str],
+        list[dict[str, tuple[int, int]]],
+    ]:
         row_keys = _selection_row_keys(params.selection)
         start_row = _selection_anchor_index(row_keys, params.start_cell)
         plan_rows: list[PastePlanRow] = []
         row_revisions: dict[str | int, str] = {}
+        coordinates: list[dict[str, tuple[int, int]]] = []
         for offset, cell_row in enumerate(params.cells):
             target_index = start_row + offset
             kind, target_key = _classify_row(
@@ -425,6 +462,7 @@ class PasteService:
                         ],
                     )
                 )
+                coordinates.append({})
                 continue
             if kind == "update" and target_key is not None:
                 current = await self._client.read_item(profile, str(target_key))
@@ -434,13 +472,12 @@ class PasteService:
                 ) or current.get("__vibetableDigest")
                 if isinstance(guard_value, str) and guard_value:
                     row_revisions[target_key] = guard_value
-                changes, diagnostics = self._build_changes(
+                changes, diagnostics, row_coordinates = self._build_changes(
                     cell_row=cell_row,
                     editable_columns=editable_columns,
                     readonly_columns=readonly_columns,
                     anchor_column_index=anchor_column_index,
                     current_row=current,
-                    column_schema=column_schema,
                 )
                 plan_rows.append(
                     PastePlanRow(
@@ -451,14 +488,14 @@ class PasteService:
                         diagnostics=diagnostics,
                     )
                 )
+                coordinates.append(row_coordinates)
             else:
-                changes, diagnostics = self._build_changes(
+                changes, diagnostics, row_coordinates = self._build_changes(
                     cell_row=cell_row,
                     editable_columns=editable_columns,
                     readonly_columns=readonly_columns,
                     anchor_column_index=anchor_column_index,
                     current_row={},
-                    column_schema=column_schema,
                 )
                 plan_rows.append(
                     PastePlanRow(
@@ -467,7 +504,145 @@ class PasteService:
                         diagnostics=diagnostics,
                     )
                 )
-        return plan_rows, row_revisions
+                coordinates.append(row_coordinates)
+        return plan_rows, row_revisions, coordinates
+
+    async def _apply_authoritative_preview(
+        self,
+        *,
+        profile: CollectionProfile,
+        schema_revision: str,
+        rows: list[PastePlanRow],
+        coordinates: list[dict[str, tuple[int, int]]],
+        row_revisions: dict[str | int, str],
+    ) -> list[dict[str, Any]]:
+        raw_rows = [
+            {field: change["after"] for field, change in row.changes.items() if "after" in change}
+            for row in rows
+        ]
+        writable = [
+            (index, row) for index, row in enumerate(rows) if row.kind in {"insert", "update"}
+        ]
+        if not writable:
+            return raw_rows
+        authoritative = await self._bulk.preview_import(
+            collection=profile.collection,
+            schema_revision=schema_revision,
+            rows=[raw_rows[index] for index, _ in writable],
+            row_modes=[row.kind for _, row in writable],
+        )
+        normalized_rows = authoritative.get("rows")
+        if not isinstance(normalized_rows, list) or len(normalized_rows) != len(writable):
+            raise PasteError(
+                "invalid authoritative paste preview",
+                code="paste_preview_invalid",
+            )
+        for authoritative_index, raw_result in enumerate(normalized_rows):
+            if not isinstance(raw_result, dict):
+                raise PasteError(
+                    "invalid authoritative paste preview row",
+                    code="paste_preview_invalid",
+                )
+            normalized = raw_result.get("values")
+            diagnostics = raw_result.get("diagnostics")
+            if not isinstance(normalized, dict) or not isinstance(diagnostics, list):
+                raise PasteError(
+                    "invalid authoritative paste preview row",
+                    code="paste_preview_invalid",
+                )
+            plan_index, row = writable[authoritative_index]
+            for field, normalized_value in normalized.items():
+                change = row.changes.get(field)
+                if change is not None:
+                    change["after"] = normalized_value
+            for raw_diagnostic in diagnostics:
+                if not isinstance(raw_diagnostic, dict):
+                    raise PasteError(
+                        "invalid authoritative paste diagnostic",
+                        code="paste_preview_invalid",
+                    )
+                raw_field = raw_diagnostic.get("field")
+                field = raw_field if isinstance(raw_field, str) else ""
+                source_row, source_column = _diagnostic_coordinate(
+                    profile=profile,
+                    coordinates=coordinates,
+                    plan_index=plan_index,
+                    field=field,
+                )
+                row.diagnostics.append(
+                    PasteCellDiagnostic(
+                        row_index=source_row,
+                        column_index=source_column,
+                        severity="error",
+                        code=str(raw_diagnostic.get("code") or "field.value.invalid"),
+                        message=str(raw_diagnostic.get("message") or "invalid field value"),
+                    )
+                )
+        for plan_index, row in writable:
+            if row.kind != "update":
+                continue
+            unchanged = [
+                field
+                for field, change in row.changes.items()
+                if change.get("before") == change.get("after")
+            ]
+            for field in unchanged:
+                row.changes.pop(field, None)
+                raw_rows[plan_index].pop(field, None)
+
+        preview_targets = [
+            (plan_index, row)
+            for plan_index, row in writable
+            if row.changes
+            and not any(diagnostic.severity == "error" for diagnostic in row.diagnostics)
+        ]
+        if not preview_targets:
+            return raw_rows
+        try:
+            await self._bulk.preview_paste(
+                collection=profile.collection,
+                profile=profile,
+                rows=[row for _, row in preview_targets],
+                raw_rows=[raw_rows[index] for index, _ in preview_targets],
+                row_revisions=row_revisions,
+                schema_revision=schema_revision,
+            )
+        except PasteError as error:
+            path = (error.data or {}).get("path")
+            match = (
+                re.match(
+                    r"^operations\[(\d+)\]\.rawValues\.([^.]+)",
+                    path,
+                )
+                if isinstance(path, str)
+                else None
+            )
+            if match is None:
+                raise
+            operation_index = int(match.group(1))
+            if operation_index >= len(preview_targets):
+                raise PasteError(
+                    "invalid authoritative mutation preview path",
+                    code="paste_preview_invalid",
+                ) from error
+            field = match.group(2)
+            plan_index, row = preview_targets[operation_index]
+            source_row, source_column = _diagnostic_coordinate(
+                profile=profile,
+                coordinates=coordinates,
+                plan_index=plan_index,
+                field=field,
+            )
+            row.diagnostics.append(
+                PasteCellDiagnostic(
+                    row_index=source_row,
+                    column_index=source_column,
+                    severity="error",
+                    code=error.code,
+                    message=str(error),
+                )
+            )
+        return raw_rows
 
     def _build_changes(
         self,
@@ -477,10 +652,14 @@ class PasteService:
         readonly_columns: list[str],
         anchor_column_index: int,
         current_row: dict[str, Any],
-        column_schema: dict[str, tuple[str | None, int | None, int | None]] | None = None,
-    ) -> tuple[dict[str, dict[str, Any]], list[PasteCellDiagnostic]]:
+    ) -> tuple[
+        dict[str, dict[str, Any]],
+        list[PasteCellDiagnostic],
+        dict[str, tuple[int, int]],
+    ]:
         changes: dict[str, dict[str, Any]] = {}
         diagnostics: list[PasteCellDiagnostic] = []
+        coordinates: dict[str, tuple[int, int]] = {}
         for cell in cell_row:
             resolved_index = anchor_column_index + cell.column_index
             if cell.column is not None:
@@ -520,138 +699,20 @@ class PasteService:
                     )
                 continue
             before = current_row.get(column)
-            after, coercion_error = _coerce_paste_value(
-                column,
-                cell.parsed_value,
-                column_schema,
-            )
-            if coercion_error is not None:
-                diagnostics.append(
-                    PasteCellDiagnostic(
-                        row_index=cell.row_index,
-                        column_index=cell.column_index,
-                        severity="error",
-                        code="invalid_json",
-                        message=coercion_error,
-                    )
-                )
-                continue
+            # Clipboard/file adapters own coordinates, not field semantics.
+            # Preserve the exact raw cell and let MutationKernel route it
+            # through FieldValueKernel.NormalizeRawInput.
+            after = cell.raw_value
             if before == after:
                 continue
-            # Numeric scale/precision guard: flag values the DB would silently
-            # truncate. The cell is excluded from the change set so the bulk
-            # write never sees it; the preview surfaces the diagnostic.
-            scale_error = _check_numeric_scale(column, after, column_schema)
-            if scale_error is not None:
-                diagnostics.append(
-                    PasteCellDiagnostic(
-                        row_index=cell.row_index,
-                        column_index=cell.column_index,
-                        severity="error",
-                        code="value_out_of_scale",
-                        message=scale_error,
-                    )
-                )
-                continue
             changes[column] = {"before": before, "after": after}
-        return changes, diagnostics
+            coordinates[column] = (cell.row_index, cell.column_index)
+        return changes, diagnostics, coordinates
 
 
 # ---------------------------------------------------------------------------
 # Module-level helpers (pure functions, easy to unit test)
 # ---------------------------------------------------------------------------
-
-
-def _numeric_column_schema(
-    profile: CollectionProfile,
-    fields_payload: list[dict[str, Any]],
-) -> dict[str, tuple[str | None, int | None, int | None]]:
-    """Project field metadata to ``{column: (data_type, scale, precision)}``.
-
-    Used by the paste preview to flag values that exceed a column's declared
-    scale/precision before they reach the bulk-write endpoint. Only the numeric
-    metadata is needed, so the columns are projected down to a tuple.
-
-    Best-effort: any failure to build the schema degrades to an empty map so
-    paste still proceeds — the database remains the final authority on column
-    bounds.
-    """
-    result: dict[str, tuple[str | None, int | None, int | None]] = {}
-    for item in fields_payload:
-        name = item.get("field") or item.get("name")
-        if not isinstance(name, str) or name not in profile.fields:
-            continue
-        raw_schema = item.get("schema")
-        schema: dict[str, Any] = raw_schema if isinstance(raw_schema, dict) else item
-        result[name] = (
-            schema.get("data_type") if isinstance(schema.get("data_type"), str) else None,
-            schema.get("numeric_scale") if isinstance(schema.get("numeric_scale"), int) else None,
-            (
-                schema.get("numeric_precision")
-                if isinstance(schema.get("numeric_precision"), int)
-                else None
-            ),
-        )
-    return result
-
-
-def _check_numeric_scale(
-    column: str,
-    value: Any,
-    column_schema: dict[str, tuple[str | None, int | None, int | None]] | None,
-) -> str | None:
-    """Return an error message if ``value`` exceeds the column's scale/precision.
-
-    When ``column_schema`` is missing the column
-    is treated as untyped (no-op), preserving backward compatibility.
-    """
-    if not column_schema:
-        return None
-    meta = column_schema.get(column)
-    if meta is None:
-        return None
-    data_type, scale, precision = meta
-    if value is None or data_type not in {"decimal", "numeric"}:
-        return None
-    try:
-        decimal = Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return f"{column} must be numeric"
-    sign, digits, exponent = decimal.as_tuple()
-    del sign
-    if not isinstance(exponent, int):
-        return f"{column} must be finite"
-    fractional = max(-exponent, 0)
-    integral = max(len(digits) + exponent, 0)
-    if scale is not None and fractional > scale:
-        return f"{column} exceeds scale {scale}"
-    if precision is not None and integral + fractional > precision:
-        return f"{column} exceeds precision {precision}"
-    return None
-
-
-def _coerce_paste_value(
-    column: str,
-    value: Any,
-    column_schema: dict[str, tuple[str | None, int | None, int | None]] | None,
-) -> tuple[Any, str | None]:
-    """Coerce structured wire values before the authoritative paste preview."""
-    if not column_schema:
-        return value, None
-    meta = column_schema.get(column)
-    if meta is None:
-        return value, None
-    data_type = meta[0]
-    if data_type not in {"json", "geoJson", "list"}:
-        return value, None
-    if value is None or value == "":
-        return None, None
-    if isinstance(value, (dict, list, int, float, bool)):
-        return value, None
-    try:
-        return json.loads(str(value)), None
-    except (json.JSONDecodeError, TypeError):
-        return None, f"{column} must contain valid JSON"
 
 
 def _selection_row_keys(selection: Any) -> list[str | int]:
@@ -714,10 +775,36 @@ def _payload_hash(cells: list[list[PasteCell]]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _diagnostic_coordinate(
+    *,
+    profile: CollectionProfile,
+    coordinates: list[dict[str, tuple[int, int]]],
+    plan_index: int,
+    field: str,
+) -> tuple[int, int]:
+    """Resolve kernel field IDs back to clipboard coordinates."""
+    row_coordinates = coordinates[plan_index]
+    direct = row_coordinates.get(field)
+    if direct is not None:
+        return direct
+    for physical_name, schema in profile.field_schemas.items():
+        if schema.get("fieldId") == field:
+            resolved = row_coordinates.get(physical_name)
+            if resolved is not None:
+                return resolved
+            break
+    if row_coordinates:
+        source_row = min(row for row, _ in row_coordinates.values())
+        return source_row, 0
+    return plan_index, 0
+
+
 def _summarize(rows: list[PastePlanRow]) -> PasteSummary:
-    update_rows = sum(1 for row in rows if row.kind == "update")
+    update_rows = sum(1 for row in rows if row.kind == "update" and row.changes)
     insert_rows = sum(1 for row in rows if row.kind == "insert")
-    skip_rows = sum(1 for row in rows if row.kind == "skip")
+    skip_rows = sum(
+        1 for row in rows if row.kind == "skip" or (row.kind == "update" and not row.changes)
+    )
     error_count = sum(len([d for d in row.diagnostics if d.severity == "error"]) for row in rows)
     warning_count = sum(
         len([d for d in row.diagnostics if d.severity == "warning"]) for row in rows

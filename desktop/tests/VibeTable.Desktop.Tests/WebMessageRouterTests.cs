@@ -356,7 +356,7 @@ public sealed class WebMessageRouterTests
         // out-of-whitelist).
         foreach (var (type, payload) in new[]
         {
-            ("tableAdmin.createRequested", """{"name":"t","fields":[]}"""),
+            ("tableAdmin.createRequested", """{"displayName":"t"}"""),
             ("tableAdmin.deleteRequested", """{"collection":"t"}""")
         })
         {

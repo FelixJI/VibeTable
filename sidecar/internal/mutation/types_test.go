@@ -64,3 +64,39 @@ func TestMutationRequestRejectsUnknownFieldsAndOperationShapes(t *testing.T) {
 		}
 	}
 }
+
+func TestMutationOperationAcceptsOptionalRawValuesAndRoundTripsThem(t *testing.T) {
+	raw := []byte(`{
+		"kind":"update","recordId":"rec","values":{},
+		"rawValues":{"amount":"$1,234.50","approved":"否"}
+	}`)
+	var operation mutation.Operation
+	if err := mutation.DecodeStrict(raw, &operation); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(operation.RawValues, map[string]any{
+		"amount": "$1,234.50", "approved": "否",
+	}) {
+		t.Fatalf("raw values = %#v", operation.RawValues)
+	}
+	encoded, err := json.Marshal(operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after any
+	_ = json.Unmarshal(raw, &before)
+	_ = json.Unmarshal(encoded, &after)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("semantic roundtrip changed\nbefore=%s\nafter=%s", raw, encoded)
+	}
+}
+
+func TestMutationOperationRejectsExplicitNullRawValues(t *testing.T) {
+	raw := []byte(`{
+		"kind":"insert","recordId":null,"values":{},"rawValues":null
+	}`)
+	var operation mutation.Operation
+	if err := mutation.DecodeStrict(raw, &operation); err == nil {
+		t.Fatal("explicit null rawValues decoded")
+	}
+}

@@ -14,11 +14,6 @@ public interface IRelationLookupRpcGateway
     Task<JsonElement> ApplyRelationDeltaAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ListLookupsAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ValidateLookupAsync(JsonElement parameters, CancellationToken token);
-    Task<JsonElement> CreateLookupAsync(JsonElement parameters, CancellationToken token);
-    Task<JsonElement> UpdateLookupAsync(JsonElement parameters, CancellationToken token);
-    Task<JsonElement> DeleteLookupAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> PreviewLookupAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> QueryLookupsAsync(JsonElement parameters, CancellationToken token);
-    Task<JsonElement> PreviewRelationChangeAsync(JsonElement parameters, CancellationToken token);
-    Task<JsonElement> ApplyRelationChangeAsync(JsonElement parameters, CancellationToken token);
 }

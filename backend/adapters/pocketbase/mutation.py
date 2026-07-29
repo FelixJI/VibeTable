@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets as pysecrets
 from typing import Any, Protocol
 
 from backend.adapters.pocketbase.client import PocketBaseClient, PocketBaseProductError
@@ -26,6 +27,67 @@ class PocketBaseBulkMutationClient:
         self._client = client
         self._auth = auth
 
+    async def preview_import(
+        self,
+        *,
+        collection: str,
+        schema_revision: str,
+        rows: list[dict[str, Any]],
+        row_modes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        modes = row_modes or ["insert"] * len(rows)
+        if len(modes) != len(rows):
+            raise ValueError("row_modes must align with rows")
+        return await self._client.preview_import(
+            {
+                "contract": "vibetable.import-preview.v1",
+                "tableId": collection,
+                "schemaRevision": schema_revision,
+                "rows": [
+                    {"values": row, "mode": mode} for row, mode in zip(rows, modes, strict=True)
+                ],
+            }
+        )
+
+    async def preview_paste(
+        self,
+        *,
+        collection: str,
+        profile: CollectionProfile,
+        rows: list[PastePlanRow],
+        raw_rows: list[dict[str, Any]],
+        row_revisions: dict[str | int, str],
+        schema_revision: str,
+    ) -> None:
+        operations = _operations(rows, row_revisions, raw_rows=raw_rows)
+        if not operations:
+            return
+        user = await self._auth.current_user()
+        request_id = "paste-preview-" + pysecrets.token_hex(12)
+        request = {
+            "contractVersion": "1.0",
+            "requestId": request_id,
+            "idempotencyKey": request_id,
+            "tableId": collection,
+            "schemaRevision": schema_revision or profile.capability_hash,
+            "operations": operations,
+            "actor": {
+                "type": "user",
+                "id": str(getattr(user, "id", "") or "local-user"),
+                "displayName": _display_name(user),
+            },
+            "expectedRevision": None,
+            "expectedDigest": None,
+        }
+        try:
+            await self._client.preview_mutation(request)
+        except PocketBaseProductError as exc:
+            raise PasteError(
+                str(exc),
+                code=exc.code,
+                data=exc.rpc_error_data,
+            ) from exc
+
     async def apply(
         self,
         *,
@@ -35,17 +97,14 @@ class PocketBaseBulkMutationClient:
         row_revisions: dict[str | int, str],
         idempotency_key: str,
         schema_revision: str | None = None,
+        raw_rows: list[dict[str, Any]] | None = None,
     ) -> ApplyPasteResult:
-        operations = _operations(rows, row_revisions)
+        operations = _operations(rows, row_revisions, raw_rows=raw_rows)
         if not operations:
             return ApplyPasteResult(
                 collection=collection,
                 outcome="committed",
-                skipped_row_keys=[
-                    row.target_row_key
-                    for row in rows
-                    if row.kind == "skip" and row.target_row_key is not None
-                ],
+                skipped_row_keys=_skipped_row_keys(rows),
                 request_id=idempotency_key,
             )
         user = await self._auth.current_user()
@@ -137,11 +196,7 @@ class PocketBaseBulkMutationClient:
             outcome="committed",
             created_row_keys=created,
             updated_row_keys=updated,
-            skipped_row_keys=[
-                row.target_row_key
-                for row in rows
-                if row.kind == "skip" and row.target_row_key is not None
-            ],
+            skipped_row_keys=_skipped_row_keys(rows),
             request_id=idempotency_key,
         )
 
@@ -149,20 +204,27 @@ class PocketBaseBulkMutationClient:
 def _operations(
     rows: list[PastePlanRow],
     revisions: dict[str | int, str],
+    *,
+    raw_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     operations: list[dict[str, Any]] = []
-    for row in rows:
+    for index, row in enumerate(rows):
         values = {
             name: change.get("after")
             for name, change in row.changes.items()
             if isinstance(change, dict) and "after" in change
         }
+        raw_values = raw_rows[index] if raw_rows is not None else None
+        if row.kind == "update" and not (raw_values if raw_values is not None else values):
+            continue
         if row.kind == "update" and row.target_row_key is not None:
             operation: dict[str, Any] = {
                 "kind": "update",
                 "recordId": str(row.target_row_key),
-                "values": values,
+                "values": {} if raw_values is not None else values,
             }
+            if raw_values is not None:
+                operation["rawValues"] = raw_values
             guard = revisions.get(row.target_row_key)
             if isinstance(guard, str) and guard.startswith("row_"):
                 operation["expectedRevision"] = guard
@@ -174,7 +236,8 @@ def _operations(
                 {
                     "kind": "insert",
                     "recordId": None,
-                    "values": values,
+                    "values": {} if raw_values is not None else values,
+                    **({"rawValues": raw_values} if raw_values is not None else {}),
                 }
             )
     return operations
@@ -184,7 +247,9 @@ def _single_row_guard(
     rows: list[PastePlanRow],
     revisions: dict[str | int, str],
 ) -> str | None:
-    writable = [row for row in rows if row.kind != "skip"]
+    writable = [
+        row for row in rows if row.kind == "insert" or (row.kind == "update" and bool(row.changes))
+    ]
     if len(writable) != 1:
         return None
     row = writable[0]
@@ -198,11 +263,20 @@ def _single_row_guard(
     )
 
 
+def _skipped_row_keys(rows: list[PastePlanRow]) -> list[str | int]:
+    return [
+        row.target_row_key
+        for row in rows
+        if row.target_row_key is not None
+        and (row.kind == "skip" or (row.kind == "update" and not row.changes))
+    ]
+
+
 def _single_update_key(rows: list[PastePlanRow]) -> str | int | None:
     updates = [
         row.target_row_key
         for row in rows
-        if row.kind == "update" and row.target_row_key is not None
+        if row.kind == "update" and row.changes and row.target_row_key is not None
     ]
     return updates[0] if len(updates) == 1 else None
 

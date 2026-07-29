@@ -52,6 +52,7 @@ class _IntegrityReport(_SidecarModel):
 class _CreateResponse(_SidecarModel):
     backup: BackupEntry
     integrity: _IntegrityReport
+    receipt: str
 
 
 class PocketBaseBackupService:
@@ -70,6 +71,7 @@ class PocketBaseBackupService:
         return BackupCreateResult(
             backup=response.backup,
             integrity_valid=True,
+            receipt=response.receipt,
         )
 
     async def restore_backup(self, params: RestoreBackupParams) -> BackupRestoreResult:

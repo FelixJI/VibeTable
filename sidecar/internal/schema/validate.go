@@ -50,7 +50,11 @@ func Validate(definition TableDefinition) error {
 	if err := validateArchivePolicy(definition); err != nil {
 		return err
 	}
-	if len(definition.Fields) == 0 {
+	// A base table may be bootstrapped without product fields. VibeTable then
+	// creates every user field through the Schema v2 field-change planner,
+	// which owns opaque identities and presence columns. Views still need an
+	// explicit projection.
+	if len(definition.Fields) == 0 && definition.Kind == TableKindView {
 		return productError("schema.table.fields_required", "fields", "at least one field is required", nil)
 	}
 

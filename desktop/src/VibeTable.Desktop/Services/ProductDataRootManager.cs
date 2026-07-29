@@ -31,6 +31,14 @@ internal static class ProductDataRootManager
     private const string PreferenceFileName = "vibetable-data-root.json";
     private const string PendingFileName = "vibetable-data-root.pending.json";
     private const string MigrationMarkerFileName = ".vibetable-data-root.json";
+    private static readonly HashSet<string> MachineLocalDirectoryNames =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "attachment-preview",
+            "logs",
+            "state",
+            "webview2-user-data",
+        };
 
     private sealed record ProductDataRootPreference(int Schema, string DataRoot);
     private sealed record PendingMigration(
@@ -50,9 +58,15 @@ internal static class ProductDataRootManager
     /// A pending settings migration is applied here while all services are
     /// stopped. Development and test roots bypass this method.
     /// </summary>
-    public static string Resolve(string programDirectory)
+    public static string Resolve(
+        string documentsDirectory,
+        string localAppData)
     {
-        string defaultRoot = DefaultDataRoot(programDirectory);
+        string defaultRoot = DefaultDataRoot(documentsDirectory);
+        string fallbackRoot = Path.Combine(
+            Path.GetFullPath(localAppData),
+            "VibeTable",
+            "Data");
         string? configured = ReadPreference();
         if (!string.IsNullOrWhiteSpace(configured))
         {
@@ -65,26 +79,29 @@ internal static class ProductDataRootManager
             }
 
             ShowMessage(
-                "已配置的数据目录不可写，请重新选择一个位置。",
+                "已配置的数据目录不可写，本次将使用默认数据目录。"
+                + $"{Environment.NewLine}你可以稍后在设置中迁移到其他位置。",
                 "数据目录不可用",
                 MessageBoxImage.Warning);
         }
 
-        string selected = PromptForFirstRunRoot(defaultRoot);
+        string selected = CanWrite(defaultRoot)
+            ? defaultRoot
+            : fallbackRoot;
         EnsureWritableRoot(selected);
-        MigrateLegacyDataRoot(selected);
+        MigrateLegacyDataRoot(selected, localAppData);
         WritePreference(selected);
         return selected;
     }
 
     public static ProductDataRootStatus GetStatus(
         string currentRoot,
-        string programDirectory)
+        string documentsDirectory)
     {
         PendingMigration? pending = ReadPendingMigration();
         return new ProductDataRootStatus(
             Path.GetFullPath(currentRoot),
-            DefaultDataRoot(programDirectory),
+            DefaultDataRoot(documentsDirectory),
             pending is not null,
             pending?.TargetRoot);
     }
@@ -120,18 +137,37 @@ internal static class ProductDataRootManager
 
     public static void ConfigureProcessEnvironment(
         IDictionary<string, string> environment,
-        string dataRoot)
+        string runtimeRoot)
     {
-        string runtimeRoot = Path.GetFullPath(dataRoot);
-        environment["LOCALAPPDATA"] = runtimeRoot;
-        environment["VIBETABLE_STATE_DIR"] = Path.Combine(runtimeRoot, "state");
+        string normalized = Path.GetFullPath(runtimeRoot);
+        environment["VIBETABLE_STATE_DIR"] = Path.Combine(normalized, "state");
     }
 
-    public static string ResolveSidecarLogPath(string dataRoot)
-        => Path.Combine(Path.GetFullPath(dataRoot), "logs", "backend.log");
+    public static string ResolveSidecarLogPath(string programDirectory)
+        => Path.Combine(ResolveLogsRoot(programDirectory), "backend.log");
 
-    internal static string DefaultDataRoot(string programDirectory)
-        => Path.Combine(Path.GetFullPath(programDirectory), ProductFolderName);
+    public static string ResolvePocketBaseLogPath(string programDirectory)
+        => Path.Combine(ResolveLogsRoot(programDirectory), "pocketbase.log");
+
+    internal static string ResolveRuntimeRoot(string localAppData)
+        => Path.Combine(
+            Path.GetFullPath(localAppData),
+            "VibeTable",
+            "runtime");
+
+    internal static string ResolveCacheRoot(string localAppData)
+        => Path.Combine(
+            Path.GetFullPath(localAppData),
+            "VibeTable",
+            "cache");
+
+    internal static string ResolveLogsRoot(string programDirectory)
+        => Path.Combine(Path.GetFullPath(programDirectory), "logs");
+
+    internal static string DefaultDataRoot(string documentsDirectory)
+        => Path.Combine(
+            Path.GetFullPath(documentsDirectory),
+            ProductFolderName);
 
     internal static string DataRootForSelectedFolder(string selectedFolder)
     {
@@ -144,47 +180,6 @@ internal static class ProductDataRootManager
             StringComparison.OrdinalIgnoreCase)
                 ? selected
                 : Path.Combine(selected, ProductFolderName);
-    }
-
-    private static string PromptForFirstRunRoot(string defaultRoot)
-    {
-        string fallback = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "VibeTable",
-            "Data");
-        if (!CanWrite(defaultRoot))
-        {
-            ShowMessage(
-                "程序运行目录不可写，默认位置已切换为“本机应用数据目录”。"
-                + $"{Environment.NewLine}你仍可在下一步选择其他位置。",
-                "数据目录检查",
-                MessageBoxImage.Information);
-            defaultRoot = fallback;
-        }
-
-        var dialog = new OpenFolderDialog
-        {
-            Title = "首次启动：请选择 VibeTable 数据存储位置",
-            InitialDirectory = Directory.GetParent(defaultRoot)?.FullName ?? defaultRoot,
-            Multiselect = false,
-        };
-        if (dialog.ShowDialog() != true)
-        {
-            return defaultRoot;
-        }
-
-        string selected = DataRootForSelectedFolder(dialog.FolderName);
-        if (CanWrite(selected))
-        {
-            return selected;
-        }
-
-        ShowMessage(
-            "所选位置不可写，将使用“本机应用数据目录”。",
-            "数据目录不可写",
-            MessageBoxImage.Warning);
-        EnsureWritableRoot(fallback);
-        return fallback;
     }
 
     private static void ValidateMigrationTarget(string source, string target)
@@ -288,10 +283,12 @@ internal static class ProductDataRootManager
         }
     }
 
-    private static void MigrateLegacyDataRoot(string targetRoot)
+    private static void MigrateLegacyDataRoot(
+        string targetRoot,
+        string localAppData)
     {
         string legacyRoot = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            Path.GetFullPath(localAppData),
             "VibeTable");
         if (!Directory.Exists(legacyRoot)
             || Directory.EnumerateFileSystemEntries(legacyRoot).All(
@@ -309,14 +306,8 @@ internal static class ProductDataRootManager
         {
             CopyContentsIfPresent(Path.Combine(legacyRoot, "data"), stage);
             CopyDirectoryIfPresent(
-                Path.Combine(legacyRoot, "state"),
-                Path.Combine(stage, "state"));
-            CopyDirectoryIfPresent(
                 Path.Combine(legacyRoot, "backups"),
                 Path.Combine(stage, "backups"));
-            CopyDirectoryIfPresent(
-                Path.Combine(legacyRoot, "webview2-udd"),
-                Path.Combine(stage, "webview2-user-data"));
 
             string compatibilityRoot = Path.Combine(stage, "VibeTable");
             CopyDirectoryIfPresent(
@@ -356,8 +347,8 @@ internal static class ProductDataRootManager
         string stage = StagePath(target);
         try
         {
-            CopyDirectory(source, stage);
-            DirectorySummary sourceSummary = Summarize(source);
+            CopyProductDataDirectory(source, stage);
+            DirectorySummary sourceSummary = SummarizeProductData(source);
             DirectorySummary stageSummary = Summarize(stage);
             if (sourceSummary != stageSummary)
             {
@@ -450,6 +441,38 @@ internal static class ProductDataRootManager
         }
     }
 
+    private static void CopyProductDataDirectory(
+        string source,
+        string destination)
+    {
+        var info = new DirectoryInfo(source);
+        if (info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            throw new IOException(
+                "Data-root migration does not follow directory reparse points.");
+        }
+        Directory.CreateDirectory(destination);
+        foreach (DirectoryInfo directory in info.GetDirectories())
+        {
+            if (MachineLocalDirectoryNames.Contains(directory.Name))
+            {
+                continue;
+            }
+            CopyDirectory(
+                directory.FullName,
+                Path.Combine(destination, directory.Name));
+        }
+        foreach (FileInfo file in info.GetFiles())
+        {
+            if (file.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                throw new IOException(
+                    "Data-root migration does not follow file reparse points.");
+            }
+            CopyFile(file.FullName, Path.Combine(destination, file.Name));
+        }
+    }
+
     private static void CopyFile(string source, string destination)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
@@ -482,6 +505,29 @@ internal static class ProductDataRootManager
         {
             count++;
             bytes += new FileInfo(file).Length;
+        }
+        return new DirectorySummary(count, bytes);
+    }
+
+    private static DirectorySummary SummarizeProductData(string root)
+    {
+        long count = 0;
+        long bytes = 0;
+        var info = new DirectoryInfo(root);
+        foreach (FileInfo file in info.GetFiles())
+        {
+            count++;
+            bytes += file.Length;
+        }
+        foreach (DirectoryInfo directory in info.GetDirectories())
+        {
+            if (MachineLocalDirectoryNames.Contains(directory.Name))
+            {
+                continue;
+            }
+            DirectorySummary child = Summarize(directory.FullName);
+            count += child.FileCount;
+            bytes += child.TotalBytes;
         }
         return new DirectorySummary(count, bytes);
     }

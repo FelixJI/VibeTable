@@ -201,8 +201,8 @@ describe("tabulatorEditor", () => {
     expect(result.editorParams?.step).toBeUndefined();
   });
 
-  it("returns tickbox for boolean", () => {
-    expect(tabulatorEditor({ kind: "boolean" }).editor).toBe("tickbox");
+  it("returns Tabulator 6's tickCross editor for boolean", () => {
+    expect(tabulatorEditor({ kind: "boolean" }).editor).toBe("tickCross");
   });
 
   it("returns the work-calendar editor for dates", () => {

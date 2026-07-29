@@ -40,6 +40,44 @@ func TestCompilerMatchesGoldenOperatorsAndParameterizesValues(t *testing.T) {
 	}
 }
 
+func TestPresenceCompanionControlsFilterSortAndAggregateSemantics(t *testing.T) {
+	descriptor := descriptorFixture()
+	descriptor.PresenceFields = map[string]string{"amount": "__present_amount"}
+
+	plan, err := query.Compile(descriptor, query.TableQuery{
+		Filters: []query.FilterExpression{{
+			Field: "amount", Operator: query.OperatorEqual, Value: float64(0),
+		}},
+		Sorts: []query.SortCondition{{
+			Field: "amount", Direction: query.SortAscending,
+		}},
+		Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("Compile(presence query): %v", err)
+	}
+	productSQL := `(CASE WHEN "__present_amount" THEN "amount" ELSE NULL END)`
+	if !strings.Contains(plan.SQL, productSQL+" = ") {
+		t.Fatalf("explicit zero filter bypassed presence: %s", plan.SQL)
+	}
+	if !strings.Contains(plan.SQL, productSQL+" IS NULL ASC") {
+		t.Fatalf("null ordering bypassed presence: %s", plan.SQL)
+	}
+
+	aggregateSQL, _, err := query.CompileAggregate(descriptor, query.AggregateQuery{
+		Metrics: []query.AggregateMetric{{
+			Alias: "total_amount", Function: query.AggregateSum, Field: "amount",
+		}},
+		Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("CompileAggregate(presence): %v", err)
+	}
+	if !strings.Contains(aggregateSQL, "SUM("+productSQL+")") {
+		t.Fatalf("aggregate bypassed presence: %s", aggregateSQL)
+	}
+}
+
 func TestCompilerNormalizesDateTimeOffsetsToPocketBaseUTC(t *testing.T) {
 	plan, err := query.Compile(autoDateDescriptorFixture(), query.TableQuery{
 		Filters: []query.FilterExpression{

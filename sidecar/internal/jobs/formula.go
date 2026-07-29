@@ -11,6 +11,7 @@ import (
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/security"
 	"github.com/pocketbase/pocketbase/tools/types"
 
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
@@ -248,6 +249,13 @@ func (service *Service) StartFormulaBackfill(
 	record.Set("job_type", formulaBackfillType)
 	record.Set("state", "queued")
 	record.Set("schema_revision", revision)
+	// The shared jobs collection uses these four fields as a composite
+	// idempotency key. Formula backfills may legitimately run again after a
+	// completed job, so use the fresh record identity for the event component
+	// and keep every remaining component non-empty.
+	record.Set("source_event_id", "formula_backfill_"+security.RandomString(15))
+	record.Set("source_table_id", tableID)
+	record.Set("relation_field_id", formulaBackfillType)
 	record.Set("cursor_json", types.JSONRaw([]byte(`{"lastRecordId":""}`)))
 	progressRaw, _ := json.Marshal(Progress{Completed: 0, Total: total})
 	record.Set("progress_json", types.JSONRaw(progressRaw))

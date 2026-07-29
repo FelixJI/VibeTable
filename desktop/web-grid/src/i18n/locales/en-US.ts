@@ -564,8 +564,6 @@ export const messages: Record<string, string> = {
   "workspace.relation.unsupported": "Relation editing is unavailable in this environment",
   "workspace.relation.structureUpdated": "Relation structure updated",
   "workspace.relation.changed": "The relation changed. Refresh and try again.",
-  "workspace.lookup.deleted": "Lookup deleted",
-  "workspace.lookup.saved": "Lookup saved",
   "workspace.lookup.sourceLocated": "Located source record {collection} · {itemId}",
   "workspace.lookup.sourceFiltered": "Filtered to source record {collection} · {itemId}",
   "workspace.notification.relationLookupFailed": "The relation or Lookup operation failed. Try again shortly.",

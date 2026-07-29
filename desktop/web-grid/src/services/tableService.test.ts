@@ -7,10 +7,15 @@ import type {
   TaskChangedEvent,
 } from "@/contracts";
 import { setHostBridgeForTesting } from "./bridgeContext";
-import { formatProductDataRevision, useTableService } from "./tableService";
+import {
+  formatProductDataRevision,
+  mergeDeferredRefreshOptions,
+  useTableService,
+} from "./tableService";
 import { useRealtimeStore } from "@/stores/realtimeStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useHistoryStore } from "@/stores/historyStore";
 
 describe("tableService realtime product wiring", () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -66,6 +71,75 @@ describe("tableService realtime product wiring", () => {
     service.dispose();
   });
 
+  it("finishes a remote first-page load and consumes a queued data change", async () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const table = useTableStore();
+    table.beginLoad();
+    const service = useTableService();
+    service.init();
+
+    harness.emit("data.changed", dataEvent(16));
+    harness.emit("table.pageLoaded", {
+      ...dataset(12),
+      mode: "remote",
+      rows: [{ rowKey: 1 }],
+      totalRows: 25_001,
+      loadedRows: 1,
+    });
+
+    expect(table.loading).toBe(false);
+    expect(table.datasetReady).toBe(false);
+    await vi.waitFor(() => expect(harness.request).toHaveBeenCalledWith(
+      "events.reconcile",
+      expect.objectContaining({ dataRevision: "data_0012" }),
+    ));
+    service.dispose();
+  });
+
+  it("retries when a same-schema refresh completes below the committed revision floor", () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const table = useTableStore();
+    table.setDatasetReady(dataset(12));
+    const service = useTableService();
+    service.init();
+
+    service.refresh({ preserveHistory: true });
+    harness.notify.mockClear();
+    harness.emit("table.datasetReady", dataset(11));
+
+    expect(table.loading).toBe(true);
+    expect(harness.notify).toHaveBeenCalledWith(
+      "table.selected",
+      { table: "orders" },
+    );
+    service.dispose();
+  });
+
+  it("fails closed after bounded stale-snapshot retries", () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const table = useTableStore();
+    table.setDatasetReady(dataset(12));
+    const service = useTableService();
+    service.init();
+
+    service.refresh({ preserveHistory: true });
+    harness.notify.mockClear();
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      harness.emit("table.datasetReady", dataset(11));
+    }
+
+    expect(harness.notify).toHaveBeenCalledTimes(3);
+    expect(table.loading).toBe(false);
+    expect(table.error).toContain("older snapshot");
+    service.dispose();
+  });
+
   it("shows monotonic backfill progress and refreshes once on its terminal snapshot", async () => {
     const harness = bridgeHarness({ action: "none" });
     setHostBridgeForTesting(harness.bridge);
@@ -105,6 +179,60 @@ describe("tableService realtime product wiring", () => {
     expect(formatProductDataRevision(7)).toBe("data_0007");
     expect(formatProductDataRevision(12_345)).toBe("data_12345");
     expect(() => formatProductDataRevision(-1)).toThrow("Invalid product data revision");
+  });
+
+  it("preserves guarded data history only for same-schema background refreshes", () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const table = useTableStore();
+    table.setDatasetReady(dataset(11));
+    const history = useHistoryStore();
+    table.setEditSchema([{
+      name: "name",
+      storageName: "name",
+      dataType: "text",
+      editable: true,
+      nullable: true,
+      primaryKey: false,
+      editor: { kind: "text" },
+      validation: [],
+    }], {
+      databaseSessionId: "pocketbase",
+      schemaRevision: "schema_0007",
+      dataRevision: 11,
+    });
+    const entry = {
+      id: "edit-1",
+      kind: "updateCell" as const,
+      label: "edit",
+      timestamp: 1,
+      undo: async () => {},
+    };
+    history.push(entry);
+    const service = useTableService();
+
+    service.refresh({ preserveHistory: true });
+    expect(history.undoStackSize).toBe(1);
+    expect(table.editSchema?.[0]?.name).toBe("name");
+
+    history.push({ ...entry, id: "edit-2" });
+    service.refresh();
+    expect(history.undoStackSize).toBe(0);
+    expect(table.editSchema).toBeNull();
+  });
+
+  it("never lets a later background refresh weaken a queued schema reload", () => {
+    const reload = mergeDeferredRefreshOptions(null, {
+      preserveHistory: false,
+    });
+    expect(mergeDeferredRefreshOptions(reload, {
+      preserveHistory: true,
+    })).toEqual({ preserveHistory: false });
+    expect(mergeDeferredRefreshOptions(
+      { preserveHistory: true },
+      { preserveHistory: true },
+    )).toEqual({ preserveHistory: true });
   });
 });
 

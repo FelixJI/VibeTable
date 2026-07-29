@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.application.product_data_service import (
+    PRODUCT_PARAM_MODELS,
     PocketBaseProductDataService,
     ProductParams,
     _renderer_columns,
@@ -48,6 +49,105 @@ def _service(responses: list[Any]) -> tuple[PocketBaseProductDataService, FakeTr
 def test_params_reject_credentials_recursively() -> None:
     with pytest.raises(ValidationError):
         ProductParams.model_validate({"nested": {"sessionSecret": "secret"}})
+
+
+def test_schema_v2_plan_params_defer_domain_validation_but_keep_transport_closed() -> None:
+    accepted = PRODUCT_PARAM_MODELS["field.change.plan"].model_validate(
+        {
+            "action": "create",
+            "tableId": "orders",
+            "fieldId": "",
+            "expectedSchemaRevision": "schema_0001",
+            "expectedDataRevision": None,
+            "draft": {},
+            "actor": {"id": "local-user", "kind": "user"},
+            "conversionRule": "",
+            "confirmation": "",
+            "backupReceipt": "",
+        }
+    )
+    assert accepted.root["draft"] == {}
+
+    with pytest.raises(ValidationError):
+        PRODUCT_PARAM_MODELS["field.change.plan"].model_validate(
+            {
+                "action": "create",
+                "tableId": "orders",
+                "fieldId": "",
+                "expectedSchemaRevision": "schema_0001",
+                "expectedDataRevision": None,
+                "draft": {},
+                "actor": {"id": "local-user", "kind": "user"},
+                "conversionRule": "",
+                "confirmation": "",
+                "backupReceipt": "",
+                "providerUrl": "http://127.0.0.1:8090",
+            }
+        )
+
+
+def test_schema_v2_apply_params_reject_open_nested_objects() -> None:
+    with pytest.raises(ValidationError):
+        PRODUCT_PARAM_MODELS["field.change.apply"].model_validate(
+            {
+                "planId": "plan_1",
+                "planHash": "a" * 64,
+                "operationId": "op_1",
+                "actor": {"id": "local-user", "kind": "user", "admin": True},
+                "confirmations": [],
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_field_settings_methods_use_only_frozen_v2_routes() -> None:
+    service, transport = _service(
+        [
+            {"contract": "vibetable.schema.v2", "definition": None},
+            {"contract": "vibetable.schema.v2", "planId": "plan_1"},
+            {"contract": "vibetable.schema.v2", "operationId": "op_1"},
+            {"contract": "vibetable.schema.v2", "fields": []},
+        ]
+    )
+    describe = PRODUCT_PARAM_MODELS["field.settings.describe"].model_validate(
+        {"tableId": "orders", "fieldId": "fld_12345678"}
+    )
+    plan = PRODUCT_PARAM_MODELS["field.change.plan"].model_validate(
+        {
+            "action": "retire",
+            "tableId": "orders",
+            "fieldId": "fld_12345678",
+            "expectedSchemaRevision": "schema_0001",
+            "expectedDataRevision": None,
+            "draft": None,
+            "actor": {"id": "local-user", "kind": "user"},
+            "conversionRule": "",
+            "confirmation": "",
+            "backupReceipt": "",
+        }
+    )
+    apply = PRODUCT_PARAM_MODELS["field.change.apply"].model_validate(
+        {
+            "planId": "plan_1",
+            "planHash": "a" * 64,
+            "operationId": "op_1",
+            "actor": {"id": "local-user", "kind": "user"},
+            "confirmations": [],
+        }
+    )
+    recycle = PRODUCT_PARAM_MODELS["field.recycleBin.list"].model_validate({"tableId": "orders"})
+
+    await service.describe_field_settings(describe)
+    await service.plan_field_change(plan)
+    await service.apply_field_change(apply)
+    await service.list_recycled_fields(recycle)
+
+    assert [request["path"] for request in transport.requests] == [
+        "/api/vibetable/v2/field-settings/orders",
+        "/api/vibetable/v2/field-change/plan",
+        "/api/vibetable/v2/field-change/apply",
+        "/api/vibetable/v2/field-recycle-bin/orders",
+    ]
 
 
 def test_renderer_columns_use_composite_relation_and_lookup_catalog_ids() -> None:
@@ -639,126 +739,6 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
         "/api/vibetable/v1/relations/describe",
         "/api/vibetable/v1/lookups/describe",
         "/api/vibetable/v1/relations/preview-delta",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_relation_admin_preview_apply_and_operation_replay_are_connected() -> None:
-    definition = {
-        "contractVersion": "1.0",
-        "tableId": "orders",
-        "physicalName": "orders",
-        "displayName": "Orders",
-        "kind": "base",
-        "schemaRevision": "schema_4",
-        "archivePolicy": {"mode": "none", "fieldId": None, "archivedValue": None},
-        "fields": [],
-        "indexes": [],
-    }
-    applied = {
-        **definition,
-        "schemaRevision": "schema_5",
-        "fields": [
-            {
-                "fieldId": "customer",
-                "physicalName": "customer",
-                "displayName": "Customer",
-                "kind": "relation",
-                "dataType": "relation",
-                "storageType": "relation",
-                "nullable": True,
-                "defaultValue": None,
-                "constraints": [],
-                "editor": {"kind": "relation", "config": {}},
-                "readOnly": False,
-                "formula": None,
-                "relation": {
-                    "mode": "direct",
-                    "targetTableId": "customers",
-                    "cardinality": "one",
-                    "deletePolicy": "setNull",
-                    "junctionTableId": None,
-                    "junctionSourceFieldId": "",
-                    "junctionTargetFieldId": "",
-                    "junctionDiscriminatorFieldId": "",
-                    "allowedTargetTableIds": [],
-                },
-                "lookup": None,
-                "attachmentPolicy": None,
-            }
-        ],
-    }
-    relation = {
-        "relationId": "orders.customer",
-        "sourceTableId": "orders",
-        "sourceFieldId": "customer",
-        "physicalName": "customer",
-        "mode": "direct",
-        "targetTableId": "customers",
-        "cardinality": "one",
-        "deletePolicy": "setNull",
-        "allowedTargetTableIds": [],
-    }
-    service, transport = _service(
-        [
-            definition,
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_4",
-                "relations": [],
-                "lookups": [],
-            },
-            {"definition": definition, "capabilities": {}},
-            applied,
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_5",
-                "relations": [relation],
-                "lookups": [],
-            },
-        ]
-    )
-    preview = await service.preview_relation_change(
-        ProductParams.model_validate(
-            {
-                "collection": "orders",
-                "action": "create",
-                "relationId": None,
-                "config": {
-                    "kind": "m2o",
-                    "fieldKey": "customer",
-                    "fieldDisplayName": "Customer",
-                    "relatedCollection": "customers",
-                    "unique": False,
-                    "nullable": True,
-                    "onDelete": "nullify",
-                    "displayTemplate": None,
-                    "preset": "standard",
-                },
-                "expectedSchemaRevision": "schema_4",
-            }
-        )
-    )
-    apply_params = ProductParams.model_validate(
-        {
-            "planId": preview["planId"],
-            "operationId": "op-relation-1",
-            "expectedSchemaRevision": "schema_4",
-            "cascadeLookupIds": [],
-        }
-    )
-    result = await service.apply_relation_change(apply_params)
-    replay = await service.apply_relation_change(apply_params)
-
-    assert result["relation"]["relationId"] == "orders.customer"
-    assert result["schemaRevision"] == "schema_5"
-    assert replay == result
-    assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v1/schema/tables/orders",
-        "/api/vibetable/v1/relations/describe",
-        "/api/vibetable/v1/schema/validate",
-        "/api/vibetable/v1/schema/apply",
-        "/api/vibetable/v1/relations/describe",
     ]
 
 

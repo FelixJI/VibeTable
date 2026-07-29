@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "migrations": [
     {
       "id": 2026072401,
@@ -25,6 +25,12 @@
       "name": "realtime_outbox_retention",
       "source": "2026072404_realtime_outbox_retention.go",
       "sha256": "66fd5dc13a70c97ed794e52a8b460255512cf62bb1cb4fc88421e9885f1c7ce8"
+    },
+    {
+      "id": 2026072801,
+      "name": "field_settings_v2_metadata",
+      "source": "2026072801_field_settings_v2_metadata.go",
+      "sha256": "64655db79fdf1d997731d8ccc4c62a5054d00b6c90491104ba0970495d2dc6eb"
     }
   ]
 }

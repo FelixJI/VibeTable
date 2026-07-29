@@ -153,17 +153,20 @@
       "sidecar/migrations/manifest.json"
     ],
     "schema": [
-      "contracts/v1/contracts.schema.json"
+      "contracts/v1/contracts.schema.json",
+      "contracts/schema-v2/schema.schema.json"
     ],
     "migrations": [
       "sidecar/migrations/manifest.json",
       "sidecar/migrations/2026072401_bootstrap.go",
       "sidecar/migrations/2026072402_internal_collections.go",
       "sidecar/migrations/2026072403_internal_metadata_channel.go",
-      "sidecar/migrations/2026072404_realtime_outbox_retention.go"
+      "sidecar/migrations/2026072404_realtime_outbox_retention.go",
+      "sidecar/migrations/2026072801_field_settings_v2_metadata.go"
     ],
     "capabilities": [
       "sidecar/internal/schema/capabilities.go",
+      "sidecar/internal/schema/v2/capabilities.go",
       "contracts/v1/README.md",
       "qa/handoff_dependencies.json"
     ]
@@ -178,7 +181,10 @@
       "contracts/v1/fixtures/table-definition.json",
       "contracts/v1/fixtures/mutation-request.json",
       "contracts/v1/fixtures/mutation-receipt.json",
-      "contracts/v1/fixtures/product-error.json"
+      "contracts/v1/fixtures/product-error.json",
+      "contracts/schema-v2/fixtures/field-definition.json",
+      "contracts/schema-v2/fixtures/field-change-intent.json",
+      "contracts/schema-v2/fixtures/migration-status.json"
     ],
     "SIDECAR": [
       "sidecar/migrations/manifest.json"

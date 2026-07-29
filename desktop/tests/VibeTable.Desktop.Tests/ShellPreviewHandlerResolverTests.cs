@@ -59,13 +59,16 @@ public sealed class ShellPreviewHandlerResolverTests
         var startInfo = spec.CreateStartInfo();
 
         Assert.AreEqual(
-            Path.Combine(appDirectory, "PreviewHost", PreviewHostLaunchSpec.ExecutableName),
+            Path.Combine(
+                appDirectory,
+                PreviewHostLaunchSpec.ExecutableName),
             startInfo.FileName);
         Assert.IsFalse(startInfo.UseShellExecute);
         Assert.AreEqual(string.Empty, startInfo.Verb);
         CollectionAssert.AreEqual(
             new[]
             {
+                "--preview-host",
                 "--file",
                 documentPath,
                 "--handler",

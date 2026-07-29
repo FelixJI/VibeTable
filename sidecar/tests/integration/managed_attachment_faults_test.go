@@ -624,7 +624,7 @@ func TestManagedAttachmentsWholeBackupRestorePreservesReferencesHashesContentAnd
 		t.Fatalf("read source attachment: read=%v close=%v", readErr, closeErr)
 	}
 	sourceAudit := attachmentAuditFingerprint(t, fixture.app)
-	service := backup.New(fixture.app, fixture.manager)
+	service := backup.New(fixture.app, fixture.manager, testBackupReceiptKey)
 	result, err := service.Create(context.Background(), "attachment_fault_backup.zip")
 	if err != nil || !result.Integrity.Valid {
 		t.Fatalf("create whole attachment backup=%#v err=%v", result, err)

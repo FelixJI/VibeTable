@@ -45,7 +45,7 @@ export function useTableService(): {
   init: () => void;
   dispose: () => void;
   selectTable: (name: string) => void;
-  refresh: () => void;
+  refresh: (options?: TableRefreshOptions) => void;
 } {
   const bridge = useHostBridge();
   const tableStore = useTableStore();
@@ -56,7 +56,9 @@ export function useTableService(): {
   const unsubscribe: Array<() => void> = [];
   let initialized = false;
   let pendingDataChange: DataChangedEvent | null = null;
-  let refreshAfterLoad = false;
+  let refreshAfterLoad: TableRefreshOptions | null = null;
+  let staleSnapshotRetries = 0;
+  const maxStaleSnapshotRetries = 3;
   const realtime = new RealtimeReconciler(
     createBridgeRealtimeReconcilePort(bridge),
     {
@@ -64,6 +66,29 @@ export function useTableService(): {
       reloadSchema: () => invalidateAndRefresh("reload-schema"),
     },
   );
+
+  function completeLoad(): void {
+    if (refreshAfterLoad) {
+      const options = refreshAfterLoad;
+      refreshAfterLoad = null;
+      refresh(options);
+      return;
+    }
+    const pending = pendingDataChange;
+    pendingDataChange = null;
+    if (pending) reconcileDataChange(pending);
+  }
+
+  function retryStaleSnapshot(): void {
+    if (staleSnapshotRetries >= maxStaleSnapshotRetries) {
+      tableStore.setError(
+        "The data source kept returning an older snapshot. Refresh and try again.",
+      );
+      return;
+    }
+    staleSnapshotRetries += 1;
+    refresh({ preserveHistory: true });
+  }
 
   function init(): void {
     if (initialized) return;
@@ -83,19 +108,28 @@ export function useTableService(): {
         querySnapshot: payload.querySnapshot,
         revision: payload.revision,
       };
-      tableStore.appendPage(page);
+      const accepted = tableStore.appendPage(page);
+      if (!accepted && page.mode === "remote") {
+        retryStaleSnapshot();
+        return;
+      }
+      // Remote mode deliberately never emits table.datasetReady: one page is
+      // the complete requested window. Finish the load here so realtime
+      // invalidations queued during the request can be reconciled.
+      if (page.mode === "remote") {
+        staleSnapshotRetries = 0;
+        tableStore.finishPageLoad();
+        completeLoad();
+      }
     }));
     unsubscribe.push(bridge.on("table.datasetReady", (payload: DatasetReadyPayload) => {
       // DatasetReadyPayload extends TablePage — it IS the authoritative page.
-      tableStore.setDatasetReady(payload);
-      if (refreshAfterLoad) {
-        refreshAfterLoad = false;
-        refresh();
+      if (!tableStore.setDatasetReady(payload)) {
+        retryStaleSnapshot();
         return;
       }
-      const pending = pendingDataChange;
-      pendingDataChange = null;
-      if (pending) reconcileDataChange(pending);
+      staleSnapshotRetries = 0;
+      completeLoad();
     }));
     unsubscribe.push(bridge.on("table.editSchemaLoaded", (payload: EditSchemaResult) => {
       // EditSchemaResult only carries schemaRevision; the full MutationRevision
@@ -129,13 +163,15 @@ export function useTableService(): {
     for (const stop of unsubscribe.splice(0)) stop();
     initialized = false;
     pendingDataChange = null;
-    refreshAfterLoad = false;
+    refreshAfterLoad = null;
+    staleSnapshotRetries = 0;
   }
 
   function selectTable(name: string): void {
     if (!name) return;
     pendingDataChange = null;
-    refreshAfterLoad = false;
+    refreshAfterLoad = null;
+    staleSnapshotRetries = 0;
     workspaceStore.selectTable(name);
     tableStore.reset();
     // A table switch invalidates the undo stack: history entries reference
@@ -147,13 +183,25 @@ export function useTableService(): {
     bridge.notify("table.selected", { table: name });
   }
 
-  function refresh(): void {
+  function refresh(options: TableRefreshOptions = {}): void {
     const current = workspaceStore.currentTable;
     if (!current) return;
-    tableStore.reset();
-    // Refresh re-fetches the full dataset; pending edits / undo entries are
-    // no longer valid against the freshly loaded data.
-    history.clear();
+    if (!options.preserveHistory) staleSnapshotRetries = 0;
+    tableStore.reset({
+      // `preserveHistory` is reserved for data-only reconciliation where the
+      // schema revision is known not to have changed. Keeping the matching
+      // edit schema prevents an SSE event that races its own mutation result
+      // from temporarily (or, after a superseded host fetch, permanently)
+      // rebuilding the grid as read-only.
+      preserveEditSchema: options.preserveHistory === true,
+    });
+    // Explicit refreshes and schema reloads invalidate data history. A
+    // same-schema background refresh (realtime/Lookup) preserves it: every
+    // inverse write remains protected by schemaRevision and row digest, so an
+    // external conflicting change will be rejected rather than overwritten.
+    // Without this distinction, the data.changed event emitted for the user's
+    // own edit clears that edit before Ctrl+Z can act on it.
+    if (!options.preserveHistory) history.clear();
     tableStore.beginLoad();
     bridge.notify("table.selected", { table: current });
   }
@@ -171,10 +219,12 @@ export function useTableService(): {
   function invalidateAndRefresh(action: "refresh-data" | "reload-schema"): void {
     realtimeStore.markInvalidated(action);
     if (tableStore.loading) {
-      refreshAfterLoad = true;
+      refreshAfterLoad = mergeDeferredRefreshOptions(refreshAfterLoad, {
+        preserveHistory: action === "refresh-data",
+      });
       return;
     }
-    refresh();
+    refresh({ preserveHistory: action === "refresh-data" });
   }
 
   function applyTaskChange(event: TaskChangedEvent): void {
@@ -187,13 +237,35 @@ export function useTableService(): {
         && event.state !== "cancelled")
     ) return;
     if (tableStore.loading) {
-      refreshAfterLoad = true;
+      refreshAfterLoad = mergeDeferredRefreshOptions(refreshAfterLoad, {
+        preserveHistory: true,
+      });
     } else {
-      refresh();
+      refresh({ preserveHistory: true });
     }
   }
 
   return { init, dispose, selectTable, refresh };
+}
+
+export interface TableRefreshOptions {
+  readonly preserveHistory?: boolean;
+}
+
+/**
+ * Merge refreshes queued during one load. Clearing history is the stricter
+ * policy and is therefore monotonic: a later data-only refresh must never
+ * weaken an already queued schema reload.
+ */
+export function mergeDeferredRefreshOptions(
+  current: TableRefreshOptions | null,
+  next: TableRefreshOptions,
+): TableRefreshOptions {
+  if (!current) return { preserveHistory: next.preserveHistory === true };
+  return {
+    preserveHistory:
+      current.preserveHistory === true && next.preserveHistory === true,
+  };
 }
 
 /** Convert the desktop mutation revision to the frozen PocketBase revision ID. */

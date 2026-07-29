@@ -1,0 +1,7 @@
+{
+  "planId": "plan_01JABCDEFGH",
+  "planHash": "sha256:0123456789abcdef",
+  "operationId": "operation_01JABCDEFGH",
+  "actor": {"id": "user_local", "kind": "user"},
+  "confirmations": []
+}

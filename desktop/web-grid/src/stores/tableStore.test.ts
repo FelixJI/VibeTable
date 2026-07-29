@@ -66,6 +66,18 @@ function makeDatasetReady(
   };
 }
 
+function lookupSnapshot(dataRevision: number) {
+  return {
+    snapshotId: `snapshot-${dataRevision}`,
+    digest: `sha256:${"a".repeat(64)}`,
+    databaseId: "database-1",
+    table: "records",
+    schemaRevision: "s",
+    dataRevision,
+    normalizedQuery: {},
+  };
+}
+
 describe("tableStore", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
@@ -101,6 +113,62 @@ describe("tableStore", () => {
     expect(s.allRows).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
   });
 
+  it("appendPage adopts the authoritative revision used by remote mode", () => {
+    const s = useTableStore();
+    const revision = {
+      databaseSessionId: "remote-session",
+      schemaRevision: "remote-schema",
+      dataRevision: 9,
+    };
+    s.beginLoad();
+    s.appendPage(makePage([{ id: 1 }], {
+      mode: "remote",
+      revision,
+    }));
+
+    expect(s.revision).toEqual(revision);
+  });
+
+  it("remote pages replace the requested window and can finish without datasetReady", () => {
+    const s = useTableStore();
+    s.beginLoad();
+    s.appendPage(makePage([{ id: 1 }], { mode: "remote", offset: 0 }));
+    s.appendPage(makePage([{ id: 501 }], { mode: "remote", offset: 500 }));
+    s.finishPageLoad();
+
+    expect(s.allRows).toEqual([{ id: 501 }]);
+    expect(s.loading).toBe(false);
+    expect(s.datasetReady).toBe(false);
+  });
+
+  it("rejects a stale remote page after a newer edit committed", () => {
+    const s = useTableStore();
+    const revision = {
+      databaseSessionId: "remote-session",
+      schemaRevision: "remote-schema",
+      dataRevision: 4,
+    };
+    s.beginLoad();
+    s.appendPage(makePage([{ rowKey: 1, name: "old" }], {
+      mode: "remote",
+      revision,
+    }));
+    s.applyCellEdit({
+      rowKey: 1,
+      column: "name",
+      storedValue: "new",
+      currentRow: { rowKey: 1, name: "new" },
+      revision: { ...revision, dataRevision: 5 },
+    });
+    s.appendPage(makePage([{ rowKey: 1, name: "old" }], {
+      mode: "remote",
+      revision,
+    }));
+
+    expect(s.allRows).toEqual([{ rowKey: 1, name: "new" }]);
+    expect(s.revision?.dataRevision).toBe(5);
+  });
+
   it("setDatasetReady stores schema, replaces pages with the final dataset, and ends loading", () => {
     const s = useTableStore();
     s.beginLoad();
@@ -119,6 +187,106 @@ describe("tableStore", () => {
     // The accumulated pages are replaced by the single datasetReady page;
     // rows must not be double-counted.
     expect(s.allRows).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+  });
+
+  it("rejects a stale datasetReady that would overwrite a newer committed row", () => {
+    const s = useTableStore();
+    const revision = {
+      databaseSessionId: "session-1",
+      schemaRevision: "schema-1",
+      dataRevision: 8,
+    };
+    s.beginLoad();
+    s.appendPage(makePage([{ rowKey: 1, name: "old" }], { revision }));
+    s.applyCellEdit({
+      rowKey: 1,
+      column: "name",
+      storedValue: "new",
+      currentRow: { rowKey: 1, name: "new" },
+      revision: { ...revision, dataRevision: 9 },
+    });
+    s.setDatasetReady({
+      ...makeDatasetReady([{ rowKey: 1, name: "old" }]),
+      revision,
+    });
+
+    expect(s.allRows).toEqual([{ rowKey: 1, name: "new" }]);
+    expect(s.revision?.dataRevision).toBe(9);
+    expect(s.loading).toBe(false);
+  });
+
+  it("retains a revision floor across same-schema refreshes", () => {
+    const s = useTableStore();
+    const oldRevision = {
+      databaseSessionId: "session-1",
+      schemaRevision: "schema-1",
+      dataRevision: 8,
+    };
+    s.beginLoad();
+    s.appendPage(makePage([{ rowKey: 1, name: "old" }], {
+      revision: oldRevision,
+    }));
+    s.applyCellEdit({
+      rowKey: 1,
+      column: "name",
+      storedValue: "new",
+      currentRow: { rowKey: 1, name: "new" },
+      revision: { ...oldRevision, dataRevision: 9 },
+    });
+
+    s.reset({ preserveEditSchema: true });
+    s.beginLoad();
+    expect(s.appendPage(makePage([{ rowKey: 1, name: "old" }], {
+      revision: oldRevision,
+    }))).toBe(false);
+    expect(s.setDatasetReady({
+      ...makeDatasetReady([{ rowKey: 1, name: "old" }]),
+      revision: oldRevision,
+    })).toBe(false);
+    expect(s.revision).toBeNull();
+    expect(s.allRows).toEqual([]);
+
+    const currentRevision = { ...oldRevision, dataRevision: 9 };
+    expect(s.setDatasetReady({
+      ...makeDatasetReady([{ rowKey: 1, name: "new" }]),
+      revision: currentRevision,
+    })).toBe(true);
+    expect(s.revision).toEqual(currentRevision);
+    expect(s.allRows).toEqual([{ rowKey: 1, name: "new" }]);
+  });
+
+  it("does not lower the public revision for an out-of-order mutation receipt", () => {
+    const s = useTableStore();
+    const base = {
+      databaseSessionId: "session-1",
+      schemaRevision: "schema-1",
+      dataRevision: 10,
+    };
+    s.beginLoad();
+    s.appendPage(makePage([
+      { rowKey: 1, name: "one" },
+      { rowKey: 2, name: "two" },
+    ], { revision: base }));
+    s.applyCellEdit({
+      rowKey: 1,
+      column: "name",
+      storedValue: "new-one",
+      currentRow: { rowKey: 1, name: "new-one" },
+      revision: { ...base, dataRevision: 12 },
+    });
+    s.applyCellEdit({
+      rowKey: 2,
+      column: "name",
+      storedValue: "new-two",
+      currentRow: { rowKey: 2, name: "new-two" },
+      revision: { ...base, dataRevision: 11 },
+    });
+
+    expect(s.revision?.dataRevision).toBe(12);
+    expect(s.allRows).toEqual([
+      { rowKey: 1, name: "new-one" },
+      { rowKey: 2, name: "new-two" },
+    ]);
   });
 
   it("setError ends loading and records error", () => {
@@ -154,6 +322,42 @@ describe("tableStore", () => {
     expect(s.schema).toBeNull();
     expect(s.datasetReady).toBe(false);
     expect(s.error).toBeNull();
+  });
+
+  it("can retain edit schema across a same-schema data refresh", () => {
+    const s = useTableStore();
+    s.setEditSchema(editSchema, {
+      databaseSessionId: "session",
+      schemaRevision: "schema",
+      dataRevision: 3,
+    });
+
+    s.reset({ preserveEditSchema: true });
+    s.beginLoad();
+
+    expect(s.editSchema).toEqual(editSchema);
+    expect(s.revision).toBeNull();
+    expect(s.loading).toBe(true);
+  });
+
+  it("drops retained edit schema when the refreshed page has a new schema revision", () => {
+    const s = useTableStore();
+    s.setEditSchema(editSchema, {
+      databaseSessionId: "session",
+      schemaRevision: "schema-1",
+      dataRevision: 3,
+    });
+    s.reset({ preserveEditSchema: true });
+    s.beginLoad();
+    s.appendPage(makePage([], {
+      revision: {
+        databaseSessionId: "session",
+        schemaRevision: "schema-2",
+        dataRevision: 4,
+      },
+    }));
+
+    expect(s.editSchema).toBeNull();
   });
 });
 
@@ -202,10 +406,30 @@ describe("tableStore mutation extensions", () => {
     expect(s.revision?.schemaRevision).toBe("sr1");
   });
 
+  it("late edit schema preserves an authoritative matching dataset revision", () => {
+    const s = useTableStore();
+    const authoritative = makeRevision({ dataRevision: 42 });
+    s.setDatasetReady({
+      ...makePage([]),
+      loadedRows: 0,
+      revision: authoritative,
+    });
+
+    s.setEditSchema(editSchema, {
+      databaseSessionId: "",
+      schemaRevision: authoritative.schemaRevision,
+      dataRevision: 0,
+    });
+
+    expect(s.editSchema).toHaveLength(2);
+    expect(s.revision).toEqual(authoritative);
+  });
+
   it("applyCellEdit updates the edited cell in allRows", () => {
     const s = useTableStore();
     s.beginLoad();
     s.appendPage(makePage([{ rowKey: 1, name: "old" }]));
+    const before = s.allRows[0];
     const res: UpdateCellResult = {
       rowKey: 1,
       column: "name",
@@ -215,6 +439,7 @@ describe("tableStore mutation extensions", () => {
     };
     s.applyCellEdit(res);
     expect(s.allRows[0]?.name).toBe("new");
+    expect(s.allRows[0]).not.toBe(before);
     expect(s.revision?.dataRevision).toBe(2);
   });
 
@@ -304,6 +529,7 @@ describe("tableStore mutation extensions", () => {
         aggregates: { total: "110.00" },
         childCursor: "cursor-1",
       }], offset: 0, limit: 2, filteredRows: 2, totalRows: 2,
+      snapshot: lookupSnapshot(1),
     });
     expect(s.allRows.map((row) => row.rowKey)).toEqual(["o2", "o1"]);
     expect(s.allRows.map((row) => row.contractPrice)).toEqual(["99.00", "11.00"]);
@@ -315,5 +541,130 @@ describe("tableStore mutation extensions", () => {
       aggregates: { total: "110.00" },
       childCursor: "cursor-1",
     }]);
+  });
+
+  it("normalizes PocketBase id to rowKey when merging Lookup rows", () => {
+    const s = useTableStore();
+    s.setDatasetReady({
+      ...makeDatasetReady([
+        { rowKey: "r1", title: "draft", lookupValue: null },
+      ], [
+        { ...makeColumn("title"), fieldId: "records.title" },
+        {
+          ...makeColumn("lookupValue"),
+          fieldId: "records.lookup",
+          kind: "lookup",
+          lookupId: "records.lookup",
+        },
+      ], 1),
+      table: "records",
+    });
+
+    s.applyLookupQueryResult({
+      contract: "vibetable.lookup-query.v1",
+      collection: "records",
+      requestGeneration: 2,
+      schemaRevision: "s",
+      permissionRevision: "p",
+      lookupRevision: "l",
+      columns: [],
+      rows: [{ id: "r1", "records.lookup": "resolved" }],
+      groups: [],
+      offset: 0,
+      limit: 1,
+      filteredRows: 1,
+      totalRows: 1,
+      snapshot: lookupSnapshot(1),
+    });
+
+    expect(s.allRows).toEqual([{
+      rowKey: "r1",
+      title: "draft",
+      lookupValue: "resolved",
+    }]);
+  });
+
+  it("ignores a Lookup snapshot older than a committed cell mutation", () => {
+    const s = useTableStore();
+    s.setDatasetReady({
+      ...makeDatasetReady([
+        { rowKey: "r1", title: "committed", lookupValue: null },
+      ], [
+        { ...makeColumn("title"), fieldId: "records.title" },
+        {
+          ...makeColumn("lookupValue"),
+          fieldId: "records.lookup",
+          kind: "lookup",
+          lookupId: "records.lookup",
+        },
+      ], 1),
+      table: "records",
+      revision: makeRevision({ dataRevision: 3 }),
+    });
+
+    s.applyLookupQueryResult({
+      contract: "vibetable.lookup-query.v1",
+      collection: "records",
+      requestGeneration: 2,
+      schemaRevision: "s",
+      permissionRevision: "p",
+      lookupRevision: "l",
+      columns: [],
+      rows: [{
+        id: "r1",
+        title: "before-edit",
+        "records.lookup": "stale",
+      }],
+      groups: [],
+      offset: 0,
+      limit: 1,
+      filteredRows: 1,
+      totalRows: 1,
+      snapshot: lookupSnapshot(2),
+    });
+
+    expect(s.allRows[0]).toEqual({
+      rowKey: "r1",
+      title: "committed",
+      lookupValue: null,
+    });
+  });
+
+  it("recovers the Lookup stable-key overlay after a valid refresh", () => {
+    const s = useTableStore();
+    s.setDatasetReady({
+      ...makeDatasetReady([{ rowKey: "r1", lookupValue: null }], [{
+        ...makeColumn("lookupValue"),
+        fieldId: "records.lookup",
+        kind: "lookup",
+        lookupId: "records.lookup",
+      }], 1),
+      table: "records",
+    });
+    const base = {
+      contract: "vibetable.lookup-query.v1" as const,
+      collection: "records",
+      requestGeneration: 2,
+      schemaRevision: "s",
+      permissionRevision: "p",
+      lookupRevision: "l",
+      columns: [],
+      groups: [],
+      offset: 0,
+      limit: 1,
+      filteredRows: 1,
+      totalRows: 1,
+      snapshot: lookupSnapshot(1),
+    };
+
+    s.applyLookupQueryResult({ ...base, rows: [{ "records.lookup": "bad" }] });
+    expect(s.error).toBe("Lookup query returned a row without a stable key.");
+
+    s.applyLookupQueryResult({
+      ...base,
+      rows: [{ id: "r1", "records.lookup": "recovered" }],
+    });
+    expect(s.error).toBeNull();
+    expect(s.allRows[0]?.lookupValue).toBe("recovered");
   });
 });

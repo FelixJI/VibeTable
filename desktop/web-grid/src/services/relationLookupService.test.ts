@@ -157,61 +157,6 @@ describe("relationLookupService", () => {
     }));
   });
 
-  it("uses the frozen table_admin two-phase relation RPCs without adding cascade targets", async () => {
-    const store = useRelationLookupStore();
-    const generation = store.beginContext("orders");
-    store.acceptContext(generation, {
-      collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [],
-      schemaRevision: "schema-1", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
-    }, [], {
-      contract: "vibetable.relation-capabilities.v1",
-      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
-    });
-    request
-      .mockResolvedValueOnce({ planId: "plan-1", canApply: true, affectedLookupIds: ["order.price"], steps: [] })
-      .mockResolvedValueOnce({ deleted: true, schemaRevision: "schema-2", appliedSteps: [] });
-    const service = useRelationLookupService();
-
-    await service.previewRelationChange({
-      collection: "orders", action: "delete", relationId: "orders.contract",
-      expectedSchemaRevision: "schema-1",
-    });
-    await service.applyRelationChange({
-      planId: "plan-1", operationId: "op-1", expectedSchemaRevision: "schema-1",
-      cascadeLookupIds: [],
-    });
-
-    expect(request).toHaveBeenNthCalledWith(1, "table_admin.previewRelationChange", expect.objectContaining({ action: "delete" }));
-    expect(request).toHaveBeenNthCalledWith(2, "table_admin.applyRelationChange", expect.objectContaining({ cascadeLookupIds: [] }));
-  });
-
-  it("validates and mutates Lookups with explicit definitions", async () => {
-    const store = useRelationLookupStore();
-    const generation = store.beginContext("orders");
-    store.acceptContext(generation, {
-      collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [],
-      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
-    }, [], {
-      contract: "vibetable.relation-capabilities.v1",
-      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
-    });
-    const definition = {
-      lookupId: "orders.contract_price", collection: "orders", fieldKey: "contract_price",
-      displayName: "合同价格", path: [{ relationId: "orders.contract", m2aCollection: null }],
-      source: { kind: "target_field" as const, fieldRef: "contracts.price" }, m2aFieldMapping: [],
-      aggregation: "single" as const, outputType: "decimal" as const, outputScale: 2,
-      revision: 1, state: "valid" as const, diagnostics: [], dependencies: [],
-    };
-    request.mockResolvedValue({ definition, valid: true, diagnostics: [], lookupRevision: "l" });
-    const service = useRelationLookupService();
-
-    await service.validateLookup(definition);
-    await service.createLookup(definition);
-
-    expect(request).toHaveBeenNthCalledWith(1, "lookup.validate", { definition, existing: [] });
-    expect(request).toHaveBeenNthCalledWith(2, "lookup.create", expect.objectContaining({ definition }));
-  });
-
   it("loads Lookup candidates from a path target collection", async () => {
     request.mockResolvedValue({ collection: "contracts", definitions: [], lookupRevision: "target-l" });
     const result = await useRelationLookupService().listCollectionLookups("contracts");

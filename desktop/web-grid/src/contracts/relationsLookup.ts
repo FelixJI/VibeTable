@@ -48,82 +48,6 @@ export interface NormalizedRelationDescriptor {
   readonly diagnostics: readonly RelationDiagnostic[];
 }
 
-export interface JunctionContextFieldConfig {
-  readonly field: string;
-  readonly type: "string" | "text" | "integer" | "bigInteger" | "decimal" | "float"
-    | "boolean" | "date" | "dateTime" | "time" | "json" | "uuid";
-  readonly nullable: boolean;
-  readonly defaultValue?: unknown;
-}
-
-interface RelationCommonConfig {
-  readonly fieldKey: string;
-  readonly fieldDisplayName: string;
-  readonly nullable: boolean;
-  readonly onDelete: RelationDeletePolicy;
-  readonly preset: RelationPreset;
-  /** Explicit display template. Empty means no template; never inferred. */
-  readonly displayTemplate?: string | null;
-}
-
-export type RelationChangeConfig =
-  | (RelationCommonConfig & { readonly kind: "m2o"; readonly relatedCollection: string; readonly unique: boolean })
-  | (RelationCommonConfig & { readonly kind: "o2m"; readonly relatedCollection: string; readonly relatedManyField: string })
-  | (RelationCommonConfig & {
-    readonly kind: "m2m";
-    readonly relatedCollection: string;
-    readonly junction: JunctionProfile;
-    readonly junctionContextFields: readonly JunctionContextFieldConfig[];
-  })
-  | (RelationCommonConfig & {
-    readonly kind: "m2a";
-    readonly allowedCollections: readonly string[];
-    readonly junction: JunctionProfile;
-    readonly junctionContextFields: readonly JunctionContextFieldConfig[];
-  });
-
-export interface PreviewRelationChangeParams {
-  readonly collection: string;
-  readonly action: "create" | "update" | "delete";
-  readonly relationId?: string | null;
-  readonly config?: RelationChangeConfig | null;
-  readonly expectedSchemaRevision: string;
-}
-
-export interface SchemaChangeStep {
-  readonly resource: "collection" | "field" | "relation" | "constraint" | "lookup";
-  readonly action: "create" | "update" | "delete";
-  readonly key: string;
-  readonly destructive: boolean;
-}
-
-export interface RelationChangePlan {
-  readonly planId: string;
-  readonly collection: string;
-  readonly expectedSchemaRevision: string;
-  readonly action: "create" | "update" | "delete";
-  readonly relationId?: string | null;
-  readonly steps: readonly SchemaChangeStep[];
-  readonly affectedLookupIds: readonly string[];
-  readonly diagnostics: readonly RelationDiagnostic[];
-  readonly canApply: boolean;
-}
-
-export interface ApplyRelationChangeParams {
-  readonly planId: string;
-  readonly operationId: string;
-  readonly expectedSchemaRevision: string;
-  /** Explicit opt-in only. UI never fills this automatically. */
-  readonly cascadeLookupIds: readonly string[];
-}
-
-export interface RelationChangeResult {
-  readonly relation?: NormalizedRelationDescriptor | null;
-  readonly deleted: boolean;
-  readonly schemaRevision: string;
-  readonly appliedSteps: readonly SchemaChangeStep[];
-}
-
 export interface RelationTargetRef {
   readonly collection: string;
   readonly itemId: string;
@@ -288,6 +212,16 @@ export interface LookupQueryResult {
   readonly limit: number;
   readonly filteredRows: number;
   readonly totalRows: number;
+  /** QueryPort snapshot used to reject responses older than a local mutation. */
+  readonly snapshot: {
+    readonly snapshotId: string;
+    readonly digest: string;
+    readonly databaseId: string;
+    readonly table: string;
+    readonly dataRevision: number;
+    readonly schemaRevision: string;
+    readonly normalizedQuery: Readonly<Record<string, unknown>>;
+  };
 }
 
 export interface SchemaSnapshot {
@@ -339,27 +273,6 @@ export interface LookupValidationResult {
   readonly diagnostics: readonly LookupDiagnostic[];
   readonly lookupRevision: string;
 }
-export interface LookupCreateParams {
-  readonly definition: LookupDefinition;
-  readonly requestId: string;
-}
-export interface LookupUpdateParams extends LookupCreateParams {
-  readonly expectedRevision: number;
-}
-export interface LookupDeleteParams {
-  readonly collection: string;
-  readonly lookupId: string;
-  readonly expectedRevision: number;
-  readonly requestId: string;
-}
-export interface LookupMutationResult {
-  readonly collection: string;
-  readonly lookupId: string;
-  readonly definition?: LookupDefinition | null;
-  readonly deleted: boolean;
-  readonly lookupRevision: string;
-}
-
 export interface LookupPreviewParams extends LookupQueryParams {
   readonly definitions: readonly LookupDefinition[];
 }

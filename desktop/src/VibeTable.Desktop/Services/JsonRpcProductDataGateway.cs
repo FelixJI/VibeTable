@@ -17,6 +17,7 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
             RespectNullableAnnotations = true,
             RespectRequiredConstructorParameters = true,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         };
     private readonly JsonRpcClient _client;
     private bool _disposed;
@@ -30,6 +31,18 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
     public event Action<DataChangedEvent>? DataChanged;
     public event Action<JsonElement>? TaskChanged;
 
+    public Task<JsonElement> DescribeFieldSettingsAsync(JsonElement p, CancellationToken t)
+        => InvokeStrictElement<FieldSettingsDescribeResultV2>("field.settings.describe", p, t);
+    public Task<JsonElement> PlanFieldChangeAsync(JsonElement p, CancellationToken t)
+        => InvokeStrictElement<FieldChangePlanV2>("field.change.plan", p, t);
+    public Task<JsonElement> ApplyFieldChangeAsync(JsonElement p, CancellationToken t)
+        => InvokeStrictElement<FieldApplyReceiptV2>("field.change.apply", p, t);
+    public Task<JsonElement> GetFieldChangeStatusAsync(JsonElement p, CancellationToken t)
+        => InvokeStrictElement<FieldMigrationStatusV2>("field.change.status", p, t);
+    public Task<JsonElement> CancelFieldChangeAsync(JsonElement p, CancellationToken t)
+        => InvokeStrictElement<FieldMigrationStatusV2>("field.change.cancel", p, t);
+    public Task<JsonElement> ListRecycledFieldsAsync(JsonElement p, CancellationToken t)
+        => InvokeStrictElement<FieldRecycleBinResultV2>("field.recycleBin.list", p, t);
     public Task<JsonElement> ValidateSchemaAsync(JsonElement p, CancellationToken t) => Invoke("schema.validate", p, t);
     public Task<JsonElement> ApplySchemaAsync(JsonElement p, CancellationToken t) => Invoke("schema.apply", p, t);
     public Task<JsonElement> DeleteSchemaAsync(JsonElement p, CancellationToken t) => Invoke("schema.delete", p, t);
@@ -86,13 +99,8 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
     public Task<JsonElement> ApplyRelationDeltaAsync(JsonElement p, CancellationToken t) => Invoke("relation.applyDelta", p, t);
     public Task<JsonElement> ListLookupsAsync(JsonElement p, CancellationToken t) => Invoke("lookup.list", p, t);
     public Task<JsonElement> ValidateLookupAsync(JsonElement p, CancellationToken t) => Invoke("lookup.validate", p, t);
-    public Task<JsonElement> CreateLookupAsync(JsonElement p, CancellationToken t) => Invoke("lookup.create", p, t);
-    public Task<JsonElement> UpdateLookupAsync(JsonElement p, CancellationToken t) => Invoke("lookup.update", p, t);
-    public Task<JsonElement> DeleteLookupAsync(JsonElement p, CancellationToken t) => Invoke("lookup.delete", p, t);
     public Task<JsonElement> PreviewLookupAsync(JsonElement p, CancellationToken t) => Invoke("lookup.preview", p, t);
     public Task<JsonElement> QueryLookupsAsync(JsonElement p, CancellationToken t) => Invoke("lookup.query", p, t);
-    public Task<JsonElement> PreviewRelationChangeAsync(JsonElement p, CancellationToken t) => Invoke("table_admin.previewRelationChange", p, t);
-    public Task<JsonElement> ApplyRelationChangeAsync(JsonElement p, CancellationToken t) => Invoke("table_admin.applyRelationChange", p, t);
 
     public void Dispose()
     {
@@ -133,9 +141,50 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
             .ConfigureAwait(false);
         try
         {
-            return response.Deserialize<TResult>(JsonOptions)
+            TResult result = response.Deserialize<TResult>(JsonOptions)
                 ?? throw new JsonException(
                     $"Product RPC '{method}' returned null.");
+            if (!SchemaV2Contract.ValidateResult(result, out string reason))
+            {
+                throw new JsonException(
+                    $"Product RPC '{method}' returned an invalid Schema v2 result: {reason}.");
+            }
+            return result;
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidOperationException(
+                $"Product RPC '{method}' returned an invalid response.",
+                exception);
+        }
+    }
+
+    private async Task<JsonElement> InvokeStrictElement<TResult>(
+        string method,
+        JsonElement parameters,
+        CancellationToken token)
+        where TResult : notnull
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        token.ThrowIfCancellationRequested();
+        JsonElement response = await _client.InvokeAsync<JsonElement, JsonElement>(
+            method,
+            parameters,
+            token).ConfigureAwait(false);
+        try
+        {
+            TResult result = response.Deserialize<TResult>(JsonOptions)
+                ?? throw new JsonException(
+                    $"Product RPC '{method}' returned null.");
+            if (!SchemaV2Contract.ValidateResult(result, out string reason))
+            {
+                throw new JsonException(
+                    $"Product RPC '{method}' returned an invalid Schema v2 result: {reason}.");
+            }
+            // Return the validated wire object unchanged. Re-serializing the
+            // typed DTO with nullable-member suppression drops required
+            // explicit-null members such as definition/before/error.
+            return response.Clone();
         }
         catch (JsonException exception)
         {

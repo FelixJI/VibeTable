@@ -31,7 +31,6 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 SCENARIO_MANIFEST = Path(__file__).with_name("pocketbase_product_scenarios.json")
 NODE_RUNNER = Path(__file__).with_name("webview_product_scenarios.mjs")
-DEFAULT_PACKAGE = ROOT / "dist" / "VibeTable.Next"
 DEFAULT_EVIDENCE = ROOT / "build" / "qa" / "product-e2e"
 CDP_TIMEOUT_SECONDS = 60.0
 
@@ -39,6 +38,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from qa.package_check import check_package  # noqa: E402
+from scripts.build_next import RepoPaths  # noqa: E402
+
+DEFAULT_PACKAGE = RepoPaths.default(ROOT).publish_root
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,11 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _package_layout_path(package_root: Path) -> Path:
+    packaged = package_root / "resources" / "publish-layout.json"
+    return packaged if packaged.is_file() else package_root / "publish-layout.json"
 
 
 def package_fingerprint(package_root: Path) -> dict[str, Any]:
@@ -120,7 +127,7 @@ def _source_files(base: Path, patterns: Sequence[str]) -> list[Path]:
 
 
 def package_freshness(package_root: Path) -> dict[str, Any]:
-    layout = json.loads((package_root / "publish-layout.json").read_text(encoding="utf-8"))
+    layout = json.loads(_package_layout_path(package_root).read_text(encoding="utf-8"))
     launch = layout["launch"]
     host_artifact = package_root / "VibeTable.Desktop.dll"
     if not host_artifact.is_file():
@@ -529,6 +536,7 @@ def _handle_storage_proof(
                 """
                 SELECT COUNT(*) FROM vibetable_idempotency_keys
                 WHERE key NOT LIKE 'metadata:%'
+                  AND key NOT LIKE 'field-v2:%'
                 """
             ).fetchone()[0]
             outbox = connection.execute(
@@ -887,7 +895,7 @@ def run_scenario(
         str(attachment_replacement.resolve()) + "\n",
         encoding="utf-8",
     )
-    layout = json.loads((package_root / "publish-layout.json").read_text(encoding="utf-8"))
+    layout = json.loads(_package_layout_path(package_root).read_text(encoding="utf-8"))
     host = (package_root / layout["launch"]["host"]).resolve()
     port = _reserve_port()
     environment = os.environ.copy()
@@ -897,6 +905,10 @@ def run_scenario(
     environment["VIBETABLE_E2E_WEBVIEW2_USER_DATA_ROOT"] = str(
         (readiness_dir / "webview2-user-data").resolve()
     )
+    if scenario.id == "05-formula-lifecycle":
+        environment["VIBETABLE_E2E_MIGRATION_FAULT_FILE"] = str(
+            (controls_dir / "migration-fault.phase").resolve()
+        )
     mutation_barrier = None
     if scenario.id == "09-atomic-import-scale":
         barrier_arm = controls_dir / "mutation-barrier.arm"

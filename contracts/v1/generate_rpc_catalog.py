@@ -52,7 +52,6 @@ from backend.contracts.history import (  # noqa: E402
 )
 from backend.contracts.lookup import (  # noqa: E402
     LookupListResult,
-    LookupMutationResult,
     LookupQueryResult,
     LookupValidationResult,
 )
@@ -81,13 +80,18 @@ from backend.contracts.presets_versions_dashboards import (  # noqa: E402
     VersionsResult,
 )
 from backend.contracts.relation_admin import (  # noqa: E402
-    RelationChangePlan,
-    RelationChangeResult,
     RelationDeltaPreview,
     RelationDeltaResult,
     RelationSearchResult,
     RelationSingleUpdateResult,
     SchemaDescribeResult,
+)
+from backend.contracts.schema_v2 import (  # noqa: E402
+    ApplyReceiptV2,
+    FieldChangePlanV2,
+    FieldRecycleBinResultV2,
+    FieldSettingsDescribeResultV2,
+    MigrationStatusV2,
 )
 from backend.contracts.settings_commands import (  # noqa: E402
     CommandResult,
@@ -136,6 +140,8 @@ def _text(name: str) -> str:
         return "text/csv"
     if name in {"digest"}:
         return "sha256:" + ("a" * 64)
+    if name in {"receipt", "backup_receipt", "backupReceipt"}:
+        return "vbr1.sample-receipt"
     if name in {"path"}:
         return "C:/VibeTable/sample.csv"
     if name in {"kind"}:
@@ -185,6 +191,8 @@ def _value(annotation: object, name: str) -> object:
 
 
 def _product_payload(model: type[ProductParams]) -> dict[str, object]:
+    if model._catalog_example is not None:
+        return model.model_validate(model._catalog_example).model_dump(mode="json")
     result: dict[str, object] = {}
     for name in sorted(model._required_fields):
         expected = model._field_types.get(name, (str,))
@@ -348,6 +356,16 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
             },
         },
     }
+    schema_v2_fixtures = REPO_ROOT / "contracts" / "schema-v2" / "fixtures"
+
+    def schema_v2_result(filename: str, model: type[BaseModel]) -> ResultSpec:
+        example = json.loads((schema_v2_fixtures / filename).read_text(encoding="utf-8"))
+        model.model_validate(example)
+        # Keep the v1 RPC catalog provider-neutral. The authoritative, richer
+        # Schema v2 response schema lives in contracts/schema-v2; catalog
+        # examples intentionally derive only the closed shape they exercise.
+        return _manual(model.__name__, example)
+
     specs: dict[str, ResultSpec] = {
         "backup.create": _typed(BackupCreateResult),
         "backup.delete": _manual(
@@ -373,6 +391,16 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
                 "currentDataRevision": "data_0002",
                 "action": "refresh-data",
             },
+        ),
+        "field.change.apply": schema_v2_result("apply-receipt.json", ApplyReceiptV2),
+        "field.change.cancel": schema_v2_result("migration-status.json", MigrationStatusV2),
+        "field.change.plan": schema_v2_result("field-change-plan.json", FieldChangePlanV2),
+        "field.change.status": schema_v2_result("migration-status.json", MigrationStatusV2),
+        "field.recycleBin.list": schema_v2_result(
+            "field-recycle-bin.json", FieldRecycleBinResultV2
+        ),
+        "field.settings.describe": schema_v2_result(
+            "field-settings-describe.json", FieldSettingsDescribeResultV2
         ),
         "file.applyHostChange": _manual(
             "MutationReceipt",
@@ -447,12 +475,9 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "insights.panelManifest": _typed(PanelManifestResult),
         "insights.readDashboardWorkspace": _typed(DashboardWorkspaceResult),
         "insights.saveDashboardDraft": _typed(SaveDashboardDraftResult),
-        "lookup.create": _typed(LookupMutationResult),
-        "lookup.delete": _typed(LookupMutationResult),
         "lookup.list": _typed(LookupListResult),
         "lookup.preview": _typed(LookupQueryResult),
         "lookup.query": _typed(LookupQueryResult),
-        "lookup.update": _typed(LookupMutationResult),
         "lookup.validate": _typed(LookupValidationResult),
         "mutation.apply": _manual("MutationReceipt", mutation_receipt, receipt_schema),
         "mutation.preview": _manual(
@@ -578,8 +603,6 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "system.handshake": _typed(HandshakeResult),
         "table.applyPaste": _typed(ApplyPasteResult),
         "table.previewPaste": _typed(PastePlan),
-        "table_admin.applyRelationChange": _typed(RelationChangeResult),
-        "table_admin.previewRelationChange": _typed(RelationChangePlan),
         "task.cancel": _typed(TaskStatus),
         "task.create": _typed(TaskStatus),
         "task.status": _typed(TaskStatus),

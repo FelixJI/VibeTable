@@ -46,6 +46,7 @@ public partial class MainWindow : Window
     private readonly ILocalDocumentPreview _attachmentPreview;
     private readonly string _attachmentPreviewRoot;
     private readonly string _productDataRoot;
+    private readonly string _documentsDirectory;
     private readonly string _pocketBaseDataDirectory;
     private readonly string _pocketBaseVersion;
     private readonly DashboardFeatureOptions _dashboardFeatures;
@@ -67,6 +68,17 @@ public partial class MainWindow : Window
         InitializeComponent();
 
         HostStartupOptions startup = HostStartupOptions.Current();
+        string localAppData = Environment.GetFolderPath(
+            Environment.SpecialFolder.LocalApplicationData);
+        _documentsDirectory = Environment.GetFolderPath(
+            Environment.SpecialFolder.MyDocuments);
+        if (string.IsNullOrWhiteSpace(_documentsDirectory))
+        {
+            _documentsDirectory = Path.Combine(
+                Environment.GetFolderPath(
+                    Environment.SpecialFolder.UserProfile),
+                "Documents");
+        }
         _e2eControlsDir = startup.TestMode
             && !string.IsNullOrWhiteSpace(startup.E2eControlsDir)
                 ? Path.GetFullPath(startup.E2eControlsDir)
@@ -87,8 +99,7 @@ public partial class MainWindow : Window
         }
         PocketBaseLaunchOptions sidecarOptions = PocketBaseHostOptions.Resolve(
             AppContext.BaseDirectory,
-            Environment.GetFolderPath(
-                Environment.SpecialFolder.LocalApplicationData));
+            localAppData);
         if (startup.TestMode && !string.IsNullOrWhiteSpace(startup.ReadinessDir))
         {
             runtimeDataRoot = Path.GetFullPath(
@@ -106,18 +117,29 @@ public partial class MainWindow : Window
         else if (!startup.TestMode)
         {
             runtimeDataRoot = ProductDataRootManager.Resolve(
-                AppContext.BaseDirectory);
+                _documentsDirectory,
+                localAppData);
         }
+        bool productionSession =
+            !startup.TestMode && !developmentDataRootRequested;
         if (runtimeDataRoot is not null)
         {
             sidecarOptions = PocketBaseHostOptions.WithRuntimeDataRoot(
                 sidecarOptions,
-                runtimeDataRoot);
+                runtimeDataRoot,
+                productionSession
+                    ? ProductDataRootManager.ResolvePocketBaseLogPath(
+                        AppContext.BaseDirectory)
+                    : null);
             ProductDataRootManager.ConfigureProcessEnvironment(
                 _backendOptions.Environment,
-                runtimeDataRoot);
+                productionSession
+                    ? ProductDataRootManager.ResolveRuntimeRoot(localAppData)
+                    : runtimeDataRoot);
             _backendOptions.LogPath = ProductDataRootManager.ResolveSidecarLogPath(
-                runtimeDataRoot);
+                productionSession
+                    ? AppContext.BaseDirectory
+                    : runtimeDataRoot);
         }
         _productDataRoot = runtimeDataRoot
             ?? Path.Combine(
@@ -127,10 +149,15 @@ public partial class MainWindow : Window
         _pocketBaseDataDirectory = sidecarOptions.DataDirectory;
         _pocketBaseVersion = sidecarOptions.ExpectedIdentity?.PocketBaseVersion
             ?? "unknown";
+        string attachmentCacheBase = productionSession
+            ? ProductDataRootManager.ResolveCacheRoot(localAppData)
+            : _productDataRoot;
+        string attachmentPreviewSession =
+            $"p{Environment.ProcessId:x}-{Guid.NewGuid():N}"[..17];
         _attachmentPreviewRoot = Path.Combine(
-            _productDataRoot,
+            attachmentCacheBase,
             "attachment-preview",
-            $"p{Environment.ProcessId}-{Guid.NewGuid():N}");
+            attachmentPreviewSession);
         Directory.CreateDirectory(_attachmentPreviewRoot);
         _attachmentPreview = new ShellDocumentPreview();
         _sidecar = new PocketBaseSupervisor(sidecarOptions);
@@ -154,10 +181,15 @@ public partial class MainWindow : Window
             _pluginResources,
             _readiness,
             OnRendererProcessFailed,
-            runtimeDataRoot is not null
-                ? Path.Combine(runtimeDataRoot, "webview2-user-data")
-                : null,
-            stableIsolatedUserDataRoot: runtimeDataRoot is not null);
+            productionSession
+                ? Path.Combine(
+                    ProductDataRootManager.ResolveCacheRoot(localAppData),
+                    "webview2-user-data")
+                : runtimeDataRoot is not null
+                    ? Path.Combine(runtimeDataRoot, "webview2-user-data")
+                    : null,
+            stableIsolatedUserDataRoot:
+                productionSession || runtimeDataRoot is not null);
 
         IPluginPackageSourcePicker pluginPackagePicker =
             _e2eControlsDir is null
@@ -426,7 +458,7 @@ public partial class MainWindow : Window
                 request.RequestId,
                 ProductDataRootManager.GetStatus(
                     _productDataRoot,
-                    AppContext.BaseDirectory));
+                    _documentsDirectory));
             return;
         }
         if (request.Type == "dataRoot.chooseMigrationRequested")
@@ -1107,9 +1139,18 @@ public partial class MainWindow : Window
         string suggested = SafeFileName(originalName)
             ?? SafeFileName(storedName)
             ?? "attachment.bin";
+        // The preview host only needs the extension to select a handler. Do
+        // not carry the original name into the temporary path: evidence roots
+        // and user filenames can otherwise cross Windows' legacy MAX_PATH
+        // boundary in the packaged Python process.
+        string previewExtension = Path.GetExtension(suggested);
+        if (previewExtension.Length > 16)
+        {
+            previewExtension = string.Empty;
+        }
         string previewPath = Path.Combine(
             _attachmentPreviewRoot,
-            $"{Guid.NewGuid():N}-{suggested}");
+            $"{Guid.NewGuid():N}{previewExtension}");
         context["storedName"] = storedName;
         context["outputPath"] = previewPath;
         try
@@ -1138,8 +1179,10 @@ public partial class MainWindow : Window
                 exception.Message,
                 exception.Code);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            _readiness?.Trace(
+                $"Attachment preview failed; type={exception.GetType().Name}; message={exception.Message}");
             _webBridge.PostOperationFailed(
                 request.RequestId,
                 "托管附件预览失败，请稍后重试。",

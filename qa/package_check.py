@@ -13,7 +13,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.build_next import BuildError, RepoPaths, render_manifest, sha256_file
+from scripts.build_next import (
+    HOST_EXE_NAME,
+    BuildError,
+    RepoPaths,
+    release_package_name,
+    render_manifest,
+    sha256_file,
+)
 from scripts.changelog import check_changelog
 from scripts.versioning import check_versions, collect_release_versions
 
@@ -77,9 +84,69 @@ def check_source(root: Path = PROJECT_ROOT) -> list[str]:
 def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[str]:
     root = package_root.resolve()
     errors: list[str] = []
-    layout_path = root / "publish-layout.json"
+    expected = collect_release_versions(source_root)
+    expected_name = release_package_name(expected.app)
+    if root.name != expected_name:
+        errors.append(f"package directory must be versioned as {expected_name}")
+
+    root_names = {path.name for path in root.iterdir()} if root.is_dir() else set()
+    required_root_entries = {
+        HOST_EXE_NAME,
+        "logs",
+        "release.json",
+        "resources",
+    }
+    errors.extend(
+        f"missing package-root entry: {name}" for name in sorted(required_root_entries - root_names)
+    )
+    allowed_root_entries = required_root_entries
+    errors.extend(
+        f"unexpected package-root entry: {name}"
+        for name in sorted(root_names - allowed_root_entries)
+    )
+
+    release_path = root / "release.json"
+    if release_path.is_file():
+        try:
+            release = json.loads(release_path.read_text(encoding="utf-8"))
+            if release.get("version") != expected.app:
+                errors.append("release.json version mismatch")
+            if release.get("platform") != "windows":
+                errors.append("release.json platform mismatch")
+            if release.get("architecture") != "x64":
+                errors.append("release.json architecture mismatch")
+        except (OSError, json.JSONDecodeError) as exc:
+            errors.append(f"invalid release.json: {exc}")
+
+    forbidden_root_directories = {
+        "userdata",
+        "VibeTableData",
+        "cs",
+        "de",
+        "es",
+        "fr",
+        "it",
+        "ja",
+        "ko",
+        "pl",
+        "pt-BR",
+        "ru",
+        "tr",
+        "zh-Hans",
+        "zh-Hant",
+    }
+    errors.extend(
+        f"forbidden package-root directory: {name}"
+        for name in sorted(root_names & forbidden_root_directories)
+    )
+
+    expanded_bytes = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+    if expanded_bytes > 512 * 1024 * 1024:
+        errors.append(f"expanded package exceeds 512 MiB: {expanded_bytes} bytes")
+
+    layout_path = root / "resources" / "publish-layout.json"
     if not layout_path.is_file():
-        return ["missing publish-layout.json"]
+        return [*errors, "missing resources/publish-layout.json"]
     try:
         layout = json.loads(layout_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -101,6 +168,7 @@ def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[
         "host executable": launch.get("host"),
         "backend executable": launch.get("backend"),
         "sidecar binary": launch.get("sidecar"),
+        "preview host": launch.get("previewHost"),
         "migration manifest": assets.get("migrations"),
         "build info": assets.get("buildInfo"),
         "sidecar checksum": assets.get("sidecarChecksum"),
@@ -144,7 +212,6 @@ def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[
     if os.name != "nt" and not os.access(binary, os.X_OK):
         errors.append("sidecar binary is not executable")
 
-    expected = collect_release_versions(source_root)
     if "build info" in resolved:
         info = json.loads(resolved["build info"].read_text(encoding="utf-8"))
         expected_info = {
@@ -198,7 +265,7 @@ def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[
                 name = item.get("name")
                 if isinstance(name, str) and f"===== {name} " not in license_text:
                     errors.append(f"third-party license bundle is missing module: {name}")
-    if (root / "data").exists() or (root / "pb_data").exists():
+    if any((root / name).exists() for name in ("data", "pb_data", "userdata", "VibeTableData")):
         errors.append("mutable user data must not be stored in the install directory")
     return errors
 

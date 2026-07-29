@@ -16,6 +16,12 @@ public interface IProductDataRpcGateway : IDisposable, IRelationLookupRpcGateway
     event Action<DataChangedEvent>? DataChanged;
     event Action<JsonElement>? TaskChanged;
 
+    Task<JsonElement> DescribeFieldSettingsAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> PlanFieldChangeAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> ApplyFieldChangeAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> GetFieldChangeStatusAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> CancelFieldChangeAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> ListRecycledFieldsAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ValidateSchemaAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ApplySchemaAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> DeleteSchemaAsync(JsonElement parameters, CancellationToken token);

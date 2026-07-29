@@ -14,7 +14,11 @@ public sealed class BackendLaunchOptionsTests
         WithTemporaryDirectory(root =>
         {
             string host = Path.Combine(root, "publish");
-            string backend = Path.Combine(host, "backend", "vibetable-backend.exe");
+            string backend = Path.Combine(
+                host,
+                "resources",
+                "backend",
+                "vibetable-backend.exe");
             Directory.CreateDirectory(Path.GetDirectoryName(backend)!);
             File.WriteAllText(backend, string.Empty);
 

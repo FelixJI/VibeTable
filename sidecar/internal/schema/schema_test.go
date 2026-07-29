@@ -199,6 +199,23 @@ func TestViewDefinitionRoundTripsAndRejectsRawQueryProperties(t *testing.T) {
 	}
 }
 
+func TestBaseTableMayBootstrapEmptyButViewStillRequiresAProjection(t *testing.T) {
+	definition := validDefinition()
+	definition.Fields = []schema.FieldDefinition{}
+	if err := schema.Validate(definition); err != nil {
+		t.Fatalf("empty base table bootstrap rejected: %v", err)
+	}
+
+	definition.Kind = schema.TableKindView
+	definition.View = &schema.ViewSpec{SourceTableID: "source_orders"}
+	err := schema.Validate(definition)
+	var productErr *schema.ProductError
+	if !errors.As(err, &productErr) ||
+		productErr.Code != "schema.table.fields_required" {
+		t.Fatalf("empty view validation = %#v, want fields_required", err)
+	}
+}
+
 func TestRelationDefinitionStrictlyExpressesDirectJunctionAndM2A(t *testing.T) {
 	for _, testCase := range []struct {
 		name     string

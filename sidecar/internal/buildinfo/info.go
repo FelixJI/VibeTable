@@ -5,7 +5,7 @@ const (
 	PocketBaseVersion = "0.39.9"
 	CELVersion        = "0.26.1"
 	ContractVersion   = "v1"
-	SchemaVersion     = "4"
+	SchemaVersion     = "5"
 )
 
 // These values are populated with -ldflags in release builds.

@@ -64,21 +64,6 @@ internal static class RelationLookupRpcRegistry
             payload => HasObject(payload, "definition") && HasArray(payload, "existing"),
             (gateway, payload, token) => gateway.ValidateLookupAsync(payload, token)),
         new(
-            "lookup.create",
-            payload => HasObject(payload, "definition") && HasString(payload, "requestId"),
-            (gateway, payload, token) => gateway.CreateLookupAsync(payload, token)),
-        new(
-            "lookup.update",
-            payload => HasObject(payload, "definition")
-                && HasString(payload, "requestId")
-                && HasNumber(payload, "expectedRevision"),
-            (gateway, payload, token) => gateway.UpdateLookupAsync(payload, token)),
-        new(
-            "lookup.delete",
-            payload => HasStrings(payload, "collection", "lookupId", "requestId")
-                && HasNumber(payload, "expectedRevision"),
-            (gateway, payload, token) => gateway.DeleteLookupAsync(payload, token)),
-        new(
             "lookup.preview",
             payload => IsValidLookupQuery(payload) && HasArray(payload, "definitions"),
             (gateway, payload, token) => gateway.PreviewLookupAsync(payload, token)),
@@ -86,20 +71,6 @@ internal static class RelationLookupRpcRegistry
             "lookup.query",
             IsValidLookupQuery,
             (gateway, payload, token) => gateway.QueryLookupsAsync(payload, token)),
-        new(
-            "table_admin.previewRelationChange",
-            payload => HasStrings(payload, "collection", "action", "expectedSchemaRevision")
-                && IsRelationChangeAction(payload),
-            (gateway, payload, token) => gateway.PreviewRelationChangeAsync(payload, token)),
-        new(
-            "table_admin.applyRelationChange",
-            payload => HasStrings(
-                    payload,
-                    "planId",
-                    "operationId",
-                    "expectedSchemaRevision")
-                && HasArray(payload, "cascadeLookupIds"),
-            (gateway, payload, token) => gateway.ApplyRelationChangeAsync(payload, token)),
     ];
 
     private static readonly IReadOnlyDictionary<string, RelationLookupRpcEndpoint> ByType =

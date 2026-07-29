@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -19,6 +21,19 @@ from backend.infrastructure.plugin_worker import (
     InMemoryBulkMutationAdapter,
     InMemoryHostConfirmationAdapter,
 )
+
+FIELD_VALUE_CORPUS_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "contracts"
+    / "schema-v2"
+    / "fixtures"
+    / "field-value-entry-corpus.json"
+)
+
+
+def _field_value_corpus_values() -> dict[str, Any]:
+    payload = json.loads(FIELD_VALUE_CORPUS_PATH.read_text(encoding="utf-8"))
+    return {case["field"]: case["productValue"] for case in payload["cases"]}
 
 
 def _snapshot(
@@ -304,6 +319,44 @@ async def test_write_action_requires_confirmation_before_product_mutation() -> N
     assert completed.result.summary == "updated"
     assert trace == ["host.confirm", "bulk.apply"]
     assert mutation.plans[0].operations[0].expected_date_updated == "sha256:old"
+
+
+@pytest.mark.asyncio
+async def test_plugin_forwards_shared_corpus_product_values_unchanged() -> None:
+    values = _field_value_corpus_values()
+    worker = RecordingWorker(
+        {
+            "contract": "vibetable.mutation-plan.v1",
+            "collection": "articles",
+            "operations": [{"kind": "create", "values": values}],
+            "preview": {"affectedCount": 1},
+            "idempotencyKey": "plugin-corpus-1",
+        }
+    )
+    mutation = InMemoryBulkMutationAdapter(
+        result={
+            "contract": "vibetable.plugin-result.v1",
+            "status": "success",
+            "summary": "created",
+        }
+    )
+    runtime = PluginExecutionRuntime(
+        registry=FakeRegistry(_snapshot(risk="write")),
+        worker_adapter=worker,
+        confirmation_adapter=InMemoryHostConfirmationAdapter(decisions=[True]),
+        mutation_adapter=mutation,
+    )
+
+    started = await runtime.start(
+        "com.example.summary",
+        "summarize",
+        _context(),
+        {},
+    )
+    completed = await _terminal(runtime, started.task_id)
+
+    assert completed.state == "succeeded"
+    assert mutation.plans[0].operations[0].values == values
 
 
 @pytest.mark.asyncio

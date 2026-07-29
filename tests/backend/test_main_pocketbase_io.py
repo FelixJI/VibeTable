@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -122,6 +123,19 @@ class _ImportTransport:
                     }
                 ],
                 "indexes": [],
+            }
+        if method == "POST" and path == "/api/vibetable/v2/import-preview":
+            assert isinstance(json_body, dict)
+            raw_payload = json_body["rows"][0]["values"]["payload"]
+            assert isinstance(raw_payload, str)
+            return {
+                "contract": "vibetable.import-preview.v1",
+                "rows": [
+                    {
+                        "values": {"payload": json.loads(raw_payload)},
+                        "diagnostics": [],
+                    }
+                ],
             }
         if method == "POST" and path == "/api/vibetable/v1/mutations/apply":
             assert isinstance(json_body, dict)

@@ -66,10 +66,13 @@ function parseCreate(value: unknown): BackupCreateResult {
   throwMappedError(value);
   if (!isRecord(value)
     || !isBackupEntry(value.backup)
-    || value.integrityValid !== true) {
+    || value.integrityValid !== true
+    || typeof value.receipt !== "string"
+    || !value.receipt.startsWith("vbr1.")
+    || value.receipt.length > 2048) {
     throw new Error("Invalid backup response");
   }
-  return { backup: value.backup, integrityValid: true };
+  return { backup: value.backup, integrityValid: true, receipt: value.receipt };
 }
 
 function parseRestore(value: unknown): BackupRestoreResult {

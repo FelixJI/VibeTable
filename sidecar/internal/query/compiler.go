@@ -68,7 +68,7 @@ func Compile(descriptor TableDescriptor, input TableQuery) (CompiledQuery, error
 			if field.Searchable && field.Type == FieldTypeText {
 				parts = append(parts, fmt.Sprintf(
 					`LOWER(CAST(%s AS TEXT)) LIKE LOWER(%s) ESCAPE '\'`,
-					quote(field.PhysicalName), c.bind(pattern),
+					c.productValueSQL(name, field.PhysicalName), c.bind(pattern),
 				))
 			}
 		}
@@ -89,6 +89,16 @@ func Compile(descriptor TableDescriptor, input TableQuery) (CompiledQuery, error
 	for _, name := range fields {
 		selects = append(selects, fmt.Sprintf(
 			`%s AS %s`, quote(descriptor.Fields[name].PhysicalName), quote(name)))
+	}
+	presenceNames := make([]string, 0, len(descriptor.PresenceFields))
+	for name := range descriptor.PresenceFields {
+		presenceNames = append(presenceNames, name)
+	}
+	sort.Strings(presenceNames)
+	for _, name := range presenceNames {
+		presence := descriptor.PresenceFields[name]
+		selects = append(selects, fmt.Sprintf(
+			`%s AS %s`, quote(presence), quote(presenceAlias(name))))
 	}
 	whereSQL := ""
 	if where != "" {
@@ -113,6 +123,10 @@ func Compile(descriptor TableDescriptor, input TableQuery) (CompiledQuery, error
 			optionalWhere(archiveWhere),
 		Params: c.params, Fields: fields,
 	}, nil
+}
+
+func presenceAlias(name string) string {
+	return "__vibetable_presence_" + name
 }
 
 func CompileAggregate(
@@ -1016,7 +1030,7 @@ func (c *compiler) resolve(fieldPath string, path string) (resolvedField, error)
 	if !ok {
 		return resolvedField{}, unknownField(path, fieldPath)
 	}
-	sql := quote(field.PhysicalName)
+	sql := c.productValueSQL(segments[0], field.PhysicalName)
 	if len(segments) == 1 {
 		return resolvedField{sql: sql, descriptor: field}, nil
 	}
@@ -1055,6 +1069,19 @@ func (c *compiler) resolve(fieldPath string, path string) (resolvedField, error)
 	default:
 		return resolvedField{}, unknownField(path, fieldPath)
 	}
+}
+
+// productValueSQL maps a provider value plus its optional presence companion
+// to the authoritative product value. Predicates, sorts, groups, aggregates
+// and keyword search therefore see missing as SQL NULL while preserving
+// explicit zero, false, empty string and empty container values.
+func (c *compiler) productValueSQL(productName, physicalName string) string {
+	value := quote(physicalName)
+	presence, ok := c.descriptor.PresenceFields[productName]
+	if !ok || presence == "" {
+		return value
+	}
+	return "(CASE WHEN " + quote(presence) + " THEN " + value + " ELSE NULL END)"
 }
 
 func (c *compiler) compileSorts(sorts []SortCondition) (string, error) {

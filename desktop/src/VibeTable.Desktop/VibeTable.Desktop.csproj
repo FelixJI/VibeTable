@@ -4,6 +4,7 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <ApplicationIcon>Assets\Brand\VibeTable.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -13,8 +14,7 @@
   <ItemGroup>
     <ProjectReference Include="..\VibeTable.Contracts\VibeTable.Contracts.csproj" />
     <ProjectReference Include="..\VibeTable.Infrastructure\VibeTable.Infrastructure.csproj" />
-    <ProjectReference Include="..\VibeTable.PreviewHost\VibeTable.PreviewHost.csproj"
-                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\VibeTable.PreviewHost\VibeTable.PreviewHost.csproj" />
     <ProjectReference Include="..\VibeTable.Workspace\VibeTable.Workspace.csproj" />
   </ItemGroup>
 
@@ -25,18 +25,8 @@
   <ItemGroup>
     <None Remove="Assets\Brand\VibeTable.png" />
     <Resource Include="Assets\Brand\VibeTable.png" />
+    <None Remove="Assets\Brand\VibeTable.ico" />
+    <Resource Include="Assets\Brand\VibeTable.ico" />
   </ItemGroup>
-
-  <Target Name="CopyPreviewHostOutput"
-          AfterTargets="Build"
-          Condition="'$(DesignTimeBuild)' != 'true'">
-    <ItemGroup>
-      <_PreviewHostOutput Include="$(MSBuildProjectDirectory)\..\VibeTable.PreviewHost\bin\$(Configuration)\$(TargetFramework)\VibeTable.PreviewHost.*" />
-    </ItemGroup>
-    <MakeDir Directories="$(TargetDir)PreviewHost" />
-    <Copy SourceFiles="@(_PreviewHostOutput)"
-          DestinationFolder="$(TargetDir)PreviewHost"
-          SkipUnchangedFiles="true" />
-  </Target>
 
 </Project>

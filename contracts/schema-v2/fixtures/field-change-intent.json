@@ -1,0 +1,15 @@
+{
+  "action": "update",
+  "tableId": "tbl_orders",
+  "fieldId": "fld_01JABCDE",
+  "expectedSchemaRevision": "schema_7",
+  "expectedDataRevision": null,
+  "draft": null,
+  "actor": {
+    "id": "user_local",
+    "kind": "user"
+  },
+  "conversionRule": "",
+  "confirmation": "",
+  "backupReceipt": ""
+}

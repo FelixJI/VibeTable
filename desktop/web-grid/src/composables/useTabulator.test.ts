@@ -419,6 +419,56 @@ describe("useTabulator", () => {
     wrapper.unmount();
   });
 
+  it("serializes a dataset column rebuild with the following edit-schema rebuild", async () => {
+    const { buildTabulatorColumns } = await import("@/grid/createGrid");
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+    const wrapper = mountHost(gridEl);
+    gridEl.value = document.createElement("div");
+    const columns = [makeColumn("id")];
+    table.beginLoad();
+    table.appendPage(makePage([{ id: 1 }], columns));
+    await flushPromises();
+
+    let finishFirst!: () => void;
+    const firstRefresh = new Promise<void>((resolve) => {
+      finishFirst = resolve;
+    });
+    lastMock!.setColumns
+      .mockImplementationOnce(() => firstRefresh)
+      .mockResolvedValue(undefined);
+    lastMock!.setColumns.mockClear();
+    vi.mocked(buildTabulatorColumns).mockClear();
+
+    table.beginLoad();
+    table.setDatasetReady(makeDatasetReady([{ id: 1 }], columns));
+    await flushPromises();
+    expect(lastMock!.setColumns).toHaveBeenCalledTimes(1);
+
+    const editableSchema = [{
+      name: "id",
+      storageName: "id",
+      dataType: "integer" as const,
+      editable: true,
+      nullable: false,
+      primaryKey: false,
+      editor: { kind: "number" as const, storage: "integer" as const },
+      validation: [],
+    }];
+    table.setEditSchema(
+      editableSchema,
+      { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 1 },
+    );
+    await flushPromises();
+    expect(lastMock!.setColumns).toHaveBeenCalledTimes(1);
+
+    finishFirst();
+    await flushPromises();
+    expect(lastMock!.setColumns).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(buildTabulatorColumns).mock.calls.at(-1)?.[1]).toEqual(editableSchema);
+    wrapper.unmount();
+  });
+
   it("rebuilds localized column chrome when the locale changes", async () => {
     const gridEl = ref<HTMLElement | null>(null);
     const table = useTableStore();

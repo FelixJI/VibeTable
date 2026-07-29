@@ -18,7 +18,7 @@ func TestManifestIsValidAndHashIsStableShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadManifest(): %v", err)
 	}
-	if manifest.SchemaVersion != 4 || len(manifest.Migrations) != 4 {
+	if manifest.SchemaVersion != 5 || len(manifest.Migrations) != 5 {
 		t.Fatalf("unexpected manifest: %#v", manifest)
 	}
 	if hash := Hash(); len(hash) != 64 || strings.Trim(hash, "0123456789abcdef") != "" {
@@ -101,7 +101,12 @@ func TestRealtimeOutboxRetentionUpgradesPopulatedV3Database(t *testing.T) {
 	v3Migrations := core.MigrationsList{}
 	allMigrations := core.MigrationsList{}
 	for _, migration := range core.AppMigrations.Items() {
-		allMigrations.Register(migration.Up, migration.Down, migration.File)
+		if strings.HasPrefix(migration.File, "2026072401_") ||
+			strings.HasPrefix(migration.File, "2026072402_") ||
+			strings.HasPrefix(migration.File, "2026072403_") ||
+			strings.HasPrefix(migration.File, "2026072404_") {
+			allMigrations.Register(migration.Up, migration.Down, migration.File)
+		}
 		if strings.HasPrefix(migration.File, "2026072401_") ||
 			strings.HasPrefix(migration.File, "2026072402_") ||
 			strings.HasPrefix(migration.File, "2026072403_") {

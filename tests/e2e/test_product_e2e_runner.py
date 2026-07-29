@@ -18,7 +18,7 @@ def test_manifest_has_exactly_twelve_unique_product_scenarios() -> None:
     assert "规范化深比较" in by_id["04-json-round-trip"]
     assert "SHA-256" in by_id["07-attachment-history"]
     assert "幂等键" in by_id["09-atomic-import-scale"]
-    assert "审计快照精确一致" in by_id["12-backup-consistency"]
+    assert "vbr1" in by_id["12-backup-consistency"]
 
 
 def test_missing_package_is_a_strict_preflight_failure(tmp_path: Path) -> None:
@@ -173,12 +173,18 @@ def test_node_runner_enforces_closed_history_and_no_external_http() -> None:
     assert "failures.length === 0 && pending.length === 0" in source
 
 
-def test_invalid_formula_assertion_matches_structured_schema_validation_contract() -> None:
+def test_invalid_field_assertion_matches_typed_v2_diagnostic_contract() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    scenario = source[
+        source.index("async function scenario03") : source.index("async function scenario04")
+    ]
 
-    assert 'response.type === "schema.validate"' in source
-    assert 'response.payload?.error?.code === "schema.field.invalid_formula"' in source
-    assert 'response.payload?.error?.path === "fields[0].formula.source"' in source
+    assert '"field.change.plan"' in source
+    assert 'v2Response.type === "field.change.plan"' in scenario
+    assert '"field.contract.invalid"' in scenario
+    assert "v2Response.payload?.error?.code" in scenario
+    assert '"schema.validate"' in scenario
+    assert 'legacy.type === "operation.failed"' in scenario
 
 
 def test_atomic_import_fault_waits_for_transactional_barrier() -> None:
@@ -192,6 +198,7 @@ def test_atomic_import_fault_waits_for_transactional_barrier() -> None:
     assert '"09-atomic-import-scale"' in orchestrator
     assert '"storage-proof-request.json"' in source
     assert "storageProof.counts?.idempotency === 0" in source
+    assert "key NOT LIKE 'field-v2:%'" in orchestrator
     assert "storageProof.counts?.outbox === 0" in source
 
 
@@ -205,13 +212,14 @@ def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -
     assert 'page.keyboard.press("Escape")' in scenario
     assert 'jsonCell.press("Shift+F10")' in scenario
     assert "document.activeElement === element" in scenario
+    assert "`${jsonField}\\n" in scenario
     assert 'setProductLocale(page, "en-US")' in scenario
     assert 'setProductLocale(page, "zh-CN")' in scenario
     assert "canonicalJsonSet(authoritativeValues)" in scenario
     assert "canonicalJsonSet(exportedValues)" in scenario
 
 
-def test_attachment_preview_and_backup_audit_are_exact_evidence() -> None:
+def test_attachment_preview_and_verified_purge_receipt_are_exact_evidence() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     attachment = source[
         source.index("async function scenario07") : source.index("async function scenario08")
@@ -221,8 +229,10 @@ def test_attachment_preview_and_backup_audit_are_exact_evidence() -> None:
     assert "waitForPreviewArtifact(" in attachment
     assert "attachment-preview-verified.txt" in attachment
     assert "sha256(await fs.readFile(preservedPreviewPath))" in attachment
-    assert "beforeAuditSnapshot === afterAuditSnapshot" in backup
-    assert "allowedBackupRestoreAuditActions = new Set([])" in backup
+    assert '"backup.create"' in backup
+    assert 'backup.payload.receipt.startsWith("vbr1.")' in backup
+    assert 'withoutBackup.applied.payload?.error?.code === "field.purge.backup_required"' in backup
+    assert '"field.recycleBin.list"' in backup
 
 
 def test_storage_proof_reads_all_transactional_surfaces_read_only(
@@ -314,41 +324,24 @@ def test_process_network_report_rejects_listener_and_remote_non_loopback() -> No
     ]
 
 
-def test_schema_scenario_reads_back_constraints_from_authoritative_definition() -> None:
+def test_schema_scenario_uses_authoritative_capabilities_and_stable_identities() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     scenario = source[
         source.index("async function scenario02") : source.index("async function rawBridgeRequest")
     ]
 
-    assert '"schema.getTable"' in scenario
-    assert 'findConstraint("quantity", "range")' in scenario
-    assert 'findConstraint("status", "enum")' in scenario
-    assert 'findConstraint("tags", "enum")' in scenario
-    assert "tagsEnum?.minSelected === 1" in scenario
-    assert "tagsEnum?.maxSelected === 2" in scenario
-    assert '{ value: true, displayName: "Enabled" }' in scenario
-    assert '{ value: 2, displayName: "Priority two" }' in scenario
-    assert "statusEnum?.options?.map((item) => item.displayName)" in scenario
-    assert "attachments?.attachmentPolicy?.protected === true" in scenario
-    assert "attachments?.attachmentPolicy?.thumbnailVariants" in scenario
-    assert 'parent?.relation?.deletePolicy === "restrict"' in scenario
-    assert 'parentLabel?.lookup?.aggregate === "first"' in scenario
-    assert 'definition.indexes[0]?.name === "idx_title"' in scenario
-    assert 'definition.indexes[1]?.name === "idx_quantity_status"' in scenario
-    assert '"e2e-typed-enum-insert"' in scenario
-    assert "tags: [true, 2]" in scenario
-    assert 'field: "tags", operator: "contains", value: true' in scenario
-    assert "typedEnumRow.tags[0] === true" in scenario
-    assert "typedEnumRow.tags[1] === 2" in scenario
-    assert 'createdAt?.autoDate?.role === "createdAt"' in scenario
-    assert 'updatedAt?.autoDate?.role === "updatedAt"' in scenario
-    assert '"e2e-autodate-forgery"' in scenario
-    assert 'forgedAutoDate.payload?.error?.code === "mutation.field.read_only"' in scenario
-    assert "updatedAutoDates?.created_at === insertedAutoDates?.created_at" in scenario
-    assert "successful save preserves createdAt and advances updatedAt" in scenario
-    assert 'field: "updated_at"' in scenario
-    assert 'operator: "gte"' in scenario
-    assert "system timestamps support authoritative range filtering and sorting" in scenario
+    assert "createEmptyTable(page" in scenario
+    assert "createV2Field(page" in scenario
+    assert '"field.settings.describe"' in scenario
+    assert '"field.change.plan"' in source
+    assert '"field.change.apply"' in source
+    assert 'field.fieldId?.startsWith("fld_")' in scenario
+    assert 'field.physicalName?.startsWith("f_")' in scenario
+    assert "updated.planned?.payload?.classes?.every" in scenario
+    assert '"field.recycleBin.list"' in scenario
+    assert '"retire"' in scenario
+    assert '"restore"' in scenario
+    assert 'legacyWrite.type === "operation.failed"' in scenario
 
 
 def test_schema_scenario_waits_for_submit_completion_without_a_fixed_delay() -> None:
@@ -357,7 +350,8 @@ def test_schema_scenario_waits_for_submit_completion_without_a_fixed_delay() -> 
         source.index("async function scenario02") : source.index("async function rawBridgeRequest")
     ]
 
-    assert "waitForCreateTableSubmission(page, submit)" in scenario
+    assert "createEmptyTable(page" in scenario
+    assert "waitForCreateTableSubmission(page, submit)" in source
     assert "waitForTimeout(1_000)" not in scenario
     assert "create table submission did not complete before timeout" in source
     assert "inputVisible" in source

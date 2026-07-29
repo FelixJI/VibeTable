@@ -23,6 +23,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/filesystem"
 
 	"github.com/vibetable/vibetable/sidecar/internal/attachments"
+	"github.com/vibetable/vibetable/sidecar/internal/backupreceipt"
 )
 
 var namePattern = regexp.MustCompile(
@@ -36,10 +37,11 @@ type IntegrityChecker interface {
 }
 
 type Service struct {
-	app       core.App
-	integrity IntegrityChecker
-	now       func() time.Time
-	restart   func() error
+	app        core.App
+	integrity  IntegrityChecker
+	now        func() time.Time
+	restart    func() error
+	receiptKey []byte
 }
 
 type Entry struct {
@@ -52,6 +54,7 @@ type Entry struct {
 type CreateResult struct {
 	Backup    Entry                       `json:"backup"`
 	Integrity attachments.IntegrityReport `json:"integrity"`
+	Receipt   string                      `json:"receipt"`
 }
 
 type Error struct {
@@ -64,11 +67,16 @@ func (err *Error) Error() string {
 	return err.Code + ": " + err.Message
 }
 
-func New(app core.App, integrity IntegrityChecker) *Service {
+func New(
+	app core.App,
+	integrity IntegrityChecker,
+	receiptKey []byte,
+) *Service {
 	return &Service{
 		app: app, integrity: integrity,
-		now:     func() time.Time { return time.Now().UTC() },
-		restart: app.Restart,
+		now:        func() time.Time { return time.Now().UTC() },
+		restart:    app.Restart,
+		receiptKey: append([]byte(nil), receiptKey...),
 	}
 }
 
@@ -129,6 +137,14 @@ func (service *Service) Create(
 			false,
 		)
 	}
+	beforeRevisionDigest, err := backupreceipt.SnapshotDigest(service.app)
+	if err != nil {
+		return CreateResult{}, backupError(
+			"backup.integrity_failed",
+			"workspace revisions could not be captured",
+			true,
+		)
+	}
 	if err := service.app.CreateBackup(ctx, name); err != nil {
 		return CreateResult{}, backupError(
 			"backup.create_failed",
@@ -140,7 +156,27 @@ func (service *Service) Create(
 	if err != nil {
 		return CreateResult{}, err
 	}
-	return CreateResult{Backup: entry, Integrity: report}, nil
+	afterRevisionDigest, err := backupreceipt.SnapshotDigest(service.app)
+	if err != nil || afterRevisionDigest != beforeRevisionDigest {
+		_ = service.Delete(ctx, name)
+		return CreateResult{}, backupError(
+			"backup.snapshot_changed",
+			"workspace changed while the backup was being created",
+			true,
+		)
+	}
+	receipt, err := backupreceipt.Encode(
+		entry.Name, entry.SHA256, afterRevisionDigest, service.receiptKey,
+	)
+	if err != nil {
+		_ = service.Delete(ctx, name)
+		return CreateResult{}, backupError(
+			"backup.integrity_failed",
+			"backup receipt could not be created",
+			true,
+		)
+	}
+	return CreateResult{Backup: entry, Integrity: report, Receipt: receipt}, nil
 }
 
 func (service *Service) List(ctx context.Context) ([]Entry, error) {

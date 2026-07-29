@@ -33,7 +33,7 @@ def test_repository_versions_are_consistent() -> None:
     assert versions.pocketbase == "0.39.9"
     assert versions.cel == "0.26.1"
     assert versions.contract == "v1"
-    assert versions.schema == "4"
+    assert versions.schema == "5"
     assert len(versions.migration_hash) == 64
 
 
@@ -97,19 +97,76 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
         "pocketBaseVersion": "0.39.9",
         "celVersion": "0.26.1",
         "contractVersion": "v1",
-        "schemaVersion": "4",
+        "schemaVersion": "5",
         "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
         "sha256": digest,
     }
-    assert manifest["launch"]["sidecar"] == "sidecar/vibetable-pb.exe"
-    assert manifest["assets"]["migrations"] == "sidecar/migrations/manifest.json"
-    assert manifest["assets"]["sbom"] == "sidecar/sbom.cdx.json"
-    assert manifest["data"]["rootPolicy"] == "first-run-selected"
+    assert manifest["launch"]["backend"] == "resources/backend/vibetable-backend.exe"
+    assert manifest["launch"]["webGrid"] == "resources/web-grid"
+    assert manifest["launch"]["sidecar"] == "resources/sidecar/vibetable-pb.exe"
+    assert manifest["launch"]["previewHost"] == "VibeTable.Next.exe"
+    assert manifest["assets"]["migrations"] == "resources/sidecar/migrations/manifest.json"
+    assert manifest["assets"]["sbom"] == "resources/sidecar/sbom.cdx.json"
+    assert manifest["data"]["rootPolicy"] == "automatic-documents"
+    assert manifest["data"]["defaultBase"] == "user-documents"
     assert manifest["data"]["relativePath"] == "VibeTableData"
+    assert manifest["writable"]["cacheBase"] == "per-user-local-app-data"
+    assert manifest["writable"]["runtimeBase"] == "per-user-local-app-data"
+    assert manifest["writable"]["logsBase"] == "program-directory"
     encoded = json.dumps(manifest).lower()
     assert "".join(["di", "rectus"]) not in encoded
     assert "node_modules" not in encoded
     assert "npm" not in encoded
+
+
+def test_windows_release_name_and_root_manifest_include_version() -> None:
+    paths = build_next.RepoPaths.default(REPO_ROOT)
+    version = read_project_version(REPO_ROOT)
+
+    assert paths.publish_root.name == f"VibeTable.Next-v{version}-win-x64"
+    assert paths.staging_root.name == f"VibeTable.Next-v{version}-win-x64.staging"
+    assert paths.resources_dir == paths.publish_root / "resources"
+    assert paths.logs_dir == paths.publish_root / "logs"
+    assert paths.manifest_path == paths.resources_dir / "publish-layout.json"
+    assert paths.release_manifest == paths.publish_root / "release.json"
+
+    release = json.loads(build_next.render_release_manifest(paths))
+    assert release == {
+        "product": "VibeTable.Next",
+        "version": version,
+        "platform": "windows",
+        "architecture": "x64",
+    }
+
+
+def test_desktop_publish_is_single_file_without_symbols_or_satellite_languages() -> None:
+    paths = build_next.RepoPaths.default(REPO_ROOT)
+    command = build_next.build_dotnet_publish_command(
+        paths,
+        paths.scratch_root / "desktop",
+    )
+
+    assert "--self-contained" in command
+    assert command[command.index("--self-contained") + 1] == "true"
+    assert "-p:PublishSingleFile=true" in command
+    assert "-p:IncludeNativeLibrariesForSelfExtract=true" in command
+    assert "-p:EnableCompressionInSingleFile=true" in command
+    assert "-p:DebugType=None" in command
+    assert "-p:DebugSymbols=false" in command
+    assert "-p:SatelliteResourceLanguages=en-US" in command
+
+
+def test_desktop_project_embeds_a_windows_icon() -> None:
+    project = (
+        REPO_ROOT / "desktop" / "src" / "VibeTable.Desktop" / "VibeTable.Desktop.csproj"
+    ).read_text(encoding="utf-8")
+    icon = (
+        REPO_ROOT / "desktop" / "src" / "VibeTable.Desktop" / "Assets" / "Brand" / "VibeTable.ico"
+    )
+
+    assert "<ApplicationIcon>Assets\\Brand\\VibeTable.ico</ApplicationIcon>" in project
+    assert icon.is_file()
+    assert icon.stat().st_size > 0
 
 
 def test_sidecar_build_is_trimmed_reproducible_and_version_stamped() -> None:
@@ -312,6 +369,10 @@ def test_release_workflow_supports_scheduled_and_manual_patch_releases() -> None
     assert "--generate-notes" not in workflow
     assert "RELEASE_TAG: ${{ steps.identity.outputs.tag }}" in workflow
     assert "git push --atomic origin HEAD:main" in workflow
+    assert "VibeTable.Next-v$version-win-x64" in workflow
+    assert "Compress-Archive -Path $packageDir" in workflow
+    assert "Assert-WindowsPackage.ps1" in workflow
+    assert "dist/VibeTable.Next.zip" not in workflow
     assert workflow.index("Build release package") < workflow.index(
         "Publish version commit and tag"
     )

@@ -27,12 +27,40 @@ internal static class ProductDataRpcRegistry
 
     private static readonly ProductDataRpcEndpoint[] RegisteredEndpoints =
     [
+        new("field.settings.describe", p => Safe(p)
+            && HasOnlyProperties(p, "tableId", "fieldId")
+            && HasString(p, "tableId")
+            && HasOptionalString(p, "fieldId"),
+            (g, p, t) => g.DescribeFieldSettingsAsync(p, t)),
+        new("field.change.plan", p => Safe(p)
+            && HasOnlyProperties(
+                p, "action", "tableId", "fieldId", "expectedSchemaRevision",
+                "expectedDataRevision", "draft", "actor", "conversionRule",
+                "confirmation", "backupReceipt")
+            && HasStrings(p, "action", "tableId", "expectedSchemaRevision")
+            && HasObject(p, "actor"),
+            (g, p, t) => g.PlanFieldChangeAsync(p, t)),
+        new("field.change.apply", p => Safe(p)
+            && HasExactProperties(
+                p, "planId", "planHash", "operationId", "actor", "confirmations")
+            && HasStrings(p, "planId", "planHash", "operationId")
+            && HasObject(p, "actor")
+            && HasArray(p, "confirmations"),
+            (g, p, t) => g.ApplyFieldChangeAsync(p, t)),
+        new("field.change.status", p => Safe(p)
+            && HasExactProperties(p, "jobId")
+            && HasString(p, "jobId"),
+            (g, p, t) => g.GetFieldChangeStatusAsync(p, t)),
+        new("field.change.cancel", p => Safe(p)
+            && HasExactProperties(p, "jobId")
+            && HasString(p, "jobId"),
+            (g, p, t) => g.CancelFieldChangeAsync(p, t)),
+        new("field.recycleBin.list", p => Safe(p)
+            && HasExactProperties(p, "tableId")
+            && HasString(p, "tableId"),
+            (g, p, t) => g.ListRecycledFieldsAsync(p, t)),
         new("schema.getTable", p => Safe(p) && HasExactProperties(p, "tableId") && HasString(p, "tableId"),
             (g, p, t) => g.GetTableSchemaAsync(p, t)),
-        new("schema.validate", p => Safe(p) && HasObject(p, "definition") && HasNumber(p, "expectedRevision"),
-            (g, p, t) => g.ValidateSchemaAsync(p, t)),
-        new("schema.apply", p => Safe(p) && HasObject(p, "definition") && HasNumber(p, "expectedRevision"),
-            (g, p, t) => g.ApplySchemaAsync(p, t)),
         new("query.page", p => Safe(p) && HasString(p, "tableId") && HasObject(p, "query"),
             (g, p, t) => g.QueryPageAsync(p, t)),
         new("mutation.preview", p => Safe(p) && HasString(p, "tableId") && HasArray(p, "operations"),
@@ -162,6 +190,14 @@ internal static class ProductDataRpcRegistry
         => payload.TryGetProperty("name", out var value)
             && value.ValueKind == JsonValueKind.String
             && BackupNamePattern.IsMatch(value.GetString()!);
+    private static bool HasOptionalString(JsonElement payload, string name)
+        => !payload.TryGetProperty(name, out var value)
+            || value.ValueKind == JsonValueKind.String;
+    private static bool HasOnlyProperties(JsonElement payload, params string[] names)
+    {
+        var allowed = new HashSet<string>(names, StringComparer.Ordinal);
+        return payload.EnumerateObject().All(property => allowed.Contains(property.Name));
+    }
     private static bool HasExactProperties(JsonElement payload, params string[] names)
     {
         var expected = new HashSet<string>(names, StringComparer.Ordinal);

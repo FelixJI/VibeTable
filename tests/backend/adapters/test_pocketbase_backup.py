@@ -89,6 +89,7 @@ async def test_create_projects_integrity_without_exposing_attachment_details() -
                     "orphanVersions": [],
                     "valid": True,
                 },
+                "receipt": "vbr1.test-receipt",
             }
         ]
     )
@@ -100,6 +101,7 @@ async def test_create_projects_integrity_without_exposing_attachment_details() -
 
     assert result.backup.name == "manual_20260724_101500.zip"
     assert result.integrity_valid is True
+    assert result.receipt == "vbr1.test-receipt"
     assert "missing_files" not in result.model_dump()
     assert transport.requests[0] == {
         "method": "POST",

@@ -22,8 +22,11 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/backup"
 	"github.com/vibetable/vibetable/sidecar/internal/buildinfo"
 	"github.com/vibetable/vibetable/sidecar/internal/computed"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldresource"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/health"
+	"github.com/vibetable/vibetable/sidecar/internal/importvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	"github.com/vibetable/vibetable/sidecar/internal/launch"
 	"github.com/vibetable/vibetable/sidecar/internal/lookup"
@@ -33,6 +36,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	"github.com/vibetable/vibetable/sidecar/internal/realtime"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
@@ -80,6 +84,10 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 	if err != nil {
 		return nil, err
 	}
+	backupReceiptKey, err := options.Session.DeriveKey("backup-receipt")
+	if err != nil {
+		return nil, err
+	}
 	attachmentManager, err := attachments.New(attachmentKey)
 	if err != nil {
 		return nil, err
@@ -97,7 +105,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		DefaultDev:      options.Dev,
 		HideStartBanner: true,
 	})
-	backupService := backup.New(pb, attachmentManager)
+	backupService := backup.New(pb, attachmentManager, backupReceiptKey)
 	migrations.Register(pb)
 	queryPort := query.NewPort(pb, querySource, snapshotKey)
 	realtimeHub := realtime.New(pb)
@@ -140,6 +148,43 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		return nil, err
 	}
 	relationService := relation.New(pb, queryPort, mutationKernel)
+	migrationOptions := []fieldchange.MigrationOption{
+		fieldchange.WithMigrationContext(jobService.Context()),
+		fieldchange.WithMigrationLogger(options.Logger),
+		fieldchange.WithBackfillWriter(func(
+			ctx context.Context,
+			plan v2.FieldChangePlan,
+			jobID string,
+			recordID string,
+			value any,
+		) error {
+			_, err := mutationKernel.Apply(ctx, mutation.Request{
+				ContractVersion: mutation.ContractVersion,
+				RequestID:       "field-backfill-" + jobID + "-" + recordID,
+				IdempotencyKey:  "field-backfill-" + jobID + "-" + recordID,
+				TableID:         plan.Intent.TableID,
+				SchemaRevision:  plan.ExpectedSchemaRev,
+				Operations: []mutation.Operation{{
+					Kind:     mutation.OperationUpdate,
+					RecordID: &recordID,
+					Values: map[string]any{
+						plan.After.Identity.FieldID: value,
+					},
+				}},
+				Actor: mutation.Actor{
+					Type: "system", ID: "field-backfill",
+				},
+				InternalBypassMigrationFence: true,
+			})
+			return err
+		}),
+	}
+	if fault := newE2EMigrationFaultFromEnvironment(); fault != nil {
+		migrationOptions = append(migrationOptions, fault)
+	}
+	fieldMigration := fieldchange.NewMigrationService(
+		pb, fieldchange.NewPocketBasePlanStore(pb), migrationOptions...,
+	)
 	startedAt := time.Now().UTC()
 	pb.OnServe().BindFunc(func(event *core.ServeEvent) error {
 		// VibeTable owns the local data lifecycle. Never expose PocketBase's
@@ -192,6 +237,13 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		})
 		registerAdminRoutes(event)
 		registerSchemaRoutes(event.Router, schemaapi.New(pb), jobService)
+		registerFieldRoutes(
+			event.Router, pb, fieldMigration, backupReceiptKey, options.Logger,
+		)
+		registerImportRoutes(
+			event.Router,
+			importvalue.New(fieldchange.NewCatalog(pb)),
+		)
 		registerQueryRoutes(event.Router, queryPort)
 		registerFormulaRoutes(event.Router, formulaCompiler)
 		registerJobRoutes(event.Router, jobService)
@@ -231,6 +283,16 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		if err := jobService.ResumePending(jobService.Context()); err != nil {
 			_ = rawListener.Close()
 			return fmt.Errorf("resume durable jobs: %w", err)
+		}
+		if err := fieldMigration.ResumePending(jobService.Context()); err != nil {
+			_ = rawListener.Close()
+			return fmt.Errorf("resume field migrations: %w", err)
+		}
+		if err := fieldresource.RunPendingAttachmentCleanup(
+			jobService.Context(), pb,
+		); err != nil {
+			_ = rawListener.Close()
+			return fmt.Errorf("resume attachment cleanup: %w", err)
 		}
 
 		var shutdownOnce sync.Once
@@ -280,6 +342,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 	})
 
 	pb.OnTerminate().BindFunc(func(event *core.TerminateEvent) error {
+		fieldMigration.Shutdown()
 		jobService.Shutdown()
 		options.Logger.Info("sidecar graceful shutdown", "restart", event.IsRestart)
 		return event.Next()

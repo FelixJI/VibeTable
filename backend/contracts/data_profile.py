@@ -240,6 +240,7 @@ def collection_profile_from_definition(
         names.append(name)
         by_id[field_id] = name
         field_schemas[name] = {
+            "fieldId": field_id,
             "dataType": field.get("dataType"),
             "nullable": field.get("nullable"),
             "constraints": field.get("constraints", []),

@@ -2,7 +2,8 @@
 
 The strict entry point builds the complete release before touching the sidecar.
 For local iteration ``--sidecar-only-build`` keeps the exact same
-``dist/VibeTable.Next/sidecar`` layout while skipping unrelated build stages.
+the versioned ``dist/.../resources/sidecar`` layout while skipping unrelated
+build stages.
 Neither mode imports or embeds PocketBase.
 """
 
@@ -27,7 +28,12 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PUBLISH_ROOT = REPO_ROOT / "dist" / "VibeTable.Next"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.build_next import RepoPaths  # noqa: E402
+
+PUBLISH_ROOT = RepoPaths.default(REPO_ROOT).publish_root
 SIDECAR_NAME = "vibetable-pb.exe" if os.name == "nt" else "vibetable-pb"
 SESSION_HEADER = "X-VibeTable-Session"
 PNG_1X1 = base64.b64decode(
@@ -814,7 +820,7 @@ def main(argv: list[str] | None = None) -> int:
         data_dir = REPO_ROOT / "build" / "qa" / ("packaged-sidecar-matrix-" + uuid.uuid4().hex)
     assert not data_dir.exists(), f"matrix requires a fresh data directory: {data_dir}"
     data_dir.mkdir(parents=True)
-    binary = package_root / "sidecar" / SIDECAR_NAME
+    binary = package_root / "resources" / "sidecar" / SIDECAR_NAME
     coverage = run_matrix(binary, data_dir)
     report = {
         "ok": True,

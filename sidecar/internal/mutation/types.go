@@ -30,6 +30,9 @@ type Request struct {
 	Actor            Actor       `json:"actor"`
 	ExpectedRevision *string     `json:"expectedRevision"`
 	ExpectedDigest   *string     `json:"expectedDigest"`
+	// InternalBypassMigrationFence is set only by the migration-owned
+	// authoritative backfill adapter. It is never accepted from JSON.
+	InternalBypassMigrationFence bool `json:"-"`
 }
 
 type Actor struct {
@@ -53,6 +56,7 @@ type Operation struct {
 
 	RecordID         *string
 	Values           map[string]any
+	RawValues        map[string]any
 	ExpectedRevision *string
 	ExpectedDigest   *string
 
@@ -65,20 +69,26 @@ func (operation Operation) MarshalJSON() ([]byte, error) {
 	switch operation.Kind {
 	case OperationInsert:
 		return json.Marshal(struct {
-			Kind     OperationKind  `json:"kind"`
-			RecordID *string        `json:"recordId"`
-			Values   map[string]any `json:"values"`
-		}{operation.Kind, operation.RecordID, nonNilMap(operation.Values)})
+			Kind      OperationKind  `json:"kind"`
+			RecordID  *string        `json:"recordId"`
+			Values    map[string]any `json:"values"`
+			RawValues map[string]any `json:"rawValues,omitempty"`
+		}{
+			operation.Kind, operation.RecordID, nonNilMap(operation.Values),
+			operation.RawValues,
+		})
 	case OperationUpdate:
 		return json.Marshal(struct {
 			Kind             OperationKind  `json:"kind"`
 			RecordID         string         `json:"recordId"`
 			Values           map[string]any `json:"values"`
+			RawValues        map[string]any `json:"rawValues,omitempty"`
 			ExpectedRevision *string        `json:"expectedRevision,omitempty"`
 			ExpectedDigest   *string        `json:"expectedDigest,omitempty"`
 		}{
 			operation.Kind, dereference(operation.RecordID),
-			nonNilMap(operation.Values), operation.ExpectedRevision,
+			nonNilMap(operation.Values), operation.RawValues,
+			operation.ExpectedRevision,
 			operation.ExpectedDigest,
 		})
 	case OperationArchive, OperationRestore, OperationDelete:
@@ -118,32 +128,42 @@ func (operation *Operation) UnmarshalJSON(raw []byte) error {
 	switch header.Kind {
 	case OperationInsert:
 		var decoded struct {
-			Kind     OperationKind  `json:"kind"`
-			RecordID *string        `json:"recordId"`
-			Values   map[string]any `json:"values"`
+			Kind      OperationKind  `json:"kind"`
+			RecordID  *string        `json:"recordId"`
+			Values    map[string]any `json:"values"`
+			RawValues map[string]any `json:"rawValues"`
 		}
 		if err := decodeObject(raw, &decoded, "kind", "recordId", "values"); err != nil {
+			return err
+		}
+		if err := rejectExplicitNull(raw, "rawValues"); err != nil {
 			return err
 		}
 		if decoded.Values == nil {
 			return fmt.Errorf("insert values must be an object")
 		}
 		operation.RecordID, operation.Values = decoded.RecordID, decoded.Values
+		operation.RawValues = decoded.RawValues
 	case OperationUpdate:
 		var decoded struct {
 			Kind             OperationKind  `json:"kind"`
 			RecordID         string         `json:"recordId"`
 			Values           map[string]any `json:"values"`
+			RawValues        map[string]any `json:"rawValues"`
 			ExpectedRevision *string        `json:"expectedRevision"`
 			ExpectedDigest   *string        `json:"expectedDigest"`
 		}
 		if err := decodeObject(raw, &decoded, "kind", "recordId", "values"); err != nil {
 			return err
 		}
+		if err := rejectExplicitNull(raw, "rawValues"); err != nil {
+			return err
+		}
 		if decoded.RecordID == "" || decoded.Values == nil {
 			return fmt.Errorf("update recordId and values are required")
 		}
 		operation.RecordID, operation.Values = &decoded.RecordID, decoded.Values
+		operation.RawValues = decoded.RawValues
 		operation.ExpectedRevision = decoded.ExpectedRevision
 		operation.ExpectedDigest = decoded.ExpectedDigest
 	case OperationArchive, OperationRestore, OperationDelete:
@@ -311,6 +331,18 @@ func requireObjectFields(raw []byte, required ...string) error {
 		if _, ok := fields[name]; !ok {
 			return fmt.Errorf("missing required field %q", name)
 		}
+	}
+	return nil
+}
+
+func rejectExplicitNull(raw []byte, field string) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	value, exists := fields[field]
+	if exists && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return fmt.Errorf("%s must be an object when supplied", field)
 	}
 	return nil
 }

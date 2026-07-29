@@ -1,0 +1,705 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibetable.local/contracts/schema-v2/schema.schema.json",
+  "title": "VibeTable Schema v2",
+  "oneOf": [
+    {"$ref": "#/$defs/FieldDefinition"},
+    {"$ref": "#/$defs/Capability"},
+    {"$ref": "#/$defs/FieldChangeIntent"},
+    {"$ref": "#/$defs/FieldChangePlan"},
+    {"$ref": "#/$defs/ApplyRequest"},
+    {"$ref": "#/$defs/ApplyReceipt"},
+    {"$ref": "#/$defs/MigrationStatus"},
+    {"$ref": "#/$defs/FieldSettingsDescribeResult"},
+    {"$ref": "#/$defs/FieldRecycleBinResult"},
+    {"$ref": "#/$defs/FieldValueEntryCorpus"}
+  ],
+  "$defs": {
+    "LogicalType": {
+      "type": "string",
+      "enum": [
+        "text", "editor", "number", "bool", "date", "dateTime", "time",
+        "autoDate", "email", "url", "select", "multiSelect", "relation",
+        "file", "geoPoint", "json", "formula", "lookup"
+      ]
+    },
+    "FieldIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fieldId", "physicalName", "providerFieldId"],
+      "properties": {
+        "fieldId": {"type": "string", "pattern": "^fld_[A-Za-z0-9_-]{8,}$"},
+        "physicalName": {"type": "string", "pattern": "^f_[a-z0-9_]{8,}$"},
+        "providerFieldId": {"type": "string", "pattern": "^pb_[A-Za-z0-9_-]{8,}$"}
+      }
+    },
+    "Lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "retiredAt"],
+      "properties": {
+        "state": {"type": "string", "enum": ["active", "retired"]},
+        "retiredAt": {"type": ["string", "null"]}
+      }
+    },
+    "DefaultSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "value", "source", "defaultsVersion"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "value": {},
+        "source": {"type": "string", "enum": ["recommended", "user"]},
+        "defaultsVersion": {"type": "integer", "minimum": 1}
+      }
+    },
+    "PresenceSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {"type": "string", "enum": ["companion", "native", "computed"]},
+        "providerFieldId": {"type": "string"},
+        "physicalName": {"type": "string"}
+      }
+    },
+    "ValueSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "default", "presence"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "default": {"$ref": "#/$defs/DefaultSpec"},
+        "presence": {"$ref": "#/$defs/PresenceSpec"}
+      }
+    },
+    "UniqueSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "blankPolicy"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "blankPolicy": {"const": "ignoreMissing"}
+      }
+    },
+    "RangeSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": {
+        "min": {"type": ["number", "string", "null"]},
+        "max": {"type": ["number", "string", "null"]}
+      }
+    },
+    "LengthSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": {
+        "min": {"type": ["integer", "null"], "minimum": 0},
+        "max": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "PatternSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "value"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "value": {"type": "string"}
+      }
+    },
+    "DomainSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["only", "except"],
+      "properties": {
+        "only": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "except": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    },
+    "SelectionSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": {
+        "min": {"type": "integer", "minimum": 0},
+        "max": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "ConstraintSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unique", "range", "length", "pattern", "domains", "selection"],
+      "properties": {
+        "unique": {"$ref": "#/$defs/UniqueSpec"},
+        "range": {"$ref": "#/$defs/RangeSpec"},
+        "length": {"$ref": "#/$defs/LengthSpec"},
+        "pattern": {"$ref": "#/$defs/PatternSpec"},
+        "domains": {"$ref": "#/$defs/DomainSpec"},
+        "selection": {"$ref": "#/$defs/SelectionSpec"}
+      }
+    },
+    "StorageOptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["onlyInt", "maxSize", "convertURLs", "presentable"],
+      "properties": {
+        "onlyInt": {"type": "boolean"},
+        "maxSize": {"type": "integer", "minimum": 0},
+        "convertURLs": {"type": "boolean"},
+        "presentable": {"type": "boolean"}
+      }
+    },
+    "StorageSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "options"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "pocketbase-text", "pocketbase-editor", "pocketbase-number",
+            "pocketbase-bool", "pocketbase-date", "pocketbase-autodate",
+            "pocketbase-email", "pocketbase-url", "pocketbase-select",
+            "pocketbase-relation", "pocketbase-file", "pocketbase-geo-point",
+            "pocketbase-json", "computed"
+          ]
+        },
+        "options": {"$ref": "#/$defs/StorageOptions"}
+      }
+    },
+    "DisplaySpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind", "preset", "displayScale", "scaleMode", "trimTrailingZeros",
+        "useGrouping", "currency", "percentStorage", "unit", "precision",
+        "timezone", "mode", "trueLabel", "falseLabel"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "text", "editor", "number", "bool", "date", "dateTime", "time",
+            "email", "url", "select", "relation", "file", "geoPoint", "json",
+            "readonly"
+          ]
+        },
+        "preset": {"type": "string"},
+        "displayScale": {"type": "integer", "minimum": 0, "maximum": 15},
+        "scaleMode": {"type": "string", "enum": ["max", "fixed"]},
+        "trimTrailingZeros": {"type": "boolean"},
+        "useGrouping": {"type": "boolean"},
+        "currency": {"type": "string"},
+        "percentStorage": {"type": "string", "enum": ["ratio", "percent"]},
+        "unit": {"type": ["string", "null"]},
+        "precision": {
+          "type": "string",
+          "enum": ["exact", "day", "minute", "second", "millisecond"]
+        },
+        "timezone": {"type": "string"},
+        "mode": {"type": "string"},
+        "indent": {"type": "integer", "enum": [0, 2, 4]},
+        "trueLabel": {"type": "string"},
+        "falseLabel": {"type": "string"}
+      }
+    },
+    "SelectOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["optionId", "label", "color", "order", "state"],
+      "properties": {
+        "optionId": {"type": "string", "pattern": "^opt_[A-Za-z0-9_-]{8,}$"},
+        "label": {"type": "string", "minLength": 1},
+        "color": {"type": "string"},
+        "order": {"type": "integer"},
+        "state": {"type": "string", "enum": ["active", "retired"]}
+      }
+    },
+    "SelectSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["options"],
+      "properties": {
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/SelectOption"}
+        }
+      }
+    },
+    "SelectOptionDraft": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["optionId", "label", "color", "order", "state"],
+      "properties": {
+        "optionId": {"type": "string"},
+        "label": {"type": "string", "minLength": 1},
+        "color": {"type": "string"},
+        "order": {"type": "integer"},
+        "state": {"type": "string", "enum": ["active", "retired"]}
+      }
+    },
+    "SelectDraftSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["options"],
+      "properties": {
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/SelectOptionDraft"}
+        }
+      }
+    },
+    "RelationSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetTableId", "cardinality", "deletePolicy", "displayFieldId"],
+      "properties": {
+        "targetTableId": {"type": "string", "minLength": 1},
+        "cardinality": {"type": "string", "enum": ["one", "many"]},
+        "deletePolicy": {"type": "string", "enum": ["setNull", "restrict", "cascade"]},
+        "displayFieldId": {"type": "string"}
+      }
+    },
+    "FileSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxFiles", "maxBytesPerFile", "allowedMimeTypes", "thumbs", "protected"],
+      "properties": {
+        "maxFiles": {"type": "integer", "minimum": 1},
+        "maxBytesPerFile": {"type": "integer", "minimum": 1},
+        "allowedMimeTypes": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "thumbs": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "protected": {"type": "boolean"}
+      }
+    },
+    "JSONSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rootType", "maxSize", "schema"],
+      "properties": {
+        "rootType": {
+          "type": "string",
+          "enum": ["any", "object", "array", "string", "number", "boolean", "null"]
+        },
+        "maxSize": {"type": "integer", "minimum": 1},
+        "schema": {"type": "object"}
+      }
+    },
+    "AutoDateSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role"],
+      "properties": {"role": {"type": "string", "enum": ["createdAt", "updatedAt"]}}
+    },
+    "FormulaSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "source", "resultType"],
+      "properties": {
+        "language": {"const": "cel-v1"},
+        "source": {"type": "string", "minLength": 1},
+        "resultType": {"$ref": "#/$defs/LogicalType"}
+      }
+    },
+    "LookupSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relationFieldId", "targetFieldId", "aggregate", "resultType"],
+      "properties": {
+        "relationFieldId": {"type": "string", "minLength": 1},
+        "targetFieldId": {"type": "string", "minLength": 1},
+        "aggregate": {
+          "type": "string",
+          "enum": ["none", "first", "distinct", "count", "sum", "avg", "min", "max"]
+        },
+        "resultType": {"$ref": "#/$defs/LogicalType"}
+      }
+    },
+    "FieldDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract", "identity", "displayName", "help", "logicalType",
+        "lifecycle", "value", "constraints", "storage", "display"
+      ],
+      "properties": {
+        "contract": {"const": "vibetable.schema.v2"},
+        "identity": {"$ref": "#/$defs/FieldIdentity"},
+        "displayName": {"type": "string", "minLength": 1},
+        "help": {"type": "string"},
+        "logicalType": {"$ref": "#/$defs/LogicalType"},
+        "lifecycle": {"$ref": "#/$defs/Lifecycle"},
+        "value": {"$ref": "#/$defs/ValueSpec"},
+        "constraints": {"$ref": "#/$defs/ConstraintSpec"},
+        "storage": {"$ref": "#/$defs/StorageSpec"},
+        "display": {"$ref": "#/$defs/DisplaySpec"},
+        "select": {"$ref": "#/$defs/SelectSpec"},
+        "relation": {"$ref": "#/$defs/RelationSpec"},
+        "file": {"$ref": "#/$defs/FileSpec"},
+        "json": {"$ref": "#/$defs/JSONSpec"},
+        "autoDate": {"$ref": "#/$defs/AutoDateSpec"},
+        "formula": {"$ref": "#/$defs/FormulaSpec"},
+        "lookup": {"$ref": "#/$defs/LookupSpec"}
+      },
+      "allOf": [{"$ref": "#/$defs/FieldTypeDiscriminator"}]
+    },
+    "FieldDraft": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "displayName", "help", "logicalType", "value", "constraints",
+        "storage", "display"
+      ],
+      "properties": {
+        "displayName": {"type": "string", "minLength": 1},
+        "help": {"type": "string"},
+        "logicalType": {"$ref": "#/$defs/LogicalType"},
+        "value": {"$ref": "#/$defs/ValueSpec"},
+        "constraints": {"$ref": "#/$defs/ConstraintSpec"},
+        "storage": {"$ref": "#/$defs/StorageSpec"},
+        "display": {"$ref": "#/$defs/DisplaySpec"},
+        "select": {"$ref": "#/$defs/SelectDraftSpec"},
+        "relation": {"$ref": "#/$defs/RelationSpec"},
+        "file": {"$ref": "#/$defs/FileSpec"},
+        "json": {"$ref": "#/$defs/JSONSpec"},
+        "autoDate": {"$ref": "#/$defs/AutoDateSpec"},
+        "formula": {"$ref": "#/$defs/FormulaSpec"},
+        "lookup": {"$ref": "#/$defs/LookupSpec"}
+      },
+      "allOf": [{"$ref": "#/$defs/FieldTypeDiscriminator"}]
+    },
+    "FieldTypeDiscriminator": {
+      "allOf": [
+        {
+          "if": {"properties": {"logicalType": {"enum": ["select", "multiSelect"]}}, "required": ["logicalType"]},
+          "then": {"required": ["select"]},
+          "else": {"not": {"required": ["select"]}}
+        },
+        {
+          "if": {"properties": {"logicalType": {"const": "relation"}}, "required": ["logicalType"]},
+          "then": {"required": ["relation"]},
+          "else": {"not": {"required": ["relation"]}}
+        },
+        {
+          "if": {"properties": {"logicalType": {"const": "file"}}, "required": ["logicalType"]},
+          "then": {"required": ["file"]},
+          "else": {"not": {"required": ["file"]}}
+        },
+        {
+          "if": {"properties": {"logicalType": {"const": "json"}}, "required": ["logicalType"]},
+          "then": {"required": ["json"]},
+          "else": {"not": {"required": ["json"]}}
+        },
+        {
+          "if": {"properties": {"logicalType": {"const": "autoDate"}}, "required": ["logicalType"]},
+          "then": {"required": ["autoDate"]},
+          "else": {"not": {"required": ["autoDate"]}}
+        },
+        {
+          "if": {"properties": {"logicalType": {"const": "formula"}}, "required": ["logicalType"]},
+          "then": {"required": ["formula"]},
+          "else": {"not": {"required": ["formula"]}}
+        },
+        {
+          "if": {"properties": {"logicalType": {"const": "lookup"}}, "required": ["logicalType"]},
+          "then": {"required": ["lookup"]},
+          "else": {"not": {"required": ["lookup"]}}
+        }
+      ]
+    },
+    "RecommendedValues": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["defaultsVersion", "value", "constraints", "storage", "display"],
+      "properties": {
+        "defaultsVersion": {"type": "integer", "minimum": 1},
+        "value": {"$ref": "#/$defs/ValueSpec"},
+        "constraints": {"$ref": "#/$defs/ConstraintSpec"},
+        "storage": {"$ref": "#/$defs/StorageSpec"},
+        "display": {"$ref": "#/$defs/DisplaySpec"},
+        "file": {"$ref": "#/$defs/FileSpec"},
+        "json": {"$ref": "#/$defs/JSONSpec"}
+      }
+    },
+    "Capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logicalType", "generalSettings", "advancedSettings", "dangerSettings",
+        "recommended", "supportsRequired", "supportsDefault", "supportsUnique",
+        "needsPresence", "displayPresets", "conversionTargets", "conversionRules",
+        "compileStrategy", "userCreatable"
+      ],
+      "properties": {
+        "logicalType": {"$ref": "#/$defs/LogicalType"},
+        "generalSettings": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "advancedSettings": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "dangerSettings": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "recommended": {"$ref": "#/$defs/RecommendedValues"},
+        "supportsRequired": {"type": "boolean"},
+        "supportsDefault": {"type": "boolean"},
+        "supportsUnique": {"type": "boolean"},
+        "needsPresence": {"type": "boolean"},
+        "displayPresets": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "conversionTargets": {
+          "type": "array", "items": {"$ref": "#/$defs/LogicalType"}, "uniqueItems": true
+        },
+        "conversionRules": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "compileStrategy": {"type": "string"},
+        "userCreatable": {"type": "boolean"}
+      }
+    },
+    "Actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1}
+      }
+    },
+    "FieldChangeIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action", "tableId", "fieldId", "expectedSchemaRevision",
+        "expectedDataRevision", "draft", "actor", "conversionRule",
+        "confirmation", "backupReceipt"
+      ],
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["create", "update", "retire", "restore", "purge", "convert", "backfill"]
+        },
+        "tableId": {"type": "string", "minLength": 1},
+        "fieldId": {"type": "string"},
+        "expectedSchemaRevision": {"type": "string", "minLength": 1},
+        "expectedDataRevision": {"type": ["integer", "null"], "minimum": 0},
+        "draft": {
+          "anyOf": [{"$ref": "#/$defs/FieldDraft"}, {"type": "null"}]
+        },
+        "actor": {"$ref": "#/$defs/Actor"},
+        "conversionRule": {"type": "string"},
+        "confirmation": {"type": "string"},
+        "backupReceipt": {"type": "string"}
+      }
+    },
+    "Diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "path", "message", "details"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "path": {"type": "string"},
+        "message": {"type": "string", "minLength": 1},
+        "details": {"type": "object"}
+      }
+    },
+    "FailureSample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recordId", "reason"],
+      "properties": {
+        "recordId": {"type": "string"},
+        "reason": {"type": "string"}
+      }
+    },
+    "DependencyRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "name"],
+      "properties": {
+        "kind": {"type": "string"},
+        "id": {"type": "string"},
+        "name": {"type": "string"}
+      }
+    },
+    "Impact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["records", "missing", "ambiguous", "failures", "dependencies"],
+      "properties": {
+        "records": {"type": "integer", "minimum": 0},
+        "missing": {"type": "integer", "minimum": 0},
+        "ambiguous": {"type": "integer", "minimum": 0},
+        "failures": {"type": "array", "items": {"$ref": "#/$defs/FailureSample"}},
+        "dependencies": {"type": "array", "items": {"$ref": "#/$defs/DependencyRef"}}
+      }
+    },
+    "PlanStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "details"],
+      "properties": {
+        "kind": {"type": "string"},
+        "details": {"type": "object"}
+      }
+    },
+    "FieldChangePlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract", "planId", "planHash", "expiresAt", "intent", "before",
+        "after", "classes", "expectedSchemaRevision", "expectedDataRevision",
+        "impact", "steps", "warnings", "errors", "confirmations",
+        "createsMigration", "canApply"
+      ],
+      "properties": {
+        "contract": {"const": "vibetable.schema.v2"},
+        "planId": {"type": "string", "minLength": 1},
+        "planHash": {"type": "string", "minLength": 1},
+        "expiresAt": {"type": "string", "minLength": 1},
+        "intent": {"$ref": "#/$defs/FieldChangeIntent"},
+        "before": {"anyOf": [{"$ref": "#/$defs/FieldDefinition"}, {"type": "null"}]},
+        "after": {"anyOf": [{"$ref": "#/$defs/FieldDefinition"}, {"type": "null"}]},
+        "classes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["display", "metadata", "constraint", "schema", "migration", "danger"]
+          },
+          "uniqueItems": true
+        },
+        "expectedSchemaRevision": {"type": "string"},
+        "expectedDataRevision": {"type": ["integer", "null"], "minimum": 0},
+        "impact": {"$ref": "#/$defs/Impact"},
+        "steps": {"type": "array", "items": {"$ref": "#/$defs/PlanStep"}},
+        "warnings": {"type": "array", "items": {"$ref": "#/$defs/Diagnostic"}},
+        "errors": {"type": "array", "items": {"$ref": "#/$defs/Diagnostic"}},
+        "confirmations": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "createsMigration": {"type": "boolean"},
+        "canApply": {"type": "boolean"}
+      }
+    },
+    "ApplyReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract", "operationId", "planId", "action", "tableId", "fieldId",
+        "schemaRevision", "definition", "migrationJobId"
+      ],
+      "properties": {
+        "contract": {"const": "vibetable.schema.v2"},
+        "operationId": {"type": "string"},
+        "planId": {"type": "string"},
+        "action": {
+          "type": "string",
+          "enum": ["create", "update", "retire", "restore", "purge", "convert", "backfill"]
+        },
+        "tableId": {"type": "string"},
+        "fieldId": {"type": "string"},
+        "schemaRevision": {"type": "string"},
+        "definition": {"anyOf": [{"$ref": "#/$defs/FieldDefinition"}, {"type": "null"}]},
+        "migrationJobId": {"type": "string"}
+      }
+    },
+    "ApplyRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["planId", "planHash", "operationId", "actor", "confirmations"],
+      "properties": {
+        "planId": {"type": "string", "minLength": 1},
+        "planHash": {"type": "string", "minLength": 1},
+        "operationId": {"type": "string", "minLength": 1},
+        "actor": {"$ref": "#/$defs/Actor"},
+        "confirmations": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    },
+    "MigrationStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract", "jobId", "planId", "phase", "processed", "total",
+        "canCancel", "error", "updatedAt"
+      ],
+      "properties": {
+        "contract": {"const": "vibetable.schema.v2"},
+        "jobId": {"type": "string"},
+        "planId": {"type": "string"},
+        "phase": {
+          "type": "string",
+          "enum": [
+            "planned", "validating", "ready", "copying", "verifying", "switching",
+            "completed", "cancelled", "failed", "cleaning", "rolled_back"
+          ]
+        },
+        "processed": {"type": "integer", "minimum": 0},
+        "total": {"type": "integer", "minimum": 0},
+        "canCancel": {"type": "boolean"},
+        "error": {"anyOf": [{"$ref": "#/$defs/Diagnostic"}, {"type": "null"}]},
+        "updatedAt": {"type": "string"}
+      }
+    },
+    "FieldSettingsDescribeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract", "tableId", "fieldId", "schemaRevision", "dataRevision",
+        "definition", "capabilities", "recommendedDefaultsVersion"
+      ],
+      "properties": {
+        "contract": {"const": "vibetable.schema.v2"},
+        "tableId": {"type": "string", "minLength": 1},
+        "fieldId": {"type": "string"},
+        "schemaRevision": {"type": "string", "minLength": 1},
+        "dataRevision": {"type": "integer", "minimum": 0},
+        "definition": {"anyOf": [{"$ref": "#/$defs/FieldDefinition"}, {"type": "null"}]},
+        "capabilities": {"type": "array", "items": {"$ref": "#/$defs/Capability"}},
+        "recommendedDefaultsVersion": {"type": "integer", "minimum": 1}
+      }
+    },
+    "FieldRecycleBinResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "fields"],
+      "properties": {
+        "contract": {"const": "vibetable.schema.v2"},
+        "fields": {"type": "array", "items": {"$ref": "#/$defs/FieldDefinition"}}
+      }
+    },
+    "FieldValueCorpusOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["optionId", "label"],
+      "properties": {
+        "optionId": {"type": "string", "minLength": 1},
+        "label": {"type": "string"}
+      }
+    },
+    "FieldValueCorpusCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "field", "logicalType", "rawValue", "productValue"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "field": {"type": "string", "minLength": 1},
+        "logicalType": {"$ref": "#/$defs/LogicalType"},
+        "rawValue": {"type": "string"},
+        "productValue": {},
+        "selectOptions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/FieldValueCorpusOption"},
+          "minItems": 1
+        }
+      }
+    },
+    "FieldValueEntryCorpus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$schema", "description", "cases"],
+      "properties": {
+        "$schema": {"const": "vibetable.field-value-entry-corpus.v1"},
+        "description": {"type": "string", "minLength": 1},
+        "cases": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/FieldValueCorpusCase"},
+          "minItems": 1
+        }
+      }
+    }
+  }
+}

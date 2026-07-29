@@ -218,7 +218,7 @@ export function parseValue(editor: Editor, raw: string): unknown {
  * Produce a Tabulator editor descriptor for the column's editor kind. The grid
  * layer maps this onto the Tabulator `editor` / `editorParams` column props.
  *
- * Tabulator's built-in editors are: "input", "textarea", "number", "tickbox",
+ * Tabulator's built-in editors are: "input", "textarea", "number", "tickCross",
  * and "list". We pick the closest match; the host's dialog-based
  * multi-select and foreign-key pickers are handled by a custom editor the grid
  * wires up separately (Task 6 integration).
@@ -247,7 +247,7 @@ export function tabulatorEditor(editor: Editor): {
       return { editor: "number", editorParams: params };
     }
     case "boolean":
-      return { editor: "tickbox" };
+      return { editor: "tickCross" };
     case "date": {
       const d = editor as DateEditor;
       return {

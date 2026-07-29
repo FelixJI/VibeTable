@@ -15,8 +15,8 @@
       "pocketBaseVersion": "0.39.9",
       "celVersion": "0.26.1",
       "contractVersion": "v1",
-      "schemaVersion": "4",
-      "migrationHash": "ad8d44046cf3b330c6d7491bc0fdc9f98a0b182fe6618435607860be95b36c7f",
+      "schemaVersion": "5",
+      "migrationHash": "55e468fdc7e56fd5732e4e847a7099bb0b1eb37ef8d43807a973fcadafb48b82",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     }
   },
@@ -28,23 +28,32 @@
   },
   "launch": {
     "host": "VibeTable.Next.exe",
-    "backend": "backend/vibetable-backend.exe",
-    "webGrid": "web-grid",
-    "sidecar": "sidecar/vibetable-pb.exe"
+    "backend": "resources/backend/vibetable-backend.exe",
+    "webGrid": "resources/web-grid",
+    "sidecar": "resources/sidecar/vibetable-pb.exe",
+    "previewHost": "VibeTable.Next.exe"
   },
   "assets": {
-    "migrations": "sidecar/migrations/manifest.json",
-    "buildInfo": "sidecar/build-info.json",
-    "sidecarChecksum": "sidecar/vibetable-pb.exe.sha256",
-    "licenses": "sidecar/THIRD_PARTY_LICENSES.txt",
-    "sbom": "sidecar/sbom.cdx.json"
+    "migrations": "resources/sidecar/migrations/manifest.json",
+    "buildInfo": "resources/sidecar/build-info.json",
+    "sidecarChecksum": "resources/sidecar/vibetable-pb.exe.sha256",
+    "licenses": "resources/sidecar/THIRD_PARTY_LICENSES.txt",
+    "sbom": "resources/sidecar/sbom.cdx.json"
   },
   "data": {
-    "rootPolicy": "first-run-selected",
-    "defaultBase": "program-directory",
+    "rootPolicy": "automatic-documents",
+    "defaultBase": "user-documents",
     "fallbackBase": "per-user-local-app-data",
     "relativePath": "VibeTableData",
     "backupRelativePath": "backups",
     "preserveOnUninstall": true
+  },
+  "writable": {
+    "cacheBase": "per-user-local-app-data",
+    "cacheRelativePath": "VibeTable/cache",
+    "runtimeBase": "per-user-local-app-data",
+    "runtimeRelativePath": "VibeTable/runtime",
+    "logsBase": "program-directory",
+    "logsRelativePath": "logs"
   }
 }

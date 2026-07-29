@@ -30,6 +30,7 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
 const (
@@ -1504,8 +1505,18 @@ func (manager *Manager) Integrity(
 			issue.StoredName,
 		)
 		if _, exists := historyReferences[historyKey]; !exists {
-			issue.Code = "attachment.version_without_history"
-			report.OrphanVersions = append(report.OrphanVersions, issue)
+			// Schema v2 audit images use the stable product fieldId as their
+			// key while older images used the public physical name.
+			fieldIDKey := attachmentHistoryIdentity(
+				issue.TableID,
+				issue.RecordID,
+				issue.FieldID,
+				issue.StoredName,
+			)
+			if _, exists = historyReferences[fieldIDKey]; !exists {
+				issue.Code = "attachment.version_without_history"
+				report.OrphanVersions = append(report.OrphanVersions, issue)
+			}
 		}
 	}
 	tables, err := app.FindRecordsByFilter("vibetable_tables", "", "", 0, 0)
@@ -1855,7 +1866,13 @@ func resolveRecordField(
 	}
 	field, err := attachmentField(definition, fieldID)
 	if err != nil {
-		return schema.TableDefinition{}, nil, nil, schema.FieldDefinition{}, err
+		field, err = retiredAttachmentField(app, tableID, fieldID)
+		if err != nil {
+			return schema.TableDefinition{}, nil, nil, schema.FieldDefinition{}, err
+		}
+		// Lossless backup integrity must continue to account for files owned by
+		// retired fields even though normal schema describe hides those fields.
+		definition.Fields = append(definition.Fields, field)
 	}
 	collection, err := app.FindCollectionByNameOrId(meta.GetString("collection_id"))
 	if err != nil {
@@ -1872,6 +1889,59 @@ func resolveRecordField(
 			attachmentError("attachment.storage_failed", "record could not be read", true)
 	}
 	return definition, collection, record, field, nil
+}
+
+func retiredAttachmentField(
+	app core.App,
+	tableID string,
+	fieldID string,
+) (schema.FieldDefinition, error) {
+	record, err := app.FindFirstRecordByFilter(
+		"vibetable_fields",
+		"table_id={:table} && field_id={:field} && lifecycle_state='retired'",
+		dbx.Params{"table": tableID, "field": fieldID},
+	)
+	if err != nil {
+		return schema.FieldDefinition{}, attachmentError(
+			"mutation.attachment.invalid_field",
+			"attachment field was not found",
+			false,
+		)
+	}
+	raw, err := json.Marshal(record.GetRaw("definition_v2_json"))
+	if err != nil {
+		return schema.FieldDefinition{}, attachmentError(
+			"attachment.storage_failed",
+			"retired attachment schema is invalid",
+			true,
+		)
+	}
+	var definition v2.FieldDefinition
+	if v2.StrictDecode(raw, &definition) != nil ||
+		definition.LogicalType != v2.LogicalFile ||
+		definition.File == nil {
+		return schema.FieldDefinition{}, attachmentError(
+			"attachment.storage_failed",
+			"retired attachment schema is invalid",
+			true,
+		)
+	}
+	return schema.FieldDefinition{
+		FieldID:      definition.Identity.FieldID,
+		PhysicalName: definition.Identity.PhysicalName,
+		DisplayName:  definition.DisplayName,
+		Kind:         schema.FieldKindAttachment,
+		DataType:     schema.DataTypeFile,
+		StorageType:  schema.StorageFile,
+		Nullable:     !definition.Value.Required,
+		AttachmentPolicy: &schema.AttachmentPolicy{
+			MaxFiles:          definition.File.MaxFiles,
+			MaxBytesPerFile:   definition.File.MaxBytesPerFile,
+			AllowedMIMETypes:  append([]string(nil), definition.File.AllowedMIMETypes...),
+			ThumbnailVariants: append([]string(nil), definition.File.Thumbs...),
+			Protected:         definition.File.Protected,
+		},
+	}, nil
 }
 
 func attachmentField(

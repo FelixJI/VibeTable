@@ -419,7 +419,7 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	if err := fsys.Close(); err != nil {
 		t.Fatal(err)
 	}
-	backupResult, err := backup.New(app, manager).Create(
+	backupResult, err := backup.New(app, manager, testBackupReceiptKey).Create(
 		ctx, "attachment_history.zip",
 	)
 	if err != nil || !backupResult.Integrity.Valid {
@@ -611,6 +611,18 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	if err != nil || report.Valid || len(report.OrphanVersions) != 1 ||
 		report.OrphanVersions[0].Code != "attachment.version_without_history" {
 		t.Fatalf("orphan version integrity %#v err=%v", report, err)
+	}
+	fsys, err = app.NewFilesystem()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fsys.Delete(
+		orphanVersion.BaseFilesPath() + "/" + orphanVersion.GetString("blob"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsys.Close(); err != nil {
+		t.Fatal(err)
 	}
 	if err := app.Delete(orphanVersion); err != nil {
 		t.Fatal(err)

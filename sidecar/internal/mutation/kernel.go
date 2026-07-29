@@ -7,13 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/security"
 	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
 const (
@@ -249,10 +252,24 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 			}, false,
 		)
 	}
+	if !request.InternalBypassMigrationFence {
+		if err := checkFieldMigrationFence(ctx, app, request.TableID); err != nil {
+			return PreviewResult{}, err
+		}
+	}
 	fields := make(map[string]schema.FieldDefinition, len(definition.Fields)*2)
 	for _, field := range definition.Fields {
 		fields[field.FieldID] = field
 		fields[field.PhysicalName] = field
+	}
+	v2Fields, err := loadV2FieldDefinitions(ctx, app, request.TableID)
+	if err != nil {
+		return PreviewResult{}, err
+	}
+	v2ByAlias := make(map[string]v2.FieldDefinition, len(v2Fields)*2)
+	for _, field := range v2Fields {
+		v2ByAlias[field.Identity.FieldID] = field
+		v2ByAlias[field.Identity.PhysicalName] = field
 	}
 	pendingRecordIDs := make(map[string]struct{}, len(request.Operations))
 	for _, operation := range request.Operations {
@@ -313,13 +330,70 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 				return PreviewResult{}, mutationError("mutation.archive.unsupported", stringPointer(path), "table has no archive policy", nil, false)
 			}
 		}
-		values := make(map[string]any, len(operation.Values))
+		values := make(map[string]any, len(operation.Values)+len(operation.RawValues))
+		suppliedV2 := make(
+			map[string]struct{}, len(operation.Values)+len(operation.RawValues),
+		)
+		type suppliedValue struct {
+			key   string
+			value any
+			raw   bool
+		}
+		supplied := make(
+			[]suppliedValue, 0, len(operation.Values)+len(operation.RawValues),
+		)
 		for key, value := range operation.Values {
-			field, ok := fields[key]
+			supplied = append(supplied, suppliedValue{key: key, value: value})
+		}
+		for key, value := range operation.RawValues {
+			supplied = append(
+				supplied, suppliedValue{key: key, value: value, raw: true},
+			)
+		}
+		sort.Slice(supplied, func(left, right int) bool {
+			if supplied[left].raw != supplied[right].raw {
+				return !supplied[left].raw
+			}
+			return supplied[left].key < supplied[right].key
+		})
+		seenFields := make(map[string]string, len(supplied))
+		for _, entry := range supplied {
+			valueContainer := "values"
+			if entry.raw {
+				valueContainer = "rawValues"
+			}
+			valuePath := path + "." + valueContainer + "." + entry.key
+			field, ok := fields[entry.key]
 			if !ok {
 				return PreviewResult{}, mutationError(
-					"mutation.field.unknown", stringPointer(path+".values."+key),
-					"mutation references an unknown field", map[string]any{"field": key}, false,
+					"mutation.field.unknown", stringPointer(valuePath),
+					"mutation references an unknown field",
+					map[string]any{"field": entry.key}, false,
+				)
+			}
+			if previous, duplicate := seenFields[field.FieldID]; duplicate {
+				return PreviewResult{}, mutationError(
+					"mutation.field.duplicate", stringPointer(valuePath),
+					"field was specified by more than one alias",
+					map[string]any{"previousPath": previous}, false,
+				)
+			}
+			seenFields[field.FieldID] = valuePath
+		}
+		for _, entry := range supplied {
+			key, value := entry.key, entry.value
+			valueContainer := "values"
+			if entry.raw {
+				valueContainer = "rawValues"
+			}
+			valuePath := path + "." + valueContainer + "." + key
+			field := fields[key]
+			v2Field, isV2 := v2ByAlias[key]
+			if entry.raw && !isV2 {
+				return PreviewResult{}, mutationError(
+					"mutation.field.raw_unsupported", stringPointer(valuePath),
+					"raw field input requires a Schema v2 field",
+					map[string]any{"fieldId": field.FieldID}, false,
 				)
 			}
 			if field.ReadOnly || field.Kind == schema.FieldKindFormula ||
@@ -328,22 +402,59 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 					autodateobs.Increment(autodateobs.ClientWriteRejected)
 				}
 				return PreviewResult{}, mutationError(
-					"mutation.field.read_only", stringPointer(path+".values."+key),
+					"mutation.field.read_only", stringPointer(valuePath),
 					"field is read-only", map[string]any{"fieldId": field.FieldID}, false,
 				)
 			}
 			if field.Kind == schema.FieldKindAttachment {
 				return PreviewResult{}, mutationError(
-					"mutation.attachment.requires_operation", stringPointer(path+".values."+key),
+					"mutation.attachment.requires_operation", stringPointer(valuePath),
 					"attachment fields require setAttachments", map[string]any{"fieldId": field.FieldID}, false,
 				)
+			}
+			var v2Result *fieldvalue.Result
+			if isV2 {
+				mode := fieldvalue.Update
+				if operation.Kind == OperationInsert {
+					mode = fieldvalue.Insert
+				}
+				input := fieldvalue.Input{Supplied: true, Value: value}
+				if entry.raw {
+					rawInput, normalizeRawErr := fieldvalue.New().NormalizeRawInput(
+						ctx, v2Field, value,
+					)
+					if normalizeRawErr != nil {
+						return PreviewResult{}, mutationError(
+							"mutation.field.invalid_value",
+							stringPointer(valuePath),
+							normalizeRawErr.Error(),
+							map[string]any{"fieldId": field.FieldID},
+							false,
+						)
+					}
+					input = rawInput
+				}
+				result, normalizeErr := fieldvalue.New().NormalizeWrite(
+					ctx, v2Field, mode, input,
+				)
+				if normalizeErr != nil {
+					return PreviewResult{}, mutationError(
+						"mutation.field.invalid_value",
+						stringPointer(valuePath),
+						normalizeErr.Error(),
+						map[string]any{"fieldId": field.FieldID},
+						false,
+					)
+				}
+				v2Result = &result
+				value = result.ProductValue
 			}
 			if isArchiveField(definition, field) {
 				switch definition.ArchivePolicy.Mode {
 				case schema.ArchiveModeDeletedAt:
 					return PreviewResult{}, mutationError(
 						"mutation.archive.requires_operation",
-						stringPointer(path+".values."+key),
+						stringPointer(valuePath),
 						"deleted-at archive fields require archive or restore",
 						nil, false,
 					)
@@ -354,7 +465,7 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 					) {
 						return PreviewResult{}, mutationError(
 							"mutation.archive.requires_operation",
-							stringPointer(path+".values."+key),
+							stringPointer(valuePath),
 							"the archived status requires an archive operation",
 							nil, false,
 						)
@@ -363,9 +474,36 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 			}
 			if _, duplicate := values[field.PhysicalName]; duplicate {
 				return PreviewResult{}, mutationError(
-					"mutation.field.duplicate", stringPointer(path+".values."+key),
+					"mutation.field.duplicate", stringPointer(valuePath),
 					"field was specified by more than one alias", nil, false,
 				)
+			}
+			if v2Result != nil {
+				if field.Kind == schema.FieldKindRelation {
+					normalizedRelation, relationErr := validateRelationValue(
+						ctx,
+						app,
+						definition,
+						field,
+						v2Result.ProductValue,
+						pendingRecordIDs,
+					)
+					if relationErr != nil {
+						return PreviewResult{}, withMutationPath(
+							relationErr,
+							valuePath,
+						)
+					}
+					v2Result.ProductValue = normalizedRelation
+					if v2Result.Present {
+						v2Result.PhysicalValues[field.PhysicalName] = normalizedRelation
+					}
+				}
+				for physicalName, physicalValue := range v2Result.PhysicalValues {
+					values[physicalName] = physicalValue
+				}
+				suppliedV2[v2Field.Identity.FieldID] = struct{}{}
+				continue
 			}
 			if field.Kind == schema.FieldKindRelation {
 				normalizedRelation, err := validateRelationValue(
@@ -379,7 +517,7 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 				if err != nil {
 					return PreviewResult{}, withMutationPath(
 						err,
-						path+".values."+key,
+						valuePath,
 					)
 				}
 				value = normalizedRelation
@@ -391,7 +529,7 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 				}
 				return PreviewResult{}, mutationError(
 					"mutation.field.invalid_value",
-					stringPointer(path+".values."+key),
+					stringPointer(valuePath),
 					err.Error(),
 					details,
 					false,
@@ -400,7 +538,52 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 			values[field.PhysicalName] = value
 		}
 		if operation.Kind == OperationInsert {
+			for _, v2Field := range v2Fields {
+				if _, supplied := suppliedV2[v2Field.Identity.FieldID]; supplied {
+					continue
+				}
+				result, normalizeErr := fieldvalue.New().NormalizeWrite(
+					ctx, v2Field, fieldvalue.Insert,
+					fieldvalue.Input{Supplied: false},
+				)
+				if normalizeErr != nil {
+					return PreviewResult{}, mutationError(
+						"mutation.field.invalid_value",
+						stringPointer(path+".values."+v2Field.Identity.PhysicalName),
+						normalizeErr.Error(),
+						map[string]any{"fieldId": v2Field.Identity.FieldID},
+						false,
+					)
+				}
+				legacyField := fields[v2Field.Identity.FieldID]
+				if result.Write && legacyField.Kind == schema.FieldKindRelation {
+					normalizedRelation, relationErr := validateRelationValue(
+						ctx,
+						app,
+						definition,
+						legacyField,
+						result.ProductValue,
+						pendingRecordIDs,
+					)
+					if relationErr != nil {
+						return PreviewResult{}, withMutationPath(
+							relationErr,
+							path+".values."+v2Field.Identity.PhysicalName,
+						)
+					}
+					result.ProductValue = normalizedRelation
+					if result.Present {
+						result.PhysicalValues[legacyField.PhysicalName] = normalizedRelation
+					}
+				}
+				for physicalName, physicalValue := range result.PhysicalValues {
+					values[physicalName] = physicalValue
+				}
+			}
 			for _, field := range definition.Fields {
+				if _, managed := v2ByAlias[field.FieldID]; managed {
+					continue
+				}
 				if _, supplied := values[field.PhysicalName]; supplied ||
 					field.DefaultValue == nil ||
 					field.ReadOnly ||
@@ -554,7 +737,8 @@ func validateRequestShape(request Request) error {
 					"insert and update values must be an object", nil, false,
 				)
 			}
-			if operation.Kind == OperationUpdate && len(operation.Values) == 0 &&
+			if operation.Kind == OperationUpdate &&
+				len(operation.Values)+len(operation.RawValues) == 0 &&
 				(request.Actor.Type != "system" ||
 					(request.Actor.ID != "formula-backfill" &&
 						request.Actor.ID != "formula-fanout")) {
@@ -563,8 +747,8 @@ func validateRequestShape(request Request) error {
 					"empty updates are reserved for formula recalculation jobs", nil, false,
 				)
 			}
-			if len(operation.Values) > maxValues {
-				return mutationError("mutation.values.limit", stringPointer(path+".values"), "operation has too many values", map[string]any{"max": maxValues}, false)
+			if len(operation.Values)+len(operation.RawValues) > maxValues {
+				return mutationError("mutation.values.limit", stringPointer(path), "operation has too many values", map[string]any{"max": maxValues}, false)
 			}
 			if operation.FieldID != "" ||
 				operation.UploadHandles != nil ||
@@ -575,7 +759,8 @@ func validateRequestShape(request Request) error {
 				)
 			}
 		case OperationArchive, OperationRestore, OperationDelete:
-			if operation.Values != nil || operation.FieldID != "" ||
+			if operation.Values != nil || operation.RawValues != nil ||
+				operation.FieldID != "" ||
 				operation.UploadHandles != nil ||
 				operation.RemoveStoredNames != nil {
 				return mutationError(
@@ -584,7 +769,7 @@ func validateRequestShape(request Request) error {
 				)
 			}
 		case OperationSetAttachments:
-			if operation.Values != nil {
+			if operation.Values != nil || operation.RawValues != nil {
 				return mutationError(
 					"mutation.operation.invalid", stringPointer(path),
 					"attachment operation contains unsupported values", nil, false,

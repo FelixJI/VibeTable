@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast
 from urllib.error import HTTPError, URLError
@@ -104,7 +105,13 @@ class PocketBaseRealtimeSession:
         data_parts: list[bytes] = []
         size = 0
         while True:
-            raw = await self._connection.readline(_MAX_LINE_BYTES + 1)
+            try:
+                raw = await self._connection.readline(_MAX_LINE_BYTES + 1)
+            except (OSError, TimeoutError):
+                raise PocketBaseTransportError(
+                    "PocketBase realtime stream disconnected",
+                    code="realtime.disconnected",
+                ) from None
             if not raw:
                 raise PocketBaseTransportError(
                     "PocketBase realtime stream closed",
@@ -199,7 +206,11 @@ class PocketBaseRealtimeSupervisor:
                 await self._sleep(min(30.0, 0.5 * (2 ** min(attempt, 6))))
             finally:
                 if session is not None:
-                    await session.close()
+                    # A sidecar restart can reset the SSE socket while the
+                    # supervisor is already reconnecting or shutting down.
+                    # Cleanup failure must not terminate the backend.
+                    with suppress(OSError, TimeoutError, PocketBaseTransportError):
+                        await session.close()
 
     def _remember(self, event: ProductEvent) -> None:
         self._seen[event.event_id] = None

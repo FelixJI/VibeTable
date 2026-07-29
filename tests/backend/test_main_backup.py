@@ -30,7 +30,11 @@ class FakeBackupService:
         return BackupListResult(backups=[backup_entry()])
 
     async def create_backup(self, _params: Any) -> BackupCreateResult:
-        return BackupCreateResult(backup=backup_entry(), integrity_valid=True)
+        return BackupCreateResult(
+            backup=backup_entry(),
+            integrity_valid=True,
+            receipt="vbr1.test-receipt",
+        )
 
     async def delete_backup(self, _params: Any) -> BackupDeleteResult:
         return BackupDeleteResult(deleted=backup_entry().name)
@@ -58,6 +62,7 @@ async def test_registers_four_closed_backup_methods_and_serializes_aliases() -> 
 
     assert response is not None
     assert response["result"]["integrityValid"] is True
+    assert response["result"]["receipt"] == "vbr1.test-receipt"
     assert response["result"]["backup"]["sha256"] == "b" * 64
 
 

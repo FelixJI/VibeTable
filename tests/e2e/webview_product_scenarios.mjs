@@ -369,16 +369,205 @@ async function waitForImportSuccess(page, expectedRows, timeoutMs = 60_000) {
   );
 }
 
-async function createSimpleTable(page, displayName, fieldName = "label") {
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+async function createEmptyTable(page, displayName) {
   await page.getByTestId("sidebar-new-table").click();
   await fillNInput(page, "create-table-name-input", displayName);
-  await fillNInput(page, "create-table-field-name-0", fieldName);
-  await page.getByTestId("create-table-submit").click();
-  await page.getByTestId("create-table-name-input").waitFor({
-    state: "hidden",
-    timeout: 30_000,
+  const submit = page.getByTestId("create-table-submit");
+  await submit.click();
+  await waitForCreateTableSubmission(page, submit);
+  const row = page.locator(".table-row").filter({
+    has: page.getByTestId("sidebar-table-name").filter({ hasText: displayName }),
+  }).last();
+  await row.waitFor();
+  const tableId = (await row.locator("small").innerText()).trim();
+  if (!tableId.startsWith("tbl_")) {
+    throw new Error(`host did not expose an opaque table identity for ${displayName}: ${tableId}`);
+  }
+  await page.getByTestId("field-display-name").waitFor({ timeout: 30_000 });
+  return tableId;
+}
+
+async function createV2Field(
+  page,
+  tableId,
+  displayName,
+  logicalType = "text",
+  customize = (draft) => draft,
+) {
+  const described = await rawBridgeRequest(page, "field.settings.describe", { tableId });
+  const capability = described.payload?.capabilities?.find(
+    (item) => item.logicalType === logicalType && item.userCreatable,
+  );
+  if (!capability) {
+    throw new Error(`no user-creatable ${logicalType} capability for ${tableId}`);
+  }
+  const recommended = cloneJson(capability.recommended);
+  let draft = {
+    displayName,
+    help: "",
+    logicalType,
+    value: recommended.value,
+    constraints: recommended.constraints,
+    storage: recommended.storage,
+    display: recommended.display,
+    ...(recommended.file ? { file: recommended.file } : {}),
+    ...(recommended.json ? { json: recommended.json } : {}),
+    ...(recommended.formula ? { formula: recommended.formula } : {}),
+    ...(recommended.lookup ? { lookup: recommended.lookup } : {}),
+  };
+  if (logicalType === "select" || logicalType === "multiSelect") {
+    draft.select = {
+      options: [{ optionId: "", label: "Option 1", color: "#64748b", order: 10, state: "active" }],
+    };
+  }
+  if (logicalType === "relation") {
+    draft.relation = {
+      targetTableId: "",
+      cardinality: "one",
+      deletePolicy: "setNull",
+      displayFieldId: "",
+    };
+  }
+  draft = customize(cloneJson(draft));
+  const intent = {
+    action: "create",
+    tableId,
+    fieldId: described.payload?.fieldId ?? "",
+    expectedSchemaRevision: described.payload?.schemaRevision,
+    expectedDataRevision: described.payload?.dataRevision ?? null,
+    draft,
+    actor: { id: "product-e2e", kind: "user" },
+    conversionRule: "",
+    confirmation: "",
+    backupReceipt: "",
+  };
+  const planned = await rawBridgeRequest(page, "field.change.plan", intent);
+  if (planned.type === "operation.failed" || !planned.payload?.canApply) {
+    throw new Error(`field plan failed: ${JSON.stringify(planned)}`);
+  }
+  const operationId = `op_e2e_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const applied = await rawBridgeRequest(page, "field.change.apply", {
+    planId: planned.payload.planId,
+    planHash: planned.payload.planHash,
+    operationId,
+    actor: { id: "product-e2e", kind: "user" },
+    confirmations: [...(planned.payload.confirmations ?? [])],
   });
-  await page.getByTestId("sidebar-table-name").filter({ hasText: displayName }).waitFor();
+  if (applied.type === "operation.failed") {
+    throw new Error(`field apply failed: ${JSON.stringify(applied)}`);
+  }
+  const definition = planned.payload.after;
+  return {
+    tableId,
+    fieldId: applied.payload?.fieldId ?? definition?.identity?.fieldId,
+    physicalName: definition?.identity?.physicalName,
+    definition,
+    receipt: applied.payload,
+  };
+}
+
+async function closeFieldSettingsDrawer(page) {
+  const confirmation = page.waitForEvent("dialog", { timeout: 2_000 })
+    .then(async (dialog) => {
+      await dialog.accept();
+      return dialog.message();
+    })
+    .catch(() => null);
+  await page.getByTestId("field-close-button").click();
+  await confirmation;
+  await page.getByTestId("field-display-name").waitFor({ state: "hidden" });
+}
+
+async function applyV2FieldChange(
+  page,
+  tableId,
+  fieldId,
+  action,
+  {
+    mutateDraft = (draft) => draft,
+    conversionRule = "",
+    confirmation = "",
+    backupReceipt = "",
+  } = {},
+) {
+  const described = await rawBridgeRequest(page, "field.settings.describe", { tableId, fieldId });
+  const definition = described.payload?.definition;
+  let draft = null;
+  if (!["retire", "restore", "purge"].includes(action)) {
+    if (!definition) throw new Error(`field ${fieldId} is not active`);
+    const {
+      contract: _contract,
+      identity: _identity,
+      lifecycle: _lifecycle,
+      ...editable
+    } = cloneJson(definition);
+    draft = mutateDraft(editable);
+  }
+  const intent = {
+    action,
+    tableId,
+    fieldId,
+    expectedSchemaRevision: described.payload?.schemaRevision,
+    expectedDataRevision: described.payload?.dataRevision ?? null,
+    draft,
+    actor: { id: "product-e2e", kind: "user" },
+    conversionRule,
+    confirmation,
+    backupReceipt,
+  };
+  const planned = await rawBridgeRequest(page, "field.change.plan", intent);
+  if (planned.type === "operation.failed" || !planned.payload?.canApply) return { planned, applied: null };
+  const applied = await rawBridgeRequest(page, "field.change.apply", {
+    planId: planned.payload.planId,
+    planHash: planned.payload.planHash,
+    operationId: `op_e2e_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    actor: { id: "product-e2e", kind: "user" },
+    confirmations: [...(planned.payload.confirmations ?? [])],
+  });
+  return { planned, applied };
+}
+
+async function waitForFieldMigration(page, jobId, timeoutMs = 60_000) {
+  const deadline = Date.now() + timeoutMs;
+  let status = null;
+  while (Date.now() < deadline) {
+    status = await rawBridgeRequest(page, "field.change.status", { jobId });
+    if (["completed", "cancelled", "failed", "rolled_back"].includes(status.payload?.phase)) {
+      return status;
+    }
+    await page.waitForTimeout(100);
+  }
+  throw new Error(`field migration did not finish: ${jobId}: ${JSON.stringify(status)}`);
+}
+
+async function applyProductMutation(page, tableId, operations, label, expectFailure = false) {
+  const snapshot = await rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const token = `${label}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return rawBridgeRequest(page, "mutation.apply", {
+    contractVersion: "1.0",
+    requestId: token,
+    idempotencyKey: token,
+    tableId,
+    schemaRevision: snapshot.payload.snapshot.schemaRevision,
+    operations,
+    actor: { type: "user", id: "product-e2e", displayName: "Product E2E" },
+    expectedRevision: null,
+    expectedDigest: null,
+  }, 20_000, expectFailure ? ["mutation.apply", "operation.failed"] : ["mutation.apply"]);
+}
+
+async function createSimpleTable(page, displayName, fieldName = "label") {
+  const tableId = await createEmptyTable(page, displayName);
+  const field = await createV2Field(page, tableId, fieldName, "text");
+  await closeFieldSettingsDrawer(page);
+  return { tableId, field };
 }
 
 async function waitForCreateTableSubmission(
@@ -457,519 +646,311 @@ async function scenario02(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
   await page.getByTestId("sidebar-new-table").waitFor();
-  await createSimpleTable(page, "E2E Relation Target", "label");
+  const target = await createSimpleTable(page, "E2E Relation Target V2", "Label");
+  const tableId = await createEmptyTable(page, "E2E Field Settings V2");
+  recorder.check(
+    "new table is host-owned, empty, and opens the unified field settings drawer",
+    tableId.startsWith("tbl_")
+      && await page.getByTestId("field-display-name").isVisible(),
+    { tableId },
+  );
+  await closeFieldSettingsDrawer(page);
 
-  await page.getByTestId("sidebar-new-table").click();
-  await fillNInput(page, "create-table-name-input", "E2E All Field Families");
-
-  const fields = [
-    ["quantity", "integer"],
-    ["title", "shortText"],
-    ["status", "select"],
-    ["metadata", "json"],
-    ["double_quantity", "formula"],
-    ["attachments", "file"],
-    ["parent", "relation"],
-    ["parent_label", "lookup"],
-    ["tags", "multiSelect"],
+  const specifications = [
+    ["Title", "text"],
+    ["Notes", "editor"],
+    ["Amount", "number"],
+    ["Enabled", "bool"],
+    ["Due date", "date"],
+    ["Observed at", "dateTime"],
+    ["Local time", "time"],
+    ["Email", "email"],
+    ["Website", "url"],
+    ["Status", "select"],
+    ["Tags", "multiSelect"],
+    ["Parent", "relation"],
+    ["Files", "file"],
+    ["Location", "geoPoint"],
+    ["Payload", "json"],
+    ["Upper title", "formula"],
+    ["Parent label", "lookup"],
   ];
-  for (let index = 0; index < fields.length; index += 1) {
-    if (index > 0) await page.getByTestId("create-table-add-field").click();
-    const [name, type] = fields[index];
-    await fillNInput(page, `create-table-field-name-${index}`, name);
-    await selectNValue(page, `create-table-field-type-${index}`, type);
+  const created = [];
+  for (const [displayName, logicalType] of specifications) {
+    created.push(await createV2Field(page, tableId, displayName, logicalType, (draft) => {
+      if (logicalType === "select" || logicalType === "multiSelect") {
+        draft.select.options = [
+          { optionId: "", label: "Draft", color: "#64748b", order: 10, state: "active" },
+          { optionId: "", label: "Active", color: "#16a34a", order: 20, state: "active" },
+          { optionId: "", label: "Obsolete", color: "#dc2626", order: 30, state: "active" },
+        ];
+      }
+      if (logicalType === "relation") {
+        draft.relation.targetTableId = target.tableId;
+        draft.relation.displayFieldId = target.field.fieldId;
+      }
+      if (logicalType === "formula") {
+        const title = created.find((field) => field.definition?.logicalType === "text");
+        draft.formula = {
+          language: "cel-v1",
+          source: `upper(${title.physicalName})`,
+          resultType: "text",
+        };
+      }
+      if (logicalType === "lookup") {
+        const relation = created.find((field) => field.definition?.logicalType === "relation");
+        draft.lookup = {
+          relationFieldId: relation.fieldId,
+          targetFieldId: target.field.fieldId,
+          aggregate: "first",
+          resultType: "text",
+        };
+      }
+      return draft;
+    }));
   }
   recorder.check(
-    "new table enables both immutable system time presets by default",
-    await page.getByTestId("create-table-include-created-at").isChecked()
-      && await page.getByTestId("create-table-include-updated-at").isChecked()
-      && await page.locator('section[data-field-type="autoDate"]').count() === 0,
+    "recommended capabilities created every regular field family with opaque stable identities",
+    created.length === specifications.length
+      && created.every((field) =>
+        field.fieldId?.startsWith("fld_")
+        && field.physicalName?.startsWith("f_"))
+      && new Set(created.map((field) => field.fieldId)).size === created.length,
+    { created: created.map(({ fieldId, physicalName, definition }) => ({
+      fieldId,
+      physicalName,
+      logicalType: definition?.logicalType,
+    })) },
   );
 
-  const scalar = page.locator('section[data-field-type="integer"]');
-  await scalar.locator('.toggles input[type="checkbox"]').nth(0).check();
-  await scalar.locator('.toggles input[type="checkbox"]').nth(1).uncheck();
-  await scalar.locator('.toggles input[type="checkbox"]').nth(2).check();
-  await scalar.locator('.config-grid input[type="number"]').nth(0).fill("0");
-  await scalar.locator('.config-grid input[type="number"]').nth(1).fill("1000");
-
-  const titleField = page.locator('section[data-field-type="shortText"]');
-  await titleField.locator('.toggles input[type="checkbox"]').nth(0).check();
-  await titleField.locator('.toggles input[type="checkbox"]').nth(1).uncheck();
-  await titleField.locator('.config-grid input[type="number"]').nth(0).fill("3");
-  await titleField.locator('.config-grid input[type="number"]').nth(1).fill("80");
-  await titleField.locator('.config-grid input[type="text"]').fill("^[A-Za-z0-9 ].+$");
-
-  const statusField = page.locator('section[data-field-type="select"]');
-  await statusField.locator('.toggles input[type="checkbox"]').nth(0).check();
-  await statusField.locator('.toggles input[type="checkbox"]').nth(1).uncheck();
-  await page.getByTestId("field-enum-option-value-2-0").fill('"draft"');
-  await page.getByTestId("field-enum-option-display-2-0").fill("Draft");
-  await page.getByTestId("field-enum-add-option-2").click();
-  await page.getByTestId("field-enum-option-value-2-1").fill('"active"');
-  await page.getByTestId("field-enum-option-display-2-1").fill("Active");
-  await page.getByTestId("field-enum-add-option-2").click();
-  await page.getByTestId("field-enum-option-value-2-2").fill('"archived"');
-  await page.getByTestId("field-enum-option-display-2-2").fill("Archived");
-  await statusField.locator('label.single input').fill('"draft"');
-
-  await page.getByTestId("field-json-schema-3").fill(
-    '{"type":"object","required":["source"],"properties":{"source":{"type":"string"}}}',
-  );
-  await page.getByTestId("field-formula-source-4").fill("quantity * 2");
-  await page.locator('section[data-field-type="formula"] select').selectOption("integer");
-
-  const attachment = page.locator('section[data-field-type="file"]');
-  await page.getByTestId("field-attachment-max-files-5").fill("3");
-  await attachment.locator('.config-grid input[type="number"]').nth(1).fill("1048576");
-  await attachment.locator(".config-grid label.wide input").first()
-    .fill("image/png, application/pdf");
-  await page.getByTestId("field-attachment-thumbnails-5").fill("320x240, 640x480");
+  const computed = created.filter((field) =>
+    field.definition?.logicalType === "formula"
+      || field.definition?.logicalType === "lookup");
   recorder.check(
-    "managed attachment policy is protected and bounded before schema apply",
-    await attachment.locator('.config-grid input[type="checkbox"]').isChecked(),
+    "formula and lookup are created through the same v2 planner and retain typed specs",
+    computed.length === 2
+      && computed.every((field) => field.receipt?.definition?.logicalType === field.definition?.logicalType)
+      && computed.find((field) => field.definition?.logicalType === "formula")
+        ?.definition?.formula?.language === "cel-v1"
+      && computed.find((field) => field.definition?.logicalType === "lookup")
+        ?.definition?.lookup?.relationFieldId
+        === created.find((field) => field.definition?.logicalType === "relation")?.fieldId,
+    { computed },
   );
 
-  await page.getByTestId("field-relation-target-6").fill("tbl_e2e_relation_target");
-  const relation = page.locator('section[data-field-type="relation"]');
-  await relation.locator("select").nth(0).selectOption("one");
-  await relation.locator("select").nth(1).selectOption("restrict");
-
-  await page.getByTestId("field-lookup-relation-7").fill("fld_parent");
-  await page.locator('section[data-field-type="lookup"] .config-grid input')
-    .nth(1)
-    .fill("fld_label");
-  await page.locator('section[data-field-type="lookup"] select').first()
-    .selectOption("first");
-  await page.getByTestId("field-lookup-output-type-7").selectOption("shortText");
-
-  await page.getByTestId("field-enum-option-value-8-0").fill("true");
-  await page.getByTestId("field-enum-option-display-8-0").fill("Enabled");
-  await page.getByTestId("field-enum-add-option-8").click();
-  await page.getByTestId("field-enum-option-value-8-1").fill("2");
-  await page.getByTestId("field-enum-option-display-8-1").fill("Priority two");
-  await page.getByTestId("field-enum-add-option-8").click();
-  await page.getByTestId("field-enum-option-value-8-2").fill('"done"');
-  await page.getByTestId("field-enum-option-display-8-2").fill("Done");
-  await page.getByTestId("field-enum-min-selected-8").fill("1");
-  await page.getByTestId("field-enum-max-selected-8").fill("2");
-
-  await page.getByTestId("create-table-add-index")
-    .evaluate((node) => node.click());
-  await fillNInput(page, "create-table-index-name-0", "idx_title");
-  await selectNOptionsByText(page, "create-table-index-fields-0", ["title"]);
-  await page.getByTestId("create-table-index-type-0")
-    .locator(".n-base-selection")
-    .evaluate((node) => node.click());
-  const uniqueIndexOption = page.locator(".n-base-select-option:visible")
-    .filter({ hasText: /(?:\u552f\u4e00\u7d22\u5f15|Unique index)/u })
-    .first();
-  await uniqueIndexOption.waitFor();
-  await uniqueIndexOption.evaluate((node) => node.click());
-  await closeVisibleNSelectMenu(page);
-  await page.getByTestId("create-table-add-index")
-    .evaluate((node) => node.click());
-  await fillNInput(page, "create-table-index-name-1", "idx_quantity_status");
-  await selectNOptionsByText(
+  await selectTable(page, "E2E Field Settings V2");
+  await insertRowFromToolbar(page);
+  const titleField = created.find((field) => field.definition?.logicalType === "text");
+  const undoCell = page.locator(
+    `.tabulator-cell[tabulator-field="${titleField.physicalName}"]`,
+  ).first();
+  const undoEditor = await beginCellEdit(undoCell);
+  await beginBridgeMessageCapture(
     page,
-    "create-table-index-fields-1",
-    ["quantity", "status"],
+    ["table.editCommitted", "table.editRejected", "operation.failed"],
+  );
+  await undoEditor.fill("undo-this-data-edit");
+  await undoEditor.press("Enter");
+  const editCommitted = await waitForCapturedBridgeMessage(page, 30_000);
+  if (editCommitted.type !== "table.editCommitted") {
+    throw new Error(`initial edit was not committed: ${JSON.stringify(editCommitted)}`);
+  }
+  await page.waitForFunction(
+    ({ field, value }) => document.querySelector(
+      `.tabulator-cell[tabulator-field="${field}"]`,
+    )?.textContent?.includes(value),
+    { field: titleField.physicalName, value: "undo-this-data-edit" },
+    { timeout: 30_000 },
+  );
+  await beginBridgeMessageCapture(
+    page,
+    ["table.editCommitted", "table.editRejected", "operation.failed"],
+  );
+  await page.keyboard.press("Control+Z");
+  const undoCommitted = await waitForCapturedBridgeMessage(page, 30_000);
+  if (undoCommitted.type !== "table.editCommitted") {
+    throw new Error(`undo edit was not committed: ${JSON.stringify(undoCommitted)}`);
+  }
+  // A data/relation refresh can briefly rebuild the Tabulator DOM. Waiting
+  // for the cell text to disappear first would mistake that transient absence
+  // for a committed undo. Poll the authoritative QueryPort boundary first;
+  // only after the value is gone from storage may the renderer assertion pass.
+  let rowsAfterUndo = null;
+  const undoDeadline = Date.now() + 30_000;
+  while (Date.now() < undoDeadline) {
+    rowsAfterUndo = await rawBridgeRequest(page, "query.page", {
+      tableId,
+      query: { filters: [], sorts: [], offset: 0, limit: 100 },
+    });
+    if (
+      rowsAfterUndo.payload?.rows?.length === 1
+      && rowsAfterUndo.payload.rows[0]?.[titleField.physicalName]
+        !== "undo-this-data-edit"
+    ) break;
+    await page.waitForTimeout(50);
+  }
+  await page.waitForFunction(
+    ({ field, value }) => !document.querySelector(
+      `.tabulator-cell[tabulator-field="${field}"]`,
+    )?.textContent?.includes(value),
+    { field: titleField.physicalName, value: "undo-this-data-edit" },
+    { timeout: 30_000 },
+  );
+  const computedAfterUndo = await rawBridgeRequest(page, "field.settings.describe", {
+    tableId,
+    fieldId: computed[0].fieldId,
+  });
+  recorder.check(
+    "Ctrl+Z reverses the data edit but never reverses a committed schema change",
+    rowsAfterUndo.payload?.rows?.length === 1
+      && rowsAfterUndo.payload.rows[0]?.[titleField.physicalName] !== "undo-this-data-edit"
+      && computedAfterUndo.payload?.definition?.identity?.fieldId === computed[0].fieldId,
+    { rowsAfterUndo, computedAfterUndo },
   );
 
-  const kinds = await page.locator("section[data-field-type]").evaluateAll((nodes) =>
-    nodes.map((node) => node.getAttribute("data-field-type")));
-  recorder.check("schema editor exposed every product field family and constraint carrier",
-    JSON.stringify(kinds) === JSON.stringify(fields.map(([, type]) => type)), {
-    dataTypes: kinds,
-    productKinds: ["scalar", "json", "formula", "attachment", "relation", "lookup", "system"],
-    constraints: [
-      "required", "nullable", "unique", "range", "length", "pattern",
-      "enumValueDisplay", "singleMultiSelectBounds", "default",
-      "jsonSchema", "attachment", "thumbnail",
-      "relation", "lookup", "regularIndex", "uniqueIndex", "compositeIndex",
-    ],
-  });
-  await closeVisibleNSelectMenu(page);
-  const submit = page.getByTestId("create-table-submit");
-  await submit.waitFor({ state: "visible" });
-  await submit.click();
-  await waitForCreateTableSubmission(page, submit);
-  const createdTable = page.getByTestId("sidebar-table-name")
-    .filter({ hasText: "E2E All Field Families" });
-  await createdTable.waitFor();
-  recorder.check("schema.validate and schema.apply completed through the UI",
-    await createdTable.isVisible()
-      && !(await page.getByTestId("create-table-name-input").isVisible()));
-  const persistedSchema = await rawBridgeRequest(page, "schema.getTable", {
-    tableId: "tbl_e2e_all_field_families",
-  });
-  const definition = persistedSchema.payload;
-  const persistedFields = new Map(
-    (definition?.fields ?? []).map((field) => [field.physicalName, field]),
-  );
-  const findConstraint = (fieldName, kind) =>
-    persistedFields.get(fieldName)?.constraints?.find((item) => item.kind === kind);
-  const quantity = persistedFields.get("quantity");
-  const title = persistedFields.get("title");
-  const status = persistedFields.get("status");
-  const metadata = persistedFields.get("metadata");
-  const formula = persistedFields.get("double_quantity");
-  const attachments = persistedFields.get("attachments");
-  const parent = persistedFields.get("parent");
-  const parentLabel = persistedFields.get("parent_label");
-  const createdAt = persistedFields.get("created_at");
-  const updatedAt = persistedFields.get("updated_at");
-  const quantityRange = findConstraint("quantity", "range");
-  const titleLength = findConstraint("title", "length");
-  const titlePattern = findConstraint("title", "pattern");
-  const statusEnum = findConstraint("status", "enum");
-  const tagsEnum = findConstraint("tags", "enum");
-  const statusDefault = findConstraint("status", "default");
-  const metadataSchema = findConstraint("metadata", "jsonSchema");
-  const attachmentConstraint = findConstraint("attachments", "attachment");
-  recorder.check(
-    "authoritative normalized schema persisted every configured field constraint and policy",
-    persistedSchema.type === "schema.getTable"
-      && definition?.tableId === "tbl_e2e_all_field_families"
-      && quantity?.nullable === false
-      && Boolean(findConstraint("quantity", "required")?.value)
-      && Boolean(findConstraint("quantity", "unique")?.value)
-      && quantityRange?.min === 0
-      && quantityRange?.max === 1000
-      && title?.nullable === false
-      && Boolean(findConstraint("title", "required")?.value)
-      && titleLength?.minLength === 3
-      && titleLength?.maxLength === 80
-      && titlePattern?.pattern === "^[A-Za-z0-9 ].+$"
-      && status?.nullable === false
-      && Boolean(findConstraint("status", "required")?.value)
-      && JSON.stringify(statusEnum?.options?.map((item) => item.value))
-        === JSON.stringify(["draft", "active", "archived"])
-      && JSON.stringify(statusEnum?.options?.map((item) => item.displayName))
-        === JSON.stringify(["Draft", "Active", "Archived"])
-      && statusEnum?.multiple === false
-      && statusEnum?.minSelected === 1
-      && statusEnum?.maxSelected === 1
-      && statusDefault?.value === "draft"
-      && status?.defaultValue === "draft"
-      && metadataSchema?.schema?.type === "object"
-      && metadataSchema?.schema?.required?.[0] === "source"
-      && formula?.formula?.source === "quantity * 2"
-      && formula?.formula?.resultType === "integer"
-      && attachments?.attachmentPolicy?.maxFiles === 3
-      && attachments?.attachmentPolicy?.maxBytesPerFile === 1048576
-      && JSON.stringify(attachments?.attachmentPolicy?.allowedMimeTypes)
-        === JSON.stringify(["image/png", "application/pdf"])
-      && attachments?.attachmentPolicy?.protected === true
-      && JSON.stringify(attachments?.attachmentPolicy?.thumbnailVariants)
-        === JSON.stringify(["320x240", "640x480"])
-      && attachmentConstraint?.policy?.protected === true
-      && parent?.relation?.targetTableId === "tbl_e2e_relation_target"
-      && parent?.relation?.cardinality === "one"
-      && parent?.relation?.deletePolicy === "restrict"
-      && parentLabel?.lookup?.relationFieldId === "fld_parent"
-      && parentLabel?.lookup?.targetFieldId === "fld_label"
-      && parentLabel?.lookup?.aggregate === "first"
-      && createdAt?.dataType === "autoDate"
-      && createdAt?.kind === "system"
-      && createdAt?.readOnly === true
-      && createdAt?.nullable === false
-      && createdAt?.autoDate?.role === "createdAt"
-      && updatedAt?.dataType === "autoDate"
-      && updatedAt?.kind === "system"
-      && updatedAt?.readOnly === true
-      && updatedAt?.nullable === false
-      && updatedAt?.autoDate?.role === "updatedAt"
-      && tagsEnum?.multiple === true
-      && tagsEnum?.minSelected === 1
-      && tagsEnum?.maxSelected === 2
-      && JSON.stringify(tagsEnum?.options)
-        === JSON.stringify([
-          { value: true, displayName: "Enabled" },
-          { value: 2, displayName: "Priority two" },
-          { value: "done", displayName: "Done" },
-        ])
-      && definition?.indexes?.length === 2
-      && definition.indexes[0]?.name === "idx_title"
-      && definition.indexes[0]?.unique === true
-      && JSON.stringify(definition.indexes[0]?.fieldIds) === JSON.stringify(["fld_title"])
-      && definition.indexes[1]?.name === "idx_quantity_status"
-      && definition.indexes[1]?.unique === false
-      && JSON.stringify(definition.indexes[1]?.fieldIds)
-        === JSON.stringify(["fld_quantity", "fld_status"]),
-    { persistedSchema },
-  );
-  await createdTable.click();
-  await page.locator(".tabulator").waitFor({ timeout: 30_000 });
-  const appliedFields = await page.locator(".tabulator-col[tabulator-field]")
-    .evaluateAll((nodes) => nodes
-      .map((node) => node.getAttribute("tabulator-field"))
-      .filter((field) => field && field !== "__vt_row_number"));
-  recorder.check(
-    "applied schema renders every configured product field",
-    [...fields.map(([name]) => name), "created_at", "updated_at"]
-      .every((name) => appliedFields.includes(name)),
-    {
-      expectedFields: [...fields.map(([name]) => name), "created_at", "updated_at"],
-      appliedFields,
-    },
-  );
-  const emptyState = page.locator(".tabulator-placeholder:visible");
-  await emptyState.waitFor({ timeout: 10_000 });
-  const emptyStateText = (await emptyState.innerText()).trim();
-  const activeLocale = await page.evaluate(
-    () => localStorage.getItem("vt:locale") ?? "zh-CN",
-  );
-  const expectedEmptyState = activeLocale === "en-US"
-    ? "No records yet — use + to add the first row"
-    : "暂无记录，使用“+”添加第一行";
-  recorder.check(
-    "new empty table shows a localized actionable empty state",
-    emptyStateText === expectedEmptyState,
-    { activeLocale, emptyStateText, expectedEmptyState },
-  );
-  const typedEnumMutation = await rawBridgeRequest(page, "mutation.apply", {
-    contractVersion: "1.0",
-    requestId: "e2e-typed-enum-insert",
-    idempotencyKey: "e2e-typed-enum-insert",
-    tableId: definition.tableId,
-    schemaRevision: definition.schemaRevision,
-    operations: [{
-      kind: "insert",
-      recordId: null,
-      values: {
-        quantity: 42,
-        title: "Typed Enum Row",
-        status: "draft",
-        tags: [true, 2],
-      },
-    }],
-    actor: { type: "user", id: "e2e-schema", displayName: "E2E schema" },
-    expectedRevision: null,
-    expectedDigest: null,
-  });
-  recorder.check(
-    "typed boolean and number enum values committed through mutation.apply",
-    typedEnumMutation.type === "mutation.apply"
-      && typedEnumMutation.payload?.status === "applied"
-      && typedEnumMutation.payload?.affectedRows?.length === 1,
-    { typedEnumMutation },
-  );
-  const typedEnumRecordId = typedEnumMutation.payload?.affectedRows?.[0]?.recordId;
-  const insertedAutoDates = typedEnumMutation.payload?.computedFields?.[typedEnumRecordId];
-  const parsePocketBaseDate = (value) => Date.parse(
-    typeof value === "string" ? value : "",
-  );
-  recorder.check(
-    "insert receipt returns authoritative UTC values for both system time roles",
-    typeof insertedAutoDates?.created_at === "string"
-      && typeof insertedAutoDates?.updated_at === "string"
-      && Number.isFinite(parsePocketBaseDate(insertedAutoDates.created_at))
-      && Number.isFinite(parsePocketBaseDate(insertedAutoDates.updated_at)),
-    { typedEnumRecordId, insertedAutoDates },
-  );
-  let updatedAutoDates = null;
-  let updatedTypedEnumTitle = "Typed Enum Row";
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const nextTitle = `Typed Enum Row ${attempt}`;
-    const updated = await rawBridgeRequest(page, "mutation.apply", {
-      contractVersion: "1.0",
-      requestId: `e2e-autodate-update-${attempt}`,
-      idempotencyKey: `e2e-autodate-update-${attempt}`,
-      tableId: definition.tableId,
-      schemaRevision: definition.schemaRevision,
-      operations: [{
-        kind: "update",
-        recordId: typedEnumRecordId,
-        values: { title: nextTitle },
-      }],
-      actor: { type: "user", id: "e2e-schema", displayName: "E2E schema" },
-      expectedRevision: null,
-      expectedDigest: null,
-    });
-    updatedAutoDates = updated.payload?.computedFields?.[typedEnumRecordId] ?? null;
-    if (updated.payload?.status === "applied") updatedTypedEnumTitle = nextTitle;
-    if (parsePocketBaseDate(updatedAutoDates?.updated_at)
-        > parsePocketBaseDate(insertedAutoDates?.updated_at)) break;
-  }
-  recorder.check(
-    "successful save preserves createdAt and advances updatedAt without a fixed delay",
-    updatedAutoDates?.created_at === insertedAutoDates?.created_at
-      && parsePocketBaseDate(updatedAutoDates?.updated_at)
-        > parsePocketBaseDate(insertedAutoDates?.updated_at),
-    { insertedAutoDates, updatedAutoDates },
-  );
-  const autoDateQuery = await rawBridgeRequest(page, "query.page", {
-    tableId: definition.tableId,
-    query: {
-      filters: [{
-        field: "updated_at",
-        operator: "gte",
-        value: insertedAutoDates?.updated_at,
-        logic: "AND",
-      }],
-      sorts: [{ field: "updated_at", direction: "desc", nullsLast: true }],
-      offset: 0,
-      limit: 100,
-    },
-  });
-  recorder.check(
-    "system timestamps support authoritative range filtering and sorting",
-    autoDateQuery.type === "query.page"
-      && autoDateQuery.payload?.rows?.some((row) => row.id === typedEnumRecordId),
-    { autoDateQuery },
-  );
-  const forgedAutoDate = await rawBridgeRequest(page, "mutation.apply", {
-    contractVersion: "1.0",
-    requestId: "e2e-autodate-forgery",
-    idempotencyKey: "e2e-autodate-forgery",
-    tableId: definition.tableId,
-    schemaRevision: definition.schemaRevision,
-    operations: [{
-      kind: "update",
-      recordId: typedEnumRecordId,
-      values: {
-        title: "Forged Row",
-        updated_at: "2000-01-01T00:00:00Z",
-      },
-    }],
-    actor: { type: "user", id: "e2e-schema", displayName: "E2E schema" },
-    expectedRevision: null,
-    expectedDigest: null,
-  });
-  recorder.check(
-    "forged system time rejects the whole mutation with the stable read-only error",
-    forgedAutoDate.type === "mutation.apply"
-      && forgedAutoDate.payload?.error?.code === "mutation.field.read_only",
-    { forgedAutoDate },
-  );
-  const typedEnumQuery = await rawBridgeRequest(page, "query.page", {
-    tableId: definition.tableId,
-    query: {
-      filters: [{ field: "tags", operator: "contains", value: true, logic: "AND" }],
-      sorts: [],
-      offset: 0,
-      limit: 100,
-    },
-  });
-  const typedEnumRow = typedEnumQuery.payload?.rows?.[0];
-  recorder.check(
-    "query.page filtered and returned typed enum values without string collapse",
-    typedEnumQuery.type === "query.page"
-      && typedEnumQuery.payload?.rows?.length === 1
-      && typedEnumRow?.title === updatedTypedEnumTitle
-      && typedEnumRow?.title !== "Forged Row"
-      && Array.isArray(typedEnumRow?.tags)
-      && typedEnumRow.tags.length === 2
-      && typedEnumRow.tags[0] === true
-      && typedEnumRow.tags[1] === 2,
-    { typedEnumQuery },
-  );
-  const lookupSchemaProbe = await rawBridgeRequest(page, "schema.describe", {
-    collection: definition.tableId,
-    requestGeneration: 2002,
-    accepts: [
-      "vibetable.relation-capabilities.v1",
-      "vibetable.lookup-query.v1",
-    ],
-  });
-  const lookupCatalogProbe = await rawBridgeRequest(page, "lookup.list", {
-    collection: definition.tableId,
-  });
-  const lookupDefinitions = lookupCatalogProbe.payload?.definitions ?? [];
-  const authoritativeLookupQuery = await rawBridgeRequest(page, "lookup.query", {
-    contract: "vibetable.lookup-query.v1",
-    collection: definition.tableId,
-    fieldRefs: lookupDefinitions.map((item) => item.fieldKey),
-    query: { filters: [], sorts: [], groups: [], offset: 0, limit: 100 },
-    requestGeneration: 2002,
-    schemaRevision: lookupSchemaProbe.payload?.schema?.schemaRevision,
-    permissionRevision: lookupSchemaProbe.payload?.schema?.permissionRevision,
-    lookupRevision: lookupSchemaProbe.payload?.schema?.lookupRevision,
-  });
-  recorder.check(
-    "authoritative Lookup projection succeeds with Lookup-only field refs",
-    authoritativeLookupQuery.type === "lookup.query"
-      && authoritativeLookupQuery.payload?.rows?.length === 1,
-    {
-      lookupDefinitions,
-      lookupSchemaProbe,
-      lookupCatalogProbe,
-      authoritativeLookupQuery,
-    },
-  );
-  const autoDateRestart = await requestSidecarKill(
-    runtime,
-    "verify autoDate roles and values survive sidecar restart",
-  );
-  await waitForActiveTableBackend(page, definition.tableId, 1);
-  const restartedDefinition = await rawBridgeRequest(page, "schema.getTable", {
-    tableId: definition.tableId,
-  });
-  const restartedQuery = await rawBridgeRequest(page, "query.page", {
-    tableId: definition.tableId,
+  // The remaining assertions intentionally mutate this table through raw
+  // bridge requests. Keep the visible grid on a different table so it cannot
+  // issue Lookup reads between an out-of-band schema apply and its UI refresh.
+  await selectTable(page, "E2E Relation Target V2");
+
+  const status = created.find((field) => field.definition?.logicalType === "select");
+  const draftOption = status.definition.select.options.find((option) => option.label === "Draft");
+  const activeOption = status.definition.select.options.find((option) => option.label === "Active");
+  const obsoleteOption = status.definition.select.options.find((option) => option.label === "Obsolete");
+  const selectSnapshot = await rawBridgeRequest(page, "query.page", {
+    tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
-  const restartedFields = restartedDefinition.payload?.fields ?? [];
-  const restartedRow = restartedQuery.payload?.rows?.find(
-    (row) => row.id === typedEnumRecordId,
+  const selectMutation = await rawBridgeRequest(page, "mutation.apply", {
+    contractVersion: "1.0",
+    requestId: `e2e-select-seed-${Date.now()}`,
+    idempotencyKey: `e2e-select-seed-${Date.now()}`,
+    tableId,
+    schemaRevision: selectSnapshot.payload.snapshot.schemaRevision,
+    operations: [
+      { kind: "insert", recordId: null, values: { [status.physicalName]: draftOption.optionId } },
+      { kind: "insert", recordId: null, values: { [status.physicalName]: activeOption.optionId } },
+      { kind: "insert", recordId: null, values: { [status.physicalName]: obsoleteOption.optionId } },
+    ],
+    actor: { type: "user", id: "product-e2e", displayName: "Product E2E" },
+    expectedRevision: null,
+    expectedDigest: null,
+  });
+  const relabelled = await applyV2FieldChange(page, tableId, status.fieldId, "update", {
+    mutateDraft: (draft) => {
+      const option = draft.select.options.find(
+        (candidate) => candidate.optionId === activeOption.optionId,
+      );
+      option.label = "In progress";
+      option.color = "#0ea5e9";
+      return draft;
+    },
+  });
+  const relabelledRows = await rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check(
+    "changing a select option label and color preserves stored stable option IDs",
+    relabelled.applied?.type === "field.change.apply"
+      && relabelled.planned?.payload?.after?.select?.options?.some(
+        (option) => option.optionId === activeOption.optionId
+          && option.label === "In progress",
+      )
+      && relabelledRows.payload?.rows?.some(
+        (row) => row[status.physicalName] === activeOption.optionId,
+      ),
+    { relabelled, relabelledRows },
+  );
+  const replaced = await applyV2FieldChange(page, tableId, status.fieldId, "update", {
+    mutateDraft: (draft) => {
+      draft.select.options = draft.select.options.filter(
+        (option) => option.optionId !== draftOption.optionId,
+      );
+      return draft;
+    },
+    conversionRule: `selectOption:${draftOption.optionId}:replace:${activeOption.optionId}`,
+  });
+  const replacedStatus = replaced.applied?.payload?.migrationJobId
+    ? await waitForFieldMigration(page, replaced.applied.payload.migrationJobId)
+    : null;
+  const cleared = await applyV2FieldChange(page, tableId, status.fieldId, "update", {
+    mutateDraft: (draft) => {
+      draft.select.options = draft.select.options.filter(
+        (option) => option.optionId !== obsoleteOption.optionId,
+      );
+      return draft;
+    },
+    conversionRule: `selectOption:${obsoleteOption.optionId}:clear`,
+  });
+  const clearedStatus = cleared.applied?.payload?.migrationJobId
+    ? await waitForFieldMigration(page, cleared.applied.payload.migrationJobId)
+    : null;
+  const selectRows = await rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const selectValues = (selectRows.payload?.rows ?? []).map(
+    (row) => row[status.physicalName],
   );
   recorder.check(
-    "autoDate roles, field IDs, values, and read-only attributes survive restart",
-    autoDateRestart.processName === "vibetable-pb.exe"
-      && restartedDefinition.type === "schema.getTable"
-      && restartedFields.some((field) =>
-        field.fieldId === "fld_created_at"
-          && field.autoDate?.role === "createdAt"
-          && field.readOnly === true)
-      && restartedFields.some((field) =>
-        field.fieldId === "fld_updated_at"
-          && field.autoDate?.role === "updatedAt"
-          && field.readOnly === true)
-      && restartedRow?.created_at === typedEnumRow?.created_at
-      && restartedRow?.updated_at === typedEnumRow?.updated_at
-      && restartedRow?.title === updatedTypedEnumTitle,
-    { autoDateRestart, restartedDefinition, restartedRow, typedEnumRow },
-  );
-  await page.waitForTimeout(100);
-  const unexpectedErrorMessages = await page.locator(".n-message--error-type:visible").allInnerTexts();
-  recorder.check(
-    "successful all-field schema flow leaves no error toast",
-    unexpectedErrorMessages.length === 0,
-    { unexpectedErrorMessages },
+    "select option deletion explicitly replaces referenced values or clears them",
+    selectMutation.payload?.status === "applied"
+      && (!replacedStatus || replacedStatus.payload?.phase === "completed")
+      && (!clearedStatus || clearedStatus.payload?.phase === "completed")
+      && selectValues.includes(activeOption.optionId)
+      && selectValues.some((value) => value === null || value === undefined || value === ""),
+    { replaced, replacedStatus, cleared, clearedStatus, selectValues },
   );
 
-  const previousViewport = page.viewportSize();
-  await page.setViewportSize({ width: 720, height: 720 });
-  const compactTableSwitcher = page.getByTestId("compact-table-switcher");
-  await compactTableSwitcher.waitFor({ state: "visible" });
-  await compactTableSwitcher.click();
-  const compactTarget = page.locator(".n-dropdown-option:visible")
-    .filter({ hasText: "E2E Relation Target" })
-    .first();
-  await compactTarget.waitFor();
-  await compactTarget.click();
-  await page.waitForFunction(
-    () => document.querySelector('[data-testid="compact-table-switcher"]')
-      ?.textContent?.includes("E2E Relation Target"),
+  const amount = created.find((field) => field.definition?.logicalType === "number");
+  const beforeIdentity = cloneJson(amount.definition.identity);
+  const updated = await applyV2FieldChange(page, tableId, amount.fieldId, "update", {
+    mutateDraft: (draft) => {
+      draft.displayName = "Total amount";
+      draft.display.displayScale = 4;
+      return draft;
+    },
+  });
+  recorder.check(
+    "same-type display update keeps field and physical identities stable",
+    updated.applied?.type === "field.change.apply"
+      && updated.planned?.payload?.classes?.every((item) => item === "display" || item === "metadata")
+      && updated.planned?.payload?.after?.identity?.fieldId === beforeIdentity.fieldId
+      && updated.planned?.payload?.after?.identity?.physicalName === beforeIdentity.physicalName,
+    { beforeIdentity, updated },
+  );
+
+  const retired = await applyV2FieldChange(page, tableId, amount.fieldId, "retire");
+  const recycle = await rawBridgeRequest(page, "field.recycleBin.list", { tableId });
+  const restored = await applyV2FieldChange(page, tableId, amount.fieldId, "restore");
+  const restoredDescribe = await rawBridgeRequest(page, "field.settings.describe", {
+    tableId,
+    fieldId: amount.fieldId,
+  });
+  recorder.check(
+    "retire and restore preserve field identity through the recycle bin",
+    retired.applied?.type === "field.change.apply"
+      && recycle.payload?.fields?.some((field) => field.identity?.fieldId === amount.fieldId)
+      && restored.applied?.type === "field.change.apply"
+      && restoredDescribe.payload?.definition?.identity?.fieldId === beforeIdentity.fieldId
+      && restoredDescribe.payload?.definition?.identity?.physicalName === beforeIdentity.physicalName,
+    { retired, recycle, restored, restoredDescribe },
+  );
+
+  const legacyWrite = await rawBridgeRequest(
+    page,
+    "schema.apply",
+    { definition: { tableId }, expectedRevision: 0 },
+    20_000,
+    ["operation.failed"],
   );
   recorder.check(
-    "narrow real WebView2 keeps table switching available from the compact toolbar",
-    await compactTableSwitcher.isVisible()
-      && (await compactTableSwitcher.innerText()).includes("E2E Relation Target")
-      && !(await page.getByTestId("toolbar-table-title").isVisible()),
-    {
-      viewport: page.viewportSize(),
-      compactLabel: await compactTableSwitcher.innerText(),
-    },
+    "renderer cannot reach the retired generic schema write route",
+    legacyWrite.type === "operation.failed",
+    { legacyWrite },
   );
-  await page.screenshot({
-    path: path.join(runtime.evidenceDir, "02-narrow-table-switcher.png"),
-    fullPage: true,
-  });
-  if (previousViewport) {
-    await page.setViewportSize(previousViewport);
-  }
+  return;
 }
 
 async function rawBridgeRequest(
@@ -983,6 +964,10 @@ async function rawBridgeRequest(
     ({ type: requestType, payload: requestPayload, timeout, responseTypes }) =>
       new Promise((resolve, reject) => {
         const requestId = `e2e-${crypto.randomUUID()}`;
+        const diagnostics = window.__vibetableE2EBridgeDiagnostics;
+        if (diagnostics && responseTypes.includes("operation.failed")) {
+          diagnostics.expectedFailures[requestId] = true;
+        }
         const timer = setTimeout(() => {
           window.chrome.webview.removeEventListener("message", handler);
           reject(new Error(`bridge timeout for ${requestType}`));
@@ -1020,6 +1005,7 @@ async function installBridgeDiagnostics(page) {
       roundTrips: [],
       failures: [],
       pending: {},
+      expectedFailures: {},
     };
     const webview = window.chrome.webview;
     const originalPostMessage = webview.postMessage.bind(webview);
@@ -1076,7 +1062,13 @@ async function installBridgeDiagnostics(page) {
         durationMs: Math.round((performance.now() - request.startedMonotonicMs) * 100) / 100,
       };
       diagnostics.roundTrips.push(roundTrip);
-      if (message.type === "operation.failed") diagnostics.failures.push(roundTrip);
+      if (
+        message.type === "operation.failed"
+        && !diagnostics.expectedFailures[message.requestId]
+      ) {
+        diagnostics.failures.push(roundTrip);
+      }
+      delete diagnostics.expectedFailures[message.requestId];
       delete diagnostics.pending[message.requestId];
     });
     window.__vibetableE2EBridgeDiagnostics = diagnostics;
@@ -1405,48 +1397,228 @@ function invalidFormulaDefinition() {
 async function scenario03(page, recorder) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
-  await page.getByTestId("sidebar-new-table").click();
-  await fillNInput(page, "create-table-name-input", "E2E Invalid Formula");
-  await fillNInput(page, "create-table-field-name-0", "total");
-  await selectNValue(page, "create-table-field-type-0", "formula");
-  const localError = page.getByTestId("field-error-0");
-  await localError.waitFor();
-  // The exact stable field path is intentionally tucked behind the
-  // user-facing "details" disclosure. Exercise that real affordance before
-  // asserting the path instead of relying on hidden DOM text.
-  await localError.locator("summary").click();
-  const localText = await localError.innerText();
-  recorder.check("client blocks invalid formula at the field path", localText.includes("fields[0].formula.source"), {
-    localText,
-    submitDisabled: await page.getByTestId("create-table-submit").isDisabled(),
-  });
+  const tableId = await createEmptyTable(page, "E2E Typed Field Error");
+  await fillNInput(page, "field-display-name", "");
+  recorder.check(
+    "unified drawer blocks an unnamed field before planning",
+    await page.getByTestId("field-plan-button").isDisabled(),
+  );
+  await closeFieldSettingsDrawer(page);
 
-  const response = await rawBridgeRequest(page, "schema.validate", {
-    definition: invalidFormulaDefinition(),
-    expectedRevision: 0,
+  const described = await rawBridgeRequest(page, "field.settings.describe", { tableId });
+  const capability = described.payload.capabilities.find(
+    (item) => item.logicalType === "file" && item.userCreatable,
+  );
+  const recommended = cloneJson(capability.recommended);
+  const invalidDraft = {
+    displayName: "Broken files",
+    help: "",
+    logicalType: "file",
+    value: recommended.value,
+    constraints: recommended.constraints,
+    storage: recommended.storage,
+    display: recommended.display,
+    file: { ...recommended.file, maxFiles: 0 },
+  };
+  const v2Response = await rawBridgeRequest(page, "field.change.plan", {
+    action: "create",
+    tableId,
+    fieldId: described.payload.fieldId,
+    expectedSchemaRevision: described.payload.schemaRevision,
+    expectedDataRevision: described.payload.dataRevision,
+    draft: invalidDraft,
+    actor: { id: "product-e2e", kind: "user" },
+    conversionRule: "",
+    confirmation: "",
+    backupReceipt: "",
+  }, 20_000);
+  recorder.check(
+    "server rejects invalid v2 field intent with a typed stable diagnostic",
+    v2Response.type === "field.change.plan"
+      && v2Response.payload?.error?.code === "field.contract.invalid"
+      && v2Response.payload?.error?.path === "file",
+    { response: v2Response },
+  );
+  const legacy = await rawBridgeRequest(
+    page,
+    "schema.validate",
+    { definition: invalidFormulaDefinition(), expectedRevision: 0 },
+    20_000,
+    ["operation.failed"],
+  );
+  recorder.check(
+    "retired generic schema validation route is absent from the renderer boundary",
+    legacy.type === "operation.failed",
+    { legacy },
+  );
+
+  const defaultsTable = await createSimpleTable(
+    page,
+    "E2E Defaults Future Inserts",
+    "Marker",
+  );
+  const oldInsert = await applyProductMutation(page, defaultsTable.tableId, [{
+    kind: "insert",
+    recordId: null,
+    values: { [defaultsTable.field.physicalName]: "old" },
+  }], "e2e-default-old");
+  const futureDefault = await createV2Field(
+    page,
+    defaultsTable.tableId,
+    "Future default",
+    "text",
+    (draft) => {
+      draft.value.default = {
+        enabled: true,
+        value: "future-only",
+        source: "user",
+        defaultsVersion: 1,
+      };
+      return draft;
+    },
+  );
+  const newInsert = await applyProductMutation(page, defaultsTable.tableId, [{
+    kind: "insert",
+    recordId: null,
+    values: { [defaultsTable.field.physicalName]: "new" },
+  }], "e2e-default-new");
+  const defaultRows = await rawBridgeRequest(page, "query.page", {
+    tableId: defaultsTable.tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const oldRow = defaultRows.payload?.rows?.find(
+    (row) => row[defaultsTable.field.physicalName] === "old",
+  );
+  const newRow = defaultRows.payload?.rows?.find(
+    (row) => row[defaultsTable.field.physicalName] === "new",
+  );
+  recorder.check(
+    "enabled defaults affect only future inserts and never backfill existing rows",
+    oldInsert.payload?.status === "applied"
+      && newInsert.payload?.status === "applied"
+      && oldRow?.[futureDefault.physicalName] == null
+      && newRow?.[futureDefault.physicalName] === "future-only",
+    { oldRow, newRow, futureDefault },
+  );
+
+  const constrainedTableId = await createEmptyTable(page, "E2E Required Unique");
+  const constrained = await createV2Field(
+    page,
+    constrainedTableId,
+    "External key",
+    "text",
+    (draft) => {
+      draft.value.required = true;
+      draft.constraints.unique.enabled = true;
+      return draft;
+    },
+  );
+  await closeFieldSettingsDrawer(page);
+  const uniqueInsert = await applyProductMutation(page, constrainedTableId, [{
+    kind: "insert",
+    recordId: null,
+    values: { [constrained.physicalName]: "only-once" },
+  }], "e2e-unique-first");
+  const duplicateInsert = await applyProductMutation(page, constrainedTableId, [{
+    kind: "insert",
+    recordId: null,
+    values: { [constrained.physicalName]: "only-once" },
+  }], "e2e-unique-duplicate", true);
+  const missingRequired = await applyProductMutation(page, constrainedTableId, [{
+    kind: "insert",
+    recordId: null,
+    values: {},
+  }], "e2e-required-missing", true);
+  const constrainedRows = await rawBridgeRequest(page, "query.page", {
+    tableId: constrainedTableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
   recorder.check(
-    "server rejects the same invalid definition with a stable code and field path",
-    response.type === "schema.validate"
-      && response.payload?.error?.code === "schema.field.invalid_formula"
-      && response.payload?.error?.path === "fields[0].formula.source",
-    { response },
+    "required and unique constraints reject missing and duplicate writes atomically",
+    uniqueInsert.payload?.status === "applied"
+      && duplicateInsert.payload?.error?.code === "mutation.validation.failed"
+      && missingRequired.payload?.error?.code === "mutation.field.invalid_value"
+      && constrainedRows.payload?.rows?.length === 1,
+    { uniqueInsert, duplicateInsert, missingRequired, constrainedRows },
   );
+
+  const presenceTable = await createSimpleTable(page, "E2E Presence Matrix", "Marker");
+  const presenceFields = {};
+  for (const [name, type] of [
+    ["Empty text", "text"],
+    ["False boolean", "bool"],
+    ["Zero number", "number"],
+    ["Origin", "geoPoint"],
+    ["Null JSON", "json"],
+    ["Empty tags", "multiSelect"],
+  ]) {
+    presenceFields[type] = await createV2Field(
+      page,
+      presenceTable.tableId,
+      name,
+      type,
+    );
+  }
+  const matrixInsert = await applyProductMutation(page, presenceTable.tableId, [{
+    kind: "insert",
+    recordId: null,
+    values: {
+      [presenceTable.field.physicalName]: "explicit",
+      [presenceFields.text.physicalName]: "",
+      [presenceFields.bool.physicalName]: false,
+      [presenceFields.number.physicalName]: 0,
+      [presenceFields.geoPoint.physicalName]: { lat: 0, lon: 0 },
+      [presenceFields.json.physicalName]: null,
+      [presenceFields.multiSelect.physicalName]: [],
+    },
+  }], "e2e-presence-matrix");
+  const matrixRows = await rawBridgeRequest(page, "query.page", {
+    tableId: presenceTable.tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const matrix = matrixRows.payload?.rows?.find(
+    (row) => row[presenceTable.field.physicalName] === "explicit",
+  );
+  recorder.check(
+    "mutation and query preserve explicit blank, false, zero, origin, JSON null, and empty collection",
+    matrixInsert.payload?.status === "applied"
+      && Object.hasOwn(matrix ?? {}, presenceFields.text.physicalName)
+      && matrix[presenceFields.text.physicalName] === ""
+      && matrix[presenceFields.bool.physicalName] === false
+      && matrix[presenceFields.number.physicalName] === 0
+      && matrix[presenceFields.geoPoint.physicalName]?.lat === 0
+      && matrix[presenceFields.geoPoint.physicalName]?.lon === 0
+      && Object.hasOwn(matrix, presenceFields.json.physicalName)
+      && matrix[presenceFields.json.physicalName] === null
+      && Array.isArray(matrix[presenceFields.multiSelect.physicalName])
+      && matrix[presenceFields.multiSelect.physicalName].length === 0,
+    { matrixInsert, matrix },
+  );
+  return;
 }
 
 async function scenario04(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
-  await page.getByTestId("sidebar-new-table").click();
-  await fillNInput(page, "create-table-name-input", "E2E JSON Round Trip");
-  await fillNInput(page, "create-table-field-name-0", "payload");
-  await selectNValue(page, "create-table-field-type-0", "json");
-  await page.getByTestId("create-table-submit").click();
-  await page.getByTestId("create-table-name-input").waitFor({ state: "hidden", timeout: 30_000 });
+  const jsonTable = await createSingleFieldTable(
+    page,
+    "E2E JSON Round Trip",
+    "Payload",
+    "json",
+  );
+  const tableId = jsonTable.tableId;
+  const jsonField = jsonTable.field.physicalName;
   await selectTable(page, "E2E JSON Round Trip");
   await insertRowFromToolbar(page);
-  let jsonCell = page.locator('.tabulator-cell[tabulator-field="payload"]').first();
+  let jsonCell = page.locator(`.tabulator-cell[tabulator-field="${jsonField}"]`).first();
   await jsonCell.waitFor({ timeout: 30_000 });
+  await page.waitForFunction(
+    (field) => document.querySelector(
+      `.tabulator-cell[tabulator-field="${field}"]`,
+    )?.getAttribute("aria-haspopup") === "dialog",
+    jsonField,
+    { timeout: 30_000 },
+  );
 
   const keyboardContract = await jsonCell.evaluate((element) => ({
     focusableByKeyboard: element.tabIndex === 0,
@@ -1504,10 +1676,10 @@ async function scenario04(page, recorder, _network, runtime) {
   await page.getByTestId("json-editor-save").click();
   await page.getByTestId("json-editor-modal").waitFor({ state: "hidden", timeout: 30_000 });
   const editorQuery = await waitForQueryPage(page, {
-    tableId: "tbl_e2e_json_round_trip",
+    tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
-  }, (payload) => payload?.rows?.[0]?.payload?.nested?.value === 7);
-  const editorValue = editorQuery.payload?.rows?.[0]?.payload;
+  }, (payload) => payload?.rows?.[0]?.[jsonField]?.nested?.value === 7);
+  const editorValue = editorQuery.payload?.rows?.[0]?.[jsonField];
   recorder.check("structured JSON editor committed a typed object through the UI",
     editorQuery.type === "query.page"
       && canonicalJsonText(editorValue) === canonicalJsonText(expectedEditorValue),
@@ -1523,7 +1695,7 @@ async function scenario04(page, recorder, _network, runtime) {
   );
   await page.evaluate(async (value) => navigator.clipboard.writeText(value),
     '{"nested":{"value":8},"items":[4,5],"enabled":false}');
-  jsonCell = page.locator('.tabulator-cell[tabulator-field="payload"]').first();
+  jsonCell = page.locator(`.tabulator-cell[tabulator-field="${jsonField}"]`).first();
   await jsonCell.click();
   await page.keyboard.press("Control+V");
   await page.getByTestId("paste-panel").waitFor({ timeout: 30_000 });
@@ -1538,6 +1710,17 @@ async function scenario04(page, recorder, _network, runtime) {
   recorder.check("JSON paste completed through preview and confirmation",
     /1/u.test(pasteSummaryText), { pasteSummaryText });
 
+  const expectedImportedValue = {
+    nested: { value: 9, label: "import" },
+    items: [1, { code: "A" }],
+    enabled: true,
+  };
+  const importedJson = JSON.stringify(expectedImportedValue).replaceAll('"', '""');
+  await fs.writeFile(
+    path.join(runtime.controlsDir, "import-source.csv"),
+    `${jsonField}\n"${importedJson}"\n`,
+    "utf8",
+  );
   let importConfirmed;
   const importDialog = new Promise((resolve) => { importConfirmed = resolve; });
   page.once("dialog", async (dialog) => {
@@ -1559,7 +1742,7 @@ async function scenario04(page, recorder, _network, runtime) {
   await waitForVisibleRowCount(page, 2, 60_000);
 
   const headerFilter = page.locator(
-    '.tabulator-col[tabulator-field="payload"] .tabulator-header-filter input',
+    `.tabulator-col[tabulator-field="${jsonField}"] .tabulator-header-filter input`,
   );
   await headerFilter.click();
   await headerFilter.pressSequentially("8");
@@ -1577,20 +1760,15 @@ async function scenario04(page, recorder, _network, runtime) {
     items: [4, 5],
     enabled: false,
   };
-  const expectedImportedValue = {
-    nested: { value: 9, label: "import" },
-    items: [1, { code: "A" }],
-    enabled: true,
-  };
   const expectedFinalValues = canonicalJsonSet([
     expectedPastedValue,
     expectedImportedValue,
   ]);
   const authoritative = await rawBridgeRequest(page, "query.page", {
-    tableId: "tbl_e2e_json_round_trip",
+    tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
-  const authoritativeValues = (authoritative.payload?.rows ?? []).map((row) => row.payload);
+  const authoritativeValues = (authoritative.payload?.rows ?? []).map((row) => row[jsonField]);
   recorder.check(
     "editor, paste, and native-picker import produced the exact normalized JSON values",
     authoritative.type === "query.page"
@@ -1604,14 +1782,17 @@ async function scenario04(page, recorder, _network, runtime) {
   );
 
   await setProductLocale(page, "en-US");
-  jsonCell = page.locator('.tabulator-cell[tabulator-field="payload"]').first();
+  jsonCell = page.locator(`.tabulator-cell[tabulator-field="${jsonField}"]`).first();
   const englishFilter = page.locator(
-    '.tabulator-col[tabulator-field="payload"] .tabulator-header-filter input',
+    `.tabulator-col[tabulator-field="${jsonField}"] .tabulator-header-filter input`,
   );
   await englishFilter.waitFor();
+  await page.evaluate((field) => {
+    window.__vibetableE2EJsonField = field;
+  }, jsonField);
   await page.waitForFunction(
     () => document.querySelector(
-      '.tabulator-col[tabulator-field="payload"] .tabulator-header-filter input',
+      `.tabulator-col[tabulator-field="${window.__vibetableE2EJsonField}"] .tabulator-header-filter input`,
     )?.getAttribute("placeholder") === "Filter…",
   );
   const englishGridLabels = {
@@ -1619,13 +1800,13 @@ async function scenario04(page, recorder, _network, runtime) {
     ariaLabel: await jsonCell.getAttribute("aria-label"),
   };
   await setProductLocale(page, "zh-CN");
-  jsonCell = page.locator('.tabulator-cell[tabulator-field="payload"]').first();
+  jsonCell = page.locator(`.tabulator-cell[tabulator-field="${jsonField}"]`).first();
   const chineseFilter = page.locator(
-    '.tabulator-col[tabulator-field="payload"] .tabulator-header-filter input',
+    `.tabulator-col[tabulator-field="${jsonField}"] .tabulator-header-filter input`,
   );
   await page.waitForFunction(
     () => document.querySelector(
-      '.tabulator-col[tabulator-field="payload"] .tabulator-header-filter input',
+      `.tabulator-col[tabulator-field="${window.__vibetableE2EJsonField}"] .tabulator-header-filter input`,
     )?.getAttribute("placeholder") === "筛选…",
   );
   const chineseGridLabels = {
@@ -1655,7 +1836,7 @@ async function scenario04(page, recorder, _network, runtime) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   const exportedRows = parseCsv(exported);
-  const payloadIndex = exportedRows[0]?.indexOf("payload") ?? -1;
+  const payloadIndex = exportedRows[0]?.indexOf(jsonField) ?? -1;
   const exportedValues = payloadIndex < 0
     ? []
     : exportedRows.slice(1)
@@ -1674,10 +1855,10 @@ async function scenario04(page, recorder, _network, runtime) {
   );
 
   const queried = await rawBridgeRequest(page, "query.page", {
-    tableId: "tbl_e2e_json_round_trip",
+    tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
-  const values = (queried.payload?.rows ?? []).map((row) => row.payload);
+  const values = (queried.payload?.rows ?? []).map((row) => row[jsonField]);
   recorder.check("authoritative query returned JSON values as objects, not strings",
     values.length === 2
       && values.every((value) =>
@@ -1686,184 +1867,188 @@ async function scenario04(page, recorder, _network, runtime) {
   { values, expectedFinalValues });
 }
 
-async function scenario05(page, recorder) {
+async function scenario05(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
-  await page.getByTestId("sidebar-new-table").click();
-  await fillNInput(page, "create-table-name-input", "E2E Formula Lifecycle");
-  await fillNInput(page, "create-table-field-name-0", "quantity");
-  await selectNValue(page, "create-table-field-type-0", "integer");
-  await page.getByTestId("create-table-add-field").click({ force: true });
-  await fillNInput(page, "create-table-field-name-1", "doubled");
-  await selectNValue(page, "create-table-field-type-1", "formula");
-  await page.locator('section[data-field-type="formula"] select').selectOption("integer");
-  await page.getByTestId("field-formula-preview-row-1").fill('{"quantity":3}');
-  await page.getByTestId("field-formula-source-1").fill("quantity * 2");
-  const livePreview = page.getByTestId("field-formula-preview-1");
-  await livePreview.locator("code").filter({ hasText: "6" }).waitFor({ timeout: 30_000 });
-  recorder.check("formula preview used the authoritative service before schema save",
-    await livePreview.getAttribute("data-state") === "ready");
-  await page.getByTestId("create-table-submit").click();
-  await page.getByTestId("create-table-name-input").waitFor({ state: "hidden", timeout: 30_000 });
-
-  await selectTable(page, "E2E Formula Lifecycle");
-  await insertRowFromToolbar(page);
-  let quantity = page.locator('.tabulator-cell[tabulator-field="quantity"]').first();
-  await quantity.waitFor({ timeout: 30_000 });
-  let quantityEditor = await beginCellEdit(quantity);
-  await quantityEditor.fill("2");
-  await quantityEditor.press("Enter");
-  let doubled = page.locator('.tabulator-cell[tabulator-field="doubled"]').first();
-  await doubled.filter({ hasText: "4" }).waitFor({ timeout: 30_000 });
-  quantity = page.locator('.tabulator-cell[tabulator-field="quantity"]').first();
-  quantityEditor = await beginCellEdit(quantity);
-  await quantityEditor.fill("5");
-  await quantityEditor.press("Enter");
-  doubled = page.locator('.tabulator-cell[tabulator-field="doubled"]').first();
-  await doubled.filter({ hasText: "10" }).waitFor({ timeout: 30_000 });
-  const recomputedFormulaValue = await doubled.innerText();
-  recorder.check("saved formula recomputed after dependency edit",
-    recomputedFormulaValue.trim() === "10", { recomputedFormulaValue });
-  const visibleRows = await page.locator(".tabulator-row:visible").count();
-  const summaryText = await page.getByTestId("table-summary").innerText();
-  const summaryMatch = summaryText.match(/\d+/u);
-  const summaryRows = summaryMatch ? Number.parseInt(summaryMatch[0], 10) : Number.NaN;
+  const conversionTable = await createSingleFieldTable(
+    page,
+    "E2E Empty Conversion",
+    "Amount",
+    "integer",
+  );
+  const described = await rawBridgeRequest(page, "field.settings.describe", {
+    tableId: conversionTable.tableId,
+    fieldId: conversionTable.field.fieldId,
+  });
+  const textCapability = described.payload.capabilities.find(
+    (item) => item.logicalType === "text" && item.userCreatable,
+  );
+  const recommended = cloneJson(textCapability.recommended);
+  const textDraft = {
+    displayName: "Amount as text",
+    help: "",
+    logicalType: "text",
+    value: recommended.value,
+    constraints: recommended.constraints,
+    storage: recommended.storage,
+    display: recommended.display,
+  };
+  const intent = {
+    action: "convert",
+    tableId: conversionTable.tableId,
+    fieldId: conversionTable.field.fieldId,
+    expectedSchemaRevision: described.payload.schemaRevision,
+    expectedDataRevision: described.payload.dataRevision,
+    draft: textDraft,
+    actor: { id: "product-e2e", kind: "user" },
+    conversionRule: "block",
+    confirmation: "",
+    backupReceipt: "",
+  };
+  const planned = await rawBridgeRequest(page, "field.change.plan", intent);
+  const applied = await rawBridgeRequest(page, "field.change.apply", {
+    planId: planned.payload.planId,
+    planHash: planned.payload.planHash,
+    operationId: `op_e2e_convert_${Date.now()}`,
+    actor: { id: "product-e2e", kind: "user" },
+    confirmations: [...(planned.payload.confirmations ?? [])],
+  });
+  const after = await rawBridgeRequest(page, "field.settings.describe", {
+    tableId: conversionTable.tableId,
+    fieldId: conversionTable.field.fieldId,
+  });
   recorder.check(
-    "visible grid row count matched the product status bar",
-    visibleRows === 1 && summaryRows === visibleRows,
-    { visibleRows, summaryRows, summaryText },
+    "empty-table type conversion completes directly while preserving public identity",
+    applied.type === "field.change.apply"
+      && !applied.payload?.migrationJobId
+      && after.payload?.definition?.logicalType === "text"
+      && after.payload?.definition?.identity?.fieldId === conversionTable.field.fieldId
+      && after.payload?.definition?.identity?.physicalName === conversionTable.field.physicalName,
+    { planned, applied, after },
   );
 
-  await page.getByTestId("sidebar-new-table").click();
-  await fillNInput(page, "create-table-name-input", "E2E Formula Cycle");
-  await fillNInput(page, "create-table-field-name-0", "a");
-  await selectNValue(page, "create-table-field-type-0", "formula");
-  await page.getByTestId("field-formula-source-0").fill("");
-  await page.locator('section[data-field-type="formula"] select').selectOption("integer");
-  await page.getByTestId("create-table-add-field").click();
-  await fillNInput(page, "create-table-field-name-1", "b");
-  await selectNValue(page, "create-table-field-type-1", "formula");
-  await page.getByTestId("field-formula-source-1").fill("");
-  await page.locator('section[data-field-type="formula"] select').nth(1).selectOption("integer");
-  await page.getByTestId("field-formula-source-0").fill("b + 1");
-  await page.getByTestId("field-formula-source-1").fill("a + 1");
-  await page.getByTestId("create-table-submit").click();
-  const cycleSurface = page.locator(
-    '[data-testid="create-table-error"], [data-testid="field-error-0"], [data-testid="field-error-1"], [data-state="error"]',
-  ).filter({ hasText: /cycle|循环|cyclic/i }).first();
-  await cycleSurface.waitFor({ timeout: 30_000 });
-  const cycleError = await cycleSurface.innerText();
-  recorder.check("cyclic formula was rejected on the product schema surface",
-    /cycle|循环|cyclic/i.test(cycleError), { cycleError });
+  const rollbackTable = await createSimpleTable(
+    page,
+    "E2E Migration Rollback",
+    "Raw number",
+  );
+  const validSeed = await applyProductMutation(page, rollbackTable.tableId, [{
+    kind: "insert",
+    recordId: null,
+    values: { [rollbackTable.field.physicalName]: "42" },
+  }], "e2e-migration-valid-seed");
+  const rollbackDescribe = await rawBridgeRequest(page, "field.settings.describe", {
+    tableId: rollbackTable.tableId,
+    fieldId: rollbackTable.field.fieldId,
+  });
+  const numberCapability = rollbackDescribe.payload.capabilities.find(
+    (item) => item.logicalType === "number" && item.userCreatable,
+  );
+  const numberRecommended = cloneJson(numberCapability.recommended);
+  const rollbackPlan = await rawBridgeRequest(page, "field.change.plan", {
+    action: "convert",
+    tableId: rollbackTable.tableId,
+    fieldId: rollbackTable.field.fieldId,
+    expectedSchemaRevision: rollbackDescribe.payload.schemaRevision,
+    expectedDataRevision: rollbackDescribe.payload.dataRevision,
+    draft: {
+      displayName: "Parsed number",
+      help: "",
+      logicalType: "number",
+      value: numberRecommended.value,
+      constraints: numberRecommended.constraints,
+      storage: numberRecommended.storage,
+      display: numberRecommended.display,
+    },
+    actor: { id: "product-e2e", kind: "user" },
+    conversionRule: "block",
+    confirmation: "",
+    backupReceipt: "",
+  });
+  await fs.writeFile(
+    path.join(runtime.controlsDir, "migration-fault.phase"),
+    "copying\n",
+    "utf8",
+  );
+  const faultedApply = await rawBridgeRequest(page, "field.change.apply", {
+    planId: rollbackPlan.payload.planId,
+    planHash: rollbackPlan.payload.planHash,
+    operationId: `op_e2e_rollback_${Date.now()}`,
+    actor: { id: "product-e2e", kind: "user" },
+    confirmations: [...(rollbackPlan.payload.confirmations ?? [])],
+  });
+  const rollbackStatus = await waitForFieldMigration(
+    page,
+    faultedApply.payload.migrationJobId,
+  );
+  const rollbackAfter = await rawBridgeRequest(page, "field.settings.describe", {
+    tableId: rollbackTable.tableId,
+    fieldId: rollbackTable.field.fieldId,
+  });
+  const rollbackRows = await rawBridgeRequest(page, "query.page", {
+    tableId: rollbackTable.tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check(
+    "a fault during a real non-empty migration rolls back schema and data authority",
+    validSeed.payload?.status === "applied"
+      && rollbackPlan.payload?.createsMigration === true
+      && rollbackPlan.payload?.canApply === true
+      && faultedApply.payload?.migrationJobId
+      && rollbackStatus.payload?.phase === "rolled_back"
+      && rollbackAfter.payload?.definition?.logicalType === "text"
+      && rollbackAfter.payload?.definition?.identity?.fieldId === rollbackTable.field.fieldId
+      && rollbackRows.payload?.rows?.[0]?.[rollbackTable.field.physicalName] === "42",
+    { rollbackPlan, faultedApply, rollbackStatus, rollbackAfter, rollbackRows },
+  );
+  return;
 }
 
 async function scenario06(page, recorder) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
-  await createSimpleTable(page, "E2E Authors", "name");
-  await selectTable(page, "E2E Authors");
-  await insertRowFromToolbar(page);
-  let authorCell = page.locator('.tabulator-cell[tabulator-field="name"]').first();
-  await authorCell.waitFor({ timeout: 30_000 });
-  let authorEditor = await beginCellEdit(authorCell);
-  await authorEditor.fill("Before");
-  await authorEditor.press("Enter");
-  await authorCell.filter({ hasText: "Before" }).waitFor({ timeout: 30_000 });
-
-  await page.getByTestId("sidebar-new-table").click();
-  await fillNInput(page, "create-table-name-input", "E2E Articles");
-  await selectNValue(page, "create-table-field-type-0", "relation");
-  await fillNInput(page, "create-table-field-name-0", "author");
-  await page.getByTestId("field-relation-target-0").fill("tbl_e2e_authors");
-  await page.getByTestId("create-table-add-field").click();
-  await selectNValue(page, "create-table-field-type-1", "formula");
-  await fillNInput(page, "create-table-field-name-1", "author_label");
-  await page.getByTestId("field-formula-preview-row-1")
-    .fill('{"author":{"name":"Before"}}');
-  await page.getByTestId("field-formula-source-1").fill("author.name");
-  await page.locator('section[data-field-type="formula"] select').selectOption("shortText");
-  await page.getByTestId("field-formula-preview-1").locator("code")
-    .filter({ hasText: "Before" }).waitFor({ timeout: 30_000 });
-  await page.getByTestId("create-table-submit").click();
-  await page.getByTestId("create-table-name-input").waitFor({ state: "hidden", timeout: 30_000 });
-  await selectTable(page, "E2E Articles");
-  await insertRowFromToolbar(page);
-
-  const relationCell = page.locator('.tabulator-cell[tabulator-field="author"]').first();
-  await relationCell.waitFor({ timeout: 30_000 });
-  const schemaProbe = await rawBridgeRequest(page, "schema.describe", {
-    collection: "tbl_e2e_articles",
-    requestGeneration: 6006,
-    accepts: [
-      "vibetable.relation-capabilities.v1",
-      "vibetable.lookup-query.v1",
-    ],
-  });
-  const lookupProbe = await rawBridgeRequest(page, "lookup.list", {
-    collection: "tbl_e2e_articles",
-  });
-  const schemaPayload = schemaProbe?.payload;
-  const lookupPayload = lookupProbe?.payload;
-  const columnRelationIds = schemaPayload?.schema?.columns
-    ?.map((column) => column.relationId)
-    .filter(Boolean) ?? [];
-  const descriptors = schemaPayload?.schema?.normalizedRelations ?? [];
-  const normalizedRelationKeys = descriptors.map((relation) => relation.relationId);
-  const descriptor = descriptors.find(
-    (relation) => relation.relationId === "tbl_e2e_articles.fld_author",
+  const authors = await createSimpleTable(page, "E2E Authors V2", "Name");
+  const articleTableId = await createEmptyTable(page, "E2E Articles V2");
+  await closeFieldSettingsDrawer(page);
+  const relation = await createV2Field(
+    page,
+    articleTableId,
+    "Author",
+    "relation",
+    (draft) => {
+      draft.relation.targetTableId = authors.tableId;
+      draft.relation.displayFieldId = authors.field.fieldId;
+      return draft;
+    },
   );
-  recorder.check("packaged schema.describe returned the valid, indexable relation descriptor",
-    schemaProbe?.type === "schema.describe"
-      && lookupProbe?.type === "lookup.list"
-      && schemaPayload?.contract === "vibetable.schema-describe.v1"
-      && schemaPayload?.collection === "tbl_e2e_articles"
-      && schemaPayload?.requestGeneration === 6006
-      && schemaPayload?.schema?.lookupRevision === lookupPayload?.lookupRevision
-      && columnRelationIds.length === 1
-      && columnRelationIds[0] === "tbl_e2e_articles.fld_author"
-      && normalizedRelationKeys.length === 1
-      && normalizedRelationKeys[0] === columnRelationIds[0]
-      && descriptor?.state === "valid"
-      && descriptor?.fieldRef === "author"
-      && descriptor?.relatedCollection === "tbl_e2e_authors",
-  {
-    schemaProbe,
-    lookupProbe,
-    schemaLookupRevision: schemaPayload?.schema?.lookupRevision,
-    listLookupRevision: lookupPayload?.lookupRevision,
-    schemaCollection: schemaPayload?.collection,
-    schemaRequestGeneration: schemaPayload?.requestGeneration,
-    columnRelationIds,
-    normalizedRelationKeys,
-    descriptor,
-  });
-  await relationCell.dblclick();
-  const relationEditor = page.locator(".relation-editor");
-  await relationEditor.waitFor();
-  await relationEditor.locator("input").first().fill("Before");
-  const candidate = relationEditor.locator(".relation-editor__candidate")
-    .filter({ hasText: "Before" });
-  await candidate.waitFor({ timeout: 30_000 });
-  await candidate.click();
-  const formulaCell = page.locator('.tabulator-cell[tabulator-field="author_label"]').first();
-  await formulaCell.filter({ hasText: "Before" }).waitFor({ timeout: 30_000 });
-  const relationFormulaValue = await formulaCell.innerText();
-  recorder.check("relation selection computed the cross-record formula",
-    relationFormulaValue.includes("Before"), { relationFormulaValue });
-
-  await selectTable(page, "E2E Authors");
-  authorCell = page.locator('.tabulator-cell[tabulator-field="name"]').first();
-  authorEditor = await beginCellEdit(authorCell);
-  await authorEditor.fill("After");
-  await authorEditor.press("Enter");
-  await authorCell.filter({ hasText: "After" }).waitFor({ timeout: 30_000 });
-  await selectTable(page, "E2E Articles");
-  const updatedFormulaCell = page.locator('.tabulator-cell[tabulator-field="author_label"]').first()
-    .filter({ hasText: "After" });
-  await updatedFormulaCell.waitFor({ timeout: 60_000 });
-  const updatedFormulaValue = await updatedFormulaCell.innerText();
-  recorder.check("target update fanned out and refreshed the dependent formula in the UI",
-    updatedFormulaValue.includes("After"), { updatedFormulaValue });
+  const cascade = await applyV2FieldChange(
+    page,
+    articleTableId,
+    relation.fieldId,
+    "update",
+    {
+      mutateDraft: (draft) => {
+        draft.relation.deletePolicy = "cascade";
+        return draft;
+      },
+    },
+  );
+  recorder.check(
+    "cascade relation plan exposes direction, impact, and danger classification before apply",
+    cascade.planned?.type === "field.change.plan"
+      && cascade.planned.payload?.classes?.includes("danger")
+      && cascade.planned.payload?.confirmations?.includes("cascade")
+      && cascade.planned.payload?.impact?.records >= 0
+      && Array.isArray(cascade.planned.payload?.impact?.dependencies)
+      && cascade.planned.payload?.warnings?.some(
+        (warning) => warning.details?.direction === "targetToSource",
+      )
+      && cascade.planned.payload?.steps?.some(
+        (step) => step.details?.direction === "targetToSource",
+      ),
+    { cascade: cascade.planned },
+  );
+  return;
 }
 
 async function selectTable(page, displayName) {
@@ -1874,27 +2059,36 @@ async function selectTable(page, displayName) {
 }
 
 async function createSingleFieldTable(page, displayName, fieldName, type) {
-  await page.getByTestId("sidebar-new-table").click();
-  await fillNInput(page, "create-table-name-input", displayName);
-  await fillNInput(page, "create-table-field-name-0", fieldName);
-  await selectNValue(page, "create-table-field-type-0", type);
-  await page.getByTestId("create-table-submit").click();
-  await page.getByTestId("create-table-name-input").waitFor({
-    state: "hidden",
-    timeout: 30_000,
+  const tableId = await createEmptyTable(page, displayName);
+  const logicalType = type === "integer" ? "number" : type === "shortText" ? "text" : type;
+  const field = await createV2Field(page, tableId, fieldName, logicalType, (draft) => {
+    if (type === "integer") {
+      draft.storage.options.onlyInt = true;
+      draft.display.displayScale = 0;
+    }
+    return draft;
   });
+  await closeFieldSettingsDrawer(page);
+  return { tableId, field };
 }
 
 async function scenario07(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
-  await createSingleFieldTable(page, "E2E Attachments", "attachments", "file");
+  const attachmentTable = await createSingleFieldTable(
+    page,
+    "E2E Attachments",
+    "Attachments",
+    "file",
+  );
+  const tableId = attachmentTable.tableId;
+  const attachmentField = attachmentTable.field.physicalName;
   await selectTable(page, "E2E Attachments");
   await insertRowFromToolbar(page);
-  const cell = page.locator('.tabulator-cell[tabulator-field="attachments"]').first();
+  const cell = page.locator(`.tabulator-cell[tabulator-field="${attachmentField}"]`).first();
   await cell.waitFor({ timeout: 30_000 });
   const schema = await rawBridgeRequest(page, "schema.describe", {
-    collection: "tbl_e2e_attachments",
+    collection: tableId,
     requestGeneration: 7007,
     accepts: [
       "vibetable.relation-capabilities.v1",
@@ -1902,10 +2096,10 @@ async function scenario07(page, recorder, _network, runtime) {
     ],
   });
   const attachmentColumn = schema.payload?.schema?.columns?.find(
-    (column) => column.name === "attachments",
+    (column) => column.name === attachmentField,
   );
   const queried = await rawBridgeRequest(page, "query.page", {
-    tableId: "tbl_e2e_attachments",
+    tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
   const recordId = queried.payload?.rows?.[0]?.id;
@@ -1921,7 +2115,7 @@ async function scenario07(page, recorder, _network, runtime) {
     })}`);
   }
   const attachmentParams = {
-    tableId: "tbl_e2e_attachments",
+    tableId,
     recordId,
     fieldId: attachmentColumn.fieldId,
   };
@@ -1991,12 +2185,24 @@ async function scenario07(page, recorder, _network, runtime) {
   await cell.dblclick();
   await panel.waitFor({ state: "visible", timeout: 30_000 });
   await page.getByTestId("attachment-preview-0").waitFor({ timeout: 30_000 });
+  await beginBridgeMessageCapture(page, ["operation.failed"]);
   await page.getByTestId("attachment-preview-0").click();
-  const previewArtifact = await waitForPreviewArtifact(
-    runtime,
-    expectedOriginalHash,
-    originalBytes.length,
-  );
+  let previewArtifact;
+  try {
+    previewArtifact = await waitForPreviewArtifact(
+      runtime,
+      expectedOriginalHash,
+      originalBytes.length,
+    );
+  } catch (error) {
+    const previewFailure = await page.evaluate(
+      () => window.__vibetableE2EBridgeCapture?.message ?? null,
+    );
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}; `
+      + `bridgeFailure=${JSON.stringify(previewFailure)}`,
+    );
+  }
   const preservedPreviewPath = path.join(
     runtime.evidenceDir,
     "attachment-preview-verified.txt",
@@ -2044,10 +2250,10 @@ async function scenario07(page, recorder, _network, runtime) {
     page,
     "history.queryRequested",
     {
-      table: "tbl_e2e_attachments",
+      table: tableId,
       scope: "cell",
       itemId: recordId,
-      field: "attachments",
+      field: attachmentField,
       limit: 50,
       offset: 0,
       actions: [],
@@ -2062,7 +2268,7 @@ async function scenario07(page, recorder, _network, runtime) {
   }
   const originalRevision = attachmentHistoryProbe.payload.changeSets.find((changeSet) =>
     changeSet.scalarChanges?.some((change) =>
-      change.field === "attachments"
+      change.field === attachmentField
         && String(change.after ?? "").includes(uploadedFile.storedName)),
   )?.rootRevisionId;
   if (!originalRevision) {
@@ -2074,11 +2280,11 @@ async function scenario07(page, recorder, _network, runtime) {
     page,
     "history.previewRestoreRequested",
     {
-      collection: "tbl_e2e_attachments",
+      collection: tableId,
       itemId: recordId,
       targetRevision: originalRevision,
       scope: "cell",
-      field: "attachments",
+      field: attachmentField,
     },
     20_000,
     ["history.restorePreviewReady"],
@@ -2087,9 +2293,9 @@ async function scenario07(page, recorder, _network, runtime) {
     "attachment restore preview identifies the original managed file",
     originalPreviewProbe.type === "history.restorePreviewReady"
       && originalPreviewProbe.payload?.canApply === true
-      && originalPreviewProbe.payload?.restorableFields?.includes("attachments")
+      && originalPreviewProbe.payload?.restorableFields?.includes(attachmentField)
       && originalPreviewProbe.payload?.scalarChanges?.some((change) =>
-        change.field === "attachments"
+        change.field === attachmentField
           && String(change.after ?? "").includes(uploadedFile.storedName)),
     { originalRevision, originalPreviewProbe },
   );
@@ -2140,14 +2346,16 @@ async function scenario07(page, recorder, _network, runtime) {
 async function scenario08(page, recorder) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
-  await createSimpleTable(page, "E2E Stale Conflict", "value");
+  const staleTable = await createSimpleTable(page, "E2E Stale Conflict", "Value");
+  const tableId = staleTable.tableId;
+  const valueField = staleTable.field.physicalName;
   await selectTable(page, "E2E Stale Conflict");
   await insertRowFromToolbar(page);
-  const cell = page.locator('.tabulator-cell[tabulator-field="value"]').first();
+  const cell = page.locator(`.tabulator-cell[tabulator-field="${valueField}"]`).first();
   await cell.waitFor({ timeout: 30_000 });
 
   const queried = await rawBridgeRequest(page, "query.page", {
-    tableId: "tbl_e2e_stale_conflict",
+    tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
   const pageResult = queried.payload;
@@ -2164,12 +2372,12 @@ async function scenario08(page, recorder) {
     contractVersion: "1.0",
     requestId: "e2e-stale-competitor",
     idempotencyKey: "e2e-stale-competitor",
-    tableId: "tbl_e2e_stale_conflict",
+    tableId,
     schemaRevision: pageResult.snapshot.schemaRevision,
     operations: [{
       kind: "update",
       recordId: row.id,
-      values: { value: "competitor-write" },
+      values: { [valueField]: "competitor-write" },
       expectedDigest: row.__vibetableDigest,
     }],
     actor: { type: "user", id: "e2e-competitor", displayName: "E2E competitor" },
@@ -2185,17 +2393,17 @@ async function scenario08(page, recorder) {
   // correctly discard the now-stale notification itself, making this conflict
   // assertion race the refresh rather than exercise the conflict boundary.
   await page.waitForFunction(
-    (value) => Array.from(
-      document.querySelectorAll('.tabulator-cell[tabulator-field="value"]'),
+    ({ field, value }) => Array.from(
+      document.querySelectorAll(`.tabulator-cell[tabulator-field="${field}"]`),
     ).some((node) => node.textContent?.includes(value)),
-    "competitor-write",
+    { field: valueField, value: "competitor-write" },
     { timeout: 30_000 },
   );
   await beginBridgeMessageCapture(page, ["table.editRejected"]);
   await beginRawBridgeRequest(page, "table.updateCellRequested", {
-    table: "tbl_e2e_stale_conflict",
+    table: tableId,
     rowKey: row.id,
-    column: "value",
+    column: valueField,
     oldValue: "",
     newValue: "stale-user-write",
     expectedDigest: row.__vibetableDigest,
@@ -2397,10 +2605,12 @@ async function waitForActiveTableBackend(page, tableId, expectedRows, timeoutMs 
 async function scenario09(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
-  await createSimpleTable(page, "E2E Atomic Import", "value");
+  const importTable = await createSimpleTable(page, "E2E Atomic Import", "Value");
+  const tableId = importTable.tableId;
+  const valueField = importTable.field.physicalName;
   await selectTable(page, "E2E Atomic Import");
 
-  const rows = ["value"];
+  const rows = [valueField];
   // The release criterion is a 1k-row atomic paste/import. MutationKernel
   // deliberately caps one transaction at 1000 operations, so exercise that
   // boundary instead of an unsupported request rejected before the barrier.
@@ -2441,7 +2651,7 @@ async function scenario09(page, recorder, _network, runtime) {
   let history;
   do {
     history = await rawBridgeRequest(page, "history.queryRequested", {
-      collection: "tbl_e2e_atomic_import",
+      collection: tableId,
       scope: "table",
       actions: [],
       limit: 100,
@@ -2453,7 +2663,7 @@ async function scenario09(page, recorder, _network, runtime) {
   const historyPage = history.payload;
   recorder.check("failed import exposed no partially committed audit entries",
     history.type === "history.pageLoaded"
-      && historyPage?.collection === "tbl_e2e_atomic_import"
+      && historyPage?.collection === tableId
       && historyPage?.scope === "table"
       && historyPage?.total === 0
       && Array.isArray(historyPage?.changeSets)
@@ -2465,7 +2675,7 @@ async function scenario09(page, recorder, _network, runtime) {
   { history });
   const storageProof = await requestStorageProof(
     runtime,
-    "tbl_e2e_atomic_import",
+    tableId,
   );
   recorder.check(
     "read-only database proof found zero records, audit, idempotency, and outbox rows",
@@ -2481,7 +2691,9 @@ async function scenario09(page, recorder, _network, runtime) {
 async function scenario10(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
-  await createSimpleTable(page, "E2E Realtime Recovery", "value");
+  const realtimeTable = await createSimpleTable(page, "E2E Realtime Recovery", "Value");
+  const tableId = realtimeTable.tableId;
+  const valueField = realtimeTable.field.physicalName;
   await selectTable(page, "E2E Realtime Recovery");
   await insertRowFromToolbar(page);
   await page.locator(".tabulator-row").first().waitFor({ timeout: 30_000 });
@@ -2498,7 +2710,7 @@ async function scenario10(page, recorder, _network, runtime) {
   });
   const recovered = await waitForActiveTableBackend(
     page,
-    "tbl_e2e_realtime_recovery",
+    tableId,
     1,
   );
   const activeSidebarTable = page
@@ -2515,12 +2727,12 @@ async function scenario10(page, recorder, _network, runtime) {
     contractVersion: "1.0",
     requestId: "e2e-realtime-after-restart",
     idempotencyKey: "e2e-realtime-after-restart",
-    tableId: "tbl_e2e_realtime_recovery",
+    tableId,
     schemaRevision: recovered.snapshot.schemaRevision,
     operations: [{
       kind: "insert",
       recordId: null,
-      values: { value: "after-reconnect" },
+      values: { [valueField]: "after-reconnect" },
     }],
     actor: { type: "user", id: "e2e-realtime", displayName: "E2E realtime" },
     expectedRevision: null,
@@ -2531,7 +2743,7 @@ async function scenario10(page, recorder, _network, runtime) {
     mutation.type === "mutation.apply" && mutation.payload?.status === "applied",
     { mutation },
   );
-  const newCell = page.locator('.tabulator-cell[tabulator-field="value"]')
+  const newCell = page.locator(`.tabulator-cell[tabulator-field="${valueField}"]`)
     .filter({ hasText: "after-reconnect" });
   await newCell.waitFor({ timeout: 30_000 });
   const stableGrid = await waitForStableGridState(page, {
@@ -2619,402 +2831,60 @@ async function scenario11(page, recorder) {
 async function scenario12(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
-  await page.getByTestId("sidebar-new-table").click();
-  await fillNInput(page, "create-table-name-input", "E2E Backup Consistency");
-  const fields = [
-    ["value", "integer"],
-    ["doubled", "formula"],
-    ["attachments", "file"],
-  ];
-  for (let index = 0; index < fields.length; index += 1) {
-    if (index > 0) await page.getByTestId("create-table-add-field").click();
-    await fillNInput(page, `create-table-field-name-${index}`, fields[index][0]);
-    await selectNValue(page, `create-table-field-type-${index}`, fields[index][1]);
-  }
-  await page.getByTestId("field-formula-preview-row-1").fill('{"value":7}');
-  await page.getByTestId("field-formula-source-1").fill("value * 2");
-  await page.locator('section[data-field-type="formula"] select').selectOption("integer");
-  const formulaPreview = page.getByTestId("field-formula-preview-1");
-  await formulaPreview.locator("code").filter({ hasText: "14" })
-    .waitFor({ timeout: 30_000 });
-  recorder.check("backup schema formula preview was authoritative before save",
-    await formulaPreview.getAttribute("data-state") === "ready");
-  await page.getByTestId("field-attachment-max-files-2").fill("2");
-  await page.getByTestId("create-table-submit").click();
-  await page.getByTestId("create-table-name-input").waitFor({ state: "hidden", timeout: 30_000 });
-  await selectTable(page, "E2E Backup Consistency");
-  await insertRowFromToolbar(page);
-
-  const valueCell = page.locator('.tabulator-cell[tabulator-field="value"]').first();
-  await valueCell.waitFor({ timeout: 30_000 });
-  let valueEditor = await beginCellEdit(valueCell);
-  await valueEditor.fill("7");
-  await valueEditor.press("Enter");
-  const formulaCell = page.locator('.tabulator-cell[tabulator-field="doubled"]').first();
-  await formulaCell.filter({ hasText: "14" }).waitFor({ timeout: 30_000 });
-
-  const original = (await fs.readFile(
-    path.join(runtime.controlsDir, "attachment-source.txt"),
-    "utf8",
-  )).trim();
-  const replacement = (await fs.readFile(
-    path.join(runtime.controlsDir, "attachment-replacement-source.txt"),
-    "utf8",
-  )).trim();
-  await fs.copyFile(
-    original,
-    path.join(runtime.evidenceDir, "backup-original.txt"),
-  );
-  await fs.copyFile(
-    replacement,
-    path.join(runtime.evidenceDir, "backup-replacement.txt"),
-  );
-  const originalBytes = await fs.readFile(original);
-  const replacementBytes = await fs.readFile(replacement);
-  const expectedOriginalHash = sha256(originalBytes);
-  const expectedReplacementHash = sha256(replacementBytes);
-  const schema = await rawBridgeRequest(page, "schema.describe", {
-    collection: "tbl_e2e_backup_consistency",
-    requestGeneration: 12_012,
-    accepts: [
-      "vibetable.relation-capabilities.v1",
-      "vibetable.lookup-query.v1",
-    ],
-  });
-  const attachmentColumn = schema.payload?.schema?.columns?.find(
-    (column) => column.name === "attachments",
-  );
-  const initialQuery = await rawBridgeRequest(page, "query.page", {
-    tableId: "tbl_e2e_backup_consistency",
-    query: { filters: [], sorts: [], offset: 0, limit: 100 },
-  });
-  const recordId = initialQuery.payload?.rows?.[0]?.id;
-  if (
-    schema.type !== "schema.describe"
-    || attachmentColumn?.kind !== "attachment"
-    || !attachmentColumn.fieldId
-    || !recordId
-  ) {
-    throw new Error(`backup attachment schema or record identity was unavailable: ${JSON.stringify({
-      schema,
-      initialQuery,
-    })}`);
-  }
-  const attachmentParams = {
-    tableId: "tbl_e2e_backup_consistency",
-    recordId,
-    fieldId: attachmentColumn.fieldId,
-  };
-  const attachmentCell = page.locator('.tabulator-cell[tabulator-field="attachments"]').first();
-  await attachmentCell.dblclick();
-  let panel = page.getByTestId("attachment-panel");
-  await page.getByTestId("attachment-upload").click();
-  await panel.waitFor({ state: "hidden", timeout: 30_000 });
-  const originalAttachmentResponse = await waitForAttachmentList(
+  const purgeTable = await createSingleFieldTable(
     page,
-    attachmentParams,
-    (attachments) => attachments.length === 1
-      && attachments[0]?.sha256 === expectedOriginalHash,
+    "E2E Purge Guard",
+    "Attachments",
+    "file",
   );
-  const beforeBackupAttachment = originalAttachmentResponse.payload.attachments[0];
-  await attachmentCell.dblclick();
-  await panel.waitFor({ state: "visible", timeout: 30_000 });
-  await page.getByTestId("attachment-preview-0").waitFor({ timeout: 30_000 });
-  await panel.locator("header button").click();
-
-  const beforeBackupQuery = await rawBridgeRequest(page, "query.page", {
-    tableId: "tbl_e2e_backup_consistency",
-    query: { filters: [], sorts: [], offset: 0, limit: 100 },
-  });
-  const beforeBackupRow = beforeBackupQuery.payload?.rows?.[0];
-  const beforeBackupHistory = await rawBridgeRequest(page, "history.queryRequested", {
-    collection: "tbl_e2e_backup_consistency",
-    scope: "table",
-    actions: [],
-    limit: 100,
-    offset: 0,
-  }, 20_000, ["history.pageLoaded"]);
-  recorder.check("pre-backup record, formula, attachment, and audit snapshot is complete",
-    beforeBackupQuery.type === "query.page"
-      && beforeBackupRow?.id === recordId
-      && String(beforeBackupRow?.value) === "7"
-      && String(beforeBackupRow?.doubled) === "14"
-      && beforeBackupAttachment?.originalName === path.basename(original)
-      && beforeBackupAttachment?.sha256 === expectedOriginalHash
-      && beforeBackupAttachment?.size === originalBytes.length
-      && beforeBackupHistory.type === "history.pageLoaded"
-      && beforeBackupHistory.payload?.collection === "tbl_e2e_backup_consistency"
-      && Array.isArray(beforeBackupHistory.payload?.changeSets)
-      && beforeBackupHistory.payload.changeSets.length > 0
-      && beforeBackupHistory.payload.total === beforeBackupHistory.payload.changeSets.length,
-  {
-    beforeBackupRow,
-    beforeBackupAttachment,
-    beforeBackupHistory: beforeBackupHistory.payload,
-    expectedOriginalHash,
-    expectedOriginalSize: originalBytes.length,
-  });
-
-  await page.getByTestId("nav-settings").click();
-  await page.getByTestId("settings-nav-backup").click();
-  await page.getByTestId("backup-create").click();
-  await page.getByTestId("backup-status").waitFor({ timeout: 60_000 });
-  const restoreButton = page.locator('[data-testid^="backup-restore-"]').first();
-  await restoreButton.waitFor();
-  const restoreTestId = await restoreButton.getAttribute("data-testid");
-  recorder.check("backup was created through the product UI with a listed archive", Boolean(restoreTestId), {
-    restoreTestId,
-    status: await page.getByTestId("backup-status").innerText(),
-  });
-
-  await page.getByTestId("nav-tables").click();
-  await selectTable(page, "E2E Backup Consistency");
-  valueEditor = await beginCellEdit(valueCell);
-  await valueEditor.fill("9");
-  await valueEditor.press("Enter");
-  await formulaCell.filter({ hasText: "18" }).waitFor({ timeout: 30_000 });
-  await attachmentCell.dblclick();
-  panel = page.getByTestId("attachment-panel");
-  await page.getByTestId("attachment-replace-0").click();
-  await panel.waitFor({ state: "hidden", timeout: 30_000 });
-  const replacementAttachmentResponse = await waitForAttachmentList(
+  const retired = await applyV2FieldChange(
     page,
-    attachmentParams,
-    (attachments) => attachments.length === 1
-      && attachments[0]?.sha256 === expectedReplacementHash,
+    purgeTable.tableId,
+    purgeTable.field.fieldId,
+    "retire",
   );
-  const changedQuery = await rawBridgeRequest(page, "query.page", {
-    tableId: "tbl_e2e_backup_consistency",
-    query: { filters: [], sorts: [], offset: 0, limit: 100 },
-  });
-  const changedRow = changedQuery.payload?.rows?.[0];
-  recorder.check("post-backup mutation changed record, formula, and attachment bytes",
-    changedQuery.type === "query.page"
-      && changedRow?.id === recordId
-      && String(changedRow?.value) === "9"
-      && String(changedRow?.doubled) === "18"
-      && replacementAttachmentResponse.payload.attachments[0]?.originalName === path.basename(replacement)
-      && replacementAttachmentResponse.payload.attachments[0]?.sha256 === expectedReplacementHash
-      && replacementAttachmentResponse.payload.attachments[0]?.size === replacementBytes.length,
-  {
-    changedRow,
-    replacementAttachment: replacementAttachmentResponse.payload.attachments[0],
-    expectedReplacementHash,
-    expectedReplacementSize: replacementBytes.length,
-  });
-
-  await page.getByTestId("nav-settings").click();
-  await page.getByTestId("settings-nav-backup").click();
-  await page.locator(`[data-testid="${restoreTestId}"]`).click();
-  await page.getByTestId("backup-restore-confirmation").waitFor();
-  await page.getByTestId("backup-restore-confirm").click();
-  await page.getByTestId("backup-status").waitFor();
-
-  await page.getByTestId("nav-tables").click();
-  await waitForTableRecovery(page, "E2E Backup Consistency", 1, 90_000);
-  const afterRestoreQuery = await rawBridgeRequest(page, "query.page", {
-    tableId: "tbl_e2e_backup_consistency",
-    query: { filters: [], sorts: [], offset: 0, limit: 100 },
-  });
-  const afterRestoreRow = afterRestoreQuery.payload?.rows?.[0];
-  recorder.check("record and stored formula returned exactly to the backup snapshot",
-    afterRestoreQuery.type === "query.page"
-      && afterRestoreRow?.id === beforeBackupRow?.id
-      && afterRestoreRow?.value === beforeBackupRow?.value
-      && afterRestoreRow?.doubled === beforeBackupRow?.doubled,
-  { beforeBackupRow, afterRestoreRow });
-  const restoredAttachmentCell = page.locator('.tabulator-cell[tabulator-field="attachments"]').first();
-  await restoredAttachmentCell.dblclick();
-  panel = page.getByTestId("attachment-panel");
-  await panel.waitFor({ state: "visible", timeout: 30_000 });
-  const restoredAttachmentResponse = await waitForAttachmentList(
+  const withoutBackup = await applyV2FieldChange(
     page,
-    attachmentParams,
-    (attachments) => attachments.length === 1
-      && attachments[0]?.sha256 === expectedOriginalHash,
+    purgeTable.tableId,
+    purgeTable.field.fieldId,
+    "purge",
+    { confirmation: "Attachments" },
   );
-  const afterRestoreAttachment = restoredAttachmentResponse.payload.attachments[0];
-  await page.getByTestId("attachment-preview-0").waitFor({
-    state: "visible",
-    timeout: 30_000,
-  });
-  const restoredAttachmentText = await panel.innerText();
-  recorder.check("attachment name, hash, and content length returned exactly to the backup snapshot",
-    restoredAttachmentText.includes("backup-original")
-      && await page.getByTestId("attachment-preview-0").isVisible()
-      && afterRestoreAttachment?.originalName === beforeBackupAttachment?.originalName
-      && afterRestoreAttachment?.storedName === beforeBackupAttachment?.storedName
-      && afterRestoreAttachment?.sha256 === expectedOriginalHash
-      && afterRestoreAttachment?.size === originalBytes.length,
-  {
-      restoredAttachmentText,
-      beforeBackupAttachment,
-      afterRestoreAttachment,
-      expectedOriginalHash,
-      expectedOriginalSize: originalBytes.length,
-  });
-  await panel.locator("header button").click();
-  const historyDrawerStartedAt = performance.now();
-  await page.getByTestId("toolbar-history").click();
-  await page.getByTestId("history-timeline").waitFor({ timeout: 30_000 });
-  runtime.recordUiTiming(
-    "history.drawer.initialLoad",
-    performance.now() - historyDrawerStartedAt,
-    { scope: "table", scenario: "12-backup-consistency" },
+  recorder.check(
+    "permanent purge is rejected without a verified backup receipt",
+    retired.applied?.type === "field.change.apply"
+      && withoutBackup.applied?.type === "field.change.apply"
+      && withoutBackup.applied.payload?.error?.code === "field.purge.backup_required",
+    { retired, withoutBackup },
   );
-  const afterRestoreHistory = await rawBridgeRequest(page, "history.queryRequested", {
-    collection: "tbl_e2e_backup_consistency",
-    scope: "table",
-    actions: [],
-    limit: 100,
-    offset: 0,
-  }, 20_000, ["history.pageLoaded"]);
-  const allowedBackupRestoreAuditActions = new Set([]);
-  const beforeChangeSetIds = new Set(
-    beforeBackupHistory.payload.changeSets.map((changeSet) => changeSet.changeSetId),
-  );
-  const afterChangeSets = afterRestoreHistory.payload?.changeSets ?? [];
-  const afterSnapshotChangeSets = afterChangeSets.filter(
-    (changeSet) => beforeChangeSetIds.has(changeSet.changeSetId),
-  );
-  const addedChangeSets = afterChangeSets.filter(
-    (changeSet) => !beforeChangeSetIds.has(changeSet.changeSetId),
-  );
-  const beforeAuditSnapshot = canonicalJsonText({
-    collection: beforeBackupHistory.payload.collection,
-    scope: beforeBackupHistory.payload.scope,
-    itemId: beforeBackupHistory.payload.itemId ?? null,
-    field: beforeBackupHistory.payload.field ?? null,
-    changeSets: beforeBackupHistory.payload.changeSets,
-    total: beforeBackupHistory.payload.total,
-    capabilityHash: beforeBackupHistory.payload.capabilityHash,
-    schemaRevision: beforeBackupHistory.payload.schemaRevision,
-    hasMore: beforeBackupHistory.payload.hasMore,
-  });
-  const afterAuditSnapshot = canonicalJsonText({
-    collection: afterRestoreHistory.payload?.collection,
-    scope: afterRestoreHistory.payload?.scope,
-    itemId: afterRestoreHistory.payload?.itemId ?? null,
-    field: afterRestoreHistory.payload?.field ?? null,
-    changeSets: afterSnapshotChangeSets,
-    total: (afterRestoreHistory.payload?.total ?? -1) - addedChangeSets.length,
-    capabilityHash: afterRestoreHistory.payload?.capabilityHash,
-    schemaRevision: afterRestoreHistory.payload?.schemaRevision,
-    hasMore: afterRestoreHistory.payload?.hasMore,
-  });
-  recorder.check("audit snapshot returned byte-for-byte equivalent normalized history after restore",
-    afterRestoreHistory.type === "history.pageLoaded"
-      && beforeAuditSnapshot === afterAuditSnapshot
-      && addedChangeSets.every(
-        (changeSet) => allowedBackupRestoreAuditActions.has(changeSet.action),
-      )
-      && afterRestoreHistory.payload?.total
-        === beforeBackupHistory.payload.total + addedChangeSets.length,
-  {
-    beforeBackupHistory: beforeBackupHistory.payload,
-    afterRestoreHistory: afterRestoreHistory.payload,
-    beforeAuditSnapshot,
-    afterAuditSnapshot,
-    addedChangeSets,
-    allowedBackupRestoreAuditActions: [...allowedBackupRestoreAuditActions],
-  });
 
-  // Visual acceptance is part of the product gate, not a source-only token
-  // check. Exercise the user-facing theme control and capture the real
-  // packaged WebView2 table, modal, and popover in dark mode.
-  const historyClose = page.locator(".n-drawer-header__close").last();
-  if (await historyClose.isVisible()) await historyClose.click();
-  await page.getByTestId("nav-settings").click();
-  await page.getByTestId("settings-nav-general").click();
-  await page.getByTestId("theme-select").click();
-  await page.locator(".n-base-select-option")
-    .filter({ hasText: /^(深色|Dark)$/u })
-    .click();
-  await page.locator("html.dark").waitFor({ timeout: 10_000 });
-  await page.getByTestId("nav-tables").click();
-  await selectTable(page, "E2E Backup Consistency");
-  const darkCell = page.locator(".tabulator-row .tabulator-cell").first();
-  await darkCell.waitFor({ state: "visible", timeout: 10_000 });
-  const [darkRootEvidence, darkTableSurface, darkCellSurface] = await Promise.all([
-    page.locator("html").evaluate((element) => ({
-      rootDark: element.classList.contains("dark"),
-      colorScheme: getComputedStyle(element).colorScheme,
-    })),
-    page.locator(".tabulator-tableholder").evaluate(collectBrowserSurfaceEvidence),
-    darkCell.evaluate(collectBrowserSurfaceEvidence),
-  ]);
-  const darkThemeEvidence = {
-    root: darkRootEvidence,
-    table: darkTableSurface,
-    cell: darkCellSurface,
-  };
-  recorder.check("dark table uses the packaged semantic theme rather than light fallbacks",
-    darkThemeEvidence.root.rootDark
-      && darkThemeEvidence.root.colorScheme.includes("dark")
-      && darkThemeEvidence.table.visible
-      && darkThemeEvidence.table.effectiveBackground[3] >= 0.999
-      && darkThemeEvidence.table.backgroundLuminance < 0.25
-      && darkThemeEvidence.cell.visible
-      && darkThemeEvidence.cell.effectiveBackground[3] >= 0.999
-      && darkThemeEvidence.cell.backgroundLuminance < 0.25
-      && darkThemeEvidence.cell.contrast >= 4.5,
-  darkThemeEvidence);
-  await page.screenshot({
-    path: path.join(runtime.evidenceDir, "12-dark-table.png"),
-    fullPage: true,
+  const backup = await rawBridgeRequest(page, "backup.create", {
+    name: `e2e_before_purge_${Date.now()}.zip`,
   });
-
-  await page.getByTestId("sidebar-new-table").click();
-  await page.getByTestId("create-table-name-input").waitFor();
-  const darkDialog = page.locator('[role="dialog"]')
-    .filter({ has: page.getByTestId("create-table-name-input") });
-  await page.waitForFunction(
-    (dialog) => {
-      const opacity = Number.parseFloat(getComputedStyle(dialog).opacity);
-      return Number.isFinite(opacity) && opacity >= 0.999;
+  const purged = await applyV2FieldChange(
+    page,
+    purgeTable.tableId,
+    purgeTable.field.fieldId,
+    "purge",
+    {
+      confirmation: "Attachments",
+      backupReceipt: backup.payload?.receipt,
     },
-    await darkDialog.elementHandle(),
   );
-  const darkModalEvidence = {
-    role: await darkDialog.getAttribute("role"),
-    ariaModal: await darkDialog.getAttribute("aria-modal"),
-    surface: await darkDialog.evaluate(collectBrowserSurfaceEvidence),
-  };
-  recorder.check("dark create-table modal has dialog semantics and a non-light surface",
-    darkModalEvidence.role === "dialog"
-      && darkModalEvidence.ariaModal === "true"
-      && darkModalEvidence.surface.visible
-      && darkModalEvidence.surface.effectiveBackground[3] >= 0.999
-      && darkModalEvidence.surface.backgroundLuminance < 0.25
-      && darkModalEvidence.surface.contrast >= 4.5,
-  darkModalEvidence);
-  await page.screenshot({
-    path: path.join(runtime.evidenceDir, "12-dark-modal.png"),
-    fullPage: true,
+  const recycle = await rawBridgeRequest(page, "field.recycleBin.list", {
+    tableId: purgeTable.tableId,
   });
-  await page.getByTestId("create-table-cancel").click();
-
-  await page.getByTestId("toolbar-more").click();
-  const darkPopover = page.locator(".n-dropdown-menu").last();
-  await darkPopover.waitFor();
-  await page.waitForFunction(
-    (popover) => {
-      const opacity = Number.parseFloat(getComputedStyle(popover).opacity);
-      return Number.isFinite(opacity) && opacity >= 0.999;
-    },
-    await darkPopover.elementHandle(),
+  recorder.check(
+    "verified backup plus frozen confirmations permits irreversible purge",
+    typeof backup.payload?.receipt === "string"
+      && backup.payload.receipt.startsWith("vbr1.")
+      && purged.applied?.type === "field.change.apply"
+      && !recycle.payload?.fields?.some(
+        (field) => field.identity?.fieldId === purgeTable.field.fieldId,
+      ),
+    { backup, purged, recycle },
   );
-  const darkPopoverEvidence = await darkPopover.evaluate(collectBrowserSurfaceEvidence);
-  recorder.check("dark toolbar popover is visible and avoids a light surface",
-    darkPopoverEvidence.visible
-      && darkPopoverEvidence.effectiveBackground[3] >= 0.999
-      && darkPopoverEvidence.backgroundLuminance < 0.25
-      && darkPopoverEvidence.contrast >= 4.5,
-  darkPopoverEvidence);
-  await page.screenshot({
-    path: path.join(runtime.evidenceDir, "12-dark-popover.png"),
-    fullPage: true,
-  });
+  return;
 }
 
 const scenarios = {

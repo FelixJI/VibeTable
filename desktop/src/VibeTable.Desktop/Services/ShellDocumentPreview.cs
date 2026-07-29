@@ -232,7 +232,8 @@ internal sealed record PreviewHostLaunchSpec(
     string FullPath,
     Guid HandlerClsid)
 {
-    public const string ExecutableName = "VibeTable.PreviewHost.exe";
+    public const string ExecutableName = "VibeTable.Next.exe";
+    public const string ModeArgument = "--preview-host";
 
     public static PreviewHostLaunchSpec Create(
         string appBaseDirectory,
@@ -246,7 +247,6 @@ internal sealed record PreviewHostLaunchSpec(
 
         string executablePath = Path.Combine(
             Path.GetFullPath(appBaseDirectory),
-            "PreviewHost",
             ExecutableName);
         return new PreviewHostLaunchSpec(
             executablePath,
@@ -263,6 +263,7 @@ internal sealed record PreviewHostLaunchSpec(
             UseShellExecute = false,
             CreateNoWindow = false,
         };
+        startInfo.ArgumentList.Add(ModeArgument);
         startInfo.ArgumentList.Add("--file");
         startInfo.ArgumentList.Add(FullPath);
         startInfo.ArgumentList.Add("--handler");

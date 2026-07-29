@@ -26,6 +26,7 @@ BackupName = Annotated[
     ),
 ]
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+BackupReceipt = Annotated[str, Field(min_length=6, max_length=2048, pattern=r"^vbr1\.")]
 
 
 class ListBackupsParams(CamelModel):
@@ -59,6 +60,7 @@ class BackupListResult(CamelModel):
 class BackupCreateResult(CamelModel):
     backup: BackupEntry
     integrity_valid: Literal[True]
+    receipt: BackupReceipt
 
 
 class BackupRestoreResult(CamelModel):

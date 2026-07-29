@@ -657,7 +657,8 @@
       "properties": {
         "kind": {"const": "insert"},
         "recordId": {"type": ["string", "null"]},
-        "values": {"$ref": "#/$defs/JsonObject"}
+        "values": {"$ref": "#/$defs/JsonObject"},
+        "rawValues": {"$ref": "#/$defs/JsonObject"}
       }
     },
     "UpdateOperation": {
@@ -668,6 +669,7 @@
         "kind": {"const": "update"},
         "recordId": {"type": "string", "minLength": 1},
         "values": {"$ref": "#/$defs/JsonObject"},
+        "rawValues": {"$ref": "#/$defs/JsonObject"},
         "expectedRevision": {"type": ["string", "null"]},
         "expectedDigest": {"type": ["string", "null"]}
       }

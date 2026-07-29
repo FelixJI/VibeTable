@@ -11,11 +11,15 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
+
+var testBackupReceiptKey = []byte("0123456789abcdef0123456789abcdef")
 
 var expectedInternalCollections = []string{
 	"vibetable_tables", "vibetable_fields", "vibetable_formulas", "vibetable_relations",
@@ -25,6 +29,7 @@ var expectedInternalCollections = []string{
 	"vibetable_shared_settings", "vibetable_dashboards", "vibetable_panels",
 	"vibetable_presets", "vibetable_identifier_mappings", "vibetable_content_versions",
 	"vibetable_workspace_index",
+	"vibetable_schema_change_plans", "vibetable_schema_audit",
 }
 
 func TestSchemaCatalogFreshMigrationApplyAlterConflictAndRestart(t *testing.T) {
@@ -101,8 +106,88 @@ func TestSchemaCatalogFreshMigrationApplyAlterConflictAndRestart(t *testing.T) {
 	}
 }
 
+func TestEmptyBaseTableBootstrapsFirstFieldOnlyThroughV2Planner(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+
+	created, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
+		Definition:       baseTable("tbl_empty", "t_empty", []schema.FieldDefinition{}),
+		ExpectedRevision: 0,
+	})
+	if err != nil {
+		t.Fatalf("bootstrap empty table: %v", err)
+	}
+	if len(created.Fields) != 0 || created.SchemaRevision != "schema_0001" {
+		t.Fatalf("empty bootstrap changed shape: %#v", created)
+	}
+
+	recommended, err := v2.RecommendedDefaults(v2.LogicalText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := v2.FieldDraft{
+		DisplayName: "Title",
+		LogicalType: v2.LogicalText,
+		Value:       recommended.Value,
+		Constraints: recommended.Constraints,
+		Storage:     recommended.Storage,
+		Display:     recommended.Display,
+	}
+	catalog := fieldchange.NewCatalog(app)
+	store := fieldchange.NewPocketBasePlanStore(app)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, nil)
+	actor := v2.Actor{ID: "user_local", Kind: "user"}
+	plan, err := planner.Plan(ctx, v2.FieldChangeIntent{
+		Action:            v2.ActionCreate,
+		TableID:           created.TableID,
+		ExpectedSchemaRev: created.SchemaRevision,
+		Draft:             &draft,
+		Actor:             actor,
+	})
+	if err != nil {
+		t.Fatalf("plan first v2 field: %v", err)
+	}
+	if plan.After == nil ||
+		plan.After.Identity.FieldID == "" ||
+		plan.After.Identity.PhysicalName == "" ||
+		plan.After.Identity.ProviderFieldID == "" {
+		t.Fatalf("planner did not freeze opaque field identities: %#v", plan.After)
+	}
+	receipt, err := fieldchange.NewExecutor(app, store).Apply(ctx, v2.ApplyRequest{
+		PlanID:        plan.PlanID,
+		PlanHash:      plan.PlanHash,
+		OperationID:   "op_empty_first_field",
+		Actor:         actor,
+		Confirmations: plan.Confirmations,
+	})
+	if err != nil {
+		t.Fatalf("apply first v2 field: %v", err)
+	}
+	if receipt.SchemaRevision != "schema_0002" ||
+		receipt.FieldID != plan.After.Identity.FieldID {
+		t.Fatalf("first field receipt = %#v", receipt)
+	}
+	reloaded, err := schemaapi.New(app).Describe(ctx, created.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Fields) != 1 ||
+		reloaded.Fields[0].FieldID != plan.After.Identity.FieldID ||
+		reloaded.Fields[0].PhysicalName != plan.After.Identity.PhysicalName {
+		t.Fatalf("legacy catalog did not reflect v2 field: %#v", reloaded.Fields)
+	}
+	collection, err := app.FindCollectionByNameOrId(created.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if collection.Fields.GetByName(plan.After.Identity.PhysicalName) == nil {
+		t.Fatal("compiled provider field is missing")
+	}
+}
+
 func TestSchemaCatalogAutoDateRolesRequireAnEmptyTableAndRemainStable(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	catalog := schemaapi.New(app)
@@ -462,7 +547,7 @@ func TestSchemaCatalogOperationIDDurableReplayConflictAndExpiry(
 }
 
 func TestSchemaCatalogDeleteChecksRevisionReferencesAndCleansMetadata(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	catalog := schemaapi.New(app)
 	ctx := context.Background()
@@ -527,7 +612,7 @@ func TestSchemaCatalogDeleteChecksRevisionReferencesAndCleansMetadata(t *testing
 }
 
 func TestSchemaCatalogRenamePreservesPocketBaseFieldIDAndRecordValue(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	catalog := schemaapi.New(app)
 	ctx := context.Background()
@@ -568,7 +653,7 @@ func TestSchemaCatalogRenamePreservesPocketBaseFieldIDAndRecordValue(t *testing.
 }
 
 func TestSchemaCatalogRejectsPersistedFieldTypeChangeBeforeTouchingData(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	catalog := schemaapi.New(app)
 	ctx := context.Background()
@@ -609,7 +694,7 @@ func TestSchemaCatalogRejectsPersistedFieldTypeChangeBeforeTouchingData(t *testi
 }
 
 func TestSchemaCatalogAllowsSameFieldIDInDifferentTables(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	catalog := schemaapi.New(app)
 	for _, table := range []string{"alpha", "beta"} {
@@ -626,7 +711,7 @@ func TestSchemaCatalogAllowsSameFieldIDInDifferentTables(t *testing.T) {
 }
 
 func TestSchemaCatalogFormulaMetadataLifecycleIsTransactional(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	catalog := schemaapi.New(app)
 	ctx := context.Background()
@@ -721,7 +806,7 @@ func TestSchemaCatalogFormulaMetadataLifecycleIsTransactional(t *testing.T) {
 }
 
 func TestSchemaCatalogInvalidFormulaDoesNotCreateCollectionOrMetadata(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	definition := baseTable("orders", "orders", []schema.FieldDefinition{
 		field("quantity_id", "quantity", schema.FieldKindScalar, schema.DataTypeInteger),
@@ -747,7 +832,7 @@ func TestSchemaCatalogInvalidFormulaDoesNotCreateCollectionOrMetadata(t *testing
 }
 
 func TestSchemaCatalogCreatesSelfRelation(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	relation := field("parent_id", "parent", schema.FieldKindRelation, schema.DataTypeRelation)
 	relation.Relation = &schema.RelationSpec{
@@ -861,7 +946,7 @@ func TestSchemaCatalogValidatesLookupReferencesAndOutputType(t *testing.T) {
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			app := bootstrapApp(t, t.TempDir())
+			app := bootstrapApp(t, queryTempDir(t))
 			defer resetApp(t, app)
 			relation := field(
 				"parent_id", "parent",
@@ -913,7 +998,7 @@ func TestSchemaCatalogValidatesLookupReferencesAndOutputType(t *testing.T) {
 }
 
 func TestSchemaCatalogRejectsHashLookupTarget(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	hashField := field(
 		"hash_id", "password_hash",
@@ -965,7 +1050,7 @@ func TestSchemaCatalogRejectsHashLookupTarget(t *testing.T) {
 }
 
 func TestSchemaCatalogRejectsInconsistentStoredRevisionMetadata(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	catalog := schemaapi.New(app)
 	created, err := catalog.ApplyChange(context.Background(), schemaapi.Change{

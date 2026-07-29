@@ -1,0 +1,36 @@
+{
+  "contract": "vibetable.schema.v2",
+  "planId": "plan_01JABCDEFGH",
+  "planHash": "sha256:0123456789abcdef",
+  "expiresAt": "2026-07-28T11:00:00Z",
+  "intent": {
+    "action": "update",
+    "tableId": "tbl_orders",
+    "fieldId": "fld_01JABCDE",
+    "expectedSchemaRevision": "schema_7",
+    "expectedDataRevision": null,
+    "draft": null,
+    "actor": {"id": "user_local", "kind": "user"},
+    "conversionRule": "",
+    "confirmation": "",
+    "backupReceipt": ""
+  },
+  "before": null,
+  "after": null,
+  "classes": ["display"],
+  "expectedSchemaRevision": "schema_7",
+  "expectedDataRevision": null,
+  "impact": {
+    "records": 0,
+    "missing": 0,
+    "ambiguous": 0,
+    "failures": [],
+    "dependencies": []
+  },
+  "steps": [{"kind": "validate", "details": {}}],
+  "warnings": [],
+  "errors": [],
+  "confirmations": [],
+  "createsMigration": false,
+  "canApply": true
+}

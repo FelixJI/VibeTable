@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import {
   classifyClipboard,
@@ -7,7 +9,37 @@ import {
   PASTE_CELL_LIMIT,
 } from "./clipboardParser";
 
+interface FieldValueCorpus {
+  readonly cases: readonly {
+    readonly id: string;
+    readonly rawValue: string;
+    readonly productValue: unknown;
+  }[];
+}
+
+const fieldValueCorpus = JSON.parse(
+  readFileSync(
+    resolve(
+      process.cwd(),
+      "..",
+      "..",
+      "contracts",
+      "schema-v2",
+      "fixtures",
+      "field-value-entry-corpus.json",
+    ),
+    "utf8",
+  ),
+) as FieldValueCorpus;
+
 describe("parseClipboard", () => {
+  it("preserves every shared corpus raw value for authoritative normalization", () => {
+    for (const test of fieldValueCorpus.cases) {
+      const parsed = parseClipboard(test.rawValue);
+      expect(parsed.cells[0]?.[0]?.rawValue, test.id).toEqual(test.rawValue);
+    }
+  });
+
   it("parses a simple tab-separated single row", () => {
     const parsed = parseClipboard("a\tb\tc");
     expect(parsed.rowCount).toBe(1);

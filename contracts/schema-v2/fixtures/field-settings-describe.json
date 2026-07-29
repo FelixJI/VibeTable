@@ -1,0 +1,10 @@
+{
+  "contract": "vibetable.schema.v2",
+  "tableId": "tbl_orders",
+  "fieldId": "",
+  "schemaRevision": "schema_7",
+  "dataRevision": 12,
+  "definition": null,
+  "capabilities": [],
+  "recommendedDefaultsVersion": 1
+}

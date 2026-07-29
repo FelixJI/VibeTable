@@ -33,7 +33,7 @@ func (failingLiveDataPublisher) Publish(
 }
 
 func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	catalog := schemaapi.New(app)
@@ -196,7 +196,7 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 }
 
 func TestLookupCalculatorTraversesSavedMultiHopPath(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	catalog := schemaapi.New(app)
@@ -394,7 +394,7 @@ func TestLookupCalculatorTraversesSavedMultiHopPath(t *testing.T) {
 }
 
 func TestFormulaRelationFanoutJobResumesAfterCancellation(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	catalog := schemaapi.New(app)
@@ -473,6 +473,7 @@ func TestFormulaRelationFanoutJobResumesAfterCancellation(t *testing.T) {
 		jobs.WithDataPublisher(hub),
 		jobs.WithRunContext(cancelled),
 	)
+	defer jobService.Shutdown()
 	calculator := computed.New(
 		lookup.NewCalculator(),
 		formula.NewCalculator(
@@ -632,7 +633,7 @@ func TestFormulaRelationFanoutJobResumesAfterCancellation(t *testing.T) {
 }
 
 func TestFormulaDereferencesValidatedRelationTarget(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	catalog := schemaapi.New(app)

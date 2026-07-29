@@ -7,13 +7,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 )
 
@@ -76,6 +79,10 @@ func (source *Source) DescribeQueryTable(
 			field.PhysicalName,
 		)
 	}
+	descriptor.PresenceFields, err = v2PresenceFields(ctx, app, definition.TableID)
+	if err != nil {
+		return query.TableDescriptor{}, err
+	}
 	if definition.ArchivePolicy.FieldID != nil {
 		for _, field := range definition.Fields {
 			if field.FieldID == *definition.ArchivePolicy.FieldID {
@@ -91,6 +98,46 @@ func (source *Source) DescribeQueryTable(
 		}
 	}
 	return descriptor, nil
+}
+
+func v2PresenceFields(
+	ctx context.Context,
+	app core.App,
+	tableID string,
+) (map[string]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	records, err := app.FindRecordsByFilter(
+		"vibetable_fields",
+		"table_id={:table} && schema_model_version=2 && lifecycle_state='active'",
+		"id",
+		0,
+		0,
+		dbx.Params{"table": tableID},
+	)
+	if err != nil {
+		return nil, &query.ProductError{
+			Code: "query.schema.failed", Path: "table",
+			Message: "v2 field projection metadata could not be loaded",
+		}
+	}
+	result := map[string]string{}
+	for _, record := range records {
+		raw, marshalErr := json.Marshal(record.GetRaw("definition_v2_json"))
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		var definition v2.FieldDefinition
+		if decodeErr := v2.StrictDecode(raw, &definition); decodeErr != nil {
+			return nil, decodeErr
+		}
+		if definition.Value.Presence.Mode == v2.PresenceCompanion {
+			result[definition.Identity.PhysicalName] =
+				definition.Value.Presence.PhysicalName
+		}
+	}
+	return result, nil
 }
 
 func (source *Source) describeFields(

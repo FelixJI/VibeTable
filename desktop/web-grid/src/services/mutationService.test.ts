@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createPinia, setActivePinia } from "pinia";
 import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
@@ -6,6 +8,29 @@ import { useTableStore } from "@/stores/tableStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useMutationService } from "./mutationService";
+
+interface FieldValueCorpus {
+  readonly cases: readonly {
+    readonly id: string;
+    readonly field: string;
+    readonly productValue: unknown;
+  }[];
+}
+
+const fieldValueCorpus = JSON.parse(
+  readFileSync(
+    resolve(
+      process.cwd(),
+      "..",
+      "..",
+      "contracts",
+      "schema-v2",
+      "fixtures",
+      "field-value-entry-corpus.json",
+    ),
+    "utf8",
+  ),
+) as FieldValueCorpus;
 
 // Build a bridge with a controllable inbound shim (same shape as
 // errorRouter.test.ts). The shim captures the message listener so tests can
@@ -41,7 +66,36 @@ describe("mutationService", () => {
 
   // CRITICAL: `useHostBridge` is a module singleton. Reset to null so the fake
   // bridge does not leak into other test files.
-  afterEach(() => setHostBridgeForTesting(null));
+  afterEach(() => {
+    vi.useRealTimers();
+    setHostBridgeForTesting(null);
+  });
+
+  it("forwards shared corpus product values unchanged for inline edits", () => {
+    const { bridge } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const spy = vi.spyOn(bridge, "notify");
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("corpus");
+    table.setEditSchema([], {
+      databaseSessionId: "s",
+      schemaRevision: "sr-corpus",
+      dataRevision: 1,
+    });
+    const service = useMutationService();
+
+    for (const test of fieldValueCorpus.cases) {
+      service.updateCell(1, test.field, null, test.productValue);
+      expect(spy, test.id).toHaveBeenLastCalledWith(
+        "table.updateCellRequested",
+        expect.objectContaining({
+          column: test.field,
+          newValue: test.productValue,
+        }),
+      );
+    }
+  });
 
   it("updateCell notifies table.updateCellRequested with schemaRevision", () => {
     const { bridge } = makeShimBridge();
@@ -87,6 +141,205 @@ describe("mutationService", () => {
     expect(spy).toHaveBeenCalledWith(
       "table.updateCellRequested",
       expect.objectContaining({ expectedDigest: digest }),
+    );
+  });
+
+  it("defers an inline edit until a refresh publishes a schema revision", async () => {
+    vi.useFakeTimers();
+    const { bridge } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const spy = vi.spyOn(bridge, "notify");
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("users");
+    const service = useMutationService();
+
+    service.updateCell(5, "name", "old", "new");
+    expect(spy).not.toHaveBeenCalledWith(
+      "table.updateCellRequested",
+      expect.anything(),
+    );
+
+    table.setEditSchema([], {
+      databaseSessionId: "s",
+      schemaRevision: "sr-after-refresh",
+      dataRevision: 2,
+    });
+    await vi.advanceTimersByTimeAsync(25);
+
+    expect(spy).toHaveBeenCalledWith("table.updateCellRequested", {
+      table: "users",
+      rowKey: 5,
+      column: "name",
+      oldValue: "old",
+      newValue: "new",
+      expectedDigest: null,
+      schemaRevision: "sr-after-refresh",
+    });
+  });
+
+  it("coalesces repeated deferred edits and preserves the first guard", async () => {
+    vi.useFakeTimers();
+    const { bridge } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const spy = vi.spyOn(bridge, "notify");
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    const originalDigest = `sha256:${"a".repeat(64)}`;
+    const refreshedDigest = `sha256:${"b".repeat(64)}`;
+    ws.selectTable("users");
+    table.beginLoad();
+    table.appendPage({
+      table: "users",
+      columns: [],
+      rows: [{ rowKey: 5, name: "first", __vibetableDigest: originalDigest }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    const service = useMutationService();
+
+    service.updateCell(5, "name", "before", "first");
+    table.allRows[0]!.name = "second";
+    service.updateCell(5, "name", "first", "second");
+    table.allRows[0]!.__vibetableDigest = refreshedDigest;
+    table.setEditSchema([], {
+      databaseSessionId: "s",
+      schemaRevision: "sr-after-refresh",
+      dataRevision: 2,
+    });
+    await vi.advanceTimersByTimeAsync(25);
+
+    const updates = spy.mock.calls.filter(
+      ([type]) => type === "table.updateCellRequested",
+    );
+    expect(updates).toEqual([[
+      "table.updateCellRequested",
+      {
+        table: "users",
+        rowKey: 5,
+        column: "name",
+        oldValue: "before",
+        newValue: "second",
+        expectedDigest: originalDigest,
+        schemaRevision: "sr-after-refresh",
+      },
+    ]]);
+  });
+
+  it("rolls repeated deferred edits back to the first old value", async () => {
+    vi.useFakeTimers();
+    const { bridge } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("users");
+    table.beginLoad();
+    table.appendPage({
+      table: "users",
+      columns: [],
+      rows: [{ rowKey: 5, name: "first" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    const onRejected = vi.fn();
+    const service = useMutationService();
+    service.init(onRejected);
+
+    service.updateCell(5, "name", "before", "first");
+    table.allRows[0]!.name = "second";
+    service.updateCell(5, "name", "first", "second");
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(table.allRows[0]?.name).toBe("before");
+    expect(onRejected).toHaveBeenCalledTimes(1);
+    expect(onRejected).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "backend_unavailable" }),
+    );
+  });
+
+  it("cancels a deferred edit without rolling it into a newly selected table", async () => {
+    vi.useFakeTimers();
+    const { bridge } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const spy = vi.spyOn(bridge, "notify");
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("users");
+    table.beginLoad();
+    table.appendPage({
+      table: "users",
+      columns: [],
+      rows: [{ rowKey: 5, name: "old-table" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    const onRejected = vi.fn();
+    const service = useMutationService();
+    service.init(onRejected);
+    service.updateCell(5, "name", "old-table", "queued-edit");
+
+    ws.selectTable("orders");
+    table.reset();
+    table.beginLoad();
+    table.appendPage({
+      table: "orders",
+      columns: [],
+      rows: [{ rowKey: 5, name: "new-table" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    await vi.advanceTimersByTimeAsync(25);
+
+    expect(table.allRows[0]?.name).toBe("new-table");
+    expect(spy).not.toHaveBeenCalledWith(
+      "table.updateCellRequested",
+      expect.anything(),
+    );
+    expect(onRejected).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "cancelled" }),
+    );
+  });
+
+  it("rolls back a deferred edit when the revision never becomes ready", async () => {
+    vi.useFakeTimers();
+    const { bridge } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const spy = vi.spyOn(bridge, "notify");
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("users");
+    table.beginLoad();
+    table.appendPage({
+      table: "users",
+      columns: [],
+      rows: [{ rowKey: 5, name: "optimistic" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    const onRejected = vi.fn();
+    const service = useMutationService();
+    service.init(onRejected);
+    service.updateCell(5, "name", "before", "optimistic");
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(table.allRows[0]?.name).toBe("before");
+    expect(spy).not.toHaveBeenCalledWith(
+      "table.updateCellRequested",
+      expect.anything(),
+    );
+    expect(onRejected).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "backend_unavailable" }),
     );
   });
 
@@ -322,6 +575,179 @@ describe("mutationService", () => {
     expect(history.canRedo).toBe(true);
   });
 
+  it("waits for a refreshed schema revision before replaying undo", async () => {
+    vi.useFakeTimers();
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("u");
+    table.beginLoad();
+    table.appendPage({
+      table: "u",
+      columns: [],
+      rows: [{ rowKey: 1, name: "old" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    const svc = useMutationService();
+    svc.init();
+    emit("table.editCommitted", {
+      rowKey: 1,
+      column: "name",
+      storedValue: "new",
+      currentRow: { rowKey: 1, name: "new" },
+      revision: {
+        databaseSessionId: "s",
+        schemaRevision: "sr",
+        dataRevision: 2,
+      },
+    });
+
+    // A background refresh temporarily removes the mutation revision.
+    table.reset();
+    table.beginLoad();
+    const spy = vi.spyOn(bridge, "notify").mockImplementation((type) => {
+      if (type === "table.updateCellRequested") {
+        emit("table.editCommitted", {
+          rowKey: 1,
+          column: "name",
+          storedValue: "old",
+          currentRow: { rowKey: 1, name: "old" },
+          revision: {
+            databaseSessionId: "s",
+            schemaRevision: "sr",
+            dataRevision: 3,
+          },
+        });
+      }
+    });
+
+    const undo = svc.performUndo();
+    expect(spy).not.toHaveBeenCalledWith(
+      "table.updateCellRequested",
+      expect.anything(),
+    );
+    table.appendPage({
+      table: "u",
+      columns: [],
+      rows: [{ rowKey: 1, name: "new" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    table.setEditSchema([], {
+      databaseSessionId: "s",
+      schemaRevision: "sr",
+      dataRevision: 2,
+    });
+    await vi.advanceTimersByTimeAsync(25);
+    await undo;
+
+    expect(spy).toHaveBeenCalledWith(
+      "table.updateCellRequested",
+      expect.objectContaining({ schemaRevision: "sr" }),
+    );
+    expect(table.allRows[0]?.name).toBe("old");
+  });
+
+  it("rejects a pending undo when the schema changes during refresh", async () => {
+    vi.useFakeTimers();
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("u");
+    table.beginLoad();
+    table.appendPage({
+      table: "u",
+      columns: [],
+      rows: [{ rowKey: 1, name: "old" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    const svc = useMutationService();
+    svc.init();
+    emit("table.editCommitted", {
+      rowKey: 1,
+      column: "name",
+      storedValue: "new",
+      currentRow: { rowKey: 1, name: "new" },
+      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
+    });
+
+    table.reset();
+    table.beginLoad();
+    const spy = vi.spyOn(bridge, "notify");
+    const undo = svc.performUndo();
+    table.setEditSchema([], {
+      databaseSessionId: "",
+      schemaRevision: "sr-next",
+      dataRevision: 0,
+    });
+    await vi.advanceTimersByTimeAsync(25);
+
+    await undo;
+    expect(useHistoryStore().lastError).toContain("schema changed");
+    expect(spy).not.toHaveBeenCalledWith(
+      "table.updateCellRequested",
+      expect.anything(),
+    );
+  });
+
+  it("times out an undo that only observes an empty-session revision", async () => {
+    vi.useFakeTimers();
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("u");
+    table.beginLoad();
+    table.appendPage({
+      table: "u",
+      columns: [],
+      rows: [{ rowKey: 1, name: "old" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    const svc = useMutationService();
+    svc.init();
+    emit("table.editCommitted", {
+      rowKey: 1,
+      column: "name",
+      storedValue: "new",
+      currentRow: { rowKey: 1, name: "new" },
+      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
+    });
+
+    table.reset();
+    table.beginLoad();
+    table.setEditSchema([], {
+      databaseSessionId: "",
+      schemaRevision: "sr",
+      dataRevision: 0,
+    });
+    const spy = vi.spyOn(bridge, "notify");
+    const undo = svc.performUndo();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await undo;
+
+    const history = useHistoryStore();
+    expect(history.lastError).toContain("did not become ready");
+    expect(history.busy).toBe(false);
+    expect(spy).not.toHaveBeenCalledWith(
+      "table.updateCellRequested",
+      expect.anything(),
+    );
+  });
+
   it("performUndo returns entry to redo stack (basic undo semantics)", async () => {
     const { bridge, emit } = makeShimBridge();
     setHostBridgeForTesting(bridge);
@@ -549,6 +975,11 @@ describe("mutationService", () => {
       limit: 2,
       totalRows: 2,
       mode: "client",
+    });
+    table.setEditSchema([], {
+      databaseSessionId: "s",
+      schemaRevision: "sr",
+      dataRevision: 1,
     });
     const spy = vi.spyOn(bridge, "notify");
     const history = useHistoryStore();

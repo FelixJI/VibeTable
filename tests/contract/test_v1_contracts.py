@@ -116,7 +116,22 @@ def _validate(instance: Any, schema: Any, root: dict[str, Any], path: str = "$")
     if "allOf" in schema:
         for candidate in schema["allOf"]:
             _validate(instance, candidate, root, path)
-        return
+    if "if" in schema:
+        try:
+            _validate(instance, schema["if"], root, path)
+        except SchemaMismatchError:
+            if "else" in schema:
+                _validate(instance, schema["else"], root, path)
+        else:
+            if "then" in schema:
+                _validate(instance, schema["then"], root, path)
+    if "not" in schema:
+        try:
+            _validate(instance, schema["not"], root, path)
+        except SchemaMismatchError:
+            pass
+        else:
+            raise SchemaMismatchError(f"{path}: value matched a prohibited schema")
 
     expected_type = schema.get("type")
     if expected_type is not None:

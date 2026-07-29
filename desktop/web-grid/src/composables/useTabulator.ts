@@ -184,6 +184,7 @@ export function useTabulator(
   let cellEditFinishedHandler: (() => void) | null = null;
   let editing = false;
   let queuedColumnRefresh = false;
+  let applyingColumns: Promise<void> | null = null;
   let queuedRows: ReadonlyArray<Record<string, unknown>> | null = null;
   let applyingRows: Promise<void> | null = null;
   let activeGroups: LookupGroup[] = [];
@@ -219,19 +220,7 @@ export function useTabulator(
   // cell labels and empty-state copy are localized at construction time.
   // Rebuild in place so an already-open table switches language immediately.
   watch(currentLocale, () => {
-    if (!tabulator.value) return;
-    if (editing) {
-      queuedColumnRefresh = true;
-      return;
-    }
-    const schema = store.schema ?? store.pages[0]?.columns;
-    if (!schema) return;
-    const carrier = { columns: schema } as TablePage;
-    retireDomSelectionBeforeColumnRefresh();
-    tabulator.value.setColumns(
-      buildTabulatorColumns(carrier, store.editSchema, relationContext()) as unknown[],
-    );
-    refreshLocalizedPlaceholder(tabulator.value, gridEl.value);
+    queueColumnRefresh();
   });
   watch(
     () => options?.onRangeSelectionChanged,
@@ -293,7 +282,7 @@ export function useTabulator(
       };
       cellEditFinishedHandler = () => {
         editing = false;
-        refreshQueuedColumns();
+        void drainQueuedColumns();
         void drainQueuedRows();
       };
       eventGrid.on?.("cellEditing", cellEditingHandler);
@@ -303,6 +292,7 @@ export function useTabulator(
       lastEditSignature = editSchemaSignature(store.editSchema);
       lastSchemaGeneration = store.loadGeneration;
       lastRelationSignature = relationSignature();
+      queuedColumnRefresh = false;
       // Record the rows we just seeded so the data watcher can recognize and
       // skip them (createGrid embedded these in its `data` option).
       lastSeededRows = firstPage.rows;
@@ -333,24 +323,7 @@ export function useTabulator(
       if (!tabulator.value || !schema) return;
       const sig = colSignature(schema);
       if (sig === lastColSignature && generation === lastSchemaGeneration) return;
-      if (editing) {
-        queuedColumnRefresh = true;
-        return;
-      }
-      lastColSignature = sig;
-      lastSchemaGeneration = generation;
-      try {
-        // buildColumns reads only `page.columns`; construct a minimal carrier
-        // so the call stays type-safe without a full TablePage.
-        const carrier = { columns: schema } as TablePage;
-        tabulator.value.setColumns(
-          buildTabulatorColumns(carrier, store.editSchema, relationContext()) as unknown[],
-        );
-        lastEditSignature = editSchemaSignature(store.editSchema);
-      } catch {
-        // setColumns failed (Tabulator version quirk) -> refresh data only.
-        void tabulator.value.setData([...store.allRows]);
-      }
+      queueColumnRefresh();
     },
   );
 
@@ -367,20 +340,7 @@ export function useTabulator(
       if (sig === lastEditSignature) return;
       const schema = store.schema ?? store.pages[0]?.columns;
       if (!schema) return;
-      if (editing) {
-        queuedColumnRefresh = true;
-        return;
-      }
-      try {
-        const carrier = { columns: schema } as TablePage;
-        tabulator.value.setColumns(
-          buildTabulatorColumns(carrier, editSchema, relationContext()) as unknown[],
-        );
-        lastEditSignature = sig;
-      } catch {
-        // setColumns rejected (Tabulator version quirk) -> no-op; the grid
-        // stays read-only until the next schema change forces a rebuild.
-      }
+      queueColumnRefresh();
     },
   );
 
@@ -407,15 +367,7 @@ export function useTabulator(
       if (signature === lastRelationSignature) return;
       const schema = store.schema ?? store.pages[0]?.columns;
       if (!schema) return;
-      if (editing) {
-        queuedColumnRefresh = true;
-        return;
-      }
-      lastRelationSignature = signature;
-      const carrier = { columns: schema } as TablePage;
-      tabulator.value.setColumns(
-        buildTabulatorColumns(carrier, store.editSchema, relationContext()) as unknown[],
-      );
+      queueColumnRefresh();
     },
   );
 
@@ -445,7 +397,13 @@ export function useTabulator(
   return { tabulator, dataApplying };
 
   async function drainQueuedRows(): Promise<void> {
-    if (editing || applyingRows || !tabulator.value || !queuedRows) return;
+    if (
+      editing
+      || applyingRows
+      || applyingColumns
+      || !tabulator.value
+      || !queuedRows
+    ) return;
     const grid = tabulator.value;
     applyingRows = (async () => {
       dataApplying.value = true;
@@ -460,33 +418,68 @@ export function useTabulator(
         dataApplying.value = false;
         applyingRows = null;
       }
+      if (!editing && queuedColumnRefresh) await drainQueuedColumns();
       if (!editing && queuedRows) await drainQueuedRows();
     })();
     await applyingRows;
   }
 
-  function refreshQueuedColumns(): void {
-    if (!queuedColumnRefresh || editing || !tabulator.value) return;
-    queuedColumnRefresh = false;
-    const schema = store.schema ?? store.pages[0]?.columns;
-    if (!schema) return;
+  function queueColumnRefresh(): void {
+    queuedColumnRefresh = true;
+    void drainQueuedColumns();
+  }
+
+  async function drainQueuedColumns(): Promise<void> {
+    if (
+      editing
+      || applyingColumns
+      || applyingRows
+      || !tabulator.value
+      || !queuedColumnRefresh
+    ) return;
+    const grid = tabulator.value;
+    applyingColumns = (async () => {
+      while (
+        !editing
+        && queuedColumnRefresh
+        && tabulator.value === grid
+      ) {
+        const schema = store.schema ?? store.pages[0]?.columns;
+        if (!schema) {
+          queuedColumnRefresh = false;
+          break;
+        }
+        queuedColumnRefresh = false;
+        const carrier = { columns: schema } as TablePage;
+        retireDomSelectionBeforeColumnRefresh();
+        try {
+          // Tabulator may complete setColumns asynchronously. Serializing the
+          // calls prevents a datasetReady rebuild from racing the immediately
+          // following editSchemaLoaded rebuild and leaving the grid read-only.
+          await Promise.resolve(grid.setColumns(
+            buildTabulatorColumns(
+              carrier,
+              store.editSchema,
+              relationContext(),
+            ) as unknown[],
+          ));
+          lastColSignature = colSignature(schema);
+          lastSchemaGeneration = store.loadGeneration;
+          lastEditSignature = editSchemaSignature(store.editSchema);
+          lastRelationSignature = relationSignature();
+          refreshLocalizedPlaceholder(grid, gridEl.value);
+        } catch {
+          queuedRows = store.allRows;
+        }
+      }
+    })();
     try {
-      const carrier = { columns: schema } as TablePage;
-      tabulator.value.setColumns(
-        buildTabulatorColumns(
-          carrier,
-          store.editSchema,
-          relationContext(),
-        ) as unknown[],
-      );
-      lastColSignature = colSignature(schema);
-      lastSchemaGeneration = store.loadGeneration;
-      lastEditSignature = editSchemaSignature(store.editSchema);
-      lastRelationSignature = relationSignature();
-      refreshLocalizedPlaceholder(tabulator.value, gridEl.value);
-    } catch {
-      void tabulator.value.setData([...store.allRows]);
+      await applyingColumns;
+    } finally {
+      applyingColumns = null;
     }
+    if (!editing && queuedColumnRefresh) await drainQueuedColumns();
+    if (!editing && queuedRows) await drainQueuedRows();
   }
 
   function retireDomSelectionBeforeColumnRefresh(): void {

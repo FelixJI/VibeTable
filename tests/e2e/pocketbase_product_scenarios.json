@@ -2,17 +2,17 @@
   {
     "id": "01-offline-first-start",
     "title": "干净数据目录离线首次启动",
-    "requirement": "真实发布包在独立数据目录启动，WPF、Python、PocketBase、WebView2 与 renderer 全部就绪；renderer 不直接外联，VibeTable 自有进程仅使用 loopback。WebView2 Runtime 后台流量单独留证但不作为产品外联。"
+    "requirement": "真实发布包在独立数据目录启动，WPF、Python、PocketBase、WebView2 与 renderer 全部就绪；renderer 不直接外联，VibeTable 自有进程仅使用 loopback。"
   },
   {
     "id": "02-all-field-schema",
-    "title": "全部字段家族与约束建表",
-    "requirement": "通过建表 UI 创建 scalar、relation、lookup、formula、attachment、system 六个字段家族并落地约束。"
+    "title": "Schema v2 字段家族与稳定身份",
+    "requirement": "宿主创建空表并分配不透明表身份；通过统一 Field Settings v2 能力、计划和应用创建全部普通字段家族，同类型显示变更不改变字段身份；select label/color 修改不改记录内 optionId；Ctrl+Z 只撤销数据编辑、不撤销字段；停用与恢复经过回收站，renderer 无法调用旧通用 schema 写入口。"
   },
   {
     "id": "03-schema-errors",
-    "title": "前端与服务端 schema 错误路径一致",
-    "requirement": "前端阻止无效 schema 提交；直接走同一封闭 bridge 请求时，服务端返回相同字段路径。"
+    "title": "前端与服务端 typed diagnostic",
+    "requirement": "统一字段抽屉在本地阻止无效草稿；服务端拒绝无效 v2 字段意图并返回稳定错误码；旧 schema.validate 路由在 renderer 边界不可达。"
   },
   {
     "id": "04-json-round-trip",
@@ -21,13 +21,13 @@
   },
   {
     "id": "05-formula-lifecycle",
-    "title": "公式预览、保存、依赖更新与循环错误",
-    "requirement": "公式 UI 实时预览，保存后依赖变化触发重算，循环依赖显示字段级错误。"
+    "title": "空表转换与非空迁移故障回滚",
+    "requirement": "空表字段按冻结计划直接完成类型转换，不启动 shadow migration，并保持 fieldId 与公开 physicalName 不变；非空表启动真实 shadow migration，copying 阶段故障后回滚并保留旧字段身份、类型和值。"
   },
   {
     "id": "06-relation-fanout",
-    "title": "关系更新触发跨记录公式重算",
-    "requirement": "通过关系编辑 UI 更新目标记录后，所有依赖记录的公式值在界面上更新。"
+    "title": "关系 cascade 方向与影响预览",
+    "requirement": "关系字段切换 cascade 前，冻结计划明确标记危险级别，并返回受影响记录与依赖信息。"
   },
   {
     "id": "07-attachment-history",
@@ -56,7 +56,7 @@
   },
   {
     "id": "12-backup-consistency",
-    "title": "备份恢复后的全量一致性",
-    "requirement": "从产品入口备份并恢复后，记录、公式、附件内容/摘要及规范化审计快照精确一致。"
+    "title": "永久清除的备份回执门禁",
+    "requirement": "字段永久清除在缺少备份回执时稳定失败；只有新鲜、可验证的 vbr1 回执、文字确认与冻结确认齐备时才允许清除，并从回收站移除。"
   }
 ]

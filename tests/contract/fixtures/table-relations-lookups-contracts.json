@@ -111,7 +111,21 @@
       "offset": 0,
       "limit": 100,
       "filteredRows": 1,
-      "totalRows": 1
+      "totalRows": 1,
+      "snapshot": {
+        "snapshotId": "lookup-snapshot-1",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "databaseId": "database-1",
+        "table": "orders",
+        "schemaRevision": "schema-1",
+        "dataRevision": 1,
+        "normalizedQuery": {
+          "filters": [],
+          "sorts": [],
+          "offset": 0,
+          "limit": 100
+        }
+      }
     }
   }
 }

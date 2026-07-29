@@ -11,6 +11,7 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/attachments"
 	"github.com/vibetable/vibetable/sidecar/internal/backup"
+	"github.com/vibetable/vibetable/sidecar/internal/backupreceipt"
 )
 
 func TestBackupContainsWholeHealthyPocketBaseData(t *testing.T) {
@@ -27,7 +28,7 @@ func TestBackupContainsWholeHealthyPocketBaseData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := backup.New(app, manager).
+	service := backup.New(app, manager, testBackupReceiptKey).
 		WithRestart(func() error { return nil }).
 		WithNow(func() time.Time {
 			return time.Date(2026, 7, 24, 1, 0, 0, 0, time.UTC)
@@ -41,8 +42,19 @@ func TestBackupContainsWholeHealthyPocketBaseData(t *testing.T) {
 	if result.Backup.Name != "manual_001.zip" ||
 		result.Backup.Size <= 0 ||
 		len(result.Backup.SHA256) != 64 ||
+		result.Receipt == "" ||
 		!result.Integrity.Valid {
 		t.Fatalf("backup result = %#v", result)
+	}
+	if err := backupreceipt.Verify(
+		context.Background(), app, result.Receipt, testBackupReceiptKey,
+	); err != nil {
+		t.Fatalf("verify fresh backup receipt: %v", err)
+	}
+	if err := backupreceipt.Verify(
+		context.Background(), app, result.Receipt+"tampered", testBackupReceiptKey,
+	); err == nil {
+		t.Fatal("tampered backup receipt was accepted")
 	}
 	entries, err := service.List(context.Background())
 	if err != nil || len(entries) != 1 ||
@@ -77,7 +89,7 @@ func TestBackupContainsWholeHealthyPocketBaseData(t *testing.T) {
 	}
 
 	app = bootstrapApp(t, dataDir)
-	service = backup.New(app, manager).
+	service = backup.New(app, manager, testBackupReceiptKey).
 		WithRestart(func() error { return nil }).
 		WithNow(func() time.Time {
 			return time.Date(2026, 7, 24, 1, 0, 1, 0, time.UTC)
@@ -98,7 +110,7 @@ func TestBackupContainsWholeHealthyPocketBaseData(t *testing.T) {
 	if err := backup.CommitPendingRestore(dataDir); err != nil {
 		t.Fatalf("CommitPendingRestore(): %v", err)
 	}
-	service = backup.New(app, manager)
+	service = backup.New(app, manager, testBackupReceiptKey)
 	entries, err = service.List(context.Background())
 	if err != nil || len(entries) != 3 {
 		t.Fatalf("backup list after restore = %#v, err=%v", entries, err)

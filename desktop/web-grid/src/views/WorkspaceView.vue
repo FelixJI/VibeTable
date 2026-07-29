@@ -31,7 +31,8 @@ import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import GridHost from "@/components/grid/GridHost.vue";
 import DataSourceViewBar from "@/components/grid/DataSourceViewBar.vue";
 import RelationEditorPanel from "@/components/grid/RelationEditorPanel.vue";
-import FieldManagerDrawer from "@/components/relations/FieldManagerDrawer.vue";
+import FieldSettingsDrawer from "@/field-settings/FieldSettingsDrawer.vue";
+import { useFieldSettingsService } from "@/field-settings/service";
 import { TABULATOR_INJECTION_KEY } from "@/components/grid/tabulatorInjection";
 import PastePanel from "@/components/panels/PastePanel.vue";
 import CreateTableModal from "@/components/panels/CreateTableModal.vue";
@@ -61,13 +62,6 @@ import { useDataIoService } from "@/services/dataIoService";
 import type { ApplyPasteInput } from "@/services/pasteService";
 import { useMutationService } from "@/services/mutationService";
 import { useTableAdminService } from "@/services/tableAdminService";
-import { buildProductTableDefinition } from "@/services/tableAdminService";
-import { buildProductFieldDefinition } from "@/services/schemaFieldDraft";
-import { buildProductIndexDefinitions } from "@/services/schemaIndexDraft";
-import {
-  FormulaPreviewCoordinator,
-  createBridgeFormulaPreviewPort,
-} from "@/services/formulaPreviewCoordinator";
 import { useErrorRouter } from "@/services/errorRouter";
 import { useIdentifierMappingService } from "@/services/identifierMappingService";
 import { createPluginCommandContext, usePluginService } from "@/services/pluginService";
@@ -118,10 +112,6 @@ import { resolvePasteContext } from "@/grid/pasteContext";
 import { canLeaveDashboardDraft } from "@/dashboard/navigationGuard";
 import type {
   NormalizedRelationDescriptor,
-  ApplyRelationChangeParams,
-  LookupDefinition,
-  LookupQueryResult,
-  LookupValidationResult,
   FilterCondition,
   LookupGroup,
   LookupValueProvenance,
@@ -129,8 +119,6 @@ import type {
   PasteCellPayload,
   PreviewPasteRequestedPayload,
   RelationTargetRef,
-  PreviewRelationChangeParams,
-  RelationChangePlan,
   AttachmentPolicy,
   ColumnSchema,
   ManagedAttachmentRef,
@@ -156,6 +144,7 @@ const revisionHistoryService = useRevisionHistoryService();
 const dashboardService = useDashboardService();
 provideDashboardService(dashboardService);
 const relationLookupService = useRelationLookupService();
+const fieldSettingsService = useFieldSettingsService();
 const ui = useUiStore();
 const admin = useTableAdminStore();
 const paste = usePasteStore();
@@ -173,74 +162,6 @@ const shouldShowNotification = createNotificationDeduper();
 const editRejectionText = computed(() =>
   editRejection.value ? mutationRejectionMessage(editRejection.value) : "");
 const DashboardWorkspaceView = defineAsyncComponent(() => import("@/views/DashboardWorkspaceView.vue"));
-const formulaPreviewCoordinator = new FormulaPreviewCoordinator(
-  createBridgeFormulaPreviewPort(hostBridge),
-);
-const formulaPreviews = ref<Record<string, {
-  phase: "idle" | "loading" | "ready" | "error";
-  value: unknown;
-  error: string | null;
-}>>({});
-
-function previewDraftFormula(payload: {
-  clientId: string;
-  index: number;
-  row: Readonly<Record<string, unknown>>;
-}): void {
-  const currentIndex = admin.form.fields.findIndex(
-    (field) => field.clientId === payload.clientId,
-  );
-  if (currentIndex < 0) return;
-  const fields = admin.form.fields.map((field, index) =>
-    buildProductFieldDefinition(field, index));
-  const indexes = admin.localIndexErrors.length === 0
-    ? buildProductIndexDefinitions(admin.form.indexes, admin.form.fields, fields)
-    : [];
-  const formula = fields[currentIndex];
-  if (!formula || formula.kind !== "formula") return;
-  formulaPreviews.value = {
-    ...formulaPreviews.value,
-    [payload.clientId]: { phase: "loading", value: null, error: null },
-  };
-  formulaPreviewCoordinator.schedule(
-    {
-      definition: buildProductTableDefinition(
-        admin.form.name || "formula_preview",
-        fields,
-        indexes,
-      ),
-      row: payload.row,
-      changedFieldIds: fields
-        .filter((field) => field.kind !== "formula")
-        .map((field) => field.fieldId),
-    },
-    {
-      onResult: (result) => {
-        if (!admin.form.fields.some((field) => field.clientId === payload.clientId)) return;
-        formulaPreviews.value = {
-          ...formulaPreviews.value,
-          [payload.clientId]: {
-            phase: "ready",
-            value: result.values[formula.physicalName],
-            error: null,
-          },
-        };
-      },
-      onError: (error) => {
-        if (!admin.form.fields.some((field) => field.clientId === payload.clientId)) return;
-        formulaPreviews.value = {
-          ...formulaPreviews.value,
-          [payload.clientId]: {
-            phase: "error",
-            value: null,
-            error: error instanceof Error ? error.message : String(error),
-          },
-        };
-      },
-    },
-  );
-}
-
 watch(() => dashboards.featureEnabled, (enabled) => {
   if (!enabled && ui.activeView === "dashboard") {
     dashboardDraft.stop();
@@ -585,25 +506,6 @@ const relationEditor = ref<{
   applying: false,
   error: null,
 });
-const fieldManager = ref<{
-  show: boolean;
-  busy: boolean;
-  error: string | null;
-  relationPlan: RelationChangePlan | null;
-  lookupValidation: LookupValidationResult | null;
-  lookupPreview: LookupQueryResult | null;
-  schemas: Record<string, import("@/contracts").SchemaSnapshot>;
-  lookupCatalog: Record<string, readonly LookupDefinition[]>;
-}>({
-  show: false,
-  busy: false,
-  error: null,
-  relationPlan: null,
-  lookupValidation: null,
-  lookupPreview: null,
-  schemas: {},
-  lookupCatalog: {},
-});
 let relationSearchGeneration = 0;
 let lookupDatasetGeneration = 0;
 const lookupSourceNavigation = ref<{
@@ -621,14 +523,8 @@ watch(
   (collection) => {
     editRejection.value = null;
     relationEditor.value.show = false;
-    fieldManager.value.relationPlan = null;
-    fieldManager.value.lookupValidation = null;
-    fieldManager.value.lookupPreview = null;
     interactiveGridQuery.value = null;
-    fieldManager.value.schemas = {};
-    fieldManager.value.lookupCatalog = {};
     if (!collection) {
-      fieldManager.value.show = false;
       relationLookup.reset();
       return;
     }
@@ -639,9 +535,34 @@ watch(
 
 watch(
   [
+    () => workspace.currentTable,
+    () => tableStore.revision?.schemaRevision,
+  ],
+  ([collection, schemaRevision]) => {
+    if (
+      collection
+      && schemaRevision
+      && relationLookup.schema?.schemaRevision !== schemaRevision
+    ) {
+      // Schema mutations refresh the table dataset independently from the
+      // relation/Lookup catalog. Invalidate the old capability snapshot
+      // synchronously so the dataset-ready watcher cannot dispatch a Lookup
+      // query with revisions that the backend has already retired.
+      void relationLookupService.loadContext(collection);
+    }
+  },
+);
+
+watch(
+  [
     () => relationLookup.schema?.lookupRevision,
     () => relationLookup.capabilities?.lookupQueryV1,
     () => tableStore.datasetReady,
+    // A local mutation can commit while a Lookup read is in flight without
+    // changing schema/lookup revisions. Start a fresh generation bound to the
+    // new data revision so the old response is ignored and Lookup values,
+    // sorting, and grouping are recomputed from the committed snapshot.
+    () => tableStore.revision?.dataRevision,
   ],
   () => { void refreshAuthoritativeLookupRows(); },
 );
@@ -712,126 +633,7 @@ function navigateLookupSource(source: LookupValueProvenance): void {
 
 function openFieldManager(): void {
   if (!workspace.currentTable) return;
-  fieldManager.value.show = true;
-  fieldManager.value.error = null;
-  if (relationLookup.schema) fieldManager.value.schemas[relationLookup.schema.collection] = relationLookup.schema;
-  fieldManager.value.lookupCatalog[workspace.currentTable] = relationLookup.lookups;
-}
-
-function closeFieldManager(): void {
-  if (fieldManager.value.busy) return;
-  fieldManager.value.show = false;
-  fieldManager.value.relationPlan = null;
-  fieldManager.value.lookupValidation = null;
-  fieldManager.value.lookupPreview = null;
-}
-
-async function previewRelationChange(params: PreviewRelationChangeParams): Promise<void> {
-  fieldManager.value.busy = true;
-  fieldManager.value.error = null;
-  fieldManager.value.relationPlan = null;
-  try {
-    fieldManager.value.relationPlan = await relationLookupService.previewRelationChange(params);
-  } catch (error) {
-    fieldManager.value.error = error instanceof Error ? error.message : String(error);
-  } finally {
-    fieldManager.value.busy = false;
-  }
-}
-
-async function applyRelationChange(params: ApplyRelationChangeParams): Promise<void> {
-  fieldManager.value.busy = true;
-  fieldManager.value.error = null;
-  try {
-    await relationLookupService.applyRelationChange(params);
-    fieldManager.value.relationPlan = null;
-    await reloadFieldContext();
-    message.success(t("workspace.relation.structureUpdated"));
-  } catch (error) {
-    fieldManager.value.error = error instanceof Error ? error.message : String(error);
-  } finally {
-    fieldManager.value.busy = false;
-  }
-}
-
-async function validateLookupDefinition(definition: LookupDefinition): Promise<void> {
-  fieldManager.value.busy = true;
-  fieldManager.value.error = null;
-  fieldManager.value.lookupValidation = null;
-  try {
-    fieldManager.value.lookupValidation = await relationLookupService.validateLookup(definition);
-  } catch (error) {
-    fieldManager.value.error = error instanceof Error ? error.message : String(error);
-  } finally {
-    fieldManager.value.busy = false;
-  }
-}
-
-async function previewLookupDefinition(definition: LookupDefinition): Promise<void> {
-  fieldManager.value.busy = true;
-  fieldManager.value.error = null;
-  fieldManager.value.lookupPreview = null;
-  try {
-    fieldManager.value.lookupPreview = await relationLookupService.previewLookup(definition);
-  } catch (error) {
-    fieldManager.value.error = error instanceof Error ? error.message : String(error);
-  } finally {
-    fieldManager.value.busy = false;
-  }
-}
-
-async function mutateLookup(
-  operation: "create" | "update" | "delete",
-  definition: LookupDefinition,
-): Promise<void> {
-  fieldManager.value.busy = true;
-  fieldManager.value.error = null;
-  try {
-    if (operation === "create") await relationLookupService.createLookup(definition);
-    else if (operation === "update") await relationLookupService.updateLookup(definition);
-    else await relationLookupService.deleteLookup(definition);
-    fieldManager.value.lookupValidation = null;
-    fieldManager.value.lookupPreview = null;
-    await reloadFieldContext();
-    message.success(
-      operation === "delete"
-        ? t("workspace.lookup.deleted")
-        : t("workspace.lookup.saved"),
-    );
-  } catch (error) {
-    fieldManager.value.error = error instanceof Error ? error.message : String(error);
-  } finally {
-    fieldManager.value.busy = false;
-  }
-}
-
-async function reloadFieldContext(): Promise<void> {
-  const collection = workspace.currentTable;
-  if (!collection) return;
-  const accepted = await relationLookupService.loadContext(collection);
-  if (accepted) {
-    if (relationLookup.schema) fieldManager.value.schemas = { [collection]: relationLookup.schema };
-    fieldManager.value.lookupCatalog = { [collection]: relationLookup.lookups };
-    await tableService.refresh();
-  }
-}
-
-async function loadFieldManagerSchema(collection: string): Promise<void> {
-  if (!collection) return;
-  try {
-    const [snapshot, lookups] = await Promise.all([
-      fieldManager.value.schemas[collection]
-        ? Promise.resolve(fieldManager.value.schemas[collection])
-        : relationLookupService.describeCollection(collection),
-      fieldManager.value.lookupCatalog[collection]
-        ? Promise.resolve({ definitions: fieldManager.value.lookupCatalog[collection] })
-        : relationLookupService.listCollectionLookups(collection),
-    ]);
-    fieldManager.value.schemas = { ...fieldManager.value.schemas, [collection]: snapshot };
-    fieldManager.value.lookupCatalog = { ...fieldManager.value.lookupCatalog, [collection]: lookups.definitions };
-  } catch (error) {
-    fieldManager.value.error = error instanceof Error ? error.message : String(error);
-  }
+  void fieldSettingsService.openCreate(workspace.currentTable, "relation");
 }
 
 /**
@@ -1231,6 +1033,16 @@ const pluginContextMenu = ref({
   rowKey: null as string | number | null,
   field: null as string | null,
 });
+const columnContextMenu = ref({
+  show: false,
+  x: 0,
+  y: 0,
+  field: null as string | null,
+});
+const columnContextOptions = [
+  { label: "字段设置", key: "settings" },
+  { label: "在右侧新增字段", key: "create" },
+];
 const pluginContextOptions = computed(() => registeredPluginActions.value
   .filter(({ action }) => action.placements.includes("table.context-menu"))
   .map(({ key, label, plugin, action }) => ({
@@ -1306,6 +1118,28 @@ async function openRegisteredPluginAction(
 
 function openPluginContextMenu(payload: { rowKey: string | number; field?: string; x: number; y: number }): void {
   pluginContextMenu.value = { show: true, ...payload, field: payload.field ?? null };
+}
+
+function openColumnContextMenu(payload: { field: string; x: number; y: number }): void {
+  pluginContextMenu.value.show = false;
+  columnContextMenu.value = { show: true, ...payload };
+}
+
+function selectColumnContextAction(key: string): void {
+  const tableId = workspace.currentTable;
+  const column = tableStore.schema?.find((item) => item.name === columnContextMenu.value.field);
+  columnContextMenu.value.show = false;
+  if (!tableId) return;
+  if (key === "create") {
+    void fieldSettingsService.openCreate(tableId);
+    return;
+  }
+  const fieldId = column?.fieldId;
+  if (!fieldId) {
+    message.error("该列没有产品字段身份，无法打开字段设置");
+    return;
+  }
+  void fieldSettingsService.openEdit(tableId, fieldId);
 }
 
 function selectPluginContextAction(key: string): void {
@@ -1387,12 +1221,20 @@ onMounted(() => {
   // handlers for the same key (see hostBridge).
   workspaceService.init();
   tableService.init();
-  relationLookupService.init(() => tableService.refresh());
+  // tableService/mutationService already own scalar-row reconciliation.
+  // Relation/Lookup invalidation reloads its capability context and the
+  // dataRevision watcher below re-queries authoritative Lookup rows. Starting
+  // a second full-table refresh here briefly removes the grid, can satisfy UI
+  // waits before an undo is committed, and races the mutation confirmation.
+  relationLookupService.init();
   pasteService.init();
   mutationService.init((error) => {
     if (error.kind !== "cancelled") editRejection.value = error;
   });
-  tableAdminService.init();
+  tableAdminService.init(async (tableId) => {
+    workspace.selectTable(tableId);
+    await fieldSettingsService.openCreate(tableId);
+  });
   errorRouter.init();
   pluginService.init();
   dashboardService.init();
@@ -1405,12 +1247,12 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  formulaPreviewCoordinator.dispose();
   tableService.dispose();
   relationLookupService.dispose();
   revisionHistoryService.invalidate();
   pluginService.dispose();
   dashboardService.dispose();
+  fieldSettingsService.dispose();
   window.removeEventListener("beforeunload", onBeforeUnload);
 });
 
@@ -2052,6 +1894,7 @@ useKeyboard({
               @selection-change="onHistorySelection"
               :on-validation-error="onValidationError"
               @row-context="openPluginContextMenu"
+              @column-context="openColumnContextMenu"
               @relation-edit="openRelationEditor"
               @attachment-open="openAttachmentPanel"
               @json-edit="openJsonEditor"
@@ -2190,38 +2033,8 @@ useKeyboard({
         </footer>
       </aside>
     </NModal>
-    <FieldManagerDrawer
-      v-if="workspace.currentTable"
-      :show="fieldManager.show"
-      :collection="workspace.currentTable"
-      :collections="workspace.collections.map(item => item.collection)"
-      :schema="relationLookup.schema"
-      :schemas="Object.values(fieldManager.schemas)"
-      :lookups="relationLookup.lookups"
-      :lookup-catalog="Object.values(fieldManager.lookupCatalog).flat()"
-      :busy="fieldManager.busy"
-      :error="fieldManager.error"
-      :relation-plan="fieldManager.relationPlan"
-      :lookup-validation="fieldManager.lookupValidation"
-      :lookup-preview="fieldManager.lookupPreview"
-      @close="closeFieldManager"
-      @reset-relation-preview="fieldManager.relationPlan = null"
-      @preview-relation="previewRelationChange"
-      @apply-relation="applyRelationChange"
-      @validate-lookup="validateLookupDefinition"
-      @preview-lookup="previewLookupDefinition"
-      @create-lookup="mutateLookup('create', $event)"
-      @update-lookup="mutateLookup('update', $event)"
-      @delete-lookup="mutateLookup('delete', $event)"
-      @load-schema="loadFieldManagerSchema"
-    />
     <PastePanel @confirm="onConfirmPaste" @cancel="onCancelPaste" />
-    <CreateTableModal
-      :formula-previews="formulaPreviews"
-      @formula-preview="previewDraftFormula"
-      @submit="onSubmitCreate"
-      @cancel="onCancelCreate"
-    />
+    <CreateTableModal @submit="onSubmitCreate" @cancel="onCancelCreate" />
     <DeleteConfirmModal @confirm="onConfirmDelete" @cancel="onCancelDelete" />
     <ShortcutsView />
     <RevisionHistoryDrawer
@@ -2231,6 +2044,25 @@ useKeyboard({
       @load-more="revisionHistoryService.loadMore"
       @preview="revisionHistoryService.previewRestore"
       @apply="revisionHistoryService.applyRestore"
+    />
+    <FieldSettingsDrawer
+      @close="fieldSettingsService.requestClose"
+      @plan="fieldSettingsService.plan()"
+      @apply="fieldSettingsService.apply"
+      @cancel-migration="fieldSettingsService.cancelMigration"
+      @load-recycle-bin="fieldSettingsService.loadRecycleBin"
+      @restore="fieldSettingsService.restore"
+    />
+    <NDropdown
+      trigger="manual"
+      placement="bottom-start"
+      :show="columnContextMenu.show"
+      :x="columnContextMenu.x"
+      :y="columnContextMenu.y"
+      :options="columnContextOptions"
+      @update:show="show => { columnContextMenu.show = show }"
+      @select="selectColumnContextAction"
+      @clickoutside="columnContextMenu.show = false"
     />
     <NDropdown
       trigger="manual"

@@ -224,10 +224,13 @@ type TableDescriptor struct {
 	// DigestFields includes every normalized product field, including
 	// non-queryable secrets. QueryPort hashes their raw values server-side but
 	// never returns those values.
-	DigestFields []string    `json:"-"`
-	ArchiveMode  ArchiveMode `json:"archiveMode,omitempty"`
-	ArchiveField string      `json:"archiveField,omitempty"`
-	ArchiveValue any         `json:"archiveValue,omitempty"`
+	DigestFields []string `json:"-"`
+	// PresenceFields maps product field aliases to hidden companion columns.
+	// QueryCompiler selects them only as transport-internal projection inputs.
+	PresenceFields map[string]string `json:"-"`
+	ArchiveMode    ArchiveMode       `json:"archiveMode,omitempty"`
+	ArchiveField   string            `json:"archiveField,omitempty"`
+	ArchiveValue   any               `json:"archiveValue,omitempty"`
 }
 
 type CompiledQuery struct {

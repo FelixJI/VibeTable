@@ -48,6 +48,7 @@ describe("backup HostBridge allowlist", () => {
             sha256: "a".repeat(64),
           },
           integrityValid: true,
+          receipt: "vbr1.test-receipt",
         },
       },
     });

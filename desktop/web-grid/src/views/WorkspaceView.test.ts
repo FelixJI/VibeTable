@@ -284,7 +284,9 @@ describe("WorkspaceView", () => {
     });
     await flushPromises();
     const dropdown = wrapper.findAllComponents(NDropdown)
-      .find((candidate) => candidate.props("trigger") === "manual")!;
+      .find((candidate) =>
+        candidate.props("trigger") === "manual"
+        && candidate.props("show") === true)!;
     expect(dropdown.props("show")).toBe(true);
 
     dropdown.vm.$emit("update:show", false);
@@ -408,8 +410,8 @@ describe("WorkspaceView", () => {
     ]));
   });
 
-  it("opens relation and Lookup field management from the table toolbar", async () => {
-    const { bridge } = makeRecordingBridge();
+  it("opens the unified relation field settings drawer from the table toolbar", async () => {
+    const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
     workspace.setOpened([{ collection: "orders" }, { collection: "contracts" }]);
@@ -422,8 +424,14 @@ describe("WorkspaceView", () => {
     trigger.click();
     await flushPromises();
 
-    expect(document.body.textContent).toContain("关系与 Lookup 字段");
-    expect(document.body.textContent).toContain("orders · schema");
+    expect(document.body.textContent).toContain("SCHEMA V2");
+    expect(document.body.textContent).toContain("正在读取字段能力与推荐设置");
+    expect(posted).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "field.settings.describe",
+        payload: { tableId: "orders" },
+      }),
+    ]));
   });
 
   it("applies relation.updateSingle current as one target object", async () => {

@@ -8,7 +8,7 @@
         xmlns:local="clr-namespace:VibeTable.Desktop"
         mc:Ignorable="d"
         Title="VibeTable"
-        Icon="Assets/Brand/VibeTable.png"
+        Icon="Assets/Brand/VibeTable.ico"
         Height="720" Width="1024"
         Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
         Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"

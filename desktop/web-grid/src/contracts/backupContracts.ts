@@ -26,6 +26,7 @@ export interface BackupListResult {
 export interface BackupCreateResult {
   readonly backup: BackupEntry;
   readonly integrityValid: true;
+  readonly receipt: string;
 }
 
 export interface BackupRestoreResult {

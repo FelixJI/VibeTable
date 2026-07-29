@@ -82,6 +82,27 @@ func TestPreviewRejectsReadOnlyViewTables(t *testing.T) {
 	}
 }
 
+func TestPreviewRejectsCrossContainerAliasesBeforeValueNormalization(t *testing.T) {
+	definition := mutationTestDefinition()
+	kernel := mutation.New(nil, staticSchemaSource{definition: definition})
+	recordID := "rec_00000000001"
+	request := mutationTestRequest(mutation.Operation{
+		Kind: mutation.OperationUpdate, RecordID: &recordID,
+		Values:    map[string]any{"fld_title": "typed"},
+		RawValues: map[string]any{"title": 42},
+	})
+
+	_, err := kernel.Preview(context.Background(), request)
+
+	var productErr *mutation.ProductError
+	if !errors.As(err, &productErr) ||
+		productErr.Code != "mutation.field.duplicate" ||
+		productErr.Path == nil ||
+		*productErr.Path != "operations[0].rawValues.title" {
+		t.Fatalf("duplicate alias error = %#v", err)
+	}
+}
+
 func mutationTestDefinition() schema.TableDefinition {
 	return schema.TableDefinition{
 		ContractVersion: schema.ContractVersion,

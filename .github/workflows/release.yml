@@ -224,25 +224,37 @@ jobs:
         run: uv run python scripts/build_next.py --release
 
       - name: Verify package
-        run: uv run python qa/package_check.py dist/VibeTable.Next
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          $packageName = "VibeTable.Next-v$env:RELEASE_VERSION-win-x64"
+          uv run python qa/package_check.py "dist/$packageName"
 
       - name: Archive and checksum
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.identity.outputs.version }}
         run: |
-          if (!(Test-Path dist/VibeTable.Next)) {
-            throw "Build artifact missing: dist/VibeTable.Next"
+          $version = $env:RELEASE_VERSION
+          $packageName = "VibeTable.Next-v$version-win-x64"
+          $packageDir = "dist/$packageName"
+          $archive = "dist/$packageName.zip"
+          if (!(Test-Path $packageDir)) {
+            throw "Build artifact missing: $packageDir"
           }
-          Compress-Archive -Path dist/VibeTable.Next/* -DestinationPath dist/VibeTable.Next.zip -Force
-          $hash = (Get-FileHash dist/VibeTable.Next.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  VibeTable.Next.zip" | Set-Content -Encoding ascii dist/VibeTable.Next.zip.sha256
+          Compress-Archive -Path $packageDir -DestinationPath $archive -Force
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/Assert-WindowsPackage.ps1 -Path $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $packageName.zip" | Set-Content -Encoding ascii "$archive.sha256"
 
       - name: Upload immutable workflow artifact
         uses: actions/upload-artifact@v7
         with:
           name: VibeTable-${{ steps.identity.outputs.tag }}
           path: |
-            dist/VibeTable.Next.zip
-            dist/VibeTable.Next.zip.sha256
+            dist/VibeTable.Next-v${{ steps.identity.outputs.version }}-win-x64.zip
+            dist/VibeTable.Next-v${{ steps.identity.outputs.version }}-win-x64.zip.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -263,9 +275,13 @@ jobs:
         shell: pwsh
         run: |
           $tag = $env:RELEASE_TAG
+          $version = "${{ steps.identity.outputs.version }}"
+          $packageName = "VibeTable.Next-v$version-win-x64"
+          $archive = "dist/$packageName.zip"
+          $checksum = "$archive.sha256"
           if (gh release view $tag 2>$null) {
             gh release edit $tag --notes-file CHANGELOG.md --title "VibeTable $tag"
-            gh release upload $tag dist/VibeTable.Next.zip dist/VibeTable.Next.zip.sha256 --clobber
+            gh release upload $tag $archive $checksum --clobber
           } else {
-            gh release create $tag dist/VibeTable.Next.zip dist/VibeTable.Next.zip.sha256 --verify-tag --notes-file CHANGELOG.md --title "VibeTable $tag"
+            gh release create $tag $archive $checksum --verify-tag --notes-file CHANGELOG.md --title "VibeTable $tag"
           }

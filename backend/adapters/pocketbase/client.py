@@ -10,6 +10,7 @@ from typing import Any, Protocol
 SESSION_HEADER = "X-VibeTable-Session"
 MUTATION_PREVIEW_PATH = "/api/vibetable/v1/mutations/preview"
 MUTATION_APPLY_PATH = "/api/vibetable/v1/mutations/apply"
+IMPORT_PREVIEW_PATH = "/api/vibetable/v2/import-preview"
 QUERY_PATH = "/api/vibetable/v1/query"
 LOOKUP_DESCRIBE_PATH = "/api/vibetable/v1/lookups/describe"
 LOOKUP_QUERY_PATH = "/api/vibetable/v1/lookups/query"
@@ -117,6 +118,12 @@ class PocketBaseClient:
         return _object(
             await self._post(MUTATION_APPLY_PATH, request),
             "mutation receipt",
+        )
+
+    async def preview_import(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        return _object(
+            await self._post(IMPORT_PREVIEW_PATH, request),
+            "import preview",
         )
 
     async def query_page(

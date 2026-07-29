@@ -16,6 +16,7 @@ from typing import Any, ClassVar
 from pydantic import RootModel, model_validator
 
 from backend.adapters.pocketbase.client import PocketBaseClient, PocketBaseTransport
+from backend.contracts.schema_v2 import ApplyRequestV2
 
 _MAX_PARAMS_BYTES = 1 << 20
 _MAX_DEPTH = 32
@@ -38,6 +39,7 @@ class ProductParams(RootModel[dict[str, Any]]):
     _allowed_fields: ClassVar[frozenset[str] | None] = None
     _required_fields: ClassVar[frozenset[str]] = frozenset()
     _field_types: ClassVar[dict[str, tuple[type, ...]]] = {}
+    _catalog_example: ClassVar[dict[str, Any] | None] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -102,6 +104,60 @@ def _closed_params(
     )
 
 
+class FieldChangePlanParams(ProductParams):
+    """Guards the transport envelope; Go owns field-domain validation."""
+
+    _allowed_fields = frozenset(
+        {
+            "action",
+            "tableId",
+            "fieldId",
+            "expectedSchemaRevision",
+            "expectedDataRevision",
+            "draft",
+            "actor",
+            "conversionRule",
+            "confirmation",
+            "backupReceipt",
+        }
+    )
+    _required_fields = _allowed_fields
+    _field_types = {
+        "draft": (dict, type(None)),
+        "actor": (dict,),
+    }
+
+    _catalog_example = {
+        "action": "retire",
+        "tableId": "orders",
+        "fieldId": "fld_example",
+        "expectedSchemaRevision": "schema_1",
+        "expectedDataRevision": None,
+        "draft": None,
+        "actor": {"id": "local-user", "kind": "user"},
+        "conversionRule": "",
+        "confirmation": "",
+        "backupReceipt": "",
+    }
+
+
+class FieldChangeApplyParams(ProductParams):
+    """Deeply validates the complete Schema v2 apply request."""
+
+    _catalog_example = {
+        "planId": "plan_example",
+        "planHash": "a" * 64,
+        "operationId": "operation_example",
+        "actor": {"id": "local-user", "kind": "user"},
+        "confirmations": [],
+    }
+
+    @model_validator(mode="after")
+    def validate_apply(self) -> FieldChangeApplyParams:
+        ApplyRequestV2.model_validate(self.root)
+        return self
+
+
 _MUTATION_FIELDS = (
     "contractVersion",
     "requestId",
@@ -128,6 +184,32 @@ _RELATION_DELTA_FIELDS = (
 # unknown field, a missing required field, or a top-level type mismatch a
 # JSON-RPC -32602 response before application code or HTTP is reached.
 PRODUCT_PARAM_MODELS: dict[str, type[ProductParams]] = {
+    "field.settings.describe": _closed_params(
+        "FieldSettingsDescribeParams",
+        allowed=("tableId", "fieldId"),
+        required=("tableId",),
+        field_types={"tableId": (str,), "fieldId": (str,)},
+    ),
+    "field.change.plan": FieldChangePlanParams,
+    "field.change.apply": FieldChangeApplyParams,
+    "field.change.status": _closed_params(
+        "FieldChangeStatusParams",
+        allowed=("jobId",),
+        required=("jobId",),
+        field_types={"jobId": (str,)},
+    ),
+    "field.change.cancel": _closed_params(
+        "FieldChangeCancelParams",
+        allowed=("jobId",),
+        required=("jobId",),
+        field_types={"jobId": (str,)},
+    ),
+    "field.recycleBin.list": _closed_params(
+        "FieldRecycleBinParams",
+        allowed=("tableId",),
+        required=("tableId",),
+        field_types={"tableId": (str,)},
+    ),
     "schema.validate": _closed_params(
         "SchemaValidateParams",
         allowed=("definition", "expectedRevision"),
@@ -371,45 +453,6 @@ PRODUCT_PARAM_MODELS: dict[str, type[ProductParams]] = {
         allowed=_RELATION_DELTA_FIELDS,
         required=tuple(name for name in _RELATION_DELTA_FIELDS if name != "expectedDateUpdated"),
     ),
-    "table_admin.previewRelationChange": _closed_params(
-        "PreviewRelationChangeParams",
-        allowed=(
-            "collection",
-            "action",
-            "relationId",
-            "config",
-            "expectedSchemaRevision",
-        ),
-        required=("collection", "action", "expectedSchemaRevision"),
-        field_types={
-            "collection": (str,),
-            "action": (str,),
-            "relationId": (str, type(None)),
-            "config": (dict, type(None)),
-            "expectedSchemaRevision": (str,),
-        },
-    ),
-    "table_admin.applyRelationChange": _closed_params(
-        "ApplyRelationChangeParams",
-        allowed=(
-            "planId",
-            "operationId",
-            "expectedSchemaRevision",
-            "cascadeLookupIds",
-        ),
-        required=(
-            "planId",
-            "operationId",
-            "expectedSchemaRevision",
-            "cascadeLookupIds",
-        ),
-        field_types={
-            "planId": (str,),
-            "operationId": (str,),
-            "expectedSchemaRevision": (str,),
-            "cascadeLookupIds": (list,),
-        },
-    ),
     "lookup.list": _closed_params(
         "LookupListParams",
         allowed=("collection",),
@@ -421,33 +464,6 @@ PRODUCT_PARAM_MODELS: dict[str, type[ProductParams]] = {
         allowed=("definition", "existing"),
         required=("definition", "existing"),
         field_types={"definition": (dict,), "existing": (list,)},
-    ),
-    "lookup.create": _closed_params(
-        "LookupCreateParams",
-        allowed=("definition", "requestId"),
-        required=("definition", "requestId"),
-        field_types={"definition": (dict,), "requestId": (str,)},
-    ),
-    "lookup.update": _closed_params(
-        "LookupUpdateParams",
-        allowed=("definition", "expectedRevision", "requestId"),
-        required=("definition", "expectedRevision", "requestId"),
-        field_types={
-            "definition": (dict,),
-            "expectedRevision": (int,),
-            "requestId": (str,),
-        },
-    ),
-    "lookup.delete": _closed_params(
-        "LookupDeleteParams",
-        allowed=("collection", "lookupId", "expectedRevision", "requestId"),
-        required=("collection", "lookupId", "expectedRevision", "requestId"),
-        field_types={
-            "collection": (str,),
-            "lookupId": (str,),
-            "expectedRevision": (int,),
-            "requestId": (str,),
-        },
     ),
     "lookup.preview": _closed_params(
         "LookupPreviewParams",
@@ -564,8 +580,6 @@ class PocketBaseProductDataService:
         self._client = client
         self._transport = transport
         self._headers = {"X-VibeTable-Session": session_secret}
-        self._relation_change_plans: dict[str, dict[str, Any]] = {}
-        self._relation_change_operations: dict[str, dict[str, Any]] = {}
 
     async def validate_schema(self, params: ProductParams) -> dict[str, Any]:
         return await self._post("/api/vibetable/v1/schema/validate", params.root)
@@ -575,6 +589,56 @@ class PocketBaseProductDataService:
 
     async def delete_schema(self, params: ProductParams) -> dict[str, Any]:
         return await self._post("/api/vibetable/v1/schema/delete", params.root)
+
+    async def describe_field_settings(self, params: ProductParams) -> dict[str, Any]:
+        table_id = _path_segment(_text(params.root, "tableId"))
+        query: dict[str, str] = {}
+        if "fieldId" in params.root:
+            query["fieldId"] = _text(params.root, "fieldId")
+        return _result_object(
+            await self._transport.request(
+                "GET",
+                f"/api/vibetable/v2/field-settings/{table_id}",
+                query=query,
+                headers=dict(self._headers),
+                expected_status=(200,),
+            )
+        )
+
+    async def plan_field_change(self, params: ProductParams) -> dict[str, Any]:
+        return await self._post("/api/vibetable/v2/field-change/plan", params.root)
+
+    async def apply_field_change(self, params: ProductParams) -> dict[str, Any]:
+        return await self._post("/api/vibetable/v2/field-change/apply", params.root)
+
+    async def field_change_status(self, params: ProductParams) -> dict[str, Any]:
+        job_id = _path_segment(_text(params.root, "jobId"))
+        return _result_object(
+            await self._transport.request(
+                "GET",
+                f"/api/vibetable/v2/field-change/status/{job_id}",
+                headers=dict(self._headers),
+                expected_status=(200,),
+            )
+        )
+
+    async def cancel_field_change(self, params: ProductParams) -> dict[str, Any]:
+        job_id = _path_segment(_text(params.root, "jobId"))
+        return await self._post(
+            f"/api/vibetable/v2/field-change/cancel/{job_id}",
+            {},
+        )
+
+    async def list_recycled_fields(self, params: ProductParams) -> dict[str, Any]:
+        table_id = _path_segment(_text(params.root, "tableId"))
+        return _result_object(
+            await self._transport.request(
+                "GET",
+                f"/api/vibetable/v2/field-recycle-bin/{table_id}",
+                headers=dict(self._headers),
+                expected_status=(200,),
+            )
+        )
 
     async def list_tables(self, params: ProductParams) -> dict[str, Any]:
         if params.root:
@@ -924,309 +988,6 @@ class PocketBaseProductDataService:
             "requestId": _text(params.root, "idempotencyKey"),
         }
 
-    async def preview_relation_change(self, params: ProductParams) -> dict[str, Any]:
-        raw = params.root
-        table_id = _text(raw, "collection")
-        action = _text(raw, "action")
-        if action not in {"create", "update", "delete"}:
-            raise ValueError("relation action is invalid")
-        schema = await self._client.describe_table(table_id)
-        expected_revision = _text(raw, "expectedSchemaRevision")
-        if _text(schema, "schemaRevision") != expected_revision:
-            raise ValueError("relation schema revision does not match")
-        catalog = await self._client.describe_relations(table_id)
-        relations = catalog.get("relations")
-        lookups = catalog.get("lookups")
-        if not isinstance(relations, list) or not isinstance(lookups, list):
-            raise ValueError("PocketBase returned an invalid relation catalog")
-        relation_id_raw = raw.get("relationId")
-        relation_id = relation_id_raw if isinstance(relation_id_raw, str) else None
-        current = next(
-            (
-                item
-                for item in relations
-                if isinstance(item, dict) and item.get("relationId") == relation_id
-            ),
-            None,
-        )
-        if action == "create" and relation_id is not None:
-            raise ValueError("create relation preview must not specify relationId")
-        if action in {"update", "delete"} and not isinstance(current, dict):
-            raise ValueError("relation was not found")
-        proposed = _clone_json(schema)
-        fields = proposed.get("fields")
-        if not isinstance(fields, list):
-            raise ValueError("PocketBase returned an invalid field catalog")
-        config_raw = raw.get("config")
-        if action in {"create", "update"}:
-            if not isinstance(config_raw, dict):
-                raise ValueError("relation config is required")
-            relation_field = await self._normalized_relation_field(
-                table_id=table_id,
-                config=config_raw,
-                current=current,
-            )
-            field_id = _text(relation_field, "fieldId")
-            indexes = [
-                index
-                for index, field in enumerate(fields)
-                if isinstance(field, dict) and field.get("fieldId") == field_id
-            ]
-            if action == "create":
-                if indexes:
-                    raise ValueError("relation field already exists")
-                fields.append(relation_field)
-                relation_id = f"{table_id}.{field_id}"
-            else:
-                if not isinstance(current, dict):
-                    raise ValueError("relation was not found")
-                current_field_id = _text(current, "sourceFieldId")
-                indexes = [
-                    index
-                    for index, field in enumerate(fields)
-                    if isinstance(field, dict) and field.get("fieldId") == current_field_id
-                ]
-                if len(indexes) != 1:
-                    raise ValueError("relation field was not found")
-                relation_field["fieldId"] = current_field_id
-                fields[indexes[0]] = relation_field
-        else:
-            assert isinstance(current, dict)
-            field_id = _text(current, "sourceFieldId")
-            proposed["fields"] = [
-                field
-                for field in fields
-                if not (isinstance(field, dict) and field.get("fieldId") == field_id)
-            ]
-
-        affected = sorted(
-            _text(item, "lookupId")
-            for item in lookups
-            if isinstance(item, dict)
-            and isinstance(current, dict)
-            and item.get("relationFieldId") == current.get("sourceFieldId")
-        )
-        steps = [
-            {
-                "resource": "relation",
-                "action": action,
-                "key": relation_id or "",
-                "destructive": action == "delete",
-            }
-        ]
-        steps.extend(
-            {
-                "resource": "lookup",
-                "action": "delete",
-                "key": lookup_id,
-                "destructive": True,
-            }
-            for lookup_id in affected
-        )
-        await self._post(
-            "/api/vibetable/v1/schema/validate",
-            {
-                "definition": proposed,
-                "expectedRevision": _schema_revision_number(expected_revision),
-            },
-        )
-        plan_payload = {
-            "collection": table_id,
-            "expectedSchemaRevision": expected_revision,
-            "action": action,
-            "relationId": relation_id,
-            "proposed": proposed,
-            "steps": steps,
-            "affectedLookupIds": affected,
-        }
-        plan_id = "relplan_" + _stable_hash(plan_payload).removeprefix("sha256:")[:32]
-        self._relation_change_plans[plan_id] = plan_payload
-        return {
-            "planId": plan_id,
-            "collection": table_id,
-            "expectedSchemaRevision": expected_revision,
-            "action": action,
-            "relationId": relation_id,
-            "steps": steps,
-            "affectedLookupIds": affected,
-            "diagnostics": [],
-            "canApply": True,
-        }
-
-    async def apply_relation_change(self, params: ProductParams) -> dict[str, Any]:
-        raw = params.root
-        plan_id = _text(raw, "planId")
-        operation_id = _text(raw, "operationId")
-        request_hash = _stable_hash(
-            {
-                "planId": plan_id,
-                "expectedSchemaRevision": raw.get("expectedSchemaRevision"),
-                "cascadeLookupIds": sorted(_array(raw, "cascadeLookupIds")),
-            }
-        )
-        replay = self._relation_change_operations.get(operation_id)
-        if replay is not None:
-            if replay["requestHash"] != request_hash:
-                raise ValueError("relation operation id was reused for another request")
-            return _clone_json(replay["result"])
-        plan = self._relation_change_plans.get(plan_id)
-        if plan is None:
-            raise ValueError("relation change plan is missing or expired")
-        expected_revision = _text(raw, "expectedSchemaRevision")
-        if expected_revision != plan["expectedSchemaRevision"]:
-            raise ValueError("relation change plan revision does not match")
-        cascade = _array(raw, "cascadeLookupIds")
-        if not all(isinstance(item, str) and item for item in cascade):
-            raise ValueError("cascadeLookupIds must contain non-empty strings")
-        affected = set(plan["affectedLookupIds"])
-        if set(cascade) != affected:
-            raise ValueError("all affected Lookups must be selected explicitly")
-        proposed = _clone_json(plan["proposed"])
-        if affected:
-            fields = proposed.get("fields")
-            if not isinstance(fields, list):
-                raise ValueError("relation change plan is invalid")
-            lookup_field_ids = {
-                _lookup_field_id(str(plan["collection"]), lookup_id) for lookup_id in affected
-            }
-            proposed["fields"] = [
-                field
-                for field in fields
-                if not (isinstance(field, dict) and field.get("fieldId") in lookup_field_ids)
-            ]
-        applied = await self._post(
-            "/api/vibetable/v1/schema/apply",
-            {
-                "definition": proposed,
-                "expectedRevision": _schema_revision_number(expected_revision),
-                "operationId": operation_id,
-            },
-        )
-        self._relation_change_plans.pop(plan_id, None)
-        applied_definition = applied.get("definition")
-        definition = applied_definition if isinstance(applied_definition, dict) else applied
-        if not isinstance(definition, dict):
-            raise ValueError("PocketBase returned an invalid schema definition")
-        schema_revision = _text(definition, "schemaRevision")
-        relation = None
-        if plan["action"] != "delete":
-            catalog = await self._client.describe_relations(str(plan["collection"]))
-            relations = catalog.get("relations")
-            if not isinstance(relations, list):
-                raise ValueError("PocketBase returned an invalid relation catalog")
-            descriptor = next(
-                (
-                    item
-                    for item in relations
-                    if isinstance(item, dict) and item.get("relationId") == plan["relationId"]
-                ),
-                None,
-            )
-            if not isinstance(descriptor, dict):
-                raise ValueError("applied relation was not found")
-            relation = _renderer_relation(descriptor, definition)
-        result = {
-            "relation": relation,
-            "deleted": plan["action"] == "delete",
-            "schemaRevision": schema_revision,
-            "appliedSteps": plan["steps"],
-        }
-        self._relation_change_operations[operation_id] = {
-            "requestHash": request_hash,
-            "result": _clone_json(result),
-        }
-        return result
-
-    async def _normalized_relation_field(
-        self,
-        *,
-        table_id: str,
-        config: dict[str, Any],
-        current: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        kind = _text(config, "kind")
-        if kind not in {"m2o", "o2m", "m2m", "m2a"}:
-            raise ValueError("relation kind is invalid")
-        field_id = (
-            _text(current, "sourceFieldId")
-            if isinstance(current, dict)
-            else _text(config, "fieldKey")
-        )
-        if _PATH_SEGMENT.fullmatch(field_id) is None:
-            raise ValueError("relation field key is invalid")
-        on_delete = {
-            "nullify": "setNull",
-            "cascade": "cascade",
-            "restrict": "restrict",
-        }.get(_text(config, "onDelete"))
-        if on_delete is None:
-            raise ValueError("relation delete policy is invalid")
-        target_table = ""
-        mode = "direct"
-        cardinality = "one" if kind == "m2o" else "many"
-        junction_table_id: str | None = None
-        junction_source = ""
-        junction_target = ""
-        junction_discriminator = ""
-        allowed: list[str] = []
-        if kind == "m2a":
-            allowed_raw = _array(config, "allowedCollections")
-            if not all(isinstance(item, str) and item for item in allowed_raw):
-                raise ValueError("allowedCollections must contain table ids")
-            allowed = list(dict.fromkeys(allowed_raw))
-            if not allowed:
-                raise ValueError("m2a relation requires allowedCollections")
-            target_table = allowed[0]
-            mode = "m2a"
-        else:
-            target_table = _text(config, "relatedCollection")
-        if kind in {"m2m", "m2a"}:
-            junction = _object(config, "junction")
-            junction_table_id = _text(junction, "collection")
-            junction_schema = await self._client.describe_table(junction_table_id)
-            junction_source = _schema_field_id(junction_schema, _text(junction, "sourceField"))
-            junction_target = _schema_field_id(junction_schema, _text(junction, "targetField"))
-            mode = "m2a" if kind == "m2a" else "junction"
-            if kind == "m2a":
-                junction_discriminator = _schema_field_id(
-                    junction_schema, _text(junction, "collectionField")
-                )
-        relation = {
-            "mode": mode,
-            "targetTableId": target_table,
-            "cardinality": cardinality,
-            "deletePolicy": on_delete,
-            "junctionTableId": junction_table_id,
-            "junctionSourceFieldId": junction_source,
-            "junctionTargetFieldId": junction_target,
-            "junctionDiscriminatorFieldId": junction_discriminator,
-            "allowedTargetTableIds": allowed,
-        }
-        return {
-            "fieldId": field_id,
-            "physicalName": _text(config, "fieldKey"),
-            "displayName": _text(config, "fieldDisplayName"),
-            "kind": "relation",
-            "dataType": "relation",
-            "storageType": "relation",
-            "nullable": config.get("nullable") is True,
-            "defaultValue": None,
-            "constraints": [
-                {
-                    "kind": "relation",
-                    "targetTableId": target_table,
-                    "cardinality": cardinality,
-                    "deletePolicy": on_delete,
-                }
-            ],
-            "editor": {"kind": "relation", "config": {}},
-            "readOnly": kind in {"m2m", "m2a"},
-            "formula": None,
-            "relation": relation,
-            "lookup": None,
-            "attachmentPolicy": None,
-        }
-
     async def update_single_relation(self, params: ProductParams) -> dict[str, Any]:
         raw = params.root
         relation_id = _text(raw, "relationId")
@@ -1354,71 +1115,6 @@ class PocketBaseProductDataService:
             ),
         }
 
-    async def create_lookup(self, params: ProductParams) -> dict[str, Any]:
-        renderer = _object(params.root, "definition")
-        return await self._mutate_lookup(
-            renderer,
-            expected_lookup_revision=None,
-            operation_id=_text(params.root, "requestId"),
-        )
-
-    async def update_lookup(self, params: ProductParams) -> dict[str, Any]:
-        renderer = _object(params.root, "definition")
-        return await self._mutate_lookup(
-            renderer,
-            expected_lookup_revision=_integer(params.root, "expectedRevision"),
-            operation_id=_text(params.root, "requestId"),
-        )
-
-    async def delete_lookup(self, params: ProductParams) -> dict[str, Any]:
-        raw = params.root
-        table_id = _text(raw, "collection")
-        lookup_id = _text(raw, "lookupId")
-        expected_lookup_revision = _integer(raw, "expectedRevision")
-        schema = await self._client.describe_table(table_id)
-        catalog = await self._client.describe_relations(table_id)
-        lookups = catalog.get("lookups")
-        if not isinstance(lookups, list):
-            raise ValueError("PocketBase returned an invalid lookup catalog")
-        descriptor = next(
-            (
-                item
-                for item in lookups
-                if isinstance(item, dict) and item.get("lookupId") == lookup_id
-            ),
-            None,
-        )
-        if not isinstance(descriptor, dict):
-            raise ValueError("Lookup was not found")
-        if _integer(descriptor, "revision") != expected_lookup_revision:
-            raise ValueError("Lookup revision does not match")
-        field_id = _lookup_field_id(table_id, lookup_id)
-        fields = schema.get("fields")
-        if not isinstance(fields, list):
-            raise ValueError("PocketBase returned an invalid field catalog")
-        proposed = _clone_json(schema)
-        proposed["fields"] = [
-            item
-            for item in fields
-            if not (isinstance(item, dict) and item.get("fieldId") == field_id)
-        ]
-        await self._post(
-            "/api/vibetable/v1/schema/apply",
-            {
-                "definition": proposed,
-                "expectedRevision": _schema_revision_number(_text(schema, "schemaRevision")),
-                "operationId": _text(raw, "requestId"),
-            },
-        )
-        listed = await self.list_lookups(ProductParams.model_validate({"collection": table_id}))
-        return {
-            "collection": table_id,
-            "lookupId": lookup_id,
-            "definition": None,
-            "deleted": True,
-            "lookupRevision": listed["lookupRevision"],
-        }
-
     async def preview_lookup(self, params: ProductParams) -> dict[str, Any]:
         raw = params.root
         table_id = _text(raw, "collection")
@@ -1461,62 +1157,6 @@ class PocketBaseProductDataService:
             definitions=rendered_by_field,
             groups=_group_lookup_rows(page.get("rows", []), groups),
         )
-
-    async def _mutate_lookup(
-        self,
-        renderer: dict[str, Any],
-        *,
-        expected_lookup_revision: int | None,
-        operation_id: str | None = None,
-    ) -> dict[str, Any]:
-        table_id = _text(renderer, "collection")
-        lookup_id = _text(renderer, "lookupId")
-        schema = await self._client.describe_table(table_id)
-        catalog = await self._client.describe_relations(table_id)
-        lookups = catalog.get("lookups")
-        if not isinstance(lookups, list):
-            raise ValueError("PocketBase returned an invalid lookup catalog")
-        current = next(
-            (
-                item
-                for item in lookups
-                if isinstance(item, dict) and item.get("lookupId") == lookup_id
-            ),
-            None,
-        )
-        if expected_lookup_revision is None and current is not None:
-            raise ValueError("Lookup already exists")
-        if expected_lookup_revision is not None:
-            if not isinstance(current, dict):
-                raise ValueError("Lookup was not found")
-            if _integer(current, "revision") != expected_lookup_revision:
-                raise ValueError("Lookup revision does not match")
-        field = await self._normalized_lookup_field(renderer, schema)
-        proposed = _replace_lookup_field(
-            schema, field, allow_create=expected_lookup_revision is None
-        )
-        await self._post(
-            "/api/vibetable/v1/schema/apply",
-            {
-                "definition": proposed,
-                "expectedRevision": _schema_revision_number(_text(schema, "schemaRevision")),
-                "operationId": operation_id or _stable_hash(renderer),
-            },
-        )
-        listed = await self.list_lookups(ProductParams.model_validate({"collection": table_id}))
-        definition = next(
-            (item for item in listed["definitions"] if item.get("lookupId") == lookup_id),
-            None,
-        )
-        if not isinstance(definition, dict):
-            raise ValueError("Lookup mutation did not persist the definition")
-        return {
-            "collection": table_id,
-            "lookupId": lookup_id,
-            "definition": definition,
-            "deleted": False,
-            "lookupRevision": listed["lookupRevision"],
-        }
 
     async def _normalized_lookup_field(
         self,

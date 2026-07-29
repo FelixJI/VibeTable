@@ -564,8 +564,6 @@ export const messages: Record<string, string> = {
   "workspace.relation.unsupported": "当前环境不支持关系编辑",
   "workspace.relation.structureUpdated": "关系结构已更新",
   "workspace.relation.changed": "关系记录已变化，请刷新后重试",
-  "workspace.lookup.deleted": "Lookup 已删除",
-  "workspace.lookup.saved": "Lookup 已保存",
   "workspace.lookup.sourceLocated": "已定位来源记录 {collection} · {itemId}",
   "workspace.lookup.sourceFiltered": "已筛选来源记录 {collection} · {itemId}",
   "workspace.notification.relationLookupFailed": "关系或 Lookup 操作失败，请稍后重试",

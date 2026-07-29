@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, model_validator
 
 from backend.contracts.query import FilterCondition, SortCondition
+from backend.contracts.selection import QuerySnapshot
 from backend.contracts.table import CamelModel
 
 LookupAggregation = Literal[
@@ -144,28 +145,6 @@ class LookupValidationResult(CamelModel):
     lookup_revision: str
 
 
-class LookupCreateParams(CamelModel):
-    definition: LookupDefinition
-    request_id: str = Field(min_length=1, max_length=128)
-
-
-class LookupUpdateParams(LookupCreateParams):
-    expected_revision: int = Field(ge=1)
-
-
-class LookupDeleteParams(LookupIdentityParams):
-    expected_revision: int = Field(ge=1)
-    request_id: str = Field(min_length=1, max_length=128)
-
-
-class LookupMutationResult(CamelModel):
-    collection: str
-    lookup_id: str
-    definition: LookupDefinition | None = None
-    deleted: bool = False
-    lookup_revision: str
-
-
 class LookupValueProvenance(CamelModel):
     collection: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=256)
@@ -238,6 +217,7 @@ class LookupQueryResult(CamelModel):
     limit: int = Field(ge=1)
     filtered_rows: int = Field(ge=0)
     total_rows: int = Field(ge=0)
+    snapshot: QuerySnapshot
 
 
 def validate_lookup_dependency_graph(definitions: list[LookupDefinition]) -> None:
@@ -279,16 +259,13 @@ __all__ = [
     "LookupCellValue",
     "LookupCollectionParams",
     "LookupColumnResult",
-    "LookupCreateParams",
     "LookupDefinition",
-    "LookupDeleteParams",
     "LookupDiagnostic",
     "LookupGroup",
     "LookupGroupNode",
     "LookupIdentityParams",
     "LookupListResult",
     "LookupM2AFieldMapping",
-    "LookupMutationResult",
     "LookupOutputType",
     "LookupPathStep",
     "LookupPreviewParams",
@@ -298,7 +275,6 @@ __all__ = [
     "LookupReferenceSource",
     "LookupSource",
     "LookupState",
-    "LookupUpdateParams",
     "LookupValidateParams",
     "LookupValidationResult",
     "LookupValueProvenance",

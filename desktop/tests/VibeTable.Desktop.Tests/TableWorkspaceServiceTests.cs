@@ -120,6 +120,47 @@ public sealed class TableWorkspaceServiceTests
     }
 
     [TestMethod]
+    public async Task SelectTableAsync_ClientMode_RetriesWhenPageRevisionsDrift()
+    {
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] =
+            new DatabaseOpenResult(new[] { "t" }, Array.Empty<string>());
+        var oldRevision = new MutationRevision("session", "schema", 7);
+        var newRevision = new MutationRevision("session", "schema", 8);
+        var oldPages = BuildPages("t", totalRows: 501, pageSize: 500);
+        var newPages = BuildPages("t", totalRows: 501, pageSize: 500);
+        gateway.ReadTablePageOverride = (_, offset, _, call) =>
+        {
+            var revision = call == 1 ? oldRevision : newRevision;
+            var source = call == 1 ? oldPages : newPages;
+            return source[offset] with { Revision = revision };
+        };
+        var service = new TableWorkspaceService(gateway);
+        var notifications = new List<TableNotification>();
+        service.Notification += notification => notifications.Add(notification);
+
+        await service.OpenDatabaseAsync("db");
+        await service.SelectTableAsync("t");
+
+        CollectionAssert.AreEqual(
+            new[] { 0, 500, 0, 500 },
+            gateway.ReadTablePageCalls.Select(call => call.Offset).ToArray());
+        var pageLoaded = notifications
+            .Where(notification => notification.Type == "table.pageLoaded")
+            .ToList();
+        Assert.AreEqual(3, pageLoaded.Count);
+        Assert.AreEqual(0, pageLoaded[0].Page!.Offset);
+        Assert.AreEqual(oldRevision, pageLoaded[0].Page!.Revision);
+        Assert.AreEqual(0, pageLoaded[1].Page!.Offset);
+        Assert.AreEqual(newRevision, pageLoaded[1].Page!.Revision);
+        Assert.AreEqual(500, pageLoaded[2].Page!.Offset);
+        var ready = notifications.Single(
+            notification => notification.Type == "table.datasetReady");
+        Assert.AreEqual(newRevision, ready.Page!.Revision);
+        Assert.AreEqual(501, ready.Page.Rows.Count);
+    }
+
+    [TestMethod]
     public async Task SelectTableAsync_RemoteMode_RetainsOnlyRequestedPage()
     {
         // 25_000 rows total: exactly at the client boundary (<= 25000), so still

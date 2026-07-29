@@ -14,7 +14,9 @@ public sealed class ProductDataRpcRegistryTests
     {
         string[] expected =
         [
-            "schema.getTable", "schema.validate", "schema.apply", "query.page",
+            "field.settings.describe", "field.change.plan", "field.change.apply",
+            "field.change.status", "field.change.cancel", "field.recycleBin.list",
+            "schema.getTable", "query.page",
             "mutation.preview", "mutation.apply",
             "data.previewImport", "data.applyImport", "data.export",
             "task.create", "task.cancel", "task.status",
@@ -29,11 +31,59 @@ public sealed class ProductDataRpcRegistryTests
         CollectionAssert.AreEquivalent(expected, ProductDataRpcRegistry.RequestTypes.ToArray());
         Assert.IsFalse(ProductDataRpcRegistry.Contains("rpc.invoke"));
         Assert.IsFalse(ProductDataRpcRegistry.Contains("dire" + "ctus.read"));
+        Assert.IsFalse(ProductDataRpcRegistry.Contains("schema.validate"));
+        Assert.IsFalse(ProductDataRpcRegistry.Contains("schema.apply"));
         foreach (string type in expected)
         {
             Assert.IsTrue(ProductDataRpcRegistry.TryGet(type, out var endpoint), type);
             Assert.AreEqual(type, endpoint.Type);
         }
+    }
+
+    [TestMethod]
+    public void FieldSettingsValidatorsExposeOnlyClosedV2UseCases()
+    {
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet("field.settings.describe", out var describe));
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet("field.change.plan", out var plan));
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet("field.change.apply", out var apply));
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet("field.change.status", out var status));
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet("field.change.cancel", out var cancel));
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet("field.recycleBin.list", out var recycleBin));
+
+        Assert.IsTrue(describe.IsValidPayload(
+            JsonDocument.Parse("""{"tableId":"tbl_orders","fieldId":"fld_status"}""").RootElement));
+        Assert.IsFalse(describe.IsValidPayload(
+            JsonDocument.Parse("""{"tableId":"tbl_orders","fieldId":7}""").RootElement));
+
+        Assert.IsTrue(plan.IsValidPayload(JsonDocument.Parse(
+            """
+            {"action":"update","tableId":"tbl_orders","fieldId":"fld_status",
+             "expectedSchemaRevision":"schema_7","draft":{},"actor":{"id":"user_1","kind":"user"}}
+            """).RootElement));
+        Assert.IsFalse(plan.IsValidPayload(JsonDocument.Parse(
+            """
+            {"action":"update","tableId":"tbl_orders","expectedSchemaRevision":"schema_7",
+             "actor":{"id":"user_1","kind":"user"},"providerFieldId":"secret"}
+            """).RootElement));
+
+        Assert.IsTrue(apply.IsValidPayload(JsonDocument.Parse(
+            """
+            {"planId":"plan_1","planHash":"sha256:1","operationId":"op_1",
+             "actor":{"id":"user_1","kind":"user"},"confirmations":[]}
+            """).RootElement));
+        Assert.IsFalse(apply.IsValidPayload(JsonDocument.Parse(
+            """
+            {"planId":"plan_1","planHash":"sha256:1","operationId":"op_1",
+             "actor":{"id":"user_1","kind":"user"},"confirmations":[],"force":true}
+            """).RootElement));
+
+        JsonElement job = JsonDocument.Parse("""{"jobId":"job_1"}""").RootElement;
+        Assert.IsTrue(status.IsValidPayload(job));
+        Assert.IsTrue(cancel.IsValidPayload(job));
+        Assert.IsTrue(recycleBin.IsValidPayload(
+            JsonDocument.Parse("""{"tableId":"tbl_orders"}""").RootElement));
+        Assert.IsFalse(recycleBin.IsValidPayload(
+            JsonDocument.Parse("""{"tableId":"tbl_orders","includeProvider":true}""").RootElement));
     }
 
     [TestMethod]
@@ -99,90 +149,21 @@ public sealed class ProductDataRpcRegistryTests
     [TestMethod]
     public void ValidatorRejectsCredentialsNestedInsideObjectsAndArrays()
     {
-        Assert.IsTrue(ProductDataRpcRegistry.TryGet("schema.validate", out var endpoint));
-        JsonElement nestedObject = JsonDocument.Parse(
-            """
-            {
-              "definition": {
-                "fields": [{
-                  "editor": {
-                    "config": {
-                      "accessToken": "must-not-cross"
-                    }
-                  }
-                }]
-              },
-              "expectedRevision": 0
-            }
-            """).RootElement.Clone();
-        JsonElement nestedArray = JsonDocument.Parse(
-            """
-            {
-              "definition": {
-                "fields": [
-                  {"constraints": [{"password": "must-not-cross"}]}
-                ]
-              },
-              "expectedRevision": 0
-            }
-            """).RootElement.Clone();
-
-        Assert.IsFalse(endpoint.IsValidPayload(nestedObject));
-        Assert.IsFalse(endpoint.IsValidPayload(nestedArray));
+        Assert.IsFalse(ProductDataRpcRegistry.TryGet("schema.validate", out _));
+        Assert.IsFalse(ProductDataRpcRegistry.TryGet("schema.apply", out _));
     }
 
     [TestMethod]
     public void ValidatorRejectsPayloadsBeyondDepthAndNodeLimits()
     {
-        Assert.IsTrue(ProductDataRpcRegistry.TryGet("schema.validate", out var endpoint));
-        object nested = "leaf";
-        for (int index = 0; index < 40; index++)
-        {
-            nested = new Dictionary<string, object?> { ["next"] = nested };
-        }
-        JsonElement tooDeep = JsonSerializer.SerializeToElement(new
-        {
-            definition = nested,
-            expectedRevision = 0,
-        });
-        JsonElement tooManyNodes = JsonSerializer.SerializeToElement(new
-        {
-            definition = new
-            {
-                values = Enumerable.Range(0, 10_001).ToArray(),
-            },
-            expectedRevision = 0,
-        });
-
-        Assert.IsFalse(endpoint.IsValidPayload(tooDeep));
-        Assert.IsFalse(endpoint.IsValidPayload(tooManyNodes));
+        Assert.IsFalse(ProductDataRpcRegistry.Contains("schema.validate"));
+        Assert.IsFalse(ProductDataRpcRegistry.Contains("schema.apply"));
     }
 
     [TestMethod]
     public void ValidatorAcceptsNormalNestedProductPayload()
     {
-        Assert.IsTrue(ProductDataRpcRegistry.TryGet("schema.validate", out var endpoint));
-        JsonElement payload = JsonDocument.Parse(
-            """
-            {
-              "definition": {
-                "tableId": "tbl_orders",
-                "fields": [{
-                  "fieldId": "status",
-                  "constraints": [
-                    {"kind": "enum", "values": ["draft", "submitted"]}
-                  ],
-                  "editor": {
-                    "kind": "select",
-                    "config": {"allowClear": false}
-                  }
-                }]
-              },
-              "expectedRevision": 7
-            }
-            """).RootElement.Clone();
-
-        Assert.IsTrue(endpoint.IsValidPayload(payload));
+        Assert.IsTrue(ProductDataRpcRegistry.Contains("field.change.plan"));
     }
 
     [TestMethod]

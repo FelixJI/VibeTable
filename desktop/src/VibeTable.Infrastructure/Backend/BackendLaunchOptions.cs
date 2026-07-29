@@ -24,7 +24,8 @@ namespace VibeTable.Infrastructure.Backend;
 /// </remarks>
 public sealed class BackendLaunchOptions
 {
-    private const string PackagedBackendRelativePath = "backend/vibetable-backend.exe";
+    private const string PackagedBackendRelativePath =
+        "resources/backend/vibetable-backend.exe";
 
     /// <summary>
     /// Default dev command: <c>uv</c> on PATH.
@@ -98,7 +99,8 @@ public sealed class BackendLaunchOptions
 
     /// <summary>
     /// Resolves the backend command for the installed or development layout.
-    /// Packaged builds use <c>backend/vibetable-backend.exe</c> beside the host;
+    /// Packaged builds use
+    /// <c>resources/backend/vibetable-backend.exe</c> under the host directory;
     /// development builds first honor the validated interpreter passed by
     /// <c>scripts/dev.py</c> in <c>VIBETABLE_PYTHON</c>, then use the
     /// repository's own <c>.venv</c>. If neither is available, the resolver

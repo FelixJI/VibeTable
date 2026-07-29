@@ -1,0 +1,52 @@
+[
+  {
+    "name": "unknown nested property",
+    "path": ["storage", "options", "ddl"],
+    "value": "DROP TABLE users"
+  },
+  {
+    "name": "logical union mismatch",
+    "path": ["relation"],
+    "value": {
+      "targetTableId": "tbl_customers",
+      "cardinality": "one",
+      "deletePolicy": "setNull",
+      "displayFieldId": "fld_name"
+    }
+  },
+  {
+    "name": "missing provider identity",
+    "path": ["identity", "providerFieldId"],
+    "remove": true
+  },
+  {
+    "name": "wrong nested scalar type",
+    "path": ["constraints", "selection", "min"],
+    "value": "0"
+  },
+  {
+    "name": "invalid lifecycle enum",
+    "path": ["lifecycle", "state"],
+    "value": "deleted"
+  },
+  {
+    "name": "invalid display scale mode",
+    "path": ["display", "scaleMode"],
+    "value": "rounded"
+  },
+  {
+    "name": "invalid JSON indent domain",
+    "path": ["display", "indent"],
+    "value": 3
+  },
+  {
+    "name": "object range boundary",
+    "path": ["constraints", "range", "min"],
+    "value": {"value": 1}
+  },
+  {
+    "name": "unsupported storage enum",
+    "path": ["storage", "kind"],
+    "value": "pocketbase-decimal"
+  }
+]

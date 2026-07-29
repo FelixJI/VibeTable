@@ -94,11 +94,12 @@ uv run python qa/next.py --ci --json-report build/qa/report.json
 ## 构建与发布
 
 ```powershell
-# 输出完整离线包到 dist/VibeTable.Next/
+# 输出完整离线包到 dist/VibeTable.Next-v<版本>-win-x64/
 uv run python scripts/build_next.py --release
 
 # 校验包内容
-uv run python qa/package_check.py dist/VibeTable.Next
+$version = (uv run python scripts/release.py --current).Trim()
+uv run python qa/package_check.py "dist/VibeTable.Next-v$version-win-x64"
 
 # 在干净工作树提升版本、提交、打 tag 并推送
 uv run python scripts/release.py --bump patch --push
@@ -108,7 +109,7 @@ uv run python scripts/release.py --bump patch --push
 
 ## 版本管理
 
-单一版本来源是 `pyproject.toml` 的 `[project].version`。`scripts/release.py` 会同步并校验 Python、.NET、Web、sidecar 和发布清单中的版本标识。
+单一版本来源是 `backend/_version.py`。`scripts/release.py` 会同步并校验 Python、.NET、Web、sidecar 和发布清单中的版本标识；发布目录、ZIP、校验文件和 `release.json` 都会携带相同版本号。
 
 ## License
 

@@ -66,6 +66,7 @@ const emit = defineEmits<{
     readonly groups: readonly LookupGroup[];
   }];
   insertFirstRow: [];
+  columnContext: [payload: { field: string; x: number; y: number }];
 }>();
 
 const gridEl = ref<HTMLElement | null>(null);
@@ -260,6 +261,14 @@ function markRangeAria(
 function onContextMenu(event: MouseEvent): void {
   const target = event.target;
   if (!(target instanceof Node)) return;
+  const element = target instanceof Element ? target : target.parentElement;
+  const header = element?.closest<HTMLElement>(".tabulator-col[data-field]");
+  const headerField = header?.dataset.field;
+  if (headerField && headerField !== ROW_NUMBER_FIELD) {
+    event.preventDefault();
+    emit("columnContext", { field: headerField, x: event.clientX, y: event.clientY });
+    return;
+  }
   const located = locateCell(target);
   if (!located) return;
   event.preventDefault();

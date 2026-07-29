@@ -7,6 +7,7 @@ import type {
   DeleteRowsResult,
   InsertRowResult,
   MutationErrorPayload,
+  MutationRevision,
   UpdateCellResult,
 } from "@/contracts";
 
@@ -111,6 +112,18 @@ export function useMutationService(): {
     readonly column: string;
     readonly oldValue: unknown;
   }> = [];
+  interface DeferredCellEdit {
+    readonly tableId: string;
+    readonly rowKey: number | string;
+    readonly column: string;
+    readonly oldValue: unknown;
+    newValue: unknown;
+    readonly expectedDigest: string | null;
+    readonly startedAt: number;
+  }
+  const deferredCellEdits = new Map<string, DeferredCellEdit>();
+  const REVISION_READY_TIMEOUT_MS = 5_000;
+  const REVISION_READY_POLL_MS = 25;
   let editRejectedHandler:
     | ((error: MutationErrorPayload) => void)
     | undefined;
@@ -189,6 +202,55 @@ export function useMutationService(): {
     });
   }
 
+  function awaitReadySchemaRevision(
+    tableId: string,
+    expected: Pick<MutationRevision, "databaseSessionId" | "schemaRevision">,
+  ): Promise<string> {
+    const startedAt = Date.now();
+    return new Promise<string>((resolve, reject) => {
+      const check = (): void => {
+        if ((ws.currentTable ?? "") !== tableId) {
+          reject(new Error(
+            "The table changed before the undo or redo could be committed.",
+          ));
+          return;
+        }
+        if (Date.now() - startedAt >= REVISION_READY_TIMEOUT_MS) {
+          reject(new Error(
+            "The table revision did not become ready for undo or redo.",
+          ));
+          return;
+        }
+        const revision = table.revision;
+        if (revision?.schemaRevision) {
+          if (revision.schemaRevision !== expected.schemaRevision) {
+            reject(new Error(
+              "The table schema changed before the undo or redo could be committed.",
+            ));
+            return;
+          }
+          // setEditSchema can temporarily expose an empty session placeholder
+          // while datasetReady is in flight. Wait for the authoritative
+          // revision, but never allow an old history item to cross sessions.
+          if (!revision.databaseSessionId) {
+            setTimeout(check, REVISION_READY_POLL_MS);
+            return;
+          }
+          if (revision.databaseSessionId !== expected.databaseSessionId) {
+            reject(new Error(
+              "The database session changed before the undo or redo could be committed.",
+            ));
+            return;
+          }
+          resolve(revision.schemaRevision);
+          return;
+        }
+        setTimeout(check, REVISION_READY_POLL_MS);
+      };
+      check();
+    });
+  }
+
   function init(
     onEditRejected?: (error: MutationErrorPayload) => void,
   ): void {
@@ -211,6 +273,8 @@ export function useMutationService(): {
       // Capture the old value BEFORE applying (apply overwrites the row).
       const pending = takePendingCellEdit(r.rowKey, r.column);
       const oldValue = pending?.oldValue ?? findCellValue(r.rowKey, r.column);
+      const historyTableId = ws.currentTable ?? "";
+      const historyRevision = r.revision;
       applyAndMaybeClear(
         "table.editCommitted",
         r.revision.schemaRevision,
@@ -222,28 +286,32 @@ export function useMutationService(): {
             label: `编辑 ${r.column}`,
             timestamp: Date.now(),
             undo: async () => {
+              const schemaRevision =
+                await awaitReadySchemaRevision(historyTableId, historyRevision);
               await runHistoryRoundTrip("table.editCommitted", () => {
                 bridge.notify("table.updateCellRequested", {
-                  table: ws.currentTable ?? "",
+                  table: historyTableId,
                   rowKey: r.rowKey,
                   column: r.column,
                   oldValue: r.storedValue,
                   newValue: oldValue,
                   expectedDigest: findRowDigest(r.rowKey),
-                  schemaRevision: currentSchemaRev(),
+                  schemaRevision,
                 });
               });
             },
             redo: async () => {
+              const schemaRevision =
+                await awaitReadySchemaRevision(historyTableId, historyRevision);
               await runHistoryRoundTrip("table.editCommitted", () => {
                 bridge.notify("table.updateCellRequested", {
-                  table: ws.currentTable ?? "",
+                  table: historyTableId,
                   rowKey: r.rowKey,
                   column: r.column,
                   oldValue: oldValue,
                   newValue: r.storedValue,
                   expectedDigest: findRowDigest(r.rowKey),
-                  schemaRevision: currentSchemaRev(),
+                  schemaRevision,
                 });
               });
             },
@@ -253,6 +321,8 @@ export function useMutationService(): {
     });
 
     bridge.on("table.rowsInserted", (r: InsertRowResult) => {
+      const historyTableId = ws.currentTable ?? "";
+      const historyRevision = r.revision;
       applyAndMaybeClear(
         "table.rowsInserted",
         r.revision.schemaRevision,
@@ -264,24 +334,28 @@ export function useMutationService(): {
             label: "插入行",
             timestamp: Date.now(),
             undo: async () => {
+              const schemaRevision =
+                await awaitReadySchemaRevision(historyTableId, historyRevision);
               const expectedDigest = findRowDigest(r.rowKey);
               if (!expectedDigest) {
                 throw new Error("The row changed and cannot be undone safely.");
               }
               await runHistoryRoundTrip("table.rowsDeleted", () => {
                 bridge.notify("table.deleteRowsRequested", {
-                  table: ws.currentTable ?? "",
+                  table: historyTableId,
                   rows: [{ rowKey: r.rowKey, expectedDigest }],
-                  schemaRevision: currentSchemaRev(),
+                  schemaRevision,
                 });
               });
             },
             redo: async () => {
+              const schemaRevision =
+                await awaitReadySchemaRevision(historyTableId, historyRevision);
               await runHistoryRoundTrip("table.rowsInserted", () => {
                 bridge.notify("table.insertRowRequested", {
-                  table: ws.currentTable ?? "",
+                  table: historyTableId,
                   values: r.row,
-                  schemaRevision: currentSchemaRev(),
+                  schemaRevision,
                 });
               });
             },
@@ -296,6 +370,8 @@ export function useMutationService(): {
       const key = JSON.stringify(r.deletedRowKeys);
       const snapshot = pendingDeleteSnapshot.get(key) ?? [];
       pendingDeleteSnapshot.delete(key);
+      const historyTableId = ws.currentTable ?? "";
+      const historyRevision = r.revision;
       applyAndMaybeClear(
         "table.rowsDeleted",
         r.revision.schemaRevision,
@@ -308,16 +384,20 @@ export function useMutationService(): {
             timestamp: Date.now(),
             undo: async () => {
               for (const row of snapshot) {
+                const schemaRevision =
+                  await awaitReadySchemaRevision(historyTableId, historyRevision);
                 await runHistoryRoundTrip("table.rowsInserted", () => {
                   bridge.notify("table.insertRowRequested", {
-                    table: ws.currentTable ?? "",
+                    table: historyTableId,
                     values: row,
-                    schemaRevision: currentSchemaRev(),
+                    schemaRevision,
                   });
                 });
               }
             },
             redo: async () => {
+              const schemaRevision =
+                await awaitReadySchemaRevision(historyTableId, historyRevision);
               const guardedRows = r.deletedRowKeys.flatMap((rowKey) => {
                 const expectedDigest = findRowDigest(rowKey);
                 return expectedDigest ? [{ rowKey, expectedDigest }] : [];
@@ -327,9 +407,9 @@ export function useMutationService(): {
               }
               await runHistoryRoundTrip("table.rowsDeleted", () => {
                 bridge.notify("table.deleteRowsRequested", {
-                  table: ws.currentTable ?? "",
+                  table: historyTableId,
                   rows: guardedRows,
-                  schemaRevision: currentSchemaRev(),
+                  schemaRevision,
                 });
               });
             },
@@ -348,6 +428,8 @@ export function useMutationService(): {
       // clear path (no revision on ApplyPasteResult); push directly.
       //
       const created = r.createdRowKeys as readonly (number | string)[];
+      const historyTableId = r.collection;
+      const historyRevision = table.revision;
       history.push({
         id: crypto.randomUUID(),
         kind: "applyPaste",
@@ -359,6 +441,11 @@ export function useMutationService(): {
           // web side; the refreshed authoritative rows do carry QueryPort
           // digests, so capture those immediately before the guarded delete.
           if (created.length === 0) return;
+          if (!historyRevision) {
+            throw new Error("The table revision was unavailable when the paste completed.");
+          }
+          const schemaRevision =
+            await awaitReadySchemaRevision(historyTableId, historyRevision);
           const guardedRows = created.flatMap((rowKey) => {
             const expectedDigest = findRowDigest(rowKey);
             return expectedDigest ? [{ rowKey, expectedDigest }] : [];
@@ -368,9 +455,9 @@ export function useMutationService(): {
           }
           await runHistoryRoundTrip("table.rowsDeleted", () => {
             bridge.notify("table.deleteRowsRequested", {
-              table: ws.currentTable ?? "",
+              table: historyTableId,
               rows: guardedRows,
-              schemaRevision: currentSchemaRev(),
+              schemaRevision,
             });
           });
         },
@@ -419,15 +506,108 @@ export function useMutationService(): {
     newValue: unknown,
     expectedDigest: string | null = null,
   ): void {
+    const tableId = ws.currentTable ?? "";
+    const resolvedDigest = expectedDigest ?? findRowDigest(rowKey);
+    const deferredKey = JSON.stringify([
+      tableId,
+      typeof rowKey,
+      rowKey,
+      column,
+    ]);
+    const existingDeferred = deferredCellEdits.get(deferredKey);
+    if (existingDeferred) {
+      // One optimistic cell can emit several Tabulator edits while a refresh
+      // temporarily withholds the schema revision. Collapse them into one
+      // guarded request: preserve the first old value/digest and send only the
+      // latest value. This also guarantees a timeout rolls back to the true
+      // pre-edit value rather than to an intermediate optimistic value.
+      existingDeferred.newValue = newValue;
+      return;
+    }
+
+    const schemaRevision = currentSchemaRev();
     pendingCellEdits.push({ rowKey, column, oldValue });
-    bridge.notify("table.updateCellRequested", {
-      table: ws.currentTable ?? "",
+    if (schemaRevision) {
+      bridge.notify("table.updateCellRequested", {
+        table: tableId,
+        rowKey,
+        column,
+        oldValue,
+        newValue,
+        expectedDigest: resolvedDigest,
+        schemaRevision,
+      });
+      return;
+    }
+
+    deferredCellEdits.set(deferredKey, {
+      tableId,
       rowKey,
       column,
       oldValue,
       newValue,
-      expectedDigest: expectedDigest ?? findRowDigest(rowKey),
-      schemaRevision: currentSchemaRev(),
+      expectedDigest: resolvedDigest,
+      startedAt: Date.now(),
+    });
+    const notifyWhenRevisionReady = (): void => {
+      const deferred = deferredCellEdits.get(deferredKey);
+      if (!deferred) return;
+      if ((ws.currentTable ?? "") !== deferred.tableId) {
+        deferredCellEdits.delete(deferredKey);
+        rejectDeferredCellEdit(
+          deferred.rowKey,
+          deferred.column,
+          "The table changed before the edit could be committed.",
+          "cancelled",
+          false,
+        );
+        return;
+      }
+      const readyRevision = currentSchemaRev();
+      if (readyRevision) {
+        deferredCellEdits.delete(deferredKey);
+        bridge.notify("table.updateCellRequested", {
+          table: deferred.tableId,
+          rowKey: deferred.rowKey,
+          column: deferred.column,
+          oldValue: deferred.oldValue,
+          newValue: deferred.newValue,
+          expectedDigest: deferred.expectedDigest,
+          schemaRevision: readyRevision,
+        });
+        return;
+      }
+      if (Date.now() - deferred.startedAt >= REVISION_READY_TIMEOUT_MS) {
+        deferredCellEdits.delete(deferredKey);
+        rejectDeferredCellEdit(
+          deferred.rowKey,
+          deferred.column,
+          "The table revision did not become ready in time.",
+          "backend_unavailable",
+          true,
+        );
+        return;
+      }
+      setTimeout(notifyWhenRevisionReady, REVISION_READY_POLL_MS);
+    };
+    notifyWhenRevisionReady();
+  }
+
+  function rejectDeferredCellEdit(
+    rowKey: number | string,
+    column: string,
+    message: string,
+    kind: MutationErrorPayload["kind"],
+    rollback: boolean,
+  ): void {
+    const pending = takePendingCellEdit(rowKey, column);
+    if (pending && rollback) {
+      table.rollbackCellEdit(rowKey, column, pending.oldValue);
+    }
+    editRejectedHandler?.({
+      kind,
+      message,
+      conflictingRowKeys: [rowKey],
     });
   }
 

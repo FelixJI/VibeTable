@@ -5,14 +5,7 @@ import type { CollectionSummary } from "@/stores/workspaceStore";
 import type {
   CollectionsChangedPayload,
   DatabaseOpenedPayload,
-  ProductErrorPayload,
-  ProductTableDefinition,
-  SchemaChangePayload,
 } from "@/contracts";
-import { buildProductFieldDefinition } from "./schemaFieldDraft";
-import { createSchemaFieldDraft } from "./schemaFieldDraft";
-import { buildProductIndexDefinitions } from "./schemaIndexDraft";
-import { t } from "@/i18n";
 
 /**
  * Translate the wire-level `database.opened` payload (separate `tables`/
@@ -59,12 +52,12 @@ function toCollectionsFromChanged(
  *   - outbound `tableAdmin.createRequested` / `tableAdmin.deleteRequested` /
  *     `admin.openRequested` carry the user's create/delete/open-admin intent.
  *
- * Note on field naming: the store's `FieldRow.name` is mapped to the wire
- * `TableAdminFieldInput.key` here, keeping the host's `key`-based contract
- * boundary clean while the UI/store uses the legacy `name` label.
+ * Table creation carries only a display-name intent. The host assigns the
+ * opaque table identity and creates an empty base table; the unified Schema
+ * v2 field-settings drawer owns every subsequent field definition.
  */
 export function useTableAdminService(): {
-  init: () => void;
+  init: (onTableCreated?: (tableId: string) => void | Promise<void>) => void;
   createTable: () => Promise<void>;
   deleteTable: (name: string) => void;
   openAdmin: () => void;
@@ -72,6 +65,9 @@ export function useTableAdminService(): {
   const bridge = useHostBridge();
   const store = useTableAdminStore();
   const ui = useUiStore();
+  let createdCallback: ((tableId: string) => void | Promise<void>) | undefined;
+  let pendingDisplayName: string | null = null;
+  let pendingExistingIds: ReadonlySet<string> | null = null;
 
   /**
    * Resolve an in-flight create/delete when the host signals the collection
@@ -83,93 +79,72 @@ export function useTableAdminService(): {
    * behavior that the pre-rewrite `main.ts` had (the rewrite dropped it; see
    * issue I3 in the final review).
    */
-  function resolveIfPending(): void {
+  function resolveIfPending(
+    collections: readonly CollectionSummary[],
+    previousIds: ReadonlySet<string>,
+  ): void {
     if (store.phase === "submitting") {
+      const baseline = pendingExistingIds ?? previousIds;
+      const additions = collections.filter(
+        (item) => !baseline.has(item.collection),
+      );
+      // The host may publish the new opaque ID before the display-name map is
+      // refreshed. A single added table is still an unambiguous response to
+      // this pending local create. Do not consume the submission on an
+      // unrelated refresh that contains no new table.
+      const created = additions.find(
+        (item) => item.displayName === pendingDisplayName,
+      ) ?? (additions.length === 1 ? additions[0] : undefined);
+      if (!created) return;
       store.succeed();
       ui.closeCreate();
+      pendingDisplayName = null;
+      pendingExistingIds = null;
+      void createdCallback?.(created.collection);
     } else if (store.phase === "deleting") {
       store.succeed();
       ui.closeDelete();
     }
   }
 
-  function init(): void {
+  function init(
+    onTableCreated?: (tableId: string) => void | Promise<void>,
+  ): void {
+    createdCallback = onTableCreated;
     bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
-      store.setCollections(toCollections(payload));
+      const previousIds = new Set(store.collections.map((item) => item.collection));
+      const collections = toCollections(payload);
+      store.setCollections(collections);
       store.setAutoDateProducerEnabled(payload.features?.autoDateFields === true);
       // A `database.opened` after a create/delete also implies success: the
       // host re-announces the full collection list once the new schema lands.
-      resolveIfPending();
+      resolveIfPending(collections, previousIds);
     });
     bridge.on("database.collectionsChanged", (payload) => {
-      store.setCollections(toCollectionsFromChanged(payload));
-      resolveIfPending();
+      const previousIds = new Set(store.collections.map((item) => item.collection));
+      const collections = toCollectionsFromChanged(payload);
+      store.setCollections(collections);
+      resolveIfPending(collections, previousIds);
     });
   }
 
   async function createTable(): Promise<void> {
     if (!store.canSubmit) return;
     store.beginSubmit();
-    const fields = store.form.fields.map((field, index) =>
-      buildProductFieldDefinition(field, index));
-    if (store.autoDateProducerEnabled && store.form.includeCreatedAt) {
-      const conflictIndex = fields.findIndex(({ physicalName }) =>
-        physicalName === "created_at");
-      if (conflictIndex >= 0) {
-        store.fail(
-          t("schema.autoDate.physicalNameConflict", { name: "created_at" }),
-          `fields[${conflictIndex}].physicalName`,
-        );
-        return;
-      }
-      const createdAt = createSchemaFieldDraft("autoDate", "createdAt");
-      createdAt.name = t("schema.autoDate.createdAt");
-      fields.push(buildProductFieldDefinition(createdAt, fields.length));
-    }
-    if (store.autoDateProducerEnabled && store.form.includeUpdatedAt) {
-      const conflictIndex = fields.findIndex(({ physicalName }) =>
-        physicalName === "updated_at");
-      if (conflictIndex >= 0) {
-        store.fail(
-          t("schema.autoDate.physicalNameConflict", { name: "updated_at" }),
-          `fields[${conflictIndex}].physicalName`,
-        );
-        return;
-      }
-      const updatedAt = createSchemaFieldDraft("autoDate", "updatedAt");
-      updatedAt.name = t("schema.autoDate.updatedAt");
-      fields.push(buildProductFieldDefinition(updatedAt, fields.length));
-    }
-    const definition = buildProductTableDefinition(
-      store.form.name,
-      fields,
-      buildProductIndexDefinitions(store.form.indexes, store.form.fields, fields),
+    pendingDisplayName = store.form.name.trim();
+    pendingExistingIds = new Set(
+      store.collections.map((item) => item.collection),
     );
-    const change: SchemaChangePayload = { definition, expectedRevision: 0 };
     try {
-      const validation = await bridge.request("schema.validate", change);
-      const validationError = productError(validation);
-      if (validationError) {
-        store.fail(localizedSchemaError(validationError), validationError.path);
-        return;
-      }
-      const normalized = (
-        validation as { readonly definition?: ProductTableDefinition }
-      )?.definition ?? definition;
-      const applied = await bridge.request("schema.apply", {
-        definition: normalized,
-        expectedRevision: 0,
+      // Table lifecycle is host-owned. The renderer submits one closed intent
+      // and never receives access to the generic schema.validate/apply RPCs.
+      bridge.notify("tableAdmin.createRequested", {
+        displayName: pendingDisplayName,
       });
-      const applyError = productError(applied);
-      if (applyError) {
-        store.fail(localizedSchemaError(applyError), applyError.path);
-        return;
-      }
-      store.succeed();
-      ui.closeCreate();
     } catch (error) {
+      pendingExistingIds = null;
       const mapped = error as Error & { readonly path?: string };
-      store.fail(mapped.message || "创建数据表失败。", mapped.path ?? null);
+      store.fail(mapped.message || "创建数据表失败。");
     }
   }
 
@@ -188,46 +163,4 @@ export function useTableAdminService(): {
   }
 
   return { init, createTable, deleteTable, openAdmin };
-}
-
-function localizedSchemaError(error: ProductErrorPayload): string {
-  if (error.code === "schema.field.autodate_backfill_required") {
-    return t("schema.autoDate.backfillRequired");
-  }
-  return error.message;
-}
-
-export function buildProductTableDefinition(
-  displayName: string,
-  fields: ProductTableDefinition["fields"],
-  indexes: ProductTableDefinition["indexes"],
-): ProductTableDefinition {
-  const physicalName = slug(displayName) || `table_${Date.now().toString(36)}`;
-  return {
-    contractVersion: "1.0",
-    tableId: `tbl_${physicalName}`,
-    physicalName,
-    displayName: displayName.trim(),
-    kind: "base",
-    schemaRevision: "schema_0000",
-    archivePolicy: { mode: "none", fieldId: null, archivedValue: null },
-    fields,
-    indexes,
-  };
-}
-
-function productError(value: unknown): ProductErrorPayload | null {
-  if (!value || typeof value !== "object") return null;
-  const error = (value as { readonly error?: unknown }).error;
-  if (!error || typeof error !== "object") return null;
-  const candidate = error as Partial<ProductErrorPayload>;
-  if (typeof candidate.code !== "string"
-      || typeof candidate.path !== "string"
-      || typeof candidate.message !== "string") return null;
-  return candidate as ProductErrorPayload;
-}
-
-function slug(value: string): string {
-  return value.trim().normalize("NFKC").toLocaleLowerCase()
-    .replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
 }

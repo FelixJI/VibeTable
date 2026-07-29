@@ -15,7 +15,7 @@ import (
 )
 
 func TestInternalMetadataMigrationAndAllowlistedCRUD(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 
 	for _, namespace := range metadata.Namespaces() {
@@ -81,7 +81,7 @@ func TestInternalMetadataMigrationAndAllowlistedCRUD(t *testing.T) {
 }
 
 func TestInternalMetadataCASIdempotencyAndDeleteReplay(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	service := metadata.New(app)
 	ctx := context.Background()
@@ -171,7 +171,7 @@ func TestInternalMetadataCASIdempotencyAndDeleteReplay(t *testing.T) {
 }
 
 func TestDashboardCommitIsAtomicAcrossDashboardAndPanels(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	service := metadata.New(app)
 	ctx := context.Background()
@@ -332,7 +332,7 @@ func TestDashboardCommitIsAtomicAcrossDashboardAndPanels(t *testing.T) {
 func TestDashboardDeleteCascadesPanelsWithOneChangeSetAndDurableReplay(
 	t *testing.T,
 ) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	service := metadata.New(app)
 	ctx := context.Background()
@@ -509,7 +509,7 @@ func TestDashboardDeleteCascadesPanelsWithOneChangeSetAndDurableReplay(
 }
 
 func TestDashboardCascadeTraceFailureRollsBackAllDeletes(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	created, err := metadata.New(app).CommitDashboard(
@@ -588,7 +588,7 @@ func TestDashboardCascadeTraceFailureRollsBackAllDeletes(t *testing.T) {
 func TestInternalMetadataTraceFailureRollsBackBusinessAndIdempotency(
 	t *testing.T,
 ) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	changeSetSequence := 0
 	service := metadata.New(

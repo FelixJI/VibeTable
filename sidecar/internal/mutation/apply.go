@@ -18,6 +18,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
@@ -391,7 +392,7 @@ func (kernel *Kernel) resolveOperationRecord(
 		}
 		record = found
 	}
-	return record, productRow(definition, record), nil
+	return record, productRow(app, definition, record), nil
 }
 
 func (kernel *Kernel) applyOperation(
@@ -416,11 +417,16 @@ func (kernel *Kernel) applyOperation(
 		for name, value := range operation.Values {
 			field, exists := fieldByPhysicalName(definition, name)
 			if !exists {
-				return nil, mutationError(
-					"mutation.schema.field_missing", nil,
-					"normalized field is missing from the active schema",
-					map[string]any{"field": name}, false,
-				)
+				physical := record.Collection().Fields.GetByName(name)
+				if physical == nil || !physical.GetHidden() {
+					return nil, mutationError(
+						"mutation.schema.field_missing", nil,
+						"normalized field is missing from the active schema",
+						map[string]any{"field": name}, false,
+					)
+				}
+				record.Set(name, value)
+				continue
 			}
 			storageValue, err := encodeFieldStorageValue(record, field, value)
 			if err != nil {
@@ -470,6 +476,20 @@ func (kernel *Kernel) applyOperation(
 		if err != nil {
 			return nil, err
 		}
+		if err := setAttachmentPresence(
+			ctx,
+			app,
+			definition.TableID,
+			operation.Attachment.FieldID,
+			record,
+			attachmentChangePresent(
+				definition,
+				record,
+				*operation.Attachment,
+			),
+		); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, mutationError("mutation.operation.unsupported", nil, "operation is not supported", nil, false)
 	}
@@ -506,7 +526,7 @@ func (kernel *Kernel) applyOperation(
 		}
 	}
 	_ = before
-	saved := productRow(definition, record)
+	saved := productRow(app, definition, record)
 	serverFields := map[string]any{}
 	for _, field := range definition.Fields {
 		if field.Kind == schema.FieldKindSystem {
@@ -524,6 +544,55 @@ func (kernel *Kernel) applyOperation(
 		)
 	}
 	return saved, nil
+}
+
+func setAttachmentPresence(
+	ctx context.Context,
+	app core.App,
+	tableID string,
+	fieldID string,
+	record *core.Record,
+	present bool,
+) error {
+	fields, err := loadV2FieldDefinitions(ctx, app, tableID)
+	if err != nil {
+		return err
+	}
+	for _, field := range fields {
+		if field.Identity.FieldID != fieldID ||
+			field.Value.Presence.PhysicalName == "" {
+			continue
+		}
+		record.Set(field.Value.Presence.PhysicalName, present)
+		return nil
+	}
+	return nil
+}
+
+func attachmentChangePresent(
+	definition schema.TableDefinition,
+	record *core.Record,
+	change AttachmentChange,
+) bool {
+	for _, field := range definition.Fields {
+		if field.FieldID != change.FieldID &&
+			field.PhysicalName != change.FieldID {
+			continue
+		}
+		current := record.GetStringSlice(field.PhysicalName)
+		removed := make(map[string]struct{}, len(change.RemoveStoredNames))
+		for _, name := range change.RemoveStoredNames {
+			removed[name] = struct{}{}
+		}
+		remaining := 0
+		for _, name := range current {
+			if _, remove := removed[name]; !remove {
+				remaining++
+			}
+		}
+		return remaining+len(change.UploadHandles) != 0
+	}
+	return len(change.UploadHandles) != 0
 }
 
 func systemWireValue(field schema.FieldDefinition, value any) (any, error) {
@@ -700,7 +769,7 @@ func (kernel *Kernel) validateGlobalGuard(
 		}
 	}
 	if request.ExpectedDigest != nil {
-		actual, digestErr := canonicalDigest(productRow(definition, record))
+		actual, digestErr := canonicalDigest(productRow(app, definition, record))
 		if digestErr != nil {
 			return storageFailure()
 		}
@@ -1173,7 +1242,11 @@ func (ctx publishLifecycleContext) Value(key any) any {
 	return ctx.values.Value(key)
 }
 
-func productRow(definition schema.TableDefinition, record *core.Record) map[string]any {
+func productRow(
+	app core.App,
+	definition schema.TableDefinition,
+	record *core.Record,
+) map[string]any {
 	fieldNames := make([]string, 0, len(definition.Fields))
 	for _, field := range definition.Fields {
 		fieldNames = append(fieldNames, field.PhysicalName)
@@ -1186,6 +1259,25 @@ func productRow(definition schema.TableDefinition, record *core.Record) map[stri
 				field,
 				row[field.PhysicalName],
 			)
+		}
+	}
+	if app != nil {
+		v2Fields, err := loadV2FieldDefinitions(
+			context.Background(), app, definition.TableID,
+		)
+		if err == nil {
+			physical := make(map[string]any, len(v2Fields)*2)
+			for _, field := range v2Fields {
+				physical[field.Identity.PhysicalName] =
+					record.GetRaw(field.Identity.PhysicalName)
+				if field.Value.Presence.PhysicalName != "" {
+					physical[field.Value.Presence.PhysicalName] =
+						record.GetRaw(field.Value.Presence.PhysicalName)
+				}
+				row[field.Identity.PhysicalName] = (fieldprojection.Descriptor{
+					Definition: field,
+				}).ProductValue(physical)
+			}
 		}
 	}
 	return row

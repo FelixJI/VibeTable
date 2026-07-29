@@ -43,7 +43,6 @@ describe("design token catalog", () => {
     const compactCopyFiles = [
       join(sourceRoot, "views", "FileWorkspaceView.vue"),
       join(sourceRoot, "components", "dashboard", "DashboardSidebar.vue"),
-      join(sourceRoot, "components", "panels", "SchemaFieldEditor.vue"),
     ];
     for (const path of compactCopyFiles) {
       const source = readFileSync(path, "utf8");

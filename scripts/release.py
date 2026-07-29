@@ -554,7 +554,7 @@ def main(argv: list[str] | None = None) -> int:
                 [
                     sys.executable,
                     "qa/package_check.py",
-                    "dist/VibeTable.Next",
+                    f"dist/VibeTable.Next-v{target}-win-x64",
                 ]
             )
         if args.commit:

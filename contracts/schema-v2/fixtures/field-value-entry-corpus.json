@@ -1,0 +1,57 @@
+{
+  "$schema": "vibetable.field-value-entry-corpus.v1",
+  "description": "Shared product-value corpus. Raw adapters preserve rawValue; typed adapters preserve productValue; FieldValueKernel is the sole normalizer.",
+  "cases": [
+    {
+      "id": "text-preserves-whitespace",
+      "field": "title",
+      "logicalType": "text",
+      "rawValue": "  Hello, VibeTable  ",
+      "productValue": "  Hello, VibeTable  "
+    },
+    {
+      "id": "currency-number",
+      "field": "amount",
+      "logicalType": "number",
+      "rawValue": "$1,234.50",
+      "productValue": 1234.5
+    },
+    {
+      "id": "localized-false",
+      "field": "approved",
+      "logicalType": "bool",
+      "rawValue": "否",
+      "productValue": false
+    },
+    {
+      "id": "slash-date",
+      "field": "signed_on",
+      "logicalType": "date",
+      "rawValue": "2026/07/28",
+      "productValue": "2026-07-28"
+    },
+    {
+      "id": "select-label-to-stable-id",
+      "field": "status",
+      "logicalType": "select",
+      "rawValue": "Active",
+      "productValue": "opt_01JACTIVE1",
+      "selectOptions": [
+        {
+          "optionId": "opt_01JACTIVE1",
+          "label": "Active"
+        }
+      ]
+    },
+    {
+      "id": "json-object",
+      "field": "payload",
+      "logicalType": "json",
+      "rawValue": "{\"ok\":true,\"count\":2}",
+      "productValue": {
+        "ok": true,
+        "count": 2
+      }
+    }
+  ]
+}

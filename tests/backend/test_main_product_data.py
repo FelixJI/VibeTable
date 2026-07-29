@@ -24,6 +24,12 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     _register_pocketbase_product_methods(dispatcher, FakeProductService())
 
     assert set(dispatcher.registered_methods) == {
+        "field.settings.describe",
+        "field.change.plan",
+        "field.change.apply",
+        "field.change.status",
+        "field.change.cancel",
+        "field.recycleBin.list",
         "events.reconcile",
         "file.list",
         "file.token",
@@ -33,9 +39,6 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "formula.validate",
         "lookup.list",
         "lookup.validate",
-        "lookup.create",
-        "lookup.update",
-        "lookup.delete",
         "lookup.preview",
         "lookup.query",
         "mutation.apply",
@@ -47,8 +50,6 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "relation.previewDelta",
         "relation.searchTargets",
         "relation.updateSingle",
-        "table_admin.applyRelationChange",
-        "table_admin.previewRelationChange",
         "schema.apply",
         "schema.delete",
         "schema.describe",

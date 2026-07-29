@@ -988,8 +988,15 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .calendar-toolbar > span { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); text-align: right; }
 /* "今日/Today" 文字很短，但 Naive UI 默认按钮水平内边距（~14px×2）让它在
    工具栏里偏宽、挤占有限空间。收紧到与圆形图标按钮视觉一致。 */
-.calendar-today-btn :deep(.n-button__content) { padding: 0 6px; }
-.calendar-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 220px); gap: 18px; padding: 16px; }
+.calendar-today-btn {
+  min-width: 48px;
+}
+.calendar-today-btn :deep(.n-button__content) {
+  width: 100%;
+  justify-content: center;
+  padding: 0 6px;
+}
+.calendar-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(210px, 240px); gap: 18px; padding: 16px; }
 /* 面板宽度由内容驱动（不再固定 230px）：NInput 的固定宽度定下列宽，
    单选按钮按文字自然宽度排列，标签/备注在列宽内换行。避免固定窄列把
    控件右边裁切。 */
@@ -1005,7 +1012,17 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .calendar-rule-panel :deep(.n-radio-group) { min-width: 0; max-width: 100%; }
 .calendar-rule-panel { container-type: inline-size; }
 .calendar-rule-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
-.calendar-rule-options :deep(.n-radio-button) { width: 100%; }
+.calendar-rule-options :deep(.n-radio-button) {
+  width: 100%;
+  min-width: 0;
+  justify-content: center;
+}
+.calendar-rule-options :deep(.n-radio__label) {
+  width: 100%;
+  text-align: center;
+  justify-content: center;
+  white-space: nowrap;
+}
 .calendar-footer { display: flex; align-items: center; gap: 14px; padding: 10px 14px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); border-top: 1px solid var(--vt-border); background: var(--vt-bg-subtle); }
 .calendar-footer > span { display: inline-flex; align-items: center; gap: 5px; }
 .calendar-footer small { margin-left: auto; }

@@ -13,12 +13,17 @@ public sealed class RelationLookupRpcRegistryTests
     {
         var types = RelationLookupRpcRegistry.RequestTypes;
 
-        Assert.HasCount(14, types);
+        Assert.HasCount(9, types);
         Assert.AreEqual(
             types.Count,
             types.Distinct(StringComparer.Ordinal).Count(),
             "RPC request types must be unique under ordinal comparison.");
         Assert.IsFalse(RelationLookupRpcRegistry.Contains("rpc.invoke"));
+        Assert.IsFalse(RelationLookupRpcRegistry.Contains("lookup.create"));
+        Assert.IsFalse(RelationLookupRpcRegistry.Contains("lookup.update"));
+        Assert.IsFalse(RelationLookupRpcRegistry.Contains("lookup.delete"));
+        Assert.IsFalse(RelationLookupRpcRegistry.Contains("table_admin.previewRelationChange"));
+        Assert.IsFalse(RelationLookupRpcRegistry.Contains("table_admin.applyRelationChange"));
 
         foreach (string type in types)
         {

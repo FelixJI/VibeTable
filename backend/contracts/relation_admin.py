@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from backend.contracts.data_profile import JunctionProfile, RelationDeletePolicy
 from backend.contracts.table import CamelModel, ColumnSchema
@@ -75,150 +75,6 @@ class RelationDiscoveryResult(CamelModel):
     relations: list[NormalizedRelationDescriptor]
     schema_revision: str
     diagnostics: list[RelationDiagnostic] = Field(default_factory=list)
-
-
-class RelationCommonConfig(CamelModel):
-    field_key: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=128)
-    field_display_name: str = Field(min_length=1, max_length=128)
-    nullable: bool = True
-    on_delete: RelationDeletePolicy = "nullify"
-    display_template: str | None = Field(default=None, max_length=512)
-    preset: Literal["standard", "file", "files", "translations"] = "standard"
-
-
-class CreateM2OConfig(RelationCommonConfig):
-    kind: Literal["m2o"] = "m2o"
-    related_collection: str = Field(min_length=1, max_length=128)
-    unique: bool = False
-
-    @model_validator(mode="after")
-    def validate_preset(self) -> CreateM2OConfig:
-        if self.preset not in {"standard", "file"}:
-            raise ValueError("M2O supports only standard or file preset")
-        if self.preset == "file" and self.related_collection != "_managed_attachments":
-            raise ValueError("file preset must target _managed_attachments")
-        return self
-
-
-class CreateO2MConfig(RelationCommonConfig):
-    kind: Literal["o2m"] = "o2m"
-    related_collection: str = Field(min_length=1, max_length=128)
-    related_many_field: str = Field(min_length=1, max_length=128)
-
-    @model_validator(mode="after")
-    def validate_preset(self) -> CreateO2MConfig:
-        if self.preset not in {"standard", "translations"}:
-            raise ValueError("O2M supports only standard or translations preset")
-        return self
-
-
-class JunctionContextFieldConfig(CamelModel):
-    field: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=128)
-    type: Literal[
-        "string",
-        "text",
-        "integer",
-        "bigInteger",
-        "decimal",
-        "float",
-        "boolean",
-        "date",
-        "dateTime",
-        "time",
-        "json",
-        "uuid",
-    ]
-    nullable: bool = True
-    default_value: Any | None = None
-
-
-class CreateM2MConfig(RelationCommonConfig):
-    kind: Literal["m2m"] = "m2m"
-    related_collection: str = Field(min_length=1, max_length=128)
-    junction: JunctionProfile
-    junction_context_fields: list[JunctionContextFieldConfig] = Field(
-        default_factory=list, max_length=64
-    )
-
-    @model_validator(mode="after")
-    def validate_preset(self) -> CreateM2MConfig:
-        if self.preset not in {"standard", "files"}:
-            raise ValueError("M2M supports only standard or files preset")
-        if self.preset == "files" and self.related_collection != "_managed_attachments":
-            raise ValueError("files preset must target _managed_attachments")
-        return self
-
-
-class CreateM2AConfig(RelationCommonConfig):
-    kind: Literal["m2a"] = "m2a"
-    allowed_collections: list[str] = Field(min_length=1, max_length=64)
-    junction: JunctionProfile
-    junction_context_fields: list[JunctionContextFieldConfig] = Field(
-        default_factory=list, max_length=64
-    )
-
-    @model_validator(mode="after")
-    def validate_preset(self) -> CreateM2AConfig:
-        if self.preset != "standard":
-            raise ValueError("M2A supports only the standard preset")
-        return self
-
-
-RelationChangeConfig = Annotated[
-    CreateM2OConfig | CreateO2MConfig | CreateM2MConfig | CreateM2AConfig,
-    Field(discriminator="kind"),
-]
-
-
-class PreviewRelationChangeParams(CamelModel):
-    collection: str = Field(min_length=1, max_length=128)
-    action: Literal["create", "update", "delete"] = "create"
-    relation_id: str | None = Field(default=None, max_length=128)
-    config: RelationChangeConfig | None = None
-    expected_schema_revision: str = Field(min_length=1, max_length=128)
-
-    @model_validator(mode="after")
-    def validate_action_shape(self) -> PreviewRelationChangeParams:
-        if self.action in {"create", "update"} and self.config is None:
-            raise ValueError("relation config is required for create/update")
-        if self.action in {"update", "delete"} and not self.relation_id:
-            raise ValueError("relationId is required for update/delete")
-        if self.action == "delete" and self.config is not None:
-            raise ValueError("delete preview must not include relation config")
-        return self
-
-
-class SchemaChangeStep(CamelModel):
-    resource: Literal["collection", "field", "relation", "constraint", "lookup"]
-    action: Literal["create", "update", "delete"]
-    key: str
-    destructive: bool = False
-
-
-class RelationChangePlan(CamelModel):
-    plan_id: str
-    collection: str
-    expected_schema_revision: str
-    action: Literal["create", "update", "delete"]
-    relation_id: str | None = None
-    steps: list[SchemaChangeStep]
-    affected_lookup_ids: list[str] = Field(default_factory=list)
-    diagnostics: list[RelationDiagnostic] = Field(default_factory=list)
-    can_apply: bool
-
-
-class ApplyRelationChangeParams(CamelModel):
-    plan_id: str = Field(min_length=1, max_length=128)
-    operation_id: str = Field(min_length=1, max_length=128)
-    expected_schema_revision: str = Field(min_length=1, max_length=128)
-    cascade_lookup_ids: list[str] = Field(default_factory=list)
-
-
-class RelationChangeResult(CamelModel):
-    relation: NormalizedRelationDescriptor | None = None
-    deleted: bool = False
-    schema_revision: str
-    applied_steps: list[SchemaChangeStep]
 
 
 class RelationTargetRef(CamelModel):
@@ -306,18 +162,8 @@ class RelationDeltaPreview(CamelModel):
 
 
 __all__ = [
-    "ApplyRelationChangeParams",
-    "CreateM2AConfig",
-    "CreateM2MConfig",
-    "CreateM2OConfig",
-    "CreateO2MConfig",
-    "JunctionContextFieldConfig",
     "NormalizedRelationDescriptor",
-    "PreviewRelationChangeParams",
     "RelationAdd",
-    "RelationChangeConfig",
-    "RelationChangePlan",
-    "RelationChangeResult",
     "RelationDelta",
     "RelationDeltaPreview",
     "RelationDeltaResult",
@@ -331,7 +177,6 @@ __all__ = [
     "RelationSingleUpdateParams",
     "RelationSingleUpdateResult",
     "RelationTargetRef",
-    "SchemaChangeStep",
     "SchemaDescribeParams",
     "SchemaDescribeResult",
     "SchemaSnapshot",

@@ -44,6 +44,15 @@ describe("relationLookupStore", () => {
       permissionRevision: "p1",
       lookupRevision: "l1",
       columns: [], rows: [], groups: [], offset: 0, limit: 100, filteredRows: 0, totalRows: 0,
+      snapshot: {
+        snapshotId: "snapshot-1",
+        digest: `sha256:${"a".repeat(64)}`,
+        databaseId: "database-1",
+        table: "orders",
+        schemaRevision: "stale",
+        dataRevision: 1,
+        normalizedQuery: {},
+      },
     })).toBe(false);
   });
 

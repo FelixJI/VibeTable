@@ -70,6 +70,14 @@ class FakeConnector:
         return outcome
 
 
+class ResetConnection:
+    async def readline(self, limit: int) -> bytes:
+        raise ConnectionResetError("sidecar restarted")
+
+    async def close(self) -> None:
+        raise ConnectionResetError("socket already reset")
+
+
 @pytest.mark.asyncio
 async def test_session_decodes_product_event_and_ignores_heartbeat() -> None:
     connection = FakeConnection(b": heartbeat\n\n" + _event("evt-1"))
@@ -160,6 +168,31 @@ async def test_supervisor_reconnects_with_durable_rowid_cursor() -> None:
     assert emitted == ["evt-1", "evt-2"]
     assert connector.cursors == [None, "rt:41"]
     assert supervisor.last_event_id == "rt:42"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_reconnects_when_sidecar_resets_stream_and_close() -> None:
+    stop = asyncio.Event()
+    connector = FakeConnector(
+        [
+            ResetConnection(),
+            FakeConnection(_event("evt-after-restart")),
+        ]
+    )
+    emitted: list[str] = []
+
+    async def emit(event: ProductEvent) -> None:
+        emitted.append(event.event_id)
+        stop.set()
+
+    async def no_wait(_: float) -> None:
+        return None
+
+    supervisor = PocketBaseRealtimeSupervisor(connector, sleep=no_wait)
+    await supervisor.run(emit, stop)
+
+    assert emitted == ["evt-after-restart"]
+    assert connector.cursors == [None, None]
 
 
 @pytest.mark.asyncio

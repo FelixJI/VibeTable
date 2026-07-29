@@ -43,30 +43,11 @@ class FakeProductReadPort:
         rows: dict[str, dict[str, Any]] | None = None,
         readonly: set[str] | None = None,
         live_readonly: set[str] | None = None,
-        decimal_scale: int | None = None,
-        field_types: dict[str, str] | None = None,
     ) -> None:
         self.rows = rows or {}
         self.readonly = readonly or set()
         self.live_readonly = live_readonly
-        self.decimal_scale = decimal_scale
-        self.field_types = field_types or {}
         self.write_checks: list[tuple[set[str], str, bool]] = []
-
-    async def fields(self, profile: CollectionProfile) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
-        for name in profile.fields:
-            schema: dict[str, Any] = {}
-            if name in self.field_types:
-                schema["data_type"] = self.field_types[name]
-            if name == "amount" and self.decimal_scale is not None:
-                schema = {
-                    "data_type": "decimal",
-                    "numeric_precision": 10,
-                    "numeric_scale": self.decimal_scale,
-                }
-            result.append({"field": name, "schema": schema})
-        return result
 
     async def readonly_fields(
         self,
@@ -106,7 +87,13 @@ class FakeProductReadPort:
 
 
 class FakeProductMutationPort:
-    def __init__(self, result: ApplyPasteResult | None = None) -> None:
+    def __init__(
+        self,
+        result: ApplyPasteResult | None = None,
+        *,
+        preview_results: list[dict[str, Any]] | None = None,
+        preview_paste_error: PasteError | None = None,
+    ) -> None:
         self.result = result or ApplyPasteResult(
             collection="vibetable_demo",
             outcome="committed",
@@ -114,6 +101,38 @@ class FakeProductMutationPort:
             request_id="request-1",
         )
         self.calls: list[dict[str, Any]] = []
+        self.preview_calls: list[dict[str, Any]] = []
+        self.preview_results = list(preview_results or [])
+        self.preview_paste_error = preview_paste_error
+        self.mutation_preview_calls: list[dict[str, Any]] = []
+
+    async def preview_import(
+        self,
+        *,
+        collection: str,
+        schema_revision: str,
+        rows: list[dict[str, Any]],
+        row_modes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self.preview_calls.append(
+            {
+                "collection": collection,
+                "schema_revision": schema_revision,
+                "rows": rows,
+                "row_modes": row_modes,
+            }
+        )
+        if self.preview_results:
+            return self.preview_results.pop(0)
+        return {
+            "contract": "vibetable.import-preview.v1",
+            "rows": [{"values": dict(row), "diagnostics": []} for row in rows],
+        }
+
+    async def preview_paste(self, **kwargs: Any) -> None:
+        self.mutation_preview_calls.append(kwargs)
+        if self.preview_paste_error is not None:
+            raise self.preview_paste_error
 
     async def apply(self, **kwargs: Any) -> ApplyPasteResult:
         self.calls.append(kwargs)
@@ -136,6 +155,10 @@ def _profile() -> CollectionProfile:
         ],
         create_fields=["id", "status", "number", "title", "amount", "seed", "payload"],
         update_fields=["status", "number", "title", "amount", "payload"],
+        field_schemas={
+            "amount": {"fieldId": "field_amount"},
+            "payload": {"fieldId": "field_payload"},
+        },
     )
 
 
@@ -197,7 +220,7 @@ async def test_preview_resolves_product_rows_and_digest_guards() -> None:
             "2": {"id": "2", "number": "A-2", "__vibetableDigest": "sha256:digest-2"},
         }
     )
-    service, _, _, _ = _service(read=read)
+    service, _, _, mutation = _service(read=read)
 
     plan = await service.preview(
         _preview_params(
@@ -211,6 +234,7 @@ async def test_preview_resolves_product_rows_and_digest_guards() -> None:
     assert [row.target_row_key for row in plan.rows] == ["1", "2"]
     assert plan.rows[0].expected_date_updated == "sha256:digest-1"
     assert plan.rows[0].changes["number"] == {"before": "A-1", "after": "B-1"}
+    assert mutation.preview_calls[0]["row_modes"] == ["update", "update"]
 
 
 @pytest.mark.asyncio
@@ -282,6 +306,7 @@ async def test_apply_committed_is_single_use_and_forwards_schema_revision() -> N
     assert result.outcome == "committed"
     assert mutation.calls[0]["schema_revision"] == "schema-1"
     assert mutation.calls[0]["row_revisions"] == {"1": "sha256:old"}
+    assert mutation.calls[0]["raw_rows"] == [{"number": "B-1"}]
     with pytest.raises(PasteError) as replay:
         await service.apply(
             ApplyPasteParams(
@@ -374,10 +399,9 @@ def test_token_store_rejects_tampering_and_expiry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_preview_rejects_decimal_beyond_product_field_scale() -> None:
+async def test_preview_preserves_raw_numeric_value_for_mutation_kernel() -> None:
     read = FakeProductReadPort(
         rows={"1": {"id": "1", "amount": "1.00", "__vibetableDigest": "sha256:old"}},
-        decimal_scale=2,
     )
     service, _, _, _ = _service(read=read)
 
@@ -390,13 +414,41 @@ async def test_preview_rejects_decimal_beyond_product_field_scale() -> None:
         )
     )
 
-    assert plan.summary.error_count == 1
-    assert plan.rows[0].diagnostics[0].code == "value_out_of_scale"
-    assert "amount" not in plan.rows[0].changes
+    assert plan.summary.error_count == 0
+    assert plan.rows[0].changes["amount"]["after"] == "3.14159"
 
 
 @pytest.mark.asyncio
-async def test_preview_coerces_json_text_to_typed_value_and_rejects_invalid_json() -> None:
+async def test_normalized_noop_update_is_counted_as_skipped() -> None:
+    read = FakeProductReadPort(
+        rows={"1": {"id": "1", "amount": 3, "__vibetableDigest": "sha256:old"}},
+    )
+    mutation = FakeProductMutationPort(
+        preview_results=[
+            {
+                "contract": "vibetable.import-preview.v1",
+                "rows": [{"values": {"amount": 3}, "diagnostics": []}],
+            }
+        ]
+    )
+    service, _, _, _ = _service(read=read, mutation=mutation)
+
+    plan = await service.preview(
+        _preview_params(
+            row_keys=["1"],
+            anchor_row="1",
+            anchor_column="amount",
+            cells=_cells([["3"]]),
+        )
+    )
+
+    assert plan.summary.update_rows == 0
+    assert plan.summary.skip_rows == 1
+    assert plan.rows[0].changes == {}
+
+
+@pytest.mark.asyncio
+async def test_preview_preserves_raw_json_without_python_field_semantics() -> None:
     read = FakeProductReadPort(
         rows={
             "1": {
@@ -404,10 +456,42 @@ async def test_preview_coerces_json_text_to_typed_value_and_rejects_invalid_json
                 "payload": {"before": True},
                 "__vibetableDigest": "sha256:old",
             }
-        },
-        field_types={"payload": "json"},
+        }
     )
-    service, _, _, _ = _service(read=read)
+    mutation = FakeProductMutationPort(
+        preview_results=[
+            {
+                "contract": "vibetable.import-preview.v1",
+                "rows": [
+                    {
+                        "values": {
+                            "payload": {
+                                "nested": {"value": 8},
+                                "items": [4, 5],
+                            }
+                        },
+                        "diagnostics": [],
+                    }
+                ],
+            },
+            {
+                "contract": "vibetable.import-preview.v1",
+                "rows": [
+                    {
+                        "values": {},
+                        "diagnostics": [
+                            {
+                                "field": "payload",
+                                "code": "field.value.invalid",
+                                "message": "invalid JSON value",
+                            }
+                        ],
+                    }
+                ],
+            },
+        ]
+    )
+    service, _, _, _ = _service(read=read, mutation=mutation)
 
     valid = await service.preview(
         _preview_params(
@@ -432,5 +516,102 @@ async def test_preview_coerces_json_text_to_typed_value_and_rejects_invalid_json
         )
     )
     assert invalid.summary.error_count == 1
-    assert invalid.rows[0].diagnostics[0].code == "invalid_json"
-    assert "payload" not in invalid.rows[0].changes
+    assert invalid.rows[0].diagnostics[0].code == "field.value.invalid"
+    assert invalid.rows[0].diagnostics[0].row_index == 0
+    assert invalid.rows[0].diagnostics[0].column_index == 0
+    assert invalid.rows[0].changes["payload"]["after"] == "{not-json}"
+
+    with pytest.raises(PasteError) as error:
+        await service.apply(
+            ApplyPasteParams(
+                collection="vibetable_demo",
+                token=invalid.token.token,
+                idempotency_key="invalid-json",
+            )
+        )
+    assert error.value.code == "paste_plan_invalid"
+    assert mutation.calls == []
+
+
+@pytest.mark.asyncio
+async def test_authoritative_field_id_diagnostic_maps_to_source_coordinate() -> None:
+    read = FakeProductReadPort(
+        rows={"1": {"id": "1", "amount": 1, "__vibetableDigest": "sha256:old"}},
+    )
+    mutation = FakeProductMutationPort(
+        preview_results=[
+            {
+                "contract": "vibetable.import-preview.v1",
+                "rows": [
+                    {
+                        "values": {},
+                        "diagnostics": [
+                            {
+                                "field": "field_amount",
+                                "code": "field.value.invalid",
+                                "message": "invalid amount",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+    service, _, _, _ = _service(read=read, mutation=mutation)
+
+    plan = await service.preview(
+        _preview_params(
+            row_keys=["1"],
+            anchor_row="1",
+            anchor_column="amount",
+            cells=[
+                [
+                    PasteCell(
+                        row_index=7,
+                        column_index=3,
+                        raw_value="bad",
+                        parsed_value="bad",
+                    )
+                ]
+            ],
+        )
+    )
+
+    diagnostic = plan.rows[0].diagnostics[0]
+    assert diagnostic.row_index == 7
+    assert diagnostic.column_index == 3
+
+
+@pytest.mark.asyncio
+async def test_preview_maps_mutation_kernel_relation_error_to_source_cell() -> None:
+    read = FakeProductReadPort(
+        rows={
+            "1": {
+                "id": "1",
+                "payload": None,
+                "__vibetableDigest": "sha256:old",
+            }
+        }
+    )
+    mutation = FakeProductMutationPort(
+        preview_paste_error=PasteError(
+            "relation target record was not found",
+            code="mutation.relation.target_not_found",
+            data={"path": "operations[0].rawValues.payload"},
+        )
+    )
+    service, _, _, _ = _service(read=read, mutation=mutation)
+
+    plan = await service.preview(
+        _preview_params(
+            row_keys=["1"],
+            anchor_row="1",
+            anchor_column="payload",
+            cells=_cells([["missingtarget01"]]),
+        )
+    )
+
+    assert plan.summary.error_count == 1
+    assert plan.rows[0].diagnostics[0].code == ("mutation.relation.target_not_found")
+    assert plan.rows[0].diagnostics[0].row_index == 0
+    assert plan.rows[0].diagnostics[0].column_index == 0

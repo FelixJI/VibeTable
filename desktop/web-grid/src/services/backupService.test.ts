@@ -34,6 +34,7 @@ describe("backupService", () => {
           sha256: "a".repeat(64),
         },
         integrityValid: true,
+        receipt: "vbr1.test-receipt",
       })
       .mockResolvedValueOnce({ status: "restarting" });
     const service = useBackupService();
@@ -47,6 +48,7 @@ describe("backupService", () => {
 
     expect(listed.backups).toHaveLength(1);
     expect(created.integrityValid).toBe(true);
+    expect(created.receipt).toBe("vbr1.test-receipt");
     expect(restored.status).toBe("restarting");
     expect(request.mock.calls).toEqual([
       ["backup.list", {}],

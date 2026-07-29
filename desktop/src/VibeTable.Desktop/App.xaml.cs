@@ -1,6 +1,8 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
+using VibeTable.PreviewHost;
 
 namespace VibeTable.Desktop;
 
@@ -12,6 +14,12 @@ namespace VibeTable.Desktop;
 /// </summary>
 public partial class App : Application
 {
+    private const string ApplicationUserModelId = "VibeTable.Next";
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SetCurrentProcessExplicitAppUserModelID(
+        string applicationId);
+
     /// <summary>
     /// Early-startup trace (test mode only). Writes to
     /// <c>&lt;readiness-dir&gt;/vibetable-trace.log</c> so the smoke test can see
@@ -19,6 +27,21 @@ public partial class App : Application
     /// </summary>
     protected override void OnStartup(StartupEventArgs e)
     {
+        _ = SetCurrentProcessExplicitAppUserModelID(
+            ApplicationUserModelId);
+        base.OnStartup(e);
+        if (e.Args is ["--preview-host", .. var previewArguments])
+        {
+            int exitCode = PreviewHostEntry.Start(
+                this,
+                previewArguments);
+            if (exitCode != 0)
+            {
+                Shutdown(exitCode);
+            }
+            return;
+        }
+
         var options = Services.HostStartupOptions.Current();
         if (options.TestMode)
         {
@@ -59,6 +82,8 @@ public partial class App : Application
                 // Best-effort trace.
             }
         }
-        base.OnStartup(e);
+        var window = new MainWindow();
+        MainWindow = window;
+        window.Show();
     }
 }

@@ -26,6 +26,16 @@ func decodeEnumValue(descriptor *EnumDescriptor, value any) any {
 			return value
 		}
 	}
+	switch typed := value.(type) {
+	case string:
+		if typed == "" {
+			return []any{}
+		}
+	case []byte:
+		if len(typed) == 0 {
+			return []any{}
+		}
+	}
 	values, ok := asSlice(value)
 	if !ok {
 		return value

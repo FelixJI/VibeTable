@@ -1,15 +1,14 @@
-"""File import service: normalization, preview and atomic apply.
+"""File import service: container parsing, preview and atomic apply.
 
-Reuses the date/currency/enum normalization algorithms from the legacy
-:mod:`core.data.import_validator` (extracted here as pure functions, decoupled
-from Qt/SQLite), but drives them from a product :class:`CollectionProfile`
-instead of the SQLite field-mapping service.
+Python preserves raw CSV/XLSX cell values, supplied state, mappings and source
+coordinates. The Go import preview service and FieldValueKernel exclusively own
+target-field conversion, defaults, blank semantics and constraints.
 
 Process
 ----
 * :meth:`preview` reads the granted file (streaming for large workbooks),
-  auto-maps or applies the explicit column mapping, normalizes each cell against
-  the collection's create-field allow-list + relations, and returns an
+  auto-maps or applies the explicit column mapping, resolves explicit relation
+  lookups, delegates raw cells to the authoritative Go preview, and returns an
   :class:`ImportPlan` bound to the source hash + capability hash via a
   single-use token.
 * :meth:`apply` submits every valid planned row in one frozen mutation request.
@@ -26,13 +25,10 @@ from __future__ import annotations
 import asyncio
 import csv
 import hashlib
-import json
-import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -50,7 +46,7 @@ from backend.contracts.data_io import (
     ImportSummary,
     PreviewImportParams,
 )
-from backend.contracts.data_profile import CollectionProfile, RelationProfile
+from backend.contracts.data_profile import CollectionProfile
 from backend.contracts.paste import PastePlanRow
 
 #: How long an import preview token remains valid (seconds).
@@ -58,33 +54,6 @@ IMPORT_TOKEN_TTL_SECONDS: float = 10 * 60.0
 
 #: Compatibility default retained by the public contract. Apply is atomic.
 DEFAULT_CHUNK_SIZE: int = 500
-
-#: Currency symbols stripped before numeric parsing (mirrors the legacy cleaner).
-_CURRENCY_SYMBOLS = ["￥", "$", "¥", "€", "£", "₹", "USD", "CNY", "RMB", "元"]
-
-#: Multi-format date/datetime parse formats (mirrors the legacy validator).
-DEFAULT_DATE_INPUT_FORMATS = [
-    "%Y-%m-%d",
-    "%Y/%m/%d",
-    "%Y.%m.%d",
-    "%Y%m%d",
-    "%d-%m-%Y",
-    "%d/%m/%Y",
-    "%d.%m.%Y",
-    "%m-%d-%Y",
-    "%m/%d/%Y",
-    "%Y年%m月%d日",
-    "%d-%m-%y",
-    "%d/%m/%y",
-]
-DEFAULT_DATETIME_INPUT_FORMATS = [
-    "%Y-%m-%d %H:%M:%S",
-    "%Y-%m-%d %H:%M",
-    "%Y/%m/%d %H:%M:%S",
-    "%Y.%m.%d %H:%M:%S",
-    "%Y%m%d%H%M%S",
-    "%Y-%m-%dT%H:%M:%S",
-]
 
 
 class ImportFlowError(Exception):
@@ -155,103 +124,17 @@ class RelationImportProvider(Protocol):
     ) -> RelationImportBatchResult: ...
 
 
-# ---------------------------------------------------------------------------
-# Pure normalization helpers (extracted from core.data.import_validator)
-# ---------------------------------------------------------------------------
+class ImportMutationPort(PasteMutationPort, Protocol):
+    """Mutation port with Go-owned raw-cell normalization for import preview."""
 
-
-def parse_date(value: Any, *, date_type: str = "date") -> tuple[bool, str | None, str | None]:
-    """Parse a date/datetime value. Returns ``(ok, normalized, error)``."""
-    if value is None or value == "":
-        return True, None, None
-    if isinstance(value, date) and not isinstance(value, datetime):
-        return True, value.isoformat(), None
-    if isinstance(value, datetime):
-        if date_type == "date":
-            return True, value.date().isoformat(), None
-        return True, value.strftime("%Y-%m-%d %H:%M:%S"), None
-    # Excel serial number (>30000 to avoid misreading small years).
-    if isinstance(value, (int, float)) and value > 30000:
-        try:
-            parsed = datetime(1899, 12, 30) + timedelta(days=float(value))
-            if date_type == "date":
-                return True, parsed.date().isoformat(), None
-            return True, parsed.strftime("%Y-%m-%d %H:%M:%S"), None
-        except (ValueError, OverflowError):
-            pass
-    formats = (
-        DEFAULT_DATETIME_INPUT_FORMATS + DEFAULT_DATE_INPUT_FORMATS
-        if date_type == "datetime"
-        else DEFAULT_DATE_INPUT_FORMATS
-    )
-    text = str(value).strip()
-    for fmt in formats:
-        try:
-            parsed = datetime.strptime(text, fmt)
-            if date_type == "date":
-                return True, parsed.date().isoformat(), None
-            return True, parsed.strftime("%Y-%m-%d %H:%M:%S"), None
-        except ValueError:
-            continue
-    return False, None, f"unrecognized date format: {value!r}"
-
-
-def clean_currency(value: Any) -> str:
-    """Strip currency symbols + thousands separators from a value."""
-    if value is None or value == "":
-        return ""
-    cleaned = str(value).strip()
-    for symbol in _CURRENCY_SYMBOLS:
-        cleaned = cleaned.replace(symbol, "")
-    cleaned = cleaned.replace(",", "").strip()
-    return cleaned
-
-
-def parse_number(
-    value: Any, *, integer: bool = False
-) -> tuple[bool, float | int | None, str | None]:
-    """Parse a numeric value (integer or decimal). Returns ``(ok, value, error)``."""
-    if value is None or value == "":
-        return True, None, None
-    if isinstance(value, (int, float)):
-        return True, (int(value) if integer else float(value)), None
-    cleaned = clean_currency(value)
-    try:
-        number = float(cleaned)
-    except ValueError:
-        return False, None, f"not a valid number: {value!r}"
-    return True, (int(number) if integer else number), None
-
-
-def validate_choice(value: Any, options: list[str]) -> tuple[bool, str | None, str | None]:
-    """Strict enum membership. Returns ``(ok, value, error)``."""
-    if value is None or value == "":
-        return True, None, None
-    text = str(value).strip()
-    if text in options:
-        return True, text, None
-    hint = ", ".join(options[:10])
-    if len(options) > 10:
-        hint += f" ... ({len(options)} total)"
-    return False, None, f"value {value!r} not in options: [{hint}]"
-
-
-def _select_options(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    for constraint in value:
-        if not isinstance(constraint, dict) or constraint.get("kind") != "enum":
-            continue
-        options = constraint.get("options")
-        if not isinstance(options, list):
-            return []
-        result: list[str] = []
-        for option in options:
-            raw = option.get("value") if isinstance(option, dict) else option
-            if isinstance(raw, str):
-                result.append(raw)
-        return result
-    return []
+    async def preview_import(
+        self,
+        *,
+        collection: str,
+        schema_revision: str,
+        rows: list[dict[str, Any]],
+        row_modes: list[str] | None = None,
+    ) -> dict[str, Any]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +307,7 @@ class ImportService:
         *,
         client: Any,
         auth: Any,
-        bulk: PasteMutationPort,
+        bulk: ImportMutationPort,
         profiles: dict[str, CollectionProfile],
         resolve_path: Callable[..., str],
         consume_grant: Callable[[str], None],
@@ -508,10 +391,6 @@ class ImportService:
                     str(exc),
                 )
         plan_rows: list[ImportPlanRow] = []
-        error_count = 0
-        warning_count = 0
-        error_rows = 0
-        warning_rows = 0
         for row_offset, raw_row in enumerate(rows):
             source_row = row_offset + 2  # 1-based + header
             values: dict[str, Any] = {}
@@ -535,6 +414,7 @@ class ImportService:
                     continue
                 if relation is not None:
                     if raw is None or raw == "":
+                        values[field] = None
                         continue
                     target = relation_targets[col_index]
                     assert self._relation_provider is not None
@@ -590,28 +470,10 @@ class ImportService:
                             )
                         )
                     continue
-                ok, normalized, error = self._normalize(field, raw, profile, relations)
-                if not ok and error:
-                    diagnostics.append(
-                        ImportCellDiagnostic(
-                            row=source_row,
-                            column=col_index + 1,
-                            severity="error",
-                            code="value_invalid",
-                            message=error,
-                            original_value="" if raw is None else str(raw),
-                        )
-                    )
-                elif normalized is not None:
-                    values[field] = normalized
-            has_error = any(d.severity == "error" for d in diagnostics)
-            has_warning = any(d.severity == "warning" for d in diagnostics)
-            if has_error:
-                error_rows += 1
-            if has_warning:
-                warning_rows += 1
-            error_count += sum(1 for d in diagnostics if d.severity == "error")
-            warning_count += sum(1 for d in diagnostics if d.severity == "warning")
+                # Preserve the exact parsed container value and key presence.
+                # Target-field conversion and validation are owned by the Go
+                # import preview service and FieldValueKernel.
+                values[field] = raw
             plan_rows.append(
                 ImportPlanRow(
                     source_row=source_row,
@@ -620,6 +482,64 @@ class ImportService:
                     relation_resolutions=relation_resolutions,
                 )
             )
+        authoritative = await self._bulk.preview_import(
+            collection=params.collection,
+            schema_revision=params.schema_revision,
+            rows=[row.values for row in plan_rows],
+        )
+        normalized_rows = authoritative.get("rows")
+        if not isinstance(normalized_rows, list) or len(normalized_rows) != len(plan_rows):
+            raise ImportFlowError(
+                "invalid authoritative import preview",
+                code="import_preview_invalid",
+            )
+        source_column_by_field = {field: index for index, field in mapping.items()}
+        for row_index, authoritative_row in enumerate(normalized_rows):
+            if not isinstance(authoritative_row, dict):
+                raise ImportFlowError(
+                    "invalid authoritative import preview row",
+                    code="import_preview_invalid",
+                )
+            normalized_values = authoritative_row.get("values")
+            raw_diagnostics = authoritative_row.get("diagnostics")
+            if not isinstance(normalized_values, dict) or not isinstance(raw_diagnostics, list):
+                raise ImportFlowError(
+                    "invalid authoritative import preview row",
+                    code="import_preview_invalid",
+                )
+            current = plan_rows[row_index]
+            current.values = normalized_values
+            for diagnostic in raw_diagnostics:
+                if not isinstance(diagnostic, dict):
+                    raise ImportFlowError(
+                        "invalid authoritative import diagnostic",
+                        code="import_preview_invalid",
+                    )
+                raw_field = diagnostic.get("field")
+                field = raw_field if isinstance(raw_field, str) else ""
+                column_index = source_column_by_field.get(field, 0)
+                raw_row = rows[row_index]
+                original = raw_row[column_index] if column_index < len(raw_row) else None
+                current.diagnostics.append(
+                    ImportCellDiagnostic(
+                        row=current.source_row,
+                        column=column_index + 1,
+                        severity="error",
+                        code=str(diagnostic.get("code") or "field.value.invalid"),
+                        message=str(diagnostic.get("message") or "invalid field value"),
+                        original_value="" if original is None else str(original),
+                    )
+                )
+        error_rows = sum(
+            any(item.severity == "error" for item in row.diagnostics) for row in plan_rows
+        )
+        warning_rows = sum(
+            any(item.severity == "warning" for item in row.diagnostics) for row in plan_rows
+        )
+        error_count = sum(item.severity == "error" for row in plan_rows for item in row.diagnostics)
+        warning_count = sum(
+            item.severity == "warning" for row in plan_rows for item in row.diagnostics
+        )
         summary = ImportSummary(
             total_rows=len(rows),
             valid_rows=len(rows) - error_rows,
@@ -802,88 +722,6 @@ class ImportService:
             )
         return profile
 
-    def _normalize(
-        self,
-        field: str,
-        raw: Any,
-        profile: CollectionProfile,
-        relations: dict[str, RelationProfile],
-    ) -> tuple[bool, Any, str | None]:
-        # Relation fields: store the raw primary-key value (display-name lookup
-        # is a preview-time resolution that requires querying the related
-        # collection; for the first cut we accept PK values directly and warn
-        # on display-name inputs that need explicit mapping).
-        if field in relations:
-            if raw is None or raw == "":
-                return True, None, None
-            return True, str(raw).strip(), None
-        descriptor = profile.field_schemas.get(field, {})
-        data_type = descriptor.get("dataType")
-        if data_type in {"date", "dateTime", "autoDate"}:
-            return parse_date(
-                raw,
-                date_type="date" if data_type == "date" else "datetime",
-            )
-        if data_type == "integer":
-            return parse_number(raw, integer=True)
-        if data_type in {"float", "decimal", "number"}:
-            return parse_number(raw)
-        if data_type == "boolean":
-            if raw is None or raw == "":
-                return True, None, None
-            if isinstance(raw, bool):
-                return True, raw, None
-            normalized = str(raw).strip().lower()
-            if normalized in {"true", "1", "yes", "y", "是"}:
-                return True, True, None
-            if normalized in {"false", "0", "no", "n", "否"}:
-                return True, False, None
-            return False, None, f"invalid boolean value: {raw!r}"
-        if data_type in {"json", "geoJson", "list"}:
-            if raw is None or raw == "":
-                return True, None, None
-            if isinstance(raw, (dict, list, int, float, bool)):
-                return True, raw, None
-            try:
-                return True, json.loads(str(raw)), None
-            except (json.JSONDecodeError, TypeError):
-                return False, None, f"invalid JSON value: {raw!r}"
-        if data_type in {"select", "multiSelect"}:
-            options = _select_options(descriptor.get("constraints"))
-            if data_type == "select":
-                return validate_choice(raw, options)
-            if raw is None or raw == "":
-                return True, [], None
-            values: Any = raw
-            if isinstance(raw, str):
-                try:
-                    decoded = json.loads(raw)
-                    values = decoded if isinstance(decoded, list) else raw.split(",")
-                except json.JSONDecodeError:
-                    values = raw.split(",")
-            if not isinstance(values, list):
-                return False, None, f"invalid multi-select value: {raw!r}"
-            normalized_values = [str(value).strip() for value in values]
-            invalid = [value for value in normalized_values if value not in options]
-            if invalid:
-                return False, None, f"values are not in select options: {invalid!r}"
-            return True, normalized_values, None
-        if data_type == "time":
-            if raw is None or raw == "":
-                return True, None, None
-            value = str(raw).strip()
-            if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?", value):
-                return True, value, None
-            return False, None, f"invalid time value: {raw!r}"
-        # String-like fields keep their textual wire representation. The
-        # MutationKernel remains authoritative for length/pattern/URL/email
-        # constraints and returns stable field paths on rejection.
-        if raw is None or raw == "":
-            return True, None, None
-        if isinstance(raw, float) and raw.is_integer():
-            return True, str(int(raw)), None
-        return True, str(raw).strip(), None
-
     def _mint_plan(
         self,
         *,
@@ -921,8 +759,4 @@ __all__ = [
     "RelationImportTarget",
     "SourceFile",
     "auto_map_columns",
-    "clean_currency",
-    "parse_date",
-    "parse_number",
-    "validate_choice",
 ]

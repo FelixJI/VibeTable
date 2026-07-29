@@ -107,7 +107,7 @@ func (kernel *firstBatchPauseKernel) Apply(
 }
 
 func TestFormulaBackfillJobRecalculatesAndMarksMetadataReady(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
@@ -147,6 +147,7 @@ func TestFormulaBackfillJobRecalculatesAndMarksMetadataReady(t *testing.T) {
 	)
 	hub := realtime.New(app)
 	service := jobs.New(app, kernel, jobs.WithTaskPublisher(hub))
+	defer service.Shutdown()
 	started, err := service.StartFormulaBackfill(
 		ctx, "job_notes", definition.SchemaRevision,
 	)
@@ -214,12 +215,18 @@ func TestFormulaBackfillJobRecalculatesAndMarksMetadataReady(t *testing.T) {
 	if fmt.Sprint(taskStates) != "[pending running running succeeded]" {
 		t.Fatalf("task states = %#v", taskStates)
 	}
+	second, err := service.StartFormulaBackfill(
+		ctx, "job_notes", definition.SchemaRevision,
+	)
+	if err != nil || second.JobID == "" || second.JobID == started.JobID {
+		t.Fatalf("second formula backfill = %#v, err=%v", second, err)
+	}
 }
 
 func TestFormulaBackfillTenThousandRowsCancelsResumesWithoutDuplicateAudit(
 	t *testing.T,
 ) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
@@ -268,6 +275,7 @@ func TestFormulaBackfillTenThousandRowsCancelsResumesWithoutDuplicateAudit(
 		inner: realKernel, paused: make(chan struct{}), release: make(chan struct{}),
 	}
 	service := jobs.New(app, pausedKernel)
+	defer service.Shutdown()
 	started, err := service.StartFormulaBackfill(
 		ctx, "scale_notes", definition.SchemaRevision,
 	)
@@ -312,7 +320,7 @@ func TestFormulaBackfillTenThousandRowsCancelsResumesWithoutDuplicateAudit(
 }
 
 func TestFormulaBackfillStartupRecoveryQueuesMissingJob(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1151,7 +1159,7 @@ func waitForJobState(
 }
 
 func TestFormulaBackfillJobFailsClosedOnSchemaDrift(t *testing.T) {
-	app := bootstrapApp(t, t.TempDir())
+	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
 	catalog := schemaapi.New(app)

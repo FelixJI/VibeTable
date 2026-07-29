@@ -1,21 +1,13 @@
 import type {
-  ApplyRelationChangeParams,
-  LookupCreateParams,
-  LookupDeleteParams,
   LookupListResult,
-  LookupMutationResult,
   LookupPreviewParams,
   LookupQueryParams,
   LookupQueryResult,
-  LookupUpdateParams,
   LookupValidateParams,
   LookupValidationResult,
   RelationDelta,
   RelationDeltaPreview,
   RelationDeltaResult,
-  PreviewRelationChangeParams,
-  RelationChangePlan,
-  RelationChangeResult,
   RelationSearchParams,
   RelationSearchResult,
   RelationSingleUpdateResult,
@@ -23,6 +15,15 @@ import type {
   SchemaDescribeParams,
   SchemaDescribeResult,
 } from "./relationsLookup";
+import type {
+  FieldApplyReceiptV2,
+  FieldApplyRequestV2,
+  FieldChangeIntentV2,
+  FieldChangePlanV2,
+  FieldMigrationStatusV2,
+  FieldRecycleBinResultV2,
+  FieldSettingsDescribeResultV2,
+} from "./schemaV2";
 
 /**
  * Wire contracts shared between the web grid (TypeScript) and the .NET host.
@@ -752,11 +753,6 @@ export interface ProductTableDefinition {
   }[];
 }
 
-export interface SchemaChangePayload {
-  readonly definition: ProductTableDefinition;
-  readonly expectedRevision: number;
-}
-
 export interface FormulaPreviewRpcPayload {
   readonly definition: ProductTableDefinition;
   readonly row: Readonly<Record<string, unknown>>;
@@ -771,8 +767,7 @@ export interface TableAdminFieldInput {
   readonly type: TableFieldType;
 }
 export interface TableAdminCreatePayload {
-  readonly name: string;
-  readonly fields: readonly TableAdminFieldInput[];
+  readonly displayName: string;
 }
 export interface TableAdminDeletePayload {
   readonly collection: string;
@@ -1390,9 +1385,13 @@ export type WebMessageType =
   | "table.updateCellRequested"
   | "table.insertRowRequested"
   | "table.deleteRowsRequested"
+  | "field.settings.describe"
+  | "field.change.plan"
+  | "field.change.apply"
+  | "field.change.status"
+  | "field.change.cancel"
+  | "field.recycleBin.list"
   | "schema.getTable"
-  | "schema.validate"
-  | "schema.apply"
   | "query.page"
   | "mutation.preview"
   | "mutation.apply"
@@ -1411,13 +1410,8 @@ export type WebMessageType =
   | "relation.updateSingle"
   | "relation.previewDelta"
   | "relation.applyDelta"
-  | "table_admin.previewRelationChange"
-  | "table_admin.applyRelationChange"
   | "lookup.list"
   | "lookup.validate"
-  | "lookup.create"
-  | "lookup.update"
-  | "lookup.delete"
   | "lookup.preview"
   | "lookup.query"
   | "preset.list"
@@ -1527,9 +1521,13 @@ export type HostMessageType =
   | "dailyQuote.fetch"
   | "dataRoot.get"
   | "dataRoot.chooseMigrationRequested"
+  | "field.settings.describe"
+  | "field.change.plan"
+  | "field.change.apply"
+  | "field.change.status"
+  | "field.change.cancel"
+  | "field.recycleBin.list"
   | "schema.getTable"
-  | "schema.validate"
-  | "schema.apply"
   | "query.page"
   | "mutation.preview"
   | "mutation.apply"
@@ -1546,13 +1544,8 @@ export type HostMessageType =
   | "relation.updateSingle"
   | "relation.previewDelta"
   | "relation.applyDelta"
-  | "table_admin.previewRelationChange"
-  | "table_admin.applyRelationChange"
   | "lookup.list"
   | "lookup.validate"
-  | "lookup.create"
-  | "lookup.update"
-  | "lookup.delete"
   | "lookup.preview"
   | "lookup.query"
   | "preset.list"
@@ -1760,9 +1753,13 @@ export interface HostPayloadMap {
   "dailyQuote.fetch": DailyQuoteFetchResult;
   "dataRoot.get": DataRootStatus;
   "dataRoot.chooseMigrationRequested": DataRootMigrationSelection;
+  "field.settings.describe": FieldSettingsDescribeResultV2;
+  "field.change.plan": FieldChangePlanV2;
+  "field.change.apply": FieldApplyReceiptV2;
+  "field.change.status": FieldMigrationStatusV2;
+  "field.change.cancel": FieldMigrationStatusV2;
+  "field.recycleBin.list": FieldRecycleBinResultV2;
   "schema.getTable": ProductTableDefinition;
-  "schema.validate": Readonly<Record<string, unknown>>;
-  "schema.apply": ProductTableDefinition;
   "query.page": Readonly<Record<string, unknown>>;
   "mutation.preview": Readonly<Record<string, unknown>>;
   "mutation.apply": MutationReceipt;
@@ -1779,13 +1776,8 @@ export interface HostPayloadMap {
   "relation.updateSingle": RelationSingleUpdateResult;
   "relation.previewDelta": RelationDeltaPreview;
   "relation.applyDelta": RelationDeltaResult;
-  "table_admin.previewRelationChange": RelationChangePlan;
-  "table_admin.applyRelationChange": RelationChangeResult;
   "lookup.list": LookupListResult;
   "lookup.validate": LookupValidationResult;
-  "lookup.create": LookupMutationResult;
-  "lookup.update": LookupMutationResult;
-  "lookup.delete": LookupMutationResult;
   "lookup.preview": LookupQueryResult;
   "lookup.query": LookupQueryResult;
   "preset.list": PresetsResult;
@@ -1852,9 +1844,16 @@ export interface WebPayloadMap {
   "table.updateCellRequested": UpdateCellRequestedPayload;
   "table.insertRowRequested": InsertRowRequestedPayload;
   "table.deleteRowsRequested": DeleteRowsRequestedPayload;
+  "field.settings.describe": {
+    readonly tableId: string;
+    readonly fieldId?: string;
+  };
+  "field.change.plan": FieldChangeIntentV2;
+  "field.change.apply": FieldApplyRequestV2;
+  "field.change.status": { readonly jobId: string };
+  "field.change.cancel": { readonly jobId: string };
+  "field.recycleBin.list": { readonly tableId: string };
   "schema.getTable": { readonly tableId: string };
-  "schema.validate": SchemaChangePayload;
-  "schema.apply": SchemaChangePayload;
   "query.page": Readonly<Record<string, unknown>>;
   "mutation.preview": Readonly<Record<string, unknown>>;
   "mutation.apply": Readonly<Record<string, unknown>>;
@@ -1887,13 +1886,8 @@ export interface WebPayloadMap {
   "relation.updateSingle": RelationUpdateSingleParams;
   "relation.previewDelta": RelationDelta;
   "relation.applyDelta": RelationDelta;
-  "table_admin.previewRelationChange": PreviewRelationChangeParams;
-  "table_admin.applyRelationChange": ApplyRelationChangeParams;
   "lookup.list": { readonly collection: string };
   "lookup.validate": LookupValidateParams;
-  "lookup.create": LookupCreateParams;
-  "lookup.update": LookupUpdateParams;
-  "lookup.delete": LookupDeleteParams;
   "lookup.preview": LookupPreviewParams;
   "lookup.query": LookupQueryParams;
   "preset.list": { readonly collection: string };
@@ -2465,3 +2459,4 @@ export interface DocumentWorkspaceChangedPayload {
   readonly reason: "import" | "relink" | "revision" | "restore" | "scheme";
   readonly affectedCount: number;
 }
+export * from "./schemaV2";

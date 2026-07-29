@@ -1,8 +1,4 @@
 import type {
-  ApplyRelationChangeParams,
-  LookupDefinition,
-  LookupMutationResult,
-  LookupValidationResult,
   LookupListResult,
   LookupQueryParams,
   LookupQueryResult,
@@ -13,9 +9,6 @@ import type {
   RelationSearchResult,
   RelationSingleUpdateResult,
   RelationTargetRef,
-  PreviewRelationChangeParams,
-  RelationChangePlan,
-  RelationChangeResult,
   SchemaDescribeResult,
   SchemaSnapshot,
 } from "@/contracts";
@@ -272,66 +265,6 @@ export function useRelationLookupService() {
     return { ...first, rows, offset: 0, limit: rows.length };
   }
 
-  async function previewRelationChange(params: PreviewRelationChangeParams): Promise<RelationChangePlan> {
-    requireRelationEdit();
-    return await bridge.request("table_admin.previewRelationChange", params) as RelationChangePlan;
-  }
-
-  async function applyRelationChange(params: ApplyRelationChangeParams): Promise<RelationChangeResult> {
-    requireRelationEdit();
-    return await bridge.request("table_admin.applyRelationChange", params) as RelationChangeResult;
-  }
-
-  async function validateLookup(definition: LookupDefinition): Promise<LookupValidationResult> {
-    return await bridge.request("lookup.validate", {
-      definition,
-      existing: store.lookups,
-    }) as LookupValidationResult;
-  }
-
-  async function previewLookup(definition: LookupDefinition): Promise<LookupQueryResult> {
-    const schema = requireSchema();
-    if (!store.capabilities?.lookupQueryV1) {
-      throw new Error(store.lookupUnavailableReason ?? "Lookup 权威查询不可用");
-    }
-    const definitions = [
-      ...store.lookups.filter((item) => item.lookupId !== definition.lookupId),
-      definition,
-    ];
-    return await bridge.request("lookup.preview", {
-      contract: "vibetable.lookup-query.v1",
-      collection: definition.collection,
-      fieldRefs: [definition.fieldKey],
-      query: { filters: [], sorts: [], groups: [], offset: 0, limit: 12 },
-      requestGeneration: store.generation,
-      schemaRevision: schema.schemaRevision,
-      permissionRevision: schema.permissionRevision,
-      lookupRevision: schema.lookupRevision,
-      definitions,
-    }) as LookupQueryResult;
-  }
-
-  async function createLookup(definition: LookupDefinition): Promise<LookupMutationResult> {
-    return await bridge.request("lookup.create", { definition, requestId: requestId() }) as LookupMutationResult;
-  }
-
-  async function updateLookup(definition: LookupDefinition): Promise<LookupMutationResult> {
-    return await bridge.request("lookup.update", {
-      definition,
-      expectedRevision: definition.revision,
-      requestId: requestId(),
-    }) as LookupMutationResult;
-  }
-
-  async function deleteLookup(definition: LookupDefinition): Promise<LookupMutationResult> {
-    return await bridge.request("lookup.delete", {
-      collection: definition.collection,
-      lookupId: definition.lookupId,
-      expectedRevision: definition.revision,
-      requestId: requestId(),
-    }) as LookupMutationResult;
-  }
-
   function requireSchema() {
     if (!store.schema) throw new Error("关系结构尚未加载");
     return store.schema;
@@ -353,13 +286,6 @@ export function useRelationLookupService() {
     applyDraft,
     queryLookups,
     queryDataset,
-    previewRelationChange,
-    applyRelationChange,
-    validateLookup,
-    previewLookup,
-    createLookup,
-    updateLookup,
-    deleteLookup,
   };
 }
 
