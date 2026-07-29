@@ -533,6 +533,43 @@ def go_binary_metadata(go: str, binary: Path) -> dict[str, Any]:
     return metadata
 
 
+def verify_recovery_tool_versions(
+    tools: tuple[tuple[Path, str], ...],
+) -> None:
+    """Smoke-test only binaries built in this release staging process."""
+    if os.name != "nt":
+        return
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() in {"SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP"}
+    }
+    environment["PATH"] = ""
+    for tool, expected_version in tools:
+        try:
+            result = subprocess.run(
+                [str(tool), "--version"],
+                cwd=tool.parent,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise BuildError(
+                f"built recovery tool failed empty-PATH --version smoke: {tool.name}: {exc}"
+            ) from exc
+        output = (result.stdout + result.stderr).strip()
+        if not output.startswith(expected_version):
+            raise BuildError(
+                "built recovery tool version mismatch: "
+                f"{tool.name}: expected {expected_version}, got {output!r}"
+            )
+
+
 def _verify_recovery_tool_builds(paths: RepoPaths, go: str) -> list[dict[str, Any]]:
     lock = load_recovery_tool_lock(paths.repo_root)
     expected_tools = (
@@ -1047,6 +1084,13 @@ def _build_sidecar(paths: RepoPaths, *, skip: bool) -> None:
             env=recovery_go_env,
         )
     recovery_tool_provenance = _verify_recovery_tool_builds(paths, go)
+    verify_recovery_tool_versions(
+        (
+            (paths.kopia_binary, lock.kopia_version),
+            (paths.age_binary, lock.age_version),
+            (paths.age_keygen_binary, lock.age_version),
+        )
+    )
     build_info_result = _run(
         [str(paths.sidecar_binary), "--build-info"],
         cwd=paths.sidecar_assets_dir,

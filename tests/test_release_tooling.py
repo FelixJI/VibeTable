@@ -341,13 +341,6 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
     build_next.write_manifest(stage)
     lock = build_next.load_recovery_tool_lock(REPO_ROOT)
 
-    def version_output(path: Path) -> str:
-        return (
-            build_next.KOPIA_VERSION
-            if path.name == build_next.KOPIA_EXE_NAME
-            else build_next.AGE_VERSION
-        )
-
     def go_metadata(_go: str, path: Path) -> dict[str, object]:
         if path.name == build_next.KOPIA_EXE_NAME:
             package = module = "github.com/kopia/kopia"
@@ -369,7 +362,6 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
             "build": {"GOOS": "windows", "GOARCH": "amd64", "CGO_ENABLED": "0"},
         }
 
-    monkeypatch.setattr(package_check, "_run_recovery_tool_version", version_output)
     monkeypatch.setattr(package_check, "go_binary_metadata", go_metadata)
 
     assert not any(

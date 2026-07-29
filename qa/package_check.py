@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -104,27 +103,6 @@ def _pe_machine(path: Path) -> int | None:
             return int.from_bytes(stream.read(2), "little")
     except OSError:
         return None
-
-
-def _run_recovery_tool_version(path: Path) -> str:
-    environment = {
-        key: value
-        for key, value in os.environ.items()
-        if key.upper() in {"SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP"}
-    }
-    environment["PATH"] = ""
-    result = subprocess.run(
-        [str(path), "--version"],
-        cwd=path.parent,
-        env=environment,
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=30,
-    )
-    return (result.stdout + result.stderr).strip()
 
 
 def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[str]:
@@ -368,15 +346,6 @@ def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[
             for key, value in expected_provenance.items():
                 if provenance_item.get(key) != value:
                     errors.append(f"recovery tool provenance mismatch: {name}.{key}")
-        if os.name == "nt":
-            try:
-                version_output = _run_recovery_tool_version(tool)
-                if not version_output.startswith(version):
-                    errors.append(
-                        f"{label} version mismatch: expected {version}, got {version_output!r}"
-                    )
-            except (OSError, subprocess.SubprocessError) as exc:
-                errors.append(f"{label} failed empty-PATH --version smoke: {exc}")
         try:
             metadata = go_binary_metadata(go, tool)
         except BuildError as exc:
