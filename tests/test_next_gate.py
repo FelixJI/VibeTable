@@ -99,6 +99,24 @@ def test_go_commands_target_sidecar_module() -> None:
     assert Path(cwd) == next_gate.REPO_ROOT
 
 
+def test_package_stage_binds_provider_evidence_to_the_release_archive(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "VibeTable.Next"
+    archive = tmp_path / "VibeTable.Next.zip"
+
+    command, cwd = next_gate.stage_command("package", package_root, archive)
+
+    assert command == [
+        next_gate.sys.executable,
+        "qa/package_check.py",
+        str(package_root),
+        "--package-archive",
+        str(archive),
+    ]
+    assert Path(cwd) == next_gate.REPO_ROOT
+
+
 def test_windows_race_gate_resolves_an_existing_gcc_executable() -> None:
     if next_gate.os.name != "nt":
         return
@@ -153,6 +171,54 @@ def test_stage_environment_uses_an_invocation_scoped_temp_root() -> None:
     assert temp_root.parent == next_gate.REPO_ROOT / "build" / "qa" / "tmp"
     assert temp_root.name.startswith(f"run-{next_gate.os.getpid()}-")
     assert temp_root.is_dir()
+
+
+def test_packaged_recovery_tools_are_injected_into_go_interoperability_stages(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "VibeTable.Next"
+    kopia = package_root / "sidecar/tools/kopia.exe"
+    age = package_root / "sidecar/tools/age.exe"
+    kopia.parent.mkdir(parents=True)
+    kopia.touch()
+    age.touch()
+    (package_root / "publish-layout.json").write_text(
+        json.dumps(
+            {
+                "assets": {
+                    "recoveryTools": {
+                        "kopia": "sidecar/tools/kopia.exe",
+                        "age": "sidecar/tools/age.exe",
+                        "ageKeygen": "sidecar/tools/age-keygen.exe",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    for stage in ("go-test", "go-race"):
+        environment = next_gate._stage_environment(stage, ["go"], package_root)
+        assert environment["VIBETABLE_KOPIA_CLI"] == str(kopia.resolve())
+        assert environment["VIBETABLE_AGE_CLI"] == str(age.resolve())
+
+
+def test_source_only_go_stages_do_not_fabricate_recovery_tool_paths() -> None:
+    environment = next_gate._stage_environment("go-test", ["go"])
+
+    assert "VIBETABLE_KOPIA_CLI" not in environment
+    assert "VIBETABLE_AGE_CLI" not in environment
+
+
+def test_release_gate_enables_required_windows_credential_manager_tests() -> None:
+    workflow = (next_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    gate_step = workflow.split(
+        "- name: Run complete release eligibility gate",
+        maxsplit=1,
+    )[1].split("- name:", maxsplit=1)[0]
+
+    assert 'VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER: "1"' in gate_step
+    assert "VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY" in gate_step
 
 
 def test_race_stage_batches_every_discovered_integration_test(
@@ -427,7 +493,11 @@ def test_full_ci_report_is_release_eligible_only_when_identity_stays_stable(
         "release_source_hash",
         lambda _deps: "s" * 64,
     )
-    monkeypatch.setattr(next_gate, "run_ci", lambda package_root=None: (0, []))
+    monkeypatch.setattr(
+        next_gate,
+        "run_ci",
+        lambda package_root=None, package_archive=None: (0, []),
+    )
     report = tmp_path / "ci.json"
 
     assert next_gate.main(["--ci", *_candidate_args(tmp_path), "--json-report", str(report)]) == 1
@@ -453,7 +523,11 @@ def test_full_ci_report_rejects_source_change_while_gate_is_running(
         "release_source_hash",
         lambda _deps: next(source_hashes),
     )
-    monkeypatch.setattr(next_gate, "run_ci", lambda package_root=None: (0, []))
+    monkeypatch.setattr(
+        next_gate,
+        "run_ci",
+        lambda package_root=None, package_archive=None: (0, []),
+    )
     report = tmp_path / "ci.json"
 
     assert next_gate.main(["--ci", *_candidate_args(tmp_path), "--json-report", str(report)]) == 1
@@ -479,7 +553,11 @@ def test_full_ci_report_is_bound_to_stable_release_candidate(
         "release_source_hash",
         lambda _deps: "s" * 64,
     )
-    monkeypatch.setattr(next_gate, "run_ci", lambda package_root=None: (0, []))
+    monkeypatch.setattr(
+        next_gate,
+        "run_ci",
+        lambda package_root=None, package_archive=None: (0, []),
+    )
     report = tmp_path / "ci.json"
 
     assert next_gate.main(["--ci", *_candidate_args(tmp_path), "--json-report", str(report)]) == 0
@@ -509,7 +587,7 @@ def test_full_ci_report_rejects_candidate_mutation(
     candidate_args = _candidate_args(tmp_path)
     package_root = Path(candidate_args[1])
 
-    def mutate_candidate(_package_root=None):
+    def mutate_candidate(_package_root=None, _package_archive=None):
         (package_root / "candidate.bin").write_bytes(b"mutated")
         return 0, []
 

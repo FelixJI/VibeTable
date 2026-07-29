@@ -40,6 +40,7 @@ func WithBusinessIntent(
 	identity string,
 ) (context.Context, error) {
 	if intent.MutationRevision == 0 ||
+		strings.TrimSpace(intent.AuditSourceEpoch) == "" ||
 		strings.TrimSpace(kind) == "" ||
 		strings.TrimSpace(identity) == "" {
 		return nil, errors.New("workspace.business_intent_invalid")
@@ -54,6 +55,17 @@ func WithBusinessIntent(
 func businessIntentFrom(ctx context.Context) (BusinessIntent, bool) {
 	intent, ok := ctx.Value(businessIntentContextKey{}).(BusinessIntent)
 	return intent, ok
+}
+
+// BusinessAuditSourceEpoch exposes only the audit epoch assigned by the
+// non-rollback coordination authority. Formal PB mutators use it while
+// constructing their transactional outbox rows.
+func BusinessAuditSourceEpoch(ctx context.Context) (string, bool) {
+	intent, ok := businessIntentFrom(ctx)
+	if !ok || strings.TrimSpace(intent.AuditSourceEpoch) == "" {
+		return "", false
+	}
+	return intent.AuditSourceEpoch, true
 }
 
 func EnsurePocketBaseReceiptTable(ctx context.Context, app core.App) error {
@@ -98,8 +110,10 @@ func PersistPocketBaseReceipt(
 	if err := txApp.DB().NewQuery(`
 		SELECT COALESCE(MAX(source_sequence), 0) + 1
 		FROM vibetable_audit_outbox
-		WHERE source_epoch = 'business-v2'
-	`).WithContext(ctx).Row(&sourceSequence); err != nil || sourceSequence <= 0 {
+		WHERE source_epoch = {:epoch}
+	`).WithContext(ctx).Bind(dbx.Params{
+		"epoch": intent.AuditSourceEpoch,
+	}).Row(&sourceSequence); err != nil || sourceSequence <= 0 {
 		return errors.Join(errors.New("workspace.business_audit_sequence_failed"), err)
 	}
 	result, err := txApp.DB().NewQuery(`
@@ -146,7 +160,7 @@ func PersistPocketBaseReceipt(
 			intent.Token.WorkspaceID,
 			intent.MutationRevision,
 		),
-		"business-v2",
+		intent.AuditSourceEpoch,
 		uint64(sourceSequence),
 		intent.Identity,
 		payload,

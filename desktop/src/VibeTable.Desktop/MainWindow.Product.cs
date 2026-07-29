@@ -1968,21 +1968,10 @@ public partial class MainWindow : Window
                     capabilities.Contains(
                         "repository.settings.v2",
                         StringComparer.Ordinal)),
-                retention = new
-                {
-                    contractVersion = WorkspaceV2Json.ContractVersion,
-                    policyRevision = 1,
-                    snapshotDays = 30,
-                    snapshotCount = 50,
-                    snapshotBuckets =
-                        new[] { "hourly", "daily", "weekly", "monthly" },
-                    fileRevisionDays = 30,
-                    fileRevisionCount = 100,
-                    fileRevisionBuckets =
-                        new[] { "daily", "weekly", "monthly" },
-                    trashMonths = 3,
-                    repositoryLimitBytes = (long?)null,
-                },
+                // The Web layer never owns retention defaults. It stays
+                // unhydrated until retention.get returns the authority
+                // projection for the active workspace and session epoch.
+                retention = (object?)null,
                 conflicts = Array.Empty<object>(),
                 fileTrees = Array.Empty<object>(),
             });

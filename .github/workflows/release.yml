@@ -243,6 +243,10 @@ jobs:
           --archive dist/VibeTable.Next.zip
 
       - name: Run complete release eligibility gate
+        env:
+          VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY: ${{ secrets.PROVIDER_EVIDENCE_HMAC_KEY }}
+          VIBETABLE_PROVIDER_EVIDENCE_KEY_ID: ${{ vars.PROVIDER_EVIDENCE_KEY_ID }}
+          VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER: "1"
         run: >
           uv run python qa/next.py --ci
           --package-root dist/VibeTable.Next

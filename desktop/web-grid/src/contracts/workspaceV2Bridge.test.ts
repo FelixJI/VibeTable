@@ -83,6 +83,25 @@ describe("workspace v2 provisional file revision results", () => {
   });
 });
 
+describe("workspace v2 snapshot request results", () => {
+  it("accepts the initial mutation revision before any authority write", () => {
+    const parsed = parseWorkspaceV2Reply({
+      ...reply,
+      method: "snapshot.request",
+      result: {
+        operationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        state: "succeeded",
+        snapshotId: "33333333-3333-4333-8333-333333333333",
+        mutationRevision: 0,
+      },
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok && parsed.method === "snapshot.request") {
+      expect(parsed.result.mutationRevision).toBe(0);
+    }
+  });
+});
+
 describe("workspace v2 row and cell history restore", () => {
   it("strictly parses the append-only history page", () => {
     const parsed = parseWorkspaceV2Reply({

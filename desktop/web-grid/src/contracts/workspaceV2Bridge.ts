@@ -641,7 +641,7 @@ export interface WorkspaceV2Bootstrap {
   readonly session: WorkspaceSessionV2;
   readonly snapshots: readonly SnapshotTimelineItem[];
   readonly storage: WorkspaceStorageProjection | null;
-  readonly retention: RetentionPolicyV2;
+  readonly retention: null;
   readonly conflicts: readonly WorkspaceConflictItem[];
   readonly fileTrees: readonly FileRevisionTreeProjection[];
 }
@@ -1026,6 +1026,9 @@ export function parseWorkspaceV2Bootstrap(value: unknown): WorkspaceV2Bootstrap 
       || !Array.isArray(source.fileTrees)) {
     throw new Error("workspace v2 bootstrap collections are invalid");
   }
+  if (source.retention !== null) {
+    throw new Error("workspace v2 bootstrap retention must be null");
+  }
   return {
     contractVersion: "2.0",
     capabilities: source.capabilities.map((item, index) =>
@@ -1034,7 +1037,7 @@ export function parseWorkspaceV2Bootstrap(value: unknown): WorkspaceV2Bootstrap 
     session: parseWorkspaceSessionV2(source.session),
     snapshots: source.snapshots.map(parseSnapshot),
     storage: source.storage === null ? null : parseStorage(source.storage),
-    retention: parseRetentionPolicyV2(source.retention),
+    retention: null,
     conflicts: source.conflicts.map(parseConflict),
     fileTrees: source.fileTrees.map(parseFileTree),
   };
@@ -1517,7 +1520,7 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
       operationId: text(source.operationId, "operationId"),
       state: text(source.state, "operation state"),
       snapshotId: text(source.snapshotId, "snapshotId"),
-      mutationRevision: integer(source.mutationRevision, "mutationRevision", 1),
+      mutationRevision: integer(source.mutationRevision, "mutationRevision", 0),
     };
   } else {
     exact(source, ["operationId", "state"], `${method} result`);

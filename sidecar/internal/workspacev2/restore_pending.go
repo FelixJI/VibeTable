@@ -21,6 +21,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 	_ "modernc.org/sqlite"
 )
 
@@ -498,6 +499,16 @@ func ApplyPendingSnapshotRestore(
 	)
 	closeErr := store.Close()
 	if err := errors.Join(publishErr, closeErr); err != nil {
+		return false, errors.Join(
+			err,
+			rollbackPendingSnapshotRestore(ctx, paths, journal),
+		)
+	}
+	if err := writecoordinator.RotatePersistentAuditEpoch(
+		ctx,
+		filepath.Join(paths.coordination, "write-coordinator.db"),
+		journal.WorkspaceID,
+	); err != nil {
 		return false, errors.Join(
 			err,
 			rollbackPendingSnapshotRestore(ctx, paths, journal),

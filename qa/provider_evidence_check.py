@@ -5,17 +5,31 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
+import os
 import re
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+try:
+    from qa import handoff
+except ModuleNotFoundError:  # pragma: no cover - direct ``python qa/provider_evidence_check.py``
+    import handoff  # type: ignore[no-redef]
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SUPPORT_PATH = PROJECT_ROOT / "contracts" / "v2" / "provider-support.json"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
+GO_VERSION = re.compile(r"^go\s+(\S+)\s*$", re.MULTILINE)
+MODULE_VERSION = {
+    "age": re.compile(r"^\s*filippo\.io/age\s+(\S+)\s*$", re.MULTILINE),
+    "kopia": re.compile(r"^\s*github\.com/kopia/kopia\s+(\S+)\s*$", re.MULTILINE),
+}
+ATTESTATION_KEY_ENV = "VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY"
+ATTESTATION_KEY_ID_ENV = "VIBETABLE_PROVIDER_EVIDENCE_KEY_ID"
 
 
 def _timestamp(value: Any) -> datetime:
@@ -38,6 +52,111 @@ def _head(root: Path) -> str:
     ).stdout.strip()
 
 
+def _canonical_json(payload: object) -> bytes:
+    return json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def _source_hash(root: Path) -> str:
+    dependencies_path = root / "qa" / "handoff_dependencies.json"
+    dependencies = json.loads(dependencies_path.read_text(encoding="utf-8"))
+    if not isinstance(dependencies, dict):
+        raise ValueError("handoff dependency manifest must be an object")
+    excluded = dependencies.get("releaseIdentityExcludedDirectories")
+    if not isinstance(excluded, list):
+        raise ValueError("releaseIdentityExcludedDirectories must be a list")
+    provider_dependencies = {
+        **dependencies,
+        "releaseIdentityExcludedDirectories": [*excluded],
+    }
+    if "provider-evidence" not in {
+        str(item).casefold() for item in provider_dependencies["releaseIdentityExcludedDirectories"]
+    }:
+        provider_dependencies["releaseIdentityExcludedDirectories"].append("provider-evidence")
+    return handoff.release_source_hash(provider_dependencies, repo_root=root)
+
+
+def _dependency_versions(root: Path) -> dict[str, str]:
+    go_mod = (root / "tools" / "recovery-tools" / "go.mod").read_text(encoding="utf-8")
+    go_match = GO_VERSION.search(go_mod)
+    module_matches = {name: pattern.search(go_mod) for name, pattern in MODULE_VERSION.items()}
+    if go_match is None or any(match is None for match in module_matches.values()):
+        raise ValueError("recovery tool Go lock is missing pinned tool versions")
+    lock = json.loads(
+        (root / "tools" / "workspace-storage-dependencies.json").read_text(encoding="utf-8")
+    )
+    sqlite = lock["dependencies"]["sqlite"]["version"]
+    if not isinstance(sqlite, str) or not sqlite:
+        raise ValueError("SQLite dependency version is missing")
+    age_match = module_matches["age"]
+    kopia_match = module_matches["kopia"]
+    if age_match is None or kopia_match is None:
+        raise ValueError("recovery tool Go lock is missing pinned tool versions")
+    return {
+        "age": age_match.group(1),
+        "go": go_match.group(1),
+        "kopia": kopia_match.group(1),
+        "sqlite": sqlite,
+    }
+
+
+def _validate_attestation(
+    *,
+    evidence_id: str,
+    evidence_path: Path,
+    evidence_root: Path,
+    root: Path,
+) -> list[str]:
+    errors: list[str] = []
+    attestation_path = evidence_root / f"{evidence_id}.attestation.json"
+    try:
+        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"{evidence_id}: protected attestation is missing or invalid: {exc}"]
+    exact = {"schemaVersion", "evidenceSha256", "dependencies", "keyId", "signature"}
+    if not isinstance(attestation, dict) or set(attestation) != exact:
+        return [f"{evidence_id}: protected attestation fields are not exact"]
+    if attestation["schemaVersion"] != 1:
+        errors.append(f"{evidence_id}: unsupported attestation schemaVersion")
+    evidence_hash = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    if attestation["evidenceSha256"] != evidence_hash:
+        errors.append(f"{evidence_id}: attestation does not bind the evidence document")
+    try:
+        expected_dependencies = _dependency_versions(root)
+    except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
+        errors.append(f"{evidence_id}: cannot resolve dependency/tool versions: {exc}")
+    else:
+        if attestation["dependencies"] != expected_dependencies:
+            errors.append(
+                f"{evidence_id}: attested dependency/tool versions do not match source locks"
+            )
+    key = os.environ.get(ATTESTATION_KEY_ENV)
+    expected_key_id = os.environ.get(ATTESTATION_KEY_ID_ENV)
+    if not key:
+        errors.append(f"{evidence_id}: protected attestation key is unavailable")
+        return errors
+    if not expected_key_id or attestation["keyId"] != expected_key_id:
+        errors.append(f"{evidence_id}: attestation key identity is not trusted")
+        return errors
+    signature = attestation["signature"]
+    if not isinstance(signature, str) or not SHA256.fullmatch(signature):
+        errors.append(f"{evidence_id}: attestation signature is invalid")
+        return errors
+    claims = {key: attestation[key] for key in exact if key != "signature"}
+    expected_signature = hmac.new(
+        key.encode("utf-8"),
+        _canonical_json(claims),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected_signature):
+        errors.append(f"{evidence_id}: attestation signature is not trusted")
+    return errors
+
+
 def _validate_evidence(
     payload: dict[str, Any],
     *,
@@ -46,6 +165,10 @@ def _validate_evidence(
     head: str,
     now: datetime,
     evidence_root: Path,
+    root: Path,
+    evidence_path: Path,
+    expected_source_hash: str,
+    expected_artifact_hashes: dict[str, str] | None,
 ) -> list[str]:
     errors: list[str] = []
     exact = {
@@ -71,6 +194,8 @@ def _validate_evidence(
         errors.append(f"{evidence_id}: evidence is not bound to current commit")
     if not isinstance(payload["sourceHash"], str) or not SHA256.fullmatch(payload["sourceHash"]):
         errors.append(f"{evidence_id}: invalid sourceHash")
+    elif payload["sourceHash"] != expected_source_hash:
+        errors.append(f"{evidence_id}: sourceHash does not match the current source tree")
     hashes = payload["artifactHashes"]
     if (
         not isinstance(hashes, dict)
@@ -84,6 +209,10 @@ def _validate_evidence(
         )
     ):
         errors.append(f"{evidence_id}: invalid artifactHashes")
+    elif expected_artifact_hashes is None:
+        errors.append(f"{evidence_id}: release candidate artifact hashes are unavailable")
+    elif hashes != expected_artifact_hashes:
+        errors.append(f"{evidence_id}: artifactHashes do not match the release candidate")
     try:
         generated = _timestamp(payload["generatedAt"])
         expires = _timestamp(payload["expiresAt"])
@@ -120,6 +249,14 @@ def _validate_evidence(
                 errors.append(f"{evidence_id}: run {index} log is missing")
             elif hashlib.sha256(log.read_bytes()).hexdigest() != run["logSha256"]:
                 errors.append(f"{evidence_id}: run {index} log hash mismatch")
+    errors.extend(
+        _validate_attestation(
+            evidence_id=evidence_id,
+            evidence_path=evidence_path,
+            evidence_root=evidence_root,
+            root=root,
+        )
+    )
     return errors
 
 
@@ -128,6 +265,7 @@ def check(
     *,
     now: datetime | None = None,
     support_path: Path | None = None,
+    expected_artifact_hashes: dict[str, str] | None = None,
 ) -> list[str]:
     root = root.resolve()
     selected_support_path = (
@@ -150,6 +288,7 @@ def check(
         return ["provider support matrix has no providers"]
     current = now or datetime.now(UTC)
     head: str | None = None
+    source_hash: str | None = None
     errors: list[str] = []
     for provider, policy in providers.items():
         if not isinstance(policy, dict):
@@ -176,6 +315,7 @@ def check(
         try:
             payload = json.loads(evidence_path.read_text(encoding="utf-8"))
             head = head or _head(root)
+            source_hash = source_hash or _source_hash(root)
             errors.extend(
                 _validate_evidence(
                     payload,
@@ -184,9 +324,18 @@ def check(
                     head=head,
                     now=current,
                     evidence_root=evidence_root,
+                    root=root,
+                    evidence_path=evidence_path,
+                    expected_source_hash=source_hash,
+                    expected_artifact_hashes=expected_artifact_hashes,
                 )
             )
-        except (OSError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        except (
+            OSError,
+            ValueError,
+            json.JSONDecodeError,
+            subprocess.SubprocessError,
+        ) as exc:
             errors.append(f"{provider}: cannot validate {evidence_id}: {exc}")
     return errors
 

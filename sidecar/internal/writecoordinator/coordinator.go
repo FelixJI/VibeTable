@@ -14,6 +14,8 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 )
 
+const businessAuditEpoch = "business-v2"
+
 var (
 	ErrInvalidIdentity  = errors.New("workspace.write.invalid_identity")
 	ErrStaleToken       = errors.New("workspace.write.stale_token")
@@ -50,6 +52,7 @@ type Counters struct {
 type WriteIntent struct {
 	Token            Token
 	MutationRevision uint64
+	AuditSourceEpoch string
 }
 
 type WriteReceipt struct {
@@ -113,6 +116,14 @@ type WorkspaceWriteCoordinator struct {
 	snapshotSequence uint64
 	highWatermark    HighWatermark
 	pendingMutation  uint64
+	auditEpoch       uint64
+}
+
+func businessAuditSourceEpoch(workspaceID string, epoch uint64) string {
+	if epoch <= 1 {
+		return businessAuditEpoch
+	}
+	return fmt.Sprintf("%s:%s:%020d", businessAuditEpoch, workspaceID, epoch)
 }
 
 func New(
@@ -136,6 +147,7 @@ func New(
 			FenceEpoch:   fenceEpoch,
 			ClaimID:      claimID,
 		},
+		auditEpoch: 1,
 	}, nil
 }
 
@@ -166,6 +178,7 @@ func OpenPersistent(
 	coordinator.snapshotSequence = state.SnapshotSequence
 	coordinator.highWatermark = state.HighWatermark
 	coordinator.pendingMutation = pendingMutation
+	coordinator.auditEpoch = state.AuditEpoch
 	return coordinator, nil
 }
 
@@ -253,6 +266,10 @@ func (coordinator *WorkspaceWriteCoordinator) Write(
 	if err := apply(ctx, WriteIntent{
 		Token:            currentToken,
 		MutationRevision: nextRevision,
+		AuditSourceEpoch: businessAuditSourceEpoch(
+			currentToken.WorkspaceID,
+			coordinator.auditEpoch,
+		),
 	}); err != nil {
 		if errors.Is(err, ErrExternalCommitted) {
 			return WriteReceipt{}, err
@@ -344,6 +361,10 @@ func (coordinator *WorkspaceWriteCoordinator) ResumePreparedMutation(
 	if err := apply(ctx, WriteIntent{
 		Token:            currentToken,
 		MutationRevision: mutationRevision,
+		AuditSourceEpoch: businessAuditSourceEpoch(
+			currentToken.WorkspaceID,
+			coordinator.auditEpoch,
+		),
 	}); err != nil {
 		return WriteReceipt{}, err
 	}
@@ -513,6 +534,7 @@ func (coordinator *WorkspaceWriteCoordinator) Drain(
 				MutationRevision: mutationRevision,
 				SnapshotSequence: snapshotSequence,
 				HighWatermark:    highWatermark,
+				AuditEpoch:       coordinator.auditEpoch,
 			},
 		); err != nil {
 			return HighWatermark{}, err
@@ -558,6 +580,7 @@ func (coordinator *WorkspaceWriteCoordinator) RotateSession(
 				MutationRevision: coordinator.mutationRevision,
 				SnapshotSequence: coordinator.snapshotSequence,
 				HighWatermark:    coordinator.highWatermark,
+				AuditEpoch:       coordinator.auditEpoch,
 			},
 		); err != nil {
 			return Token{}, err
@@ -602,6 +625,7 @@ func (coordinator *WorkspaceWriteCoordinator) TransferFence(
 				MutationRevision: coordinator.mutationRevision,
 				SnapshotSequence: coordinator.snapshotSequence,
 				HighWatermark:    coordinator.highWatermark,
+				AuditEpoch:       coordinator.auditEpoch,
 			},
 		); err != nil {
 			return Token{}, err

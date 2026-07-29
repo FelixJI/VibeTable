@@ -186,6 +186,53 @@ func TestRuntimeCompositionPersistsSequencePolicyAndSnapshots(t *testing.T) {
 	}
 }
 
+func TestSnapshotRequestAllowsInitialMutationRevisionZero(t *testing.T) {
+	root := createWorkspace(t, testWorkspaceID)
+	dataDir := filepath.Join(root, ".vibetable", "data")
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir:  dataDir,
+		HideStartBanner: true,
+	})
+	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	createAuditOutbox(t, app)
+	defer func() {
+		if err := app.ResetBootstrapState(); err != nil {
+			t.Error(err)
+		}
+	}()
+	ledger, err := auditledger.Open(filepath.Join(root, ".vibetable", "audit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledger.Close()
+	runtime, err := Open(context.Background(), Options{
+		App: app, DataDir: dataDir,
+		WorkspaceID: testWorkspaceID, SessionEpoch: 7,
+		FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close(context.Background())
+
+	response := dispatch(
+		t,
+		runtime,
+		1,
+		"snapshot.request",
+		`{"trigger":"manual","urgency":"foreground"}`,
+	)
+	if response.Error != nil {
+		t.Fatalf("snapshot.request error = %#v", response.Error)
+	}
+	result := response.Result.(map[string]any)
+	if result["mutationRevision"] != uint64(0) {
+		t.Fatalf("initial mutationRevision = %#v", result)
+	}
+}
+
 func TestRepositoryLimitPausesOnlyAutomaticSnapshotsAndProjectsRealReasons(
 	t *testing.T,
 ) {

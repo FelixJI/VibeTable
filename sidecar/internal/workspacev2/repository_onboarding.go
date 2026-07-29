@@ -28,6 +28,16 @@ func InitializeRepository(
 	if err != nil {
 		return RepositoryInitialization{}, err
 	}
+	releaseRepository, err := objectrepo.AcquireWorkspaceRepositorySession(
+		ctx,
+		paths.coordination,
+	)
+	if err != nil {
+		return RepositoryInitialization{}, err
+	}
+	defer func() {
+		err = errors.Join(err, releaseRepository())
+	}()
 	mode := objectrepo.EncryptionMode(manifest.EncryptionMode)
 	provider := objectrepo.NewKeyProvider(
 		objectrepo.WindowsCredentialVault{},
@@ -102,7 +112,7 @@ func RestoreProtectedRepository(
 	dataDir string,
 	workspaceID string,
 	recoveryKey []byte,
-) error {
+) (err error) {
 	paths, manifest, err := validateBinding(dataDir, workspaceID)
 	if err != nil {
 		return err
@@ -111,6 +121,16 @@ func RestoreProtectedRepository(
 		objectrepo.EncryptionProtected {
 		return errors.New("repository.protected_mode_required")
 	}
+	releaseRepository, err := objectrepo.AcquireWorkspaceRepositorySession(
+		ctx,
+		paths.coordination,
+	)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = errors.Join(err, releaseRepository())
+	}()
 	provider := objectrepo.NewKeyProvider(
 		objectrepo.WindowsCredentialVault{},
 	)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -16,6 +17,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 const (
@@ -285,31 +287,47 @@ func (service *Service) StartFormulaBackfill(
 		return Snapshot{}, err
 	}
 	revision, _ := schema.ParseSchemaRevision(definition.SchemaRevision)
-	collection, err := service.app.FindCollectionByNameOrId("vibetable_jobs")
-	if err != nil {
-		return Snapshot{}, jobError(
-			"job.storage_failed", "job storage is unavailable", true,
+	var recordID string
+	err = service.app.RunInTransaction(func(txApp core.App) (transactionErr error) {
+		defer func() {
+			if transactionErr == nil {
+				transactionErr = writecoordinator.PersistPocketBaseReceipt(
+					ctx,
+					txApp,
+					time.Now().UTC(),
+				)
+			}
+		}()
+		collection, findErr := txApp.FindCollectionByNameOrId(
+			"vibetable_jobs",
 		)
-	}
-	record := core.NewRecord(collection)
-	record.Set("job_type", formulaBackfillType)
-	record.Set("state", "queued")
-	record.Set("schema_revision", revision)
-	record.Set("cursor_json", types.JSONRaw([]byte(`{"lastRecordId":""}`)))
-	progressRaw, _ := json.Marshal(Progress{Completed: 0, Total: total})
-	record.Set("progress_json", types.JSONRaw(progressRaw))
-	record.Set("error_json", nil)
-	cursorMeta, _ := json.Marshal(map[string]any{
-		"tableId":      tableID,
-		"lastRecordId": "",
+		if findErr != nil {
+			return findErr
+		}
+		record := core.NewRecord(collection)
+		record.Set("job_type", formulaBackfillType)
+		record.Set("state", "queued")
+		record.Set("schema_revision", revision)
+		progressRaw, _ := json.Marshal(Progress{Completed: 0, Total: total})
+		record.Set("progress_json", types.JSONRaw(progressRaw))
+		record.Set("error_json", nil)
+		cursorMeta, _ := json.Marshal(map[string]any{
+			"tableId":      tableID,
+			"lastRecordId": "",
+		})
+		record.Set("cursor_json", types.JSONRaw(cursorMeta))
+		if saveErr := txApp.Save(record); saveErr != nil {
+			return saveErr
+		}
+		recordID = record.Id
+		return nil
 	})
-	record.Set("cursor_json", types.JSONRaw(cursorMeta))
-	if err := service.app.Save(record); err != nil {
+	if err != nil {
 		return Snapshot{}, jobError(
 			"job.storage_failed", "formula backfill job could not be created", true,
 		)
 	}
-	snapshot, err := service.Get(ctx, record.Id)
+	snapshot, err := service.Get(ctx, recordID)
 	if err == nil {
 		service.publish(ctx, snapshot)
 	}

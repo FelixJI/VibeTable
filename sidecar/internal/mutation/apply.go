@@ -175,7 +175,7 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 				return err
 			}
 			if err := saveAudit(
-				txApp, changeSetID, index+1, request, definition,
+				ctx, txApp, changeSetID, index+1, request, definition,
 				recordID, operation.Kind, before, after, dataRevision+1, kernel.now(),
 			); err != nil {
 				return err
@@ -751,6 +751,7 @@ func committedRowRevision(
 }
 
 func saveAudit(
+	ctx context.Context,
 	app core.App,
 	changeSetID string,
 	sequence int,
@@ -805,6 +806,7 @@ func saveAudit(
 		return storageFailure()
 	}
 	return saveAuditOutbox(
+		ctx,
 		app,
 		record.Id,
 		changeSetID,
@@ -821,6 +823,7 @@ func saveAudit(
 }
 
 func saveAuditOutbox(
+	ctx context.Context,
 	app core.App,
 	revisionID string,
 	changeSetID string,
@@ -838,11 +841,19 @@ func saveAuditOutbox(
 		return storageFailure()
 	}
 	var sourceSequence int64
+	sourceEpoch := "business-v2"
+	if coordinatedEpoch, ok := writecoordinator.BusinessAuditSourceEpoch(
+		ctx,
+	); ok {
+		sourceEpoch = coordinatedEpoch
+	}
 	if err := app.DB().NewQuery(`
 		SELECT COALESCE(MAX(source_sequence), 0) + 1
 		FROM vibetable_audit_outbox
-		WHERE source_epoch = 'business-v2'
-	`).Row(&sourceSequence); err != nil || sourceSequence <= 0 {
+		WHERE source_epoch = {:epoch}
+	`).Bind(dbx.Params{
+		"epoch": sourceEpoch,
+	}).Row(&sourceSequence); err != nil || sourceSequence <= 0 {
 		return storageFailure()
 	}
 	payload, err := json.Marshal(map[string]any{
@@ -858,7 +869,7 @@ func saveAuditOutbox(
 	}
 	envelope, err := auditledger.NewEnvelope(
 		fmt.Sprintf("%s:%d", changeSetID, sequence),
-		"business-v2",
+		sourceEpoch,
 		uint64(sourceSequence),
 		request.IdempotencyKey,
 		payload,

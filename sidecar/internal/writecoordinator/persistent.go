@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,11 +16,120 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func ensureAuditEpochColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(coordination_state)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			column     string
+			notNull    int
+			defaultV   sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(
+			&cid,
+			&name,
+			&column,
+			&notNull,
+			&defaultV,
+			&primaryKey,
+		); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "audit_epoch_counter" {
+			found = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = db.Exec(`
+		ALTER TABLE coordination_state
+		ADD COLUMN audit_epoch_counter INTEGER NOT NULL DEFAULT 1
+	`)
+	return err
+}
+
+// RotatePersistentAuditEpoch advances the business audit producer identity in
+// the coordination database that snapshot restore never replaces. It is
+// called only after the restored PB database and topology have installed and
+// before PocketBase reopens them.
+func RotatePersistentAuditEpoch(
+	ctx context.Context,
+	databasePath string,
+	workspaceID string,
+) error {
+	if strings.TrimSpace(databasePath) == "" ||
+		strings.TrimSpace(workspaceID) == "" {
+		return ErrInvalidIdentity
+	}
+	info, err := os.Stat(databasePath)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("workspace.write.database_invalid")
+	}
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		return err
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	if err := ensureAuditEpochColumn(db); err != nil {
+		return err
+	}
+	transaction, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer transaction.Rollback()
+	var current uint64
+	err = transaction.QueryRowContext(ctx, `
+		SELECT audit_epoch_counter
+		FROM coordination_state
+		WHERE singleton = 1 AND workspace_id = ?
+	`, workspaceID).Scan(&current)
+	if err != nil {
+		return err
+	}
+	if current == 0 {
+		return ErrRecoveryRequired
+	}
+	if current >= math.MaxInt64 {
+		return ErrCounterExhausted
+	}
+	result, err := transaction.ExecContext(ctx, `
+		UPDATE coordination_state
+		SET audit_epoch_counter = ?
+		WHERE singleton = 1 AND workspace_id = ?
+		  AND audit_epoch_counter = ?
+	`, current+1, workspaceID, current)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected != 1 {
+		return errors.Join(ErrRecoveryRequired, err)
+	}
+	return transaction.Commit()
+}
+
 type persistedState struct {
 	Token
 	MutationRevision uint64
 	SnapshotSequence uint64
 	HighWatermark
+	AuditEpoch uint64
 }
 
 type persistentStore struct {
@@ -181,7 +291,8 @@ func openPersistentStore(
 			snapshot_sequence INTEGER NOT NULL,
 			audit_source_epoch TEXT NOT NULL,
 			audit_source_sequence INTEGER NOT NULL,
-			audit_chain_hash TEXT NOT NULL
+			audit_chain_hash TEXT NOT NULL,
+			audit_epoch_counter INTEGER NOT NULL DEFAULT 1
 		);
 		CREATE TABLE IF NOT EXISTS mutation_intents (
 			mutation_revision INTEGER PRIMARY KEY,
@@ -212,13 +323,17 @@ func openPersistentStore(
 		_ = db.Close()
 		return nil, persistedState{}, 0, fmt.Errorf("initialize coordination database: %w", err)
 	}
+	if err := ensureAuditEpochColumn(db); err != nil {
+		_ = db.Close()
+		return nil, persistedState{}, 0, err
+	}
 	state, found, err := store.loadState(context.Background())
 	if err != nil {
 		_ = db.Close()
 		return nil, persistedState{}, 0, err
 	}
 	if !found {
-		state = persistedState{Token: initial}
+		state = persistedState{Token: initial, AuditEpoch: 1}
 		if err := store.insertInitial(context.Background(), state); err != nil {
 			_ = db.Close()
 			return nil, persistedState{}, 0, err
@@ -226,6 +341,9 @@ func openPersistentStore(
 	} else if !tokensEqual(state.Token, initial) {
 		_ = db.Close()
 		return nil, persistedState{}, 0, ErrStaleToken
+	} else if state.AuditEpoch == 0 {
+		_ = db.Close()
+		return nil, persistedState{}, 0, ErrRecoveryRequired
 	}
 	var prepared uint64
 	err = db.QueryRow(
@@ -252,8 +370,8 @@ func (store *persistentStore) insertInitial(ctx context.Context, state persisted
 		INSERT INTO coordination_state (
 			singleton, workspace_id, session_epoch, fence_epoch, claim_id,
 			mutation_revision, snapshot_sequence, audit_source_epoch,
-			audit_source_sequence, audit_chain_hash
-		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			audit_source_sequence, audit_chain_hash, audit_epoch_counter
+		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		state.WorkspaceID,
 		state.SessionEpoch,
 		state.FenceEpoch,
@@ -263,6 +381,7 @@ func (store *persistentStore) insertInitial(ctx context.Context, state persisted
 		state.SourceEpoch,
 		state.SourceSequence,
 		state.ChainHash,
+		state.AuditEpoch,
 	)
 	return err
 }
@@ -272,7 +391,7 @@ func (store *persistentStore) loadState(ctx context.Context) (persistedState, bo
 	err := store.db.QueryRowContext(ctx, `
 		SELECT workspace_id, session_epoch, fence_epoch, claim_id,
 		       mutation_revision, snapshot_sequence, audit_source_epoch,
-		       audit_source_sequence, audit_chain_hash
+		       audit_source_sequence, audit_chain_hash, audit_epoch_counter
 		FROM coordination_state WHERE singleton = 1`,
 	).Scan(
 		&state.WorkspaceID,
@@ -284,6 +403,7 @@ func (store *persistentStore) loadState(ctx context.Context) (persistedState, bo
 		&state.SourceEpoch,
 		&state.SourceSequence,
 		&state.ChainHash,
+		&state.AuditEpoch,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return persistedState{}, false, nil
@@ -296,7 +416,8 @@ func (store *persistentStore) persistState(ctx context.Context, state persistedS
 		UPDATE coordination_state
 		SET workspace_id = ?, session_epoch = ?, fence_epoch = ?, claim_id = ?,
 		    mutation_revision = ?, snapshot_sequence = ?, audit_source_epoch = ?,
-		    audit_source_sequence = ?, audit_chain_hash = ?
+		    audit_source_sequence = ?, audit_chain_hash = ?,
+		    audit_epoch_counter = ?
 		WHERE singleton = 1`,
 		state.WorkspaceID,
 		state.SessionEpoch,
@@ -307,6 +428,7 @@ func (store *persistentStore) persistState(ctx context.Context, state persistedS
 		state.SourceEpoch,
 		state.SourceSequence,
 		state.ChainHash,
+		state.AuditEpoch,
 	)
 	if err != nil {
 		return err

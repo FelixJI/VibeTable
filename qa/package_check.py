@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from qa.legacy_surface_check import check as check_legacy_surface
 from qa.provider_evidence_check import check as check_provider_evidence
+from qa.release_candidate import CandidateError, candidate_evidence
 from scripts.build_next import (
     AGE_VERSION,
     KOPIA_VERSION,
@@ -111,6 +112,7 @@ def check_packaged_provider_support(
     source_root: Path,
     *,
     now: datetime | None = None,
+    expected_artifact_hashes: dict[str, str] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     try:
@@ -127,14 +129,46 @@ def check_packaged_provider_support(
             source_root,
             now=now,
             support_path=provider_path,
+            expected_artifact_hashes=expected_artifact_hashes,
         )
     )
     return errors
 
 
-def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[str]:
+def _provider_artifact_hashes(package_root: Path, package_archive: Path) -> dict[str, str]:
+    evidence = candidate_evidence(package_root, package_archive)
+    archive = evidence["archive"]
+    if not isinstance(archive, dict):
+        raise CandidateError("release candidate archive evidence is invalid")
+    archive_name = archive.get("name")
+    archive_hash = archive.get("sha256")
+    package_tree_hash = evidence.get("packageTreeSha256")
+    if (
+        not isinstance(archive_name, str)
+        or not isinstance(archive_hash, str)
+        or not isinstance(package_tree_hash, str)
+    ):
+        raise CandidateError("release candidate hashes are invalid")
+    return {
+        "packageTree": package_tree_hash,
+        archive_name: archive_hash,
+    }
+
+
+def check_package(
+    package_root: Path,
+    source_root: Path = PROJECT_ROOT,
+    *,
+    package_archive: Path | None = None,
+) -> list[str]:
     root = package_root.resolve()
     errors: list[str] = []
+    provider_artifact_hashes: dict[str, str] | None = None
+    if package_archive is not None:
+        try:
+            provider_artifact_hashes = _provider_artifact_hashes(root, package_archive)
+        except CandidateError as exc:
+            errors.append(f"release candidate identity is invalid: {exc}")
     layout_path = root / "publish-layout.json"
     if not layout_path.is_file():
         return ["missing publish-layout.json"]
@@ -257,6 +291,7 @@ def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[
                     check_packaged_provider_support(
                         provider_path,
                         source_root,
+                        expected_artifact_hashes=provider_artifact_hashes,
                     )
                 )
             corpus_path = contracts_root / "compatibility-corpus.json"
@@ -545,6 +580,7 @@ def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package_root", nargs="?", type=Path)
+    parser.add_argument("--package-archive", type=Path)
     return parser
 
 
@@ -552,9 +588,11 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         errors = (
-            check_package(args.package_root) if args.package_root is not None else check_source()
+            check_package(args.package_root, package_archive=args.package_archive)
+            if args.package_root is not None
+            else check_source()
         )
-    except (BuildError, OSError, json.JSONDecodeError) as exc:
+    except (BuildError, CandidateError, OSError, json.JSONDecodeError) as exc:
         errors = [str(exc)]
     if errors:
         print("[FAIL] package contract:", file=sys.stderr)

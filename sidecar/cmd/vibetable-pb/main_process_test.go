@@ -567,6 +567,51 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertBusinessReceiptKindCount(
+		t,
+		dataDir,
+		map[string]int{
+			"schema.apply":             1,
+			"formula.backfill.enqueue": 1,
+		},
+	)
+	response = requestJSON(
+		t,
+		client,
+		http.MethodPost,
+		baseURL+"/api/vibetable/v1/schema/apply",
+		secret,
+		formulaSchemaBody,
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("formula schema replay status=%d body=%s", response.StatusCode, body)
+	}
+	var replayed schema.TableDefinition
+	if err := json.NewDecoder(response.Body).Decode(&replayed); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if replayed.TableID != "formula-read-purity" ||
+		replayed.SchemaRevision != "schema_0001" {
+		t.Fatalf("formula schema replay = %#v", replayed)
+	}
+	revisionAfterReplay, err := writecoordinator.ReadPersistentMutationRevision(
+		context.Background(),
+		coordinatorPath,
+		env[config.WorkspaceIDEnv],
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revisionAfterReplay != revisionBefore {
+		t.Fatalf(
+			"idempotent schema replay changed mutation revision from %d to %d",
+			revisionBefore,
+			revisionAfterReplay,
+		)
+	}
 	projectionBefore := readFormulaReadProjection(t, dataDir)
 	response = request(
 		t,
@@ -995,6 +1040,32 @@ type formulaReadProjection struct {
 	FormulaState string
 	TableState   string
 	BusinessRows int
+}
+
+func assertBusinessReceiptKindCount(
+	t *testing.T,
+	dataDir string,
+	expected map[string]int,
+) {
+	t.Helper()
+	database, err := sql.Open("sqlite", filepath.Join(dataDir, "data.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for kind, want := range expected {
+		var count int
+		if err := database.QueryRow(
+			`SELECT COUNT(*) FROM workspace_v2_mutation_receipts
+			  WHERE kind = ?`,
+			kind,
+		).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != want {
+			t.Fatalf("receipt kind %q count=%d want=%d", kind, count, want)
+		}
+	}
 }
 
 func readFormulaReadProjection(t *testing.T, dataDir string) formulaReadProjection {

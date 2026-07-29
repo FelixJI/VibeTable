@@ -78,7 +78,7 @@ func registerSchemaRoutes(
 		}
 		var definition schema.TableDefinition
 		var backfill jobs.Snapshot
-		err := runBusinessWrite(
+		err := runIdempotentBusinessWrite(
 			request.Request.Context(),
 			gates,
 			"schema.apply",
@@ -86,22 +86,57 @@ func registerSchemaRoutes(
 			func(ctx context.Context) error {
 				var applyErr error
 				definition, applyErr = catalog.ApplyChange(ctx, change)
-				if applyErr != nil || !definitionNeedsBackfill(definition) {
-					return applyErr
-				}
-				backfill, applyErr = jobService.StartFormulaBackfill(
-					ctx,
-					definition.TableID,
-					definition.SchemaRevision,
-				)
 				return applyErr
 			},
 		)
 		if err != nil {
-			if _, ok := err.(*jobs.JobError); ok {
-				return writeJobError(request, err)
-			}
 			return writeSchemaError(request, err)
+		}
+		// An idempotent coordinator replay deliberately skips the mutator
+		// callback, so always re-read the committed authority projection.
+		definition, err = catalog.Describe(
+			request.Request.Context(),
+			change.Definition.TableID,
+		)
+		if err != nil {
+			return writeSchemaError(request, err)
+		}
+		if definitionNeedsBackfill(definition) {
+			err = runIdempotentBusinessWrite(
+				request.Request.Context(),
+				gates,
+				"formula.backfill.enqueue",
+				fmt.Sprintf(
+					"%s:%s",
+					definition.TableID,
+					definition.SchemaRevision,
+				),
+				func(ctx context.Context) error {
+					var startErr error
+					backfill, startErr = jobService.StartFormulaBackfill(
+						ctx,
+						definition.TableID,
+						definition.SchemaRevision,
+					)
+					return startErr
+				},
+			)
+			if err != nil {
+				if _, ok := err.(*jobs.JobError); ok {
+					return writeJobError(request, err)
+				}
+				return writeSchemaError(request, err)
+			}
+			if backfill.JobID == "" {
+				backfill, err = jobService.StartFormulaBackfill(
+					request.Request.Context(),
+					definition.TableID,
+					definition.SchemaRevision,
+				)
+				if err != nil {
+					return writeJobError(request, err)
+				}
+			}
 		}
 		if backfill.State == "queued" {
 			jobService.Start(backfill.JobID)

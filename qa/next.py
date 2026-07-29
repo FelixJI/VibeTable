@@ -113,7 +113,11 @@ def _resolve(name: str) -> str:
     return shutil.which(name) or name
 
 
-def stage_command(stage: str, package_root: Path | None = None) -> tuple[list[str], str]:
+def stage_command(
+    stage: str,
+    package_root: Path | None = None,
+    package_archive: Path | None = None,
+) -> tuple[list[str], str]:
     go = _resolve("go")
     if stage == "version":
         return [sys.executable, "qa/version_check.py"], str(REPO_ROOT)
@@ -121,6 +125,8 @@ def stage_command(stage: str, package_root: Path | None = None) -> tuple[list[st
         command = [sys.executable, "qa/package_check.py"]
         if package_root is not None:
             command.append(str(package_root))
+        if package_archive is not None:
+            command.extend(["--package-archive", str(package_archive)])
         return command, str(REPO_ROOT)
     if stage == "go-fmt":
         return [sys.executable, str(GO_FORMAT_CHECK)], str(REPO_ROOT)
@@ -275,6 +281,25 @@ def _stage_environment(
         go_tmp.mkdir(parents=True, exist_ok=True)
         environment["GOCACHE"] = str(go_cache)
         environment["GOTMPDIR"] = str(go_tmp)
+    if stage in {"go-test", "go-race"} and package_root is not None:
+        layout_path = package_root / "publish-layout.json"
+        try:
+            layout = json.loads(layout_path.read_text(encoding="utf-8"))
+            recovery_tools = layout["assets"]["recoveryTools"]
+            tool_paths = {
+                "VIBETABLE_KOPIA_CLI": package_root / recovery_tools["kopia"],
+                "VIBETABLE_AGE_CLI": package_root / recovery_tools["age"],
+            }
+            resolved_root = package_root.resolve()
+            resolved_tools = {
+                name: path.resolve() for name, path in tool_paths.items() if path.is_file()
+            }
+            if len(resolved_tools) == len(tool_paths) and all(
+                path.is_relative_to(resolved_root) for path in resolved_tools.values()
+            ):
+                environment.update({name: str(path) for name, path in resolved_tools.items()})
+        except (KeyError, OSError, json.JSONDecodeError, TypeError):
+            pass
     if stage == "go-race" and os.name == "nt":
         # Go's Windows race runtime requires cgo plus a MinGW-w64 runtime that
         # provides libsynchronization.a. Prefer the repository-local,
@@ -498,8 +523,16 @@ def _is_windows_tempdir_cleanup_flake(output: str) -> bool:
     return bool(diagnostics) and all(Path(source).name == "testing.go" for source in diagnostics)
 
 
-def run_stage(stage: str, package_root: Path | None = None) -> StageResult:
-    command, cwd = stage_command(stage, package_root)
+def run_stage(
+    stage: str,
+    package_root: Path | None = None,
+    package_archive: Path | None = None,
+) -> StageResult:
+    command, cwd = (
+        stage_command(stage, package_root)
+        if package_archive is None
+        else stage_command(stage, package_root, package_archive)
+    )
     environment = _stage_environment(stage, command, package_root)
     started = time.monotonic()
     if stage == "go-race":
@@ -571,10 +604,13 @@ def _write_console_text(stream: object, value: str) -> None:
     stream.flush()  # type: ignore[attr-defined]
 
 
-def run_ci(package_root: Path | None = None) -> tuple[int, list[StageResult]]:
+def run_ci(
+    package_root: Path | None = None,
+    package_archive: Path | None = None,
+) -> tuple[int, list[StageResult]]:
     results: list[StageResult] = []
     for stage in STAGES:
-        result = run_stage(stage, package_root)
+        result = run_stage(stage, package_root, package_archive)
         results.append(result)
         _write_console_text(sys.stdout, result.stdout)
         _write_console_text(sys.stderr, result.stderr)
@@ -624,13 +660,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"failed to capture release candidate: {exc}", file=sys.stderr)
             return 2
     if args.stage:
-        result = run_stage(args.stage, args.package_root)
+        result = (
+            run_stage(args.stage, args.package_root)
+            if args.package_archive is None
+            else run_stage(args.stage, args.package_root, args.package_archive)
+        )
         results = [result]
         _write_console_text(sys.stdout, result.stdout)
         _write_console_text(sys.stderr, result.stderr)
         code = result.returncode
     elif args.ci:
-        code, results = run_ci(args.package_root)
+        code, results = run_ci(args.package_root, args.package_archive)
     else:
         _parser().error("choose --list, --stage, or --ci")
     ending_commit = handoff_gate.git_head_sha()

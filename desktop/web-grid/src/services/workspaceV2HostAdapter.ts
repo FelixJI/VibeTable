@@ -337,7 +337,6 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     if (session.capabilities.includes("repository.settings.v2")) {
       protection.setStorage(bootstrap.storage);
     }
-    if (session.policyEnabled) protection.setRetention(bootstrap.retention);
     if (session.conflictEnabled) protection.setConflicts(bootstrap.conflicts);
     if (session.fileHistoryEnabled) {
       for (const tree of bootstrap.fileTrees) protection.setFileTree(tree);

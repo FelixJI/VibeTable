@@ -79,4 +79,69 @@ func TestLedgerHistoryIgnoresKnownReceiptAndRejectsUnknownTypedEvent(
 			t.Fatalf("unknown typed event accepted: %v", err)
 		}
 	})
+	t.Run("malformed rotated business epoch", func(t *testing.T) {
+		ledger, err := auditledger.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ledger.Close()
+		raw, _ := json.Marshal(map[string]any{
+			"type":             businessReceiptType,
+			"workspaceId":      "workspace-1",
+			"sessionEpoch":     1,
+			"fenceEpoch":       1,
+			"claimId":          "claim-1",
+			"mutationRevision": 1,
+			"kind":             "row.update",
+			"identity":         "operation-1",
+		})
+		envelope, err := auditledger.NewEnvelope(
+			"event-1",
+			"business-v2:not-a-workspace:00000000000000000002",
+			1,
+			"mutation-1",
+			raw,
+			time.Now().UTC(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ledger.Append(context.Background(), envelope); err != nil {
+			t.Fatal(err)
+		}
+		service := &Service{ledger: ledger}
+		if _, err := service.projectLedgerHistory(
+			context.Background(),
+		); !errors.Is(err, auditledger.ErrChainCorrupt) {
+			t.Fatalf("malformed business epoch accepted: %v", err)
+		}
+	})
+}
+
+func TestBusinessHistoryEpochValidation(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		valid bool
+	}{
+		{businessHistoryEpoch, true},
+		{
+			"business-v2:11111111-1111-4111-8111-111111111111:00000000000000000002",
+			true,
+		},
+		{"business-v2:not-a-workspace:00000000000000000002", false},
+		{
+			"business-v2:11111111-1111-4111-8111-111111111111:00000000000000000001",
+			false,
+		},
+		{"business-v2:11111111-1111-4111-8111-111111111111:2:extra", false},
+	} {
+		if actual := isBusinessHistoryEpoch(test.value); actual != test.valid {
+			t.Fatalf(
+				"isBusinessHistoryEpoch(%q) = %v, want %v",
+				test.value,
+				actual,
+				test.valid,
+			)
+		}
+	}
 }

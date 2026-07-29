@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import {
   NAlert,
   NButton,
@@ -57,6 +57,8 @@ export type WorkspaceProtectionAction = WorkspaceV2UiAction<
   | "repository.verify"
   | "repository.previewKeyRotation"
   | "repository.applyKeyRotation"
+  | "retention.get"
+  | "retention.status"
   | "retention.update"
   | "retention.plan"
   | "retention.apply"
@@ -80,6 +82,17 @@ const extractTarget = ref<SnapshotTimelineItem | null>(null);
 const extractDocumentId = ref<string | null>(null);
 const convenientPasswordCopied = ref(false);
 const storageConfirmation = ref("");
+
+onMounted(() => {
+  if (!session.policyEnabled) return;
+  if (!protection.retentionHydrated) {
+    emit("action", { method: "retention.get", params: {} });
+  }
+  if (!protection.retentionStatus) {
+    emit("action", { method: "retention.status", params: {} });
+  }
+});
+
 type RetentionBucket = RetentionPolicyV2["snapshotBuckets"][number];
 const emptyRetentionDraft = () => ({
   snapshotDays: 0,

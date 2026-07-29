@@ -9,7 +9,10 @@
 完整 CI 必须输出发布身份摘要：
 
 ```powershell
-.\.venv\Scripts\python.exe qa\next.py --ci --json-report .qa-next-summary.json
+.\.venv\Scripts\python.exe qa\next.py --ci `
+  --package-root dist\VibeTable.Next `
+  --package-archive dist\VibeTable.Next.zip `
+  --json-report .qa-next-summary.json
 ```
 
 摘要只有在以下条件全部满足时才会标记 `releaseEligible: true`：
@@ -18,6 +21,12 @@
 - 执行期间 Git commit、四组 handoff artifact hashes 与发布源码
   `sourceHash` 没有变化；
 - 摘要包含生成时间、当前 commit、artifact hashes、source hash 和逐阶段结果。
+
+当 `--package-root` 的发布布局包含随包 `kopia.exe` 与 `age.exe` 时，完整门禁会
+把其绝对路径分别注入 `VIBETABLE_KOPIA_CLI` 和 `VIBETABLE_AGE_CLI`，供普通
+Go test 与 Go race 的官方 CLI 互操作测试使用。Windows release gate 还必须设置
+`VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER=1`；因此恢复工具和 Credential
+Manager 测试不会以“环境未配置”为由静默跳过。
 
 `qa/handoff.py record <STAGE>` 会 fail-closed 校验上述摘要：必须成功、24
 小时内生成，并且精确绑定当前 commit、artifact hashes 与 release source
@@ -74,6 +83,21 @@ empty” 清理诊断。出现 `WARNING: DATA RACE`、panic、业务断言或第
 检查 sidecar 二进制、执行权限、SHA-256、迁移、构建信息、许可证、
 CycloneDX SBOM，以及安装目录与可变数据隔离策略。发布布局禁止旧提供方运行
 时、Node/npm 或 `node_modules`。
+
+启用任一非 fixed provider 时，必须同时传入 `--package-archive`。provider lab
+证据的 `sourceHash` 会按 handoff 的 release source identity 重算（排除
+`qa/provider-evidence` 本身以避免自引用），`artifactHashes` 必须精确等于发布
+候选的 package tree hash 和 ZIP SHA-256。每份
+`<evidence-id>.json` 还必须带同目录
+`<evidence-id>.attestation.json`，其中记录固定的 Go、Kopia、age、SQLite
+版本和证据文件 SHA-256，并以 HMAC-SHA256 签名。release Environment 需要提供：
+
+- secret `PROVIDER_EVIDENCE_HMAC_KEY`：硬件实验室与受保护发布门共享的高熵密钥；
+- variable `PROVIDER_EVIDENCE_KEY_ID`：当前受信密钥标识。
+
+工作流只在受保护的 `release` Environment 中把它们映射到校验器环境变量。
+证据过期、源码或候选产物变化、版本缺失、key id 不匹配、密钥缺失或签名不可信
+都会 fail closed。非 fixed provider 仍为 `blockedPendingLab` 时不要求伪造证据。
 
 正式安装器生成与签名、Windows SmartScreen/杀毒软件验证、全新用户安装/升级/
 卸载 UI、跨版本真实数据恢复和断电/磁盘满注入仍需在发布环境保留独立证据。

@@ -1075,6 +1075,28 @@ describe("workspace protection UI capability gates", () => {
     });
   });
 
+  it("requests retention only from authority and stays disabled before hydration", () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities([
+      "workspace.session.v2",
+      "retention.policy.v2",
+      "repository.settings.v2",
+    ]);
+    const protection = useWorkspaceProtectionStore();
+    const settings = mount(WorkspaceProtectionSettings, {
+      props: { mode: "storage" },
+    });
+
+    expect(protection.retention).toBeNull();
+    expect(protection.retentionHydrated).toBe(false);
+    expect(settings.emitted("action")?.map((event) => event[0])).toEqual([
+      { method: "retention.get", params: {} },
+      { method: "retention.status", params: {} },
+    ]);
+    expect(settings.get('[data-testid="retention-save"]').attributes("disabled"))
+      .toBeDefined();
+  });
+
   it("explains durable quota pauses and integrity failures", async () => {
     const session = useWorkspaceSessionStore();
     session.configureCapabilities([

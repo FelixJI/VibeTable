@@ -71,18 +71,7 @@ function bootstrap() {
       catalogRevision: 3,
     }],
     storage: null,
-    retention: {
-      contractVersion: "2.0",
-      policyRevision: 1,
-      snapshotDays: 30,
-      snapshotCount: 50,
-      snapshotBuckets: ["hourly", "daily", "weekly", "monthly"],
-      fileRevisionDays: 30,
-      fileRevisionCount: 100,
-      fileRevisionBuckets: ["daily", "weekly", "monthly"],
-      trashMonths: 3,
-      repositoryLimitBytes: null,
-    },
+    retention: null,
     conflicts: [],
     fileTrees: [],
   } as const;
@@ -230,6 +219,8 @@ describe("workspace v2 production host adapter", () => {
     expect(session.activeWorkspaceId).toBe(WORKSPACE_ID);
     expect(session.workspaces[0]?.displayName).toBe("季度规划");
     expect(protection.snapshots[0]?.catalogRevision).toBe(3);
+    expect(protection.retention).toBeNull();
+    expect(protection.retentionHydrated).toBe(false);
 
     expect(() => fake.handlers.get("workspace.v2.bootstrap")!({
       ...bootstrap(),

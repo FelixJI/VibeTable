@@ -8,8 +8,10 @@ import (
 	"errors"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
@@ -132,7 +134,13 @@ func (service *Service) projectLedgerHistory(
 	collection := core.NewBaseCollection("vibetable_ledger_history")
 	projected := make([]*core.Record, 0, len(records))
 	for _, record := range records {
-		if record.Envelope.SourceEpoch != businessHistoryEpoch {
+		if !isBusinessHistoryEpoch(record.Envelope.SourceEpoch) {
+			if strings.HasPrefix(
+				record.Envelope.SourceEpoch,
+				businessHistoryEpoch+":",
+			) {
+				return nil, auditledger.ErrChainCorrupt
+			}
 			continue
 		}
 		payload, include, err := decodeLedgerHistoryPayload(
@@ -192,6 +200,23 @@ func (service *Service) projectLedgerHistory(
 		projected = append(projected, event)
 	}
 	return projected, nil
+}
+
+func isBusinessHistoryEpoch(sourceEpoch string) bool {
+	if sourceEpoch == businessHistoryEpoch {
+		return true
+	}
+	parts := strings.Split(sourceEpoch, ":")
+	if len(parts) != 3 || parts[0] != businessHistoryEpoch {
+		return false
+	}
+	workspaceID, err := uuid.Parse(parts[1])
+	if err != nil || workspaceID == uuid.Nil ||
+		strings.ToLower(parts[1]) != parts[1] {
+		return false
+	}
+	counter, err := strconv.ParseUint(parts[2], 10, 64)
+	return err == nil && counter > 1
 }
 
 func decodeLedgerHistoryPayload(

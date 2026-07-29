@@ -264,6 +264,25 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				apply,
 			)
 		})
+		idempotentBusinessGate := businessWriteGate(func(
+			ctx context.Context,
+			kind string,
+			identity string,
+			apply func(context.Context) error,
+		) error {
+			if options.WorkspaceV2 == nil {
+				return apply(ctx)
+			}
+			if workspaceRuntime == nil {
+				return errors.New("workspace.business_write_unavailable")
+			}
+			return workspaceRuntime.CoordinateIdempotentBusinessWrite(
+				ctx,
+				kind,
+				identity,
+				apply,
+			)
+		})
 
 		event.Router.GET(healthPath, func(request *core.RequestEvent) error {
 			snapshot, status := health.Check(
@@ -287,7 +306,13 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		if options.WorkspaceV2 == nil {
 			registerAdminRoutes(event)
 		}
-		registerSchemaRoutes(event.Router, schemaapi.New(pb), jobService, businessGate)
+		registerSchemaRoutes(
+			event.Router,
+			schemaapi.New(pb),
+			jobService,
+			businessGate,
+			idempotentBusinessGate,
+		)
 		registerQueryRoutes(event.Router, queryPort)
 		registerFormulaRoutes(event.Router, formulaCompiler)
 		registerJobRoutes(event.Router, jobService)
@@ -332,22 +357,13 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			jobService.SetBusinessWriteGate(
 				workspaceRuntime.CoordinateIdempotentBusinessWrite,
 			)
-			if err := jobService.ResumePending(
-				jobService.Context(),
+			if err := completeRestoreBeforeResumingJobs(
+				workspaceRuntime,
+				options.OnWorkspaceV2Ready,
+				jobService,
 			); err != nil {
 				_ = rawListener.Close()
-				return fmt.Errorf(
-					"resume coordinated workspace jobs: %w",
-					err,
-				)
-			}
-			if options.OnWorkspaceV2Ready != nil {
-				if err := options.OnWorkspaceV2Ready(
-					workspaceRuntime,
-				); err != nil {
-					_ = rawListener.Close()
-					return err
-				}
+				return err
 			}
 			registerWorkspaceV2Routes(event.Router, workspaceRuntime)
 		}

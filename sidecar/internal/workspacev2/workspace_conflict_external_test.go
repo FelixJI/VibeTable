@@ -437,6 +437,7 @@ func TestConflictExternalNormalFaultRollsBackSettingsAndRequestsShutdownOnlyAfte
 	token, counters := runtime.coordinator.Current()
 	intent := writecoordinator.WriteIntent{
 		Token: token, MutationRevision: counters.MutationRevision + 1,
+		AuditSourceEpoch: "business-v2",
 	}
 	shutdown := false
 	runtime.requestShutdown = func() { shutdown = true }
@@ -720,6 +721,7 @@ func TestConflictExternalAttachmentFaultRestoresOldFilesAndTableTransaction(
 	token, counters := runtime.coordinator.Current()
 	intent := writecoordinator.WriteIntent{
 		Token: token, MutationRevision: counters.MutationRevision + 1,
+		AuditSourceEpoch: "business-v2",
 	}
 	applier, err := filehistory.NewConflictApplier(
 		runtime.history, runtime.headStore,

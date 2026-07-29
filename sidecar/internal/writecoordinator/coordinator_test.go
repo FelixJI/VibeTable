@@ -2,6 +2,7 @@ package writecoordinator
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -211,6 +212,134 @@ func TestPersistentCoordinatorReopensCountersDrainAndCaptureIntent(t *testing.T)
 		counters.SnapshotSequence != 1 ||
 		reopened.HighWatermark() != highWatermark {
 		t.Fatalf("reopened state = %#v %#v", counters, reopened.HighWatermark())
+	}
+}
+
+func TestPersistentAuditEpochRotatesOutsideBusinessDatabase(t *testing.T) {
+	const workspaceID = "11111111-1111-4111-8111-111111111111"
+	databasePath := filepath.Join(t.TempDir(), "coordination.db")
+	coordinator, err := OpenPersistent(
+		databasePath,
+		workspaceID,
+		1,
+		"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _ := coordinator.Current()
+	var before string
+	if _, err := coordinator.Write(
+		context.Background(),
+		token,
+		func(_ context.Context, intent WriteIntent) error {
+			before = intent.AuditSourceEpoch
+			return nil
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if before != "business-v2" {
+		t.Fatalf("initial audit epoch = %q", before)
+	}
+	if err := coordinator.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := RotatePersistentAuditEpoch(
+		context.Background(),
+		databasePath,
+		workspaceID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenPersistent(
+		databasePath,
+		workspaceID,
+		1,
+		"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	token, _ = reopened.Current()
+	var after string
+	if _, err := reopened.Write(
+		context.Background(),
+		token,
+		func(_ context.Context, intent WriteIntent) error {
+			after = intent.AuditSourceEpoch
+			return nil
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if after !=
+		"business-v2:11111111-1111-4111-8111-111111111111:00000000000000000002" {
+		t.Fatalf("rotated audit epoch = %q", after)
+	}
+}
+
+func TestPersistentCoordinatorMigratesLegacyAuditEpochAuthority(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "legacy-coordination.db")
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE coordination_state (
+			singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+			workspace_id TEXT NOT NULL,
+			session_epoch INTEGER NOT NULL,
+			fence_epoch INTEGER NOT NULL,
+			claim_id TEXT NOT NULL,
+			mutation_revision INTEGER NOT NULL,
+			snapshot_sequence INTEGER NOT NULL,
+			audit_source_epoch TEXT NOT NULL,
+			audit_source_sequence INTEGER NOT NULL,
+			audit_chain_hash TEXT NOT NULL
+		);
+		INSERT INTO coordination_state (
+			singleton, workspace_id, session_epoch, fence_epoch, claim_id,
+			mutation_revision, snapshot_sequence, audit_source_epoch,
+			audit_source_sequence, audit_chain_hash
+		) VALUES (
+			1, '11111111-1111-4111-8111-111111111111', 1, 1,
+			'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+			0, 0, '', 0, ''
+		);
+	`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := OpenPersistent(
+		databasePath,
+		"11111111-1111-4111-8111-111111111111",
+		1,
+		"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	token, _ := coordinator.Current()
+	if _, err := coordinator.Write(
+		context.Background(),
+		token,
+		func(_ context.Context, intent WriteIntent) error {
+			if intent.AuditSourceEpoch != "business-v2" {
+				t.Fatalf("migrated audit epoch = %q", intent.AuditSourceEpoch)
+			}
+			return nil
+		},
+	); err != nil {
+		t.Fatal(err)
 	}
 }
 
