@@ -273,6 +273,18 @@ def test_windows_tempdir_cleanup_retry_never_matches_data_race(
     )
 
 
+def test_fault_injection_evidence_uses_isolated_gate_temp(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", tmp_path)
+    command, _cwd = next_gate.stage_command("fault-injection")
+
+    environment = next_gate._stage_environment("fault-injection", command)
+
+    assert environment["VIBETABLE_FAULT_EVIDENCE_ROOT"] == str(tmp_path / "fault-injection")
+
+
 def test_go_test_retries_only_the_narrow_windows_tempdir_cleanup_flake(
     monkeypatch,
 ) -> None:

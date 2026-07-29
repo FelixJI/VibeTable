@@ -261,6 +261,8 @@ def _stage_environment(
     environment = os.environ.copy()
     environment["TMP"] = str(qa_tmp)
     environment["TEMP"] = str(qa_tmp)
+    if stage == "fault-injection":
+        environment["VIBETABLE_FAULT_EVIDENCE_ROOT"] = str(qa_tmp / "fault-injection")
     if stage.startswith("go-"):
         go_cache = REPO_ROOT / "build" / "qa" / "go-cache"
         go_tmp = REPO_ROOT / "build" / "qa" / "go-tmp"

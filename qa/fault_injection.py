@@ -28,7 +28,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SIDECAR = ROOT / "sidecar"
-EVIDENCE_ROOT = ROOT / "build" / "qa" / "fault-injection"
+EVIDENCE_ROOT = Path(
+    os.environ.get(
+        "VIBETABLE_FAULT_EVIDENCE_ROOT",
+        str(ROOT / "build" / "qa" / "fault-injection"),
+    )
+)
 PRODUCT_RUNNER = ROOT / "tests" / "e2e" / "product_e2e_runner.py"
 INFRASTRUCTURE_TESTS = (
     ROOT
