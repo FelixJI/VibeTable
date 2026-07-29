@@ -400,6 +400,8 @@ class RpcGoldenCase(V2Model):
 
 
 def _valid_rpc_schema_node(schema: Any, *, conditional: bool = False) -> bool:
+    if isinstance(schema, bool):
+        return schema
     if not isinstance(schema, dict):
         return False
     allowed = {
@@ -470,17 +472,23 @@ def _valid_rpc_schema_node(schema: Any, *, conditional: bool = False) -> bool:
             or not set(required).issubset(set(schema.get("properties", {})))
         ):
             return False
-    if "additionalProperties" in schema and not isinstance(schema["additionalProperties"], bool):
+    additional = schema.get("additionalProperties")
+    if "additionalProperties" in schema and not (
+        isinstance(additional, bool)
+        or (isinstance(additional, dict) and _valid_rpc_schema_node(additional, conditional=True))
+    ):
         return False
     if node_type == "object" and not conditional:
         properties = schema.get("properties")
         required = schema.get("required")
-        if (
-            schema.get("additionalProperties") is not False
-            or not isinstance(properties, dict)
-            or not isinstance(required, list)
-            or set(required) != set(properties)
-        ):
+        closed_object = (
+            additional is False
+            and isinstance(properties, dict)
+            and isinstance(required, list)
+            and set(required) == set(properties)
+        )
+        typed_map = isinstance(additional, dict) and properties is None and required is None
+        if not closed_object and not typed_map:
             return False
     if node_type == "array":
         return "items" in schema and _valid_rpc_schema_node(schema["items"])

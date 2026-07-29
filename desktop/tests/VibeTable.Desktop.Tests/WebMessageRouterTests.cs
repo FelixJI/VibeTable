@@ -659,11 +659,48 @@ public sealed class WebMessageRouterTests
             "history.applyRestore",
             dispatched.Last().V2Method);
 
+        var historyQuery = router.Route(JsonSerializer.Serialize(new
+        {
+            type = "workspace.v2.request",
+            requestId = "v2-history-query",
+            wire = new
+            {
+                scope = "workspace",
+                workspaceId,
+                sessionEpoch = 3,
+                operationId = Guid.NewGuid(),
+                sequence = 12,
+            },
+            payload = new
+            {
+                method = "history.query",
+                @params = new
+                {
+                    collection = "orders",
+                    scope = "table",
+                    itemId = (string?)null,
+                    field = (string?)null,
+                    search = "",
+                    dateFrom = (string?)null,
+                    dateTo = (string?)null,
+                    actorId = (string?)null,
+                    actions = Array.Empty<string>(),
+                    recordId = (string?)null,
+                    limit = 50,
+                    offset = 0,
+                },
+            },
+        }));
+        Assert.IsNull(historyQuery);
+        Assert.AreEqual(
+            "history.query",
+            dispatched.Last().V2Method);
+
         var wrongScope = router.Route(JsonSerializer.Serialize(new
         {
             type = "workspace.v2.request",
             requestId = "v2-2",
-            wire = new { scope = "global", operationId, sequence = 10 },
+            wire = new { scope = "global", operationId, sequence = 13 },
             payload = new { method = "workspace.close", @params = new { reason = "user" } },
         }));
         Assert.AreEqual("BAD_WORKSPACE_WIRE", wrongScope!.Payload!.Code);
@@ -672,7 +709,7 @@ public sealed class WebMessageRouterTests
         {
             type = "workspace.v2.request",
             requestId = "v2-3",
-            wire = new { scope = "global", operationId, sequence = 11 },
+            wire = new { scope = "global", operationId, sequence = 14 },
             payload = new { method = "repository.rotateKey", @params = new { } },
         }));
         Assert.AreEqual("UNKNOWN_V2_METHOD", unknown!.Payload!.Code);

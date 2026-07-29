@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 )
@@ -30,37 +28,6 @@ func InitializeRepository(
 	if err != nil {
 		return RepositoryInitialization{}, err
 	}
-	if manifest.RepositoryFormat != "kopia-v3" {
-		return RepositoryInitialization{}, errors.New(
-			"repository.format_unsupported",
-		)
-	}
-	configPath := filepath.Join(
-		paths.coordination,
-		"kopia.repository.config",
-	)
-	storagePath := filepath.Join(paths.objects, "kopia")
-	if _, statErr := os.Lstat(configPath); statErr == nil {
-		return RepositoryInitialization{}, errors.New(
-			"repository.already_initialized",
-		)
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return RepositoryInitialization{}, statErr
-	}
-	if entries, readErr := os.ReadDir(storagePath); readErr == nil &&
-		len(entries) != 0 {
-		return RepositoryInitialization{}, errors.New(
-			"repository.already_initialized",
-		)
-	} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		return RepositoryInitialization{}, readErr
-	}
-	if err := os.MkdirAll(paths.coordination, 0o700); err != nil {
-		return RepositoryInitialization{}, err
-	}
-	if err := os.MkdirAll(paths.objects, 0o700); err != nil {
-		return RepositoryInitialization{}, err
-	}
 	mode := objectrepo.EncryptionMode(manifest.EncryptionMode)
 	provider := objectrepo.NewKeyProvider(
 		objectrepo.WindowsCredentialVault{},
@@ -76,27 +43,36 @@ func InitializeRepository(
 	}
 	defer clearBytes(keys.Password)
 	cleanup := true
+	repositoryCreated := false
 	defer func() {
 		if !cleanup {
 			return
 		}
-		_ = os.Remove(configPath)
-		if repositoryStorageTargetSafe(paths.objects, storagePath) {
-			_ = os.RemoveAll(storagePath)
+		if repositoryCreated {
+			_ = objectrepo.RemoveWorkspaceRepository(
+				workspaceRepositorySpec(
+					paths,
+					manifest.RepositoryFormat,
+					nil,
+				),
+			)
 		}
 		if mode == objectrepo.EncryptionProtected {
 			_ = provider.DeleteProtected(context.Background(), workspaceID)
 		}
 	}()
-	repository, err := objectrepo.CreateKopiaFilesystem(
+	repository, err := objectrepo.CreateWorkspaceRepository(
 		ctx,
-		storagePath,
-		configPath,
-		string(keys.Password),
+		workspaceRepositorySpec(
+			paths,
+			manifest.RepositoryFormat,
+			keys.Password,
+		),
 	)
 	if err != nil {
 		return RepositoryInitialization{}, err
 	}
+	repositoryCreated = true
 	authority := objectrepo.Authority{
 		WorkspaceID: workspaceID,
 		FenceEpoch:  fenceEpoch,
@@ -131,18 +107,9 @@ func RestoreProtectedRepository(
 	if err != nil {
 		return err
 	}
-	if manifest.RepositoryFormat != "kopia-v3" ||
-		objectrepo.EncryptionMode(manifest.EncryptionMode) !=
-			objectrepo.EncryptionProtected {
+	if objectrepo.EncryptionMode(manifest.EncryptionMode) !=
+		objectrepo.EncryptionProtected {
 		return errors.New("repository.protected_mode_required")
-	}
-	configPath := filepath.Join(
-		paths.coordination,
-		"kopia.repository.config",
-	)
-	if info, statErr := os.Lstat(configPath); statErr != nil ||
-		!info.Mode().IsRegular() {
-		return errors.Join(errors.New("repository.config_missing"), statErr)
 	}
 	provider := objectrepo.NewKeyProvider(
 		objectrepo.WindowsCredentialVault{},
@@ -162,26 +129,30 @@ func RestoreProtectedRepository(
 		workspaceID,
 		recoveryKey,
 		func(ctx context.Context, candidate []byte) error {
-			repository, err := objectrepo.OpenKopia(
-				ctx,
-				configPath,
-				string(candidate),
+			rotation, err := objectrepo.NewWorkspaceRepositoryRotation(
+				workspaceRepositorySpec(
+					paths,
+					manifest.RepositoryFormat,
+					nil,
+				),
 			)
 			if err != nil {
 				return err
 			}
-			pins, pinErr := repository.ListPins(ctx)
-			var roots []objectrepo.ObjectID
-			for _, pin := range pins {
-				roots = append(roots, pin.Roots...)
-			}
-			report, verifyErr := repository.Verify(ctx, roots)
-			closeErr := repository.Close(context.WithoutCancel(ctx))
-			if err := errors.Join(pinErr, verifyErr, closeErr); err != nil {
-				return err
-			}
-			if !report.Valid {
-				return errors.New("repository.recovery_key_invalid")
+			if err := rotation.VerifyPassword(ctx, candidate); err != nil {
+				if errors.Is(
+					err,
+					objectrepo.ErrRepositoryNotInitialized,
+				) {
+					return errors.Join(
+						errors.New("repository.config_missing"),
+						err,
+					)
+				}
+				return errors.Join(
+					errors.New("repository.recovery_key_invalid"),
+					err,
+				)
 			}
 			return nil
 		},
@@ -203,19 +174,13 @@ func RollbackRepositoryInitialization(
 	if err != nil {
 		return err
 	}
-	configPath := filepath.Join(
-		paths.coordination,
-		"kopia.repository.config",
+	removeErr := objectrepo.RemoveWorkspaceRepository(
+		workspaceRepositorySpec(
+			paths,
+			manifest.RepositoryFormat,
+			nil,
+		),
 	)
-	storagePath := filepath.Join(paths.objects, "kopia")
-	if !repositoryStorageTargetSafe(paths.objects, storagePath) {
-		return errors.New("repository.cleanup_target_invalid")
-	}
-	configErr := os.Remove(configPath)
-	if errors.Is(configErr, os.ErrNotExist) {
-		configErr = nil
-	}
-	storageErr := os.RemoveAll(storagePath)
 	var keyErr error
 	if objectrepo.EncryptionMode(manifest.EncryptionMode) ==
 		objectrepo.EncryptionProtected {
@@ -223,24 +188,18 @@ func RollbackRepositoryInitialization(
 			objectrepo.WindowsCredentialVault{},
 		).DeleteProtected(ctx, workspaceID)
 	}
-	return errors.Join(configErr, storageErr, keyErr)
+	return errors.Join(removeErr, keyErr)
 }
 
-func repositoryStorageTargetSafe(parent string, target string) bool {
-	parentAbsolute, parentErr := filepath.Abs(parent)
-	targetAbsolute, targetErr := filepath.Abs(target)
-	if parentErr != nil || targetErr != nil {
-		return false
+func workspaceRepositorySpec(
+	paths workspacePaths,
+	format string,
+	password []byte,
+) objectrepo.WorkspaceRepositorySpec {
+	return objectrepo.WorkspaceRepositorySpec{
+		Format:           format,
+		CoordinationRoot: paths.coordination,
+		ObjectsRoot:      paths.objects,
+		Password:         password,
 	}
-	relative, err := filepath.Rel(parentAbsolute, targetAbsolute)
-	return err == nil && relative != "." &&
-		relative != ".." &&
-		!filepath.IsAbs(relative) &&
-		!startsWithParentTraversal(relative)
-}
-
-func startsWithParentTraversal(relative string) bool {
-	separator := string(filepath.Separator)
-	return len(relative) >= 3 &&
-		relative[:3] == ".."+separator
 }

@@ -81,15 +81,16 @@ const extractDocumentId = ref<string | null>(null);
 const convenientPasswordCopied = ref(false);
 const storageConfirmation = ref("");
 type RetentionBucket = RetentionPolicyV2["snapshotBuckets"][number];
-const retentionDraft = ref({
-  snapshotDays: protection.retention.snapshotDays,
-  snapshotCount: protection.retention.snapshotCount,
-  snapshotBuckets: [...protection.retention.snapshotBuckets] as RetentionBucket[],
-  fileRevisionDays: protection.retention.fileRevisionDays,
-  fileRevisionCount: protection.retention.fileRevisionCount,
-  fileRevisionBuckets: [...protection.retention.fileRevisionBuckets] as RetentionBucket[],
-  repositoryLimitBytes: protection.retention.repositoryLimitBytes,
+const emptyRetentionDraft = () => ({
+  snapshotDays: 0,
+  snapshotCount: 0,
+  snapshotBuckets: [] as RetentionBucket[],
+  fileRevisionDays: 0,
+  fileRevisionCount: 0,
+  fileRevisionBuckets: [] as RetentionBucket[],
+  repositoryLimitBytes: null as number | null,
 });
+const retentionDraft = ref(emptyRetentionDraft());
 const gibibyte = 1024 ** 3;
 const repositoryLimitGiB = computed<number | null>({
   get: () => retentionDraft.value.repositoryLimitBytes === null
@@ -105,6 +106,10 @@ const repositoryLimitGiB = computed<number | null>({
 watch(
   () => protection.retention,
   (next) => {
+    if (!next) {
+      retentionDraft.value = emptyRetentionDraft();
+      return;
+    }
     retentionDraft.value = {
       snapshotDays: next.snapshotDays,
       snapshotCount: next.snapshotCount,
@@ -139,6 +144,7 @@ const selected = computed(() => protection.selectedSnapshot);
 const busy = computed(() => protection.busyOperation !== null);
 const retentionDirty = computed(() =>
   protection.retentionHydrated
+  && protection.retention !== null
   && (retentionDraft.value.snapshotDays !== protection.retention.snapshotDays
   || retentionDraft.value.snapshotCount !== protection.retention.snapshotCount
   || retentionDraft.value.snapshotBuckets.join(",") !== protection.retention.snapshotBuckets.join(",")
@@ -354,6 +360,7 @@ function advanceRestore(): void {
 }
 
 function saveRetention(): void {
+  if (!protection.retention) return;
   emit("action", {
     method: "retention.update",
     params: {
@@ -944,7 +951,7 @@ function applyStoragePlan(): void {
     <section class="policy-card retention-card">
       <div class="policy-title">
         <div><strong>{{ t("workspaceV2.retention.title") }}</strong><small>{{ t("workspaceV2.retention.hint") }}</small></div>
-        <NTag size="small">{{ t("workspaceV2.retention.revision", { revision: protection.retention.policyRevision }) }}</NTag>
+        <NTag size="small">{{ t("workspaceV2.retention.revision", { revision: protection.retention?.policyRevision ?? "—" }) }}</NTag>
       </div>
       <NAlert
         v-if="!protection.retentionHydrated"

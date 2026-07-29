@@ -1902,6 +1902,7 @@ public partial class MainWindow : Window
         }
         if (ContainsEvery(
                 methods,
+                "history.query",
                 "history.previewRestore",
                 "history.applyRestore"))
             capabilities.Add("history.restore.v2");

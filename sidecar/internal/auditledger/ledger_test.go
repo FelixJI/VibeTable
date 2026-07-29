@@ -221,6 +221,64 @@ func TestLedgerRejectsPayloadTamperingAndSourceSequenceReuse(t *testing.T) {
 	}
 }
 
+func TestVerifiedRecordsFailsClosedOnLiveTamperAndTruncation(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		tamper string
+	}{
+		{
+			name: "payload tamper",
+			tamper: `UPDATE audit_ledger
+				SET payload = '{"tampered":true}'
+				WHERE ledger_sequence = 2`,
+		},
+		{
+			name:   "tail truncation",
+			tamper: `DELETE FROM audit_ledger WHERE ledger_sequence = 2`,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			ledger, err := Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ledger.Close()
+			for sequence := uint64(1); sequence <= 2; sequence++ {
+				if _, err := ledger.Append(
+					context.Background(),
+					envelopeAt(
+						t,
+						fmt.Sprintf("event-%d", sequence),
+						sequence,
+					),
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
+			db, err := sql.Open(
+				"sqlite",
+				filepath.Join(root, ledgerFileName),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(testCase.tamper); err != nil {
+				_ = db.Close()
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ledger.VerifiedRecords(
+				context.Background(),
+			); !errors.Is(err, ErrChainCorrupt) {
+				t.Fatalf("live tamper accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestLedgerRejectsSourceGapAndExportsVerifiablePrefix(t *testing.T) {
 	ledger, err := Open(t.TempDir())
 	if err != nil {

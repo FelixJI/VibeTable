@@ -1051,6 +1051,102 @@ async function rawBridgeRequest(
   );
 }
 
+async function rawWorkspaceV2Request(
+  page,
+  method,
+  params,
+  timeoutMs = 20_000,
+) {
+  return page.evaluate(
+    ({ rpcMethod, rpcParams, timeout }) =>
+      new Promise((resolve, reject) => {
+        const diagnostics = window.__vibetableE2EBridgeDiagnostics;
+        const session = diagnostics?.workspaceSession;
+        if (
+          typeof session?.workspaceId !== "string"
+          || !Number.isSafeInteger(session?.sessionEpoch)
+          || session.sessionEpoch < 1
+        ) {
+          reject(new Error(`workspace v2 session unavailable for ${rpcMethod}`));
+          return;
+        }
+        const operationId = crypto.randomUUID();
+        const requestId = `e2e-${operationId}`;
+        const sequence = Math.max(
+          Date.now() * 1_000,
+          (diagnostics.maxWorkspaceSequence ?? 0) + 1,
+        );
+        const wire = {
+          scope: "workspace",
+          workspaceId: session.workspaceId,
+          sessionEpoch: session.sessionEpoch,
+          operationId,
+          sequence,
+        };
+        diagnostics.maxWorkspaceSequence = sequence;
+        const envelope = {
+          type: "workspace.v2.request",
+          requestId,
+          payload: { method: rpcMethod, params: rpcParams, wire },
+          wire,
+        };
+        const timer = setTimeout(() => {
+          window.chrome.webview.removeEventListener("message", handler);
+          reject(new Error(`workspace v2 timeout for ${rpcMethod}`));
+        }, timeout);
+        const handler = (event) => {
+          let message = event.data;
+          if (typeof message === "string") {
+            try { message = JSON.parse(message); } catch { return; }
+          }
+          if (
+            !message
+            || message.requestId !== requestId
+            || !["workspace.v2.response", "workspace.v2.reply", "operation.failed"]
+              .includes(message.type)
+          ) {
+            return;
+          }
+          clearTimeout(timer);
+          window.chrome.webview.removeEventListener("message", handler);
+          const finishAfterSequenceWindow = () => {
+            if (Date.now() * 1_000 <= sequence) {
+              setTimeout(finishAfterSequenceWindow, 1);
+              return;
+            }
+            if (message.type === "operation.failed") {
+              reject(new Error(
+                `${rpcMethod} failed: ${JSON.stringify(message.payload)}`,
+              ));
+              return;
+            }
+            const reply = message.payload;
+            if (
+              reply?.method !== rpcMethod
+              || reply?.wire?.operationId !== operationId
+            ) {
+              reject(new Error(
+                `${rpcMethod} returned a mismatched reply: ${JSON.stringify(reply)}`,
+              ));
+              return;
+            }
+            if (reply.ok !== true) {
+              reject(new Error(
+                `${rpcMethod} failed closed: ${JSON.stringify(reply.error)}`,
+              ));
+              return;
+            }
+            resolve(reply);
+          };
+          finishAfterSequenceWindow();
+        };
+        window.chrome.webview.addEventListener("message", handler);
+        window.chrome.webview.postMessage(envelope);
+      }),
+    { rpcMethod: method, rpcParams: params, timeout: timeoutMs },
+  );
+}
+
 async function installBridgeDiagnostics(page) {
   await page.evaluate(() => {
     if (window.__vibetableE2EBridgeDiagnostics?.installed) return;
@@ -1121,7 +1217,10 @@ async function installBridgeDiagnostics(page) {
           : null;
         const request = {
           requestId: message.requestId,
-          requestType: message.type,
+          requestType: message.type === "workspace.v2.request"
+            && typeof message.payload?.method === "string"
+            ? message.payload.method
+            : message.type,
           payloadShape,
           startedAt: new Date().toISOString(),
           startedMonotonicMs: performance.now(),
@@ -2204,34 +2303,33 @@ async function scenario07(page, recorder, _network, runtime) {
   // neighbouring identity cell as the active range after realtime refresh.
   // Select the attachment field explicitly so history is scoped correctly.
   await cell.click();
-  const attachmentHistoryProbe = await rawBridgeRequest(
+  const attachmentHistoryReply = await rawWorkspaceV2Request(
     page,
-    "history.queryRequested",
+    "history.query",
     {
-      table: "tbl_e2e_attachments",
+      collection: "tbl_e2e_attachments",
       scope: "cell",
       itemId: recordId,
       field: "attachments",
+      search: "",
+      dateFrom: null,
+      dateTo: null,
+      actorId: null,
+      recordId: null,
       limit: 50,
       offset: 0,
       actions: [],
     },
-    20_000,
-    ["history.pageLoaded"],
   );
-  if (attachmentHistoryProbe.type !== "history.pageLoaded") {
-    throw new Error(
-      `attachment history query failed: ${JSON.stringify(attachmentHistoryProbe)}`,
-    );
-  }
-  const originalRevision = attachmentHistoryProbe.payload.changeSets.find((changeSet) =>
+  const attachmentHistoryProbe = attachmentHistoryReply.result;
+  const originalRevision = attachmentHistoryProbe.changeSets.find((changeSet) =>
     changeSet.scalarChanges?.some((change) =>
       change.field === "attachments"
         && String(change.after ?? "").includes(uploadedFile.storedName)),
   )?.rootRevisionId;
   if (!originalRevision) {
     throw new Error(
-      `original attachment revision was not returned: ${JSON.stringify(attachmentHistoryProbe.payload)}`,
+      `original attachment revision was not returned: ${JSON.stringify(attachmentHistoryProbe)}`,
     );
   }
   const historyDrawerStartedAt = performance.now();
@@ -2633,19 +2731,27 @@ async function scenario09(page, recorder, _network, runtime) {
   const historyDeadline = Date.now() + 30_000;
   let history;
   do {
-    history = await rawBridgeRequest(page, "history.queryRequested", {
+    history = await rawWorkspaceV2Request(page, "history.query", {
       collection: "tbl_e2e_atomic_import",
       scope: "table",
+      itemId: null,
+      field: null,
+      search: "",
+      dateFrom: null,
+      dateTo: null,
+      actorId: null,
       actions: [],
+      recordId: null,
       limit: 100,
       offset: 0,
-    }, 5_000, ["history.pageLoaded"]);
-    if (history.type === "history.pageLoaded") break;
+    }, 5_000);
+    if (history.ok === true) break;
     await page.waitForTimeout(250);
   } while (Date.now() < historyDeadline);
-  const historyPage = history.payload;
+  const historyPage = history.result;
   recorder.check("failed import exposed no partially committed audit entries",
-    history.type === "history.pageLoaded"
+    history.method === "history.query"
+      && history.ok === true
       && historyPage?.collection === "tbl_e2e_atomic_import"
       && historyPage?.scope === "table"
       && historyPage?.total === 0
@@ -2930,13 +3036,21 @@ async function scenario12(page, recorder, _network, runtime) {
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
   const beforeBackupRow = beforeBackupQuery.payload?.rows?.[0];
-  const beforeBackupHistory = await rawBridgeRequest(page, "history.queryRequested", {
+  const beforeBackupHistoryReply = await rawWorkspaceV2Request(page, "history.query", {
     collection: "tbl_e2e_backup_consistency",
     scope: "table",
+    itemId: null,
+    field: null,
+    search: "",
+    dateFrom: null,
+    dateTo: null,
+    actorId: null,
     actions: [],
+    recordId: null,
     limit: 100,
     offset: 0,
-  }, 20_000, ["history.pageLoaded"]);
+  });
+  const beforeBackupHistory = beforeBackupHistoryReply.result;
   recorder.check("pre-backup record, formula, attachment, and audit snapshot is complete",
     beforeBackupQuery.type === "query.page"
       && beforeBackupRow?.id === recordId
@@ -2945,15 +3059,16 @@ async function scenario12(page, recorder, _network, runtime) {
       && beforeBackupAttachment?.originalName === path.basename(original)
       && beforeBackupAttachment?.sha256 === expectedOriginalHash
       && beforeBackupAttachment?.size === originalBytes.length
-      && beforeBackupHistory.type === "history.pageLoaded"
-      && beforeBackupHistory.payload?.collection === "tbl_e2e_backup_consistency"
-      && Array.isArray(beforeBackupHistory.payload?.changeSets)
-      && beforeBackupHistory.payload.changeSets.length > 0
-      && beforeBackupHistory.payload.total === beforeBackupHistory.payload.changeSets.length,
+      && beforeBackupHistoryReply.method === "history.query"
+      && beforeBackupHistoryReply.ok === true
+      && beforeBackupHistory?.collection === "tbl_e2e_backup_consistency"
+      && Array.isArray(beforeBackupHistory?.changeSets)
+      && beforeBackupHistory.changeSets.length > 0
+      && beforeBackupHistory.total === beforeBackupHistory.changeSets.length,
   {
     beforeBackupRow,
     beforeBackupAttachment,
-    beforeBackupHistory: beforeBackupHistory.payload,
+    beforeBackupHistory,
     expectedOriginalHash,
     expectedOriginalSize: originalBytes.length,
   });
@@ -3155,61 +3270,63 @@ async function scenario12(page, recorder, _network, runtime) {
     performance.now() - historyDrawerStartedAt,
     { scope: "table", scenario: "12-backup-consistency" },
   );
-  const afterRestoreHistory = await rawBridgeRequest(page, "history.queryRequested", {
+  const afterRestoreHistoryReply = await rawWorkspaceV2Request(page, "history.query", {
     collection: "tbl_e2e_backup_consistency",
     scope: "table",
+    itemId: null,
+    field: null,
+    search: "",
+    dateFrom: null,
+    dateTo: null,
+    actorId: null,
     actions: [],
+    recordId: null,
     limit: 100,
     offset: 0,
-  }, 20_000, ["history.pageLoaded"]);
-  const allowedBackupRestoreAuditActions = new Set([]);
+  });
+  const afterRestoreHistory = afterRestoreHistoryReply.result;
   const beforeChangeSetIds = new Set(
-    beforeBackupHistory.payload.changeSets.map((changeSet) => changeSet.changeSetId),
+    beforeBackupHistory.changeSets.map((changeSet) => changeSet.changeSetId),
   );
-  const afterChangeSets = afterRestoreHistory.payload?.changeSets ?? [];
-  const afterSnapshotChangeSets = afterChangeSets.filter(
+  const afterChangeSets = afterRestoreHistory?.changeSets ?? [];
+  const preservedChangeSets = afterChangeSets.filter(
     (changeSet) => beforeChangeSetIds.has(changeSet.changeSetId),
   );
   const addedChangeSets = afterChangeSets.filter(
     (changeSet) => !beforeChangeSetIds.has(changeSet.changeSetId),
   );
-  const beforeAuditSnapshot = canonicalJsonText({
-    collection: beforeBackupHistory.payload.collection,
-    scope: beforeBackupHistory.payload.scope,
-    itemId: beforeBackupHistory.payload.itemId ?? null,
-    field: beforeBackupHistory.payload.field ?? null,
-    changeSets: beforeBackupHistory.payload.changeSets,
-    total: beforeBackupHistory.payload.total,
-    capabilityHash: beforeBackupHistory.payload.capabilityHash,
-    schemaRevision: beforeBackupHistory.payload.schemaRevision,
-    hasMore: beforeBackupHistory.payload.hasMore,
-  });
-  const afterAuditSnapshot = canonicalJsonText({
-    collection: afterRestoreHistory.payload?.collection,
-    scope: afterRestoreHistory.payload?.scope,
-    itemId: afterRestoreHistory.payload?.itemId ?? null,
-    field: afterRestoreHistory.payload?.field ?? null,
-    changeSets: afterSnapshotChangeSets,
-    total: (afterRestoreHistory.payload?.total ?? -1) - addedChangeSets.length,
-    capabilityHash: afterRestoreHistory.payload?.capabilityHash,
-    schemaRevision: afterRestoreHistory.payload?.schemaRevision,
-    hasMore: afterRestoreHistory.payload?.hasMore,
-  });
-  recorder.check("audit snapshot returned byte-for-byte equivalent normalized history after restore",
-    afterRestoreHistory.type === "history.pageLoaded"
-      && beforeAuditSnapshot === afterAuditSnapshot
-      && addedChangeSets.every(
-        (changeSet) => allowedBackupRestoreAuditActions.has(changeSet.action),
+  const preservedChangeSetIds = new Set(
+    preservedChangeSets.map((changeSet) => changeSet.changeSetId),
+  );
+  const addedScalarChanges = addedChangeSets.flatMap(
+    (changeSet) => changeSet.scalarChanges ?? [],
+  );
+  const postSnapshotValuePreserved = addedScalarChanges.some(
+    (change) => change.field === "value" && String(change.after) === "9",
+  );
+  const postSnapshotAttachmentPreserved = addedScalarChanges.some(
+    (change) => change.field === "attachments"
+      && String(change.after ?? "").includes(
+        replacementAttachmentResponse.payload.attachments[0].storedName,
+      ),
+  );
+  recorder.check("append-only history preserved the snapshot prefix and post-snapshot mutations after restore",
+    afterRestoreHistoryReply.method === "history.query"
+      && afterRestoreHistoryReply.ok === true
+      && beforeBackupHistory.changeSets.every(
+        (changeSet) => preservedChangeSetIds.has(changeSet.changeSetId),
       )
-      && afterRestoreHistory.payload?.total
-        === beforeBackupHistory.payload.total + addedChangeSets.length,
+      && postSnapshotValuePreserved
+      && postSnapshotAttachmentPreserved
+      && afterRestoreHistory.total
+        === beforeBackupHistory.total + addedChangeSets.length
+      && addedChangeSets.length >= 2,
   {
-    beforeBackupHistory: beforeBackupHistory.payload,
-    afterRestoreHistory: afterRestoreHistory.payload,
-    beforeAuditSnapshot,
-    afterAuditSnapshot,
+    beforeBackupHistory,
+    afterRestoreHistory,
     addedChangeSets,
-    allowedBackupRestoreAuditActions: [...allowedBackupRestoreAuditActions],
+    postSnapshotValuePreserved,
+    postSnapshotAttachmentPreserved,
   });
 
   // Visual acceptance is part of the product gate, not a source-only token

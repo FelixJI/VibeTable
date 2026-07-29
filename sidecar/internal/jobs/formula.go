@@ -33,9 +33,17 @@ type TaskPublisher interface {
 	PublishTaskChanged(context.Context, Snapshot) error
 }
 
+type BusinessWriteGate func(
+	context.Context,
+	string,
+	string,
+	func(context.Context) error,
+) error
+
 type Service struct {
 	app            core.App
 	kernel         MutationKernel
+	businessGate   BusinessWriteGate
 	publisher      TaskPublisher
 	dataPublisher  DataPublisher
 	runContext     context.Context
@@ -139,6 +147,45 @@ func (service *Service) SetKernel(kernel MutationKernel) {
 	service.mu.Lock()
 	service.kernel = kernel
 	service.mu.Unlock()
+}
+
+// SetBusinessWriteGate binds background business batches to the same
+// Workspace V2 coordinator used by synchronous product routes. V1 leaves the
+// gate unset and retains its existing direct-kernel behavior.
+func (service *Service) SetBusinessWriteGate(gate BusinessWriteGate) {
+	service.mu.Lock()
+	service.businessGate = gate
+	service.mu.Unlock()
+}
+
+func (service *Service) applyKernelBatch(
+	ctx context.Context,
+	kind string,
+	identity string,
+	request mutation.Request,
+) (mutation.Receipt, error) {
+	service.mu.Lock()
+	kernel := service.kernel
+	gate := service.businessGate
+	service.mu.Unlock()
+	if kernel == nil {
+		return mutation.Receipt{}, jobError(
+			"job.kernel_unavailable",
+			"mutation kernel is unavailable",
+			true,
+		)
+	}
+	var receipt mutation.Receipt
+	apply := func(writeCtx context.Context) error {
+		var err error
+		receipt, err = kernel.Apply(writeCtx, request)
+		return err
+	}
+	if gate == nil {
+		return receipt, apply(ctx)
+	}
+	err := gate(ctx, kind, identity, apply)
+	return receipt, err
 }
 
 func (service *Service) Start(jobID string) bool {
@@ -411,21 +458,24 @@ func (service *Service) Run(
 		}
 		batchStart := records[0].Id
 		batchEnd := records[len(records)-1].Id
-		_, err = service.kernel.Apply(ctx, mutation.Request{
-			ContractVersion: mutation.ContractVersion,
-			RequestID: fmt.Sprintf(
-				"job_%s_%s_%s", jobID, batchStart, batchEnd,
-			),
-			IdempotencyKey: fmt.Sprintf(
-				"job_%s_%s_%s", jobID, batchStart, batchEnd,
-			),
-			TableID:        snapshot.TableID,
-			SchemaRevision: snapshot.SchemaRevision,
-			Operations:     operations,
-			Actor: mutation.Actor{
-				Type: "system", ID: "formula-backfill",
-			},
-		})
+		batchIdentity := fmt.Sprintf(
+			"job_%s_%s_%s", jobID, batchStart, batchEnd,
+		)
+		_, err = service.applyKernelBatch(
+			ctx,
+			"formula.backfill.batch",
+			batchIdentity,
+			mutation.Request{
+				ContractVersion: mutation.ContractVersion,
+				RequestID:       batchIdentity,
+				IdempotencyKey:  batchIdentity,
+				TableID:         snapshot.TableID,
+				SchemaRevision:  snapshot.SchemaRevision,
+				Operations:      operations,
+				Actor: mutation.Actor{
+					Type: "system", ID: "formula-backfill",
+				},
+			})
 		if err != nil {
 			return service.failUnlessContextInterrupted(
 				ctx, record, snapshot.TableID, err,

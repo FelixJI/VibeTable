@@ -139,6 +139,29 @@ describe("workspace v2 strict contracts", () => {
       .toThrow("rpc catalog index and cases do not match");
   });
 
+  it("accepts boolean schemas and typed maps but rejects invalid map values", () => {
+    const catalog = structuredClone(fixture("rpc-catalog.json")) as {
+      rpcCases: Array<{
+        method: string;
+        resultSchema: {
+          properties: Record<string, {
+            additionalProperties?: unknown;
+          }>;
+        };
+      }>;
+    };
+    const query = catalog.rpcCases.find(
+      (item) => item.method === "history.query",
+    )!;
+    expect(() => parseRpcContractCatalogV2(catalog)).not.toThrow();
+
+    query.resultSchema.properties.archivedDefaultRevisionIds!
+      .additionalProperties = { type: "array" };
+    expect(() => parseRpcContractCatalogV2(catalog)).toThrow(
+      "additionalProperties.items is invalid",
+    );
+  });
+
   it("accepts only a scalar-or-null union for nullable catalog fields", () => {
     const catalog = structuredClone(fixture("rpc-catalog.json")) as {
       rpcCases: Array<{

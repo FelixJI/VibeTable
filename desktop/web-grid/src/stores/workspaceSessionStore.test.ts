@@ -145,11 +145,7 @@ describe("workspaceSessionStore", () => {
     store.applySession(session(workspaceA.workspaceId, 2));
     expect(protection.snapshots).toEqual([]);
     expect(protection.retentionHydrated).toBe(false);
-    expect(protection.retention.snapshotDays).toBe(30);
-    expect(protection.retention.snapshotCount).toBe(50);
-    expect(protection.retention.fileRevisionDays).toBe(30);
-    expect(protection.retention.fileRevisionCount).toBe(100);
-    expect(protection.retention.trashMonths).toBe(3);
+    expect(protection.retention).toBeNull();
   });
 
   it("keeps recent-table preferences inside the workspace namespace", () => {

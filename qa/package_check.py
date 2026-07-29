@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -103,6 +104,32 @@ def _pe_machine(path: Path) -> int | None:
             return int.from_bytes(stream.read(2), "little")
     except OSError:
         return None
+
+
+def check_packaged_provider_support(
+    provider_path: Path,
+    source_root: Path,
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        provider_support = json.loads(provider_path.read_text(encoding="utf-8"))
+        providers = provider_support["providers"]
+        if provider_support.get("contractVersion") != "2.0":
+            errors.append("provider support contract version is invalid")
+        if providers["fixed"].get("creation") != "enabled":
+            errors.append("fixed provider must remain enabled")
+    except (KeyError, OSError, json.JSONDecodeError, TypeError):
+        return ["provider support matrix is invalid"]
+    errors.extend(
+        check_provider_evidence(
+            source_root,
+            now=now,
+            support_path=provider_path,
+        )
+    )
+    return errors
 
 
 def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[str]:
@@ -226,23 +253,12 @@ def check_package(package_root: Path, source_root: Path = PROJECT_ROOT) -> list[
                     errors.append(f"missing workspace contract asset: {required_contract}")
             provider_path = contracts_root / "provider-support.json"
             if provider_path.is_file():
-                try:
-                    provider_support = json.loads(provider_path.read_text(encoding="utf-8"))
-                    providers = provider_support["providers"]
-                    if provider_support.get("contractVersion") != "2.0":
-                        errors.append("provider support contract version is invalid")
-                    if providers["fixed"].get("creation") != "enabled":
-                        errors.append("fixed provider must remain enabled")
-                    for name in (
-                        "network",
-                        "registeredCloud",
-                        "userMarkedSync",
-                        "removable",
-                    ):
-                        if providers[name].get("creation") != "blockedPendingLab":
-                            errors.append(f"unverified provider is not release-blocked: {name}")
-                except (KeyError, OSError, json.JSONDecodeError, TypeError):
-                    errors.append("provider support matrix is invalid")
+                errors.extend(
+                    check_packaged_provider_support(
+                        provider_path,
+                        source_root,
+                    )
+                )
             corpus_path = contracts_root / "compatibility-corpus.json"
             if corpus_path.is_file():
                 try:

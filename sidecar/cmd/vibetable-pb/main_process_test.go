@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +24,8 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 const helperProcessEnv = "VIBETABLE_TEST_HELPER_PROCESS"
@@ -533,6 +537,75 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		t.Fatalf("capabilities = %#v", capabilities)
 	}
 
+	formulaSchemaBody := workspaceV2FormulaSchemaBody(t)
+	response = requestJSON(
+		t,
+		client,
+		http.MethodPost,
+		baseURL+"/api/vibetable/v1/schema/apply",
+		secret,
+		formulaSchemaBody,
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("formula schema apply status=%d body=%s", response.StatusCode, body)
+	}
+	drainAndClose(t, response.Body)
+	waitForFormulaJobsSettled(t, dataDir)
+	coordinatorPath := filepath.Join(
+		root,
+		".vibetable",
+		"coordination",
+		"write-coordinator.db",
+	)
+	revisionBefore, err := writecoordinator.ReadPersistentMutationRevision(
+		context.Background(),
+		coordinatorPath,
+		env[config.WorkspaceIDEnv],
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectionBefore := readFormulaReadProjection(t, dataDir)
+	response = request(
+		t,
+		client,
+		http.MethodGet,
+		baseURL+"/api/vibetable/v1/schema/tables/formula-read-purity",
+		secret,
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("formula schema describe status=%d body=%s", response.StatusCode, body)
+	}
+	drainAndClose(t, response.Body)
+	waitForFormulaJobsSettled(t, dataDir)
+	revisionAfter, err := writecoordinator.ReadPersistentMutationRevision(
+		context.Background(),
+		coordinatorPath,
+		env[config.WorkspaceIDEnv],
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectionAfter := readFormulaReadProjection(t, dataDir)
+	if revisionAfter != revisionBefore {
+		t.Fatalf(
+			"schema GET mutation revision changed from %d to %d",
+			revisionBefore,
+			revisionAfter,
+		)
+	}
+	if projectionAfter != projectionBefore {
+		t.Fatalf(
+			"schema GET changed jobs/business projection: before=%#v after=%#v",
+			projectionBefore,
+			projectionAfter,
+		)
+	}
+
 	for _, legacyWrite := range []struct {
 		method string
 		path   string
@@ -853,6 +926,149 @@ func workspaceV2Request(
 	) + `","sequence":` +
 		strconv.FormatUint(sequence, 10) +
 		`},"params":` + params + `}`
+}
+
+func workspaceV2FormulaSchemaBody(t *testing.T) string {
+	t.Helper()
+	change := schemaapi.Change{
+		Definition: schema.TableDefinition{
+			ContractVersion: "1.0",
+			TableID:         "formula-read-purity",
+			PhysicalName:    "formula_read_purity",
+			DisplayName:     "Formula read purity",
+			Kind:            schema.TableKindBase,
+			SchemaRevision:  "schema_0000",
+			ArchivePolicy: schema.ArchivePolicy{
+				Mode: schema.ArchiveModeNone,
+			},
+			Fields: []schema.FieldDefinition{
+				{
+					FieldID:      "quantity",
+					PhysicalName: "quantity",
+					DisplayName:  "Quantity",
+					Kind:         schema.FieldKindScalar,
+					DataType:     schema.DataTypeInteger,
+					StorageType:  schema.StorageNumber,
+					Nullable:     true,
+					Constraints:  []schema.FieldConstraint{},
+					Editor: schema.EditorDefinition{
+						Kind: "number", Config: map[string]any{},
+					},
+				},
+				{
+					FieldID:      "total",
+					PhysicalName: "total",
+					DisplayName:  "Total",
+					Kind:         schema.FieldKindFormula,
+					DataType:     schema.DataTypeFormula,
+					StorageType:  schema.StorageNumber,
+					Nullable:     false,
+					Constraints:  []schema.FieldConstraint{},
+					Editor: schema.EditorDefinition{
+						Kind: "readonly", Config: map[string]any{},
+					},
+					ReadOnly: true,
+					Formula: &schema.FormulaSpec{
+						Language:   "cel-v1",
+						Source:     "quantity * 2",
+						ResultType: schema.DataTypeInteger,
+						Version:    1,
+						Status:     "ready",
+					},
+				},
+			},
+			Indexes: []schema.IndexDefinition{},
+		},
+		ExpectedRevision: 0,
+		OperationID:      "formula-read-purity-create",
+	}
+	raw, err := json.Marshal(change)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+type formulaReadProjection struct {
+	Jobs         int
+	JobStates    string
+	FormulaState string
+	TableState   string
+	BusinessRows int
+}
+
+func readFormulaReadProjection(t *testing.T, dataDir string) formulaReadProjection {
+	t.Helper()
+	database, err := sql.Open("sqlite", filepath.Join(dataDir, "data.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec("PRAGMA query_only=ON"); err != nil {
+		t.Fatal(err)
+	}
+	result := formulaReadProjection{}
+	queries := []struct {
+		query  string
+		target any
+	}{
+		{
+			"SELECT COUNT(*) FROM vibetable_jobs",
+			&result.Jobs,
+		},
+		{
+			`SELECT COALESCE(GROUP_CONCAT(
+				id || ':' || state || ':' || CAST(progress_json AS TEXT), '|'
+			), '') FROM vibetable_jobs`,
+			&result.JobStates,
+		},
+		{
+			`SELECT COALESCE(GROUP_CONCAT(
+				field_id || ':' || status || ':' || version, '|'
+			), '') FROM vibetable_formulas`,
+			&result.FormulaState,
+		},
+		{
+			`SELECT COALESCE(GROUP_CONCAT(
+				table_id || ':' || schema_revision || ':' ||
+				CAST(definition_json AS TEXT), '|'
+			), '') FROM vibetable_tables`,
+			&result.TableState,
+		},
+		{
+			"SELECT COUNT(*) FROM formula_read_purity",
+			&result.BusinessRows,
+		},
+	}
+	for _, item := range queries {
+		if err := database.QueryRow(item.query).Scan(item.target); err != nil {
+			t.Fatalf("read formula GET projection: %v", err)
+		}
+	}
+	return result
+}
+
+func waitForFormulaJobsSettled(t *testing.T, dataDir string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		database, err := sql.Open("sqlite", filepath.Join(dataDir, "data.db"))
+		if err == nil {
+			var pending int
+			queryErr := database.QueryRow(
+				"SELECT COUNT(*) FROM vibetable_jobs " +
+					"WHERE state='queued' OR state='running'",
+			).Scan(&pending)
+			_ = database.Close()
+			if queryErr == nil && pending == 0 {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("formula jobs did not settle")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func requestJSON(

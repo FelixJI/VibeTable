@@ -9,19 +9,30 @@ import (
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
+	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
 
 type historyRestoreStub struct {
+	queryParams   audit.ReadParams
 	previewParams audit.PreviewParams
 	applyParams   audit.ApplyParams
+	page          audit.Page
 	preview       audit.Preview
 	applied       audit.RestoreResult
 	previewErr    error
 	applyErr      error
 	onApply       func(context.Context) error
+}
+
+func (stub *historyRestoreStub) ReadChangeSets(
+	_ context.Context,
+	params audit.ReadParams,
+) (audit.Page, error) {
+	stub.queryParams = params
+	return stub.page, nil
 }
 
 func (stub *historyRestoreStub) PreviewRestore(
@@ -64,13 +75,89 @@ func newHistoryRestoreTestRuntime(
 		WorkspaceID: testWorkspaceID,
 		Epoch:       7,
 	})
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir:  filepath.Join(t.TempDir(), "pb_data"),
+		HideStartBanner: true,
+	})
+	migrations.Register(app)
+	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.RunAllMigrations(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { app.ResetBootstrapState() })
+	ledger, err := auditledger.Open(filepath.Join(t.TempDir(), "audit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ledger.Close() })
+	outbox, err := auditledger.NewPocketBaseOutbox(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainer, err := auditledger.NewDrainer(ledger, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runtime := &Runtime{
-		coordinator:    coordinator,
-		dispatcher:     dispatcher,
-		historyRestore: service,
+		app:                 app,
+		coordinator:         coordinator,
+		dispatcher:          dispatcher,
+		historyRestore:      service,
+		ledger:              ledger,
+		fileAuditDrainer:    drainer,
+		businessAuditOutbox: outbox,
 	}
 	runtime.registerHistoryRestoreHandlers()
 	return runtime
+}
+
+func TestCoordinatedBackgroundIdentityDoesNotAdvanceTwice(t *testing.T) {
+	runtime := newHistoryRestoreTestRuntime(t, &historyRestoreStub{})
+	if err := writecoordinator.EnsurePocketBaseReceiptTable(
+		context.Background(),
+		runtime.app,
+	); err != nil {
+		t.Fatal(err)
+	}
+	applies := 0
+	apply := func(ctx context.Context) error {
+		applies++
+		return writecoordinator.PersistPocketBaseReceipt(
+			ctx,
+			runtime.app,
+			time.Date(2026, 7, 29, 11, 0, 0, 0, time.UTC),
+		)
+	}
+	for range 2 {
+		if err := runtime.CoordinateIdempotentBusinessWrite(
+			context.Background(),
+			"formula.backfill.batch",
+			"job-1:rows-1-100",
+			apply,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, counters := runtime.coordinator.Current()
+	if applies != 1 || counters.MutationRevision != 1 {
+		t.Fatalf(
+			"applies=%d mutationRevision=%d",
+			applies,
+			counters.MutationRevision,
+		)
+	}
+	found, err := writecoordinator.HasPocketBaseReceiptIdentity(
+		context.Background(),
+		runtime.app,
+		testWorkspaceID,
+		"formula.backfill.batch",
+		"job-1:rows-1-100",
+	)
+	if err != nil || !found {
+		t.Fatalf("identity receipt found=%v err=%v", found, err)
+	}
 }
 
 func TestHistoryRestoreV2IsStrictAndEnforcesWorkspaceWire(t *testing.T) {
@@ -157,6 +244,74 @@ func TestHistoryRestoreV2IsStrictAndEnforcesWorkspaceWire(t *testing.T) {
 	if staleEpoch.Error == nil ||
 		staleEpoch.Error.Code != protocolv2.ErrStaleSession.Error() {
 		t.Fatalf("stale epoch accepted: %#v", staleEpoch)
+	}
+}
+
+func TestHistoryQueryV2IsStrictAndReturnsExistingHistoryPageShape(
+	t *testing.T,
+) {
+	itemID := "row-1"
+	field := "status"
+	stub := &historyRestoreStub{
+		page: audit.Page{
+			Collection:                 "orders",
+			ItemID:                     &itemID,
+			ChangeSets:                 []audit.ChangeSet{},
+			Total:                      0,
+			CapabilityHash:             "sha256:capability",
+			SchemaRevision:             "schema:1",
+			Scope:                      "cell",
+			Field:                      &field,
+			HasMore:                    false,
+			ArchivedDefaultRevisionIDs: map[string]string{},
+		},
+	}
+	runtime := newHistoryRestoreTestRuntime(t, stub)
+	invalid := dispatch(
+		t,
+		runtime,
+		1,
+		"history.query",
+		`{"collection":"orders","scope":"cell","itemId":"row-1","field":"status","search":"","dateFrom":null,"dateTo":null,"actorId":null,"actions":[],"recordId":null,"limit":50,"offset":0,"unknown":true}`,
+	)
+	if invalid.Error == nil || invalid.Error.Code != "history.request_invalid" {
+		t.Fatalf("unknown history query params accepted: %#v", invalid)
+	}
+	valid := dispatch(
+		t,
+		runtime,
+		1,
+		"history.query",
+		`{"collection":"orders","scope":"cell","itemId":"row-1","field":"status","search":"","dateFrom":null,"dateTo":null,"actorId":null,"actions":[],"recordId":null,"limit":50,"offset":0}`,
+	)
+	if valid.Error != nil {
+		t.Fatalf("valid history query failed: %#v", valid.Error)
+	}
+	page, ok := valid.Result.(audit.Page)
+	if !ok || page.Collection != "orders" ||
+		page.ChangeSets == nil ||
+		page.ArchivedDefaultRevisionIDs == nil {
+		t.Fatalf("history query result = %#v", valid.Result)
+	}
+	if stub.queryParams.TableID != "orders" ||
+		stub.queryParams.Scope != "cell" ||
+		stub.queryParams.ItemID == nil ||
+		*stub.queryParams.ItemID != "row-1" ||
+		stub.queryParams.Field == nil ||
+		*stub.queryParams.Field != "status" {
+		t.Fatalf("history query params = %#v", stub.queryParams)
+	}
+	runtime.ledger = nil
+	missingLedger := dispatch(
+		t,
+		runtime,
+		2,
+		"history.query",
+		`{"collection":"orders","scope":"cell","itemId":"row-1","field":"status","search":"","dateFrom":null,"dateTo":null,"actorId":null,"actions":[],"recordId":null,"limit":50,"offset":0}`,
+	)
+	if missingLedger.Error == nil ||
+		missingLedger.Error.Code != "history.storage_failed" {
+		t.Fatalf("missing ledger did not fail closed: %#v", missingLedger)
 	}
 }
 

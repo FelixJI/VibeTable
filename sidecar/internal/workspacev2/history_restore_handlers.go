@@ -12,6 +12,7 @@ import (
 )
 
 type historyRestoreService interface {
+	ReadChangeSets(context.Context, audit.ReadParams) (audit.Page, error)
 	PreviewRestore(context.Context, audit.PreviewParams) (audit.Preview, error)
 	ApplyRestore(context.Context, audit.ApplyParams) (audit.RestoreResult, error)
 }
@@ -20,6 +21,11 @@ func (runtime *Runtime) registerHistoryRestoreHandlers() {
 	if runtime.historyRestore == nil {
 		return
 	}
+	runtime.dispatcher.Register(
+		"history.query",
+		protocolv2.WorkspaceScope,
+		runtime.queryHistory,
+	)
 	runtime.dispatcher.Register(
 		"history.previewRestore",
 		protocolv2.WorkspaceScope,
@@ -30,6 +36,56 @@ func (runtime *Runtime) registerHistoryRestoreHandlers() {
 		protocolv2.WorkspaceScope,
 		runtime.applyHistoryRestore,
 	)
+}
+
+type queryHistoryParams struct {
+	Collection string   `json:"collection"`
+	Scope      string   `json:"scope"`
+	ItemID     *string  `json:"itemId"`
+	Field      *string  `json:"field"`
+	Search     string   `json:"search"`
+	DateFrom   *string  `json:"dateFrom"`
+	DateTo     *string  `json:"dateTo"`
+	ActorID    *string  `json:"actorId"`
+	Actions    []string `json:"actions"`
+	RecordID   *string  `json:"recordId"`
+	Limit      int      `json:"limit"`
+	Offset     int      `json:"offset"`
+}
+
+func (runtime *Runtime) queryHistory(
+	ctx context.Context,
+	_ json.RawMessage,
+	paramsRaw json.RawMessage,
+) (any, error) {
+	params, err := decodeStrict[queryHistoryParams](paramsRaw)
+	if err != nil {
+		return nil, errors.New("history.request_invalid")
+	}
+	if err := runtime.drainBusinessHistory(ctx); err != nil {
+		return nil, errors.New("history.storage_failed")
+	}
+	page, err := runtime.historyRestore.ReadChangeSets(
+		ctx,
+		audit.ReadParams{
+			TableID:  params.Collection,
+			ItemID:   params.ItemID,
+			Field:    params.Field,
+			Search:   params.Search,
+			ActorID:  params.ActorID,
+			Actions:  params.Actions,
+			DateFrom: params.DateFrom,
+			DateTo:   params.DateTo,
+			Limit:    params.Limit,
+			Offset:   params.Offset,
+			Scope:    params.Scope,
+			RecordID: params.RecordID,
+		},
+	)
+	if err != nil {
+		return nil, publicHistoryRestoreError(err)
+	}
+	return page, nil
 }
 
 type previewHistoryRestoreParams struct {
@@ -48,6 +104,9 @@ func (runtime *Runtime) previewHistoryRestore(
 	params, err := decodeStrict[previewHistoryRestoreParams](paramsRaw)
 	if err != nil {
 		return nil, errors.New("history.request_invalid")
+	}
+	if err := runtime.drainBusinessHistory(ctx); err != nil {
+		return nil, errors.New("history.storage_failed")
 	}
 	var field *string
 	if len(params.Field) == 0 {
@@ -75,6 +134,21 @@ func (runtime *Runtime) previewHistoryRestore(
 		return nil, publicHistoryRestoreError(err)
 	}
 	return result, nil
+}
+
+func (runtime *Runtime) drainBusinessHistory(ctx context.Context) error {
+	if runtime.ledger == nil ||
+		runtime.fileAuditDrainer == nil ||
+		runtime.businessAuditOutbox == nil {
+		return errors.New("history.ledger_unavailable")
+	}
+	runtime.auditDrainMu.Lock()
+	defer runtime.auditDrainMu.Unlock()
+	_, err := runtime.fileAuditDrainer.Drain(
+		ctx,
+		runtime.businessAuditOutbox,
+	)
+	return err
 }
 
 type applyHistoryRestoreParams struct {

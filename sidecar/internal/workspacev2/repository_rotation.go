@@ -3,8 +3,6 @@ package workspacev2
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -30,12 +28,12 @@ type RepositoryRotation struct {
 }
 
 type keyRotationJournal struct {
-	FormatVersion  int    `json:"formatVersion"`
-	WorkspaceID    string `json:"workspaceId"`
-	RotationID     string `json:"rotationId"`
-	Phase          string `json:"phase"`
-	RepositoryHash string `json:"repositoryHash"`
-	BlobConfigHash string `json:"blobConfigHash"`
+	FormatVersion int    `json:"formatVersion"`
+	WorkspaceID   string `json:"workspaceId"`
+	RotationID    string `json:"rotationId"`
+	Phase         string `json:"phase"`
+	BackupPrimary string `json:"repositoryHash"`
+	BackupSecond  string `json:"blobConfigHash"`
 }
 
 type keyRotationFault func(string) error
@@ -59,15 +57,11 @@ func RotateProtectedRepository(
 	}
 	provider := objectrepo.NewKeyProvider(objectrepo.WindowsCredentialVault{})
 	if intent.State == keyRotationIntentCompleted {
-		configPath := filepath.Join(
-			paths.coordination,
-			"kopia.repository.config",
-		)
 		lockCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
 		defer cancel()
-		release, lockErr := objectrepo.AcquireRepositorySession(
+		release, lockErr := objectrepo.AcquireWorkspaceRepositorySession(
 			lockCtx,
-			configPath,
+			paths.coordination,
 		)
 		if errors.Is(lockErr, context.DeadlineExceeded) {
 			return RepositoryRotation{},
@@ -111,22 +105,26 @@ func rotateProtectedRepository(
 	if err != nil {
 		return RepositoryRotation{}, err
 	}
-	if manifest.RepositoryFormat != "kopia-v3" ||
-		objectrepo.EncryptionMode(manifest.EncryptionMode) !=
-			objectrepo.EncryptionProtected {
+	if objectrepo.EncryptionMode(manifest.EncryptionMode) !=
+		objectrepo.EncryptionProtected {
 		return RepositoryRotation{},
 			errors.New("repository.protected_mode_required")
 	}
-	configPath := filepath.Join(
-		paths.coordination,
-		"kopia.repository.config",
+	rotation, err := objectrepo.NewWorkspaceRepositoryRotation(
+		workspaceRepositorySpec(
+			paths,
+			manifest.RepositoryFormat,
+			nil,
+		),
 	)
-	storagePath := filepath.Join(paths.objects, "kopia")
+	if err != nil {
+		return RepositoryRotation{}, err
+	}
 	lockCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
 	defer cancel()
-	release, err := objectrepo.AcquireRepositorySession(
+	release, err := objectrepo.AcquireWorkspaceRepositorySession(
 		lockCtx,
-		configPath,
+		paths.coordination,
 	)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return RepositoryRotation{},
@@ -145,10 +143,9 @@ func rotateProtectedRepository(
 		journal, err = prepareKeyRotation(
 			ctx,
 			paths,
-			configPath,
-			storagePath,
 			workspaceID,
 			provider,
+			rotation,
 		)
 		if err != nil {
 			return RepositoryRotation{}, err
@@ -180,9 +177,8 @@ func rotateProtectedRepository(
 	defer clearBytes(staged.RecoveryKey)
 
 	if journal.Phase == keyRotationPrepared {
-		newValid := verifyRepositoryWithPassword(
+		newValid := rotation.VerifyPassword(
 			ctx,
-			configPath,
 			staged.Password,
 		) == nil
 		if !newValid {
@@ -195,35 +191,32 @@ func rotateProtectedRepository(
 				return RepositoryRotation{}, openErr
 			}
 			defer clearBytes(current.Password)
-			repository, oldErr := openVerifiedRepository(
+			oldErr := rotation.VerifyPassword(
 				ctx,
-				configPath,
 				current.Password,
 			)
 			if oldErr != nil {
 				if err := restoreKeyRotationFormat(
 					ctx,
 					paths,
-					storagePath,
 					journal,
+					rotation,
 				); err != nil {
 					return RepositoryRotation{}, errors.Join(oldErr, err)
 				}
-				repository, oldErr = openVerifiedRepository(
+				oldErr = rotation.VerifyPassword(
 					ctx,
-					configPath,
 					current.Password,
 				)
 			}
 			if oldErr != nil {
 				return RepositoryRotation{}, oldErr
 			}
-			changeErr := repository.ChangePassword(
+			if err := rotation.ChangePassword(
 				ctx,
-				string(staged.Password),
-			)
-			closeErr := repository.Close(context.WithoutCancel(ctx))
-			if err := errors.Join(changeErr, closeErr); err != nil {
+				current.Password,
+				staged.Password,
+			); err != nil {
 				return RepositoryRotation{}, err
 			}
 			if err := injectKeyRotationFault(
@@ -239,9 +232,8 @@ func rotateProtectedRepository(
 		}
 	}
 	if journal.Phase == keyRotationChanged {
-		if err := verifyRepositoryWithPassword(
+		if err := rotation.VerifyPassword(
 			ctx,
-			configPath,
 			staged.Password,
 		); err != nil {
 			return RepositoryRotation{}, err
@@ -310,17 +302,10 @@ func completeKeyRotationIntentIfPresent(
 func prepareKeyRotation(
 	ctx context.Context,
 	paths workspacePaths,
-	configPath string,
-	storagePath string,
 	workspaceID string,
 	provider *objectrepo.KeyProvider,
+	rotation objectrepo.WorkspaceRepositoryRotation,
 ) (keyRotationJournal, error) {
-	if _, err := os.Stat(configPath); err != nil {
-		return keyRotationJournal{}, errors.Join(
-			errors.New("repository.config_missing"),
-			err,
-		)
-	}
 	plan, err := provider.PreviewProtectedRotation(ctx, workspaceID)
 	if err != nil {
 		return keyRotationJournal{}, err
@@ -328,25 +313,10 @@ func prepareKeyRotation(
 	defer clearBytes(plan.CurrentPassword)
 	defer clearBytes(plan.NewPassword)
 	defer clearBytes(plan.RecoveryKey)
-	backup, err := objectrepo.ReadPasswordFormatBackup(ctx, storagePath)
-	if err != nil {
-		return keyRotationJournal{}, err
-	}
 	rotationID := uuid.NewString()
 	root := keyRotationRoot(paths, rotationID)
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return keyRotationJournal{}, err
-	}
-	if err := writeDurablePrivateFile(
-		filepath.Join(root, "kopia.repository"),
-		backup.Repository,
-	); err != nil {
-		return keyRotationJournal{}, err
-	}
-	if err := writeDurablePrivateFile(
-		filepath.Join(root, "kopia.blobcfg"),
-		backup.BlobConfig,
-	); err != nil {
+	proof, err := rotation.Backup(ctx, root)
+	if err != nil {
 		return keyRotationJournal{}, err
 	}
 	if err := provider.StageProtectedRotation(
@@ -361,10 +331,8 @@ func prepareKeyRotation(
 		WorkspaceID:   workspaceID,
 		RotationID:    rotationID,
 		Phase:         keyRotationPrepared,
-		RepositoryHash: hashBytes(
-			backup.Repository,
-		),
-		BlobConfigHash: hashBytes(backup.BlobConfig),
+		BackupPrimary: proof.PrimaryHash,
+		BackupSecond:  proof.SecondaryHash,
 	}
 	if err := writeKeyRotationJournal(paths, journal); err != nil {
 		_ = provider.DiscardStagedProtectedRotation(
@@ -377,70 +345,18 @@ func prepareKeyRotation(
 	return journal, nil
 }
 
-func openVerifiedRepository(
-	ctx context.Context,
-	configPath string,
-	password []byte,
-) (*objectrepo.KopiaRepository, error) {
-	repository, err := objectrepo.OpenKopia(
-		ctx,
-		configPath,
-		string(password),
-	)
-	if err != nil {
-		return nil, err
-	}
-	roots := repository.AllObjectRoots()
-	report, err := repository.Verify(ctx, roots)
-	if err != nil || !report.Valid {
-		_ = repository.Close(context.WithoutCancel(ctx))
-		return nil, errors.Join(
-			errors.New("repository.rotation_verify_failed"),
-			err,
-		)
-	}
-	return repository, nil
-}
-
-func verifyRepositoryWithPassword(
-	ctx context.Context,
-	configPath string,
-	password []byte,
-) error {
-	repository, err := openVerifiedRepository(ctx, configPath, password)
-	if err != nil {
-		return err
-	}
-	return repository.Close(context.WithoutCancel(ctx))
-}
-
 func restoreKeyRotationFormat(
 	ctx context.Context,
 	paths workspacePaths,
-	storagePath string,
 	journal keyRotationJournal,
+	rotation objectrepo.WorkspaceRepositoryRotation,
 ) error {
-	root := keyRotationRoot(paths, journal.RotationID)
-	repositoryBlob, err := os.ReadFile(filepath.Join(root, "kopia.repository"))
-	if err != nil || hashBytes(repositoryBlob) != journal.RepositoryHash {
-		return errors.Join(
-			errors.New("repository.rotation_backup_corrupt"),
-			err,
-		)
-	}
-	blobConfig, err := os.ReadFile(filepath.Join(root, "kopia.blobcfg"))
-	if err != nil || hashBytes(blobConfig) != journal.BlobConfigHash {
-		return errors.Join(
-			errors.New("repository.rotation_backup_corrupt"),
-			err,
-		)
-	}
-	return objectrepo.RestorePasswordFormatBackup(
+	return rotation.Restore(
 		ctx,
-		storagePath,
-		objectrepo.PasswordFormatBackup{
-			Repository: repositoryBlob,
-			BlobConfig: blobConfig,
+		keyRotationRoot(paths, journal.RotationID),
+		objectrepo.WorkspaceRepositoryRotationProof{
+			PrimaryHash:   journal.BackupPrimary,
+			SecondaryHash: journal.BackupSecond,
 		},
 	)
 }
@@ -523,8 +439,8 @@ func validateKeyRotationJournal(journal keyRotationJournal) error {
 	if journal.FormatVersion != 1 ||
 		!validUUID(journal.WorkspaceID) ||
 		!validUUID(journal.RotationID) ||
-		len(journal.RepositoryHash) != 64 ||
-		len(journal.BlobConfigHash) != 64 {
+		len(journal.BackupPrimary) != 64 ||
+		len(journal.BackupSecond) != 64 {
 		return errors.New("repository.rotation_journal_corrupt")
 	}
 	switch journal.Phase {
@@ -565,11 +481,6 @@ func cleanupKeyRotation(paths workspacePaths, rotationID string) error {
 		return nil
 	}
 	return err
-}
-
-func hashBytes(raw []byte) string {
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
 }
 
 func injectKeyRotationFault(fault keyRotationFault, phase string) error {

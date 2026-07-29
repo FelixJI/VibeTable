@@ -806,6 +806,7 @@ func saveAudit(
 	}
 	return saveAuditOutbox(
 		app,
+		record.Id,
 		changeSetID,
 		sequence,
 		request,
@@ -821,6 +822,7 @@ func saveAudit(
 
 func saveAuditOutbox(
 	app core.App,
+	revisionID string,
 	changeSetID string,
 	sequence int,
 	request Request,
@@ -844,6 +846,7 @@ func saveAuditOutbox(
 		return storageFailure()
 	}
 	payload, err := json.Marshal(map[string]any{
+		"revisionId":  revisionID,
 		"changeSetId": changeSetID, "sequence": sequence,
 		"tableId": request.TableID, "recordId": recordID,
 		"operation": operation, "before": before, "after": after,

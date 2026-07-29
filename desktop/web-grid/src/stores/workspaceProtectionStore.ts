@@ -28,26 +28,13 @@ export type {
   WorkspaceStorageProjection,
 } from "@/contracts/workspaceV2Bridge";
 
-// Display-only ADR fixture. Mutations stay gated by retentionHydrated until the host supplies the policy.
-const DEFAULT_RETENTION: RetentionPolicyV2 = {
-  contractVersion: "2.0",
-  policyRevision: 1,
-  snapshotDays: 30,
-  snapshotCount: 50,
-  snapshotBuckets: ["hourly", "daily", "weekly", "monthly"],
-  fileRevisionDays: 30,
-  fileRevisionCount: 100,
-  fileRevisionBuckets: ["daily", "weekly", "monthly"],
-  trashMonths: 3,
-  repositoryLimitBytes: null,
-};
-
 export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2", () => {
   const snapshots = ref<readonly SnapshotTimelineItem[]>([]);
   const selectedSnapshotId = ref<string | null>(null);
   const storage = ref<WorkspaceStorageProjection | null>(null);
   const storagePlan = ref<WorkspaceStoragePlan | null>(null);
-  const retention = ref<RetentionPolicyV2>(DEFAULT_RETENTION);
+  // Null is the only pre-bootstrap state: Web never owns product defaults.
+  const retention = ref<RetentionPolicyV2 | null>(null);
   const retentionHydrated = ref(false);
   const retentionStatus = ref<RetentionProtectionStatus | null>(null);
   const conflicts = ref<readonly WorkspaceConflictItem[]>([]);
@@ -75,7 +62,7 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
     selectedSnapshotId.value = null;
     storage.value = null;
     storagePlan.value = null;
-    retention.value = DEFAULT_RETENTION;
+    retention.value = null;
     retentionHydrated.value = false;
     retentionStatus.value = null;
     conflicts.value = [];

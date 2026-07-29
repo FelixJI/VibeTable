@@ -552,6 +552,8 @@ public sealed record RpcGoldenCaseV2 : IWorkspaceV2Contract
         JsonElement schema,
         bool conditional = false)
     {
+        if (schema.ValueKind == JsonValueKind.True)
+            return true;
         if (schema.ValueKind != JsonValueKind.Object ||
             !HasOnlySchemaKeys(
                 schema,
@@ -671,27 +673,35 @@ public sealed record RpcGoldenCaseV2 : IWorkspaceV2Contract
                  .ToHashSet(StringComparer.Ordinal)
                  .IsSubsetOf(propertyNames)))
             return false;
-        if (schema.TryGetProperty(
-                "additionalProperties",
-                out JsonElement additional) &&
+        bool hasAdditional = schema.TryGetProperty(
+            "additionalProperties",
+            out JsonElement additional);
+        bool typedMap = hasAdditional &&
+            additional.ValueKind == JsonValueKind.Object &&
+            ValidateSchemaNode(additional, conditional: true);
+        if (hasAdditional &&
             additional.ValueKind is not (
-                JsonValueKind.True or JsonValueKind.False))
+                JsonValueKind.True or JsonValueKind.False) &&
+            !typedMap)
             return false;
         if (hasType &&
             type.ValueKind == JsonValueKind.String &&
             type.GetString() == "object" &&
             !conditional &&
-            (!hasProperties ||
-             !hasRequired ||
-             !schema.TryGetProperty(
-                 "additionalProperties",
-                 out additional) ||
-             additional.ValueKind != JsonValueKind.False ||
-             requiredNames.Length != propertyNames.Length ||
-             !requiredNames!
-                 .Cast<string>()
-                 .ToHashSet(StringComparer.Ordinal)
-                 .SetEquals(propertyNames)))
+            !(
+                hasAdditional &&
+                additional.ValueKind == JsonValueKind.False &&
+                hasProperties &&
+                hasRequired &&
+                requiredNames.Length == propertyNames.Length &&
+                requiredNames!
+                    .Cast<string>()
+                    .ToHashSet(StringComparer.Ordinal)
+                    .SetEquals(propertyNames) ||
+                typedMap &&
+                !hasProperties &&
+                !hasRequired
+            ))
             return false;
         bool hasItems = schema.TryGetProperty(
             "items",

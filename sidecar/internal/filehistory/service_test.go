@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ const (
 	testDeviceID    = "22222222-2222-4222-8222-222222222222"
 	testDocumentOne = "33333333-3333-4333-8333-333333333333"
 	testDocumentTwo = "44444444-4444-4444-8444-444444444444"
+	testClaimID     = "55555555-5555-4555-8555-555555555555"
 )
 
 type historyFixture struct {
@@ -30,7 +32,7 @@ type historyFixture struct {
 func newHistoryFixture(t *testing.T) historyFixture {
 	t.Helper()
 	coordinator, err := writecoordinator.New(
-		testWorkspaceID, 1, "claim-a", 1,
+		testWorkspaceID, 1, testClaimID, 1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -284,6 +286,118 @@ func TestRenameDeletePreserveIdentityHistoryAndReservePath(t *testing.T) {
 		Kind: RevisionFormal, Content: []byte("other"),
 	}); !errors.Is(err, ErrPathConflict) {
 		t.Fatalf("deleted path reuse error = %v", err)
+	}
+}
+
+func TestStageSnapshotRestoreMergesDeletedSourceIntoActiveDocument(t *testing.T) {
+	fixture := newHistoryFixture(t)
+	ctx := context.Background()
+	first, err := fixture.save(ctx, SaveRequest{
+		Token: fixture.token, DocumentID: testDocumentOne, Path: "notes.txt",
+		Kind: RevisionFormal, Content: []byte("snapshot content"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := fixture.service.Delete(
+		ctx,
+		fixture.token,
+		testDocumentOne,
+		stringRef(first.Revision.RevisionID),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceRoot := deleted.Root
+
+	current := cloneDocument(deleted.Document)
+	current.Status = DocumentActive
+	current.TopologyRevision++
+	fixture.service.documents[testDocumentOne] = current
+	newer, err := fixture.save(ctx, SaveRequest{
+		Token:                     fixture.token,
+		DocumentID:                testDocumentOne,
+		ExpectedEffectiveRevision: stringRef(first.Revision.RevisionID),
+		Kind:                      RevisionFormal,
+		Content:                   []byte("newer live content"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, counters := fixture.coordinator.Current()
+	staged, err := fixture.service.StageSnapshotRestore(
+		ctx,
+		writecoordinator.WriteIntent{
+			Token:            fixture.token,
+			MutationRevision: counters.MutationRevision + 1,
+		},
+		sourceRoot,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged.Documents) != 1 {
+		t.Fatalf("staged documents = %#v", staged.Documents)
+	}
+	restored := staged.Documents[0]
+	tombstone := revisionByID(restored, restored.EffectiveRevisionID)
+	if restored.Status != DocumentDeleted ||
+		restored.EffectiveRevisionID == first.Revision.RevisionID ||
+		len(restored.Revisions) != 3 ||
+		revisionByID(restored, newer.Revision.RevisionID) == nil ||
+		revisionByID(restored, first.Revision.RevisionID) == nil ||
+		tombstone == nil ||
+		tombstone.Kind != RevisionRestore ||
+		tombstone.ParentRevisionID == nil ||
+		*tombstone.ParentRevisionID != newer.Revision.RevisionID ||
+		tombstone.RestoredFromRevisionID == nil ||
+		*tombstone.RestoredFromRevisionID != first.Revision.RevisionID ||
+		tombstone.ObjectID != first.Revision.ObjectID {
+		t.Fatalf("deleted snapshot merge = %#v", restored)
+	}
+}
+
+func TestStageSnapshotRestorePreservesDeletedSourceWhenCurrentMissing(t *testing.T) {
+	fixture := newHistoryFixture(t)
+	ctx := context.Background()
+	first, err := fixture.save(ctx, SaveRequest{
+		Token: fixture.token, DocumentID: testDocumentOne, Path: "notes.txt",
+		Kind: RevisionFormal, Content: []byte("snapshot content"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := fixture.service.Delete(
+		ctx,
+		fixture.token,
+		testDocumentOne,
+		stringRef(first.Revision.RevisionID),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.service.documents = map[string]Document{}
+	_, counters := fixture.coordinator.Current()
+	staged, err := fixture.service.StageSnapshotRestore(
+		ctx,
+		writecoordinator.WriteIntent{
+			Token:            fixture.token,
+			MutationRevision: counters.MutationRevision + 1,
+		},
+		deleted.Root,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged.Documents) != 1 {
+		t.Fatalf("staged documents = %#v", staged.Documents)
+	}
+	restored := staged.Documents[0]
+	if restored.Status != DocumentDeleted ||
+		restored.EffectiveRevisionID != deleted.Document.EffectiveRevisionID ||
+		restored.RelativePath != deleted.Document.RelativePath ||
+		!reflect.DeepEqual(restored.Revisions, deleted.Document.Revisions) {
+		t.Fatalf("deleted snapshot tombstone = %#v", restored)
 	}
 }
 

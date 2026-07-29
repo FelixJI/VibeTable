@@ -80,9 +80,9 @@ func InitializeWorkspaceReplica(
 	if err != nil {
 		return ReplicaOneShotReceipt{}, err
 	}
-	releaseRepository, err := objectrepo.AcquireRepositorySession(
+	releaseRepository, err := objectrepo.AcquireWorkspaceRepositorySession(
 		ctx,
-		filepath.Join(paths.coordination, "kopia.repository.config"),
+		paths.coordination,
 	)
 	if err != nil {
 		return ReplicaOneShotReceipt{}, err

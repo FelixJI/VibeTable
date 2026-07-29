@@ -777,6 +777,9 @@ func validRPCSchemaNode(value any) bool {
 }
 
 func validRPCSchemaNodeAt(value any, conditional bool) bool {
+	if boolean, ok := value.(bool); ok {
+		return boolean
+	}
 	node, ok := value.(map[string]any)
 	if !ok || !onlyRPCSchemaKeys(
 		node,
@@ -899,16 +902,26 @@ func validRPCSchemaNodeAt(value any, conditional bool) bool {
 		}
 	}
 	if raw, exists := node["additionalProperties"]; exists {
-		if _, ok := raw.(bool); !ok {
+		switch typed := raw.(type) {
+		case bool:
+		case map[string]any:
+			if !validRPCSchemaNodeAt(typed, true) {
+				return false
+			}
+		default:
 			return false
 		}
 	}
-	if nodeTypeName == "object" && !conditional &&
-		(node["additionalProperties"] != false ||
-			properties == nil ||
-			required == nil ||
-			len(required) != len(properties)) {
-		return false
+	if nodeTypeName == "object" && !conditional {
+		_, typedMap := node["additionalProperties"].(map[string]any)
+		closedObject := node["additionalProperties"] == false &&
+			properties != nil &&
+			required != nil &&
+			len(required) == len(properties)
+		if !closedObject &&
+			!(typedMap && properties == nil && required == nil) {
+			return false
+		}
 	}
 	if nodeTypeName == "array" {
 		item, exists := node["items"]

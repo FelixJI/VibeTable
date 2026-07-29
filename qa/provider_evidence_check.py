@@ -123,11 +123,20 @@ def _validate_evidence(
     return errors
 
 
-def check(root: Path = PROJECT_ROOT, *, now: datetime | None = None) -> list[str]:
+def check(
+    root: Path = PROJECT_ROOT,
+    *,
+    now: datetime | None = None,
+    support_path: Path | None = None,
+) -> list[str]:
     root = root.resolve()
-    support_path = root / "contracts" / "v2" / "provider-support.json"
+    selected_support_path = (
+        support_path.resolve()
+        if support_path is not None
+        else root / "contracts" / "v2" / "provider-support.json"
+    )
     try:
-        support = json.loads(support_path.read_text(encoding="utf-8"))
+        support = json.loads(selected_support_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return [f"provider support matrix is invalid: {exc}"]
     if support.get("contractVersion") != "2.0":

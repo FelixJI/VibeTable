@@ -89,7 +89,28 @@ export function useRevisionHistoryService(): {
       offset: append ? store.offset : 0,
     };
     try {
-      const page = await bridge.request("history.queryRequested", payload) as HistoryPage;
+      const request = session.hasOpenWorkspace
+        ? session.historyRestoreEnabled
+          ? requestWorkspaceV2UiAction({
+              method: "history.query",
+              params: {
+                collection,
+                scope: store.scope,
+                itemId: store.itemId,
+                field: store.field ?? (filters.field || null),
+                search: filters.search.trim(),
+                dateFrom: filters.dateFrom || null,
+                dateTo: filters.dateTo || null,
+                actorId: filters.actorId.trim() || null,
+                actions: [...filters.actions],
+                recordId: filters.recordId.trim() || null,
+                limit: store.limit,
+                offset: append ? store.offset : 0,
+              },
+            })
+          : Promise.reject(new Error("workspace.history_restore_unavailable"))
+        : bridge.request("history.queryRequested", payload);
+      const page = await request as HistoryPage;
       if (generation !== queryGeneration || workspace.currentTable !== collection) return;
       store.receivePage(page, append);
     } catch (error) {

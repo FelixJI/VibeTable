@@ -52,6 +52,17 @@ type Options struct {
 	DisableReplicaWorker     bool
 }
 
+// WorkspaceRepository is the workspace-owned capability contract. Storage
+// engine handles and format-specific open/create operations remain private to
+// objectrepo.
+type WorkspaceRepository interface {
+	objectrepo.Repository
+	objectrepo.RetentionInventorySource
+	objectrepo.RetentionMaintainer
+	objectrepo.RepositoryUsageSource
+	Close(context.Context) error
+}
+
 type Runtime struct {
 	app                      core.App
 	paths                    workspacePaths
@@ -60,7 +71,7 @@ type Runtime struct {
 	state                    *stateStore
 	coordinator              *writecoordinator.WorkspaceWriteCoordinator
 	coordinatorPath          string
-	repository               *objectrepo.KopiaRepository
+	repository               WorkspaceRepository
 	repositorySessionRelease func() error
 	catalog                  *snapshot.DurableCatalog
 	headStore                *filehistory.SQLiteHeadStore
@@ -73,6 +84,7 @@ type Runtime struct {
 	watchMu                  sync.Mutex
 	watchEvents              []filehistory.WatchEvent
 	auditDrainMu             sync.Mutex
+	businessIdempotencyMu    sync.Mutex
 	businessAuditOutbox      *auditledger.PocketBaseOutbox
 	fileAuditDrainer         *auditledger.Drainer
 	snapshots                *snapshot.Coordinator
@@ -172,12 +184,11 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 		return nil, err
 	}
 
-	configPath := filepath.Join(
-		paths.coordination,
-		"kopia.repository.config",
-	)
 	result.repositorySessionRelease, err =
-		objectrepo.AcquireRepositorySession(ctx, configPath)
+		objectrepo.AcquireWorkspaceRepositorySession(
+			ctx,
+			paths.coordination,
+		)
 	if err != nil {
 		return nil, err
 	}
@@ -445,6 +456,43 @@ func (runtime *Runtime) CoordinateBusinessWrite(
 		apply,
 	)
 	return err
+}
+
+// CoordinateIdempotentBusinessWrite coordinates durable background batches.
+// Their stable identity may be replayed after a crash with a stale job cursor;
+// an existing transactional PB receipt proves the data batch already committed
+// and prevents a second, receipt-less mutationRevision from being allocated.
+func (runtime *Runtime) CoordinateIdempotentBusinessWrite(
+	ctx context.Context,
+	kind string,
+	identity string,
+	apply func(context.Context) error,
+) error {
+	if runtime == nil || runtime.coordinator == nil || runtime.app == nil {
+		return errors.New("workspace.business_write_unavailable")
+	}
+	runtime.businessIdempotencyMu.Lock()
+	defer runtime.businessIdempotencyMu.Unlock()
+	token, _ := runtime.coordinator.Current()
+	committed, err := writecoordinator.HasPocketBaseReceiptIdentity(
+		ctx,
+		runtime.app,
+		token.WorkspaceID,
+		kind,
+		identity,
+	)
+	if err != nil {
+		return err
+	}
+	if committed {
+		return nil
+	}
+	return runtime.CoordinateBusinessWrite(
+		ctx,
+		kind,
+		identity,
+		apply,
+	)
 }
 
 func (runtime *Runtime) coordinateBusinessWriteReceipt(
@@ -919,10 +967,7 @@ func openRepository(
 	paths workspacePaths,
 	manifest contractsv2.WorkspaceManifest,
 	options Options,
-) (*objectrepo.KopiaRepository, error) {
-	if manifest.RepositoryFormat != "kopia-v3" {
-		return nil, errors.New("repository.format_unsupported")
-	}
+) (WorkspaceRepository, error) {
 	mode := objectrepo.EncryptionMode(manifest.EncryptionMode)
 	keys, err := objectrepo.NewKeyProvider(
 		objectrepo.WindowsCredentialVault{},
@@ -935,29 +980,24 @@ func openRepository(
 			keys.Password[index] = 0
 		}
 	}()
-	configPath := filepath.Join(paths.coordination, "kopia.repository.config")
-	storagePath := filepath.Join(paths.objects, "kopia")
-	_, statErr := os.Stat(configPath)
-	var repository *objectrepo.KopiaRepository
-	switch {
-	case statErr == nil:
-		repository, err = objectrepo.OpenKopia(
-			ctx, configPath, string(keys.Password),
-		)
-	case errors.Is(statErr, os.ErrNotExist):
-		if mode == objectrepo.EncryptionProtected {
+	spec := objectrepo.WorkspaceRepositorySpec{
+		Format:           manifest.RepositoryFormat,
+		CoordinationRoot: paths.coordination,
+		ObjectsRoot:      paths.objects,
+		Password:         keys.Password,
+	}
+	var (
+		repository WorkspaceRepository
+		created    bool
+	)
+	if mode == objectrepo.EncryptionProtected {
+		repository, err = objectrepo.OpenWorkspaceRepository(ctx, spec)
+		if errors.Is(err, objectrepo.ErrRepositoryNotInitialized) {
 			return nil, objectrepo.ErrKeyMissing
 		}
-		if entries, readErr := os.ReadDir(storagePath); readErr == nil && len(entries) != 0 {
-			return nil, errors.New("repository.config_missing")
-		} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-			return nil, readErr
-		}
-		repository, err = objectrepo.CreateKopiaFilesystem(
-			ctx, storagePath, configPath, string(keys.Password),
-		)
-	default:
-		return nil, statErr
+	} else {
+		repository, created, err =
+			objectrepo.OpenOrCreateWorkspaceRepository(ctx, spec)
 	}
 	if err != nil {
 		return nil, err
@@ -967,7 +1007,7 @@ func openRepository(
 		FenceEpoch:  options.FenceEpoch,
 		ClaimID:     options.ClaimID,
 	}
-	if statErr == nil {
+	if !created {
 		err = repository.AcceptAuthority(ctx, &authority, authority)
 		if errors.Is(err, objectrepo.ErrStaleAuthority) {
 			err = repository.AcceptAuthority(ctx, nil, authority)

@@ -1407,8 +1407,10 @@ func mergeSnapshotDocument(
 	source Document,
 	deviceID string,
 ) (Document, error) {
+	hadCurrent := current.DocumentID != ""
 	sourceRevision := revisionByID(source, source.EffectiveRevisionID)
-	if source.Status != DocumentActive ||
+	if (source.Status != DocumentActive &&
+		source.Status != DocumentDeleted) ||
 		sourceRevision == nil {
 		return Document{}, ErrStateCorrupt
 	}
@@ -1434,6 +1436,62 @@ func mergeSnapshotDocument(
 			}
 			current.Revisions = append(current.Revisions, *cloneRevision(&revision))
 		}
+	}
+	if source.Status == DocumentDeleted {
+		if current.DocumentID != source.DocumentID ||
+			current.WorkspaceID != source.WorkspaceID {
+			return Document{}, ErrStateCorrupt
+		}
+		if !hadCurrent {
+			if err := validateDocument(current); err != nil {
+				return Document{}, err
+			}
+			return current, nil
+		}
+		if current.TopologyRevision < source.TopologyRevision {
+			current.TopologyRevision = source.TopologyRevision
+		}
+		if current.NextRevisionOrdinal < source.NextRevisionOrdinal {
+			current.NextRevisionOrdinal = source.NextRevisionOrdinal
+		}
+		if current.NextFormalVersion < source.NextFormalVersion {
+			current.NextFormalVersion = source.NextFormalVersion
+		}
+		current.RelativePath = source.RelativePath
+		current.Status = DocumentDeleted
+		parent := current.EffectiveRevisionID
+		revisionID, err := service.newID()
+		if err != nil {
+			return Document{}, err
+		}
+		formalVersion := current.NextFormalVersion
+		restoredFrom := sourceRevision.RevisionID
+		tombstone := Revision{
+			ContractVersion:        contractVersion,
+			RevisionID:             revisionID,
+			DocumentID:             current.DocumentID,
+			ParentRevisionID:       optionalString(parent),
+			RestoredFromRevisionID: &restoredFrom,
+			Kind:                   RevisionRestore,
+			RevisionOrdinal:        current.NextRevisionOrdinal,
+			FormalVersion:          &formalVersion,
+			ObjectID:               sourceRevision.ObjectID,
+			ContentHash:            sourceRevision.ContentHash,
+			Size:                   sourceRevision.Size,
+			MimeType:               sourceRevision.MimeType,
+			CreatedAt:              service.now().UTC(),
+			CreatedBy:              "snapshot-restore",
+			DeviceID:               deviceID,
+		}
+		current.TopologyRevision++
+		current.EffectiveRevisionID = revisionID
+		current.NextRevisionOrdinal++
+		current.NextFormalVersion++
+		current.Revisions = append(current.Revisions, tombstone)
+		if err := validateDocument(current); err != nil {
+			return Document{}, err
+		}
+		return current, nil
 	}
 	parent := current.EffectiveRevisionID
 	revisionID, err := service.newID()

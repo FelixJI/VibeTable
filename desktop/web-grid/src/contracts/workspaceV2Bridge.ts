@@ -18,6 +18,9 @@ import {
   type WorkspaceStorageMode,
 } from "@/contracts/workspaceV2";
 import type {
+  HistoryChangeSet,
+  HistoryPage,
+  HistoryRecordChange,
   RelationFieldChange,
   RestorePreview,
   RestoreResult,
@@ -48,6 +51,7 @@ export const WORKSPACE_V2_RPC_METHODS = [
   "snapshot.export",
   "snapshot.inspectPackage",
   "snapshot.import",
+  "history.query",
   "history.previewRestore",
   "history.applyRestore",
   "repository.verify",
@@ -169,6 +173,20 @@ export interface WorkspaceV2RpcParams {
     readonly credential: string | null;
     readonly targetMode: "newWorkspace" | "currentWorkspace";
     readonly targetWorkspaceId: string | null;
+  };
+  readonly "history.query": {
+    readonly collection: string;
+    readonly scope: "table" | "row" | "cell" | "archived";
+    readonly itemId: string | null;
+    readonly field: string | null;
+    readonly search: string;
+    readonly dateFrom: string | null;
+    readonly dateTo: string | null;
+    readonly actorId: string | null;
+    readonly actions: readonly string[];
+    readonly recordId: string | null;
+    readonly limit: number;
+    readonly offset: number;
   };
   readonly "history.previewRestore": {
     readonly collection: string;
@@ -477,6 +495,7 @@ export interface WorkspaceV2RpcResultMap {
   readonly "snapshot.export": { readonly displayName: string; readonly sha256: string };
   readonly "snapshot.inspectPackage": SnapshotPackagePlan;
   readonly "snapshot.import": SnapshotImportResult;
+  readonly "history.query": HistoryPage;
   readonly "history.previewRestore": RestorePreview;
   readonly "history.applyRestore": HistoryRestoreResultV2;
   readonly "repository.verify": RepositoryVerificationResult;
@@ -834,6 +853,114 @@ function parseHistoryRelationChange(value: unknown): RelationFieldChange {
   };
 }
 
+function parseHistoryScalarChange(value: unknown): {
+  readonly field: string;
+  readonly before: unknown;
+  readonly after: unknown;
+} {
+  const source = object(value, "history scalar change");
+  exact(source, ["field", "before", "after"], "history scalar change");
+  return {
+    field: text(source.field, "history scalar field"),
+    before: source.before,
+    after: source.after,
+  };
+}
+
+function parseHistoryRecordChange(value: unknown): HistoryRecordChange {
+  const source = object(value, "history record change");
+  exact(source, [
+    "revisionId", "itemId", "recordLabel", "action",
+    "scalarChanges", "relationChanges",
+  ], "history record change");
+  if (!Array.isArray(source.scalarChanges)
+      || !Array.isArray(source.relationChanges)) {
+    throw new Error("history record change collections are invalid");
+  }
+  return {
+    revisionId: text(source.revisionId, "history revisionId"),
+    itemId: text(source.itemId, "history record itemId"),
+    recordLabel: nullableText(source.recordLabel, "history record label"),
+    action: text(source.action, "history record action"),
+    scalarChanges: source.scalarChanges.map(parseHistoryScalarChange),
+    relationChanges: source.relationChanges.map(parseHistoryRelationChange),
+  };
+}
+
+function parseHistoryChangeSet(value: unknown): HistoryChangeSet {
+  const source = object(value, "history change set");
+  exact(source, [
+    "rootRevisionId", "changeSetId", "activityId", "action", "timestamp",
+    "actor", "scalarChanges", "relationChanges", "itemId", "recordLabel",
+    "revisionIds", "affectedRecords", "recordChanges",
+  ], "history change set");
+  if (!Array.isArray(source.scalarChanges)
+      || !Array.isArray(source.relationChanges)
+      || !Array.isArray(source.recordChanges)) {
+    throw new Error("history change set collections are invalid");
+  }
+  const actor = object(source.actor, "history actor");
+  exact(actor, ["userId", "displayName"], "history actor");
+  return {
+    rootRevisionId: text(source.rootRevisionId, "history rootRevisionId"),
+    changeSetId: text(source.changeSetId, "history changeSetId"),
+    activityId: nullableText(source.activityId, "history activityId"),
+    action: text(source.action, "history action"),
+    timestamp: text(source.timestamp, "history timestamp"),
+    actor: {
+      userId: nullableText(actor.userId, "history actor userId"),
+      displayName: nullableText(actor.displayName, "history actor displayName"),
+    },
+    scalarChanges: source.scalarChanges.map(parseHistoryScalarChange),
+    relationChanges: source.relationChanges.map(parseHistoryRelationChange),
+    itemId: nullableText(source.itemId, "history itemId"),
+    recordLabel: nullableText(source.recordLabel, "history record label"),
+    revisionIds: stringList(source.revisionIds, "history revisionIds"),
+    affectedRecords: integer(
+      source.affectedRecords,
+      "history affectedRecords",
+    ),
+    recordChanges: source.recordChanges.map(parseHistoryRecordChange),
+  };
+}
+
+function parseHistoryPage(value: unknown): HistoryPage {
+  const source = object(value, "history page");
+  exact(source, [
+    "collection", "itemId", "changeSets", "total", "capabilityHash",
+    "schemaRevision", "scope", "field", "hasMore",
+    "archivedDefaultRevisionIds",
+  ], "history page");
+  if (!Array.isArray(source.changeSets)) {
+    throw new Error("history changeSets must be an array");
+  }
+  const archived = object(
+    source.archivedDefaultRevisionIds,
+    "archived default revision ids",
+  );
+  return {
+    collection: text(source.collection, "history collection"),
+    itemId: nullableText(source.itemId, "history page itemId"),
+    changeSets: source.changeSets.map(parseHistoryChangeSet),
+    total: integer(source.total, "history total"),
+    capabilityHash: text(source.capabilityHash, "history capabilityHash"),
+    schemaRevision: text(source.schemaRevision, "history schemaRevision"),
+    scope: oneOf(
+      source.scope,
+      ["table", "row", "cell", "archived"] as const,
+      "history scope",
+    ),
+    field: nullableText(source.field, "history page field"),
+    hasMore: bool(source.hasMore, "history hasMore"),
+    archivedDefaultRevisionIds: Object.fromEntries(
+      Object.entries(archived).map(([itemId, revisionId]) => [
+        text(itemId, "archived itemId"),
+        text(revisionId, "archived revisionId"),
+      ]),
+    ),
+  };
+}
+
 function parseHistoryRestorePreview(value: unknown): RestorePreview {
   const source = object(value, "history restore preview");
   exact(source, [
@@ -853,15 +980,7 @@ function parseHistoryRestorePreview(value: unknown): RestorePreview {
     targetRevision: text(source.targetRevision, "targetRevision"),
     currentHash: text(source.currentHash, "currentHash"),
     schemaRevision: text(source.schemaRevision, "schemaRevision"),
-    scalarChanges: source.scalarChanges.map((value) => {
-      const change = object(value, "history scalar change");
-      exact(change, ["field", "before", "after"], "history scalar change");
-      return {
-        field: text(change.field, "history scalar field"),
-        before: change.before,
-        after: change.after,
-      };
-    }),
+    scalarChanges: source.scalarChanges.map(parseHistoryScalarChange),
     relationChanges: source.relationChanges.map(parseHistoryRelationChange),
     diagnostics: source.diagnostics.map((value) => {
       const diagnostic = object(value, "history restore diagnostic");
@@ -1145,6 +1264,8 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
       ),
       state: "restoreRequired",
     };
+  } else if (method === "history.query") {
+    parsed = parseHistoryPage(source);
   } else if (method === "history.previewRestore") {
     parsed = parseHistoryRestorePreview(source);
   } else if (method === "history.applyRestore") {

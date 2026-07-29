@@ -216,12 +216,45 @@ describe("revisionHistoryService", () => {
       item: { id: "42", status: "new" },
       mutationRevision: 1,
     };
-    const request = vi.fn(async (action: { method: string }) =>
-      action.method === "history.previewRestore" ? preview : applied);
+    const page: HistoryPage = {
+      collection: "orders",
+      scope: "cell",
+      itemId: "42",
+      field: "status",
+      changeSets: [],
+      total: 0,
+      hasMore: false,
+      capabilityHash: "sha256:capability",
+      schemaRevision: "schema:1",
+      archivedDefaultRevisionIds: {},
+    };
+    const request = vi.fn(async (action: { method: string }) => {
+      if (action.method === "history.query") return page;
+      return action.method === "history.previewRestore" ? preview : applied;
+    });
     setWorkspaceV2UiPort({ request } as unknown as WorkspaceV2UiPort);
     const store = useRevisionHistoryStore();
     const service = useRevisionHistoryService();
     service.open({ scope: "cell", itemId: "42", field: "status" });
+    await vi.waitFor(() => expect(store.phase).toBe("empty"));
+    expect(request).toHaveBeenCalledWith({
+      method: "history.query",
+      params: {
+        collection: "orders",
+        scope: "cell",
+        itemId: "42",
+        field: "status",
+        search: "",
+        dateFrom: null,
+        dateTo: null,
+        actorId: null,
+        actions: [],
+        recordId: null,
+        limit: 50,
+        offset: 0,
+      },
+    });
+    expect(harness.posted).toHaveLength(0);
     const legacyMessagesBeforePreview = harness.posted.length;
 
     service.previewRestore({ itemId: "42", revisionId: "r1", field: "status" });
@@ -249,6 +282,47 @@ describe("revisionHistoryService", () => {
       },
     });
     expect(store.lastApplied?.item.status).toBe("new");
+  });
+
+  it("fails V2 history queries closed without falling back to legacy history", async () => {
+    const harness = setupBridge();
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const sessionStore = useWorkspaceSessionStore();
+    const workspaceEntry: WorkspaceRegistryEntryV2 = {
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      displayName: "项目 A",
+      selectedRoot: "D:\\Workspaces\\A",
+      activityRoot: null,
+      storageKind: "fixed",
+      coordinationStrength: "strong",
+      lastOpenedAt: null,
+      lastKnownHealth: "healthy",
+      lastSnapshotAt: null,
+      lastSyncAt: null,
+      pendingSync: false,
+    };
+    sessionStore.configureCapabilities(["workspace.session.v2"]);
+    sessionStore.setWorkspaces([workspaceEntry]);
+    sessionStore.applySession({
+      contractVersion: "2.0",
+      workspaceId: workspaceEntry.workspaceId,
+      sessionEpoch: 7,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+
+    const store = useRevisionHistoryStore();
+    useRevisionHistoryService().open({ scope: "table" });
+
+    await vi.waitFor(() => expect(store.phase).toBe("failed"));
+    expect(store.lastError).toContain("workspace.history_restore_unavailable");
+    expect(harness.posted).toHaveLength(0);
   });
 
   it("fails closed when V2 history capability is absent or its method is rejected", async () => {

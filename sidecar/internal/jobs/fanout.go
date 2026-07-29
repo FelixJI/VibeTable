@@ -801,17 +801,22 @@ func (service *Service) runFanout(
 			"fanout_%s_%d_%d", record.Id,
 			snapshot.Progress.Completed, end,
 		)
-		if _, err := service.kernel.Apply(ctx, mutation.Request{
-			ContractVersion: mutation.ContractVersion,
-			RequestID:       key,
-			IdempotencyKey:  key,
-			TableID:         snapshot.TableID,
-			SchemaRevision:  snapshot.SchemaRevision,
-			Operations:      operations,
-			Actor: mutation.Actor{
-				Type: "system", ID: "formula-fanout",
+		if _, err := service.applyKernelBatch(
+			ctx,
+			"formula.fanout.batch",
+			key,
+			mutation.Request{
+				ContractVersion: mutation.ContractVersion,
+				RequestID:       key,
+				IdempotencyKey:  key,
+				TableID:         snapshot.TableID,
+				SchemaRevision:  snapshot.SchemaRevision,
+				Operations:      operations,
+				Actor: mutation.Actor{
+					Type: "system", ID: "formula-fanout",
+				},
 			},
-		}); err != nil {
+		); err != nil {
 			return service.failUnlessContextInterrupted(
 				ctx, record, snapshot.TableID, err,
 			)

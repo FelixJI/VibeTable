@@ -149,17 +149,6 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		mutationOptions...,
 	)
 	jobService.SetKernel(mutationKernel)
-	auditService, err := audit.New(
-		pb,
-		mutationKernel,
-		mutation.MetadataSchemaSource{},
-		restoreKey,
-		audit.WithAttachmentHistory(attachmentManager),
-	)
-	if err != nil {
-		jobService.Shutdown()
-		return nil, err
-	}
 	ledgerRoot := filepath.Join(filepath.Dir(options.DataDir), "audit")
 	ledger, err := auditledger.Open(ledgerRoot)
 	if err != nil {
@@ -173,6 +162,27 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		return nil, err
 	}
 	auditOutbox, err := auditledger.NewPocketBaseOutbox(pb)
+	if err != nil {
+		_ = ledger.Close()
+		jobService.Shutdown()
+		return nil, err
+	}
+	auditOptions := []audit.Option{
+		audit.WithAttachmentHistory(attachmentManager),
+	}
+	if options.WorkspaceV2 != nil {
+		auditOptions = append(
+			auditOptions,
+			audit.WithLedgerHistory(ledger),
+		)
+	}
+	auditService, err := audit.New(
+		pb,
+		mutationKernel,
+		mutation.MetadataSchemaSource{},
+		restoreKey,
+		auditOptions...,
+	)
 	if err != nil {
 		_ = ledger.Close()
 		jobService.Shutdown()
@@ -318,6 +328,18 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			if err != nil {
 				_ = rawListener.Close()
 				return fmt.Errorf("open workspace v2 runtime: %w", err)
+			}
+			jobService.SetBusinessWriteGate(
+				workspaceRuntime.CoordinateIdempotentBusinessWrite,
+			)
+			if err := jobService.ResumePending(
+				jobService.Context(),
+			); err != nil {
+				_ = rawListener.Close()
+				return fmt.Errorf(
+					"resume coordinated workspace jobs: %w",
+					err,
+				)
 			}
 			if options.OnWorkspaceV2Ready != nil {
 				if err := options.OnWorkspaceV2Ready(

@@ -206,6 +206,45 @@ func HasPocketBaseReceipt(
 	return count == 1, nil
 }
 
+// HasPocketBaseReceiptIdentity reports whether the same logical background
+// batch already committed in any session for this workspace. Job identities
+// are globally idempotent and survive session rotation; if snapshot restore
+// rolls the business database back, the receipt disappears with the mutation
+// and the batch is intentionally eligible to run again.
+func HasPocketBaseReceiptIdentity(
+	ctx context.Context,
+	app core.App,
+	workspaceID string,
+	kind string,
+	identity string,
+) (bool, error) {
+	if app == nil ||
+		strings.TrimSpace(workspaceID) == "" ||
+		strings.TrimSpace(kind) == "" ||
+		strings.TrimSpace(identity) == "" {
+		return false, errors.New("workspace.business_receipt_invalid")
+	}
+	var count int
+	err := app.DB().NewQuery(`
+		SELECT COUNT(*)
+		FROM workspace_v2_mutation_receipts
+		WHERE workspace_id = {:workspace}
+		  AND kind = {:kind}
+		  AND identity = {:identity}
+	`).WithContext(ctx).Bind(dbx.Params{
+		"workspace": workspaceID,
+		"kind":      kind,
+		"identity":  identity,
+	}).Row(&count)
+	if err != nil {
+		return false, err
+	}
+	if count < 0 || count > 1 {
+		return false, errors.New("workspace.business_receipt_corrupt")
+	}
+	return count == 1, nil
+}
+
 // LoadPocketBaseReceipt returns the exact business identity associated with a
 // prepared coordinator revision. Startup recovery uses it to route conflict
 // publications back to their original durable stage.

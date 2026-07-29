@@ -34,7 +34,7 @@ class ContractValue:
     """Example wire value paired with a schema not inferable from the example."""
 
     example: Any
-    schema: dict[str, Any]
+    schema: Any
 
 
 def nullable_string(example: str | None = None) -> ContractValue:
@@ -108,6 +108,22 @@ def typed_array(item_example: Any) -> ContractValue:
 
 def string_array() -> ContractValue:
     return typed_array("value")
+
+
+def string_map(example: dict[str, str] | None = None) -> ContractValue:
+    return ContractValue(
+        example or {},
+        {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+        },
+    )
+
+
+def json_value(example: Any = None) -> ContractValue:
+    # JSON Schema's boolean true schema is the closed catalog's explicit
+    # spelling for a field whose value may be any JSON value.
+    return ContractValue(example, True)
 
 
 def constrained_object(
@@ -686,6 +702,111 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
             "sourceWorkspaceId": WORKSPACE_ID,
             "sourceSnapshotId": "88888888-8888-4888-8888-888888888888",
             "state": "restoreRequired",
+        },
+    ),
+    Rpc(
+        "history.query",
+        "workspace",
+        "QueryHistoryParams",
+        "HistoryPage",
+        {
+            "collection": "orders",
+            "scope": enum_string("row", "table", "row", "cell", "archived"),
+            "itemId": nullable_string("row-1"),
+            "field": nullable_string(),
+            "search": "",
+            "dateFrom": nullable_string(),
+            "dateTo": nullable_string(),
+            "actorId": nullable_string(),
+            "actions": string_array(),
+            "recordId": nullable_string("row-1"),
+            "limit": positive_integer(50),
+            "offset": nonnegative_integer(),
+        },
+        {
+            "collection": "orders",
+            "itemId": nullable_string("row-1"),
+            "changeSets": typed_array(
+                {
+                    "rootRevisionId": "revision-1",
+                    "changeSetId": "change-set-1",
+                    "activityId": nullable_string("change-set-1"),
+                    "action": "update",
+                    "timestamp": "2026-07-29T10:00:00Z",
+                    "actor": {
+                        "userId": nullable_string("user-1"),
+                        "displayName": nullable_string("用户 A"),
+                    },
+                    "scalarChanges": typed_array(
+                        {
+                            "field": "status",
+                            "before": json_value("new"),
+                            "after": json_value("done"),
+                        }
+                    ),
+                    "relationChanges": typed_array(
+                        {
+                            "field": "customer",
+                            "kind": enum_string(
+                                "m2o",
+                                "m2o",
+                                "o2m",
+                                "m2m",
+                                "m2a",
+                                "file",
+                            ),
+                            "relatedCollection": nullable_string("customers"),
+                            "relatedItemId": nullable_string("customer-1"),
+                            "displayValue": nullable_string("客户 A"),
+                            "beforeItemId": nullable_string("customer-2"),
+                            "afterItemId": nullable_string("customer-1"),
+                            "beforeDisplayValue": nullable_string("客户 B"),
+                            "afterDisplayValue": nullable_string("客户 A"),
+                            "targetAvailable": True,
+                        }
+                    ),
+                    "itemId": nullable_string("row-1"),
+                    "recordLabel": nullable_string("订单 1"),
+                    "revisionIds": string_array(),
+                    "affectedRecords": nonnegative_integer(1),
+                    "recordChanges": typed_array(
+                        {
+                            "revisionId": "revision-1",
+                            "itemId": "row-1",
+                            "recordLabel": nullable_string("订单 1"),
+                            "action": "update",
+                            "scalarChanges": typed_array(
+                                {
+                                    "field": "status",
+                                    "before": json_value("new"),
+                                    "after": json_value("done"),
+                                }
+                            ),
+                            "relationChanges": typed_array(
+                                {
+                                    "field": "customer",
+                                    "kind": "m2o",
+                                    "relatedCollection": nullable_string("customers"),
+                                    "relatedItemId": nullable_string("customer-1"),
+                                    "displayValue": nullable_string("客户 A"),
+                                    "beforeItemId": nullable_string("customer-2"),
+                                    "afterItemId": nullable_string("customer-1"),
+                                    "beforeDisplayValue": nullable_string("客户 B"),
+                                    "afterDisplayValue": nullable_string("客户 A"),
+                                    "targetAvailable": True,
+                                }
+                            ),
+                        }
+                    ),
+                }
+            ),
+            "total": nonnegative_integer(1),
+            "capabilityHash": "sha256:capability",
+            "schemaRevision": "schema:1",
+            "scope": enum_string("row", "table", "row", "cell", "archived"),
+            "field": nullable_string(),
+            "hasMore": False,
+            "archivedDefaultRevisionIds": string_map(),
         },
     ),
     Rpc(

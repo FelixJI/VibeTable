@@ -117,13 +117,13 @@ def test_performance_summary_reports_scenarios_bridge_percentiles_and_failures()
                     "pending": [],
                     "roundTrips": [
                         {
-                            "requestType": "history.queryRequested",
-                            "responseType": "history.pageLoaded",
+                            "requestType": "history.query",
+                            "responseType": "workspace.v2.response",
                             "durationMs": 20,
                         },
                         {
-                            "requestType": "history.queryRequested",
-                            "responseType": "history.pageLoaded",
+                            "requestType": "history.query",
+                            "responseType": "workspace.v2.response",
                             "durationMs": 80,
                         },
                     ],
@@ -165,10 +165,10 @@ def test_performance_summary_reports_scenarios_bridge_percentiles_and_failures()
         }
     ]
     history = next(
-        item for item in summary["byOperation"] if item["requestType"] == "history.queryRequested"
+        item for item in summary["byOperation"] if item["requestType"] == "history.query"
     )
     assert history == {
-        "requestType": "history.queryRequested",
+        "requestType": "history.query",
         "count": 2,
         "failures": 0,
         "p50Ms": 20.0,
@@ -193,8 +193,9 @@ def test_node_runner_enforces_closed_history_and_no_external_http() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
 
     assert '"history.read"' not in source
-    assert '"history.queryRequested"' in source
-    assert '["history.pageLoaded"]' in source
+    assert '"history.query"' in source
+    assert "rawWorkspaceV2Request(" in source
+    assert '"history.queryRequested"' not in source
     assert "externalRequests.length === 0" in source
     assert 'url.hostname === "app.vibetable.local"' in source
     assert '["127.0.0.1", "::1", "localhost"]' in source
@@ -256,8 +257,10 @@ def test_attachment_preview_and_backup_audit_are_exact_evidence() -> None:
     assert "waitForPreviewArtifact(" in attachment
     assert "attachment-preview-verified.txt" in attachment
     assert "sha256(await fs.readFile(preservedPreviewPath))" in attachment
-    assert "beforeAuditSnapshot === afterAuditSnapshot" in backup
-    assert "allowedBackupRestoreAuditActions = new Set([])" in backup
+    assert "preservedChangeSetIds" in backup
+    assert "postSnapshotValuePreserved" in backup
+    assert "postSnapshotAttachmentPreserved" in backup
+    assert "beforeAuditSnapshot === afterAuditSnapshot" not in backup
     assert "snapshotStorageProof.auditLedger?.verified === true" in backup
     assert "preservedSnapshotAnchor === snapshotStorageProof.auditLedger.anchorHash" in backup
     assert 'record.sourceEpoch.startsWith("snapshot-restore:")' in backup

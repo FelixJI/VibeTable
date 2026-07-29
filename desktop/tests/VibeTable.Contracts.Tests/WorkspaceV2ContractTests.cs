@@ -175,6 +175,33 @@ public sealed class WorkspaceV2ContractTests
     }
 
     [TestMethod]
+    public void RpcCatalogAcceptsTypedMapsAndRejectsInvalidMapValueSchemas()
+    {
+        JsonObject catalog =
+            JsonNode.Parse(ReadFixture("rpc-catalog.json"))!.AsObject();
+        JsonObject query = catalog["rpcCases"]!.AsArray()
+            .Select(item => item!.AsObject())
+            .Single(item =>
+                item["method"]!.GetValue<string>() == "history.query");
+        JsonObject map = query["resultSchema"]!["properties"]![
+            "archivedDefaultRevisionIds"]!.AsObject();
+        Assert.AreEqual(
+            "string",
+            map["additionalProperties"]!["type"]!.GetValue<string>());
+
+        WorkspaceV2Json.DeserializeStrict<RpcContractCatalogV2>(
+            catalog.ToJsonString());
+
+        map["additionalProperties"] = new JsonObject
+        {
+            ["type"] = "array",
+        };
+        Assert.ThrowsExactly<JsonException>(() =>
+            WorkspaceV2Json.DeserializeStrict<RpcContractCatalogV2>(
+                catalog.ToJsonString()));
+    }
+
+    [TestMethod]
     public void WorkspaceScopeRejectsLateEpochAndSequence()
     {
         var scope = new WorkspaceWireScope

@@ -919,11 +919,7 @@ def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
         )
 
     history = next(
-        (
-            operation
-            for operation in by_operation
-            if operation["requestType"] == "history.queryRequested"
-        ),
+        (operation for operation in by_operation if operation["requestType"] == "history.query"),
         None,
     )
     history_status = "not-measured"

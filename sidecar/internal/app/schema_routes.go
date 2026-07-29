@@ -44,19 +44,6 @@ func registerSchemaRoutes(
 		if err != nil {
 			return writeSchemaError(request, err)
 		}
-		if definitionNeedsBackfill(definition) {
-			snapshot, startErr := jobService.StartFormulaBackfill(
-				request.Request.Context(),
-				definition.TableID,
-				definition.SchemaRevision,
-			)
-			if startErr != nil {
-				return writeJobError(request, startErr)
-			}
-			if snapshot.State == "queued" {
-				jobService.Start(snapshot.JobID)
-			}
-		}
 		return request.JSON(http.StatusOK, definition)
 	})
 
@@ -90,6 +77,7 @@ func registerSchemaRoutes(
 			return writeSchemaError(request, err)
 		}
 		var definition schema.TableDefinition
+		var backfill jobs.Snapshot
 		err := runBusinessWrite(
 			request.Request.Context(),
 			gates,
@@ -98,11 +86,25 @@ func registerSchemaRoutes(
 			func(ctx context.Context) error {
 				var applyErr error
 				definition, applyErr = catalog.ApplyChange(ctx, change)
+				if applyErr != nil || !definitionNeedsBackfill(definition) {
+					return applyErr
+				}
+				backfill, applyErr = jobService.StartFormulaBackfill(
+					ctx,
+					definition.TableID,
+					definition.SchemaRevision,
+				)
 				return applyErr
 			},
 		)
 		if err != nil {
+			if _, ok := err.(*jobs.JobError); ok {
+				return writeJobError(request, err)
+			}
 			return writeSchemaError(request, err)
+		}
+		if backfill.State == "queued" {
+			jobService.Start(backfill.JobID)
 		}
 		return request.JSON(http.StatusOK, definition)
 	})

@@ -49,11 +49,14 @@ func TestProtectedKeyRotationRecoversKillAfterKopiaChangeBeforeJournal(
 	ctx := context.Background()
 	root := createProtectedWorkspace(t)
 	dataDir := filepath.Join(root, ".vibetable", "data")
-	configPath := filepath.Join(
-		root,
-		".vibetable",
-		"coordination",
-		"kopia.repository.config",
+	paths, manifest, err := validateBinding(dataDir, testWorkspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositorySpec := workspaceRepositorySpec(
+		paths,
+		manifest.RepositoryFormat,
+		nil,
 	)
 	oldKey := []byte("old-protected-repository-key-0001")
 	vault := rotationTestVault{}
@@ -65,11 +68,11 @@ func TestProtectedKeyRotationRecoversKillAfterKopiaChangeBeforeJournal(
 	); err != nil {
 		t.Fatal(err)
 	}
-	repository, err := objectrepo.CreateKopiaFilesystem(
+	createSpec := repositorySpec
+	createSpec.Password = oldKey
+	repository, err := objectrepo.CreateWorkspaceRepository(
 		ctx,
-		filepath.Join(root, ".vibetable", "objects", "kopia"),
-		configPath,
-		string(oldKey),
+		createSpec,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -136,17 +139,19 @@ func TestProtectedKeyRotationRecoversKillAfterKopiaChangeBeforeJournal(
 		string(rotated.RecoveryKey) == string(oldKey) {
 		t.Fatalf("rotation recovery key = %x", rotated.RecoveryKey)
 	}
-	if _, err := objectrepo.OpenKopia(
-		ctx,
-		configPath,
-		string(oldKey),
+	oldSpec := repositorySpec
+	oldSpec.Password = oldKey
+	if stale, err := objectrepo.OpenWorkspaceRepository(
+		ctx, oldSpec,
 	); err == nil {
+		_ = stale.Close(ctx)
 		t.Fatal("old key still opens the repository")
 	}
-	reopened, err := objectrepo.OpenKopia(
+	rotatedSpec := repositorySpec
+	rotatedSpec.Password = rotated.RecoveryKey
+	reopened, err := objectrepo.OpenWorkspaceRepository(
 		ctx,
-		configPath,
-		string(rotated.RecoveryKey),
+		rotatedSpec,
 	)
 	if err != nil {
 		t.Fatal(err)

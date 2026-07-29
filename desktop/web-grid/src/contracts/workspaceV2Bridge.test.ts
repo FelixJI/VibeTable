@@ -84,6 +84,71 @@ describe("workspace v2 provisional file revision results", () => {
 });
 
 describe("workspace v2 row and cell history restore", () => {
+  it("strictly parses the append-only history page", () => {
+    const parsed = parseWorkspaceV2Reply({
+      ...reply,
+      method: "history.query",
+      result: {
+        collection: "orders",
+        itemId: "row-1",
+        changeSets: [{
+          rootRevisionId: "revision-2",
+          changeSetId: "change-set-2",
+          activityId: "activity-2",
+          action: "update",
+          timestamp: "2026-07-29T10:00:00Z",
+          actor: { userId: "user-1", displayName: "用户 A" },
+          scalarChanges: [{ field: "status", before: "new", after: "done" }],
+          relationChanges: [],
+          itemId: "row-1",
+          recordLabel: "订单 1",
+          revisionIds: ["revision-2"],
+          affectedRecords: 1,
+          recordChanges: [{
+            revisionId: "revision-2",
+            itemId: "row-1",
+            recordLabel: "订单 1",
+            action: "update",
+            scalarChanges: [{ field: "status", before: "new", after: "done" }],
+            relationChanges: [],
+          }],
+        }],
+        total: 1,
+        capabilityHash: "sha256:capability",
+        schemaRevision: "schema:2",
+        scope: "row",
+        field: null,
+        hasMore: false,
+        archivedDefaultRevisionIds: {},
+      },
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok && parsed.method === "history.query") {
+      expect(parsed.result.changeSets[0]?.rootRevisionId).toBe("revision-2");
+      expect(parsed.result.total).toBe(1);
+    }
+  });
+
+  it("rejects open or malformed history-page projections", () => {
+    expect(() => parseWorkspaceV2Reply({
+      ...reply,
+      method: "history.query",
+      result: {
+        collection: "orders",
+        itemId: null,
+        changeSets: [],
+        total: 0,
+        capabilityHash: "sha256:capability",
+        schemaRevision: "schema:2",
+        scope: "table",
+        field: null,
+        hasMore: false,
+        archivedDefaultRevisionIds: {},
+        databasePath: "must-not-leak",
+      },
+    })).toThrow("history page has unknown or missing fields");
+  });
+
   it("strictly parses preview and coordinated apply results", () => {
     const preview = parseWorkspaceV2Reply({
       ...reply,

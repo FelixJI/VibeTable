@@ -26,16 +26,20 @@ func TestInitializeRepositoryIsOneShotAndVerified(t *testing.T) {
 		len(result.RecoveryKey) != 0 {
 		t.Fatalf("initialization result = %#v", result)
 	}
-	configPath := filepath.Join(
-		root,
-		".vibetable",
-		"coordination",
-		"kopia.repository.config",
+	paths, manifest, err := validateBinding(
+		dataDir,
+		testWorkspaceID,
 	)
-	repository, err := objectrepo.OpenKopia(
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := objectrepo.OpenWorkspaceRepository(
 		context.Background(),
-		configPath,
-		objectrepo.ConvenientPassword,
+		workspaceRepositorySpec(
+			paths,
+			manifest.RepositoryFormat,
+			[]byte(objectrepo.ConvenientPassword),
+		),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -58,5 +62,19 @@ func TestInitializeRepositoryIsOneShotAndVerified(t *testing.T) {
 		testClaimID,
 	); err == nil || err.Error() != "repository.already_initialized" {
 		t.Fatalf("second initialization was not rejected: %v", err)
+	}
+	stillPresent, err := objectrepo.OpenWorkspaceRepository(
+		context.Background(),
+		workspaceRepositorySpec(
+			paths,
+			manifest.RepositoryFormat,
+			[]byte(objectrepo.ConvenientPassword),
+		),
+	)
+	if err != nil {
+		t.Fatalf("second initialization removed existing repository: %v", err)
+	}
+	if err := stillPresent.Close(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }

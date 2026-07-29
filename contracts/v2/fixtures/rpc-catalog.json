@@ -25,6 +25,7 @@
     "snapshot.export",
     "snapshot.inspectPackage",
     "snapshot.import",
+    "history.query",
     "history.previewRestore",
     "history.applyRestore",
     "repository.verify",
@@ -2702,6 +2703,603 @@
       }
     },
     {
+      "method": "history.query",
+      "scope": "workspace",
+      "paramsModel": "QueryHistoryParams",
+      "resultModel": "HistoryPage",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "collection",
+          "scope",
+          "itemId",
+          "field",
+          "search",
+          "dateFrom",
+          "dateTo",
+          "actorId",
+          "actions",
+          "recordId",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "collection": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "table",
+              "row",
+              "cell",
+              "archived"
+            ]
+          },
+          "itemId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "search": {
+            "type": "string"
+          },
+          "dateFrom": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dateTo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "actorId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recordId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "collection",
+          "itemId",
+          "changeSets",
+          "total",
+          "capabilityHash",
+          "schemaRevision",
+          "scope",
+          "field",
+          "hasMore",
+          "archivedDefaultRevisionIds"
+        ],
+        "properties": {
+          "collection": {
+            "type": "string"
+          },
+          "itemId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "changeSets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "rootRevisionId",
+                "changeSetId",
+                "activityId",
+                "action",
+                "timestamp",
+                "actor",
+                "scalarChanges",
+                "relationChanges",
+                "itemId",
+                "recordLabel",
+                "revisionIds",
+                "affectedRecords",
+                "recordChanges"
+              ],
+              "properties": {
+                "rootRevisionId": {
+                  "type": "string"
+                },
+                "changeSetId": {
+                  "type": "string"
+                },
+                "activityId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "action": {
+                  "type": "string"
+                },
+                "timestamp": {
+                  "type": "string"
+                },
+                "actor": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "userId",
+                    "displayName"
+                  ],
+                  "properties": {
+                    "userId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "displayName": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "scalarChanges": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "field",
+                      "before",
+                      "after"
+                    ],
+                    "properties": {
+                      "field": {
+                        "type": "string"
+                      },
+                      "before": true,
+                      "after": true
+                    }
+                  }
+                },
+                "relationChanges": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "field",
+                      "kind",
+                      "relatedCollection",
+                      "relatedItemId",
+                      "displayValue",
+                      "beforeItemId",
+                      "afterItemId",
+                      "beforeDisplayValue",
+                      "afterDisplayValue",
+                      "targetAvailable"
+                    ],
+                    "properties": {
+                      "field": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "m2o",
+                          "o2m",
+                          "m2m",
+                          "m2a",
+                          "file"
+                        ]
+                      },
+                      "relatedCollection": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "relatedItemId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "displayValue": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "beforeItemId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "afterItemId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "beforeDisplayValue": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "afterDisplayValue": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "targetAvailable": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                },
+                "itemId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "recordLabel": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "revisionIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "affectedRecords": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "recordChanges": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "revisionId",
+                      "itemId",
+                      "recordLabel",
+                      "action",
+                      "scalarChanges",
+                      "relationChanges"
+                    ],
+                    "properties": {
+                      "revisionId": {
+                        "type": "string"
+                      },
+                      "itemId": {
+                        "type": "string"
+                      },
+                      "recordLabel": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "action": {
+                        "type": "string"
+                      },
+                      "scalarChanges": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "field",
+                            "before",
+                            "after"
+                          ],
+                          "properties": {
+                            "field": {
+                              "type": "string"
+                            },
+                            "before": true,
+                            "after": true
+                          }
+                        }
+                      },
+                      "relationChanges": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "field",
+                            "kind",
+                            "relatedCollection",
+                            "relatedItemId",
+                            "displayValue",
+                            "beforeItemId",
+                            "afterItemId",
+                            "beforeDisplayValue",
+                            "afterDisplayValue",
+                            "targetAvailable"
+                          ],
+                          "properties": {
+                            "field": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "type": "string"
+                            },
+                            "relatedCollection": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "relatedItemId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "displayValue": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "beforeItemId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "afterItemId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "beforeDisplayValue": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "afterDisplayValue": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "targetAvailable": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "capabilityHash": {
+            "type": "string"
+          },
+          "schemaRevision": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "table",
+              "row",
+              "cell",
+              "archived"
+            ]
+          },
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "archivedDefaultRevisionIds": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-025",
+        "method": "history.query",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 25,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "collection": "orders",
+          "scope": "row",
+          "itemId": "row-1",
+          "field": null,
+          "search": "",
+          "dateFrom": null,
+          "dateTo": null,
+          "actorId": null,
+          "actions": [
+            "value"
+          ],
+          "recordId": "row-1",
+          "limit": 50,
+          "offset": 0
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-025",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 25,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "collection": "orders",
+          "itemId": "row-1",
+          "changeSets": [
+            {
+              "rootRevisionId": "revision-1",
+              "changeSetId": "change-set-1",
+              "activityId": "change-set-1",
+              "action": "update",
+              "timestamp": "2026-07-29T10:00:00Z",
+              "actor": {
+                "userId": "user-1",
+                "displayName": "用户 A"
+              },
+              "scalarChanges": [
+                {
+                  "field": "status",
+                  "before": "new",
+                  "after": "done"
+                }
+              ],
+              "relationChanges": [
+                {
+                  "field": "customer",
+                  "kind": "m2o",
+                  "relatedCollection": "customers",
+                  "relatedItemId": "customer-1",
+                  "displayValue": "客户 A",
+                  "beforeItemId": "customer-2",
+                  "afterItemId": "customer-1",
+                  "beforeDisplayValue": "客户 B",
+                  "afterDisplayValue": "客户 A",
+                  "targetAvailable": true
+                }
+              ],
+              "itemId": "row-1",
+              "recordLabel": "订单 1",
+              "revisionIds": [
+                "value"
+              ],
+              "affectedRecords": 1,
+              "recordChanges": [
+                {
+                  "revisionId": "revision-1",
+                  "itemId": "row-1",
+                  "recordLabel": "订单 1",
+                  "action": "update",
+                  "scalarChanges": [
+                    {
+                      "field": "status",
+                      "before": "new",
+                      "after": "done"
+                    }
+                  ],
+                  "relationChanges": [
+                    {
+                      "field": "customer",
+                      "kind": "m2o",
+                      "relatedCollection": "customers",
+                      "relatedItemId": "customer-1",
+                      "displayValue": "客户 A",
+                      "beforeItemId": "customer-2",
+                      "afterItemId": "customer-1",
+                      "beforeDisplayValue": "客户 B",
+                      "afterDisplayValue": "客户 A",
+                      "targetAvailable": true
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "total": 1,
+          "capabilityHash": "sha256:capability",
+          "schemaRevision": "schema:1",
+          "scope": "row",
+          "field": null,
+          "hasMore": false,
+          "archivedDefaultRevisionIds": {}
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-025",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 25,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "history.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
       "method": "history.previewRestore",
       "scope": "workspace",
       "paramsModel": "PreviewHistoryRestoreParams",
@@ -2957,12 +3555,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-025",
+        "id": "v2-026",
         "method": "history.previewRestore",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 25,
+          "sequence": 26,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -2976,11 +3574,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-025",
+        "id": "v2-026",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 25,
+          "sequence": 26,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3032,11 +3630,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-025",
+        "id": "v2-026",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 25,
+          "sequence": 26,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3126,12 +3724,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-026",
+        "id": "v2-027",
         "method": "history.applyRestore",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 26,
+          "sequence": 27,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3143,11 +3741,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-026",
+        "id": "v2-027",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 26,
+          "sequence": 27,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3165,11 +3763,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-026",
+        "id": "v2-027",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 26,
+          "sequence": 27,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3223,12 +3821,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-027",
+        "id": "v2-028",
         "method": "repository.verify",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 27,
+          "sequence": 28,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3236,11 +3834,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-027",
+        "id": "v2-028",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 27,
+          "sequence": 28,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3255,11 +3853,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-027",
+        "id": "v2-028",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 27,
+          "sequence": 28,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3306,12 +3904,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-028",
+        "id": "v2-029",
         "method": "repository.previewKeyRotation",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 28,
+          "sequence": 29,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3319,11 +3917,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-028",
+        "id": "v2-029",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 28,
+          "sequence": 29,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3335,11 +3933,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-028",
+        "id": "v2-029",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 28,
+          "sequence": 29,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3396,12 +3994,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-029",
+        "id": "v2-030",
         "method": "repository.applyKeyRotation",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 29,
+          "sequence": 30,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3412,11 +4010,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-029",
+        "id": "v2-030",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 29,
+          "sequence": 30,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3428,11 +4026,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-029",
+        "id": "v2-030",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 29,
+          "sequence": 30,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3516,12 +4114,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-030",
+        "id": "v2-031",
         "method": "fileHistory.import",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 30,
+          "sequence": 31,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3533,11 +4131,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-030",
+        "id": "v2-031",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 30,
+          "sequence": 31,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3554,11 +4152,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-030",
+        "id": "v2-031",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 30,
+          "sequence": 31,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3646,12 +4244,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-031",
+        "id": "v2-032",
         "method": "fileHistory.listDocuments",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 31,
+          "sequence": 32,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3661,11 +4259,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-031",
+        "id": "v2-032",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 31,
+          "sequence": 32,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3686,11 +4284,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-031",
+        "id": "v2-032",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 31,
+          "sequence": 32,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3776,12 +4374,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-032",
+        "id": "v2-033",
         "method": "fileHistory.listPendingChanges",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 32,
+          "sequence": 33,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3789,11 +4387,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-032",
+        "id": "v2-033",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 32,
+          "sequence": 33,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3817,11 +4415,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-032",
+        "id": "v2-033",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 32,
+          "sequence": 33,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3932,12 +4530,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-033",
+        "id": "v2-034",
         "method": "fileHistory.applyPendingChange",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 33,
+          "sequence": 34,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3950,11 +4548,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-033",
+        "id": "v2-034",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 33,
+          "sequence": 34,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -3975,11 +4573,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-033",
+        "id": "v2-034",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 33,
+          "sequence": 34,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4059,12 +4657,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-034",
+        "id": "v2-035",
         "method": "fileHistory.unlink",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 34,
+          "sequence": 35,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4075,11 +4673,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-034",
+        "id": "v2-035",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 34,
+          "sequence": 35,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4096,11 +4694,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-034",
+        "id": "v2-035",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 34,
+          "sequence": 35,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4184,12 +4782,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-035",
+        "id": "v2-036",
         "method": "fileHistory.relink",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 35,
+          "sequence": 36,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4201,11 +4799,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-035",
+        "id": "v2-036",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 35,
+          "sequence": 36,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4222,11 +4820,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-035",
+        "id": "v2-036",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 35,
+          "sequence": 36,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4504,12 +5102,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-036",
+        "id": "v2-037",
         "method": "fileHistory.readTree",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 36,
+          "sequence": 37,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4519,11 +5117,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-036",
+        "id": "v2-037",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 36,
+          "sequence": 37,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4555,11 +5153,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-036",
+        "id": "v2-037",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 36,
+          "sequence": 37,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4674,12 +5272,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-037",
+        "id": "v2-038",
         "method": "fileHistory.restore",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 37,
+          "sequence": 38,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4691,11 +5289,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-037",
+        "id": "v2-038",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 37,
+          "sequence": 38,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4708,11 +5306,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-037",
+        "id": "v2-038",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 37,
+          "sequence": 38,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4827,12 +5425,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-038",
+        "id": "v2-039",
         "method": "fileHistory.upgrade",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 38,
+          "sequence": 39,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4844,11 +5442,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-038",
+        "id": "v2-039",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 38,
+          "sequence": 39,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4861,11 +5459,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-038",
+        "id": "v2-039",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 38,
+          "sequence": 39,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4922,12 +5520,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-039",
+        "id": "v2-040",
         "method": "fileHistory.activateLeaf",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 39,
+          "sequence": 40,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4939,11 +5537,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-039",
+        "id": "v2-040",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 39,
+          "sequence": 40,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4954,11 +5552,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-039",
+        "id": "v2-040",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 39,
+          "sequence": 40,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5042,12 +5640,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-040",
+        "id": "v2-041",
         "method": "retention.get",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 40,
+          "sequence": 41,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5055,11 +5653,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-040",
+        "id": "v2-041",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 40,
+          "sequence": 41,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5087,11 +5685,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-040",
+        "id": "v2-041",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 40,
+          "sequence": 41,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5204,12 +5802,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-041",
+        "id": "v2-042",
         "method": "retention.status",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 41,
+          "sequence": 42,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5217,11 +5815,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-041",
+        "id": "v2-042",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 41,
+          "sequence": 42,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5241,11 +5839,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-041",
+        "id": "v2-042",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 41,
+          "sequence": 42,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5372,12 +5970,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-042",
+        "id": "v2-043",
         "method": "retention.update",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 42,
+          "sequence": 43,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5403,11 +6001,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-042",
+        "id": "v2-043",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 42,
+          "sequence": 43,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5435,11 +6033,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-042",
+        "id": "v2-043",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 42,
+          "sequence": 43,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5489,12 +6087,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-043",
+        "id": "v2-044",
         "method": "retention.plan",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 43,
+          "sequence": 44,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5502,11 +6100,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-043",
+        "id": "v2-044",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 43,
+          "sequence": 44,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5520,11 +6118,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-043",
+        "id": "v2-044",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 43,
+          "sequence": 44,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5573,12 +6171,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-044",
+        "id": "v2-045",
         "method": "retention.apply",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 44,
+          "sequence": 45,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5588,11 +6186,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-044",
+        "id": "v2-045",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 44,
+          "sequence": 45,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5603,11 +6201,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-044",
+        "id": "v2-045",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 44,
+          "sequence": 45,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5654,12 +6252,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-045",
+        "id": "v2-046",
         "method": "replica.status",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 45,
+          "sequence": 46,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5667,11 +6265,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-045",
+        "id": "v2-046",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 45,
+          "sequence": 46,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5683,11 +6281,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-045",
+        "id": "v2-046",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 45,
+          "sequence": 46,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5730,12 +6328,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-046",
+        "id": "v2-047",
         "method": "replica.synchronize",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 46,
+          "sequence": 47,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5743,11 +6341,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-046",
+        "id": "v2-047",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 46,
+          "sequence": 47,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5758,11 +6356,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-046",
+        "id": "v2-047",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 46,
+          "sequence": 47,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5815,12 +6413,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-047",
+        "id": "v2-048",
         "method": "replica.forceTakeover",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 47,
+          "sequence": 48,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5830,11 +6428,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-047",
+        "id": "v2-048",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 47,
+          "sequence": 48,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5846,11 +6444,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-047",
+        "id": "v2-048",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 47,
+          "sequence": 48,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5939,12 +6537,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-048",
+        "id": "v2-049",
         "method": "conflict.list",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 48,
+          "sequence": 49,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5955,11 +6553,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-048",
+        "id": "v2-049",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 48,
+          "sequence": 49,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5977,11 +6575,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-048",
+        "id": "v2-049",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 48,
+          "sequence": 49,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6111,12 +6709,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-049",
+        "id": "v2-050",
         "method": "conflict.inspect",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 49,
+          "sequence": 50,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6126,11 +6724,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-049",
+        "id": "v2-050",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 49,
+          "sequence": 50,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6157,11 +6755,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-049",
+        "id": "v2-050",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 49,
+          "sequence": 50,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6251,12 +6849,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-050",
+        "id": "v2-051",
         "method": "conflict.preview",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 50,
+          "sequence": 51,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6273,11 +6871,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-050",
+        "id": "v2-051",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 50,
+          "sequence": 51,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6291,11 +6889,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-050",
+        "id": "v2-051",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 50,
+          "sequence": 51,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6351,12 +6949,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-051",
+        "id": "v2-052",
         "method": "conflict.apply",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 51,
+          "sequence": 52,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6366,11 +6964,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-051",
+        "id": "v2-052",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 51,
+          "sequence": 52,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6384,11 +6982,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-051",
+        "id": "v2-052",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 51,
+          "sequence": 52,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },

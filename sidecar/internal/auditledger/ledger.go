@@ -279,6 +279,46 @@ func (ledger *Ledger) Records(after uint64, limit int) []Record {
 	return result
 }
 
+// VerifiedRecords returns a point-in-time copy only after re-reading the
+// durable database and checking both the hash chain and the in-process anchor.
+// History readers use this seam instead of the cached Records view so a
+// truncated, missing, or externally modified ledger fails closed.
+func (ledger *Ledger) VerifiedRecords(ctx context.Context) ([]Record, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	if ledger.db == nil {
+		return nil, errors.New("audit.ledger_closed")
+	}
+	records, err := readRecords(ctx, ledger.db)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyRecords(records); err != nil {
+		return nil, err
+	}
+	if len(records) != len(ledger.records) {
+		return nil, fmt.Errorf(
+			"%w: durable record count changed from %d to %d",
+			ErrChainCorrupt,
+			len(ledger.records),
+			len(records),
+		)
+	}
+	for index := range records {
+		if records[index].Hash != ledger.records[index].Hash {
+			return nil, fmt.Errorf(
+				"%w: durable record differs at sequence %d",
+				ErrChainCorrupt,
+				records[index].LedgerSequence,
+			)
+		}
+	}
+	return records, nil
+}
+
 func (ledger *Ledger) Verify() error {
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
@@ -334,15 +374,54 @@ func VerifyPrefix(raw []byte) (Anchor, error) {
 }
 
 func (ledger *Ledger) load() error {
-	rows, err := ledger.db.Query(`
+	records, err := readRecords(context.Background(), ledger.db)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if _, exists := ledger.events[record.Envelope.EventID]; exists {
+			return fmt.Errorf(
+				"%w: duplicate event %s",
+				ErrChainCorrupt,
+				record.Envelope.EventID,
+			)
+		}
+		sourceKey := envelopeSourceKey(record.Envelope)
+		if _, exists := ledger.sourceKeys[sourceKey]; exists {
+			return fmt.Errorf(
+				"%w: duplicate source sequence %s",
+				ErrChainCorrupt,
+				sourceKey,
+			)
+		}
+		if record.Envelope.SourceSequence !=
+			ledger.sourceHigh[record.Envelope.SourceEpoch]+1 {
+			return fmt.Errorf(
+				"%w: non-contiguous source sequence %s",
+				ErrChainCorrupt,
+				sourceKey,
+			)
+		}
+		ledger.events[record.Envelope.EventID] = len(ledger.records)
+		ledger.sourceKeys[sourceKey] = record.Envelope.EventID
+		ledger.sourceHigh[record.Envelope.SourceEpoch] =
+			record.Envelope.SourceSequence
+		ledger.records = append(ledger.records, record)
+	}
+	return verifyRecords(ledger.records)
+}
+
+func readRecords(ctx context.Context, db *sql.DB) ([]Record, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT ledger_sequence, event_id, source_epoch, source_sequence,
 		       mutation_identity, payload_hash, payload, occurred_at,
 		       previous_hash, hash
 		FROM audit_ledger ORDER BY ledger_sequence`)
 	if err != nil {
-		return fmt.Errorf("%w: read ledger: %v", ErrChainCorrupt, err)
+		return nil, fmt.Errorf("%w: read ledger: %v", ErrChainCorrupt, err)
 	}
 	defer rows.Close()
+	records := []Record{}
 	line := 0
 	for rows.Next() {
 		line++
@@ -363,43 +442,32 @@ func (ledger *Ledger) load() error {
 			&record.PreviousHash,
 			&record.Hash,
 		); err != nil {
-			return fmt.Errorf("%w: row %d: %v", ErrChainCorrupt, line, err)
+			return nil, fmt.Errorf("%w: row %d: %v", ErrChainCorrupt, line, err)
 		}
 		record.Envelope.Payload = append(json.RawMessage(nil), payload...)
 		record.Envelope.OccurredAt, err = time.Parse(time.RFC3339Nano, occurredAt)
 		if err != nil {
-			return fmt.Errorf("%w: row %d timestamp: %v", ErrChainCorrupt, line, err)
+			return nil, fmt.Errorf("%w: row %d timestamp: %v", ErrChainCorrupt, line, err)
 		}
 		normalized, err := normalizeEnvelope(record.Envelope)
 		if err != nil {
-			return fmt.Errorf("%w: row %d: %v", ErrChainCorrupt, line, err)
+			return nil, fmt.Errorf("%w: row %d: %v", ErrChainCorrupt, line, err)
 		}
 		record.Envelope = normalized
 		if record.LedgerSequence != uint64(line) {
-			return fmt.Errorf("%w: row %d has sequence %d", ErrChainCorrupt, line, record.LedgerSequence)
+			return nil, fmt.Errorf(
+				"%w: row %d has sequence %d",
+				ErrChainCorrupt,
+				line,
+				record.LedgerSequence,
+			)
 		}
-		if _, exists := ledger.events[record.Envelope.EventID]; exists {
-			return fmt.Errorf("%w: duplicate event %s", ErrChainCorrupt, record.Envelope.EventID)
-		}
-		sourceKey := envelopeSourceKey(record.Envelope)
-		if _, exists := ledger.sourceKeys[sourceKey]; exists {
-			return fmt.Errorf("%w: duplicate source sequence %s", ErrChainCorrupt, sourceKey)
-		}
-		if record.Envelope.SourceSequence != ledger.sourceHigh[record.Envelope.SourceEpoch]+1 {
-			return fmt.Errorf("%w: non-contiguous source sequence %s", ErrChainCorrupt, sourceKey)
-		}
-		ledger.events[record.Envelope.EventID] = len(ledger.records)
-		ledger.sourceKeys[sourceKey] = record.Envelope.EventID
-		ledger.sourceHigh[record.Envelope.SourceEpoch] = record.Envelope.SourceSequence
-		ledger.records = append(ledger.records, record)
+		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("%w: scan ledger: %v", ErrChainCorrupt, err)
+		return nil, fmt.Errorf("%w: scan ledger: %v", ErrChainCorrupt, err)
 	}
-	if err := verifyRecords(ledger.records); err != nil {
-		return err
-	}
-	return nil
+	return records, nil
 }
 
 func verifyRecords(records []Record) error {

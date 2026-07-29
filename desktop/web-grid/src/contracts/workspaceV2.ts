@@ -724,6 +724,7 @@ function parsePropertySchema(
   label: string,
   conditional = false,
 ): JsonRecord {
+  if (value === true) return {};
   const property = record(value, label);
   if (Object.keys(property).length === 0) return property;
   const allowed = [
@@ -776,8 +777,16 @@ function parsePropertySchema(
   }
   if (
     "additionalProperties" in property
-    && typeof property.additionalProperties !== "boolean"
-  ) throw new Error(`${label}.additionalProperties is invalid`);
+  ) {
+    const additional = property.additionalProperties;
+    if (typeof additional !== "boolean") {
+      parsePropertySchema(
+        additional,
+        `${label}.additionalProperties`,
+        true,
+      );
+    }
+  }
   if ("properties" in property) {
     const properties = record(property.properties, `${label}.properties`);
     for (const [key, child] of Object.entries(properties)) {
@@ -802,13 +811,24 @@ function parsePropertySchema(
       parsePropertySchema(branch, `${label}.${keyword}[${index}]`, true));
   }
   if (types.includes("object") && !conditional) {
-    const properties = record(property.properties, `${label}.properties`);
-    const required = stringArray(property.required, `${label}.required`);
-    if (
-      property.additionalProperties !== false
-      || required.length !== Object.keys(properties).length
-      || !required.every((key) => key in properties)
-    ) throw new Error(`${label} must be a closed object schema`);
+    const hasProperties = "properties" in property;
+    const hasRequired = "required" in property;
+    const typedMap = (
+      property.additionalProperties !== null
+      && typeof property.additionalProperties === "object"
+      && !Array.isArray(property.additionalProperties)
+      && !hasProperties
+      && !hasRequired
+    );
+    if (!typedMap) {
+      const properties = record(property.properties, `${label}.properties`);
+      const required = stringArray(property.required, `${label}.required`);
+      if (
+        property.additionalProperties !== false
+        || required.length !== Object.keys(properties).length
+        || !required.every((key) => key in properties)
+      ) throw new Error(`${label} must be a closed object schema`);
+    }
   }
   if (types.includes("array")) {
     if (!("items" in property)) throw new Error(`${label}.items is invalid`);
@@ -840,9 +860,11 @@ function schemaPropertyTypes(value: unknown, label: string): readonly string[] {
 
 function validateSchemaValue(
   value: unknown,
-  schema: JsonRecord,
+  rawSchema: unknown,
   label: string,
 ): void {
+  if (rawSchema === true) return;
+  const schema = record(rawSchema, `${label}.schema`);
   if (Object.keys(schema).length === 0) return;
   if ("const" in schema && !Object.is(value, schema.const)) {
     throw new Error(`${label} does not match its const schema`);
@@ -892,24 +914,24 @@ function validateSchemaValue(
     && !Array.isArray(value)
   ) validateObjectPayload(value, schema, label);
   if (schema.type === "array" && Array.isArray(value)) {
-    const itemSchema = record(schema.items, `${label}.schema.items`);
+    const itemSchema = schema.items;
     value.forEach((item, index) =>
       validateSchemaValue(item, itemSchema, `${label}[${index}]`));
   }
   if (Array.isArray(schema.allOf)) {
-    schema.allOf.forEach((branch, index) =>
+    schema.allOf.forEach((branch) =>
       validateSchemaValue(
         value,
-        record(branch, `${label}.schema.allOf[${index}]`),
+        branch,
         label,
       ));
   }
   if (Array.isArray(schema.oneOf)) {
-    const matches = schema.oneOf.filter((branch, index) => {
+    const matches = schema.oneOf.filter((branch) => {
       try {
         validateSchemaValue(
           value,
-          record(branch, `${label}.schema.oneOf[${index}]`),
+          branch,
           label,
         );
         return true;
@@ -944,9 +966,21 @@ function validateObjectPayload(
     throw new Error(`${label} does not match its closed schema`);
   }
   for (const [key, raw] of Object.entries(payload)) {
-    if (!(key in properties)) continue;
-    const property = record(properties[key], `${label}.schema.properties.${key}`);
-    validateSchemaValue(raw, property, `${label}.${key}`);
+    if (key in properties) {
+      validateSchemaValue(raw, properties[key], `${label}.${key}`);
+      continue;
+    }
+    if (
+      schema.additionalProperties !== null
+      && typeof schema.additionalProperties === "object"
+      && !Array.isArray(schema.additionalProperties)
+    ) {
+      validateSchemaValue(
+        raw,
+        schema.additionalProperties,
+        `${label}.${key}`,
+      );
+    }
   }
   return payload;
 }
