@@ -852,8 +852,10 @@ func (service *Service) ensureMissingFormulaBackfills(ctx context.Context) error
 		if describeErr != nil {
 			return describeErr
 		}
-		snapshot, startErr := service.StartFormulaBackfill(
-			ctx, tableID, definition.SchemaRevision,
+		snapshot, startErr := service.startRecoveredFormulaBackfill(
+			ctx,
+			tableID,
+			definition.SchemaRevision,
 		)
 		if startErr != nil {
 			return startErr
@@ -864,6 +866,43 @@ func (service *Service) ensureMissingFormulaBackfills(ctx context.Context) error
 		service.Start(snapshot.JobID)
 	}
 	return nil
+}
+
+// startRecoveredFormulaBackfill closes the crash window between a committed
+// schema change and its normal enqueue step. Startup discovers the durable
+// "backfilling" formula metadata and recreates the missing job through the
+// same idempotent Workspace V2 write coordinator used by the request path.
+func (service *Service) startRecoveredFormulaBackfill(
+	ctx context.Context,
+	tableID string,
+	schemaRevision string,
+) (Snapshot, error) {
+	service.mu.Lock()
+	gate := service.businessGate
+	service.mu.Unlock()
+	var snapshot Snapshot
+	start := func(writeCtx context.Context) error {
+		var err error
+		snapshot, err = service.StartFormulaBackfill(
+			writeCtx,
+			tableID,
+			schemaRevision,
+		)
+		return err
+	}
+	if gate == nil {
+		return snapshot, start(ctx)
+	}
+	identity := fmt.Sprintf("%s:%s", tableID, schemaRevision)
+	if err := gate(ctx, "formula.backfill.enqueue", identity, start); err != nil {
+		return Snapshot{}, err
+	}
+	// Coordinator replay skips the callback. Resolve the already committed
+	// job from PocketBase without creating a duplicate.
+	if snapshot.JobID == "" {
+		return service.StartFormulaBackfill(ctx, tableID, schemaRevision)
+	}
+	return snapshot, nil
 }
 
 func (service *Service) fail(

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"strconv"
@@ -211,12 +212,19 @@ func isBusinessHistoryEpoch(sourceEpoch string) bool {
 		return false
 	}
 	workspaceID, err := uuid.Parse(parts[1])
-	if err != nil || workspaceID == uuid.Nil ||
-		strings.ToLower(parts[1]) != parts[1] {
+	if err != nil || workspaceID == uuid.Nil {
 		return false
 	}
 	counter, err := strconv.ParseUint(parts[2], 10, 64)
-	return err == nil && counter > 1
+	if err != nil || counter <= 1 {
+		return false
+	}
+	return sourceEpoch == fmt.Sprintf(
+		"%s:%s:%020d",
+		businessHistoryEpoch,
+		workspaceID.String(),
+		counter,
+	)
 }
 
 func decodeLedgerHistoryPayload(

@@ -133,6 +133,11 @@ func TestBusinessHistoryEpochValidation(t *testing.T) {
 			"business-v2:11111111-1111-4111-8111-111111111111:00000000000000000001",
 			false,
 		},
+		{
+			"business-v2:11111111111141118111111111111111:00000000000000000002",
+			false,
+		},
+		{"business-v2:11111111-1111-4111-8111-111111111111:2", false},
 		{"business-v2:11111111-1111-4111-8111-111111111111:2:extra", false},
 	} {
 		if actual := isBusinessHistoryEpoch(test.value); actual != test.valid {

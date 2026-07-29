@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import {
   NAlert,
   NButton,
@@ -83,15 +83,26 @@ const extractDocumentId = ref<string | null>(null);
 const convenientPasswordCopied = ref(false);
 const storageConfirmation = ref("");
 
-onMounted(() => {
-  if (!session.policyEnabled) return;
-  if (!protection.retentionHydrated) {
-    emit("action", { method: "retention.get", params: {} });
-  }
-  if (!protection.retentionStatus) {
-    emit("action", { method: "retention.status", params: {} });
-  }
-});
+watch(
+  () => [
+    session.policyEnabled,
+    session.activeWorkspaceId,
+    session.sessionEpoch,
+    protection.retentionHydrated,
+    protection.retentionStatus,
+  ] as const,
+  ([policyEnabled]) => {
+    if (!policyEnabled) return;
+    if (!protection.retentionHydrated) {
+      emit("action", { method: "retention.get", params: {} });
+      return;
+    }
+    if (protection.retentionStatus === null) {
+      emit("action", { method: "retention.status", params: {} });
+    }
+  },
+  { immediate: true },
+);
 
 type RetentionBucket = RetentionPolicyV2["snapshotBuckets"][number];
 const emptyRetentionDraft = () => ({

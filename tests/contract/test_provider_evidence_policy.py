@@ -236,6 +236,64 @@ def test_packaged_enabled_provider_accepts_current_authentic_evidence(
     )
 
 
+def test_source_check_accepts_authentic_evidence_before_candidate_exists(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _support(tmp_path, creation="enabled")
+    head = "a" * 40
+    now = datetime(2026, 7, 29, tzinfo=UTC)
+    source_hash = _source_identity(tmp_path)
+    dependencies = _dependency_versions(tmp_path)
+    artifact_hashes, _artifact = _release_artifacts(tmp_path / "future-release")
+    _evidence(
+        tmp_path,
+        source_commit=head,
+        source_hash=source_hash,
+        artifact_hashes=artifact_hashes,
+        expires_at=now + timedelta(days=1),
+        dependencies=dependencies,
+    )
+    monkeypatch.setattr(provider_evidence_check, "_head", lambda _root: head)
+    monkeypatch.setenv("VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY", ATTESTATION_KEY)
+    monkeypatch.setenv("VIBETABLE_PROVIDER_EVIDENCE_KEY_ID", ATTESTATION_KEY_ID)
+
+    assert provider_evidence_check.check(tmp_path, now=now) == []
+
+
+def test_packaged_provider_requires_candidate_artifact_hashes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source"
+    package = tmp_path / "package"
+    _support(package, creation="enabled")
+    head = "a" * 40
+    now = datetime(2026, 7, 29, tzinfo=UTC)
+    source_hash = _source_identity(source)
+    dependencies = _dependency_versions(source)
+    artifact_hashes, _artifact = _release_artifacts(tmp_path / "release")
+    _evidence(
+        source,
+        source_commit=head,
+        source_hash=source_hash,
+        artifact_hashes=artifact_hashes,
+        expires_at=now + timedelta(days=1),
+        dependencies=dependencies,
+    )
+    monkeypatch.setattr(provider_evidence_check, "_head", lambda _root: head)
+    monkeypatch.setenv("VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY", ATTESTATION_KEY)
+    monkeypatch.setenv("VIBETABLE_PROVIDER_EVIDENCE_KEY_ID", ATTESTATION_KEY_ID)
+
+    errors = package_check.check_packaged_provider_support(
+        package / "contracts/v2/provider-support.json",
+        source,
+        now=now,
+    )
+
+    assert "hardware.smb-v1: release candidate artifact hashes are unavailable" in errors
+
+
 def test_packaged_enabled_provider_rejects_forged_source_tree(
     tmp_path: Path,
     monkeypatch,

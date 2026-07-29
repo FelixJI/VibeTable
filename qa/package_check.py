@@ -130,6 +130,7 @@ def check_packaged_provider_support(
             now=now,
             support_path=provider_path,
             expected_artifact_hashes=expected_artifact_hashes,
+            require_artifact_hashes=True,
         )
     )
     return errors

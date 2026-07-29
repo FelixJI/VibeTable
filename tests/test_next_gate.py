@@ -212,6 +212,8 @@ def test_source_only_go_stages_do_not_fabricate_recovery_tool_paths() -> None:
 
 def test_release_gate_enables_required_windows_credential_manager_tests() -> None:
     workflow = (next_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    publish_job = workflow.split("  publish:", maxsplit=1)[1]
+    assert "timeout-minutes: 120" in publish_job.split("    steps:", maxsplit=1)[0]
     gate_step = workflow.split(
         "- name: Run complete release eligibility gate",
         maxsplit=1,

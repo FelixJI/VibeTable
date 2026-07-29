@@ -169,6 +169,7 @@ def _validate_evidence(
     evidence_path: Path,
     expected_source_hash: str,
     expected_artifact_hashes: dict[str, str] | None,
+    require_artifact_hashes: bool,
 ) -> list[str]:
     errors: list[str] = []
     exact = {
@@ -209,9 +210,9 @@ def _validate_evidence(
         )
     ):
         errors.append(f"{evidence_id}: invalid artifactHashes")
-    elif expected_artifact_hashes is None:
+    elif expected_artifact_hashes is None and require_artifact_hashes:
         errors.append(f"{evidence_id}: release candidate artifact hashes are unavailable")
-    elif hashes != expected_artifact_hashes:
+    elif expected_artifact_hashes is not None and hashes != expected_artifact_hashes:
         errors.append(f"{evidence_id}: artifactHashes do not match the release candidate")
     try:
         generated = _timestamp(payload["generatedAt"])
@@ -266,6 +267,7 @@ def check(
     now: datetime | None = None,
     support_path: Path | None = None,
     expected_artifact_hashes: dict[str, str] | None = None,
+    require_artifact_hashes: bool = False,
 ) -> list[str]:
     root = root.resolve()
     selected_support_path = (
@@ -328,6 +330,7 @@ def check(
                     evidence_path=evidence_path,
                     expected_source_hash=source_hash,
                     expected_artifact_hashes=expected_artifact_hashes,
+                    require_artifact_hashes=require_artifact_hashes,
                 )
             )
         except (

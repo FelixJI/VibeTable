@@ -92,7 +92,7 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     environment: release
     permissions:
       contents: write

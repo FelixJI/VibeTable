@@ -1091,10 +1091,49 @@ describe("workspace protection UI capability gates", () => {
     expect(protection.retentionHydrated).toBe(false);
     expect(settings.emitted("action")?.map((event) => event[0])).toEqual([
       { method: "retention.get", params: {} },
-      { method: "retention.status", params: {} },
     ]);
     expect(settings.get('[data-testid="retention-save"]').attributes("disabled"))
       .toBeDefined();
+  });
+
+  it("requests retention when policy capability arrives after settings mount", async () => {
+    const session = useWorkspaceSessionStore();
+    const protection = useWorkspaceProtectionStore();
+    const settings = mount(WorkspaceProtectionSettings, {
+      props: { mode: "storage" },
+    });
+
+    expect(settings.emitted("action")).toBeUndefined();
+    session.configureCapabilities([
+      "workspace.session.v2",
+      "retention.policy.v2",
+      "repository.settings.v2",
+    ]);
+    await settings.vm.$nextTick();
+
+    expect(settings.emitted("action")?.map((event) => event[0])).toEqual([
+      { method: "retention.get", params: {} },
+    ]);
+    expect(protection.beginOperation("retention.get")).toBe(true);
+    protection.setRetention({
+      contractVersion: "2.0",
+      policyRevision: 1,
+      snapshotDays: 30,
+      snapshotCount: 30,
+      snapshotBuckets: ["daily"],
+      fileRevisionDays: 30,
+      fileRevisionCount: 100,
+      fileRevisionBuckets: ["daily"],
+      trashMonths: 3,
+      repositoryLimitBytes: null,
+    });
+    protection.finishOperation();
+    await settings.vm.$nextTick();
+
+    expect(settings.emitted("action")?.map((event) => event[0])).toEqual([
+      { method: "retention.get", params: {} },
+      { method: "retention.status", params: {} },
+    ]);
   });
 
   it("explains durable quota pauses and integrity failures", async () => {
