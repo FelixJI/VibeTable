@@ -74,6 +74,7 @@ RACE_LONG_TESTS = frozenset(
 )
 TIMEOUT_RETURNCODE = 124
 WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS = 3
+QA_TEMP_PARENT_ENV = "VIBETABLE_QA_TEMP_PARENT"
 QA_RUN_TEMP_DIR: Path | None = None
 
 
@@ -84,8 +85,13 @@ def _qa_temp_dir() -> Path:
     if QA_RUN_TEMP_DIR is None:
         # Several real tests add pytest, backup, timestamp and previous-install
         # segments below this root. A short system location avoids legacy
-        # Windows MAX_PATH failures; mkdtemp also creates it exclusively.
-        QA_RUN_TEMP_DIR = Path(tempfile.mkdtemp(prefix="vtqa-"))
+        # Windows MAX_PATH failures; mkdtemp also creates it exclusively. An
+        # outer QA process exports its original parent so nested gate tests
+        # create a sibling instead of recursively nesting under TMP.
+        parent = Path(os.environ.get(QA_TEMP_PARENT_ENV, tempfile.gettempdir())).resolve()
+        if not parent.is_dir():
+            raise RuntimeError(f"QA temporary parent does not exist: {parent}")
+        QA_RUN_TEMP_DIR = Path(tempfile.mkdtemp(prefix="vtqa-", dir=parent))
     return QA_RUN_TEMP_DIR
 
 
@@ -299,6 +305,7 @@ def _stage_environment(
     environment = os.environ.copy()
     environment["TMP"] = str(qa_tmp)
     environment["TEMP"] = str(qa_tmp)
+    environment[QA_TEMP_PARENT_ENV] = str(qa_tmp.parent)
     if stage == "fault-injection":
         environment["VIBETABLE_FAULT_EVIDENCE_ROOT"] = str(qa_tmp / "fault-injection")
     if stage.startswith("go-"):

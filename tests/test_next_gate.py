@@ -169,11 +169,35 @@ def test_stage_environment_uses_an_invocation_scoped_temp_root() -> None:
     environment = next_gate._stage_environment("upgrade-smoke", ["pytest"])
 
     temp_root = Path(environment["TEMP"])
+    expected_parent = Path(
+        next_gate.os.environ.get(
+            next_gate.QA_TEMP_PARENT_ENV,
+            next_gate.tempfile.gettempdir(),
+        )
+    ).resolve()
     assert environment["TMP"] == environment["TEMP"]
     assert temp_root == next_gate.QA_RUN_TEMP_DIR
-    assert temp_root.parent == Path(next_gate.tempfile.gettempdir())
+    assert temp_root.parent == expected_parent
     assert temp_root.name.startswith("vtqa-")
     assert temp_root.is_dir()
+    assert environment[next_gate.QA_TEMP_PARENT_ENV] == str(expected_parent)
+
+
+def test_nested_gate_temp_root_is_a_sibling_not_a_recursive_child(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    outer = tmp_path / "vtqa-outer"
+    outer.mkdir()
+    monkeypatch.setenv(next_gate.QA_TEMP_PARENT_ENV, str(tmp_path))
+    monkeypatch.setenv("TMP", str(outer))
+    monkeypatch.setenv("TEMP", str(outer))
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", None)
+
+    nested = next_gate._qa_temp_dir()
+
+    assert nested.parent == tmp_path
+    assert not nested.is_relative_to(outer)
 
 
 def test_upgrade_smoke_uses_a_short_explicit_pytest_temp_root() -> None:
