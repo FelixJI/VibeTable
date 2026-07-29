@@ -73,6 +73,77 @@ func TestGoldenFixturesDecodeStrictly(t *testing.T) {
 	}
 }
 
+func TestFileRevisionAcceptsProvisionalIdentityWithoutCanonicalNumbers(t *testing.T) {
+	raw, err := os.ReadFile(
+		filepath.Join(fixturesDir(t), "file-revision.json"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var revision map[string]any
+	if err := json.Unmarshal(raw, &revision); err != nil {
+		t.Fatal(err)
+	}
+	revision["revisionOrdinal"] = float64(0)
+	revision["localSequence"] = float64(7)
+	revision["formalVersion"] = nil
+	revision["kind"] = "autosave"
+	revision["restoredFromRevisionId"] = nil
+	encoded, err := json.Marshal(revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := DecodeStrict[FileRevision](encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.RevisionOrdinal != 0 ||
+		parsed.LocalSequence == nil ||
+		*parsed.LocalSequence != 7 {
+		t.Fatalf("provisional revision = %#v", parsed)
+	}
+
+	revision["localSequence"] = nil
+	encoded, err = json.Marshal(revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeStrict[FileRevision](encoded); err == nil {
+		t.Fatal("provisional revision without localSequence was accepted")
+	}
+
+	revision["localSequence"] = float64(0)
+	encoded, err = json.Marshal(revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeStrict[FileRevision](encoded); err == nil {
+		t.Fatal("zero localSequence was accepted")
+	}
+
+	revision["localSequence"] = float64(7)
+	revision["formalVersion"] = float64(3)
+	encoded, err = json.Marshal(revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeStrict[FileRevision](encoded); err == nil {
+		t.Fatal("provisional formalVersion was accepted")
+	}
+
+	revision["revisionOrdinal"] = float64(4)
+	revision["localSequence"] = nil
+	revision["formalVersion"] = nil
+	revision["kind"] = "formal"
+	encoded, err = json.Marshal(revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeStrict[FileRevision](encoded); err == nil {
+		t.Fatal("canonical formal revision without Vn was accepted")
+	}
+}
+
 func TestRPCCatalogRejectsUnclosedArrayItemSchemas(t *testing.T) {
 	for _, mutation := range []string{
 		"untyped-items",
@@ -151,6 +222,10 @@ func TestSharedNegativeFixtureCorpusFailsClosed(t *testing.T) {
 		},
 		"workspace-event.json": func(raw []byte) error {
 			_, err := DecodeStrict[WorkspaceEvent](raw)
+			return err
+		},
+		"file-revision.json": func(raw []byte) error {
+			_, err := DecodeStrict[FileRevision](raw)
 			return err
 		},
 	}

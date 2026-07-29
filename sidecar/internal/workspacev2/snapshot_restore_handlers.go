@@ -262,7 +262,7 @@ func (runtime *Runtime) buildSnapshotRestorePreview(
 	if err != nil {
 		return snapshotRestorePreview{}, err
 	}
-	settings, err := runtime.frozenSource.workspaceSettings()
+	settings, err := runtime.frozenSource.workspaceSettings(ctx)
 	if err != nil {
 		return snapshotRestorePreview{}, err
 	}
@@ -296,8 +296,19 @@ func (runtime *Runtime) buildSnapshotRestorePreview(
 			),
 		)
 	}
-	if currentSettingsID != targetSettingsID {
-		changes = append(changes, "workspace-settings:replace")
+	targetSettings, err := runtime.readWorkspaceSettingsObject(
+		ctx,
+		targetSettingsID,
+	)
+	if err != nil {
+		return snapshotRestorePreview{}, err
+	}
+	settingsChanged, err := workspaceSettingsDiffer(settings, targetSettings)
+	if err != nil {
+		return snapshotRestorePreview{}, err
+	}
+	if settingsChanged {
+		changes = append(changes, "workspace-settings:retention")
 	}
 	sort.Strings(changes)
 	binding := struct {

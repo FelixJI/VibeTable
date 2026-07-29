@@ -46,7 +46,14 @@ const childMap = computed(() => {
     map.set(revision.parentRevisionId, siblings);
   }
   for (const children of map.values()) {
-    children.sort((left, right) => left.revisionOrdinal - right.revisionOrdinal);
+    children.sort((left, right) => {
+      const leftOrdinal = left.revisionOrdinal || Number.MAX_SAFE_INTEGER;
+      const rightOrdinal = right.revisionOrdinal || Number.MAX_SAFE_INTEGER;
+      return leftOrdinal - rightOrdinal
+        || (left.localSequence ?? 0) - (right.localSequence ?? 0)
+        || left.createdAt.localeCompare(right.createdAt)
+        || left.revisionId.localeCompare(right.revisionId);
+    });
   }
   return map;
 });
@@ -69,7 +76,8 @@ const rows = computed<TreeRow[]>(() => {
   const result: TreeRow[] = [];
   const walk = (revision: FileRevisionV2, level: number): void => {
     const children = childMap.value.get(revision.revisionId) ?? [];
-    const forceVisible = revision.kind !== "autosave"
+    const forceVisible = isProvisional(revision)
+      || revision.kind !== "autosave"
       || revision.revisionId === props.tree?.effectiveRevisionId
       || children.length > 1;
     if (showAutosaves.value || forceVisible) {
@@ -163,6 +171,16 @@ function formatDate(value: string): string {
     minute: "2-digit",
   }).format(new Date(value));
 }
+
+function isProvisional(revision: FileRevisionV2): boolean {
+  return revision.revisionOrdinal === 0;
+}
+
+function revisionLabel(revision: FileRevisionV2): string {
+  if (revision.formalVersion !== null) return `V${revision.formalVersion}`;
+  if (isProvisional(revision)) return `p${revision.localSequence}`;
+  return `r${revision.revisionOrdinal}`;
+}
 </script>
 
 <template>
@@ -200,7 +218,11 @@ function formatDate(value: string): string {
         v-for="(row, index) in rows"
         :key="row.revision.revisionId"
         class="tree-row"
-        :class="{ effective: row.effective, 'effective-path': row.onEffectivePath }"
+        :class="{
+          effective: row.effective,
+          provisional: isProvisional(row.revision),
+          'effective-path': row.onEffectivePath,
+        }"
         role="treeitem"
         :aria-level="row.level"
         :aria-expanded="row.hasChildren ? row.expanded : undefined"
@@ -226,9 +248,10 @@ function formatDate(value: string): string {
         <div class="tree-copy">
           <span>
             <strong>
-              {{ row.revision.formalVersion ? `V${row.revision.formalVersion}` : `r${row.revision.revisionOrdinal}` }}
+              {{ revisionLabel(row.revision) }}
             </strong>
             <NTag v-if="row.effective" size="small" type="success">{{ t("workspaceV2.fileTree.effective") }}</NTag>
+            <NTag v-if="isProvisional(row.revision)" size="small" type="warning">{{ t("workspaceV2.fileTree.provisional") }}</NTag>
             <NTag v-else-if="row.revision.kind === 'restore'" size="small" type="warning">{{ t("workspaceV2.fileTree.restored") }}</NTag>
             <NTag v-else-if="row.revision.kind === 'autosave'" size="small">{{ t("workspaceV2.fileTree.autosave") }}</NTag>
           </span>
@@ -237,7 +260,7 @@ function formatDate(value: string): string {
         </div>
         <div class="tree-actions">
           <NButton
-            v-if="row.hasChildren"
+            v-if="!isProvisional(row.revision) && row.hasChildren"
             size="tiny"
             quaternary
             :disabled="busy"
@@ -248,7 +271,7 @@ function formatDate(value: string): string {
             {{ t("workspaceV2.fileTree.upgrade") }}
           </NButton>
           <NButton
-            v-else-if="!row.effective"
+            v-else-if="!isProvisional(row.revision) && !row.effective"
             size="tiny"
             quaternary
             type="warning"
@@ -260,7 +283,7 @@ function formatDate(value: string): string {
             {{ t("workspaceV2.fileTree.restore") }}
           </NButton>
           <NButton
-            v-if="!row.hasChildren && !row.effective"
+            v-if="!isProvisional(row.revision) && !row.hasChildren && !row.effective"
             size="tiny"
             quaternary
             :disabled="busy"

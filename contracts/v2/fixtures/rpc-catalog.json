@@ -237,7 +237,8 @@
           "locationPolicy",
           "selectedRootGrant",
           "storageMode",
-          "encryptionMode"
+          "encryptionMode",
+          "userMarkedSync"
         ],
         "properties": {
           "displayName": {
@@ -264,9 +265,52 @@
             ]
           },
           "encryptionMode": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "none",
+              "convenient",
+              "protected"
+            ]
+          },
+          "userMarkedSync": {
+            "type": "boolean"
           }
-        }
+        },
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "locationPolicy": {
+                    "const": "managedDefault"
+                  },
+                  "selectedRootGrant": {
+                    "type": "null"
+                  },
+                  "storageMode": {
+                    "const": "direct"
+                  },
+                  "userMarkedSync": {
+                    "const": false
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "locationPolicy": {
+                    "const": "other"
+                  },
+                  "selectedRootGrant": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            ]
+          }
+        ]
       },
       "resultSchema": {
         "type": "object",
@@ -298,7 +342,8 @@
           "locationPolicy": "managedDefault",
           "selectedRootGrant": null,
           "storageMode": "direct",
-          "encryptionMode": "convenient"
+          "encryptionMode": "convenient",
+          "userMarkedSync": false
         }
       },
       "success": {
@@ -3757,6 +3802,7 @@
                 "documentId",
                 "parentRevisionId",
                 "revisionOrdinal",
+                "localSequence",
                 "formalVersion",
                 "kind",
                 "objectId",
@@ -3786,13 +3832,22 @@
                   ]
                 },
                 "revisionOrdinal": {
-                  "type": "integer"
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "localSequence": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
                 },
                 "formalVersion": {
                   "type": [
                     "integer",
                     "null"
-                  ]
+                  ],
+                  "minimum": 1
                 },
                 "kind": {
                   "type": "string",
@@ -3809,7 +3864,8 @@
                   "type": "string"
                 },
                 "size": {
-                  "type": "integer"
+                  "type": "integer",
+                  "minimum": 0
                 },
                 "mimeType": {
                   "type": "string"
@@ -3835,7 +3891,129 @@
                     "null"
                   ]
                 }
-              }
+              },
+              "allOf": [
+                {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "revisionOrdinal": {
+                          "const": 0
+                        },
+                        "localSequence": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "formalVersion": {
+                          "type": "null"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "revisionOrdinal": {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "const": "autosave"
+                        },
+                        "formalVersion": {
+                          "type": "null"
+                        },
+                        "restoredFromRevisionId": {
+                          "type": "null"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "revisionOrdinal": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "kind": {
+                          "const": "formal"
+                        },
+                        "formalVersion": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "restoredFromRevisionId": {
+                          "type": "null"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "revisionOrdinal": {
+                          "const": 0
+                        },
+                        "kind": {
+                          "const": "formal"
+                        },
+                        "formalVersion": {
+                          "type": "null"
+                        },
+                        "restoredFromRevisionId": {
+                          "type": "null"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "revisionOrdinal": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "kind": {
+                          "const": "restore"
+                        },
+                        "formalVersion": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "restoredFromRevisionId": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "revisionOrdinal": {
+                          "const": 0
+                        },
+                        "kind": {
+                          "const": "restore"
+                        },
+                        "formalVersion": {
+                          "type": "null"
+                        },
+                        "restoredFromRevisionId": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
             }
           }
         }
@@ -3875,6 +4053,7 @@
               "documentId": "99999999-9999-4999-8999-999999999999",
               "parentRevisionId": null,
               "revisionOrdinal": 1,
+              "localSequence": null,
               "formalVersion": null,
               "kind": "autosave",
               "objectId": "obj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -3940,16 +4119,74 @@
         "additionalProperties": false,
         "required": [
           "revisionId",
+          "revisionOrdinal",
+          "localSequence",
           "formalVersion"
         ],
         "properties": {
           "revisionId": {
             "type": "string"
           },
+          "revisionOrdinal": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "localSequence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
           "formalVersion": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
           }
-        }
+        },
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "revisionOrdinal": {
+                    "const": 0
+                  },
+                  "localSequence": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "formalVersion": {
+                    "type": "null"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "revisionOrdinal": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "localSequence": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 1
+                  },
+                  "formalVersion": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            ]
+          }
+        ]
       },
       "request": {
         "jsonrpc": "2.0",
@@ -3980,6 +4217,8 @@
         },
         "result": {
           "revisionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "revisionOrdinal": 4,
+          "localSequence": null,
           "formalVersion": 4
         }
       },
@@ -4033,16 +4272,74 @@
         "additionalProperties": false,
         "required": [
           "revisionId",
+          "revisionOrdinal",
+          "localSequence",
           "formalVersion"
         ],
         "properties": {
           "revisionId": {
             "type": "string"
           },
+          "revisionOrdinal": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "localSequence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
           "formalVersion": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
           }
-        }
+        },
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "revisionOrdinal": {
+                    "const": 0
+                  },
+                  "localSequence": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "formalVersion": {
+                    "type": "null"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "revisionOrdinal": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "localSequence": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 1
+                  },
+                  "formalVersion": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            ]
+          }
+        ]
       },
       "request": {
         "jsonrpc": "2.0",
@@ -4073,6 +4370,8 @@
         },
         "result": {
           "revisionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "revisionOrdinal": 4,
+          "localSequence": null,
           "formalVersion": 4
         }
       },

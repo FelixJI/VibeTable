@@ -1,6 +1,7 @@
 package replica
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -142,21 +143,29 @@ type AuthorityTransfer interface {
 	ApplyReplicaClaim(context.Context, Claim) error
 }
 
+// ProvisionalPublicationAcceptor is the local authoritative seam invoked only
+// after an advisory publication is durably visible and is the sole DAG head.
+// Implementations must bind acceptance to the exact published snapshot root.
+type ProvisionalPublicationAcceptor interface {
+	AcceptProvisionalPublication(context.Context, snapshot.Record) error
+}
+
 type ManagerOptions struct {
-	WorkspaceID       string
-	DeviceID          string
-	QueuePath         string
-	StatePath         string
-	PublicationPath   string
-	PublicationKey    []byte
-	Remote            VerifiedRemote
-	Catalog           SnapshotCatalog
-	Repository        objectrepo.Repository
-	Authority         AuthorityTransfer
-	Conflicts         ConflictSink
-	DependencyScanner ConflictDependencyScanner
-	DestructiveSafe   func(context.Context) error
-	Now               func() time.Time
+	WorkspaceID         string
+	DeviceID            string
+	QueuePath           string
+	StatePath           string
+	PublicationPath     string
+	PublicationKey      []byte
+	Remote              VerifiedRemote
+	Catalog             SnapshotCatalog
+	Repository          objectrepo.Repository
+	Authority           AuthorityTransfer
+	ProvisionalAcceptor ProvisionalPublicationAcceptor
+	Conflicts           ConflictSink
+	DependencyScanner   ConflictDependencyScanner
+	DestructiveSafe     func(context.Context) error
+	Now                 func() time.Time
 }
 
 type Status struct {
@@ -167,23 +176,24 @@ type Status struct {
 }
 
 type Manager struct {
-	mu                sync.Mutex
-	workspace         string
-	device            string
-	identity          RemoteIdentity
-	remote            VerifiedRemote
-	catalog           SnapshotCatalog
-	repository        objectrepo.Repository
-	authority         AuthorityTransfer
-	conflicts         ConflictSink
-	conflictRemote    ConflictRemote
-	dependencyScanner ConflictDependencyScanner
-	destructiveSafe   func(context.Context) error
-	queue             *Queue
-	state             *productionState
-	strong            *StrongLease
-	advisory          *AdvisoryDAG
-	now               func() time.Time
+	mu                  sync.Mutex
+	workspace           string
+	device              string
+	identity            RemoteIdentity
+	remote              VerifiedRemote
+	catalog             SnapshotCatalog
+	repository          objectrepo.Repository
+	authority           AuthorityTransfer
+	provisionalAcceptor ProvisionalPublicationAcceptor
+	conflicts           ConflictSink
+	conflictRemote      ConflictRemote
+	dependencyScanner   ConflictDependencyScanner
+	destructiveSafe     func(context.Context) error
+	queue               *Queue
+	state               *productionState
+	strong              *StrongLease
+	advisory            *AdvisoryDAG
+	now                 func() time.Time
 }
 
 func OpenManager(ctx context.Context, options ManagerOptions) (_ *Manager, err error) {
@@ -219,19 +229,20 @@ func OpenManager(ctx context.Context, options ManagerOptions) (_ *Manager, err e
 		return nil, err
 	}
 	manager := &Manager{
-		workspace:         options.WorkspaceID,
-		device:            options.DeviceID,
-		identity:          identity,
-		remote:            options.Remote,
-		catalog:           options.Catalog,
-		repository:        options.Repository,
-		authority:         options.Authority,
-		conflicts:         options.Conflicts,
-		dependencyScanner: options.DependencyScanner,
-		destructiveSafe:   options.DestructiveSafe,
-		queue:             queue,
-		state:             state,
-		now:               options.Now,
+		workspace:           options.WorkspaceID,
+		device:              options.DeviceID,
+		identity:            identity,
+		remote:              options.Remote,
+		catalog:             options.Catalog,
+		repository:          options.Repository,
+		authority:           options.Authority,
+		provisionalAcceptor: options.ProvisionalAcceptor,
+		conflicts:           options.Conflicts,
+		dependencyScanner:   options.DependencyScanner,
+		destructiveSafe:     options.DestructiveSafe,
+		queue:               queue,
+		state:               state,
+		now:                 options.Now,
 	}
 	if manager.now == nil {
 		manager.now = func() time.Time { return time.Now().UTC() }
@@ -1368,7 +1379,22 @@ func (manager *Manager) publishAdvisory(
 	if err := manager.advisory.PublishContext(ctx, publication); err != nil {
 		return err
 	}
-	return manager.refreshAdvisory(ctx)
+	if err := manager.refreshAdvisory(ctx); err != nil {
+		return err
+	}
+	winner, losers, found, err := manager.advisory.Winner()
+	if err != nil {
+		return err
+	}
+	if manager.provisionalAcceptor != nil &&
+		found &&
+		winner.CanonicalHash == publication.CanonicalHash &&
+		len(losers) == 0 {
+		return manager.provisionalAcceptor.AcceptProvisionalPublication(
+			ctx, record,
+		)
+	}
+	return nil
 }
 
 func (manager *Manager) refreshAdvisory(ctx context.Context) error {
@@ -1473,7 +1499,7 @@ func makeCheckpoint(
 			} `json:"documents"`
 		}
 		if err := json.Unmarshal(history.Payload, &root); err != nil ||
-			root.FormatVersion != 2 ||
+			(root.FormatVersion != 2 && root.FormatVersion != 3) ||
 			root.WorkspaceID != record.WorkspaceID {
 			return Checkpoint{}, ErrVerificationInvalid
 		}
@@ -1780,6 +1806,68 @@ func deterministicTaskID(
 
 type productionState struct {
 	db *sql.DB
+}
+
+// ReadPersistedTakeoverClaim recovers the last durable claim mode without
+// contacting the replica. It lets an offline restart preserve provisional
+// allocation before the first new file save. Older state databases without
+// the takeover table are treated as having no remembered claim.
+func ReadPersistedTakeoverClaim(
+	ctx context.Context,
+	path string,
+) (Claim, bool, error) {
+	if strings.TrimSpace(path) == "" {
+		return Claim{}, false, errors.New("replica.state_path_required")
+	}
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return Claim{}, false, nil
+	}
+	if err != nil {
+		return Claim{}, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return Claim{}, false, errors.New("replica.state_path_invalid")
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return Claim{}, false, err
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	var tableCount int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'replica_takeover'`,
+	).Scan(&tableCount); err != nil {
+		return Claim{}, false, err
+	}
+	if tableCount == 0 {
+		return Claim{}, false, nil
+	}
+	var raw []byte
+	err = db.QueryRowContext(ctx, `
+		SELECT claim_json FROM replica_takeover WHERE singleton = 1`,
+	).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Claim{}, false, nil
+	}
+	if err != nil {
+		return Claim{}, false, err
+	}
+	if len(raw) == 0 || len(raw) > 1<<20 {
+		return Claim{}, false, ErrStaleClaim
+	}
+	var claim Claim
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&claim); err != nil ||
+		decoder.Decode(&struct{}{}) != io.EOF ||
+		(claim.Strength != Strong && claim.Strength != Advisory) ||
+		validateClaim(claim, claim.Strength) != nil {
+		return Claim{}, false, errors.Join(ErrStaleClaim, err)
+	}
+	return claim, true, nil
 }
 
 func openProductionState(path string) (*productionState, error) {

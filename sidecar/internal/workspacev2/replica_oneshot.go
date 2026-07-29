@@ -690,7 +690,8 @@ func installReplicaRecovery(
 		return err
 	}
 	record := selection.bundle.Snapshot
-	if err := installReplicaDatabaseAndFiles(
+	if err := installReplicaDatabaseAndFilesWithContext(
+		ctx,
 		record,
 		selection.bundle.Objects,
 		metadata,
@@ -815,6 +816,20 @@ func installReplicaDatabaseAndFiles(
 	objects map[objectrepo.ObjectID][]byte,
 	metadata string,
 ) error {
+	return installReplicaDatabaseAndFilesWithContext(
+		context.Background(),
+		record,
+		objects,
+		metadata,
+	)
+}
+
+func installReplicaDatabaseAndFilesWithContext(
+	ctx context.Context,
+	record snapshot.Record,
+	objects map[objectrepo.ObjectID][]byte,
+	metadata string,
+) error {
 	database, err := replicaObject(record, objects, "database")
 	if err != nil {
 		return err
@@ -831,13 +846,25 @@ func installReplicaDatabaseAndFiles(
 		objects,
 		"workspace-settings",
 	)
-	if err != nil || !json.Valid(settings) {
+	if err != nil {
 		return errors.Join(errors.New("replica.settings_invalid"), err)
 	}
-	if err := writeReplicaRecoveryFile(
-		filepath.Join(metadata, "settings.json"),
+	if _, _, err := decodeWorkspaceSettingsSnapshot(settings); err != nil {
+		return errors.Join(errors.New("replica.settings_invalid"), err)
+	}
+	store, err := openStateStore(
+		filepath.Join(metadata, "coordination", "workspace-v2.db"),
+	)
+	if err != nil {
+		return err
+	}
+	replaceErr := replaceWorkspaceSettings(
+		ctx,
+		store,
 		settings,
-	); err != nil {
+		record.MutationRevision,
+	)
+	if err := errors.Join(replaceErr, store.db.Close()); err != nil {
 		return err
 	}
 	rootRaw, err := replicaObject(record, objects, "file-state-root")

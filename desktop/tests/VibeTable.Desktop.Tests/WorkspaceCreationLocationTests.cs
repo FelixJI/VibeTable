@@ -26,7 +26,8 @@ public sealed class WorkspaceCreationLocationTests
               "locationPolicy": "managedDefault",
               "selectedRootGrant": null,
               "storageMode": "direct",
-              "encryptionMode": "convenient"
+              "encryptionMode": "convenient",
+              "userMarkedSync": false
             }
             """);
 
@@ -64,7 +65,8 @@ public sealed class WorkspaceCreationLocationTests
               "locationPolicy": "other",
               "selectedRootGrant": "host-picker://workspace-root",
               "storageMode": "direct",
-              "encryptionMode": "convenient"
+              "encryptionMode": "convenient",
+              "userMarkedSync": false
             }
             """);
 
@@ -106,7 +108,8 @@ public sealed class WorkspaceCreationLocationTests
               "locationPolicy": "{{policy}}",
               "selectedRootGrant": {{grantJson}},
               "storageMode": "direct",
-              "encryptionMode": "convenient"
+              "encryptionMode": "convenient",
+              "userMarkedSync": false
             }
             """);
 
@@ -132,7 +135,8 @@ public sealed class WorkspaceCreationLocationTests
               "locationPolicy": "managedDefault",
               "selectedRootGrant": null,
               "storageMode": "mirrored",
-              "encryptionMode": "convenient"
+              "encryptionMode": "convenient",
+              "userMarkedSync": false
             }
             """);
 
@@ -162,6 +166,7 @@ public sealed class WorkspaceCreationLocationTests
               "selectedRootGrant": null,
               "storageMode": "direct",
               "encryptionMode": "convenient",
+              "userMarkedSync": false,
               "unexpected": true
             }
             """);
@@ -178,6 +183,37 @@ public sealed class WorkspaceCreationLocationTests
         Assert.AreEqual("workspace.request_invalid", error.Code);
         Assert.AreEqual(
             "Workspace create params contain missing or unknown fields.",
+            error.Message);
+    }
+
+    [TestMethod]
+    public void ManagedDefaultRejectsManualSyncClassification()
+    {
+        using JsonDocument document = JsonDocument.Parse(
+            """
+            {
+              "displayName": "Managed",
+              "locationPolicy": "managedDefault",
+              "selectedRootGrant": null,
+              "storageMode": "direct",
+              "encryptionMode": "convenient",
+              "userMarkedSync": true
+            }
+            """);
+
+        WorkspaceRegistryException error =
+            Assert.ThrowsExactly<WorkspaceRegistryException>(() =>
+                MainWindow.ResolveWorkspaceCreateRoot(
+                    document.RootElement,
+                    Guid.NewGuid(),
+                    new WorkspacePathGrantStore(
+                        new RecordingPicker(Path.GetTempPath())),
+                    Path.GetTempPath(),
+                    Guid.NewGuid()));
+
+        Assert.AreEqual("workspace.request_invalid", error.Code);
+        Assert.AreEqual(
+            "The managed default location cannot be marked as sync-managed.",
             error.Message);
     }
 

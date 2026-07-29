@@ -1,9 +1,23 @@
+using System.Runtime.InteropServices;
 using VibeTable.Contracts;
 
 namespace VibeTable.Infrastructure.Workspace;
 
 public sealed class WorkspaceStorageProbe
 {
+    private readonly Func<string, bool> _isRegisteredCloudPath;
+
+    public WorkspaceStorageProbe()
+        : this(WindowsCloudFilesPathProbe.IsUnderRegisteredSyncRoot)
+    {
+    }
+
+    internal WorkspaceStorageProbe(Func<string, bool> isRegisteredCloudPath)
+    {
+        _isRegisteredCloudPath = isRegisteredCloudPath
+            ?? throw new ArgumentNullException(nameof(isRegisteredCloudPath));
+    }
+
     public WorkspaceStorageObservation Probe(
         string selectedRoot,
         bool userMarkedSync = false,
@@ -18,7 +32,9 @@ public sealed class WorkspaceStorageProbe
             .Select(Path.GetFullPath)
             .OrderByDescending(candidate => candidate.Length)
             .FirstOrDefault(candidate => IsWithin(root, candidate));
-        var kind = cloudRoot is not null
+        bool registeredCloud = cloudRoot is not null
+            || _isRegisteredCloudPath(root);
+        var kind = registeredCloud
             ? WorkspaceStorageKind.RegisteredCloud
             : userMarkedSync
                 ? WorkspaceStorageKind.UserMarkedSync
@@ -104,3 +120,48 @@ public sealed record WorkspaceStorageObservation(
     bool IsReparsePoint,
     DateTimeOffset ObservedAt,
     string? RegisteredCloudRoot = null);
+
+internal static class WindowsCloudFilesPathProbe
+{
+    private const int BasicInfoClass = 0;
+
+    public static bool IsUnderRegisteredSyncRoot(string path)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 16299))
+            return false;
+        try
+        {
+            int result = CfGetSyncRootInfoByPath(
+                Path.GetFullPath(path),
+                BasicInfoClass,
+                out _,
+                (uint)Marshal.SizeOf<CfSyncRootBasicInfo>(),
+                out _);
+            return result == 0;
+        }
+        catch (Exception exception) when (
+            exception is DllNotFoundException
+                or EntryPointNotFoundException
+                or BadImageFormatException)
+        {
+            return false;
+        }
+    }
+
+    [DllImport(
+        "CldApi.dll",
+        CharSet = CharSet.Unicode,
+        ExactSpelling = true)]
+    private static extern int CfGetSyncRootInfoByPath(
+        string filePath,
+        int infoClass,
+        out CfSyncRootBasicInfo infoBuffer,
+        uint infoBufferLength,
+        out uint returnedLength);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private readonly struct CfSyncRootBasicInfo
+    {
+        public readonly long SyncRootFileId;
+    }
+}

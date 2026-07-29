@@ -48,4 +48,35 @@ public sealed class WorkspaceProviderPolicyTests
 
         Assert.AreEqual("workspace.provider_blocked", error.Code);
     }
+
+    [TestMethod]
+    public void CreateTargetForwardsExplicitSyncClassification()
+    {
+        bool observed = false;
+        WorkspaceProviderPolicy policy = WorkspaceProviderPolicy.CreateForTests(
+            new Dictionary<WorkspaceStorageKind, bool>
+            {
+                [WorkspaceStorageKind.UserMarkedSync] = true,
+            },
+            (root, userMarkedSync, _) =>
+            {
+                observed = userMarkedSync;
+                return new WorkspaceStorageObservation(
+                    WorkspaceStorageKind.UserMarkedSync,
+                    WorkspaceCoordinationStrength.Advisory,
+                    1024,
+                    false,
+                    DateTimeOffset.UtcNow);
+            });
+
+        WorkspaceStorageObservation result =
+            policy.ProbeCreateTargetAndEnsureSupported(
+                Path.GetTempPath(),
+                userMarkedSync: true);
+
+        Assert.IsTrue(observed);
+        Assert.AreEqual(
+            WorkspaceStorageKind.UserMarkedSync,
+            result.StorageKind);
+    }
 }

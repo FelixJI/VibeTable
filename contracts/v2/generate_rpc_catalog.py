@@ -25,7 +25,7 @@ class Rpc:
     scope: Literal["global", "workspace"]
     params_model: str
     result_model: str
-    params: dict[str, Any]
+    params: Any
     result: Any
 
 
@@ -43,6 +43,21 @@ def nullable_string(example: str | None = None) -> ContractValue:
 
 def nullable_integer(example: int | None = None) -> ContractValue:
     return ContractValue(example, {"type": ["integer", "null"]})
+
+
+def nonnegative_integer(example: int = 0) -> ContractValue:
+    return ContractValue(example, {"type": "integer", "minimum": 0})
+
+
+def positive_integer(example: int = 1) -> ContractValue:
+    return ContractValue(example, {"type": "integer", "minimum": 1})
+
+
+def nullable_positive_integer(example: int | None = None) -> ContractValue:
+    return ContractValue(
+        example,
+        {"type": ["integer", "null"], "minimum": 1},
+    )
 
 
 def enum_string(example: str, *values: str) -> ContractValue:
@@ -95,6 +110,138 @@ def string_array() -> ContractValue:
     return typed_array("value")
 
 
+def constrained_object(
+    example: dict[str, Any],
+    *constraints: dict[str, Any],
+) -> ContractValue:
+    schema = _schema_from_example(example)
+    schema["allOf"] = list(constraints)
+    return ContractValue(example, schema)
+
+
+def provisional_identity_constraint() -> dict[str, Any]:
+    return {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "revisionOrdinal": {"const": 0},
+                    "localSequence": {"type": "integer", "minimum": 1},
+                    "formalVersion": {"type": "null"},
+                },
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "revisionOrdinal": {"type": "integer", "minimum": 1},
+                },
+            },
+        ]
+    }
+
+
+def file_revision_kind_constraint() -> dict[str, Any]:
+    uuid = {
+        "type": "string",
+        "pattern": ("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
+    }
+    return {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "kind": {"const": "autosave"},
+                    "formalVersion": {"type": "null"},
+                    "restoredFromRevisionId": {"type": "null"},
+                },
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "revisionOrdinal": {"type": "integer", "minimum": 1},
+                    "kind": {"const": "formal"},
+                    "formalVersion": {"type": "integer", "minimum": 1},
+                    "restoredFromRevisionId": {"type": "null"},
+                },
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "revisionOrdinal": {"const": 0},
+                    "kind": {"const": "formal"},
+                    "formalVersion": {"type": "null"},
+                    "restoredFromRevisionId": {"type": "null"},
+                },
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "revisionOrdinal": {"type": "integer", "minimum": 1},
+                    "kind": {"const": "restore"},
+                    "formalVersion": {"type": "integer", "minimum": 1},
+                    "restoredFromRevisionId": uuid,
+                },
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "revisionOrdinal": {"const": 0},
+                    "kind": {"const": "restore"},
+                    "formalVersion": {"type": "null"},
+                    "restoredFromRevisionId": uuid,
+                },
+            },
+        ]
+    }
+
+
+def formal_revision_result(
+    revision_id: str,
+    revision_ordinal: int,
+) -> ContractValue:
+    example = {
+        "revisionId": revision_id,
+        "revisionOrdinal": nonnegative_integer(revision_ordinal),
+        "localSequence": nullable_positive_integer(),
+        "formalVersion": nullable_positive_integer(revision_ordinal),
+    }
+    return constrained_object(
+        example,
+        {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "revisionOrdinal": {"const": 0},
+                        "localSequence": {
+                            "type": "integer",
+                            "minimum": 1,
+                        },
+                        "formalVersion": {"type": "null"},
+                    },
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "revisionOrdinal": {
+                            "type": "integer",
+                            "minimum": 1,
+                        },
+                        "localSequence": {
+                            "type": ["integer", "null"],
+                            "minimum": 1,
+                        },
+                        "formalVersion": {
+                            "type": "integer",
+                            "minimum": 1,
+                        },
+                    },
+                },
+            ]
+        },
+    )
+
+
 RPC_REGISTRY: tuple[Rpc, ...] = (
     Rpc(
         "workspace.list",
@@ -140,17 +287,54 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         "global",
         "CreateWorkspaceParams",
         "WorkspaceOperationResult",
-        {
-            "displayName": "季度规划",
-            "locationPolicy": enum_string(
-                "managedDefault",
-                "managedDefault",
-                "other",
-            ),
-            "selectedRootGrant": nullable_string(),
-            "storageMode": enum_string("direct", "direct", "mirrored"),
-            "encryptionMode": "convenient",
-        },
+        constrained_object(
+            {
+                "displayName": "季度规划",
+                "locationPolicy": enum_string(
+                    "managedDefault",
+                    "managedDefault",
+                    "other",
+                ),
+                "selectedRootGrant": nullable_string(),
+                "storageMode": enum_string(
+                    "direct",
+                    "direct",
+                    "mirrored",
+                ),
+                "encryptionMode": enum_string(
+                    "convenient",
+                    "none",
+                    "convenient",
+                    "protected",
+                ),
+                "userMarkedSync": False,
+            },
+            {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "locationPolicy": {
+                                "const": "managedDefault",
+                            },
+                            "selectedRootGrant": {"type": "null"},
+                            "storageMode": {"const": "direct"},
+                            "userMarkedSync": {"const": False},
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "locationPolicy": {"const": "other"},
+                            "selectedRootGrant": {
+                                "type": "string",
+                                "minLength": 1,
+                            },
+                        },
+                    },
+                ]
+            },
+        ),
         {"workspaceId": WORKSPACE_ID, "status": "created"},
     ),
     Rpc(
@@ -682,24 +866,34 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
             "documentId": "22222222-2222-4222-8222-222222222222",
             "effectiveRevisionId": nullable_string("33333333-3333-4333-8333-333333333333"),
             "revisions": typed_array(
-                {
-                    "contractVersion": "2.0",
-                    "revisionId": "88888888-8888-4888-8888-888888888888",
-                    "documentId": "99999999-9999-4999-8999-999999999999",
-                    "parentRevisionId": nullable_string(),
-                    "revisionOrdinal": 1,
-                    "formalVersion": nullable_integer(),
-                    "kind": enum_string("autosave", "autosave", "formal", "restore"),
-                    "objectId": "obj_" + "a" * 64,
-                    "contentHash": "sha256:" + "b" * 64,
-                    "size": 128,
-                    "mimeType": "text/csv",
-                    "createdAt": "2026-07-28T10:00:00Z",
-                    "createdBy": "user",
-                    "deviceId": "66666666-6666-4666-8666-666666666666",
-                    "comment": nullable_string(),
-                    "restoredFromRevisionId": nullable_string(),
-                }
+                constrained_object(
+                    {
+                        "contractVersion": "2.0",
+                        "revisionId": "88888888-8888-4888-8888-888888888888",
+                        "documentId": "99999999-9999-4999-8999-999999999999",
+                        "parentRevisionId": nullable_string(),
+                        "revisionOrdinal": positive_integer(),
+                        "localSequence": nullable_positive_integer(),
+                        "formalVersion": nullable_positive_integer(),
+                        "kind": enum_string(
+                            "autosave",
+                            "autosave",
+                            "formal",
+                            "restore",
+                        ),
+                        "objectId": "obj_" + "a" * 64,
+                        "contentHash": "sha256:" + "b" * 64,
+                        "size": nonnegative_integer(128),
+                        "mimeType": "text/csv",
+                        "createdAt": "2026-07-28T10:00:00Z",
+                        "createdBy": "user",
+                        "deviceId": "66666666-6666-4666-8666-666666666666",
+                        "comment": nullable_string(),
+                        "restoredFromRevisionId": nullable_string(),
+                    },
+                    provisional_identity_constraint(),
+                    file_revision_kind_constraint(),
+                )
             ),
         },
     ),
@@ -713,7 +907,10 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
             "expectedEffectiveRevisionId": "33333333-3333-4333-8333-333333333333",
             "historicalRevisionId": "66666666-6666-4666-8666-666666666666",
         },
-        {"revisionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "formalVersion": 4},
+        formal_revision_result(
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            4,
+        ),
     ),
     Rpc(
         "fileHistory.upgrade",
@@ -725,7 +922,10 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
             "revisionId": "66666666-6666-4666-8666-666666666666",
             "pathGrant": "grant_upgrade_1",
         },
-        {"revisionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "formalVersion": 4},
+        formal_revision_result(
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            4,
+        ),
     ),
     Rpc(
         "fileHistory.activateLeaf",

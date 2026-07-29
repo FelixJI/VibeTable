@@ -141,6 +141,7 @@ def test_workspace_create_location_policy_is_strict_and_grant_is_explicit() -> N
     assert params["locationPolicy"] == "managedDefault"
     assert params["selectedRootGrant"] is None
     assert params["storageMode"] == "direct"
+    assert params["userMarkedSync"] is False
     assert schema["properties"]["locationPolicy"]["enum"] == [
         "managedDefault",
         "other",
@@ -148,7 +149,11 @@ def test_workspace_create_location_policy_is_strict_and_grant_is_explicit() -> N
     assert schema["properties"]["storageMode"]["enum"] == ["direct", "mirrored"]
     for invalid in (
         {**params, "locationPolicy": "remote"},
+        {**params, "storageMode": "mirrored"},
+        {**params, "userMarkedSync": True},
         {key: value for key, value in params.items() if key != "selectedRootGrant"},
+        {key: value for key, value in params.items() if key != "userMarkedSync"},
+        {**params, "userMarkedSync": "false"},
         {**params, "unexpected": True},
     ):
         try:
@@ -156,6 +161,35 @@ def test_workspace_create_location_policy_is_strict_and_grant_is_explicit() -> N
         except SchemaMismatchError:
             continue
         raise AssertionError(f"invalid workspace.create params were accepted: {invalid}")
+
+
+def test_file_revision_rpc_schemas_enforce_provisional_combinations() -> None:
+    catalog = _load(FIXTURES / "rpc-catalog.json")
+    restore = next(case for case in catalog["rpcCases"] if case["method"] == "fileHistory.restore")
+    schema = restore["resultSchema"]
+    canonical = restore["success"]["result"]
+    _validate(canonical, schema, schema)
+    _validate(
+        {
+            **canonical,
+            "revisionOrdinal": 0,
+            "localSequence": 7,
+            "formalVersion": None,
+        },
+        schema,
+        schema,
+    )
+    for invalid in (
+        {**canonical, "revisionOrdinal": 0, "localSequence": None, "formalVersion": None},
+        {**canonical, "revisionOrdinal": 0, "localSequence": 7},
+        {**canonical, "formalVersion": None},
+        {**canonical, "localSequence": 0},
+    ):
+        try:
+            _validate(invalid, schema, schema)
+        except SchemaMismatchError:
+            continue
+        raise AssertionError(f"invalid file revision result was accepted: {invalid}")
 
 
 def test_v2_catalog_nonempty_array_items_fail_closed() -> None:

@@ -82,11 +82,13 @@ export interface WorkspaceV2RpcParams {
       readonly locationPolicy: "managedDefault";
       readonly selectedRootGrant: null;
       readonly storageMode: "direct";
+      readonly userMarkedSync: false;
     }
     | {
       readonly locationPolicy: "other";
       readonly selectedRootGrant: string;
       readonly storageMode: WorkspaceStorageMode;
+      readonly userMarkedSync: boolean;
     }
   );
   readonly "workspace.register": { readonly selectedRootGrant: string };
@@ -530,7 +532,9 @@ interface OperationResult {
 
 interface FileRevisionResult {
   readonly revisionId: string;
-  readonly formalVersion: number;
+  readonly revisionOrdinal: number;
+  readonly localSequence: number | null;
+  readonly formalVersion: number | null;
 }
 
 interface SnapshotStateResult {
@@ -1087,10 +1091,32 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
   } else if (method === "fileHistory.readTree") {
     parsed = parseFileTree(source);
   } else if (["fileHistory.restore", "fileHistory.upgrade"].includes(method)) {
-    exact(source, ["revisionId", "formalVersion"], `${method} result`);
+    exact(
+      source,
+      ["revisionId", "revisionOrdinal", "localSequence", "formalVersion"],
+      `${method} result`,
+    );
+    const revisionOrdinal = integer(source.revisionOrdinal, "revisionOrdinal");
+    const localSequence = source.localSequence === null
+      ? null
+      : integer(source.localSequence, "localSequence", 1);
+    const formalVersion = source.formalVersion === null
+      ? null
+      : integer(source.formalVersion, "formalVersion", 1);
+    if (revisionOrdinal === 0 && localSequence === null) {
+      throw new Error(`${method} provisional result requires localSequence`);
+    }
+    if (revisionOrdinal === 0 && formalVersion !== null) {
+      throw new Error(`${method} provisional result cannot allocate formalVersion`);
+    }
+    if (revisionOrdinal > 0 && formalVersion === null) {
+      throw new Error(`${method} canonical result requires formalVersion`);
+    }
     parsed = {
       revisionId: text(source.revisionId, "revisionId"),
-      formalVersion: integer(source.formalVersion, "formalVersion", 1),
+      revisionOrdinal,
+      localSequence,
+      formalVersion,
     };
   } else if (method === "fileHistory.activateLeaf") {
     exact(source, ["revisionId", "effective"], `${method} result`);

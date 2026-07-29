@@ -40,6 +40,22 @@
       "path": [],
       "value": " {}",
       "expected": "reject"
+    },
+    {
+      "name": "file-revision-local-sequence-missing",
+      "fixture": "file-revision.json",
+      "operation": "remove",
+      "path": ["localSequence"],
+      "value": null,
+      "expected": "reject"
+    },
+    {
+      "name": "file-revision-provisional-sequence-missing",
+      "fixture": "file-revision.json",
+      "operation": "replace",
+      "path": ["revisionOrdinal"],
+      "value": 0,
+      "expected": "reject"
     }
   ]
 }

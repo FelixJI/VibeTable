@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"path"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -25,8 +27,9 @@ import (
 )
 
 const (
-	rootFormatVersion = 2
-	contractVersion   = "2.0"
+	legacyRootFormatVersion = 2
+	rootFormatVersion       = 3
+	contractVersion         = "2.0"
 
 	// A FileHistory root is part of the snapshot bundle closure. Keep its
 	// aggregate entry limits aligned with the bundle's 10,000-entry ceiling,
@@ -61,22 +64,26 @@ const (
 )
 
 type Revision struct {
-	ContractVersion        string              `json:"contractVersion"`
-	RevisionID             string              `json:"revisionId"`
-	DocumentID             string              `json:"documentId"`
-	ParentRevisionID       *string             `json:"parentRevisionId"`
-	RestoredFromRevisionID *string             `json:"restoredFromRevisionId"`
-	Kind                   RevisionKind        `json:"kind"`
-	RevisionOrdinal        uint64              `json:"revisionOrdinal"`
-	FormalVersion          *uint64             `json:"formalVersion"`
-	ObjectID               objectrepo.ObjectID `json:"objectId"`
-	ContentHash            string              `json:"contentHash"`
-	Size                   int64               `json:"size"`
-	MimeType               string              `json:"mimeType"`
-	CreatedAt              time.Time           `json:"createdAt"`
-	CreatedBy              string              `json:"createdBy"`
-	DeviceID               string              `json:"deviceId"`
-	Comment                *string             `json:"comment"`
+	ContractVersion        string       `json:"contractVersion"`
+	RevisionID             string       `json:"revisionId"`
+	DocumentID             string       `json:"documentId"`
+	ParentRevisionID       *string      `json:"parentRevisionId"`
+	RestoredFromRevisionID *string      `json:"restoredFromRevisionId"`
+	Kind                   RevisionKind `json:"kind"`
+	RevisionOrdinal        uint64       `json:"revisionOrdinal"`
+	// LocalSequence is allocated by a provisional writer before a revision
+	// enters the canonical tree. It remains immutable after acceptance so a
+	// replicated candidate keeps its original device-local identity.
+	LocalSequence *uint64             `json:"localSequence,omitempty"`
+	FormalVersion *uint64             `json:"formalVersion"`
+	ObjectID      objectrepo.ObjectID `json:"objectId"`
+	ContentHash   string              `json:"contentHash"`
+	Size          int64               `json:"size"`
+	MimeType      string              `json:"mimeType"`
+	CreatedAt     time.Time           `json:"createdAt"`
+	CreatedBy     string              `json:"createdBy"`
+	DeviceID      string              `json:"deviceId"`
+	Comment       *string             `json:"comment"`
 }
 
 func (revision Revision) VersionLabel() string {
@@ -113,11 +120,14 @@ type SaveRequest struct {
 	ParentRevisionID          string
 	ExpectedEffectiveRevision *string
 	Kind                      RevisionKind
-	Content                   []byte
-	MimeType                  string
-	CreatedBy                 string
-	DeviceID                  string
-	Comment                   string
+	// Provisional records a durable local candidate without consuming either
+	// the document's canonical revision ordinal or its formal Vn.
+	Provisional bool
+	Content     []byte
+	MimeType    string
+	CreatedBy   string
+	DeviceID    string
+	Comment     string
 }
 
 type SaveResult struct {
@@ -126,6 +136,15 @@ type SaveResult struct {
 	Root             objectrepo.ManifestID
 	MutationRevision uint64
 	NoOp             bool
+}
+
+// AcceptProvisionalRequest selects one provisional leaf for canonical
+// acceptance. The service accepts its complete provisional ancestor closure
+// in deterministic parent-first order, preserving every unselected branch.
+type AcceptProvisionalRequest struct {
+	Token               writecoordinator.Token
+	DocumentID          string
+	CandidateRevisionID string
 }
 
 type RestoreRequest struct {
@@ -215,6 +234,9 @@ type Service struct {
 	headSessionEpoch     uint64
 	headFenceEpoch       uint64
 	headClaimID          string
+
+	claimModeMu       sync.RWMutex
+	provisionalClaims map[string]struct{}
 }
 
 func New(
@@ -226,12 +248,13 @@ func New(
 		return nil, errors.New("filehistory.dependencies_required")
 	}
 	service := &Service{
-		repository:  repository,
-		coordinator: coordinator,
-		now:         func() time.Time { return time.Now().UTC() },
-		newID:       randomRevisionID,
-		headStore:   newMemoryHeadStore(),
-		documents:   map[string]Document{},
+		repository:        repository,
+		coordinator:       coordinator,
+		now:               func() time.Time { return time.Now().UTC() },
+		newID:             randomRevisionID,
+		headStore:         newMemoryHeadStore(),
+		documents:         map[string]Document{},
+		provisionalClaims: map[string]struct{}{},
 	}
 	for _, option := range options {
 		option(service)
@@ -241,6 +264,34 @@ func New(
 		return nil, errors.New("filehistory.workspace_id_invalid")
 	}
 	return service, nil
+}
+
+// ConfigureClaimMode binds a lease claim to the revision allocation policy.
+// The claim ID is the narrow seam shared with ReplicaSync: every Save carrying
+// that token automatically uses provisional identity until the claim is
+// replaced, including watcher and import paths that do not know about leases.
+func (service *Service) ConfigureClaimMode(
+	claimID string,
+	provisional bool,
+) error {
+	if service == nil || strings.TrimSpace(claimID) == "" {
+		return errors.New("filehistory.claim_mode_invalid")
+	}
+	service.claimModeMu.Lock()
+	defer service.claimModeMu.Unlock()
+	if provisional {
+		service.provisionalClaims[claimID] = struct{}{}
+	} else {
+		delete(service.provisionalClaims, claimID)
+	}
+	return nil
+}
+
+func (service *Service) isProvisionalClaim(claimID string) bool {
+	service.claimModeMu.RLock()
+	defer service.claimModeMu.RUnlock()
+	_, found := service.provisionalClaims[claimID]
+	return found
 }
 
 func Open(
@@ -266,9 +317,12 @@ func Open(
 		return nil, errors.Join(ErrStateCorrupt, err)
 	}
 	token, counters := coordinator.Current()
-	if payload.FormatVersion != rootFormatVersion ||
+	if !supportedRootFormat(payload.FormatVersion) ||
 		payload.WorkspaceID != token.WorkspaceID {
 		return nil, ErrStateCorrupt
+	}
+	if err := validateRootVersion(payload); err != nil {
+		return nil, errors.Join(ErrStateCorrupt, err)
 	}
 	if err := validateRootResourceLimits(payload); err != nil {
 		return nil, errors.Join(ErrStateCorrupt, err)
@@ -287,6 +341,9 @@ func Open(
 		documents[document.DocumentID] = cloneDocument(document)
 	}
 	if err := validatePaths(documents); err != nil {
+		return nil, errors.Join(ErrStateCorrupt, err)
+	}
+	if err := validateLocalSequences(documents); err != nil {
 		return nil, errors.Join(ErrStateCorrupt, err)
 	}
 	roots := reachableObjects(documents)
@@ -447,6 +504,8 @@ func (service *Service) Save(
 	if err := validateSaveRequest(request); err != nil {
 		return SaveResult{}, errors.New("filehistory.save_invalid")
 	}
+	provisional := request.Provisional ||
+		service.isProvisionalClaim(request.Token.ClaimID)
 	var (
 		result           SaveResult
 		pendingDocuments map[string]Document
@@ -552,7 +611,6 @@ func (service *Service) Save(
 				RevisionID:      revisionID,
 				DocumentID:      document.DocumentID,
 				Kind:            request.Kind,
-				RevisionOrdinal: document.NextRevisionOrdinal,
 				ObjectID:        contentID,
 				ContentHash:     contentHash(request.Content),
 				Size:            int64(len(request.Content)),
@@ -562,11 +620,20 @@ func (service *Service) Save(
 				DeviceID:        request.DeviceID,
 				Comment:         optionalString(request.Comment),
 			}
-			document.NextRevisionOrdinal++
+			if provisional {
+				localSequence, err := nextLocalSequence(next, request.DeviceID)
+				if err != nil {
+					return err
+				}
+				revision.LocalSequence = uint64Pointer(localSequence)
+			} else {
+				revision.RevisionOrdinal = document.NextRevisionOrdinal
+				document.NextRevisionOrdinal++
+			}
 			if parent != nil {
 				revision.ParentRevisionID = stringPointer(parent.RevisionID)
 			}
-			if request.Kind == RevisionFormal {
+			if request.Kind == RevisionFormal && !provisional {
 				revision.FormalVersion = uint64Pointer(
 					document.NextFormalVersion,
 				)
@@ -613,6 +680,272 @@ func (service *Service) Save(
 	return result, nil
 }
 
+// AcceptProvisional serially assigns canonical ordinals (and Vn for
+// formal/restore revisions) to one candidate's complete provisional ancestor
+// chain. Revision IDs, local sequences, object references and parent links are
+// never rewritten; competing leaves remain durable and discoverable.
+func (service *Service) AcceptProvisional(
+	ctx context.Context,
+	request AcceptProvisionalRequest,
+) (MutationResult, error) {
+	if !validUUID(request.DocumentID) ||
+		!validUUID(request.CandidateRevisionID) {
+		return MutationResult{}, errors.New(
+			"filehistory.provisional_accept_invalid",
+		)
+	}
+	return service.mutateDocument(
+		ctx,
+		request.Token,
+		request.DocumentID,
+		nil,
+		false,
+		func(document *Document, _ map[string]Document) (bool, error) {
+			return acceptProvisionalCandidate(
+				document, request.CandidateRevisionID,
+			)
+		},
+	)
+}
+
+// AcceptPublishedProvisional canonicalizes every effective provisional branch
+// covered by one verified publication. A publication may finish after newer
+// local saves have advanced the live root; in that case only the immutable
+// prefix present in the published root is accepted and the newer tail remains
+// provisional.
+func (service *Service) AcceptPublishedProvisional(
+	ctx context.Context,
+	token writecoordinator.Token,
+	expectedRoot objectrepo.ManifestID,
+) (MutationResult, error) {
+	if expectedRoot == "" {
+		return MutationResult{}, errors.New(
+			"filehistory.provisional_root_invalid",
+		)
+	}
+	published, err := loadDocumentsFromRoot(
+		ctx,
+		service.repository,
+		token.WorkspaceID,
+		expectedRoot,
+	)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	var (
+		result           MutationResult
+		pendingDocuments map[string]Document
+		pendingHead      CurrentHead
+		stateLocked      bool
+	)
+	receipt, err := service.coordinator.Write(
+		ctx,
+		token,
+		func(ctx context.Context, intent writecoordinator.WriteIntent) error {
+			service.mu.Lock()
+			stateLocked = true
+			next := cloneDocuments(service.documents)
+			changed := false
+			for documentID, publishedDocument := range published {
+				document, exists := next[documentID]
+				if !exists || !publishedDocumentCoveredByCurrent(
+					publishedDocument,
+					document,
+				) {
+					return errors.New(
+						"filehistory.provisional_root_not_ancestor",
+					)
+				}
+				effective := revisionByID(
+					publishedDocument,
+					publishedDocument.EffectiveRevisionID,
+				)
+				if effective == nil {
+					return ErrStateCorrupt
+				}
+				if effective.RevisionOrdinal != 0 {
+					continue
+				}
+				accepted, err := acceptProvisionalChain(
+					&document,
+					effective.RevisionID,
+					false,
+					false,
+				)
+				if err != nil {
+					return err
+				}
+				if accepted {
+					next[documentID] = document
+					changed = true
+				}
+			}
+			if !changed {
+				result = MutationResult{
+					Root:             service.root,
+					MutationRevision: intent.MutationRevision - 1,
+					NoOp:             true,
+				}
+				return errNoOp
+			}
+			head, err := service.commit(ctx, intent, next, nil)
+			if err != nil {
+				return err
+			}
+			pendingDocuments = next
+			pendingHead = head
+			result = MutationResult{Root: head.Root}
+			return nil
+		},
+	)
+	if stateLocked {
+		defer service.mu.Unlock()
+	}
+	if errors.Is(err, errNoOp) {
+		return result, nil
+	}
+	if err != nil {
+		return MutationResult{}, err
+	}
+	service.documents = pendingDocuments
+	service.installHeadLocked(pendingHead)
+	result.MutationRevision = receipt.MutationRevision
+	if service.materializer != nil {
+		_ = service.materializer.Finalize(receipt.MutationRevision)
+	}
+	return result, nil
+}
+
+func acceptProvisionalCandidate(
+	document *Document,
+	candidateRevisionID string,
+) (bool, error) {
+	return acceptProvisionalChain(
+		document,
+		candidateRevisionID,
+		true,
+		true,
+	)
+}
+
+func acceptProvisionalChain(
+	document *Document,
+	candidateRevisionID string,
+	requireLeaf bool,
+	makeEffective bool,
+) (bool, error) {
+	candidate := revisionByID(*document, candidateRevisionID)
+	if candidate == nil {
+		return false, ErrRevisionNotFound
+	}
+	if requireLeaf && !isLeaf(*document, candidate.RevisionID) {
+		return false, ErrNotLeaf
+	}
+	if candidate.RevisionOrdinal != 0 {
+		return false, nil
+	}
+
+	indices := make(map[string]int, len(document.Revisions))
+	for index := range document.Revisions {
+		indices[document.Revisions[index].RevisionID] = index
+	}
+	chain := make([]int, 0, MaxRevisionChainDepth)
+	current := candidate.RevisionID
+	for current != "" {
+		index, exists := indices[current]
+		if !exists {
+			return false, ErrStateCorrupt
+		}
+		revision := document.Revisions[index]
+		if revision.RevisionOrdinal != 0 {
+			break
+		}
+		if revision.LocalSequence == nil ||
+			*revision.LocalSequence == 0 {
+			return false, ErrStateCorrupt
+		}
+		if len(chain) == MaxRevisionChainDepth {
+			return false, errors.Join(
+				ErrStateCorrupt, ErrResourceLimit,
+			)
+		}
+		chain = append(chain, index)
+		if revision.ParentRevisionID == nil {
+			break
+		}
+		current = *revision.ParentRevisionID
+	}
+	if len(chain) == 0 {
+		return false, ErrStateCorrupt
+	}
+	for left, right := 0, len(chain)-1; left < right; left, right =
+		left+1, right-1 {
+		chain[left], chain[right] = chain[right], chain[left]
+	}
+	for _, index := range chain {
+		if document.NextRevisionOrdinal == math.MaxUint64 {
+			return false, errors.Join(
+				ErrResourceLimit,
+				errors.New("filehistory.revision_ordinal_exhausted"),
+			)
+		}
+		revision := &document.Revisions[index]
+		revision.RevisionOrdinal = document.NextRevisionOrdinal
+		document.NextRevisionOrdinal++
+		if revision.Kind != RevisionAutosave {
+			if document.NextFormalVersion == math.MaxUint64 {
+				return false, errors.Join(
+					ErrResourceLimit,
+					errors.New("filehistory.formal_version_exhausted"),
+				)
+			}
+			revision.FormalVersion = uint64Pointer(
+				document.NextFormalVersion,
+			)
+			document.NextFormalVersion++
+		}
+	}
+	if makeEffective {
+		document.EffectiveRevisionID = candidate.RevisionID
+	}
+	return true, nil
+}
+
+func publishedDocumentCoveredByCurrent(
+	published Document,
+	current Document,
+) bool {
+	for _, publishedRevision := range published.Revisions {
+		currentRevision := revisionByID(
+			current,
+			publishedRevision.RevisionID,
+		)
+		if currentRevision == nil ||
+			!publishedRevisionMatchesCurrent(
+				publishedRevision,
+				*currentRevision,
+			) {
+			return false
+		}
+	}
+	return revisionByID(
+		current,
+		published.EffectiveRevisionID,
+	) != nil
+}
+
+func publishedRevisionMatchesCurrent(
+	published Revision,
+	current Revision,
+) bool {
+	if published.RevisionOrdinal == 0 &&
+		current.RevisionOrdinal != 0 {
+		current.RevisionOrdinal = 0
+		current.FormalVersion = nil
+	}
+	return reflect.DeepEqual(published, current)
+}
+
 func (service *Service) Restore(
 	ctx context.Context,
 	request RestoreRequest,
@@ -625,6 +958,7 @@ func (service *Service) Restore(
 		!validUUID(request.DeviceID) {
 		return SaveResult{}, errors.New("filehistory.restore_invalid")
 	}
+	provisional := service.isProvisionalClaim(request.Token.ClaimID)
 	var (
 		result           SaveResult
 		pendingDocuments map[string]Document
@@ -674,21 +1008,29 @@ func (service *Service) Restore(
 				ParentRevisionID:       stringPointer(parent.RevisionID),
 				RestoredFromRevisionID: stringPointer(target.RevisionID),
 				Kind:                   RevisionRestore,
-				RevisionOrdinal:        document.NextRevisionOrdinal,
-				FormalVersion: uint64Pointer(
-					document.NextFormalVersion,
-				),
-				ObjectID:    target.ObjectID,
-				ContentHash: target.ContentHash,
-				Size:        target.Size,
-				MimeType:    target.MimeType,
-				CreatedAt:   service.now().UTC(),
-				CreatedBy:   request.CreatedBy,
-				DeviceID:    request.DeviceID,
-				Comment:     optionalString(request.Comment),
+				ObjectID:               target.ObjectID,
+				ContentHash:            target.ContentHash,
+				Size:                   target.Size,
+				MimeType:               target.MimeType,
+				CreatedAt:              service.now().UTC(),
+				CreatedBy:              request.CreatedBy,
+				DeviceID:               request.DeviceID,
+				Comment:                optionalString(request.Comment),
 			}
-			document.NextRevisionOrdinal++
-			document.NextFormalVersion++
+			if provisional {
+				localSequence, err := nextLocalSequence(next, request.DeviceID)
+				if err != nil {
+					return err
+				}
+				revision.LocalSequence = uint64Pointer(localSequence)
+			} else {
+				revision.RevisionOrdinal = document.NextRevisionOrdinal
+				revision.FormalVersion = uint64Pointer(
+					document.NextFormalVersion,
+				)
+				document.NextRevisionOrdinal++
+				document.NextFormalVersion++
+			}
 			document.Revisions = append(document.Revisions, revision)
 			document.EffectiveRevisionID = revision.RevisionID
 			next[document.DocumentID] = document
@@ -1141,8 +1483,11 @@ func loadDocumentsFromRoot(
 	}
 	var payload rootPayload
 	if err := decodeStrict(record.Payload, &payload); err != nil ||
-		payload.FormatVersion != rootFormatVersion ||
+		!supportedRootFormat(payload.FormatVersion) ||
 		payload.WorkspaceID != workspaceID {
+		return nil, errors.Join(ErrStateCorrupt, err)
+	}
+	if err := validateRootVersion(payload); err != nil {
 		return nil, errors.Join(ErrStateCorrupt, err)
 	}
 	if err := validateRootResourceLimits(payload); err != nil {
@@ -1160,6 +1505,9 @@ func loadDocumentsFromRoot(
 		documents[document.DocumentID] = cloneDocument(document)
 	}
 	if err := validatePaths(documents); err != nil {
+		return nil, errors.Join(ErrStateCorrupt, err)
+	}
+	if err := validateLocalSequences(documents); err != nil {
 		return nil, errors.Join(ErrStateCorrupt, err)
 	}
 	report, err := repository.Verify(ctx, reachableObjects(documents))
@@ -1277,6 +1625,9 @@ func (service *Service) commit(
 		if err := validateDocument(document); err != nil {
 			return CurrentHead{}, err
 		}
+	}
+	if err := validateLocalSequences(documents); err != nil {
+		return CurrentHead{}, err
 	}
 	payload := rootPayload{
 		FormatVersion: rootFormatVersion,
@@ -1566,6 +1917,76 @@ func validatePaths(documents map[string]Document) error {
 	return nil
 }
 
+func supportedRootFormat(version int) bool {
+	return version == legacyRootFormatVersion || version == rootFormatVersion
+}
+
+func validateRootVersion(root rootPayload) error {
+	if !supportedRootFormat(root.FormatVersion) {
+		return ErrStateCorrupt
+	}
+	if root.FormatVersion != legacyRootFormatVersion {
+		return nil
+	}
+	for _, document := range root.Documents {
+		for _, revision := range document.Revisions {
+			if revision.RevisionOrdinal == 0 ||
+				revision.LocalSequence != nil {
+				return ErrStateCorrupt
+			}
+		}
+	}
+	return nil
+}
+
+func nextLocalSequence(
+	documents map[string]Document,
+	deviceID string,
+) (uint64, error) {
+	var maximum uint64
+	for _, document := range documents {
+		for _, revision := range document.Revisions {
+			if revision.DeviceID == deviceID &&
+				revision.LocalSequence != nil &&
+				*revision.LocalSequence > maximum {
+				maximum = *revision.LocalSequence
+			}
+		}
+	}
+	if maximum == math.MaxUint64 {
+		return 0, errors.Join(
+			ErrResourceLimit,
+			errors.New("filehistory.local_sequence_exhausted"),
+		)
+	}
+	return maximum + 1, nil
+}
+
+func validateLocalSequences(documents map[string]Document) error {
+	type localIdentity struct {
+		deviceID string
+		sequence uint64
+	}
+	seen := make(map[localIdentity]string)
+	for _, document := range documents {
+		for _, revision := range document.Revisions {
+			if revision.LocalSequence == nil {
+				continue
+			}
+			identity := localIdentity{
+				deviceID: revision.DeviceID,
+				sequence: *revision.LocalSequence,
+			}
+			if previous, exists := seen[identity]; exists &&
+				previous != revision.RevisionID {
+				return ErrStateCorrupt
+			}
+			seen[identity] = revision.RevisionID
+		}
+	}
+	return nil
+}
+
 func validateDocument(document Document) error {
 	if document.ContractVersion != contractVersion ||
 		!validUUID(document.WorkspaceID) ||
@@ -1574,8 +1995,7 @@ func validateDocument(document Document) error {
 			document.Status != DocumentDeleted) ||
 		document.TopologyRevision == 0 ||
 		len(document.Revisions) == 0 ||
-		document.NextRevisionOrdinal <=
-			uint64(len(document.Revisions)) ||
+		document.NextRevisionOrdinal == 0 ||
 		document.NextFormalVersion == 0 {
 		return ErrStateCorrupt
 	}
@@ -1593,7 +2013,6 @@ func validateDocument(document Document) error {
 		if revision.ContractVersion != contractVersion ||
 			!validUUID(revision.RevisionID) ||
 			revision.DocumentID != document.DocumentID ||
-			revision.RevisionOrdinal == 0 ||
 			revision.ObjectID == "" ||
 			!validContentHash(revision.ContentHash) ||
 			revision.ObjectID != objectIDFromHash(revision.ContentHash) ||
@@ -1607,20 +2026,32 @@ func validateDocument(document Document) error {
 				revision.Kind != RevisionRestore) {
 			return ErrStateCorrupt
 		}
+		provisional := revision.RevisionOrdinal == 0
+		if (provisional && revision.LocalSequence == nil) ||
+			(revision.LocalSequence != nil &&
+				*revision.LocalSequence == 0) {
+			return ErrStateCorrupt
+		}
 		if _, exists := revisions[revision.RevisionID]; exists {
 			return ErrStateCorrupt
 		}
-		if _, exists := sequences[revision.RevisionOrdinal]; exists {
-			return ErrStateCorrupt
+		if !provisional {
+			if _, exists := sequences[revision.RevisionOrdinal]; exists {
+				return ErrStateCorrupt
+			}
+			sequences[revision.RevisionOrdinal] = struct{}{}
 		}
-		sequences[revision.RevisionOrdinal] = struct{}{}
 		if revision.Kind == RevisionAutosave &&
 			revision.FormalVersion != nil {
 			return ErrStateCorrupt
 		}
-		if revision.Kind != RevisionAutosave &&
+		if !provisional &&
+			revision.Kind != RevisionAutosave &&
 			(revision.FormalVersion == nil ||
 				*revision.FormalVersion == 0) {
+			return ErrStateCorrupt
+		}
+		if provisional && revision.FormalVersion != nil {
 			return ErrStateCorrupt
 		}
 		if revision.FormalVersion != nil {
@@ -1634,7 +2065,7 @@ func validateDocument(document Document) error {
 			roots++
 		}
 		revisions[revision.RevisionID] = revision
-		if revision.RevisionOrdinal > maxSequence {
+		if !provisional && revision.RevisionOrdinal > maxSequence {
 			maxSequence = revision.RevisionOrdinal
 		}
 		if revision.FormalVersion != nil &&
@@ -1665,8 +2096,18 @@ func validateDocument(document Document) error {
 		}
 		if revision.ParentRevisionID != nil {
 			parent := revisions[*revision.ParentRevisionID]
-			if parent.RevisionOrdinal >= revision.RevisionOrdinal ||
-				parent.CreatedAt.After(revision.CreatedAt) {
+			if parent.CreatedAt.After(revision.CreatedAt) {
+				return ErrStateCorrupt
+			}
+			if revision.RevisionOrdinal != 0 &&
+				(parent.RevisionOrdinal == 0 ||
+					parent.RevisionOrdinal >= revision.RevisionOrdinal) {
+				return ErrStateCorrupt
+			}
+			if parent.DeviceID == revision.DeviceID &&
+				parent.LocalSequence != nil &&
+				revision.LocalSequence != nil &&
+				*parent.LocalSequence >= *revision.LocalSequence {
 				return ErrStateCorrupt
 			}
 		}
@@ -1818,6 +2259,9 @@ func cloneRevision(revision *Revision) *Revision {
 	}
 	if revision.FormalVersion != nil {
 		result.FormalVersion = uint64Pointer(*revision.FormalVersion)
+	}
+	if revision.LocalSequence != nil {
+		result.LocalSequence = uint64Pointer(*revision.LocalSequence)
 	}
 	if revision.Comment != nil {
 		result.Comment = stringPointer(*revision.Comment)

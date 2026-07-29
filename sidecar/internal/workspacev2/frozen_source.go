@@ -1,7 +1,6 @@
 package workspacev2
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -11,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/pocketbase/pocketbase/core"
@@ -39,6 +37,7 @@ type frozenSource struct {
 	fileAuditOutbox auditledger.OutboxStore
 	repository      objectrepo.Repository
 	history         *filehistory.Service
+	state           *stateStore
 }
 
 func (source *frozenSource) Freeze(
@@ -79,7 +78,7 @@ func (source *frozenSource) Freeze(
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
-	settings, err := source.workspaceSettings()
+	settings, err := source.workspaceSettings(ctx)
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
@@ -326,26 +325,10 @@ func (source *frozenSource) snapshotFiles(
 	return result, fileRevision, nil
 }
 
-func (source *frozenSource) workspaceSettings() ([]byte, error) {
-	path := filepath.Join(source.paths.metadata, "settings.json")
-	raw, err := readFileBounded(path, 1<<20)
-	if errors.Is(err, os.ErrNotExist) {
-		return []byte("{}"), nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var value map[string]any
-	if err := decoder.Decode(&value); err != nil || value == nil {
-		return nil, errors.New("workspace.settings_invalid")
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, errors.New("workspace.settings_invalid")
-	}
-	return json.Marshal(value)
+func (source *frozenSource) workspaceSettings(
+	ctx context.Context,
+) ([]byte, error) {
+	return snapshotWorkspaceSettings(ctx, source.state)
 }
 
 func readFileBounded(path string, limit int64) ([]byte, error) {

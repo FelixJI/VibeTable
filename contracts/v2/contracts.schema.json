@@ -232,6 +232,7 @@
         "documentId",
         "parentRevisionId",
         "revisionOrdinal",
+        "localSequence",
         "formalVersion",
         "kind",
         "objectId",
@@ -251,7 +252,8 @@
         "parentRevisionId": {
           "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Uuid"}]
         },
-        "revisionOrdinal": {"type": "integer", "minimum": 1},
+        "revisionOrdinal": {"type": "integer", "minimum": 0},
+        "localSequence": {"type": ["integer", "null"], "minimum": 1},
         "formalVersion": {"type": ["integer", "null"], "minimum": 1},
         "kind": {"type": "string", "enum": ["autosave", "formal", "restore"]},
         "objectId": {"$ref": "#/$defs/ObjectId"},
@@ -265,7 +267,75 @@
         "restoredFromRevisionId": {
           "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Uuid"}]
         }
-      }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "revisionOrdinal": {"const": 0},
+                "localSequence": {"type": "integer", "minimum": 1},
+                "formalVersion": {"type": "null"}
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "revisionOrdinal": {"type": "integer", "minimum": 1}
+              }
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {"const": "autosave"},
+                "formalVersion": {"type": "null"},
+                "restoredFromRevisionId": {"type": "null"}
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "revisionOrdinal": {"type": "integer", "minimum": 1},
+                "kind": {"const": "formal"},
+                "formalVersion": {"type": "integer", "minimum": 1},
+                "restoredFromRevisionId": {"type": "null"}
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "revisionOrdinal": {"const": 0},
+                "kind": {"const": "formal"},
+                "formalVersion": {"type": "null"},
+                "restoredFromRevisionId": {"type": "null"}
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "revisionOrdinal": {"type": "integer", "minimum": 1},
+                "kind": {"const": "restore"},
+                "formalVersion": {"type": "integer", "minimum": 1},
+                "restoredFromRevisionId": {"$ref": "#/$defs/Uuid"}
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "revisionOrdinal": {"const": 0},
+                "kind": {"const": "restore"},
+                "formalVersion": {"type": "null"},
+                "restoredFromRevisionId": {"$ref": "#/$defs/Uuid"}
+              }
+            }
+          ]
+        }
+      ]
     },
     "AuditAnchor": {
       "type": "object",

@@ -1153,8 +1153,14 @@ public partial class MainWindow : Window
             _workspacePathGrants,
             _productDataRoot,
             workspaceId);
+        bool userMarkedSync = ReadRequiredBoolean(
+            parameters,
+            "userMarkedSync");
         WorkspaceStorageObservation selectedStorage =
-            ProbeCreateTarget(_providerPolicy, selectedRoot);
+            ProbeCreateTarget(
+                _providerPolicy,
+                selectedRoot,
+                userMarkedSync);
         string displayName = ReadString(parameters, "displayName")?.Trim()
             ?? string.Empty;
         if (displayName.Length is < 1 or > 120)
@@ -1269,7 +1275,8 @@ public partial class MainWindow : Window
                 "locationPolicy",
                 "selectedRootGrant",
                 "storageMode",
-                "encryptionMode"))
+                "encryptionMode",
+                "userMarkedSync"))
         {
             throw new WorkspaceRegistryException(
                 "workspace.request_invalid",
@@ -1285,6 +1292,15 @@ public partial class MainWindow : Window
         }
 
         string? locationPolicy = ReadString(parameters, "locationPolicy");
+        bool userMarkedSync = ReadRequiredBoolean(
+            parameters,
+            "userMarkedSync");
+        if (locationPolicy == "managedDefault" && userMarkedSync)
+        {
+            throw new WorkspaceRegistryException(
+                "workspace.request_invalid",
+                "The managed default location cannot be marked as sync-managed.");
+        }
         if (locationPolicy == "managedDefault"
             && ReadString(parameters, "storageMode") == "mirrored")
         {
@@ -1616,8 +1632,11 @@ public partial class MainWindow : Window
 
     private static WorkspaceStorageObservation ProbeCreateTarget(
         WorkspaceProviderPolicy providerPolicy,
-        string root)
-        => providerPolicy.ProbeCreateTargetAndEnsureSupported(root);
+        string root,
+        bool userMarkedSync = false)
+        => providerPolicy.ProbeCreateTargetAndEnsureSupported(
+            root,
+            userMarkedSync);
 
     private object RemoveWorkspace(JsonElement parameters)
     {
@@ -2926,6 +2945,21 @@ public partial class MainWindow : Window
             && item.ValueKind == JsonValueKind.String
                 ? item.GetString()
                 : null;
+
+    private static bool ReadRequiredBoolean(
+        JsonElement value,
+        string name)
+    {
+        if (value.ValueKind == JsonValueKind.Object
+            && value.TryGetProperty(name, out JsonElement item)
+            && item.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            return item.GetBoolean();
+        }
+        throw new WorkspaceRegistryException(
+            "workspace.request_invalid",
+            $"{name} must be a boolean.");
+    }
 
     private static string? ReadScalar(JsonElement value, string name)
     {

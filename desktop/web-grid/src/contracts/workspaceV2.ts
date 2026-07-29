@@ -300,6 +300,7 @@ export interface FileRevisionV2 {
   readonly documentId: string;
   readonly parentRevisionId: string | null;
   readonly revisionOrdinal: number;
+  readonly localSequence: number | null;
   readonly formalVersion: number | null;
   readonly kind: "autosave" | "formal" | "restore";
   readonly objectId: string;
@@ -317,18 +318,29 @@ export function parseFileRevisionV2(value: unknown): FileRevisionV2 {
   const source = record(value, "file revision");
   exact(source, [
     "contractVersion", "revisionId", "documentId", "parentRevisionId",
-    "revisionOrdinal", "formalVersion", "kind", "objectId", "contentHash", "size",
+    "revisionOrdinal", "localSequence", "formalVersion", "kind", "objectId", "contentHash", "size",
     "mimeType", "createdAt", "createdBy", "deviceId", "comment", "restoredFromRevisionId",
   ], "file revision");
   const kind = oneOf(source.kind, ["autosave", "formal", "restore"], "kind");
   const formalVersion = source.formalVersion === null
     ? null
     : integer(source.formalVersion, "formalVersion", 1);
+  const revisionOrdinal = integer(source.revisionOrdinal, "revisionOrdinal");
+  const localSequence = source.localSequence === null
+    ? null
+    : integer(source.localSequence, "localSequence", 1);
+  const provisional = revisionOrdinal === 0;
+  if (provisional && localSequence === null) {
+    throw new Error("provisional revision requires localSequence");
+  }
+  if (provisional && formalVersion !== null) {
+    throw new Error("provisional revision cannot consume a formal version");
+  }
   const restoredFromRevisionId = nullableUuid(source.restoredFromRevisionId, "restoredFromRevisionId");
   if (kind === "autosave" && formalVersion !== null) {
     throw new Error("autosave cannot consume a formal version");
   }
-  if (kind !== "autosave" && formalVersion === null) {
+  if (!provisional && kind !== "autosave" && formalVersion === null) {
     throw new Error("formal revision requires a formal version");
   }
   if ((kind === "restore") !== (restoredFromRevisionId !== null)) {
@@ -344,7 +356,8 @@ export function parseFileRevisionV2(value: unknown): FileRevisionV2 {
     revisionId: uuid(source.revisionId, "revisionId"),
     documentId: uuid(source.documentId, "documentId"),
     parentRevisionId: nullableUuid(source.parentRevisionId, "parentRevisionId"),
-    revisionOrdinal: integer(source.revisionOrdinal, "revisionOrdinal", 1),
+    revisionOrdinal,
+    localSequence,
     formalVersion,
     kind,
     objectId,
@@ -683,8 +696,7 @@ export interface RpcContractCatalogV2 {
 }
 
 function parseClosedSchema(value: unknown, label: string): JsonRecord {
-  const schema = record(value, label);
-  exact(schema, ["type", "additionalProperties", "required", "properties"], label);
+  const schema = parsePropertySchema(value, label);
   if (
     schema.type !== "object"
     || schema.additionalProperties !== false
@@ -696,6 +708,7 @@ function parseClosedSchema(value: unknown, label: string): JsonRecord {
   const required = stringArray(schema.required, `${label}.required`);
   if (
     new Set(required).size !== required.length
+    || required.length !== Object.keys(properties).length
     || required.some((key) => !(key in properties))
   ) {
     throw new Error(`${label} required fields are invalid`);
@@ -706,18 +719,28 @@ function parseClosedSchema(value: unknown, label: string): JsonRecord {
   return schema;
 }
 
-function parsePropertySchema(value: unknown, label: string): JsonRecord {
+function parsePropertySchema(
+  value: unknown,
+  label: string,
+  conditional = false,
+): JsonRecord {
   const property = record(value, label);
   if (Object.keys(property).length === 0) return property;
-  if (property.type === "object") return parseClosedSchema(property, label);
-  const allowed = property.type === "array"
-    ? ["type", "items"]
-    : "enum" in property
-      ? ["type", "enum"]
-      : ["type"];
-  exact(property, allowed, label);
-  const types = schemaPropertyTypes(property.type, `${label}.type`);
-  if (types.length === 0) throw new Error(`${label}.type is invalid`);
+  const allowed = [
+    "type", "enum", "const", "minimum", "minLength", "pattern",
+    "additionalProperties", "required", "properties", "items", "allOf",
+    "oneOf",
+  ];
+  if (Object.keys(property).some((key) => !allowed.includes(key))) {
+    throw new Error(`${label} has unknown or missing fields`);
+  }
+  const types = "type" in property
+    ? schemaPropertyTypes(property.type, `${label}.type`)
+    : [];
+  if (
+    types.length === 0
+    && !["const", "properties", "allOf", "oneOf"].some((key) => key in property)
+  ) throw new Error(`${label}.type is invalid`);
   if ("enum" in property) {
     if (
       !Array.isArray(property.enum)
@@ -733,14 +756,73 @@ function parsePropertySchema(value: unknown, label: string): JsonRecord {
       }
     }
   }
-  if (property.type === "array") {
+  if ("minimum" in property && (
+    typeof property.minimum !== "number"
+    || !Number.isFinite(property.minimum)
+  )) throw new Error(`${label}.minimum is invalid`);
+  if ("minLength" in property && (
+    !Number.isInteger(property.minLength)
+    || (property.minLength as number) < 0
+  )) throw new Error(`${label}.minLength is invalid`);
+  if ("pattern" in property) {
+    if (typeof property.pattern !== "string") {
+      throw new Error(`${label}.pattern is invalid`);
+    }
+    try {
+      new RegExp(property.pattern);
+    } catch {
+      throw new Error(`${label}.pattern is invalid`);
+    }
+  }
+  if (
+    "additionalProperties" in property
+    && typeof property.additionalProperties !== "boolean"
+  ) throw new Error(`${label}.additionalProperties is invalid`);
+  if ("properties" in property) {
+    const properties = record(property.properties, `${label}.properties`);
+    for (const [key, child] of Object.entries(properties)) {
+      parsePropertySchema(child, `${label}.properties.${key}`, conditional);
+    }
+  }
+  if ("required" in property) {
+    const required = stringArray(property.required, `${label}.required`);
+    const properties = record(property.properties, `${label}.properties`);
+    if (
+      new Set(required).size !== required.length
+      || required.some((key) => !(key in properties))
+    ) throw new Error(`${label}.required fields are invalid`);
+  }
+  for (const keyword of ["allOf", "oneOf"] as const) {
+    if (!(keyword in property)) continue;
+    const branches = property[keyword];
+    if (!Array.isArray(branches) || branches.length === 0) {
+      throw new Error(`${label}.${keyword} is invalid`);
+    }
+    branches.forEach((branch, index) =>
+      parsePropertySchema(branch, `${label}.${keyword}[${index}]`, true));
+  }
+  if (types.includes("object") && !conditional) {
+    const properties = record(property.properties, `${label}.properties`);
+    const required = stringArray(property.required, `${label}.required`);
+    if (
+      property.additionalProperties !== false
+      || required.length !== Object.keys(properties).length
+      || !required.every((key) => key in properties)
+    ) throw new Error(`${label} must be a closed object schema`);
+  }
+  if (types.includes("array")) {
+    if (!("items" in property)) throw new Error(`${label}.items is invalid`);
     parsePropertySchema(property.items, `${label}.items`);
+  } else if ("items" in property) {
+    throw new Error(`${label}.items is invalid`);
   }
   return property;
 }
 
 function schemaPropertyTypes(value: unknown, label: string): readonly string[] {
-  const allowed = ["string", "integer", "boolean", "null", "array", "object"];
+  const allowed = [
+    "string", "integer", "number", "boolean", "null", "array", "object",
+  ];
   if (typeof value === "string" && allowed.includes(value)) return [value];
   if (
     Array.isArray(value)
@@ -749,7 +831,7 @@ function schemaPropertyTypes(value: unknown, label: string): readonly string[] {
     && value.includes("null")
     && value.every((item) =>
       typeof item === "string"
-      && ["string", "integer", "boolean", "null"].includes(item))
+      && ["string", "integer", "number", "boolean", "null"].includes(item))
   ) {
     return value as string[];
   }
@@ -762,34 +844,111 @@ function validateSchemaValue(
   label: string,
 ): void {
   if (Object.keys(schema).length === 0) return;
-  if (schema.type === "object") {
-    validateClosedPayload(value, schema, label);
-    return;
+  if ("const" in schema && !Object.is(value, schema.const)) {
+    throw new Error(`${label} does not match its const schema`);
   }
-  const types = schemaPropertyTypes(schema.type, `${label}.schema.type`);
   if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {
     throw new Error(`${label} does not match its enum schema`);
   }
-  const valid = types.some((type) =>
-    type === "string"
-      ? typeof value === "string"
-      : type === "integer"
-        ? Number.isInteger(value)
-        : type === "boolean"
-          ? typeof value === "boolean"
-          : type === "null"
-            ? value === null
-            : type === "array"
-              ? Array.isArray(value)
-              : type === "object"
-                ? value !== null && typeof value === "object" && !Array.isArray(value)
-                : false);
-  if (!valid) throw new Error(`${label} has invalid type`);
+  if ("type" in schema) {
+    const types = schemaPropertyTypes(schema.type, `${label}.schema.type`);
+    const valid = types.some((type) =>
+      type === "string"
+        ? typeof value === "string"
+        : type === "integer"
+          ? Number.isInteger(value)
+          : type === "number"
+            ? typeof value === "number" && Number.isFinite(value)
+            : type === "boolean"
+              ? typeof value === "boolean"
+              : type === "null"
+                ? value === null
+                : type === "array"
+                  ? Array.isArray(value)
+                  : type === "object"
+                    ? value !== null && typeof value === "object" && !Array.isArray(value)
+                    : false);
+    if (!valid) throw new Error(`${label} has invalid type`);
+  }
+  if (
+    typeof schema.minimum === "number"
+    && typeof value === "number"
+    && value < schema.minimum
+  ) throw new Error(`${label} is below its minimum`);
+  if (
+    typeof schema.minLength === "number"
+    && typeof value === "string"
+    && value.length < schema.minLength
+  ) throw new Error(`${label} is shorter than its minimum length`);
+  if (
+    typeof schema.pattern === "string"
+    && typeof value === "string"
+    && !new RegExp(schema.pattern).test(value)
+  ) throw new Error(`${label} does not match its pattern`);
+  if (
+    (schema.type === "object" || "properties" in schema)
+    && value !== null
+    && typeof value === "object"
+    && !Array.isArray(value)
+  ) validateObjectPayload(value, schema, label);
   if (schema.type === "array" && Array.isArray(value)) {
     const itemSchema = record(schema.items, `${label}.schema.items`);
     value.forEach((item, index) =>
       validateSchemaValue(item, itemSchema, `${label}[${index}]`));
   }
+  if (Array.isArray(schema.allOf)) {
+    schema.allOf.forEach((branch, index) =>
+      validateSchemaValue(
+        value,
+        record(branch, `${label}.schema.allOf[${index}]`),
+        label,
+      ));
+  }
+  if (Array.isArray(schema.oneOf)) {
+    const matches = schema.oneOf.filter((branch, index) => {
+      try {
+        validateSchemaValue(
+          value,
+          record(branch, `${label}.schema.oneOf[${index}]`),
+          label,
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    }).length;
+    if (matches !== 1) {
+      throw new Error(`${label} does not match exactly one schema`);
+    }
+  }
+}
+
+function validateObjectPayload(
+  value: unknown,
+  schema: JsonRecord,
+  label: string,
+): JsonRecord {
+  const payload = record(value, label);
+  const properties = "properties" in schema
+    ? record(schema.properties, `${label}.schema.properties`)
+    : {};
+  const required = "required" in schema
+    ? stringArray(schema.required, `${label}.schema.required`)
+    : [];
+  const allowed = Object.keys(properties);
+  if (
+    (schema.additionalProperties === false
+      && Object.keys(payload).some((key) => !allowed.includes(key)))
+    || required.some((key) => !(key in payload))
+  ) {
+    throw new Error(`${label} does not match its closed schema`);
+  }
+  for (const [key, raw] of Object.entries(payload)) {
+    if (!(key in properties)) continue;
+    const property = record(properties[key], `${label}.schema.properties.${key}`);
+    validateSchemaValue(raw, property, `${label}.${key}`);
+  }
+  return payload;
 }
 
 function validateClosedPayload(
@@ -797,21 +956,7 @@ function validateClosedPayload(
   schema: JsonRecord,
   label: string,
 ): JsonRecord {
-  const payload = record(value, label);
-  const properties = record(schema.properties, `${label}.schema.properties`);
-  const required = stringArray(schema.required, `${label}.schema.required`);
-  const allowed = Object.keys(properties);
-  if (
-    Object.keys(payload).some((key) => !allowed.includes(key))
-    || required.some((key) => !(key in payload))
-  ) {
-    throw new Error(`${label} does not match its closed schema`);
-  }
-  for (const [key, raw] of Object.entries(payload)) {
-    const property = record(properties[key], `${label}.schema.properties.${key}`);
-    validateSchemaValue(raw, property, `${label}.${key}`);
-  }
-  return payload;
+  return validateObjectPayload(value, schema, label);
 }
 
 function parseRpcCaseV2(value: unknown): RpcGoldenCaseV2 {

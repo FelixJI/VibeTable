@@ -245,6 +245,7 @@ public sealed record FileRevisionV2 : IWorkspaceV2Contract
     [JsonRequired] public required Guid DocumentId { get; init; }
     [JsonRequired] public required Guid? ParentRevisionId { get; init; }
     [JsonRequired] public required ulong RevisionOrdinal { get; init; }
+    [JsonRequired] public required ulong? LocalSequence { get; init; }
     [JsonRequired] public required ulong? FormalVersion { get; init; }
     [JsonRequired] public required FileRevisionKind Kind { get; init; }
     [JsonRequired] public required string ObjectId { get; init; }
@@ -261,14 +262,23 @@ public sealed record FileRevisionV2 : IWorkspaceV2Contract
     {
         WorkspaceV2Json.RequireVersion(ContractVersion);
         if (RevisionId == Guid.Empty || DocumentId == Guid.Empty ||
-            DeviceId == Guid.Empty || RevisionOrdinal == 0 ||
+            DeviceId == Guid.Empty ||
             !ObjectId.StartsWith("obj_", StringComparison.Ordinal) ||
             !ContentHash.StartsWith("sha256:", StringComparison.Ordinal) ||
             string.IsNullOrWhiteSpace(MimeType) || string.IsNullOrWhiteSpace(CreatedBy))
             throw new JsonException("File revision is invalid.");
+        bool provisional = RevisionOrdinal == 0;
+        if (provisional && LocalSequence is null or 0)
+            throw new JsonException("Provisional revision requires localSequence.");
+        if (LocalSequence == 0)
+            throw new JsonException("localSequence must be positive.");
+        if (provisional && FormalVersion is not null)
+            throw new JsonException("Provisional revision cannot consume a formal version.");
         if (Kind == FileRevisionKind.Autosave && FormalVersion is not null)
             throw new JsonException("Autosave cannot consume a formal version.");
-        if (Kind != FileRevisionKind.Autosave && FormalVersion is null or 0)
+        if (!provisional &&
+            Kind != FileRevisionKind.Autosave &&
+            FormalVersion is null or 0)
             throw new JsonException("Formal revision requires a formal version.");
         if (Kind == FileRevisionKind.Restore && RestoredFromRevisionId is null)
             throw new JsonException("Restore requires restoredFromRevisionId.");
@@ -538,83 +548,165 @@ public sealed record RpcGoldenCaseV2 : IWorkspaceV2Contract
             throw new JsonException("RPC params/result schema must be a closed object.");
     }
 
-    private static bool ValidateSchemaNode(JsonElement schema)
+    private static bool ValidateSchemaNode(
+        JsonElement schema,
+        bool conditional = false)
     {
         if (schema.ValueKind != JsonValueKind.Object ||
-            !schema.TryGetProperty("type", out JsonElement type))
+            !HasOnlySchemaKeys(
+                schema,
+                "type",
+                "enum",
+                "const",
+                "minimum",
+                "minLength",
+                "pattern",
+                "additionalProperties",
+                "required",
+                "properties",
+                "items",
+                "allOf",
+                "oneOf"))
             return false;
-        if (type.ValueKind == JsonValueKind.Array)
+        bool hasType = schema.TryGetProperty(
+            "type",
+            out JsonElement type);
+        if (hasType && type.ValueKind == JsonValueKind.Array)
         {
-            if (!HasOnlySchemaKeys(schema, "type", "enum"))
-                return false;
             string[] allowed =
                 ["string", "integer", "number", "boolean", "null"];
             JsonElement[] values = type.EnumerateArray().ToArray();
-            return values.Length > 0 &&
-                values.All(item =>
+            if (values.Length == 0 ||
+                !values.All(item =>
                     item.ValueKind == JsonValueKind.String &&
                     allowed.Contains(
                         item.GetString(),
-                        StringComparer.Ordinal));
+                        StringComparer.Ordinal)))
+                return false;
         }
-        if (type.ValueKind != JsonValueKind.String)
+        else if (hasType &&
+            (type.ValueKind != JsonValueKind.String ||
+             type.GetString() is not (
+                 "object" or
+                 "array" or
+                 "string" or
+                 "integer" or
+                 "number" or
+                 "boolean" or
+                 "null")))
             return false;
-        switch (type.GetString())
+        if (schema.TryGetProperty(
+                "enum",
+                out JsonElement enumValues) &&
+            enumValues.ValueKind != JsonValueKind.Array)
+            return false;
+        if (schema.TryGetProperty(
+                "minimum",
+                out JsonElement minimum) &&
+            minimum.ValueKind != JsonValueKind.Number)
+            return false;
+        if (schema.TryGetProperty(
+                "minLength",
+                out JsonElement minLength) &&
+            (minLength.ValueKind != JsonValueKind.Number ||
+             !minLength.TryGetInt32(out int minLengthValue) ||
+             minLengthValue < 0))
+            return false;
+        if (schema.TryGetProperty(
+                "pattern",
+                out JsonElement pattern) &&
+            pattern.ValueKind != JsonValueKind.String)
+            return false;
+        foreach (string keyword in new[] { "allOf", "oneOf" })
         {
-            case "object":
-                if (!HasOnlySchemaKeys(
-                        schema,
-                        "type",
-                        "additionalProperties",
-                        "required",
-                        "properties") ||
-                    !schema.TryGetProperty(
-                        "additionalProperties",
-                        out JsonElement additional) ||
-                    additional.ValueKind != JsonValueKind.False ||
-                    !schema.TryGetProperty(
-                        "properties",
-                        out JsonElement properties) ||
-                    properties.ValueKind != JsonValueKind.Object ||
-                    !schema.TryGetProperty(
-                        "required",
-                        out JsonElement required) ||
-                    required.ValueKind != JsonValueKind.Array)
-                    return false;
-                string[] propertyNames = properties.EnumerateObject()
-                    .Select(property => property.Name)
-                    .ToArray();
-                string?[] requiredNames = required.EnumerateArray()
+            if (!schema.TryGetProperty(
+                    keyword,
+                    out JsonElement alternatives))
+                continue;
+            JsonElement[] branches =
+                alternatives.ValueKind == JsonValueKind.Array
+                    ? alternatives.EnumerateArray().ToArray()
+                    : [];
+            if (branches.Length == 0 ||
+                !branches.All(branch =>
+                    ValidateSchemaNode(branch, conditional: true)))
+                return false;
+        }
+        JsonElement properties = default;
+        bool hasProperties = schema.TryGetProperty(
+            "properties",
+            out properties);
+        if (hasProperties &&
+            (properties.ValueKind != JsonValueKind.Object ||
+             !properties.EnumerateObject().All(property =>
+                 ValidateSchemaNode(
+                     property.Value,
+                     conditional))))
+            return false;
+        JsonElement required = default;
+        bool hasRequired = schema.TryGetProperty(
+            "required",
+            out required);
+        string[] propertyNames = hasProperties
+            ? properties.EnumerateObject()
+                .Select(property => property.Name)
+                .ToArray()
+            : [];
+        string?[] requiredNames = hasRequired &&
+            required.ValueKind == JsonValueKind.Array
+                ? required.EnumerateArray()
                     .Select(item =>
                         item.ValueKind == JsonValueKind.String
                             ? item.GetString()
                             : null)
-                    .ToArray();
-                return requiredNames.All(name => name is not null) &&
-                    requiredNames.Distinct(StringComparer.Ordinal).Count() ==
-                        requiredNames.Length &&
-                    requiredNames.Length == propertyNames.Length &&
-                    requiredNames!
-                        .Cast<string>()
-                        .ToHashSet(StringComparer.Ordinal)
-                        .SetEquals(propertyNames) &&
-                    properties.EnumerateObject().All(
-                        property => ValidateSchemaNode(property.Value));
-            case "array":
-                return HasOnlySchemaKeys(schema, "type", "items") &&
-                    schema.TryGetProperty(
-                        "items",
-                        out JsonElement items) &&
-                    ValidateSchemaNode(items);
-            case "string":
-            case "integer":
-            case "number":
-            case "boolean":
-            case "null":
-                return HasOnlySchemaKeys(schema, "type", "enum");
-            default:
-                return false;
-        }
+                    .ToArray()
+                : [];
+        if (hasRequired &&
+            (required.ValueKind != JsonValueKind.Array ||
+             requiredNames.Any(name => name is null) ||
+             requiredNames.Distinct(StringComparer.Ordinal).Count() !=
+                 requiredNames.Length ||
+             !requiredNames!
+                 .Cast<string>()
+                 .ToHashSet(StringComparer.Ordinal)
+                 .IsSubsetOf(propertyNames)))
+            return false;
+        if (schema.TryGetProperty(
+                "additionalProperties",
+                out JsonElement additional) &&
+            additional.ValueKind is not (
+                JsonValueKind.True or JsonValueKind.False))
+            return false;
+        if (hasType &&
+            type.ValueKind == JsonValueKind.String &&
+            type.GetString() == "object" &&
+            !conditional &&
+            (!hasProperties ||
+             !hasRequired ||
+             !schema.TryGetProperty(
+                 "additionalProperties",
+                 out additional) ||
+             additional.ValueKind != JsonValueKind.False ||
+             requiredNames.Length != propertyNames.Length ||
+             !requiredNames!
+                 .Cast<string>()
+                 .ToHashSet(StringComparer.Ordinal)
+                 .SetEquals(propertyNames)))
+            return false;
+        bool hasItems = schema.TryGetProperty(
+            "items",
+            out JsonElement items);
+        if (hasType &&
+            type.ValueKind == JsonValueKind.String &&
+            type.GetString() == "array")
+            return hasItems && ValidateSchemaNode(items);
+        if (hasItems)
+            return false;
+        return hasType ||
+            schema.TryGetProperty("const", out _) ||
+            hasProperties ||
+            schema.TryGetProperty("allOf", out _) ||
+            schema.TryGetProperty("oneOf", out _);
     }
 
     private static bool HasOnlySchemaKeys(

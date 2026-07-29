@@ -47,6 +47,42 @@ describe("workspace v2 document list reply", () => {
   });
 });
 
+describe("workspace v2 provisional file revision results", () => {
+  it("parses restore results before canonical ordinal and Vn allocation", () => {
+    const parsed = parseWorkspaceV2Reply({
+      ...reply,
+      method: "fileHistory.restore",
+      result: {
+        revisionId: "33333333-3333-4333-8333-333333333333",
+        revisionOrdinal: 0,
+        localSequence: 7,
+        formalVersion: null,
+      },
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok && parsed.method === "fileHistory.restore") {
+      expect(parsed.result).toMatchObject({
+        revisionOrdinal: 0,
+        localSequence: 7,
+        formalVersion: null,
+      });
+    }
+  });
+
+  it("rejects provisional results without localSequence", () => {
+    expect(() => parseWorkspaceV2Reply({
+      ...reply,
+      method: "fileHistory.upgrade",
+      result: {
+        revisionId: "33333333-3333-4333-8333-333333333333",
+        revisionOrdinal: 0,
+        localSequence: null,
+        formalVersion: null,
+      },
+    })).toThrow("localSequence");
+  });
+});
+
 describe("workspace v2 pending external file changes", () => {
   const pendingReply = {
     ...reply,

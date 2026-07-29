@@ -98,6 +98,40 @@ def test_file_revision_kind_invariants_are_closed() -> None:
     with pytest.raises(ValidationError, match="restoredFromRevisionId"):
         FileRevision.model_validate(payload)
 
+    payload = json.loads((FIXTURES / "file-revision.json").read_text(encoding="utf-8"))
+    payload.update(
+        revisionOrdinal=0,
+        localSequence=7,
+        formalVersion=None,
+        kind="autosave",
+        restoredFromRevisionId=None,
+    )
+    provisional = FileRevision.model_validate(payload)
+    assert provisional.revision_ordinal == 0
+    assert provisional.local_sequence == 7
+
+    payload["localSequence"] = None
+    with pytest.raises(ValidationError, match="localSequence"):
+        FileRevision.model_validate(payload)
+
+    payload["localSequence"] = 0
+    with pytest.raises(ValidationError):
+        FileRevision.model_validate(payload)
+
+    payload["localSequence"] = 7
+    payload["formalVersion"] = 3
+    with pytest.raises(ValidationError, match="provisional"):
+        FileRevision.model_validate(payload)
+
+    payload.update(
+        revisionOrdinal=4,
+        localSequence=None,
+        formalVersion=None,
+        kind="formal",
+    )
+    with pytest.raises(ValidationError, match="formal version"):
+        FileRevision.model_validate(payload)
+
 
 def test_scope_rejects_late_workspace_epoch_and_sequence() -> None:
     scope = WorkspaceWireScope.model_validate(

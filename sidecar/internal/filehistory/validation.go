@@ -26,8 +26,11 @@ func ValidateRootPayload(
 ) ([]RevisionObject, error) {
 	var root rootPayload
 	if err := decodeStrict(payload, &root); err != nil ||
-		root.FormatVersion != rootFormatVersion ||
+		!supportedRootFormat(root.FormatVersion) ||
 		root.WorkspaceID != workspaceID {
+		return nil, errors.Join(ErrStateCorrupt, err)
+	}
+	if err := validateRootVersion(root); err != nil {
 		return nil, errors.Join(ErrStateCorrupt, err)
 	}
 	if err := validateRootResourceLimits(root); err != nil {
@@ -61,6 +64,9 @@ func ValidateRootPayload(
 		}
 	}
 	if err := validatePaths(documents); err != nil {
+		return nil, errors.Join(ErrStateCorrupt, err)
+	}
+	if err := validateLocalSequences(documents); err != nil {
 		return nil, errors.Join(ErrStateCorrupt, err)
 	}
 	result := make([]RevisionObject, 0, len(objects))

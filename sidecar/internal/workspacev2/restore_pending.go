@@ -135,7 +135,10 @@ func (runtime *Runtime) stagePendingSnapshotRestore(
 		filepath.Join(staging, "settings.json"),
 		1<<20,
 	)
-	if err != nil || !json.Valid(settingsRaw) {
+	if err != nil {
+		return errors.Join(errors.New("restore.settings_invalid"), err)
+	}
+	if _, _, err := decodeWorkspaceSettingsSnapshot(settingsRaw); err != nil {
 		return errors.Join(errors.New("restore.settings_invalid"), err)
 	}
 	files := make(map[string]restoreStagedFile)
@@ -177,13 +180,8 @@ func (runtime *Runtime) stagePendingSnapshotRestore(
 			Hash: hash, Size: size,
 		}
 	}
-	_, settingsErr := os.Lstat(filepath.Join(paths.metadata, "settings.json"))
-	previousSettings := settingsErr == nil
-	if settingsErr != nil && !errors.Is(settingsErr, os.ErrNotExist) {
-		return settingsErr
-	}
 	journal := pendingSnapshotRestore{
-		FormatVersion:        1,
+		FormatVersion:        2,
 		OperationID:          receipt.OperationID,
 		WorkspaceID:          runtime.manifest.WorkspaceID,
 		SnapshotID:           record.SnapshotID,
@@ -198,7 +196,7 @@ func (runtime *Runtime) stagePendingSnapshotRestore(
 		DatabaseHash:         databaseHash,
 		SettingsHash:         settingsHash,
 		Files:                files,
-		PreviousSettings:     previousSettings,
+		PreviousSettings:     false,
 		Sequence:             sequence,
 		Method:               receipt.Method,
 		Scope:                string(receipt.Scope),
@@ -355,7 +353,7 @@ func validateRestoreJournal(
 	paths workspacePaths,
 	journal pendingSnapshotRestore,
 ) error {
-	if journal.FormatVersion != 1 ||
+	if (journal.FormatVersion != 1 && journal.FormatVersion != 2) ||
 		!validUUID(journal.OperationID) ||
 		!validUUID(journal.WorkspaceID) ||
 		!validUUID(journal.SnapshotID) ||
@@ -447,14 +445,37 @@ func ApplyPendingSnapshotRestore(
 	if err := os.MkdirAll(filepath.Dir(rollback), 0o700); err != nil {
 		return false, err
 	}
+	// The requested phase proves that no live file has moved yet. A previous
+	// attempt may nevertheless have died after creating or staging this
+	// operation's rollback directory, so discard only that validated,
+	// operation-scoped directory before preparing it again.
+	if err := os.RemoveAll(rollback); err != nil {
+		return false, err
+	}
 	if err := os.Mkdir(rollback, 0o700); err != nil {
 		return false, err
+	}
+	rollbackPrepared := true
+	defer func() {
+		if rollbackPrepared {
+			_ = os.RemoveAll(rollback)
+		}
+	}()
+	if journal.FormatVersion == 2 {
+		if err := stagePreviousWorkspaceSettings(
+			ctx,
+			paths,
+			rollback,
+		); err != nil {
+			return false, err
+		}
 	}
 	journal.Phase = restorePhaseInstalling
 	if err := writeRestoreJournal(paths, journal); err != nil {
 		return false, err
 	}
-	if err := installRestoreFiles(paths, journal); err != nil {
+	rollbackPrepared = false
+	if err := installRestoreFiles(ctx, paths, journal); err != nil {
 		return false, errors.Join(
 			err,
 			rollbackPendingSnapshotRestore(ctx, paths, journal),
@@ -527,6 +548,7 @@ func verifyRestoreStaging(
 }
 
 func installRestoreFiles(
+	ctx context.Context,
 	paths workspacePaths,
 	journal pendingSnapshotRestore,
 ) error {
@@ -561,18 +583,33 @@ func installRestoreFiles(
 	); err != nil {
 		return err
 	}
-	liveSettings := filepath.Join(paths.metadata, "settings.json")
-	if journal.PreviousSettings {
-		if err := os.Rename(
-			liveSettings,
-			filepath.Join(rollback, "settings.json"),
-		); err != nil {
-			return err
+	if journal.FormatVersion == 1 {
+		liveSettings := filepath.Join(paths.metadata, "settings.json")
+		if journal.PreviousSettings {
+			if err := os.Rename(
+				liveSettings,
+				filepath.Join(rollback, "settings.json"),
+			); err != nil {
+				return err
+			}
 		}
+		return os.Rename(
+			filepath.Join(staging, "settings.json"),
+			liveSettings,
+		)
 	}
-	return os.Rename(
+	raw, err := readFileBounded(
 		filepath.Join(staging, "settings.json"),
-		liveSettings,
+		1<<20,
+	)
+	if err != nil {
+		return err
+	}
+	return replaceWorkspaceSettingsAtPath(
+		ctx,
+		paths,
+		raw,
+		journal.NextHead.MutationRevision,
 	)
 }
 
@@ -657,22 +694,42 @@ func rollbackPendingSnapshotRestore(
 			os.Rename(filepath.Join(rollback, "files"), paths.files),
 		)
 	}
-	liveSettings := filepath.Join(paths.metadata, "settings.json")
-	if journal.PreviousSettings {
-		if _, err := os.Lstat(
-			filepath.Join(rollback, "settings.json"),
-		); err == nil {
+	if journal.FormatVersion == 1 {
+		liveSettings := filepath.Join(paths.metadata, "settings.json")
+		if journal.PreviousSettings {
+			if _, err := os.Lstat(
+				filepath.Join(rollback, "settings.json"),
+			); err == nil {
+				_ = os.Remove(liveSettings)
+				rollbackErrors = append(
+					rollbackErrors,
+					os.Rename(
+						filepath.Join(rollback, "settings.json"),
+						liveSettings,
+					),
+				)
+			}
+		} else {
 			_ = os.Remove(liveSettings)
+		}
+	} else {
+		previous, readErr := readFileBounded(
+			filepath.Join(rollback, "settings.json"),
+			1<<20,
+		)
+		if readErr != nil {
+			rollbackErrors = append(rollbackErrors, readErr)
+		} else {
 			rollbackErrors = append(
 				rollbackErrors,
-				os.Rename(
-					filepath.Join(rollback, "settings.json"),
-					liveSettings,
+				replaceWorkspaceSettingsAtPath(
+					ctx,
+					paths,
+					previous,
+					journal.PreviousHead.MutationRevision,
 				),
 			)
 		}
-	} else {
-		_ = os.Remove(liveSettings)
 	}
 	if err := errors.Join(rollbackErrors...); err != nil {
 		return err

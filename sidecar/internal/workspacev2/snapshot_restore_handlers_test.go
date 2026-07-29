@@ -3,6 +3,7 @@ package workspacev2
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,13 +19,6 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 ) {
 	ctx := context.Background()
 	root := createWorkspace(t, testWorkspaceID)
-	if err := os.WriteFile(
-		filepath.Join(root, ".vibetable", "settings.json"),
-		[]byte(`{"theme":"system"}`),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
 	dataDir := filepath.Join(root, ".vibetable", "data")
 	app := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir: dataDir, HideStartBanner: true,
@@ -113,6 +107,22 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 	); err != nil {
 		t.Fatal(err)
 	}
+	updateSettingsRaw, _ := json.Marshal(updateRetentionParams{
+		ExpectedRevision:    1,
+		SnapshotDays:        45,
+		SnapshotCount:       60,
+		SnapshotBuckets:     []string{"daily", "weekly"},
+		FileRevisionDays:    40,
+		FileRevisionCount:   120,
+		FileRevisionBuckets: []string{"daily", "monthly"},
+	})
+	if _, err := runtime.updateRetention(
+		ctx,
+		nil,
+		updateSettingsRaw,
+	); err != nil {
+		t.Fatal(err)
+	}
 	previewRaw, _ := json.Marshal(previewSnapshotRestoreParams{
 		SnapshotID: target.SnapshotID,
 		TargetMode: "currentWorkspace",
@@ -132,6 +142,10 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 		!containsRestorePreviewPrefix(
 			changes,
 			"files:added-after-snapshot:",
+		) ||
+		!containsRestorePreviewChange(
+			changes,
+			"workspace-settings:retention",
 		) {
 		t.Fatalf("restore preview changes is not string[]: %#v", previewMap)
 	}
@@ -157,19 +171,18 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 	applyRaw, _ := json.Marshal(applySnapshotRestoreParams{
 		PlanID: planID, Confirmed: true,
 	})
-	settingsPath := filepath.Join(
-		root,
-		".vibetable",
-		"settings.json",
-	)
-	originalSettings, err := os.ReadFile(settingsPath)
+	currentSettings, mutationRevision, err := runtime.state.retention(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(
-		settingsPath,
-		[]byte(`{"changedAfterPreview":true}`),
-		0o600,
+	changedAfterPreview := currentSettings
+	changedAfterPreview.PolicyRevision++
+	changedAfterPreview.SnapshotCount++
+	if err := runtime.state.updateRetention(
+		ctx,
+		currentSettings.PolicyRevision,
+		changedAfterPreview,
+		mutationRevision,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -180,10 +193,12 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 	); err == nil || err.Error() != "restore.plan_stale" {
 		t.Fatalf("unbound settings change was accepted: %v", err)
 	}
-	if err := os.WriteFile(
-		settingsPath,
-		originalSettings,
-		0o600,
+	currentSettings.PolicyRevision = changedAfterPreview.PolicyRevision + 1
+	if err := runtime.state.updateRetention(
+		ctx,
+		changedAfterPreview.PolicyRevision,
+		currentSettings,
+		mutationRevision,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +249,16 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 	defer reopened.Close(ctx)
 	if err := reopened.CompletePendingSnapshotRestore(ctx); err != nil {
 		t.Fatal(err)
+	}
+	restoredSettings, _, err := reopened.state.retention(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restoredSettings.SnapshotDays != 30 ||
+		restoredSettings.SnapshotCount != 50 ||
+		restoredSettings.FileRevisionDays != 30 ||
+		restoredSettings.FileRevisionCount != 100 {
+		t.Fatalf("restored retention settings = %#v", restoredSettings)
 	}
 	replayRequest, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
@@ -369,6 +394,22 @@ func TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness(
 	).Execute(); err != nil {
 		t.Fatal(err)
 	}
+	updateSettingsRaw, _ := json.Marshal(updateRetentionParams{
+		ExpectedRevision:    1,
+		SnapshotDays:        45,
+		SnapshotCount:       60,
+		SnapshotBuckets:     []string{"daily", "weekly"},
+		FileRevisionDays:    40,
+		FileRevisionCount:   120,
+		FileRevisionBuckets: []string{"daily", "monthly"},
+	})
+	if _, err := runtime.updateRetention(
+		ctx,
+		nil,
+		updateSettingsRaw,
+	); err != nil {
+		t.Fatal(err)
+	}
 	previewRaw, _ := json.Marshal(previewSnapshotRestoreParams{
 		SnapshotID: target.SnapshotID,
 		TargetMode: "currentWorkspace",
@@ -402,6 +443,45 @@ func TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness(
 		t.Fatal(err)
 	}
 	if err := app.ResetBootstrapState(); err != nil {
+		t.Fatal(err)
+	}
+	paths := mustResolvePaths(t, dataDir)
+	statePath := filepath.Join(paths.coordination, "workspace-v2.db")
+	stateBackup := statePath + ".restore-test-backup"
+	if err := os.Rename(statePath, stateBackup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(statePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if installed, err := ApplyPendingSnapshotRestore(
+		ctx,
+		dataDir,
+		testWorkspaceID,
+	); err == nil || installed {
+		t.Fatalf("settings staging fault = %v, %v", installed, err)
+	}
+	rollback := restoreRollbackRoot(
+		paths,
+		"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+	)
+	if _, err := os.Lstat(rollback); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed requested attempt left rollback directory: %v", err)
+	}
+	if err := os.Remove(statePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(stateBackup, statePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rollback, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(rollback, "stale"),
+		[]byte("stale requested attempt"),
+		0o600,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if installed, err := ApplyPendingSnapshotRestore(
@@ -447,6 +527,19 @@ func TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness(
 		t.Fatal(err)
 	}
 	defer rolledBack.Close(ctx)
+	rolledBackSettings, _, err := rolledBack.state.retention(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolledBackSettings.SnapshotDays != 45 ||
+		rolledBackSettings.SnapshotCount != 60 ||
+		rolledBackSettings.FileRevisionDays != 40 ||
+		rolledBackSettings.FileRevisionCount != 120 {
+		t.Fatalf(
+			"rollback retention settings = %#v",
+			rolledBackSettings,
+		)
+	}
 	if _, found, err := readRestoreJournal(mustResolvePaths(t, dataDir)); err != nil || found {
 		t.Fatalf("rollback left restore journal: found=%v err=%v", found, err)
 	}

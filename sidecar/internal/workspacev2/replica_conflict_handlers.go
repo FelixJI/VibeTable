@@ -20,6 +20,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
 	"github.com/vibetable/vibetable/sidecar/internal/replica"
+	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 )
 
 type productionReplicaConflict struct {
@@ -98,28 +99,47 @@ func openProductionReplicaConflict(
 	if deviceID == "" {
 		deviceID = options.ClaimID
 	}
+	replicaStatePath := joinCoordination(paths, "replica-state.db")
 	result.managerOptions = replica.ManagerOptions{
 		WorkspaceID: options.WorkspaceID,
 		DeviceID:    deviceID,
 		QueuePath: joinCoordination(
 			paths, "replica-queue.db",
 		),
-		StatePath: joinCoordination(
-			paths, "replica-state.db",
-		),
+		StatePath: replicaStatePath,
 		PublicationPath: joinCoordination(
 			paths, "replica-publications.db",
 		),
-		PublicationKey:    append([]byte(nil), options.ReplicaPublicationKey...),
-		Remote:            options.ReplicaRemote,
-		Catalog:           runtime.catalog,
-		Repository:        runtime.repository,
-		Authority:         runtimeReplicaAuthority{runtime: runtime},
-		Conflicts:         conflicts,
-		DependencyScanner: options.ReplicaDependencyScanner,
+		PublicationKey:      append([]byte(nil), options.ReplicaPublicationKey...),
+		Remote:              options.ReplicaRemote,
+		Catalog:             runtime.catalog,
+		Repository:          runtime.repository,
+		Authority:           runtimeReplicaAuthority{runtime: runtime},
+		ProvisionalAcceptor: runtimeProvisionalAcceptor{runtime: runtime},
+		Conflicts:           conflicts,
+		DependencyScanner:   options.ReplicaDependencyScanner,
 		DestructiveSafe: func(ctx context.Context) error {
 			return runtime.retention.store.EnsureIntegrityHealthy(ctx)
 		},
+	}
+	persistedClaim, found, err := replica.ReadPersistedTakeoverClaim(
+		ctx, replicaStatePath,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		token, _ := runtime.coordinator.Current()
+		if persistedClaim.WorkspaceID == token.WorkspaceID &&
+			persistedClaim.FenceEpoch == token.FenceEpoch &&
+			persistedClaim.ClaimID == token.ClaimID {
+			if err := runtime.history.ConfigureClaimMode(
+				persistedClaim.ClaimID,
+				persistedClaim.Mode == replica.Provisional,
+			); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if result.managerOptions.DependencyScanner == nil {
 		result.managerOptions.DependencyScanner =
@@ -1131,6 +1151,46 @@ type runtimeReplicaAuthority struct {
 	runtime *Runtime
 }
 
+type runtimeProvisionalAcceptor struct {
+	runtime *Runtime
+}
+
+func (acceptor runtimeProvisionalAcceptor) AcceptProvisionalPublication(
+	ctx context.Context,
+	record snapshot.Record,
+) error {
+	if acceptor.runtime == nil || acceptor.runtime.history == nil {
+		return errors.New("filehistory.provisional_acceptor_unavailable")
+	}
+	hasProvisional := false
+	for _, document := range acceptor.runtime.history.List() {
+		for _, revision := range document.Revisions {
+			if revision.RevisionID == document.EffectiveRevisionID &&
+				revision.RevisionOrdinal == 0 {
+				hasProvisional = true
+				break
+			}
+		}
+		if hasProvisional {
+			break
+		}
+	}
+	if !hasProvisional {
+		return nil
+	}
+	historyRoot, err := acceptor.runtime.snapshotFileHistoryRoot(
+		ctx, record.ObjectMap,
+	)
+	if err != nil {
+		return err
+	}
+	token, _ := acceptor.runtime.coordinator.Current()
+	_, err = acceptor.runtime.history.AcceptPublishedProvisional(
+		ctx, token, historyRoot,
+	)
+	return err
+}
+
 func (authority runtimeReplicaAuthority) CurrentAuthority() replica.AuthorityState {
 	token, _ := authority.runtime.coordinator.Current()
 	return replica.AuthorityState{
@@ -1149,6 +1209,12 @@ func (authority runtimeReplicaAuthority) ApplyReplicaClaim(
 		claim.FenceEpoch != token.FenceEpoch+1 ||
 		!validUUID(claim.ClaimID) {
 		return replica.ErrStaleClaim
+	}
+	if err := authority.runtime.history.ConfigureClaimMode(
+		claim.ClaimID,
+		claim.Mode == replica.Provisional,
+	); err != nil {
+		return err
 	}
 	oldAuthority := token.Authority()
 	nextAuthority := objectrepo.Authority{

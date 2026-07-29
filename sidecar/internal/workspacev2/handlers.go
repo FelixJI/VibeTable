@@ -508,6 +508,7 @@ func (runtime *Runtime) readFileTree(
 			"documentId":             revision.DocumentID,
 			"parentRevisionId":       revision.ParentRevisionID,
 			"revisionOrdinal":        revision.RevisionOrdinal,
+			"localSequence":          revision.LocalSequence,
 			"formalVersion":          revision.FormalVersion,
 			"kind":                   revision.Kind,
 			"objectId":               revision.ObjectID,

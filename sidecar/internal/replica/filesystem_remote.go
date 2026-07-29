@@ -779,7 +779,7 @@ func filesystemConflictCandidate(
 		} `json:"documents"`
 	}
 	if err := json.Unmarshal(history.Payload, &root); err != nil ||
-		root.FormatVersion != 2 ||
+		(root.FormatVersion != 2 && root.FormatVersion != 3) ||
 		root.WorkspaceID != bundle.Snapshot.WorkspaceID {
 		return conflictresolution.Candidate{}, ErrVerificationInvalid
 	}

@@ -15,6 +15,7 @@ const base = {
   createdBy: "device A",
   deviceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   comment: null,
+  localSequence: null,
   restoredFromRevisionId: null,
 } as const;
 const revisions: readonly FileRevisionV2[] = [
@@ -92,5 +93,65 @@ describe("FileRevisionTree", () => {
     await first.trigger("keydown", { key: "ArrowRight" });
     expect(wrapper.findAll('[role="treeitem"]')).toHaveLength(2);
     wrapper.unmount();
+  });
+
+  it("labels provisional revisions without claiming a canonical ordinal or Vn", () => {
+    const provisional: FileRevisionV2 = {
+      ...base,
+      revisionId: "66666666-6666-4666-8666-666666666666",
+      parentRevisionId: revisions[2]!.revisionId,
+      revisionOrdinal: 0,
+      localSequence: 8,
+      formalVersion: null,
+      kind: "autosave",
+      createdAt: "2026-07-28T11:00:00Z",
+    };
+    const wrapper = mount(FileRevisionTree, {
+      props: {
+        tree: {
+          documentId: "opaque-document",
+          effectiveRevisionId: provisional.revisionId,
+          revisions: [...revisions, provisional],
+        },
+        busy: false,
+      },
+    });
+
+    expect(wrapper.text()).toContain("p8");
+    expect(wrapper.text()).toContain("待接纳");
+    expect(wrapper.text()).not.toContain("r0");
+    const row = wrapper.get(
+      `[data-revision-id="${provisional.revisionId}"]`,
+    );
+    expect(row.findAll(".tree-actions button")).toHaveLength(0);
+  });
+
+  it("keeps a non-effective provisional conflict leaf visible by default", () => {
+    const provisional: FileRevisionV2 = {
+      ...base,
+      revisionId: "77777777-7777-4777-8777-777777777777",
+      parentRevisionId: revisions[1]!.revisionId,
+      revisionOrdinal: 0,
+      localSequence: 9,
+      formalVersion: null,
+      kind: "autosave",
+      createdAt: "2026-07-28T11:00:00Z",
+    };
+    const wrapper = mount(FileRevisionTree, {
+      props: {
+        tree: {
+          documentId: "opaque-document",
+          effectiveRevisionId: revisions[2]!.revisionId,
+          revisions: [...revisions, provisional],
+        },
+        busy: false,
+      },
+    });
+
+    expect(wrapper.text()).toContain("p9");
+    expect(wrapper.text()).toContain("待接纳");
+    expect(wrapper.get(
+      `[data-revision-id="${provisional.revisionId}"]`,
+    ).findAll(".tree-actions button")).toHaveLength(0);
   });
 });

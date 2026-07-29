@@ -20,6 +20,19 @@ type productionCatalog struct {
 	records []snapshot.Record
 }
 
+type productionProvisionalAcceptor struct {
+	records []snapshot.Record
+	err     error
+}
+
+func (acceptor *productionProvisionalAcceptor) AcceptProvisionalPublication(
+	_ context.Context,
+	record snapshot.Record,
+) error {
+	acceptor.records = append(acceptor.records, record)
+	return acceptor.err
+}
+
 func (catalog productionCatalog) List(
 	_ context.Context,
 	workspaceID string,
@@ -393,6 +406,8 @@ func TestQueueSynchronizePersistsWithoutRunningRemoteIO(t *testing.T) {
 		},
 	}
 	options, _, _ := productionManagerFixture(t, remote, now)
+	acceptor := &productionProvisionalAcceptor{}
+	options.ProvisionalAcceptor = acceptor
 	manager, err := OpenManager(context.Background(), options)
 	if err != nil {
 		t.Fatal(err)
@@ -431,6 +446,78 @@ func TestQueueSynchronizePersistsWithoutRunningRemoteIO(t *testing.T) {
 			"advisory publication is not provisional: %#v",
 			remote.publications,
 		)
+	}
+	if len(acceptor.records) != 1 ||
+		acceptor.records[0].SnapshotID !=
+			options.Catalog.(productionCatalog).records[0].SnapshotID {
+		t.Fatalf("sole advisory head was not accepted: %#v", acceptor.records)
+	}
+}
+
+func TestReadPersistedTakeoverClaimRestoresOfflineModeAndRejectsTampering(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "replica-state.db")
+	if claim, found, err := ReadPersistedTakeoverClaim(
+		ctx, path,
+	); err != nil || found || claim != (Claim{}) {
+		t.Fatalf("missing state claim = %#v, %t, %v", claim, found, err)
+	}
+	state, err := openProductionState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	claim := testClaim(
+		"11111111-1111-4111-8111-111111111111",
+		"22222222-2222-4222-8222-222222222222",
+		"33333333-3333-4333-8333-333333333333",
+		"nonce",
+		Advisory,
+		now,
+	)
+	claim.Mode = Provisional
+	claim.FenceEpoch = 4
+	previous := AuthorityState{
+		WorkspaceID: claim.WorkspaceID,
+		FenceEpoch:  3,
+		ClaimID:     "44444444-4444-4444-8444-444444444444",
+	}
+	if err := state.prepareTakeover(
+		ctx, previous, claim, protocolv2.OperationReceipt{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.completeTakeover(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.close(); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := ReadPersistedTakeoverClaim(ctx, path)
+	if err != nil || !found || !sameLeaseIdentity(got, claim) {
+		t.Fatalf("persisted claim = %#v, %t, %v", got, found, err)
+	}
+
+	state, err = openProductionState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`
+		UPDATE replica_takeover
+		SET claim_json = '{"unknown":true}'
+		WHERE singleton = 1`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ReadPersistedTakeoverClaim(
+		ctx, path,
+	); !errors.Is(err, ErrStaleClaim) {
+		t.Fatalf("tampered claim error = %v", err)
 	}
 }
 

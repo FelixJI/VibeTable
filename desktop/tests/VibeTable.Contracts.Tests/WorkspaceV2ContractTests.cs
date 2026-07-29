@@ -95,6 +95,47 @@ public sealed class WorkspaceV2ContractTests
     }
 
     [TestMethod]
+    public void FileRevisionAcceptsProvisionalIdentityWithoutCanonicalNumbers()
+    {
+        var revision = JsonNode.Parse(ReadFixture("file-revision.json"))!
+            .AsObject();
+        revision["revisionOrdinal"] = 0;
+        revision["localSequence"] = 7;
+        revision["formalVersion"] = null;
+        revision["kind"] = "autosave";
+        revision["restoredFromRevisionId"] = null;
+
+        var parsed = WorkspaceV2Json.DeserializeStrict<FileRevisionV2>(
+            revision.ToJsonString());
+        Assert.AreEqual((ulong)0, parsed.RevisionOrdinal);
+        Assert.AreEqual((ulong)7, parsed.LocalSequence);
+
+        revision["localSequence"] = null;
+        Assert.ThrowsExactly<JsonException>(() =>
+            WorkspaceV2Json.DeserializeStrict<FileRevisionV2>(
+                revision.ToJsonString()));
+
+        revision["localSequence"] = 0;
+        Assert.ThrowsExactly<JsonException>(() =>
+            WorkspaceV2Json.DeserializeStrict<FileRevisionV2>(
+                revision.ToJsonString()));
+
+        revision["localSequence"] = 7;
+        revision["formalVersion"] = 3;
+        Assert.ThrowsExactly<JsonException>(() =>
+            WorkspaceV2Json.DeserializeStrict<FileRevisionV2>(
+                revision.ToJsonString()));
+
+        revision["revisionOrdinal"] = 4;
+        revision["localSequence"] = null;
+        revision["formalVersion"] = null;
+        revision["kind"] = "formal";
+        Assert.ThrowsExactly<JsonException>(() =>
+            WorkspaceV2Json.DeserializeStrict<FileRevisionV2>(
+                revision.ToJsonString()));
+    }
+
+    [TestMethod]
     public void RpcCatalogRejectsUnclosedArrayItemSchemas()
     {
         foreach (string mutation in new[]

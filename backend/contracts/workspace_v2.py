@@ -160,7 +160,8 @@ class FileRevision(V2Model):
     revision_id: UUID
     document_id: UUID
     parent_revision_id: UUID | None
-    revision_ordinal: int = Field(ge=1)
+    revision_ordinal: int = Field(ge=0)
+    local_sequence: int | None = Field(ge=1)
     formal_version: int | None = Field(ge=1)
     kind: Literal["autosave", "formal", "restore"]
     object_id: ObjectId
@@ -175,9 +176,14 @@ class FileRevision(V2Model):
 
     @model_validator(mode="after")
     def _coherent_kind(self) -> FileRevision:
+        provisional = self.revision_ordinal == 0
+        if provisional and self.local_sequence is None:
+            raise ValueError("provisional revision requires localSequence")
+        if provisional and self.formal_version is not None:
+            raise ValueError("provisional revision cannot consume a formal version")
         if self.kind == "autosave" and self.formal_version is not None:
             raise ValueError("autosave cannot consume a formal version")
-        if self.kind != "autosave" and self.formal_version is None:
+        if not provisional and self.kind != "autosave" and self.formal_version is None:
             raise ValueError("formal and restore revisions require a formal version")
         if self.kind == "restore" and self.restored_from_revision_id is None:
             raise ValueError("restore revision requires restoredFromRevisionId")
@@ -393,34 +399,95 @@ class RpcGoldenCase(V2Model):
         return self
 
 
-def _valid_rpc_schema_node(schema: Any) -> bool:
+def _valid_rpc_schema_node(schema: Any, *, conditional: bool = False) -> bool:
     if not isinstance(schema, dict):
+        return False
+    allowed = {
+        "type",
+        "enum",
+        "const",
+        "minimum",
+        "minLength",
+        "pattern",
+        "additionalProperties",
+        "required",
+        "properties",
+        "items",
+        "allOf",
+        "oneOf",
+    }
+    if not set(schema).issubset(allowed):
         return False
     node_type = schema.get("type")
     if isinstance(node_type, list):
-        return (
-            bool(node_type)
-            and all(
-                item in {"string", "integer", "number", "boolean", "null"} for item in node_type
-            )
-            and set(schema).issubset({"type", "enum"})
-        )
-    if node_type == "object":
+        if not node_type or not all(
+            item in {"string", "integer", "number", "boolean", "null"} for item in node_type
+        ):
+            return False
+    elif node_type is not None and node_type not in {
+        "object",
+        "array",
+        "string",
+        "integer",
+        "number",
+        "boolean",
+        "null",
+    }:
+        return False
+    if "enum" in schema and not isinstance(schema["enum"], list):
+        return False
+    if "minimum" in schema and (
+        not isinstance(schema["minimum"], (int, float)) or isinstance(schema["minimum"], bool)
+    ):
+        return False
+    if "minLength" in schema and (
+        not isinstance(schema["minLength"], int)
+        or isinstance(schema["minLength"], bool)
+        or schema["minLength"] < 0
+    ):
+        return False
+    if "pattern" in schema and not isinstance(schema["pattern"], str):
+        return False
+    for keyword in ("allOf", "oneOf"):
+        if keyword in schema and (
+            not isinstance(schema[keyword], list)
+            or not schema[keyword]
+            or not all(_valid_rpc_schema_node(item, conditional=True) for item in schema[keyword])
+        ):
+            return False
+    if "properties" in schema:
+        properties = schema.get("properties")
+        if not isinstance(properties, dict) or not all(
+            _valid_rpc_schema_node(item, conditional=conditional) for item in properties.values()
+        ):
+            return False
+    if "required" in schema:
+        required = schema["required"]
+        if (
+            not isinstance(required, list)
+            or len(required) != len(set(required))
+            or not all(isinstance(item, str) for item in required)
+            or not set(required).issubset(set(schema.get("properties", {})))
+        ):
+            return False
+    if "additionalProperties" in schema and not isinstance(schema["additionalProperties"], bool):
+        return False
+    if node_type == "object" and not conditional:
         properties = schema.get("properties")
         required = schema.get("required")
-        return (
-            schema.get("additionalProperties") is False
-            and isinstance(properties, dict)
-            and isinstance(required, list)
-            and len(required) == len(set(required))
-            and set(required) == set(properties)
-            and set(schema) == {"type", "additionalProperties", "required", "properties"}
-            and all(_valid_rpc_schema_node(item) for item in properties.values())
-        )
+        if (
+            schema.get("additionalProperties") is not False
+            or not isinstance(properties, dict)
+            or not isinstance(required, list)
+            or set(required) != set(properties)
+        ):
+            return False
     if node_type == "array":
-        return set(schema) == {"type", "items"} and _valid_rpc_schema_node(schema.get("items"))
-    return node_type in {"string", "integer", "number", "boolean", "null"} and set(schema).issubset(
-        {"type", "enum"}
+        return "items" in schema and _valid_rpc_schema_node(schema["items"])
+    if "items" in schema:
+        return False
+    return node_type is not None or any(
+        keyword in schema for keyword in ("const", "properties", "allOf", "oneOf")
     )
 
 

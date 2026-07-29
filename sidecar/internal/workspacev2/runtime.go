@@ -298,6 +298,7 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 		fileAuditOutbox: result.headStore,
 		repository:      result.repository,
 		history:         result.history,
+		state:           result.state,
 	}
 	result.frozenSource = source
 	barrier, err := snapshot.NewCoordinatedBarrier(

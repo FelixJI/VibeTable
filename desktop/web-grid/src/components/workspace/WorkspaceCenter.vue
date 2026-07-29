@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from "vue";
 import {
   NAlert,
   NButton,
+  NCheckbox,
   NIcon,
   NInput,
   NModal,
@@ -51,6 +52,7 @@ const flowTrigger = ref<HTMLElement | null>(null);
 const displayName = ref("");
 const locationPolicy = ref<"managedDefault" | "other">("managedDefault");
 const storageMode = ref<"direct" | "mirrored">("direct");
+const userMarkedSync = ref(false);
 const mirroredCreationAvailable = computed(() =>
   locationPolicy.value === "other" && mirroredCreationEnabled.value);
 const encryptionMode = ref<"none" | "convenient" | "protected">("convenient");
@@ -101,6 +103,7 @@ function openFlow(kind: "create" | "connect", event?: MouseEvent): void {
     displayName.value = "";
     locationPolicy.value = "managedDefault";
     storageMode.value = "direct";
+    userMarkedSync.value = false;
     encryptionMode.value = "convenient";
   }
 }
@@ -130,11 +133,13 @@ function confirmFlow(): void {
           locationPolicy: "managedDefault" as const,
           selectedRootGrant: null,
           storageMode: "direct" as const,
+          userMarkedSync: false as const,
         }
       : {
           locationPolicy: "other" as const,
           selectedRootGrant: HOST_WORKSPACE_ROOT_GRANT,
           storageMode: storageMode.value,
+          userMarkedSync: userMarkedSync.value,
         };
     emit("action", {
       method: "workspace.create",
@@ -224,7 +229,10 @@ watch(deletePlan, (plan) => {
   if (plan) deleteConfirmation.value = "";
 });
 watch(locationPolicy, (policy) => {
-  if (policy === "managedDefault") storageMode.value = "direct";
+  if (policy === "managedDefault") {
+    storageMode.value = "direct";
+    userMarkedSync.value = false;
+  }
 });
 watch(
   () => protection.snapshotPackagePlan,
@@ -462,6 +470,16 @@ watch(
             </NRadioButton>
           </NRadioGroup>
         </fieldset>
+        <NCheckbox
+          v-if="locationPolicy === 'other'"
+          v-model:checked="userMarkedSync"
+          data-testid="workspace-user-marked-sync"
+        >
+          <span class="sync-provider-option">
+            <strong>{{ t("workspaceV2.center.userMarkedSync") }}</strong>
+            <small>{{ t("workspaceV2.center.userMarkedSyncHint") }}</small>
+          </span>
+        </NCheckbox>
         <label>
           <span>{{ t("workspaceV2.storage.encryption") }}</span>
           <NSelect
@@ -795,10 +813,20 @@ watch(
 .workspace-flow legend { color: var(--vt-fg-secondary); font-size: var(--vt-font-caption); font-weight: 600; }
 .workspace-flow fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
 .workspace-flow legend { margin-bottom: 7px; }
-.flow-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.flow-options {
+  display: grid !important;
+  width: 100%;
+  height: auto !important;
+  min-height: 76px;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.flow-options :deep(.n-radio-group__splitor) { display: none; }
 .flow-options :deep(.n-radio-button) { height: auto; min-height: 76px; padding: 10px !important; border-radius: var(--vt-radius-lg) !important; white-space: normal; }
 .flow-options :deep(.n-radio-button__content) { display: flex; align-items: flex-start; flex-direction: column; gap: 3px; }
 .flow-options small { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
+.sync-provider-option { display: inline-grid; gap: 3px; padding-inline-start: 4px; }
+.sync-provider-option small { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); line-height: 1.45; }
 .workspace-flow > p { margin: 0; color: var(--vt-fg-muted); line-height: 1.6; }
 .flow-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .import-summary { margin: 0; }

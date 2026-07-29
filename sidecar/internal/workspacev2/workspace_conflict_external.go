@@ -1,7 +1,6 @@
 package workspacev2
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -44,6 +43,10 @@ type workspaceConflictTableStage struct {
 type workspaceConflictSettingsStage struct {
 	ExpectedObjectID objectrepo.ObjectID `json:"expectedObjectId"`
 	ObjectID         objectrepo.ObjectID `json:"objectId"`
+	// Previous is the exact authoritative projection observed while staging.
+	// It makes rollback and restart deterministic even when the expected
+	// snapshot carries the legacy "{}" no-setting marker.
+	Previous json.RawMessage `json:"previous,omitempty"`
 }
 
 func (appender *workspaceConflictAppender) stageConflictTable(
@@ -131,24 +134,40 @@ func (appender *workspaceConflictAppender) stageConflictSettings(
 	if err := validateConflictSettings(raw); err != nil {
 		return workspaceConflictSettingsStage{}, err
 	}
+	previous, err := snapshotWorkspaceSettings(
+		ctx,
+		appender.owner.runtime.state,
+	)
+	if err != nil {
+		return workspaceConflictSettingsStage{}, err
+	}
+	expectedID := objectrepo.ObjectID(expected.ObjectID)
+	expectedRaw, err := readConflictObject(
+		ctx,
+		appender.owner.runtime.repository,
+		expectedID,
+	)
+	if err != nil {
+		return workspaceConflictSettingsStage{}, err
+	}
+	differ, err := workspaceSettingsDiffer(previous, expectedRaw)
+	if err != nil {
+		return workspaceConflictSettingsStage{}, err
+	}
+	if differ {
+		return workspaceConflictSettingsStage{},
+			conflictresolution.ErrStalePlan
+	}
 	return workspaceConflictSettingsStage{
-		ExpectedObjectID: objectrepo.ObjectID(expected.ObjectID),
+		ExpectedObjectID: expectedID,
 		ObjectID:         id,
+		Previous:         append(json.RawMessage(nil), previous...),
 	}, nil
 }
 
 func validateConflictSettings(raw []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var value map[string]any
-	if err := decoder.Decode(&value); err != nil || value == nil {
-		return errors.New("workspace.settings_invalid")
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return errors.New("workspace.settings_invalid")
-	}
-	return nil
+	_, _, err := decodeWorkspaceSettingsSnapshot(raw)
+	return err
 }
 
 func (appender *workspaceConflictAppender) applyExternalStage(
@@ -262,12 +281,11 @@ func (appender *workspaceConflictAppender) applyExternalStage(
 				if err := validateConflictSettings(raw); err != nil {
 					return err
 				}
-				if err := atomicReplaceConflictFile(
-					filepath.Join(
-						appender.owner.runtime.paths.metadata,
-						"settings.json",
-					),
+				if err := replaceWorkspaceSettings(
+					ctx,
+					appender.owner.runtime.state,
 					raw,
+					intent.MutationRevision,
 				); err != nil {
 					return err
 				}
@@ -323,6 +341,7 @@ func (appender *workspaceConflictAppender) validateExternalChosen(
 	live := &frozenSource{
 		app:   appender.owner.runtime.app,
 		paths: appender.owner.runtime.paths,
+		state: appender.owner.runtime.state,
 	}
 	if len(external.Tables) != 0 {
 		database, err := live.snapshotDatabase(ctx)
@@ -358,12 +377,19 @@ func (appender *workspaceConflictAppender) validateExternalChosen(
 		}
 	}
 	if external.Settings != nil {
-		current, err := live.workspaceSettings()
+		current, err := live.workspaceSettings(ctx)
 		if err != nil {
 			return err
 		}
-		if objectrepo.ObjectID(conflictObjectID(current)) !=
-			external.Settings.ObjectID {
+		matches, err := appender.workspaceSettingsChoiceMatches(
+			ctx,
+			current,
+			external.Settings.ObjectID,
+		)
+		if err != nil {
+			return err
+		}
+		if !matches {
 			return conflictresolution.ErrApplyUnproven
 		}
 	}
@@ -401,6 +427,7 @@ func (appender *workspaceConflictAppender) validateExternalExpected(
 	live := &frozenSource{
 		app:   appender.owner.runtime.app,
 		paths: appender.owner.runtime.paths,
+		state: appender.owner.runtime.state,
 	}
 	if len(external.Tables) != 0 {
 		database, err := live.snapshotDatabase(ctx)
@@ -436,16 +463,69 @@ func (appender *workspaceConflictAppender) validateExternalExpected(
 		}
 	}
 	if external.Settings != nil {
-		current, err := live.workspaceSettings()
+		current, err := live.workspaceSettings(ctx)
 		if err != nil {
 			return err
 		}
-		if objectrepo.ObjectID(conflictObjectID(current)) !=
-			external.Settings.ExpectedObjectID {
+		if len(external.Settings.Previous) == 0 &&
+			objectrepo.ObjectID(conflictObjectID(current)) ==
+				external.Settings.ExpectedObjectID {
+			return nil
+		}
+		target, err := appender.workspaceSettingsExpectedRaw(
+			ctx,
+			*external.Settings,
+		)
+		if err != nil {
+			return errors.Join(conflictresolution.ErrStalePlan, err)
+		}
+		differ, err := workspaceSettingsDiffer(current, target)
+		if err != nil {
+			return err
+		}
+		matches := !differ
+		if !matches {
 			return conflictresolution.ErrStalePlan
 		}
 	}
 	return nil
+}
+
+func (appender *workspaceConflictAppender) workspaceSettingsChoiceMatches(
+	ctx context.Context,
+	current []byte,
+	choice objectrepo.ObjectID,
+) (bool, error) {
+	target, err := readConflictObject(
+		ctx,
+		appender.owner.runtime.repository,
+		choice,
+	)
+	if err != nil {
+		return false, err
+	}
+	differ, err := workspaceSettingsDiffer(current, target)
+	if err != nil {
+		return false, err
+	}
+	return !differ, nil
+}
+
+func (appender *workspaceConflictAppender) workspaceSettingsExpectedRaw(
+	ctx context.Context,
+	settings workspaceConflictSettingsStage,
+) ([]byte, error) {
+	if len(settings.Previous) != 0 {
+		if err := validateConflictSettings(settings.Previous); err != nil {
+			return nil, err
+		}
+		return append([]byte(nil), settings.Previous...), nil
+	}
+	return readConflictObject(
+		ctx,
+		appender.owner.runtime.repository,
+		settings.ExpectedObjectID,
+	)
 }
 
 func conflictObjectID(content []byte) string {
@@ -492,40 +572,40 @@ func (appender *workspaceConflictAppender) restoreExternalExpected(
 	}
 	errs = append(errs, filesystem.Close())
 	if external.Settings != nil {
-		settingsPath := filepath.Join(
-			appender.owner.runtime.paths.metadata,
-			"settings.json",
-		)
-		if external.Settings.ExpectedObjectID == "" {
-			if err := os.Remove(settingsPath); err != nil &&
-				!errors.Is(err, os.ErrNotExist) {
-				errs = append(errs, err)
-			}
-		} else {
-			content, readErr := readConflictObject(
+		if external.Settings.ExpectedObjectID != "" {
+			content, readErr := appender.workspaceSettingsExpectedRaw(
 				ctx,
-				appender.owner.runtime.repository,
-				external.Settings.ExpectedObjectID,
+				*external.Settings,
 			)
 			if readErr != nil {
 				errs = append(errs, readErr)
 			} else {
-				errs = append(errs, atomicReplaceConflictFile(
-					settingsPath, content,
-				))
+				_, counters := appender.owner.runtime.coordinator.Current()
+				errs = append(
+					errs,
+					replaceWorkspaceSettings(
+						ctx,
+						appender.owner.runtime.state,
+						content,
+						counters.MutationRevision,
+					),
+				)
 			}
 		}
 	}
 	return errors.Join(errs...)
 }
 
+// atomicReplaceConflictFile is the durable generic file replacement seam used
+// by fault-injection tests and restore rollback artifacts. Live workspace
+// settings never use it; their only authority is the coordination database.
 func atomicReplaceConflictFile(target string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return err
 	}
 	file, err := os.CreateTemp(
 		filepath.Dir(target),
-		".conflict-settings-*.tmp",
+		".conflict-file-*.tmp",
 	)
 	if err != nil {
 		return err
@@ -632,6 +712,7 @@ func (appender *workspaceConflictAppender) validateMixedCandidate(
 	}
 	live := &frozenSource{
 		app: appender.owner.runtime.app, paths: appender.owner.runtime.paths,
+		state: appender.owner.runtime.state,
 	}
 	database, err := live.snapshotDatabase(ctx)
 	if err != nil {

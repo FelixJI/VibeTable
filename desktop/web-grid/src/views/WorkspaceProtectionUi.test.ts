@@ -80,6 +80,7 @@ describe("workspace protection UI capability gates", () => {
         selectedRootGrant: null,
         storageMode: "direct",
         encryptionMode: "convenient",
+        userMarkedSync: false,
       },
     });
     wrapper.unmount();
@@ -111,6 +112,81 @@ describe("workspace protection UI capability gates", () => {
         selectedRootGrant: "host-picker://workspace-root",
         storageMode: "direct",
         encryptionMode: "convenient",
+        userMarkedSync: false,
+      },
+    });
+    wrapper.unmount();
+  });
+
+  it("marks an other location as sync-managed only after explicit consent", async () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    const wrapper = mount(WorkspaceCenter, { attachTo: document.body });
+
+    await wrapper.get('[data-testid="workspace-create"]').trigger("click");
+    const name = document.body.querySelector<HTMLInputElement>(
+      '.workspace-flow-modal input[type="text"]',
+    )!;
+    name.value = "同步目录";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    document.body.querySelector<HTMLInputElement>(
+      '[data-testid="workspace-location-policy"] input[value="other"]',
+    )!.click();
+    await wrapper.vm.$nextTick();
+    expect(document.body.textContent).toContain("此目录由同步软件管理");
+    document.body.querySelector<HTMLElement>(
+      '[data-testid="workspace-user-marked-sync"]',
+    )!.click();
+    document.body.querySelector<HTMLButtonElement>(
+      '[data-testid="workspace-flow-confirm"]',
+    )!.click();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted("action")?.[0]?.[0]).toMatchObject({
+      method: "workspace.create",
+      params: {
+        locationPolicy: "other",
+        userMarkedSync: true,
+      },
+    });
+    wrapper.unmount();
+  });
+
+  it("clears manual sync consent after returning through managed default", async () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    const wrapper = mount(WorkspaceCenter, { attachTo: document.body });
+
+    await wrapper.get('[data-testid="workspace-create"]').trigger("click");
+    const name = document.body.querySelector<HTMLInputElement>(
+      '.workspace-flow-modal input[type="text"]',
+    )!;
+    name.value = "重新选择";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    const location = document.body.querySelector(
+      '[data-testid="workspace-location-policy"]',
+    )!;
+    location.querySelector<HTMLInputElement>('input[value="other"]')!.click();
+    await wrapper.vm.$nextTick();
+    document.body.querySelector<HTMLElement>(
+      '[data-testid="workspace-user-marked-sync"]',
+    )!.click();
+    location.querySelector<HTMLInputElement>(
+      'input[value="managedDefault"]',
+    )!.click();
+    await wrapper.vm.$nextTick();
+    location.querySelector<HTMLInputElement>('input[value="other"]')!.click();
+    await wrapper.vm.$nextTick();
+    document.body.querySelector<HTMLButtonElement>(
+      '[data-testid="workspace-flow-confirm"]',
+    )!.click();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted("action")?.[0]?.[0]).toMatchObject({
+      method: "workspace.create",
+      params: {
+        locationPolicy: "other",
+        userMarkedSync: false,
       },
     });
     wrapper.unmount();
@@ -168,6 +244,7 @@ describe("workspace protection UI capability gates", () => {
         locationPolicy: "managedDefault",
         selectedRootGrant: null,
         storageMode: "direct",
+        userMarkedSync: false,
       },
     });
     wrapper.unmount();

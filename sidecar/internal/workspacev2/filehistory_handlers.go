@@ -771,12 +771,28 @@ func decodeFileHistoryRequest[T any](
 }
 
 func fileRevisionResult(revision filehistory.Revision) (map[string]any, error) {
-	if revision.FormalVersion == nil {
+	if revision.RevisionOrdinal == 0 {
+		if revision.LocalSequence == nil ||
+			*revision.LocalSequence == 0 ||
+			revision.FormalVersion != nil {
+			return nil, errors.New("file_history.provisional_revision_invalid")
+		}
+	} else if revision.FormalVersion == nil {
 		return nil, errors.New("file_history.formal_revision_required")
 	}
+	var formalVersion any
+	if revision.FormalVersion != nil {
+		formalVersion = *revision.FormalVersion
+	}
+	var localSequence any
+	if revision.LocalSequence != nil {
+		localSequence = *revision.LocalSequence
+	}
 	return map[string]any{
-		"revisionId":    revision.RevisionID,
-		"formalVersion": *revision.FormalVersion,
+		"revisionId":      revision.RevisionID,
+		"revisionOrdinal": revision.RevisionOrdinal,
+		"localSequence":   localSequence,
+		"formalVersion":   formalVersion,
 	}, nil
 }
 

@@ -341,7 +341,9 @@ func ValidateSnapshotBundleData(
 		auditAnchor.LedgerSequence != record.AuditRevision {
 		return ErrBundleInvalid
 	}
-	if err := validateJSONMap(bundle.Objects["workspace-settings"]); err != nil {
+	if err := validateWorkspaceSettingsObject(
+		bundle.Objects["workspace-settings"],
+	); err != nil {
 		return err
 	}
 	return validateBundleRoots(ctx, bundle, manifest)
@@ -599,12 +601,59 @@ func decodeStrictBundle[T any](raw []byte) (T, error) {
 	return value, nil
 }
 
-func validateJSONMap(raw []byte) error {
-	value, err := decodeStrictBundle[map[string]any](raw)
-	if err != nil || value == nil {
+type workspaceSettingsBundle struct {
+	FormatVersion int                              `json:"formatVersion"`
+	Retention     workspaceRetentionSettingsBundle `json:"retention"`
+}
+
+type workspaceRetentionSettingsBundle struct {
+	SnapshotDays         uint64   `json:"snapshotDays"`
+	SnapshotCount        uint64   `json:"snapshotCount"`
+	SnapshotBuckets      []string `json:"snapshotBuckets"`
+	FileRevisionDays     uint64   `json:"fileRevisionDays"`
+	FileRevisionCount    uint64   `json:"fileRevisionCount"`
+	FileRevisionBuckets  []string `json:"fileRevisionBuckets"`
+	RepositoryLimitBytes *uint64  `json:"repositoryLimitBytes"`
+}
+
+func validateWorkspaceSettingsObject(raw []byte) error {
+	keys, err := decodeStrictBundle[map[string]json.RawMessage](raw)
+	if err != nil || keys == nil {
+		return ErrBundleInvalid
+	}
+	if _, versioned := keys["formatVersion"]; !versioned {
+		return nil
+	}
+	value, err := decodeStrictBundle[workspaceSettingsBundle](raw)
+	if err != nil ||
+		value.FormatVersion != 1 ||
+		value.Retention.SnapshotDays == 0 ||
+		value.Retention.SnapshotCount == 0 ||
+		value.Retention.FileRevisionDays == 0 ||
+		value.Retention.FileRevisionCount == 0 ||
+		!validWorkspaceSettingsBuckets(value.Retention.SnapshotBuckets) ||
+		!validWorkspaceSettingsBuckets(value.Retention.FileRevisionBuckets) ||
+		(value.Retention.RepositoryLimitBytes != nil &&
+			*value.Retention.RepositoryLimitBytes == 0) {
 		return ErrBundleInvalid
 	}
 	return nil
+}
+
+func validWorkspaceSettingsBuckets(values []string) bool {
+	seen := map[string]bool{}
+	for _, value := range values {
+		switch value {
+		case "hourly", "daily", "weekly", "monthly":
+		default:
+			return false
+		}
+		if seen[value] {
+			return false
+		}
+		seen[value] = true
+	}
+	return len(values) != 0
 }
 
 func objectIDBundle(raw []byte) objectrepo.ObjectID {

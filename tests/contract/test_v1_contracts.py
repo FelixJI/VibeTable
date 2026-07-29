@@ -116,7 +116,6 @@ def _validate(instance: Any, schema: Any, root: dict[str, Any], path: str = "$")
     if "allOf" in schema:
         for candidate in schema["allOf"]:
             _validate(instance, candidate, root, path)
-        return
 
     expected_type = schema.get("type")
     if expected_type is not None:

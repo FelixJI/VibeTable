@@ -1075,6 +1075,62 @@ func TestRuntimeListsCanonicalDocumentsAndRestoresRevision(t *testing.T) {
 		*effective.RestoredFromRevisionID != first.Revision.RevisionID {
 		t.Fatalf("restored document = %#v", document)
 	}
+	if err := runtime.history.ConfigureClaimMode(token.ClaimID, true); err != nil {
+		t.Fatal(err)
+	}
+	provisional, err := runtime.history.Save(
+		context.Background(),
+		filehistory.SaveRequest{
+			Token: token, DocumentID: documentID,
+			ExpectedEffectiveRevision: &effective.RevisionID,
+			Kind:                      filehistory.RevisionFormal,
+			Content:                   []byte("offline"), MimeType: "text/plain",
+			CreatedBy: "test", DeviceID: testClaimID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := dispatch(
+		t,
+		runtime,
+		3,
+		"fileHistory.readTree",
+		`{"documentId":"`+documentID+`"}`,
+	)
+	if tree.Error != nil {
+		t.Fatalf("read tree error = %#v", tree.Error)
+	}
+	revisions := tree.Result.(map[string]any)["revisions"].([]map[string]any)
+	projected := revisions[len(revisions)-1]
+	localSequence, localOK := projected["localSequence"].(*uint64)
+	formalVersion, formalOK := projected["formalVersion"].(*uint64)
+	if projected["revisionId"] != provisional.Revision.RevisionID ||
+		projected["revisionOrdinal"] != uint64(0) ||
+		!localOK || localSequence == nil || *localSequence != 1 ||
+		!formalOK || formalVersion != nil {
+		t.Fatalf("provisional tree projection = %#v", projected)
+	}
+	response = dispatch(
+		t,
+		runtime,
+		4,
+		"fileHistory.restore",
+		`{"documentId":"`+documentID+
+			`","expectedEffectiveRevisionId":"`+
+			provisional.Revision.RevisionID+
+			`","historicalRevisionId":"`+
+			first.Revision.RevisionID+`"}`,
+	)
+	if response.Error != nil {
+		t.Fatalf("provisional restore error = %#v", response.Error)
+	}
+	provisionalRestore := response.Result.(map[string]any)
+	if provisionalRestore["revisionOrdinal"] != uint64(0) ||
+		provisionalRestore["localSequence"] != uint64(2) ||
+		provisionalRestore["formalVersion"] != nil {
+		t.Fatalf("provisional restore result = %#v", provisionalRestore)
+	}
 }
 
 func TestValidateStartupBindingRejectsMismatchBeforeCreatingLayout(t *testing.T) {

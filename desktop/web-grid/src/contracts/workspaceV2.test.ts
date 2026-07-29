@@ -89,6 +89,39 @@ describe("workspace v2 strict contracts", () => {
     })).toThrow();
   });
 
+  it("accepts provisional file revisions without allocating canonical numbers", () => {
+    const canonical = fixture("file-revision.json") as Record<string, unknown>;
+    const provisional = parseFileRevisionV2({
+      ...canonical,
+      revisionOrdinal: 0,
+      localSequence: 7,
+      formalVersion: null,
+      kind: "autosave",
+      restoredFromRevisionId: null,
+    });
+    expect(provisional.revisionOrdinal).toBe(0);
+    expect(provisional.localSequence).toBe(7);
+    expect(() => parseFileRevisionV2({
+      ...provisional,
+      localSequence: null,
+    })).toThrow("localSequence");
+    expect(() => parseFileRevisionV2({
+      ...provisional,
+      localSequence: 0,
+    })).toThrow("localSequence");
+    expect(() => parseFileRevisionV2({
+      ...provisional,
+      formalVersion: 3,
+    })).toThrow("provisional");
+    expect(() => parseFileRevisionV2({
+      ...provisional,
+      revisionOrdinal: 4,
+      localSequence: null,
+      formalVersion: null,
+      kind: "formal",
+    })).toThrow("formal version");
+  });
+
   it("rejects stale epoch and sequence before dispatch", () => {
     const event = parseWorkspaceEventV2(fixture("workspace-event.json"));
     ensureCurrentWorkspaceScope(event.wire, event.wire.workspaceId, 7, 12);

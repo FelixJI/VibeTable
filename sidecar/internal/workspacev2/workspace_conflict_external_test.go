@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -25,14 +24,9 @@ func TestConflictCommitKeepsPocketBaseReceiptPreparedAndResumesSameRevision(
 	ctx := context.Background()
 	runtime, app, closeRuntime := openExternalConflictTestRuntime(t)
 	defer closeRuntime()
-	settingsPath := filepath.Join(
-		runtime.paths.metadata, "settings.json",
-	)
-	local := []byte(`{"theme":"local"}`)
-	replica := []byte(`{"theme":"replica"}`)
-	if err := writeDurablePrivateFile(settingsPath, local); err != nil {
-		t.Fatal(err)
-	}
+	local := conflictSettingsForSnapshotDays(t, runtime, 31)
+	replica := conflictSettingsForSnapshotDays(t, runtime, 32)
+	applyConflictTestSettings(t, runtime, local)
 	externalRaw, err := json.Marshal(workspaceConflictExternalStage{
 		FormatVersion: 1,
 		Settings: &workspaceConflictSettingsStage{
@@ -141,16 +135,12 @@ func TestRuntimeReopensAndResumesConflictAtPocketBaseReceiptRevision(
 ) {
 	ctx := context.Background()
 	runtime, app, _ := openExternalConflictTestRuntime(t)
-	settingsPath := filepath.Join(
-		runtime.paths.metadata, "settings.json",
-	)
-	local := []byte(`{"theme":"local"}`)
-	replicaSettings := []byte(`{"theme":"replica"}`)
-	if err := writeDurablePrivateFile(settingsPath, local); err != nil {
-		t.Fatal(err)
-	}
+	local := conflictSettingsForSnapshotDays(t, runtime, 31)
+	replicaSettings := conflictSettingsForSnapshotDays(t, runtime, 32)
+	applyConflictTestSettings(t, runtime, local)
 	baseID := commitConflictTestObject(
-		t, runtime, "restart-base-settings", []byte(`{"theme":"base"}`),
+		t, runtime, "restart-base-settings",
+		conflictSettingsForSnapshotDays(t, runtime, 29),
 	)
 	localID := commitConflictTestObject(
 		t, runtime, "restart-local-settings", local,
@@ -315,7 +305,7 @@ func TestRuntimeReopensAndResumesConflictAtPocketBaseReceiptRevision(
 			head, found, err,
 		)
 	}
-	currentSettings, err := os.ReadFile(settingsPath)
+	currentSettings, err := snapshotWorkspaceSettings(ctx, reopened.state)
 	if err != nil || string(currentSettings) != string(replicaSettings) {
 		t.Fatalf("settings=%s err=%v", currentSettings, err)
 	}
@@ -420,14 +410,9 @@ func TestConflictExternalNormalFaultRollsBackSettingsAndRequestsShutdownOnlyAfte
 	ctx := context.Background()
 	runtime, app, closeRuntime := openExternalConflictTestRuntime(t)
 	defer closeRuntime()
-	settingsPath := filepath.Join(
-		runtime.paths.metadata, "settings.json",
-	)
-	localSettings := []byte(`{"theme":"local"}`)
-	if err := writeDurablePrivateFile(settingsPath, localSettings); err != nil {
-		t.Fatal(err)
-	}
-	targetSettings := []byte(`{"theme":"replica"}`)
+	localSettings := conflictSettingsForSnapshotDays(t, runtime, 31)
+	applyConflictTestSettings(t, runtime, localSettings)
+	targetSettings := conflictSettingsForSnapshotDays(t, runtime, 32)
 	localID := commitConflictTestObject(
 		t, runtime, "local-settings", localSettings,
 	)
@@ -474,7 +459,7 @@ func TestConflictExternalNormalFaultRollsBackSettingsAndRequestsShutdownOnlyAfte
 	if _, err := appender.applyExternalStage(ctx, intent, stage); err == nil {
 		t.Fatal("after-settings fault unexpectedly succeeded")
 	}
-	current, err := os.ReadFile(settingsPath)
+	current, err := snapshotWorkspaceSettings(ctx, runtime.state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +497,7 @@ func TestConflictExternalNormalFaultRollsBackSettingsAndRequestsShutdownOnlyAfte
 	if err != nil || !committed {
 		t.Fatalf("PB receipt = %v, %v", committed, err)
 	}
-	current, err = os.ReadFile(settingsPath)
+	current, err = snapshotWorkspaceSettings(ctx, runtime.state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,13 +527,8 @@ func TestConflictExternalExpectedSettingsCASRejectsPostPreviewEdit(
 ) {
 	runtime, _, closeRuntime := openExternalConflictTestRuntime(t)
 	defer closeRuntime()
-	settingsPath := filepath.Join(
-		runtime.paths.metadata, "settings.json",
-	)
-	previewed := []byte(`{"density":"comfortable"}`)
-	if err := writeDurablePrivateFile(settingsPath, previewed); err != nil {
-		t.Fatal(err)
-	}
+	previewed := conflictSettingsForSnapshotDays(t, runtime, 31)
+	applyConflictTestSettings(t, runtime, previewed)
 	external := workspaceConflictExternalStage{
 		FormatVersion: 1,
 		Settings: &workspaceConflictSettingsStage{
@@ -558,11 +538,11 @@ func TestConflictExternalExpectedSettingsCASRejectsPostPreviewEdit(
 			ObjectID: "obj_target",
 		},
 	}
-	if err := atomicReplaceConflictFile(
-		settingsPath, []byte(`{"density":"compact"}`),
-	); err != nil {
-		t.Fatal(err)
-	}
+	applyConflictTestSettings(
+		t,
+		runtime,
+		conflictSettingsForSnapshotDays(t, runtime, 32),
+	)
 	appender := &workspaceConflictAppender{
 		owner: &productionReplicaConflict{runtime: runtime},
 	}
@@ -571,6 +551,104 @@ func TestConflictExternalExpectedSettingsCASRejectsPostPreviewEdit(
 	)
 	if !errors.Is(err, conflictresolution.ErrStalePlan) {
 		t.Fatalf("post-preview edit accepted: %v", err)
+	}
+}
+
+func TestConflictExternalLegacySettingsChoiceIsSemanticNoOpWithDurableRollbackBaseline(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	runtime, _, closeRuntime := openExternalConflictTestRuntime(t)
+	defer closeRuntime()
+	current := conflictSettingsForSnapshotDays(t, runtime, 31)
+	applyConflictTestSettings(t, runtime, current)
+	currentID := commitConflictTestObject(
+		t,
+		runtime,
+		"legacy-settings-current",
+		current,
+	)
+	legacyID := commitConflictTestObject(
+		t,
+		runtime,
+		"legacy-settings-marker",
+		[]byte(`{}`),
+	)
+	appender := &workspaceConflictAppender{
+		owner: &productionReplicaConflict{runtime: runtime},
+	}
+
+	staged, err := appender.stageConflictSettings(
+		ctx,
+		conflictresolution.SettingsState{ObjectID: string(currentID)},
+		conflictresolution.SettingsState{ObjectID: string(legacyID)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged.Previous) == 0 ||
+		string(staged.Previous) != string(current) {
+		t.Fatalf("durable rollback baseline = %s", staged.Previous)
+	}
+	external := workspaceConflictExternalStage{
+		FormatVersion: 1,
+		Settings:      &staged,
+	}
+	if err := appender.validateExternalExpected(ctx, external); err != nil {
+		t.Fatalf("legacy expected precondition = %v", err)
+	}
+	if err := replaceWorkspaceSettings(
+		ctx,
+		runtime.state,
+		[]byte(`{}`),
+		99,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := appender.validateExternalChosen(ctx, external); err != nil {
+		t.Fatalf("legacy chosen semantic validation = %v", err)
+	}
+
+	target := conflictSettingsForSnapshotDays(t, runtime, 32)
+	applyConflictTestSettings(t, runtime, target)
+	if err := appender.restoreExternalExpected(ctx, external); err != nil {
+		t.Fatalf("restore durable rollback baseline = %v", err)
+	}
+	restored, err := snapshotWorkspaceSettings(ctx, runtime.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restored) != string(current) {
+		t.Fatalf("restored settings = %s", restored)
+	}
+}
+
+func TestConflictExternalLegacyExpectedAcceptsVersionedCurrent(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	runtime, _, closeRuntime := openExternalConflictTestRuntime(t)
+	defer closeRuntime()
+	current := conflictSettingsForSnapshotDays(t, runtime, 31)
+	applyConflictTestSettings(t, runtime, current)
+	legacyID := commitConflictTestObject(
+		t,
+		runtime,
+		"legacy-settings-expected",
+		[]byte(`{}`),
+	)
+	appender := &workspaceConflictAppender{
+		owner: &productionReplicaConflict{runtime: runtime},
+	}
+	external := workspaceConflictExternalStage{
+		FormatVersion: 1,
+		Settings: &workspaceConflictSettingsStage{
+			ExpectedObjectID: legacyID,
+			ObjectID:         legacyID,
+		},
+	}
+	if err := appender.validateExternalExpected(ctx, external); err != nil {
+		t.Fatalf("legacy expected did not match versioned live state: %v", err)
 	}
 }
 
@@ -786,4 +864,46 @@ func commitConflictTestObject(
 		t.Fatal(err)
 	}
 	return receipt.Objects[name]
+}
+
+func conflictSettingsForSnapshotDays(
+	t *testing.T,
+	runtime *Runtime,
+	days uint64,
+) []byte {
+	t.Helper()
+	raw, err := snapshotWorkspaceSettings(
+		context.Background(),
+		runtime.state,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, legacy, err := decodeWorkspaceSettingsSnapshot(raw)
+	if err != nil || legacy {
+		t.Fatalf("current workspace settings: legacy=%v err=%v", legacy, err)
+	}
+	value.Retention.SnapshotDays = days
+	raw, err = json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func applyConflictTestSettings(
+	t *testing.T,
+	runtime *Runtime,
+	raw []byte,
+) {
+	t.Helper()
+	_, counters := runtime.coordinator.Current()
+	if err := replaceWorkspaceSettings(
+		context.Background(),
+		runtime.state,
+		raw,
+		counters.MutationRevision,
+	); err != nil {
+		t.Fatal(err)
+	}
 }

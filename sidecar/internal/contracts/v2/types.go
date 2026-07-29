@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -25,8 +26,26 @@ type Validator interface {
 	Validate() error
 }
 
+type requiredJSONFieldProvider interface {
+	requiredJSONFields() []string
+}
+
 func DecodeStrict[T Validator](raw []byte) (T, error) {
 	var result T
+	if required, ok := any(result).(requiredJSONFieldProvider); ok {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &object); err != nil {
+			return result, fmt.Errorf("decode v2 contract: %w", err)
+		}
+		for _, field := range required.requiredJSONFields() {
+			if _, present := object[field]; !present {
+				return result, fmt.Errorf(
+					"decode v2 contract: required field %q is missing",
+					field,
+				)
+			}
+		}
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&result); err != nil {
@@ -284,6 +303,7 @@ type FileRevision struct {
 	DocumentID             string  `json:"documentId"`
 	ParentRevisionID       *string `json:"parentRevisionId"`
 	RevisionOrdinal        uint64  `json:"revisionOrdinal"`
+	LocalSequence          *uint64 `json:"localSequence"`
 	FormalVersion          *uint64 `json:"formalVersion"`
 	Kind                   string  `json:"kind"`
 	ObjectID               string  `json:"objectId"`
@@ -297,6 +317,28 @@ type FileRevision struct {
 	RestoredFromRevisionID *string `json:"restoredFromRevisionId"`
 }
 
+func (FileRevision) requiredJSONFields() []string {
+	return []string{
+		"contractVersion",
+		"revisionId",
+		"documentId",
+		"parentRevisionId",
+		"revisionOrdinal",
+		"localSequence",
+		"formalVersion",
+		"kind",
+		"objectId",
+		"contentHash",
+		"size",
+		"mimeType",
+		"createdAt",
+		"createdBy",
+		"deviceId",
+		"comment",
+		"restoredFromRevisionId",
+	}
+}
+
 func (value FileRevision) Validate() error {
 	if err := validateVersion(value.ContractVersion); err != nil {
 		return err
@@ -307,13 +349,24 @@ func (value FileRevision) Validate() error {
 		!validOptionalUUID(value.RestoredFromRevisionID) {
 		return errors.New("file revision identity is invalid")
 	}
-	if value.RevisionOrdinal == 0 || !oneOf(value.Kind, "autosave", "formal", "restore") {
+	if !oneOf(value.Kind, "autosave", "formal", "restore") {
 		return errors.New("file revision state is invalid")
+	}
+	provisional := value.RevisionOrdinal == 0
+	if provisional &&
+		(value.LocalSequence == nil || *value.LocalSequence == 0) {
+		return errors.New("provisional revision requires localSequence")
+	}
+	if value.LocalSequence != nil && *value.LocalSequence == 0 {
+		return errors.New("localSequence must be positive")
+	}
+	if provisional && value.FormalVersion != nil {
+		return errors.New("provisional revision cannot consume a formal version")
 	}
 	if value.Kind == "autosave" && value.FormalVersion != nil {
 		return errors.New("autosave cannot consume a formal version")
 	}
-	if value.Kind != "autosave" &&
+	if !provisional && value.Kind != "autosave" &&
 		(value.FormalVersion == nil || *value.FormalVersion == 0) {
 		return errors.New("formal revision requires a version")
 	}
@@ -720,13 +773,34 @@ func closedSchema(value map[string]any) bool {
 }
 
 func validRPCSchemaNode(value any) bool {
+	return validRPCSchemaNodeAt(value, false)
+}
+
+func validRPCSchemaNodeAt(value any, conditional bool) bool {
 	node, ok := value.(map[string]any)
-	if !ok {
+	if !ok || !onlyRPCSchemaKeys(
+		node,
+		"type",
+		"enum",
+		"const",
+		"minimum",
+		"minLength",
+		"pattern",
+		"additionalProperties",
+		"required",
+		"properties",
+		"items",
+		"allOf",
+		"oneOf",
+	) {
 		return false
 	}
+	hasType := false
+	nodeTypeName := ""
 	switch nodeType := node["type"].(type) {
 	case []any:
-		if len(nodeType) == 0 || !onlyRPCSchemaKeys(node, "type", "enum") {
+		hasType = true
+		if len(nodeType) == 0 {
 			return false
 		}
 		for _, item := range nodeType {
@@ -738,52 +812,116 @@ func validRPCSchemaNode(value any) bool {
 				return false
 			}
 		}
-		return true
 	case string:
-		switch nodeType {
-		case "object":
-			if !onlyRPCSchemaKeys(
-				node,
-				"type",
-				"additionalProperties",
-				"required",
-				"properties",
-			) || node["additionalProperties"] != false {
-				return false
-			}
-			properties, ok := node["properties"].(map[string]any)
-			if !ok {
-				return false
-			}
-			required, ok := node["required"].([]any)
-			if !ok || len(required) != len(properties) {
-				return false
-			}
-			seen := make(map[string]bool, len(required))
-			for _, item := range required {
-				name, ok := item.(string)
-				if !ok || seen[name] {
-					return false
-				}
-				if _, found := properties[name]; !found {
-					return false
-				}
-				seen[name] = true
-			}
-			for _, property := range properties {
-				if !validRPCSchemaNode(property) {
-					return false
-				}
-			}
-			return true
-		case "array":
-			return onlyRPCSchemaKeys(node, "type", "items") &&
-				validRPCSchemaNode(node["items"])
-		case "string", "integer", "number", "boolean", "null":
-			return onlyRPCSchemaKeys(node, "type", "enum")
+		hasType = true
+		nodeTypeName = nodeType
+		if !oneOf(
+			nodeType,
+			"object", "array", "string", "integer", "number",
+			"boolean", "null",
+		) {
+			return false
+		}
+	case nil:
+	default:
+		return false
+	}
+	if raw, exists := node["enum"]; exists {
+		if _, ok := raw.([]any); !ok {
+			return false
 		}
 	}
-	return false
+	if raw, exists := node["minimum"]; exists {
+		if _, ok := raw.(float64); !ok {
+			return false
+		}
+	}
+	if raw, exists := node["minLength"]; exists {
+		number, ok := raw.(float64)
+		if !ok || number < 0 || math.Trunc(number) != number {
+			return false
+		}
+	}
+	if raw, exists := node["pattern"]; exists {
+		pattern, ok := raw.(string)
+		if !ok {
+			return false
+		}
+		if _, err := regexp.Compile(pattern); err != nil {
+			return false
+		}
+	}
+	for _, keyword := range []string{"allOf", "oneOf"} {
+		raw, exists := node[keyword]
+		if !exists {
+			continue
+		}
+		branches, ok := raw.([]any)
+		if !ok || len(branches) == 0 {
+			return false
+		}
+		for _, branch := range branches {
+			if !validRPCSchemaNodeAt(branch, true) {
+				return false
+			}
+		}
+	}
+	properties := map[string]any(nil)
+	if raw, exists := node["properties"]; exists {
+		var ok bool
+		properties, ok = raw.(map[string]any)
+		if !ok {
+			return false
+		}
+		for _, property := range properties {
+			if !validRPCSchemaNodeAt(property, conditional) {
+				return false
+			}
+		}
+	}
+	required := []any(nil)
+	if raw, exists := node["required"]; exists {
+		var ok bool
+		required, ok = raw.([]any)
+		if !ok || properties == nil {
+			return false
+		}
+		seen := make(map[string]bool, len(required))
+		for _, item := range required {
+			name, ok := item.(string)
+			if !ok || seen[name] {
+				return false
+			}
+			if _, found := properties[name]; !found {
+				return false
+			}
+			seen[name] = true
+		}
+	}
+	if raw, exists := node["additionalProperties"]; exists {
+		if _, ok := raw.(bool); !ok {
+			return false
+		}
+	}
+	if nodeTypeName == "object" && !conditional &&
+		(node["additionalProperties"] != false ||
+			properties == nil ||
+			required == nil ||
+			len(required) != len(properties)) {
+		return false
+	}
+	if nodeTypeName == "array" {
+		item, exists := node["items"]
+		return exists && validRPCSchemaNodeAt(item, false)
+	}
+	if _, exists := node["items"]; exists {
+		return false
+	}
+	_, hasConst := node["const"]
+	_, hasProperties := node["properties"]
+	_, hasAllOf := node["allOf"]
+	_, hasOneOf := node["oneOf"]
+	return hasType || hasConst || hasProperties || hasAllOf || hasOneOf
 }
 
 func onlyRPCSchemaKeys(value map[string]any, allowed ...string) bool {

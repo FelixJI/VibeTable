@@ -148,7 +148,8 @@ public sealed class WorkspaceProviderPolicy
     }
 
     public WorkspaceStorageObservation ProbeCreateTargetAndEnsureSupported(
-        string root)
+        string root,
+        bool userMarkedSync = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         string fullPath = Path.GetFullPath(root);
@@ -156,7 +157,9 @@ public sealed class WorkspaceProviderPolicy
         Directory.CreateDirectory(fullPath);
         try
         {
-            return ProbeAndEnsureSupported(fullPath);
+            return ProbeAndEnsureSupported(
+                fullPath,
+                userMarkedSync);
         }
         finally
         {
