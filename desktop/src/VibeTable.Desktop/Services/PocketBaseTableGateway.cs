@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
+using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
 
@@ -45,17 +46,35 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         // collection list is exposed to the renderer.  Keeping this inside
         // the provider-neutral gateway also prevents a second, racy reconcile
         // later in MainWindow.
-        await _product.ReconcileIdentifierMappingsAsync(
-            JsonSerializer.SerializeToElement(
-                new Dictionary<string, object?>(),
-                JsonOptions),
-            token).ConfigureAwait(false);
+        try
+        {
+            await _product.ReconcileIdentifierMappingsAsync(
+                JsonSerializer.SerializeToElement(
+                    new Dictionary<string, object?>(),
+                    JsonOptions),
+                token).ConfigureAwait(false);
+        }
+        catch (RpcRemoteException exception)
+            when (IsWorkspaceV1WriteDisabled(exception))
+        {
+            // A restored Workspace V2 database can legitimately contain
+            // business tables without identifier aliases. Reconciliation is
+            // an old metadata write and must stay blocked by the v1 boundary;
+            // the authoritative schema still supplies safe display names.
+        }
         var summary = await ReadTableSummaryAsync(token).ConfigureAwait(false);
         return new DatabaseOpenResult(
             summary.Tables,
             summary.Views,
             DisplayNames: summary.DisplayNames);
     }
+
+    private static bool IsWorkspaceV1WriteDisabled(RpcRemoteException exception)
+        => exception.ErrorData is JsonElement data
+            && data.ValueKind == JsonValueKind.Object
+            && data.TryGetProperty("code", out JsonElement code)
+            && code.ValueKind == JsonValueKind.String
+            && code.GetString() == "workspace.v1_write_disabled";
 
     public Task<TableSummary> ListTablesAsync(CancellationToken token)
         => ReadTableSummaryAsync(token);

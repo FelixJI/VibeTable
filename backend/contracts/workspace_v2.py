@@ -352,7 +352,7 @@ class RpcError(V2Model):
         Field(
             pattern=(
                 r"^(workspace|snapshot|repository|lease|replica|conflict|"
-                r"file_history|retention)\.[a-z0-9_]+$"
+                r"file_history|history|retention)\.[a-z0-9_]+$"
             )
         ),
     ]

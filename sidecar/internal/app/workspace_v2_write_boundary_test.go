@@ -21,6 +21,8 @@ func TestWorkspaceV2WriteBoundaryFailsClosed(t *testing.T) {
 		{"coordinated mutation", http.MethodPost, "/api/vibetable/v1/mutations/apply", true},
 		{"legacy restore preview", http.MethodPost, "/api/vibetable/v1/history/restore-preview", false},
 		{"legacy restore apply", http.MethodPost, "/api/vibetable/v1/history/restore-apply", false},
+		{"removed v2 restore preview route", http.MethodPost, "/api/vibetable/v2/history/restore-preview", false},
+		{"removed v2 restore apply route", http.MethodPost, "/api/vibetable/v2/history/restore-apply", false},
 		{"coordinated schema apply", http.MethodPost, "/api/vibetable/v1/schema/apply", true},
 		{"coordinated schema delete", http.MethodPost, "/api/vibetable/v1/schema/delete", true},
 		{"coordinated relation apply", http.MethodPost, "/api/vibetable/v1/relations/apply-delta", true},

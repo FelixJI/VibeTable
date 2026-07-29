@@ -83,6 +83,93 @@ describe("workspace v2 provisional file revision results", () => {
   });
 });
 
+describe("workspace v2 row and cell history restore", () => {
+  it("strictly parses preview and coordinated apply results", () => {
+    const preview = parseWorkspaceV2Reply({
+      ...reply,
+      method: "history.previewRestore",
+      result: {
+        collection: "orders",
+        itemId: "row-1",
+        targetRevision: "revision-1",
+        currentHash: "sha256:current",
+        schemaRevision: "schema-1",
+        scalarChanges: [{ field: "status", before: "done", after: "new" }],
+        relationChanges: [],
+        diagnostics: [],
+        token: "restore-token",
+        expiresAt: "2026-07-29T10:00:00Z",
+        scope: "cell",
+        field: "status",
+        canApply: true,
+        restorableFields: ["status"],
+      },
+    });
+    expect(preview.ok).toBe(true);
+    if (preview.ok && preview.method === "history.previewRestore") {
+      expect(preview.result.scalarChanges[0]?.after).toBe("new");
+    }
+
+    const applied = parseWorkspaceV2Reply({
+      ...reply,
+      method: "history.applyRestore",
+      result: {
+        collection: "orders",
+        itemId: "row-1",
+        restoredToRevision: "revision-1",
+        newRevisionId: "revision-2",
+        item: { id: "row-1", status: "new" },
+        mutationRevision: 42,
+      },
+    });
+    expect(applied.ok).toBe(true);
+    if (applied.ok && applied.method === "history.applyRestore") {
+      expect(applied.result.mutationRevision).toBe(42);
+      expect(applied.result.item.status).toBe("new");
+    }
+  });
+
+  it("rejects unknown nested preview fields and missing mutation revisions", () => {
+    expect(() => parseWorkspaceV2Reply({
+      ...reply,
+      method: "history.previewRestore",
+      result: {
+        collection: "orders",
+        itemId: "row-1",
+        targetRevision: "revision-1",
+        currentHash: "sha256:current",
+        schemaRevision: "schema-1",
+        scalarChanges: [{
+          field: "status",
+          before: "done",
+          after: "new",
+          writable: true,
+        }],
+        relationChanges: [],
+        diagnostics: [],
+        token: "restore-token",
+        expiresAt: "2026-07-29T10:00:00Z",
+        scope: "cell",
+        field: "status",
+        canApply: true,
+        restorableFields: ["status"],
+      },
+    })).toThrow("history scalar change has unknown or missing fields");
+
+    expect(() => parseWorkspaceV2Reply({
+      ...reply,
+      method: "history.applyRestore",
+      result: {
+        collection: "orders",
+        itemId: "row-1",
+        restoredToRevision: "revision-1",
+        newRevisionId: "revision-2",
+        item: { id: "row-1", status: "new" },
+      },
+    })).toThrow("history.applyRestore result has unknown or missing fields");
+  });
+});
+
 describe("workspace v2 pending external file changes", () => {
   const pendingReply = {
     ...reply,

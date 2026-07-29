@@ -689,6 +689,98 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         },
     ),
     Rpc(
+        "history.previewRestore",
+        "workspace",
+        "PreviewHistoryRestoreParams",
+        "HistoryRestorePreview",
+        {
+            "collection": "orders",
+            "itemId": "row-1",
+            "targetRevision": "revision-1",
+            "scope": enum_string("cell", "row", "cell", "archived"),
+            "field": nullable_string("status"),
+        },
+        {
+            "collection": "orders",
+            "itemId": "row-1",
+            "targetRevision": "revision-1",
+            "currentHash": "sha256:current",
+            "schemaRevision": "schema-1",
+            "scalarChanges": typed_array(
+                {
+                    "field": "status",
+                    "before": "done",
+                    "after": "new",
+                }
+            ),
+            "relationChanges": typed_array(
+                {
+                    "field": "customer",
+                    "kind": enum_string(
+                        "m2o",
+                        "m2o",
+                        "o2m",
+                        "m2m",
+                        "m2a",
+                        "file",
+                    ),
+                    "relatedCollection": nullable_string("customers"),
+                    "relatedItemId": nullable_string("customer-1"),
+                    "displayValue": nullable_string("客户 A"),
+                    "beforeItemId": nullable_string("customer-2"),
+                    "afterItemId": nullable_string("customer-1"),
+                    "beforeDisplayValue": nullable_string("客户 B"),
+                    "afterDisplayValue": nullable_string("客户 A"),
+                    "targetAvailable": True,
+                }
+            ),
+            "diagnostics": typed_array(
+                {
+                    "field": "created",
+                    "classification": enum_string(
+                        "derived",
+                        "recoverable",
+                        "readonly_system",
+                        "derived",
+                        "sensitive",
+                        "schema_retired",
+                        "permission_denied",
+                        "incompatible",
+                        "relation_unsafe",
+                    ),
+                    "severity": enum_string("warning", "warning", "error"),
+                    "code": "field_generated",
+                    "message": "Computed and system fields cannot be restored directly.",
+                }
+            ),
+            "token": "restore-token",
+            "expiresAt": "2026-07-29T10:00:00Z",
+            "scope": enum_string("cell", "row", "cell", "archived"),
+            "field": nullable_string("status"),
+            "canApply": True,
+            "restorableFields": ["status"],
+        },
+    ),
+    Rpc(
+        "history.applyRestore",
+        "workspace",
+        "ApplyHistoryRestoreParams",
+        "HistoryRestoreResult",
+        {
+            "collection": "orders",
+            "itemId": "row-1",
+            "token": "restore-token",
+        },
+        {
+            "collection": "orders",
+            "itemId": "row-1",
+            "restoredToRevision": "revision-1",
+            "newRevisionId": nullable_string("revision-2"),
+            "item": {"id": "row-1", "status": "new"},
+            "mutationRevision": positive_integer(42),
+        },
+    ),
+    Rpc(
         "repository.verify",
         "workspace",
         "VerifyRepositoryParams",

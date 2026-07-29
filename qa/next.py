@@ -229,7 +229,12 @@ def stage_command(stage: str, package_root: Path | None = None) -> tuple[list[st
     if stage == "fault-injection":
         return [sys.executable, str(FAULT_INJECTION)], str(REPO_ROOT)
     if stage == "product-e2e":
-        command = [sys.executable, "qa/product_acceptance.py"]
+        command = [
+            sys.executable,
+            "qa/product_acceptance.py",
+            "--evidence-root",
+            str(QA_RUN_TEMP_DIR / "product-e2e"),
+        ]
         if package_root is not None:
             command.extend(["--package-root", str(package_root)])
         return command, str(REPO_ROOT)

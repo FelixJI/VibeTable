@@ -271,7 +271,17 @@ def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
         json.dumps(value, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    os.replace(temporary, path)
+    for attempt in range(20):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            # Windows can briefly deny replacement while the Node consumer or
+            # endpoint protection is closing its read handle. Keep the write
+            # atomic and bounded instead of falling back to an in-place write.
+            time.sleep(min(0.01 * (attempt + 1), 0.1))
 
 
 def _wait_for_readiness(readiness_dir: Path, process: subprocess.Popen[bytes]) -> dict[str, Any]:
@@ -491,17 +501,43 @@ def _handle_storage_proof(
     request: dict[str, Any],
     scenario_dir: Path,
 ) -> dict[str, Any]:
+    request_id = request.get("requestId")
+    if not isinstance(request_id, str) or not request_id:
+        return {
+            "status": "failed",
+            "code": "STORAGE_PROOF_REQUEST_ID_REQUIRED",
+        }
     table_id = request.get("tableId")
     if not isinstance(table_id, str) or not table_id:
         return {
             "status": "failed",
             "code": "STORAGE_PROOF_TABLE_REQUIRED",
+            "requestId": request_id,
         }
-    data_db = scenario_dir / "runtime" / "local-data" / "pocketbase" / "data.db"
+    local_data = scenario_dir / "runtime" / "local-data"
+    data_db = local_data / "pocketbase" / "data.db"
+    if not data_db.is_file():
+        registry_path = local_data / "VibeTable" / "shell" / "workspace-registry-v2.json"
+        try:
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            workspaces = registry.get("workspaces")
+            if not isinstance(workspaces, list) or not workspaces:
+                raise ValueError("workspace registry contains no workspaces")
+            latest = max(
+                (item for item in workspaces if isinstance(item, dict)),
+                key=lambda item: str(item.get("lastOpenedAt", "")),
+            )
+            selected_root = latest.get("selectedRoot")
+            if not isinstance(selected_root, str) or not selected_root:
+                raise ValueError("workspace registry selectedRoot is invalid")
+            data_db = Path(selected_root) / ".vibetable" / "data" / "data.db"
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
     if not data_db.is_file():
         return {
             "status": "failed",
             "code": "STORAGE_PROOF_DATABASE_MISSING",
+            "requestId": request_id,
             "database": str(data_db),
         }
     try:
@@ -544,10 +580,21 @@ def _handle_storage_proof(
         return {
             "status": "failed",
             "code": "STORAGE_PROOF_READ_FAILED",
+            "requestId": request_id,
+            "message": str(exc),
+        }
+    try:
+        audit_ledger = _audit_ledger_proof(data_db.parent.parent / "audit" / "ledger.db")
+    except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+        return {
+            "status": "failed",
+            "code": "AUDIT_LEDGER_PROOF_FAILED",
+            "requestId": request_id,
             "message": str(exc),
         }
     return {
         "status": "completed",
+        "requestId": request_id,
         "tableId": table_id,
         "physicalName": physical_name,
         "database": {
@@ -560,6 +607,104 @@ def _handle_storage_proof(
             "idempotency": int(idempotency),
             "outbox": int(outbox),
         },
+        "auditLedger": audit_ledger,
+    }
+
+
+def _audit_ledger_proof(ledger_path: Path) -> dict[str, Any]:
+    if not ledger_path.is_file():
+        raise RuntimeError(f"audit ledger not found: {ledger_path}")
+    connection = sqlite3.connect(
+        f"{ledger_path.resolve().as_uri()}?mode=ro",
+        uri=True,
+        timeout=5,
+    )
+    try:
+        rows = connection.execute(
+            """
+            SELECT ledger_sequence, event_id, source_epoch, source_sequence,
+                   mutation_identity, payload_hash, payload, occurred_at,
+                   previous_hash, hash
+            FROM audit_ledger
+            ORDER BY ledger_sequence
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    previous_hash = ""
+    records: list[dict[str, Any]] = []
+    source_high_watermarks: dict[str, int] = {}
+    for expected_sequence, row in enumerate(rows, start=1):
+        (
+            ledger_sequence,
+            event_id,
+            source_epoch,
+            source_sequence,
+            mutation_identity,
+            payload_hash,
+            payload_raw,
+            occurred_at,
+            linked_previous_hash,
+            record_hash,
+        ) = row
+        payload_bytes = bytes(payload_raw)
+        expected_payload_hash = "sha256:" + hashlib.sha256(payload_bytes).hexdigest()
+        payload = json.loads(payload_bytes)
+        envelope = {
+            "eventId": event_id,
+            "sourceEpoch": source_epoch,
+            "sourceSequence": int(source_sequence),
+            "mutationIdentity": mutation_identity,
+            "payloadHash": payload_hash,
+            "payload": payload,
+            "occurredAt": occurred_at,
+        }
+        hash_input = {
+            "ledgerSequence": int(ledger_sequence),
+            "previousHash": linked_previous_hash,
+            "envelope": envelope,
+        }
+        expected_record_hash = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(
+                    hash_input,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+        if (
+            ledger_sequence != expected_sequence
+            or linked_previous_hash != previous_hash
+            or payload_hash != expected_payload_hash
+            or record_hash != expected_record_hash
+        ):
+            raise RuntimeError(f"audit ledger chain is invalid at sequence {ledger_sequence}")
+        prior_source_sequence = source_high_watermarks.get(source_epoch, 0)
+        if source_sequence != prior_source_sequence + 1:
+            raise RuntimeError(f"audit source sequence is invalid for {source_epoch!r}")
+        source_high_watermarks[source_epoch] = int(source_sequence)
+        previous_hash = record_hash
+        records.append(
+            {
+                "ledgerSequence": int(ledger_sequence),
+                "eventId": event_id,
+                "sourceEpoch": source_epoch,
+                "sourceSequence": int(source_sequence),
+                "mutationIdentity": mutation_identity,
+                "payload": payload,
+                "hash": record_hash,
+            }
+        )
+    return {
+        "path": str(ledger_path),
+        "readOnly": True,
+        "verified": True,
+        "count": len(records),
+        "anchorHash": previous_hash,
+        "sourceHighWatermarks": source_high_watermarks,
+        "records": records,
     }
 
 
@@ -627,7 +772,7 @@ def _run_node_runner(
         errors="replace",
     )
     handled_fault = False
-    handled_storage_proof = False
+    handled_storage_proof_ids: set[str] = set()
     next_network_sample = 0.0
     deadline = time.monotonic() + 180
     while node_process.poll() is None:
@@ -644,10 +789,14 @@ def _run_node_runner(
                     json.dumps(response, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8",
                 )
-        if not handled_storage_proof:
-            request = _read_json(storage_request)
-            if request is not None:
-                handled_storage_proof = True
+        request = _read_json(storage_request)
+        if request is not None:
+            storage_request_id = request.get("requestId")
+            if (
+                isinstance(storage_request_id, str)
+                and storage_request_id not in handled_storage_proof_ids
+            ):
+                handled_storage_proof_ids.add(storage_request_id)
                 _write_json_atomic(
                     storage_result,
                     _handle_storage_proof(request, scenario_dir),

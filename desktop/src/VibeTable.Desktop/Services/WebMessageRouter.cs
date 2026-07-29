@@ -232,6 +232,8 @@ public sealed class WebMessageRouter
             ["snapshot.export"] = "workspace",
             ["snapshot.inspectPackage"] = "global",
             ["snapshot.import"] = "global",
+            ["history.previewRestore"] = "workspace",
+            ["history.applyRestore"] = "workspace",
             ["repository.verify"] = "workspace",
             ["repository.previewKeyRotation"] = "workspace",
             ["repository.applyKeyRotation"] = "workspace",

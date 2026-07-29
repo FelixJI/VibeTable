@@ -17,6 +17,11 @@ import {
   type WorkspaceSessionV2,
   type WorkspaceStorageMode,
 } from "@/contracts/workspaceV2";
+import type {
+  RelationFieldChange,
+  RestorePreview,
+  RestoreResult,
+} from "@/contracts";
 
 export const WORKSPACE_V2_RPC_METHODS = [
   "workspace.list",
@@ -43,6 +48,8 @@ export const WORKSPACE_V2_RPC_METHODS = [
   "snapshot.export",
   "snapshot.inspectPackage",
   "snapshot.import",
+  "history.previewRestore",
+  "history.applyRestore",
   "repository.verify",
   "repository.previewKeyRotation",
   "repository.applyKeyRotation",
@@ -162,6 +169,18 @@ export interface WorkspaceV2RpcParams {
     readonly credential: string | null;
     readonly targetMode: "newWorkspace" | "currentWorkspace";
     readonly targetWorkspaceId: string | null;
+  };
+  readonly "history.previewRestore": {
+    readonly collection: string;
+    readonly itemId: string;
+    readonly targetRevision: string;
+    readonly scope: "row" | "cell" | "archived";
+    readonly field: string | null;
+  };
+  readonly "history.applyRestore": {
+    readonly collection: string;
+    readonly itemId: string;
+    readonly token: string;
   };
   readonly "repository.verify": Readonly<Record<string, never>>;
   readonly "repository.previewKeyRotation": Readonly<Record<string, never>>;
@@ -396,6 +415,10 @@ export interface SnapshotImportResult {
   readonly state: "restoreRequired";
 }
 
+export interface HistoryRestoreResultV2 extends RestoreResult {
+  readonly mutationRevision: number;
+}
+
 export interface WorkspaceDeletePlan {
   readonly workspaceId: string;
   readonly planId: string;
@@ -454,6 +477,8 @@ export interface WorkspaceV2RpcResultMap {
   readonly "snapshot.export": { readonly displayName: string; readonly sha256: string };
   readonly "snapshot.inspectPackage": SnapshotPackagePlan;
   readonly "snapshot.import": SnapshotImportResult;
+  readonly "history.previewRestore": RestorePreview;
+  readonly "history.applyRestore": HistoryRestoreResultV2;
   readonly "repository.verify": RepositoryVerificationResult;
   readonly "repository.previewKeyRotation": RepositoryKeyRotationPlan;
   readonly "repository.applyKeyRotation": RepositoryKeyRotationResult;
@@ -788,6 +813,86 @@ function parseFileTree(value: unknown): FileRevisionTreeProjection {
   };
 }
 
+function parseHistoryRelationChange(value: unknown): RelationFieldChange {
+  const source = object(value, "history relation change");
+  exact(source, [
+    "field", "kind", "relatedCollection", "relatedItemId", "displayValue",
+    "beforeItemId", "afterItemId", "beforeDisplayValue",
+    "afterDisplayValue", "targetAvailable",
+  ], "history relation change");
+  return {
+    field: text(source.field, "history relation field"),
+    kind: oneOf(source.kind, ["m2o", "o2m", "m2m", "m2a", "file"], "history relation kind"),
+    relatedCollection: nullableText(source.relatedCollection, "relatedCollection"),
+    relatedItemId: nullableText(source.relatedItemId, "relatedItemId"),
+    displayValue: nullableText(source.displayValue, "displayValue"),
+    beforeItemId: nullableText(source.beforeItemId, "beforeItemId"),
+    afterItemId: nullableText(source.afterItemId, "afterItemId"),
+    beforeDisplayValue: nullableText(source.beforeDisplayValue, "beforeDisplayValue"),
+    afterDisplayValue: nullableText(source.afterDisplayValue, "afterDisplayValue"),
+    targetAvailable: bool(source.targetAvailable, "targetAvailable"),
+  };
+}
+
+function parseHistoryRestorePreview(value: unknown): RestorePreview {
+  const source = object(value, "history restore preview");
+  exact(source, [
+    "collection", "itemId", "targetRevision", "currentHash",
+    "schemaRevision", "scalarChanges", "relationChanges", "diagnostics",
+    "token", "expiresAt", "scope", "field", "canApply",
+    "restorableFields",
+  ], "history restore preview");
+  if (!Array.isArray(source.scalarChanges)
+      || !Array.isArray(source.relationChanges)
+      || !Array.isArray(source.diagnostics)) {
+    throw new Error("history restore preview collections are invalid");
+  }
+  return {
+    collection: text(source.collection, "history collection"),
+    itemId: text(source.itemId, "history itemId"),
+    targetRevision: text(source.targetRevision, "targetRevision"),
+    currentHash: text(source.currentHash, "currentHash"),
+    schemaRevision: text(source.schemaRevision, "schemaRevision"),
+    scalarChanges: source.scalarChanges.map((value) => {
+      const change = object(value, "history scalar change");
+      exact(change, ["field", "before", "after"], "history scalar change");
+      return {
+        field: text(change.field, "history scalar field"),
+        before: change.before,
+        after: change.after,
+      };
+    }),
+    relationChanges: source.relationChanges.map(parseHistoryRelationChange),
+    diagnostics: source.diagnostics.map((value) => {
+      const diagnostic = object(value, "history restore diagnostic");
+      exact(diagnostic, [
+        "field", "classification", "severity", "code", "message",
+      ], "history restore diagnostic");
+      return {
+        field: text(diagnostic.field, "diagnostic field"),
+        classification: oneOf(diagnostic.classification, [
+          "recoverable", "readonly_system", "derived", "sensitive",
+          "schema_retired", "permission_denied", "incompatible",
+          "relation_unsafe",
+        ], "diagnostic classification"),
+        severity: oneOf(diagnostic.severity, ["warning", "error"], "diagnostic severity"),
+        code: text(diagnostic.code, "diagnostic code"),
+        message: text(diagnostic.message, "diagnostic message"),
+      };
+    }),
+    token: text(source.token, "history restore token"),
+    expiresAt: text(source.expiresAt, "history restore expiry"),
+    scope: oneOf(
+      source.scope,
+      ["row", "cell", "archived"] as const,
+      "history restore scope",
+    ),
+    field: nullableText(source.field, "history restore field"),
+    canApply: bool(source.canApply, "history restore canApply"),
+    restorableFields: stringList(source.restorableFields, "restorableFields"),
+  };
+}
+
 export function parseWorkspaceV2Bootstrap(value: unknown): WorkspaceV2Bootstrap {
   const source = object(value, "workspace v2 bootstrap");
   exact(source, [
@@ -1039,6 +1144,28 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
         "sourceSnapshotId",
       ),
       state: "restoreRequired",
+    };
+  } else if (method === "history.previewRestore") {
+    parsed = parseHistoryRestorePreview(source);
+  } else if (method === "history.applyRestore") {
+    exact(source, [
+      "collection", "itemId", "restoredToRevision", "newRevisionId",
+      "item", "mutationRevision",
+    ], `${method} result`);
+    parsed = {
+      collection: text(source.collection, "history collection"),
+      itemId: text(source.itemId, "history itemId"),
+      restoredToRevision: text(
+        source.restoredToRevision,
+        "restoredToRevision",
+      ),
+      newRevisionId: nullableText(source.newRevisionId, "newRevisionId"),
+      item: { ...object(source.item, "restored item") },
+      mutationRevision: integer(
+        source.mutationRevision,
+        "mutationRevision",
+        1,
+      ),
     };
   } else if (
     method === "fileHistory.import"

@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	conflictresolution "github.com/vibetable/vibetable/sidecar/internal/conflict"
 	contractsv2 "github.com/vibetable/vibetable/sidecar/internal/contracts/v2"
@@ -40,6 +41,7 @@ type Options struct {
 	FenceEpoch               uint64
 	ClaimID                  string
 	Ledger                   *auditledger.Ledger
+	Audit                    *audit.Service
 	RequestShutdown          func()
 	ReplicaRemote            replica.VerifiedRemote
 	ReplicaRemoteFactory     func(context.Context) (replica.VerifiedRemote, error)
@@ -79,6 +81,7 @@ type Runtime struct {
 	schedulerCancel          context.CancelFunc
 	schedulerWG              sync.WaitGroup
 	ledger                   *auditledger.Ledger
+	historyRestore           historyRestoreService
 	requestShutdown          func()
 }
 
@@ -129,6 +132,7 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 		paths:           paths,
 		manifest:        manifest,
 		ledger:          options.Ledger,
+		historyRestore:  options.Audit,
 		requestShutdown: options.RequestShutdown,
 	}
 	defer func() {
@@ -434,11 +438,27 @@ func (runtime *Runtime) CoordinateBusinessWrite(
 	identity string,
 	apply func(context.Context) error,
 ) error {
+	_, err := runtime.coordinateBusinessWriteReceipt(
+		ctx,
+		kind,
+		identity,
+		apply,
+	)
+	return err
+}
+
+func (runtime *Runtime) coordinateBusinessWriteReceipt(
+	ctx context.Context,
+	kind string,
+	identity string,
+	apply func(context.Context) error,
+) (writecoordinator.WriteReceipt, error) {
 	if runtime == nil || runtime.coordinator == nil || apply == nil {
-		return errors.New("workspace.business_write_unavailable")
+		return writecoordinator.WriteReceipt{},
+			errors.New("workspace.business_write_unavailable")
 	}
 	token, _ := runtime.coordinator.Current()
-	_, err := runtime.coordinator.Write(
+	receipt, err := runtime.coordinator.Write(
 		ctx,
 		token,
 		func(writeCtx context.Context, intent writecoordinator.WriteIntent) error {
@@ -461,7 +481,7 @@ func (runtime *Runtime) CoordinateBusinessWrite(
 		// replica queue for a fully replicated workspace.
 		err = runtime.replicaConflict.markLocalMutationPending()
 	}
-	return err
+	return receipt, err
 }
 
 // Drain blocks new coordinated writes, drains both authoritative outboxes and

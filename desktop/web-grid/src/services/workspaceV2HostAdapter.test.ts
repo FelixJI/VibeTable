@@ -13,6 +13,7 @@ import type {
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const SNAPSHOT_ID = "77777777-7777-4777-8777-777777777777";
+const NEW_SNAPSHOT_ID = "88888888-8888-4888-8888-888888888888";
 
 function bootstrap() {
   return {
@@ -23,6 +24,7 @@ function bootstrap() {
       "snapshot.timeline.v2",
       "snapshot.package.v2",
       "snapshot.open-as-new.v2",
+      "history.restore.v2",
       "fileHistory.tree.v2",
       "retention.policy.v2",
       "repository.settings.v2",
@@ -100,11 +102,50 @@ function fakeBridge() {
         state: "ready",
         integrity: "verified",
       };
+    } else if (payload.method === "snapshot.request") {
+      result = {
+        operationId: payload.wire.operationId,
+        snapshotId: NEW_SNAPSHOT_ID,
+        state: "ready",
+        mutationRevision: 4,
+      };
+    } else if (payload.method === "snapshot.list") {
+      result = {
+        snapshots: [{
+          ...bootstrap().snapshots[0],
+          snapshotId: NEW_SNAPSHOT_ID,
+          createdAt: "2026-07-28T09:00:00Z",
+          catalogRevision: 4,
+        }, ...bootstrap().snapshots],
+        nextCursor: null,
+      };
     } else if (payload.method === "snapshot.previewRestore") {
       result = {
         planId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         protectionRequired: true,
         changes: ["table:projects"],
+      };
+    } else if (payload.method === "snapshot.applyRestore") {
+      result = {
+        operationId: payload.wire.operationId,
+        state: "prepared",
+      };
+    } else if (payload.method === "history.previewRestore") {
+      result = {
+        collection: payload.params.collection,
+        itemId: payload.params.itemId,
+        targetRevision: payload.params.targetRevision,
+        currentHash: "sha256:current",
+        schemaRevision: "schema-1",
+        scalarChanges: [],
+        relationChanges: [],
+        diagnostics: [],
+        token: "restore-token",
+        expiresAt: "2026-07-29T10:00:00Z",
+        scope: payload.params.scope,
+        field: payload.params.field,
+        canApply: true,
+        restorableFields: [],
       };
     } else if (payload.method === "workspace.list") {
       result = { workspaces: bootstrap().workspaces };
@@ -241,6 +282,49 @@ describe("workspace v2 production host adapter", () => {
     });
   });
 
+  it("refreshes the snapshot timeline after creating a snapshot", async () => {
+    const fake = fakeBridge();
+    const { port } = createWorkspaceV2HostAdapter(fake.bridge);
+    fake.handlers.get("workspace.v2.bootstrap")!(bootstrap());
+
+    await port.request({
+      method: "snapshot.request",
+      params: { trigger: "manual", urgency: "foreground" },
+    });
+
+    await vi.waitFor(() => {
+      expect(useWorkspaceProtectionStore().snapshots[0]?.snapshotId).toBe(NEW_SNAPSHOT_ID);
+    });
+    expect(fake.request.mock.calls.map((call) => call[1].method)).toEqual([
+      "snapshot.request",
+      "snapshot.list",
+    ]);
+  });
+
+  it("waits for the new bootstrap instead of refreshing with the restored old epoch", async () => {
+    const fake = fakeBridge();
+    const { port } = createWorkspaceV2HostAdapter(fake.bridge);
+    fake.handlers.get("workspace.v2.bootstrap")!(bootstrap());
+
+    await port.request({
+      method: "snapshot.previewRestore",
+      params: { snapshotId: SNAPSHOT_ID, targetMode: "currentWorkspace" },
+    });
+    const planId = useWorkspaceProtectionStore().restorePlan?.planId;
+    expect(planId).toBe("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+
+    await port.request({
+      method: "snapshot.applyRestore",
+      params: { planId: planId!, confirmed: true },
+    });
+
+    expect(useWorkspaceProtectionStore().restorePlan).toBeNull();
+    expect(fake.request.mock.calls.map((call) => call[1].method)).toEqual([
+      "snapshot.previewRestore",
+      "snapshot.applyRestore",
+    ]);
+  });
+
   it("fails closed before sending methods whose production capability is absent", async () => {
     const fake = fakeBridge();
     const { port } = createWorkspaceV2HostAdapter(fake.bridge);
@@ -257,6 +341,47 @@ describe("workspace v2 production host adapter", () => {
     expect(fake.request).not.toHaveBeenCalled();
 
     await port.request({ method: "workspace.list", params: {} });
+    expect(fake.request).toHaveBeenCalledOnce();
+  });
+
+  it("routes history restore only through its dedicated capability", async () => {
+    const fake = fakeBridge();
+    const { port } = createWorkspaceV2HostAdapter(fake.bridge);
+    fake.handlers.get("workspace.v2.bootstrap")!(bootstrap());
+
+    const preview = await port.request({
+      method: "history.previewRestore",
+      params: {
+        collection: "orders",
+        itemId: "row-1",
+        targetRevision: "revision-1",
+        scope: "row",
+        field: null,
+      },
+    });
+    expect(preview.token).toBe("restore-token");
+    expect(fake.request.mock.calls[0]![1].method)
+      .toBe("history.previewRestore");
+
+    fake.handlers.get("workspace.v2.bootstrap")!({
+      ...bootstrap(),
+      capabilities: [
+        "workspace.session.v2",
+        "repository.settings.v2",
+      ],
+    });
+    await expect(port.request({
+      method: "history.previewRestore",
+      params: {
+        collection: "orders",
+        itemId: "row-1",
+        targetRevision: "revision-1",
+        scope: "row",
+        field: null,
+      },
+    })).rejects.toMatchObject({
+      code: "workspace.capability_unavailable",
+    });
     expect(fake.request).toHaveBeenCalledOnce();
   });
 

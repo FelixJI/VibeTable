@@ -108,6 +108,7 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
       return session.capabilities.includes("repository.key-rotation.v2");
     }
     if (method.startsWith("snapshot.")) return session.snapshotEnabled;
+    if (method.startsWith("history.")) return session.historyRestoreEnabled;
     if (method.startsWith("fileHistory.")) return session.fileHistoryEnabled;
     if (method.startsWith("retention.")) return session.policyEnabled;
     if (method.startsWith("conflict.")) return session.conflictEnabled;
@@ -221,6 +222,8 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
       || method === "workspace.relink"
     ) {
       void refreshWorkspaceList();
+    } else if (method === "snapshot.request") {
+      void port.request({ method: "snapshot.list", params: { cursor: null, limit: 50 } });
     } else if (method === "snapshot.list") {
       protection.setSnapshots(result.snapshots);
     } else if (method === "snapshot.inspect") {
@@ -239,7 +242,6 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
       protection.setRestorePlan(result);
     } else if (method === "snapshot.applyRestore") {
       protection.setRestorePlan(null);
-      void port.request({ method: "snapshot.list", params: { cursor: null, limit: 50 } });
     } else if (method === "snapshot.previewExtract") {
       protection.setExtractPlan(result);
     } else if (method === "snapshot.applyExtract") {

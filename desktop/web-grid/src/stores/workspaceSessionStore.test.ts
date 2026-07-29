@@ -56,6 +56,16 @@ describe("workspaceSessionStore", () => {
     expect(store.capabilities).toEqual(["workspace.session.v2"]);
   });
 
+  it("accepts the dedicated history restore capability", () => {
+    const store = useWorkspaceSessionStore();
+    store.configureCapabilities([
+      "workspace.session.v2",
+      "history.restore.v2",
+    ]);
+    expect(store.historyRestoreEnabled).toBe(true);
+    expect(store.capabilities).toContain("history.restore.v2");
+  });
+
   it("runs all epoch resetters before publishing the new session", () => {
     const store = useWorkspaceSessionStore();
     store.configureCapabilities(["workspace.session.v2"]);

@@ -532,6 +532,8 @@ def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
     assert product_command == [
         next_gate.sys.executable,
         "qa/product_acceptance.py",
+        "--evidence-root",
+        str(next_gate.QA_RUN_TEMP_DIR / "product-e2e"),
     ]
     assert Path(product_cwd) == next_gate.REPO_ROOT
 

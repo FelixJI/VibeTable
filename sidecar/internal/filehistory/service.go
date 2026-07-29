@@ -1181,17 +1181,18 @@ func (service *Service) PreviewSnapshotRestore(
 	ctx context.Context,
 	sourceRoot objectrepo.ManifestID,
 ) (SnapshotRestoreDiff, error) {
-	if sourceRoot == "" {
-		return SnapshotRestoreDiff{}, ErrStateCorrupt
-	}
-	source, err := loadDocumentsFromRoot(
-		ctx,
-		service.repository,
-		service.coordinatorWorkspaceID(),
-		sourceRoot,
-	)
-	if err != nil {
-		return SnapshotRestoreDiff{}, err
+	source := map[string]Document{}
+	if sourceRoot != "" {
+		var err error
+		source, err = loadDocumentsFromRoot(
+			ctx,
+			service.repository,
+			service.coordinatorWorkspaceID(),
+			sourceRoot,
+		)
+		if err != nil {
+			return SnapshotRestoreDiff{}, err
+		}
 	}
 	service.mu.RLock()
 	current := cloneDocuments(service.documents)
@@ -1249,19 +1250,22 @@ func (service *Service) StageSnapshotRestore(
 	intent writecoordinator.WriteIntent,
 	sourceRoot objectrepo.ManifestID,
 ) (StagedSnapshotRestore, error) {
-	if sourceRoot == "" ||
-		intent.Token.WorkspaceID == "" ||
+	if intent.Token.WorkspaceID == "" ||
 		intent.MutationRevision == 0 {
 		return StagedSnapshotRestore{}, ErrStateCorrupt
 	}
-	sourceDocuments, err := loadDocumentsFromRoot(
-		ctx,
-		service.repository,
-		intent.Token.WorkspaceID,
-		sourceRoot,
-	)
-	if err != nil {
-		return StagedSnapshotRestore{}, err
+	sourceDocuments := map[string]Document{}
+	if sourceRoot != "" {
+		var err error
+		sourceDocuments, err = loadDocumentsFromRoot(
+			ctx,
+			service.repository,
+			intent.Token.WorkspaceID,
+			sourceRoot,
+		)
+		if err != nil {
+			return StagedSnapshotRestore{}, err
+		}
 	}
 	service.mu.Lock()
 	defer service.mu.Unlock()

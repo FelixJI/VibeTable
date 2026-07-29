@@ -8,8 +8,10 @@ import type {
 } from "@/contracts";
 import { BridgeOperationError } from "@/bridge/hostBridge";
 import { useRevisionHistoryStore, type OpenRevisionHistorySelection } from "@/stores/revisionHistoryStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useHostBridge } from "./bridgeContext";
+import { requestWorkspaceV2UiAction } from "./workspaceV2UiPort";
 
 export interface RestoreTarget {
   readonly itemId: string;
@@ -29,6 +31,7 @@ export function useRevisionHistoryService(): {
 } {
   const bridge = useHostBridge();
   const store = useRevisionHistoryStore();
+  const session = useWorkspaceSessionStore();
   const workspace = useWorkspaceStore();
   let queryGeneration = 0;
   let previewGeneration = 0;
@@ -121,7 +124,21 @@ export function useRevisionHistoryService(): {
       field: field ?? undefined,
       targetRevision: target.revisionId,
     };
-    void bridge.request("history.previewRestoreRequested", payload)
+    const request = session.hasOpenWorkspace
+      ? session.historyRestoreEnabled
+        ? requestWorkspaceV2UiAction({
+            method: "history.previewRestore",
+            params: {
+              collection,
+              itemId: target.itemId,
+              scope: restoreScope,
+              field: field ?? null,
+              targetRevision: target.revisionId,
+            },
+          })
+        : Promise.reject(new Error("workspace.history_restore_unavailable"))
+      : bridge.request("history.previewRestoreRequested", payload);
+    void request
       .then((preview) => {
         if (generation !== previewGeneration || workspace.currentTable !== collection) return;
         store.receivePreview(preview as RestorePreview);
@@ -145,7 +162,15 @@ export function useRevisionHistoryService(): {
     store.beginApply();
     const generation = ++applyGeneration;
     const payload: HistoryApplyRestorePayload = { collection, itemId, token };
-    void bridge.request("history.applyRestoreRequested", payload)
+    const request = session.hasOpenWorkspace
+      ? session.historyRestoreEnabled
+        ? requestWorkspaceV2UiAction({
+            method: "history.applyRestore",
+            params: { collection, itemId, token },
+          })
+        : Promise.reject(new Error("workspace.history_restore_unavailable"))
+      : bridge.request("history.applyRestoreRequested", payload);
+    void request
       .then((result) => {
         if (generation !== applyGeneration || workspace.currentTable !== collection) return;
         store.completeRestore(result as RestoreResult);

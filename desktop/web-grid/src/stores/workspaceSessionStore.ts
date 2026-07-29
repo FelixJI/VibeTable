@@ -16,6 +16,7 @@ export type WorkspaceV2Capability =
   | "snapshot.timeline.v2"
   | "snapshot.package.v2"
   | "snapshot.open-as-new.v2"
+  | "history.restore.v2"
   | "fileHistory.tree.v2"
   | "retention.policy.v2"
   | "repository.settings.v2"
@@ -69,6 +70,7 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
   const enabled = computed(() => capabilities.value.includes("workspace.session.v2"));
   const snapshotEnabled = computed(() => capabilities.value.includes("snapshot.timeline.v2"));
   const snapshotPackageEnabled = computed(() => capabilities.value.includes("snapshot.package.v2"));
+  const historyRestoreEnabled = computed(() => capabilities.value.includes("history.restore.v2"));
   const fileHistoryEnabled = computed(() => capabilities.value.includes("fileHistory.tree.v2"));
   const policyEnabled = computed(() =>
     capabilities.value.includes("retention.policy.v2")
@@ -95,6 +97,7 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
         "snapshot.timeline.v2",
         "snapshot.package.v2",
         "snapshot.open-as-new.v2",
+        "history.restore.v2",
         "fileHistory.tree.v2",
         "retention.policy.v2",
         "repository.settings.v2",
@@ -221,6 +224,7 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
     enabled,
     snapshotEnabled,
     snapshotPackageEnabled,
+    historyRestoreEnabled,
     fileHistoryEnabled,
     policyEnabled,
     conflictEnabled,

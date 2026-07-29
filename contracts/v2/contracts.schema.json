@@ -616,7 +616,7 @@
           "properties": {
             "code": {
               "type": "string",
-              "pattern": "^(workspace|snapshot|repository|lease|replica|conflict|file_history|retention)\\.[a-z0-9_]+$"
+              "pattern": "^(workspace|snapshot|repository|lease|replica|conflict|file_history|history|retention)\\.[a-z0-9_]+$"
             },
             "message": {"type": "string", "minLength": 1},
             "details": {"$ref": "#/$defs/JsonObject"},

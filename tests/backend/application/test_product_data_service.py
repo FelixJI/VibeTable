@@ -360,8 +360,8 @@ async def test_history_and_attachment_refs_use_closed_product_routes() -> None:
 
     assert transport.requests[0]["path"] == "/api/vibetable/v1/history/change-sets"
     assert transport.requests[0]["query"]["action"] == ["update", "restore"]
-    assert transport.requests[1]["path"].endswith("/history/restore-preview")
-    assert transport.requests[2]["path"].endswith("/history/restore-apply")
+    assert transport.requests[1]["path"] == "/api/vibetable/v1/history/restore-preview"
+    assert transport.requests[2]["path"] == "/api/vibetable/v1/history/restore-apply"
     assert transport.requests[3]["path"].endswith("/attachments/refs")
 
 

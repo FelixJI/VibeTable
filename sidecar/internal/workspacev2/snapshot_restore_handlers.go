@@ -244,12 +244,17 @@ func (runtime *Runtime) buildSnapshotRestorePreview(
 		return snapshotRestorePreview{},
 			errors.New("restore.preview_unavailable")
 	}
-	historyRoot, err := runtime.snapshotFileHistoryRoot(
+	bundle, err := snapshot.LoadSnapshotBundle(
 		ctx,
-		record.ObjectMap,
+		runtime.repository,
+		record,
 	)
 	if err != nil {
 		return snapshotRestorePreview{}, err
+	}
+	var historyRoot objectrepo.ManifestID
+	if bundle.HistoryRoot != nil {
+		historyRoot = bundle.HistoryRoot.ID
 	}
 	fileDiff, err := runtime.history.PreviewSnapshotRestore(
 		ctx,

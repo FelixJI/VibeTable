@@ -1902,6 +1902,11 @@ public partial class MainWindow : Window
         }
         if (ContainsEvery(
                 methods,
+                "history.previewRestore",
+                "history.applyRestore"))
+            capabilities.Add("history.restore.v2");
+        if (ContainsEvery(
+                methods,
                 "fileHistory.listDocuments",
                 "fileHistory.listPendingChanges",
                 "fileHistory.import",
@@ -2199,6 +2204,7 @@ public partial class MainWindow : Window
             or "snapshot.update"
             or "snapshot.applyRestore"
             or "snapshot.import"
+            or "history.applyRestore"
             or "repository.applyKeyRotation"
             or "fileHistory.import"
             or "fileHistory.relink"

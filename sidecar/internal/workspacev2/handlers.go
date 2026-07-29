@@ -20,6 +20,7 @@ import (
 )
 
 func (runtime *Runtime) registerHandlers() {
+	runtime.registerHistoryRestoreHandlers()
 	runtime.registerFileHistoryHandlers()
 	runtime.registerSnapshotExportHandler()
 	runtime.registerSnapshotExtractHandlers()

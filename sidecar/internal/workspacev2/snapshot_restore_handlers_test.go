@@ -11,8 +11,134 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
+	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
+
+func TestSnapshotRestoreAcceptsSnapshotWithoutFileHistory(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	root := createWorkspace(t, testWorkspaceID)
+	dataDir := filepath.Join(root, ".vibetable", "data")
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir: dataDir, HideStartBanner: true,
+	})
+	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	createAuditOutbox(t, app)
+	ledger, err := auditledger.Open(filepath.Join(root, ".vibetable", "audit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shutdownRequested := false
+	runtime, err := Open(ctx, Options{
+		App: app, DataDir: dataDir,
+		WorkspaceID: testWorkspaceID, SessionEpoch: 7,
+		FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+		RequestShutdown: func() { shutdownRequested = true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = runtime.Close(ctx)
+		_ = ledger.Close()
+		_ = app.ResetBootstrapState()
+	})
+	token, _ := runtime.coordinator.Current()
+	target, created, err := runtime.snapshots.Capture(
+		ctx,
+		snapshot.CaptureRequest{
+			WorkspaceID: testWorkspaceID,
+			Authority:   token.Authority(),
+			Trigger:     snapshot.TriggerManual,
+			Pinned:      true,
+		},
+	)
+	if err != nil || !created {
+		t.Fatalf("capture target = %#v, %v, %v", target, created, err)
+	}
+	added, err := runtime.history.Save(
+		ctx,
+		filehistory.SaveRequest{
+			Token:      token,
+			DocumentID: "22222222-2222-4222-8222-222222222222",
+			Path:       "plans/added-after-empty-snapshot.txt",
+			Kind:       filehistory.RevisionFormal,
+			Content:    []byte("preserve this revision"),
+			MimeType:   "text/plain",
+			CreatedBy:  "test",
+			DeviceID:   testClaimID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff, err := runtime.history.PreviewSnapshotRestore(ctx, "")
+	if err != nil ||
+		len(diff.AddedAfterSnapshot) != 1 ||
+		diff.AddedAfterSnapshot[0] != "plans/added-after-empty-snapshot.txt" {
+		t.Fatalf("empty-root restore diff = %#v, %v", diff, err)
+	}
+	staged, err := runtime.history.StageSnapshotRestore(
+		ctx,
+		writecoordinator.WriteIntent{
+			Token:            token,
+			MutationRevision: added.MutationRevision + 1,
+		},
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged.Documents) != 1 ||
+		staged.Documents[0].Status != filehistory.DocumentDeleted ||
+		staged.Documents[0].EffectiveRevisionID !=
+			added.Document.EffectiveRevisionID ||
+		len(staged.Documents[0].Revisions) !=
+			len(added.Document.Revisions) {
+		t.Fatalf(
+			"empty-root staged restore did not soft-delete with revisions intact: %#v",
+			staged.Documents,
+		)
+	}
+	previewRaw, _ := json.Marshal(previewSnapshotRestoreParams{
+		SnapshotID: target.SnapshotID,
+		TargetMode: "currentWorkspace",
+	})
+	preview, err := runtime.previewSnapshotRestore(ctx, nil, previewRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previewMap := preview.(map[string]any)
+	changes := previewMap["changes"].([]string)
+	if !containsRestorePreviewPrefix(
+		changes,
+		"files:added-after-snapshot:",
+	) {
+		t.Fatalf("empty-root restore preview omitted added file: %#v", changes)
+	}
+	planID := previewMap["planId"].(string)
+	wire := json.RawMessage(`{
+		"scope":"workspace",
+		"workspaceId":"11111111-1111-4111-8111-111111111111",
+		"sessionEpoch":7,
+		"sequence":1,
+		"operationId":"cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	}`)
+	applyRaw, _ := json.Marshal(applySnapshotRestoreParams{
+		PlanID: planID, Confirmed: true,
+	})
+	if _, err := runtime.applySnapshotRestore(ctx, wire, applyRaw); err != nil {
+		t.Fatal(err)
+	}
+	if !shutdownRequested {
+		t.Fatal("restore did not request process shutdown")
+	}
+}
 
 func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 	t *testing.T,
@@ -74,6 +200,30 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 	)
 	if err != nil || !created {
 		t.Fatalf("capture target = %#v, %v, %v", target, created, err)
+	}
+	bundlePreview, err := runtime.buildSnapshotRestorePreview(ctx, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundlePreview.HistoryRoot == "" ||
+		bundlePreview.HistoryRoot != runtime.history.Root() {
+		t.Fatalf(
+			"restore preview history root = %q, current = %q",
+			bundlePreview.HistoryRoot,
+			runtime.history.Root(),
+		)
+	}
+	invalid := target
+	invalid.ObjectMap = make(
+		map[string]objectrepo.ObjectID,
+		len(target.ObjectMap),
+	)
+	for name, id := range target.ObjectMap {
+		invalid.ObjectMap[name] = id
+	}
+	invalid.ObjectMap["file-state-root"] = invalid.ObjectMap["database"]
+	if _, err := runtime.buildSnapshotRestorePreview(ctx, invalid); err == nil {
+		t.Fatal("restore preview accepted an invalid snapshot bundle")
 	}
 	if _, err := app.DB().NewQuery(
 		`UPDATE restore_probe SET value = 'later'`,

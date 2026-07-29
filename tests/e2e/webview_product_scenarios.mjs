@@ -1167,14 +1167,26 @@ async function installBridgeDiagnostics(page) {
         requestType: request.requestType,
         payloadShape: request.payloadShape,
         responseType: message.type ?? null,
-        code: message.payload?.code ?? null,
-        message: message.payload?.message ?? null,
+        code: message.payload?.code
+          ?? message.payload?.error?.code
+          ?? message.error?.code
+          ?? null,
+        message: message.payload?.message
+          ?? message.payload?.error?.message
+          ?? message.error?.message
+          ?? null,
         startedAt: request.startedAt,
         finishedAt: new Date().toISOString(),
         durationMs: Math.round((performance.now() - request.startedMonotonicMs) * 100) / 100,
       };
       diagnostics.roundTrips.push(roundTrip);
-      if (message.type === "operation.failed") diagnostics.failures.push(roundTrip);
+      if (
+        message.type === "operation.failed"
+        || message.ok === false
+        || message.payload?.ok === false
+      ) {
+        diagnostics.failures.push(roundTrip);
+      }
       delete diagnostics.pending[message.requestId];
     });
     window.__vibetableE2EBridgeDiagnostics = diagnostics;
@@ -1220,6 +1232,33 @@ async function beginBridgeMessageCapture(page, responseTypes) {
       window.chrome.webview.removeEventListener("message", handler);
     });
   }, responseTypes);
+}
+
+async function beginWritableWorkspaceBootstrapCapture(page, minimumExclusiveEpoch) {
+  await page.evaluate((minimumEpoch) => {
+    window.__vibetableE2EBridgeCapture = {
+      types: ["workspace.v2.bootstrap"],
+      message: null,
+    };
+    window.chrome.webview.addEventListener("message", function handler(event) {
+      let message = event.data;
+      if (typeof message === "string") {
+        try { message = JSON.parse(message); } catch { return; }
+      }
+      const session = message?.payload?.session;
+      if (
+        message?.type !== "workspace.v2.bootstrap"
+        || session?.state !== "openedWritable"
+        || session?.writable !== true
+        || !Number.isInteger(session?.sessionEpoch)
+        || session.sessionEpoch <= minimumEpoch
+      ) {
+        return;
+      }
+      window.__vibetableE2EBridgeCapture.message = message;
+      window.chrome.webview.removeEventListener("message", handler);
+    });
+  }, minimumExclusiveEpoch);
 }
 
 async function waitForCapturedBridgeMessage(page, timeoutMs = 20_000) {
@@ -1438,9 +1477,14 @@ async function waitForPreviewArtifact(runtime, expectedHash, expectedSize, timeo
 async function requestStorageProof(runtime, tableId, timeoutMs = 30_000) {
   const requestPath = path.join(runtime.evidenceDir, "storage-proof-request.json");
   const resultPath = path.join(runtime.evidenceDir, "storage-proof-result.json");
+  const requestId = crypto.randomUUID();
   await fs.writeFile(
     requestPath,
-    `${JSON.stringify({ tableId, requestedAt: new Date().toISOString() }, null, 2)}\n`,
+    `${JSON.stringify({
+      requestId,
+      tableId,
+      requestedAt: new Date().toISOString(),
+    }, null, 2)}\n`,
     "utf8",
   );
   const deadline = Date.now() + timeoutMs;
@@ -1448,6 +1492,10 @@ async function requestStorageProof(runtime, tableId, timeoutMs = 30_000) {
   while (Date.now() < deadline) {
     try {
       result = JSON.parse(await fs.readFile(resultPath, "utf8"));
+      if (result.requestId !== requestId) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        continue;
+      }
       if (result.status === "completed") return result;
       if (result.status === "failed") {
         throw new Error(`storage proof failed: ${JSON.stringify(result)}`);
@@ -2080,7 +2128,12 @@ async function scenario07(page, recorder, _network, runtime) {
   const restart = await requestSidecarKill(runtime, "verify attachment survives sidecar restart");
   recorder.check("attachment restart terminated only the exact sidecar child",
     restart.processName === "vibetable-pb.exe", { restart });
-  await waitForTableRecovery(page, "E2E Attachments", 1);
+  await waitForTableRecovery(
+    page,
+    "E2E Attachments",
+    "tbl_e2e_attachments",
+    1,
+  );
   const recovered = await waitForAttachmentList(
     page,
     attachmentParams,
@@ -2181,29 +2234,6 @@ async function scenario07(page, recorder, _network, runtime) {
       `original attachment revision was not returned: ${JSON.stringify(attachmentHistoryProbe.payload)}`,
     );
   }
-  const originalPreviewProbe = await rawBridgeRequest(
-    page,
-    "history.previewRestoreRequested",
-    {
-      collection: "tbl_e2e_attachments",
-      itemId: recordId,
-      targetRevision: originalRevision,
-      scope: "cell",
-      field: "attachments",
-    },
-    20_000,
-    ["history.restorePreviewReady"],
-  );
-  recorder.check(
-    "attachment restore preview identifies the original managed file",
-    originalPreviewProbe.type === "history.restorePreviewReady"
-      && originalPreviewProbe.payload?.canApply === true
-      && originalPreviewProbe.payload?.restorableFields?.includes("attachments")
-      && originalPreviewProbe.payload?.scalarChanges?.some((change) =>
-        change.field === "attachments"
-          && String(change.after ?? "").includes(uploadedFile.storedName)),
-    { originalRevision, originalPreviewProbe },
-  );
   const historyDrawerStartedAt = performance.now();
   await page.getByTestId("toolbar-history").click();
   await page.getByTestId("history-timeline").waitFor({ timeout: 30_000 });
@@ -2216,18 +2246,31 @@ async function scenario07(page, recorder, _network, runtime) {
   const restore = page.getByTestId(`history-preview-${originalRevision}`);
   await restore.waitFor();
   await restore.click();
-  await page.getByTestId("restore-preview").waitFor();
+  const restorePreview = page.getByTestId("restore-preview");
+  await restorePreview.waitFor();
+  const restorePreviewText = await restorePreview.innerText();
+  recorder.check(
+    "attachment restore preview identifies the original managed file through the product UI",
+    restorePreviewText.includes("attachments")
+      && restorePreviewText.includes(uploadedFile.storedName)
+      && await page.getByTestId("restore-confirm").isEnabled(),
+    { originalRevision, restorePreviewText },
+  );
   await beginBridgeMessageCapture(
     page,
-    ["history.restoreApplied", "operation.failed"],
+    ["workspace.v2.response", "operation.failed"],
   );
   await page.getByTestId("restore-confirm").click();
   const appliedMessage = await waitForCapturedBridgeMessage(page);
   recorder.check(
-    "attachment restore UI receives a committed restore revision",
-    appliedMessage.type === "history.restoreApplied"
-      && appliedMessage.payload?.restoredToRevision === originalRevision
-      && typeof appliedMessage.payload?.newRevisionId === "string",
+    "attachment restore UI receives a coordinated Workspace V2 mutation receipt",
+    appliedMessage.type === "workspace.v2.response"
+      && appliedMessage.payload?.method === "history.applyRestore"
+      && appliedMessage.payload?.ok === true
+      && appliedMessage.payload?.result?.restoredToRevision === originalRevision
+      && typeof appliedMessage.payload?.result?.newRevisionId === "string"
+      && Number.isInteger(appliedMessage.payload?.result?.mutationRevision)
+      && appliedMessage.payload.result.mutationRevision > 0,
     { appliedMessage, originalRevision },
   );
   await page.getByTestId("restore-preview").waitFor({ state: "hidden", timeout: 30_000 });
@@ -2392,7 +2435,13 @@ async function chooseToolbarMore(page, key) {
   await option.click();
 }
 
-async function waitForTableRecovery(page, displayName, expectedRows, timeoutMs = 60_000) {
+async function waitForTableRecovery(
+  page,
+  displayName,
+  tableId,
+  expectedRows,
+  timeoutMs = 60_000,
+) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
   while (Date.now() < deadline) {
@@ -2401,14 +2450,42 @@ async function waitForTableRecovery(page, displayName, expectedRows, timeoutMs =
       if (await retry.isVisible().catch(() => false)) await retry.click();
       const name = page.getByTestId("sidebar-table-name").filter({ hasText: displayName });
       if (await name.isVisible().catch(() => false)) {
-        await name.locator("xpath=ancestor::button").click();
+        const tableButton = name.locator("xpath=ancestor::button");
+        if (await tableButton.getAttribute("aria-current") !== "page") {
+          await tableButton.click();
+        }
       }
       await page.waitForTimeout(750);
       const count = await page.locator(".tabulator-row").count();
-      if (count === expectedRows && await page.getByTestId("connection-pill").isVisible()) {
-        return count;
+      const backend = await rawBridgeRequest(page, "query.page", {
+        tableId,
+        query: { filters: [], sorts: [], offset: 0, limit: 100 },
+      }, 5_000);
+      const backendRows = backend.type === "query.page"
+        && Array.isArray(backend.payload?.rows)
+        ? backend.payload.rows.length
+        : null;
+      if (
+        count === expectedRows
+        && backendRows === expectedRows
+        && typeof backend.payload?.snapshot?.schemaRevision === "string"
+      ) {
+        const errorOverlay = page.getByTestId("table-error-overlay");
+        if (await errorOverlay.isVisible().catch(() => false)) {
+          await name.locator("xpath=ancestor::button").click();
+          await errorOverlay.waitFor({ state: "hidden", timeout: 10_000 });
+          await page.waitForTimeout(250);
+        }
+        const recoveredCount = await page.locator(".tabulator-row").count();
+        if (recoveredCount === expectedRows) return recoveredCount;
       }
-      lastError = new Error(`observed ${count} rows, expected ${expectedRows}`);
+      lastError = new Error(`table did not recover: ${JSON.stringify({
+        tableId,
+        observedUiRows: count,
+        observedBackendRows: backendRows,
+        expectedRows,
+        backendType: backend.type,
+      })}`);
     } catch (error) {
       lastError = error;
     }
@@ -2546,7 +2623,12 @@ async function scenario09(page, recorder, _network, runtime) {
     barrier,
     confirmation,
   });
-  const rowCount = await waitForTableRecovery(page, "E2E Atomic Import", 0);
+  const rowCount = await waitForTableRecovery(
+    page,
+    "E2E Atomic Import",
+    "tbl_e2e_atomic_import",
+    0,
+  );
   recorder.check("failed import exposed no partially committed records in the UI", rowCount === 0);
   const historyDeadline = Date.now() + 30_000;
   let history;
@@ -2699,7 +2781,12 @@ async function scenario11(page, recorder) {
   await page.getByTestId("plugin-action-close").click();
 
   await page.getByTestId("nav-tables").click();
-  const afterAuthorized = await waitForTableRecovery(page, "E2E Plugin Target", 1);
+  const afterAuthorized = await waitForTableRecovery(
+    page,
+    "E2E Plugin Target",
+    "tbl_e2e_plugin_target",
+    1,
+  );
   recorder.check("approved plugin mutation became one visible record", afterAuthorized === 1);
 
   await page.getByTestId("nav-plugins").click();
@@ -2723,7 +2810,12 @@ async function scenario11(page, recorder) {
     Boolean(deniedAudit), { auditEvents });
   await page.getByTestId("plugin-action-close").click();
   await page.getByTestId("nav-tables").click();
-  const afterDenied = await waitForTableRecovery(page, "E2E Plugin Target", 1);
+  const afterDenied = await waitForTableRecovery(
+    page,
+    "E2E Plugin Target",
+    "tbl_e2e_plugin_target",
+    1,
+  );
   recorder.check("rejected plugin mutation did not create a second record", afterDenied === 1);
 }
 
@@ -2867,16 +2959,39 @@ async function scenario12(page, recorder, _network, runtime) {
   });
 
   await page.getByTestId("nav-settings").click();
-  await page.getByTestId("settings-nav-backup").click();
-  await page.getByTestId("backup-create").click();
-  await page.getByTestId("backup-status").waitFor({ timeout: 60_000 });
-  const restoreButton = page.locator('[data-testid^="backup-restore-"]').first();
-  await restoreButton.waitFor();
-  const restoreTestId = await restoreButton.getAttribute("data-testid");
-  recorder.check("backup was created through the product UI with a listed archive", Boolean(restoreTestId), {
-    restoreTestId,
-    status: await page.getByTestId("backup-status").innerText(),
+  await page.getByTestId("settings-nav-versions").click();
+  const existingSnapshotIds = await page.locator(".snapshot-row").evaluateAll(
+    (rows) => rows.map((row) => row.id),
+  );
+  await page.getByTestId("snapshot-create").click();
+  await page.waitForFunction(
+    (existing) => [...document.querySelectorAll(".snapshot-row")]
+      .some((row) => row.id && !existing.includes(row.id)),
+    existingSnapshotIds,
+    { timeout: 60_000 },
+  );
+  const createdSnapshotId = await page.locator(".snapshot-row").evaluateAll(
+    (rows, existing) => rows.find((row) => row.id && !existing.includes(row.id))?.id ?? null,
+    existingSnapshotIds,
+  );
+  const createdSnapshot = page.locator(`[id="${createdSnapshotId}"]`);
+  await createdSnapshot.click();
+  recorder.check("backup was created through the product UI with a listed archive",
+    typeof createdSnapshotId === "string" && createdSnapshotId.startsWith("snapshot-"),
+  {
+    createdSnapshotId,
+    timelineText: await createdSnapshot.innerText(),
   });
+  const snapshotStorageProof = await requestStorageProof(
+    runtime,
+    "tbl_e2e_backup_consistency",
+  );
+  recorder.check("backup boundary published a verified external audit-ledger prefix",
+    snapshotStorageProof.auditLedger?.verified === true
+      && snapshotStorageProof.auditLedger?.count > 0
+      && typeof snapshotStorageProof.auditLedger?.anchorHash === "string"
+      && snapshotStorageProof.auditLedger.anchorHash.startsWith("sha256:"),
+  { snapshotStorageProof });
 
   await page.getByTestId("nav-tables").click();
   await selectTable(page, "E2E Backup Consistency");
@@ -2915,14 +3030,47 @@ async function scenario12(page, recorder, _network, runtime) {
   });
 
   await page.getByTestId("nav-settings").click();
-  await page.getByTestId("settings-nav-backup").click();
-  await page.locator(`[data-testid="${restoreTestId}"]`).click();
-  await page.getByTestId("backup-restore-confirmation").waitFor();
-  await page.getByTestId("backup-restore-confirm").click();
-  await page.getByTestId("backup-status").waitFor();
+  await page.getByTestId("settings-nav-versions").click();
+  await page.locator(`[id="${createdSnapshotId}"]`).click();
+  await page.getByTestId("snapshot-restore-open").click();
+  const restoreAdvance = page.getByTestId("snapshot-restore-preview");
+  await restoreAdvance.click();
+  const restorePlan = page.locator(".snapshot-restore-modal .plan-summary");
+  const restoreFailure = page.locator(".protection-settings .n-alert--error");
+  await Promise.race([
+    restorePlan.waitFor({ timeout: 30_000 }),
+    restoreFailure.waitFor({ timeout: 30_000 }).then(async () => {
+      throw new Error(`snapshot restore preview failed: ${await restoreFailure.innerText()}`);
+    }),
+  ]);
+  const restoreSourceSessionEpoch = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics?.workspaceSession?.sessionEpoch ?? 0,
+  );
+  await beginWritableWorkspaceBootstrapCapture(page, restoreSourceSessionEpoch);
+  await restoreAdvance.click();
+  await page.locator(".snapshot-restore-modal").waitFor({ state: "hidden" });
+  const restoredBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
+  recorder.check(
+    "snapshot restore published a fresh writable Workspace V2 session before follow-up reads",
+    restoredBootstrap.type === "workspace.v2.bootstrap"
+      && restoredBootstrap.payload?.session?.state === "openedWritable"
+      && restoredBootstrap.payload.session.writable === true
+      && Number.isInteger(restoredBootstrap.payload.session.sessionEpoch)
+      && restoredBootstrap.payload.session.sessionEpoch > restoreSourceSessionEpoch,
+    {
+      restoreSourceSessionEpoch,
+      restoredSession: restoredBootstrap.payload?.session,
+    },
+  );
 
   await page.getByTestId("nav-tables").click();
-  await waitForTableRecovery(page, "E2E Backup Consistency", 1, 90_000);
+  await waitForTableRecovery(
+    page,
+    "E2E Backup Consistency",
+    "tbl_e2e_backup_consistency",
+    1,
+    90_000,
+  );
   const afterRestoreQuery = await rawBridgeRequest(page, "query.page", {
     tableId: "tbl_e2e_backup_consistency",
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
@@ -2934,6 +3082,40 @@ async function scenario12(page, recorder, _network, runtime) {
       && afterRestoreRow?.value === beforeBackupRow?.value
       && afterRestoreRow?.doubled === beforeBackupRow?.doubled,
   { beforeBackupRow, afterRestoreRow });
+  const restoredStorageProof = await requestStorageProof(
+    runtime,
+    "tbl_e2e_backup_consistency",
+  );
+  const snapshotLedgerCount = snapshotStorageProof.auditLedger.count;
+  const appendedLedgerRecords = restoredStorageProof.auditLedger.records.slice(
+    snapshotLedgerCount,
+  );
+  const preservedPostSnapshotMutations = appendedLedgerRecords.filter(
+    (record) => record.sourceEpoch === "business-v2"
+      && record.payload?.type === "workspace.v2.business-mutation",
+  );
+  const restoreLedgerEvents = appendedLedgerRecords.filter(
+    (record) => record.sourceEpoch.startsWith("snapshot-restore:")
+      && record.payload?.type === "workspace.snapshotRestored",
+  );
+  const preservedSnapshotAnchor = restoredStorageProof.auditLedger
+    .records[snapshotLedgerCount - 1]?.hash;
+  recorder.check("external audit ledger preserved the snapshot prefix and appended post-snapshot mutations plus restore epoch",
+    restoredStorageProof.auditLedger?.verified === true
+      && restoredStorageProof.auditLedger.count > snapshotLedgerCount
+      && preservedSnapshotAnchor === snapshotStorageProof.auditLedger.anchorHash
+      && preservedPostSnapshotMutations.length > 0
+      && restoreLedgerEvents.length === 1
+      && preservedPostSnapshotMutations.every(
+        (record) => record.ledgerSequence < restoreLedgerEvents[0].ledgerSequence,
+      ),
+  {
+    snapshotLedger: snapshotStorageProof.auditLedger,
+    restoredLedger: restoredStorageProof.auditLedger,
+    appendedLedgerRecords,
+    preservedPostSnapshotMutations,
+    restoreLedgerEvents,
+  });
   const restoredAttachmentCell = page.locator('.tabulator-cell[tabulator-field="attachments"]').first();
   await restoredAttachmentCell.dblclick();
   panel = page.getByTestId("attachment-panel");

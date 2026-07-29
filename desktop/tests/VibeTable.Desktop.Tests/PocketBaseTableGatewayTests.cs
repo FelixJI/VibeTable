@@ -53,6 +53,32 @@ public sealed class PocketBaseTableGatewayTests
     }
 
     [TestMethod]
+    public async Task RestoredWorkspaceListsSchemaWhenLegacyAliasWriteIsBlocked()
+    {
+        var transport = new ProductTransport();
+        transport.RespondError(
+            "identifier.reconcile",
+            -32120,
+            "Product data error",
+            """{"kind":"product_data_error","code":"workspace.v1_write_disabled"}""");
+        transport.Respond(
+            "schema.list",
+            """{"tables":[""" + Schema("orders") + "]}");
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client),
+            new JsonRpcWorkspaceSupportGateway(client));
+
+        var opened = await gateway.OpenDatabaseAsync("ignored", CancellationToken.None);
+
+        CollectionAssert.AreEqual(new[] { "orders" }, opened.Tables.ToArray());
+        Assert.AreEqual("Orders", opened.DisplayNames!["orders"]);
+        CollectionAssert.AreEqual(
+            new[] { "identifier.reconcile", "schema.list" },
+            transport.Methods);
+    }
+
+    [TestMethod]
     public async Task RendererColumnsUseCompositeRelationAndLookupCatalogIds()
     {
         var transport = new ProductTransport();
@@ -578,7 +604,7 @@ public sealed class PocketBaseTableGatewayTests
     {
         private readonly Channel<JsonElement?> _incoming =
             Channel.CreateUnbounded<JsonElement?>();
-        private readonly Dictionary<string, Queue<string>> _responses =
+        private readonly Dictionary<string, Queue<(string Json, bool IsError)>> _responses =
             new(StringComparer.Ordinal);
 
         public List<string> Methods { get; } = [];
@@ -586,12 +612,33 @@ public sealed class PocketBaseTableGatewayTests
 
         public void Respond(string method, string result)
         {
-            if (!_responses.TryGetValue(method, out Queue<string>? queue))
+            if (!_responses.TryGetValue(
+                    method,
+                    out Queue<(string Json, bool IsError)>? queue))
             {
-                queue = new Queue<string>();
+                queue = new Queue<(string Json, bool IsError)>();
                 _responses[method] = queue;
             }
-            queue.Enqueue(result);
+            queue.Enqueue((result, false));
+        }
+
+        public void RespondError(string method, int code, string message, string data)
+        {
+            if (!_responses.TryGetValue(
+                    method,
+                    out Queue<(string Json, bool IsError)>? queue))
+            {
+                queue = new Queue<(string Json, bool IsError)>();
+                _responses[method] = queue;
+            }
+            queue.Enqueue((
+                JsonSerializer.Serialize(new
+                {
+                    code,
+                    message,
+                    data = JsonDocument.Parse(data).RootElement.Clone(),
+                }),
+                true));
         }
 
         public Task<JsonElement?> ReadAsync(CancellationToken cancellationToken)
@@ -604,18 +651,28 @@ public sealed class PocketBaseTableGatewayTests
             string id = request.RootElement.GetProperty("id").GetString()!;
             string method = request.RootElement.GetProperty("method").GetString()!;
             Methods.Add(method);
-            if (!_responses.TryGetValue(method, out Queue<string>? queue)
+            if (!_responses.TryGetValue(
+                    method,
+                    out Queue<(string Json, bool IsError)>? queue)
                 || queue.Count == 0)
             {
                 throw new InvalidOperationException($"No response for {method}.");
             }
-            using var result = JsonDocument.Parse(queue.Dequeue());
-            JsonElement response = JsonSerializer.SerializeToElement(new
-            {
-                jsonrpc = "2.0",
-                id,
-                result = result.RootElement.Clone(),
-            });
+            (string json, bool isError) = queue.Dequeue();
+            using var result = JsonDocument.Parse(json);
+            JsonElement response = isError
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    jsonrpc = "2.0",
+                    id,
+                    error = result.RootElement.Clone(),
+                })
+                : JsonSerializer.SerializeToElement(new
+                {
+                    jsonrpc = "2.0",
+                    id,
+                    result = result.RootElement.Clone(),
+                });
             _incoming.Writer.TryWrite(response);
             return Task.CompletedTask;
         }

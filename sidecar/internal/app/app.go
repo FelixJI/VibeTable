@@ -310,6 +310,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 					FenceEpoch:      options.WorkspaceV2.FenceEpoch,
 					ClaimID:         options.WorkspaceV2.ClaimID,
 					Ledger:          ledger,
+					Audit:           auditService,
 					RequestShutdown: requestShutdown,
 					ReplicaRoot:     options.WorkspaceV2.ReplicaRoot,
 				},

@@ -114,6 +114,14 @@ public sealed class WorkspacePathGrantStoreTests
             VibeTable.Desktop.MainWindow.IsWorkspaceMutation(
                 "snapshot.applyExtract"),
             "Extract writes only to an operation-bound external path grant.");
+        Assert.IsTrue(
+            VibeTable.Desktop.MainWindow.IsWorkspaceMutation(
+                "history.applyRestore"),
+            "History restore mutates the authoritative workspace database.");
+        Assert.IsFalse(
+            VibeTable.Desktop.MainWindow.IsWorkspaceMutation(
+                "history.previewRestore"),
+            "History restore preview is read-only.");
     }
 
     private sealed class FakePicker : IWorkspacePathPicker

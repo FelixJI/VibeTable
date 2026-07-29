@@ -631,6 +631,34 @@ public sealed class WebMessageRouterTests
             workspaceId,
             dispatched.Last().Scope!.WorkspaceId);
 
+        var historyRestore = router.Route(JsonSerializer.Serialize(new
+        {
+            type = "workspace.v2.request",
+            requestId = "v2-history-restore",
+            wire = new
+            {
+                scope = "workspace",
+                workspaceId,
+                sessionEpoch = 3,
+                operationId = Guid.NewGuid(),
+                sequence = 11,
+            },
+            payload = new
+            {
+                method = "history.applyRestore",
+                @params = new
+                {
+                    collection = "orders",
+                    itemId = "row-1",
+                    token = "restore-token",
+                },
+            },
+        }));
+        Assert.IsNull(historyRestore);
+        Assert.AreEqual(
+            "history.applyRestore",
+            dispatched.Last().V2Method);
+
         var wrongScope = router.Route(JsonSerializer.Serialize(new
         {
             type = "workspace.v2.request",
