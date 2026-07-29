@@ -185,6 +185,28 @@ def test_upgrade_smoke_uses_a_short_explicit_pytest_temp_root() -> None:
     assert Path(cwd) == next_gate.REPO_ROOT
 
 
+def test_product_e2e_deepest_plugin_cache_path_stays_below_windows_max_path() -> None:
+    command, _cwd = next_gate.stage_command("product-e2e")
+    evidence_root = Path(command[command.index("--evidence-root") + 1])
+    deepest_path = (
+        evidence_root
+        / "20260729T153642Z"
+        / "11-plugin-mutation"
+        / "runtime"
+        / "local-data"
+        / "workspaces"
+        / "6dcf9c24-5c36-4bf4-ace6-89408a260018"
+        / ".vibetable"
+        / "data"
+        / "state"
+        / "plugin-packages"
+        / ("a" * 52 + ".vtplugin")
+    )
+
+    assert evidence_root.name == "p"
+    assert len(str(deepest_path)) < 260
+
+
 def test_packaged_recovery_tools_are_injected_into_go_interoperability_stages(
     tmp_path: Path,
 ) -> None:
@@ -665,7 +687,7 @@ def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
         next_gate.sys.executable,
         "qa/product_acceptance.py",
         "--evidence-root",
-        str(next_gate.QA_RUN_TEMP_DIR / "product-e2e"),
+        str(next_gate.QA_RUN_TEMP_DIR / "p"),
     ]
     assert Path(product_cwd) == next_gate.REPO_ROOT
 

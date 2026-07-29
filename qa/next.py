@@ -262,7 +262,11 @@ def stage_command(
             sys.executable,
             "qa/product_acceptance.py",
             "--evidence-root",
-            str(_qa_temp_dir() / "product-e2e"),
+            # Product acceptance creates timestamp, scenario, runtime,
+            # workspace and content-addressed package-cache descendants. Keep
+            # this segment minimal so the deepest real Windows path remains
+            # below the legacy MAX_PATH boundary.
+            str(_qa_temp_dir() / "p"),
         ]
         if package_root is not None:
             command.extend(["--package-root", str(package_root)])
