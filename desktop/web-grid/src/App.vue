@@ -31,12 +31,16 @@ import StartupGate from "@/components/startup/StartupGate.vue";
 import { useStartupStore } from "@/stores/startupStore";
 import { useStartupService } from "@/services/startupService";
 import type { StartupPhase } from "@/contracts";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 
 const { isDark } = useTheme();
 const ui = useUiStore();
 const startup = useStartupStore();
 const startupService = useStartupService();
+const workspaceSession = useWorkspaceSessionStore();
 startupService.init();
+const shellReady = computed(() =>
+  startup.phase === "ready" || workspaceSession.enabled);
 
 const gatePhase = computed<Exclude<StartupPhase, "ready">>(() =>
   startup.phase === "ready" ? "starting" : startup.phase,
@@ -77,7 +81,7 @@ onBeforeUnmount(() => {
     :date-locale="naiveDateLocale"
   >
     <NMessageProvider placement="bottom" :max="1">
-      <WorkspaceView v-if="startup.phase === 'ready'" />
+      <WorkspaceView v-if="shellReady" />
       <StartupGate
         v-else
         :phase="gatePhase"

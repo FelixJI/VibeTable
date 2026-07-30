@@ -3,5 +3,6 @@
   "planHash": "sha256:0123456789abcdef",
   "operationId": "operation_01JABCDEFGH",
   "actor": {"id": "user_local", "kind": "user"},
-  "confirmations": []
+  "confirmations": [],
+  "protectionSnapshotId": "77777777-7777-4777-8777-777777777777"
 }

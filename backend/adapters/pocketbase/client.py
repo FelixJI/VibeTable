@@ -18,8 +18,6 @@ RELATION_DESCRIBE_PATH = "/api/vibetable/v1/relations/describe"
 SCHEMA_TABLE_PATH = "/api/vibetable/v1/schema/tables"
 REALTIME_RECONCILE_PATH = "/api/vibetable/v1/events/reconcile"
 METADATA_PATH = "/api/vibetable/v1/metadata"
-BACKUP_PATH = "/api/vibetable/v1/backups"
-BACKUP_RESTORE_PATH = "/api/vibetable/v1/backups/restore"
 _METADATA_NAMESPACES = frozenset(
     {
         "shared_settings",
@@ -230,53 +228,6 @@ class PocketBaseClient:
                 expected_status=(200,),
             ),
             "table catalog",
-        )
-
-    async def list_backups(self) -> dict[str, Any]:
-        return _object(
-            await self._transport.request(
-                "GET",
-                BACKUP_PATH,
-                headers=dict(self._headers),
-                expected_status=(200,),
-            ),
-            "backup list",
-        )
-
-    async def create_backup(self, name: str) -> dict[str, Any]:
-        return _object(
-            await self._transport.request(
-                "POST",
-                BACKUP_PATH,
-                json_body={"name": name},
-                headers=dict(self._headers),
-                expected_status=(201,),
-            ),
-            "backup create result",
-        )
-
-    async def delete_backup(self, name: str) -> dict[str, Any]:
-        return _object(
-            await self._transport.request(
-                "DELETE",
-                BACKUP_PATH,
-                json_body={"name": name},
-                headers=dict(self._headers),
-                expected_status=(200,),
-            ),
-            "backup delete result",
-        )
-
-    async def restore_backup(self, name: str) -> dict[str, Any]:
-        return _object(
-            await self._transport.request(
-                "POST",
-                BACKUP_RESTORE_PATH,
-                json_body={"name": name},
-                headers=dict(self._headers),
-                expected_status=(202,),
-            ),
-            "backup restore result",
         )
 
     async def list_internal_metadata(self, namespace: str) -> dict[str, Any]:
@@ -510,8 +461,6 @@ def _text(value: Any, fallback: str) -> str:
 
 
 __all__ = [
-    "BACKUP_PATH",
-    "BACKUP_RESTORE_PATH",
     "LOOKUP_DESCRIBE_PATH",
     "LOOKUP_QUERY_PATH",
     "METADATA_PATH",

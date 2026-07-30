@@ -13,6 +13,9 @@
 
   /* Semantic colors (Feishu) */
   --vt-color-success: #007f63;
+  --vt-color-success-50: #e8f7f2;
+  --vt-color-success-500: #008f70;
+  --vt-color-success-600: #00715a;
   --vt-color-warning: #8f4f00;
   --vt-color-danger:  #c2312c;
   --vt-color-info:    #3370ff;
@@ -47,6 +50,8 @@
   --vt-text-secondary: var(--vt-fg-secondary);
   --vt-border:    var(--vt-gray-200);
   --vt-border-subtle: #eef0f3;
+  --vt-border-strong: var(--vt-gray-300);
+  --vt-focus-ring: var(--vt-color-primary-500);
 
   /* Shadows — restrained */
   --vt-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -96,6 +101,9 @@
   --vt-color-primary-600: #315fca;
   --vt-color-primary-700: #274da8;
   --vt-color-success: #3dd7af;
+  --vt-color-success-50: #17382f;
+  --vt-color-success-500: #3dd7af;
+  --vt-color-success-600: #79e4c8;
   --vt-color-warning: #ffc766;
   --vt-color-danger: #ff8b87;
 
@@ -117,6 +125,8 @@
   --vt-fg-accent: var(--vt-color-primary-300);
   --vt-fg-accent-strong: var(--vt-color-primary-300);
   --vt-border-subtle: #252932;
+  --vt-border-strong: var(--vt-gray-300);
+  --vt-focus-ring: var(--vt-color-primary-300);
 
   --vt-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
   --vt-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.4);

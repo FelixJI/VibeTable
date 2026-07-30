@@ -7,6 +7,9 @@ import {
   FilePlus2,
   RefreshCw,
   Search,
+  ShieldCheck,
+  CloudOff,
+  Clock3,
   Sparkles,
   Table2,
 } from "lucide-vue-next";
@@ -15,13 +18,17 @@ import { useUiStore } from "@/stores/uiStore";
 import { collectionLabel } from "@/components/layout/collectionLabel";
 import { t } from "@/i18n";
 import WorkCalendarMonth from "@/components/calendar/WorkCalendarMonth.vue";
-import { formatMonthKey } from "@/calendar/workCalendar";
+import { formatDateKey, formatMonthKey } from "@/calendar/workCalendar";
 import { useWorkCalendarStore } from "@/stores/workCalendarStore";
 import { loadDailyQuote, type DailyQuote } from "@/services/dailyQuoteService";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
+import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";
 
 const workspace = useWorkspaceStore();
 const ui = useUiStore();
 const workCalendar = useWorkCalendarStore();
+const workspaceSession = useWorkspaceSessionStore();
+const protection = useWorkspaceProtectionStore();
 const query = ref("");
 
 const emit = defineEmits<{
@@ -65,6 +72,7 @@ const fallbackRecent = computed(() =>
 const continueItems = computed(() =>
   recent.value.length > 0 ? recent.value : fallbackRecent.value,
 );
+const latestSnapshot = computed(() => protection.snapshots[0] ?? null);
 const searchResults = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase();
   if (!needle) return [];
@@ -237,6 +245,27 @@ function openTable(name: string) {
       </div>
     </header>
 
+    <section
+      v-if="workspaceSession.enabled && workspaceSession.hasOpenWorkspace"
+      class="protection-strip"
+      :aria-label="t('workspaceV2.home.status')"
+      data-testid="home-protection-status"
+    >
+      <div>
+        <span class="status-icon"><ShieldCheck :size="16" /></span>
+        <p><small>{{ t("workspaceV2.home.lastProtection") }}</small><strong>{{ latestSnapshot ? formatDateKey(new Date(latestSnapshot.createdAt)) : t("workspaceV2.home.notCreated") }}</strong></p>
+      </div>
+      <div>
+        <span class="status-icon"><CloudOff :size="16" /></span>
+        <p><small>{{ t("workspaceV2.home.replica") }}</small><strong>{{ workspaceSession.activeWorkspace?.pendingSync ? t("workspaceV2.center.pendingSync") : t("workspaceV2.home.synced") }}</strong></p>
+      </div>
+      <div>
+        <span class="status-icon"><Clock3 :size="16" /></span>
+        <p><small>{{ t("workspaceV2.home.session") }}</small><strong>{{ workspaceSession.provisional ? t("workspaceV2.switch.provisional") : workspaceSession.writable ? t("workspaceV2.home.writable") : t("workspaceV2.switch.readOnly") }}</strong></p>
+      </div>
+      <NButton size="small" quaternary @click="ui.navigate('settings')">{{ t("workspaceV2.home.openTimeline") }}</NButton>
+    </section>
+
     <div class="home-grid">
       <main class="home-main">
         <section class="content-card continue-card" :style="continueCardStyle">
@@ -360,6 +389,22 @@ function openTable(name: string) {
   max-width: 1180px;
   margin: 0 auto 24px;
 }
+.protection-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr)) auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--vt-color-primary-100);
+  border-radius: var(--vt-radius-lg);
+  background: color-mix(in srgb, var(--vt-color-primary-50) 64%, var(--vt-bg));
+}
+.protection-strip > div { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.status-icon { display: grid; flex: none; place-items: center; width: 28px; height: 28px; color: var(--vt-color-primary-500); border-radius: 8px; background: var(--vt-bg); }
+.protection-strip p { display: flex; min-width: 0; flex-direction: column; margin: 0; }
+.protection-strip small { color: var(--vt-fg-muted); font-size: 10px; }
+.protection-strip strong { overflow: hidden; font-size: var(--vt-font-caption); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .eyebrow, .section-kicker {
   margin: 0 0 4px;
   color: var(--vt-fg-muted);
@@ -490,9 +535,13 @@ h1 {
 .quote-card footer a, .quote-card footer span { color: var(--vt-fg-muted); text-decoration: none; }
 .quote-card footer a:hover { color: var(--vt-color-primary-500); }
 @media (max-width: 900px) {
+  .protection-strip { grid-template-columns: 1fr 1fr; }
   .home-view { padding: 24px; }
   .home-grid { grid-template-columns: 1fr; }
   .home-aside { display: grid; grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 560px) {
+  .protection-strip { grid-template-columns: 1fr; }
 }
 @media (max-width: 680px) {
   .home-view { padding: 20px clamp(16px, 4vw, 24px) 28px; }

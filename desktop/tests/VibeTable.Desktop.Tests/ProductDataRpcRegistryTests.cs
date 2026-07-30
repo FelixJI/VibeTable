@@ -25,7 +25,6 @@ public sealed class ProductDataRpcRegistryTests
             "preset.list", "preset.save", "preset.delete",
             "version.list", "version.create", "version.save", "version.compare",
             "version.promote", "version.delete",
-            "backup.list", "backup.create", "backup.delete", "backup.restore",
         ];
 
         CollectionAssert.AreEquivalent(expected, ProductDataRpcRegistry.RequestTypes.ToArray());
@@ -87,6 +86,44 @@ public sealed class ProductDataRpcRegistryTests
     }
 
     [TestMethod]
+    public void MutatorsAndDangerousOperationsHaveExplicitAdmissionMetadata()
+    {
+        foreach (string type in new[]
+                 {
+                     "field.change.plan", "field.change.apply", "field.change.cancel",
+                     "mutation.apply", "data.applyImport",
+                     "task.create", "task.cancel", "preset.save",
+                     "preset.delete", "version.create", "version.save",
+                     "version.promote", "version.delete",
+                 })
+        {
+            Assert.IsTrue(ProductDataRpcRegistry.TryGet(type, out var endpoint));
+            Assert.IsTrue(endpoint.MutatesWorkspace, type);
+        }
+        foreach (string type in new[]
+                 {
+                     "field.change.plan", "field.change.apply",
+                     "data.applyImport", "task.create",
+                     "version.promote",
+                 })
+        {
+            Assert.IsTrue(ProductDataRpcRegistry.TryGet(type, out var endpoint));
+            Assert.IsTrue(endpoint.RequiresProtectionSnapshot, type);
+        }
+        foreach (string type in new[]
+                 {
+                     "field.settings.describe", "field.change.status",
+                     "field.recycleBin.list",
+                     "mutation.preview", "query.page",
+                     "data.previewImport", "data.export", "task.status",
+                 })
+        {
+            Assert.IsTrue(ProductDataRpcRegistry.TryGet(type, out var endpoint));
+            Assert.IsFalse(endpoint.MutatesWorkspace, type);
+        }
+    }
+
+    [TestMethod]
     public void SchemaGetTableAcceptsOnlyAClosedProductTableIdentity()
     {
         Assert.IsTrue(ProductDataRpcRegistry.TryGet("schema.getTable", out var endpoint));
@@ -96,39 +133,6 @@ public sealed class ProductDataRpcRegistryTests
             JsonDocument.Parse("""{"tableId":"tbl_orders","sessionSecret":"nope"}""").RootElement));
         Assert.IsFalse(endpoint.IsValidPayload(
             JsonDocument.Parse("""{"tableId":7}""").RootElement));
-    }
-
-    [TestMethod]
-    public void BackupValidatorsAcceptOnlyClosedSafeArchivePayloads()
-    {
-        Assert.IsTrue(ProductDataRpcRegistry.TryGet("backup.list", out var list));
-        Assert.IsTrue(ProductDataRpcRegistry.TryGet("backup.create", out var create));
-        Assert.IsTrue(ProductDataRpcRegistry.TryGet("backup.delete", out var delete));
-        Assert.IsTrue(ProductDataRpcRegistry.TryGet("backup.restore", out var restore));
-
-        Assert.IsTrue(list.IsValidPayload(JsonDocument.Parse("{}").RootElement));
-        Assert.IsFalse(list.IsValidPayload(
-            JsonDocument.Parse("""{"url":"http://127.0.0.1"}""").RootElement));
-
-        Assert.IsTrue(create.IsValidPayload(
-            JsonDocument.Parse("""{"name":"manual_20260724_101500.zip"}""").RootElement));
-        Assert.IsFalse(create.IsValidPayload(
-            JsonDocument.Parse("""{"name":"../data.db.zip"}""").RootElement));
-        Assert.IsFalse(create.IsValidPayload(
-            JsonDocument.Parse("""{"name":"safe.zip","path":"C:\\private"}""").RootElement));
-
-        Assert.IsTrue(delete.IsValidPayload(
-            JsonDocument.Parse("""{"name":"manual_20260724_101500.zip"}""").RootElement));
-        Assert.IsFalse(delete.IsValidPayload(
-            JsonDocument.Parse("""{"name":"../data.db.zip"}""").RootElement));
-
-        Assert.IsTrue(restore.IsValidPayload(JsonDocument.Parse(
-            """{"name":"manual_20260724_101500.zip","confirmed":true}""").RootElement));
-        Assert.IsFalse(restore.IsValidPayload(JsonDocument.Parse(
-            """{"name":"manual_20260724_101500.zip","confirmed":false}""").RootElement));
-        Assert.IsFalse(restore.IsValidPayload(JsonDocument.Parse(
-            """{"name":"manual_20260724_101500.zip","confirmed":true,"sessionSecret":"x"}"""
-        ).RootElement));
     }
 
     [TestMethod]

@@ -15,27 +15,61 @@ namespace VibeTable.Desktop.Services;
 /// </summary>
 public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
 {
-    private readonly PythonBackendSupervisor _supervisor;
+    private PythonBackendSupervisor? _supervisor;
     private readonly object _gate = new();
     private readonly List<PocketBaseTableGateway> _retired = [];
     private JsonRpcClient? _resolvedClient;
     private PocketBaseTableGateway? _resolved;
     private bool _disposed;
 
+    public LazyProductTableGateway()
+    {
+    }
+
     public LazyProductTableGateway(PythonBackendSupervisor supervisor)
-        => _supervisor = supervisor
-            ?? throw new ArgumentNullException(nameof(supervisor));
+        => Bind(supervisor);
+
+    public void Bind(PythonBackendSupervisor supervisor)
+    {
+        ArgumentNullException.ThrowIfNull(supervisor);
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (ReferenceEquals(_supervisor, supervisor))
+                return;
+            RetireResolved();
+            _supervisor = supervisor;
+        }
+    }
+
+    public void Unbind(PythonBackendSupervisor? supervisor = null)
+    {
+        lock (_gate)
+        {
+            if (_disposed
+                || (supervisor is not null
+                    && !ReferenceEquals(_supervisor, supervisor)))
+            {
+                return;
+            }
+            RetireResolved();
+            _supervisor = null;
+        }
+    }
 
     private PocketBaseTableGateway Gateway
     {
         get
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            JsonRpcClient client = _supervisor.Client
-                ?? throw new BackendUnavailableException(
-                    "Product data service is not ready.");
             lock (_gate)
             {
+                PythonBackendSupervisor supervisor = _supervisor
+                    ?? throw new BackendUnavailableException(
+                        "No workspace runtime is bound.");
+                JsonRpcClient client = supervisor.Client
+                    ?? throw new BackendUnavailableException(
+                        "Product data service is not ready.");
                 if (_resolved is not null
                     && ReferenceEquals(_resolvedClient, client))
                 {
@@ -131,6 +165,15 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
             _retired.Clear();
             _resolved = null;
             _resolvedClient = null;
+            _supervisor = null;
         }
+    }
+
+    private void RetireResolved()
+    {
+        if (_resolved is not null)
+            _retired.Add(_resolved);
+        _resolved = null;
+        _resolvedClient = null;
     }
 }

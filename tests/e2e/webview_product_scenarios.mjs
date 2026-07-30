@@ -183,8 +183,41 @@ function assertCleanBridgeDiagnostics(recorder, diagnostics) {
 
 async function waitForShell(page, recorder) {
   await page.getByTestId("nav-home").waitFor({ state: "visible", timeout: 60_000 });
+  const workspaceCenter = page.getByTestId("workspace-center");
+  await workspaceCenter.waitFor({ state: "visible", timeout: 60_000 });
+  recorder.check(
+    "fresh device starts in Workspace Center before product data services",
+    await page.getByTestId("home-view").isHidden(),
+  );
+  await page.getByTestId("workspace-create").click();
+  const createModal = page.getByTestId("workspace-flow-modal");
+  await createModal.waitFor({ state: "visible" });
+  await createModal.locator("input").first().fill("E2E Product Workspace");
+  await page.getByTestId("workspace-flow-confirm").click();
+  const openCreatedWorkspace = workspaceCenter.getByRole("button", {
+    name: /E2E Product Workspace/,
+  });
+  await openCreatedWorkspace.waitFor({ state: "visible", timeout: 60_000 });
+  recorder.check(
+    "fresh-device workspace creation is projected into Workspace Center",
+    await openCreatedWorkspace.isVisible(),
+  );
+  await openCreatedWorkspace.click();
+  const activationOutcome = await Promise.race([
+    workspaceCenter.waitFor({ state: "hidden", timeout: 60_000 })
+      .then(() => ({ kind: "opened" })),
+    page.getByTestId("workspace-operation-error")
+      .waitFor({ state: "visible", timeout: 60_000 })
+      .then(async () => ({
+        kind: "failed",
+        message: await page.getByTestId("workspace-operation-error").innerText(),
+      })),
+  ]);
+  if (activationOutcome.kind === "failed") {
+    throw new Error(`workspace activation failed: ${activationOutcome.message}`);
+  }
   await page.getByTestId("home-view").waitFor({ state: "visible" });
-  await page.getByTestId("connection-pill").waitFor({ state: "visible" });
+  await page.getByTestId("workspace-switcher").waitFor({ state: "visible" });
   recorder.check("real WebView2 renderer reached the home workspace",
     page.url().startsWith("https://app.vibetable.local/"), {
     url: page.url(),
@@ -964,10 +997,11 @@ async function rawBridgeRequest(
     ({ type: requestType, payload: requestPayload, timeout, responseTypes }) =>
       new Promise((resolve, reject) => {
         const requestId = `e2e-${crypto.randomUUID()}`;
-        const diagnostics = window.__vibetableE2EBridgeDiagnostics;
-        if (diagnostics && responseTypes.includes("operation.failed")) {
-          diagnostics.expectedFailures[requestId] = true;
-        }
+        const envelope = {
+          type: requestType,
+          requestId,
+          payload: requestPayload,
+        };
         const timer = setTimeout(() => {
           window.chrome.webview.removeEventListener("message", handler);
           reject(new Error(`bridge timeout for ${requestType}`));
@@ -981,16 +1015,116 @@ async function rawBridgeRequest(
           if (!responseTypes.includes(message.type) && message.type !== "operation.failed") return;
           clearTimeout(timer);
           window.chrome.webview.removeEventListener("message", handler);
-          resolve(message);
+          const finishAfterSequenceWindow = () => {
+            const sequence = envelope.scope?.sequence ?? 0;
+            if (Date.now() * 1_000 > sequence) {
+              resolve(message);
+              return;
+            }
+            setTimeout(finishAfterSequenceWindow, 1);
+          };
+          finishAfterSequenceWindow();
         };
         window.chrome.webview.addEventListener("message", handler);
-        window.chrome.webview.postMessage({
-          type: requestType,
-          requestId,
-          payload: requestPayload,
-        });
+        window.chrome.webview.postMessage(envelope);
       }),
     { type, payload, timeout: timeoutMs, responseTypes: expectedResponseTypes },
+  );
+}
+
+async function rawWorkspaceV2Request(
+  page,
+  method,
+  params,
+  timeoutMs = 20_000,
+) {
+  return page.evaluate(
+    ({ rpcMethod, rpcParams, timeout }) =>
+      new Promise((resolve, reject) => {
+        const diagnostics = window.__vibetableE2EBridgeDiagnostics;
+        const session = diagnostics?.workspaceSession;
+        if (
+          typeof session?.workspaceId !== "string"
+          || !Number.isSafeInteger(session?.sessionEpoch)
+          || session.sessionEpoch < 1
+        ) {
+          reject(new Error(`workspace v2 session unavailable for ${rpcMethod}`));
+          return;
+        }
+        const operationId = crypto.randomUUID();
+        const requestId = `e2e-${operationId}`;
+        const sequence = Math.max(
+          Date.now() * 1_000,
+          (diagnostics.maxWorkspaceSequence ?? 0) + 1,
+        );
+        const wire = {
+          scope: "workspace",
+          workspaceId: session.workspaceId,
+          sessionEpoch: session.sessionEpoch,
+          operationId,
+          sequence,
+        };
+        diagnostics.maxWorkspaceSequence = sequence;
+        const envelope = {
+          type: "workspace.v2.request",
+          requestId,
+          payload: { method: rpcMethod, params: rpcParams, wire },
+          wire,
+        };
+        const timer = setTimeout(() => {
+          window.chrome.webview.removeEventListener("message", handler);
+          reject(new Error(`workspace v2 timeout for ${rpcMethod}`));
+        }, timeout);
+        const handler = (event) => {
+          let message = event.data;
+          if (typeof message === "string") {
+            try { message = JSON.parse(message); } catch { return; }
+          }
+          if (
+            !message
+            || message.requestId !== requestId
+            || !["workspace.v2.response", "workspace.v2.reply", "operation.failed"]
+              .includes(message.type)
+          ) {
+            return;
+          }
+          clearTimeout(timer);
+          window.chrome.webview.removeEventListener("message", handler);
+          const finishAfterSequenceWindow = () => {
+            if (Date.now() * 1_000 <= sequence) {
+              setTimeout(finishAfterSequenceWindow, 1);
+              return;
+            }
+            if (message.type === "operation.failed") {
+              reject(new Error(
+                `${rpcMethod} failed: ${JSON.stringify(message.payload)}`,
+              ));
+              return;
+            }
+            const reply = message.payload;
+            if (
+              reply?.method !== rpcMethod
+              || reply?.wire?.operationId !== operationId
+            ) {
+              reject(new Error(
+                `${rpcMethod} returned a mismatched reply: ${JSON.stringify(reply)}`,
+              ));
+              return;
+            }
+            if (reply.ok !== true) {
+              reject(new Error(
+                `${rpcMethod} failed closed: ${JSON.stringify(reply.error)}`,
+              ));
+              return;
+            }
+            resolve(reply);
+          };
+          finishAfterSequenceWindow();
+        };
+        window.chrome.webview.addEventListener("message", handler);
+        window.chrome.webview.postMessage(envelope);
+      }),
+    { rpcMethod: method, rpcParams: params, timeout: timeoutMs },
   );
 }
 
@@ -1005,7 +1139,8 @@ async function installBridgeDiagnostics(page) {
       roundTrips: [],
       failures: [],
       pending: {},
-      expectedFailures: {},
+      workspaceSession: null,
+      maxWorkspaceSequence: 0,
     };
     const webview = window.chrome.webview;
     const originalPostMessage = webview.postMessage.bind(webview);
@@ -1014,6 +1149,38 @@ async function installBridgeDiagnostics(page) {
       let message = candidate;
       if (typeof candidate === "string") {
         try { message = JSON.parse(candidate); } catch { message = null; }
+      }
+      const existingWire = message?.scope ?? message?.wire ?? message?.payload?.wire;
+      if (
+        existingWire?.scope === "workspace"
+        && Number.isSafeInteger(existingWire.sequence)
+      ) {
+        diagnostics.maxWorkspaceSequence = Math.max(
+          diagnostics.maxWorkspaceSequence,
+          existingWire.sequence,
+        );
+      }
+      if (
+        typeof candidate === "object"
+        && candidate !== null
+        && typeof message?.requestId === "string"
+        && message.requestId.startsWith("e2e-")
+        && message.type !== "workspace.v2.request"
+        && !message.scope
+        && diagnostics.workspaceSession
+      ) {
+        const sequence = Math.max(
+          Date.now() * 1_000,
+          diagnostics.maxWorkspaceSequence + 1,
+        );
+        message.scope = {
+          scope: "workspace",
+          workspaceId: diagnostics.workspaceSession.workspaceId,
+          sessionEpoch: diagnostics.workspaceSession.sessionEpoch,
+          operationId: message.requestId.slice("e2e-".length),
+          sequence,
+        };
+        diagnostics.maxWorkspaceSequence = sequence;
       }
       if (message?.requestId && message?.type) {
         const requestPayload = message.payload;
@@ -1031,7 +1198,10 @@ async function installBridgeDiagnostics(page) {
           : null;
         const request = {
           requestId: message.requestId,
-          requestType: message.type,
+          requestType: message.type === "workspace.v2.request"
+            && typeof message.payload?.method === "string"
+            ? message.payload.method
+            : message.type,
           payloadShape,
           startedAt: new Date().toISOString(),
           startedMonotonicMs: performance.now(),
@@ -1046,6 +1216,28 @@ async function installBridgeDiagnostics(page) {
       if (typeof message === "string") {
         try { message = JSON.parse(message); } catch { return; }
       }
+      const inboundWire = message?.wire ?? message?.payload?.wire;
+      if (
+        inboundWire?.scope === "workspace"
+        && Number.isSafeInteger(inboundWire.sequence)
+      ) {
+        diagnostics.maxWorkspaceSequence = Math.max(
+          diagnostics.maxWorkspaceSequence,
+          inboundWire.sequence,
+        );
+      }
+      if (message?.type === "workspace.v2.bootstrap") {
+        const session = message.payload?.session;
+        diagnostics.workspaceSession =
+          typeof session?.workspaceId === "string"
+          && Number.isSafeInteger(session?.sessionEpoch)
+          && session.sessionEpoch > 0
+            ? {
+                workspaceId: session.workspaceId,
+                sessionEpoch: session.sessionEpoch,
+              }
+            : null;
+      }
       const request = message?.requestId
         ? diagnostics.pending[message.requestId]
         : null;
@@ -1055,8 +1247,14 @@ async function installBridgeDiagnostics(page) {
         requestType: request.requestType,
         payloadShape: request.payloadShape,
         responseType: message.type ?? null,
-        code: message.payload?.code ?? null,
-        message: message.payload?.message ?? null,
+        code: message.payload?.code
+          ?? message.payload?.error?.code
+          ?? message.error?.code
+          ?? null,
+        message: message.payload?.message
+          ?? message.payload?.error?.message
+          ?? message.error?.message
+          ?? null,
         startedAt: request.startedAt,
         finishedAt: new Date().toISOString(),
         durationMs: Math.round((performance.now() - request.startedMonotonicMs) * 100) / 100,
@@ -1064,11 +1262,11 @@ async function installBridgeDiagnostics(page) {
       diagnostics.roundTrips.push(roundTrip);
       if (
         message.type === "operation.failed"
-        && !diagnostics.expectedFailures[message.requestId]
+        || message.ok === false
+        || message.payload?.ok === false
       ) {
         diagnostics.failures.push(roundTrip);
       }
-      delete diagnostics.expectedFailures[message.requestId];
       delete diagnostics.pending[message.requestId];
     });
     window.__vibetableE2EBridgeDiagnostics = diagnostics;
@@ -1116,6 +1314,33 @@ async function beginBridgeMessageCapture(page, responseTypes) {
   }, responseTypes);
 }
 
+async function beginWritableWorkspaceBootstrapCapture(page, minimumExclusiveEpoch) {
+  await page.evaluate((minimumEpoch) => {
+    window.__vibetableE2EBridgeCapture = {
+      types: ["workspace.v2.bootstrap"],
+      message: null,
+    };
+    window.chrome.webview.addEventListener("message", function handler(event) {
+      let message = event.data;
+      if (typeof message === "string") {
+        try { message = JSON.parse(message); } catch { return; }
+      }
+      const session = message?.payload?.session;
+      if (
+        message?.type !== "workspace.v2.bootstrap"
+        || session?.state !== "openedWritable"
+        || session?.writable !== true
+        || !Number.isInteger(session?.sessionEpoch)
+        || session.sessionEpoch <= minimumEpoch
+      ) {
+        return;
+      }
+      window.__vibetableE2EBridgeCapture.message = message;
+      window.chrome.webview.removeEventListener("message", handler);
+    });
+  }, minimumExclusiveEpoch);
+}
+
 async function waitForCapturedBridgeMessage(page, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -1141,6 +1366,7 @@ async function beginRawBridgeRequest(
       window.__vibetableE2ERawRequests[requestId] = {
         responseTypes,
         message: null,
+        scopeSequence: 0,
       };
       window.chrome.webview.addEventListener("message", function handler(event) {
         let message = event.data;
@@ -1152,11 +1378,14 @@ async function beginRawBridgeRequest(
         window.__vibetableE2ERawRequests[requestId].message = message;
         window.chrome.webview.removeEventListener("message", handler);
       });
-      window.chrome.webview.postMessage({
+      const envelope = {
         type: requestType,
         requestId,
         payload: requestPayload,
-      });
+      };
+      window.chrome.webview.postMessage(envelope);
+      window.__vibetableE2ERawRequests[requestId].scopeSequence =
+        envelope.scope?.sequence ?? 0;
       return requestId;
     },
     {
@@ -1170,11 +1399,20 @@ async function beginRawBridgeRequest(
 async function waitForRawBridgeRequest(page, requestId, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const message = await page.evaluate(
-      (id) => window.__vibetableE2ERawRequests?.[id]?.message ?? null,
+    const result = await page.evaluate(
+      (id) => {
+        const request = window.__vibetableE2ERawRequests?.[id];
+        return request
+          ? {
+              message: request.message,
+              sequenceWindowPassed:
+                Date.now() * 1_000 > (request.scopeSequence ?? 0),
+            }
+          : null;
+      },
       requestId,
     );
-    if (message) return message;
+    if (result?.message && result.sequenceWindowPassed) return result.message;
     await page.waitForTimeout(25);
   }
   throw new Error(`bridge response timeout for ${requestId}`);
@@ -1319,9 +1557,14 @@ async function waitForPreviewArtifact(runtime, expectedHash, expectedSize, timeo
 async function requestStorageProof(runtime, tableId, timeoutMs = 30_000) {
   const requestPath = path.join(runtime.evidenceDir, "storage-proof-request.json");
   const resultPath = path.join(runtime.evidenceDir, "storage-proof-result.json");
+  const requestId = crypto.randomUUID();
   await fs.writeFile(
     requestPath,
-    `${JSON.stringify({ tableId, requestedAt: new Date().toISOString() }, null, 2)}\n`,
+    `${JSON.stringify({
+      requestId,
+      tableId,
+      requestedAt: new Date().toISOString(),
+    }, null, 2)}\n`,
     "utf8",
   );
   const deadline = Date.now() + timeoutMs;
@@ -1329,6 +1572,10 @@ async function requestStorageProof(runtime, tableId, timeoutMs = 30_000) {
   while (Date.now() < deadline) {
     try {
       result = JSON.parse(await fs.readFile(resultPath, "utf8"));
+      if (result.requestId !== requestId) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        continue;
+      }
       if (result.status === "completed") return result;
       if (result.status === "failed") {
         throw new Error(`storage proof failed: ${JSON.stringify(result)}`);
@@ -2163,7 +2410,12 @@ async function scenario07(page, recorder, _network, runtime) {
   const restart = await requestSidecarKill(runtime, "verify attachment survives sidecar restart");
   recorder.check("attachment restart terminated only the exact sidecar child",
     restart.processName === "vibetable-pb.exe", { restart });
-  await waitForTableRecovery(page, "E2E Attachments", 1);
+  await waitForTableRecovery(
+    page,
+    "E2E Attachments",
+    "tbl_e2e_attachments",
+    1,
+  );
   const recovered = await waitForAttachmentList(
     page,
     attachmentParams,
@@ -2246,59 +2498,35 @@ async function scenario07(page, recorder, _network, runtime) {
   // neighbouring identity cell as the active range after realtime refresh.
   // Select the attachment field explicitly so history is scoped correctly.
   await cell.click();
-  const attachmentHistoryProbe = await rawBridgeRequest(
+  const attachmentHistoryReply = await rawWorkspaceV2Request(
     page,
-    "history.queryRequested",
+    "history.query",
     {
-      table: tableId,
+      collection: "tbl_e2e_attachments",
       scope: "cell",
       itemId: recordId,
-      field: attachmentField,
+      field: "attachments",
+      search: "",
+      dateFrom: null,
+      dateTo: null,
+      actorId: null,
+      recordId: null,
       limit: 50,
       offset: 0,
       actions: [],
     },
-    20_000,
-    ["history.pageLoaded"],
   );
-  if (attachmentHistoryProbe.type !== "history.pageLoaded") {
-    throw new Error(
-      `attachment history query failed: ${JSON.stringify(attachmentHistoryProbe)}`,
-    );
-  }
-  const originalRevision = attachmentHistoryProbe.payload.changeSets.find((changeSet) =>
+  const attachmentHistoryProbe = attachmentHistoryReply.result;
+  const originalRevision = attachmentHistoryProbe.changeSets.find((changeSet) =>
     changeSet.scalarChanges?.some((change) =>
       change.field === attachmentField
         && String(change.after ?? "").includes(uploadedFile.storedName)),
   )?.rootRevisionId;
   if (!originalRevision) {
     throw new Error(
-      `original attachment revision was not returned: ${JSON.stringify(attachmentHistoryProbe.payload)}`,
+      `original attachment revision was not returned: ${JSON.stringify(attachmentHistoryProbe)}`,
     );
   }
-  const originalPreviewProbe = await rawBridgeRequest(
-    page,
-    "history.previewRestoreRequested",
-    {
-      collection: tableId,
-      itemId: recordId,
-      targetRevision: originalRevision,
-      scope: "cell",
-      field: attachmentField,
-    },
-    20_000,
-    ["history.restorePreviewReady"],
-  );
-  recorder.check(
-    "attachment restore preview identifies the original managed file",
-    originalPreviewProbe.type === "history.restorePreviewReady"
-      && originalPreviewProbe.payload?.canApply === true
-      && originalPreviewProbe.payload?.restorableFields?.includes(attachmentField)
-      && originalPreviewProbe.payload?.scalarChanges?.some((change) =>
-        change.field === attachmentField
-          && String(change.after ?? "").includes(uploadedFile.storedName)),
-    { originalRevision, originalPreviewProbe },
-  );
   const historyDrawerStartedAt = performance.now();
   await page.getByTestId("toolbar-history").click();
   await page.getByTestId("history-timeline").waitFor({ timeout: 30_000 });
@@ -2311,18 +2539,31 @@ async function scenario07(page, recorder, _network, runtime) {
   const restore = page.getByTestId(`history-preview-${originalRevision}`);
   await restore.waitFor();
   await restore.click();
-  await page.getByTestId("restore-preview").waitFor();
+  const restorePreview = page.getByTestId("restore-preview");
+  await restorePreview.waitFor();
+  const restorePreviewText = await restorePreview.innerText();
+  recorder.check(
+    "attachment restore preview identifies the original managed file through the product UI",
+    restorePreviewText.includes("attachments")
+      && restorePreviewText.includes(uploadedFile.storedName)
+      && await page.getByTestId("restore-confirm").isEnabled(),
+    { originalRevision, restorePreviewText },
+  );
   await beginBridgeMessageCapture(
     page,
-    ["history.restoreApplied", "operation.failed"],
+    ["workspace.v2.response", "operation.failed"],
   );
   await page.getByTestId("restore-confirm").click();
   const appliedMessage = await waitForCapturedBridgeMessage(page);
   recorder.check(
-    "attachment restore UI receives a committed restore revision",
-    appliedMessage.type === "history.restoreApplied"
-      && appliedMessage.payload?.restoredToRevision === originalRevision
-      && typeof appliedMessage.payload?.newRevisionId === "string",
+    "attachment restore UI receives a coordinated Workspace V2 mutation receipt",
+    appliedMessage.type === "workspace.v2.response"
+      && appliedMessage.payload?.method === "history.applyRestore"
+      && appliedMessage.payload?.ok === true
+      && appliedMessage.payload?.result?.restoredToRevision === originalRevision
+      && typeof appliedMessage.payload?.result?.newRevisionId === "string"
+      && Number.isInteger(appliedMessage.payload?.result?.mutationRevision)
+      && appliedMessage.payload.result.mutationRevision > 0,
     { appliedMessage, originalRevision },
   );
   await page.getByTestId("restore-preview").waitFor({ state: "hidden", timeout: 30_000 });
@@ -2489,7 +2730,13 @@ async function chooseToolbarMore(page, key) {
   await option.click();
 }
 
-async function waitForTableRecovery(page, displayName, expectedRows, timeoutMs = 60_000) {
+async function waitForTableRecovery(
+  page,
+  displayName,
+  tableId,
+  expectedRows,
+  timeoutMs = 60_000,
+) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
   while (Date.now() < deadline) {
@@ -2498,14 +2745,42 @@ async function waitForTableRecovery(page, displayName, expectedRows, timeoutMs =
       if (await retry.isVisible().catch(() => false)) await retry.click();
       const name = page.getByTestId("sidebar-table-name").filter({ hasText: displayName });
       if (await name.isVisible().catch(() => false)) {
-        await name.locator("xpath=ancestor::button").click();
+        const tableButton = name.locator("xpath=ancestor::button");
+        if (await tableButton.getAttribute("aria-current") !== "page") {
+          await tableButton.click();
+        }
       }
       await page.waitForTimeout(750);
       const count = await page.locator(".tabulator-row").count();
-      if (count === expectedRows && await page.getByTestId("connection-pill").isVisible()) {
-        return count;
+      const backend = await rawBridgeRequest(page, "query.page", {
+        tableId,
+        query: { filters: [], sorts: [], offset: 0, limit: 100 },
+      }, 5_000);
+      const backendRows = backend.type === "query.page"
+        && Array.isArray(backend.payload?.rows)
+        ? backend.payload.rows.length
+        : null;
+      if (
+        count === expectedRows
+        && backendRows === expectedRows
+        && typeof backend.payload?.snapshot?.schemaRevision === "string"
+      ) {
+        const errorOverlay = page.getByTestId("table-error-overlay");
+        if (await errorOverlay.isVisible().catch(() => false)) {
+          await name.locator("xpath=ancestor::button").click();
+          await errorOverlay.waitFor({ state: "hidden", timeout: 10_000 });
+          await page.waitForTimeout(250);
+        }
+        const recoveredCount = await page.locator(".tabulator-row").count();
+        if (recoveredCount === expectedRows) return recoveredCount;
       }
-      lastError = new Error(`observed ${count} rows, expected ${expectedRows}`);
+      lastError = new Error(`table did not recover: ${JSON.stringify({
+        tableId,
+        observedUiRows: count,
+        observedBackendRows: backendRows,
+        expectedRows,
+        backendType: backend.type,
+      })}`);
     } catch (error) {
       lastError = error;
     }
@@ -2645,25 +2920,38 @@ async function scenario09(page, recorder, _network, runtime) {
     barrier,
     confirmation,
   });
-  const rowCount = await waitForTableRecovery(page, "E2E Atomic Import", 0);
+  const rowCount = await waitForTableRecovery(
+    page,
+    "E2E Atomic Import",
+    "tbl_e2e_atomic_import",
+    0,
+  );
   recorder.check("failed import exposed no partially committed records in the UI", rowCount === 0);
   const historyDeadline = Date.now() + 30_000;
   let history;
   do {
-    history = await rawBridgeRequest(page, "history.queryRequested", {
-      collection: tableId,
+    history = await rawWorkspaceV2Request(page, "history.query", {
+      collection: "tbl_e2e_atomic_import",
       scope: "table",
+      itemId: null,
+      field: null,
+      search: "",
+      dateFrom: null,
+      dateTo: null,
+      actorId: null,
       actions: [],
+      recordId: null,
       limit: 100,
       offset: 0,
-    }, 5_000, ["history.pageLoaded"]);
-    if (history.type === "history.pageLoaded") break;
+    }, 5_000);
+    if (history.ok === true) break;
     await page.waitForTimeout(250);
   } while (Date.now() < historyDeadline);
-  const historyPage = history.payload;
+  const historyPage = history.result;
   recorder.check("failed import exposed no partially committed audit entries",
-    history.type === "history.pageLoaded"
-      && historyPage?.collection === tableId
+    history.method === "history.query"
+      && history.ok === true
+      && historyPage?.collection === "tbl_e2e_atomic_import"
       && historyPage?.scope === "table"
       && historyPage?.total === 0
       && Array.isArray(historyPage?.changeSets)
@@ -2800,7 +3088,12 @@ async function scenario11(page, recorder) {
   await page.getByTestId("plugin-action-close").click();
 
   await page.getByTestId("nav-tables").click();
-  const afterAuthorized = await waitForTableRecovery(page, "E2E Plugin Target", 1);
+  const afterAuthorized = await waitForTableRecovery(
+    page,
+    "E2E Plugin Target",
+    "tbl_e2e_plugin_target",
+    1,
+  );
   recorder.check("approved plugin mutation became one visible record", afterAuthorized === 1);
 
   await page.getByTestId("nav-plugins").click();
@@ -2824,67 +3117,515 @@ async function scenario11(page, recorder) {
     Boolean(deniedAudit), { auditEvents });
   await page.getByTestId("plugin-action-close").click();
   await page.getByTestId("nav-tables").click();
-  const afterDenied = await waitForTableRecovery(page, "E2E Plugin Target", 1);
+  const afterDenied = await waitForTableRecovery(
+    page,
+    "E2E Plugin Target",
+    "tbl_e2e_plugin_target",
+    1,
+  );
   recorder.check("rejected plugin mutation did not create a second record", afterDenied === 1);
 }
 
 async function scenario12(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
-  const purgeTable = await createSingleFieldTable(
-    page,
-    "E2E Purge Guard",
-    "Attachments",
-    "file",
-  );
-  const retired = await applyV2FieldChange(
-    page,
-    purgeTable.tableId,
-    purgeTable.field.fieldId,
-    "retire",
-  );
-  const withoutBackup = await applyV2FieldChange(
-    page,
-    purgeTable.tableId,
-    purgeTable.field.fieldId,
-    "purge",
-    { confirmation: "Attachments" },
-  );
-  recorder.check(
-    "permanent purge is rejected without a verified backup receipt",
-    retired.applied?.type === "field.change.apply"
-      && withoutBackup.applied?.type === "field.change.apply"
-      && withoutBackup.applied.payload?.error?.code === "field.purge.backup_required",
-    { retired, withoutBackup },
-  );
+  await page.getByTestId("sidebar-new-table").click();
+  await fillNInput(page, "create-table-name-input", "E2E Backup Consistency");
+  const fields = [
+    ["value", "integer"],
+    ["doubled", "formula"],
+    ["attachments", "file"],
+  ];
+  for (let index = 0; index < fields.length; index += 1) {
+    if (index > 0) await page.getByTestId("create-table-add-field").click();
+    await fillNInput(page, `create-table-field-name-${index}`, fields[index][0]);
+    await selectNValue(page, `create-table-field-type-${index}`, fields[index][1]);
+  }
+  await page.getByTestId("field-formula-preview-row-1").fill('{"value":7}');
+  await page.getByTestId("field-formula-source-1").fill("value * 2");
+  await page.locator('section[data-field-type="formula"] select').selectOption("integer");
+  const formulaPreview = page.getByTestId("field-formula-preview-1");
+  await formulaPreview.locator("code").filter({ hasText: "14" })
+    .waitFor({ timeout: 30_000 });
+  recorder.check("backup schema formula preview was authoritative before save",
+    await formulaPreview.getAttribute("data-state") === "ready");
+  await page.getByTestId("field-attachment-max-files-2").fill("2");
+  await page.getByTestId("create-table-submit").click();
+  await page.getByTestId("create-table-name-input").waitFor({ state: "hidden", timeout: 30_000 });
+  await selectTable(page, "E2E Backup Consistency");
+  await insertRowFromToolbar(page);
 
-  const backup = await rawBridgeRequest(page, "backup.create", {
-    name: `e2e_before_purge_${Date.now()}.zip`,
+  const valueCell = page.locator('.tabulator-cell[tabulator-field="value"]').first();
+  await valueCell.waitFor({ timeout: 30_000 });
+  let valueEditor = await beginCellEdit(valueCell);
+  await valueEditor.fill("7");
+  await valueEditor.press("Enter");
+  const formulaCell = page.locator('.tabulator-cell[tabulator-field="doubled"]').first();
+  await formulaCell.filter({ hasText: "14" }).waitFor({ timeout: 30_000 });
+
+  const original = (await fs.readFile(
+    path.join(runtime.controlsDir, "attachment-source.txt"),
+    "utf8",
+  )).trim();
+  const replacement = (await fs.readFile(
+    path.join(runtime.controlsDir, "attachment-replacement-source.txt"),
+    "utf8",
+  )).trim();
+  await fs.copyFile(
+    original,
+    path.join(runtime.evidenceDir, "backup-original.txt"),
+  );
+  await fs.copyFile(
+    replacement,
+    path.join(runtime.evidenceDir, "backup-replacement.txt"),
+  );
+  const originalBytes = await fs.readFile(original);
+  const replacementBytes = await fs.readFile(replacement);
+  const expectedOriginalHash = sha256(originalBytes);
+  const expectedReplacementHash = sha256(replacementBytes);
+  const schema = await rawBridgeRequest(page, "schema.describe", {
+    collection: "tbl_e2e_backup_consistency",
+    requestGeneration: 12_012,
+    accepts: [
+      "vibetable.relation-capabilities.v1",
+      "vibetable.lookup-query.v1",
+    ],
   });
-  const purged = await applyV2FieldChange(
+  const attachmentColumn = schema.payload?.schema?.columns?.find(
+    (column) => column.name === "attachments",
+  );
+  const initialQuery = await rawBridgeRequest(page, "query.page", {
+    tableId: "tbl_e2e_backup_consistency",
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const recordId = initialQuery.payload?.rows?.[0]?.id;
+  if (
+    schema.type !== "schema.describe"
+    || attachmentColumn?.kind !== "attachment"
+    || !attachmentColumn.fieldId
+    || !recordId
+  ) {
+    throw new Error(`backup attachment schema or record identity was unavailable: ${JSON.stringify({
+      schema,
+      initialQuery,
+    })}`);
+  }
+  const attachmentParams = {
+    tableId: "tbl_e2e_backup_consistency",
+    recordId,
+    fieldId: attachmentColumn.fieldId,
+  };
+  const attachmentCell = page.locator('.tabulator-cell[tabulator-field="attachments"]').first();
+  await attachmentCell.dblclick();
+  let panel = page.getByTestId("attachment-panel");
+  await page.getByTestId("attachment-upload").click();
+  await panel.waitFor({ state: "hidden", timeout: 30_000 });
+  const originalAttachmentResponse = await waitForAttachmentList(
     page,
-    purgeTable.tableId,
-    purgeTable.field.fieldId,
-    "purge",
+    attachmentParams,
+    (attachments) => attachments.length === 1
+      && attachments[0]?.sha256 === expectedOriginalHash,
+  );
+  const beforeBackupAttachment = originalAttachmentResponse.payload.attachments[0];
+  await attachmentCell.dblclick();
+  await panel.waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("attachment-preview-0").waitFor({ timeout: 30_000 });
+  await panel.locator("header button").click();
+
+  const beforeBackupQuery = await rawBridgeRequest(page, "query.page", {
+    tableId: "tbl_e2e_backup_consistency",
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const beforeBackupRow = beforeBackupQuery.payload?.rows?.[0];
+  const beforeBackupHistoryReply = await rawWorkspaceV2Request(page, "history.query", {
+    collection: "tbl_e2e_backup_consistency",
+    scope: "table",
+    itemId: null,
+    field: null,
+    search: "",
+    dateFrom: null,
+    dateTo: null,
+    actorId: null,
+    actions: [],
+    recordId: null,
+    limit: 100,
+    offset: 0,
+  });
+  const beforeBackupHistory = beforeBackupHistoryReply.result;
+  recorder.check("pre-backup record, formula, attachment, and audit snapshot is complete",
+    beforeBackupQuery.type === "query.page"
+      && beforeBackupRow?.id === recordId
+      && String(beforeBackupRow?.value) === "7"
+      && String(beforeBackupRow?.doubled) === "14"
+      && beforeBackupAttachment?.originalName === path.basename(original)
+      && beforeBackupAttachment?.sha256 === expectedOriginalHash
+      && beforeBackupAttachment?.size === originalBytes.length
+      && beforeBackupHistoryReply.method === "history.query"
+      && beforeBackupHistoryReply.ok === true
+      && beforeBackupHistory?.collection === "tbl_e2e_backup_consistency"
+      && Array.isArray(beforeBackupHistory?.changeSets)
+      && beforeBackupHistory.changeSets.length > 0
+      && beforeBackupHistory.total === beforeBackupHistory.changeSets.length,
+  {
+    beforeBackupRow,
+    beforeBackupAttachment,
+    beforeBackupHistory,
+    expectedOriginalHash,
+    expectedOriginalSize: originalBytes.length,
+  });
+
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-versions").click();
+  const existingSnapshotIds = await page.locator(".snapshot-row").evaluateAll(
+    (rows) => rows.map((row) => row.id),
+  );
+  await page.getByTestId("snapshot-create").click();
+  await page.waitForFunction(
+    (existing) => [...document.querySelectorAll(".snapshot-row")]
+      .some((row) => row.id && !existing.includes(row.id)),
+    existingSnapshotIds,
+    { timeout: 60_000 },
+  );
+  const createdSnapshotId = await page.locator(".snapshot-row").evaluateAll(
+    (rows, existing) => rows.find((row) => row.id && !existing.includes(row.id))?.id ?? null,
+    existingSnapshotIds,
+  );
+  const createdSnapshot = page.locator(`[id="${createdSnapshotId}"]`);
+  await createdSnapshot.click();
+  recorder.check("backup was created through the product UI with a listed archive",
+    typeof createdSnapshotId === "string" && createdSnapshotId.startsWith("snapshot-"),
+  {
+    createdSnapshotId,
+    timelineText: await createdSnapshot.innerText(),
+  });
+  const snapshotStorageProof = await requestStorageProof(
+    runtime,
+    "tbl_e2e_backup_consistency",
+  );
+  recorder.check("backup boundary published a verified external audit-ledger prefix",
+    snapshotStorageProof.auditLedger?.verified === true
+      && snapshotStorageProof.auditLedger?.count > 0
+      && typeof snapshotStorageProof.auditLedger?.anchorHash === "string"
+      && snapshotStorageProof.auditLedger.anchorHash.startsWith("sha256:"),
+  { snapshotStorageProof });
+
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "E2E Backup Consistency");
+  valueEditor = await beginCellEdit(valueCell);
+  await valueEditor.fill("9");
+  await valueEditor.press("Enter");
+  await formulaCell.filter({ hasText: "18" }).waitFor({ timeout: 30_000 });
+  await attachmentCell.dblclick();
+  panel = page.getByTestId("attachment-panel");
+  await page.getByTestId("attachment-replace-0").click();
+  await panel.waitFor({ state: "hidden", timeout: 30_000 });
+  const replacementAttachmentResponse = await waitForAttachmentList(
+    page,
+    attachmentParams,
+    (attachments) => attachments.length === 1
+      && attachments[0]?.sha256 === expectedReplacementHash,
+  );
+  const changedQuery = await rawBridgeRequest(page, "query.page", {
+    tableId: "tbl_e2e_backup_consistency",
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const changedRow = changedQuery.payload?.rows?.[0];
+  recorder.check("post-backup mutation changed record, formula, and attachment bytes",
+    changedQuery.type === "query.page"
+      && changedRow?.id === recordId
+      && String(changedRow?.value) === "9"
+      && String(changedRow?.doubled) === "18"
+      && replacementAttachmentResponse.payload.attachments[0]?.originalName === path.basename(replacement)
+      && replacementAttachmentResponse.payload.attachments[0]?.sha256 === expectedReplacementHash
+      && replacementAttachmentResponse.payload.attachments[0]?.size === replacementBytes.length,
+  {
+    changedRow,
+    replacementAttachment: replacementAttachmentResponse.payload.attachments[0],
+    expectedReplacementHash,
+    expectedReplacementSize: replacementBytes.length,
+  });
+
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-versions").click();
+  await page.locator(`[id="${createdSnapshotId}"]`).click();
+  await page.getByTestId("snapshot-restore-open").click();
+  const restoreAdvance = page.getByTestId("snapshot-restore-preview");
+  await restoreAdvance.click();
+  const restorePlan = page.locator(".snapshot-restore-modal .plan-summary");
+  const restoreFailure = page.locator(".protection-settings .n-alert--error");
+  await Promise.race([
+    restorePlan.waitFor({ timeout: 30_000 }),
+    restoreFailure.waitFor({ timeout: 30_000 }).then(async () => {
+      throw new Error(`snapshot restore preview failed: ${await restoreFailure.innerText()}`);
+    }),
+  ]);
+  const restoreSourceSessionEpoch = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics?.workspaceSession?.sessionEpoch ?? 0,
+  );
+  await beginWritableWorkspaceBootstrapCapture(page, restoreSourceSessionEpoch);
+  await restoreAdvance.click();
+  await page.locator(".snapshot-restore-modal").waitFor({ state: "hidden" });
+  const restoredBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
+  recorder.check(
+    "snapshot restore published a fresh writable Workspace V2 session before follow-up reads",
+    restoredBootstrap.type === "workspace.v2.bootstrap"
+      && restoredBootstrap.payload?.session?.state === "openedWritable"
+      && restoredBootstrap.payload.session.writable === true
+      && Number.isInteger(restoredBootstrap.payload.session.sessionEpoch)
+      && restoredBootstrap.payload.session.sessionEpoch > restoreSourceSessionEpoch,
     {
-      confirmation: "Attachments",
-      backupReceipt: backup.payload?.receipt,
+      restoreSourceSessionEpoch,
+      restoredSession: restoredBootstrap.payload?.session,
     },
   );
-  const recycle = await rawBridgeRequest(page, "field.recycleBin.list", {
-    tableId: purgeTable.tableId,
-  });
-  recorder.check(
-    "verified backup plus frozen confirmations permits irreversible purge",
-    typeof backup.payload?.receipt === "string"
-      && backup.payload.receipt.startsWith("vbr1.")
-      && purged.applied?.type === "field.change.apply"
-      && !recycle.payload?.fields?.some(
-        (field) => field.identity?.fieldId === purgeTable.field.fieldId,
-      ),
-    { backup, purged, recycle },
+
+  await page.getByTestId("nav-tables").click();
+  await waitForTableRecovery(
+    page,
+    "E2E Backup Consistency",
+    "tbl_e2e_backup_consistency",
+    1,
+    90_000,
   );
-  return;
+  const afterRestoreQuery = await rawBridgeRequest(page, "query.page", {
+    tableId: "tbl_e2e_backup_consistency",
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const afterRestoreRow = afterRestoreQuery.payload?.rows?.[0];
+  recorder.check("record and stored formula returned exactly to the backup snapshot",
+    afterRestoreQuery.type === "query.page"
+      && afterRestoreRow?.id === beforeBackupRow?.id
+      && afterRestoreRow?.value === beforeBackupRow?.value
+      && afterRestoreRow?.doubled === beforeBackupRow?.doubled,
+  { beforeBackupRow, afterRestoreRow });
+  const restoredStorageProof = await requestStorageProof(
+    runtime,
+    "tbl_e2e_backup_consistency",
+  );
+  const snapshotLedgerCount = snapshotStorageProof.auditLedger.count;
+  const appendedLedgerRecords = restoredStorageProof.auditLedger.records.slice(
+    snapshotLedgerCount,
+  );
+  const preservedPostSnapshotMutations = appendedLedgerRecords.filter(
+    (record) => record.sourceEpoch === "business-v2"
+      && record.payload?.type === "workspace.v2.business-mutation",
+  );
+  const restoreLedgerEvents = appendedLedgerRecords.filter(
+    (record) => record.sourceEpoch.startsWith("snapshot-restore:")
+      && record.payload?.type === "workspace.snapshotRestored",
+  );
+  const preservedSnapshotAnchor = restoredStorageProof.auditLedger
+    .records[snapshotLedgerCount - 1]?.hash;
+  recorder.check("external audit ledger preserved the snapshot prefix and appended post-snapshot mutations plus restore epoch",
+    restoredStorageProof.auditLedger?.verified === true
+      && restoredStorageProof.auditLedger.count > snapshotLedgerCount
+      && preservedSnapshotAnchor === snapshotStorageProof.auditLedger.anchorHash
+      && preservedPostSnapshotMutations.length > 0
+      && restoreLedgerEvents.length === 1
+      && preservedPostSnapshotMutations.every(
+        (record) => record.ledgerSequence < restoreLedgerEvents[0].ledgerSequence,
+      ),
+  {
+    snapshotLedger: snapshotStorageProof.auditLedger,
+    restoredLedger: restoredStorageProof.auditLedger,
+    appendedLedgerRecords,
+    preservedPostSnapshotMutations,
+    restoreLedgerEvents,
+  });
+  const restoredAttachmentCell = page.locator('.tabulator-cell[tabulator-field="attachments"]').first();
+  await restoredAttachmentCell.dblclick();
+  panel = page.getByTestId("attachment-panel");
+  await panel.waitFor({ state: "visible", timeout: 30_000 });
+  const restoredAttachmentResponse = await waitForAttachmentList(
+    page,
+    attachmentParams,
+    (attachments) => attachments.length === 1
+      && attachments[0]?.sha256 === expectedOriginalHash,
+  );
+  const afterRestoreAttachment = restoredAttachmentResponse.payload.attachments[0];
+  await page.getByTestId("attachment-preview-0").waitFor({
+    state: "visible",
+    timeout: 30_000,
+  });
+  const restoredAttachmentText = await panel.innerText();
+  recorder.check("attachment name, hash, and content length returned exactly to the backup snapshot",
+    restoredAttachmentText.includes("backup-original")
+      && await page.getByTestId("attachment-preview-0").isVisible()
+      && afterRestoreAttachment?.originalName === beforeBackupAttachment?.originalName
+      && afterRestoreAttachment?.storedName === beforeBackupAttachment?.storedName
+      && afterRestoreAttachment?.sha256 === expectedOriginalHash
+      && afterRestoreAttachment?.size === originalBytes.length,
+  {
+      restoredAttachmentText,
+      beforeBackupAttachment,
+      afterRestoreAttachment,
+      expectedOriginalHash,
+      expectedOriginalSize: originalBytes.length,
+  });
+  await panel.locator("header button").click();
+  const historyDrawerStartedAt = performance.now();
+  await page.getByTestId("toolbar-history").click();
+  await page.getByTestId("history-timeline").waitFor({ timeout: 30_000 });
+  runtime.recordUiTiming(
+    "history.drawer.initialLoad",
+    performance.now() - historyDrawerStartedAt,
+    { scope: "table", scenario: "12-backup-consistency" },
+  );
+  const afterRestoreHistoryReply = await rawWorkspaceV2Request(page, "history.query", {
+    collection: "tbl_e2e_backup_consistency",
+    scope: "table",
+    itemId: null,
+    field: null,
+    search: "",
+    dateFrom: null,
+    dateTo: null,
+    actorId: null,
+    actions: [],
+    recordId: null,
+    limit: 100,
+    offset: 0,
+  });
+  const afterRestoreHistory = afterRestoreHistoryReply.result;
+  const beforeChangeSetIds = new Set(
+    beforeBackupHistory.changeSets.map((changeSet) => changeSet.changeSetId),
+  );
+  const afterChangeSets = afterRestoreHistory?.changeSets ?? [];
+  const preservedChangeSets = afterChangeSets.filter(
+    (changeSet) => beforeChangeSetIds.has(changeSet.changeSetId),
+  );
+  const addedChangeSets = afterChangeSets.filter(
+    (changeSet) => !beforeChangeSetIds.has(changeSet.changeSetId),
+  );
+  const preservedChangeSetIds = new Set(
+    preservedChangeSets.map((changeSet) => changeSet.changeSetId),
+  );
+  const addedScalarChanges = addedChangeSets.flatMap(
+    (changeSet) => changeSet.scalarChanges ?? [],
+  );
+  const postSnapshotValuePreserved = addedScalarChanges.some(
+    (change) => change.field === "value" && String(change.after) === "9",
+  );
+  const postSnapshotAttachmentPreserved = addedScalarChanges.some(
+    (change) => change.field === "attachments"
+      && String(change.after ?? "").includes(
+        replacementAttachmentResponse.payload.attachments[0].storedName,
+      ),
+  );
+  recorder.check("append-only history preserved the snapshot prefix and post-snapshot mutations after restore",
+    afterRestoreHistoryReply.method === "history.query"
+      && afterRestoreHistoryReply.ok === true
+      && beforeBackupHistory.changeSets.every(
+        (changeSet) => preservedChangeSetIds.has(changeSet.changeSetId),
+      )
+      && postSnapshotValuePreserved
+      && postSnapshotAttachmentPreserved
+      && afterRestoreHistory.total
+        === beforeBackupHistory.total + addedChangeSets.length
+      && addedChangeSets.length >= 2,
+  {
+    beforeBackupHistory,
+    afterRestoreHistory,
+    addedChangeSets,
+    postSnapshotValuePreserved,
+    postSnapshotAttachmentPreserved,
+  });
+
+  // Visual acceptance is part of the product gate, not a source-only token
+  // check. Exercise the user-facing theme control and capture the real
+  // packaged WebView2 table, modal, and popover in dark mode.
+  const historyClose = page.locator(".n-drawer-header__close").last();
+  if (await historyClose.isVisible()) await historyClose.click();
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-general").click();
+  await page.getByTestId("theme-select").click();
+  await page.locator(".n-base-select-option")
+    .filter({ hasText: /^(深色|Dark)$/u })
+    .click();
+  await page.locator("html.dark").waitFor({ timeout: 10_000 });
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "E2E Backup Consistency");
+  const darkCell = page.locator(".tabulator-row .tabulator-cell").first();
+  await darkCell.waitFor({ state: "visible", timeout: 10_000 });
+  const [darkRootEvidence, darkTableSurface, darkCellSurface] = await Promise.all([
+    page.locator("html").evaluate((element) => ({
+      rootDark: element.classList.contains("dark"),
+      colorScheme: getComputedStyle(element).colorScheme,
+    })),
+    page.locator(".tabulator-tableholder").evaluate(collectBrowserSurfaceEvidence),
+    darkCell.evaluate(collectBrowserSurfaceEvidence),
+  ]);
+  const darkThemeEvidence = {
+    root: darkRootEvidence,
+    table: darkTableSurface,
+    cell: darkCellSurface,
+  };
+  recorder.check("dark table uses the packaged semantic theme rather than light fallbacks",
+    darkThemeEvidence.root.rootDark
+      && darkThemeEvidence.root.colorScheme.includes("dark")
+      && darkThemeEvidence.table.visible
+      && darkThemeEvidence.table.effectiveBackground[3] >= 0.999
+      && darkThemeEvidence.table.backgroundLuminance < 0.25
+      && darkThemeEvidence.cell.visible
+      && darkThemeEvidence.cell.effectiveBackground[3] >= 0.999
+      && darkThemeEvidence.cell.backgroundLuminance < 0.25
+      && darkThemeEvidence.cell.contrast >= 4.5,
+  darkThemeEvidence);
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "12-dark-table.png"),
+    fullPage: true,
+  });
+
+  await page.getByTestId("sidebar-new-table").click();
+  await page.getByTestId("create-table-name-input").waitFor();
+  const darkDialog = page.locator('[role="dialog"]')
+    .filter({ has: page.getByTestId("create-table-name-input") });
+  await page.waitForFunction(
+    (dialog) => {
+      const opacity = Number.parseFloat(getComputedStyle(dialog).opacity);
+      return Number.isFinite(opacity) && opacity >= 0.999;
+    },
+    await darkDialog.elementHandle(),
+  );
+  const darkModalEvidence = {
+    role: await darkDialog.getAttribute("role"),
+    ariaModal: await darkDialog.getAttribute("aria-modal"),
+    surface: await darkDialog.evaluate(collectBrowserSurfaceEvidence),
+  };
+  recorder.check("dark create-table modal has dialog semantics and a non-light surface",
+    darkModalEvidence.role === "dialog"
+      && darkModalEvidence.ariaModal === "true"
+      && darkModalEvidence.surface.visible
+      && darkModalEvidence.surface.effectiveBackground[3] >= 0.999
+      && darkModalEvidence.surface.backgroundLuminance < 0.25
+      && darkModalEvidence.surface.contrast >= 4.5,
+  darkModalEvidence);
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "12-dark-modal.png"),
+    fullPage: true,
+  });
+  await page.getByTestId("create-table-cancel").click();
+
+  await page.getByTestId("toolbar-more").click();
+  const darkPopover = page.locator(".n-dropdown-menu").last();
+  await darkPopover.waitFor();
+  await page.waitForFunction(
+    (popover) => {
+      const opacity = Number.parseFloat(getComputedStyle(popover).opacity);
+      return Number.isFinite(opacity) && opacity >= 0.999;
+    },
+    await darkPopover.elementHandle(),
+  );
+  const darkPopoverEvidence = await darkPopover.evaluate(collectBrowserSurfaceEvidence);
+  recorder.check("dark toolbar popover is visible and avoids a light surface",
+    darkPopoverEvidence.visible
+      && darkPopoverEvidence.effectiveBackground[3] >= 0.999
+      && darkPopoverEvidence.backgroundLuminance < 0.25
+      && darkPopoverEvidence.contrast >= 4.5,
+  darkPopoverEvidence);
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "12-dark-popover.png"),
+    fullPage: true,
+  });
 }
 
 const scenarios = {

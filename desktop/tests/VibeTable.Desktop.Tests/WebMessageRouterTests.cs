@@ -391,7 +391,7 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
-    public void Whitelists_AcceptOpaqueDocumentRequestsAndResponses()
+    public void Whitelists_AcceptOnlyOpaqueDocumentOsAdapterMessages()
     {
         var dispatched = new List<RoutedWebRequest>();
         var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
@@ -404,17 +404,7 @@ public sealed class WebMessageRouterTests
             "document.openRequested",
             "document.previewRequested",
             "document.revealRequested",
-            "document.historyRequested",
             "document.relinkRequested",
-            "document.commitRevisionRequested",
-            "document.promoteVersionRequested",
-            "document.revisionPreviewRequested",
-            "document.revisionRestoreRequested",
-            "document.schemeListRequested",
-            "document.schemeCreateRequested",
-            "document.schemeRenameRequested",
-            "document.schemeArchiveRequested",
-            "document.schemeActivateRequested",
         })
         {
             var reply = router.Route(JsonSerializer.Serialize(new
@@ -426,16 +416,30 @@ public sealed class WebMessageRouterTests
             Assert.IsNull(reply, type);
         }
 
-        Assert.AreEqual(18, dispatched.Count);
+        Assert.AreEqual(8, dispatched.Count);
         Assert.IsTrue(router.IsHostNotificationAllowed("document.listLoaded"));
-        Assert.IsTrue(router.IsHostNotificationAllowed("document.historyLoaded"));
         Assert.IsTrue(router.IsHostNotificationAllowed("document.actionCompleted"));
         Assert.IsTrue(router.IsHostNotificationAllowed("document.workspaceChanged"));
         Assert.IsTrue(router.IsHostNotificationAllowed("document.operationFailed"));
-        Assert.IsTrue(router.IsHostNotificationAllowed("document.versionCommitted"));
-        Assert.IsTrue(router.IsHostNotificationAllowed("document.revisionPreviewCompleted"));
-        Assert.IsTrue(router.IsHostNotificationAllowed("document.schemeListLoaded"));
-        Assert.IsTrue(router.IsHostNotificationAllowed("document.schemeMutationCompleted"));
+        foreach (string retired in new[]
+        {
+            "document.historyRequested",
+            "document.commitRevisionRequested",
+            "document.promoteVersionRequested",
+            "document.revisionPreviewRequested",
+            "document.revisionRestoreRequested",
+            "document.schemeListRequested",
+            "document.schemeCreateRequested",
+            "document.schemeRenameRequested",
+            "document.schemeArchiveRequested",
+            "document.schemeActivateRequested",
+        })
+        {
+            HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(
+                new { type = retired, requestId = "retired", payload = new { } }));
+            Assert.IsNotNull(reply, retired);
+            Assert.AreEqual("operation.failed", reply.Type, retired);
+        }
     }
 
     [TestMethod]
@@ -571,5 +575,143 @@ public sealed class WebMessageRouterTests
             """{"type":"dire""" + """ctus.read","requestId":"provider","payload":{}}""");
         Assert.IsNotNull(provider);
         Assert.AreEqual("UNKNOWN_TYPE", provider!.Payload!.Code);
+    }
+
+    [TestMethod]
+    public void WorkspaceV2RequestRequiresCatalogMethodAndMatchingTopLevelWire()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+        Guid workspaceId = Guid.NewGuid();
+        Guid operationId = Guid.NewGuid();
+
+        var accepted = router.Route(JsonSerializer.Serialize(new
+        {
+            type = "workspace.v2.request",
+            requestId = "v2-1",
+            wire = new
+            {
+                scope = "workspace",
+                workspaceId,
+                sessionEpoch = 3,
+                operationId,
+                sequence = 9,
+            },
+            payload = new { method = "workspace.close", @params = new { reason = "user" } },
+        }));
+
+        Assert.IsNull(accepted);
+        Assert.AreEqual("workspace.close", dispatched.Single().V2Method);
+        Assert.AreEqual(workspaceId, dispatched.Single().Scope!.WorkspaceId);
+        Assert.AreEqual(JsonValueKind.Object, dispatched.Single().Wire.ValueKind);
+
+        var openAsNew = router.Route(JsonSerializer.Serialize(new
+        {
+            type = "workspace.v2.request",
+            requestId = "v2-open-as-new",
+            wire = new
+            {
+                scope = "workspace",
+                workspaceId,
+                sessionEpoch = 3,
+                operationId = Guid.NewGuid(),
+                sequence = 10,
+            },
+            payload = new
+            {
+                method = "snapshot.openAsNewWorkspace",
+                @params = new { snapshotId = Guid.NewGuid() },
+            },
+        }));
+        Assert.IsNull(openAsNew);
+        Assert.AreEqual(
+            "snapshot.openAsNewWorkspace",
+            dispatched.Last().V2Method);
+        Assert.AreEqual(
+            workspaceId,
+            dispatched.Last().Scope!.WorkspaceId);
+
+        var historyRestore = router.Route(JsonSerializer.Serialize(new
+        {
+            type = "workspace.v2.request",
+            requestId = "v2-history-restore",
+            wire = new
+            {
+                scope = "workspace",
+                workspaceId,
+                sessionEpoch = 3,
+                operationId = Guid.NewGuid(),
+                sequence = 11,
+            },
+            payload = new
+            {
+                method = "history.applyRestore",
+                @params = new
+                {
+                    collection = "orders",
+                    itemId = "row-1",
+                    token = "restore-token",
+                },
+            },
+        }));
+        Assert.IsNull(historyRestore);
+        Assert.AreEqual(
+            "history.applyRestore",
+            dispatched.Last().V2Method);
+
+        var historyQuery = router.Route(JsonSerializer.Serialize(new
+        {
+            type = "workspace.v2.request",
+            requestId = "v2-history-query",
+            wire = new
+            {
+                scope = "workspace",
+                workspaceId,
+                sessionEpoch = 3,
+                operationId = Guid.NewGuid(),
+                sequence = 12,
+            },
+            payload = new
+            {
+                method = "history.query",
+                @params = new
+                {
+                    collection = "orders",
+                    scope = "table",
+                    itemId = (string?)null,
+                    field = (string?)null,
+                    search = "",
+                    dateFrom = (string?)null,
+                    dateTo = (string?)null,
+                    actorId = (string?)null,
+                    actions = Array.Empty<string>(),
+                    recordId = (string?)null,
+                    limit = 50,
+                    offset = 0,
+                },
+            },
+        }));
+        Assert.IsNull(historyQuery);
+        Assert.AreEqual(
+            "history.query",
+            dispatched.Last().V2Method);
+
+        var wrongScope = router.Route(JsonSerializer.Serialize(new
+        {
+            type = "workspace.v2.request",
+            requestId = "v2-2",
+            wire = new { scope = "global", operationId, sequence = 13 },
+            payload = new { method = "workspace.close", @params = new { reason = "user" } },
+        }));
+        Assert.AreEqual("BAD_WORKSPACE_WIRE", wrongScope!.Payload!.Code);
+
+        var unknown = router.Route(JsonSerializer.Serialize(new
+        {
+            type = "workspace.v2.request",
+            requestId = "v2-3",
+            wire = new { scope = "global", operationId, sequence = 14 },
+            payload = new { method = "repository.rotateKey", @params = new { } },
+        }));
+        Assert.AreEqual("UNKNOWN_V2_METHOD", unknown!.Payload!.Code);
     }
 }

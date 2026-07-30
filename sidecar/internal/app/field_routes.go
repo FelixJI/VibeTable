@@ -1,8 +1,10 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,6 +24,8 @@ func registerFieldRoutes(
 	migration *fieldchange.MigrationService,
 	backupReceiptKey []byte,
 	logger *slog.Logger,
+	protectionVerifier fieldchange.ProtectionSnapshotVerifier,
+	gates ...businessWriteGate,
 ) {
 	catalog := fieldchange.NewCatalog(app)
 	store := fieldchange.NewPocketBasePlanStore(app)
@@ -29,12 +33,18 @@ func registerFieldRoutes(
 		catalog, catalog, store, v2.NewIdentityAllocator(nil),
 		fieldchange.WithPlannerLogger(logger),
 	)
-	executor := fieldchange.NewExecutor(
-		app, store,
+	executorOptions := []fieldchange.ExecutorOption{
 		fieldchange.WithMigrationScheduler(migration),
 		fieldchange.WithBackupReceiptKey(backupReceiptKey),
 		fieldchange.WithExecutorLogger(logger),
-	)
+	}
+	if protectionVerifier != nil {
+		executorOptions = append(
+			executorOptions,
+			fieldchange.WithProtectionSnapshotVerifier(protectionVerifier),
+		)
+	}
+	executor := fieldchange.NewExecutor(app, store, executorOptions...)
 
 	r.GET("/api/vibetable/v2/field-settings/{tableId}", func(
 		request *core.RequestEvent,
@@ -81,7 +91,24 @@ func registerFieldRoutes(
 		if err := decodeFieldRequest(request.Request.Body, &intent); err != nil {
 			return writeFieldError(request, err)
 		}
-		plan, err := planner.Plan(request.Request.Context(), intent)
+		var plan v2.FieldChangePlan
+		err := runBusinessWrite(
+			request.Request.Context(),
+			gates,
+			"field.change.plan",
+			fmt.Sprintf(
+				"%s:%s:%s:%s",
+				intent.TableID,
+				intent.FieldID,
+				intent.Action,
+				intent.ExpectedSchemaRev,
+			),
+			func(ctx context.Context) error {
+				var planErr error
+				plan, planErr = planner.Plan(ctx, intent)
+				return planErr
+			},
+		)
 		if err != nil {
 			return writeFieldError(request, err)
 		}
@@ -95,7 +122,18 @@ func registerFieldRoutes(
 		if err := decodeFieldRequest(request.Request.Body, &body); err != nil {
 			return writeFieldError(request, err)
 		}
-		receipt, err := executor.Apply(request.Request.Context(), body)
+		var receipt v2.ApplyReceipt
+		err := runBusinessWrite(
+			request.Request.Context(),
+			gates,
+			"field.change.apply",
+			body.OperationID,
+			func(ctx context.Context) error {
+				var applyErr error
+				receipt, applyErr = executor.Apply(ctx, body)
+				return applyErr
+			},
+		)
 		if err != nil {
 			return writeFieldError(request, err)
 		}
@@ -140,8 +178,18 @@ func registerFieldRoutes(
 	r.POST("/api/vibetable/v2/field-change/cancel/{jobId}", func(
 		request *core.RequestEvent,
 	) error {
-		status, err := migration.Cancel(
-			request.Request.Context(), request.Request.PathValue("jobId"),
+		jobID := request.Request.PathValue("jobId")
+		var status v2.MigrationStatus
+		err := runBusinessWrite(
+			request.Request.Context(),
+			gates,
+			"field.change.cancel",
+			jobID,
+			func(ctx context.Context) error {
+				var cancelErr error
+				status, cancelErr = migration.Cancel(ctx, jobID)
+				return cancelErr
+			},
 		)
 		if err != nil {
 			return writeFieldError(request, err)

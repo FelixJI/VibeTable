@@ -1,0 +1,37 @@
+{
+  "contractVersion": "2.0",
+  "policyRevision": 1,
+  "evidenceContract": "provider-lab-evidence.schema.json",
+  "evidenceDirectory": "qa/provider-evidence",
+  "providers": {
+    "fixed": {
+      "creation": "enabled",
+      "coordinationStrength": "strong",
+      "evidence": [
+        "automated.fixed-durable-rename",
+        "automated.sqlite-fixed-read-view",
+        "automated.repository-cross-process-cas"
+      ]
+    },
+    "network": {
+      "creation": "blockedPendingLab",
+      "coordinationStrength": "advisory",
+      "requiredEvidence": "hardware.smb-v1"
+    },
+    "registeredCloud": {
+      "creation": "blockedPendingLab",
+      "coordinationStrength": "advisory",
+      "requiredEvidence": "hardware.cloud-files-v1"
+    },
+    "userMarkedSync": {
+      "creation": "blockedPendingLab",
+      "coordinationStrength": "advisory",
+      "requiredEvidence": "hardware.sync-folder-v1"
+    },
+    "removable": {
+      "creation": "blockedPendingLab",
+      "coordinationStrength": "advisory",
+      "requiredEvidence": "hardware.removable-v1"
+    }
+  }
+}

@@ -18,7 +18,7 @@ func TestManifestIsValidAndHashIsStableShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadManifest(): %v", err)
 	}
-	if manifest.SchemaVersion != 5 || len(manifest.Migrations) != 5 {
+	if manifest.SchemaVersion != 6 || len(manifest.Migrations) != 6 {
 		t.Fatalf("unexpected manifest: %#v", manifest)
 	}
 	if hash := Hash(); len(hash) != 64 || strings.Trim(hash, "0123456789abcdef") != "" {
@@ -104,7 +104,9 @@ func TestRealtimeOutboxRetentionUpgradesPopulatedV3Database(t *testing.T) {
 		if strings.HasPrefix(migration.File, "2026072401_") ||
 			strings.HasPrefix(migration.File, "2026072402_") ||
 			strings.HasPrefix(migration.File, "2026072403_") ||
-			strings.HasPrefix(migration.File, "2026072404_") {
+			strings.HasPrefix(migration.File, "2026072404_") ||
+			strings.HasPrefix(migration.File, "2026072801_") ||
+			strings.HasPrefix(migration.File, "2026072805_") {
 			allMigrations.Register(migration.Up, migration.Down, migration.File)
 		}
 		if strings.HasPrefix(migration.File, "2026072401_") ||
@@ -144,31 +146,37 @@ func TestRealtimeOutboxRetentionUpgradesPopulatedV3Database(t *testing.T) {
 
 	runner := core.NewMigrationsRunner(app, allMigrations)
 	if applied, err := runner.Up(); err != nil {
-		t.Fatalf("upgrade v3 to v4: %v", err)
-	} else if len(applied) != 1 ||
-		!strings.HasPrefix(applied[0], "2026072404_") {
-		t.Fatalf("applied v4 migrations = %#v", applied)
+		t.Fatalf("upgrade v3 to v6: %v", err)
+	} else if len(applied) != 3 ||
+		!strings.HasPrefix(applied[0], "2026072404_") ||
+		!strings.HasPrefix(applied[1], "2026072801_") ||
+		!strings.HasPrefix(applied[2], "2026072805_") {
+		t.Fatalf("applied v4-v6 migrations = %#v", applied)
 	}
 	assertOutboxRetentionState(t, app, 10000, "event0000000006", true)
 
 	insertRawOutboxRecord(t, app, 10006)
 	assertOutboxRetentionState(t, app, 10000, "event0000000007", true)
 
-	if reverted, err := runner.Down(1); err != nil {
-		t.Fatalf("downgrade v4: %v", err)
-	} else if len(reverted) != 1 ||
-		!strings.HasPrefix(reverted[0], "2026072404_") {
-		t.Fatalf("reverted v4 migrations = %#v", reverted)
+	if reverted, err := runner.Down(3); err != nil {
+		t.Fatalf("downgrade v6 through v4: %v", err)
+	} else if len(reverted) != 3 ||
+		!strings.HasPrefix(reverted[0], "2026072805_") ||
+		!strings.HasPrefix(reverted[1], "2026072801_") ||
+		!strings.HasPrefix(reverted[2], "2026072404_") {
+		t.Fatalf("reverted v6-v4 migrations = %#v", reverted)
 	}
 	assertOutboxRetentionState(t, app, 10000, "event0000000007", false)
 	insertRawOutboxRecord(t, app, 10007)
 	assertOutboxRetentionState(t, app, 10001, "event0000000007", false)
 
 	if applied, err := runner.Up(); err != nil {
-		t.Fatalf("reapply v4: %v", err)
-	} else if len(applied) != 1 ||
-		!strings.HasPrefix(applied[0], "2026072404_") {
-		t.Fatalf("reapplied v4 migrations = %#v", applied)
+		t.Fatalf("reapply v4-v6: %v", err)
+	} else if len(applied) != 3 ||
+		!strings.HasPrefix(applied[0], "2026072404_") ||
+		!strings.HasPrefix(applied[1], "2026072801_") ||
+		!strings.HasPrefix(applied[2], "2026072805_") {
+		t.Fatalf("reapplied v4-v6 migrations = %#v", applied)
 	}
 	assertOutboxRetentionState(t, app, 10000, "event0000000008", true)
 }

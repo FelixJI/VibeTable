@@ -20,7 +20,6 @@ import (
 	"github.com/pocketbase/pocketbase/tools/filesystem"
 	"github.com/vibetable/vibetable/sidecar/internal/attachments"
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
-	"github.com/vibetable/vibetable/sidecar/internal/backup"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -419,11 +418,12 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	if err := fsys.Close(); err != nil {
 		t.Fatal(err)
 	}
-	backupResult, err := backup.New(app, manager, testBackupReceiptKey).Create(
-		ctx, "attachment_history.zip",
-	)
-	if err != nil || !backupResult.Integrity.Valid {
-		t.Fatalf("attachment history backup %#v err=%v", backupResult, err)
+	backupIntegrity, err := manager.Integrity(ctx, app)
+	if err != nil || !backupIntegrity.Valid {
+		t.Fatalf("attachment history integrity %#v err=%v", backupIntegrity, err)
+	}
+	if err := app.CreateBackup(ctx, "attachment_history.zip"); err != nil {
+		t.Fatalf("create PocketBase archive primitive: %v", err)
 	}
 	backupFS, err := app.NewBackupsFilesystem()
 	if err != nil {

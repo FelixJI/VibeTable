@@ -13,6 +13,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
+	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -1083,6 +1084,87 @@ func TestSchemaCatalogRejectsInconsistentStoredRevisionMetadata(t *testing.T) {
 	if !errors.As(err, &productErr) ||
 		productErr.Code != "schema.metadata.revision_mismatch" {
 		t.Fatalf("Describe() error = %#v", err)
+	}
+}
+
+func TestResumePendingCoordinatesBackfillMissingAfterSchemaCommit(t *testing.T) {
+	app := bootstrapApp(t, t.TempDir())
+	defer resetApp(t, app)
+	created, err := schemaapi.New(app).ApplyChange(
+		context.Background(),
+		schemaapi.Change{
+			Definition: baseTable(
+				"formula-recovery",
+				"formula_recovery",
+				[]schema.FieldDefinition{
+					field(
+						"quantity_id",
+						"quantity",
+						schema.FieldKindScalar,
+						schema.DataTypeInteger,
+					),
+					formulaField(
+						"total_id",
+						"total",
+						schema.DataTypeInteger,
+						"quantity * 2",
+					),
+				},
+			),
+			ExpectedRevision: 0,
+		},
+	)
+	if err != nil {
+		t.Fatalf("commit schema before simulated crash: %v", err)
+	}
+	if created.SchemaRevision != "schema_0001" {
+		t.Fatalf("created schema revision = %q", created.SchemaRevision)
+	}
+	existing, err := app.FindRecordsByFilter(
+		"vibetable_jobs",
+		"job_type='formula_backfill'",
+		"",
+		0,
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(existing) != 0 {
+		t.Fatalf("simulated crash state already has backfill jobs: %d", len(existing))
+	}
+
+	service := jobs.New(app, nil)
+	defer service.Shutdown()
+	var coordinated []string
+	service.SetBusinessWriteGate(func(
+		ctx context.Context,
+		kind string,
+		identity string,
+		apply func(context.Context) error,
+	) error {
+		coordinated = append(coordinated, kind+":"+identity)
+		return apply(ctx)
+	})
+	if err := service.ResumePending(context.Background()); err != nil {
+		t.Fatalf("ResumePending(): %v", err)
+	}
+	if len(coordinated) != 1 ||
+		coordinated[0] != "formula.backfill.enqueue:formula-recovery:schema_0001" {
+		t.Fatalf("coordinated recovery writes = %#v", coordinated)
+	}
+	recovered, err := app.FindRecordsByFilter(
+		"vibetable_jobs",
+		"job_type='formula_backfill' && schema_revision=1",
+		"",
+		0,
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered) != 1 {
+		t.Fatalf("recovered backfill jobs = %d, want 1", len(recovered))
 	}
 }
 

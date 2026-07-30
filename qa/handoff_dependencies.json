@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "description": "PocketBase-only delivery sequence and product evidence consumed by qa/handoff.py.",
+  "description": "Workspace/snapshot v2 delivery sequence and release evidence consumed by qa/handoff.py.",
   "sequence": [
     "CONTRACT",
     "SIDECAR",
@@ -39,6 +39,7 @@
     "desktop/tests",
     "desktop/web-grid",
     "CHANGELOG.md",
+    "docs/RECOVERY.md",
     "desktop/Directory.Build.props",
     "desktop/publish-layout.json",
     "desktop/VibeTable.Desktop.sln",
@@ -51,6 +52,8 @@
     "sidecar/go.mod",
     "sidecar/go.sum",
     "tests",
+    "tools/recovery-tools",
+    "tools/workspace-storage-dependencies.json",
     "global.json",
     "pyproject.toml",
     "uv.lock"
@@ -112,7 +115,10 @@
     "CONTRACT": [
       "product.contract.v1",
       "product.error.v1",
-      "mutation.receipt.v1"
+      "mutation.receipt.v1",
+      "workspace.protocol.v2",
+      "workspace.closed-contract.v2",
+      "snapshot.package.v2"
     ],
     "SIDECAR": [
       "sidecar.health.v1",
@@ -120,41 +126,64 @@
       "schema.catalog.v1",
       "query.port.v1",
       "mutation.kernel.v1",
-      "realtime.data-changed.v1"
+      "realtime.data-changed.v1",
+      "workspace.runtime.v2",
+      "workspace.write-coordinator.v2",
+      "snapshot.repository.v2",
+      "file-history.revision-tree.v2"
     ],
     "DESKTOP": [
       "sidecar.supervisor.v1",
       "sidecar.offline-launch.v1",
-      "product.rpc-gateway.v1"
+      "product.rpc-gateway.v1",
+      "workspace.session.v2",
+      "workspace.path-grant.v2",
+      "workspace.provider-policy.v2"
     ],
     "PRODUCT": [
       "formula.cel-v1",
       "audit.restore.v1",
       "managed-attachments.v1",
       "relation.lookup.v1",
-      "plugin.local-worker.v1"
+      "plugin.local-worker.v1",
+      "snapshot.timeline.v2",
+      "file-history.tree.v2",
+      "retention.policy.v2",
+      "repository.settings.v2",
+      "conflict.center.v2"
     ],
     "RELEASE": [
       "release.sidecar-hash.v1",
       "release.migration-hash.v1",
       "release.sbom.v1",
-      "release.backup-restore.v1"
+      "release.workspace-snapshot-v2",
+      "release.recovery-tools.v2",
+      "release.contract-corpus.v2",
+      "release.fault-matrix.v2"
     ],
     "DELETE": [
       "provider.legacy-runtime.absent.v1",
       "automation.compatibility.absent.v1",
-      "collaboration.ui.absent.v1"
+      "collaboration.ui.absent.v1",
+      "legacy.backup.absent.v2",
+      "legacy.scheme-main-adoption.absent.v2",
+      "legacy.global-data-root.absent.v2"
     ]
   },
   "artifactFiles": {
     "sidecar": [
       "sidecar/go.mod",
       "sidecar/go.sum",
-      "sidecar/migrations/manifest.json"
+      "sidecar/migrations/manifest.json",
+      "docs/RECOVERY.md",
+      "tools/recovery-tools/go.mod",
+      "tools/recovery-tools/go.sum",
+      "tools/workspace-storage-dependencies.json"
     ],
     "schema": [
       "contracts/v1/contracts.schema.json",
-      "contracts/schema-v2/schema.schema.json"
+      "contracts/schema-v2/schema.schema.json",
+      "contracts/v2/contracts.schema.json"
     ],
     "migrations": [
       "sidecar/migrations/manifest.json",
@@ -162,12 +191,15 @@
       "sidecar/migrations/2026072402_internal_collections.go",
       "sidecar/migrations/2026072403_internal_metadata_channel.go",
       "sidecar/migrations/2026072404_realtime_outbox_retention.go",
-      "sidecar/migrations/2026072801_field_settings_v2_metadata.go"
+      "sidecar/migrations/2026072801_field_settings_v2_metadata.go",
+      "sidecar/migrations/2026072805_audit_outbox.go"
     ],
     "capabilities": [
       "sidecar/internal/schema/capabilities.go",
       "sidecar/internal/schema/v2/capabilities.go",
       "contracts/v1/README.md",
+      "contracts/v2/fixtures/rpc-catalog.json",
+      "contracts/v2/provider-support.json",
       "qa/handoff_dependencies.json"
     ]
   },
@@ -184,21 +216,39 @@
       "contracts/v1/fixtures/product-error.json",
       "contracts/schema-v2/fixtures/field-definition.json",
       "contracts/schema-v2/fixtures/field-change-intent.json",
-      "contracts/schema-v2/fixtures/migration-status.json"
+      "contracts/schema-v2/fixtures/migration-status.json",
+      "contracts/v2/fixtures/workspace-manifest.json",
+      "contracts/v2/fixtures/workspace-session.json",
+      "contracts/v2/fixtures/snapshot-manifest.json",
+      "contracts/v2/fixtures/snapshot-seal.json"
     ],
     "SIDECAR": [
-      "sidecar/migrations/manifest.json"
+      "sidecar/migrations/manifest.json",
+      "contracts/v2/fixtures/rpc-catalog.json",
+      "contracts/v2/fixtures/lease-claim.json",
+      "contracts/v2/fixtures/file-revision.json"
     ],
-    "DESKTOP": [],
+    "DESKTOP": [
+      "contracts/v2/fixtures/workspace-registry-entry.json",
+      "contracts/v2/fixtures/workspace-event.json"
+    ],
     "PRODUCT": [
       "contracts/v1/fixtures/data-changed-event.json",
-      "contracts/v1/fixtures/managed-attachment-ref.json"
+      "contracts/v1/fixtures/managed-attachment-ref.json",
+      "contracts/v2/fixtures/file-document.json",
+      "contracts/v2/fixtures/retention-policy.json",
+      "contracts/v2/fixtures/snapshot-catalog-entry.json"
     ],
     "RELEASE": [
       "desktop/publish-layout.json",
       "desktop/web-grid/src/generated/changelog.json",
+      "contracts/v2/compatibility-corpus.json",
+      "contracts/v2/negative-fixtures.json",
+      "contracts/v2/provider-support.json",
       "CHANGELOG.md"
     ],
-    "DELETE": []
+    "DELETE": [
+      "contracts/v2/legacy-surface.json"
+    ]
   }
 }

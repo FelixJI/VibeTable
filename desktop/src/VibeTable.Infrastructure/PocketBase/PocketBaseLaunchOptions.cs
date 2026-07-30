@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace VibeTable.Infrastructure.PocketBase;
 
@@ -29,6 +30,8 @@ public sealed class PocketBaseLaunchOptions
     public TimeSpan CrashRestartMaximumDelay { get; init; } =
         DefaultCrashRestartMaximumDelay;
     public PocketBaseExpectedIdentity? ExpectedIdentity { get; init; }
+    public IDictionary<string, string> Environment { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
 
     internal void Validate()
     {

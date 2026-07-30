@@ -1,0 +1,36 @@
+{
+  "contractVersion": "2.0",
+  "schemaVersion": 1,
+  "appendOnly": true,
+  "previousFormalReleases": [],
+  "previousFormalReleaseNote": "VibeTable is still pre-release and has no prior formal workspace artifact. This corpus establishes the immutable first-release baseline; a release gate must append the first signed release artifact before any later release.",
+  "baselines": [
+    {
+      "writerVersion": "0.1.0-dev",
+      "minimumAppVersion": "0.1.0-dev",
+      "baselineParentCommit": "9470817a41b0c4b234a0f2683b7af1fe91719f7b",
+      "artifacts": [
+        {
+          "path": "fixtures/workspace-manifest.json",
+          "sha256": "d0bd6a69757df06f649433acb970e90237d1a0049db6dd55085dac985073fd3f",
+          "expected": "read"
+        },
+        {
+          "path": "fixtures/snapshot-manifest.json",
+          "sha256": "a2fe69932c2a698bfb63426a484f2c9214835ced542debc024e3bbea3f3b430e",
+          "expected": "read"
+        },
+        {
+          "path": "fixtures/retention-policy.json",
+          "sha256": "48f870f86053a97546d37a7228fe563b1f91a24a65e351b6b65dfe0d25c5fa47",
+          "expected": "read"
+        },
+        {
+          "path": "fixtures/snapshot-package-v2.vtsnapshot",
+          "sha256": "85388ca583698f452232b9a0291190aeb98ec94e314ca8eccb2cf35a438aebc2",
+          "expected": "read"
+        }
+      ]
+    }
+  ]
+}

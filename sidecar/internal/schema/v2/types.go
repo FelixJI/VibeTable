@@ -446,11 +446,12 @@ type FieldChangePlan struct {
 }
 
 type ApplyRequest struct {
-	PlanID        string   `json:"planId"`
-	PlanHash      string   `json:"planHash"`
-	OperationID   string   `json:"operationId"`
-	Actor         Actor    `json:"actor"`
-	Confirmations []string `json:"confirmations"`
+	PlanID               string   `json:"planId"`
+	PlanHash             string   `json:"planHash"`
+	OperationID          string   `json:"operationId"`
+	Actor                Actor    `json:"actor"`
+	Confirmations        []string `json:"confirmations"`
+	ProtectionSnapshotID string   `json:"protectionSnapshotId"`
 }
 
 type ApplyReceipt struct {

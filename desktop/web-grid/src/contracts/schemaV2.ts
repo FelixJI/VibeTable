@@ -340,6 +340,7 @@ export interface FieldApplyRequestV2 {
   readonly operationId: string;
   readonly actor: ActorV2;
   readonly confirmations: readonly string[];
+  readonly protectionSnapshotId?: string;
 }
 
 const FIELD_KEYS = [

@@ -36,16 +36,6 @@ import type {
   OperationFailedPayload,
 } from "@/contracts";
 import type {
-  BackupHostMessageType,
-  BackupHostPayloadMap,
-  BackupWebMessageType,
-  BackupWebPayloadMap,
-} from "@/contracts/backupContracts";
-import {
-  BACKUP_HOST_MESSAGE_TYPES,
-  BACKUP_WEB_MESSAGE_TYPES,
-} from "@/contracts/backupContracts";
-import type {
   RuntimeDiagnosticsHostMessageType,
   RuntimeDiagnosticsHostPayloadMap,
   RuntimeDiagnosticsWebMessageType,
@@ -55,23 +45,39 @@ import {
   RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
   RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
 } from "@/contracts/runtimeDiagnosticsContracts";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
+import {
+  configureWorkspaceWire,
+  nextWorkspaceWire,
+} from "@/services/workspaceWireAllocator";
+import type {
+  WorkspaceV2HostMessageType,
+  WorkspaceV2HostPayloadMap,
+  WorkspaceV2RequestPayload,
+  WorkspaceV2WebMessageType,
+  WorkspaceV2WebPayloadMap,
+} from "@/contracts/workspaceV2Bridge";
+import {
+  WORKSPACE_V2_HOST_MESSAGE_TYPES,
+  WORKSPACE_V2_WEB_MESSAGE_TYPES,
+} from "@/contracts/workspaceV2Bridge";
 
 type HostMessageType =
   | SharedHostMessageType
-  | BackupHostMessageType
-  | RuntimeDiagnosticsHostMessageType;
+  | RuntimeDiagnosticsHostMessageType
+  | WorkspaceV2HostMessageType;
 type HostPayloadMap =
   & SharedHostPayloadMap
-  & BackupHostPayloadMap
-  & RuntimeDiagnosticsHostPayloadMap;
+  & RuntimeDiagnosticsHostPayloadMap
+  & WorkspaceV2HostPayloadMap;
 type WebMessageType =
   | SharedWebMessageType
-  | BackupWebMessageType
-  | RuntimeDiagnosticsWebMessageType;
+  | RuntimeDiagnosticsWebMessageType
+  | WorkspaceV2WebMessageType;
 type WebPayloadMap =
   & SharedWebPayloadMap
-  & BackupWebPayloadMap
-  & RuntimeDiagnosticsWebPayloadMap;
+  & RuntimeDiagnosticsWebPayloadMap
+  & WorkspaceV2WebPayloadMap;
 
 /** Diagnostic emitted when an inbound message is dropped. */
 export type DiagnosticKind =
@@ -181,8 +187,6 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "task.cancel",
   "task.status",
   "dailyQuote.fetch",
-  "dataRoot.get",
-  "dataRoot.chooseMigrationRequested",
   "field.settings.describe",
   "field.change.plan",
   "field.change.apply",
@@ -219,8 +223,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "version.compare",
   "version.promote",
   "version.delete",
-  ...BACKUP_HOST_MESSAGE_TYPES,
   ...RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
+  ...WORKSPACE_V2_HOST_MESSAGE_TYPES,
   // B2 paste preview + apply outcomes.
   "table.pastePreviewReady",
   "table.pasteApplied",
@@ -237,14 +241,9 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "dashboard.saved",
   "dashboard.deleted",
   "document.listLoaded",
-  "document.historyLoaded",
   "document.actionCompleted",
   "document.operationFailed",
   "document.workspaceChanged",
-  "document.versionCommitted",
-  "document.revisionPreviewCompleted",
-  "document.schemeListLoaded",
-  "document.schemeMutationCompleted",
   "plugin.catalog.changed",
   "plugin.task.changed",
   "plugin.interaction.requested",
@@ -320,8 +319,8 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "version.compare",
   "version.promote",
   "version.delete",
-  ...BACKUP_WEB_MESSAGE_TYPES,
   ...RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
+  ...WORKSPACE_V2_WEB_MESSAGE_TYPES,
   // B3 query + state requests.
   "table.queryRequested",
   "gridState.saveRequested",
@@ -337,8 +336,6 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "task.cancel",
   "task.status",
   "dailyQuote.fetch",
-  "dataRoot.get",
-  "dataRoot.chooseMigrationRequested",
   "history.queryRequested",
   "history.previewRestoreRequested",
   "history.applyRestoreRequested",
@@ -377,16 +374,7 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "document.openRequested",
   "document.previewRequested",
   "document.revealRequested",
-  "document.historyRequested",
   "document.relinkRequested",
-  "document.commitRevisionRequested",
-  "document.promoteVersionRequested",
-  "document.revisionPreviewRequested",
-  "document.revisionRestoreRequested",
-  "document.schemeListRequested",
-  "document.schemeCreateRequested",
-  "document.schemeRenameRequested",
-  "document.schemeArchiveRequested",
   // Open the embedded data administration surface in this webview.
   "admin.openRequested",
 ]);
@@ -405,7 +393,7 @@ interface Pending {
 
 /**
  * Correlated response names implemented by the desktop host. Closed RPC
- * endpoints (including backup and plugin endpoints) reply with their request
+ * endpoints (including plugin endpoints) reply with their request
  * type; workflow endpoints use the explicit outcome names below.
  */
 const RESPONSE_TYPE_OVERRIDES: Readonly<
@@ -435,24 +423,18 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
   "dashboard.saveRequested": ["dashboard.saved"],
   "dashboard.deleteRequested": ["dashboard.deleted"],
   "document.listRequested": ["document.listLoaded"],
-  "document.historyRequested": ["document.historyLoaded"],
   "document.openRequested": ["document.actionCompleted"],
   "document.previewRequested": ["document.actionCompleted"],
   "document.revealRequested": ["document.actionCompleted"],
-  "document.commitRevisionRequested": ["document.versionCommitted"],
-  "document.promoteVersionRequested": ["document.versionCommitted"],
-  "document.revisionPreviewRequested": ["document.revisionPreviewCompleted"],
-  "document.revisionRestoreRequested": ["document.versionCommitted"],
-  "document.schemeListRequested": ["document.schemeListLoaded"],
-  "document.schemeCreateRequested": ["document.schemeMutationCompleted"],
-  "document.schemeRenameRequested": ["document.schemeMutationCompleted"],
-  "document.schemeArchiveRequested": ["document.schemeMutationCompleted"],
+  // Desktop currently names correlated replies `workspace.v2.response`.
+  // Keep `reply` accepted for protocol-v2 producers that use the catalog term.
+  "workspace.v2.request": ["workspace.v2.response", "workspace.v2.reply"],
 };
 
 function responseTypesFor(type: WebMessageType): ReadonlySet<HostMessageType> {
   const overrides = RESPONSE_TYPE_OVERRIDES[type];
   if (overrides) return new Set(overrides);
-  // Product-data, relation/Lookup, backup, attachment and plugin RPC replies
+  // Product-data, relation/Lookup, attachment and plugin RPC replies
   // reuse the closed request type. Only accept that default when it is also a
   // declared host message type.
   return HOST_EVENT_TYPES.has(type as HostMessageType)
@@ -470,39 +452,39 @@ export interface HostBridge {
   /** Stop listening. Idempotent. */
   stop(): void;
   /** Outbound request awaiting a matching response. */
-  request<K extends BackupWebMessageType>(
-    type: K,
-    payload: BackupWebPayloadMap[K],
-  ): Promise<unknown>;
   request<K extends RuntimeDiagnosticsWebMessageType>(
     type: K,
     payload: RuntimeDiagnosticsWebPayloadMap[K],
   ): Promise<RuntimeDiagnosticsHostPayloadMap[K]>;
+  request<K extends WorkspaceV2WebMessageType>(
+    type: K,
+    payload: WorkspaceV2WebPayloadMap[K],
+  ): Promise<unknown>;
   request<K extends SharedWebMessageType>(
     type: K,
     payload: SharedWebPayloadMap[K],
   ): Promise<unknown>;
   /** Begin a correlated request and expose its envelope id for typed cancellation. */
-  requestWithHandle<K extends BackupWebMessageType>(
-    type: K,
-    payload: BackupWebPayloadMap[K],
-  ): { readonly requestId: string; readonly promise: Promise<unknown> };
   requestWithHandle<K extends RuntimeDiagnosticsWebMessageType>(
     type: K,
     payload: RuntimeDiagnosticsWebPayloadMap[K],
+  ): { readonly requestId: string; readonly promise: Promise<unknown> };
+  requestWithHandle<K extends WorkspaceV2WebMessageType>(
+    type: K,
+    payload: WorkspaceV2WebPayloadMap[K],
   ): { readonly requestId: string; readonly promise: Promise<unknown> };
   requestWithHandle<K extends SharedWebMessageType>(
     type: K,
     payload: SharedWebPayloadMap[K],
   ): { readonly requestId: string; readonly promise: Promise<unknown> };
   /** Outbound fire-and-forget notification (no requestId). */
-  notify<K extends BackupWebMessageType>(
-    type: K,
-    payload: BackupWebPayloadMap[K],
-  ): void;
   notify<K extends RuntimeDiagnosticsWebMessageType>(
     type: K,
     payload: RuntimeDiagnosticsWebPayloadMap[K],
+  ): void;
+  notify<K extends WorkspaceV2WebMessageType>(
+    type: K,
+    payload: WorkspaceV2WebPayloadMap[K],
   ): void;
   notify<K extends SharedWebMessageType>(
     type: K,
@@ -512,11 +494,6 @@ export interface HostBridge {
    * Post an envelope and DOM File objects over WebView2's native additional
    * objects channel. Returns false when the installed runtime lacks the API.
    */
-  notifyWithAdditionalObjects<K extends BackupWebMessageType>(
-    type: K,
-    payload: BackupWebPayloadMap[K],
-    additionalObjects: readonly File[],
-  ): boolean;
   notifyWithAdditionalObjects<K extends RuntimeDiagnosticsWebMessageType>(
     type: K,
     payload: RuntimeDiagnosticsWebPayloadMap[K],
@@ -537,13 +514,13 @@ export interface HostBridge {
     additionalObjects: readonly File[],
   ): Promise<unknown> | null;
   /** Subscribe to a whitelisted host -> web event. Returns an unsubscribe fn. */
-  on<K extends BackupHostMessageType>(
-    type: K,
-    handler: (payload: BackupHostPayloadMap[K]) => void,
-  ): () => void;
   on<K extends RuntimeDiagnosticsHostMessageType>(
     type: K,
     handler: (payload: RuntimeDiagnosticsHostPayloadMap[K]) => void,
+  ): () => void;
+  on<K extends WorkspaceV2HostMessageType>(
+    type: K,
+    handler: (payload: WorkspaceV2HostPayloadMap[K]) => void,
   ): () => void;
   on<K extends SharedHostMessageType>(
     type: K,
@@ -765,6 +742,57 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     webview().postMessage(env);
   }
 
+  function operationId(): string {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+      return crypto.randomUUID();
+    }
+    const suffix = Math.floor(Math.random() * 0xffff_ffff)
+      .toString(16)
+      .padStart(12, "0");
+    return `00000000-0000-4000-8000-${suffix}`;
+  }
+
+  function activeWorkspaceScope(): ReturnType<typeof nextWorkspaceWire> | undefined {
+    try {
+      const session = useWorkspaceSessionStore();
+      if (
+        !session.hasOpenWorkspace
+        || !session.activeWorkspaceId
+        || session.sessionEpoch < 1
+      ) return undefined;
+      configureWorkspaceWire(session.activeWorkspaceId, session.sessionEpoch);
+      return nextWorkspaceWire(operationId());
+    } catch {
+      // HostBridge is also used in isolated tests without an active Pinia.
+      return undefined;
+    }
+  }
+
+  function outboundEnvelope(
+    type: WebMessageType,
+    payload: unknown,
+    requestId?: string,
+    nativeObjects?: true,
+  ): BridgeMessage {
+    if (type === "workspace.v2.request") {
+      return {
+        type,
+        ...(requestId ? { requestId } : {}),
+        ...(nativeObjects ? { nativeObjects } : {}),
+        payload,
+        wire: (payload as WorkspaceV2RequestPayload).wire,
+      };
+    }
+    const scope = activeWorkspaceScope();
+    return {
+      type,
+      ...(requestId ? { requestId } : {}),
+      ...(nativeObjects ? { nativeObjects } : {}),
+      ...(scope ? { scope } : {}),
+      payload,
+    };
+  }
+
   function request<K extends WebMessageType>(
     type: K,
     payload: WebPayloadMap[K],
@@ -777,7 +805,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     payload: WebPayloadMap[K],
   ): { readonly requestId: string; readonly promise: Promise<unknown> } {
     const requestId = generateRequestId();
-    const env: BridgeMessage = { type, requestId, payload };
+    const env = outboundEnvelope(type, payload, requestId);
     const promise = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (pending.delete(requestId)) {
@@ -806,7 +834,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     type: K,
     payload: WebPayloadMap[K],
   ): void {
-    postEnvelope({ type, payload });
+    postEnvelope(outboundEnvelope(type, payload));
   }
 
   function notifyWithAdditionalObjects<K extends WebMessageType>(
@@ -825,7 +853,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     // travel exclusively in WebView2's native additionalObjects collection.
     try {
       target.postMessageWithAdditionalObjects(
-        { type, nativeObjects: true, payload },
+        outboundEnvelope(type, payload, undefined, true),
         [...additionalObjects],
       );
       return true;
@@ -872,7 +900,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     });
     try {
       target.postMessageWithAdditionalObjects(
-        { type, requestId, nativeObjects: true, payload },
+        outboundEnvelope(type, payload, requestId, true),
         [...additionalObjects],
       );
       return promise;

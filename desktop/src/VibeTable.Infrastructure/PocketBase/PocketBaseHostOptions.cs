@@ -75,6 +75,9 @@ public static class PocketBaseHostOptions
             CrashRestartInitialDelay = options.CrashRestartInitialDelay,
             CrashRestartMaximumDelay = options.CrashRestartMaximumDelay,
             ExpectedIdentity = options.ExpectedIdentity,
+            Environment = new Dictionary<string, string>(
+                options.Environment,
+                StringComparer.Ordinal),
         };
     }
 

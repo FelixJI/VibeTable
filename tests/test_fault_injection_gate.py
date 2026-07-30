@@ -16,13 +16,13 @@ def test_release_gate_has_all_required_named_faults() -> None:
         "TestFaultGateReadOnlyDirectoryReturnsStableActionableError",
         "TestFaultGatePortOccupiedReturnsStableActionableError",
         "TestFaultGateCorruptMigrationStopsBeforeStartup",
-        "TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete",
-        "TestManagedAttachmentsMultiFileMidwayFailureRollsBackAtomically",
-        "TestManagedAttachmentsCommittedDBCleanupFailureIsReportedAndRecoverable",
-        "TestManagedAttachmentsProcessExitDuringUploadLeavesNoDurableState",
-        "TestManagedAttachmentsProcessExitDuringCommitReportsAndRecoversOrphans",
-        "TestManagedAttachmentsProcessExitDuringCleanupReportsAndRecoversOrphans",
-        "TestManagedAttachmentsWholeBackupRestorePreservesReferencesHashesContentAndAudit",
+        "TestCapturePublishesOnlyVerifiedCompleteSnapshotAndDeduplicatesRevision",
+        "TestReadPersistentMutationRevisionCoversCommittedApplyBeforeFinish",
+        "TestAuthorityReceiptsCloseFileHistoryAndSnapshotKillWindows",
+        "TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen",
+        "TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness",
+        "TestConflictExternalAttachmentFaultRestoresOldFilesAndTableTransaction",
+        "TestRuntimeReopensAndResumesConflictAtPocketBaseReceiptRevision",
     } <= names
     assert "FaultGateKilledSidecar" in fault_injection.DOTNET_TEST
     assert fault_injection.PRODUCT_SCENARIO == "10-sse-reconnect"

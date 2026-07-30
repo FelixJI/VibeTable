@@ -6,7 +6,23 @@ import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
+
 from qa import next as next_gate
+
+
+def _candidate_args(tmp_path: Path) -> list[str]:
+    package_root = tmp_path / "VibeTable.Next"
+    package_root.mkdir()
+    (package_root / "candidate.bin").write_bytes(b"candidate")
+    archive = tmp_path / "VibeTable.Next.zip"
+    next_gate.release_candidate.create_archive(package_root, archive)
+    return [
+        "--package-root",
+        str(package_root),
+        "--package-archive",
+        str(archive),
+    ]
 
 
 def test_console_output_is_safe_on_legacy_windows_code_pages() -> None:
@@ -85,6 +101,24 @@ def test_go_commands_target_sidecar_module() -> None:
     assert Path(cwd) == next_gate.REPO_ROOT
 
 
+def test_package_stage_binds_provider_evidence_to_the_release_archive(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "VibeTable.Next"
+    archive = tmp_path / "VibeTable.Next.zip"
+
+    command, cwd = next_gate.stage_command("package", package_root, archive)
+
+    assert command == [
+        next_gate.sys.executable,
+        "qa/package_check.py",
+        str(package_root),
+        "--package-archive",
+        str(archive),
+    ]
+    assert Path(cwd) == next_gate.REPO_ROOT
+
+
 def test_windows_race_gate_resolves_an_existing_gcc_executable() -> None:
     if next_gate.os.name != "nt":
         return
@@ -131,14 +165,120 @@ def test_windows_race_stage_enables_cgo_with_the_resolved_compiler(
 
 
 def test_stage_environment_uses_an_invocation_scoped_temp_root() -> None:
+    next_gate._cleanup_qa_temp_dir()
     environment = next_gate._stage_environment("upgrade-smoke", ["pytest"])
 
     temp_root = Path(environment["TEMP"])
+    expected_parent = Path(
+        next_gate.os.environ.get(
+            next_gate.QA_TEMP_PARENT_ENV,
+            next_gate.tempfile.gettempdir(),
+        )
+    ).resolve()
     assert environment["TMP"] == environment["TEMP"]
     assert temp_root == next_gate.QA_RUN_TEMP_DIR
-    assert temp_root.parent == next_gate.REPO_ROOT / "build" / "qa" / "tmp"
-    assert temp_root.name.startswith(f"run-{next_gate.os.getpid()}-")
+    assert temp_root.parent == expected_parent
+    assert temp_root.name.startswith("vtqa-")
     assert temp_root.is_dir()
+    assert environment[next_gate.QA_TEMP_PARENT_ENV] == str(expected_parent)
+
+
+def test_nested_gate_temp_root_is_a_sibling_not_a_recursive_child(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    outer = tmp_path / "vtqa-outer"
+    outer.mkdir()
+    monkeypatch.setenv(next_gate.QA_TEMP_PARENT_ENV, str(tmp_path))
+    monkeypatch.setenv("TMP", str(outer))
+    monkeypatch.setenv("TEMP", str(outer))
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", None)
+
+    nested = next_gate._qa_temp_dir()
+
+    assert nested.parent == tmp_path
+    assert not nested.is_relative_to(outer)
+
+
+def test_upgrade_smoke_uses_a_short_explicit_pytest_temp_root() -> None:
+    command, cwd = next_gate.stage_command("upgrade-smoke")
+
+    basetemp_index = command.index("--basetemp")
+    assert next_gate.QA_RUN_TEMP_DIR is not None
+    assert command[basetemp_index + 1] == str(next_gate.QA_RUN_TEMP_DIR / "u")
+    assert Path(cwd) == next_gate.REPO_ROOT
+
+
+def test_product_e2e_deepest_plugin_cache_path_stays_below_windows_max_path() -> None:
+    command, _cwd = next_gate.stage_command("product-e2e")
+    evidence_root = Path(command[command.index("--evidence-root") + 1])
+    deepest_path = (
+        evidence_root
+        / "20260729T153642Z"
+        / "11-plugin-mutation"
+        / "runtime"
+        / "local-data"
+        / "workspaces"
+        / "6dcf9c24-5c36-4bf4-ace6-89408a260018"
+        / ".vibetable"
+        / "data"
+        / "state"
+        / "plugin-packages"
+        / ("a" * 52 + ".vtplugin")
+    )
+
+    assert evidence_root.name == "p"
+    assert len(str(deepest_path)) < 260
+
+
+def test_packaged_recovery_tools_are_injected_into_go_interoperability_stages(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "VibeTable.Next"
+    kopia = package_root / "sidecar/tools/kopia.exe"
+    age = package_root / "sidecar/tools/age.exe"
+    kopia.parent.mkdir(parents=True)
+    kopia.touch()
+    age.touch()
+    (package_root / "publish-layout.json").write_text(
+        json.dumps(
+            {
+                "assets": {
+                    "recoveryTools": {
+                        "kopia": "sidecar/tools/kopia.exe",
+                        "age": "sidecar/tools/age.exe",
+                        "ageKeygen": "sidecar/tools/age-keygen.exe",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    for stage in ("go-test", "go-race"):
+        environment = next_gate._stage_environment(stage, ["go"], package_root)
+        assert environment["VIBETABLE_KOPIA_CLI"] == str(kopia.resolve())
+        assert environment["VIBETABLE_AGE_CLI"] == str(age.resolve())
+
+
+def test_source_only_go_stages_do_not_fabricate_recovery_tool_paths() -> None:
+    environment = next_gate._stage_environment("go-test", ["go"])
+
+    assert "VIBETABLE_KOPIA_CLI" not in environment
+    assert "VIBETABLE_AGE_CLI" not in environment
+
+
+def test_release_gate_enables_required_windows_credential_manager_tests() -> None:
+    workflow = (next_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    publish_job = workflow.split("  publish:", maxsplit=1)[1]
+    assert "timeout-minutes: 120" in publish_job.split("    steps:", maxsplit=1)[0]
+    gate_step = workflow.split(
+        "- name: Run complete release eligibility gate",
+        maxsplit=1,
+    )[1].split("- name:", maxsplit=1)[0]
+
+    assert 'VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER: "1"' in gate_step
+    assert "VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY" in gate_step
 
 
 def test_race_stage_batches_every_discovered_integration_test(
@@ -259,6 +399,18 @@ def test_windows_tempdir_cleanup_retry_never_matches_data_race(
     )
 
 
+def test_fault_injection_evidence_uses_isolated_gate_temp(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", tmp_path)
+    command, _cwd = next_gate.stage_command("fault-injection")
+
+    environment = next_gate._stage_environment("fault-injection", command)
+
+    assert environment["VIBETABLE_FAULT_EVIDENCE_ROOT"] == str(tmp_path / "fault-injection")
+
+
 def test_go_test_retries_only_the_narrow_windows_tempdir_cleanup_flake(
     monkeypatch,
 ) -> None:
@@ -266,9 +418,13 @@ def test_go_test_retries_only_the_narrow_windows_tempdir_cleanup_flake(
     monkeypatch.setattr(
         next_gate,
         "stage_command",
-        lambda _stage: (["go", "test", "./..."], "repo"),
+        lambda _stage, package_root=None: (["go", "test", "./..."], "repo"),
     )
-    monkeypatch.setattr(next_gate, "_stage_environment", lambda _stage, _command: {})
+    monkeypatch.setattr(
+        next_gate,
+        "_stage_environment",
+        lambda _stage, _command, package_root=None: {},
+    )
     calls = 0
 
     def run(*_args, **_kwargs):
@@ -336,6 +492,9 @@ def test_stage_report_is_never_release_eligible(
     tmp_path: Path,
     capsys,
 ) -> None:
+    qa_temp = tmp_path / "qa-success"
+    qa_temp.mkdir()
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
     identity = {"sidecar": "a" * 64}
     monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
     monkeypatch.setattr(
@@ -356,7 +515,7 @@ def test_stage_report_is_never_release_eligible(
     monkeypatch.setattr(
         next_gate,
         "run_stage",
-        lambda stage: next_gate.StageResult(
+        lambda stage, package_root=None: next_gate.StageResult(
             stage=stage,
             command=["test"],
             returncode=0,
@@ -378,12 +537,18 @@ def test_stage_report_is_never_release_eligible(
     captured = capsys.readouterr()
     assert captured.out == "stage stdout\n"
     assert captured.err == "stage stderr\n"
+    assert not qa_temp.exists()
+    assert next_gate.QA_RUN_TEMP_DIR is None
 
 
 def test_full_ci_report_is_release_eligible_only_when_identity_stays_stable(
     monkeypatch,
     tmp_path: Path,
+    capsys,
 ) -> None:
+    qa_temp = tmp_path / "qa-failure"
+    qa_temp.mkdir()
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
     hashes = iter(({"sidecar": "a" * 64}, {"sidecar": "b" * 64}))
     monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
     monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
@@ -397,13 +562,48 @@ def test_full_ci_report_is_release_eligible_only_when_identity_stays_stable(
         "release_source_hash",
         lambda _deps: "s" * 64,
     )
-    monkeypatch.setattr(next_gate, "run_ci", lambda: (0, []))
+    monkeypatch.setattr(
+        next_gate,
+        "run_ci",
+        lambda package_root=None, package_archive=None: (0, []),
+    )
     report = tmp_path / "ci.json"
 
-    assert next_gate.main(["--ci", "--json-report", str(report)]) == 1
+    assert next_gate.main(["--ci", *_candidate_args(tmp_path), "--json-report", str(report)]) == 1
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["ok"] is False
     assert payload["releaseEligible"] is False
+    assert qa_temp.is_dir()
+    assert f"QA failure evidence retained at {qa_temp}" in capsys.readouterr().err
+
+
+def test_main_reports_retained_evidence_when_a_stage_raises(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    qa_temp = tmp_path / "qa-exception"
+    qa_temp.mkdir()
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(next_gate.handoff_gate, "artifact_hashes", lambda _deps: {})
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "release_source_hash",
+        lambda _deps: "s" * 64,
+    )
+
+    def raise_stage(_stage, _package_root=None):
+        raise RuntimeError("stage exploded")
+
+    monkeypatch.setattr(next_gate, "run_stage", raise_stage)
+
+    with pytest.raises(RuntimeError, match="stage exploded"):
+        next_gate.main(["--stage", "go-test"])
+
+    assert qa_temp.is_dir()
+    assert f"QA failure evidence retained at {qa_temp}" in capsys.readouterr().err
 
 
 def test_full_ci_report_rejects_source_change_while_gate_is_running(
@@ -423,14 +623,80 @@ def test_full_ci_report_rejects_source_change_while_gate_is_running(
         "release_source_hash",
         lambda _deps: next(source_hashes),
     )
-    monkeypatch.setattr(next_gate, "run_ci", lambda: (0, []))
+    monkeypatch.setattr(
+        next_gate,
+        "run_ci",
+        lambda package_root=None, package_archive=None: (0, []),
+    )
     report = tmp_path / "ci.json"
 
-    assert next_gate.main(["--ci", "--json-report", str(report)]) == 1
+    assert next_gate.main(["--ci", *_candidate_args(tmp_path), "--json-report", str(report)]) == 1
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["ok"] is False
     assert payload["releaseEligible"] is False
     assert payload["sourceHash"] == "b" * 64
+
+
+def test_full_ci_report_is_bound_to_stable_release_candidate(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "artifact_hashes",
+        lambda _deps: {"sidecar": "d" * 64},
+    )
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "release_source_hash",
+        lambda _deps: "s" * 64,
+    )
+    monkeypatch.setattr(
+        next_gate,
+        "run_ci",
+        lambda package_root=None, package_archive=None: (0, []),
+    )
+    report = tmp_path / "ci.json"
+
+    assert next_gate.main(["--ci", *_candidate_args(tmp_path), "--json-report", str(report)]) == 0
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["schemaVersion"] == 2
+    assert payload["releaseEligible"] is True
+    assert payload["releaseCandidate"]["archive"]["sha256"]
+    assert payload["releaseCandidate"]["packageTreeSha256"]
+
+
+def test_full_ci_report_rejects_candidate_mutation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "artifact_hashes",
+        lambda _deps: {"sidecar": "d" * 64},
+    )
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "release_source_hash",
+        lambda _deps: "s" * 64,
+    )
+    candidate_args = _candidate_args(tmp_path)
+    package_root = Path(candidate_args[1])
+
+    def mutate_candidate(_package_root=None, _package_archive=None):
+        (package_root / "candidate.bin").write_bytes(b"mutated")
+        return 0, []
+
+    monkeypatch.setattr(next_gate, "run_ci", mutate_candidate)
+    report = tmp_path / "ci.json"
+    assert next_gate.main(["--ci", *candidate_args, "--json-report", str(report)]) == 1
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["releaseEligible"] is False
+    assert payload["releaseCandidate"] is None
 
 
 def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
@@ -444,6 +710,8 @@ def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
     assert product_command == [
         next_gate.sys.executable,
         "qa/product_acceptance.py",
+        "--evidence-root",
+        str(next_gate.QA_RUN_TEMP_DIR / "p"),
     ]
     assert Path(product_cwd) == next_gate.REPO_ROOT
 

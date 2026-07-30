@@ -25,7 +25,6 @@ import (
 	"github.com/pocketbase/pocketbase/tools/hook"
 
 	"github.com/vibetable/vibetable/sidecar/internal/attachments"
-	"github.com/vibetable/vibetable/sidecar/internal/backup"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -624,16 +623,25 @@ func TestManagedAttachmentsWholeBackupRestorePreservesReferencesHashesContentAnd
 		t.Fatalf("read source attachment: read=%v close=%v", readErr, closeErr)
 	}
 	sourceAudit := attachmentAuditFingerprint(t, fixture.app)
-	service := backup.New(fixture.app, fixture.manager, testBackupReceiptKey)
-	result, err := service.Create(context.Background(), "attachment_fault_backup.zip")
-	if err != nil || !result.Integrity.Valid {
-		t.Fatalf("create whole attachment backup=%#v err=%v", result, err)
+	backupIntegrity, err := fixture.manager.Integrity(
+		context.Background(),
+		fixture.app,
+	)
+	if err != nil || !backupIntegrity.Valid {
+		t.Fatalf("attachment integrity=%#v err=%v", backupIntegrity, err)
+	}
+	const backupName = "attachment_fault_backup.zip"
+	if err := fixture.app.CreateBackup(
+		context.Background(),
+		backupName,
+	); err != nil {
+		t.Fatalf("create PocketBase archive primitive: %v", err)
 	}
 	backupFS, err := fixture.app.NewBackupsFilesystem()
 	if err != nil {
 		t.Fatal(err)
 	}
-	reader, err := backupFS.GetReader(result.Backup.Name)
+	reader, err := backupFS.GetReader(backupName)
 	if err != nil {
 		_ = backupFS.Close()
 		t.Fatal(err)

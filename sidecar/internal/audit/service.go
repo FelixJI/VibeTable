@@ -22,6 +22,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/vibetable/vibetable/sidecar/internal/attachments"
+	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 )
@@ -52,6 +53,7 @@ type Service struct {
 	kernel  MutationKernel
 	schemas SchemaSource
 	files   AttachmentHistory
+	ledger  *auditledger.Ledger
 	secret  []byte
 	now     func() time.Time
 
@@ -103,6 +105,13 @@ func WithAttachmentHistory(history AttachmentHistory) Option {
 	return func(service *Service) { service.files = history }
 }
 
+// WithLedgerHistory makes the append-only external ledger authoritative for
+// history reads and restore targets. It is required for Workspace V2, whose
+// replaceable business database can move backwards during snapshot restore.
+func WithLedgerHistory(ledger *auditledger.Ledger) Option {
+	return func(service *Service) { service.ledger = ledger }
+}
+
 func New(
 	app core.App,
 	kernel MutationKernel,
@@ -147,19 +156,11 @@ func (service *Service) ReadChangeSets(
 	if recordID == nil && (params.Scope == "row" || params.Scope == "cell") {
 		recordID = params.ItemID
 	}
-	filter := "table_id={:table}"
-	bindings := dbx.Params{"table": params.TableID}
-	if recordID != nil {
-		filter += " && record_id={:record}"
-		bindings["record"] = *recordID
-	}
-	if params.ActorID != nil {
-		filter += " && actor_id={:actor}"
-		bindings["actor"] = *params.ActorID
-	}
-	events, err := service.app.FindRecordsByFilter(
-		"vibetable_audit_events", filter,
-		"-data_revision,-sequence", maxHistoryScanEvents+1, 0, bindings,
+	events, err := service.readHistoryEvents(
+		ctx,
+		params.TableID,
+		recordID,
+		params.ActorID,
 	)
 	if err != nil {
 		return Page{}, historyError("history.storage_failed", "history could not be read", true)
@@ -237,7 +238,7 @@ func (service *Service) PreviewRestore(
 	if err != nil {
 		return Preview{}, err
 	}
-	event, err := service.app.FindRecordById("vibetable_audit_events", params.TargetRevision)
+	event, err := service.findHistoryEvent(ctx, params.TargetRevision)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Preview{}, historyError("target_revision_invalid", "target revision was not found", false)

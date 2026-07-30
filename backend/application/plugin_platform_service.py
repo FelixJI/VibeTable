@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import shutil
 import uuid
@@ -366,9 +367,13 @@ class PluginPlatformService:
     def _retain_package(self, plan: InstallPlan) -> Path:
         digest = plan.package_hash.removeprefix("sha256:")
         # The package hash already binds the manifest (including pluginId), so
-        # a flat content-addressed cache is collision-safe and avoids pushing
-        # valid Windows E2E/user-data roots beyond MAX_PATH.
-        destination = self._package_cache / f"{digest}.vtplugin"
+        # a flat content-addressed cache is collision-safe. Lowercase Base32
+        # retains all 256 digest bits and remains unique on case-insensitive
+        # Windows filesystems while saving 12 characters versus hex.
+        compact_digest = (
+            base64.b32encode(bytes.fromhex(digest)).rstrip(b"=").decode("ascii").lower()
+        )
+        destination = self._package_cache / f"{compact_digest}.vtplugin"
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.is_file():
             if inspect_plugin_package(destination).package_hash != plan.package_hash:

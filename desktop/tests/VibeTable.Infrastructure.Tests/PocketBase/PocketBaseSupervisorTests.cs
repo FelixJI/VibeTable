@@ -6,6 +6,33 @@ namespace VibeTable.Infrastructure.Tests.PocketBase;
 public sealed class PocketBaseSupervisorTests
 {
     [TestMethod]
+    public async Task StartAsync_PreservesWorkspaceAuthorityEnvironment()
+    {
+        PocketBaseLaunchOptions options = Options();
+        options.Environment["VIBETABLE_WORKSPACE_ID"] =
+            "11111111-1111-4111-8111-111111111111";
+        options.Environment["VIBETABLE_WORKSPACE_SESSION_EPOCH"] = "17";
+        options.Environment["VIBETABLE_WORKSPACE_FENCE_EPOCH"] = "3";
+        options.Environment["VIBETABLE_WORKSPACE_CLAIM_ID"] =
+            "22222222-2222-4222-8222-222222222222";
+        var process = FakePocketBaseProcess.Ready(ReadyRecord());
+        var factory = new FakePocketBaseProcessFactory(process);
+        await using var supervisor = new PocketBaseSupervisor(
+            options,
+            factory,
+            new FakePocketBaseHealthProbe(isHealthy: true));
+
+        await supervisor.StartAsync(CancellationToken.None);
+
+        PocketBaseProcessStartRequest request = factory.Requests.Single();
+        foreach ((string key, string value) in options.Environment)
+            Assert.AreEqual(value, request.Environment[key]);
+        Assert.AreEqual(
+            64,
+            request.Environment["VIBETABLE_SIDECAR_SESSION_SECRET"].Length);
+    }
+
+    [TestMethod]
     public async Task StartAsync_UsesEnvironmentSecretAndValidatesStructuredHealth()
     {
         var process = FakePocketBaseProcess.Ready(ReadyRecord());

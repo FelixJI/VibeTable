@@ -44,7 +44,7 @@
       "requires": {
         "selection": "none"
       },
-      "workerEntry": "dist/allowed.js",
+      "workerEntry": "workers/allowed.js",
       "formSchema": "schemas/empty.json",
       "inputSchema": "schemas/empty.json",
       "outputSchema": "schemas/result.json"
@@ -64,7 +64,7 @@
       "requires": {
         "selection": "none"
       },
-      "workerEntry": "dist/denied.js",
+      "workerEntry": "workers/denied.js",
       "formSchema": "schemas/empty.json",
       "inputSchema": "schemas/empty.json",
       "outputSchema": "schemas/result.json"

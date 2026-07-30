@@ -1,0 +1,199 @@
+using System.IO;
+using System.Text.Json;
+using VibeTable.Contracts;
+using VibeTable.Infrastructure.Workspace;
+
+namespace VibeTable.Desktop.Services;
+
+/// <summary>
+/// Release gate backed by the packaged provider-support matrix and a real
+/// durable write/rename probe. Cloud and user-marked-sync classification can
+/// only be supplied explicitly by a trusted native source.
+/// </summary>
+public sealed class WorkspaceProviderPolicy
+{
+    private static readonly IReadOnlyDictionary<string, WorkspaceStorageKind>
+        ProviderKinds = new Dictionary<string, WorkspaceStorageKind>(
+            StringComparer.Ordinal)
+        {
+            ["fixed"] = WorkspaceStorageKind.Fixed,
+            ["network"] = WorkspaceStorageKind.Network,
+            ["registeredCloud"] = WorkspaceStorageKind.RegisteredCloud,
+            ["userMarkedSync"] = WorkspaceStorageKind.UserMarkedSync,
+            ["removable"] = WorkspaceStorageKind.Removable,
+        };
+
+    private readonly IReadOnlyDictionary<
+        WorkspaceStorageKind,
+        ProviderRule> _rules;
+    private readonly Func<
+        string,
+        bool,
+        IEnumerable<string>?,
+        WorkspaceStorageObservation> _probe;
+
+    private WorkspaceProviderPolicy(
+        IReadOnlyDictionary<WorkspaceStorageKind, ProviderRule> rules,
+        Func<
+            string,
+            bool,
+            IEnumerable<string>?,
+            WorkspaceStorageObservation>? probe = null)
+    {
+        _rules = rules;
+        var storageProbe = new WorkspaceStorageProbe();
+        _probe = probe ?? storageProbe.Probe;
+    }
+
+    public static WorkspaceProviderPolicy Load(string baseDirectory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseDirectory);
+        string? path = FindPolicy(baseDirectory);
+        if (path is null)
+            throw new WorkspaceRegistryException(
+                "workspace.provider_policy_missing",
+                "The packaged provider support policy is missing.");
+        using JsonDocument document = JsonDocument.Parse(
+            File.ReadAllText(path));
+        JsonElement root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object
+            || root.GetProperty("contractVersion").GetString() != "2.0"
+            || !root.TryGetProperty("providers", out JsonElement providers)
+            || providers.ValueKind != JsonValueKind.Object)
+        {
+            throw InvalidPolicy();
+        }
+
+        var rules = new Dictionary<WorkspaceStorageKind, ProviderRule>();
+        foreach ((string providerName, WorkspaceStorageKind kind)
+                 in ProviderKinds)
+        {
+            if (!providers.TryGetProperty(
+                    providerName,
+                    out JsonElement provider)
+                || provider.ValueKind != JsonValueKind.Object
+                || !provider.TryGetProperty(
+                    "creation",
+                    out JsonElement creation)
+                || creation.ValueKind != JsonValueKind.String
+                || !provider.TryGetProperty(
+                    "coordinationStrength",
+                    out JsonElement coordination)
+                || coordination.ValueKind != JsonValueKind.String)
+            {
+                throw InvalidPolicy();
+            }
+            WorkspaceCoordinationStrength expected = kind ==
+                WorkspaceStorageKind.Fixed
+                    ? WorkspaceCoordinationStrength.Strong
+                    : WorkspaceCoordinationStrength.Advisory;
+            string expectedName = expected ==
+                WorkspaceCoordinationStrength.Strong
+                    ? "strong"
+                    : "advisory";
+            if (coordination.GetString() != expectedName)
+                throw InvalidPolicy();
+            rules.Add(
+                kind,
+                new ProviderRule(
+                    creation.GetString() == "enabled",
+                    expected));
+        }
+        if (providers.EnumerateObject().Any(
+                provider => !ProviderKinds.ContainsKey(provider.Name)))
+            throw InvalidPolicy();
+        return new WorkspaceProviderPolicy(rules);
+    }
+
+    internal static WorkspaceProviderPolicy CreateForTests(
+        IReadOnlyDictionary<WorkspaceStorageKind, bool> enabled,
+        Func<
+            string,
+            bool,
+            IEnumerable<string>?,
+            WorkspaceStorageObservation> probe)
+        => new(
+            Enum.GetValues<WorkspaceStorageKind>()
+                .ToDictionary(
+                    kind => kind,
+                    kind => new ProviderRule(
+                        enabled.TryGetValue(kind, out bool allowed) && allowed,
+                        kind == WorkspaceStorageKind.Fixed
+                            ? WorkspaceCoordinationStrength.Strong
+                            : WorkspaceCoordinationStrength.Advisory)),
+            probe);
+
+    public WorkspaceStorageObservation ProbeAndEnsureSupported(
+        string root,
+        bool userMarkedSync = false,
+        IEnumerable<string>? registeredCloudRoots = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        WorkspaceStorageObservation observation = _probe(
+            Path.GetFullPath(root),
+            userMarkedSync,
+            registeredCloudRoots);
+        if (!_rules.TryGetValue(
+                observation.StorageKind,
+                out ProviderRule? rule)
+            || !rule.CreationEnabled)
+        {
+            throw new WorkspaceRegistryException(
+                "workspace.provider_blocked",
+                "This storage provider is blocked until its hardware lab evidence is release-eligible.");
+        }
+        if (rule.CoordinationStrength != observation.CoordinationStrength)
+            throw InvalidPolicy();
+        return observation;
+    }
+
+    public WorkspaceStorageObservation ProbeCreateTargetAndEnsureSupported(
+        string root,
+        bool userMarkedSync = false)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        string fullPath = Path.GetFullPath(root);
+        bool created = !Directory.Exists(fullPath);
+        Directory.CreateDirectory(fullPath);
+        try
+        {
+            return ProbeAndEnsureSupported(
+                fullPath,
+                userMarkedSync);
+        }
+        finally
+        {
+            if (created
+                && Directory.Exists(fullPath)
+                && !Directory.EnumerateFileSystemEntries(fullPath).Any())
+                Directory.Delete(fullPath);
+        }
+    }
+
+    private static WorkspaceRegistryException InvalidPolicy()
+        => new(
+            "workspace.provider_policy_invalid",
+            "The packaged provider support policy is invalid.");
+
+    private static string? FindPolicy(string baseDirectory)
+    {
+        string start = Path.GetFullPath(baseDirectory);
+        for (DirectoryInfo? current = new(start);
+             current is not null;
+             current = current.Parent)
+        {
+            string direct = Path.Combine(
+                current.FullName,
+                "contracts",
+                "v2",
+                "provider-support.json");
+            if (File.Exists(direct))
+                return direct;
+        }
+        return null;
+    }
+
+    private sealed record ProviderRule(
+        bool CreationEnabled,
+        WorkspaceCoordinationStrength CoordinationStrength);
+}

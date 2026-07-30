@@ -3,9 +3,15 @@ import { createPinia, setActivePinia } from "pinia";
 import { createHostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { useRevisionHistoryService } from "./revisionHistoryService";
+import {
+  setWorkspaceV2UiPort,
+  type WorkspaceV2UiPort,
+} from "./workspaceV2UiPort";
 import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
-import type { BridgeMessage, HistoryPage, RestorePreview } from "@/contracts";
+import type { BridgeMessage, HistoryPage, RestorePreview, RestoreResult } from "@/contracts";
+import type { WorkspaceRegistryEntryV2 } from "@/contracts/workspaceV2";
 
 function setupBridge() {
   const posted: BridgeMessage[] = [];
@@ -45,6 +51,7 @@ describe("revisionHistoryService", () => {
   afterEach(() => {
     for (const bridge of activeBridges.splice(0)) bridge.stop();
     setHostBridgeForTesting(null);
+    setWorkspaceV2UiPort(null);
   });
 
   it("opens the selected cell scope and posts a server-side filtered query", () => {
@@ -148,6 +155,230 @@ describe("revisionHistoryService", () => {
       payload: { collection: "orders", itemId: "42", token: "token-1" },
     });
     expect(store.restorePhase).toBe("applying");
+  });
+
+  it("uses Workspace V2 restore RPCs when the dedicated capability is active", async () => {
+    const harness = setupBridge();
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const sessionStore = useWorkspaceSessionStore();
+    const workspaceEntry: WorkspaceRegistryEntryV2 = {
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      displayName: "项目 A",
+      selectedRoot: "D:\\Workspaces\\A",
+      activityRoot: null,
+      storageKind: "fixed",
+      coordinationStrength: "strong",
+      lastOpenedAt: null,
+      lastKnownHealth: "healthy",
+      lastSnapshotAt: null,
+      lastSyncAt: null,
+      pendingSync: false,
+    };
+    sessionStore.configureCapabilities([
+      "workspace.session.v2",
+      "history.restore.v2",
+    ]);
+    sessionStore.setWorkspaces([workspaceEntry]);
+    sessionStore.applySession({
+      contractVersion: "2.0",
+      workspaceId: workspaceEntry.workspaceId,
+      sessionEpoch: 7,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+    const preview: RestorePreview = {
+      collection: "orders",
+      itemId: "42",
+      scope: "cell",
+      field: "status",
+      targetRevision: "r1",
+      currentHash: "hash",
+      schemaRevision: "schema",
+      scalarChanges: [{ field: "status", before: "done", after: "new" }],
+      relationChanges: [],
+      diagnostics: [],
+      canApply: true,
+      restorableFields: ["status"],
+      token: "token-v2",
+      expiresAt: "2026-07-22T09:00:00Z",
+    };
+    const applied: RestoreResult & { mutationRevision: number } = {
+      collection: "orders",
+      itemId: "42",
+      restoredToRevision: "r1",
+      newRevisionId: "r2",
+      item: { id: "42", status: "new" },
+      mutationRevision: 1,
+    };
+    const page: HistoryPage = {
+      collection: "orders",
+      scope: "cell",
+      itemId: "42",
+      field: "status",
+      changeSets: [],
+      total: 0,
+      hasMore: false,
+      capabilityHash: "sha256:capability",
+      schemaRevision: "schema:1",
+      archivedDefaultRevisionIds: {},
+    };
+    const request = vi.fn(async (action: { method: string }) => {
+      if (action.method === "history.query") return page;
+      return action.method === "history.previewRestore" ? preview : applied;
+    });
+    setWorkspaceV2UiPort({ request } as unknown as WorkspaceV2UiPort);
+    const store = useRevisionHistoryStore();
+    const service = useRevisionHistoryService();
+    service.open({ scope: "cell", itemId: "42", field: "status" });
+    await vi.waitFor(() => expect(store.phase).toBe("empty"));
+    expect(request).toHaveBeenCalledWith({
+      method: "history.query",
+      params: {
+        collection: "orders",
+        scope: "cell",
+        itemId: "42",
+        field: "status",
+        search: "",
+        dateFrom: null,
+        dateTo: null,
+        actorId: null,
+        actions: [],
+        recordId: null,
+        limit: 50,
+        offset: 0,
+      },
+    });
+    expect(harness.posted).toHaveLength(0);
+    const legacyMessagesBeforePreview = harness.posted.length;
+
+    service.previewRestore({ itemId: "42", revisionId: "r1", field: "status" });
+    await vi.waitFor(() => expect(store.restorePhase).toBe("ready"));
+    expect(request).toHaveBeenLastCalledWith({
+      method: "history.previewRestore",
+      params: {
+        collection: "orders",
+        itemId: "42",
+        targetRevision: "r1",
+        scope: "cell",
+        field: "status",
+      },
+    });
+    expect(harness.posted).toHaveLength(legacyMessagesBeforePreview);
+
+    service.applyRestore();
+    await vi.waitFor(() => expect(store.restorePhase).toBe("idle"));
+    expect(request).toHaveBeenLastCalledWith({
+      method: "history.applyRestore",
+      params: {
+        collection: "orders",
+        itemId: "42",
+        token: "token-v2",
+      },
+    });
+    expect(store.lastApplied?.item.status).toBe("new");
+  });
+
+  it("fails V2 history queries closed without falling back to legacy history", async () => {
+    const harness = setupBridge();
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const sessionStore = useWorkspaceSessionStore();
+    const workspaceEntry: WorkspaceRegistryEntryV2 = {
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      displayName: "项目 A",
+      selectedRoot: "D:\\Workspaces\\A",
+      activityRoot: null,
+      storageKind: "fixed",
+      coordinationStrength: "strong",
+      lastOpenedAt: null,
+      lastKnownHealth: "healthy",
+      lastSnapshotAt: null,
+      lastSyncAt: null,
+      pendingSync: false,
+    };
+    sessionStore.configureCapabilities(["workspace.session.v2"]);
+    sessionStore.setWorkspaces([workspaceEntry]);
+    sessionStore.applySession({
+      contractVersion: "2.0",
+      workspaceId: workspaceEntry.workspaceId,
+      sessionEpoch: 7,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+
+    const store = useRevisionHistoryStore();
+    useRevisionHistoryService().open({ scope: "table" });
+
+    await vi.waitFor(() => expect(store.phase).toBe("failed"));
+    expect(store.lastError).toContain("workspace.history_restore_unavailable");
+    expect(harness.posted).toHaveLength(0);
+  });
+
+  it("fails closed when V2 history capability is absent or its method is rejected", async () => {
+    const harness = setupBridge();
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const sessionStore = useWorkspaceSessionStore();
+    const workspaceEntry: WorkspaceRegistryEntryV2 = {
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      displayName: "项目 A",
+      selectedRoot: "D:\\Workspaces\\A",
+      activityRoot: null,
+      storageKind: "fixed",
+      coordinationStrength: "strong",
+      lastOpenedAt: null,
+      lastKnownHealth: "healthy",
+      lastSnapshotAt: null,
+      lastSyncAt: null,
+      pendingSync: false,
+    };
+    sessionStore.configureCapabilities(["workspace.session.v2"]);
+    sessionStore.setWorkspaces([workspaceEntry]);
+    sessionStore.applySession({
+      contractVersion: "2.0",
+      workspaceId: workspaceEntry.workspaceId,
+      sessionEpoch: 7,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+    const store = useRevisionHistoryStore();
+    const service = useRevisionHistoryService();
+    service.open({ scope: "row", itemId: "42" });
+    const legacyMessagesBeforePreview = harness.posted.length;
+    service.previewRestore({ itemId: "42", revisionId: "r1" });
+    await vi.waitFor(() => expect(store.restorePhase).toBe("failed"));
+    expect(store.restoreError).toContain("workspace.history_restore_unavailable");
+    expect(harness.posted).toHaveLength(legacyMessagesBeforePreview);
+
+    sessionStore.configureCapabilities([
+      "workspace.session.v2",
+      "history.restore.v2",
+    ]);
+    const request = vi.fn().mockRejectedValue(
+      new Error("workspace.method_not_found"),
+    );
+    setWorkspaceV2UiPort({ request } as unknown as WorkspaceV2UiPort);
+    service.previewRestore({ itemId: "42", revisionId: "r1" });
+    await vi.waitFor(() =>
+      expect(store.restoreError).toContain("workspace.method_not_found"));
+    expect(request).toHaveBeenCalledOnce();
+    expect(harness.posted).toHaveLength(legacyMessagesBeforePreview);
   });
 
   it("surfaces capability and optimistic-lock failures in distinct states", async () => {

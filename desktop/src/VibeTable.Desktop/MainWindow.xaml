@@ -23,7 +23,7 @@
             AllowExternalDrop="True"
             Visibility="{Binding IsWebViewVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
 
-        <!-- Host fallback exists only while bootstrapping or after a fatal fault. -->
+        <!-- Host fallback exists only before the shell loads or after a renderer fault. -->
         <Grid Panel.ZIndex="30" Background="#F7F8FA"
               Visibility="{Binding IsHostFallbackVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
             <StackPanel Width="440" HorizontalAlignment="Center" VerticalAlignment="Center">

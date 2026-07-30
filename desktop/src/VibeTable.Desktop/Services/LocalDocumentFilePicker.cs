@@ -18,28 +18,6 @@ public enum DocumentFilePickPurpose
     RelinkMissing,
 }
 
-public sealed record DocumentImportRequest(
-    string WorkspaceId,
-    string? FolderId,
-    string? ItemCollection = null,
-    string? ItemId = null,
-    string LinkType = "attachment");
-
-public sealed record DocumentImportResult(
-    string DocumentId,
-    string WorkspaceId,
-    string? FolderId,
-    string DisplayName,
-    string MimeType,
-    string SchemeId,
-    string RevisionId,
-    string? LinkId);
-
-public sealed record DocumentRelinkResult(
-    string DocumentId,
-    string WorkspaceId,
-    string DisplayName);
-
 public sealed class DocumentFileOperationException : InvalidOperationException
 {
     public DocumentFileOperationException(string message, string code)

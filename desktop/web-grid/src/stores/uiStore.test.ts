@@ -52,9 +52,11 @@ describe("uiStore", () => {
   it("starts on Home and persists product preferences", () => {
     const s = useUiStore();
     expect(s.activeView).toBe("home");
+    expect(s.workspaceStartupPolicy).toBe("lastWorkspace");
     expect(s.dailyQuoteSource).toBe("builtin");
     s.navigate("settings");
     s.setStartupPage("tables");
+    s.setWorkspaceStartupPolicy("workspaceCenter");
     s.setShowDailyQuote(false);
     s.setShowMiniCalendar(false);
     s.setAdminFloatingButton(false);
@@ -63,6 +65,7 @@ describe("uiStore", () => {
     s.setDensity("compact");
     expect(s.activeView).toBe("settings");
     expect(localStorage.getItem("vt:startup-page")).toBe("tables");
+    expect(localStorage.getItem("vt:workspace-startup-policy")).toBe("workspaceCenter");
     expect(localStorage.getItem("vt:show-daily-quote")).toBe("false");
     expect(localStorage.getItem("vt:show-mini-calendar")).toBe("false");
     expect(localStorage.getItem("vt:admin-floating-button")).toBe("false");

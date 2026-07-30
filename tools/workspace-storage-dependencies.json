@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "recoveryToolLock": "tools/recovery-tools/go.mod",
+  "recoveryToolSums": "tools/recovery-tools/go.sum",
+  "dependencies": {
+    "kopia": {
+      "module": "github.com/kopia/kopia",
+      "license": "Apache-2.0",
+      "source": "https://github.com/kopia/kopia",
+      "integration": "public CLI and public repo.RepositoryWriter surface only"
+    },
+    "age": {
+      "module": "filippo.io/age",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/FiloSottile/age",
+      "integration": "public Go API with bundled official CLI interoperability"
+    },
+    "sqlite": {
+      "module": "modernc.org/sqlite",
+      "version": "v1.54.0",
+      "license": "BSD-3-Clause",
+      "integration": "fixed read view and online backup spike"
+    }
+  }
+}

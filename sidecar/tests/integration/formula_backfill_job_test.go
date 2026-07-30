@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -148,6 +149,20 @@ func TestFormulaBackfillJobRecalculatesAndMarksMetadataReady(t *testing.T) {
 	hub := realtime.New(app)
 	service := jobs.New(app, kernel, jobs.WithTaskPublisher(hub))
 	defer service.Shutdown()
+	batchGateCalls := 0
+	service.SetBusinessWriteGate(func(
+		ctx context.Context,
+		kind string,
+		identity string,
+		apply func(context.Context) error,
+	) error {
+		batchGateCalls++
+		if kind != "formula.backfill.batch" ||
+			!strings.HasPrefix(identity, "job_") {
+			t.Fatalf("background write gate = %q %q", kind, identity)
+		}
+		return apply(ctx)
+	})
 	started, err := service.StartFormulaBackfill(
 		ctx, "job_notes", definition.SchemaRevision,
 	)
@@ -157,6 +172,9 @@ func TestFormulaBackfillJobRecalculatesAndMarksMetadataReady(t *testing.T) {
 	}
 	if err := service.Run(ctx, started.JobID); err != nil {
 		t.Fatalf("run formula backfill: %#v", err)
+	}
+	if batchGateCalls != 1 {
+		t.Fatalf("coordinated backfill batches = %d", batchGateCalls)
 	}
 	completed, err := service.Get(ctx, started.JobID)
 	if err != nil || completed.State != "complete" ||
@@ -676,9 +694,28 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 		mutation.MetadataSchemaSource{},
 	)
 	restarted := jobs.New(app, realKernel)
+	fanoutGate := make(chan [2]string, 1)
+	restarted.SetBusinessWriteGate(func(
+		ctx context.Context,
+		kind string,
+		identity string,
+		apply func(context.Context) error,
+	) error {
+		fanoutGate <- [2]string{kind, identity}
+		return apply(ctx)
+	})
 	defer restarted.Shutdown()
 	restarted.ResumePending(ctx)
 	waitForJobState(t, restarted, job.Id, "complete")
+	select {
+	case observed := <-fanoutGate:
+		if observed[0] != "formula.fanout.batch" ||
+			!strings.HasPrefix(observed[1], "fanout_") {
+			t.Fatalf("fanout write gate = %#v", observed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fanout batch bypassed the business write gate")
+	}
 	updated, err := app.FindRecordById(collection, row.Id)
 	if err != nil || updated.GetString("title") != "unchanged" {
 		t.Fatalf("resumed fan-out record = %#v, err=%v", updated, err)

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -11,7 +10,9 @@ namespace VibeTable.Desktop.Services;
 internal sealed record ProductDataRpcEndpoint(
     string Type,
     Func<JsonElement, bool> IsValidPayload,
-    Func<IProductDataRpcGateway, JsonElement, CancellationToken, Task<JsonElement>> InvokeAsync);
+    Func<IProductDataRpcGateway, JsonElement, CancellationToken, Task<JsonElement>> InvokeAsync,
+    bool MutatesWorkspace = false,
+    bool RequiresProtectionSnapshot = false);
 
 /// <summary>
 /// Closed renderer-to-product dispatch table. The renderer chooses a complete
@@ -21,10 +22,6 @@ internal static class ProductDataRpcRegistry
 {
     private const int MaxPayloadDepth = 32;
     private const int MaxPayloadNodes = 10_000;
-    private static readonly Regex BackupNamePattern = new(
-        @"^[a-z0-9][a-z0-9_-]{0,62}\.zip$",
-        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
-
     private static readonly ProductDataRpcEndpoint[] RegisteredEndpoints =
     [
         new("field.settings.describe", p => Safe(p)
@@ -39,14 +36,18 @@ internal static class ProductDataRpcRegistry
                 "confirmation", "backupReceipt")
             && HasStrings(p, "action", "tableId", "expectedSchemaRevision")
             && HasObject(p, "actor"),
-            (g, p, t) => g.PlanFieldChangeAsync(p, t)),
+            (g, p, t) => g.PlanFieldChangeAsync(p, t),
+            MutatesWorkspace: true,
+            RequiresProtectionSnapshot: true),
         new("field.change.apply", p => Safe(p)
             && HasExactProperties(
                 p, "planId", "planHash", "operationId", "actor", "confirmations")
             && HasStrings(p, "planId", "planHash", "operationId")
             && HasObject(p, "actor")
             && HasArray(p, "confirmations"),
-            (g, p, t) => g.ApplyFieldChangeAsync(p, t)),
+            (g, p, t) => g.ApplyFieldChangeAsync(p, t),
+            MutatesWorkspace: true,
+            RequiresProtectionSnapshot: true),
         new("field.change.status", p => Safe(p)
             && HasExactProperties(p, "jobId")
             && HasString(p, "jobId"),
@@ -54,7 +55,8 @@ internal static class ProductDataRpcRegistry
         new("field.change.cancel", p => Safe(p)
             && HasExactProperties(p, "jobId")
             && HasString(p, "jobId"),
-            (g, p, t) => g.CancelFieldChangeAsync(p, t)),
+            (g, p, t) => g.CancelFieldChangeAsync(p, t),
+            MutatesWorkspace: true),
         new("field.recycleBin.list", p => Safe(p)
             && HasExactProperties(p, "tableId")
             && HasString(p, "tableId"),
@@ -66,17 +68,23 @@ internal static class ProductDataRpcRegistry
         new("mutation.preview", p => Safe(p) && HasString(p, "tableId") && HasArray(p, "operations"),
             (g, p, t) => g.PreviewMutationAsync(p, t)),
         new("mutation.apply", p => Safe(p) && HasString(p, "tableId") && HasArray(p, "operations"),
-            (g, p, t) => g.ApplyMutationAsync(p, t)),
+            (g, p, t) => g.ApplyMutationAsync(p, t),
+            MutatesWorkspace: true),
         new("data.previewImport", p => Safe(p) && HasStrings(p, "grantId", "collection", "schemaRevision"),
             (g, p, t) => g.PreviewImportAsync(p, t)),
         new("data.applyImport", p => Safe(p) && HasStrings(p, "grantId", "collection", "token"),
-            (g, p, t) => g.ApplyImportAsync(p, t)),
+            (g, p, t) => g.ApplyImportAsync(p, t),
+            MutatesWorkspace: true,
+            RequiresProtectionSnapshot: true),
         new("data.export", p => Safe(p) && HasStrings(p, "grantId", "collection") && HasObject(p, "query"),
             (g, p, t) => g.ExportAsync(p, t)),
         new("task.create", p => Safe(p) && HasString(p, "kind") && HasObject(p, "params"),
-            (g, p, t) => g.CreateTaskAsync(p, t)),
+            (g, p, t) => g.CreateTaskAsync(p, t),
+            MutatesWorkspace: true,
+            RequiresProtectionSnapshot: true),
         new("task.cancel", p => Safe(p) && HasString(p, "taskId"),
-            (g, p, t) => g.CancelTaskAsync(p, t)),
+            (g, p, t) => g.CancelTaskAsync(p, t),
+            MutatesWorkspace: true),
         new("task.status", p => Safe(p) && HasString(p, "taskId"),
             (g, p, t) => g.GetTaskStatusAsync(p, t)),
         new("formula.validate", p => Safe(p) && HasObject(p, "definition"),
@@ -92,30 +100,28 @@ internal static class ProductDataRpcRegistry
         new("preset.list", p => Safe(p) && HasString(p, "collection"),
             (g, p, t) => g.ListPresetsAsync(p, t)),
         new("preset.save", p => Safe(p) && HasStrings(p, "collection", "name", "operationId") && HasObject(p, "view"),
-            (g, p, t) => g.SavePresetAsync(p, t)),
+            (g, p, t) => g.SavePresetAsync(p, t),
+            MutatesWorkspace: true),
         new("preset.delete", p => Safe(p) && HasStrings(p, "presetId", "expectedRevision", "operationId"),
-            (g, p, t) => g.DeletePresetAsync(p, t)),
+            (g, p, t) => g.DeletePresetAsync(p, t),
+            MutatesWorkspace: true),
         new("version.list", p => Safe(p) && HasStrings(p, "collection", "itemId"),
             (g, p, t) => g.ListVersionsAsync(p, t)),
         new("version.create", p => Safe(p) && HasStrings(p, "collection", "itemId", "operationId"),
-            (g, p, t) => g.CreateVersionAsync(p, t)),
+            (g, p, t) => g.CreateVersionAsync(p, t),
+            MutatesWorkspace: true),
         new("version.save", p => Safe(p) && HasStrings(p, "collection", "itemId", "versionId", "operationId") && HasObject(p, "values"),
-            (g, p, t) => g.SaveVersionAsync(p, t)),
+            (g, p, t) => g.SaveVersionAsync(p, t),
+            MutatesWorkspace: true),
         new("version.compare", p => Safe(p) && HasStrings(p, "collection", "itemId", "versionId"),
             (g, p, t) => g.CompareVersionAsync(p, t)),
         new("version.promote", p => Safe(p) && HasStrings(p, "collection", "itemId", "versionId", "mainHash", "operationId"),
-            (g, p, t) => g.PromoteVersionAsync(p, t)),
+            (g, p, t) => g.PromoteVersionAsync(p, t),
+            MutatesWorkspace: true,
+            RequiresProtectionSnapshot: true),
         new("version.delete", p => Safe(p) && HasStrings(p, "collection", "itemId", "versionId", "expectedRevision", "operationId"),
-            (g, p, t) => g.DeleteVersionAsync(p, t)),
-        new("backup.list", p => Safe(p) && HasExactProperties(p),
-            (g, p, t) => g.ListBackupsAsync(p, t)),
-        new("backup.create", p => Safe(p) && HasExactProperties(p, "name") && HasBackupName(p),
-            (g, p, t) => g.CreateBackupAsync(p, t)),
-        new("backup.delete", p => Safe(p) && HasExactProperties(p, "name") && HasBackupName(p),
-            (g, p, t) => g.DeleteBackupAsync(p, t)),
-        new("backup.restore", p => Safe(p) && HasExactProperties(p, "name", "confirmed")
-            && HasBackupName(p) && HasTrue(p, "confirmed"),
-            (g, p, t) => g.RestoreBackupAsync(p, t)),
+            (g, p, t) => g.DeleteVersionAsync(p, t),
+            MutatesWorkspace: true),
     ];
 
     private static readonly IReadOnlyDictionary<string, ProductDataRpcEndpoint> ByType =
@@ -186,10 +192,6 @@ internal static class ProductDataRpcRegistry
         => payload.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Object;
     private static bool HasTrue(JsonElement payload, string name)
         => payload.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
-    private static bool HasBackupName(JsonElement payload)
-        => payload.TryGetProperty("name", out var value)
-            && value.ValueKind == JsonValueKind.String
-            && BackupNamePattern.IsMatch(value.GetString()!);
     private static bool HasOptionalString(JsonElement payload, string name)
         => !payload.TryGetProperty(name, out var value)
             || value.ValueKind == JsonValueKind.String;

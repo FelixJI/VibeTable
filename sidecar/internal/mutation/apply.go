@@ -17,11 +17,13 @@ import (
 	validation "github.com/pocketbase/ozzo-validation/v4"
 	"github.com/pocketbase/pocketbase/core"
 	pbtypes "github.com/pocketbase/pocketbase/tools/types"
+	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 const (
@@ -63,7 +65,16 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 
 	var receipt Receipt
 	var emittedEventIDs []string
-	err = kernel.app.RunInTransaction(func(txApp core.App) error {
+	err = kernel.app.RunInTransaction(func(txApp core.App) (transactionErr error) {
+		defer func() {
+			if transactionErr == nil {
+				transactionErr = writecoordinator.PersistPocketBaseReceipt(
+					ctx,
+					txApp,
+					kernel.now(),
+				)
+			}
+		}()
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -165,7 +176,7 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 				return err
 			}
 			if err := saveAudit(
-				txApp, changeSetID, index+1, request, definition,
+				ctx, txApp, changeSetID, index+1, request, definition,
 				recordID, operation.Kind, before, after, dataRevision+1, kernel.now(),
 			); err != nil {
 				return err
@@ -809,6 +820,7 @@ func committedRowRevision(
 }
 
 func saveAudit(
+	ctx context.Context,
 	app core.App,
 	changeSetID string,
 	sequence int,
@@ -860,6 +872,92 @@ func saveAudit(
 	}
 	record.Set("occurred_at", occurredAt.UTC())
 	if err := app.Save(record); err != nil {
+		return storageFailure()
+	}
+	return saveAuditOutbox(
+		ctx,
+		app,
+		record.Id,
+		changeSetID,
+		sequence,
+		request,
+		recordID,
+		operation,
+		before,
+		after,
+		schemaRevision,
+		dataRevision,
+		occurredAt,
+	)
+}
+
+func saveAuditOutbox(
+	ctx context.Context,
+	app core.App,
+	revisionID string,
+	changeSetID string,
+	sequence int,
+	request Request,
+	recordID string,
+	operation OperationKind,
+	before, after map[string]any,
+	schemaRevision int64,
+	dataRevision int64,
+	occurredAt time.Time,
+) error {
+	collection, err := app.FindCollectionByNameOrId("vibetable_audit_outbox")
+	if err != nil {
+		return storageFailure()
+	}
+	var sourceSequence int64
+	sourceEpoch := "business-v2"
+	if coordinatedEpoch, ok := writecoordinator.BusinessAuditSourceEpoch(
+		ctx,
+	); ok {
+		sourceEpoch = coordinatedEpoch
+	}
+	if err := app.DB().NewQuery(`
+		SELECT COALESCE(MAX(source_sequence), 0) + 1
+		FROM vibetable_audit_outbox
+		WHERE source_epoch = {:epoch}
+	`).Bind(dbx.Params{
+		"epoch": sourceEpoch,
+	}).Row(&sourceSequence); err != nil || sourceSequence <= 0 {
+		return storageFailure()
+	}
+	payload, err := json.Marshal(map[string]any{
+		"revisionId":  revisionID,
+		"changeSetId": changeSetID, "sequence": sequence,
+		"tableId": request.TableID, "recordId": recordID,
+		"operation": operation, "before": before, "after": after,
+		"schemaRevision": schemaRevision, "dataRevision": dataRevision,
+		"requestId": request.RequestID, "actor": request.Actor,
+	})
+	if err != nil {
+		return storageFailure()
+	}
+	envelope, err := auditledger.NewEnvelope(
+		fmt.Sprintf("%s:%d", changeSetID, sequence),
+		sourceEpoch,
+		uint64(sourceSequence),
+		request.IdempotencyKey,
+		payload,
+		occurredAt,
+	)
+	if err != nil {
+		return storageFailure()
+	}
+	outbox := core.NewRecord(collection)
+	outbox.Set("event_id", envelope.EventID)
+	outbox.Set("source_epoch", envelope.SourceEpoch)
+	outbox.Set("source_sequence", envelope.SourceSequence)
+	outbox.Set("mutation_identity", envelope.MutationIdentity)
+	outbox.Set("payload_hash", envelope.PayloadHash)
+	outbox.Set("payload_json", pbtypes.JSONRaw(envelope.Payload))
+	outbox.Set("occurred_at", envelope.OccurredAt)
+	outbox.Set("status", "pending")
+	outbox.Set("attempts", 0)
+	if err := app.Save(outbox); err != nil {
 		return storageFailure()
 	}
 	return nil

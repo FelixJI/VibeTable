@@ -1,0 +1,685 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibetable.local/contracts/v2/contracts.schema.json",
+  "title": "VibeTable Workspace and Snapshot Contracts v2",
+  "oneOf": [
+    {"$ref": "#/$defs/WorkspaceManifest"},
+    {"$ref": "#/$defs/WorkspaceRegistryEntry"},
+    {"$ref": "#/$defs/WorkspaceSession"},
+    {"$ref": "#/$defs/FileDocument"},
+    {"$ref": "#/$defs/FileRevision"},
+    {"$ref": "#/$defs/SnapshotManifest"},
+    {"$ref": "#/$defs/SnapshotSeal"},
+    {"$ref": "#/$defs/SnapshotCatalogEntry"},
+    {"$ref": "#/$defs/LeaseClaim"},
+    {"$ref": "#/$defs/RetentionPolicy"},
+    {"$ref": "#/$defs/WorkspaceEvent"},
+    {"$ref": "#/$defs/RpcContractCatalog"}
+  ],
+  "$defs": {
+    "ContractVersion": {"type": "string", "const": "2.0"},
+    "Uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "Timestamp": {"type": "string", "minLength": 20},
+    "Sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "ObjectId": {"type": "string", "pattern": "^obj_[0-9a-f]{64}$"},
+    "JsonObject": {"type": "object", "additionalProperties": true},
+    "JsonValue": {},
+    "WorkspaceScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "workspaceId",
+        "sessionEpoch",
+        "operationId",
+        "sequence"
+      ],
+      "properties": {
+        "scope": {"const": "workspace"},
+        "workspaceId": {"$ref": "#/$defs/Uuid"},
+        "sessionEpoch": {"type": "integer", "minimum": 1},
+        "operationId": {"$ref": "#/$defs/Uuid"},
+        "sequence": {"type": "integer", "minimum": 0}
+      }
+    },
+    "GlobalScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "operationId", "sequence"],
+      "properties": {
+        "scope": {"const": "global"},
+        "operationId": {"$ref": "#/$defs/Uuid"},
+        "sequence": {"type": "integer", "minimum": 0}
+      }
+    },
+    "WireScope": {
+      "oneOf": [
+        {"$ref": "#/$defs/GlobalScope"},
+        {"$ref": "#/$defs/WorkspaceScope"}
+      ]
+    },
+    "WorkspaceManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "formatVersion",
+        "workspaceId",
+        "displayName",
+        "createdAt",
+        "storageMode",
+        "encryptionMode",
+        "repositoryFormat",
+        "topologySchemaVersion",
+        "businessSchemaVersion"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "formatVersion": {"type": "integer", "minimum": 1},
+        "workspaceId": {"$ref": "#/$defs/Uuid"},
+        "displayName": {"type": "string", "minLength": 1},
+        "createdAt": {"$ref": "#/$defs/Timestamp"},
+        "storageMode": {"type": "string", "enum": ["direct", "mirrored"]},
+        "encryptionMode": {
+          "type": "string",
+          "enum": ["none", "convenient", "protected"]
+        },
+        "repositoryFormat": {"type": "string", "minLength": 1},
+        "topologySchemaVersion": {"type": "integer", "minimum": 1},
+        "businessSchemaVersion": {"type": "integer", "minimum": 1},
+        "importedFromWorkspaceId": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Uuid"}]
+        },
+        "sourceSnapshotId": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Uuid"}]
+        }
+      }
+    },
+    "WorkspaceRegistryEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "workspaceId",
+        "displayName",
+        "selectedRoot",
+        "activityRoot",
+        "storageKind",
+        "coordinationStrength",
+        "lastOpenedAt",
+        "lastKnownHealth",
+        "lastSnapshotAt",
+        "lastSyncAt",
+        "pendingSync"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "workspaceId": {"$ref": "#/$defs/Uuid"},
+        "displayName": {"type": "string", "minLength": 1},
+        "selectedRoot": {"type": "string", "minLength": 1},
+        "activityRoot": {"type": ["string", "null"]},
+        "storageKind": {
+          "type": "string",
+          "enum": [
+            "fixed",
+            "network",
+            "removable",
+            "registeredCloud",
+            "userMarkedSync"
+          ]
+        },
+        "coordinationStrength": {"type": "string", "enum": ["strong", "advisory"]},
+        "lastOpenedAt": {"type": ["string", "null"]},
+        "lastKnownHealth": {
+          "type": "string",
+          "enum": ["healthy", "offline", "degraded", "corrupt", "unknown"]
+        },
+        "lastSnapshotAt": {"type": ["string", "null"]},
+        "lastSyncAt": {"type": ["string", "null"]},
+        "pendingSync": {"type": "boolean"}
+      }
+    },
+    "WorkspaceSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "workspaceId",
+        "sessionEpoch",
+        "state",
+        "openMode",
+        "writable",
+        "provisional",
+        "phase",
+        "errorCode"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "workspaceId": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Uuid"}]
+        },
+        "sessionEpoch": {"type": "integer", "minimum": 0},
+        "state": {
+          "type": "string",
+          "enum": [
+            "closed",
+            "opening",
+            "openedReadOnly",
+            "openedWritable",
+            "openedProvisional",
+            "switching",
+            "failed"
+          ]
+        },
+        "openMode": {"type": "string", "enum": ["readOnly", "writable", "provisional"]},
+        "writable": {"type": "boolean"},
+        "provisional": {"type": "boolean"},
+        "phase": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "protecting",
+            "draining",
+            "stopping",
+            "starting",
+            "binding",
+            "verifying",
+            "rollingBack"
+          ]
+        },
+        "errorCode": {"type": ["string", "null"]}
+      }
+    },
+    "FileDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "documentId",
+        "workspaceId",
+        "relativePath",
+        "status",
+        "effectiveRevisionId",
+        "nextRevisionOrdinal",
+        "nextFormalVersion"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "documentId": {"$ref": "#/$defs/Uuid"},
+        "workspaceId": {"$ref": "#/$defs/Uuid"},
+        "relativePath": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$"
+        },
+        "status": {"type": "string", "enum": ["active", "deleted"]},
+        "effectiveRevisionId": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Uuid"}]
+        },
+        "nextRevisionOrdinal": {"type": "integer", "minimum": 1},
+        "nextFormalVersion": {"type": "integer", "minimum": 1}
+      }
+    },
+    "FileRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "revisionId",
+        "documentId",
+        "parentRevisionId",
+        "revisionOrdinal",
+        "localSequence",
+        "formalVersion",
+        "kind",
+        "objectId",
+        "contentHash",
+        "size",
+        "mimeType",
+        "createdAt",
+        "createdBy",
+        "deviceId",
+        "comment",
+        "restoredFromRevisionId"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "revisionId": {"$ref": "#/$defs/Uuid"},
+        "documentId": {"$ref": "#/$defs/Uuid"},
+        "parentRevisionId": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Uuid"}]
+        },
+        "revisionOrdinal": {"type": "integer", "minimum": 0},
+        "localSequence": {"type": ["integer", "null"], "minimum": 1},
+        "formalVersion": {"type": ["integer", "null"], "minimum": 1},
+        "kind": {"type": "string", "enum": ["autosave", "formal", "restore"]},
+        "objectId": {"$ref": "#/$defs/ObjectId"},
+        "contentHash": {"$ref": "#/$defs/Sha256"},
+        "size": {"type": "integer", "minimum": 0},
+        "mimeType": {"type": "string", "minLength": 1},
+        "createdAt": {"$ref": "#/$defs/Timestamp"},
+        "createdBy": {"type": "string", "minLength": 1},
+        "deviceId": {"$ref": "#/$defs/Uuid"},
+        "comment": {"type": ["string", "null"]},
+        "restoredFromRevisionId": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Uuid"}]
+        }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "revisionOrdinal": {"const": 0},
+                "localSequence": {"type": "integer", "minimum": 1},
+                "formalVersion": {"type": "null"}
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "revisionOrdinal": {"type": "integer", "minimum": 1}
+              }
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {"const": "autosave"},
+                "formalVersion": {"type": "null"},
+                "restoredFromRevisionId": {"type": "null"}
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "revisionOrdinal": {"type": "integer", "minimum": 1},
+                "kind": {"const": "formal"},
+                "formalVersion": {"type": "integer", "minimum": 1},
+                "restoredFromRevisionId": {"type": "null"}
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "revisionOrdinal": {"const": 0},
+                "kind": {"const": "formal"},
+                "formalVersion": {"type": "null"},
+                "restoredFromRevisionId": {"type": "null"}
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "revisionOrdinal": {"type": "integer", "minimum": 1},
+                "kind": {"const": "restore"},
+                "formalVersion": {"type": "integer", "minimum": 1},
+                "restoredFromRevisionId": {"$ref": "#/$defs/Uuid"}
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "revisionOrdinal": {"const": 0},
+                "kind": {"const": "restore"},
+                "formalVersion": {"type": "null"},
+                "restoredFromRevisionId": {"$ref": "#/$defs/Uuid"}
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "AuditAnchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["epoch", "sequence", "chainHash"],
+      "properties": {
+        "epoch": {"type": "integer", "minimum": 1},
+        "sequence": {"type": "integer", "minimum": 0},
+        "chainHash": {"$ref": "#/$defs/Sha256"}
+      }
+    },
+    "SnapshotManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "snapshotId",
+        "workspaceId",
+        "fenceEpoch",
+        "claimId",
+        "mutationRevision",
+        "snapshotSequence",
+        "trigger",
+        "createdAt",
+        "createdByDevice",
+        "businessDatabaseObjectId",
+        "topologyRootObjectId",
+        "fileStateRootObjectId",
+        "workspaceSettingsObjectId",
+        "auditAnchor",
+        "auditPrefixObjectId",
+        "sourceSnapshotId",
+        "formatVersion",
+        "minimumAppVersion"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "snapshotId": {"$ref": "#/$defs/Uuid"},
+        "workspaceId": {"$ref": "#/$defs/Uuid"},
+        "fenceEpoch": {"type": "integer", "minimum": 1},
+        "claimId": {"$ref": "#/$defs/Uuid"},
+        "mutationRevision": {"type": "integer", "minimum": 0},
+        "snapshotSequence": {"type": "integer", "minimum": 1},
+        "trigger": {
+          "type": "string",
+          "enum": ["automatic", "manual", "protection", "import", "restore"]
+        },
+        "createdAt": {"$ref": "#/$defs/Timestamp"},
+        "createdByDevice": {"$ref": "#/$defs/Uuid"},
+        "businessDatabaseObjectId": {"$ref": "#/$defs/ObjectId"},
+        "topologyRootObjectId": {"$ref": "#/$defs/ObjectId"},
+        "fileStateRootObjectId": {"$ref": "#/$defs/ObjectId"},
+        "workspaceSettingsObjectId": {"$ref": "#/$defs/ObjectId"},
+        "auditAnchor": {"$ref": "#/$defs/AuditAnchor"},
+        "auditPrefixObjectId": {"$ref": "#/$defs/ObjectId"},
+        "sourceSnapshotId": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Uuid"}]
+        },
+        "formatVersion": {"type": "integer", "minimum": 1},
+        "minimumAppVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        }
+      }
+    },
+    "SnapshotSeal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "snapshotId",
+        "manifestHash",
+        "databaseHash",
+        "fileStateRootHash",
+        "auditAnchorHash",
+        "repositoryFormat",
+        "fenceEpoch",
+        "claimId",
+        "mutationRevision",
+        "snapshotSequence",
+        "verified"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "snapshotId": {"$ref": "#/$defs/Uuid"},
+        "manifestHash": {"$ref": "#/$defs/Sha256"},
+        "databaseHash": {"$ref": "#/$defs/Sha256"},
+        "fileStateRootHash": {"$ref": "#/$defs/Sha256"},
+        "auditAnchorHash": {"$ref": "#/$defs/Sha256"},
+        "repositoryFormat": {"type": "string", "minLength": 1},
+        "fenceEpoch": {"type": "integer", "minimum": 1},
+        "claimId": {"$ref": "#/$defs/Uuid"},
+        "mutationRevision": {"type": "integer", "minimum": 0},
+        "snapshotSequence": {"type": "integer", "minimum": 1},
+        "verified": {"const": true}
+      }
+    },
+    "SnapshotCatalogEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "snapshotId",
+        "state",
+        "pinned",
+        "retentionReasons",
+        "integrity",
+        "syncState",
+        "logicalSize",
+        "physicalSize",
+        "note",
+        "catalogRevision"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "snapshotId": {"$ref": "#/$defs/Uuid"},
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "barrier",
+            "captured",
+            "chunking",
+            "verifying",
+            "published",
+            "syncing",
+            "ready",
+            "failed",
+            "corrupt",
+            "repairing"
+          ]
+        },
+        "pinned": {"type": "boolean"},
+        "retentionReasons": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "integrity": {
+          "type": "string",
+          "enum": ["pending", "verified", "corrupt", "repairing"]
+        },
+        "syncState": {
+          "type": "string",
+          "enum": ["localOnly", "pending", "syncing", "replicated", "failed"]
+        },
+        "logicalSize": {"type": "integer", "minimum": 0},
+        "physicalSize": {"type": "integer", "minimum": 0},
+        "note": {"type": ["string", "null"]},
+        "catalogRevision": {"type": "integer", "minimum": 1}
+      }
+    },
+    "LeaseClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "workspaceId",
+        "fenceEpoch",
+        "claimId",
+        "deviceId",
+        "issuedAt",
+        "heartbeatAt",
+        "expiresAt",
+        "mode",
+        "previousClaimId",
+        "coordinationStrength"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "workspaceId": {"$ref": "#/$defs/Uuid"},
+        "fenceEpoch": {"type": "integer", "minimum": 1},
+        "claimId": {"$ref": "#/$defs/Uuid"},
+        "deviceId": {"$ref": "#/$defs/Uuid"},
+        "issuedAt": {"$ref": "#/$defs/Timestamp"},
+        "heartbeatAt": {"$ref": "#/$defs/Timestamp"},
+        "expiresAt": {"$ref": "#/$defs/Timestamp"},
+        "mode": {"type": "string", "enum": ["writable", "provisional"]},
+        "previousClaimId": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Uuid"}]
+        },
+        "coordinationStrength": {"type": "string", "enum": ["strong", "advisory"]}
+      }
+    },
+    "RetentionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "policyRevision",
+        "snapshotDays",
+        "snapshotCount",
+        "snapshotBuckets",
+        "fileRevisionDays",
+        "fileRevisionCount",
+        "fileRevisionBuckets",
+        "trashMonths",
+        "repositoryLimitBytes"
+      ],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "policyRevision": {"type": "integer", "minimum": 1},
+        "snapshotDays": {"type": "integer", "minimum": 1},
+        "snapshotCount": {"type": "integer", "minimum": 1},
+        "snapshotBuckets": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "enum": ["hourly", "daily", "weekly", "monthly"]}
+        },
+        "fileRevisionDays": {"type": "integer", "minimum": 1},
+        "fileRevisionCount": {"type": "integer", "minimum": 1},
+        "fileRevisionBuckets": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "enum": ["hourly", "daily", "weekly", "monthly"]}
+        },
+        "trashMonths": {"const": 3},
+        "repositoryLimitBytes": {"type": ["integer", "null"], "minimum": 1}
+      }
+    },
+    "WorkspaceEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "topic", "wire", "payloadModel", "payloadSchema", "payload"],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "topic": {
+          "type": "string",
+          "enum": [
+            "workspace.session.changed",
+            "snapshot.changed",
+            "replica.changed",
+            "lease.changed",
+            "conflict.changed"
+          ]
+        },
+        "wire": {"$ref": "#/$defs/WorkspaceScope"},
+        "payloadModel": {"type": "string", "minLength": 1},
+        "payloadSchema": {"$ref": "#/$defs/JsonObject"},
+        "payload": {"$ref": "#/$defs/JsonObject"}
+      }
+    },
+    "RpcRequestEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "method", "wire", "params"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"type": "string", "minLength": 1},
+        "method": {"type": "string", "minLength": 3},
+        "wire": {"$ref": "#/$defs/WireScope"},
+        "params": {"$ref": "#/$defs/JsonObject"}
+      }
+    },
+    "RpcSuccessEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "wire", "result"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"type": "string", "minLength": 1},
+        "wire": {"$ref": "#/$defs/WireScope"},
+        "result": {"$ref": "#/$defs/JsonValue"}
+      }
+    },
+    "RpcErrorEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "wire", "error"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"type": "string", "minLength": 1},
+        "wire": {"$ref": "#/$defs/WireScope"},
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message", "details", "retryable"],
+          "properties": {
+            "code": {
+              "type": "string",
+              "pattern": "^(workspace|snapshot|repository|lease|replica|conflict|file_history|history|retention)\\.[a-z0-9_]+$"
+            },
+            "message": {"type": "string", "minLength": 1},
+            "details": {"$ref": "#/$defs/JsonObject"},
+            "retryable": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    "RpcGoldenCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "scope",
+        "paramsModel",
+        "resultModel",
+        "paramsSchema",
+        "resultSchema",
+        "request",
+        "success",
+        "error"
+      ],
+      "properties": {
+        "method": {"type": "string", "minLength": 3},
+        "scope": {"type": "string", "enum": ["global", "workspace"]},
+        "paramsModel": {"type": "string", "minLength": 1},
+        "resultModel": {"type": "string", "minLength": 1},
+        "paramsSchema": {"$ref": "#/$defs/JsonObject"},
+        "resultSchema": {"$ref": "#/$defs/JsonObject"},
+        "request": {"$ref": "#/$defs/RpcRequestEnvelope"},
+        "success": {"$ref": "#/$defs/RpcSuccessEnvelope"},
+        "error": {"$ref": "#/$defs/RpcErrorEnvelope"}
+      }
+    },
+    "RpcContractCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "rpcMethods", "eventTopics", "rpcCases", "eventCases"],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "rpcMethods": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 3}
+        },
+        "eventTopics": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 3}
+        },
+        "rpcCases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/RpcGoldenCase"}
+        },
+        "eventCases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/WorkspaceEvent"}
+        }
+      }
+    }
+  }
+}

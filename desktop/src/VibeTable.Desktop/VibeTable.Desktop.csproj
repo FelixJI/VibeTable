@@ -15,7 +15,6 @@
     <ProjectReference Include="..\VibeTable.Contracts\VibeTable.Contracts.csproj" />
     <ProjectReference Include="..\VibeTable.Infrastructure\VibeTable.Infrastructure.csproj" />
     <ProjectReference Include="..\VibeTable.PreviewHost\VibeTable.PreviewHost.csproj" />
-    <ProjectReference Include="..\VibeTable.Workspace\VibeTable.Workspace.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -27,6 +26,22 @@
     <Resource Include="Assets\Brand\VibeTable.png" />
     <None Remove="Assets\Brand\VibeTable.ico" />
     <Resource Include="Assets\Brand\VibeTable.ico" />
+    <Content Include="..\..\..\contracts\v2\provider-support.json"
+             Link="contracts\v2\provider-support.json"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <Target Name="CopyPreviewHostOutput"
+          AfterTargets="Build"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <ItemGroup>
+      <_PreviewHostOutput Include="$(MSBuildProjectDirectory)\..\VibeTable.PreviewHost\bin\$(Configuration)\$(TargetFramework)\VibeTable.PreviewHost.*" />
+    </ItemGroup>
+    <MakeDir Directories="$(TargetDir)PreviewHost" />
+    <Copy SourceFiles="@(_PreviewHostOutput)"
+          DestinationFolder="$(TargetDir)PreviewHost"
+          SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

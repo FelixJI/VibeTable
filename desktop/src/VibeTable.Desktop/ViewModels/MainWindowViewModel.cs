@@ -144,16 +144,23 @@ public sealed class MainWindowViewModel : ViewModelBase
     private bool _shellLoaded;
 
     /// <summary>
-    /// The native surface is only an initial WebView2/runtime guard and a
-    /// fatal-error fallback. Normal bootstrap/auth progress belongs
-    /// to the web renderer once its first navigation succeeds.
+    /// The native surface is only an initial WebView2 guard and renderer-error
+    /// fallback. Backend faults remain visible in the already loaded global
+    /// shell, where the user can retry or choose another workspace.
     /// </summary>
-    public bool IsHostFallbackVisible => !_shellLoaded || State == StartupState.Faulted;
+    public bool IsHostFallbackVisible => !_shellLoaded;
 
     public void MarkShellLoaded()
     {
         if (_shellLoaded) return;
         _shellLoaded = true;
+        RaisePropertyChanged(nameof(IsHostFallbackVisible));
+    }
+
+    public void MarkShellUnavailable()
+    {
+        if (!_shellLoaded) return;
+        _shellLoaded = false;
         RaisePropertyChanged(nameof(IsHostFallbackVisible));
     }
 
@@ -244,6 +251,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             // MoveToFaulted guards against double-fault races.
             if (State != StartupState.Faulted)
             {
+                MarkShellUnavailable();
                 TransitionTo(StartupState.Faulted);
             }
             return;

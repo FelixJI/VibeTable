@@ -97,6 +97,54 @@ public sealed class ProductRuntimeService : IBackendLifecycle, IAsyncDisposable
         cancellationToken.ThrowIfCancellationRequested();
     }
 
+    /// <summary>
+    /// Closes Python/job ingress while leaving the private Sidecar available
+    /// for its authenticated write-coordinator drain.
+    /// </summary>
+    public async Task StopIngressAsync(CancellationToken cancellationToken)
+    {
+        Volatile.Write(ref _started, 0);
+        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_backend.State != BackendState.Stopped)
+                await _backend.StopAsync(CancellationToken.None)
+                    .ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    /// <summary>
+    /// Reopens Python ingress when a switch fails before the previous runtime
+    /// is stopped. The Sidecar process and session identity are unchanged.
+    /// </summary>
+    public async Task ResumeIngressAsync(CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            if (!_localData.GetStatus().IsReady)
+                throw new InvalidOperationException(
+                    "The workspace Sidecar is no longer ready.");
+            _sidecar.ConfigureBackendEnvironment(_backendOptions.Environment);
+            if (_backend.State != BackendState.Ready)
+                await _backend.StartAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            Volatile.Write(ref _started, 1);
+            ClientReady?.Invoke();
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)

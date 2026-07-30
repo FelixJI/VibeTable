@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { createHostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { useUiStore } from "@/stores/uiStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import {
   NConfigProvider,
   NMessageProvider,
@@ -39,6 +40,23 @@ describe("App startup gate", () => {
 
     listeners[0]?.({ data: { type: "host.startupStateChanged", payload: { phase: "ready" } } });
     await flushPromises();
+    expect(wrapper.find('[data-testid="startup-gate"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="workspace-stub"]').exists()).toBe(true);
+  });
+
+  it("mounts the v2 shell before business runtime readiness when capability is active", () => {
+    const bridge = createHostBridge({ webview: {
+      postMessage: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    } });
+    setHostBridgeForTesting(bridge);
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    useWorkspaceSessionStore().configureCapabilities(["workspace.session.v2"]);
+
+    const wrapper = mount(App, { global: { plugins: [pinia] } });
+
     expect(wrapper.find('[data-testid="startup-gate"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="workspace-stub"]').exists()).toBe(true);
   });

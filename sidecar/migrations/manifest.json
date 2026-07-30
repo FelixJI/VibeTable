@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "schemaVersion": 5,
+  "schemaVersion": 6,
   "migrations": [
     {
       "id": 2026072401,
@@ -31,6 +31,12 @@
       "name": "field_settings_v2_metadata",
       "source": "2026072801_field_settings_v2_metadata.go",
       "sha256": "64655db79fdf1d997731d8ccc4c62a5054d00b6c90491104ba0970495d2dc6eb"
+    },
+    {
+      "id": 2026072805,
+      "name": "audit_outbox",
+      "source": "2026072805_audit_outbox.go",
+      "sha256": "1d53794ee64f9b746caf0aee638ee872ac92b5918257ca77d631c2b14f291de8"
     }
   ]
 }

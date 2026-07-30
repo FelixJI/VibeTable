@@ -30,8 +30,11 @@ type Executor struct {
 	migration        MigrationScheduler
 	clock            func() time.Time
 	backupReceiptKey []byte
+	protectionProof  ProtectionSnapshotVerifier
 	logger           *slog.Logger
 }
+
+type ProtectionSnapshotVerifier func(context.Context, string) error
 
 type MigrationScheduler interface {
 	Enqueue(
@@ -60,6 +63,14 @@ func WithMigrationScheduler(scheduler MigrationScheduler) ExecutorOption {
 func WithBackupReceiptKey(key []byte) ExecutorOption {
 	return func(executor *Executor) {
 		executor.backupReceiptKey = append([]byte(nil), key...)
+	}
+}
+
+func WithProtectionSnapshotVerifier(
+	verifier ProtectionSnapshotVerifier,
+) ExecutorOption {
+	return func(executor *Executor) {
+		executor.protectionProof = verifier
 	}
 }
 
@@ -212,13 +223,22 @@ func (executor *Executor) apply(
 			)
 		}
 		if plan.Intent.Action == v2.ActionPurge {
-			if verifyErr := backupreceipt.Verify(
-				ctx, txApp, plan.Intent.BackupReceipt,
-				executor.backupReceiptKey,
-			); verifyErr != nil {
+			var verifyErr error
+			if executor.protectionProof != nil {
+				verifyErr = executor.protectionProof(
+					ctx,
+					request.ProtectionSnapshotID,
+				)
+			} else {
+				verifyErr = backupreceipt.Verify(
+					ctx, txApp, plan.Intent.BackupReceipt,
+					executor.backupReceiptKey,
+				)
+			}
+			if verifyErr != nil {
 				return productError(
-					"field.purge.backup_required", "backupReceipt",
-					"a current verified backup receipt is required", nil,
+					"field.purge.backup_required", "protectionSnapshotId",
+					"a current verified protection snapshot is required", nil,
 				)
 			}
 		}

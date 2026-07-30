@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +24,8 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 const helperProcessEnv = "VIBETABLE_TEST_HELPER_PROCESS"
@@ -108,6 +114,20 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 	if health.Status != "ok" || !health.StorageWritable {
 		t.Fatalf("unexpected health response: %#v", health)
 	}
+	response = request(
+		t,
+		client,
+		http.MethodGet,
+		baseURL+"/api/vibetable/v2/capabilities",
+		secret,
+	)
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf(
+			"legacy launch v2 capabilities status = %d, want 404",
+			response.StatusCode,
+		)
+	}
+	drainAndClose(t, response.Body)
 
 	for _, protectedPath := range []string{"/_/", "/api/collections"} {
 		response = request(t, client, http.MethodGet, baseURL+protectedPath, "")
@@ -471,12 +491,655 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 	removeDirectoryEventually(t, dataDir)
 }
 
+func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping process integration test in short mode")
+	}
+	secret := strings.Repeat("24", 32)
+	root := filepath.Join(t.TempDir(), "workspace")
+	dataDir := createV2Workspace(t, root)
+	env := map[string]string{
+		helperProcessEnv:        "1",
+		config.SessionSecretEnv: secret,
+		config.DataDirEnv:       dataDir,
+		config.WorkspaceIDEnv:   "11111111-1111-4111-8111-111111111111",
+		config.SessionEpochEnv:  "7",
+		config.FenceEpochEnv:    "3",
+		config.ClaimIDEnv:       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+	}
+	command, stderr, baseURL := startSidecarHelper(t, env)
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	response := request(
+		t, client, http.MethodGet,
+		baseURL+"/api/vibetable/v2/capabilities", secret,
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("capabilities status=%d body=%s", response.StatusCode, body)
+	}
+	var capabilities struct {
+		WorkspaceID   string   `json:"workspaceId"`
+		RPCMethods    []string `json:"rpcMethods"`
+		Registrations []struct {
+			Method string `json:"method"`
+			Scope  string `json:"scope"`
+		} `json:"registrations"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&capabilities); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if capabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||
+		len(capabilities.RPCMethods) < 9 ||
+		len(capabilities.Registrations) != len(capabilities.RPCMethods) {
+		t.Fatalf("capabilities = %#v", capabilities)
+	}
+
+	formulaSchemaBody := workspaceV2FormulaSchemaBody(t)
+	response = requestJSON(
+		t,
+		client,
+		http.MethodPost,
+		baseURL+"/api/vibetable/v1/schema/apply",
+		secret,
+		formulaSchemaBody,
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("formula schema apply status=%d body=%s", response.StatusCode, body)
+	}
+	drainAndClose(t, response.Body)
+	waitForFormulaJobsSettled(t, dataDir)
+	coordinatorPath := filepath.Join(
+		root,
+		".vibetable",
+		"coordination",
+		"write-coordinator.db",
+	)
+	revisionBefore, err := writecoordinator.ReadPersistentMutationRevision(
+		context.Background(),
+		coordinatorPath,
+		env[config.WorkspaceIDEnv],
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBusinessReceiptKindCount(
+		t,
+		dataDir,
+		map[string]int{
+			"schema.apply":             1,
+			"formula.backfill.enqueue": 1,
+		},
+	)
+	response = requestJSON(
+		t,
+		client,
+		http.MethodPost,
+		baseURL+"/api/vibetable/v1/schema/apply",
+		secret,
+		formulaSchemaBody,
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("formula schema replay status=%d body=%s", response.StatusCode, body)
+	}
+	var replayed schema.TableDefinition
+	if err := json.NewDecoder(response.Body).Decode(&replayed); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if replayed.TableID != "formula-read-purity" ||
+		replayed.SchemaRevision != "schema_0001" {
+		t.Fatalf("formula schema replay = %#v", replayed)
+	}
+	revisionAfterReplay, err := writecoordinator.ReadPersistentMutationRevision(
+		context.Background(),
+		coordinatorPath,
+		env[config.WorkspaceIDEnv],
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revisionAfterReplay != revisionBefore {
+		t.Fatalf(
+			"idempotent schema replay changed mutation revision from %d to %d",
+			revisionBefore,
+			revisionAfterReplay,
+		)
+	}
+	projectionBefore := readFormulaReadProjection(t, dataDir)
+	response = request(
+		t,
+		client,
+		http.MethodGet,
+		baseURL+"/api/vibetable/v1/schema/tables/formula-read-purity",
+		secret,
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("formula schema describe status=%d body=%s", response.StatusCode, body)
+	}
+	drainAndClose(t, response.Body)
+	waitForFormulaJobsSettled(t, dataDir)
+	revisionAfter, err := writecoordinator.ReadPersistentMutationRevision(
+		context.Background(),
+		coordinatorPath,
+		env[config.WorkspaceIDEnv],
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectionAfter := readFormulaReadProjection(t, dataDir)
+	if revisionAfter != revisionBefore {
+		t.Fatalf(
+			"schema GET mutation revision changed from %d to %d",
+			revisionBefore,
+			revisionAfter,
+		)
+	}
+	if projectionAfter != projectionBefore {
+		t.Fatalf(
+			"schema GET changed jobs/business projection: before=%#v after=%#v",
+			projectionBefore,
+			projectionAfter,
+		)
+	}
+
+	for _, legacyWrite := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{
+			method: http.MethodPost,
+			path:   "/api/collections/vibetable_tables/records",
+			body:   `{}`,
+		},
+	} {
+		response = requestJSON(
+			t,
+			client,
+			legacyWrite.method,
+			baseURL+legacyWrite.path,
+			secret,
+			legacyWrite.body,
+		)
+		if response.StatusCode != http.StatusLocked {
+			body, _ := io.ReadAll(response.Body)
+			response.Body.Close()
+			t.Fatalf(
+				"legacy write %s status=%d body=%s",
+				legacyWrite.path,
+				response.StatusCode,
+				body,
+			)
+		}
+		var denied struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&denied); err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if denied.Code != "workspace.v1_write_disabled" {
+			t.Fatalf("legacy write error = %#v", denied)
+		}
+	}
+
+	response = requestJSON(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v2/rpc", secret,
+		workspaceV2Request(1, 7, "retention.get", `{}`)+` {}`,
+	)
+	if response.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("trailing JSON status=%d body=%s", response.StatusCode, body)
+	}
+	drainAndClose(t, response.Body)
+	invalid := workspaceV2Request(
+		1, 7, "retention.get", `{"unknown":true}`,
+	)
+	response = requestJSON(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v2/rpc", secret, invalid,
+	)
+	if response.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("unknown params status=%d body=%s", response.StatusCode, body)
+	}
+	var invalidEnvelope struct {
+		ID    string `json:"id"`
+		Wire  any    `json:"wire"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&invalidEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if invalidEnvelope.ID != "request-1" ||
+		invalidEnvelope.Wire == nil ||
+		invalidEnvelope.Error.Code != "workspace.request_invalid" {
+		t.Fatalf("invalid envelope = %#v", invalidEnvelope)
+	}
+	response = requestJSON(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v2/rpc", secret,
+		workspaceV2Request(1, 7, "retention.get", `{}`),
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("valid reused sequence status=%d body=%s", response.StatusCode, body)
+	}
+	drainAndClose(t, response.Body)
+	response = requestJSON(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v2/rpc", secret,
+		workspaceV2Request(
+			2,
+			7,
+			"retention.update",
+			`{"expectedRevision":1,"snapshotDays":40,"snapshotCount":60,"snapshotBuckets":["daily","weekly"],"fileRevisionDays":35,"fileRevisionCount":120,"fileRevisionBuckets":["daily","monthly"],"repositoryLimitBytes":null}`,
+		),
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("retention update status=%d body=%s", response.StatusCode, body)
+	}
+	drainAndClose(t, response.Body)
+	response = requestJSON(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v2/rpc", secret,
+		workspaceV2Request(3, 6, "snapshot.list", `{"cursor":null,"limit":50}`),
+	)
+	var staleEnvelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&staleEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if staleEnvelope.Error.Code != "workspace.session_epoch_stale" {
+		t.Fatalf("stale epoch response = %#v", staleEnvelope)
+	}
+	response = request(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v1/shutdown", secret,
+	)
+	drainAndClose(t, response.Body)
+	waitSidecarHelper(t, command, stderr)
+
+	command, stderr, baseURL = startSidecarHelper(t, env)
+	response = requestJSON(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v2/rpc", secret,
+		workspaceV2Request(
+			2,
+			7,
+			"retention.update",
+			`{"expectedRevision":1,"snapshotDays":40,"snapshotCount":60,"snapshotBuckets":["daily","weekly"],"fileRevisionDays":35,"fileRevisionCount":120,"fileRevisionBuckets":["daily","monthly"],"repositoryLimitBytes":null}`,
+		),
+	)
+	var duplicateEnvelope struct {
+		Result struct {
+			PolicyRevision uint64 `json:"policyRevision"`
+			SnapshotDays   uint64 `json:"snapshotDays"`
+		} `json:"result"`
+		Error *struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&duplicateEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if duplicateEnvelope.Error != nil ||
+		duplicateEnvelope.Result.PolicyRevision != 2 ||
+		duplicateEnvelope.Result.SnapshotDays != 40 {
+		t.Fatalf(
+			"restart did not replay durable operation: %#v",
+			duplicateEnvelope,
+		)
+	}
+	response = requestJSON(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v2/rpc", secret,
+		workspaceV2Request(3, 7, "retention.get", `{}`),
+	)
+	var policyEnvelope struct {
+		Result struct {
+			PolicyRevision uint64 `json:"policyRevision"`
+			SnapshotDays   uint64 `json:"snapshotDays"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&policyEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if policyEnvelope.Result.PolicyRevision != 2 ||
+		policyEnvelope.Result.SnapshotDays != 40 {
+		t.Fatalf("restarted policy = %#v", policyEnvelope)
+	}
+	response = request(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v1/shutdown", secret,
+	)
+	drainAndClose(t, response.Body)
+	waitSidecarHelper(t, command, stderr)
+}
+
 func TestSidecarHelperProcess(t *testing.T) {
 	if os.Getenv(helperProcessEnv) != "1" {
 		return
 	}
 	os.Args = []string{"vibetable-pb"}
 	os.Exit(run(nil))
+}
+
+func startSidecarHelper(
+	t *testing.T,
+	env map[string]string,
+) (*exec.Cmd, *bytes.Buffer, string) {
+	t.Helper()
+	command := exec.Command(os.Args[0], "-test.run=^TestSidecarHelperProcess$")
+	command.Env = normalizedEnvironment(env)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := &bytes.Buffer{}
+	command.Stderr = stderr
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if command.ProcessState == nil && command.Process != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	})
+	type result struct {
+		line string
+		err  error
+	}
+	ready := make(chan result, 1)
+	go func() {
+		line, err := bufio.NewReader(stdout).ReadString('\n')
+		ready <- result{line: line, err: err}
+	}()
+	select {
+	case value := <-ready:
+		if value.err != nil {
+			t.Fatalf("read helper ready: %v stderr=%s", value.err, stderr)
+		}
+		var record launch.Ready
+		if err := json.Unmarshal([]byte(value.line), &record); err != nil {
+			t.Fatal(err)
+		}
+		return command, stderr, "http://" + record.Address
+	case <-time.After(45 * time.Second):
+		_ = command.Process.Kill()
+		t.Fatalf("helper ready timeout stderr=%s", stderr)
+	}
+	return nil, nil, ""
+}
+
+func waitSidecarHelper(
+	t *testing.T,
+	command *exec.Cmd,
+	stderr *bytes.Buffer,
+) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("sidecar helper exit: %v stderr=%s", err, stderr)
+		}
+	case <-time.After(20 * time.Second):
+		_ = command.Process.Kill()
+		t.Fatalf("sidecar helper stop timeout stderr=%s", stderr)
+	}
+}
+
+func createV2Workspace(t *testing.T, root string) string {
+	t.Helper()
+	metadata := filepath.Join(root, ".vibetable")
+	for _, directory := range []string{
+		"data", "topology", "objects", "audit", "snapshots",
+		"coordination", "quarantine", "temp",
+	} {
+		if err := os.MkdirAll(
+			filepath.Join(metadata, directory),
+			0o700,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw := `{
+		"contractVersion":"2.0",
+		"formatVersion":1,
+		"workspaceId":"11111111-1111-4111-8111-111111111111",
+		"displayName":"HTTP test workspace",
+		"createdAt":"2026-07-28T08:00:00Z",
+		"storageMode":"direct",
+		"encryptionMode":"convenient",
+		"repositoryFormat":"kopia-v3",
+		"topologySchemaVersion":1,
+		"businessSchemaVersion":1,
+		"importedFromWorkspaceId":null,
+		"sourceSnapshotId":null
+	}`
+	if err := os.WriteFile(
+		filepath.Join(metadata, "workspace.json"),
+		[]byte(raw),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(metadata, "data")
+}
+
+func workspaceV2Request(
+	sequence uint64,
+	epoch uint64,
+	method string,
+	params string,
+) string {
+	return `{"jsonrpc":"2.0","id":"request-` +
+		strconv.FormatUint(sequence, 10) +
+		`","method":` + strconv.Quote(method) +
+		`,"wire":{"scope":"workspace","workspaceId":"11111111-1111-4111-8111-111111111111","sessionEpoch":` +
+		strconv.FormatUint(epoch, 10) +
+		`,"operationId":"` + fmt.Sprintf(
+		"bbbbbbbb-bbbb-4bbb-8bbb-%012d",
+		sequence,
+	) + `","sequence":` +
+		strconv.FormatUint(sequence, 10) +
+		`},"params":` + params + `}`
+}
+
+func workspaceV2FormulaSchemaBody(t *testing.T) string {
+	t.Helper()
+	change := schemaapi.Change{
+		Definition: schema.TableDefinition{
+			ContractVersion: "1.0",
+			TableID:         "formula-read-purity",
+			PhysicalName:    "formula_read_purity",
+			DisplayName:     "Formula read purity",
+			Kind:            schema.TableKindBase,
+			SchemaRevision:  "schema_0000",
+			ArchivePolicy: schema.ArchivePolicy{
+				Mode: schema.ArchiveModeNone,
+			},
+			Fields: []schema.FieldDefinition{
+				{
+					FieldID:      "quantity",
+					PhysicalName: "quantity",
+					DisplayName:  "Quantity",
+					Kind:         schema.FieldKindScalar,
+					DataType:     schema.DataTypeInteger,
+					StorageType:  schema.StorageNumber,
+					Nullable:     true,
+					Constraints:  []schema.FieldConstraint{},
+					Editor: schema.EditorDefinition{
+						Kind: "number", Config: map[string]any{},
+					},
+				},
+				{
+					FieldID:      "total",
+					PhysicalName: "total",
+					DisplayName:  "Total",
+					Kind:         schema.FieldKindFormula,
+					DataType:     schema.DataTypeFormula,
+					StorageType:  schema.StorageNumber,
+					Nullable:     false,
+					Constraints:  []schema.FieldConstraint{},
+					Editor: schema.EditorDefinition{
+						Kind: "readonly", Config: map[string]any{},
+					},
+					ReadOnly: true,
+					Formula: &schema.FormulaSpec{
+						Language:   "cel-v1",
+						Source:     "quantity * 2",
+						ResultType: schema.DataTypeInteger,
+						Version:    1,
+						Status:     "ready",
+					},
+				},
+			},
+			Indexes: []schema.IndexDefinition{},
+		},
+		ExpectedRevision: 0,
+		OperationID:      "formula-read-purity-create",
+	}
+	raw, err := json.Marshal(change)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+type formulaReadProjection struct {
+	Jobs         int
+	JobStates    string
+	FormulaState string
+	TableState   string
+	BusinessRows int
+}
+
+func assertBusinessReceiptKindCount(
+	t *testing.T,
+	dataDir string,
+	expected map[string]int,
+) {
+	t.Helper()
+	database, err := sql.Open("sqlite", filepath.Join(dataDir, "data.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for kind, want := range expected {
+		var count int
+		if err := database.QueryRow(
+			`SELECT COUNT(*) FROM workspace_v2_mutation_receipts
+			  WHERE kind = ?`,
+			kind,
+		).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != want {
+			t.Fatalf("receipt kind %q count=%d want=%d", kind, count, want)
+		}
+	}
+}
+
+func readFormulaReadProjection(t *testing.T, dataDir string) formulaReadProjection {
+	t.Helper()
+	database, err := sql.Open("sqlite", filepath.Join(dataDir, "data.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec("PRAGMA query_only=ON"); err != nil {
+		t.Fatal(err)
+	}
+	result := formulaReadProjection{}
+	queries := []struct {
+		query  string
+		target any
+	}{
+		{
+			"SELECT COUNT(*) FROM vibetable_jobs",
+			&result.Jobs,
+		},
+		{
+			`SELECT COALESCE(GROUP_CONCAT(
+				id || ':' || state || ':' || CAST(progress_json AS TEXT), '|'
+			), '') FROM vibetable_jobs`,
+			&result.JobStates,
+		},
+		{
+			`SELECT COALESCE(GROUP_CONCAT(
+				field_id || ':' || status || ':' || version, '|'
+			), '') FROM vibetable_formulas`,
+			&result.FormulaState,
+		},
+		{
+			`SELECT COALESCE(GROUP_CONCAT(
+				table_id || ':' || schema_revision || ':' ||
+				CAST(definition_json AS TEXT), '|'
+			), '') FROM vibetable_tables`,
+			&result.TableState,
+		},
+		{
+			"SELECT COUNT(*) FROM formula_read_purity",
+			&result.BusinessRows,
+		},
+	}
+	for _, item := range queries {
+		if err := database.QueryRow(item.query).Scan(item.target); err != nil {
+			t.Fatalf("read formula GET projection: %v", err)
+		}
+	}
+	return result
+}
+
+func waitForFormulaJobsSettled(t *testing.T, dataDir string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		database, err := sql.Open("sqlite", filepath.Join(dataDir, "data.db"))
+		if err == nil {
+			var pending int
+			queryErr := database.QueryRow(
+				"SELECT COUNT(*) FROM vibetable_jobs " +
+					"WHERE state='queued' OR state='running'",
+			).Scan(&pending)
+			_ = database.Close()
+			if queryErr == nil && pending == 0 {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("formula jobs did not settle")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func requestJSON(

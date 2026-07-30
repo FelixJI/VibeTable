@@ -64,7 +64,7 @@ func TestFaultGateCorruptMigrationStopsBeforeStartup(t *testing.T) {
 		}
 		return nil
 	})
-	assertStable(t, err, CodeMigrationCorrupt, "known-good backup")
+	assertStable(t, err, CodeMigrationCorrupt, "known-good Snapshot")
 }
 
 func TestFaultGateRealWritableProbeDoesNotLeaveSentinel(t *testing.T) {

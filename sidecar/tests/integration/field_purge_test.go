@@ -9,7 +9,6 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/attachments"
-	"github.com/vibetable/vibetable/sidecar/internal/backup"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldresource"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
@@ -49,7 +48,14 @@ func TestFileFieldPurgeRequiresCurrentBackupAndRemovesEveryPhysicalResource(
 	planner := fieldchange.NewPlanner(catalog, catalog, store, nil)
 	executor := fieldchange.NewExecutor(
 		app, store,
-		fieldchange.WithBackupReceiptKey(testBackupReceiptKey),
+		fieldchange.WithProtectionSnapshotVerifier(
+			func(_ context.Context, snapshotID string) error {
+				if snapshotID != "snapshot_current" {
+					return errors.New("protection snapshot is not current")
+				}
+				return nil
+			},
+		),
 	)
 	actor := v2.Actor{ID: "local-user", Kind: "user"}
 	createPlan, err := planner.Plan(ctx, v2.FieldChangeIntent{
@@ -218,12 +224,6 @@ func TestFileFieldPurgeRequiresCurrentBackupAndRemovesEveryPhysicalResource(
 	if err != nil || !integrity.Valid {
 		t.Fatalf("retired file integrity = %#v, err=%v", integrity, err)
 	}
-	backupResult, err := backup.New(app, manager, testBackupReceiptKey).Create(
-		ctx, "before_file_purge.zip",
-	)
-	if err != nil {
-		t.Fatalf("create purge backup: %v", err)
-	}
 	stalePurgeIntent := v2.FieldChangeIntent{
 		Action:            v2.ActionPurge,
 		TableID:           table.TableID,
@@ -231,7 +231,7 @@ func TestFileFieldPurgeRequiresCurrentBackupAndRemovesEveryPhysicalResource(
 		ExpectedSchemaRev: retireReceipt.SchemaRevision,
 		Actor:             actor,
 		Confirmation:      field.DisplayName,
-		BackupReceipt:     backupResult.Receipt,
+		BackupReceipt:     "snapshot_at_plan",
 	}
 	stalePurgePlan, err := planner.Plan(ctx, stalePurgeIntent)
 	if err != nil {
@@ -255,9 +255,10 @@ func TestFileFieldPurgeRequiresCurrentBackupAndRemovesEveryPhysicalResource(
 	if _, err := executor.Apply(ctx, v2.ApplyRequest{
 		PlanID: stalePurgePlan.PlanID, PlanHash: stalePurgePlan.PlanHash,
 		OperationID: "op_purge_stale_backup", Actor: actor,
-		Confirmations: stalePurgePlan.Confirmations,
+		Confirmations:        stalePurgePlan.Confirmations,
+		ProtectionSnapshotID: "snapshot_stale",
 	}); err == nil {
-		t.Fatal("purge accepted a stale backup receipt")
+		t.Fatal("purge accepted stale data and a stale protection snapshot")
 	}
 	failedAudit, err := app.FindFirstRecordByFilter(
 		"vibetable_schema_audit",
@@ -268,14 +269,8 @@ func TestFileFieldPurgeRequiresCurrentBackupAndRemovesEveryPhysicalResource(
 		failedAudit.GetString("error_code") != "field.change.data_conflict" {
 		t.Fatalf("failed purge audit mismatch: %#v, err=%v", failedAudit, err)
 	}
-	backupResult, err = backup.New(app, manager, testBackupReceiptKey).Create(
-		ctx, "before_file_purge_fresh.zip",
-	)
-	if err != nil {
-		t.Fatalf("create fresh purge backup: %v", err)
-	}
 	purgeIntent := stalePurgeIntent
-	purgeIntent.BackupReceipt = backupResult.Receipt
+	purgeIntent.BackupReceipt = "snapshot_current"
 	purgePlan, err := planner.Plan(ctx, purgeIntent)
 	if err != nil {
 		t.Fatal(err)
@@ -287,13 +282,15 @@ func TestFileFieldPurgeRequiresCurrentBackupAndRemovesEveryPhysicalResource(
 	if _, err := executor.Apply(ctx, v2.ApplyRequest{
 		PlanID: purgePlan.PlanID, PlanHash: purgePlan.PlanHash,
 		OperationID: "op_purge_without_confirmation", Actor: actor,
+		ProtectionSnapshotID: "snapshot_current",
 	}); err == nil {
 		t.Fatal("purge without frozen confirmations was accepted")
 	}
 	purgeReceipt, err := executor.Apply(ctx, v2.ApplyRequest{
 		PlanID: purgePlan.PlanID, PlanHash: purgePlan.PlanHash,
 		OperationID: "op_purge_file_field", Actor: actor,
-		Confirmations: purgePlan.Confirmations,
+		Confirmations:        purgePlan.Confirmations,
+		ProtectionSnapshotID: "snapshot_current",
 	})
 	if err != nil {
 		t.Fatalf("purge file field: %v", err)
@@ -351,7 +348,7 @@ func TestFileFieldPurgeRequiresCurrentBackupAndRemovesEveryPhysicalResource(
 		"vibetable_schema_audit",
 		"operation_id='op_purge_file_field'",
 	)
-	if err != nil || audit.GetString("backup_receipt") != backupResult.Receipt {
+	if err != nil || audit.GetString("backup_receipt") != "snapshot_current" {
 		t.Fatalf("purge audit receipt mismatch: %#v, err=%v", audit, err)
 	}
 }

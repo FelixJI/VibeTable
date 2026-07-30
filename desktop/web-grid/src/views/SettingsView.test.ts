@@ -7,10 +7,9 @@ import { useIdentifierMappingStore } from "@/stores/identifierMappingStore";
 import { useWorkCalendarStore } from "@/stores/workCalendarStore";
 import { formatDateKey } from "@/calendar/workCalendar";
 import { useUiStore } from "@/stores/uiStore";
-import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import WorkCalendarMonth from "@/components/calendar/WorkCalendarMonth.vue";
 import MonthNavigator from "@/components/calendar/MonthNavigator.vue";
-import { NModal, NSelect } from "naive-ui";
+import { NSelect } from "naive-ui";
 import type { HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 
@@ -22,48 +21,11 @@ describe("SettingsView", () => {
     setActivePinia(createPinia());
     backupRequest.mockReset();
     backupRequest.mockImplementation(async (type: string) => {
-      if (type === "backup.list") {
-        return {
-          backups: [{
-            name: "manual_20260724_101500.zip",
-            size: 8192,
-            modified: "2026-07-24T10:15:00Z",
-            sha256: "a".repeat(64),
-          }],
-        };
-      }
-      if (type === "backup.create") {
-        return {
-          backup: {
-            name: "manual_20260724_101501.zip",
-            size: 9000,
-            modified: "2026-07-24T10:15:01Z",
-            sha256: "b".repeat(64),
-          },
-          integrityValid: true,
-          receipt: "vbr1.test-receipt",
-        };
-      }
-      if (type === "dataRoot.get") {
-        return {
-          dataRoot: "C:\\VibeTable\\VibeTableData",
-          defaultDataRoot: "C:\\VibeTable\\VibeTableData",
-          migrationPending: false,
-          pendingDataRoot: null,
-        };
-      }
-      if (type === "dataRoot.chooseMigrationRequested") {
-        return {
-          selected: true,
-          targetDataRoot: "D:\\Data\\VibeTableData",
-          requiresRestart: true,
-        };
-      }
       if (type === "diagnostics.get") {
         return {
           currentDirectory: "C:\\VibeTable",
           programDirectory: "C:\\VibeTable",
-          dataDirectory: "C:\\VibeTable\\VibeTableData",
+          dataDirectory: "C:\\VibeTable\\shell",
           operatingSystem: "Windows 11",
           programVersion: "0.1.0",
           dotnetVersion: "10.0.0",
@@ -85,7 +47,24 @@ describe("SettingsView", () => {
     const wrapper = mount(SettingsView);
     expect(wrapper.findAll(".settings-nav button")).toHaveLength(7);
     expect(wrapper.text()).toContain("界面语言");
+    expect(wrapper.text()).toContain("启动时进入");
+    expect(wrapper.text()).toContain("上次使用的工作区");
     expect(wrapper.text()).toContain("启动页面");
+  });
+
+  it("persists the device-level Workspace Center startup preference", async () => {
+    const wrapper = mount(SettingsView);
+    const startup = wrapper.findAllComponents(NSelect)
+      .find((select) =>
+        select.attributes("data-testid") === "workspace-startup-policy-select");
+    expect(startup).toBeDefined();
+
+    startup!.vm.$emit("update:value", "workspaceCenter");
+    await wrapper.vm.$nextTick();
+
+    const ui = useUiStore();
+    expect(ui.workspaceStartupPolicy).toBe("workspaceCenter");
+    expect(localStorage.getItem("vt:workspace-startup-policy")).toBe("workspaceCenter");
   });
 
   it("shows the assembly version and generated changelog in About", async () => {
@@ -101,77 +80,6 @@ describe("SettingsView", () => {
       .not.toMatch(/\bMerge\b|合并/i);
   });
 
-  it("lists and creates integrity-checked local backups", async () => {
-    const wrapper = mount(SettingsView);
-    await wrapper.get('[data-testid="settings-nav-backup"]').trigger("click");
-    await flushPromises();
-
-    expect(backupRequest).toHaveBeenCalledWith("backup.list", {});
-    expect(wrapper.text()).toContain("manual_20260724_101500.zip");
-
-    await wrapper.get('[data-testid="backup-create"]').trigger("click");
-    await flushPromises();
-    expect(backupRequest).toHaveBeenCalledWith(
-      "backup.create",
-      expect.objectContaining({ name: expect.stringMatching(/^manual_\d{8}_\d{6}\.zip$/) }),
-    );
-    expect(wrapper.get('[data-testid="backup-status"]').text()).toContain("备份");
-  });
-
-  it("requires explicit confirmation before starting a two-phase restore", async () => {
-    const wrapper = mount(SettingsView, { attachTo: document.body });
-    await wrapper.get('[data-testid="settings-nav-backup"]').trigger("click");
-    await flushPromises();
-
-    const restoreButton = wrapper.get(
-      '[data-testid="backup-restore-manual_20260724_101500.zip"]',
-    );
-    (restoreButton.element as HTMLElement).focus();
-    await restoreButton.trigger("click");
-    expect(backupRequest).not.toHaveBeenCalledWith(
-      "backup.restore",
-      expect.anything(),
-    );
-    const modal = wrapper.findComponent(NModal);
-    expect(modal.props("trapFocus")).toBe(true);
-    expect(modal.props("maskClosable")).toBe(false);
-    expect(
-      document.body.querySelector('[data-testid="backup-restore-confirmation"]')
-        ?.getAttribute("role"),
-    ).toBe("dialog");
-
-    document.body.querySelector<HTMLElement>('[data-testid="backup-restore-confirm"]')
-      ?.click();
-    await flushPromises();
-    expect(backupRequest).toHaveBeenCalledWith("backup.restore", {
-      name: "manual_20260724_101500.zip",
-      confirmed: true,
-    });
-    expect(wrapper.get('[data-testid="backup-status"]').text()).toContain("重启");
-    wrapper.unmount();
-  });
-
-  it("closes restore confirmation on Esc intent and returns focus to its trigger", async () => {
-    const wrapper = mount(SettingsView, { attachTo: document.body });
-    await wrapper.get('[data-testid="settings-nav-backup"]').trigger("click");
-    await flushPromises();
-    const restoreButton = wrapper.get(
-      '[data-testid="backup-restore-manual_20260724_101500.zip"]',
-    );
-    await restoreButton.trigger("click");
-
-    wrapper.findComponent(NModal).vm.$emit("update:show", false);
-    await flushPromises();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-
-    expect(document.activeElement).toBe(restoreButton.element);
-    expect(backupRequest).not.toHaveBeenCalledWith(
-      "backup.restore",
-      expect.anything(),
-    );
-    wrapper.unmount();
-  });
-
   it("aligns the interface density control with the other general settings", () => {
     const wrapper = mount(SettingsView);
     const densityRow = wrapper
@@ -184,39 +92,6 @@ describe("SettingsView", () => {
     const group = densityRow!.find(".setting-control--radio");
     expect(group.exists()).toBe(true);
     expect(group.classes()).toContain("n-radio-group");
-  });
-
-  it("keeps the data-service connection pill on a single line in the source row", async () => {
-    const wrapper = mount(SettingsView);
-    await wrapper.get('[data-testid="settings-nav-source"]').trigger("click");
-    // The pill's intrinsic width exceeds the space `space-between` leaves it;
-    // wrapping it in a non-shrinking container keeps its content on one line.
-    const sourceRow = wrapper
-      .findAll(".setting-row")
-      .find((row) => row.text().includes("本地数据服务"));
-    expect(sourceRow, "data-service source row should render").toBeTruthy();
-    expect(sourceRow!.find(".setting-control--pill").exists()).toBe(true);
-    expect(sourceRow!.findComponent(ConnectionPill).exists()).toBe(true);
-    expect(wrapper.find('[data-testid="preset-version-panel"]').exists()).toBe(false);
-  });
-
-  it("shows the active data root and schedules native migration for restart", async () => {
-    const wrapper = mount(SettingsView);
-    await wrapper.get('[data-testid="settings-nav-source"]').trigger("click");
-    await flushPromises();
-
-    expect(backupRequest).toHaveBeenCalledWith("dataRoot.get", {});
-    expect(wrapper.get('[data-testid="data-root-path"]').text())
-      .toContain("VibeTableData");
-
-    await wrapper.get('[data-testid="data-root-migrate"]').trigger("click");
-    await flushPromises();
-    expect(backupRequest).toHaveBeenCalledWith(
-      "dataRoot.chooseMigrationRequested",
-      {},
-    );
-    expect(wrapper.get('[data-testid="data-root-pending"]').text())
-      .toContain("重启");
   });
 
   it("manages manual holidays and adjusted workdays from the shared calendar", async () => {
@@ -248,7 +123,7 @@ describe("SettingsView", () => {
     expect(wrapper.emitted("loadMappings")).toHaveLength(1);
   });
 
-  it("routes advanced schema, shortcuts, and reconnect through real emits", async () => {
+  it("routes advanced schema and shortcuts through real emits", async () => {
     const wrapper = mount(SettingsView);
     await wrapper.get('[data-testid="settings-nav-mapping"]').trigger("click");
     await wrapper.find(".mapping-footer .n-button").trigger("click");
@@ -258,9 +133,6 @@ describe("SettingsView", () => {
     await wrapper.get(".setting-action").trigger("click");
     expect(wrapper.emitted("openHelp")).toHaveLength(1);
 
-    await wrapper.get('[data-testid="settings-nav-source"]').trigger("click");
-    await wrapper.get('[data-testid="connection-retry"]').trigger("click");
-    expect(wrapper.emitted("reconnect")).toHaveLength(1);
   });
 
   it("offers persistent source and compatible style controls for daily quotes", async () => {

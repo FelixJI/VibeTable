@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from tests.e2e import product_e2e_runner as runner
 
@@ -18,7 +21,7 @@ def test_manifest_has_exactly_twelve_unique_product_scenarios() -> None:
     assert "规范化深比较" in by_id["04-json-round-trip"]
     assert "SHA-256" in by_id["07-attachment-history"]
     assert "幂等键" in by_id["09-atomic-import-scale"]
-    assert "vbr1" in by_id["12-backup-consistency"]
+    assert "审计快照精确一致" in by_id["12-backup-consistency"]
 
 
 def test_missing_package_is_a_strict_preflight_failure(tmp_path: Path) -> None:
@@ -26,6 +29,34 @@ def test_missing_package_is_a_strict_preflight_failure(tmp_path: Path) -> None:
 
     assert audit["passed"] is False
     assert "does not exist" in audit["errors"][0]
+
+
+def test_atomic_json_write_retries_transient_windows_replace_denial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "result.json"
+    destination.write_text('{"old": true}\n', encoding="utf-8")
+    real_replace = runner.os.replace
+    attempts = 0
+
+    def transient_replace(source: Path, target: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError(5, "access denied", str(target))
+        real_replace(source, target)
+
+    monkeypatch.setattr(runner.os, "replace", transient_replace)
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
+
+    runner._write_json_atomic(destination, {"requestId": "second"})
+
+    assert attempts == 3
+    assert json.loads(destination.read_text(encoding="utf-8")) == {
+        "requestId": "second",
+    }
+    assert not destination.with_suffix(".json.tmp").exists()
 
 
 def test_package_fingerprint_is_content_and_path_sensitive(tmp_path: Path) -> None:
@@ -86,13 +117,13 @@ def test_performance_summary_reports_scenarios_bridge_percentiles_and_failures()
                     "pending": [],
                     "roundTrips": [
                         {
-                            "requestType": "history.queryRequested",
-                            "responseType": "history.pageLoaded",
+                            "requestType": "history.query",
+                            "responseType": "workspace.v2.response",
                             "durationMs": 20,
                         },
                         {
-                            "requestType": "history.queryRequested",
-                            "responseType": "history.pageLoaded",
+                            "requestType": "history.query",
+                            "responseType": "workspace.v2.response",
                             "durationMs": 80,
                         },
                     ],
@@ -134,10 +165,10 @@ def test_performance_summary_reports_scenarios_bridge_percentiles_and_failures()
         }
     ]
     history = next(
-        item for item in summary["byOperation"] if item["requestType"] == "history.queryRequested"
+        item for item in summary["byOperation"] if item["requestType"] == "history.query"
     )
     assert history == {
-        "requestType": "history.queryRequested",
+        "requestType": "history.query",
         "count": 2,
         "failures": 0,
         "p50Ms": 20.0,
@@ -162,8 +193,9 @@ def test_node_runner_enforces_closed_history_and_no_external_http() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
 
     assert '"history.read"' not in source
-    assert '"history.queryRequested"' in source
-    assert '["history.pageLoaded"]' in source
+    assert '"history.query"' in source
+    assert "rawWorkspaceV2Request(" in source
+    assert '"history.queryRequested"' not in source
     assert "externalRequests.length === 0" in source
     assert 'url.hostname === "app.vibetable.local"' in source
     assert '["127.0.0.1", "::1", "localhost"]' in source
@@ -171,6 +203,8 @@ def test_node_runner_enforces_closed_history_and_no_external_http() -> None:
     assert "unexpectedProductNonLoopback.length === 0" in source
     assert "assertCleanBridgeDiagnostics(recorder" in source
     assert "failures.length === 0 && pending.length === 0" in source
+    assert "allowedBridgeFailureCodes" not in source
+    assert "allowedPageErrors" not in source
 
 
 def test_invalid_field_assertion_matches_typed_v2_diagnostic_contract() -> None:
@@ -200,6 +234,8 @@ def test_atomic_import_fault_waits_for_transactional_barrier() -> None:
     assert "storageProof.counts?.idempotency === 0" in source
     assert "key NOT LIKE 'field-v2:%'" in orchestrator
     assert "storageProof.counts?.outbox === 0" in source
+    assert "handled_storage_proof_ids" in orchestrator
+    assert "result.requestId !== requestId" in source
 
 
 def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -> None:
@@ -229,10 +265,27 @@ def test_attachment_preview_and_verified_purge_receipt_are_exact_evidence() -> N
     assert "waitForPreviewArtifact(" in attachment
     assert "attachment-preview-verified.txt" in attachment
     assert "sha256(await fs.readFile(preservedPreviewPath))" in attachment
-    assert '"backup.create"' in backup
-    assert 'backup.payload.receipt.startsWith("vbr1.")' in backup
-    assert 'withoutBackup.applied.payload?.error?.code === "field.purge.backup_required"' in backup
-    assert '"field.recycleBin.list"' in backup
+    assert "preservedChangeSetIds" in backup
+    assert "postSnapshotValuePreserved" in backup
+    assert "postSnapshotAttachmentPreserved" in backup
+    assert "beforeAuditSnapshot === afterAuditSnapshot" not in backup
+    assert "snapshotStorageProof.auditLedger?.verified === true" in backup
+    assert "preservedSnapshotAnchor === snapshotStorageProof.auditLedger.anchorHash" in backup
+    assert 'record.sourceEpoch.startsWith("snapshot-restore:")' in backup
+    assert 'record.sourceEpoch === "business-v2"' in backup
+
+
+def test_backup_consistency_uses_current_snapshot_versions_ui_contract() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    scenario = source[source.index("async function scenario12") : source.index("const scenarios")]
+
+    assert 'getByTestId("settings-nav-versions")' in scenario
+    assert 'getByTestId("snapshot-create")' in scenario
+    assert 'getByTestId("snapshot-restore-open")' in scenario
+    assert 'getByTestId("snapshot-restore-preview")' in scenario
+    assert "settings-nav-backup" not in scenario
+    assert "backup-create" not in scenario
+    assert "backup-restore-" not in scenario
 
 
 def test_storage_proof_reads_all_transactional_surfaces_read_only(
@@ -261,20 +314,144 @@ def test_storage_proof_reads_all_transactional_surfaces_read_only(
         connection.commit()
     finally:
         connection.close()
+    audit_root = data_root.parent / "audit"
+    audit_root.mkdir()
+    ledger = sqlite3.connect(audit_root / "ledger.db")
+    try:
+        ledger.execute(
+            """
+            CREATE TABLE audit_ledger (
+                ledger_sequence INTEGER PRIMARY KEY,
+                event_id TEXT NOT NULL UNIQUE,
+                source_epoch TEXT NOT NULL,
+                source_sequence INTEGER NOT NULL,
+                mutation_identity TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                occurred_at TEXT NOT NULL,
+                previous_hash TEXT NOT NULL,
+                hash TEXT NOT NULL,
+                UNIQUE(source_epoch, source_sequence)
+            )
+            """
+        )
+        ledger.commit()
+    finally:
+        ledger.close()
 
     proof = runner._handle_storage_proof(
-        {"tableId": "tbl_e2e_atomic_import"},
+        {
+            "requestId": "11111111-1111-4111-8111-111111111111",
+            "tableId": "tbl_e2e_atomic_import",
+        },
         tmp_path,
     )
 
     assert proof["status"] == "completed"
+    assert proof["requestId"] == "11111111-1111-4111-8111-111111111111"
     assert proof["database"]["readOnly"] is True
+    assert proof["auditLedger"] == {
+        "path": str(audit_root / "ledger.db"),
+        "readOnly": True,
+        "verified": True,
+        "count": 0,
+        "anchorHash": "",
+        "sourceHighWatermarks": {},
+        "records": [],
+    }
     assert proof["counts"] == {
         "records": 0,
         "audit": 0,
         "idempotency": 0,
         "outbox": 0,
     }
+
+
+def test_audit_ledger_proof_verifies_payload_links_and_record_hashes(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.db"
+    connection = sqlite3.connect(ledger_path)
+    payload = b'{"type":"workspace.snapshotRestored"}'
+    payload_hash = "sha256:" + hashlib.sha256(payload).hexdigest()
+    occurred_at = "2026-07-29T00:00:00Z"
+    envelope = {
+        "eventId": "snapshot-restore:operation",
+        "sourceEpoch": "snapshot-restore:operation",
+        "sourceSequence": 1,
+        "mutationIdentity": "snapshot-restore:operation",
+        "payloadHash": payload_hash,
+        "payload": json.loads(payload),
+        "occurredAt": occurred_at,
+    }
+    record_hash = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                {
+                    "ledgerSequence": 1,
+                    "previousHash": "",
+                    "envelope": envelope,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+    )
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE audit_ledger (
+                ledger_sequence INTEGER PRIMARY KEY,
+                event_id TEXT NOT NULL UNIQUE,
+                source_epoch TEXT NOT NULL,
+                source_sequence INTEGER NOT NULL,
+                mutation_identity TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                occurred_at TEXT NOT NULL,
+                previous_hash TEXT NOT NULL,
+                hash TEXT NOT NULL,
+                UNIQUE(source_epoch, source_sequence)
+            );
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO audit_ledger VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                envelope["eventId"],
+                envelope["sourceEpoch"],
+                1,
+                envelope["mutationIdentity"],
+                payload_hash,
+                payload,
+                occurred_at,
+                "",
+                record_hash,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    proof = runner._audit_ledger_proof(ledger_path)
+
+    assert proof["verified"] is True
+    assert proof["count"] == 1
+    assert proof["anchorHash"] == record_hash
+    assert proof["sourceHighWatermarks"] == {"snapshot-restore:operation": 1}
+
+    connection = sqlite3.connect(ledger_path)
+    try:
+        connection.execute("UPDATE audit_ledger SET hash = 'sha256:tampered'")
+        connection.commit()
+    finally:
+        connection.close()
+    with pytest.raises(RuntimeError, match="chain is invalid"):
+        runner._audit_ledger_proof(ledger_path)
 
 
 def test_process_network_report_rejects_listener_and_remote_non_loopback() -> None:

@@ -49,6 +49,7 @@ func registerMutationRoutes(
 	r *router.Router[*core.RequestEvent],
 	kernel mutationKernel,
 	stager uploadStager,
+	gates ...businessWriteGate,
 ) {
 	r.POST("/api/vibetable/v1/mutations/preview", func(request *core.RequestEvent) error {
 		input, err := decodeMutationRequest(request.Request.Body)
@@ -69,7 +70,18 @@ func registerMutationRoutes(
 		if err != nil {
 			return writeMutationError(request, err)
 		}
-		receipt, err := kernel.Apply(request.Request.Context(), input)
+		var receipt mutation.Receipt
+		err = runBusinessWrite(
+			request.Request.Context(),
+			gates,
+			"mutation.apply",
+			input.IdempotencyKey,
+			func(ctx context.Context) error {
+				var applyErr error
+				receipt, applyErr = kernel.Apply(ctx, input)
+				return applyErr
+			},
+		)
 		if err != nil {
 			return writeMutationError(request, err)
 		}

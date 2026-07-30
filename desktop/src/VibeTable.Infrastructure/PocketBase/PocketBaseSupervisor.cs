@@ -256,14 +256,17 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         try
         {
             string sessionSecret = GenerateSessionSecret();
+            var environment = new Dictionary<string, string>(
+                _options.Environment,
+                StringComparer.Ordinal)
+            {
+                [SessionSecretEnvironment] = sessionSecret,
+            };
             var request = new PocketBaseProcessStartRequest(
                 _options.ExecutablePath,
                 _options.WorkingDirectory,
                 BuildArguments(),
-                new Dictionary<string, string>(StringComparer.Ordinal)
-                {
-                    [SessionSecretEnvironment] = sessionSecret,
-                });
+                environment);
             IPocketBaseProcess process = _processFactory.Start(request);
             generation = new ProcessGeneration(process, sessionSecret);
             generation.ExitHandler = (_, _) => OnProcessExited(generation);

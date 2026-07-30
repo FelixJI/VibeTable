@@ -92,7 +92,7 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     environment: release
     permissions:
       contents: write
@@ -116,6 +116,25 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           global-json-file: global.json
+
+      - name: Install pinned Windows race toolchain
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "w64devkit-x64-2.8.0.7z.exe"
+          $destination = Join-Path $PWD ".tools\w64devkit"
+          $expected = "6252bf34fe2231a55ac7f03d482b36d2c7c58697990551bba508102cfb3f342e"
+          Invoke-WebRequest `
+            -Uri "https://github.com/skeeto/w64devkit/releases/download/v2.8.0/w64devkit-x64-2.8.0.7z.exe" `
+            -OutFile $archive
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "w64devkit checksum mismatch: expected $expected, got $actual"
+          }
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          7z x $archive "-o$destination" -y
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path "$destination\w64devkit\bin\gcc.exe")) {
+            throw "w64devkit extraction did not produce the pinned gcc.exe"
+          }
 
       - name: Set up uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -214,47 +233,47 @@ jobs:
         working-directory: desktop/web-grid
         run: npm run test
 
-      - name: Verify sidecar
-        run: uv run python qa/next.py --stage go-test
-
-      - name: Verify .NET release configuration
-        run: dotnet test desktop/VibeTable.Desktop.sln --configuration Release
-
-      - name: Build release package
+      - name: Build immutable release candidate
         run: uv run python scripts/build_next.py --release
 
-      - name: Verify package
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ steps.identity.outputs.version }}
-        run: |
-          $packageName = "VibeTable.Next-v$env:RELEASE_VERSION-win-x64"
-          uv run python qa/package_check.py "dist/$packageName"
+      - name: Archive immutable release candidate
+        run: >
+          uv run python qa/release_candidate.py create
+          --package-root dist/VibeTable.Next
+          --archive dist/VibeTable.Next.zip
 
-      - name: Archive and checksum
-        shell: pwsh
+      - name: Run complete release eligibility gate
         env:
-          RELEASE_VERSION: ${{ steps.identity.outputs.version }}
-        run: |
-          $version = $env:RELEASE_VERSION
-          $packageName = "VibeTable.Next-v$version-win-x64"
-          $packageDir = "dist/$packageName"
-          $archive = "dist/$packageName.zip"
-          if (!(Test-Path $packageDir)) {
-            throw "Build artifact missing: $packageDir"
-          }
-          Compress-Archive -Path $packageDir -DestinationPath $archive -Force
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/Assert-WindowsPackage.ps1 -Path $archive
-          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $packageName.zip" | Set-Content -Encoding ascii "$archive.sha256"
+          VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY: ${{ secrets.PROVIDER_EVIDENCE_HMAC_KEY }}
+          VIBETABLE_PROVIDER_EVIDENCE_KEY_ID: ${{ vars.PROVIDER_EVIDENCE_KEY_ID }}
+          VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER: "1"
+        run: >
+          uv run python qa/next.py --ci
+          --package-root dist/VibeTable.Next
+          --package-archive dist/VibeTable.Next.zip
+          --json-report build/qa/release-eligibility.json
+
+      - name: Verify eligibility is bound to the immutable candidate
+        run: >
+          uv run python qa/release_candidate.py verify
+          --package-root dist/VibeTable.Next
+          --archive dist/VibeTable.Next.zip
+          --eligibility-report build/qa/release-eligibility.json
+
+      - name: Upload release eligibility evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-eligibility-${{ steps.identity.outputs.tag }}
+          path: build/qa/release-eligibility.json
+          if-no-files-found: error
 
       - name: Upload immutable workflow artifact
         uses: actions/upload-artifact@v7
         with:
           name: VibeTable-${{ steps.identity.outputs.tag }}
           path: |
-            dist/VibeTable.Next-v${{ steps.identity.outputs.version }}-win-x64.zip
-            dist/VibeTable.Next-v${{ steps.identity.outputs.version }}-win-x64.zip.sha256
+            dist/VibeTable.Next.zip
+            dist/VibeTable.Next.zip.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -275,13 +294,9 @@ jobs:
         shell: pwsh
         run: |
           $tag = $env:RELEASE_TAG
-          $version = "${{ steps.identity.outputs.version }}"
-          $packageName = "VibeTable.Next-v$version-win-x64"
-          $archive = "dist/$packageName.zip"
-          $checksum = "$archive.sha256"
           if (gh release view $tag 2>$null) {
             gh release edit $tag --notes-file CHANGELOG.md --title "VibeTable $tag"
-            gh release upload $tag $archive $checksum --clobber
+            gh release upload $tag dist/VibeTable.Next.zip dist/VibeTable.Next.zip.sha256 --clobber
           } else {
-            gh release create $tag $archive $checksum --verify-tag --notes-file CHANGELOG.md --title "VibeTable $tag"
+            gh release create $tag dist/VibeTable.Next.zip dist/VibeTable.Next.zip.sha256 --verify-tag --notes-file CHANGELOG.md --title "VibeTable $tag"
           }

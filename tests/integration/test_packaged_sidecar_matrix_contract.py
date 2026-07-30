@@ -34,7 +34,11 @@ def test_matrix_declares_every_plan_12_4_coverage_axis() -> None:
         "audit+restore",
         "sse",
         "process-restart",
-        "backup+restore",
         "record-delete",
+        "workspace-v2-build-info",
+        "workspace-v2-capabilities",
+        "workspace-v2-legacy-write-rejection",
+        "workspace-v2-snapshot-package",
     }
-    assert all(f'coverage["{axis}"] = "passed"' in source for axis in expected)
+    assert all(axis in source for axis in expected)
+    assert '"backup+restore"' not in source

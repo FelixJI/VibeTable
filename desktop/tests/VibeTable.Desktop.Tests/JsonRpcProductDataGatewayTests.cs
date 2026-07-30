@@ -58,9 +58,6 @@ public sealed class JsonRpcProductDataGatewayTests
         await gateway.CompareVersionAsync(payload, CancellationToken.None);
         await gateway.PromoteVersionAsync(payload, CancellationToken.None);
         await gateway.DeleteVersionAsync(payload, CancellationToken.None);
-        await gateway.ListBackupsAsync(payload, CancellationToken.None);
-        await gateway.CreateBackupAsync(payload, CancellationToken.None);
-        await gateway.RestoreBackupAsync(payload, CancellationToken.None);
 
         CollectionAssert.AreEqual(
             new[]
@@ -79,7 +76,6 @@ public sealed class JsonRpcProductDataGatewayTests
                 "preset.list", "preset.save", "preset.delete",
                 "version.list", "version.create", "version.save", "version.compare",
                 "version.promote", "version.delete",
-                "backup.list", "backup.create", "backup.restore",
             },
             transport.Methods);
         Assert.IsFalse(transport.Serialized.Contains(

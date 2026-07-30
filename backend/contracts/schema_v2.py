@@ -424,6 +424,7 @@ class ApplyRequestV2(SchemaV2Model):
     operation_id: str
     actor: ActorV2
     confirmations: list[str]
+    protection_snapshot_id: str = ""
 
 
 class MigrationStatusV2(SchemaV2Model):

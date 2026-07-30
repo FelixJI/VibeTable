@@ -1,0 +1,12 @@
+{
+  "contractVersion": "2.0",
+  "policyRevision": 1,
+  "snapshotDays": 30,
+  "snapshotCount": 50,
+  "snapshotBuckets": ["daily", "weekly", "monthly"],
+  "fileRevisionDays": 30,
+  "fileRevisionCount": 100,
+  "fileRevisionBuckets": ["daily", "weekly"],
+  "trashMonths": 3,
+  "repositoryLimitBytes": null
+}

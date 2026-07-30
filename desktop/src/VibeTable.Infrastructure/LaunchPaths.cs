@@ -3,7 +3,7 @@ using System.IO;
 
 namespace VibeTable.Infrastructure;
 
-/// <summary>Product-only install, executable, data, and backup paths.</summary>
+/// <summary>Product-only install, executable, and data paths.</summary>
 internal static class LaunchPaths
 {
     public static string? FindRepositoryRoot(string startDirectory)
@@ -48,9 +48,6 @@ internal static class LaunchPaths
 
     public static string ResolveDataRoot(string localAppData) =>
         Path.GetFullPath(Path.Combine(localAppData, "VibeTable", "data"));
-
-    public static string ResolveBackupRoot(string localAppData) =>
-        Path.GetFullPath(Path.Combine(localAppData, "VibeTable", "backups"));
 
     public static void EnsureInstallAndDataAreSeparated(
         string installDirectory,

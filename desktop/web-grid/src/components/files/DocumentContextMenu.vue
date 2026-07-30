@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from "vue";
 import { NIcon } from "naive-ui";
-import { ExternalLink, Eye, FolderSearch, History, LocateFixed } from "lucide-vue-next";
+import { ExternalLink, Eye, FolderSearch, History, LocateFixed, Trash2 } from "lucide-vue-next";
 import type { DocumentCapability, DocumentEntry } from "@/stores/documentWorkspaceStore";
 import { t } from "@/i18n";
 
@@ -51,6 +51,16 @@ function choose(action: DocumentCapability): void {
     <button v-if="entry.capabilities.includes('history')" role="menuitem" @click="choose('history')">
       <NIcon :size="15"><History /></NIcon>{{ t("files.action.history") }}
     </button>
+    <i v-if="entry.capabilities.includes('unlink')"></i>
+    <button
+      v-if="entry.capabilities.includes('unlink')"
+      class="danger"
+      data-testid="document-unlink"
+      role="menuitem"
+      @click="choose('unlink')"
+    >
+      <NIcon :size="15"><Trash2 /></NIcon>{{ t("files.action.unlink") }}
+    </button>
   </div>
 </template>
 
@@ -80,5 +90,6 @@ function choose(action: DocumentCapability): void {
   cursor: pointer;
 }
 .document-menu button:hover, .document-menu button:focus-visible { outline: none; background: var(--vt-bg-sunken); }
+.document-menu button.danger { color: var(--vt-color-danger-600); }
 .document-menu i { display: block; height: 1px; margin: 4px 6px; background: var(--vt-border); }
 </style>

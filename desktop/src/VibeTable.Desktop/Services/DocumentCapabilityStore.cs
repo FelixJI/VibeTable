@@ -1,11 +1,11 @@
 using System.Collections.Frozen;
-using System.Collections.Generic;
 
 namespace VibeTable.Desktop.Services;
 
 /// <summary>
-/// Session-local opaque handles for document actions. Renderer-visible handles
-/// contain no path information and expire automatically.
+/// Session-local capabilities for native file actions. This store is never a
+/// document catalog: it only wraps a canonical Sidecar document UUID and path
+/// for one active workspace session.
 /// </summary>
 public sealed class DocumentCapabilityStore
 {
@@ -13,10 +13,6 @@ public sealed class DocumentCapabilityStore
 
     private readonly object _gate = new();
     private readonly Dictionary<string, DocumentCapabilityDescriptor> _entries =
-        new(StringComparer.Ordinal);
-    private readonly Dictionary<string, DocumentRevisionCapabilityDescriptor> _revisions =
-        new(StringComparer.Ordinal);
-    private readonly Dictionary<string, DocumentSchemeCapabilityDescriptor> _schemes =
         new(StringComparer.Ordinal);
     private readonly Func<DateTimeOffset> _clock;
     private readonly TimeSpan _ttl;
@@ -31,54 +27,53 @@ public sealed class DocumentCapabilityStore
     }
 
     public string Issue(
-        string workspaceId,
-        string documentId,
-        string? linkId,
+        Guid workspaceId,
+        ulong sessionEpoch,
+        Guid documentId,
         string relativePath,
-        IEnumerable<string> capabilities,
-        string? currentRevisionId = null)
+        Guid? effectiveRevisionId,
+        IEnumerable<string> capabilities)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
+        if (workspaceId == Guid.Empty || documentId == Guid.Empty ||
+            sessionEpoch == 0)
+            throw new ArgumentException("A canonical workspace session is required.");
         ArgumentException.ThrowIfNullOrWhiteSpace(relativePath);
         ArgumentNullException.ThrowIfNull(capabilities);
 
-        var grantedCapabilities = capabilities.ToFrozenSet(StringComparer.Ordinal);
         lock (_gate)
         {
-            var now = _clock();
-            PruneExpiredLocked(now);
-            string handle = $"doc-{Guid.NewGuid():N}";
+            PruneExpiredLocked(_clock());
+            string handle = $"entry-{Guid.NewGuid():N}";
             _entries[handle] = new DocumentCapabilityDescriptor(
                 workspaceId,
+                sessionEpoch,
                 documentId,
-                linkId,
                 relativePath,
-                currentRevisionId,
-                grantedCapabilities,
-                now + _ttl,
+                effectiveRevisionId,
+                capabilities.ToFrozenSet(StringComparer.Ordinal),
+                _clock() + _ttl,
                 _epoch);
             return handle;
         }
     }
 
-    public DocumentCapabilityDescriptor Resolve(string handle, string requiredCapability)
+    public DocumentCapabilityDescriptor Resolve(
+        string handle,
+        string requiredCapability,
+        Guid workspaceId,
+        ulong sessionEpoch)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(handle);
         ArgumentException.ThrowIfNullOrWhiteSpace(requiredCapability);
-
         lock (_gate)
         {
-            if (!_entries.TryGetValue(handle, out var descriptor))
-                throw new DocumentCapabilityException(
-                    "文档授权已失效，请刷新文件列表。",
-                    "DOCUMENT_HANDLE_INVALID");
-            if (descriptor.Epoch != _epoch)
+            if (!_entries.TryGetValue(handle, out var descriptor) ||
+                descriptor.Epoch != _epoch ||
+                descriptor.WorkspaceId != workspaceId ||
+                descriptor.SessionEpoch != sessionEpoch)
             {
                 _entries.Remove(handle);
-                throw new DocumentCapabilityException(
-                    "文档授权已失效，请刷新文件列表。",
-                    "DOCUMENT_HANDLE_INVALID");
+                throw InvalidHandle();
             }
             if (_clock() >= descriptor.ExpiresAt)
             {
@@ -95,167 +90,20 @@ public sealed class DocumentCapabilityStore
         }
     }
 
-    public string IssueRevision(
-        string workspaceId,
-        string documentId,
-        string revisionId,
-        IEnumerable<string> capabilities)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(revisionId);
-        ArgumentNullException.ThrowIfNull(capabilities);
-
-        var grantedCapabilities = capabilities.ToFrozenSet(StringComparer.Ordinal);
-        lock (_gate)
-        {
-            var now = _clock();
-            PruneExpiredLocked(now);
-            string handle = $"rev-{Guid.NewGuid():N}";
-            _revisions[handle] = new DocumentRevisionCapabilityDescriptor(
-                workspaceId,
-                documentId,
-                revisionId,
-                grantedCapabilities,
-                now + _ttl,
-                _epoch);
-            return handle;
-        }
-    }
-
-    public DocumentRevisionCapabilityDescriptor ResolveRevision(
-        string handle,
-        string requiredCapability)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(handle);
-        ArgumentException.ThrowIfNullOrWhiteSpace(requiredCapability);
-
-        lock (_gate)
-        {
-            if (!_revisions.TryGetValue(handle, out var descriptor))
-                throw new DocumentCapabilityException(
-                    "版本授权已失效，请重新打开版本历史。",
-                    "REVISION_HANDLE_INVALID");
-            if (descriptor.Epoch != _epoch)
-            {
-                _revisions.Remove(handle);
-                throw new DocumentCapabilityException(
-                    "版本授权已失效，请重新打开版本历史。",
-                    "REVISION_HANDLE_INVALID");
-            }
-            if (_clock() >= descriptor.ExpiresAt)
-            {
-                _revisions.Remove(handle);
-                throw new DocumentCapabilityException(
-                    "版本授权已过期，请重新打开版本历史。",
-                    "REVISION_HANDLE_EXPIRED");
-            }
-            if (!descriptor.Capabilities.Contains(requiredCapability))
-                throw new DocumentCapabilityException(
-                    "当前版本不允许执行此操作。",
-                    "REVISION_CAPABILITY_DENIED");
-            return descriptor;
-        }
-    }
-
-    public string IssueScheme(
-        string workspaceId,
-        string documentId,
-        string schemeId,
-        string observedHeadRevisionId,
-        IEnumerable<string> capabilities)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(schemeId);
-        ArgumentNullException.ThrowIfNull(observedHeadRevisionId);
-        ArgumentNullException.ThrowIfNull(capabilities);
-
-        var grantedCapabilities = capabilities.ToFrozenSet(StringComparer.Ordinal);
-        lock (_gate)
-        {
-            var now = _clock();
-            PruneExpiredLocked(now);
-            string handle = $"scheme-{Guid.NewGuid():N}";
-            _schemes[handle] = new DocumentSchemeCapabilityDescriptor(
-                workspaceId,
-                documentId,
-                schemeId,
-                observedHeadRevisionId,
-                grantedCapabilities,
-                now + _ttl,
-                _epoch);
-            return handle;
-        }
-    }
-
-    public DocumentSchemeCapabilityDescriptor ResolveScheme(
-        string handle,
-        string requiredCapability)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(handle);
-        ArgumentException.ThrowIfNullOrWhiteSpace(requiredCapability);
-
-        lock (_gate)
-        {
-            if (!_schemes.TryGetValue(handle, out var descriptor))
-                throw new DocumentCapabilityException(
-                    "The scheme authorization is no longer valid. Refresh the scheme list.",
-                    "SCHEME_HANDLE_INVALID");
-            if (descriptor.Epoch != _epoch)
-            {
-                _schemes.Remove(handle);
-                throw new DocumentCapabilityException(
-                    "The scheme authorization is no longer valid. Refresh the scheme list.",
-                    "SCHEME_HANDLE_INVALID");
-            }
-            if (_clock() >= descriptor.ExpiresAt)
-            {
-                _schemes.Remove(handle);
-                throw new DocumentCapabilityException(
-                    "The scheme authorization expired. Refresh the scheme list.",
-                    "SCHEME_HANDLE_EXPIRED");
-            }
-            if (!descriptor.Capabilities.Contains(requiredCapability))
-                throw new DocumentCapabilityException(
-                    "This scheme does not allow the requested operation.",
-                    "SCHEME_CAPABILITY_DENIED");
-            return descriptor;
-        }
-    }
-
-    public void RevokeAll()
-    {
-        lock (_gate)
-        {
-            _entries.Clear();
-            _revisions.Clear();
-            _schemes.Clear();
-        }
-    }
-
-    /// <summary>
-    /// Advances the capability generation and invalidates every handle issued
-    /// by an earlier host session or workspace context.
-    /// </summary>
     public long RotateEpoch()
     {
         lock (_gate)
         {
             _epoch = _epoch == long.MaxValue ? 0 : _epoch + 1;
             _entries.Clear();
-            _revisions.Clear();
-            _schemes.Clear();
             return _epoch;
         }
     }
 
-    public void PruneExpired()
+    public void RevokeAll()
     {
         lock (_gate)
-        {
-            PruneExpiredLocked(_clock());
-        }
+            _entries.Clear();
     }
 
     private void PruneExpiredLocked(DateTimeOffset now)
@@ -264,49 +112,21 @@ public sealed class DocumentCapabilityStore
             .Where(entry => now >= entry.Value.ExpiresAt)
             .Select(entry => entry.Key)
             .ToArray())
-        {
             _entries.Remove(key);
-        }
-        foreach (string key in _revisions
-            .Where(entry => now >= entry.Value.ExpiresAt)
-            .Select(entry => entry.Key)
-            .ToArray())
-        {
-            _revisions.Remove(key);
-        }
-        foreach (string key in _schemes
-            .Where(entry => now >= entry.Value.ExpiresAt)
-            .Select(entry => entry.Key)
-            .ToArray())
-        {
-            _schemes.Remove(key);
-        }
     }
+
+    private static DocumentCapabilityException InvalidHandle()
+        => new(
+            "文档授权已失效，请刷新文件列表。",
+            "DOCUMENT_HANDLE_INVALID");
 }
 
 public sealed record DocumentCapabilityDescriptor(
-    string WorkspaceId,
-    string DocumentId,
-    string? LinkId,
+    Guid WorkspaceId,
+    ulong SessionEpoch,
+    Guid DocumentId,
     string RelativePath,
-    string? CurrentRevisionId,
-    IReadOnlySet<string> Capabilities,
-    DateTimeOffset ExpiresAt,
-    long Epoch);
-
-public sealed record DocumentRevisionCapabilityDescriptor(
-    string WorkspaceId,
-    string DocumentId,
-    string RevisionId,
-    IReadOnlySet<string> Capabilities,
-    DateTimeOffset ExpiresAt,
-    long Epoch);
-
-public sealed record DocumentSchemeCapabilityDescriptor(
-    string WorkspaceId,
-    string DocumentId,
-    string SchemeId,
-    string ObservedHeadRevisionId,
+    Guid? EffectiveRevisionId,
     IReadOnlySet<string> Capabilities,
     DateTimeOffset ExpiresAt,
     long Epoch);
@@ -314,10 +134,7 @@ public sealed record DocumentSchemeCapabilityDescriptor(
 public sealed class DocumentCapabilityException : InvalidOperationException
 {
     public DocumentCapabilityException(string message, string code)
-        : base(message)
-    {
-        Code = code;
-    }
+        : base(message) => Code = code;
 
     public string Code { get; }
 }

@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "1.0",
+  "protocolVersion": "2.0",
   "components": {
     "host": {
       "version": "0.1.0"
@@ -14,9 +14,9 @@
       "version": "0.1.0",
       "pocketBaseVersion": "0.39.9",
       "celVersion": "0.26.1",
-      "contractVersion": "v1",
-      "schemaVersion": "5",
-      "migrationHash": "55e468fdc7e56fd5732e4e847a7099bb0b1eb37ef8d43807a973fcadafb48b82",
+      "contractVersion": "2.0",
+      "schemaVersion": "6",
+      "migrationHash": "9bf1f4b24141a3d4bd9ee64c1fa2d0935e132152b1d91df9c1531ed465bd4938",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     }
   },
@@ -28,32 +28,42 @@
   },
   "launch": {
     "host": "VibeTable.Next.exe",
-    "backend": "resources/backend/vibetable-backend.exe",
-    "webGrid": "resources/web-grid",
-    "sidecar": "resources/sidecar/vibetable-pb.exe",
-    "previewHost": "VibeTable.Next.exe"
+    "backend": "backend/vibetable-backend.exe",
+    "webGrid": "web-grid",
+    "sidecar": "sidecar/vibetable-pb.exe"
   },
   "assets": {
-    "migrations": "resources/sidecar/migrations/manifest.json",
-    "buildInfo": "resources/sidecar/build-info.json",
-    "sidecarChecksum": "resources/sidecar/vibetable-pb.exe.sha256",
-    "licenses": "resources/sidecar/THIRD_PARTY_LICENSES.txt",
-    "sbom": "resources/sidecar/sbom.cdx.json"
+    "migrations": "sidecar/migrations/manifest.json",
+    "buildInfo": "sidecar/build-info.json",
+    "sidecarChecksum": "sidecar/vibetable-pb.exe.sha256",
+    "licenses": "sidecar/THIRD_PARTY_LICENSES.txt",
+    "sbom": "sidecar/sbom.cdx.json",
+    "recoveryToolProvenance": "sidecar/recovery-tools.provenance.json",
+    "recoveryGuide": "RECOVERY.md",
+    "workspaceContracts": "contracts/v2",
+    "recoveryTools": {
+      "kopia": "sidecar/tools/kopia.exe",
+      "age": "sidecar/tools/age.exe",
+      "ageKeygen": "sidecar/tools/age-keygen.exe"
+    },
+    "recoveryToolChecksums": {
+      "kopia": "sidecar/tools/kopia.exe.sha256",
+      "age": "sidecar/tools/age.exe.sha256",
+      "ageKeygen": "sidecar/tools/age-keygen.exe.sha256"
+    }
+  },
+  "formats": {
+    "workspace": 1,
+    "repository": "kopia-v3",
+    "snapshot": 2,
+    "package": 2,
+    "contracts": "2.0"
   },
   "data": {
-    "rootPolicy": "automatic-documents",
-    "defaultBase": "user-documents",
-    "fallbackBase": "per-user-local-app-data",
-    "relativePath": "VibeTableData",
-    "backupRelativePath": "backups",
+    "shellRoot": "%LOCALAPPDATA%/VibeTable/shell",
+    "managedWorkspaceRoot": "%LOCALAPPDATA%/VibeTable/shell/workspaces/<workspaceId>",
+    "mirroredActivityRoot": "%LOCALAPPDATA%/VibeTable/activity/<workspaceId>",
+    "workspaceIdentity": "manifest-uuid",
     "preserveOnUninstall": true
-  },
-  "writable": {
-    "cacheBase": "per-user-local-app-data",
-    "cacheRelativePath": "VibeTable/cache",
-    "runtimeBase": "per-user-local-app-data",
-    "runtimeRelativePath": "VibeTable/runtime",
-    "logsBase": "program-directory",
-    "logsRelativePath": "logs"
   }
 }

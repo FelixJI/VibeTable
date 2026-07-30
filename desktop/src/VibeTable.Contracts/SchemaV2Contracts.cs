@@ -372,7 +372,8 @@ public sealed record FieldApplyRequestV2(
     string PlanHash,
     string OperationId,
     FieldActorV2 Actor,
-    IReadOnlyList<string> Confirmations);
+    IReadOnlyList<string> Confirmations,
+    string ProtectionSnapshotId = "");
 
 public sealed record FieldMigrationStatusV2(
     string Contract,

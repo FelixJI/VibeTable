@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -17,6 +18,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 const (
@@ -34,9 +36,17 @@ type TaskPublisher interface {
 	PublishTaskChanged(context.Context, Snapshot) error
 }
 
+type BusinessWriteGate func(
+	context.Context,
+	string,
+	string,
+	func(context.Context) error,
+) error
+
 type Service struct {
 	app            core.App
 	kernel         MutationKernel
+	businessGate   BusinessWriteGate
 	publisher      TaskPublisher
 	dataPublisher  DataPublisher
 	runContext     context.Context
@@ -142,6 +152,45 @@ func (service *Service) SetKernel(kernel MutationKernel) {
 	service.mu.Unlock()
 }
 
+// SetBusinessWriteGate binds background business batches to the same
+// Workspace V2 coordinator used by synchronous product routes. V1 leaves the
+// gate unset and retains its existing direct-kernel behavior.
+func (service *Service) SetBusinessWriteGate(gate BusinessWriteGate) {
+	service.mu.Lock()
+	service.businessGate = gate
+	service.mu.Unlock()
+}
+
+func (service *Service) applyKernelBatch(
+	ctx context.Context,
+	kind string,
+	identity string,
+	request mutation.Request,
+) (mutation.Receipt, error) {
+	service.mu.Lock()
+	kernel := service.kernel
+	gate := service.businessGate
+	service.mu.Unlock()
+	if kernel == nil {
+		return mutation.Receipt{}, jobError(
+			"job.kernel_unavailable",
+			"mutation kernel is unavailable",
+			true,
+		)
+	}
+	var receipt mutation.Receipt
+	apply := func(writeCtx context.Context) error {
+		var err error
+		receipt, err = kernel.Apply(writeCtx, request)
+		return err
+	}
+	if gate == nil {
+		return receipt, apply(ctx)
+	}
+	err := gate(ctx, kind, identity, apply)
+	return receipt, err
+}
+
 func (service *Service) Start(jobID string) bool {
 	service.mu.Lock()
 	if service.stopping || service.active >= maxResumableJobs {
@@ -239,38 +288,55 @@ func (service *Service) StartFormulaBackfill(
 		return Snapshot{}, err
 	}
 	revision, _ := schema.ParseSchemaRevision(definition.SchemaRevision)
-	collection, err := service.app.FindCollectionByNameOrId("vibetable_jobs")
-	if err != nil {
-		return Snapshot{}, jobError(
-			"job.storage_failed", "job storage is unavailable", true,
+	var recordID string
+	err = service.app.RunInTransaction(func(txApp core.App) (transactionErr error) {
+		defer func() {
+			if transactionErr == nil {
+				transactionErr = writecoordinator.PersistPocketBaseReceipt(
+					ctx,
+					txApp,
+					time.Now().UTC(),
+				)
+			}
+		}()
+		collection, findErr := txApp.FindCollectionByNameOrId(
+			"vibetable_jobs",
 		)
-	}
-	record := core.NewRecord(collection)
-	record.Set("job_type", formulaBackfillType)
-	record.Set("state", "queued")
-	record.Set("schema_revision", revision)
-	// The shared jobs collection uses these four fields as a composite
-	// idempotency key. Formula backfills may legitimately run again after a
-	// completed job, so use the fresh record identity for the event component
-	// and keep every remaining component non-empty.
-	record.Set("source_event_id", "formula_backfill_"+security.RandomString(15))
-	record.Set("source_table_id", tableID)
-	record.Set("relation_field_id", formulaBackfillType)
-	record.Set("cursor_json", types.JSONRaw([]byte(`{"lastRecordId":""}`)))
-	progressRaw, _ := json.Marshal(Progress{Completed: 0, Total: total})
-	record.Set("progress_json", types.JSONRaw(progressRaw))
-	record.Set("error_json", nil)
-	cursorMeta, _ := json.Marshal(map[string]any{
-		"tableId":      tableID,
-		"lastRecordId": "",
+		if findErr != nil {
+			return findErr
+		}
+		record := core.NewRecord(collection)
+		record.Set("job_type", formulaBackfillType)
+		record.Set("state", "queued")
+		record.Set("schema_revision", revision)
+		// The shared jobs collection uses these fields as a composite
+		// idempotency key. Completed formula jobs may be started again.
+		record.Set(
+			"source_event_id",
+			"formula_backfill_"+security.RandomString(15),
+		)
+		record.Set("source_table_id", tableID)
+		record.Set("relation_field_id", formulaBackfillType)
+		progressRaw, _ := json.Marshal(Progress{Completed: 0, Total: total})
+		record.Set("progress_json", types.JSONRaw(progressRaw))
+		record.Set("error_json", nil)
+		cursorMeta, _ := json.Marshal(map[string]any{
+			"tableId":      tableID,
+			"lastRecordId": "",
+		})
+		record.Set("cursor_json", types.JSONRaw(cursorMeta))
+		if saveErr := txApp.Save(record); saveErr != nil {
+			return saveErr
+		}
+		recordID = record.Id
+		return nil
 	})
-	record.Set("cursor_json", types.JSONRaw(cursorMeta))
-	if err := service.app.Save(record); err != nil {
+	if err != nil {
 		return Snapshot{}, jobError(
 			"job.storage_failed", "formula backfill job could not be created", true,
 		)
 	}
-	snapshot, err := service.Get(ctx, record.Id)
+	snapshot, err := service.Get(ctx, recordID)
 	if err == nil {
 		service.publish(ctx, snapshot)
 	}
@@ -419,21 +485,24 @@ func (service *Service) Run(
 		}
 		batchStart := records[0].Id
 		batchEnd := records[len(records)-1].Id
-		_, err = service.kernel.Apply(ctx, mutation.Request{
-			ContractVersion: mutation.ContractVersion,
-			RequestID: fmt.Sprintf(
-				"job_%s_%s_%s", jobID, batchStart, batchEnd,
-			),
-			IdempotencyKey: fmt.Sprintf(
-				"job_%s_%s_%s", jobID, batchStart, batchEnd,
-			),
-			TableID:        snapshot.TableID,
-			SchemaRevision: snapshot.SchemaRevision,
-			Operations:     operations,
-			Actor: mutation.Actor{
-				Type: "system", ID: "formula-backfill",
-			},
-		})
+		batchIdentity := fmt.Sprintf(
+			"job_%s_%s_%s", jobID, batchStart, batchEnd,
+		)
+		_, err = service.applyKernelBatch(
+			ctx,
+			"formula.backfill.batch",
+			batchIdentity,
+			mutation.Request{
+				ContractVersion: mutation.ContractVersion,
+				RequestID:       batchIdentity,
+				IdempotencyKey:  batchIdentity,
+				TableID:         snapshot.TableID,
+				SchemaRevision:  snapshot.SchemaRevision,
+				Operations:      operations,
+				Actor: mutation.Actor{
+					Type: "system", ID: "formula-backfill",
+				},
+			})
 		if err != nil {
 			return service.failUnlessContextInterrupted(
 				ctx, record, snapshot.TableID, err,
@@ -792,8 +861,10 @@ func (service *Service) ensureMissingFormulaBackfills(ctx context.Context) error
 		if describeErr != nil {
 			return describeErr
 		}
-		snapshot, startErr := service.StartFormulaBackfill(
-			ctx, tableID, definition.SchemaRevision,
+		snapshot, startErr := service.startRecoveredFormulaBackfill(
+			ctx,
+			tableID,
+			definition.SchemaRevision,
 		)
 		if startErr != nil {
 			return startErr
@@ -804,6 +875,43 @@ func (service *Service) ensureMissingFormulaBackfills(ctx context.Context) error
 		service.Start(snapshot.JobID)
 	}
 	return nil
+}
+
+// startRecoveredFormulaBackfill closes the crash window between a committed
+// schema change and its normal enqueue step. Startup discovers the durable
+// "backfilling" formula metadata and recreates the missing job through the
+// same idempotent Workspace V2 write coordinator used by the request path.
+func (service *Service) startRecoveredFormulaBackfill(
+	ctx context.Context,
+	tableID string,
+	schemaRevision string,
+) (Snapshot, error) {
+	service.mu.Lock()
+	gate := service.businessGate
+	service.mu.Unlock()
+	var snapshot Snapshot
+	start := func(writeCtx context.Context) error {
+		var err error
+		snapshot, err = service.StartFormulaBackfill(
+			writeCtx,
+			tableID,
+			schemaRevision,
+		)
+		return err
+	}
+	if gate == nil {
+		return snapshot, start(ctx)
+	}
+	identity := fmt.Sprintf("%s:%s", tableID, schemaRevision)
+	if err := gate(ctx, "formula.backfill.enqueue", identity, start); err != nil {
+		return Snapshot{}, err
+	}
+	// Coordinator replay skips the callback. Resolve the already committed
+	// job from PocketBase without creating a duplicate.
+	if snapshot.JobID == "" {
+		return service.StartFormulaBackfill(ctx, tableID, schemaRevision)
+	}
+	return snapshot, nil
 }
 
 func (service *Service) fail(
