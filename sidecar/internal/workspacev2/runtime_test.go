@@ -1051,10 +1051,7 @@ func TestRuntimeListsCanonicalDocumentsAndRestoresRevision(t *testing.T) {
 	defer runtime.Close(context.Background())
 	// This test writes the history service directly before exercising the RPC
 	// surface. Keep the unrelated files/ watcher from racing those writes.
-	if err := runtime.watcher.Close(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.watcher = nil
+	stopFileWatcher(t, runtime)
 	token, _ := runtime.coordinator.Current()
 	documentID := "22222222-2222-4222-8222-222222222222"
 	first, err := runtime.history.Save(
@@ -1265,6 +1262,17 @@ func createWorkspace(t *testing.T, workspaceID string) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func stopFileWatcher(t *testing.T, runtime *Runtime) {
+	t.Helper()
+	if runtime == nil || runtime.watcher == nil {
+		return
+	}
+	if err := runtime.watcher.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.watcher = nil
 }
 
 func createAuditOutbox(t *testing.T, app *pocketbase.PocketBase) {

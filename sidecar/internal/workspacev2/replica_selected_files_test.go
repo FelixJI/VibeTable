@@ -40,6 +40,10 @@ func TestSelectedFilesThreeWayReconcileRenameAndConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer runtime.Close(ctx)
+	// This test drives both history and selected-file reconciliation directly.
+	// Keep the production files/ watcher from ingesting materialized writes in
+	// parallel and advancing the revision/audit sequence behind the fixture.
+	stopFileWatcher(t, runtime)
 
 	conflicts, err := conflictresolution.OpenEngine(
 		filepath.Join(

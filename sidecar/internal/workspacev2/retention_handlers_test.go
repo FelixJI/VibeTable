@@ -601,6 +601,10 @@ func TestRetainedSnapshotProtectsHistoryOnlyObjectsThroughMaintenance(
 		t.Fatal(err)
 	}
 	defer runtime.Close(ctx)
+	// The fixture writes history directly to construct exact retention roots.
+	// A production files/ watcher would race the materialized files back into
+	// history and invalidate the expected revision chain.
+	stopFileWatcher(t, runtime)
 	if runtime.retention.cancel != nil {
 		runtime.retention.cancel()
 		runtime.retention.wg.Wait()
