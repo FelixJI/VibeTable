@@ -15,6 +15,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CACHE_ROOTS = (
     ".cache",
+    ".codex-dotnet",
     ".pytest_cache",
     ".ruff_cache",
     ".mypy_cache",

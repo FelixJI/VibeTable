@@ -187,6 +187,7 @@ TestResults/
 /.tmp-shot/
 /.codex-test-tmp/
 /.codex-go-cache/
+/.codex-dotnet/
 /.e2e-pytest-runner-*/
 /.pytest-*/
 /.pytest_tmp_*/
