@@ -1,3 +1,26 @@
-# VibeTable 0.1.0
+# VibeTable 0.2.0
 
-- 初始化项目
+- fix(ci): stabilize Windows release gates (`b61d9f42`)
+- docs: retain workspace implementation plan (`9a47d4ff`)
+- fix(maintenance): clean nested sidecar caches (`27580973`)
+- fix: prevent nested QA temp path growth (`1edc6569`)
+- fix: keep product E2E evidence paths short (`65e1d5d7`)
+- fix: keep formal QA below Windows path limit (`a1bbe71f`)
+- fix: resolve final workspace review findings (`b6f01c9f`)
+- fix: close workspace restore release gates (`43201b0f`)
+- fix: close workspace history safety gates (`74935a8d`)
+- fix: coordinate workspace history recovery (`85470583`)
+- fix: keep fault evidence under short QA path (`51f25ff9`)
+- fix: close workspace history acceptance gaps (`8e105d39`)
+- fix: keep package verification non-executing (`c975a74b`)
+- fix: integrate workspace sessions with product runtime (`384754a5`)
+- feat(fields): implement schema v2 settings overhaul (`292ce09a`)
+- feat: complete workspace snapshots and file history (`ff95d26d`)
+- fix: merge packaged workspace contracts (`274283bc`)
+- fix: select pinned Go toolchain for release (`1fc3d78e`)
+- fix: close final workspace snapshot review gaps (`eb100ac4`)
+- feat: complete workspace snapshot conflict recovery (`82df9f50`)
+- fix: retain replica pending state until snapshot coverage (`a8135e2e`)
+- fix: close workspace v2 data safety gaps (`598a3b1c`)
+- fix: harden workspace replica and retention safety (`b7de3b87`)
+- feat: add workspace snapshots and file history v2 (`4b0d5e80`)
