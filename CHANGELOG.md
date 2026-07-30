@@ -1,5 +1,6 @@
 # VibeTable 0.2.0
 
+- fix(ci): isolate direct history fixtures from watcher (`0af625b8`)
 - fix(release): resolve packaged sidecar from layout (`49509922`)
 - fix(ci): bound formula backfill race scale (`adb16e58`)
 - fix(release): make changelog hashes deterministic (`f6a00679`)

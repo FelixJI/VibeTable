@@ -1,6 +1,10 @@
 {
   "entries": [
     {
+      "subject": "fix(ci): isolate direct history fixtures from watcher",
+      "commit": "0af625b8"
+    },
+    {
       "subject": "fix(release): resolve packaged sidecar from layout",
       "commit": "49509922"
     },
