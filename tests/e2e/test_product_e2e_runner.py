@@ -207,6 +207,17 @@ def test_node_runner_enforces_closed_history_and_no_external_http() -> None:
     assert "allowedPageErrors" not in source
 
 
+def test_expected_bridge_rejection_is_acknowledged_only_after_the_scenario_asserts_it() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    scenario = source[
+        source.index("async function scenario03") : source.index("async function scenario04")
+    ]
+
+    assert "await acknowledgeExpectedBridgeFailure(page, legacy)" in scenario
+    assert "diagnostics.acknowledgedFailures" in source
+    assert "diagnostics.failures.splice(index, 1)" in source
+
+
 def test_invalid_field_assertion_matches_typed_v2_diagnostic_contract() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     scenario = source[
@@ -286,6 +297,31 @@ def test_backup_consistency_uses_current_snapshot_versions_ui_contract() -> None
     assert "settings-nav-backup" not in scenario
     assert "backup-create" not in scenario
     assert "backup-restore-" not in scenario
+
+
+def test_fault_scenarios_use_host_allocated_table_and_field_identities() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    scenario07 = source[
+        source.index("async function scenario07") : source.index("async function scenario08")
+    ]
+    scenario09 = source[
+        source.index("async function scenario09") : source.index("async function scenario10")
+    ]
+    scenario11 = source[
+        source.index("async function scenario11") : source.index("async function scenario12")
+    ]
+    scenario12 = source[source.index("async function scenario12") : source.index("const scenarios")]
+
+    assert '"tbl_e2e_attachments"' not in scenario07
+    assert '"tbl_e2e_atomic_import"' not in scenario09
+    assert '"tbl_e2e_plugin_target"' not in scenario11
+    assert '"tbl_e2e_backup_consistency"' not in scenario12
+    assert 'const tableId = await createEmptyTable(page, "E2E Backup Consistency")' in scenario12
+    assert "createV2Field(" in scenario12
+    assert "valueField.physicalName" in scenario12
+    assert "formulaField.physicalName" in scenario12
+    assert "attachmentField.physicalName" in scenario12
+    assert "create-table-field-name-" not in scenario12
 
 
 def test_storage_proof_reads_all_transactional_surfaces_read_only(
@@ -564,9 +600,33 @@ def test_plugin_confirmation_assertion_is_not_constant_true() -> None:
     assert "await confirmationApprove.isEnabled()" in source
 
 
-def test_nonzero_node_exit_overrides_misreported_passing_json(
+@pytest.mark.parametrize(
+    ("node_result", "expected_code", "expected_message"),
+    [
+        (
+            {"status": "passed"},
+            "NODE_RUNNER_FAILED",
+            "node crashed",
+        ),
+        (
+            {
+                "status": "failed",
+                "error": {
+                    "code": "SCENARIO_FAILED",
+                    "message": "authoritative assertion failed",
+                },
+            },
+            "SCENARIO_FAILED",
+            "authoritative assertion failed",
+        ),
+    ],
+)
+def test_nonzero_node_exit_preserves_structured_scenario_failure_but_rejects_passing_json(
     monkeypatch,
     tmp_path: Path,
+    node_result: dict[str, Any],
+    expected_code: str,
+    expected_message: str,
 ) -> None:
     scenario = runner.Scenario(
         id="01-offline-first-start",
@@ -611,7 +671,7 @@ def test_nonzero_node_exit_overrides_misreported_passing_json(
         del host_process
         del process_network
         (scenario_dir / f"{scenario.id}-result.json").write_text(
-            json.dumps({"scenario": scenario.id, "status": "passed"}),
+            json.dumps({"scenario": scenario.id, **node_result}),
             encoding="utf-8",
         )
         (scenario_dir / "process-network-observations.json").write_text(
@@ -638,5 +698,5 @@ def test_nonzero_node_exit_overrides_misreported_passing_json(
 
     assert result["status"] == "failed"
     assert result["nodeExitCode"] == 7
-    assert result["error"]["code"] == "NODE_RUNNER_FAILED"
-    assert "node crashed" in result["error"]["message"]
+    assert result["error"]["code"] == expected_code
+    assert expected_message in result["error"]["message"]

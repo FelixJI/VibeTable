@@ -29,6 +29,7 @@ import { setLocale } from "@/i18n";
  */
 
 interface MockTabulator {
+  initialized?: boolean;
   setData: ReturnType<typeof vi.fn>;
   setColumns: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
@@ -40,11 +41,13 @@ interface MockTabulator {
 }
 
 let lastMock: MockTabulator | null = null;
+let mockStartsInitialized = true;
 
 vi.mock("@/grid/createGrid", () => ({
   // Return an object that quacks like TabulatorFull for our lifecycle.
   createGrid: vi.fn((_el: HTMLElement, _page: TablePage) => {
     const mock: MockTabulator = {
+      initialized: mockStartsInitialized,
       setData: vi.fn().mockResolvedValue(undefined),
       setColumns: vi.fn(),
       destroy: vi.fn(),
@@ -173,6 +176,7 @@ describe("useTabulator", () => {
     setLocale("zh-CN");
     setActivePinia(createPinia());
     lastMock = null;
+    mockStartsInitialized = true;
     vi.clearAllMocks();
   });
 
@@ -273,6 +277,30 @@ describe("useTabulator", () => {
     wrapper.unmount();
   });
 
+  it("queues data until tableBuilt when Tabulator is not initialized", async () => {
+    mockStartsInitialized = false;
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+    const wrapper = mountHost(gridEl);
+    gridEl.value = document.createElement("div");
+
+    table.beginLoad();
+    table.appendPage(makePage([{ id: 1 }], [makeColumn("id")]));
+    await flushPromises();
+    table.setDatasetReady(
+      makeDatasetReady([{ id: 1 }, { id: 2 }], [makeColumn("id")]),
+    );
+    await flushPromises();
+    expect(lastMock!.setData).not.toHaveBeenCalled();
+
+    const tableBuilt = lastMock!.on.mock.calls
+      .find((call) => call[0] === "tableBuilt")?.[1] as () => void;
+    tableBuilt();
+    await flushPromises();
+    expect(lastMock!.setData).toHaveBeenCalledWith([{ id: 1 }, { id: 2 }]);
+    wrapper.unmount();
+  });
+
   it("defers dataset replacement until an active cell editor finishes", async () => {
     const gridEl = ref<HTMLElement | null>(null);
     const table = useTableStore();
@@ -326,6 +354,32 @@ describe("useTabulator", () => {
 
     wrapper.unmount();
     expect(lastMock!.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for an in-flight data application before destroying Tabulator", async () => {
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+    const wrapper = mountHost(gridEl);
+    gridEl.value = document.createElement("div");
+    table.beginLoad();
+    table.appendPage(makePage([{ id: 1 }], [makeColumn("id")]));
+    await flushPromises();
+
+    let finishSetData!: () => void;
+    lastMock!.setData.mockImplementation(() => new Promise<void>((resolve) => {
+      finishSetData = resolve;
+    }));
+    table.setDatasetReady(
+      makeDatasetReady([{ id: 1 }, { id: 2 }], [makeColumn("id")]),
+    );
+    await flushPromises();
+    expect(lastMock!.setData).toHaveBeenCalledOnce();
+
+    wrapper.unmount();
+    expect(lastMock!.destroy).not.toHaveBeenCalled();
+    finishSetData();
+    await flushPromises();
+    expect(lastMock!.destroy).toHaveBeenCalledOnce();
   });
 
   /**

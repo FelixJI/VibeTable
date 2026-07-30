@@ -7,11 +7,11 @@ export async function run(_input, capabilities, signal) {
     operations: [
       {
         kind: "create",
-        values: { value: "created-by-e2e-plugin" },
+        values: {},
       },
     ],
     preview: {
-      summary: [{ action: "create", field: "value" }],
+      summary: [{ action: "create" }],
       affectedCount: 1,
     },
     idempotencyKey: "e2e-plugin-allowed-plan",

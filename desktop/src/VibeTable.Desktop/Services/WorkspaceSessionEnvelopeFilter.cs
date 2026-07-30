@@ -20,8 +20,10 @@ public sealed class WorkspaceSessionEnvelopeFilter :
     IWorkspaceRequestDrainHook,
     IDisposable
 {
+    private const ulong SequenceReplayWindow = 1_048_576;
     private readonly object _gate = new();
     private readonly WorkspaceSessionManager _sessions;
+    private readonly HashSet<ulong> _acceptedSequences = [];
     private EpochState _epoch = EpochState.Empty();
     private ulong _lastAcceptedSequence;
     private bool _disposed;
@@ -72,9 +74,8 @@ public sealed class WorkspaceSessionEnvelopeFilter :
                     WorkspaceSessionState.OpenedWritable or
                     WorkspaceSessionState.OpenedProvisional) &&
                 current.Phase == WorkspaceSessionPhase.Idle &&
-                scope.Sequence > _lastAcceptedSequence)
+                TryAcceptSequenceLocked(scope.Sequence))
             {
-                _lastAcceptedSequence = scope.Sequence;
                 _epoch.AddLease();
                 lease = new WorkspaceRequestEpochLease(
                     scope,
@@ -112,9 +113,8 @@ public sealed class WorkspaceSessionEnvelopeFilter :
                     WorkspaceSessionState.OpenedWritable or
                     WorkspaceSessionState.OpenedProvisional) &&
                 current.Phase == WorkspaceSessionPhase.Idle &&
-                scope.Sequence > _lastAcceptedSequence)
+                TryAcceptSequenceLocked(scope.Sequence))
             {
-                _lastAcceptedSequence = scope.Sequence;
                 accepted = true;
             }
         }
@@ -131,7 +131,10 @@ public sealed class WorkspaceSessionEnvelopeFilter :
                 _epoch.SessionEpoch != sessionEpoch)
                 throw new InvalidOperationException(
                     "The workspace epoch is no longer active.");
-            return checked(++_lastAcceptedSequence);
+            ulong sequence = checked(_lastAcceptedSequence + 1);
+            _lastAcceptedSequence = sequence;
+            _acceptedSequences.Add(sequence);
+            return sequence;
         }
     }
 
@@ -232,7 +235,25 @@ public sealed class WorkspaceSessionEnvelopeFilter :
                 WorkspaceSessionState.OpenedProvisional) &&
                 session.Phase == WorkspaceSessionPhase.Idle);
         _lastAcceptedSequence = 0;
+        _acceptedSequences.Clear();
         return previous;
+    }
+
+    private bool TryAcceptSequenceLocked(ulong sequence)
+    {
+        if (_acceptedSequences.Contains(sequence))
+            return false;
+        if (_lastAcceptedSequence >= SequenceReplayWindow &&
+            sequence <= _lastAcceptedSequence - SequenceReplayWindow)
+            return false;
+        _acceptedSequences.Add(sequence);
+        _lastAcceptedSequence = Math.Max(_lastAcceptedSequence, sequence);
+        if (_lastAcceptedSequence >= SequenceReplayWindow)
+        {
+            ulong cutoff = _lastAcceptedSequence - SequenceReplayWindow;
+            _acceptedSequences.RemoveWhere(item => item <= cutoff);
+        }
+        return true;
     }
 
     private static void Retire(EpochState? epoch)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import os
 import shutil
 import uuid
 from collections.abc import Awaitable, Callable
@@ -29,6 +30,18 @@ from backend.contracts.plugin import (
 from backend.infrastructure.plugin_package import inspect_plugin_package, pack_plugin
 
 NotificationSink = Callable[[PluginEventEnvelope], Awaitable[None]]
+
+
+def _filesystem_package_path(path: Path) -> Path:
+    """Return a filesystem-safe absolute path without weakening package identity."""
+
+    resolved = path.resolve()
+    raw = str(resolved)
+    if os.name != "nt" or raw.startswith("\\\\?\\") or len(raw) < 260:
+        return resolved
+    if raw.startswith("\\\\"):
+        return Path(f"\\\\?\\UNC\\{raw[2:]}")
+    return Path(f"\\\\?\\{raw}")
 
 
 class PluginPlatformService:
@@ -374,16 +387,18 @@ class PluginPlatformService:
             base64.b32encode(bytes.fromhex(digest)).rstrip(b"=").decode("ascii").lower()
         )
         destination = self._package_cache / f"{compact_digest}.vtplugin"
+        filesystem_destination = _filesystem_package_path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.is_file():
-            if inspect_plugin_package(destination).package_hash != plan.package_hash:
+        if filesystem_destination.is_file():
+            if inspect_plugin_package(filesystem_destination).package_hash != plan.package_hash:
                 raise ValueError("retained plugin package failed integrity verification")
-            return destination
+            return filesystem_destination
         # Keep the transient component deliberately short. On Windows a
         # pytest/user cache root can already be close to MAX_PATH; repeating
         # the 64-character digest plus a UUID made an otherwise valid retained
         # package fail to open.
-        temporary = destination.with_name(f".tmp-{uuid.uuid4().hex[:16]}")
+        # Keep the temporary archive recognizable as a plugin package.
+        temporary = destination.with_name(f".tmp-{uuid.uuid4().hex[:16]}.vtplugin")
         try:
             source = Path(plan.source_location).resolve()
             if source.is_dir():
@@ -393,10 +408,10 @@ class PluginPlatformService:
                 retained_hash = inspect_plugin_package(temporary).package_hash
             if retained_hash != plan.package_hash:
                 raise ValueError("retained plugin package hash does not match the plan")
-            temporary.replace(destination)
+            temporary.replace(filesystem_destination)
         finally:
             temporary.unlink(missing_ok=True)
-        return destination
+        return filesystem_destination
 
     def _prune_package_revisions(self, project_key: str, plugin_id: str) -> None:
         revisions = self._store.list_package_revisions(project_key, plugin_id)

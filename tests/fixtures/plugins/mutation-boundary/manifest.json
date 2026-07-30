@@ -10,7 +10,7 @@
     "zh-CN": "确定性验证 mutation plan 确认与字段越权拒绝"
   },
   "compatibility": {
-    "minHostVersion": "1.0.0",
+    "minHostVersion": "0.2.0",
     "pluginApi": "1.x"
   },
   "permissions": {
@@ -18,7 +18,7 @@
       {
         "collection": "$active",
         "operations": ["read", "create", "update"],
-        "fields": ["value"]
+        "fields": []
       }
     ],
     "files": [],
@@ -35,7 +35,7 @@
         "zh-CN": "提交授权变更计划"
       },
       "description": {
-        "zh-CN": "创建一条仅写入 value 字段的记录"
+        "zh-CN": "创建一条不写入任何字段的记录"
       },
       "mode": "local",
       "risk": "write",

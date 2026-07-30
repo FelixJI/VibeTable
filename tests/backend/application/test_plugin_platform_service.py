@@ -5,16 +5,19 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import backend.application.plugin_platform_service as plugin_platform_module
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_platform_service import PluginPlatformService
 from backend.application.plugin_registry import PluginRegistry
 from backend.contracts.plugin import CommandContext, InteractionResolveResult
+from backend.infrastructure.plugin_package import inspect_plugin_package
 from backend.infrastructure.plugin_store import InMemoryPluginStore
 from backend.infrastructure.plugin_worker import (
     InMemoryPluginWorkerAdapter,
@@ -171,11 +174,20 @@ async def test_host_interaction_and_file_resolutions_reach_live_adapters(
 @pytest.mark.asyncio
 async def test_inspect_and_commit_recheck_and_retain_immutable_package(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "reader"
     _write_plugin(source)
     store = InMemoryPluginStore()
     service = _service(store, package_cache=tmp_path / "cache")
+    packed_outputs: list[Path] = []
+    original_pack_plugin = plugin_platform_module.pack_plugin
+
+    def capture_pack_output(source_path: str | Path, output_path: str | Path) -> str:
+        packed_outputs.append(Path(output_path))
+        return original_pack_plugin(source_path, output_path)
+
+    monkeypatch.setattr(plugin_platform_module, "pack_plugin", capture_pack_output)
 
     plan = await service.inspect_install(
         project_key="local:default",
@@ -201,6 +213,9 @@ async def test_inspect_and_commit_recheck_and_retain_immutable_package(
     digest = bytes.fromhex(plan.package_hash.removeprefix("sha256:"))
     compact = base64.b32encode(digest).rstrip(b"=").decode("ascii").lower()
     assert Path(revisions[0].local_path).name == f"{compact}.vtplugin"
+    assert len(packed_outputs) == 1
+    assert packed_outputs[0].name.startswith(".tmp-")
+    assert packed_outputs[0].suffix == ".vtplugin"
 
 
 @pytest.mark.asyncio
@@ -210,12 +225,13 @@ async def test_retained_package_compacts_digest_for_deep_windows_cache_path(
     source = tmp_path / "reader"
     _write_plugin(source)
     cache = tmp_path
-    while len(str(cache.resolve())) + len("\\deep") <= 195:
+    while len(str(cache.resolve())) + len("\\deep") <= 220:
         cache /= "deep"
-    remaining = 195 - len(str(cache.resolve())) - 1
+    remaining = 220 - len(str(cache.resolve())) - 1
     if remaining > 0:
         cache /= "x" * remaining
-    service = _service(InMemoryPluginStore(), package_cache=cache)
+    store = InMemoryPluginStore()
+    service = _service(store, package_cache=cache)
 
     plan = await service.inspect_install(
         project_key="local:default",
@@ -230,10 +246,15 @@ async def test_retained_package_compacts_digest_for_deep_windows_cache_path(
     digest = bytes.fromhex(plan.package_hash.removeprefix("sha256:"))
     compact = base64.b32encode(digest).rstrip(b"=").decode("ascii").lower()
     retained = cache / f"{compact}.vtplugin"
+    revisions = store.list_package_revisions("local:default", "com.example.reader")
+    filesystem_retained = Path(revisions[0].local_path)
     assert len(compact) == 52
     assert len(str((cache / ("f" * 64 + ".vtplugin")).resolve())) > 260
-    assert len(str(retained.resolve())) <= 260
-    assert retained.is_file()
+    assert len(str(retained.resolve())) > 260
+    if os.name == "nt":
+        assert str(filesystem_retained).startswith("\\\\?\\")
+    assert filesystem_retained.is_file()
+    assert inspect_plugin_package(filesystem_retained).package_hash == plan.package_hash
 
 
 @pytest.mark.asyncio

@@ -272,7 +272,13 @@ export function useMutationService(): {
     bridge.on("table.editCommitted", (r: UpdateCellResult) => {
       // Capture the old value BEFORE applying (apply overwrites the row).
       const pending = takePendingCellEdit(r.rowKey, r.column);
-      const oldValue = pending?.oldValue ?? findCellValue(r.rowKey, r.column);
+      // `null` is a real, serializable empty-cell value. Do not treat it as a
+      // missing pending edit: a data.changed refresh can update the row before
+      // editCommitted arrives, and falling back would make undo write the new
+      // value back to itself.
+      const oldValue = pending
+        ? pending.oldValue
+        : findCellValue(r.rowKey, r.column);
       const historyTableId = ws.currentTable ?? "";
       const historyRevision = r.revision;
       applyAndMaybeClear(

@@ -33,6 +33,7 @@ export interface WorkspaceResetContext {
 type WorkspaceEpochResetter = (context: WorkspaceResetContext) => void;
 
 const epochResetters = new Map<string, WorkspaceEpochResetter>();
+const SEQUENCE_REPLAY_WINDOW = 1_048_576;
 
 /**
  * Registers workspace-scoped state that must be invalidated atomically before
@@ -65,6 +66,7 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
   const errorCode = ref<string | null>(null);
   const targetWorkspaceId = ref<string | null>(null);
   const lastSequence = ref(0);
+  const acceptedSequences = new Set<number>();
   const deletePlan = ref<WorkspaceDeletePlan | null>(null);
 
   const enabled = computed(() => capabilities.value.includes("workspace.session.v2"));
@@ -130,10 +132,10 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
 
   function applySession(next: WorkspaceSessionV2): boolean {
     if (!enabled.value) return false;
-    if (
-      next.workspaceId === activeWorkspaceId.value
-      && next.sessionEpoch < sessionEpoch.value
-    ) {
+    // Session epochs are host-global, not per-workspace. A delayed bootstrap
+    // from the previously active workspace must never rotate the renderer
+    // back to an older authority after a create/switch/restore completed.
+    if (next.sessionEpoch < sessionEpoch.value) {
       return false;
     }
 
@@ -148,6 +150,7 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
         nextSessionEpoch: next.sessionEpoch,
       });
       lastSequence.value = 0;
+      acceptedSequences.clear();
     }
 
     activeWorkspaceId.value = next.workspaceId;
@@ -175,11 +178,22 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
       !enabled.value
       || scope.workspaceId !== activeWorkspaceId.value
       || scope.sessionEpoch !== sessionEpoch.value
-      || scope.sequence <= lastSequence.value
+      || acceptedSequences.has(scope.sequence)
+      || (
+        lastSequence.value >= SEQUENCE_REPLAY_WINDOW
+        && scope.sequence <= lastSequence.value - SEQUENCE_REPLAY_WINDOW
+      )
     ) {
       return false;
     }
-    lastSequence.value = scope.sequence;
+    acceptedSequences.add(scope.sequence);
+    lastSequence.value = Math.max(lastSequence.value, scope.sequence);
+    if (lastSequence.value >= SEQUENCE_REPLAY_WINDOW) {
+      const cutoff = lastSequence.value - SEQUENCE_REPLAY_WINDOW;
+      for (const sequence of acceptedSequences) {
+        if (sequence <= cutoff) acceptedSequences.delete(sequence);
+      }
+    }
     return true;
   }
 
@@ -201,6 +215,7 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
     errorCode.value = null;
     targetWorkspaceId.value = null;
     lastSequence.value = 0;
+    acceptedSequences.clear();
     deletePlan.value = null;
   }
 

@@ -190,6 +190,7 @@ export function useTabulator(
   let activeGroups: LookupGroup[] = [];
   let lastViewQuerySignature = "";
   let gridReady = false;
+  let gridOperationsReady = false;
 
   /**
    * Holder for the latest `onValidationError` callback. Same rationale as
@@ -247,6 +248,8 @@ export function useTabulator(
         onValidationError: (rk, col, err) => currentOnValidationError?.(rk, col, err),
         relationLookup: relationContext(),
       });
+      gridOperationsReady =
+        (tabulator.value as unknown as { initialized?: boolean }).initialized !== false;
       const eventGrid = tabulator.value as unknown as {
         on?: (event: string, handler: (...args: unknown[]) => void) => void;
         getSorters?: () => Array<{ field: string; dir: "asc" | "desc" }>;
@@ -267,6 +270,9 @@ export function useTabulator(
       eventGrid.on?.("rangeChanged", rangeChangedHandler);
       tableBuiltHandler = () => {
         gridReady = true;
+        gridOperationsReady = true;
+        void drainQueuedColumns();
+        void drainQueuedRows();
       };
       eventGrid.on?.("tableBuilt", tableBuiltHandler);
       viewQueryHandler = () => emitViewQuery(eventGrid);
@@ -372,11 +378,17 @@ export function useTabulator(
   );
 
   onBeforeUnmount(() => {
+    gridReady = false;
+    gridOperationsReady = false;
+    queuedRows = null;
+    queuedColumnRefresh = false;
+    const retiringGrid = tabulator.value;
+    tabulator.value = null;
     if (rangeChangedHandler) {
-      (tabulator.value as unknown as { off?: (event: string, handler: (range: unknown) => void) => void } | null)
+      (retiringGrid as unknown as { off?: (event: string, handler: (range: unknown) => void) => void } | null)
         ?.off?.("rangeChanged", rangeChangedHandler);
     }
-    const eventGrid = tabulator.value as unknown as {
+    const eventGrid = retiringGrid as unknown as {
       off?: (event: string, handler: (...args: unknown[]) => void) => void;
     } | null;
     if (tableBuiltHandler) eventGrid?.off?.("tableBuilt", tableBuiltHandler);
@@ -390,8 +402,16 @@ export function useTabulator(
       eventGrid?.off?.("cellEdited", cellEditFinishedHandler);
       eventGrid?.off?.("cellEditCancelled", cellEditFinishedHandler);
     }
-    tabulator.value?.destroy?.();
-    tabulator.value = null;
+    const pendingApplications = [applyingRows, applyingColumns].filter(
+      (pending): pending is Promise<void> => pending !== null,
+    );
+    if (pendingApplications.length === 0) {
+      retiringGrid?.destroy?.();
+    } else {
+      void Promise.allSettled(pendingApplications).then(() => {
+        retiringGrid?.destroy?.();
+      });
+    }
   });
 
   return { tabulator, dataApplying };
@@ -401,6 +421,7 @@ export function useTabulator(
       editing
       || applyingRows
       || applyingColumns
+      || !gridOperationsReady
       || !tabulator.value
       || !queuedRows
     ) return;
@@ -434,6 +455,7 @@ export function useTabulator(
       editing
       || applyingColumns
       || applyingRows
+      || !gridOperationsReady
       || !tabulator.value
       || !queuedColumnRefresh
     ) return;

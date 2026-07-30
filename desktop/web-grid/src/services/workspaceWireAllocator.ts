@@ -7,6 +7,7 @@ interface ActiveWorkspaceWire {
 
 let active: ActiveWorkspaceWire | null = null;
 let sequence = 0;
+const RENDERER_SEQUENCE_STRIDE = 1_024;
 
 export function configureWorkspaceWire(
   workspaceId: string | null,
@@ -34,7 +35,16 @@ export function observeWorkspaceWire(wire: WorkspaceWireScope): void {
 
 export function nextWorkspaceWire(operationId: string): WorkspaceWireScope {
   if (!active) throw new Error("workspace wire allocator has no active session");
-  sequence = Math.max(sequence + 1, Date.now() * 1_000);
+  // The host and renderer share one monotonic sequence space. A host event can
+  // reserve sequence N+1 after the renderer has already queued its next
+  // request, so adjacent renderer values race even though WebView messages
+  // themselves are ordered. Leave a bounded host-reservation window between
+  // renderer requests; observeWorkspaceWire still advances past any larger
+  // host watermark.
+  sequence = Math.max(
+    sequence + RENDERER_SEQUENCE_STRIDE,
+    Date.now() * 1_000,
+  );
   return {
     scope: "workspace",
     workspaceId: active.workspaceId,

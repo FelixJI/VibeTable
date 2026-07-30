@@ -81,7 +81,18 @@ describe("workspaceSessionStore", () => {
     unregister();
   });
 
-  it("drops stale epochs, wrong workspaces, and non-monotonic sequences", () => {
+  it("rejects an older session epoch even when a delayed bootstrap names another workspace", () => {
+    const store = useWorkspaceSessionStore();
+    store.configureCapabilities(["workspace.session.v2"]);
+    const workspaceB = "22222222-2222-4222-8222-222222222222";
+
+    expect(store.applySession(session(workspaceB, 8))).toBe(true);
+    expect(store.applySession(session(workspaceA.workspaceId, 7))).toBe(false);
+    expect(store.activeWorkspaceId).toBe(workspaceB);
+    expect(store.sessionEpoch).toBe(8);
+  });
+
+  it("accepts bounded out-of-order envelopes but rejects duplicates and stale epochs", () => {
     const store = useWorkspaceSessionStore();
     store.configureCapabilities(["workspace.session.v2"]);
     store.applySession(session(workspaceA.workspaceId, 7));
@@ -100,6 +111,20 @@ describe("workspaceSessionStore", () => {
       operationId: "44444444-4444-4444-8444-444444444444",
       sequence: 1,
     })).toBe(false);
+    expect(store.acceptEnvelope({
+      scope: "workspace",
+      workspaceId: workspaceA.workspaceId,
+      sessionEpoch: 7,
+      operationId: "66666666-6666-4666-8666-666666666666",
+      sequence: 3,
+    })).toBe(true);
+    expect(store.acceptEnvelope({
+      scope: "workspace",
+      workspaceId: workspaceA.workspaceId,
+      sessionEpoch: 7,
+      operationId: "77777777-7777-4777-8777-777777777777",
+      sequence: 2,
+    })).toBe(true);
     expect(store.acceptEnvelope({
       scope: "workspace",
       workspaceId: workspaceA.workspaceId,

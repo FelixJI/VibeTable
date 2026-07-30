@@ -72,6 +72,7 @@ public sealed class TableWorkspaceService
     public ITableRpcGateway Gateway => _gateway;
 
     private string? _currentDatabase;
+    private string? _currentTable;
     private IReadOnlyList<string> _knownTables = Array.Empty<string>();
     private IReadOnlyList<string> _knownViews = Array.Empty<string>();
 
@@ -197,6 +198,7 @@ public sealed class TableWorkspaceService
         // fetch's continuation will observe either cancellation (token fired)
         // or a generation mismatch and drop its pages.
         CancelSelection();
+        Volatile.Write(ref _currentTable, table);
         int generation = System.Threading.Interlocked.Increment(ref _generation);
         var cts = new CancellationTokenSource();
         _selectCts = cts;
@@ -414,11 +416,36 @@ public sealed class TableWorkspaceService
     // Every mutation method captures the current generation up front and
     // suppresses the response (no notification) if the user switched tables
     // before the backend replied — a stale commit must never land on a
-    // different table. Retry after an unknown commit state is prohibited:
-    // the host surfaces the error and lets the user re-issue explicitly.
+    // different table. A same-table data refresh also advances the selection
+    // generation, but must not discard the mutation confirmation that caused
+    // that refresh. Retry after an unknown commit state is prohibited: the
+    // host surfaces the error and lets the user re-issue explicitly.
     // -------------------------------------------------------------------
 
     private int CurrentGeneration => Volatile.Read(ref _generation);
+
+    private bool IsMutationStale(int generation, string table)
+    {
+        if (!IsStale(generation))
+        {
+            return false;
+        }
+        string? currentTable = Volatile.Read(ref _currentTable);
+        return currentTable is not null
+            && !string.Equals(currentTable, table, StringComparison.Ordinal);
+    }
+
+    private void EmitMutation(
+        int generation,
+        string table,
+        TableNotification notification)
+    {
+        if (IsMutationStale(generation, table))
+        {
+            return;
+        }
+        Notification?.Invoke(notification);
+    }
 
     /// <summary>
     /// B1 Task 1: fetch the editable schema for a table. Notifies
@@ -480,12 +507,12 @@ public sealed class TableWorkspaceService
             var result = await _gateway.UpdateCellAsync(
                 table, rowKey, column, oldValue, newValue, schemaRevision,
                 CancellationToken.None, expectedDigest).ConfigureAwait(false);
-            if (IsStale(generation))
+            if (IsMutationStale(generation, table))
             {
                 // The user switched tables: do NOT apply the commit anywhere.
                 return false;
             }
-            Emit(generation, new TableNotification(
+            EmitMutation(generation, table, new TableNotification(
                 Type: "table.editCommitted", Page: null, LoadedRows: 0,
                 MutationResult: new MutationOutcome(
                     Kind: "updateCell", Success: true, Error: null, Result: result),
@@ -494,15 +521,18 @@ public sealed class TableWorkspaceService
         }
         catch (Exception ex)
         {
-            if (IsStale(generation))
+            if (IsMutationStale(generation, table))
             {
                 return false;
             }
-            EmitMutationError(
-                generation,
-                "updateCell",
-                MutationErrorMapper.Map(ex),
-                requestId);
+            EmitMutation(generation, table, new TableNotification(
+                Type: "table.editRejected", Page: null, LoadedRows: 0,
+                MutationResult: new MutationOutcome(
+                    Kind: "updateCell",
+                    Success: false,
+                    Error: MutationErrorMapper.Map(ex),
+                    Result: null),
+                RequestId: requestId));
             return false;
         }
     }
@@ -524,11 +554,11 @@ public sealed class TableWorkspaceService
             var result = await _gateway.InsertRowAsync(
                 table, values, schemaRevision, CancellationToken.None)
                 .ConfigureAwait(false);
-            if (IsStale(generation))
+            if (IsMutationStale(generation, table))
             {
                 return false;
             }
-            Emit(generation, new TableNotification(
+            EmitMutation(generation, table, new TableNotification(
                 Type: "table.rowsInserted", Page: null, LoadedRows: 0,
                 MutationResult: new MutationOutcome(
                     Kind: "insertRow", Success: true, Error: null, Result: result),
@@ -537,15 +567,18 @@ public sealed class TableWorkspaceService
         }
         catch (Exception ex)
         {
-            if (IsStale(generation))
+            if (IsMutationStale(generation, table))
             {
                 return false;
             }
-            EmitMutationError(
-                generation,
-                "insertRow",
-                MutationErrorMapper.Map(ex),
-                requestId);
+            EmitMutation(generation, table, new TableNotification(
+                Type: "table.editRejected", Page: null, LoadedRows: 0,
+                MutationResult: new MutationOutcome(
+                    Kind: "insertRow",
+                    Success: false,
+                    Error: MutationErrorMapper.Map(ex),
+                    Result: null),
+                RequestId: requestId));
             return false;
         }
     }
@@ -567,11 +600,11 @@ public sealed class TableWorkspaceService
             var result = await _gateway.DeleteRowsAsync(
                 table, rows, schemaRevision, CancellationToken.None)
                 .ConfigureAwait(false);
-            if (IsStale(generation))
+            if (IsMutationStale(generation, table))
             {
                 return false;
             }
-            Emit(generation, new TableNotification(
+            EmitMutation(generation, table, new TableNotification(
                 Type: "table.rowsDeleted", Page: null, LoadedRows: 0,
                 MutationResult: new MutationOutcome(
                     Kind: "deleteRows", Success: true, Error: null, Result: result),
@@ -580,15 +613,18 @@ public sealed class TableWorkspaceService
         }
         catch (Exception ex)
         {
-            if (IsStale(generation))
+            if (IsMutationStale(generation, table))
             {
                 return false;
             }
-            EmitMutationError(
-                generation,
-                "deleteRows",
-                MutationErrorMapper.Map(ex),
-                requestId);
+            EmitMutation(generation, table, new TableNotification(
+                Type: "table.editRejected", Page: null, LoadedRows: 0,
+                MutationResult: new MutationOutcome(
+                    Kind: "deleteRows",
+                    Success: false,
+                    Error: MutationErrorMapper.Map(ex),
+                    Result: null),
+                RequestId: requestId));
             return false;
         }
     }

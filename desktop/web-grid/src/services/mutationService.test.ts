@@ -371,6 +371,71 @@ describe("mutationService", () => {
     expect(history.canUndo).toBe(true);
   });
 
+  it("preserves a pending null old value when realtime refresh wins the commit race", async () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("u");
+    table.beginLoad();
+    table.appendPage({
+      table: "u",
+      columns: [],
+      rows: [{ rowKey: 1, name: null }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "client",
+    });
+    table.setEditSchema([], {
+      databaseSessionId: "s",
+      schemaRevision: "sr",
+      dataRevision: 1,
+    });
+    const svc = useMutationService();
+    svc.init();
+    svc.updateCell(1, "name", null, "new");
+
+    // Realtime data refresh can expose the committed value before the
+    // editCommitted notification consumes the pending edit.
+    table.applyCellEdit({
+      rowKey: 1,
+      column: "name",
+      storedValue: "new",
+      currentRow: { rowKey: 1, name: "new" },
+      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
+    });
+    emit("table.editCommitted", {
+      rowKey: 1,
+      column: "name",
+      storedValue: "new",
+      currentRow: { rowKey: 1, name: "new" },
+      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
+    });
+
+    const notify = vi.spyOn(bridge, "notify").mockImplementation((type, payload) => {
+      if (type !== "table.updateCellRequested") return;
+      expect(payload).toEqual(expect.objectContaining({
+        oldValue: "new",
+        newValue: null,
+      }));
+      emit("table.editCommitted", {
+        rowKey: 1,
+        column: "name",
+        storedValue: null,
+        currentRow: { rowKey: 1, name: null },
+        revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 3 },
+      });
+    });
+
+    await svc.performUndo();
+    expect(notify).toHaveBeenCalledWith(
+      "table.updateCellRequested",
+      expect.objectContaining({ newValue: null }),
+    );
+    expect(table.allRows[0]?.name).toBeNull();
+  });
+
   it("rolls back a rejected edit locally without entering table error state", () => {
     const { bridge, emit } = makeShimBridge();
     setHostBridgeForTesting(bridge);

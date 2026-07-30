@@ -173,6 +173,7 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     /// <summary>When set, the next UpdateCell call throws this exception
     /// (used to exercise the error-mapping path).</summary>
     public Exception? NextUpdateCellException { get; set; }
+    public TaskCompletionSource<UpdateCellResult>? PendingUpdateCell { get; set; }
 
     public Task<EditSchemaResult> GetEditSchemaAsync(string table, CancellationToken token)
     {
@@ -190,6 +191,10 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
         CancellationToken token, string? expectedDigest = null)
     {
         UpdateCellCalls.Add(table);
+        if (PendingUpdateCell is not null)
+        {
+            return PendingUpdateCell.Task;
+        }
         if (NextUpdateCellException is not null)
         {
             var ex = NextUpdateCellException;

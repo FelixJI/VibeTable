@@ -46,7 +46,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    public async Task RejectsDuplicateOrOutOfOrderSequenceWithinEpoch()
+    public async Task AcceptsBoundedOutOfOrderButRejectsDuplicateOrStaleSequence()
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -57,8 +57,10 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
 
         Assert.IsTrue(filter.TryCapture(ScopeFor(opened, 5), out _));
         Assert.IsFalse(filter.TryCapture(ScopeFor(opened, 5), out _));
-        Assert.IsFalse(filter.TryCapture(ScopeFor(opened, 4), out _));
+        Assert.IsTrue(filter.TryCapture(ScopeFor(opened, 4), out _));
         Assert.IsTrue(filter.TryCapture(ScopeFor(opened, 6), out _));
+        Assert.IsTrue(filter.TryCapture(ScopeFor(opened, 1_048_578), out _));
+        Assert.IsFalse(filter.TryCapture(ScopeFor(opened, 1), out _));
     }
 
     [TestMethod]

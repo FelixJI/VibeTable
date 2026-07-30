@@ -772,22 +772,47 @@ async function scenario02(page, recorder, _network, runtime) {
   );
 
   await selectTable(page, "E2E Field Settings V2");
-  await insertRowFromToolbar(page);
   const titleField = created.find((field) => field.definition?.logicalType === "text");
+  const undoSeed = await applyProductMutation(page, tableId, [{
+    kind: "insert",
+    recordId: null,
+    values: {},
+  }], "e2e-undo-seed");
+  if (undoSeed.payload?.status !== "applied") {
+    throw new Error(`undo seed row was not committed: ${JSON.stringify(undoSeed)}`);
+  }
+  await waitForVisibleRowCount(page, 1);
+  await page.evaluate(() => {
+    window.__vibetableE2eEditCommitted = false;
+    window.chrome?.webview?.addEventListener("message", (event) => {
+      let value = event.data;
+      if (typeof value === "string") {
+        try {
+          value = JSON.parse(value);
+        } catch {
+          return;
+        }
+      }
+      if (value?.type === "table.editCommitted") {
+        window.__vibetableE2eEditCommitted = true;
+      }
+    });
+  });
   const undoCell = page.locator(
     `.tabulator-cell[tabulator-field="${titleField.physicalName}"]`,
   ).first();
   const undoEditor = await beginCellEdit(undoCell);
-  await beginBridgeMessageCapture(
-    page,
-    ["table.editCommitted", "table.editRejected", "operation.failed"],
-  );
   await undoEditor.fill("undo-this-data-edit");
   await undoEditor.press("Enter");
-  const editCommitted = await waitForCapturedBridgeMessage(page, 30_000);
-  if (editCommitted.type !== "table.editCommitted") {
-    throw new Error(`initial edit was not committed: ${JSON.stringify(editCommitted)}`);
-  }
+  await waitForQueryPage(
+    page,
+    {
+      tableId,
+      query: { filters: [], sorts: [], offset: 0, limit: 100 },
+    },
+    (payload) => payload?.rows?.length === 1
+      && payload.rows[0]?.[titleField.physicalName] === "undo-this-data-edit",
+  );
   await page.waitForFunction(
     ({ field, value }) => document.querySelector(
       `.tabulator-cell[tabulator-field="${field}"]`,
@@ -795,33 +820,48 @@ async function scenario02(page, recorder, _network, runtime) {
     { field: titleField.physicalName, value: "undo-this-data-edit" },
     { timeout: 30_000 },
   );
-  await beginBridgeMessageCapture(
-    page,
-    ["table.editCommitted", "table.editRejected", "operation.failed"],
-  );
-  await page.keyboard.press("Control+Z");
-  const undoCommitted = await waitForCapturedBridgeMessage(page, 30_000);
-  if (undoCommitted.type !== "table.editCommitted") {
-    throw new Error(`undo edit was not committed: ${JSON.stringify(undoCommitted)}`);
-  }
+  // QueryPort and the optimistic grid can both expose the new value before
+  // the host's commit notification creates the renderer history entry. Wait
+  // for that public transport boundary before exercising Ctrl+Z.
+  await page.waitForFunction(() => window.__vibetableE2eEditCommitted === true);
+  // Enter can leave the detached editor as document.activeElement for one
+  // renderer turn. Clicking the committed cell would start a contenteditable
+  // Tabulator editor again, and the product intentionally ignores global
+  // shortcuts while an editor owns focus. Move focus outside the grid first.
+  await page.getByTestId("toolbar-table-title").click();
+  await page.waitForFunction(() => {
+    const active = document.activeElement;
+    const tag = active?.tagName.toLowerCase();
+    return tag !== "input"
+      && tag !== "textarea"
+      && tag !== "select"
+      && !(active instanceof HTMLElement && active.isContentEditable);
+  });
+  const undoShortcutHandled = await page.evaluate(() => {
+    const event = new KeyboardEvent("keydown", {
+      key: "z",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  recorder.check("Ctrl+Z is accepted by the table shortcut layer", undoShortcutHandled);
   // A data/relation refresh can briefly rebuild the Tabulator DOM. Waiting
   // for the cell text to disappear first would mistake that transient absence
   // for a committed undo. Poll the authoritative QueryPort boundary first;
   // only after the value is gone from storage may the renderer assertion pass.
-  let rowsAfterUndo = null;
-  const undoDeadline = Date.now() + 30_000;
-  while (Date.now() < undoDeadline) {
-    rowsAfterUndo = await rawBridgeRequest(page, "query.page", {
+  const rowsAfterUndoResponse = await waitForQueryPage(
+    page,
+    {
       tableId,
       query: { filters: [], sorts: [], offset: 0, limit: 100 },
-    });
-    if (
-      rowsAfterUndo.payload?.rows?.length === 1
-      && rowsAfterUndo.payload.rows[0]?.[titleField.physicalName]
-        !== "undo-this-data-edit"
-    ) break;
-    await page.waitForTimeout(50);
-  }
+    },
+    (payload) => payload?.rows?.length === 1
+      && payload.rows[0]?.[titleField.physicalName] !== "undo-this-data-edit",
+  );
+  const rowsAfterUndo = rowsAfterUndoResponse.payload;
   await page.waitForFunction(
     ({ field, value }) => !document.querySelector(
       `.tabulator-cell[tabulator-field="${field}"]`,
@@ -835,8 +875,8 @@ async function scenario02(page, recorder, _network, runtime) {
   });
   recorder.check(
     "Ctrl+Z reverses the data edit but never reverses a committed schema change",
-    rowsAfterUndo.payload?.rows?.length === 1
-      && rowsAfterUndo.payload.rows[0]?.[titleField.physicalName] !== "undo-this-data-edit"
+    rowsAfterUndo?.rows?.length === 1
+      && rowsAfterUndo.rows[0]?.[titleField.physicalName] !== "undo-this-data-edit"
       && computedAfterUndo.payload?.definition?.identity?.fieldId === computed[0].fieldId,
     { rowsAfterUndo, computedAfterUndo },
   );
@@ -983,6 +1023,7 @@ async function scenario02(page, recorder, _network, runtime) {
     legacyWrite.type === "operation.failed",
     { legacyWrite },
   );
+  await acknowledgeExpectedBridgeFailure(page, legacyWrite);
   return;
 }
 
@@ -1288,6 +1329,7 @@ async function readBridgeDiagnostics(page) {
       })),
       roundTrips: diagnostics.roundTrips,
       failures: diagnostics.failures,
+      acknowledgedFailures: diagnostics.acknowledgedFailures ?? [],
       pending: Object.values(diagnostics.pending).map((request) => ({
         requestId: request.requestId,
         requestType: request.requestType,
@@ -1297,6 +1339,25 @@ async function readBridgeDiagnostics(page) {
       })),
     };
   });
+}
+
+async function acknowledgeExpectedBridgeFailure(page, response) {
+  const requestId = response?.requestId;
+  if (typeof requestId !== "string") {
+    throw new Error(`expected bridge failure has no requestId: ${JSON.stringify(response)}`);
+  }
+  const acknowledged = await page.evaluate((id) => {
+    const diagnostics = window.__vibetableE2EBridgeDiagnostics;
+    if (!diagnostics) return false;
+    const index = diagnostics.failures.findIndex((failure) => failure.requestId === id);
+    if (index < 0) return false;
+    diagnostics.acknowledgedFailures ??= [];
+    diagnostics.acknowledgedFailures.push(...diagnostics.failures.splice(index, 1));
+    return true;
+  }, requestId);
+  if (!acknowledged) {
+    throw new Error(`expected bridge failure was not recorded: ${requestId}`);
+  }
 }
 
 async function beginBridgeMessageCapture(page, responseTypes) {
@@ -1698,6 +1759,7 @@ async function scenario03(page, recorder) {
     legacy.type === "operation.failed",
     { legacy },
   );
+  await acknowledgeExpectedBridgeFailure(page, legacy);
 
   const defaultsTable = await createSimpleTable(
     page,
@@ -2413,7 +2475,7 @@ async function scenario07(page, recorder, _network, runtime) {
   await waitForTableRecovery(
     page,
     "E2E Attachments",
-    "tbl_e2e_attachments",
+    tableId,
     1,
   );
   const recovered = await waitForAttachmentList(
@@ -2502,10 +2564,10 @@ async function scenario07(page, recorder, _network, runtime) {
     page,
     "history.query",
     {
-      collection: "tbl_e2e_attachments",
+      collection: tableId,
       scope: "cell",
       itemId: recordId,
-      field: "attachments",
+      field: attachmentField,
       search: "",
       dateFrom: null,
       dateTo: null,
@@ -2544,7 +2606,7 @@ async function scenario07(page, recorder, _network, runtime) {
   const restorePreviewText = await restorePreview.innerText();
   recorder.check(
     "attachment restore preview identifies the original managed file through the product UI",
-    restorePreviewText.includes("attachments")
+    restorePreviewText.includes(attachmentField)
       && restorePreviewText.includes(uploadedFile.storedName)
       && await page.getByTestId("restore-confirm").isEnabled(),
     { originalRevision, restorePreviewText },
@@ -2720,6 +2782,7 @@ async function chooseToolbarMore(page, key) {
   const labels = {
     import: /导入数据|Import data/i,
     export: /导出数据|Export data/i,
+    refresh: /刷新|Refresh/i,
   };
   if (!labels[key]) throw new Error(`missing toolbar menu label mapping: ${key}`);
   await page.getByTestId("toolbar-more").click();
@@ -2923,7 +2986,7 @@ async function scenario09(page, recorder, _network, runtime) {
   const rowCount = await waitForTableRecovery(
     page,
     "E2E Atomic Import",
-    "tbl_e2e_atomic_import",
+    tableId,
     0,
   );
   recorder.check("failed import exposed no partially committed records in the UI", rowCount === 0);
@@ -2931,7 +2994,7 @@ async function scenario09(page, recorder, _network, runtime) {
   let history;
   do {
     history = await rawWorkspaceV2Request(page, "history.query", {
-      collection: "tbl_e2e_atomic_import",
+      collection: tableId,
       scope: "table",
       itemId: null,
       field: null,
@@ -2951,7 +3014,7 @@ async function scenario09(page, recorder, _network, runtime) {
   recorder.check("failed import exposed no partially committed audit entries",
     history.method === "history.query"
       && history.ok === true
-      && historyPage?.collection === "tbl_e2e_atomic_import"
+      && historyPage?.collection === tableId
       && historyPage?.scope === "table"
       && historyPage?.total === 0
       && Array.isArray(historyPage?.changeSets)
@@ -3050,7 +3113,7 @@ async function scenario10(page, recorder, _network, runtime) {
 async function scenario11(page, recorder) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
-  await createSimpleTable(page, "E2E Plugin Target", "value");
+  const pluginTable = await createSimpleTable(page, "E2E Plugin Target", "value");
   await selectTable(page, "E2E Plugin Target");
   await page.getByTestId("nav-plugins").click();
   await page.getByTestId("plugin-install-folder").click();
@@ -3091,7 +3154,7 @@ async function scenario11(page, recorder) {
   const afterAuthorized = await waitForTableRecovery(
     page,
     "E2E Plugin Target",
-    "tbl_e2e_plugin_target",
+    pluginTable.tableId,
     1,
   );
   recorder.check("approved plugin mutation became one visible record", afterAuthorized === 1);
@@ -3120,7 +3183,7 @@ async function scenario11(page, recorder) {
   const afterDenied = await waitForTableRecovery(
     page,
     "E2E Plugin Target",
-    "tbl_e2e_plugin_target",
+    pluginTable.tableId,
     1,
   );
   recorder.check("rejected plugin mutation did not create a second record", afterDenied === 1);
@@ -3129,38 +3192,80 @@ async function scenario11(page, recorder) {
 async function scenario12(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
-  await page.getByTestId("sidebar-new-table").click();
-  await fillNInput(page, "create-table-name-input", "E2E Backup Consistency");
-  const fields = [
-    ["value", "integer"],
-    ["doubled", "formula"],
-    ["attachments", "file"],
-  ];
-  for (let index = 0; index < fields.length; index += 1) {
-    if (index > 0) await page.getByTestId("create-table-add-field").click();
-    await fillNInput(page, `create-table-field-name-${index}`, fields[index][0]);
-    await selectNValue(page, `create-table-field-type-${index}`, fields[index][1]);
-  }
-  await page.getByTestId("field-formula-preview-row-1").fill('{"value":7}');
-  await page.getByTestId("field-formula-source-1").fill("value * 2");
-  await page.locator('section[data-field-type="formula"] select').selectOption("integer");
-  const formulaPreview = page.getByTestId("field-formula-preview-1");
-  await formulaPreview.locator("code").filter({ hasText: "14" })
-    .waitFor({ timeout: 30_000 });
-  recorder.check("backup schema formula preview was authoritative before save",
-    await formulaPreview.getAttribute("data-state") === "ready");
-  await page.getByTestId("field-attachment-max-files-2").fill("2");
-  await page.getByTestId("create-table-submit").click();
-  await page.getByTestId("create-table-name-input").waitFor({ state: "hidden", timeout: 30_000 });
+  const tableId = await createEmptyTable(page, "E2E Backup Consistency");
+  await closeFieldSettingsDrawer(page);
+  const valueField = await createV2Field(
+    page,
+    tableId,
+    "Value",
+    "number",
+    (draft) => {
+      draft.storage.options.onlyInt = true;
+      draft.display.displayScale = 0;
+      return draft;
+    },
+  );
+  const formulaField = await createV2Field(
+    page,
+    tableId,
+    "Doubled",
+    "formula",
+    (draft) => {
+      draft.formula = {
+        language: "cel-v1",
+        source: `${valueField.physicalName} * 2.0`,
+        resultType: "number",
+      };
+      return draft;
+    },
+  );
+  const attachmentField = await createV2Field(
+    page,
+    tableId,
+    "Attachments",
+    "file",
+    (draft) => {
+      draft.file.maxFiles = 2;
+      return draft;
+    },
+  );
+  recorder.check(
+    "backup schema was planned through Schema v2 with opaque stable field identities",
+    valueField.fieldId?.startsWith("fld_")
+      && formulaField.fieldId?.startsWith("fld_")
+      && attachmentField.fieldId?.startsWith("fld_")
+      && formulaField.definition?.formula?.source === `${valueField.physicalName} * 2.0`
+      && formulaField.definition?.formula?.resultType === "number"
+      && attachmentField.definition?.file?.maxFiles === 2,
+    { valueField, formulaField, attachmentField },
+  );
   await selectTable(page, "E2E Backup Consistency");
-  await insertRowFromToolbar(page);
+  await chooseToolbarMore(page, "refresh");
+  await page.locator(
+    `.tabulator-col[tabulator-field="${valueField.physicalName}"]`,
+  ).waitFor({ timeout: 30_000 });
+  const seed = await applyProductMutation(page, tableId, [{
+    kind: "insert",
+    recordId: null,
+    values: {},
+  }], "e2e-backup-seed");
+  recorder.check(
+    "backup seed row committed through the product mutation boundary",
+    seed.type === "mutation.apply" && seed.payload?.status === "applied",
+    { seed },
+  );
+  await waitForVisibleRowCount(page, 1);
 
-  const valueCell = page.locator('.tabulator-cell[tabulator-field="value"]').first();
+  const valueCell = page.locator(
+    `.tabulator-cell[tabulator-field="${valueField.physicalName}"]`,
+  ).first();
   await valueCell.waitFor({ timeout: 30_000 });
   let valueEditor = await beginCellEdit(valueCell);
   await valueEditor.fill("7");
   await valueEditor.press("Enter");
-  const formulaCell = page.locator('.tabulator-cell[tabulator-field="doubled"]').first();
+  const formulaCell = page.locator(
+    `.tabulator-cell[tabulator-field="${formulaField.physicalName}"]`,
+  ).first();
   await formulaCell.filter({ hasText: "14" }).waitFor({ timeout: 30_000 });
 
   const original = (await fs.readFile(
@@ -3184,7 +3289,7 @@ async function scenario12(page, recorder, _network, runtime) {
   const expectedOriginalHash = sha256(originalBytes);
   const expectedReplacementHash = sha256(replacementBytes);
   const schema = await rawBridgeRequest(page, "schema.describe", {
-    collection: "tbl_e2e_backup_consistency",
+    collection: tableId,
     requestGeneration: 12_012,
     accepts: [
       "vibetable.relation-capabilities.v1",
@@ -3192,10 +3297,10 @@ async function scenario12(page, recorder, _network, runtime) {
     ],
   });
   const attachmentColumn = schema.payload?.schema?.columns?.find(
-    (column) => column.name === "attachments",
+    (column) => column.name === attachmentField.physicalName,
   );
   const initialQuery = await rawBridgeRequest(page, "query.page", {
-    tableId: "tbl_e2e_backup_consistency",
+    tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
   const recordId = initialQuery.payload?.rows?.[0]?.id;
@@ -3211,11 +3316,13 @@ async function scenario12(page, recorder, _network, runtime) {
     })}`);
   }
   const attachmentParams = {
-    tableId: "tbl_e2e_backup_consistency",
+    tableId,
     recordId,
     fieldId: attachmentColumn.fieldId,
   };
-  const attachmentCell = page.locator('.tabulator-cell[tabulator-field="attachments"]').first();
+  const attachmentCell = page.locator(
+    `.tabulator-cell[tabulator-field="${attachmentField.physicalName}"]`,
+  ).first();
   await attachmentCell.dblclick();
   let panel = page.getByTestId("attachment-panel");
   await page.getByTestId("attachment-upload").click();
@@ -3233,12 +3340,12 @@ async function scenario12(page, recorder, _network, runtime) {
   await panel.locator("header button").click();
 
   const beforeBackupQuery = await rawBridgeRequest(page, "query.page", {
-    tableId: "tbl_e2e_backup_consistency",
+    tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
   const beforeBackupRow = beforeBackupQuery.payload?.rows?.[0];
   const beforeBackupHistoryReply = await rawWorkspaceV2Request(page, "history.query", {
-    collection: "tbl_e2e_backup_consistency",
+    collection: tableId,
     scope: "table",
     itemId: null,
     field: null,
@@ -3255,14 +3362,14 @@ async function scenario12(page, recorder, _network, runtime) {
   recorder.check("pre-backup record, formula, attachment, and audit snapshot is complete",
     beforeBackupQuery.type === "query.page"
       && beforeBackupRow?.id === recordId
-      && String(beforeBackupRow?.value) === "7"
-      && String(beforeBackupRow?.doubled) === "14"
+      && String(beforeBackupRow?.[valueField.physicalName]) === "7"
+      && String(beforeBackupRow?.[formulaField.physicalName]) === "14"
       && beforeBackupAttachment?.originalName === path.basename(original)
       && beforeBackupAttachment?.sha256 === expectedOriginalHash
       && beforeBackupAttachment?.size === originalBytes.length
       && beforeBackupHistoryReply.method === "history.query"
       && beforeBackupHistoryReply.ok === true
-      && beforeBackupHistory?.collection === "tbl_e2e_backup_consistency"
+      && beforeBackupHistory?.collection === tableId
       && Array.isArray(beforeBackupHistory?.changeSets)
       && beforeBackupHistory.changeSets.length > 0
       && beforeBackupHistory.total === beforeBackupHistory.changeSets.length,
@@ -3300,7 +3407,7 @@ async function scenario12(page, recorder, _network, runtime) {
   });
   const snapshotStorageProof = await requestStorageProof(
     runtime,
-    "tbl_e2e_backup_consistency",
+    tableId,
   );
   recorder.check("backup boundary published a verified external audit-ledger prefix",
     snapshotStorageProof.auditLedger?.verified === true
@@ -3326,15 +3433,15 @@ async function scenario12(page, recorder, _network, runtime) {
       && attachments[0]?.sha256 === expectedReplacementHash,
   );
   const changedQuery = await rawBridgeRequest(page, "query.page", {
-    tableId: "tbl_e2e_backup_consistency",
+    tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
   const changedRow = changedQuery.payload?.rows?.[0];
   recorder.check("post-backup mutation changed record, formula, and attachment bytes",
     changedQuery.type === "query.page"
       && changedRow?.id === recordId
-      && String(changedRow?.value) === "9"
-      && String(changedRow?.doubled) === "18"
+      && String(changedRow?.[valueField.physicalName]) === "9"
+      && String(changedRow?.[formulaField.physicalName]) === "18"
       && replacementAttachmentResponse.payload.attachments[0]?.originalName === path.basename(replacement)
       && replacementAttachmentResponse.payload.attachments[0]?.sha256 === expectedReplacementHash
       && replacementAttachmentResponse.payload.attachments[0]?.size === replacementBytes.length,
@@ -3383,24 +3490,26 @@ async function scenario12(page, recorder, _network, runtime) {
   await waitForTableRecovery(
     page,
     "E2E Backup Consistency",
-    "tbl_e2e_backup_consistency",
+    tableId,
     1,
     90_000,
   );
   const afterRestoreQuery = await rawBridgeRequest(page, "query.page", {
-    tableId: "tbl_e2e_backup_consistency",
+    tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
   const afterRestoreRow = afterRestoreQuery.payload?.rows?.[0];
   recorder.check("record and stored formula returned exactly to the backup snapshot",
     afterRestoreQuery.type === "query.page"
       && afterRestoreRow?.id === beforeBackupRow?.id
-      && afterRestoreRow?.value === beforeBackupRow?.value
-      && afterRestoreRow?.doubled === beforeBackupRow?.doubled,
+      && afterRestoreRow?.[valueField.physicalName]
+        === beforeBackupRow?.[valueField.physicalName]
+      && afterRestoreRow?.[formulaField.physicalName]
+        === beforeBackupRow?.[formulaField.physicalName],
   { beforeBackupRow, afterRestoreRow });
   const restoredStorageProof = await requestStorageProof(
     runtime,
-    "tbl_e2e_backup_consistency",
+    tableId,
   );
   const snapshotLedgerCount = snapshotStorageProof.auditLedger.count;
   const appendedLedgerRecords = restoredStorageProof.auditLedger.records.slice(
@@ -3432,7 +3541,9 @@ async function scenario12(page, recorder, _network, runtime) {
     preservedPostSnapshotMutations,
     restoreLedgerEvents,
   });
-  const restoredAttachmentCell = page.locator('.tabulator-cell[tabulator-field="attachments"]').first();
+  const restoredAttachmentCell = page.locator(
+    `.tabulator-cell[tabulator-field="${attachmentField.physicalName}"]`,
+  ).first();
   await restoredAttachmentCell.dblclick();
   panel = page.getByTestId("attachment-panel");
   await panel.waitFor({ state: "visible", timeout: 30_000 });
@@ -3472,7 +3583,7 @@ async function scenario12(page, recorder, _network, runtime) {
     { scope: "table", scenario: "12-backup-consistency" },
   );
   const afterRestoreHistoryReply = await rawWorkspaceV2Request(page, "history.query", {
-    collection: "tbl_e2e_backup_consistency",
+    collection: tableId,
     scope: "table",
     itemId: null,
     field: null,
@@ -3503,10 +3614,10 @@ async function scenario12(page, recorder, _network, runtime) {
     (changeSet) => changeSet.scalarChanges ?? [],
   );
   const postSnapshotValuePreserved = addedScalarChanges.some(
-    (change) => change.field === "value" && String(change.after) === "9",
+    (change) => change.field === valueField.physicalName && String(change.after) === "9",
   );
   const postSnapshotAttachmentPreserved = addedScalarChanges.some(
-    (change) => change.field === "attachments"
+    (change) => change.field === attachmentField.physicalName
       && String(change.after ?? "").includes(
         replacementAttachmentResponse.payload.attachments[0].storedName,
       ),

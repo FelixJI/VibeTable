@@ -1170,13 +1170,18 @@ def run_scenario(
                 }
             elif node_returncode != 0:
                 result["status"] = "failed"
-                result["error"] = {
-                    "code": "NODE_RUNNER_FAILED",
-                    "message": (
-                        f"Playwright runner exited with code {node_returncode}: "
-                        f"{node_stderr.strip() or 'no stderr'}"
-                    ),
-                }
+                # The Node runner catches scenario assertions, persists their
+                # structured error, and intentionally exits non-zero. Preserve
+                # that root cause; only synthesize an infrastructure error when
+                # Node crashed or returned a contradictory passing document.
+                if not isinstance(result.get("error"), dict):
+                    result["error"] = {
+                        "code": "NODE_RUNNER_FAILED",
+                        "message": (
+                            f"Playwright runner exited with code {node_returncode}: "
+                            f"{node_stderr.strip() or 'no stderr'}"
+                        ),
+                    }
             elif result.get("status") != "passed":
                 result["status"] = "failed"
                 result["error"] = {

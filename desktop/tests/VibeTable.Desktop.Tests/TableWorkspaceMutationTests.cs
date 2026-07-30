@@ -99,11 +99,8 @@ public sealed class TableWorkspaceMutationTests
     }
 
     [TestMethod]
-    public async Task UpdateCellAsync_DoesNotEmitAfterTableSwitch()
+    public async Task UpdateCellAsync_EmitsAfterSameTableRefresh()
     {
-        // The host must NOT apply a stale commit to a different table. We can't
-        // easily time the switch here, so we assert the no-notification path by
-        // switching before the response: open two tables, switch, then fire.
         var fake = new FakeTableRpcGateway();
         fake.DatabaseOpenResults["path"] = new DatabaseOpenResult(
             new List<string> { "a", "b" }, new List<string>(), "read_write", null);
@@ -113,12 +110,55 @@ public sealed class TableWorkspaceMutationTests
 
         await workspace.OpenDatabaseAsync("path");
         await workspace.SelectTableAsync("a");
-        int countAfterA = notifications.Count;
-        // No stale-suppression here without concurrency, but we confirm the
-        // success path still emits exactly one editCommitted.
         notifications.Clear();
-        await workspace.UpdateCellAsync("a", 1, "x", 1, 2, "rev1");
+        fake.PendingUpdateCell = new TaskCompletionSource<UpdateCellResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<bool> update = workspace.UpdateCellAsync("a", 1, "x", 1, 2, "rev1");
+
+        // The user's own data.changed reconciliation reselects the same table
+        // while the mutation response is still in flight.
+        await workspace.SelectTableAsync("a");
+        notifications.Clear();
+        fake.PendingUpdateCell.SetResult(new UpdateCellResult(
+            1,
+            "x",
+            2,
+            new Dictionary<string, object?> { ["rowKey"] = 1, ["x"] = 2 },
+            new MutationRevision("fake", "rev1", 2)));
+
+        Assert.IsTrue(await update);
         Assert.AreEqual(1, notifications.Count);
+        Assert.AreEqual("table.editCommitted", notifications[0].Type);
+    }
+
+    [TestMethod]
+    public async Task UpdateCellAsync_DoesNotEmitAfterActualTableSwitch()
+    {
+        var fake = new FakeTableRpcGateway();
+        fake.DatabaseOpenResults["path"] = new DatabaseOpenResult(
+            new List<string> { "a", "b" }, new List<string>(), "read_write", null);
+        var workspace = new TableWorkspaceService(fake);
+        var notifications = new List<TableNotification>();
+        workspace.Notification += n => notifications.Add(n);
+
+        await workspace.OpenDatabaseAsync("path");
+        await workspace.SelectTableAsync("a");
+        notifications.Clear();
+        fake.PendingUpdateCell = new TaskCompletionSource<UpdateCellResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<bool> update = workspace.UpdateCellAsync("a", 1, "x", 1, 2, "rev1");
+
+        await workspace.SelectTableAsync("b");
+        notifications.Clear();
+        fake.PendingUpdateCell.SetResult(new UpdateCellResult(
+            1,
+            "x",
+            2,
+            new Dictionary<string, object?> { ["rowKey"] = 1, ["x"] = 2 },
+            new MutationRevision("fake", "rev1", 2)));
+
+        Assert.IsFalse(await update);
+        Assert.AreEqual(0, notifications.Count);
     }
 
     [TestMethod]

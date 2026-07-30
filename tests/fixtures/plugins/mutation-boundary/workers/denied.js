@@ -8,7 +8,6 @@ export async function run(_input, capabilities, signal) {
       {
         kind: "create",
         values: {
-          value: "must-not-be-created",
           forbidden: "undeclared-field",
         },
       },
