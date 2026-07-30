@@ -1,6 +1,10 @@
 {
   "entries": [
     {
+      "subject": "fix(ci): stabilize release metadata checks",
+      "commit": "33970df0"
+    },
+    {
       "subject": "fix(ci): stabilize Windows release gates",
       "commit": "b61d9f42"
     },

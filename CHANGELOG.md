@@ -1,5 +1,6 @@
 # VibeTable 0.2.0
 
+- fix(ci): stabilize release metadata checks (`33970df0`)
 - fix(ci): stabilize Windows release gates (`b61d9f42`)
 - docs: retain workspace implementation plan (`9a47d4ff`)
 - fix(maintenance): clean nested sidecar caches (`27580973`)
