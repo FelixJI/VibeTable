@@ -79,7 +79,7 @@ def collect_changelog(repo_root: Path, version: str) -> list[ChangelogEntry]:
         repo_root,
         "log",
         "--no-merges",
-        "--format=%h%x1f%s",
+        "--format=%H%x1f%s",
         revision_range,
     )
     entries: list[ChangelogEntry] = []
@@ -88,7 +88,7 @@ def collect_changelog(repo_root: Path, version: str) -> list[ChangelogEntry]:
         normalized = subject.strip()
         if not separator or not normalized or HOUSEKEEPING_SUBJECT.match(normalized):
             continue
-        entries.append(ChangelogEntry(subject=normalized, commit=commit.strip()))
+        entries.append(ChangelogEntry(subject=normalized, commit=commit.strip()[:8]))
     return entries
 
 
