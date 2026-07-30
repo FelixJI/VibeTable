@@ -1,5 +1,6 @@
 # VibeTable 0.2.0
 
+- fix(ci): bound formula backfill race scale (`adb16e58`)
 - fix(release): make changelog hashes deterministic (`f6a00679`)
 - fix(ci): stabilize release metadata checks (`33970df0`)
 - fix(ci): stabilize Windows release gates (`b61d9f42`)

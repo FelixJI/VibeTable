@@ -1,6 +1,10 @@
 {
   "entries": [
     {
+      "subject": "fix(ci): bound formula backfill race scale",
+      "commit": "adb16e58"
+    },
+    {
       "subject": "fix(release): make changelog hashes deterministic",
       "commit": "f6a00679"
     },
