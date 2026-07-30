@@ -42,6 +42,7 @@ def test_changelog_uses_non_merge_commits_and_filters_merge_wording(
                 "b2c3d4e\x1fMerge branch 'feature/filter'",
                 "c3d4e5f\x1f合并主分支",
                 "d4e5f6a\x1fchore: release v0.1.1",
+                "d5e6f7a\x1fchore(release): prepare 0.2.0",
                 "e5f6a7b\x1ffix: 修复导出",
             ]
         ),

@@ -22,7 +22,7 @@ JSON_OUTPUT = Path("desktop/web-grid/src/generated/changelog.json")
 MARKDOWN_OUTPUT = Path("CHANGELOG.md")
 SEMVER_TAG = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 HOUSEKEEPING_SUBJECT = re.compile(
-    r"^(?:chore(?:\(release\))?:\s*release\s+v|merge\b|合并)",
+    r"^(?:chore\(release\):|chore:\s*release\s+v|merge\b|合并)",
     flags=re.IGNORECASE,
 )
 

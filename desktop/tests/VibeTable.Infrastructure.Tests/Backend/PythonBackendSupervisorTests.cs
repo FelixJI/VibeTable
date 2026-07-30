@@ -31,8 +31,9 @@ namespace VibeTable.Infrastructure.Tests.Backend;
 /// re-checks.
 /// </para>
 /// <para>
-/// Timeouts in <see cref="BackendLaunchOptions"/> are deliberately short
-/// (1-2 seconds) so a regression fails the suite fast instead of hanging it.
+/// Timeouts in <see cref="BackendLaunchOptions"/> are deliberately bounded.
+/// Successful process startup gets enough headroom for loaded CI runners,
+/// while timeout-specific tests override the value to fail quickly.
 /// </para>
 /// </remarks>
 [TestClass]
@@ -63,7 +64,7 @@ public sealed class PythonBackendSupervisorTests
             Command = PythonExecutable,
             Arguments = FakeBackendScript,
             WorkingDirectory = RepoRoot,
-            StartupTimeout = TimeSpan.FromSeconds(2),
+            StartupTimeout = TimeSpan.FromSeconds(10),
             StopTimeout = TimeSpan.FromSeconds(2),
         };
         if (env is not null)

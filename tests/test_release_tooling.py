@@ -562,6 +562,14 @@ def test_release_workflow_supports_scheduled_and_manual_patch_releases() -> None
     ) < workflow.index("Publish version commit and tag")
 
 
+def test_ci_metadata_checkout_fetches_release_tags() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    python_job = workflow.split("\n  web:", maxsplit=1)[0]
+
+    assert "fetch-depth: 0" in python_job
+    assert python_job.index("fetch-depth: 0") < python_job.index("Version and package metadata")
+
+
 def test_fault_gate_targets_workspace_v2_durability_without_whole_backup() -> None:
     tests = set(fault_injection.GO_TESTS)
     packages = set(fault_injection.GO_PACKAGES)
