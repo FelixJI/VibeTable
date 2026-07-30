@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import stat
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,11 @@ CACHE_ROOTS = (
     ".codex-go-tmp",
     ".codex-test-tmp",
     ".npm-cache",
+    "sidecar/.cache",
+    "sidecar/.codex-go-cache",
+    "sidecar/.codex-go-tmp",
+    "sidecar/.codex-test-tmp",
+    "sidecar/.tmp",
 )
 PROTECTED_NAMES = {".git", ".venv", ".tools", "node_modules"}
 
@@ -102,6 +108,8 @@ def _artifact_paths(root: Path, keep_qa_runs: int) -> Iterable[Path]:
         yield from dist.iterdir()
     yield root / "VibeTable.Next"
     yield root / "desktop" / "web-grid" / "dist"
+    yield root / "sidecar" / "build"
+    yield root / "sidecar" / "vibetable-pb.exe"
 
     for projects in (root / "desktop" / "src", root / "desktop" / "tests"):
         if not projects.is_dir():
@@ -153,12 +161,24 @@ def remove_candidates(root: Path, candidates: Iterable[Candidate]) -> list[str]:
         try:
             path = validate_target(root, candidate.path)
             if path.is_dir():
-                shutil.rmtree(path)
+                shutil.rmtree(path, onerror=_retry_readonly)
             elif path.exists():
                 path.unlink()
         except OSError as exc:
             failures.append(f"{candidate.path}: {exc}")
     return failures
+
+
+def _retry_readonly(
+    function: Callable[[str], object],
+    path: str,
+    exc_info: tuple[type[BaseException], BaseException, object],
+) -> None:
+    error = exc_info[1]
+    if not isinstance(error, PermissionError):
+        raise error
+    os.chmod(path, stat.S_IWRITE)
+    function(path)
 
 
 def _format_bytes(value: int) -> str:
