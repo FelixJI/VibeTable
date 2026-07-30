@@ -1,6 +1,10 @@
 {
   "entries": [
     {
+      "subject": "fix(release): stabilize packaged product eligibility",
+      "commit": "1a1a8fea"
+    },
+    {
       "subject": "fix(release): close packaged product fault gate",
       "commit": "b0244988"
     },
