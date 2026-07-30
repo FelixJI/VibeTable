@@ -1,5 +1,6 @@
 # VibeTable 0.2.0
 
+- fix(release): stabilize workspace creation gate (`c3e4c111`)
 - fix(release): stabilize packaged product eligibility (`1a1a8fea`)
 - fix(release): close packaged product fault gate (`b0244988`)
 - fix(ci): isolate direct history fixtures from watcher (`0af625b8`)

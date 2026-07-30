@@ -1,6 +1,10 @@
 {
   "entries": [
     {
+      "subject": "fix(release): stabilize workspace creation gate",
+      "commit": "c3e4c111"
+    },
+    {
       "subject": "fix(release): stabilize packaged product eligibility",
       "commit": "1a1a8fea"
     },
