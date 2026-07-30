@@ -10,7 +10,7 @@ public sealed class PocketBaseHostOptionsTests
     public void Resolve_UsesPackagedIdentityAndSeparatesMutableData()
     {
         string root = CreateDirectory();
-        string sidecar = Path.Combine(root, "resources", "sidecar");
+        string sidecar = Path.Combine(root, "sidecar");
         Directory.CreateDirectory(sidecar);
         File.WriteAllBytes(
             Path.Combine(sidecar, "vibetable-pb.exe"),
@@ -93,7 +93,7 @@ public sealed class PocketBaseHostOptionsTests
     public void WithRuntimeDataRoot_IsolatesWritablePathsAndPreservesIdentity()
     {
         string root = CreateDirectory();
-        string sidecar = Path.Combine(root, "resources", "sidecar");
+        string sidecar = Path.Combine(root, "sidecar");
         Directory.CreateDirectory(sidecar);
         File.WriteAllBytes(
             Path.Combine(sidecar, "vibetable-pb.exe"),
@@ -129,7 +129,7 @@ public sealed class PocketBaseHostOptionsTests
     public void WithRuntimeDataRoot_RejectsDataNestedInsideSidecarInstall()
     {
         string root = CreateDirectory();
-        string sidecar = Path.Combine(root, "resources", "sidecar");
+        string sidecar = Path.Combine(root, "sidecar");
         Directory.CreateDirectory(sidecar);
         var options = new PocketBaseLaunchOptions
         {
@@ -156,7 +156,7 @@ public sealed class PocketBaseHostOptionsTests
         string migrationHash)
     {
         string root = CreateDirectory();
-        string sidecar = Path.Combine(root, "resources", "sidecar");
+        string sidecar = Path.Combine(root, "sidecar");
         Directory.CreateDirectory(sidecar);
         File.WriteAllBytes(
             Path.Combine(sidecar, "vibetable-pb.exe"),

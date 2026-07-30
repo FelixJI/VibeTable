@@ -26,7 +26,7 @@ internal static class LaunchPaths
     {
         string name = OperatingSystem.IsWindows() ? "vibetable-pb.exe" : "vibetable-pb";
         string packaged = Path.GetFullPath(
-            Path.Combine(baseDirectory, "resources", "sidecar", name));
+            Path.Combine(baseDirectory, "sidecar", name));
         if (File.Exists(packaged))
         {
             return packaged;

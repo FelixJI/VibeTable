@@ -6,6 +6,26 @@ namespace VibeTable.Desktop.Tests;
 public sealed class WebViewAssetServiceTests
 {
     [TestMethod]
+    public void ResolveWebGridFolder_UsesPublishedTopLevelLayout()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-web-assets-" + Guid.NewGuid().ToString("N"));
+        string webGrid = Path.Combine(root, "web-grid");
+        Directory.CreateDirectory(webGrid);
+        try
+        {
+            Assert.AreEqual(
+                webGrid,
+                WebViewAssetService.ResolveWebGridFolder(root));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public void AppUri_TargetsBundledIndexFile_NotVirtualDirectory()
     {
         var uriText = (string)typeof(WebViewAssetService)

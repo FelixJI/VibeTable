@@ -85,7 +85,6 @@ public static class PocketBaseHostOptions
     {
         string packaged = Path.Combine(
             baseDirectory,
-            "resources",
             "sidecar",
             "build-info.json");
         if (File.Exists(packaged))
@@ -143,7 +142,7 @@ public static class PocketBaseHostOptions
     private static bool IsPackaged(string baseDirectory, string executable) =>
         executable.StartsWith(
             Path.GetFullPath(
-                Path.Combine(baseDirectory, "resources", "sidecar"))
+                Path.Combine(baseDirectory, "sidecar"))
                 + Path.DirectorySeparatorChar,
             StringComparison.OrdinalIgnoreCase);
 

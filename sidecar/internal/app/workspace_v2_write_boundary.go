@@ -2,10 +2,13 @@ package app
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/hook"
 )
+
+const workspaceV2FieldCancelPrefix = "/api/vibetable/v2/field-change/cancel/"
 
 var workspaceV2ReadOnlyPosts = map[string]struct{}{
 	"/api/vibetable/v1/formulas/validate":        {},
@@ -16,8 +19,10 @@ var workspaceV2ReadOnlyPosts = map[string]struct{}{
 	"/api/vibetable/v1/relations/preview-delta":  {},
 	"/api/vibetable/v1/lookups/query":            {},
 	"/api/vibetable/v1/lookups/preview":          {},
+	"/api/vibetable/v1/mutations/preview":        {},
 	"/api/vibetable/v1/schema/validate":          {},
 	"/api/vibetable/v1/events/reconcile":         {},
+	"/api/vibetable/v2/import-preview":           {},
 }
 
 var workspaceV2CoordinatedPosts = map[string]struct{}{
@@ -25,6 +30,8 @@ var workspaceV2CoordinatedPosts = map[string]struct{}{
 	"/api/vibetable/v1/schema/apply":          {},
 	"/api/vibetable/v1/schema/delete":         {},
 	"/api/vibetable/v1/relations/apply-delta": {},
+	"/api/vibetable/v2/field-change/plan":     {},
+	"/api/vibetable/v2/field-change/apply":    {},
 }
 
 func bindWorkspaceV2WriteBoundary(event *core.ServeEvent) {
@@ -58,7 +65,8 @@ func workspaceV2RequestAllowed(method string, path string) bool {
 	case http.MethodPost:
 		if path == workspaceV2RPCPath ||
 			path == workspaceV2DrainPath ||
-			path == shutdownPath {
+			path == shutdownPath ||
+			isWorkspaceV2FieldCancelPath(path) {
 			return true
 		}
 		_, allowed := workspaceV2ReadOnlyPosts[path]
@@ -70,4 +78,9 @@ func workspaceV2RequestAllowed(method string, path string) bool {
 	default:
 		return false
 	}
+}
+
+func isWorkspaceV2FieldCancelPath(path string) bool {
+	jobID, found := strings.CutPrefix(path, workspaceV2FieldCancelPrefix)
+	return found && jobID != "" && !strings.Contains(jobID, "/")
 }

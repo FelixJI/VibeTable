@@ -2,7 +2,7 @@
 
 The strict entry point builds the complete release before touching the sidecar.
 For local iteration ``--sidecar-only-build`` keeps the exact same
-the versioned ``dist/.../resources/sidecar`` layout while skipping unrelated
+the versioned ``dist/.../sidecar`` layout while skipping unrelated
 build stages.
 Neither mode imports or embeds PocketBase.
 """
