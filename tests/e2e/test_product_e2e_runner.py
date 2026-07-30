@@ -207,6 +207,29 @@ def test_node_runner_enforces_closed_history_and_no_external_http() -> None:
     assert "allowedPageErrors" not in source
 
 
+def test_node_runner_waits_for_bridge_quiescence_instead_of_a_fixed_delay() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    helper = source[
+        source.index("async function waitForBridgeDiagnosticsToSettle") : source.index(
+            "async function acknowledgeExpectedBridgeFailure"
+        )
+    ]
+    completion_start = source.index("const implementation = scenarios[args.scenario]")
+    completion = source[
+        completion_start : source.index("assertCleanRendererDiagnostics(recorder", completion_start)
+    ]
+
+    assert "timeoutMs = 10_000" in helper
+    assert "quietMs = 250" in helper
+    assert "if (failures.length > 0) return diagnostics" in helper
+    assert "if (pending.length === 0)" in helper
+    assert "quietSince = null" in helper
+    assert "waitForBridgeDiagnosticsToSettle(page)" in completion
+    assert "await page.waitForTimeout(250)" not in completion
+    assert "JSON.stringify(details)" in source
+    assert "serialized.slice(0, 4_000)" in source
+
+
 def test_expected_bridge_rejection_is_acknowledged_only_after_the_scenario_asserts_it() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     scenario = source[

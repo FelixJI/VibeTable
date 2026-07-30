@@ -52,7 +52,16 @@ function makeRecorder() {
     assertions,
     check(name, passed, details = {}) {
       assertions.push({ name, passed: Boolean(passed), details });
-      if (!passed) throw new Error(`assertion failed: ${name}`);
+      if (!passed) {
+        let serialized = "";
+        try {
+          serialized = JSON.stringify(details);
+        } catch {
+          serialized = "<unserializable details>";
+        }
+        const suffix = serialized ? `: ${serialized.slice(0, 4_000)}` : "";
+        throw new Error(`assertion failed: ${name}${suffix}`);
+      }
     },
   };
 }
@@ -1339,6 +1348,29 @@ async function readBridgeDiagnostics(page) {
       })),
     };
   });
+}
+
+async function waitForBridgeDiagnosticsToSettle(
+  page,
+  { timeoutMs = 10_000, quietMs = 250 } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  let quietSince = null;
+  let diagnostics = null;
+  while (Date.now() < deadline) {
+    diagnostics = await readBridgeDiagnostics(page);
+    const failures = diagnostics?.failures ?? [];
+    const pending = diagnostics?.pending ?? [];
+    if (failures.length > 0) return diagnostics;
+    if (pending.length === 0) {
+      quietSince ??= Date.now();
+      if (Date.now() - quietSince >= quietMs) return diagnostics;
+    } else {
+      quietSince = null;
+    }
+    await page.waitForTimeout(50);
+  }
+  return diagnostics ?? await readBridgeDiagnostics(page);
 }
 
 async function acknowledgeExpectedBridgeFailure(page, response) {
@@ -3828,8 +3860,7 @@ async function main() {
       });
     }
     else throw new Error(`unknown product scenario: ${args.scenario}`);
-    await page.waitForTimeout(250);
-    result.bridgeDiagnostics = await readBridgeDiagnostics(page);
+    result.bridgeDiagnostics = await waitForBridgeDiagnosticsToSettle(page);
     assertCleanBridgeDiagnostics(recorder, result.bridgeDiagnostics);
     assertCleanRendererDiagnostics(recorder, consoleEntries, pageErrors, network);
     result.status = "passed";

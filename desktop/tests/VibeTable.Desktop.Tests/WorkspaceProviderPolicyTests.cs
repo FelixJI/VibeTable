@@ -79,4 +79,43 @@ public sealed class WorkspaceProviderPolicyTests
             WorkspaceStorageKind.UserMarkedSync,
             result.StorageKind);
     }
+
+    [TestMethod]
+    public void SuccessfulCreateProbeLeavesAnEmptyRootForWorkspaceLayout()
+    {
+        string target = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-provider-policy-tests",
+            Guid.NewGuid().ToString("N"));
+        WorkspaceProviderPolicy policy = WorkspaceProviderPolicy.CreateForTests(
+            new Dictionary<WorkspaceStorageKind, bool>
+            {
+                [WorkspaceStorageKind.Fixed] = true,
+            },
+            (root, _, _) => new WorkspaceStorageObservation(
+                WorkspaceStorageKind.Fixed,
+                WorkspaceCoordinationStrength.Strong,
+                1024,
+                false,
+                DateTimeOffset.UtcNow));
+
+        try
+        {
+            _ = policy.ProbeCreateTargetAndEnsureSupported(target);
+
+            Assert.IsTrue(Directory.Exists(target));
+            Assert.IsFalse(Directory.EnumerateFileSystemEntries(target).Any());
+            WorkspaceLayoutResult layout = WorkspaceLayout.Create(
+                target,
+                "Managed",
+                WorkspaceStorageMode.Direct,
+                WorkspaceEncryptionMode.Convenient);
+            Assert.AreEqual(Path.GetFullPath(target), layout.SelectedRoot);
+        }
+        finally
+        {
+            if (Directory.Exists(target))
+                Directory.Delete(target, recursive: true);
+        }
+    }
 }

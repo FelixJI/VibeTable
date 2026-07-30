@@ -161,12 +161,30 @@ public sealed class WorkspaceProviderPolicy
                 fullPath,
                 userMarkedSync);
         }
-        finally
+        catch
         {
-            if (created
-                && Directory.Exists(fullPath)
+            if (created)
+                TryDeleteEmptyCreateTarget(fullPath);
+            throw;
+        }
+    }
+
+    private static void TryDeleteEmptyCreateTarget(string fullPath)
+    {
+        try
+        {
+            if (Directory.Exists(fullPath)
                 && !Directory.EnumerateFileSystemEntries(fullPath).Any())
+            {
                 Directory.Delete(fullPath);
+            }
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            // Preserve the authoritative probe/policy failure. A concurrent
+            // filesystem actor may touch the directory between enumeration
+            // and deletion; rollback cleanup must never replace that error.
         }
     }
 
