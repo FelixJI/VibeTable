@@ -1,6 +1,10 @@
 {
   "entries": [
     {
+      "subject": "fix(release): close packaged product fault gate",
+      "commit": "b0244988"
+    },
+    {
       "subject": "fix(ci): isolate direct history fixtures from watcher",
       "commit": "0af625b8"
     },
