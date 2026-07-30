@@ -1,6 +1,10 @@
 {
   "entries": [
     {
+      "subject": "fix(release): resolve packaged sidecar from layout",
+      "commit": "49509922"
+    },
+    {
       "subject": "fix(ci): bound formula backfill race scale",
       "commit": "adb16e58"
     },
