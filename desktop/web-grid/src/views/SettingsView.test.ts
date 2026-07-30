@@ -12,6 +12,7 @@ import MonthNavigator from "@/components/calendar/MonthNavigator.vue";
 import { NSelect } from "naive-ui";
 import type { HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
+import changelog from "@/generated/changelog.json";
 
 describe("SettingsView", () => {
   const backupRequest = vi.fn();
@@ -74,10 +75,14 @@ describe("SettingsView", () => {
 
     expect(backupRequest).toHaveBeenCalledWith("diagnostics.get", {});
     expect(wrapper.text()).toContain("v0.1.0");
+    const firstEntry = changelog.entries[0];
+    expect(firstEntry).toBeDefined();
     expect(wrapper.get('[data-testid="about-changelog"]').text())
-      .toContain("初始化项目");
-    expect(wrapper.get('[data-testid="about-changelog"]').text())
-      .not.toMatch(/\bMerge\b|合并/i);
+      .toContain(firstEntry!.subject);
+    expect(changelog.entries)
+      .not.toContainEqual(expect.objectContaining({
+        subject: expect.stringMatching(/^(merge|合并)(:|\s)/i),
+      }));
   });
 
   it("aligns the interface density control with the other general settings", () => {

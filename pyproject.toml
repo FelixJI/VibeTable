@@ -81,6 +81,8 @@ ignore = [
 "scripts/release.py" = ["E402"]
 "qa/package_check.py" = ["E402"]
 "qa/version_check.py" = ["E402"]
+# v1 契约生成器字节已冻结；不要仅为历史导入顺序改写其内容。
+"contracts/v1/generate_rpc_catalog.py" = ["I001"]
 
 [tool.mypy]
 python_version = "3.11"

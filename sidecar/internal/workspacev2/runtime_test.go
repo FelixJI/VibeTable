@@ -1049,6 +1049,12 @@ func TestRuntimeListsCanonicalDocumentsAndRestoresRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer runtime.Close(context.Background())
+	// This test writes the history service directly before exercising the RPC
+	// surface. Keep the unrelated files/ watcher from racing those writes.
+	if err := runtime.watcher.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.watcher = nil
 	token, _ := runtime.coordinator.Current()
 	documentID := "22222222-2222-4222-8222-222222222222"
 	first, err := runtime.history.Save(

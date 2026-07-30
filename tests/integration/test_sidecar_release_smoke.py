@@ -25,9 +25,6 @@ def _readline_with_timeout(stream, seconds: float) -> str:
 
 def _sidecar_binary(tmp_path: Path) -> Path:
     suffix = ".exe" if os.name == "nt" else ""
-    staged = REPO_ROOT / "build" / "qa" / f"vibetable-pb{suffix}"
-    if staged.is_file():
-        return staged
     output = tmp_path / f"vibetable-pb{suffix}"
     paths = RepoPaths.default(REPO_ROOT)
     subprocess.run(

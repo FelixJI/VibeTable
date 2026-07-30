@@ -740,6 +740,7 @@ func replicaOneShotTreeState(t *testing.T, root string) []string {
 				return err
 			}
 			digest := ""
+			modified := ""
 			if !entry.IsDir() {
 				raw, err := os.ReadFile(current)
 				if err != nil {
@@ -747,10 +748,11 @@ func replicaOneShotTreeState(t *testing.T, root string) []string {
 				}
 				sum := sha256.Sum256(raw)
 				digest = hex.EncodeToString(sum[:])
+				modified = info.ModTime().UTC().Format(time.RFC3339Nano)
 			}
 			result = append(result, relative+"|"+
 				info.Mode().String()+"|"+
-				info.ModTime().UTC().Format(time.RFC3339Nano)+"|"+
+				modified+"|"+
 				digest)
 			return nil
 		},

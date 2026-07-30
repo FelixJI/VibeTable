@@ -16,7 +16,7 @@ def test_strict_entry_builds_release_and_uses_only_published_binary() -> None:
         for alias in node.names
     }
     assert "pocketbase" not in imports
-    assert matrix.PUBLISH_ROOT == (matrix.REPO_ROOT / "dist" / "VibeTable.Next-v0.1.0-win-x64")
+    assert matrix.PUBLISH_ROOT == (matrix.REPO_ROOT / "dist" / "VibeTable.Next")
     assert "scripts/build_next.py" in source
     assert 'command.append("--release")' in source
     assert "NewWithConfig" not in source

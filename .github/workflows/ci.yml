@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -37,17 +41,21 @@ jobs:
       - name: Version and package metadata
         run: |
           uv run python scripts/release.py --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv run python qa/version_check.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv run python qa/package_check.py
 
       - name: Format and lint
         run: |
           uv run ruff format --check .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv run ruff check .
 
       - name: Type check
         run: |
           uv run pyright backend
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv run mypy backend
 
       - name: Test with coverage
