@@ -241,7 +241,7 @@ func TestFormulaBackfillJobRecalculatesAndMarksMetadataReady(t *testing.T) {
 	}
 }
 
-func TestFormulaBackfillTenThousandRowsCancelsResumesWithoutDuplicateAudit(
+func TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit(
 	t *testing.T,
 ) {
 	app := bootstrapApp(t, queryTempDir(t))
@@ -264,7 +264,7 @@ func TestFormulaBackfillTenThousandRowsCancelsResumesWithoutDuplicateAudit(
 	if err != nil {
 		t.Fatal(err)
 	}
-	const rowCount = 10_000
+	const rowCount = formulaBackfillScaleRows
 	if err := app.RunInTransaction(func(txApp core.App) error {
 		for index := 0; index < rowCount; index++ {
 			record := core.NewRecord(collection)
@@ -298,7 +298,7 @@ func TestFormulaBackfillTenThousandRowsCancelsResumesWithoutDuplicateAudit(
 		ctx, "scale_notes", definition.SchemaRevision,
 	)
 	if err != nil || started.Progress.Total != rowCount {
-		t.Fatalf("start 10k backfill = %#v, err=%v", started, err)
+		t.Fatalf("start %d-row backfill = %#v, err=%v", rowCount, started, err)
 	}
 	runResult := make(chan error, 1)
 	go func() {
@@ -331,7 +331,7 @@ func TestFormulaBackfillTenThousandRowsCancelsResumesWithoutDuplicateAudit(
 	completed, err := service.Get(ctx, started.JobID)
 	if err != nil || completed.State != "complete" ||
 		completed.Progress.Completed != rowCount {
-		t.Fatalf("completed 10k backfill = %#v, err=%v", completed, err)
+		t.Fatalf("completed %d-row backfill = %#v, err=%v", rowCount, completed, err)
 	}
 	assertRecordCount(t, app, "vibetable_audit_events", rowCount)
 	assertRecordCount(t, app, "vibetable_idempotency_keys", rowCount/100)

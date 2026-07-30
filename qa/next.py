@@ -67,7 +67,7 @@ RACE_LONG_COMMAND_TIMEOUT_SECONDS = 16 * 60
 RACE_LONG_TEST_TIMEOUT = "15m"
 RACE_LONG_TESTS = frozenset(
     {
-        "TestFormulaBackfillTenThousandRowsCancelsResumesWithoutDuplicateAudit",
+        "TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit",
         "TestMutationKernelOneThousandOperationsCommitOrFullyRollback",
         "TestQueryPortPagesFiltersAndSortsTwentyFiveThousandRows",
     }

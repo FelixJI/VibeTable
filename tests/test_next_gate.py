@@ -350,6 +350,20 @@ def test_known_slow_race_tests_run_individually_with_long_timeout(
         assert timeout == next_gate.RACE_LONG_COMMAND_TIMEOUT_SECONDS
 
 
+def test_formula_backfill_scale_retains_capacity_and_bounds_race_cost() -> None:
+    integration = next_gate.SIDECAR_DIR / "tests" / "integration"
+    normal = (integration / "formula_backfill_scale_default_test.go").read_text(encoding="utf-8")
+    race = (integration / "formula_backfill_scale_race_test.go").read_text(encoding="utf-8")
+
+    assert "//go:build !race" in normal
+    assert "formulaBackfillScaleRows = 10_000" in normal
+    assert "//go:build race" in race
+    assert "formulaBackfillScaleRows = 1_000" in race
+    assert "TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit" in (
+        next_gate.RACE_LONG_TESTS
+    )
+
+
 def test_race_stage_isolates_named_tests_in_every_package(
     monkeypatch,
 ) -> None:
