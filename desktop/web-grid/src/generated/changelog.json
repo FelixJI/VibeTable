@@ -1,6 +1,10 @@
 {
   "entries": [
     {
+      "subject": "fix(release): make changelog hashes deterministic",
+      "commit": "f6a00679"
+    },
+    {
       "subject": "fix(ci): stabilize release metadata checks",
       "commit": "33970df0"
     },
