@@ -1037,6 +1037,23 @@ def build_release(*, sidecar_only: bool) -> None:
     subprocess.run(command, cwd=REPO_ROOT, check=True)
 
 
+def published_sidecar_binary(package_root: Path) -> Path:
+    """Resolve the packaged sidecar from the release layout contract."""
+
+    root = package_root.resolve()
+    layout_path = root / "publish-layout.json"
+    try:
+        layout = json.loads(layout_path.read_text(encoding="utf-8"))
+        relative = Path(layout["launch"]["sidecar"])
+    except (KeyError, OSError, json.JSONDecodeError, TypeError) as exc:
+        raise AssertionError(f"invalid published sidecar layout: {layout_path}: {exc}") from exc
+    assert not relative.is_absolute(), f"published sidecar path must be relative: {relative}"
+    binary = (root / relative).resolve()
+    assert binary.is_relative_to(root), f"published sidecar escapes package root: {relative}"
+    assert binary.name == SIDECAR_NAME, f"unexpected published sidecar name: {relative}"
+    return binary
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1076,7 +1093,7 @@ def main(argv: list[str] | None = None) -> int:
     audit_dir = data_dir.parent / "audit"
     assert not audit_dir.exists(), f"matrix requires a fresh audit directory: {audit_dir}"
     data_dir.mkdir(parents=True)
-    binary = package_root / "resources" / "sidecar" / SIDECAR_NAME
+    binary = published_sidecar_binary(package_root)
     coverage = run_matrix(binary, data_dir)
     report = {
         "ok": True,
