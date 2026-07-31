@@ -564,25 +564,29 @@ def test_release_preflight_rejects_dirty_or_untracked_worktree(
         _ensure_clean_worktree()
 
 
-def test_release_workflow_supports_scheduled_and_manual_patch_releases() -> None:
+def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    release_please = (
+        REPO_ROOT / ".github" / "workflows" / "release-please.yml"
+    ).read_text(encoding="utf-8")
 
-    assert 'cron: "30 15 * * *"' in workflow
-    assert 'timezone: "Asia/Shanghai"' in workflow
     assert "workflow_dispatch:" in workflow
-    assert "Detect unreleased main commits" in workflow
-    assert 'git rev-list --count "$latestTag..HEAD"' in workflow
-    assert "needs.prepare.outputs.should_release == 'true'" in workflow
-    assert "has no tag yet; publishing it without an extra bump" in workflow
-    assert 'if ($bump -notin @("patch", "minor", "major"))' in workflow
-    assert "scripts/changelog.py --write" in workflow
-    assert "scripts/changelog.py --check" in workflow
-    assert "Retrying unpublished release $tag without another version bump." in workflow
-    assert "steps.identity.outputs.tag_exists != 'true'" in workflow
-    assert "--notes-file CHANGELOG.md" in workflow
+    assert "release_tag:" in workflow
+    assert "Verify tag and draft Release" in workflow
+    assert "gh release view $env:RELEASE_TAG --json isDraft" in workflow
+    assert "Attach assets to draft Release" in workflow
+    assert "gh release upload" in workflow
+    assert "schedule:" not in workflow
+    assert "gh release create" not in workflow
+    assert "git push" not in workflow
+
+    assert "workflow_dispatch:" in release_please
+    assert "options: [patch, minor, major]" in release_please
+    assert "release-as:" in release_please
+    assert "skip-github-release: true" in release_please
+    assert "skip-github-pull-request: true" in release_please
     assert "--generate-notes" not in workflow
-    assert "RELEASE_TAG: ${{ steps.identity.outputs.tag }}" in workflow
-    assert "git push --atomic origin HEAD:main" in workflow
+    assert "RELEASE_TAG: ${{ inputs.release_tag }}" in workflow
     assert "w64devkit-x64-2.8.0.7z.exe" in workflow
     assert "6252bf34fe2231a55ac7f03d482b36d2c7c58697990551bba508102cfb3f342e" in workflow
     assert '7z x $archive "-o$destination" -y' in workflow
@@ -611,7 +615,7 @@ def test_release_workflow_supports_scheduled_and_manual_patch_releases() -> None
     assert "Compress-Archive" not in workflow
     assert workflow.index(
         "Verify eligibility is bound to the immutable candidate"
-    ) < workflow.index("Publish version commit and tag")
+    ) < workflow.index("Attach assets to draft Release")
 
 
 def test_ci_metadata_checkout_fetches_release_tags() -> None:
