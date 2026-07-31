@@ -1,8 +1,12 @@
 {
   "entries": [
     {
+      "subject": "ci: harden PR and release workflows",
+      "commit": "54a43183"
+    },
+    {
       "subject": "feat(release): streamline Windows package delivery",
-      "commit": "92afc2e4"
+      "commit": "8d11d364"
     },
     {
       "subject": "fix(release): stabilize workspace creation gate",
