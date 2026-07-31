@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
@@ -194,3 +192,24 @@ jobs:
           --no-restore
           /p:CollectCoverage=true
           /p:CoverletOutputFormat=cobertura
+
+  required:
+    name: required
+    if: always()
+    needs: [python, web, plugin-sdk, sidecar, dotnet]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every CI job
+        shell: bash
+        env:
+          PYTHON_RESULT: ${{ needs.python.result }}
+          WEB_RESULT: ${{ needs.web.result }}
+          PLUGIN_SDK_RESULT: ${{ needs['plugin-sdk'].result }}
+          SIDECAR_RESULT: ${{ needs.sidecar.result }}
+          DOTNET_RESULT: ${{ needs.dotnet.result }}
+        run: |
+          results="$PYTHON_RESULT,$WEB_RESULT,$PLUGIN_SDK_RESULT,$SIDECAR_RESULT,$DOTNET_RESULT"
+          if [[ "$results" != "success,success,success,success,success" ]]; then
+            echo "::error::One or more required CI jobs did not succeed: $results"
+            exit 1
+          fi

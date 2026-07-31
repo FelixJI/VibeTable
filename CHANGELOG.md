@@ -1,6 +1,8 @@
 # VibeTable 0.2.0
 
-- feat(release): streamline Windows package delivery (`92afc2e4`)
+- test: align release workflow contracts (`21009d3d`)
+- ci: harden PR and release workflows (`54a43183`)
+- feat(release): streamline Windows package delivery (`8d11d364`)
 - fix(release): stabilize workspace creation gate (`c3e4c111`)
 - fix(release): stabilize packaged product eligibility (`1a1a8fea`)
 - fix(release): close packaged product fault gate (`b0244988`)

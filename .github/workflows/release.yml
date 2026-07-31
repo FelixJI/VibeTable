@@ -1,33 +1,18 @@
-name: Release
+name: Build Release Assets
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
-  schedule:
-    - cron: "30 15 * * *"
-      timezone: "Asia/Shanghai"
   workflow_dispatch:
     inputs:
-      bump:
-        description: Version part to bump for this release
+      release_tag:
+        description: Existing draft Release tag, for example v0.2.1
         required: true
-        default: patch
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
+        type: string
 
 permissions:
   contents: read
 
-env:
-  PYTHONUTF8: "1"
-  PYTHONIOENCODING: "utf-8"
-
 concurrency:
-  group: release-${{ github.repository }}
+  group: release-assets-${{ github.repository }}-${{ inputs.release_tag }}
   cancel-in-progress: false
 
 defaults:
@@ -35,78 +20,22 @@ defaults:
     shell: pwsh
 
 jobs:
-  prepare:
-    name: Check whether a release is needed
-    runs-on: windows-latest
-    timeout-minutes: 5
-    outputs:
-      should_release: ${{ steps.gate.outputs.should_release }}
-      bump: ${{ steps.gate.outputs.bump }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'push' && github.ref || 'main' }}
-
-      - name: Detect unreleased main commits
-        id: gate
-        shell: pwsh
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          MANUAL_BUMP: ${{ inputs.bump }}
-        run: |
-          $shouldRelease = $true
-          $bump = "patch"
-          $reason = "tag push"
-
-          if ($env:EVENT_NAME -eq "workflow_dispatch") {
-            $bump = $env:MANUAL_BUMP
-            if ($bump -notin @("patch", "minor", "major")) {
-              throw "Unsupported version bump: $bump"
-            }
-            $reason = "manual $bump release"
-          } elseif ($env:EVENT_NAME -eq "schedule") {
-            $releaseTags = @(
-              git tag --merged HEAD --list "v[0-9]*.[0-9]*.[0-9]*" --sort=-version:refname
-            )
-            if ($LASTEXITCODE -ne 0) {
-              throw "Unable to inspect release tags"
-            }
-            $latestTag = $releaseTags | Select-Object -First 1
-            if ($latestTag) {
-              $commitCount = [int](git rev-list --count "$latestTag..HEAD")
-              if ($LASTEXITCODE -ne 0) {
-                throw "Unable to inspect commits after $latestTag"
-              }
-              $shouldRelease = $commitCount -gt 0
-              $reason = if ($shouldRelease) {
-                "$commitCount commit(s) after $latestTag"
-              } else {
-                "main is already released as $latestTag"
-              }
-            } else {
-              $reason = "no existing semantic release tag"
-            }
-          }
-
-          "should_release=$($shouldRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
-          "bump=$bump" >> $env:GITHUB_OUTPUT
-          "### Release gate`n`n$reason" >> $env:GITHUB_STEP_SUMMARY
-
-  publish:
-    name: Build and publish Windows package
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
+  build:
+    name: Build and upload Windows package
     runs-on: windows-latest
     timeout-minutes: 120
     environment: release
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'push' && github.ref || 'main' }}
+          ref: ${{ inputs.release_tag }}
 
       - uses: actions/setup-node@v6
         with:
@@ -123,8 +52,22 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Verify tag and draft Release
+        id: identity
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $version = (python -c "from backend._version import __version__; print(__version__)").Trim()
+          if ($env:RELEASE_TAG -ne "v$version") {
+            throw "Tag $env:RELEASE_TAG does not match repository version v$version"
+          }
+          $isDraft = (gh release view $env:RELEASE_TAG --json isDraft --jq '.isDraft').Trim()
+          if ($isDraft -ne "true") {
+            throw "Release $env:RELEASE_TAG must exist and remain a draft before assets are uploaded"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
       - name: Install pinned Windows race toolchain
-        shell: pwsh
         run: |
           $archive = Join-Path $env:RUNNER_TEMP "w64devkit-x64-2.8.0.7z.exe"
           $destination = Join-Path $PWD ".tools\w64devkit"
@@ -154,76 +97,6 @@ jobs:
       - name: Install locked web dependencies
         working-directory: desktop/web-grid
         run: npm ci
-
-      - name: Prepare release identity
-        id: identity
-        shell: pwsh
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
-          RELEASE_BUMP: ${{ needs.prepare.outputs.bump }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $tagAlreadyExists = $false
-          if ($env:EVENT_NAME -eq "push") {
-            uv run python scripts/release.py --check
-            uv run python scripts/changelog.py --check
-            $version = (uv run python scripts/release.py --current).Trim()
-            $tag = $env:REF_NAME
-            if ($tag -ne "v$version") {
-              throw "Tag $tag does not match repository version v$version"
-            }
-          } else {
-            uv run python scripts/release.py --check
-            $version = (uv run python scripts/release.py --current).Trim()
-            $tag = "v$version"
-
-            if (git rev-parse --verify --quiet "refs/tags/$tag") {
-              $tagCommit = (git rev-list -n 1 $tag).Trim()
-              $headCommit = (git rev-parse HEAD).Trim()
-              gh release view $tag *> $null
-              $releaseExists = $LASTEXITCODE -eq 0
-              if ($tagCommit -eq $headCommit -and -not $releaseExists) {
-                $tagAlreadyExists = $true
-                Write-Host "Retrying unpublished release $tag without another version bump."
-              } else {
-                $bump = $env:RELEASE_BUMP
-                if ($bump -notin @("patch", "minor", "major")) {
-                  throw "Unsupported version bump: $bump"
-                }
-                uv run python scripts/release.py "--$bump"
-                $version = (uv run python scripts/release.py --current).Trim()
-                $tag = "v$version"
-                if (git rev-parse --verify --quiet "refs/tags/$tag") {
-                  throw "Release tag $tag already exists"
-                }
-              }
-            } else {
-              Write-Host "Version $version has no tag yet; publishing it without an extra bump."
-            }
-
-            if ($tagAlreadyExists) {
-              uv run python scripts/changelog.py --check
-            } else {
-              uv run python scripts/changelog.py --write
-              git config user.name "github-actions[bot]"
-              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-              git add `
-                backend/_version.py `
-                desktop/publish-layout.json `
-                desktop/web-grid/src/generated/changelog.json `
-                CHANGELOG.md
-              git diff --cached --quiet
-              if ($LASTEXITCODE -ne 0) {
-                git commit -m "chore: release $tag"
-              }
-            }
-          }
-
-          "version=$version" >> $env:GITHUB_OUTPUT
-          "tag=$tag" >> $env:GITHUB_OUTPUT
-          "tag_exists=$($tagAlreadyExists.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
-          "### Release identity`n`n$tag" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Build immutable release candidate
         run: uv run python scripts/build_next.py --release
@@ -260,43 +133,26 @@ jobs:
       - name: Upload release eligibility evidence
         uses: actions/upload-artifact@v6
         with:
-          name: release-eligibility-${{ steps.identity.outputs.tag }}
+          name: release-eligibility-${{ inputs.release_tag }}
           path: build/qa/release-eligibility.json
           if-no-files-found: error
 
-      - name: Upload immutable workflow artifact
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: VibeTable-${{ steps.identity.outputs.tag }}
+          name: VibeTable-${{ inputs.release_tag }}
           path: |
             dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
             dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip.sha256
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish version commit and tag
-        if: github.event_name != 'push' && steps.identity.outputs.tag_exists != 'true'
-        shell: pwsh
+      - name: Attach assets to draft Release
         env:
-          RELEASE_TAG: ${{ steps.identity.outputs.tag }}
-        run: |
-          $tag = $env:RELEASE_TAG
-          git tag -a $tag -m "VibeTable $tag"
-          git push --atomic origin HEAD:main "refs/tags/$tag"
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.identity.outputs.tag }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
           PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
-        shell: pwsh
         run: |
-          $tag = $env:RELEASE_TAG
-          $archive = $env:PACKAGE_ARCHIVE
-          $checksum = "$archive.sha256"
-          if (gh release view $tag 2>$null) {
-            gh release edit $tag --notes-file CHANGELOG.md --title "VibeTable $tag"
-            gh release upload $tag $archive $checksum --clobber
-          } else {
-            gh release create $tag $archive $checksum --verify-tag --notes-file CHANGELOG.md --title "VibeTable $tag"
-          }
+          gh release upload $env:RELEASE_TAG `
+            $env:PACKAGE_ARCHIVE `
+            "$env:PACKAGE_ARCHIVE.sha256" `
+            --clobber

@@ -66,7 +66,7 @@ def test_ci_gate_runs_go_and_real_sidecar_before_desktop_stacks() -> None:
     )
 
 
-def test_github_workflows_are_windows_only_and_keep_desktop_smoke_heavy() -> None:
+def test_github_workflows_keep_release_build_on_windows() -> None:
     workflow_dir = next_gate.REPO_ROOT / ".github" / "workflows"
     workflow_paths = sorted([*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")])
     workflows = {path.name: path.read_text(encoding="utf-8") for path in workflow_paths}
@@ -76,9 +76,22 @@ def test_github_workflows_are_windows_only_and_keep_desktop_smoke_heavy() -> Non
             line.strip() for line in workflow.splitlines() if line.strip().startswith("runs-on:")
         ]
         assert runner_lines
-        assert set(runner_lines) == {"runs-on: windows-latest"}
-        assert "ubuntu-latest" not in workflow
+        assert set(runner_lines) <= {
+            "runs-on: windows-latest",
+            "runs-on: ubuntu-latest",
+        }
         assert "macos-" not in workflow
+
+    release_workflow = workflows["release.yml"]
+    release_runner_lines = [
+        line.strip()
+        for line in release_workflow.splitlines()
+        if line.strip().startswith("runs-on:")
+    ]
+    assert set(release_runner_lines) == {"runs-on: windows-latest"}
+    assert "ubuntu-latest" not in release_workflow
+    for workflow_name in ("cleanup-releases.yml", "mirror.yml", "release-please.yml"):
+        assert "runs-on: ubuntu-latest" in workflows[workflow_name]
         assert "\ndefaults:\n  run:\n    shell: pwsh\n" in workflow
 
     ci_workflow = workflows["ci.yml"]
@@ -283,8 +296,8 @@ def test_source_only_go_stages_do_not_fabricate_recovery_tool_paths() -> None:
 
 def test_release_gate_enables_required_windows_credential_manager_tests() -> None:
     workflow = (next_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    publish_job = workflow.split("  publish:", maxsplit=1)[1]
-    assert "timeout-minutes: 120" in publish_job.split("    steps:", maxsplit=1)[0]
+    build_job = workflow.split("  build:", maxsplit=1)[1]
+    assert "timeout-minutes: 120" in build_job.split("    steps:", maxsplit=1)[0]
     gate_step = workflow.split(
         "- name: Run complete release eligibility gate",
         maxsplit=1,
@@ -296,12 +309,12 @@ def test_release_gate_enables_required_windows_credential_manager_tests() -> Non
 
 def test_release_workflow_runs_each_python_and_web_suite_once_in_the_complete_gate() -> None:
     workflow = (next_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    publish_job = workflow.split("  publish:", maxsplit=1)[1]
+    build_job = workflow.split("  build:", maxsplit=1)[1]
 
-    assert "- name: Run complete release eligibility gate" in publish_job
-    assert "- name: Verify eligibility is bound to the immutable candidate" in publish_job
-    assert "- name: Verify Python, contracts, and release tooling" not in publish_job
-    assert "- name: Verify web grid" not in publish_job
+    assert "- name: Run complete release eligibility gate" in build_job
+    assert "- name: Verify eligibility is bound to the immutable candidate" in build_job
+    assert "- name: Verify Python, contracts, and release tooling" not in build_job
+    assert "- name: Verify web grid" not in build_job
 
 
 def test_race_stage_compiles_each_package_once_and_runs_every_test_in_isolation(
