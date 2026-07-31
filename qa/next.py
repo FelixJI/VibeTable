@@ -13,10 +13,12 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
 
 try:
     from qa import handoff as handoff_gate
@@ -65,6 +67,8 @@ STAGE_TIMEOUT_SECONDS = {
 RACE_COMMAND_TIMEOUT_SECONDS = 7 * 60
 RACE_LONG_COMMAND_TIMEOUT_SECONDS = 16 * 60
 RACE_LONG_TEST_TIMEOUT = "15m"
+RACE_BINARY_DIR = REPO_ROOT / "build" / "qa" / "race-tests"
+RACE_PACKAGE_WORKERS = 2
 RACE_LONG_TESTS = frozenset(
     {
         "TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit",
@@ -316,7 +320,7 @@ def _stage_environment(
         environment["GOCACHE"] = str(go_cache)
         environment["GOTMPDIR"] = str(go_tmp)
     if stage in {"go-test", "go-race"} and package_root is not None:
-        layout_path = package_root / "publish-layout.json"
+        layout_path = package_root / "resources" / "publish-layout.json"
         try:
             layout = json.loads(layout_path.read_text(encoding="utf-8"))
             recovery_tools = layout["assets"]["recoveryTools"]
@@ -419,15 +423,99 @@ def _run_command(
         return TIMEOUT_RETURNCODE, stdout, stderr
 
 
+def _run_race_package(
+    commands: list[tuple[list[str], int, str]],
+    *,
+    environment: dict[str, str],
+    stop_event: Event,
+    compile_command: list[str] | None = None,
+    compile_cwd: str | None = None,
+    binary: Path | None = None,
+) -> tuple[int, list[str], list[str]]:
+    output: list[str] = []
+    errors: list[str] = []
+    try:
+        if stop_event.is_set():
+            output.append("race package stopped after another package failed")
+            return 0, output, errors
+        if compile_command is not None:
+            if compile_cwd is None:
+                raise ValueError("race package compile command requires compile cwd")
+            output.append("$ " + subprocess.list2cmdline(compile_command))
+            compile_code, compile_stdout, compile_stderr = _run_command(
+                compile_command,
+                cwd=compile_cwd,
+                environment=environment,
+                timeout=RACE_COMMAND_TIMEOUT_SECONDS,
+            )
+            output.append(compile_stdout)
+            errors.append(compile_stderr)
+            if compile_code:
+                stop_event.set()
+                return compile_code, output, errors
+
+        for command, timeout, command_cwd in commands:
+            if stop_event.is_set():
+                output.append("race package stopped after another package failed")
+                return 0, output, errors
+            output.append("$ " + subprocess.list2cmdline(command))
+            code, stdout, stderr = _run_command(
+                command,
+                cwd=command_cwd,
+                environment=environment,
+                timeout=timeout,
+            )
+            output.append(stdout)
+            errors.append(stderr)
+            combined = stdout + "\n" + stderr
+            attempt = 1
+            while (
+                code
+                and attempt < WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS
+                and _is_windows_tempdir_cleanup_flake(combined)
+            ):
+                attempt += 1
+                output.append(
+                    "known Windows TempDir watcher cleanup flake; "
+                    "retrying this exact race command in a fresh process "
+                    f"(attempt {attempt}/{WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS})"
+                )
+                code, stdout, stderr = _run_command(
+                    command,
+                    cwd=command_cwd,
+                    environment=environment,
+                    timeout=timeout,
+                )
+                output.append(stdout)
+                errors.append(stderr)
+                combined = stdout + "\n" + stderr
+            if code:
+                stop_event.set()
+                return code, output, errors
+        return 0, output, errors
+    finally:
+        if binary is not None:
+            try:
+                binary.unlink(missing_ok=True)
+            except OSError as exc:
+                errors.append(f"race binary cleanup failed for {binary}: {exc}")
+
+
 def _run_go_race(
     *,
     cwd: str,
     environment: dict[str, str],
 ) -> tuple[int, str, str]:
-    """Run every Go test under race while recycling watcher-heavy test processes."""
+    """Compile race tests once per package, then isolate every named test process."""
 
     go = _resolve("go")
-    package_command = [go, "list", "./..."]
+    package_command = [
+        go,
+        "list",
+        "-f",
+        "{{.ImportPath}}\t{{.Dir}}",
+        "./...",
+    ]
     package_code, package_stdout, package_stderr = _run_command(
         package_command,
         cwd=cwd,
@@ -438,12 +526,31 @@ def _run_go_race(
     errors = [package_stderr]
     if package_code:
         return package_code, "\n".join(output), "\n".join(errors)
-    packages = [line.strip() for line in package_stdout.splitlines() if line.strip()]
+    packages: list[tuple[str, str]] = []
+    for line in package_stdout.splitlines():
+        if not line.strip():
+            continue
+        package, separator, package_dir = line.partition("\t")
+        if not separator or not package.strip() or not package_dir.strip():
+            return (
+                1,
+                "\n".join(output),
+                f"invalid race package discovery row: {line!r}",
+            )
+        packages.append((package.strip(), package_dir.strip()))
     if not packages:
         return 1, "\n".join(output), "race package discovery found zero packages"
-    commands: list[tuple[list[str], int]] = []
-    discovered_names: list[tuple[str, str]] = []
-    for package in packages:
+
+    RACE_BINARY_DIR.mkdir(parents=True, exist_ok=True)
+    package_plans: list[
+        tuple[
+            list[tuple[list[str], int, str]],
+            list[str] | None,
+            Path | None,
+        ]
+    ] = []
+    discovered_count = 0
+    for package_index, (package, package_dir) in enumerate(packages):
         list_command = [
             go,
             "test",
@@ -467,79 +574,95 @@ def _run_go_race(
             if re.fullmatch(r"(?:Test|Example|Fuzz)[A-Za-z0-9_]+", line.strip())
         ]
         if not names:
-            commands.append(
+            package_plans.append(
                 (
                     [
-                        go,
-                        "test",
-                        "-race",
-                        "-count=1",
-                        "-timeout=5m",
-                        package,
+                        (
+                            [
+                                go,
+                                "test",
+                                "-race",
+                                "-count=1",
+                                "-timeout=5m",
+                                package,
+                            ],
+                            RACE_COMMAND_TIMEOUT_SECONDS,
+                            cwd,
+                        )
                     ],
-                    RACE_COMMAND_TIMEOUT_SECONDS,
+                    None,
+                    None,
                 )
             )
             continue
-        discovered_names.extend((package, name) for name in names)
-    if not discovered_names:
+
+        binary_suffix = ".exe" if os.name == "nt" else ".test"
+        binary = (RACE_BINARY_DIR / f"package-{package_index:03d}{binary_suffix}").resolve()
+        compile_command = [
+            go,
+            "test",
+            "-c",
+            "-race",
+            "-o",
+            str(binary),
+            package,
+        ]
+
+        discovered_count += len(names)
+        regular = [name for name in names if name not in RACE_LONG_TESTS]
+        long_running = [name for name in names if name in RACE_LONG_TESTS]
+        package_commands: list[tuple[list[str], int, str]] = []
+        for name in (*regular, *long_running):
+            is_long = name in RACE_LONG_TESTS
+            go_timeout = RACE_LONG_TEST_TIMEOUT if is_long else "5m"
+            package_commands.append(
+                (
+                    [
+                        str(binary),
+                        "-test.count=1",
+                        "-test.parallel=1",
+                        f"-test.timeout={go_timeout}",
+                        f"-test.run=^{re.escape(name)}$",
+                    ],
+                    (
+                        RACE_LONG_COMMAND_TIMEOUT_SECONDS
+                        if is_long
+                        else RACE_COMMAND_TIMEOUT_SECONDS
+                    ),
+                    package_dir,
+                )
+            )
+        package_plans.append((package_commands, compile_command, binary))
+    if not discovered_count:
         return 1, "\n".join(output), "race discovery found zero named Go tests"
-    regular = [item for item in discovered_names if item[1] not in RACE_LONG_TESTS]
-    long_running = [item for item in discovered_names if item[1] in RACE_LONG_TESTS]
-    for package, name in (*regular, *long_running):
-        is_long = name in RACE_LONG_TESTS
-        go_timeout = RACE_LONG_TEST_TIMEOUT if is_long else "5m"
-        commands.append(
-            (
-                [
-                    go,
-                    "test",
-                    "-race",
-                    "-count=1",
-                    "-parallel=1",
-                    f"-timeout={go_timeout}",
-                    package,
-                    "-run",
-                    f"^{re.escape(name)}$",
-                ],
-                (RACE_LONG_COMMAND_TIMEOUT_SECONDS if is_long else RACE_COMMAND_TIMEOUT_SECONDS),
-            )
-        )
-    for command, timeout in commands:
-        output.append("$ " + subprocess.list2cmdline(command))
-        code, stdout, stderr = _run_command(
-            command,
-            cwd=cwd,
-            environment=environment,
-            timeout=timeout,
-        )
-        output.append(stdout)
-        errors.append(stderr)
-        combined = stdout + "\n" + stderr
-        attempt = 1
-        while (
-            code
-            and attempt < WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS
-            and _is_windows_tempdir_cleanup_flake(combined)
-        ):
-            attempt += 1
-            output.append(
-                "known Windows TempDir watcher cleanup flake; "
-                "retrying this exact race command in a fresh process "
-                f"(attempt {attempt}/{WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS})"
-            )
-            code, stdout, stderr = _run_command(
-                command,
-                cwd=cwd,
+
+    package_plans.sort(key=lambda plan: len(plan[0]), reverse=True)
+    stop_event = Event()
+    worker_count = min(RACE_PACKAGE_WORKERS, len(package_plans))
+    with ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="vibetable-go-race",
+    ) as executor:
+        futures = [
+            executor.submit(
+                _run_race_package,
+                package_commands,
                 environment=environment,
-                timeout=timeout,
+                stop_event=stop_event,
+                compile_command=compile_command,
+                compile_cwd=cwd,
+                binary=binary,
             )
-            output.append(stdout)
-            errors.append(stderr)
-            combined = stdout + "\n" + stderr
-        if code:
-            return code, "\n".join(output), "\n".join(errors)
-    return 0, "\n".join(output), "\n".join(errors)
+            for package_commands, compile_command, binary in package_plans
+        ]
+        package_results = [future.result() for future in futures]
+    returncode = 0
+    for code, package_output, package_errors in package_results:
+        output.extend(package_output)
+        errors.extend(package_errors)
+        if code and not returncode:
+            returncode = code
+    return returncode, "\n".join(output), "\n".join(errors)
 
 
 def _is_windows_tempdir_cleanup_flake(output: str) -> bool:

@@ -8,6 +8,44 @@ namespace VibeTable.Desktop.Tests;
 public sealed class WorkspaceProviderPolicyTests
 {
     [TestMethod]
+    public void LoadFindsPackagedPolicyUnderResources()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-provider-policy-tests",
+            Guid.NewGuid().ToString("N"));
+        string policyPath = Path.Combine(
+            root,
+            "resources",
+            "contracts",
+            "v2",
+            "provider-support.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(policyPath)!);
+        File.WriteAllText(
+            policyPath,
+            """
+            {
+              "contractVersion": "2.0",
+              "providers": {
+                "fixed": {"creation": "enabled", "coordinationStrength": "strong"},
+                "network": {"creation": "disabled", "coordinationStrength": "advisory"},
+                "registeredCloud": {"creation": "disabled", "coordinationStrength": "advisory"},
+                "userMarkedSync": {"creation": "disabled", "coordinationStrength": "advisory"},
+                "removable": {"creation": "disabled", "coordinationStrength": "advisory"}
+              }
+            }
+            """);
+        try
+        {
+            Assert.IsNotNull(WorkspaceProviderPolicy.Load(root));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public void ProbeFailureIsNotConvertedIntoDriveTypeApproval()
     {
         var expected = new WorkspaceRegistryException(

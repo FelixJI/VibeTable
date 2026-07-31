@@ -27,11 +27,12 @@ def test_strict_entry_builds_release_and_uses_only_published_binary() -> None:
 
 def test_matrix_resolves_sidecar_from_publish_layout(tmp_path: Path) -> None:
     package_root = tmp_path / "VibeTable.Next"
-    binary = package_root / "sidecar" / matrix.SIDECAR_NAME
+    binary = package_root / "resources" / "sidecar" / matrix.SIDECAR_NAME
     binary.parent.mkdir(parents=True)
     binary.write_bytes(b"sidecar")
-    (package_root / "publish-layout.json").write_text(
-        json.dumps({"launch": {"sidecar": f"sidecar/{matrix.SIDECAR_NAME}"}}),
+    layout = package_root / "resources" / "publish-layout.json"
+    layout.write_text(
+        json.dumps({"launch": {"sidecar": f"resources/sidecar/{matrix.SIDECAR_NAME}"}}),
         encoding="utf-8",
     )
 
@@ -40,8 +41,9 @@ def test_matrix_resolves_sidecar_from_publish_layout(tmp_path: Path) -> None:
 
 def test_matrix_rejects_sidecar_path_outside_package_root(tmp_path: Path) -> None:
     package_root = tmp_path / "VibeTable.Next"
-    package_root.mkdir()
-    (package_root / "publish-layout.json").write_text(
+    resources = package_root / "resources"
+    resources.mkdir(parents=True)
+    (resources / "publish-layout.json").write_text(
         json.dumps({"launch": {"sidecar": f"../{matrix.SIDECAR_NAME}"}}),
         encoding="utf-8",
     )

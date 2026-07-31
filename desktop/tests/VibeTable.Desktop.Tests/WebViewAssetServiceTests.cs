@@ -6,12 +6,12 @@ namespace VibeTable.Desktop.Tests;
 public sealed class WebViewAssetServiceTests
 {
     [TestMethod]
-    public void ResolveWebGridFolder_UsesPublishedTopLevelLayout()
+    public void ResolveWebGridFolder_UsesPublishedResourcesLayout()
     {
         string root = Path.Combine(
             Path.GetTempPath(),
             "vibetable-web-assets-" + Guid.NewGuid().ToString("N"));
-        string webGrid = Path.Combine(root, "web-grid");
+        string webGrid = Path.Combine(root, "resources", "web-grid");
         Directory.CreateDirectory(webGrid);
         try
         {

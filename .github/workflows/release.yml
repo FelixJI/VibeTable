@@ -225,45 +225,36 @@ jobs:
           "tag_exists=$($tagAlreadyExists.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "### Release identity`n`n$tag" >> $env:GITHUB_STEP_SUMMARY
 
-      - name: Verify Python, contracts, and release tooling
-        run: >
-          uv run pytest
-          tests/backend
-          tests/contract
-          tests/test_release_tooling.py
-          tests/test_architecture.py
-          tests/test_handoff_artifacts.py
-          -q -o addopts=
-
-      - name: Verify web grid
-        working-directory: desktop/web-grid
-        run: npm run test
-
       - name: Build immutable release candidate
         run: uv run python scripts/build_next.py --release
 
       - name: Archive immutable release candidate
+        env:
+          PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
         run: >
           uv run python qa/release_candidate.py create
           --package-root dist/VibeTable.Next
-          --archive dist/VibeTable.Next.zip
+          --archive $env:PACKAGE_ARCHIVE
 
       - name: Run complete release eligibility gate
         env:
           VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY: ${{ secrets.PROVIDER_EVIDENCE_HMAC_KEY }}
           VIBETABLE_PROVIDER_EVIDENCE_KEY_ID: ${{ vars.PROVIDER_EVIDENCE_KEY_ID }}
           VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER: "1"
+          PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
         run: >
           uv run python qa/next.py --ci
           --package-root dist/VibeTable.Next
-          --package-archive dist/VibeTable.Next.zip
+          --package-archive $env:PACKAGE_ARCHIVE
           --json-report build/qa/release-eligibility.json
 
       - name: Verify eligibility is bound to the immutable candidate
+        env:
+          PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
         run: >
           uv run python qa/release_candidate.py verify
           --package-root dist/VibeTable.Next
-          --archive dist/VibeTable.Next.zip
+          --archive $env:PACKAGE_ARCHIVE
           --eligibility-report build/qa/release-eligibility.json
 
       - name: Upload release eligibility evidence
@@ -278,8 +269,8 @@ jobs:
         with:
           name: VibeTable-${{ steps.identity.outputs.tag }}
           path: |
-            dist/VibeTable.Next.zip
-            dist/VibeTable.Next.zip.sha256
+            dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
+            dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -297,12 +288,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.identity.outputs.tag }}
+          PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
         shell: pwsh
         run: |
           $tag = $env:RELEASE_TAG
+          $archive = $env:PACKAGE_ARCHIVE
+          $checksum = "$archive.sha256"
           if (gh release view $tag 2>$null) {
             gh release edit $tag --notes-file CHANGELOG.md --title "VibeTable $tag"
-            gh release upload $tag dist/VibeTable.Next.zip dist/VibeTable.Next.zip.sha256 --clobber
+            gh release upload $tag $archive $checksum --clobber
           } else {
-            gh release create $tag dist/VibeTable.Next.zip dist/VibeTable.Next.zip.sha256 --verify-tag --notes-file CHANGELOG.md --title "VibeTable $tag"
+            gh release create $tag $archive $checksum --verify-tag --notes-file CHANGELOG.md --title "VibeTable $tag"
           }

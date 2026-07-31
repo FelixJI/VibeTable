@@ -1041,7 +1041,7 @@ def published_sidecar_binary(package_root: Path) -> Path:
     """Resolve the packaged sidecar from the release layout contract."""
 
     root = package_root.resolve()
-    layout_path = root / "publish-layout.json"
+    layout_path = root / "resources" / "publish-layout.json"
     try:
         layout = json.loads(layout_path.read_text(encoding="utf-8"))
         relative = Path(layout["launch"]["sidecar"])

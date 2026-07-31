@@ -18,7 +18,7 @@ namespace VibeTable.Desktop.Services;
 /// found, so it works regardless of which <c>bin/Configuration</c> subtree the
 /// app launched from.</item>
 /// <item><b>Packaged</b>: a <c>web-grid</c> folder placed under
-/// <c>AppContext.BaseDirectory/web-grid</c>. The Phase A
+/// <c>AppContext.BaseDirectory/resources/web-grid</c>. The release
 /// packaging step copies the built <c>dist</c> output into this folder.</item>
 /// </list>
 /// <para>
@@ -54,9 +54,10 @@ public static class WebViewAssetService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(baseDirectory);
         string baseDir = Path.GetFullPath(baseDirectory);
-        // 1. Packaged layout: <exe-dir>/web-grid
+        // 1. Packaged layout: <exe-dir>/resources/web-grid
         string packaged = Path.Combine(
             baseDir,
+            "resources",
             "web-grid");
         if (Directory.Exists(packaged))
         {

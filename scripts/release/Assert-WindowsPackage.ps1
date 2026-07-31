@@ -16,11 +16,17 @@ function Add-Failure {
 function Test-ReleaseRoot {
     param(
         [System.IO.DirectoryInfo]$Root,
-        [string]$PackageName
+        [string]$PackageName,
+        [string]$ArchiveName
     )
 
-    if ($PackageName -notmatch '^VibeTable\.Next-v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?-win-x64$') {
-        Add-Failure "Package root '$PackageName' does not include a semantic version and win-x64 suffix."
+    if ($ArchiveName) {
+        if ($PackageName -cne "VibeTable") {
+            Add-Failure "Archive top-level directory must be exactly 'VibeTable'; found '$PackageName'."
+        }
+        if ($ArchiveName -notmatch '^VibeTable-v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?-win-x64\.zip$') {
+            Add-Failure "Archive '$ArchiveName' does not include a semantic version and win-x64 suffix."
+        }
     }
 
     $entries = @(Get-ChildItem -LiteralPath $Root.FullName -Force)
@@ -37,13 +43,10 @@ function Test-ReleaseRoot {
         Add-Failure "The package root must contain one resources directory for internal application files."
     }
 
-    if ("logs" -notin $directoryNames) {
-        Add-Failure "The package root must contain a first-level logs directory."
-    }
-
     $forbiddenDirectories = @(
         "userdata",
         "VibeTableData",
+        "backend", "contracts", "sidecar", "web-grid", "runtimes",
         "cs", "de", "es", "fr", "it", "ja", "ko", "pl", "pt-BR", "ru", "tr",
         "zh-Hans", "zh-Hant"
     )
@@ -85,8 +88,8 @@ function Test-ReleaseRoot {
             if ([string]::IsNullOrWhiteSpace([string]$manifest.version)) {
                 Add-Failure "release.json does not contain a version."
             }
-            elseif ($PackageName -notlike "*-v$($manifest.version)-win-x64") {
-                Add-Failure "release.json version '$($manifest.version)' does not match package root '$PackageName'."
+            elseif ($ArchiveName -and $ArchiveName -ne "VibeTable-v$($manifest.version)-win-x64.zip") {
+                Add-Failure "release.json version '$($manifest.version)' does not match archive '$ArchiveName'."
             }
         }
         catch {
@@ -126,6 +129,7 @@ try {
     if ($resolved.PSIsContainer) {
         $packageRoot = $resolved
         $packageName = $resolved.Name
+        $archiveName = ""
     }
     elseif ($resolved.Extension -ieq ".zip") {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -145,8 +149,16 @@ try {
         if ($topLevels.Count -ne 1) {
             Add-Failure "Archive must contain exactly one top-level directory; found $($topLevels.Count)."
         }
+        elseif ($topLevels[0] -cne "VibeTable") {
+            Add-Failure "Archive top-level directory must be exactly 'VibeTable'; found '$($topLevels[0])'."
+        }
 
-        $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+        $repositoryRoot = [System.IO.Path]::GetFullPath(
+            (Join-Path $PSScriptRoot "..\..")
+        )
+        $packageChecksRoot = Join-Path $repositoryRoot "build\package-checks"
+        [System.IO.Directory]::CreateDirectory($packageChecksRoot) | Out-Null
+        $temporaryRoot = Join-Path $packageChecksRoot (
             "vibetable-release-check-" + [Guid]::NewGuid().ToString("N")
         )
         [System.IO.Compression.ZipFile]::ExtractToDirectory($resolved.FullName, $temporaryRoot)
@@ -159,12 +171,16 @@ try {
             $packageRoot = Get-Item -LiteralPath $temporaryRoot
             $packageName = $resolved.BaseName
         }
+        $archiveName = $resolved.Name
     }
     else {
         throw "Path must be a release directory or .zip archive."
     }
 
-    $summary = Test-ReleaseRoot -Root $packageRoot -PackageName $packageName
+    $summary = Test-ReleaseRoot `
+        -Root $packageRoot `
+        -PackageName $packageName `
+        -ArchiveName $archiveName
     $summary | Format-List | Out-String | Write-Host
 
     if ($Failures.Count -gt 0) {

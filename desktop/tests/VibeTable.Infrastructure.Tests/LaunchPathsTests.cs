@@ -8,6 +8,30 @@ namespace VibeTable.Infrastructure.Tests;
 public sealed class LaunchPathsTests
 {
     [TestMethod]
+    public void PackagedSidecarLivesUnderResources()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-launch-paths-" + Guid.NewGuid().ToString("N"));
+        string name = OperatingSystem.IsWindows()
+            ? "vibetable-pb.exe"
+            : "vibetable-pb";
+        string packaged = Path.Combine(root, "resources", "sidecar", name);
+        Directory.CreateDirectory(Path.GetDirectoryName(packaged)!);
+        File.WriteAllText(packaged, "sidecar");
+        try
+        {
+            Assert.AreEqual(
+                Path.GetFullPath(packaged),
+                LaunchPaths.ResolveSidecarBinary(root));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public void ProductDataLivesOutsideInstall()
     {
         string local = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));

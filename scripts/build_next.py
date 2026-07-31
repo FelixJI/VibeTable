@@ -36,6 +36,8 @@ PROTOCOL_VERSION = "2.0"
 WEBVIEW2_SDK = "1.0.4078.44"
 TABULATOR_VERSION = "6.5.2"
 HOST_EXE_NAME = "VibeTable.Next.exe"
+ARCHIVE_ROOT_NAME = "VibeTable"
+RELEASE_PLATFORM = "win-x64"
 BACKEND_EXE_NAME = "vibetable-backend.exe"
 # The published product is a Windows desktop package even when source-contract
 # checks run on Linux. Keep the manifest target-platform deterministic instead
@@ -63,6 +65,10 @@ DEV_SKIP_FLAGS = (
     "--skip-desktop",
     "--skip-sidecar",
 )
+
+
+def release_archive_name(version: str) -> str:
+    return f"VibeTable-v{version}-{RELEASE_PLATFORM}.zip"
 
 
 class BuildError(RuntimeError):
@@ -129,6 +135,7 @@ class RepoPaths:
     staging_root: Path
     scratch_root: Path
     publish_root: Path
+    resources_dir: Path = field(init=False)
     host_exe: Path = field(init=False)
     backend_dir: Path = field(init=False)
     web_grid_publish_dir: Path = field(init=False)
@@ -143,12 +150,14 @@ class RepoPaths:
     age_binary: Path = field(init=False)
     age_keygen_binary: Path = field(init=False)
     manifest_path: Path = field(init=False)
+    release_manifest: Path = field(init=False)
 
     def __post_init__(self) -> None:
+        self.resources_dir = self.publish_root / "resources"
         self.host_exe = self.publish_root / HOST_EXE_NAME
-        self.backend_dir = self.publish_root / "backend"
-        self.web_grid_publish_dir = self.publish_root / "web-grid"
-        self.sidecar_assets_dir = self.publish_root / "sidecar"
+        self.backend_dir = self.resources_dir / "backend"
+        self.web_grid_publish_dir = self.resources_dir / "web-grid"
+        self.sidecar_assets_dir = self.resources_dir / "sidecar"
         self.sidecar_binary = self.sidecar_assets_dir / SIDECAR_EXE_NAME
         self.sidecar_checksum = self.sidecar_assets_dir / f"{SIDECAR_EXE_NAME}.sha256"
         self.sidecar_build_info = self.sidecar_assets_dir / "build-info.json"
@@ -158,7 +167,8 @@ class RepoPaths:
         self.kopia_binary = self.sidecar_assets_dir / "tools" / KOPIA_EXE_NAME
         self.age_binary = self.sidecar_assets_dir / "tools" / AGE_EXE_NAME
         self.age_keygen_binary = self.sidecar_assets_dir / "tools" / AGE_KEYGEN_EXE_NAME
-        self.manifest_path = self.publish_root / "publish-layout.json"
+        self.manifest_path = self.resources_dir / "publish-layout.json"
+        self.release_manifest = self.publish_root / "release.json"
 
     @classmethod
     def default(cls, repo_root: Path) -> RepoPaths:
@@ -240,6 +250,12 @@ def build_dotnet_publish_command(
         "win-x64",
         "--self-contained",
         "true",
+        "-p:PublishSingleFile=true",
+        "-p:IncludeNativeLibrariesForSelfExtract=true",
+        "-p:EnableCompressionInSingleFile=true",
+        "-p:DebugType=None",
+        "-p:DebugSymbols=false",
+        "-p:SatelliteResourceLanguages=en-US",
     ]
     if output_dir is not None:
         command.extend(["--output", os.fsdecode(Path(output_dir))])
@@ -344,28 +360,29 @@ def render_manifest(
         "webGrid": {"tabulator": TABULATOR_VERSION},
         "launch": {
             "host": HOST_EXE_NAME,
-            "backend": f"backend/{BACKEND_EXE_NAME}",
-            "webGrid": "web-grid",
-            "sidecar": f"sidecar/{SIDECAR_EXE_NAME}",
+            "backend": f"resources/backend/{BACKEND_EXE_NAME}",
+            "webGrid": "resources/web-grid",
+            "sidecar": f"resources/sidecar/{SIDECAR_EXE_NAME}",
+            "previewHost": HOST_EXE_NAME,
         },
         "assets": {
-            "migrations": "sidecar/migrations/manifest.json",
-            "buildInfo": "sidecar/build-info.json",
-            "sidecarChecksum": f"sidecar/{SIDECAR_EXE_NAME}.sha256",
-            "licenses": "sidecar/THIRD_PARTY_LICENSES.txt",
-            "sbom": "sidecar/sbom.cdx.json",
-            "recoveryToolProvenance": f"sidecar/{RECOVERY_PROVENANCE_NAME}",
-            "recoveryGuide": "RECOVERY.md",
-            "workspaceContracts": "contracts/v2",
+            "migrations": "resources/sidecar/migrations/manifest.json",
+            "buildInfo": "resources/sidecar/build-info.json",
+            "sidecarChecksum": f"resources/sidecar/{SIDECAR_EXE_NAME}.sha256",
+            "licenses": "resources/sidecar/THIRD_PARTY_LICENSES.txt",
+            "sbom": "resources/sidecar/sbom.cdx.json",
+            "recoveryToolProvenance": f"resources/sidecar/{RECOVERY_PROVENANCE_NAME}",
+            "recoveryGuide": "resources/RECOVERY.md",
+            "workspaceContracts": "resources/contracts/v2",
             "recoveryTools": {
-                "kopia": "sidecar/tools/kopia.exe",
-                "age": "sidecar/tools/age.exe",
-                "ageKeygen": "sidecar/tools/age-keygen.exe",
+                "kopia": "resources/sidecar/tools/kopia.exe",
+                "age": "resources/sidecar/tools/age.exe",
+                "ageKeygen": "resources/sidecar/tools/age-keygen.exe",
             },
             "recoveryToolChecksums": {
-                "kopia": "sidecar/tools/kopia.exe.sha256",
-                "age": "sidecar/tools/age.exe.sha256",
-                "ageKeygen": "sidecar/tools/age-keygen.exe.sha256",
+                "kopia": "resources/sidecar/tools/kopia.exe.sha256",
+                "age": "resources/sidecar/tools/age.exe.sha256",
+                "ageKeygen": "resources/sidecar/tools/age-keygen.exe.sha256",
             },
         },
         "formats": {
@@ -390,6 +407,31 @@ def write_manifest(paths: RepoPaths) -> Path:
     paths.manifest_path.parent.mkdir(parents=True, exist_ok=True)
     paths.manifest_path.write_text(render_manifest(paths), encoding="utf-8")
     return paths.manifest_path
+
+
+def render_release_manifest(paths: RepoPaths) -> str:
+    return (
+        json.dumps(
+            {
+                "product": "VibeTable",
+                "version": read_project_version(paths.repo_root),
+                "platform": "windows",
+                "architecture": "x64",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def write_release_manifest(paths: RepoPaths) -> Path:
+    paths.release_manifest.parent.mkdir(parents=True, exist_ok=True)
+    paths.release_manifest.write_text(
+        render_release_manifest(paths),
+        encoding="utf-8",
+    )
+    return paths.release_manifest
 
 
 _LICENSE_FILE_PREFIXES = ("license", "copying", "notice")
@@ -621,7 +663,7 @@ def _verify_recovery_tool_builds(paths: RepoPaths, go: str) -> list[dict[str, An
         provenance.append(
             {
                 "name": binary.name,
-                "path": f"sidecar/tools/{binary.name}",
+                "path": f"resources/sidecar/tools/{binary.name}",
                 "package": package,
                 "module": module,
                 "version": version,
@@ -672,7 +714,7 @@ def stage_sidecar_assets(
         recovery_tool_provenance = [
             {
                 "name": tool.name,
-                "path": f"sidecar/tools/{tool.name}",
+                "path": f"resources/sidecar/tools/{tool.name}",
                 "package": package,
                 "module": module,
                 "version": version,
@@ -859,7 +901,7 @@ def verify_sidecar_package(paths: RepoPaths) -> None:
         if item is None:
             raise BuildError(f"recovery tool provenance is missing: {tool.name}")
         expected_values = {
-            "path": f"sidecar/tools/{tool.name}",
+            "path": f"resources/sidecar/tools/{tool.name}",
             "package": package,
             "module": module,
             "version": version,
@@ -951,7 +993,7 @@ def verify_sidecar_package(paths: RepoPaths) -> None:
 def stage_workspace_contracts(paths: RepoPaths) -> None:
     shutil.copytree(
         paths.repo_root / "contracts" / "v2",
-        paths.publish_root / "contracts" / "v2",
+        paths.resources_dir / "contracts" / "v2",
         ignore=shutil.ignore_patterns(*CONTRACT_COPY_IGNORES),
         dirs_exist_ok=True,
     )
@@ -1174,12 +1216,8 @@ def _build_desktop(paths: RepoPaths, *, skip: bool) -> None:
     source = output / f"{assembly}.exe"
     if not source.is_file():
         raise BuildError("desktop publish output is missing")
-    for item in output.iterdir():
-        destination = paths.publish_root / (HOST_EXE_NAME if item == source else item.name)
-        if item.is_dir():
-            shutil.copytree(item, destination)
-        else:
-            shutil.copy2(item, destination)
+    paths.host_exe.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, paths.host_exe)
 
 
 def _atomic_swap(staging: Path, publish: Path) -> None:
@@ -1261,9 +1299,11 @@ def run_build(paths: RepoPaths, args: argparse.Namespace) -> int:
     _build_desktop(stage, skip=args.skip_desktop)
     if not args.skip_sidecar:
         verify_sidecar_package(stage)
-    shutil.copy2(paths.repo_root / "docs" / "RECOVERY.md", stage.publish_root / "RECOVERY.md")
+    stage.resources_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(paths.repo_root / "docs" / "RECOVERY.md", stage.resources_dir / "RECOVERY.md")
     stage_workspace_contracts(stage)
     write_manifest(stage)
+    write_release_manifest(stage)
     _atomic_swap(paths.staging_root, paths.publish_root)
     if not args.keep_staging:
         shutil.rmtree(paths.scratch_root, ignore_errors=True)
