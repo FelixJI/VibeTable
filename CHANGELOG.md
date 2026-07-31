@@ -1,4 +1,13 @@
-# VibeTable 0.2.0
+# Changelog
+
+## [0.3.0](https://github.com/FelixJI/VibeTable/compare/v0.2.0...v0.3.0) (2026-07-31)
+
+
+### Features
+
+* **release:** streamline Windows package delivery ([8d11d36](https://github.com/FelixJI/VibeTable/commit/8d11d364213d72c674c05578548464150f2fb629))
+
+## VibeTable 0.2.0
 
 - test: align release workflow contracts (`21009d3d`)
 - ci: harden PR and release workflows (`54a43183`)
