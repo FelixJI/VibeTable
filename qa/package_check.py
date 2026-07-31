@@ -170,14 +170,35 @@ def check_package(
             provider_artifact_hashes = _provider_artifact_hashes(root, package_archive)
         except CandidateError as exc:
             errors.append(f"release candidate identity is invalid: {exc}")
-    layout_path = root / "publish-layout.json"
+    root_entries = {path.name: path for path in root.iterdir()}
+    allowed_root_entries = {"VibeTable.Next.exe", "release.json", "resources"}
+    errors.extend(
+        f"unexpected package-root entry: {name}"
+        for name in sorted(root_entries.keys() - allowed_root_entries)
+    )
+    release_path = root / "release.json"
+    try:
+        release = json.loads(release_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        errors.append(f"invalid release.json: {exc}")
+        release = {}
+    expected = collect_release_versions(source_root)
+    expected_release = {
+        "product": "VibeTable",
+        "version": expected.app,
+        "platform": "windows",
+        "architecture": "x64",
+    }
+    if release != expected_release:
+        errors.append("release.json does not match the package identity")
+
+    layout_path = root / "resources" / "publish-layout.json"
     if not layout_path.is_file():
-        return ["missing publish-layout.json"]
+        return [*errors, "missing resources/publish-layout.json"]
     try:
         layout = json.loads(layout_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return [f"invalid publish-layout.json: {exc}"]
-    expected = collect_release_versions(source_root)
     if layout.get("protocolVersion") != "2.0":
         errors.append("package protocol version is not workspace v2")
     expected_formats = {
@@ -211,6 +232,7 @@ def check_package(
         "host executable": launch.get("host"),
         "backend executable": launch.get("backend"),
         "sidecar binary": launch.get("sidecar"),
+        "preview host": launch.get("previewHost"),
         "migration manifest": assets.get("migrations"),
         "build info": assets.get("buildInfo"),
         "sidecar checksum": assets.get("sidecarChecksum"),
@@ -383,7 +405,7 @@ def check_package(
             errors.append(f"{label} is not a Windows amd64 PE executable")
         provenance_item = provenance_tools.get(name)
         expected_provenance = {
-            "path": f"sidecar/tools/{name}",
+            "path": f"resources/sidecar/tools/{name}",
             "package": package,
             "module": module,
             "version": version,

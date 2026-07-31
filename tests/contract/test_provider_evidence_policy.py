@@ -115,7 +115,18 @@ def _release_artifacts(
     artifact = package_root / "app.bin"
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_bytes(content)
-    archive = root / "VibeTable.Next.zip"
+    (package_root / "release.json").write_text(
+        json.dumps(
+            {
+                "product": "VibeTable",
+                "version": "1.2.3",
+                "platform": "windows",
+                "architecture": "x64",
+            }
+        ),
+        encoding="utf-8",
+    )
+    archive = root / "VibeTable-v1.2.3-win-x64.zip"
     evidence = release_candidate.create_archive(package_root, archive)
     archive_evidence = evidence["archive"]
     assert isinstance(archive_evidence, dict)

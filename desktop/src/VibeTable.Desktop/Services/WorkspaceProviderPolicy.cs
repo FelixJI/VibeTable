@@ -200,13 +200,20 @@ public sealed class WorkspaceProviderPolicy
              current is not null;
              current = current.Parent)
         {
-            string direct = Path.Combine(
-                current.FullName,
-                "contracts",
-                "v2",
-                "provider-support.json");
-            if (File.Exists(direct))
-                return direct;
+            foreach (string relativeRoot in new[]
+                     {
+                         Path.Combine("resources", "contracts"),
+                         "contracts",
+                     })
+            {
+                string candidate = Path.Combine(
+                    current.FullName,
+                    relativeRoot,
+                    "v2",
+                    "provider-support.json");
+                if (File.Exists(candidate))
+                    return candidate;
+            }
         }
         return null;
     }

@@ -16,6 +16,7 @@ public sealed class BackendLaunchOptionsTests
             string host = Path.Combine(root, "publish");
             string backend = Path.Combine(
                 host,
+                "resources",
                 "backend",
                 "vibetable-backend.exe");
             Directory.CreateDirectory(Path.GetDirectoryName(backend)!);

@@ -11,7 +11,7 @@
 ```powershell
 .\.venv\Scripts\python.exe qa\next.py --ci `
   --package-root dist\VibeTable.Next `
-  --package-archive dist\VibeTable.Next.zip `
+  --package-archive dist\VibeTable-v0.2.0-win-x64.zip `
   --json-report .qa-next-summary.json
 ```
 
@@ -51,20 +51,23 @@ Windows 上的 Go race detector 需要启用 cgo，并使用包含
 PocketBase 的每个集成测试 app 会启动文件系统 watcher。为避免单一测试进程
 累计 watcher 并触发 Go 的 10 分钟测试超时，race 门会：
 
-1. 动态枚举 `go list ./...` 返回的全部包；
+1. 动态枚举 `go list ./...` 返回的全部包及其源码目录；
 2. 对每个包动态枚举 `Test`、`Example` 与默认执行的 `Fuzz` seed；
-3. Windows 上每个命名测试使用独立进程（仍为 `-race -count=1`），包括
-   migrations 与 integration，避免 PocketBase 异步 watcher 与同一测试二进制
-   中后续测试的 `TempDir` 清理相互干扰；没有命名测试的包也会单独执行
-   `go test -race`；
-4. 将 1,000/10,000/25,000 行压力测试各自放入独立进程，并给予更长但有界的
+3. 每个包只用 `go test -c -race` 编译一次；最多两个包并行，不同包可以并行，
+   同一包内仍逐测试串行；
+4. Windows 上每个命名测试使用编译后 race 二进制的独立进程（仍为
+   `-test.count=1 -test.parallel=1`），包括 migrations 与 integration，避免
+   PocketBase 异步 watcher 与同一测试进程中的后续测试互相影响；包完成后立即
+   删除其临时测试二进制；
+5. 没有命名测试的包仍单独执行 `go test -race`；
+6. 将 1,000/10,000/25,000 行压力测试各自放入独立进程，并给予更长但有界的
    超时；
-5. 任一批次失败、发生数据竞争、超时或枚举到零测试时立即失败。
+7. 任一批次失败、发生数据竞争、超时或枚举到零测试时立即失败。
 
 这只是隔离测试进程资源，不会关闭 race detector，也不会忽略任何测试。
 Windows 偶发的 PocketBase watcher 与 Go `TempDir` 删除竞争只允许对完全相同的
-race 命令重试一次；识别条件严格限定为 `testing.go` 的 “directory is not
-empty” 清理诊断。出现 `WARNING: DATA RACE`、panic、业务断言或第二次仍失败时
+race 命令最多重试两次；识别条件严格限定为 `testing.go` 的 “directory is not
+empty” 清理诊断。出现 `WARNING: DATA RACE`、panic、业务断言或第三次仍失败时
 一律失败。
 
 ## Fault injection

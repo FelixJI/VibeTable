@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -156,9 +157,15 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
         "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
         "sha256": digest,
     }
-    assert manifest["launch"]["sidecar"] == "sidecar/vibetable-pb.exe"
-    assert manifest["assets"]["migrations"] == "sidecar/migrations/manifest.json"
-    assert manifest["assets"]["sbom"] == "sidecar/sbom.cdx.json"
+    assert manifest["launch"] == {
+        "host": "VibeTable.Next.exe",
+        "backend": "resources/backend/vibetable-backend.exe",
+        "webGrid": "resources/web-grid",
+        "sidecar": "resources/sidecar/vibetable-pb.exe",
+        "previewHost": "VibeTable.Next.exe",
+    }
+    assert manifest["assets"]["migrations"] == "resources/sidecar/migrations/manifest.json"
+    assert manifest["assets"]["sbom"] == "resources/sidecar/sbom.cdx.json"
     assert manifest["data"] == {
         "shellRoot": "%LOCALAPPDATA%/VibeTable/shell",
         "managedWorkspaceRoot": ("%LOCALAPPDATA%/VibeTable/shell/workspaces/<workspaceId>"),
@@ -166,12 +173,12 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
         "workspaceIdentity": "manifest-uuid",
         "preserveOnUninstall": True,
     }
-    assert manifest["assets"]["recoveryGuide"] == "RECOVERY.md"
-    assert manifest["assets"]["workspaceContracts"] == "contracts/v2"
+    assert manifest["assets"]["recoveryGuide"] == "resources/RECOVERY.md"
+    assert manifest["assets"]["workspaceContracts"] == "resources/contracts/v2"
     assert manifest["assets"]["recoveryTools"] == {
-        "kopia": "sidecar/tools/kopia.exe",
-        "age": "sidecar/tools/age.exe",
-        "ageKeygen": "sidecar/tools/age-keygen.exe",
+        "kopia": "resources/sidecar/tools/kopia.exe",
+        "age": "resources/sidecar/tools/age.exe",
+        "ageKeygen": "resources/sidecar/tools/age-keygen.exe",
     }
     assert manifest["formats"] == {
         "workspace": 1,
@@ -184,6 +191,21 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
     assert "".join(["di", "rectus"]) not in encoded
     assert "node_modules" not in encoded
     assert "npm" not in encoded
+
+
+def test_desktop_publish_is_single_file_without_satellite_language_directories() -> None:
+    paths = build_next.RepoPaths.default(REPO_ROOT)
+    command = build_next.build_dotnet_publish_command(paths)
+
+    assert "-p:PublishSingleFile=true" in command
+    assert "-p:IncludeNativeLibrariesForSelfExtract=true" in command
+    assert "-p:EnableCompressionInSingleFile=true" in command
+    assert "-p:DebugSymbols=false" in command
+    assert "-p:SatelliteResourceLanguages=en-US" in command
+
+
+def test_release_archive_name_contains_version_platform_and_architecture() -> None:
+    assert build_next.release_archive_name("1.2.3") == "VibeTable-v1.2.3-win-x64.zip"
 
 
 def test_sidecar_build_is_trimmed_reproducible_and_version_stamped() -> None:
@@ -289,7 +311,7 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
     stage.host_exe.parent.mkdir(parents=True)
     stage.host_exe.write_bytes(b"host")
     backend = stage.backend_dir / build_next.BACKEND_EXE_NAME
-    backend.parent.mkdir()
+    backend.parent.mkdir(parents=True)
     backend.write_bytes(b"backend")
     stage.web_grid_publish_dir.mkdir()
     (stage.web_grid_publish_dir / "index.html").write_text(
@@ -324,7 +346,7 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
         build_info=_release_build_info(),
         modules=modules,
     )
-    desktop_contracts = stage.publish_root / "contracts" / "v2"
+    desktop_contracts = stage.resources_dir / "contracts" / "v2"
     desktop_contracts.mkdir(parents=True)
     (desktop_contracts / "provider-support.json").write_text(
         "{}",
@@ -336,9 +358,10 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
     ).read_bytes()
     shutil.copy2(
         REPO_ROOT / "docs" / "RECOVERY.md",
-        stage.publish_root / "RECOVERY.md",
+        stage.resources_dir / "RECOVERY.md",
     )
     build_next.write_manifest(stage)
+    build_next.write_release_manifest(stage)
     lock = build_next.load_recovery_tool_lock(REPO_ROOT)
 
     def go_metadata(_go: str, path: Path) -> dict[str, object]:
@@ -366,7 +389,7 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
 
     assert not any(
         path.name == "__pycache__" or path.suffix == ".pyc"
-        for path in (stage.publish_root / "contracts" / "v2").rglob("*")
+        for path in (stage.resources_dir / "contracts" / "v2").rglob("*")
     )
     assert check_package(stage.publish_root) == []
 
@@ -376,7 +399,7 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
         json.dumps(layout),
         encoding="utf-8",
     )
-    cache = stage.publish_root / "contracts" / "v2" / "__pycache__"
+    cache = stage.resources_dir / "contracts" / "v2" / "__pycache__"
     cache.mkdir()
     (cache / "generator.pyc").write_bytes(b"cache")
     errors = check_package(stage.publish_root)
@@ -427,12 +450,27 @@ def test_release_candidate_report_binds_the_exact_package_tree_and_archive(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "VibeTable.Next"
-    (package_root / "sidecar").mkdir(parents=True)
+    (package_root / "resources" / "sidecar").mkdir(parents=True)
     (package_root / "VibeTable.Next.exe").write_bytes(b"host")
-    (package_root / "sidecar" / "vibetable-pb.exe").write_bytes(b"sidecar")
-    archive = tmp_path / "VibeTable.Next.zip"
+    (package_root / "resources" / "sidecar" / "vibetable-pb.exe").write_bytes(b"sidecar")
+    (package_root / "release.json").write_text(
+        json.dumps(
+            {
+                "product": "VibeTable",
+                "version": "1.2.3",
+                "platform": "windows",
+                "architecture": "x64",
+            }
+        ),
+        encoding="utf-8",
+    )
+    archive = tmp_path / "VibeTable-v1.2.3-win-x64.zip"
 
     evidence = release_candidate.create_archive(package_root, archive)
+    assert evidence["archive"]["rootDirectory"] == "VibeTable"
+    with zipfile.ZipFile(archive) as created:
+        assert created.namelist()
+        assert all(name.startswith("VibeTable/") for name in created.namelist())
     report = tmp_path / "release-eligibility.json"
     report.write_text(
         json.dumps({"releaseEligible": True, "releaseCandidate": evidence}),
@@ -443,6 +481,16 @@ def test_release_candidate_report_binds_the_exact_package_tree_and_archive(
     (package_root / "VibeTable.Next.exe").write_bytes(b"changed")
     with pytest.raises(release_candidate.CandidateError, match="no longer matches"):
         release_candidate.verify_eligibility_report(package_root, archive, report)
+
+
+def test_release_candidate_rejects_an_extra_top_level_directory(tmp_path: Path) -> None:
+    archive = tmp_path / "VibeTable-v1.2.3-win-x64.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("VibeTable/app.bin", b"app")
+        output.writestr("unexpected/", b"")
+
+    with pytest.raises(release_candidate.CandidateError, match="top-level directory"):
+        release_candidate.archive_tree(archive)
 
 
 def test_upgrade_backup_is_outside_install_and_failure_keeps_old_binary(
@@ -543,7 +591,11 @@ def test_release_workflow_supports_scheduled_and_manual_patch_releases() -> None
     )
     assert "qa/next.py --ci" in workflow
     assert "--package-root dist/VibeTable.Next" in workflow
-    assert "--package-archive dist/VibeTable.Next.zip" in workflow
+    assert (
+        "PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip"
+        in workflow
+    )
+    assert "--package-archive $env:PACKAGE_ARCHIVE" in workflow
     assert "--json-report build/qa/release-eligibility.json" in workflow
     assert "Upload release eligibility evidence" in workflow
     assert workflow.index("Build immutable release candidate") < workflow.index(

@@ -14,8 +14,9 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 TREE_DOMAIN = b"vibetable.release-candidate.tree.v1\0"
+ARCHIVE_ROOT_NAME = "VibeTable"
 
 
 class CandidateError(RuntimeError):
@@ -70,30 +71,62 @@ def archive_tree(path: Path) -> tuple[str, int]:
         raise CandidateError(f"release candidate archive is missing: {path}")
     entries: list[tuple[str, int, str]] = []
     with zipfile.ZipFile(path) as archive:
-        infos = [item for item in archive.infolist() if not item.is_dir()]
+        infos = archive.infolist()
         names = [item.filename for item in infos]
         if len(names) != len(set(names)):
             raise CandidateError("release candidate archive contains duplicate entries")
         for item in sorted(infos, key=lambda value: value.filename):
-            relative = PurePosixPath(item.filename)
-            if relative.is_absolute() or ".." in relative.parts or "\\" in item.filename:
+            archived = PurePosixPath(item.filename)
+            if archived.is_absolute() or ".." in archived.parts or "\\" in item.filename:
                 raise CandidateError(f"unsafe release candidate archive entry: {item.filename}")
+            if len(archived.parts) < 2 or archived.parts[0] != ARCHIVE_ROOT_NAME:
+                raise CandidateError(
+                    "release candidate archive must contain only the "
+                    f"{ARCHIVE_ROOT_NAME}/ top-level directory"
+                )
+            relative = PurePosixPath(*archived.parts[1:])
             if stat.S_ISLNK((item.external_attr >> 16) & 0xFFFF):
                 raise CandidateError(
                     f"release candidate archive contains a symlink: {item.filename}"
                 )
+            if item.is_dir():
+                continue
             with archive.open(item) as stream:
                 content_hash = _sha256_stream(stream)
-            entries.append((item.filename, item.file_size, content_hash))
+            entries.append((relative.as_posix(), item.file_size, content_hash))
     if not entries:
         raise CandidateError("release candidate archive contains no files")
     return _tree_digest(entries)
+
+
+def _expected_archive_name(root: Path) -> str:
+    release_manifest = root / "release.json"
+    try:
+        identity = json.loads(release_manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CandidateError(f"release identity is invalid: {exc}") from exc
+    if (
+        identity.get("product") != "VibeTable"
+        or identity.get("platform") != "windows"
+        or identity.get("architecture") != "x64"
+        or not isinstance(identity.get("version"), str)
+        or not identity["version"]
+    ):
+        raise CandidateError("release identity is incomplete")
+    return f"VibeTable-v{identity['version']}-win-x64.zip"
+
+
+def _verify_archive_name(root: Path, archive: Path) -> None:
+    expected = _expected_archive_name(root)
+    if archive.name != expected:
+        raise CandidateError(f"release archive must be named {expected}, got {archive.name}")
 
 
 def create_archive(package_root: Path, archive_path: Path) -> dict[str, object]:
     root = package_root.resolve()
     tree_hash, file_count = package_tree(root)
     archive = archive_path.resolve()
+    _verify_archive_name(root, archive)
     archive.parent.mkdir(parents=True, exist_ok=True)
     temporary = archive.with_name(archive.name + ".tmp")
     if temporary.exists():
@@ -110,7 +143,8 @@ def create_archive(package_root: Path, archive_path: Path) -> dict[str, object]:
                 if not path.is_file():
                     continue
                 relative = path.relative_to(root).as_posix()
-                info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
+                archived = f"{ARCHIVE_ROOT_NAME}/{relative}"
+                info = zipfile.ZipInfo(archived, date_time=(1980, 1, 1, 0, 0, 0))
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.create_system = 3
                 mode = 0o755 if path.suffix.casefold() == ".exe" else 0o644
@@ -134,6 +168,7 @@ def create_archive(package_root: Path, archive_path: Path) -> dict[str, object]:
 def candidate_evidence(package_root: Path, archive_path: Path) -> dict[str, object]:
     root = package_root.resolve()
     archive = archive_path.resolve()
+    _verify_archive_name(root, archive)
     package_hash, package_files = package_tree(root)
     archived_hash, archived_files = archive_tree(archive)
     if archived_hash != package_hash or archived_files != package_files:
@@ -152,6 +187,7 @@ def candidate_evidence(package_root: Path, archive_path: Path) -> dict[str, obje
         "packageFileCount": package_files,
         "archive": {
             "name": archive.name,
+            "rootDirectory": ARCHIVE_ROOT_NAME,
             "sha256": archive_hash,
             "size": archive.stat().st_size,
             "treeSha256": archived_hash,

@@ -28,28 +28,29 @@
   },
   "launch": {
     "host": "VibeTable.Next.exe",
-    "backend": "backend/vibetable-backend.exe",
-    "webGrid": "web-grid",
-    "sidecar": "sidecar/vibetable-pb.exe"
+    "backend": "resources/backend/vibetable-backend.exe",
+    "webGrid": "resources/web-grid",
+    "sidecar": "resources/sidecar/vibetable-pb.exe",
+    "previewHost": "VibeTable.Next.exe"
   },
   "assets": {
-    "migrations": "sidecar/migrations/manifest.json",
-    "buildInfo": "sidecar/build-info.json",
-    "sidecarChecksum": "sidecar/vibetable-pb.exe.sha256",
-    "licenses": "sidecar/THIRD_PARTY_LICENSES.txt",
-    "sbom": "sidecar/sbom.cdx.json",
-    "recoveryToolProvenance": "sidecar/recovery-tools.provenance.json",
-    "recoveryGuide": "RECOVERY.md",
-    "workspaceContracts": "contracts/v2",
+    "migrations": "resources/sidecar/migrations/manifest.json",
+    "buildInfo": "resources/sidecar/build-info.json",
+    "sidecarChecksum": "resources/sidecar/vibetable-pb.exe.sha256",
+    "licenses": "resources/sidecar/THIRD_PARTY_LICENSES.txt",
+    "sbom": "resources/sidecar/sbom.cdx.json",
+    "recoveryToolProvenance": "resources/sidecar/recovery-tools.provenance.json",
+    "recoveryGuide": "resources/RECOVERY.md",
+    "workspaceContracts": "resources/contracts/v2",
     "recoveryTools": {
-      "kopia": "sidecar/tools/kopia.exe",
-      "age": "sidecar/tools/age.exe",
-      "ageKeygen": "sidecar/tools/age-keygen.exe"
+      "kopia": "resources/sidecar/tools/kopia.exe",
+      "age": "resources/sidecar/tools/age.exe",
+      "ageKeygen": "resources/sidecar/tools/age-keygen.exe"
     },
     "recoveryToolChecksums": {
-      "kopia": "sidecar/tools/kopia.exe.sha256",
-      "age": "sidecar/tools/age.exe.sha256",
-      "ageKeygen": "sidecar/tools/age-keygen.exe.sha256"
+      "kopia": "resources/sidecar/tools/kopia.exe.sha256",
+      "age": "resources/sidecar/tools/age.exe.sha256",
+      "ageKeygen": "resources/sidecar/tools/age-keygen.exe.sha256"
     }
   },
   "formats": {

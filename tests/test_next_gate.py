@@ -3,7 +3,9 @@ from __future__ import annotations
 import io
 import json
 import subprocess
+import threading
 import xml.etree.ElementTree as ET
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -15,7 +17,18 @@ def _candidate_args(tmp_path: Path) -> list[str]:
     package_root = tmp_path / "VibeTable.Next"
     package_root.mkdir()
     (package_root / "candidate.bin").write_bytes(b"candidate")
-    archive = tmp_path / "VibeTable.Next.zip"
+    (package_root / "release.json").write_text(
+        json.dumps(
+            {
+                "product": "VibeTable",
+                "version": "1.2.3",
+                "platform": "windows",
+                "architecture": "x64",
+            }
+        ),
+        encoding="utf-8",
+    )
+    archive = tmp_path / "VibeTable-v1.2.3-win-x64.zip"
     next_gate.release_candidate.create_archive(package_root, archive)
     return [
         "--package-root",
@@ -105,7 +118,7 @@ def test_package_stage_binds_provider_evidence_to_the_release_archive(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "VibeTable.Next"
-    archive = tmp_path / "VibeTable.Next.zip"
+    archive = tmp_path / "VibeTable-v1.2.3-win-x64.zip"
 
     command, cwd = next_gate.stage_command("package", package_root, archive)
 
@@ -235,19 +248,19 @@ def test_packaged_recovery_tools_are_injected_into_go_interoperability_stages(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "VibeTable.Next"
-    kopia = package_root / "sidecar/tools/kopia.exe"
-    age = package_root / "sidecar/tools/age.exe"
+    kopia = package_root / "resources/sidecar/tools/kopia.exe"
+    age = package_root / "resources/sidecar/tools/age.exe"
     kopia.parent.mkdir(parents=True)
     kopia.touch()
     age.touch()
-    (package_root / "publish-layout.json").write_text(
+    (package_root / "resources/publish-layout.json").write_text(
         json.dumps(
             {
                 "assets": {
                     "recoveryTools": {
-                        "kopia": "sidecar/tools/kopia.exe",
-                        "age": "sidecar/tools/age.exe",
-                        "ageKeygen": "sidecar/tools/age-keygen.exe",
+                        "kopia": "resources/sidecar/tools/kopia.exe",
+                        "age": "resources/sidecar/tools/age.exe",
+                        "ageKeygen": "resources/sidecar/tools/age-keygen.exe",
                     }
                 }
             }
@@ -281,17 +294,31 @@ def test_release_gate_enables_required_windows_credential_manager_tests() -> Non
     assert "VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY" in gate_step
 
 
-def test_race_stage_batches_every_discovered_integration_test(
+def test_release_workflow_runs_each_python_and_web_suite_once_in_the_complete_gate() -> None:
+    workflow = (next_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    publish_job = workflow.split("  publish:", maxsplit=1)[1]
+
+    assert "- name: Run complete release eligibility gate" in publish_job
+    assert "- name: Verify eligibility is bound to the immutable candidate" in publish_job
+    assert "- name: Verify Python, contracts, and release tooling" not in publish_job
+    assert "- name: Verify web grid" not in publish_job
+
+
+def test_race_stage_compiles_each_package_once_and_runs_every_test_in_isolation(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
-    observed: list[list[str]] = []
+    observed: list[tuple[list[str], str, int]] = []
     names = [f"TestCase{index}" for index in range(17)]
+    package_dir = tmp_path / "integration"
+    package_dir.mkdir()
+    monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", tmp_path / "race-binaries", raising=False)
 
     def fake_command(command, *, cwd, environment, timeout):
-        del cwd, environment, timeout
-        observed.append(command)
-        if command[1:3] == ["list", "./..."]:
-            return 0, "example/tests/integration\n", ""
+        del environment
+        observed.append((command, cwd, timeout))
+        if command[1] == "list" and command[-1] == "./...":
+            return 0, f"example/tests/integration\t{package_dir}\n", ""
         if "-list" in command:
             return 0, "\n".join(names) + "\nok\tpackage\n", ""
         return 0, "ok\n", ""
@@ -303,30 +330,44 @@ def test_race_stage_batches_every_discovered_integration_test(
     )
 
     assert code == 0
-    race_batches = [
-        command
-        for command in observed
-        if "example/tests/integration" in command and "-race" in command
+    compile_commands = [
+        command for command, _cwd, _timeout in observed if command[1:4] == ["test", "-c", "-race"]
     ]
-    assert len(race_batches) == len(names)
-    covered = set()
-    for command in race_batches:
-        pattern = command[command.index("-run") + 1]
-        covered.update(name for name in names if name in pattern)
-    assert covered == set(names)
+    assert len(compile_commands) == 1
+    assert compile_commands[0][-1] == "example/tests/integration"
+
+    test_runs = [
+        (command, cwd)
+        for command, cwd, _timeout in observed
+        if any(argument.startswith("-test.run=") for argument in command)
+    ]
+    assert len(test_runs) == len(names)
+    assert {
+        argument.removeprefix("-test.run=^").removesuffix("$")
+        for command, _cwd in test_runs
+        for argument in command
+        if argument.startswith("-test.run=")
+    } == set(names)
+    assert all(cwd == str(package_dir) for _command, cwd in test_runs)
+    assert all("-test.count=1" in command for command, _cwd in test_runs)
+    assert all("-test.parallel=1" in command for command, _cwd in test_runs)
 
 
 def test_known_slow_race_tests_run_individually_with_long_timeout(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
     observed: list[tuple[list[str], int]] = []
     slow = sorted(next_gate.RACE_LONG_TESTS)
+    package_dir = tmp_path / "integration"
+    package_dir.mkdir()
+    monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", tmp_path / "race-binaries", raising=False)
 
     def fake_command(command, *, cwd, environment, timeout):
         del cwd, environment
         observed.append((command, timeout))
-        if command[1:3] == ["list", "./..."]:
-            return 0, "example/tests/integration\n", ""
+        if command[1] == "list" and command[-1] == "./...":
+            return 0, f"example/tests/integration\t{package_dir}\n", ""
         if "-list" in command:
             return 0, "\n".join([*slow, "TestRegular"]) + "\nok\tpackage\n", ""
         return 0, "ok\n", ""
@@ -340,14 +381,18 @@ def test_known_slow_race_tests_run_individually_with_long_timeout(
     assert code == 0
     for name in slow:
         matching = [
-            (command, timeout)
-            for command, timeout in observed
-            if "-run" in command and command[command.index("-run") + 1] == f"^{name}$"
+            (command, timeout) for command, timeout in observed if f"-test.run=^{name}$" in command
         ]
         assert len(matching) == 1
         command, timeout = matching[0]
-        assert f"-timeout={next_gate.RACE_LONG_TEST_TIMEOUT}" in command
+        assert f"-test.timeout={next_gate.RACE_LONG_TEST_TIMEOUT}" in command
         assert timeout == next_gate.RACE_LONG_COMMAND_TIMEOUT_SECONDS
+    regular = [
+        (command, timeout) for command, timeout in observed if "-test.run=^TestRegular$" in command
+    ]
+    assert len(regular) == 1
+    assert "-test.timeout=5m" in regular[0][0]
+    assert regular[0][1] == next_gate.RACE_COMMAND_TIMEOUT_SECONDS
 
 
 def test_formula_backfill_scale_retains_capacity_and_bounds_race_cost() -> None:
@@ -366,14 +411,27 @@ def test_formula_backfill_scale_retains_capacity_and_bounds_race_cost() -> None:
 
 def test_race_stage_isolates_named_tests_in_every_package(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
-    observed: list[list[str]] = []
+    observed: list[tuple[list[str], str]] = []
+    migration_dir = tmp_path / "migrations"
+    integration_dir = tmp_path / "integration"
+    migration_dir.mkdir()
+    integration_dir.mkdir()
+    monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", tmp_path / "race-binaries", raising=False)
 
     def fake_command(command, *, cwd, environment, timeout):
-        del cwd, environment, timeout
-        observed.append(command)
-        if command[1:3] == ["list", "./..."]:
-            return 0, "example/migrations\nexample/tests/integration\n", ""
+        del environment, timeout
+        observed.append((command, cwd))
+        if command[1] == "list" and command[-1] == "./...":
+            return (
+                0,
+                (
+                    f"example/migrations\t{migration_dir}\n"
+                    f"example/tests/integration\t{integration_dir}\n"
+                ),
+                "",
+            )
         if "-list" in command:
             package = command[2]
             prefix = "Migration" if package.endswith("migrations") else "Integration"
@@ -387,14 +445,184 @@ def test_race_stage_isolates_named_tests_in_every_package(
     )
 
     assert code == 0
-    race_commands = [command for command in observed if "-race" in command]
-    assert len(race_commands) == 4
-    assert {(command[command.index("-run") + 1], command[-3]) for command in race_commands} == {
-        ("^TestMigrationOne$", "example/migrations"),
-        ("^TestMigrationTwo$", "example/migrations"),
-        ("^TestIntegrationOne$", "example/tests/integration"),
-        ("^TestIntegrationTwo$", "example/tests/integration"),
+    compile_commands = [
+        command for command, _cwd in observed if command[1:4] == ["test", "-c", "-race"]
+    ]
+    assert len(compile_commands) == 2
+    assert {command[-1] for command in compile_commands} == {
+        "example/migrations",
+        "example/tests/integration",
     }
+    test_runs = [
+        (command, cwd)
+        for command, cwd in observed
+        if any(argument.startswith("-test.run=") for argument in command)
+    ]
+    assert len(test_runs) == 4
+    assert {
+        (
+            next(argument for argument in command if argument.startswith("-test.run=")),
+            cwd,
+        )
+        for command, cwd in test_runs
+    } == {
+        ("-test.run=^TestMigrationOne$", str(migration_dir)),
+        ("-test.run=^TestMigrationTwo$", str(migration_dir)),
+        ("-test.run=^TestIntegrationOne$", str(integration_dir)),
+        ("-test.run=^TestIntegrationTwo$", str(integration_dir)),
+    }
+
+
+def test_race_stage_runs_packages_in_parallel_but_tests_within_each_package_serially(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    third_dir = tmp_path / "third"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    third_dir.mkdir()
+    monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", tmp_path / "race-binaries")
+    monkeypatch.setattr(next_gate, "RACE_PACKAGE_WORKERS", 2, raising=False)
+    barrier = threading.Barrier(2)
+    lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+    active_by_cwd: dict[str, int] = {}
+    maximum_by_cwd: dict[str, int] = {}
+    observed: list[tuple[list[str], str]] = []
+    maximum_binaries = 0
+
+    def fake_command(command, *, cwd, environment, timeout):
+        nonlocal active, maximum_active, maximum_binaries
+        del environment, timeout
+        with lock:
+            observed.append((command, cwd))
+        if command[1] == "list" and command[-1] == "./...":
+            return (
+                0,
+                (
+                    f"example/first\t{first_dir}\n"
+                    f"example/second\t{second_dir}\n"
+                    f"example/third\t{third_dir}\n"
+                ),
+                "",
+            )
+        if "-list" in command:
+            return 0, "TestOne\nTestTwo\nok\tpackage\n", ""
+        if command[1:4] == ["test", "-c", "-race"]:
+            binary = Path(command[command.index("-o") + 1])
+            binary.touch()
+            with lock:
+                maximum_binaries = max(
+                    maximum_binaries,
+                    len(list(next_gate.RACE_BINARY_DIR.glob("package-*"))),
+                )
+            return 0, "", ""
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+            active_by_cwd[cwd] = active_by_cwd.get(cwd, 0) + 1
+            maximum_by_cwd[cwd] = max(
+                maximum_by_cwd.get(cwd, 0),
+                active_by_cwd[cwd],
+            )
+        try:
+            if cwd != str(third_dir):
+                with suppress(threading.BrokenBarrierError):
+                    barrier.wait(timeout=0.5)
+        finally:
+            with lock:
+                active -= 1
+                active_by_cwd[cwd] -= 1
+        return 0, "ok\n", ""
+
+    monkeypatch.setattr(next_gate, "_run_command", fake_command)
+
+    code, _stdout, _stderr = next_gate._run_go_race(
+        cwd=str(next_gate.SIDECAR_DIR),
+        environment={},
+    )
+
+    assert code == 0
+    assert maximum_active == 2
+    assert maximum_by_cwd == {
+        str(first_dir): 1,
+        str(second_dir): 1,
+        str(third_dir): 1,
+    }
+    compile_indices = {
+        command[command.index("-o") + 1]: index
+        for index, (command, _cwd) in enumerate(observed)
+        if command[1:4] == ["test", "-c", "-race"]
+    }
+    assert len(compile_indices) == 3
+    for index, (command, _cwd) in enumerate(observed):
+        if any(argument.startswith("-test.run=") for argument in command):
+            assert compile_indices[command[0]] < index
+    assert maximum_binaries <= next_gate.RACE_PACKAGE_WORKERS
+    assert not list(next_gate.RACE_BINARY_DIR.glob("package-*"))
+
+
+def test_compiled_race_test_retries_only_the_known_windows_cleanup_flake(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(next_gate.os, "name", "nt")
+    calls = 0
+    cleanup = (
+        "--- FAIL: TestExample\n"
+        "    testing.go:1464: TempDir RemoveAll cleanup: unlinkat path: "
+        "The directory is not empty.\n"
+    )
+
+    def fake_command(command, *, cwd, environment, timeout):
+        nonlocal calls
+        del command, cwd, environment, timeout
+        calls += 1
+        if calls == 1:
+            return 1, cleanup, ""
+        return 0, "ok\n", ""
+
+    monkeypatch.setattr(next_gate, "_run_command", fake_command)
+    stop_event = threading.Event()
+
+    code, stdout, _stderr = next_gate._run_race_package(
+        [(["race.test.exe", "-test.run=^TestExample$"], 60, "package")],
+        environment={},
+        stop_event=stop_event,
+    )
+
+    assert code == 0
+    assert calls == 2
+    assert "attempt 2/3" in "\n".join(stdout)
+    assert not stop_event.is_set()
+
+
+def test_compiled_race_test_never_retries_a_real_data_race(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(next_gate.os, "name", "nt")
+    calls = 0
+
+    def fake_command(command, *, cwd, environment, timeout):
+        nonlocal calls
+        del command, cwd, environment, timeout
+        calls += 1
+        return 66, "WARNING: DATA RACE\n", ""
+
+    monkeypatch.setattr(next_gate, "_run_command", fake_command)
+    stop_event = threading.Event()
+
+    code, _stdout, _stderr = next_gate._run_race_package(
+        [(["race.test.exe", "-test.run=^TestExample$"], 60, "package")],
+        environment={},
+        stop_event=stop_event,
+    )
+
+    assert code == 66
+    assert calls == 1
+    assert stop_event.is_set()
 
 
 def test_windows_tempdir_cleanup_retry_never_matches_data_race(
