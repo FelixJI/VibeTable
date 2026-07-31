@@ -1,6 +1,10 @@
 {
   "entries": [
     {
+      "subject": "feat(release): streamline Windows package delivery",
+      "commit": "92afc2e4"
+    },
+    {
       "subject": "fix(release): stabilize workspace creation gate",
       "commit": "c3e4c111"
     },
