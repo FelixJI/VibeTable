@@ -200,6 +200,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Require every CI job
+        shell: bash
         env:
           PYTHON_RESULT: ${{ needs.python.result }}
           WEB_RESULT: ${{ needs.web.result }}
