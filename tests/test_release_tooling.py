@@ -566,9 +566,9 @@ def test_release_preflight_rejects_dirty_or_untracked_worktree(
 
 def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-    release_please = (
-        REPO_ROOT / ".github" / "workflows" / "release-please.yml"
-    ).read_text(encoding="utf-8")
+    release_please = (REPO_ROOT / ".github" / "workflows" / "release-please.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "workflow_dispatch:" in workflow
     assert "release_tag:" in workflow
