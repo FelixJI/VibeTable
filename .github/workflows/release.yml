@@ -1,6 +1,8 @@
 name: Build Release Assets
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -21,6 +23,7 @@ defaults:
 
 jobs:
   build:
+    if: github.event_name == 'workflow_dispatch'
     name: Build and upload Windows package
     runs-on: windows-latest
     timeout-minutes: 120
@@ -156,3 +159,24 @@ jobs:
             $env:PACKAGE_ARCHIVE `
             "$env:PACKAGE_ARCHIVE.sha256" `
             --clobber
+
+  cleanup:
+    name: Keep recent published Releases
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Keep the five most recent published Releases
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
+            --json databaseId,tagName,isDraft,publishedAt \
+            --jq 'map(select(.isDraft == false and .publishedAt != null)) | sort_by(.publishedAt) | reverse | .[5:][] | [.databaseId, .tagName] | @tsv' |
+          while IFS=$'\t' read -r release_id tag_name; do
+            echo "Deleting old Release ${tag_name}; the git tag is retained."
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+          done
