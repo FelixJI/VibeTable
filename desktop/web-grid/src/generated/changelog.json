@@ -1,6 +1,10 @@
 {
   "entries": [
     {
+      "subject": "test: align release workflow contracts",
+      "commit": "21009d3d"
+    },
+    {
       "subject": "ci: harden PR and release workflows",
       "commit": "54a43183"
     },
