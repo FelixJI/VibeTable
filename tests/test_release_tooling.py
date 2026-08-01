@@ -26,6 +26,7 @@ from scripts.versioning import (
     collect_release_versions,
     read_project_version,
     update_versions,
+    validate_version,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +44,11 @@ def _write_recovery_tools(paths: build_next.RepoPaths) -> None:
         payload[0x80:0x84] = b"PE\0\0"
         payload[0x84:0x86] = (0x8664).to_bytes(2, "little")
         tool.write_bytes(payload)
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    """Parse a MAJOR.MINOR.PATCH version into a comparable tuple."""
+    return tuple(int(part) for part in validate_version(value).split("."))
 
 
 def _release_build_info() -> dict[str, str]:
@@ -616,7 +622,11 @@ def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> No
     assert "RELEASE_PR: ${{ steps.release.outputs.pr }}" in release_please
     assert "python scripts/changelog.py --write" in release_please
     assert "desktop/web-grid/src/generated/changelog.json" in release_please
-    assert release_request["requested-version"] == release_manifest["."]
+    # release-request.json records the next version a Release PR targets, so it
+    # leads .release-please-manifest.json until the Release PR lands the bump.
+    assert _version_tuple(release_request["requested-version"]) >= _version_tuple(
+        release_manifest["."]
+    )
     assert release_config["packages"]["."]["skip-changelog"] is True
     assert "--generate-notes" not in workflow
     assert "RELEASE_TAG: ${{ inputs.release_tag }}" in workflow
