@@ -13,6 +13,7 @@ import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { useUiStore } from "@/stores/uiStore";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { usePasteStore } from "@/stores/pasteStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useTableStore } from "@/stores/tableStore";
@@ -169,6 +170,31 @@ describe("WorkspaceView", () => {
     const wrapper = mountView();
     await flushPromises();
     expect(wrapper.find(".workspace").exists()).toBe(true);
+  });
+
+  it("lets navigation leave the workspace center before a workspace is open", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    useWorkspaceSessionStore().configureCapabilities(["workspace.session.v2"]);
+    const wrapper = mountView();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="workspace-center"]').exists()).toBe(true);
+
+    await wrapper.get('[data-testid="nav-settings"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="workspace-center"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="settings-view"]').isVisible()).toBe(true);
+
+    await wrapper.get('[data-testid="nav-files"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="workspace-center"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="file-workspace"]').exists()).toBe(true);
+
+    await wrapper.get('[data-testid="nav-tables"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="workspace-center"]').exists()).toBe(false);
+    expect(wrapper.get(".tables-view").isVisible()).toBe(true);
   });
 
   it("shows a localized non-blocking recovery path for stale edits", async () => {

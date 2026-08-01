@@ -143,6 +143,57 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it("keeps a native-picker workspace request beyond the ordinary RPC timeout", async () => {
+    vi.useFakeTimers();
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 30_000,
+      generateRequestId: () => "workspace-picker-1",
+    });
+    bridge.start();
+    const wire = {
+      scope: "global" as const,
+      operationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      sequence: 1,
+    };
+
+    const pending = bridge.request("workspace.v2.request", {
+      method: "workspace.create",
+      params: {
+        displayName: "自选位置",
+        locationPolicy: "other",
+        selectedRootGrant: "host-picker://workspace-root",
+        storageMode: "direct",
+        encryptionMode: "convenient",
+        userMarkedSync: false,
+      },
+      wire,
+    });
+    let settled = false;
+    void pending.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(settled).toBe(false);
+
+    const reply = {
+      method: "workspace.create",
+      wire,
+      ok: true,
+      result: { workspaceId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", status: "created" },
+      error: null,
+    };
+    webview.emit({
+      type: "workspace.v2.response",
+      requestId: "workspace-picker-1",
+      payload: reply,
+    });
+    await expect(pending).resolves.toEqual(reply);
+    bridge.stop();
+  });
+
   it("adds a strictly scoped workspace envelope to legacy product requests", async () => {
     const session = useWorkspaceSessionStore();
     session.configureCapabilities(["workspace.session.v2"]);
