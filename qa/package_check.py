@@ -28,7 +28,6 @@ from scripts.build_next import (
     resolve_go,
     sha256_file,
 )
-from scripts.changelog import check_changelog
 from scripts.versioning import check_versions, collect_release_versions
 
 FORBIDDEN_LEGACY_PROVIDER = "".join(["di", "rectus"])
@@ -73,7 +72,10 @@ def check_source(root: Path = PROJECT_ROOT) -> list[str]:
         for path in required
         if not path.is_file()
     )
-    errors.extend(check_changelog(root, collect_release_versions(root).app))
+    # Changelog freshness is intentionally not enforced here: release-please
+    # regenerates CHANGELOG.md and the generated JSON via `scripts/changelog.py
+    # --write` when it opens the Release PR. Forcing per-PR freshness would
+    # block every non-chore commit until that release step runs.
     layout_path = root / "desktop" / "publish-layout.json"
     if layout_path.is_file():
         committed = json.loads(layout_path.read_text(encoding="utf-8"))
