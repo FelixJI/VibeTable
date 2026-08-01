@@ -60,6 +60,7 @@ public partial class MainWindow : Window
     private readonly MainWindowViewModel _viewModel;
     private readonly TestModeReadinessWriter? _readiness;
     private readonly string? _e2eControlsDir;
+    private readonly AppPreferencesService _appPreferencesService;
     private readonly SemaphoreSlim _workspaceOpenGate = new(1, 1);
     private readonly CancellationTokenSource _session = new();
 
@@ -69,6 +70,9 @@ public partial class MainWindow : Window
     private DatabaseOpenResult? _workspaceSnapshot;
     private ShellBootstrapResult? _shellBootstrapResult;
     private readonly Dictionary<Guid, WorkspaceDeletePlan> _workspaceDeletePlans = [];
+    private AppPreferences _appPreferences = AppPreferences.Default;
+    private TrayIconController? _trayIcon;
+    private bool _explicitExitRequested;
     private int _closing;
 
     public MainWindow()
@@ -106,6 +110,13 @@ public partial class MainWindow : Window
             Environment.SpecialFolder.LocalApplicationData);
         _productDataRoot = runtimeDataRoot
             ?? Path.Combine(localAppData, "VibeTable", "shell");
+        _appPreferencesService = new AppPreferencesService(
+            new JsonAppPreferencesStore(
+                Path.Combine(_productDataRoot, "app-preferences.json")),
+            startup.TestMode
+                ? new InMemoryStartupRegistration()
+                : WindowsStartupRegistration.ForCurrentProcess());
+        _appPreferences = _appPreferencesService.ReadForStartup();
         _activityRootBase = runtimeDataRoot is null
             ? Path.Combine(localAppData, "VibeTable", "activity")
             : Path.Combine(runtimeDataRoot, "activity");
@@ -236,7 +247,10 @@ public partial class MainWindow : Window
         DataContext = _viewModel;
 
         Loaded += OnLoaded;
+        Closing += OnClosing;
         Closed += OnClosed;
+        Application.Current.SessionEnding += OnSessionEnding;
+        ApplyAppPreferences(_appPreferences);
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs args)
@@ -467,7 +481,7 @@ public partial class MainWindow : Window
         }
         if (request.Type == "host.startupCancelRequested")
         {
-            Dispatcher.BeginInvoke(Close);
+            Dispatcher.BeginInvoke(RequestExit);
             return;
         }
         if (request.Type == "host.startupRetryRequested")
@@ -522,6 +536,63 @@ public partial class MainWindow : Window
                         _runtime.CurrentSidecar?.GetStatus().State.ToString()
                         ?? "Stopped",
                 });
+            return;
+        }
+        if (request.Type == "appPreferences.get")
+        {
+            if (!HasEmptyObjectPayload(request))
+            {
+                _webBridge.PostOperationFailed(
+                    request.RequestId,
+                    "The application preferences request is invalid.",
+                    "APP_PREFERENCES_BAD_PAYLOAD");
+                return;
+            }
+            try
+            {
+                _appPreferences = _appPreferencesService.Read();
+                ApplyAppPreferences(_appPreferences);
+                PostAppPreferences(request);
+            }
+            catch (Exception)
+            {
+                _webBridge.PostOperationFailed(
+                    request.RequestId,
+                    "无法读取桌面应用设置。",
+                    "APP_PREFERENCES_READ_FAILED");
+            }
+            return;
+        }
+        if (request.Type == "appPreferences.update")
+        {
+            if (!TryReadAppPreferencesPatch(
+                    request.Payload,
+                    out AppPreferencesPatch? patch)
+                || patch is null)
+            {
+                _webBridge.PostOperationFailed(
+                    request.RequestId,
+                    "The application preferences update is invalid.",
+                    "APP_PREFERENCES_BAD_PAYLOAD");
+                return;
+            }
+            try
+            {
+                if (patch.MinimizeToTrayOnClose is true)
+                {
+                    EnsureTrayIcon();
+                }
+                _appPreferences = _appPreferencesService.Update(patch);
+                ApplyAppPreferences(_appPreferences);
+                PostAppPreferences(request);
+            }
+            catch (Exception)
+            {
+                _webBridge.PostOperationFailed(
+                    request.RequestId,
+                    "无法保存桌面应用设置，请检查当前用户权限后重试。",
+                    "APP_PREFERENCES_WRITE_FAILED");
+            }
             return;
         }
         if (request.Type == "dailyQuote.fetch")
@@ -2330,6 +2401,116 @@ public partial class MainWindow : Window
         => request.Payload.ValueKind == JsonValueKind.Object
             && !request.Payload.EnumerateObject().Any();
 
+    internal static bool TryReadAppPreferencesPatch(
+        JsonElement payload,
+        out AppPreferencesPatch? patch)
+    {
+        patch = null;
+        if (payload.ValueKind != JsonValueKind.Object) return false;
+
+        bool? minimizeToTrayOnClose = null;
+        bool? startWithWindows = null;
+        bool sawMinimize = false;
+        bool sawStartup = false;
+        foreach (JsonProperty property in payload.EnumerateObject())
+        {
+            if (property.NameEquals("minimizeToTrayOnClose"))
+            {
+                if (sawMinimize || property.Value.ValueKind is not
+                        (JsonValueKind.True or JsonValueKind.False))
+                {
+                    return false;
+                }
+                sawMinimize = true;
+                minimizeToTrayOnClose = property.Value.GetBoolean();
+                continue;
+            }
+            if (property.NameEquals("startWithWindows"))
+            {
+                if (sawStartup || property.Value.ValueKind is not
+                        (JsonValueKind.True or JsonValueKind.False))
+                {
+                    return false;
+                }
+                sawStartup = true;
+                startWithWindows = property.Value.GetBoolean();
+                continue;
+            }
+            return false;
+        }
+
+        if (!sawMinimize && !sawStartup) return false;
+        patch = new AppPreferencesPatch(minimizeToTrayOnClose, startWithWindows);
+        return true;
+    }
+
+    private void PostAppPreferences(RoutedWebRequest request)
+    {
+        _webBridge.PostResponse(
+            request.Type,
+            request.RequestId,
+            new
+            {
+                minimizeToTrayOnClose = _appPreferences.MinimizeToTrayOnClose,
+                startWithWindows = _appPreferences.StartWithWindows,
+            });
+    }
+
+    private void ApplyAppPreferences(AppPreferences preferences)
+    {
+        if (!preferences.MinimizeToTrayOnClose)
+        {
+            if (_trayIcon is not null) _trayIcon.Visible = false;
+            return;
+        }
+
+        EnsureTrayIcon().Visible = true;
+    }
+
+    private TrayIconController EnsureTrayIcon() =>
+        _trayIcon ??= new TrayIconController(RestoreFromTray, RequestExit);
+
+    private void OnClosing(object? sender, CancelEventArgs args)
+    {
+        if (!WindowClosePolicy.ShouldMinimizeToTray(
+                _appPreferences,
+                _explicitExitRequested))
+        {
+            return;
+        }
+
+        ApplyAppPreferences(_appPreferences);
+        args.Cancel = true;
+        Hide();
+    }
+
+    private void RestoreFromTray()
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            Show();
+            if (WindowState == WindowState.Minimized)
+            {
+                WindowState = WindowState.Normal;
+            }
+            Activate();
+        });
+    }
+
+    private void RequestExit()
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            _explicitExitRequested = true;
+            Close();
+        });
+    }
+
+    private void OnSessionEnding(object? sender, SessionEndingCancelEventArgs args)
+    {
+        _explicitExitRequested = true;
+    }
+
     private IReadOnlyList<string> PickAttachmentPaths(bool multiselect)
     {
         var dialog = new OpenFileDialog
@@ -2998,6 +3179,8 @@ public partial class MainWindow : Window
     private void OnClosed(object? sender, EventArgs args)
     {
         if (Interlocked.Exchange(ref _closing, 1) != 0) return;
+        Application.Current.SessionEnding -= OnSessionEnding;
+        _trayIcon?.Dispose();
         _session.Cancel();
         _router.IsReady = false;
         _runtime.ClientReady -= OnRuntimeClientReady;

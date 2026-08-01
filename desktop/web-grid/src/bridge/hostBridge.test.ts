@@ -99,6 +99,52 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it("round-trips the closed application preferences RPC types", async () => {
+    const ids = ["preferences-get", "preferences-update"];
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => ids.shift()!,
+    });
+    bridge.start();
+
+    const get = bridge.request("appPreferences.get", {});
+    expect(webview.postMessage).toHaveBeenLastCalledWith({
+      type: "appPreferences.get",
+      requestId: "preferences-get",
+      payload: {},
+    });
+    webview.emit({
+      type: "appPreferences.get",
+      requestId: "preferences-get",
+      payload: { minimizeToTrayOnClose: false, startWithWindows: false },
+    });
+    await expect(get).resolves.toEqual({
+      minimizeToTrayOnClose: false,
+      startWithWindows: false,
+    });
+
+    const update = bridge.request("appPreferences.update", {
+      minimizeToTrayOnClose: true,
+    });
+    expect(webview.postMessage).toHaveBeenLastCalledWith({
+      type: "appPreferences.update",
+      requestId: "preferences-update",
+      payload: { minimizeToTrayOnClose: true },
+    });
+    webview.emit({
+      type: "appPreferences.update",
+      requestId: "preferences-update",
+      payload: { minimizeToTrayOnClose: true, startWithWindows: false },
+    });
+    await expect(update).resolves.toEqual({
+      minimizeToTrayOnClose: true,
+      startWithWindows: false,
+    });
+
+    bridge.stop();
+  });
+
   it("allows only the closed workspace v2 request type and correlates its reply", async () => {
     const bridge = createHostBridge({
       webview,

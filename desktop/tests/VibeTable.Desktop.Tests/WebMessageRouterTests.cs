@@ -115,6 +115,34 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
+    public void Route_AppPreferencesUseCasesAreWhitelistedInBothDirections()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+
+        foreach (string type in new[]
+        {
+            "appPreferences.get",
+            "appPreferences.update",
+        })
+        {
+            HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new
+            {
+                type,
+                requestId = $"request-{type}",
+                payload = type.EndsWith("get", StringComparison.Ordinal)
+                    ? new { }
+                    : (object)new { minimizeToTrayOnClose = true },
+            }));
+            Assert.IsNull(reply, type);
+            Assert.IsTrue(router.IsHostNotificationAllowed(type), type);
+        }
+
+        Assert.AreEqual(2, dispatched.Count);
+        Assert.IsFalse(router.IsHostNotificationAllowed("appPreferences.delete"));
+    }
+
+    [TestMethod]
     public void Route_UnknownType_ReturnsOperationFailed_AndDoesNotDispatch()
     {
         var dispatched = new List<RoutedWebRequest>();

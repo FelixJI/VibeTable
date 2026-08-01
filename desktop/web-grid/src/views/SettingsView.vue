@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import {
   NButton,
   NAlert,
@@ -54,6 +54,11 @@ import { useWorkCalendarStore } from "@/stores/workCalendarStore";
 import type { WorkCalendarOverrideKind } from "@/calendar/workCalendar";
 import type { RuntimeDiagnostics } from "@/contracts/runtimeDiagnosticsContracts";
 import { useRuntimeDiagnosticsService } from "@/services/runtimeDiagnosticsService";
+import type {
+  AppPreferences,
+  AppPreferencesUpdate,
+} from "@/contracts/appPreferencesContracts";
+import { useAppPreferencesService } from "@/services/appPreferencesService";
 import WorkspaceProtectionSettings, {
   type WorkspaceProtectionAction,
 } from "@/components/settings/WorkspaceProtectionSettings.vue";
@@ -83,7 +88,16 @@ const diagnosticsService = useRuntimeDiagnosticsService();
 const diagnostics = ref<RuntimeDiagnostics | null>(null);
 const diagnosticsPhase = ref<"idle" | "loading">("idle");
 const diagnosticsError = ref<string | null>(null);
+const appPreferencesService = useAppPreferencesService();
+const appPreferences = ref<AppPreferences>({
+  minimizeToTrayOnClose: false,
+  startWithWindows: false,
+});
+const appPreferencesPhase = ref<"loading" | "idle" | "saving">("loading");
+const appPreferencesError = ref<string | null>(null);
 const changelogEntries = changelog.entries;
+
+onMounted(() => void loadAppPreferences());
 
 const filteredMappings = computed(() => {
   const needle = mappingQuery.value.trim().toLocaleLowerCase();
@@ -110,6 +124,35 @@ async function loadDiagnostics(): Promise<void> {
       : t("settings.about.failed");
   } finally {
     diagnosticsPhase.value = "idle";
+  }
+}
+
+async function loadAppPreferences(): Promise<void> {
+  appPreferencesPhase.value = "loading";
+  appPreferencesError.value = null;
+  try {
+    appPreferences.value = await appPreferencesService.get();
+  } catch (error) {
+    appPreferencesError.value = error instanceof Error
+      ? error.message
+      : t("settings.appPreferences.failed");
+  } finally {
+    appPreferencesPhase.value = "idle";
+  }
+}
+
+async function updateAppPreferences(patch: AppPreferencesUpdate): Promise<void> {
+  if (appPreferencesPhase.value !== "idle") return;
+  appPreferencesPhase.value = "saving";
+  appPreferencesError.value = null;
+  try {
+    appPreferences.value = await appPreferencesService.update(patch);
+  } catch (error) {
+    appPreferencesError.value = error instanceof Error
+      ? error.message
+      : t("settings.appPreferences.failed");
+  } finally {
+    appPreferencesPhase.value = "idle";
   }
 }
 
@@ -308,6 +351,42 @@ function setCalendarName(name: string): void {
                 @update:value="ui.setStartupPage($event as StartupPage)"
               />
             </div>
+            <div class="setting-row">
+              <div>
+                <strong>{{ t("settings.minimizeToTrayOnClose") }}</strong>
+                <small>{{ t("settings.minimizeToTrayOnClose.hint") }}</small>
+              </div>
+              <NSwitch
+                :value="appPreferences.minimizeToTrayOnClose"
+                :disabled="appPreferencesPhase !== 'idle'"
+                :loading="appPreferencesPhase === 'saving'"
+                :aria-label="t('settings.minimizeToTrayOnClose')"
+                data-testid="minimize-to-tray-switch"
+                @update:value="updateAppPreferences({ minimizeToTrayOnClose: $event })"
+              />
+            </div>
+            <div class="setting-row">
+              <div>
+                <strong>{{ t("settings.startWithWindows") }}</strong>
+                <small>{{ t("settings.startWithWindows.hint") }}</small>
+              </div>
+              <NSwitch
+                :value="appPreferences.startWithWindows"
+                :disabled="appPreferencesPhase !== 'idle'"
+                :loading="appPreferencesPhase === 'saving'"
+                :aria-label="t('settings.startWithWindows')"
+                data-testid="start-with-windows-switch"
+                @update:value="updateAppPreferences({ startWithWindows: $event })"
+              />
+            </div>
+            <NAlert
+              v-if="appPreferencesError"
+              type="error"
+              :title="t('settings.appPreferences.failed')"
+              data-testid="app-preferences-error"
+            >
+              {{ appPreferencesError }}
+            </NAlert>
             <div class="setting-row">
               <div><strong>{{ t("settings.quote") }}</strong><small>{{ t("settings.quote.hint") }}</small></div>
               <NSwitch :value="ui.showDailyQuote" :aria-label="t('settings.quote')" @update:value="ui.setShowDailyQuote" />

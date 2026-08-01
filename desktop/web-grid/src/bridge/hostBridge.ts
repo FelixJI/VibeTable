@@ -45,6 +45,16 @@ import {
   RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
   RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
 } from "@/contracts/runtimeDiagnosticsContracts";
+import type {
+  AppPreferencesHostMessageType,
+  AppPreferencesHostPayloadMap,
+  AppPreferencesWebMessageType,
+  AppPreferencesWebPayloadMap,
+} from "@/contracts/appPreferencesContracts";
+import {
+  APP_PREFERENCES_HOST_MESSAGE_TYPES,
+  APP_PREFERENCES_WEB_MESSAGE_TYPES,
+} from "@/contracts/appPreferencesContracts";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import {
   configureWorkspaceWire,
@@ -65,18 +75,22 @@ import {
 type HostMessageType =
   | SharedHostMessageType
   | RuntimeDiagnosticsHostMessageType
+  | AppPreferencesHostMessageType
   | WorkspaceV2HostMessageType;
 type HostPayloadMap =
   & SharedHostPayloadMap
   & RuntimeDiagnosticsHostPayloadMap
+  & AppPreferencesHostPayloadMap
   & WorkspaceV2HostPayloadMap;
 type WebMessageType =
   | SharedWebMessageType
   | RuntimeDiagnosticsWebMessageType
+  | AppPreferencesWebMessageType
   | WorkspaceV2WebMessageType;
 type WebPayloadMap =
   & SharedWebPayloadMap
   & RuntimeDiagnosticsWebPayloadMap
+  & AppPreferencesWebPayloadMap
   & WorkspaceV2WebPayloadMap;
 
 /** Diagnostic emitted when an inbound message is dropped. */
@@ -224,6 +238,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "version.promote",
   "version.delete",
   ...RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
+  ...APP_PREFERENCES_HOST_MESSAGE_TYPES,
   ...WORKSPACE_V2_HOST_MESSAGE_TYPES,
   // B2 paste preview + apply outcomes.
   "table.pastePreviewReady",
@@ -320,6 +335,7 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "version.promote",
   "version.delete",
   ...RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
+  ...APP_PREFERENCES_WEB_MESSAGE_TYPES,
   ...WORKSPACE_V2_WEB_MESSAGE_TYPES,
   // B3 query + state requests.
   "table.queryRequested",
@@ -456,6 +472,10 @@ export interface HostBridge {
     type: K,
     payload: RuntimeDiagnosticsWebPayloadMap[K],
   ): Promise<RuntimeDiagnosticsHostPayloadMap[K]>;
+  request<K extends AppPreferencesWebMessageType>(
+    type: K,
+    payload: AppPreferencesWebPayloadMap[K],
+  ): Promise<AppPreferencesHostPayloadMap[K]>;
   request<K extends WorkspaceV2WebMessageType>(
     type: K,
     payload: WorkspaceV2WebPayloadMap[K],

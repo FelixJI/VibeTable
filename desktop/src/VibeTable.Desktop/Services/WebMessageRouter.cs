@@ -72,6 +72,8 @@ public sealed class WebMessageRouter
         "data.exportTargetRequested",
         "dailyQuote.fetch",
         "diagnostics.get",
+        "appPreferences.get",
+        "appPreferences.update",
         // G1 history query + two-phase safe restore.
         "history.queryRequested",
         "history.previewRestoreRequested",
@@ -158,6 +160,8 @@ public sealed class WebMessageRouter
         "data.exportTargetRequested",
         "dailyQuote.fetch",
         "diagnostics.get",
+        "appPreferences.get",
+        "appPreferences.update",
         // G1 history query + two-phase safe restore outcomes.
         "history.pageLoaded",
         "history.restorePreviewReady",
