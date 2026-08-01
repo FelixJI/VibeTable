@@ -36,7 +36,8 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GITEE_TOKEN" || { echo "::error::GITEE_TOKEN is not configured"; exit 1; }
-          remote="https://${GITEE_TOKEN}@${GITEE_URL#https://}"
+          # Token must sit in the password slot: https://<user>:<token>@host
+          remote="https://${GITEE_USER:-felixjii}:${GITEE_TOKEN}@${GITEE_URL#https://}"
           git push "$remote" refs/remotes/origin/main:refs/heads/main --tags
       - name: Push main and tags to CNB
         shell: bash
