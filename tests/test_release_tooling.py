@@ -651,6 +651,15 @@ def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> No
     assert "RELEASE_PR: ${{ steps.release.outputs.pr }}" in release_please
     assert "python scripts/changelog.py --write" in release_please
     assert "desktop/web-grid/src/generated/changelog.json" in release_please
+    refresh_changelog = release_please.split("Refresh generated changelog in Release PR", 1)[1]
+    assert 'git config user.name "github-actions[bot]"' in refresh_changelog
+    assert (
+        'git config user.email "41898282+github-actions[bot]@users.noreply.github.com"'
+        in refresh_changelog
+    )
+    assert refresh_changelog.index(
+        'git config user.name "github-actions[bot]"'
+    ) < refresh_changelog.index('git commit -m "chore(release): refresh generated changelog"')
     # release-request.json records the next version a Release PR targets, so it
     # leads .release-please-manifest.json until the Release PR lands the bump.
     assert _version_tuple(release_request["requested-version"]) >= _version_tuple(
@@ -705,6 +714,9 @@ def test_ci_metadata_checkout_fetches_release_tags() -> None:
 
     assert "fetch-depth: 0" in python_job
     assert python_job.index("fetch-depth: 0") < python_job.index("Version and package metadata")
+    assert "Release changelog freshness" in python_job
+    assert "startsWith(github.head_ref, 'release-please--branches--')" in python_job
+    assert "uv run python scripts/changelog.py --check" in python_job
 
 
 def test_fault_gate_targets_workspace_v2_durability_without_whole_backup() -> None:

@@ -21,16 +21,36 @@ FIRST_RELEASE_SUBJECT = "初始化项目"
 JSON_OUTPUT = Path("desktop/web-grid/src/generated/changelog.json")
 MARKDOWN_OUTPUT = Path("CHANGELOG.md")
 SEMVER_TAG = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
-HOUSEKEEPING_SUBJECT = re.compile(
-    r"^(?:chore\(release\):|chore\(main\):\s*release\b|chore:\s*release\s+v|merge\b|合并)",
+CONVENTIONAL_SUBJECT = re.compile(
+    r"^(?P<type>[a-z][a-z0-9-]*)(?:\([^)]+\))?(?P<breaking>!)?:\s+\S",
     flags=re.IGNORECASE,
 )
+CHANGELOG_DIRECTIVE = re.compile(
+    r"^Changelog:\s*(include|skip)\s*$", flags=re.IGNORECASE | re.MULTILINE
+)
+BREAKING_CHANGE = re.compile(r"^BREAKING(?: |-)?CHANGE:\s+\S", flags=re.IGNORECASE | re.MULTILINE)
+USER_VISIBLE_TYPES = frozenset({"feat", "fix", "perf", "revert"})
 
 
 @dataclass(frozen=True)
 class ChangelogEntry:
     subject: str
     commit: str | None
+
+
+def _is_user_visible(subject: str, message: str) -> bool:
+    directives = CHANGELOG_DIRECTIVE.findall(message)
+    if directives:
+        return directives[-1].lower() == "include"
+
+    match = CONVENTIONAL_SUBJECT.match(subject)
+    if match is None:
+        return False
+    return (
+        match.group("type").lower() in USER_VISIBLE_TYPES
+        or match.group("breaking") == "!"
+        or BREAKING_CHANGE.search(message) is not None
+    )
 
 
 def _git(repo_root: Path, *args: str) -> str:
@@ -79,14 +99,20 @@ def collect_changelog(repo_root: Path, version: str) -> list[ChangelogEntry]:
         repo_root,
         "log",
         "--no-merges",
-        "--format=%H%x1f%s",
+        "--format=%H%x1f%s%x1f%B%x1e",
         revision_range,
     )
     entries: list[ChangelogEntry] = []
-    for line in output.splitlines():
-        commit, separator, subject = line.partition("\x1f")
+    for record in output.split("\x1e"):
+        commit, separator, remainder = record.strip("\r\n").partition("\x1f")
+        subject, message_separator, message = remainder.partition("\x1f")
         normalized = subject.strip()
-        if not separator or not normalized or HOUSEKEEPING_SUBJECT.match(normalized):
+        if (
+            not separator
+            or not message_separator
+            or not normalized
+            or not _is_user_visible(normalized, message)
+        ):
             continue
         entries.append(ChangelogEntry(subject=normalized, commit=commit.strip()[:8]))
     return entries
