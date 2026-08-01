@@ -12,6 +12,10 @@ VibeTable 已具备端到端的稳定版自我更新能力。用户可在“设�
 该能力复用现有发布资产 `VibeTable-v<version>-win-x64.zip`。版本元数据始终从
 GitHub 官方 REST API 读取；代理只处理 ZIP 下载，不能提供版本号、下载地址或摘要。
 
+![软件更新设置界面](assets/screenshots/vibetable-self-update-settings.png)
+
+> 截图使用隔离 mock Release 数据进行界面回归，不包含用户数据或真实本机路径。
+
 ## 更新流程
 
 1. 宿主直连 `api.github.com/repos/FelixJI/VibeTable/releases`，忽略 draft、
