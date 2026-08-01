@@ -19,15 +19,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release-pr:
+  release-request:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      issues: write
       pull-requests: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
       - name: Compute requested version
         id: version
         shell: python
@@ -49,17 +51,102 @@ jobs:
               version = f"{major}.{minor}.{patch + 1}"
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"next={version}\n")
+      - name: Record requested version on a branch
+        id: request
+        shell: bash
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          branch="release-request/v${NEXT_VERSION}"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "::error::Release request branch already exists: $branch"
+            exit 1
+          fi
+          git switch --create "$branch"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          request = {"requested-version": os.environ["NEXT_VERSION"]}
+          Path(".github/release-request.json").write_text(
+              json.dumps(request, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/release-request.json
+          git commit \
+            -m "chore(release): request ${NEXT_VERSION}" \
+            -m "Release-As: ${NEXT_VERSION}"
+          git push origin "HEAD:${branch}"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+      - name: Open protected release request PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          NEXT_VERSION: ${{ steps.version.outputs.next }}
+          REQUEST_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          pr_url="$(gh pr create \
+            --base main \
+            --head "$REQUEST_BRANCH" \
+            --title "chore(release): request ${NEXT_VERSION}" \
+            --body "Request the selected release version after required CI passes.
+
+          Release-As: ${NEXT_VERSION}")"
+          gh pr merge --auto --squash \
+            --subject "chore(release): request ${NEXT_VERSION}" \
+            --body "Release-As: ${NEXT_VERSION}" \
+            "$pr_url"
+
+  release-pr:
+    if: >-
+      github.event_name == 'push' &&
+      contains(github.event.head_commit.message, 'Release-As:')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
       - name: Create or update Release PR
+        id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-          release-as: ${{ steps.version.outputs.next }}
           skip-github-release: true
+      - name: Refresh generated changelog in Release PR
+        if: steps.release.outputs.prs_created == 'true'
+        shell: bash
+        env:
+          RELEASE_PR: ${{ steps.release.outputs.pr }}
+        run: |
+          set -euo pipefail
+          branch="$(python -c 'import json, os; print(json.loads(os.environ["RELEASE_PR"])["headBranchName"])')"
+          git fetch origin "$branch"
+          git switch --force-create release-pr "origin/$branch"
+          python scripts/changelog.py --write
+          git add CHANGELOG.md desktop/web-grid/src/generated/changelog.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore(release): refresh generated changelog"
+          git push origin "HEAD:$branch"
 
   draft-release:
-    if: github.event_name == 'push'
+    if: >-
+      github.event_name == 'push' &&
+      !contains(github.event.head_commit.message, 'Release-As:')
     runs-on: ubuntu-latest
     permissions:
       contents: write

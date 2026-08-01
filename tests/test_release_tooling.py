@@ -565,26 +565,59 @@ def test_release_preflight_rejects_dirty_or_untracked_worktree(
 
 
 def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> None:
+    workflows = REPO_ROOT / ".github" / "workflows"
     workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     release_please = (REPO_ROOT / ".github" / "workflows" / "release-please.yml").read_text(
         encoding="utf-8"
     )
+    release_config = json.loads(
+        (REPO_ROOT / "release-please-config.json").read_text(encoding="utf-8")
+    )
+    release_request = json.loads(
+        (REPO_ROOT / ".github" / "release-request.json").read_text(encoding="utf-8")
+    )
+    release_manifest = json.loads(
+        (REPO_ROOT / ".release-please-manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert {path.name for path in workflows.glob("*.yml")} == {
+        "ci.yml",
+        "mirror.yml",
+        "release-please.yml",
+        "release.yml",
+    }
 
     assert "workflow_dispatch:" in workflow
+    assert "release:\n    types: [published]" in workflow
     assert "release_tag:" in workflow
     assert "Verify tag and draft Release" in workflow
     assert "gh release view $env:RELEASE_TAG --json isDraft" in workflow
     assert "Attach assets to draft Release" in workflow
     assert "gh release upload" in workflow
+    assert "Keep the five most recent published Releases" in workflow
+    assert "if: github.event_name == 'release'" in workflow
     assert "schedule:" not in workflow
     assert "gh release create" not in workflow
     assert "git push" not in workflow
 
     assert "workflow_dispatch:" in release_please
     assert "options: [patch, minor, major]" in release_please
-    assert "release-as:" in release_please
+    assert "git commit --allow-empty" not in release_please
+    assert "git push origin HEAD:main" not in release_please
+    assert ".github/release-request.json" in release_please
+    assert "gh pr create" in release_please
+    assert "gh pr merge --auto --squash" in release_please
+    assert '"Release-As: ${NEXT_VERSION}"' in release_please
+    assert "contains(github.event.head_commit.message, 'Release-As:')" in release_please
+    assert "release-as: ${{ steps.version.outputs.next }}" not in release_please
     assert "skip-github-release: true" in release_please
     assert "skip-github-pull-request: true" in release_please
+    assert "id: release" in release_please
+    assert "RELEASE_PR: ${{ steps.release.outputs.pr }}" in release_please
+    assert "python scripts/changelog.py --write" in release_please
+    assert "desktop/web-grid/src/generated/changelog.json" in release_please
+    assert release_request["requested-version"] == release_manifest["."]
+    assert release_config["packages"]["."]["skip-changelog"] is True
     assert "--generate-notes" not in workflow
     assert "RELEASE_TAG: ${{ inputs.release_tag }}" in workflow
     assert "w64devkit-x64-2.8.0.7z.exe" in workflow

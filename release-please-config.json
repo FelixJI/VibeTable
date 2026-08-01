@@ -9,6 +9,7 @@
   "packages": {
     ".": {
       "package-name": "vibetable",
+      "skip-changelog": true,
       "extra-files": [
         {
           "type": "generic",
