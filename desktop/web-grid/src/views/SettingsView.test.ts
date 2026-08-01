@@ -75,10 +75,14 @@ describe("SettingsView", () => {
 
     expect(backupRequest).toHaveBeenCalledWith("diagnostics.get", {});
     expect(wrapper.text()).toContain("v0.1.0");
-    const firstEntry = changelog.entries[0];
-    expect(firstEntry).toBeDefined();
-    expect(wrapper.get('[data-testid="about-changelog"]').text())
-      .toContain(firstEntry!.subject);
+    const changelogPanel = wrapper.get('[data-testid="about-changelog"]');
+    if (changelog.entries.length === 0) {
+      expect(changelogPanel.get(".changelog-empty").text())
+        .toBe("此版本暂无用户可见变更。");
+    } else {
+      expect(changelogPanel.findAll(".changelog-subject"))
+        .toHaveLength(changelog.entries.length);
+    }
     expect(changelog.entries)
       .not.toContainEqual(expect.objectContaining({
         subject: expect.stringMatching(/^(merge|合并)(:|\s)/i),
