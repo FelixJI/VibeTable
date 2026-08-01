@@ -573,6 +573,9 @@ def test_release_preflight_rejects_dirty_or_untracked_worktree(
 def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> None:
     workflows = REPO_ROOT / ".github" / "workflows"
     workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    cleanup = (REPO_ROOT / ".github" / "workflows" / "release-cleanup.yml").read_text(
+        encoding="utf-8"
+    )
     release_please = (REPO_ROOT / ".github" / "workflows" / "release-please.yml").read_text(
         encoding="utf-8"
     )
@@ -589,12 +592,13 @@ def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> No
     assert {path.name for path in workflows.glob("*.yml")} == {
         "ci.yml",
         "mirror.yml",
+        "release-cleanup.yml",
         "release-please.yml",
         "release.yml",
     }
 
     assert "workflow_dispatch:" in workflow
-    assert "release:\n    types: [published]" in workflow
+    assert "release:\n    types: [published]" not in workflow
     # Build auto-fires after Release Please finishes so draft Releases get their
     # assets without a manual dispatch; workflow_run has no inputs, so the tag is
     # resolved dynamically instead of being read from inputs.release_tag.
@@ -614,14 +618,19 @@ def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> No
     assert "gh release view $env:RELEASE_TAG --json isDraft" in workflow
     assert "Attach assets to draft Release" in workflow
     assert "gh release upload" in workflow
-    assert "Keep the five most recent published Releases" in workflow
-    # The published-Release cleanup keeps running on the release event, while the
-    # build job answers manual dispatch and the Release Please completion hook.
-    assert "if: github.event_name == 'release'" in workflow
-    assert (
-        "if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run'"
-        in workflow
-    )
+    assert "Verify attached Release assets" in workflow
+    assert "Publish verified Release" in workflow
+    assert "github.event_name == 'workflow_run'" in workflow
+    assert "gh release edit $env:RELEASE_TAG --draft=false --latest" in workflow
+    assert "Keep the five most recent published Releases" not in workflow
+    assert "release:\n    types: [published]" in cleanup
+    assert "Keep the five most recent published Releases" in cleanup
+    assert "gh api --paginate" in cleanup
+    assert "--slurp" not in cleanup
+    assert ".published_at, .id, .tag_name" in cleanup
+    assert "LC_ALL=C sort -r" in cleanup
+    assert "tail -n +6" in cleanup
+    assert "databaseId" not in cleanup
     assert "schedule:" not in workflow
     assert "gh release create" not in workflow
     assert "git push" not in workflow
@@ -682,6 +691,12 @@ def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> No
     assert workflow.index(
         "Verify eligibility is bound to the immutable candidate"
     ) < workflow.index("Attach assets to draft Release")
+    assert workflow.index("Attach assets to draft Release") < workflow.index(
+        "Verify attached Release assets"
+    )
+    assert workflow.index("Verify attached Release assets") < workflow.index(
+        "Publish verified Release"
+    )
 
 
 def test_ci_metadata_checkout_fetches_release_tags() -> None:
