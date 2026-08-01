@@ -1592,7 +1592,8 @@ const pageTitle = computed(() => {
 
 const showWorkspaceCenterScreen = computed(() =>
   workspaceSession.enabled
-  && (showWorkspaceCenter.value || !workspaceSession.hasOpenWorkspace));
+  && (showWorkspaceCenter.value
+    || (!workspaceSession.hasOpenWorkspace && ui.activeView === "home")));
 
 const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
   "workspace-view-v1-consumers",
