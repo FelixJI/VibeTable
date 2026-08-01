@@ -8,7 +8,7 @@
  *     `window.chrome.webview.postMessage`, and returns a Promise that:
  *        * resolves on the matching `{type:<resultType>, requestId}` payload,
  *        * rejects  on `{type:"operation.failed", requestId}` payloads,
- *        * rejects  with a TimeoutError after `timeoutMs`.
+ *        * rejects  with a TimeoutError after its request-specific timeout.
  *
  *   - `notify(type, payload)`   : fire-and-forget web -> host (no requestId),
  *     used for `app.ready` and other one-shot notifications.
@@ -135,6 +135,12 @@ export interface HostBridgeOptions {
   readonly webview?: WebViewLike;
   /** Per-request timeout in ms. Default 10_000. */
   readonly timeoutMs?: number;
+  /**
+   * Timeout for requests that open a host-owned path picker. The user's time
+   * in a native dialog must not consume the ordinary RPC budget.
+   * Default 30 minutes.
+   */
+  readonly nativePickerTimeoutMs?: number;
   /**
    * Native File-object delivery should be acknowledged almost immediately.
    * A shorter timeout lets the UI fall back to a host-owned picker when a
@@ -447,6 +453,18 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
   "workspace.v2.request": ["workspace.v2.response", "workspace.v2.reply"],
 };
 
+const HOST_PICKER_PREFIX = "host-picker://";
+
+function containsHostPickerSentinel(value: unknown): boolean {
+  if (typeof value === "string") return value.startsWith(HOST_PICKER_PREFIX);
+  if (Array.isArray(value)) return value.some(containsHostPickerSentinel);
+  if (value && typeof value === "object") {
+    return Object.values(value as Readonly<Record<string, unknown>>)
+      .some(containsHostPickerSentinel);
+  }
+  return false;
+}
+
 function responseTypesFor(type: WebMessageType): ReadonlySet<HostMessageType> {
   const overrides = RESPONSE_TYPE_OVERRIDES[type];
   if (overrides) return new Set(overrides);
@@ -555,6 +573,8 @@ export interface HostBridge {
  */
 export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
   const timeoutMs = options.timeoutMs ?? 10_000;
+  const nativePickerTimeoutMs = options.nativePickerTimeoutMs
+    ?? Math.max(timeoutMs, 30 * 60_000);
   const additionalObjectsTimeoutMs =
     options.additionalObjectsTimeoutMs ?? Math.min(timeoutMs, 1_500);
   const onDiagnostic = options.onDiagnostic ?? (() => undefined);
@@ -826,12 +846,16 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
   ): { readonly requestId: string; readonly promise: Promise<unknown> } {
     const requestId = generateRequestId();
     const env = outboundEnvelope(type, payload, requestId);
+    const requestTimeoutMs = type === "workspace.v2.request"
+      && containsHostPickerSentinel(payload)
+      ? nativePickerTimeoutMs
+      : timeoutMs;
     const promise = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (pending.delete(requestId)) {
-          reject(new BridgeTimeoutError(type, requestId, timeoutMs));
+          reject(new BridgeTimeoutError(type, requestId, requestTimeoutMs));
         }
-      }, timeoutMs);
+      }, requestTimeoutMs);
       pending.set(requestId, {
         messageType: type,
         responseTypes: responseTypesFor(type),
