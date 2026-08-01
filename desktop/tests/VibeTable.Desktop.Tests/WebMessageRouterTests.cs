@@ -115,7 +115,7 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
-    public void Route_AppPreferencesUseCasesAreWhitelistedInBothDirections()
+    public void Route_AppPreferencesAndUpdateUseCasesAreWhitelistedInBothDirections()
     {
         var dispatched = new List<RoutedWebRequest>();
         var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
@@ -124,21 +124,23 @@ public sealed class WebMessageRouterTests
         {
             "appPreferences.get",
             "appPreferences.update",
+            "update.check",
+            "update.install",
         })
         {
             HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new
             {
                 type,
                 requestId = $"request-{type}",
-                payload = type.EndsWith("get", StringComparison.Ordinal)
-                    ? new { }
-                    : (object)new { minimizeToTrayOnClose = true },
+                payload = type is "appPreferences.update"
+                    ? (object)new { minimizeToTrayOnClose = true }
+                    : new { },
             }));
             Assert.IsNull(reply, type);
             Assert.IsTrue(router.IsHostNotificationAllowed(type), type);
         }
 
-        Assert.AreEqual(2, dispatched.Count);
+        Assert.AreEqual(4, dispatched.Count);
         Assert.IsFalse(router.IsHostNotificationAllowed("appPreferences.delete"));
     }
 

@@ -7,19 +7,52 @@ namespace VibeTable.Desktop.Services;
 
 internal sealed record AppPreferences(
     bool MinimizeToTrayOnClose,
-    bool StartWithWindows)
+    bool StartWithWindows,
+    string UpdateProxy = UpdateProxyOptions.Direct,
+    string? CustomUpdateProxyUrl = null)
 {
     public static AppPreferences Default { get; } = new(false, false);
 }
 
 internal sealed record AppPreferencesPatch(
     bool? MinimizeToTrayOnClose,
-    bool? StartWithWindows);
+    bool? StartWithWindows,
+    string? UpdateProxy = null,
+    string? CustomUpdateProxyUrl = null,
+    bool HasCustomUpdateProxyUrl = false);
+
+internal sealed record PersistedAppPreferences(
+    bool MinimizeToTrayOnClose,
+    string UpdateProxy,
+    string? CustomUpdateProxyUrl)
+{
+    public static PersistedAppPreferences Default { get; } = new(
+        false,
+        UpdateProxyOptions.Direct,
+        null);
+}
+
+internal static class UpdateProxyOptions
+{
+    public const string Direct = "direct";
+    public const string GhProxyNet = "ghproxyNet";
+    public const string GhProxyCom = "ghProxyCom";
+    public const string Custom = "custom";
+
+    public static bool IsKnown(string value) => value is
+        Direct or GhProxyNet or GhProxyCom or Custom;
+
+    public static string? NormalizeCustomUrl(string? value)
+    {
+        string? trimmed = value?.Trim();
+        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
+    }
+}
 
 internal interface IAppPreferencesStore
 {
-    bool ReadMinimizeToTrayOnClose();
-    void WriteMinimizeToTrayOnClose(bool value);
+    PersistedAppPreferences Read();
+    void Write(PersistedAppPreferences preferences);
 }
 
 internal sealed class JsonAppPreferencesStore : IAppPreferencesStore
@@ -37,7 +70,7 @@ internal sealed class JsonAppPreferencesStore : IAppPreferencesStore
         _path = Path.GetFullPath(path);
     }
 
-    public bool ReadMinimizeToTrayOnClose()
+    public PersistedAppPreferences Read()
     {
         try
         {
@@ -45,23 +78,33 @@ internal sealed class JsonAppPreferencesStore : IAppPreferencesStore
             StoredAppPreferences? stored = JsonSerializer.Deserialize<StoredAppPreferences>(
                 stream,
                 SerializerOptions);
-            return stored?.MinimizeToTrayOnClose ?? false;
+            if (stored is null)
+            {
+                return PersistedAppPreferences.Default;
+            }
+            string proxy = UpdateProxyOptions.IsKnown(stored.UpdateProxy ?? "")
+                ? stored.UpdateProxy!
+                : UpdateProxyOptions.Direct;
+            return new PersistedAppPreferences(
+                stored.MinimizeToTrayOnClose,
+                proxy,
+                UpdateProxyOptions.NormalizeCustomUrl(stored.CustomUpdateProxyUrl));
         }
         catch (FileNotFoundException)
         {
-            return false;
+            return PersistedAppPreferences.Default;
         }
         catch (DirectoryNotFoundException)
         {
-            return false;
+            return PersistedAppPreferences.Default;
         }
         catch (JsonException)
         {
-            return false;
+            return PersistedAppPreferences.Default;
         }
     }
 
-    public void WriteMinimizeToTrayOnClose(bool value)
+    public void Write(PersistedAppPreferences preferences)
     {
         string? directory = Path.GetDirectoryName(_path);
         if (string.IsNullOrWhiteSpace(directory))
@@ -82,7 +125,10 @@ internal sealed class JsonAppPreferencesStore : IAppPreferencesStore
             {
                 JsonSerializer.Serialize(
                     stream,
-                    new StoredAppPreferences(value),
+                    new StoredAppPreferences(
+                        preferences.MinimizeToTrayOnClose,
+                        preferences.UpdateProxy,
+                        preferences.CustomUpdateProxyUrl),
                     SerializerOptions);
                 stream.Flush(flushToDisk: true);
             }
@@ -102,7 +148,10 @@ internal sealed class JsonAppPreferencesStore : IAppPreferencesStore
         }
     }
 
-    private sealed record StoredAppPreferences(bool MinimizeToTrayOnClose);
+    private sealed record StoredAppPreferences(
+        bool MinimizeToTrayOnClose,
+        string? UpdateProxy = null,
+        string? CustomUpdateProxyUrl = null);
 }
 
 internal sealed class AppPreferencesService
@@ -118,17 +167,28 @@ internal sealed class AppPreferencesService
         _startupRegistration = startupRegistration;
     }
 
-    public AppPreferences Read() => new(
-        _store.ReadMinimizeToTrayOnClose(),
-        _startupRegistration.IsEnabled());
+    public AppPreferences Read()
+    {
+        PersistedAppPreferences stored = _store.Read();
+        return new AppPreferences(
+            stored.MinimizeToTrayOnClose,
+            _startupRegistration.IsEnabled(),
+            stored.UpdateProxy,
+            stored.CustomUpdateProxyUrl);
+    }
 
     public AppPreferences ReadForStartup()
     {
         bool minimizeToTrayOnClose = false;
         bool startWithWindows = false;
+        string updateProxy = UpdateProxyOptions.Direct;
+        string? customUpdateProxyUrl = null;
         try
         {
-            minimizeToTrayOnClose = _store.ReadMinimizeToTrayOnClose();
+            PersistedAppPreferences stored = _store.Read();
+            minimizeToTrayOnClose = stored.MinimizeToTrayOnClose;
+            updateProxy = stored.UpdateProxy;
+            customUpdateProxyUrl = stored.CustomUpdateProxyUrl;
         }
         catch (Exception exception) when (IsNonCriticalReadFailure(exception))
         {
@@ -144,7 +204,11 @@ internal sealed class AppPreferencesService
             // The settings page still uses strict Read/Update and will surface
             // a permission failure. Startup itself remains available.
         }
-        return new AppPreferences(minimizeToTrayOnClose, startWithWindows);
+        return new AppPreferences(
+            minimizeToTrayOnClose,
+            startWithWindows,
+            updateProxy,
+            customUpdateProxyUrl);
     }
 
     public AppPreferences Update(AppPreferencesPatch patch)
@@ -152,8 +216,20 @@ internal sealed class AppPreferencesService
         AppPreferences current = Read();
         AppPreferences updated = new(
             patch.MinimizeToTrayOnClose ?? current.MinimizeToTrayOnClose,
-            patch.StartWithWindows ?? current.StartWithWindows);
+            patch.StartWithWindows ?? current.StartWithWindows,
+            patch.UpdateProxy ?? current.UpdateProxy,
+            patch.HasCustomUpdateProxyUrl
+                ? UpdateProxyOptions.NormalizeCustomUrl(patch.CustomUpdateProxyUrl)
+                : current.CustomUpdateProxyUrl);
+        if (!UpdateProxyOptions.IsKnown(updated.UpdateProxy))
+        {
+            throw new ArgumentException("Unknown update proxy.", nameof(patch));
+        }
         bool startupChanged = updated.StartWithWindows != current.StartWithWindows;
+        bool storedPreferencesChanged =
+            updated.MinimizeToTrayOnClose != current.MinimizeToTrayOnClose
+            || updated.UpdateProxy != current.UpdateProxy
+            || updated.CustomUpdateProxyUrl != current.CustomUpdateProxyUrl;
 
         if (startupChanged)
         {
@@ -162,9 +238,12 @@ internal sealed class AppPreferencesService
 
         try
         {
-            if (updated.MinimizeToTrayOnClose != current.MinimizeToTrayOnClose)
+            if (storedPreferencesChanged)
             {
-                _store.WriteMinimizeToTrayOnClose(updated.MinimizeToTrayOnClose);
+                _store.Write(new PersistedAppPreferences(
+                    updated.MinimizeToTrayOnClose,
+                    updated.UpdateProxy,
+                    updated.CustomUpdateProxyUrl));
             }
         }
         catch

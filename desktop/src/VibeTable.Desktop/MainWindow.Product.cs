@@ -61,6 +61,7 @@ public partial class MainWindow : Window
     private readonly TestModeReadinessWriter? _readiness;
     private readonly string? _e2eControlsDir;
     private readonly AppPreferencesService _appPreferencesService;
+    private readonly ReleaseUpdateCoordinator _releaseUpdateCoordinator;
     private readonly SemaphoreSlim _workspaceOpenGate = new(1, 1);
     private readonly CancellationTokenSource _session = new();
 
@@ -117,6 +118,9 @@ public partial class MainWindow : Window
                 ? new InMemoryStartupRegistration()
                 : WindowsStartupRegistration.ForCurrentProcess());
         _appPreferences = _appPreferencesService.ReadForStartup();
+        _releaseUpdateCoordinator = new ReleaseUpdateCoordinator(
+            AppContext.BaseDirectory,
+            ApplicationVersion.FromAssembly(typeof(MainWindow).Assembly));
         _activityRootBase = runtimeDataRoot is null
             ? Path.Combine(localAppData, "VibeTable", "activity")
             : Path.Combine(runtimeDataRoot, "activity");
@@ -481,7 +485,7 @@ public partial class MainWindow : Window
         }
         if (request.Type == "host.startupCancelRequested")
         {
-            Dispatcher.BeginInvoke(RequestExit);
+            _ = Dispatcher.BeginInvoke(RequestExit);
             return;
         }
         if (request.Type == "host.startupRetryRequested")
@@ -593,6 +597,32 @@ public partial class MainWindow : Window
                     "无法保存桌面应用设置，请检查当前用户权限后重试。",
                     "APP_PREFERENCES_WRITE_FAILED");
             }
+            return;
+        }
+        if (request.Type == "update.check")
+        {
+            if (!HasEmptyObjectPayload(request))
+            {
+                _webBridge.PostOperationFailed(
+                    request.RequestId,
+                    "The update check request is invalid.",
+                    "UPDATE_BAD_PAYLOAD");
+                return;
+            }
+            _ = CheckForReleaseUpdateAsync(request);
+            return;
+        }
+        if (request.Type == "update.install")
+        {
+            if (!HasEmptyObjectPayload(request))
+            {
+                _webBridge.PostOperationFailed(
+                    request.RequestId,
+                    "The update install request is invalid.",
+                    "UPDATE_BAD_PAYLOAD");
+                return;
+            }
+            _ = InstallReleaseUpdateAsync(request);
             return;
         }
         if (request.Type == "dailyQuote.fetch")
@@ -2401,6 +2431,88 @@ public partial class MainWindow : Window
         => request.Payload.ValueKind == JsonValueKind.Object
             && !request.Payload.EnumerateObject().Any();
 
+    private async Task CheckForReleaseUpdateAsync(RoutedWebRequest request)
+    {
+        try
+        {
+            _appPreferences = _appPreferencesService.Read();
+            ReleaseUpdateCheckResult result = await _releaseUpdateCoordinator.CheckAsync(
+                _appPreferences,
+                _session.Token);
+            _webBridge.PostResponse(
+                request.Type,
+                request.RequestId,
+                new
+                {
+                    currentVersion = result.CurrentVersion,
+                    latestVersion = result.LatestVersion,
+                    updateAvailable = result.UpdateAvailable,
+                    canInstall = result.CanInstall,
+                    installUnavailableReason = result.InstallUnavailableReason,
+                    downloadBytes = result.DownloadBytes,
+                    releaseUrl = result.ReleaseUrl,
+                    notesTruncated = result.NotesTruncated,
+                    releases = result.Releases.Select(note => new
+                    {
+                        version = note.Version,
+                        title = note.Title,
+                        body = note.Body,
+                        publishedAt = note.PublishedAt,
+                        releaseUrl = note.ReleaseUrl,
+                    }),
+                });
+        }
+        catch (OperationCanceledException) when (_session.IsCancellationRequested)
+        {
+            // The application is already shutting down.
+        }
+        catch (ReleaseUpdateException exception)
+        {
+            _webBridge.PostOperationFailed(
+                request.RequestId,
+                exception.Message,
+                exception.Code);
+        }
+        catch (Exception)
+        {
+            _webBridge.PostOperationFailed(
+                request.RequestId,
+                "无法连接 GitHub 检查更新，请稍后重试。",
+                "UPDATE_CHECK_FAILED");
+        }
+    }
+
+    private async Task InstallReleaseUpdateAsync(RoutedWebRequest request)
+    {
+        try
+        {
+            await _releaseUpdateCoordinator.LaunchUpdateAsync(_session.Token);
+            _webBridge.PostResponse(
+                request.Type,
+                request.RequestId,
+                new { status = "restarting" });
+            _ = Dispatcher.BeginInvoke(RequestExit);
+        }
+        catch (OperationCanceledException) when (_session.IsCancellationRequested)
+        {
+            // The application is already shutting down.
+        }
+        catch (ReleaseUpdateException exception)
+        {
+            _webBridge.PostOperationFailed(
+                request.RequestId,
+                exception.Message,
+                exception.Code);
+        }
+        catch (Exception)
+        {
+            _webBridge.PostOperationFailed(
+                request.RequestId,
+                "更新包下载或暂存失败，现有程序与用户数据均未更改。",
+                "UPDATE_INSTALL_FAILED");
+        }
+    }
+
     internal static bool TryReadAppPreferencesPatch(
         JsonElement payload,
         out AppPreferencesPatch? patch)
@@ -2410,8 +2522,12 @@ public partial class MainWindow : Window
 
         bool? minimizeToTrayOnClose = null;
         bool? startWithWindows = null;
+        string? updateProxy = null;
+        string? customUpdateProxyUrl = null;
         bool sawMinimize = false;
         bool sawStartup = false;
+        bool sawUpdateProxy = false;
+        bool sawCustomUpdateProxyUrl = false;
         foreach (JsonProperty property in payload.EnumerateObject())
         {
             if (property.NameEquals("minimizeToTrayOnClose"))
@@ -2436,11 +2552,48 @@ public partial class MainWindow : Window
                 startWithWindows = property.Value.GetBoolean();
                 continue;
             }
+            if (property.NameEquals("updateProxy"))
+            {
+                if (sawUpdateProxy || property.Value.ValueKind != JsonValueKind.String)
+                {
+                    return false;
+                }
+                sawUpdateProxy = true;
+                updateProxy = property.Value.GetString();
+                if (updateProxy is null || !UpdateProxyOptions.IsKnown(updateProxy))
+                {
+                    return false;
+                }
+                continue;
+            }
+            if (property.NameEquals("customUpdateProxyUrl"))
+            {
+                if (sawCustomUpdateProxyUrl
+                    || property.Value.ValueKind != JsonValueKind.String)
+                {
+                    return false;
+                }
+                sawCustomUpdateProxyUrl = true;
+                customUpdateProxyUrl = property.Value.GetString();
+                if (customUpdateProxyUrl is null || customUpdateProxyUrl.Length > 2048)
+                {
+                    return false;
+                }
+                continue;
+            }
             return false;
         }
 
-        if (!sawMinimize && !sawStartup) return false;
-        patch = new AppPreferencesPatch(minimizeToTrayOnClose, startWithWindows);
+        if (!sawMinimize && !sawStartup && !sawUpdateProxy && !sawCustomUpdateProxyUrl)
+        {
+            return false;
+        }
+        patch = new AppPreferencesPatch(
+            minimizeToTrayOnClose,
+            startWithWindows,
+            updateProxy,
+            customUpdateProxyUrl,
+            sawCustomUpdateProxyUrl);
         return true;
     }
 
@@ -2453,6 +2606,8 @@ public partial class MainWindow : Window
             {
                 minimizeToTrayOnClose = _appPreferences.MinimizeToTrayOnClose,
                 startWithWindows = _appPreferences.StartWithWindows,
+                updateProxy = _appPreferences.UpdateProxy,
+                customUpdateProxyUrl = _appPreferences.CustomUpdateProxyUrl ?? "",
             });
     }
 

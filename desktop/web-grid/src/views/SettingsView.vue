@@ -57,8 +57,11 @@ import { useRuntimeDiagnosticsService } from "@/services/runtimeDiagnosticsServi
 import type {
   AppPreferences,
   AppPreferencesUpdate,
+  UpdateProxyId,
 } from "@/contracts/appPreferencesContracts";
 import { useAppPreferencesService } from "@/services/appPreferencesService";
+import type { ReleaseUpdateCheckResult } from "@/contracts/releaseUpdateContracts";
+import { useReleaseUpdateService } from "@/services/releaseUpdateService";
 import WorkspaceProtectionSettings, {
   type WorkspaceProtectionAction,
 } from "@/components/settings/WorkspaceProtectionSettings.vue";
@@ -92,10 +95,22 @@ const appPreferencesService = useAppPreferencesService();
 const appPreferences = ref<AppPreferences>({
   minimizeToTrayOnClose: false,
   startWithWindows: false,
+  updateProxy: "direct",
+  customUpdateProxyUrl: "",
 });
 const appPreferencesPhase = ref<"loading" | "idle" | "saving">("loading");
 const appPreferencesError = ref<string | null>(null);
+const releaseUpdateService = useReleaseUpdateService();
+const releaseUpdate = ref<ReleaseUpdateCheckResult | null>(null);
+const releaseUpdatePhase = ref<"idle" | "checking" | "installing">("idle");
+const releaseUpdateError = ref<string | null>(null);
 const changelogEntries = changelog.entries;
+const updateProxyOptions = computed(() => [
+  { label: t("settings.update.proxy.direct"), value: "direct" },
+  { label: "ghproxy.net", value: "ghproxyNet" },
+  { label: "gh-proxy.com", value: "ghProxyCom" },
+  { label: t("settings.update.proxy.custom"), value: "custom" },
+]);
 
 onMounted(() => void loadAppPreferences());
 
@@ -154,6 +169,56 @@ async function updateAppPreferences(patch: AppPreferencesUpdate): Promise<void> 
   } finally {
     appPreferencesPhase.value = "idle";
   }
+}
+
+async function selectUpdateProxy(value: UpdateProxyId): Promise<void> {
+  await updateAppPreferences({ updateProxy: value });
+  releaseUpdate.value = null;
+  releaseUpdateError.value = null;
+}
+
+async function saveCustomUpdateProxy(value: string): Promise<void> {
+  await updateAppPreferences({ customUpdateProxyUrl: value });
+  releaseUpdate.value = null;
+  releaseUpdateError.value = null;
+}
+
+async function checkForReleaseUpdate(): Promise<void> {
+  if (releaseUpdatePhase.value !== "idle") return;
+  releaseUpdatePhase.value = "checking";
+  releaseUpdateError.value = null;
+  try {
+    releaseUpdate.value = await releaseUpdateService.check();
+  } catch (error) {
+    releaseUpdateError.value = error instanceof Error
+      ? error.message
+      : t("settings.update.checkFailed");
+  } finally {
+    releaseUpdatePhase.value = "idle";
+  }
+}
+
+async function installReleaseUpdate(): Promise<void> {
+  if (releaseUpdatePhase.value !== "idle") return;
+  releaseUpdatePhase.value = "installing";
+  releaseUpdateError.value = null;
+  try {
+    await releaseUpdateService.install();
+  } catch (error) {
+    releaseUpdateError.value = error instanceof Error
+      ? error.message
+      : t("settings.update.installFailed");
+    releaseUpdatePhase.value = "idle";
+  }
+}
+
+function formatDownloadSize(size: number): string {
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatReleaseDate(value: string | null): string {
+  return value ? value.slice(0, 10) : "";
 }
 
 function formatMemory(size: number): string {
@@ -590,6 +655,104 @@ function setCalendarName(name: string): void {
               <span v-if="diagnostics" class="version-badge">v{{ diagnostics.programVersion }}</span>
             </div>
           </section>
+          <section class="update-card" data-testid="release-update-card">
+            <div class="update-heading">
+              <div>
+                <strong>{{ t("settings.update.title") }}</strong>
+                <small>{{ t("settings.update.hint") }}</small>
+              </div>
+              <NButton
+                size="small"
+                data-testid="check-update-button"
+                :loading="releaseUpdatePhase === 'checking'"
+                :disabled="releaseUpdatePhase === 'installing'"
+                @click="checkForReleaseUpdate"
+              >
+                {{ t("settings.update.check") }}
+              </NButton>
+            </div>
+            <div class="update-proxy-row">
+              <div>
+                <strong>{{ t("settings.update.proxy") }}</strong>
+                <small>{{ t("settings.update.proxyHint") }}</small>
+              </div>
+              <NSelect
+                data-testid="update-proxy-select"
+                class="update-proxy-select"
+                :value="appPreferences.updateProxy"
+                :options="updateProxyOptions"
+                :disabled="appPreferencesPhase !== 'idle' || releaseUpdatePhase !== 'idle'"
+                @update:value="selectUpdateProxy"
+              />
+            </div>
+            <NInput
+              v-if="appPreferences.updateProxy === 'custom'"
+              data-testid="custom-update-proxy-input"
+              :value="appPreferences.customUpdateProxyUrl"
+              :placeholder="t('settings.update.proxyPlaceholder')"
+              :disabled="appPreferencesPhase !== 'idle' || releaseUpdatePhase !== 'idle'"
+              @change="saveCustomUpdateProxy"
+            />
+            <NAlert type="info" :show-icon="true" class="proxy-disclosure">
+              {{ t("settings.update.proxyDisclosure") }}
+            </NAlert>
+            <NAlert
+              v-if="releaseUpdateError"
+              type="error"
+              :title="t('settings.update.failed')"
+            >
+              {{ releaseUpdateError }}
+            </NAlert>
+            <div v-if="releaseUpdate" class="update-result" data-testid="release-update-result">
+              <div class="update-version-line">
+                <div>
+                  <span>{{ t("settings.update.current") }} v{{ releaseUpdate.currentVersion }}</span>
+                  <NIcon :size="16"><ChevronRight /></NIcon>
+                  <strong>v{{ releaseUpdate.latestVersion }}</strong>
+                </div>
+                <NTag :type="releaseUpdate.updateAvailable ? 'success' : 'default'" size="small">
+                  {{ releaseUpdate.updateAvailable
+                    ? t("settings.update.available")
+                    : t("settings.update.latest") }}
+                </NTag>
+              </div>
+              <template v-if="releaseUpdate.updateAvailable">
+                <NAlert
+                  v-if="!releaseUpdate.canInstall"
+                  type="warning"
+                  :title="t('settings.update.installUnavailable')"
+                >
+                  {{ releaseUpdate.installUnavailableReason }}
+                </NAlert>
+                <NAlert v-if="releaseUpdate.notesTruncated" type="info">
+                  {{ t("settings.update.notesTruncated") }}
+                </NAlert>
+                <div class="release-notes-heading">
+                  <strong>{{ t("settings.update.betweenVersions") }}</strong>
+                  <small>{{ t("settings.update.downloadSize") }} {{ formatDownloadSize(releaseUpdate.downloadBytes) }}</small>
+                </div>
+                <ol class="release-notes-list" data-testid="between-version-release-notes">
+                  <li v-for="release in releaseUpdate.releases" :key="release.version">
+                    <div>
+                      <strong>v{{ release.version }} · {{ release.title }}</strong>
+                      <time v-if="release.publishedAt">{{ formatReleaseDate(release.publishedAt) }}</time>
+                    </div>
+                    <pre>{{ release.body || t("settings.update.notesEmpty") }}</pre>
+                  </li>
+                </ol>
+                <NButton
+                  type="primary"
+                  data-testid="install-update-button"
+                  :loading="releaseUpdatePhase === 'installing'"
+                  :disabled="!releaseUpdate.canInstall || releaseUpdatePhase !== 'idle'"
+                  @click="installReleaseUpdate"
+                >
+                  <template #icon><NIcon><Download /></NIcon></template>
+                  {{ t("settings.update.install") }}
+                </NButton>
+              </template>
+            </div>
+          </section>
           <section class="changelog-card" data-testid="about-changelog">
             <div class="changelog-heading">
               <strong>{{ t("settings.about.changelog") }}</strong>
@@ -810,6 +973,17 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .about-badges { display: flex; align-items: center; gap: 8px; }
 .version-badge { color: var(--vt-color-primary-700); font-family: Consolas, monospace; font-size: var(--vt-font-caption); }
 .changelog-card { margin-top: 16px; padding: 18px 20px 8px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: linear-gradient(145deg, var(--vt-bg) 0%, var(--vt-bg-subtle) 100%); }
+.update-card { display: flex; flex-direction: column; gap: 14px; margin-top: 16px; padding: 18px 20px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
+.update-heading, .update-proxy-row, .update-version-line, .release-notes-list li > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.update-heading > div, .update-proxy-row > div, .release-notes-heading { display: flex; flex-direction: column; gap: 3px; }
+.update-heading small, .update-proxy-row small, .release-notes-heading small, .release-notes-list time { color: var(--vt-fg-muted); }
+.update-proxy-select { width: min(260px, 46%); }
+.proxy-disclosure { font-size: var(--vt-font-caption); }
+.update-result { display: flex; flex-direction: column; gap: 14px; padding-top: 2px; }
+.update-version-line > div { display: flex; align-items: center; gap: 6px; }
+.release-notes-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.release-notes-list li { padding: 13px 14px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-md); background: var(--vt-bg-subtle); }
+.release-notes-list pre { margin: 8px 0 0; color: var(--vt-fg-muted); font: inherit; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .changelog-heading { display: flex; flex-direction: column; gap: 3px; margin-bottom: 14px; }
 .changelog-heading small, .changelog-empty { color: var(--vt-fg-muted); }
 .changelog-list { margin: 0; padding: 0; list-style: none; }
@@ -846,6 +1020,8 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   .about-badges { align-items: flex-end; flex-direction: column; }
   .changelog-list li { grid-template-columns: 12px minmax(0, 1fr); }
   .changelog-list code { grid-column: 2; }
+  .update-heading, .update-proxy-row { align-items: stretch; flex-direction: column; }
+  .update-proxy-select { width: 100%; }
 }
 @media (max-width: 560px) {
   .settings-content { padding: 24px 14px; }

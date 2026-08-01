@@ -1,11 +1,17 @@
+export type UpdateProxyId = "direct" | "ghproxyNet" | "ghProxyCom" | "custom";
+
 export interface AppPreferences {
   readonly minimizeToTrayOnClose: boolean;
   readonly startWithWindows: boolean;
+  readonly updateProxy: UpdateProxyId;
+  readonly customUpdateProxyUrl: string;
 }
 
 export interface AppPreferencesUpdate {
   readonly minimizeToTrayOnClose?: boolean;
   readonly startWithWindows?: boolean;
+  readonly updateProxy?: UpdateProxyId;
+  readonly customUpdateProxyUrl?: string;
 }
 
 export const APP_PREFERENCES_WEB_MESSAGE_TYPES = [

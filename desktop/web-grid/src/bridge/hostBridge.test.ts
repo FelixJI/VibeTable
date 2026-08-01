@@ -117,11 +117,18 @@ describe("HostBridge", () => {
     webview.emit({
       type: "appPreferences.get",
       requestId: "preferences-get",
-      payload: { minimizeToTrayOnClose: false, startWithWindows: false },
+      payload: {
+        minimizeToTrayOnClose: false,
+        startWithWindows: false,
+        updateProxy: "direct",
+        customUpdateProxyUrl: "",
+      },
     });
     await expect(get).resolves.toEqual({
       minimizeToTrayOnClose: false,
       startWithWindows: false,
+      updateProxy: "direct",
+      customUpdateProxyUrl: "",
     });
 
     const update = bridge.request("appPreferences.update", {
@@ -135,12 +142,70 @@ describe("HostBridge", () => {
     webview.emit({
       type: "appPreferences.update",
       requestId: "preferences-update",
-      payload: { minimizeToTrayOnClose: true, startWithWindows: false },
+      payload: {
+        minimizeToTrayOnClose: true,
+        startWithWindows: false,
+        updateProxy: "direct",
+        customUpdateProxyUrl: "",
+      },
     });
     await expect(update).resolves.toEqual({
       minimizeToTrayOnClose: true,
       startWithWindows: false,
+      updateProxy: "direct",
+      customUpdateProxyUrl: "",
     });
+
+    bridge.stop();
+  });
+
+  it("correlates update RPCs and keeps installation beyond the ordinary timeout", async () => {
+    vi.useFakeTimers();
+    const ids = ["update-check", "update-install"];
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => ids.shift()!,
+    });
+    bridge.start();
+
+    const check = bridge.request("update.check", {});
+    webview.emit({
+      type: "update.check",
+      requestId: "update-check",
+      payload: {
+        currentVersion: "1.0.0",
+        latestVersion: "1.1.0",
+        updateAvailable: true,
+        canInstall: true,
+        installUnavailableReason: null,
+        downloadBytes: 1024,
+        releaseUrl: "https://github.com/FelixJI/VibeTable/releases/tag/v1.1.0",
+        notesTruncated: false,
+        releases: [],
+      },
+    });
+    await expect(check).resolves.toMatchObject({ latestVersion: "1.1.0" });
+
+    const install = bridge.request("update.install", {});
+    let settled = false;
+    void install.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(settled).toBe(false);
+    expect(webview.postMessage).toHaveBeenLastCalledWith({
+      type: "update.install",
+      requestId: "update-install",
+      payload: {},
+    });
+    webview.emit({
+      type: "update.install",
+      requestId: "update-install",
+      payload: { status: "restarting" },
+    });
+    await expect(install).resolves.toEqual({ status: "restarting" });
 
     bridge.stop();
   });

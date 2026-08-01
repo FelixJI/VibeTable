@@ -27,6 +27,23 @@ public partial class App : Application
     /// </summary>
     protected override void OnStartup(StartupEventArgs e)
     {
+        if (Services.UpdateProcessCommand.TryApply(
+                e.Args,
+                out int updateExitCode,
+                out string? updateError))
+        {
+            if (updateError is not null)
+            {
+                MessageBox.Show(
+                    updateError,
+                    "VibeTable 更新失败",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
+            Shutdown(updateExitCode);
+            return;
+        }
+        Services.UpdateProcessCommand.TryScheduleCleanup(e.Args);
         _ = SetCurrentProcessExplicitAppUserModelID(
             ApplicationUserModelId);
         base.OnStartup(e);

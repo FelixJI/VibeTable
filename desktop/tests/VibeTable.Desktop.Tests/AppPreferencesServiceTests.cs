@@ -23,17 +23,28 @@ public sealed class AppPreferencesServiceTests
         string path = PreferencesPath();
         var store = new JsonAppPreferencesStore(path);
 
-        Assert.IsFalse(store.ReadMinimizeToTrayOnClose());
+        Assert.AreEqual(PersistedAppPreferences.Default, store.Read());
 
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, "not-json");
-        Assert.IsFalse(store.ReadMinimizeToTrayOnClose());
+        Assert.AreEqual(PersistedAppPreferences.Default, store.Read());
 
-        store.WriteMinimizeToTrayOnClose(true);
-        Assert.IsTrue(store.ReadMinimizeToTrayOnClose());
+        store.Write(new PersistedAppPreferences(
+            true,
+            UpdateProxyOptions.GhProxyNet,
+            "https://proxy.example.com/"));
+        Assert.AreEqual(
+            new PersistedAppPreferences(
+                true,
+                UpdateProxyOptions.GhProxyNet,
+                "https://proxy.example.com/"),
+            store.Read());
         using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
         Assert.IsTrue(
             document.RootElement.GetProperty("minimizeToTrayOnClose").GetBoolean());
+        Assert.AreEqual(
+            UpdateProxyOptions.GhProxyNet,
+            document.RootElement.GetProperty("updateProxy").GetString());
     }
 
     [TestMethod]
@@ -46,9 +57,30 @@ public sealed class AppPreferencesServiceTests
         AppPreferences updated = service.Update(new AppPreferencesPatch(true, true));
 
         Assert.AreEqual(new AppPreferences(true, true), updated);
-        Assert.IsTrue(store.Value);
+        Assert.IsTrue(store.Value.MinimizeToTrayOnClose);
         Assert.IsTrue(startup.Enabled);
         CollectionAssert.AreEqual(new[] { true }, startup.Changes);
+    }
+
+    [TestMethod]
+    public void UpdatePersistsProxySelectionWithoutChangingStartup()
+    {
+        var store = new FakeStore();
+        var startup = new FakeStartupRegistration();
+        var service = new AppPreferencesService(store, startup);
+
+        AppPreferences updated = service.Update(new AppPreferencesPatch(
+            null,
+            null,
+            UpdateProxyOptions.Custom,
+            " https://proxy.example.com/base ",
+            HasCustomUpdateProxyUrl: true));
+
+        Assert.AreEqual(UpdateProxyOptions.Custom, updated.UpdateProxy);
+        Assert.AreEqual("https://proxy.example.com/base", updated.CustomUpdateProxyUrl);
+        Assert.AreEqual(updated.MinimizeToTrayOnClose, store.Value.MinimizeToTrayOnClose);
+        Assert.AreEqual(updated.UpdateProxy, store.Value.UpdateProxy);
+        Assert.IsEmpty(startup.Changes);
     }
 
     [TestMethod]
@@ -115,6 +147,12 @@ public sealed class AppPreferencesServiceTests
             "{\"minimizeToTrayOnClose\":true,\"startWithWindows\":false}",
             out AppPreferencesPatch? patch));
         Assert.AreEqual(new AppPreferencesPatch(true, false), patch);
+        Assert.IsTrue(ParsePatch(
+            "{\"updateProxy\":\"custom\",\"customUpdateProxyUrl\":\"https://proxy.example/\"}",
+            out patch));
+        Assert.AreEqual(UpdateProxyOptions.Custom, patch!.UpdateProxy);
+        Assert.IsTrue(patch.HasCustomUpdateProxyUrl);
+        Assert.IsFalse(ParsePatch("{\"updateProxy\":\"automatic\"}", out _));
     }
 
     private static bool ParsePatch(string json, out AppPreferencesPatch? patch)
@@ -133,18 +171,18 @@ public sealed class AppPreferencesServiceTests
 
     private sealed class FakeStore : IAppPreferencesStore
     {
-        private bool _value;
+        private PersistedAppPreferences _value = PersistedAppPreferences.Default;
 
         public bool InitialValue
         {
-            init => _value = value;
+            init => _value = _value with { MinimizeToTrayOnClose = value };
         }
-        public bool Value => _value;
+        public PersistedAppPreferences Value => _value;
         public bool ThrowOnWrite { get; init; }
 
-        public bool ReadMinimizeToTrayOnClose() => _value;
+        public PersistedAppPreferences Read() => _value;
 
-        public void WriteMinimizeToTrayOnClose(bool value)
+        public void Write(PersistedAppPreferences value)
         {
             if (ThrowOnWrite) throw new IOException("simulated write failure");
             _value = value;

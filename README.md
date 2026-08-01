@@ -112,6 +112,8 @@ uv run python scripts/release.py --bump patch --push
 
 `.github/workflows/ci.yml` 在 Windows runner 上分别验证 Python/契约、Web、插件 SDK、Go sidecar 和 Windows/.NET。`.github/workflows/release.yml` 只响应与仓库版本一致的 `vX.Y.Z` tag，在 Windows 上重新验证并构建 ZIP、SHA-256 与包内 SBOM，然后发布 GitHub Release。
 
+已安装的 Windows x64 便携包可在“设置 → 关于 → 软件更新”手动读取 GitHub Releases、查看当前版本到目标版本之间的更新日志，并选择 GitHub 直连、`ghproxy.net`、`gh-proxy.com` 或自定义 HTTPS 下载代理。代理只用于 ZIP 传输，文件仍按 GitHub API 提供的 SHA-256 digest 校验；更新事务不会触碰 `%LOCALAPPDATA%\VibeTable` 用户数据。详细安全边界见 [自我更新能力说明](docs/self-update-assessment.md)。
+
 ## 版本管理
 
 单一版本来源是 `backend/_version.py`。`scripts/release.py` 会同步并校验 Python、.NET、Web、sidecar 和发布清单中的版本标识；发布目录、ZIP、校验文件和 `release.json` 都会携带相同版本号。
