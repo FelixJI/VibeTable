@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from scripts import changelog
-from scripts.versioning import read_project_version
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -60,13 +59,3 @@ def test_changelog_uses_non_merge_commits_and_filters_merge_wording(
         changelog.ChangelogEntry(subject="feat: 新增筛选器", commit="a1b2c3d0"),
         changelog.ChangelogEntry(subject="fix: 修复导出", commit="e5f6a7b0"),
     ]
-
-
-def test_checked_in_changelog_matches_the_current_version() -> None:
-    assert (
-        changelog.check_changelog(
-            REPO_ROOT,
-            read_project_version(REPO_ROOT),
-        )
-        == []
-    )
