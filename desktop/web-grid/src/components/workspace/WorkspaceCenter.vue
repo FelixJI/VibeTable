@@ -57,6 +57,8 @@ const mirroredCreationAvailable = computed(() =>
   locationPolicy.value === "other" && mirroredCreationEnabled.value);
 const encryptionMode = ref<"none" | "convenient" | "protected">("convenient");
 const convenientPasswordCopied = ref(false);
+const workspaceFlowModalStyle = { maxHeight: "calc(100dvh - 32px)" } as const;
+const workspaceFlowContentStyle = { minHeight: "0", overflowY: "auto" } as const;
 const deleteWorkspaceId = ref<string | null>(null);
 const deleteTrigger = ref<HTMLElement | null>(null);
 const deleteConfirmation = ref("");
@@ -421,6 +423,8 @@ watch(
       :show="flow !== null"
       preset="card"
       class="workspace-flow-modal"
+      :style="workspaceFlowModalStyle"
+      :content-style="workspaceFlowContentStyle"
       :title="flow === 'create' ? t('workspaceV2.center.createTitle') : t('workspaceV2.center.connectTitle')"
       :trap-focus="true"
       :auto-focus="true"
@@ -542,6 +546,8 @@ watch(
       :show="protection.snapshotPackagePlan !== null"
       preset="card"
       class="workspace-flow-modal"
+      :style="workspaceFlowModalStyle"
+      :content-style="workspaceFlowContentStyle"
       :title="t('workspaceV2.center.importTitle')"
       :trap-focus="true"
       :auto-focus="true"
@@ -605,6 +611,8 @@ watch(
       :show="deletePlan !== null"
       preset="card"
       class="workspace-flow-modal"
+      :style="workspaceFlowModalStyle"
+      :content-style="workspaceFlowContentStyle"
       :title="t('workspaceV2.center.deleteTitle')"
       :trap-focus="true"
       :auto-focus="true"

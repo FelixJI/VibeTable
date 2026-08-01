@@ -86,6 +86,25 @@ describe("workspace protection UI capability gates", () => {
     wrapper.unmount();
   });
 
+  it("constrains the workspace flow to the viewport and scrolls long content", async () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    const wrapper = mount(WorkspaceCenter, { attachTo: document.body });
+
+    await wrapper.get('[data-testid="workspace-create"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
+    const modal = document.body.querySelector<HTMLElement>(".workspace-flow-modal");
+    const content = modal?.querySelector<HTMLElement>(".n-card__content");
+    try {
+      expect(modal?.style.maxHeight).toBe("calc(100dvh - 32px)");
+      expect(content?.style.minHeight).toBe("0px");
+      expect(content?.style.overflowY).toBe("auto");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("offers an explicit other-location picker for workspace creation", async () => {
     const session = useWorkspaceSessionStore();
     session.configureCapabilities(["workspace.session.v2"]);
