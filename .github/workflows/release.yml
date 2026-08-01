@@ -9,12 +9,23 @@ on:
         description: Existing draft Release tag, for example v0.2.1
         required: true
         type: string
+  # Auto-attach assets after the Release Please workflow finishes. Release Please
+  # also runs for non-draft scenarios (release-request, release-pr), so the build
+  # job resolves the latest actionable draft and skips gracefully when there is
+  # none — see the "Resolve release tag" step.
+  workflow_run:
+    workflows: ["Release Please"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-assets-${{ github.repository }}-${{ inputs.release_tag }}
+  # workflow_run events have empty inputs; fall back to a stable per-repo key so
+  # auto-triggered builds serialize. The "Resolve release tag" step + idempotency
+  # check prevent rebuilding a draft that already has assets.
+  group: release-assets-${{ github.repository }}-${{ inputs.release_tag || 'auto' }}
   cancel-in-progress: false
 
 defaults:
@@ -23,7 +34,7 @@ defaults:
 
 jobs:
   build:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run'
     name: Build and upload Windows package
     runs-on: windows-latest
     timeout-minutes: 120
@@ -38,27 +49,76 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ inputs.release_tag }}
+          # ref resolved per-event in the next step; default checkout keeps
+          # workflow_run (which has no ref context) from failing here.
+
+      - name: Resolve release tag
+        id: resolve
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          # Manual dispatch: trust the provided tag.
+          if ($env:EVENT_NAME -eq 'workflow_dispatch') {
+            $tag = $env:INPUT_TAG.Trim()
+            if ([string]::IsNullOrEmpty($tag)) { throw "workflow_dispatch requires release_tag input" }
+            git fetch origin "$tag" --tags --force
+            git checkout "$tag"
+            "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+            "release_tag=$tag" >> $env:GITHUB_OUTPUT
+            Write-Host "::notice::Manual build for $tag"
+            return
+          }
+
+          # Auto path (workflow_run): find the latest draft release. If there is
+          # none, or it already carries the package zip, skip gracefully.
+          $drafts = gh release list --limit 50 --json tagName,isDraft `
+            | ConvertFrom-Json | Where-Object { $_.isDraft -and $_.tagName -match '^v\d+\.\d+\.\d+$' }
+          if (-not $drafts) {
+            Write-Host "::notice::No actionable draft release; skipping build."
+            "RELEASE_TAG=" >> $env:GITHUB_ENV
+            "release_tag=" >> $env:GITHUB_OUTPUT
+            return
+          }
+          $tag = $drafts[0].tagName
+          # Idempotency: skip if this draft already has the package zip attached
+          # (e.g. workflow_run fired again after a successful attach).
+          $assets = gh release view "$tag" --json assets --jq '.assets[].name'
+          if ($assets -contains "VibeTable-$tag-win-x64.zip") {
+            Write-Host "::notice::Draft $tag already has assets; skipping build."
+            "RELEASE_TAG=" >> $env:GITHUB_ENV
+            "release_tag=" >> $env:GITHUB_OUTPUT
+            return
+          }
+          git fetch origin "$tag" --tags --force
+          git checkout "$tag"
+          "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+          "release_tag=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "::notice::Auto build for draft $tag"
 
       - uses: actions/setup-node@v6
+        if: env.RELEASE_TAG != ''
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: desktop/web-grid/package-lock.json
 
       - uses: actions/setup-go@v6
+        if: env.RELEASE_TAG != ''
         with:
           go-version-file: sidecar/go.mod
           cache-dependency-path: sidecar/go.sum
 
       - uses: actions/setup-dotnet@v5
+        if: env.RELEASE_TAG != ''
         with:
           global-json-file: global.json
 
       - name: Verify tag and draft Release
         id: identity
+        if: env.RELEASE_TAG != ''
         env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
         run: |
           $version = (python -c "from backend._version import __version__; print(__version__)").Trim()
           if ($env:RELEASE_TAG -ne "v$version") {
@@ -71,6 +131,7 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Install pinned Windows race toolchain
+        if: env.RELEASE_TAG != ''
         run: |
           $archive = Join-Path $env:RUNNER_TEMP "w64devkit-x64-2.8.0.7z.exe"
           $destination = Join-Path $PWD ".tools\w64devkit"
@@ -89,22 +150,27 @@ jobs:
           }
 
       - name: Set up uv
+        if: env.RELEASE_TAG != ''
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: "0.11.16"
           enable-cache: true
 
       - name: Install locked build and verification dependencies
+        if: env.RELEASE_TAG != ''
         run: uv sync --frozen --group build --group dev
 
       - name: Install locked web dependencies
+        if: env.RELEASE_TAG != ''
         working-directory: desktop/web-grid
         run: npm ci
 
       - name: Build immutable release candidate
+        if: env.RELEASE_TAG != ''
         run: uv run python scripts/build_next.py --release
 
       - name: Archive immutable release candidate
+        if: env.RELEASE_TAG != ''
         env:
           PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
         run: >
@@ -113,6 +179,7 @@ jobs:
           --archive $env:PACKAGE_ARCHIVE
 
       - name: Run complete release eligibility gate
+        if: env.RELEASE_TAG != ''
         env:
           VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY: ${{ secrets.PROVIDER_EVIDENCE_HMAC_KEY }}
           VIBETABLE_PROVIDER_EVIDENCE_KEY_ID: ${{ vars.PROVIDER_EVIDENCE_KEY_ID }}
@@ -125,6 +192,7 @@ jobs:
           --json-report build/qa/release-eligibility.json
 
       - name: Verify eligibility is bound to the immutable candidate
+        if: env.RELEASE_TAG != ''
         env:
           PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
         run: >
@@ -134,16 +202,18 @@ jobs:
           --eligibility-report build/qa/release-eligibility.json
 
       - name: Upload release eligibility evidence
+        if: env.RELEASE_TAG != ''
         uses: actions/upload-artifact@v6
         with:
-          name: release-eligibility-${{ inputs.release_tag }}
+          name: release-eligibility-${{ steps.resolve.outputs.release_tag }}
           path: build/qa/release-eligibility.json
           if-no-files-found: error
 
       - name: Upload workflow artifact
+        if: env.RELEASE_TAG != ''
         uses: actions/upload-artifact@v7
         with:
-          name: VibeTable-${{ inputs.release_tag }}
+          name: VibeTable-${{ steps.resolve.outputs.release_tag }}
           path: |
             dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
             dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip.sha256
@@ -151,8 +221,9 @@ jobs:
           retention-days: 30
 
       - name: Attach assets to draft Release
+        if: env.RELEASE_TAG != ''
         env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
           PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
         run: |
           gh release upload $env:RELEASE_TAG `

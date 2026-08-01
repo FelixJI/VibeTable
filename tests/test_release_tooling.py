@@ -595,13 +595,33 @@ def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> No
 
     assert "workflow_dispatch:" in workflow
     assert "release:\n    types: [published]" in workflow
+    # Build auto-fires after Release Please finishes so draft Releases get their
+    # assets without a manual dispatch; workflow_run has no inputs, so the tag is
+    # resolved dynamically instead of being read from inputs.release_tag.
+    assert "workflow_run:" in workflow
+    assert 'workflows: ["Release Please"]' in workflow
     assert "release_tag:" in workflow
+    assert "Resolve release tag" in workflow
+    assert "INPUT_TAG: ${{ inputs.release_tag }}" in workflow
+    assert "RELEASE_TAG: ${{ env.RELEASE_TAG }}" in workflow
+    # The old direct binding `RELEASE_TAG: ${{ inputs.release_tag }}` only worked
+    # for manual dispatch and is now replaced by the Resolve step + env wiring:
+    # the upload step reads the resolved tag from env, never from inputs.
+    attach = workflow.split("Attach assets to draft Release", 1)[1]
+    assert "RELEASE_TAG: ${{ env.RELEASE_TAG }}" in attach
+    assert "${{ inputs.release_tag }}" not in attach
     assert "Verify tag and draft Release" in workflow
     assert "gh release view $env:RELEASE_TAG --json isDraft" in workflow
     assert "Attach assets to draft Release" in workflow
     assert "gh release upload" in workflow
     assert "Keep the five most recent published Releases" in workflow
+    # The published-Release cleanup keeps running on the release event, while the
+    # build job answers manual dispatch and the Release Please completion hook.
     assert "if: github.event_name == 'release'" in workflow
+    assert (
+        "if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run'"
+        in workflow
+    )
     assert "schedule:" not in workflow
     assert "gh release create" not in workflow
     assert "git push" not in workflow
@@ -629,7 +649,10 @@ def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> No
     )
     assert release_config["packages"]["."]["skip-changelog"] is True
     assert "--generate-notes" not in workflow
-    assert "RELEASE_TAG: ${{ inputs.release_tag }}" in workflow
+    # RELEASE_TAG is resolved by the "Resolve release tag" step (supports both
+    # manual dispatch and the Release Please workflow_run hook) and flows through
+    # env to downstream steps; the Resolve step must run before asset attach.
+    assert workflow.index("Resolve release tag") < workflow.index("Attach assets to draft Release")
     assert "w64devkit-x64-2.8.0.7z.exe" in workflow
     assert "6252bf34fe2231a55ac7f03d482b36d2c7c58697990551bba508102cfb3f342e" in workflow
     assert '7z x $archive "-o$destination" -y' in workflow
