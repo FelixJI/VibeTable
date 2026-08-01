@@ -1,10 +1,10 @@
 name: Mirror
 
 on:
-  workflow_run:
-    workflows: ["Release Please"]
-    types: [completed]
-    branches: [main]
+  # Mirror only after a Release is actually published, so unfinished draft tags
+  # are not pushed to the downstream mirrors ahead of the bundled assets.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -16,14 +16,9 @@ concurrency:
 
 jobs:
   mirror:
-    # workflow_run 监听整个 Release Please workflow的完成,不区分触发事件。
-    # release-please 有两类入口(push main 打 tag / workflow_dispatch 仅开 PR)。
-    # 仅对 push 触发的那次运行做镜像(此时 main 有新 commit + 新 tag);
-    # 手动开 PR 那次 main 不变,镜像无意义。workflow_dispatch 仍可随时兜底。
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push')
+    # 触发已收敛为 release:published(见上方 on:),workflow_dispatch 仅作手动兜底。
+    # 旧版按 workflow_run 事件过滤的逻辑在 trigger 改为 release 后已成死代码,故移除。
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
     runs-on: ubuntu-latest
     env:
       # 所有目标地址与凭据都来自 secret,改地址/换令牌无需改代码。
