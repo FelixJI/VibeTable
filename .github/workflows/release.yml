@@ -8,7 +8,7 @@ on:
         required: true
         type: string
   # Build, verify, attach, and publish after Release Please finishes. Release
-  # Please also runs for non-draft scenarios (release-request, release-pr), so
+  # Please also runs while creating or updating a Release PR, so
   # the build job resolves the latest actionable draft and skips gracefully when
   # there is none — see the "Resolve release tag" step.
   workflow_run:

@@ -622,7 +622,7 @@ def test_release_preflight_rejects_dirty_or_untracked_worktree(
         _ensure_clean_worktree()
 
 
-def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> None:
+def test_release_workflows_open_direct_release_prs_and_only_fill_draft_releases() -> None:
     workflows = REPO_ROOT / ".github" / "workflows"
     workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     cleanup = (REPO_ROOT / ".github" / "workflows" / "release-cleanup.yml").read_text(
@@ -634,13 +634,6 @@ def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> No
     release_config = json.loads(
         (REPO_ROOT / "release-please-config.json").read_text(encoding="utf-8")
     )
-    release_request = json.loads(
-        (REPO_ROOT / ".github" / "release-request.json").read_text(encoding="utf-8")
-    )
-    release_manifest = json.loads(
-        (REPO_ROOT / ".release-please-manifest.json").read_text(encoding="utf-8")
-    )
-
     assert {path.name for path in workflows.glob("*.yml")} == {
         "ci.yml",
         "mirror.yml",
@@ -688,15 +681,25 @@ def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> No
     assert "git push" not in workflow
 
     assert "workflow_dispatch:" in release_please
-    assert "options: [patch, minor, major]" in release_please
+    assert "options: [patch, minor, major]" not in release_please
+    assert "Compute requested version" not in release_please
     assert "git commit --allow-empty" not in release_please
     assert "git push origin HEAD:main" not in release_please
-    assert ".github/release-request.json" in release_please
-    assert "gh pr create" in release_please
-    assert "gh pr merge --auto --squash" in release_please
-    assert '"Release-As: ${NEXT_VERSION}"' in release_please
-    assert "contains(github.event.head_commit.message, 'Release-As:')" in release_please
-    assert "release-as: ${{ steps.version.outputs.next }}" not in release_please
+    assert not (REPO_ROOT / ".github" / "release-request.json").exists()
+    assert "release-request:" not in release_please
+    assert "gh pr create" not in release_please
+    assert "gh pr merge --auto --squash" not in release_please
+    assert "Release-As:" not in release_please
+    assert "if: github.event_name == 'workflow_dispatch'" in release_please
+    assert "Clear stale pending labels from closed Release PRs" in release_please
+    stale_label_cleanup = release_please.split(
+        "Clear stale pending labels from closed Release PRs", 1
+    )[1].split("Create or update Release PR", 1)[0]
+    assert "gh pr list" in stale_label_cleanup
+    assert "--state closed" in stale_label_cleanup
+    assert "--base main" in stale_label_cleanup
+    assert '--label "autorelease: pending"' in stale_label_cleanup
+    assert 'gh pr edit "$number" --remove-label "autorelease: pending"' in release_please
     assert "skip-github-release: true" in release_please
     assert "skip-github-pull-request: true" in release_please
     assert "id: release" in release_please
@@ -712,11 +715,6 @@ def test_release_workflows_use_manual_bumps_and_only_fill_draft_releases() -> No
     assert refresh_changelog.index(
         'git config user.name "github-actions[bot]"'
     ) < refresh_changelog.index('git commit -m "chore(release): refresh generated changelog"')
-    # release-request.json records the next version a Release PR targets, so it
-    # leads .release-please-manifest.json until the Release PR lands the bump.
-    assert _version_tuple(release_request["requested-version"]) >= _version_tuple(
-        release_manifest["."]
-    )
     assert release_config["packages"]["."]["skip-changelog"] is True
     assert "--generate-notes" not in workflow
     # RELEASE_TAG is resolved by the "Resolve release tag" step (supports both
