@@ -85,6 +85,7 @@ import {
   mutationRejectionMessage,
   relationLookupErrorMessage,
   relationLookupNoticeKey,
+  workspaceV2ErrorMessage,
 } from "@/services/notificationPolicy";
 import { useKeyboard } from "@/composables/useKeyboard";
 import { useUiStore, type AppView } from "@/stores/uiStore";
@@ -1619,7 +1620,7 @@ async function handleWorkspaceV2Action(action: WorkspaceV2UiAction): Promise<boo
     workspaceProtection.finishOperation();
     return true;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = workspaceV2ErrorMessage(error);
     workspaceProtection.finishOperation(message);
     if (action.method === "workspace.open" || action.method === "workspace.switch") {
       workspaceSession.failSwitch(message);

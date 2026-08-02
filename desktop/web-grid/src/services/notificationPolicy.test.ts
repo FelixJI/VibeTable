@@ -6,6 +6,7 @@ import {
 import {
   createNotificationDeduper,
   relationLookupErrorMessage,
+  workspaceV2ErrorMessage,
 } from "./notificationPolicy";
 
 describe("notificationPolicy", () => {
@@ -29,6 +30,19 @@ describe("notificationPolicy", () => {
     const localized = relationLookupErrorMessage(error);
     expect(localized).not.toContain(error.message);
     expect(localized).toContain("关系");
+  });
+
+  it("maps non-fixed direct workspace failures to an actionable mirrored-mode prompt", () => {
+    const error = new BridgeOperationError({
+      code: "workspace.storage_requires_mirrored",
+      message: "raw host storage message",
+    });
+
+    const localized = workspaceV2ErrorMessage(error);
+
+    expect(localized).toContain("非固定存储");
+    expect(localized).toContain("镜像模式");
+    expect(localized).not.toContain(error.message);
   });
 
   it("maps timeouts and suppresses cancellations", () => {

@@ -10,6 +10,13 @@ from qa import handoff, package_check, provider_evidence_check, release_candidat
 
 ATTESTATION_KEY = "lab-secret"
 ATTESTATION_KEY_ID = "release-lab-v1"
+SMB_REQUIRED_STAGES = (
+    "protocol-identification",
+    "durable-write-rename-readback",
+    "immutable-no-replace-publish",
+    "disconnect-reconnect-recovery",
+    "independent-reopen-root-verification",
+)
 
 
 def _support(root: Path, *, creation: str) -> None:
@@ -31,6 +38,7 @@ def _support(root: Path, *, creation: str) -> None:
                     "network": {
                         "creation": creation,
                         "coordinationStrength": "advisory",
+                        "protocol": "smb",
                         "requiredEvidence": "hardware.smb-v1",
                     },
                 },
@@ -147,6 +155,7 @@ def _evidence(
     artifact_hashes: dict[str, str],
     expires_at: datetime,
     dependencies: dict[str, str],
+    stages: tuple[str, ...] = SMB_REQUIRED_STAGES,
 ) -> None:
     evidence_root = root / "qa/provider-evidence"
     logs = evidence_root / "logs"
@@ -167,12 +176,13 @@ def _evidence(
         "releaseEligible": True,
         "runs": [
             {
-                "stage": "durable rename",
+                "stage": stage,
                 "oracle": "workspace remains consistent",
                 "timeoutSeconds": 60,
                 "result": "passed",
                 "logSha256": log_hash,
             }
+            for stage in stages
         ],
     }
     evidence_path = evidence_root / "hardware.smb-v1.json"
@@ -203,6 +213,16 @@ def _evidence(
 def test_blocked_provider_needs_no_fabricated_hardware_evidence(tmp_path: Path) -> None:
     _support(tmp_path, creation="blockedPendingLab")
     assert provider_evidence_check.check(tmp_path) == []
+
+
+def test_network_provider_requires_explicit_smb_protocol(tmp_path: Path) -> None:
+    _support(tmp_path, creation="blockedPendingLab")
+    path = tmp_path / "contracts/v2/provider-support.json"
+    support = json.loads(path.read_text(encoding="utf-8"))
+    support["providers"]["network"].pop("protocol")
+    path.write_text(json.dumps(support), encoding="utf-8")
+
+    assert provider_evidence_check.check(tmp_path) == ["network: protocol must be smb"]
 
 
 def test_enabled_provider_without_evidence_is_release_blocked(tmp_path: Path) -> None:
@@ -270,6 +290,33 @@ def test_source_check_accepts_authentic_evidence_before_candidate_exists(
     monkeypatch.setenv("VIBETABLE_PROVIDER_EVIDENCE_KEY_ID", ATTESTATION_KEY_ID)
 
     assert provider_evidence_check.check(tmp_path, now=now) == []
+
+
+def test_smb_evidence_requires_every_safety_stage(tmp_path: Path, monkeypatch) -> None:
+    _support(tmp_path, creation="enabled")
+    head = "a" * 40
+    now = datetime(2026, 7, 29, tzinfo=UTC)
+    source_hash = _source_identity(tmp_path)
+    dependencies = _dependency_versions(tmp_path)
+    artifact_hashes, _artifact = _release_artifacts(tmp_path / "release")
+    _evidence(
+        tmp_path,
+        source_commit=head,
+        source_hash=source_hash,
+        artifact_hashes=artifact_hashes,
+        expires_at=now + timedelta(days=1),
+        dependencies=dependencies,
+        stages=("durable-write-rename-readback",),
+    )
+    monkeypatch.setattr(provider_evidence_check, "_head", lambda _root: head)
+    monkeypatch.setenv("VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY", ATTESTATION_KEY)
+    monkeypatch.setenv("VIBETABLE_PROVIDER_EVIDENCE_KEY_ID", ATTESTATION_KEY_ID)
+
+    assert provider_evidence_check.check(tmp_path, now=now) == [
+        "hardware.smb-v1: missing required hardware stages: "
+        "disconnect-reconnect-recovery, immutable-no-replace-publish, "
+        "independent-reopen-root-verification, protocol-identification"
+    ]
 
 
 def test_packaged_provider_requires_candidate_artifact_hashes(

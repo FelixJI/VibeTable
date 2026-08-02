@@ -28,7 +28,7 @@ public sealed class WorkspaceProviderPolicyTests
               "contractVersion": "2.0",
               "providers": {
                 "fixed": {"creation": "enabled", "coordinationStrength": "strong"},
-                "network": {"creation": "disabled", "coordinationStrength": "advisory"},
+                "network": {"creation": "disabled", "coordinationStrength": "advisory", "protocol": "smb"},
                 "registeredCloud": {"creation": "disabled", "coordinationStrength": "advisory"},
                 "userMarkedSync": {"creation": "disabled", "coordinationStrength": "advisory"},
                 "removable": {"creation": "disabled", "coordinationStrength": "advisory"}
@@ -38,6 +38,47 @@ public sealed class WorkspaceProviderPolicyTests
         try
         {
             Assert.IsNotNull(WorkspaceProviderPolicy.Load(root));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void LoadRejectsNetworkPolicyWithoutExplicitSmbProtocol()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-provider-policy-tests",
+            Guid.NewGuid().ToString("N"));
+        string policyPath = Path.Combine(
+            root,
+            "contracts",
+            "v2",
+            "provider-support.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(policyPath)!);
+        File.WriteAllText(
+            policyPath,
+            """
+            {
+              "contractVersion": "2.0",
+              "providers": {
+                "fixed": {"creation": "enabled", "coordinationStrength": "strong"},
+                "network": {"creation": "disabled", "coordinationStrength": "advisory"},
+                "registeredCloud": {"creation": "disabled", "coordinationStrength": "advisory"},
+                "userMarkedSync": {"creation": "disabled", "coordinationStrength": "advisory"},
+                "removable": {"creation": "disabled", "coordinationStrength": "advisory"}
+              }
+            }
+            """);
+        try
+        {
+            WorkspaceRegistryException error =
+                Assert.ThrowsExactly<WorkspaceRegistryException>(() =>
+                    WorkspaceProviderPolicy.Load(root));
+
+            Assert.AreEqual("workspace.provider_policy_invalid", error.Code);
         }
         finally
         {
@@ -78,13 +119,108 @@ public sealed class WorkspaceProviderPolicyTests
                 WorkspaceCoordinationStrength.Advisory,
                 1024,
                 false,
-                DateTimeOffset.UtcNow));
+                DateTimeOffset.UtcNow,
+                RemoteProtocol: WorkspaceRemoteProtocol.Smb));
 
         WorkspaceRegistryException error =
             Assert.ThrowsExactly<WorkspaceRegistryException>(() =>
                 policy.ProbeAndEnsureSupported(Path.GetTempPath()));
 
         Assert.AreEqual("workspace.provider_blocked", error.Code);
+    }
+
+    [TestMethod]
+    public void EnabledNetworkProviderAcceptsSmbOnlyInMirroredMode()
+    {
+        WorkspaceProviderPolicy policy = WorkspaceProviderPolicy.CreateForTests(
+            new Dictionary<WorkspaceStorageKind, bool>
+            {
+                [WorkspaceStorageKind.Network] = true,
+            },
+            (root, _, _) => new WorkspaceStorageObservation(
+                WorkspaceStorageKind.Network,
+                WorkspaceCoordinationStrength.Advisory,
+                1024,
+                false,
+                DateTimeOffset.UtcNow,
+                RemoteProtocol: WorkspaceRemoteProtocol.Smb));
+
+        WorkspaceStorageObservation result = policy.ProbeAndEnsureSupported(
+            Path.GetTempPath(),
+            WorkspaceStorageMode.Mirrored);
+
+        Assert.AreEqual(WorkspaceRemoteProtocol.Smb, result.RemoteProtocol);
+        Assert.IsTrue(policy.MirroredCreationEnabled);
+    }
+
+    [TestMethod]
+    public void BlockedNetworkProviderDoesNotAdvertiseMirroredCreation()
+    {
+        WorkspaceProviderPolicy policy = WorkspaceProviderPolicy.CreateForTests(
+            new Dictionary<WorkspaceStorageKind, bool>
+            {
+                [WorkspaceStorageKind.Fixed] = true,
+            },
+            (root, _, _) => new WorkspaceStorageObservation(
+                WorkspaceStorageKind.Fixed,
+                WorkspaceCoordinationStrength.Strong,
+                1024,
+                false,
+                DateTimeOffset.UtcNow));
+
+        Assert.IsFalse(policy.MirroredCreationEnabled);
+    }
+
+    [TestMethod]
+    public void EnabledNetworkProviderRejectsNonSmbProtocol()
+    {
+        WorkspaceProviderPolicy policy = WorkspaceProviderPolicy.CreateForTests(
+            new Dictionary<WorkspaceStorageKind, bool>
+            {
+                [WorkspaceStorageKind.Network] = true,
+            },
+            (root, _, _) => new WorkspaceStorageObservation(
+                WorkspaceStorageKind.Network,
+                WorkspaceCoordinationStrength.Advisory,
+                1024,
+                false,
+                DateTimeOffset.UtcNow,
+                RemoteProtocol: WorkspaceRemoteProtocol.Other));
+
+        WorkspaceRegistryException error =
+            Assert.ThrowsExactly<WorkspaceRegistryException>(() =>
+                policy.ProbeAndEnsureSupported(
+                    Path.GetTempPath(),
+                    WorkspaceStorageMode.Mirrored));
+
+        Assert.AreEqual("workspace.network_protocol_unsupported", error.Code);
+    }
+
+    [TestMethod]
+    public void DirectNetworkTargetRequiresMirroredBeforeProviderEvidenceCheck()
+    {
+        WorkspaceProviderPolicy policy = WorkspaceProviderPolicy.CreateForTests(
+            new Dictionary<WorkspaceStorageKind, bool>
+            {
+                [WorkspaceStorageKind.Fixed] = true,
+            },
+            (root, _, _) => new WorkspaceStorageObservation(
+                WorkspaceStorageKind.Network,
+                WorkspaceCoordinationStrength.Advisory,
+                1024,
+                false,
+                DateTimeOffset.UtcNow));
+
+        WorkspaceRegistryException error =
+            Assert.ThrowsExactly<WorkspaceRegistryException>(() =>
+                policy.ProbeCreateTargetAndEnsureSupported(
+                    Path.GetTempPath(),
+                    WorkspaceStorageMode.Direct));
+
+        Assert.AreEqual("workspace.storage_requires_mirrored", error.Code);
+        Assert.AreEqual(
+            "This non-fixed location requires mirrored storage mode.",
+            error.Message);
     }
 
     [TestMethod]

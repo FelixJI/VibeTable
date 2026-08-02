@@ -7,6 +7,17 @@ namespace VibeTable.Infrastructure.Tests.Workspace;
 public sealed class WorkspaceStorageProbeTests
 {
     [TestMethod]
+    public void RemoteProtocolClassificationAcceptsOnlyTheWindowsSmbProtocol()
+    {
+        Assert.AreEqual(
+            WorkspaceRemoteProtocol.Smb,
+            WindowsRemoteProtocolProbe.Classify(0x00020000));
+        Assert.AreEqual(
+            WorkspaceRemoteProtocol.Other,
+            WindowsRemoteProtocolProbe.Classify(0x002B0000));
+    }
+
+    [TestMethod]
     public void SystemCloudFilesProbeClassifiesNestedPathWithoutCallerRoots()
     {
         var root = Path.Combine(

@@ -118,6 +118,9 @@ describe("workspace protection UI capability gates", () => {
       '[data-testid="workspace-location-policy"] input[value="other"]',
     )!.click();
     await wrapper.vm.$nextTick();
+    expect(document.body.querySelector(".workspace-flow-modal")?.textContent).toContain(
+      "SMB 等网络位置属于非固定存储，必须使用镜像模式",
+    );
     document.body.querySelector<HTMLButtonElement>(
       '[data-testid="workspace-flow-confirm"]',
     )!.click();
