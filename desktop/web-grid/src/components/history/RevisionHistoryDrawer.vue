@@ -32,6 +32,7 @@ import {
   UserRound,
 } from "lucide-vue-next";
 import type { HistoryChangeSet, HistoryRecordChange } from "@/contracts";
+import { useSystemTimeZone } from "@/composables/useSystemTimeZone";
 import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
 import { useUiStore } from "@/stores/uiStore";
 import { t } from "@/i18n";
@@ -50,6 +51,7 @@ const emit = defineEmits<{
 
 const store = useRevisionHistoryStore();
 const ui = useUiStore();
+const systemTimeZone = useSystemTimeZone();
 const searchDraft = ref("");
 const actorDraft = ref("");
 const recordDraft = ref("");
@@ -163,6 +165,7 @@ function formatTimestamp(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+    timeZone: systemTimeZone.value,
   }).format(date);
 }
 
@@ -303,6 +306,7 @@ function closeDrawer(): void {
             @update:value="updateField"
           />
           <NDatePicker
+            :key="systemTimeZone"
             :value="dateRange"
             type="datetimerange"
             clearable

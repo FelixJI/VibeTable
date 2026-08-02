@@ -42,9 +42,14 @@ func TestWorkspaceV2LedgerHistorySurvivesBusinessAuditRollback(
 	if err != nil {
 		t.Fatal(err)
 	}
+	currentTime := time.Date(
+		2026, 7, 22, 16, 0, 0, 0,
+		time.FixedZone("UTC+08", 8*60*60),
+	)
 	kernel := mutation.New(
 		app,
 		mutation.MetadataSchemaSource{},
+		mutation.WithClock(func() time.Time { return currentTime }),
 	)
 	recordID := "ledgerhistrow01"
 	apply := func(key string, kind mutation.OperationKind, title string) {
@@ -70,6 +75,10 @@ func TestWorkspaceV2LedgerHistorySurvivesBusinessAuditRollback(
 		}
 	}
 	apply("create", mutation.OperationInsert, "before snapshot")
+	currentTime = time.Date(
+		2026, 7, 22, 2, 0, 0, 0,
+		time.FixedZone("UTC-07", -7*60*60),
+	)
 	apply("after_snapshot", mutation.OperationUpdate, "after snapshot")
 
 	ledger, err := auditledger.Open(
@@ -116,6 +125,28 @@ func TestWorkspaceV2LedgerHistorySurvivesBusinessAuditRollback(
 	beforeRollback := read()
 	if len(beforeRollback.ChangeSets) != 2 {
 		t.Fatalf("initial ledger history = %#v", beforeRollback)
+	}
+	if beforeRollback.ChangeSets[0].Timestamp != "2026-07-22T09:00:00Z" ||
+		beforeRollback.ChangeSets[1].Timestamp != "2026-07-22T08:00:00Z" {
+		t.Fatalf(
+			"cross-time-zone timestamps were not normalized: %#v",
+			beforeRollback.ChangeSets,
+		)
+	}
+	dateFrom := "2026-07-22T08:30:00Z"
+	dateTo := "2026-07-22T09:30:00Z"
+	filtered, err := service.ReadChangeSets(ctx, audit.ReadParams{
+		TableID:  definition.TableID,
+		ItemID:   &recordID,
+		Scope:    "row",
+		DateFrom: &dateFrom,
+		DateTo:   &dateTo,
+		Limit:    20,
+	})
+	if err != nil || len(filtered.ChangeSets) != 1 ||
+		filtered.ChangeSets[0].Action != "update" ||
+		filtered.ChangeSets[0].Timestamp != "2026-07-22T09:00:00Z" {
+		t.Fatalf("UTC-filtered ledger history = %#v, %v", filtered, err)
 	}
 	targetRevision := beforeRollback.ChangeSets[1].
 		RecordChanges[0].

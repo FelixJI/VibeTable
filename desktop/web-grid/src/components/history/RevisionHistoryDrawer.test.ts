@@ -106,6 +106,36 @@ describe("RevisionHistoryDrawer", () => {
     expect(wrapper.emitted("close")).toHaveLength(1);
   });
 
+  it("refreshes visible audit times after the system time zone changes", async () => {
+    const previousTimeZone = process.env.TZ;
+    process.env.TZ = "Asia/Shanghai";
+    try {
+      const store = useRevisionHistoryStore();
+      store.open({ scope: "table" });
+      store.updateQuery({
+        dateFrom: "2026-07-22T07:30:00.000Z",
+        dateTo: "2026-07-22T08:30:00.000Z",
+      });
+      store.receivePage(page);
+      const wrapper = mountDrawer();
+      await flushPromises();
+
+      const meta = wrapper.get('[data-testid="history-entry-meta-r2"]');
+      expect(meta.text()).not.toContain("01:00:00");
+
+      process.env.TZ = "America/Los_Angeles";
+      window.dispatchEvent(new Event("timezonechange"));
+      await wrapper.vm.$nextTick();
+
+      expect(meta.text()).toContain("01:00:00");
+      expect(store.query.dateFrom).toBe("2026-07-22T07:30:00.000Z");
+      expect(store.query.dateTo).toBe("2026-07-22T08:30:00.000Z");
+      expect(wrapper.emitted("reload")).toBeUndefined();
+    } finally {
+      process.env.TZ = previousTimeZone;
+    }
+  });
+
   it("groups narrow-drawer metadata and keeps every filter in the responsive grid", async () => {
     const store = useRevisionHistoryStore();
     store.open({ scope: "table" });
