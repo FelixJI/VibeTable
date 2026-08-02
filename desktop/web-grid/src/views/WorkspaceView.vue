@@ -31,6 +31,8 @@ import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import GridHost from "@/components/grid/GridHost.vue";
 import DataSourceViewBar from "@/components/grid/DataSourceViewBar.vue";
 import RecordCalendarView from "@/components/grid/RecordCalendarView.vue";
+import RecordGalleryView from "@/components/grid/RecordGalleryView.vue";
+import RecordKanbanView from "@/components/grid/RecordKanbanView.vue";
 import RecordTimelineView from "@/components/grid/RecordTimelineView.vue";
 import RelationEditorPanel from "@/components/grid/RelationEditorPanel.vue";
 import FieldSettingsDrawer from "@/field-settings/FieldSettingsDrawer.vue";
@@ -119,6 +121,7 @@ import {
   captureDataSourceView,
   type DataSourceViewGrid,
 } from "@/grid/dataSourceViewState";
+import { projectPresetRows } from "@/grid/projectPresetRows";
 import type { PresetEntry, PresetView } from "@/contracts";
 import {
   classifyClipboard,
@@ -751,11 +754,25 @@ let applyingPresetView = false;
 const activePresetView = computed(() => presetViews.presets
   .find((item) => item.id === presetViews.activePresetId)?.view ?? null);
 const activeViewKind = computed(() => activePresetView.value?.kind ?? "table");
+const projectedPresetRows = computed(() => activePresetView.value
+  ? projectPresetRows(tableStore.allRows, activePresetView.value)
+  : tableStore.allRows);
 const dateFieldOptions = computed(() => (tableStore.schema ?? [])
   .filter((column) => column.dataType === "date" || column.dataType === "datetime")
   .map((column) => ({ label: column.title, value: column.name })));
 const titleFieldOptions = computed(() => (tableStore.schema ?? [])
   .filter((column) => column.dataType === "text")
+  .map((column) => ({ label: column.title, value: column.name })));
+const groupFieldOptions = computed(() => (tableStore.schema ?? [])
+  .filter((column) => (
+    column.kind !== "attachment"
+    && column.kind !== "relation"
+    && column.kind !== "lookup"
+    && (column.dataType === "text" || column.dataType === "integer" || column.dataType === "boolean")
+  ))
+  .map((column) => ({ label: column.title, value: column.name })));
+const coverFieldOptions = computed(() => (tableStore.schema ?? [])
+  .filter((column) => column.kind === "attachment" || column.dataType === "text")
   .map((column) => ({ label: column.title, value: column.name })));
 
 function captureTableView(isDefault = false): PresetView {
@@ -885,10 +902,12 @@ async function switchView(view: PresetEntry): Promise<void> {
 
 async function createView(request: {
   readonly name: string;
-  readonly kind: "table" | "calendar" | "timeline";
+  readonly kind: "table" | "calendar" | "timeline" | "kanban" | "gallery";
   readonly dateField: string | null;
   readonly endDateField: string | null;
   readonly titleField: string | null;
+  readonly groupField: string | null;
+  readonly coverField: string | null;
 }): Promise<void> {
   const collection = workspace.currentTable;
   if (!collection) return;
@@ -899,6 +918,8 @@ async function createView(request: {
     dateField: request.dateField,
     endDateField: request.endDateField,
     titleField: request.titleField,
+    groupField: request.groupField,
+    coverField: request.coverField,
   };
   const saved = await persistView(
     collection,
@@ -2013,6 +2034,8 @@ useKeyboard({
               :dirty="presetViews.dirty"
               :date-fields="dateFieldOptions"
               :title-fields="titleFieldOptions"
+              :group-fields="groupFieldOptions"
+              :cover-fields="coverFieldOptions"
               @create="createView"
               @switch="switchView"
               @save="saveView"
@@ -2094,13 +2117,25 @@ useKeyboard({
               />
               <RecordCalendarView
                 v-if="activeViewKind === 'calendar' && activePresetView"
-                :rows="tableStore.allRows"
+                :rows="projectedPresetRows"
                 :schema="tableStore.schema ?? []"
                 :view="activePresetView"
               />
               <RecordTimelineView
                 v-else-if="activeViewKind === 'timeline' && activePresetView"
-                :rows="tableStore.allRows"
+                :rows="projectedPresetRows"
+                :schema="tableStore.schema ?? []"
+                :view="activePresetView"
+              />
+              <RecordKanbanView
+                v-else-if="activeViewKind === 'kanban' && activePresetView"
+                :rows="projectedPresetRows"
+                :schema="tableStore.schema ?? []"
+                :view="activePresetView"
+              />
+              <RecordGalleryView
+                v-else-if="activeViewKind === 'gallery' && activePresetView"
+                :rows="projectedPresetRows"
                 :schema="tableStore.schema ?? []"
                 :view="activePresetView"
               />

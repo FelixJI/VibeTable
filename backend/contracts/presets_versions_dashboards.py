@@ -50,10 +50,12 @@ class PresetView(CamelModel):
     search: str = Field(default="", max_length=256)
     visible_fields: list[str] = Field(default_factory=list, max_length=128)
     layout: str = Field(default="table", max_length=32)
-    kind: Literal["table", "calendar", "timeline"] = "table"
+    kind: Literal["table", "calendar", "timeline", "kanban", "gallery"] = "table"
     date_field: str | None = Field(default=None, max_length=128)
     end_date_field: str | None = Field(default=None, max_length=128)
     title_field: str | None = Field(default=None, max_length=128)
+    group_field: str | None = Field(default=None, max_length=128)
+    cover_field: str | None = Field(default=None, max_length=128)
     columns: list[dict[str, Any]] = Field(default_factory=list, max_length=128)
     density: Literal["compact", "comfortable", "cozy"] = "comfortable"
     is_default: bool = False

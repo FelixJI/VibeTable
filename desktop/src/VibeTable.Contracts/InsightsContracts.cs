@@ -73,7 +73,9 @@ public sealed record PresetView(
     bool IsDefault = false,
     string? DateField = null,
     string? EndDateField = null,
-    string? TitleField = null);
+    string? TitleField = null,
+    string? GroupField = null,
+    string? CoverField = null);
 
 public sealed record PresetEntry(
     string Id,

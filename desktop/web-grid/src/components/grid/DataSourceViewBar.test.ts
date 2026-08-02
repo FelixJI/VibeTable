@@ -80,6 +80,72 @@ describe("DataSourceViewBar", () => {
       dateField: "startsAt",
       endDateField: null,
       titleField: "title",
+      groupField: null,
+      coverField: null,
+    }]);
+  });
+
+  it("requires a grouping field and creates a kanban view", async () => {
+    const wrapper = mount(DataSourceViewBar, {
+      attachTo: document.body,
+      props: {
+        collection: "orders",
+        views: [],
+        activeId: null,
+        loading: false,
+        dirty: false,
+        groupFields: [{ label: "状态", value: "status" }],
+        titleFields: [{ label: "标题", value: "title" }],
+      },
+    });
+    await wrapper.get('[data-testid="view-create"]').trigger("click");
+    document.body.querySelector<HTMLElement>('[data-testid="view-kind-kanban"]')?.click();
+    await wrapper.vm.$nextTick();
+    const input = document.body.querySelector<HTMLInputElement>("input");
+    input!.value = "任务看板";
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+    await wrapper.vm.$nextTick();
+    document.body.querySelector<HTMLElement>('[data-testid="view-dialog-confirm"]')?.click();
+    expect(wrapper.emitted("create")?.[0]).toEqual([{
+      name: "任务看板",
+      kind: "kanban",
+      dateField: null,
+      endDateField: null,
+      titleField: "title",
+      groupField: "status",
+      coverField: null,
+    }]);
+  });
+
+  it("creates a gallery view without guessing an optional cover field", async () => {
+    const wrapper = mount(DataSourceViewBar, {
+      attachTo: document.body,
+      props: {
+        collection: "assets",
+        views: [],
+        activeId: null,
+        loading: false,
+        dirty: false,
+        coverFields: [{ label: "封面", value: "cover" }],
+        titleFields: [{ label: "名称", value: "name" }],
+      },
+    });
+    await wrapper.get('[data-testid="view-create"]').trigger("click");
+    document.body.querySelector<HTMLElement>('[data-testid="view-kind-gallery"]')?.click();
+    await wrapper.vm.$nextTick();
+    const input = document.body.querySelector<HTMLInputElement>("input");
+    input!.value = "素材画册";
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+    await wrapper.vm.$nextTick();
+    document.body.querySelector<HTMLElement>('[data-testid="view-dialog-confirm"]')?.click();
+    expect(wrapper.emitted("create")?.[0]).toEqual([{
+      name: "素材画册",
+      kind: "gallery",
+      dateField: null,
+      endDateField: null,
+      titleField: "name",
+      groupField: null,
+      coverField: null,
     }]);
   });
 });

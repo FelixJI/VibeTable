@@ -1266,10 +1266,12 @@ export interface PresetView {
   readonly search: string;
   readonly visibleFields: readonly string[];
   readonly layout: string;
-  readonly kind?: "table" | "calendar" | "timeline";
+  readonly kind?: "table" | "calendar" | "timeline" | "kanban" | "gallery";
   readonly dateField?: string | null;
   readonly endDateField?: string | null;
   readonly titleField?: string | null;
+  readonly groupField?: string | null;
+  readonly coverField?: string | null;
   readonly columns?: readonly ColumnState[];
   readonly density?: "compact" | "comfortable" | "cozy";
   readonly isDefault?: boolean;

@@ -141,9 +141,10 @@ async def test_save_preset_submits_internal_metadata_mutation() -> None:
         "Open",
         PresetView(
             visible_fields=["id", "status"],
-            kind="calendar",
-            date_field="startsAt",
+            kind="kanban",
             title_field="title",
+            group_field="status",
+            cover_field="cover",
         ),
         "p1",
         "preset-op-1",
@@ -156,9 +157,10 @@ async def test_save_preset_submits_internal_metadata_mutation() -> None:
     assert payload["record_id"] == "p1"
     assert payload["values"]["scope"] == "orders"
     assert payload["values"]["presetScope"] == "system"
-    assert payload["values"]["view"]["kind"] == "calendar"
-    assert payload["values"]["view"]["dateField"] == "startsAt"
+    assert payload["values"]["view"]["kind"] == "kanban"
     assert payload["values"]["view"]["titleField"] == "title"
+    assert payload["values"]["view"]["groupField"] == "status"
+    assert payload["values"]["view"]["coverField"] == "cover"
     assert "token" not in repr(payload).lower()
 
 
