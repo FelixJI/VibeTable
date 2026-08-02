@@ -45,6 +45,26 @@ import {
   RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
   RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
 } from "@/contracts/runtimeDiagnosticsContracts";
+import type {
+  AppPreferencesHostMessageType,
+  AppPreferencesHostPayloadMap,
+  AppPreferencesWebMessageType,
+  AppPreferencesWebPayloadMap,
+} from "@/contracts/appPreferencesContracts";
+import {
+  APP_PREFERENCES_HOST_MESSAGE_TYPES,
+  APP_PREFERENCES_WEB_MESSAGE_TYPES,
+} from "@/contracts/appPreferencesContracts";
+import type {
+  ReleaseUpdateHostMessageType,
+  ReleaseUpdateHostPayloadMap,
+  ReleaseUpdateWebMessageType,
+  ReleaseUpdateWebPayloadMap,
+} from "@/contracts/releaseUpdateContracts";
+import {
+  RELEASE_UPDATE_HOST_MESSAGE_TYPES,
+  RELEASE_UPDATE_WEB_MESSAGE_TYPES,
+} from "@/contracts/releaseUpdateContracts";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import {
   configureWorkspaceWire,
@@ -65,18 +85,26 @@ import {
 type HostMessageType =
   | SharedHostMessageType
   | RuntimeDiagnosticsHostMessageType
+  | AppPreferencesHostMessageType
+  | ReleaseUpdateHostMessageType
   | WorkspaceV2HostMessageType;
 type HostPayloadMap =
   & SharedHostPayloadMap
   & RuntimeDiagnosticsHostPayloadMap
+  & AppPreferencesHostPayloadMap
+  & ReleaseUpdateHostPayloadMap
   & WorkspaceV2HostPayloadMap;
 type WebMessageType =
   | SharedWebMessageType
   | RuntimeDiagnosticsWebMessageType
+  | AppPreferencesWebMessageType
+  | ReleaseUpdateWebMessageType
   | WorkspaceV2WebMessageType;
 type WebPayloadMap =
   & SharedWebPayloadMap
   & RuntimeDiagnosticsWebPayloadMap
+  & AppPreferencesWebPayloadMap
+  & ReleaseUpdateWebPayloadMap
   & WorkspaceV2WebPayloadMap;
 
 /** Diagnostic emitted when an inbound message is dropped. */
@@ -230,6 +258,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "version.promote",
   "version.delete",
   ...RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
+  ...APP_PREFERENCES_HOST_MESSAGE_TYPES,
+  ...RELEASE_UPDATE_HOST_MESSAGE_TYPES,
   ...WORKSPACE_V2_HOST_MESSAGE_TYPES,
   // B2 paste preview + apply outcomes.
   "table.pastePreviewReady",
@@ -326,6 +356,8 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "version.promote",
   "version.delete",
   ...RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
+  ...APP_PREFERENCES_WEB_MESSAGE_TYPES,
+  ...RELEASE_UPDATE_WEB_MESSAGE_TYPES,
   ...WORKSPACE_V2_WEB_MESSAGE_TYPES,
   // B3 query + state requests.
   "table.queryRequested",
@@ -474,6 +506,14 @@ export interface HostBridge {
     type: K,
     payload: RuntimeDiagnosticsWebPayloadMap[K],
   ): Promise<RuntimeDiagnosticsHostPayloadMap[K]>;
+  request<K extends AppPreferencesWebMessageType>(
+    type: K,
+    payload: AppPreferencesWebPayloadMap[K],
+  ): Promise<AppPreferencesHostPayloadMap[K]>;
+  request<K extends ReleaseUpdateWebMessageType>(
+    type: K,
+    payload: ReleaseUpdateWebPayloadMap[K],
+  ): Promise<ReleaseUpdateHostPayloadMap[K]>;
   request<K extends WorkspaceV2WebMessageType>(
     type: K,
     payload: WorkspaceV2WebPayloadMap[K],
@@ -557,6 +597,8 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     ?? Math.max(timeoutMs, 30 * 60_000);
   const additionalObjectsTimeoutMs =
     options.additionalObjectsTimeoutMs ?? Math.min(timeoutMs, 1_500);
+  const updateCheckTimeoutMs = Math.max(timeoutMs, 30_000);
+  const updateInstallTimeoutMs = Math.max(timeoutMs, 30 * 60_000);
   const onDiagnostic = options.onDiagnostic ?? (() => undefined);
   const generateRequestId =
     options.generateRequestId ?? defaultGenerateRequestId;
@@ -826,10 +868,13 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
   ): { readonly requestId: string; readonly promise: Promise<unknown> } {
     const requestId = generateRequestId();
     const env = outboundEnvelope(type, payload, requestId);
-    const requestTimeoutMs = type === "workspace.v2.request"
-      && containsHostPickerSentinel(payload)
-      ? nativePickerTimeoutMs
-      : timeoutMs;
+    const requestTimeoutMs = type === "update.install"
+      ? updateInstallTimeoutMs
+      : type === "update.check"
+        ? updateCheckTimeoutMs
+        : type === "workspace.v2.request" && containsHostPickerSentinel(payload)
+          ? nativePickerTimeoutMs
+          : timeoutMs;
     const promise = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (pending.delete(requestId)) {

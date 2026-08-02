@@ -210,6 +210,58 @@ def test_desktop_publish_is_single_file_without_satellite_language_directories()
     assert "-p:SatelliteResourceLanguages=en-US" in command
 
 
+@pytest.mark.parametrize(
+    ("release", "expected"),
+    [(False, ["swap"]), (True, ["smoke", "swap"])],
+)
+def test_release_build_runs_self_update_smoke_before_atomic_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    release: bool,
+    expected: list[str],
+) -> None:
+    defaults = build_next.RepoPaths.default(REPO_ROOT)
+    paths = defaults.with_output_roots(
+        staging_root=tmp_path / "staging",
+        scratch_root=tmp_path / "scratch",
+        publish_root=tmp_path / "publish",
+    )
+    events: list[str] = []
+
+    monkeypatch.setattr(build_next, "check_versions", lambda _root: [])
+    monkeypatch.setattr(build_next, "_build_sidecar", lambda _paths, *, skip: None)
+    monkeypatch.setattr(build_next, "_build_web", lambda _paths, *, skip: None)
+    monkeypatch.setattr(build_next, "_build_backend", lambda _paths, *, skip: None)
+
+    def build_desktop(stage: build_next.RepoPaths, *, skip: bool) -> None:
+        assert not skip
+        stage.host_exe.parent.mkdir(parents=True, exist_ok=True)
+        stage.host_exe.write_bytes(b"published-host")
+
+    monkeypatch.setattr(build_next, "_build_desktop", build_desktop)
+    monkeypatch.setattr(build_next, "verify_sidecar_package", lambda _paths: None)
+    monkeypatch.setattr(build_next, "stage_workspace_contracts", lambda _paths: None)
+    monkeypatch.setattr(build_next, "write_manifest", lambda _paths: None)
+    monkeypatch.setattr(build_next, "write_release_manifest", lambda _paths: None)
+
+    def smoke(host: Path, root: Path, *, repo_root: Path) -> None:
+        assert host == paths.staging_root / build_next.HOST_EXE_NAME
+        assert root == REPO_ROOT / "build" / "self-update-smoke"
+        assert repo_root == REPO_ROOT
+        events.append("smoke")
+
+    monkeypatch.setattr(build_next, "run_desktop_self_update_smoke", smoke)
+    monkeypatch.setattr(
+        build_next,
+        "_atomic_swap",
+        lambda _staging, _publish: events.append("swap"),
+    )
+    args = build_next.parse_args(["--release"] if release else [])
+
+    assert build_next.run_build(paths, args) == 0
+    assert events == expected
+
+
 def test_release_archive_name_contains_version_platform_and_architecture() -> None:
     assert build_next.release_archive_name("1.2.3") == "VibeTable-v1.2.3-win-x64.zip"
 

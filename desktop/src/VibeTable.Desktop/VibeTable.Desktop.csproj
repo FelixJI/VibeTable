@@ -4,11 +4,18 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>Assets\Brand\VibeTable.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Keep WinForms available for NotifyIcon without globally importing its
+         UI namespace into the WPF application. -->
+    <Using Remove="System.Windows.Forms" />
   </ItemGroup>
 
   <ItemGroup>
