@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { createHostBridge } from "@/bridge/hostBridge";
-import type { PluginSnapshot } from "@/contracts";
+import type { PluginAuditEvent, PluginSnapshot } from "@/contracts";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { usePluginStore } from "@/stores/pluginStore";
 import PluginCenterView from "./PluginCenterView.vue";
@@ -45,6 +45,27 @@ const blockedPlugin: PluginSnapshot = {
   revision: 7,
 };
 
+const auditEvent: PluginAuditEvent = {
+  eventId: "audit-1",
+  projectKey: blockedPlugin.projectKey,
+  pluginId: blockedPlugin.pluginId,
+  pluginVersion: blockedPlugin.version,
+  packageHash: blockedPlugin.packageHash,
+  eventType: "install",
+  outcome: "succeeded",
+  actionId: null,
+  runId: null,
+  actor: "local-user",
+  risk: null,
+  targetCollection: null,
+  targetCount: null,
+  startedAt: "2026-07-22T08:00:00Z",
+  finishedAt: "2026-07-22T08:00:00Z",
+  durationMs: 0,
+  errorCode: null,
+  details: {},
+};
+
 describe("PluginCenterView", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -59,6 +80,44 @@ describe("PluginCenterView", () => {
     expect(wrapper.text()).toContain("契约版本不兼容");
     expect(wrapper.text()).toContain("data:customers:write");
     expect(wrapper.text()).toContain("2 个阻断原因");
+  });
+
+  it("refreshes plugin audit times when the app regains focus in a new time zone", async () => {
+    const previousTimeZone = process.env.TZ;
+    process.env.TZ = "Asia/Shanghai";
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const bridge = createHostBridge({
+      generateRequestId: () => "audit-list-1",
+      webview: {
+        postMessage: (message) => {
+          const request = message as { type: string; requestId: string };
+          queueMicrotask(() => listener?.({ data: {
+            type: request.type,
+            requestId: request.requestId,
+            payload: [auditEvent],
+          } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    try {
+      await wrapper.get(".plugin-row").trigger("click");
+      await flushPromises();
+      expect(wrapper.get(".audit-log time").text()).toContain("16:00:00");
+
+      process.env.TZ = "America/Los_Angeles";
+      window.dispatchEvent(new Event("focus"));
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.get(".audit-log time").text()).toContain("01:00:00");
+    } finally {
+      wrapper.unmount();
+      process.env.TZ = previousTimeZone;
+    }
   });
 
   it("sends whole-plugin enable with canonical project identity and no presentation revision", async () => {

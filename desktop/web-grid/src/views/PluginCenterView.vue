@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { NIcon } from "naive-ui";
 import { Box, PackageOpen, Play, Power, RotateCcw, ShieldAlert, Trash2, Upload } from "lucide-vue-next";
 import type { PluginAuditEvent, PluginRisk, PluginSnapshot } from "@/contracts";
+import { useSystemTimeZone } from "@/composables/useSystemTimeZone";
 import { usePluginStore } from "@/stores/pluginStore";
 import { createPluginCommandContext, usePluginService } from "@/services/pluginService";
 import { useUiStore } from "@/stores/uiStore";
@@ -17,6 +18,7 @@ const service = usePluginService();
 const ui = useUiStore();
 const workspace = useWorkspaceStore();
 const table = useTableStore();
+const systemTimeZone = useSystemTimeZone();
 const plannedUpgradePluginId = ref<string | null>(null);
 const cleanupPrivateSettings = ref(false);
 const uninstalling = ref(false);
@@ -41,6 +43,12 @@ function statusLabel(value: PluginSnapshot["status"]): string {
 }
 function riskLabel(value: PluginRisk): string {
   return t(`plugin.risk.${value}`);
+}
+function formatAuditTimestamp(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString(ui.locale, { timeZone: systemTimeZone.value });
 }
 function permissions(snapshot: PluginSnapshot): string[] {
   return flatten(snapshot.manifest.permissions);
@@ -248,7 +256,7 @@ onBeforeUnmount(() => service.dispose());
           <header><span>TASKS / AUDIT</span><h3>任务摘要与审计</h3></header>
           <div v-if="store.activeTask?.pluginId === plugin.pluginId" class="task-summary"><strong>{{ store.activeTask.actionId }}</strong><span>{{ store.activeTask.state }}</span><code>{{ store.activeTask.runId }}</code></div>
           <article v-for="event in auditEvents" :key="event.eventId">
-            <time>{{ new Date(event.startedAt).toLocaleString(ui.locale) }}</time><strong>{{ event.eventType }}</strong><span :data-outcome="event.outcome">{{ event.outcome }}</span><code>{{ event.runId ?? event.packageHash }}</code><small v-if="event.durationMs !== null">{{ event.durationMs }} ms</small>
+            <time>{{ formatAuditTimestamp(event.startedAt) }}</time><strong>{{ event.eventType }}</strong><span :data-outcome="event.outcome">{{ event.outcome }}</span><code>{{ event.runId ?? event.packageHash }}</code><small v-if="event.durationMs !== null">{{ event.durationMs }} ms</small>
           </article>
           <p v-if="!auditEvents.length" class="empty-line">暂无审计记录。</p>
         </section>
