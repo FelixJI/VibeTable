@@ -834,6 +834,8 @@ describe("workspace protection UI capability gates", () => {
       attachTo: document.body,
     });
 
+    expect(wrapper.find('[data-testid="workspace-storage-sync"]').exists()).toBe(false);
+
     await wrapper.get('[data-testid="workspace-storage-relocate-preview"]').trigger("click");
     expect(wrapper.emitted("action")?.[0]?.[0]).toEqual({
       method: "workspace.storage.preview",
@@ -939,6 +941,8 @@ describe("workspace protection UI capability gates", () => {
       attachTo: document.body,
     });
 
+    expect(wrapper.get('[data-testid="workspace-storage-sync"]').text()).toContain("同步镜像副本");
+
     await wrapper.get('[data-testid="workspace-storage-convert-preview"]').trigger("click");
     await wrapper.get('[data-testid="workspace-storage-release-cache-preview"]').trigger("click");
     expect(wrapper.emitted("action")?.map((event) => event[0])).toEqual([
@@ -961,6 +965,11 @@ describe("workspace protection UI capability gates", () => {
         },
       },
     ]);
+    await wrapper.get('[data-testid="workspace-storage-sync"]').trigger("click");
+    expect(wrapper.emitted("action")?.[2]?.[0]).toEqual({
+      method: "replica.synchronize",
+      params: {},
+    });
     wrapper.unmount();
   });
 

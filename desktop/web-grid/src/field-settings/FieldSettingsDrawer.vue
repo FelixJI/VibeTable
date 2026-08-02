@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import {
   NAlert,
   NButton,
@@ -43,6 +43,7 @@ const settingsTab = ref("general");
 const jsonDefaultText = ref("null");
 const jsonSchemaText = ref("{}");
 const jsonEditorError = ref("");
+const planCard = ref<HTMLElement | null>(null);
 watch(() => store.open, (open) => {
   if (open) {
     rootTab.value = store.result?.definition?.lifecycle.state === "retired"
@@ -53,6 +54,11 @@ watch(() => store.open, (open) => {
 });
 watch(rootTab, (value) => {
   if (value === "recycle") emit("loadRecycleBin");
+});
+watch(() => store.plan?.planId, async (planId, previousPlanId) => {
+  if (!planId || planId === previousPlanId) return;
+  await nextTick();
+  planCard.value?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 });
 watch(
   () => [
@@ -372,8 +378,9 @@ function isTextual(type: LogicalTypeV2): boolean {
                 <NInput
                   :value="store.draft.help"
                   type="textarea"
+                  maxlength="300"
                   :autosize="{ minRows: 2, maxRows: 4 }"
-                  placeholder="帮助协作者理解这个字段"
+                  placeholder="记录字段用途、填写规则或示例"
                   @update:value="patch({ help: $event })"
                 />
               </label>
@@ -671,7 +678,11 @@ function isTextual(type: LogicalTypeV2): boolean {
                   <div class="two-column">
                     <label><span>fieldId</span><NInput :value="store.result.definition.identity.fieldId" readonly /></label>
                     <label><span>physicalName</span><NInput :value="store.result.definition.identity.physicalName" readonly /></label>
-                    <label class="wide"><span>providerFieldId（内部）</span><NInput :value="store.result.definition.identity.providerFieldId" readonly /></label>
+                    <label class="wide">
+                      <span>数据源字段标识（只读）</span>
+                      <NInput :value="store.result.definition.identity.providerFieldId" readonly />
+                      <small>由存储引擎维护，用于诊断与迁移，普通使用无需修改。</small>
+                    </label>
                   </div>
                 </section>
                 <section v-if="!isComputedField" class="settings-section">
@@ -890,7 +901,7 @@ function isTextual(type: LogicalTypeV2): boolean {
 
                 <section v-if="!isComputedField" class="settings-section">
                   <div class="switch-row">
-                    <div><strong>Provider presentable</strong><small>只影响 PocketBase 管理提示</small></div>
+                    <div><strong>在数据源后台突出显示</strong><small>仅影响 PocketBase 管理后台的字段展示，不改变 VibeTable 表格界面或数据。</small></div>
                     <NSwitch
                       :value="store.draft.storage.options.presentable"
                       @update:value="patchStorage({ presentable: $event })"
@@ -944,7 +955,7 @@ function isTextual(type: LogicalTypeV2): boolean {
               </NTabPane>
             </NTabs>
 
-            <section v-if="store.plan" class="plan-card" data-testid="field-change-plan">
+            <section v-if="store.plan" ref="planCard" class="plan-card" data-testid="field-change-plan">
               <div class="section-title">
                 <div>
                   <span class="eyebrow">FROZEN PLAN</span>
@@ -1031,7 +1042,7 @@ function isTextual(type: LogicalTypeV2): boolean {
               data-testid="field-apply-button"
               @click="emit('apply')"
             >
-              应用计划
+              保存字段变更
             </NButton>
           </NSpace>
         </div>

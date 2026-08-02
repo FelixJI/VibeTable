@@ -863,17 +863,6 @@ function applyStoragePlan(): void {
         <div><span>{{ t("workspaceV2.snapshot.actual") }}</span><strong>{{ formatBytes(protection.storage?.physicalSize ?? 0) }}</strong></div>
         <div><span>{{ t("workspaceV2.storage.reclaimable") }}</span><strong>{{ formatBytes(protection.storage?.reclaimableSize ?? 0) }}</strong></div>
       </div>
-      <NButton
-        v-if="session.capabilities.includes('workspace.storage.relocate.v2')
-          && protection.storage?.mode === 'direct'
-          && protection.storage?.provider === 'fixed'"
-        size="small"
-        :disabled="busy || session.isTransitioning"
-        data-testid="workspace-storage-relocate-preview"
-        @click="previewStorageRelocation"
-      >
-        {{ t("workspaceV2.storage.relocate") }}
-      </NButton>
     </section>
 
     <section class="policy-card">
@@ -882,10 +871,22 @@ function applyStoragePlan(): void {
         <NTag>{{ protection.storage?.mode === "mirrored" ? t("workspaceV2.storage.mirrored") : t("workspaceV2.storage.direct") }}</NTag>
       </div>
       <div
-        v-if="session.capabilities.includes('workspace.storage.topology.v2')
+        v-if="session.capabilities.includes('workspace.storage.relocate.v2')
+          || session.capabilities.includes('workspace.storage.topology.v2')
           || session.capabilities.includes('workspace.storage.release-cache.v2')"
         class="storage-mode-actions"
       >
+        <NButton
+          v-if="session.capabilities.includes('workspace.storage.relocate.v2')
+            && protection.storage?.mode === 'direct'
+            && protection.storage?.provider === 'fixed'"
+          size="small"
+          :disabled="busy || session.isTransitioning"
+          data-testid="workspace-storage-relocate-preview"
+          @click="previewStorageRelocation"
+        >
+          {{ t("workspaceV2.storage.relocate") }}
+        </NButton>
         <NButton
           v-if="session.capabilities.includes('workspace.storage.topology.v2')"
           size="small"
@@ -952,8 +953,10 @@ function applyStoragePlan(): void {
           {{ t("workspaceV2.storage.verify") }}
         </NButton>
         <NButton
+          v-if="protection.storage?.mode === 'mirrored'"
           size="small"
           :disabled="protection.storage?.pendingSync || session.isTransitioning"
+          data-testid="workspace-storage-sync"
           @click="emit('action', { method: 'replica.synchronize', params: {} })"
         >
           {{ t("workspaceV2.storage.sync") }}
@@ -1294,6 +1297,7 @@ function applyStoragePlan(): void {
 .size-meter strong { margin-top: 3px; font-size: var(--vt-font-caption); }
 .policy-card { border: 1px solid var(--vt-border); border-radius: 12px; background: var(--vt-bg); }
 .policy-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 16px; border-bottom: 1px solid var(--vt-border); }
+.storage-mode-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--vt-border); }
 .policy-heading > div,
 .policy-title > div,
 .key-card > div:nth-child(2) { display: flex; min-width: 0; flex-direction: column; }

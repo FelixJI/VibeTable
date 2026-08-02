@@ -139,7 +139,12 @@ async def test_save_preset_submits_internal_metadata_mutation() -> None:
     saved = await service.save_preset(
         "orders",
         "Open",
-        PresetView(visible_fields=["id", "status"]),
+        PresetView(
+            visible_fields=["id", "status"],
+            kind="calendar",
+            date_field="startsAt",
+            title_field="title",
+        ),
         "p1",
         "preset-op-1",
     )
@@ -151,6 +156,9 @@ async def test_save_preset_submits_internal_metadata_mutation() -> None:
     assert payload["record_id"] == "p1"
     assert payload["values"]["scope"] == "orders"
     assert payload["values"]["presetScope"] == "system"
+    assert payload["values"]["view"]["kind"] == "calendar"
+    assert payload["values"]["view"]["dateField"] == "startsAt"
+    assert payload["values"]["view"]["titleField"] == "title"
     assert "token" not in repr(payload).lower()
 
 

@@ -70,7 +70,10 @@ public sealed record PresetView(
     string Kind = "table",
     IReadOnlyList<PresetColumnState>? Columns = null,
     string Density = "comfortable",
-    bool IsDefault = false);
+    bool IsDefault = false,
+    string? DateField = null,
+    string? EndDateField = null,
+    string? TitleField = null);
 
 public sealed record PresetEntry(
     string Id,

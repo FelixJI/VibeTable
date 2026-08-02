@@ -65,7 +65,8 @@ describe("field settings service", () => {
       .mockResolvedValueOnce(plan())
       .mockResolvedValueOnce(receipt())
       .mockResolvedValueOnce(describeResult(true));
-    const service = useFieldSettingsService();
+    const onCommitted = vi.fn();
+    const service = useFieldSettingsService({ onCommitted });
     const store = useFieldSettingsStore();
 
     await service.openEdit("tbl_opaque", definition().identity.fieldId);
@@ -91,6 +92,11 @@ describe("field settings service", () => {
       { planId: "plan_01JABCDEFGH", planHash: "sha256:0123456789abcdef", operationId: expect.any(String) },
     ]);
     expect(request.mock.calls[3]?.[0]).toBe("field.settings.describe");
+    expect(onCommitted).toHaveBeenCalledOnce();
+    expect(onCommitted).toHaveBeenCalledWith(expect.objectContaining({
+      tableId: "tbl_orders",
+      fieldId: definition().identity.fieldId,
+    }));
     expect(JSON.stringify(request.mock.calls)).not.toMatch(/schema\.(apply|validate|delete)/);
   });
 
@@ -128,7 +134,8 @@ describe("field settings service", () => {
       .mockResolvedValueOnce(migration("copying"))
       .mockResolvedValueOnce(migration("completed"))
       .mockResolvedValueOnce(describeResult(true));
-    const service = useFieldSettingsService();
+    const onCommitted = vi.fn();
+    const service = useFieldSettingsService({ onCommitted });
     const store = useFieldSettingsStore();
 
     await service.openEdit("tbl_opaque", definition().identity.fieldId);
@@ -154,6 +161,7 @@ describe("field settings service", () => {
       "field.change.status",
       "field.settings.describe",
     ]);
+    expect(onCommitted).toHaveBeenCalledOnce();
   });
 
   it("cancels an active migration and removes the pending poll", async () => {

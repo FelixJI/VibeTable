@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import FieldSettingsDrawer from "./FieldSettingsDrawer.vue";
@@ -287,6 +287,30 @@ describe("FieldSettingsDrawer", () => {
     expect(wrapper.emitted("cancelMigration")).toHaveLength(1);
     expect(wrapper.emitted("loadRecycleBin")).toHaveLength(2);
     expect(wrapper.emitted("restore")?.[0]).toEqual(["fld_amount"]);
+  });
+
+  it("用单人场景解释字段元数据，并在计划生成后滚动到预览", async () => {
+    const scrollIntoView = vi.fn();
+    vi.stubGlobal("HTMLElement", HTMLElement);
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described());
+    const wrapper = mountDrawer();
+
+    expect(wrapper.text()).not.toContain("协作者");
+    expect(wrapper.get("textarea").attributes("placeholder")).toContain("字段用途");
+    await openTab(wrapper, "高级");
+    expect(wrapper.text()).toContain("数据源字段标识（只读）");
+    expect(wrapper.text()).toContain("普通使用无需修改");
+
+    store.setPlan(plan());
+    await flushPromises();
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "nearest" });
+    expect(wrapper.get('[data-testid="field-apply-button"]').text()).toContain("保存字段变更");
   });
 
   it("危险操作在发出计划请求前冻结对应动作", async () => {

@@ -92,6 +92,20 @@ describe("RevisionHistoryDrawer", () => {
     expect(meta.text()).toContain("2 条记录");
   });
 
+  it("closes when the user clicks outside the table audit drawer", async () => {
+    const store = useRevisionHistoryStore();
+    store.open({ scope: "table" });
+    store.receivePage(page);
+    const wrapper = mountDrawer();
+    const drawer = wrapper.getComponent(NDrawer);
+
+    expect(drawer.props("showMask")).toBe(true);
+    expect(drawer.props("maskClosable")).toBe(true);
+    drawer.vm.$emit("update:show", false);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("close")).toHaveLength(1);
+  });
+
   it("groups narrow-drawer metadata and keeps every filter in the responsive grid", async () => {
     const store = useRevisionHistoryStore();
     store.open({ scope: "table" });
@@ -190,7 +204,8 @@ describe("RevisionHistoryDrawer", () => {
 
     expect(wrapper.find('[data-testid="history-default-r2"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="history-default-r1"]').exists()).toBe(true);
-    expect(wrapper.text()).toContain("默认 · 删除前版本");
+    expect(wrapper.text()).toContain("删除前版本");
+    expect(wrapper.text()).not.toContain("默认 · 删除前版本");
   });
 
   it("shows empty, unavailable, and retryable error states", async () => {

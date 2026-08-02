@@ -36,7 +36,9 @@ internal sealed record ReleaseUpdateCheckResult(
 
 internal sealed record ReleaseUpdateCandidate(
     StableReleaseVersion Version,
+    string AssetName,
     Uri DownloadUri,
+    Uri ChecksumUri,
     string Sha256,
     long Size,
     string ReleaseUrl,
@@ -250,6 +252,19 @@ internal sealed class GitHubReleaseUpdateClient
                 $"GitHub Release v{latest.Version} 缺少可验证的 Windows x64 更新包。",
                 "UPDATE_ASSET_INVALID");
         }
+        string checksumAssetName = assetName + ".sha256";
+        GitHubAssetDto? checksumAsset = (latest.Release.Assets ?? []).FirstOrDefault(item =>
+            item.State == "uploaded" && item.Name == checksumAssetName);
+        if (checksumAsset is null
+            || checksumAsset.Size <= 0
+            || checksumAsset.Size > 4096
+            || !Uri.TryCreate(checksumAsset.BrowserDownloadUrl, UriKind.Absolute,
+                out Uri? checksumUri))
+        {
+            throw new ReleaseUpdateException(
+                $"GitHub Release v{latest.Version} 缺少可验证的 SHA-256 文件。",
+                "UPDATE_CHECKSUM_ASSET_INVALID");
+        }
 
         IReadOnlyList<ReleaseUpdateNote> notes = stable
             .Where(item => item.Version > current && item.Version <= latest.Version)
@@ -269,7 +284,9 @@ internal sealed class GitHubReleaseUpdateClient
 
         return new ReleaseUpdateCandidate(
             latest.Version,
+            assetName,
             UpdateDownloadProxy.Rewrite(downloadUri, proxy, customProxyUrl),
+            UpdateDownloadProxy.Rewrite(checksumUri, proxy, customProxyUrl),
             sha256!,
             asset.Size,
             latest.Release.HtmlUrl ?? "",
@@ -458,6 +475,16 @@ internal sealed class ReleasePackageStager
         string archivePath,
         CancellationToken cancellationToken)
     {
+        string checksumDigest = await DownloadChecksumAsync(candidate, cancellationToken)
+            .ConfigureAwait(false);
+        if (!CryptographicOperations.FixedTimeEquals(
+                Convert.FromHexString(checksumDigest),
+                Convert.FromHexString(candidate.Sha256)))
+        {
+            throw new ReleaseUpdateException(
+                "SHA-256 文件与 GitHub Release 元数据不一致。",
+                "UPDATE_CHECKSUM_DIGEST_MISMATCH");
+        }
         using HttpResponseMessage response = await _httpClient.GetAsync(
             candidate.DownloadUri,
             HttpCompletionOption.ResponseHeadersRead,
@@ -518,6 +545,71 @@ internal sealed class ReleasePackageStager
                 "更新包 SHA-256 与 GitHub Release 元数据不一致。",
                 "UPDATE_DOWNLOAD_DIGEST_MISMATCH");
         }
+    }
+
+    private async Task<string> DownloadChecksumAsync(
+        ReleaseUpdateCandidate candidate,
+        CancellationToken cancellationToken)
+    {
+        const int maxChecksumBytes = 4096;
+        using HttpResponseMessage response = await _httpClient.GetAsync(
+            candidate.ChecksumUri,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new ReleaseUpdateException(
+                $"SHA-256 文件下载失败（HTTP {(int)response.StatusCode}）。",
+                "UPDATE_CHECKSUM_DOWNLOAD_FAILED");
+        }
+        if (response.Content.Headers.ContentLength is long contentLength
+            && contentLength > maxChecksumBytes)
+        {
+            throw new ReleaseUpdateException(
+                "SHA-256 文件格式无效。",
+                "UPDATE_CHECKSUM_INVALID");
+        }
+
+        await using Stream input = await response.Content.ReadAsStreamAsync(cancellationToken)
+            .ConfigureAwait(false);
+        using var buffer = new MemoryStream();
+        byte[] chunk = new byte[512];
+        int read;
+        while ((read = await input.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
+        {
+            if (buffer.Length + read > maxChecksumBytes)
+            {
+                throw new ReleaseUpdateException(
+                    "SHA-256 文件格式无效。",
+                    "UPDATE_CHECKSUM_INVALID");
+            }
+            buffer.Write(chunk, 0, read);
+        }
+
+        string content;
+        try
+        {
+            content = new System.Text.UTF8Encoding(false, true).GetString(buffer.ToArray());
+        }
+        catch (System.Text.DecoderFallbackException exception)
+        {
+            throw new ReleaseUpdateException(
+                "SHA-256 文件不是有效的 UTF-8 文本。",
+                "UPDATE_CHECKSUM_INVALID",
+                exception);
+        }
+        Match match = Regex.Match(
+            content,
+            @"\A([0-9A-Fa-f]{64})  ([^\r\n]+)\r?\n\z",
+            RegexOptions.CultureInvariant);
+        if (!match.Success
+            || !match.Groups[2].Value.Equals(candidate.AssetName, StringComparison.Ordinal))
+        {
+            throw new ReleaseUpdateException(
+                "SHA-256 文件格式无效或指向了其他发布包。",
+                "UPDATE_CHECKSUM_INVALID");
+        }
+        return match.Groups[1].Value.ToLowerInvariant();
     }
 
     internal static string ExtractVerifiedPackage(

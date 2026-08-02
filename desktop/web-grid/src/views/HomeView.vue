@@ -115,6 +115,9 @@ function nextFallbackQuote(): DailyQuote {
 const dailyQuote = ref<DailyQuote>(nextFallbackQuote());
 const quoteLoading = ref(false);
 const quoteSourceLabel = computed(() => t(`settings.quote.source.${ui.dailyQuoteSource}`));
+const quoteFallbackLabel = computed(() => ui.dailyQuoteSource === "builtin"
+  ? t("home.quote.builtin")
+  : t("home.quote.offlineFallback", { source: quoteSourceLabel.value }));
 let quoteRequestId = 0;
 const calendarMonth = formatMonthKey(now);
 const monthText = computed(() =>
@@ -364,7 +367,7 @@ function openTable(name: string) {
             <a v-if="dailyQuote.origin !== 'builtin'" :href="dailyQuote.url" target="_blank" rel="noreferrer">
               {{ dailyQuote.attribution || quoteSourceLabel }}
             </a>
-            <span v-else>{{ t("home.quote.builtin") }}</span>
+            <span v-else>{{ quoteFallbackLabel }}</span>
           </footer>
         </section>
       </aside>

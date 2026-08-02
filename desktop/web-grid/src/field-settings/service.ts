@@ -1,5 +1,6 @@
 import { BridgeOperationError } from "@/bridge/hostBridge";
 import type {
+  FieldApplyReceiptV2,
   FieldChangeActionV2,
   LogicalTypeV2,
 } from "@/contracts";
@@ -31,7 +32,11 @@ function unwrapFieldResult(value: unknown): unknown {
   });
 }
 
-export function useFieldSettingsService(): {
+interface FieldSettingsServiceOptions {
+  readonly onCommitted?: (receipt: FieldApplyReceiptV2) => void | Promise<void>;
+}
+
+export function useFieldSettingsService(options: FieldSettingsServiceOptions = {}): {
   openCreate: (tableId: string, preferredType?: LogicalTypeV2) => Promise<void>;
   openEdit: (tableId: string, fieldId: string) => Promise<void>;
   requestClose: () => boolean;
@@ -130,11 +135,13 @@ export function useFieldSettingsService(): {
         schedulePoll();
       } else if (receipt.action === "purge") {
         frozenOperationId = null;
+        await options.onCommitted?.(receipt);
         generation += 1;
         store.close();
       } else {
         frozenOperationId = null;
         await describe(receipt.tableId, receipt.fieldId);
+        await options.onCommitted?.(receipt);
       }
     } catch (error) {
       store.fail(error);
@@ -155,8 +162,10 @@ export function useFieldSettingsService(): {
         stopPolling();
         if (status.phase === "completed" && store.receipt) {
           const { tableId, fieldId } = store.receipt;
+          const receipt = store.receipt;
           frozenOperationId = null;
           await describe(tableId, fieldId);
+          await options.onCommitted?.(receipt);
         }
       }
     } catch (error) {
