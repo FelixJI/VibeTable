@@ -59,6 +59,10 @@ import WorkspaceProtectionSettings, {
 } from "@/components/settings/WorkspaceProtectionSettings.vue";
 
 type Section = "general" | "calendar" | "mapping" | "storage" | "versions" | "interaction" | "about";
+type ChangelogEntry = Readonly<{
+  subject: string;
+  commit: string | null;
+}>;
 
 const ui = useUiStore();
 const mappings = useIdentifierMappingStore();
@@ -83,7 +87,7 @@ const diagnosticsService = useRuntimeDiagnosticsService();
 const diagnostics = ref<RuntimeDiagnostics | null>(null);
 const diagnosticsPhase = ref<"idle" | "loading">("idle");
 const diagnosticsError = ref<string | null>(null);
-const changelogEntries = changelog.entries;
+const changelogEntries = changelog.entries as readonly ChangelogEntry[];
 
 const filteredMappings = computed(() => {
   const needle = mappingQuery.value.trim().toLocaleLowerCase();

@@ -1,18 +1,16 @@
 name: Build Release Assets
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
         description: Existing draft Release tag, for example v0.2.1
         required: true
         type: string
-  # Auto-attach assets after the Release Please workflow finishes. Release Please
-  # also runs for non-draft scenarios (release-request, release-pr), so the build
-  # job resolves the latest actionable draft and skips gracefully when there is
-  # none — see the "Resolve release tag" step.
+  # Build, verify, attach, and publish after Release Please finishes. Release
+  # Please also runs for non-draft scenarios (release-request, release-pr), so
+  # the build job resolves the latest actionable draft and skips gracefully when
+  # there is none — see the "Resolve release tag" step.
   workflow_run:
     workflows: ["Release Please"]
     types: [completed]
@@ -34,7 +32,6 @@ defaults:
 
 jobs:
   build:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run'
     name: Build and upload Windows package
     runs-on: windows-latest
     timeout-minutes: 120
@@ -71,7 +68,8 @@ jobs:
           }
 
           # Auto path (workflow_run): find the latest draft release. If there is
-          # none, or it already carries the package zip, skip gracefully.
+          # none, skip gracefully. Always rebuild an existing draft so publishing
+          # remains bound to eligibility evidence produced by this run.
           $drafts = gh release list --limit 50 --json tagName,isDraft `
             | ConvertFrom-Json | Where-Object { $_.isDraft -and $_.tagName -match '^v\d+\.\d+\.\d+$' }
           if (-not $drafts) {
@@ -81,15 +79,6 @@ jobs:
             return
           }
           $tag = $drafts[0].tagName
-          # Idempotency: skip if this draft already has the package zip attached
-          # (e.g. workflow_run fired again after a successful attach).
-          $assets = gh release view "$tag" --json assets --jq '.assets[].name'
-          if ($assets -contains "VibeTable-$tag-win-x64.zip") {
-            Write-Host "::notice::Draft $tag already has assets; skipping build."
-            "RELEASE_TAG=" >> $env:GITHUB_ENV
-            "release_tag=" >> $env:GITHUB_OUTPUT
-            return
-          }
           git fetch origin "$tag" --tags --force
           git checkout "$tag"
           "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
@@ -226,28 +215,42 @@ jobs:
           RELEASE_TAG: ${{ env.RELEASE_TAG }}
           PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
         run: |
+          $release = gh release view $env:RELEASE_TAG --json isDraft | ConvertFrom-Json
+          if (-not $release.isDraft) {
+            throw "Release $env:RELEASE_TAG was published before its verified assets were ready"
+          }
           gh release upload $env:RELEASE_TAG `
             $env:PACKAGE_ARCHIVE `
             "$env:PACKAGE_ARCHIVE.sha256" `
             --clobber
 
-  cleanup:
-    name: Keep recent published Releases
-    if: github.event_name == 'release'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Keep the five most recent published Releases
-        shell: bash
+      - name: Verify attached Release assets
+        if: env.RELEASE_TAG != ''
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          PACKAGE_ARCHIVE_NAME: VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
         run: |
-          set -euo pipefail
-          gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
-            --json databaseId,tagName,isDraft,publishedAt \
-            --jq 'map(select(.isDraft == false and .publishedAt != null)) | sort_by(.publishedAt) | reverse | .[5:][] | [.databaseId, .tagName] | @tsv' |
-          while IFS=$'\t' read -r release_id tag_name; do
-            echo "Deleting old Release ${tag_name}; the git tag is retained."
-            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
-          done
+          $release = gh release view $env:RELEASE_TAG --json isDraft,assets | ConvertFrom-Json
+          if (-not $release.isDraft) {
+            throw "Release $env:RELEASE_TAG was published before asset verification completed"
+          }
+          $assetNames = @($release.assets | ForEach-Object { $_.name })
+          $expected = @($env:PACKAGE_ARCHIVE_NAME, "$($env:PACKAGE_ARCHIVE_NAME).sha256")
+          $missing = @($expected | Where-Object { $_ -notin $assetNames })
+          if ($missing.Count -gt 0) {
+            throw "Release $env:RELEASE_TAG is missing required assets: $($missing -join ', ')"
+          }
+          Write-Host "::notice::Verified required assets for $env:RELEASE_TAG"
+
+      - name: Publish verified Release
+        if: env.RELEASE_TAG != '' && github.event_name == 'workflow_run'
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          gh release edit $env:RELEASE_TAG --draft=false --latest
+          $release = gh release view $env:RELEASE_TAG --json isDraft,publishedAt `
+            | ConvertFrom-Json
+          if ($release.isDraft -or [string]::IsNullOrEmpty($release.publishedAt)) {
+            throw "Release $env:RELEASE_TAG was not published"
+          }
+          Write-Host "::notice::Published verified Release $env:RELEASE_TAG"

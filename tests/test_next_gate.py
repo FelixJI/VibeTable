@@ -88,14 +88,9 @@ def test_github_workflows_keep_release_build_on_windows() -> None:
         for line in release_workflow.splitlines()
         if line.strip().startswith("runs-on:")
     ]
-    assert set(release_runner_lines) == {
-        "runs-on: ubuntu-latest",
-        "runs-on: windows-latest",
-    }
-    release_build_job = release_workflow.split("\n  cleanup:\n", maxsplit=1)[0]
-    assert "runs-on: windows-latest" in release_build_job
-    assert "runs-on: ubuntu-latest" not in release_build_job
-    for workflow_name in ("mirror.yml", "release-please.yml"):
+    assert set(release_runner_lines) == {"runs-on: windows-latest"}
+    assert "runs-on: ubuntu-latest" not in release_workflow
+    for workflow_name in ("mirror.yml", "release-cleanup.yml", "release-please.yml"):
         assert "runs-on: ubuntu-latest" in workflows[workflow_name]
     assert "\ndefaults:\n  run:\n    shell: pwsh\n" in release_workflow
 

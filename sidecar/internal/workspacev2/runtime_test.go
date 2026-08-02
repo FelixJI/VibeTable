@@ -872,6 +872,15 @@ func TestRuntimeKeepsLocalWorkspaceAvailableWhenReplicaIsOffline(t *testing.T) {
 		t.Fatalf("offline replica blocked local runtime: %v", err)
 	}
 	defer runtime.Close(context.Background())
+	// This test owns the exact offline status and queue transitions. Stop the
+	// background snapshot and replica retry workers so they cannot race the
+	// foreground synchronize request or keep writing after TempDir cleanup.
+	runtime.schedulerCancel()
+	runtime.schedulerWG.Wait()
+	runtime.schedulerCancel = nil
+	runtime.replicaConflict.cancel()
+	runtime.replicaConflict.wg.Wait()
+	runtime.replicaConflict.cancel = nil
 	methods := map[string]bool{}
 	for _, method := range runtime.Capabilities().RPCMethods {
 		methods[method] = true
