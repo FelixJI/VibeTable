@@ -93,6 +93,31 @@ public sealed class ReleaseUpdateServiceTests
     }
 
     [TestMethod]
+    public async Task CoordinatorDisablesInstallForDevelopmentAndTestHosts()
+    {
+        const string json = """
+            [{"tag_name":"v1.0.0","name":"Current","body":"","html_url":"https://github.com/FelixJI/VibeTable/releases/tag/v1.0.0","draft":false,"prerelease":false,"published_at":"2026-01-01T00:00:00Z","assets":[]}]
+            """;
+        using var http = new HttpClient(new DelegateHandler((_, _) => JsonResponse(json)));
+        var coordinator = new ReleaseUpdateCoordinator(
+            Root(),
+            "1.0.0",
+            new GitHubReleaseUpdateClient(http),
+            new ReleasePackageStager(),
+            installationEnabled: false);
+
+        ReleaseUpdateCheckResult result = await coordinator.CheckAsync(
+            AppPreferences.Default,
+            CancellationToken.None);
+        ReleaseUpdateException exception = await Assert.ThrowsExactlyAsync<ReleaseUpdateException>(
+            () => coordinator.LaunchUpdateAsync(CancellationToken.None));
+
+        Assert.IsFalse(result.CanInstall);
+        StringAssert.Contains(result.InstallUnavailableReason, "开发或测试模式");
+        Assert.AreEqual("UPDATE_INSTALL_DISABLED", exception.Code);
+    }
+
+    [TestMethod]
     public void ProxyRewritingRequiresHttpsAndKeepsGitHubAsTheSourceUrl()
     {
         var direct = new Uri(
@@ -229,6 +254,53 @@ public sealed class ReleaseUpdateServiceTests
             targetAlreadyUpdated: true);
 
         Assert.AreEqual("1.1.0", validated.TargetVersion);
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public void SmokePlanRequiresTheMatchingProcessEnvironmentToken()
+    {
+        string target = CreateInstalledPackage("1.0.0");
+        string stage = Path.Combine(Path.GetDirectoryName(target)!, ".VibeTable.Next.update-smoke");
+        string source = Path.Combine(stage, "package", "VibeTable");
+        CreatePackageTree(source, "1.1.0", "new");
+        string token = new('d', 64);
+        var plan = new UpdateApplyPlan(
+            1,
+            target,
+            source,
+            stage,
+            123,
+            "1.0.0",
+            "1.1.0",
+            token,
+            SmokeTest: true);
+        string planPath = Path.Combine(stage, "update-plan.json");
+        File.WriteAllText(planPath, System.Text.Json.JsonSerializer.Serialize(plan));
+        string? previous = Environment.GetEnvironmentVariable(
+            UpdateProcessCommand.SmokeTokenEnvironmentVariable);
+
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                null);
+            ReleaseUpdateException rejected = Assert.ThrowsExactly<ReleaseUpdateException>(() =>
+                UpdateProcessCommand.ReadAndValidatePlan(planPath));
+            Assert.AreEqual("UPDATE_PLAN_INVALID", rejected.Code);
+
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                token);
+            UpdateApplyPlan validated = UpdateProcessCommand.ReadAndValidatePlan(planPath);
+            Assert.IsTrue(validated.SmokeTest);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                previous);
+        }
     }
 
     [TestMethod]

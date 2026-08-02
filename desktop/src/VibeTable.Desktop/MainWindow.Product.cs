@@ -120,7 +120,8 @@ public partial class MainWindow : Window
         _appPreferences = _appPreferencesService.ReadForStartup();
         _releaseUpdateCoordinator = new ReleaseUpdateCoordinator(
             AppContext.BaseDirectory,
-            ApplicationVersion.FromAssembly(typeof(MainWindow).Assembly));
+            ApplicationVersion.FromAssembly(typeof(MainWindow).Assembly),
+            installationEnabled: !developmentDataRootRequested && !startup.TestMode);
         _activityRootBase = runtimeDataRoot is null
             ? Path.Combine(localAppData, "VibeTable", "activity")
             : Path.Combine(runtimeDataRoot, "activity");

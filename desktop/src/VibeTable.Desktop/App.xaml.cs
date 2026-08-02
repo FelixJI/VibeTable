@@ -32,7 +32,9 @@ public partial class App : Application
                 out int updateExitCode,
                 out string? updateError))
         {
-            if (updateError is not null)
+            if (updateError is not null
+                && string.IsNullOrEmpty(Environment.GetEnvironmentVariable(
+                    Services.UpdateProcessCommand.SmokeTokenEnvironmentVariable)))
             {
                 MessageBox.Show(
                     updateError,
@@ -43,7 +45,11 @@ public partial class App : Application
             Shutdown(updateExitCode);
             return;
         }
-        Services.UpdateProcessCommand.TryScheduleCleanup(e.Args);
+        if (Services.UpdateProcessCommand.TryScheduleCleanup(e.Args))
+        {
+            Shutdown(0);
+            return;
+        }
         _ = SetCurrentProcessExplicitAppUserModelID(
             ApplicationUserModelId);
         base.OnStartup(e);

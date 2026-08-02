@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -65,6 +66,8 @@ DEV_SKIP_FLAGS = (
     "--skip-desktop",
     "--skip-sidecar",
 )
+SELF_UPDATE_SMOKE_TOKEN_ENV = "VIBETABLE_SELF_UPDATE_SMOKE_TOKEN"
+SELF_UPDATE_SMOKE_COMPLETION_FILE = ".self-update-smoke-complete"
 
 
 def release_archive_name(version: str) -> str:
@@ -1220,6 +1223,132 @@ def _build_desktop(paths: RepoPaths, *, skip: bool) -> None:
     shutil.copy2(source, paths.host_exe)
 
 
+def _stage_self_update_smoke_package(
+    root: Path,
+    host_exe: Path,
+    *,
+    version: str,
+    resource_marker: str,
+) -> None:
+    resources = root / "resources"
+    resources.mkdir(parents=True)
+    destination = root / HOST_EXE_NAME
+    try:
+        os.link(host_exe, destination)
+    except OSError:
+        shutil.copy2(host_exe, destination)
+    (root / "release.json").write_text(
+        json.dumps(
+            {
+                "product": "VibeTable",
+                "version": version,
+                "platform": "windows",
+                "architecture": "x64",
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    (resources / "self-update-smoke.txt").write_text(resource_marker, encoding="utf-8")
+
+
+def run_desktop_self_update_smoke(
+    host_exe: Path,
+    smoke_root: Path,
+    *,
+    repo_root: Path,
+) -> None:
+    """Exercise the published host's process-out update path without user data access."""
+    if os.name != "nt":
+        raise BuildError("desktop self-update smoke requires Windows")
+    executable = host_exe.resolve()
+    if not executable.is_file():
+        raise BuildError("desktop self-update smoke host is missing")
+    repository = Path(os.path.abspath(repo_root))
+    root = Path(os.path.abspath(smoke_root))
+    expected_root = repository / "build" / "self-update-smoke"
+    if root != expected_root:
+        raise BuildError("desktop self-update smoke root must be build/self-update-smoke")
+    if root.is_symlink() or (hasattr(os.path, "isjunction") and os.path.isjunction(root)):
+        raise BuildError("desktop self-update smoke root must not be a link")
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+
+    target = root / "VibeTable.Next"
+    stage = root / ".VibeTable.Next.update-smoke"
+    source = stage / "package" / ARCHIVE_ROOT_NAME
+    _stage_self_update_smoke_package(
+        target,
+        executable,
+        version="1.0.0",
+        resource_marker="old",
+    )
+    _stage_self_update_smoke_package(
+        source,
+        executable,
+        version="1.0.1",
+        resource_marker="new",
+    )
+    install_sentinel = target / "user-data.db"
+    external_sentinel = root / "local-app-data" / "user-data.db"
+    install_sentinel.write_text("preserve-install-root", encoding="utf-8")
+    external_sentinel.parent.mkdir()
+    external_sentinel.write_text("preserve-user-data", encoding="utf-8")
+
+    exited_parent = subprocess.Popen(
+        [sys.executable, "-c", "pass"],
+        cwd=root,
+    )
+    exited_parent.wait(timeout=30)
+    token = secrets.token_hex(32)
+    plan = {
+        "SchemaVersion": 1,
+        "TargetRoot": str(target),
+        "SourceRoot": str(source),
+        "StagingRoot": str(stage),
+        "ParentProcessId": exited_parent.pid,
+        "CurrentVersion": "1.0.0",
+        "TargetVersion": "1.0.1",
+        "Token": token,
+        "SmokeTest": True,
+    }
+    plan_path = stage / "update-plan.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    environment = os.environ.copy()
+    environment[SELF_UPDATE_SMOKE_TOKEN_ENV] = token
+    try:
+        applied = subprocess.run(
+            [str(source / HOST_EXE_NAME), "--apply-update", str(plan_path)],
+            cwd=source,
+            env=environment,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BuildError("desktop self-update smoke could not run the published host") from exc
+    if applied.returncode != 0:
+        raise BuildError(f"desktop self-update smoke updater exited with {applied.returncode}")
+
+    completion = target / SELF_UPDATE_SMOKE_COMPLETION_FILE
+    deadline = time.monotonic() + 120
+    while not completion.is_file() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if not completion.is_file() or completion.read_text(encoding="ascii") != token:
+        raise BuildError("desktop self-update smoke restart handoff did not complete")
+    if stage.exists():
+        raise BuildError("desktop self-update smoke did not clean its staging directory")
+    identity = json.loads((target / "release.json").read_text(encoding="utf-8"))
+    if identity.get("version") != "1.0.1":
+        raise BuildError("desktop self-update smoke retained the old package identity")
+    if (target / "resources" / "self-update-smoke.txt").read_text(encoding="utf-8") != "new":
+        raise BuildError("desktop self-update smoke did not replace package resources")
+    if install_sentinel.read_text(encoding="utf-8") != "preserve-install-root":
+        raise BuildError("desktop self-update smoke overwrote an unknown install-root file")
+    if external_sentinel.read_text(encoding="utf-8") != "preserve-user-data":
+        raise BuildError("desktop self-update smoke overwrote external user data")
+
+
 def _atomic_swap(staging: Path, publish: Path) -> None:
     def replace_with_retry(source: Path, destination: Path) -> None:
         last_error: OSError | None = None
@@ -1304,6 +1433,12 @@ def run_build(paths: RepoPaths, args: argparse.Namespace) -> int:
     stage_workspace_contracts(stage)
     write_manifest(stage)
     write_release_manifest(stage)
+    if args.release:
+        run_desktop_self_update_smoke(
+            stage.host_exe,
+            paths.repo_root / "build" / "self-update-smoke",
+            repo_root=paths.repo_root,
+        )
     _atomic_swap(paths.staging_root, paths.publish_root)
     if not args.keep_staging:
         shutil.rmtree(paths.scratch_root, ignore_errors=True)

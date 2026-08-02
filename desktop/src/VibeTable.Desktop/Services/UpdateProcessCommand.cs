@@ -12,6 +12,10 @@ namespace VibeTable.Desktop.Services;
 
 internal static class UpdateProcessCommand
 {
+    internal const string SmokeTokenEnvironmentVariable =
+        "VIBETABLE_SELF_UPDATE_SMOKE_TOKEN";
+    internal const string SmokeCompletionFileName =
+        ".self-update-smoke-complete";
     private static readonly string[] OwnedRootEntries =
     [
         "VibeTable.Next.exe",
@@ -49,12 +53,12 @@ internal static class UpdateProcessCommand
         return true;
     }
 
-    public static void TryScheduleCleanup(IReadOnlyList<string> arguments)
+    public static bool TryScheduleCleanup(IReadOnlyList<string> arguments)
     {
         if (!TryParseCleanup(arguments, out string? stageRoot, out int updaterProcessId,
-                out string? token))
+                out string? token, out bool smokeArgument))
         {
-            return;
+            return false;
         }
         try
         {
@@ -64,9 +68,19 @@ internal static class UpdateProcessCommand
                 requireCurrentSource: false,
                 targetAlreadyUpdated: true);
             if (!PathsEqual(plan.TargetRoot, AppContext.BaseDirectory)
-                || !FixedTimeTokenEquals(plan.Token, token!))
+                || !FixedTimeTokenEquals(plan.Token, token!)
+                || plan.SmokeTest != smokeArgument)
             {
-                return;
+                return false;
+            }
+            if (plan.SmokeTest)
+            {
+                CleanupAfterUpdaterExit(plan, updaterProcessId);
+                File.WriteAllText(
+                    Path.Combine(plan.TargetRoot, SmokeCompletionFileName),
+                    plan.Token,
+                    Encoding.ASCII);
+                return true;
             }
             _ = Task.Run(() => CleanupAfterUpdaterExit(plan, updaterProcessId));
         }
@@ -74,6 +88,7 @@ internal static class UpdateProcessCommand
         {
             // A retained update directory is safer than deleting an unverified path.
         }
+        return false;
     }
 
     internal static UpdateApplyPlan ReadAndValidatePlan(
@@ -99,7 +114,11 @@ internal static class UpdateProcessCommand
             || string.IsNullOrWhiteSpace(plan.TargetVersion)
             || plan.Token is null
             || plan.Token.Length != 64
-            || plan.Token.Any(character => !Uri.IsHexDigit(character)))
+            || plan.Token.Any(character => !Uri.IsHexDigit(character))
+            || (plan.SmokeTest
+                && !FixedTimeTokenEquals(
+                    plan.Token,
+                    Environment.GetEnvironmentVariable(SmokeTokenEnvironmentVariable))))
         {
             throw new ReleaseUpdateException(
                 "更新计划格式无效。",
@@ -283,6 +302,10 @@ internal static class UpdateProcessCommand
         start.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
         start.ArgumentList.Add("--update-token");
         start.ArgumentList.Add(plan.Token);
+        if (plan.SmokeTest)
+        {
+            start.ArgumentList.Add("--self-update-smoke");
+        }
         using Process? process = Process.Start(start);
         if (process is null)
         {
@@ -296,15 +319,18 @@ internal static class UpdateProcessCommand
         IReadOnlyList<string> arguments,
         out string? stageRoot,
         out int updaterProcessId,
-        out string? token)
+        out string? token,
+        out bool smokeTest)
     {
         stageRoot = null;
         updaterProcessId = 0;
         token = null;
-        if (arguments.Count != 6
+        smokeTest = false;
+        if (arguments.Count is not (6 or 7)
             || arguments[0] != "--cleanup-update"
             || arguments[2] != "--updater-pid"
             || arguments[4] != "--update-token"
+            || (arguments.Count == 7 && arguments[6] != "--self-update-smoke")
             || !int.TryParse(arguments[3], out updaterProcessId)
             || updaterProcessId <= 0)
         {
@@ -312,6 +338,7 @@ internal static class UpdateProcessCommand
         }
         stageRoot = arguments[1];
         token = arguments[5];
+        smokeTest = arguments.Count == 7;
         return true;
     }
 
@@ -402,9 +429,9 @@ internal static class UpdateProcessCommand
             NormalizeDirectory(right),
             StringComparison.OrdinalIgnoreCase);
 
-    private static bool FixedTimeTokenEquals(string expected, string actual)
+    private static bool FixedTimeTokenEquals(string expected, string? actual)
     {
-        if (expected.Length != actual.Length) return false;
+        if (actual is null || expected.Length != actual.Length) return false;
         return CryptographicOperations.FixedTimeEquals(
             Encoding.ASCII.GetBytes(expected),
             Encoding.ASCII.GetBytes(actual));

@@ -365,7 +365,8 @@ internal sealed record UpdateApplyPlan(
     int ParentProcessId,
     string CurrentVersion,
     string TargetVersion,
-    string Token);
+    string Token,
+    bool SmokeTest = false);
 
 internal sealed class ReleasePackageStager
 {
@@ -638,19 +639,26 @@ internal sealed class ReleasePackageStager
 
 internal sealed class ReleaseUpdateCoordinator
 {
+    private const string InstallDisabledReason =
+        "开发或测试模式不支持原地安装，请使用正式发布包验证更新。";
     private readonly GitHubReleaseUpdateClient _client;
     private readonly ReleasePackageStager _stager;
     private readonly string _installRoot;
     private readonly string _currentVersion;
+    private readonly bool _installationEnabled;
     private readonly object _gate = new();
     private ReleaseUpdateCandidate? _candidate;
 
-    public ReleaseUpdateCoordinator(string installRoot, string currentVersion)
+    public ReleaseUpdateCoordinator(
+        string installRoot,
+        string currentVersion,
+        bool installationEnabled = true)
         : this(
             installRoot,
             currentVersion,
             new GitHubReleaseUpdateClient(),
-            new ReleasePackageStager())
+            new ReleasePackageStager(),
+            installationEnabled)
     {
     }
 
@@ -658,12 +666,14 @@ internal sealed class ReleaseUpdateCoordinator
         string installRoot,
         string currentVersion,
         GitHubReleaseUpdateClient client,
-        ReleasePackageStager stager)
+        ReleasePackageStager stager,
+        bool installationEnabled = true)
     {
         _installRoot = installRoot;
         _currentVersion = currentVersion;
         _client = client;
         _stager = stager;
+        _installationEnabled = installationEnabled;
     }
 
     public async Task<ReleaseUpdateCheckResult> CheckAsync(
@@ -677,22 +687,25 @@ internal sealed class ReleaseUpdateCoordinator
             cancellationToken).ConfigureAwait(false);
         lock (_gate) _candidate = candidate;
 
-        bool canInstall = true;
-        string? unavailableReason = null;
-        try
+        bool canInstall = _installationEnabled;
+        string? unavailableReason = _installationEnabled ? null : InstallDisabledReason;
+        if (_installationEnabled)
         {
-            InstalledPackageIdentity identity = InstalledPackageIdentity.Read(_installRoot);
-            if (identity.Version != _currentVersion)
+            try
             {
-                throw new ReleaseUpdateException(
-                    "运行版本与安装目录不一致。",
-                    "UPDATE_INSTALL_IDENTITY_MISMATCH");
+                InstalledPackageIdentity identity = InstalledPackageIdentity.Read(_installRoot);
+                if (identity.Version != _currentVersion)
+                {
+                    throw new ReleaseUpdateException(
+                        "运行版本与安装目录不一致。",
+                        "UPDATE_INSTALL_IDENTITY_MISMATCH");
+                }
             }
-        }
-        catch (ReleaseUpdateException exception)
-        {
-            canInstall = false;
-            unavailableReason = exception.Message;
+            catch (ReleaseUpdateException exception)
+            {
+                canInstall = false;
+                unavailableReason = exception.Message;
+            }
         }
 
         return new ReleaseUpdateCheckResult(
@@ -709,6 +722,12 @@ internal sealed class ReleaseUpdateCoordinator
 
     public async Task LaunchUpdateAsync(CancellationToken cancellationToken)
     {
+        if (!_installationEnabled)
+        {
+            throw new ReleaseUpdateException(
+                InstallDisabledReason,
+                "UPDATE_INSTALL_DISABLED");
+        }
         ReleaseUpdateCandidate? candidate;
         lock (_gate) candidate = _candidate;
         if (candidate is null)
