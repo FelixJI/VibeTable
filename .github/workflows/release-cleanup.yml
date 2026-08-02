@@ -1,0 +1,36 @@
+name: Keep Recent Releases
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cleanup-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Keep recent published Releases
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Keep the five most recent published Releases
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .published_at != null) | [.published_at, .id, .tag_name] | @tsv' |
+          LC_ALL=C sort -r |
+          tail -n +6 |
+          while IFS=$'\t' read -r published_at release_id tag_name; do
+            echo "Deleting old Release ${tag_name}; the git tag is retained."
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+          done

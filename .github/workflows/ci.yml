@@ -46,6 +46,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv run python qa/package_check.py
 
+      - name: Release changelog freshness
+        if: startsWith(github.head_ref, 'release-please--branches--')
+        run: uv run python scripts/changelog.py --check
+
       - name: Format and lint
         run: |
           uv run ruff format --check .

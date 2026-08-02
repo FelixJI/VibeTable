@@ -24,22 +24,36 @@ def test_first_release_has_the_project_initialization_entry(
     assert changelog.render_markdown("0.1.0", entries) == ("# VibeTable 0.1.0\n\n- 初始化项目\n")
 
 
-def test_changelog_uses_non_merge_commits_and_filters_merge_wording(
+def test_changelog_uses_user_visible_conventional_types_and_directives(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     git_args: list[tuple[str, ...]] = []
 
+    def record(seed: str, subject: str, body: str = "") -> str:
+        commit = seed + "0" * (40 - len(seed))
+        message = subject if not body else f"{subject}\n\n{body}"
+        return f"{commit}\x1f{subject}\x1f{message}\x1e"
+
     def fake_git(_repo_root: Path, *args: str) -> str:
         git_args.append(args)
-        return "\n".join(
+        return "".join(
             [
-                f"{'a1b2c3d' + '0' * 33}\x1ffeat: 新增筛选器",
-                f"{'b2c3d4e' + '0' * 33}\x1fMerge branch 'feature/filter'",
-                f"{'c3d4e5f' + '0' * 33}\x1f合并主分支",
-                f"{'d4e5f6a' + '0' * 33}\x1fchore: release v0.1.1",
-                f"{'d5e6f7a' + '0' * 33}\x1fchore(release): prepare 0.2.0",
-                f"{'d6e7f8a' + '0' * 33}\x1fchore(main): release 0.1.1",
-                f"{'e5f6a7b' + '0' * 33}\x1ffix: 修复导出",
+                record("a1b2c3d", "feat: 新增筛选器"),
+                record("b2c3d4e", "fix(export): 修复导出"),
+                record("c3d4e5f", "perf!: 重写大型表格渲染"),
+                record("d4e5f6a", "revert: 回退不兼容的导入器"),
+                record("e5f6a7b", "ci: 更新 Windows runner"),
+                record("f6a7b8c", "test: 增加导出测试"),
+                record("a7b8c9d", "docs: 更新开发文档"),
+                record("b8c9d0e", "chore(release): refresh generated changelog"),
+                record("c9d0e1f", "重排内部模块"),
+                record("d0e1f2a", "docs: 发布用户迁移指南", "Changelog: include"),
+                record("e1f2a3b", "fix: 隐藏实验功能", "Changelog: skip"),
+                record(
+                    "f2a3b4c",
+                    "chore(storage): 迁移本地索引",
+                    "BREAKING CHANGE: 旧索引格式不再支持",
+                ),
             ]
         )
 
@@ -53,9 +67,13 @@ def test_changelog_uses_non_merge_commits_and_filters_merge_wording(
     entries = changelog.collect_changelog(REPO_ROOT, "0.1.1")
 
     assert git_args == [
-        ("log", "--no-merges", "--format=%H%x1f%s", "v0.1.0..HEAD"),
+        ("log", "--no-merges", "--format=%H%x1f%s%x1f%B%x1e", "v0.1.0..HEAD"),
     ]
     assert entries == [
         changelog.ChangelogEntry(subject="feat: 新增筛选器", commit="a1b2c3d0"),
-        changelog.ChangelogEntry(subject="fix: 修复导出", commit="e5f6a7b0"),
+        changelog.ChangelogEntry(subject="fix(export): 修复导出", commit="b2c3d4e0"),
+        changelog.ChangelogEntry(subject="perf!: 重写大型表格渲染", commit="c3d4e5f0"),
+        changelog.ChangelogEntry(subject="revert: 回退不兼容的导入器", commit="d4e5f6a0"),
+        changelog.ChangelogEntry(subject="docs: 发布用户迁移指南", commit="d0e1f2a0"),
+        changelog.ChangelogEntry(subject="chore(storage): 迁移本地索引", commit="f2a3b4c0"),
     ]

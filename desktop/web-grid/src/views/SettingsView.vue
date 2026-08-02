@@ -67,6 +67,10 @@ import WorkspaceProtectionSettings, {
 } from "@/components/settings/WorkspaceProtectionSettings.vue";
 
 type Section = "general" | "calendar" | "mapping" | "storage" | "versions" | "interaction" | "about";
+type ChangelogEntry = Readonly<{
+  subject: string;
+  commit: string | null;
+}>;
 
 const ui = useUiStore();
 const mappings = useIdentifierMappingStore();
@@ -104,7 +108,7 @@ const releaseUpdateService = useReleaseUpdateService();
 const releaseUpdate = ref<ReleaseUpdateCheckResult | null>(null);
 const releaseUpdatePhase = ref<"idle" | "checking" | "installing">("idle");
 const releaseUpdateError = ref<string | null>(null);
-const changelogEntries = changelog.entries;
+const changelogEntries = changelog.entries as readonly ChangelogEntry[];
 const updateProxyOptions = computed(() => [
   { label: t("settings.update.proxy.direct"), value: "direct" },
   { label: "ghproxy.net", value: "ghproxyNet" },
