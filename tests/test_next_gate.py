@@ -296,25 +296,36 @@ def test_source_only_go_stages_do_not_fabricate_recovery_tool_paths() -> None:
 
 def test_release_gate_enables_required_windows_credential_manager_tests() -> None:
     workflow = (next_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    build_job = workflow.split("  build:", maxsplit=1)[1]
-    assert "timeout-minutes: 120" in build_job.split("    steps:", maxsplit=1)[0]
-    gate_step = workflow.split(
-        "- name: Run complete release eligibility gate",
+    build_job = workflow.split("  build:", maxsplit=1)[1].split("\n  core:", maxsplit=1)[0]
+    assert "timeout-minutes: 45" in build_job.split("    steps:", maxsplit=1)[0]
+    assert "environment: release" not in build_job
+    assert "contents: write" not in build_job
+    assert workflow.count('VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER: "1"') == 2
+    protected_step = workflow.split(
+        "- name: Run protected package eligibility lane",
         maxsplit=1,
     )[1].split("- name:", maxsplit=1)[0]
+    assert "VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY" in protected_step
+    assert "environment: release" in workflow.split("  release:", maxsplit=1)[1]
+    gate_job = workflow.split("  gate:", maxsplit=1)[1].split("\n  release:", maxsplit=1)[0]
+    assert "if: always()" in gate_job
+    assert "environment: release" not in gate_job
+    assert "contents: write" not in gate_job
+    release_header = workflow.split("  release:", maxsplit=1)[1].split("    steps:", maxsplit=1)[0]
+    assert "needs: [build, gate]" in release_header
+    assert "needs.gate.result == 'success'" in release_header
 
-    assert 'VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER: "1"' in gate_step
-    assert "VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY" in gate_step
 
-
-def test_release_workflow_runs_each_python_and_web_suite_once_in_the_complete_gate() -> None:
+def test_release_workflow_runs_each_stage_in_one_candidate_bound_lane() -> None:
     workflow = (next_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    build_job = workflow.split("  build:", maxsplit=1)[1]
 
-    assert "- name: Run complete release eligibility gate" in build_job
-    assert "- name: Verify eligibility is bound to the immutable candidate" in build_job
-    assert "- name: Verify Python, contracts, and release tooling" not in build_job
-    assert "- name: Verify web grid" not in build_job
+    for lane in next_gate.LANE_STAGES:
+        assert workflow.count(f"qa/next.py --lane {lane}") == 1
+    assert "qa/next.py --ci" not in workflow
+    assert workflow.count("qa/release_eligibility.py") == 1
+    assert workflow.index("Aggregate immutable candidate evidence") < workflow.index(
+        "Verify eligibility is bound to the immutable candidate"
+    )
 
 
 def test_race_stage_compiles_each_package_once_and_runs_every_test_in_isolation(
@@ -921,6 +932,55 @@ def test_full_ci_report_is_bound_to_stable_release_candidate(
     assert payload["releaseEligible"] is True
     assert payload["releaseCandidate"]["archive"]["sha256"]
     assert payload["releaseCandidate"]["packageTreeSha256"]
+
+
+def test_lane_report_is_candidate_bound_but_never_release_eligible(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "artifact_hashes",
+        lambda _deps: {"sidecar": "d" * 64},
+    )
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "release_source_hash",
+        lambda _deps: "s" * 64,
+    )
+    monkeypatch.setattr(
+        next_gate,
+        "run_lane",
+        lambda lane, package_root, package_archive: (
+            0,
+            [
+                next_gate.StageResult(
+                    stage=stage,
+                    command=["test"],
+                    returncode=0,
+                    elapsed=0.01,
+                    stdout="",
+                    stderr="",
+                    cwd=str(next_gate.REPO_ROOT),
+                )
+                for stage in next_gate.LANE_STAGES[lane]
+            ],
+        ),
+    )
+    report = tmp_path / "lane.json"
+
+    assert (
+        next_gate.main(["--lane", "race", *_candidate_args(tmp_path), "--json-report", str(report)])
+        == 0
+    )
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["reportKind"] == "lane"
+    assert payload["lane"] == "race"
+    assert payload["ok"] is True
+    assert payload["releaseEligible"] is False
+    assert payload["releaseCandidate"]["archive"]["sha256"]
 
 
 def test_full_ci_report_rejects_candidate_mutation(

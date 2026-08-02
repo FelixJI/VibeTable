@@ -23,9 +23,11 @@ from threading import Event
 try:
     from qa import handoff as handoff_gate
     from qa import release_candidate
+    from qa.release_eligibility import LANE_STAGES, REQUIRED_STAGES
 except ModuleNotFoundError:  # pragma: no cover - direct ``python qa/next.py``
     import handoff as handoff_gate  # type: ignore[no-redef]
     import release_candidate  # type: ignore[no-redef]
+    from release_eligibility import LANE_STAGES, REQUIRED_STAGES  # type: ignore[no-redef]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SIDECAR_DIR = REPO_ROOT / "sidecar"
@@ -38,27 +40,7 @@ GO_FORMAT_CHECK = REPO_ROOT / "qa" / "go_format_check.py"
 E2E_SMOKE = REPO_ROOT / "tests" / "e2e" / "test_next_readonly_smoke.py"
 UPGRADE_SMOKE = REPO_ROOT / "tests" / "integration" / "test_upgrade_activation_smoke.py"
 
-STAGES = (
-    "version",
-    "package",
-    "go-fmt",
-    "go-vet",
-    "go-test",
-    "go-race",
-    "go-build",
-    "sidecar-smoke",
-    "upgrade-smoke",
-    "dev-build",
-    "python",
-    "contracts",
-    "tooling",
-    "dotnet",
-    "web-test",
-    "web-build",
-    "fault-injection",
-    "product-e2e",
-    "smoke",
-)
+STAGES = REQUIRED_STAGES
 DEFAULT_STAGE_TIMEOUT_SECONDS = 15 * 60
 STAGE_TIMEOUT_SECONDS = {
     "fault-injection": 30 * 60,
@@ -776,11 +758,29 @@ def run_ci(
     return 0, results
 
 
+def run_lane(
+    lane: str,
+    package_root: Path,
+    package_archive: Path,
+) -> tuple[int, list[StageResult]]:
+    results: list[StageResult] = []
+    for stage in LANE_STAGES[lane]:
+        result = run_stage(stage, package_root, package_archive)
+        results.append(result)
+        _write_console_text(sys.stdout, result.stdout)
+        _write_console_text(sys.stderr, result.stderr)
+        if result.returncode:
+            return result.returncode, results
+    return 0, results
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--list", action="store_true")
-    parser.add_argument("--ci", action="store_true")
-    parser.add_argument("--stage", choices=STAGES)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--list", action="store_true")
+    mode.add_argument("--ci", action="store_true")
+    mode.add_argument("--stage", choices=STAGES)
+    mode.add_argument("--lane", choices=tuple(LANE_STAGES))
     parser.add_argument("--json-report", type=Path)
     parser.add_argument("--package-root", type=Path)
     parser.add_argument("--package-archive", type=Path)
@@ -801,10 +801,11 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"failed to capture gate identity: {exc}", file=sys.stderr)
         return 2
     starting_candidate: dict[str, object] | None = None
-    if args.ci:
+    if args.ci or args.lane:
         if args.package_root is None or args.package_archive is None:
             print(
-                "--ci requires --package-root and --package-archive for immutable candidate binding",
+                "--ci/--lane requires --package-root and --package-archive "
+                "for immutable candidate binding",
                 file=sys.stderr,
             )
             return 2
@@ -826,10 +827,12 @@ def _main(argv: list[str] | None = None) -> int:
         _write_console_text(sys.stdout, result.stdout)
         _write_console_text(sys.stderr, result.stderr)
         code = result.returncode
+    elif args.lane:
+        code, results = run_lane(args.lane, args.package_root, args.package_archive)
     elif args.ci:
         code, results = run_ci(args.package_root, args.package_archive)
     else:
-        _parser().error("choose --list, --stage, or --ci")
+        _parser().error("choose --list, --stage, --lane, or --ci")
     ending_commit = handoff_gate.git_head_sha()
     ending_dependencies = handoff_gate.load_dependencies()
     ending_hashes = handoff_gate.artifact_hashes(ending_dependencies)
@@ -846,8 +849,12 @@ def _main(argv: list[str] | None = None) -> int:
         )
         code = code or 1
     ending_candidate: dict[str, object] | None = None
-    candidate_stable = not args.ci
-    if args.ci and args.package_root is not None and args.package_archive is not None:
+    candidate_stable = not (args.ci or args.lane)
+    if (
+        (args.ci or args.lane)
+        and args.package_root is not None
+        and args.package_archive is not None
+    ):
         try:
             ending_candidate = release_candidate.candidate_evidence(
                 args.package_root,
@@ -873,6 +880,8 @@ def _main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "schemaVersion": 2,
+                    "reportKind": "lane" if args.lane else ("complete" if args.ci else "stage"),
+                    "lane": args.lane,
                     "ok": code == 0,
                     "releaseEligible": release_eligible,
                     "generatedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),

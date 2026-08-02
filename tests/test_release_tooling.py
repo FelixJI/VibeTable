@@ -531,10 +531,29 @@ def test_release_candidate_report_binds_the_exact_package_tree_and_archive(
         assert all(name.startswith("VibeTable/") for name in created.namelist())
     report = tmp_path / "release-eligibility.json"
     report.write_text(
-        json.dumps({"releaseEligible": True, "releaseCandidate": evidence}),
+        json.dumps(
+            {
+                "reportKind": "aggregate",
+                "releaseEligible": True,
+                "releaseCandidate": evidence,
+            }
+        ),
         encoding="utf-8",
     )
     assert release_candidate.verify_eligibility_report(package_root, archive, report) == evidence
+
+    report.write_text(
+        json.dumps(
+            {
+                "reportKind": "lane",
+                "releaseEligible": True,
+                "releaseCandidate": evidence,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(release_candidate.CandidateError, match="not an aggregate"):
+        release_candidate.verify_eligibility_report(package_root, archive, report)
 
     (package_root / "VibeTable.Next.exe").write_bytes(b"changed")
     with pytest.raises(release_candidate.CandidateError, match="no longer matches"):
@@ -658,12 +677,10 @@ def test_release_workflows_open_direct_release_prs_and_only_fill_draft_releases(
     assert "release_tag:" in workflow
     assert "Resolve release tag" in workflow
     assert "INPUT_TAG: ${{ inputs.release_tag }}" in workflow
-    assert "RELEASE_TAG: ${{ env.RELEASE_TAG }}" in workflow
-    # The old direct binding `RELEASE_TAG: ${{ inputs.release_tag }}` only worked
-    # for manual dispatch and is now replaced by the Resolve step + env wiring:
-    # the upload step reads the resolved tag from env, never from inputs.
+    assert "RELEASE_TAG: ${{ needs.build.outputs.release_tag }}" in workflow
+    # The final publish job consumes the build job's resolved immutable tag,
+    # never the untrusted manual input directly.
     attach = workflow.split("Attach assets to draft Release", 1)[1]
-    assert "RELEASE_TAG: ${{ env.RELEASE_TAG }}" in attach
     assert "${{ inputs.release_tag }}" not in attach
     assert "Verify tag and draft Release" in workflow
     assert "gh release view $env:RELEASE_TAG --json isDraft" in workflow
@@ -742,13 +759,15 @@ def test_release_workflows_open_direct_release_prs_and_only_fill_draft_releases(
     assert "w64devkit-x64-2.8.0.7z.exe" in workflow
     assert "6252bf34fe2231a55ac7f03d482b36d2c7c58697990551bba508102cfb3f342e" in workflow
     assert '7z x $archive "-o$destination" -y' in workflow
-    assert workflow.index("Install pinned Windows race toolchain") < workflow.index(
-        "Build immutable release candidate"
+    assert workflow.index("Build immutable release candidate") < workflow.index(
+        "Install pinned Windows race toolchain"
     )
-    assert "qa/next.py --ci" in workflow
+    assert "qa/next.py --ci" not in workflow
+    for lane in ("core", "race", "resilience", "release"):
+        assert workflow.count(f"qa/next.py --lane {lane}") == 1
     assert "--package-root dist/VibeTable.Next" in workflow
     assert (
-        "PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip"
+        "PACKAGE_ARCHIVE: dist/VibeTable-v${{ needs.build.outputs.version }}-win-x64.zip"
         in workflow
     )
     assert "--package-archive $env:PACKAGE_ARCHIVE" in workflow
@@ -758,13 +777,27 @@ def test_release_workflows_open_direct_release_prs_and_only_fill_draft_releases(
         "Archive immutable release candidate"
     )
     assert workflow.index("Archive immutable release candidate") < workflow.index(
-        "Run complete release eligibility gate"
+        "Run core release eligibility lane"
     )
-    assert workflow.index("Run complete release eligibility gate") < workflow.index(
+    assert workflow.index("Aggregate immutable candidate evidence") < workflow.index(
         "Verify eligibility is bound to the immutable candidate"
     )
     assert workflow.count("scripts/build_next.py --release") == 1
     assert "Compress-Archive" not in workflow
+    assert "if: always() && needs.build.outputs.release_tag != ''" in workflow
+    gate_job = workflow.split("  gate:", 1)[1].split("\n  release:", 1)[0]
+    assert "needs: [build, core, race, resilience]" in gate_job
+    assert "Reject failed or skipped release lanes" in gate_job
+    assert "environment: release" not in gate_job
+    assert "contents: write" not in gate_job
+    release_job = workflow.split("  release:", 1)[1]
+    assert "needs: [build, gate]" in release_job
+    assert "needs.gate.result == 'success'" in release_job
+    assert workflow.count("environment: release") == 1
+    assert workflow.count("contents: write") == 1
+    assert "actions/download-artifact@v8" in workflow
+    assert "actions/upload-artifact@v7" in workflow
+    assert "Release lanes did not all succeed" in workflow
     assert workflow.index(
         "Verify eligibility is bound to the immutable candidate"
     ) < workflow.index("Attach assets to draft Release")

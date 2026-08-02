@@ -7,10 +7,6 @@ on:
         description: Existing draft Release tag, for example v0.2.1
         required: true
         type: string
-  # Build, verify, attach, and publish after Release Please finishes. Release
-  # Please also runs while creating or updating a Release PR, so
-  # the build job resolves the latest actionable draft and skips gracefully when
-  # there is none — see the "Resolve release tag" step.
   workflow_run:
     workflows: ["Release Please"]
     types: [completed]
@@ -20,9 +16,6 @@ permissions:
   contents: read
 
 concurrency:
-  # workflow_run events have empty inputs; fall back to a stable per-repo key so
-  # auto-triggered builds serialize. The "Resolve release tag" step + idempotency
-  # check prevent rebuilding a draft that already has assets.
   group: release-assets-${{ github.repository }}-${{ inputs.release_tag || 'auto' }}
   cancel-in-progress: false
 
@@ -30,84 +23,64 @@ defaults:
   run:
     shell: pwsh
 
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
 jobs:
   build:
-    name: Build and upload Windows package
+    name: Build immutable Windows package
     runs-on: windows-latest
-    timeout-minutes: 120
-    environment: release
+    timeout-minutes: 45
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      version: ${{ steps.identity.outputs.version }}
+      commit: ${{ steps.identity.outputs.commit }}
     env:
       GH_TOKEN: ${{ github.token }}
-      PYTHONUTF8: "1"
-      PYTHONIOENCODING: "utf-8"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          # ref resolved per-event in the next step; default checkout keeps
-          # workflow_run (which has no ref context) from failing here.
 
       - name: Resolve release tag
         id: resolve
         env:
           INPUT_TAG: ${{ inputs.release_tag }}
           EVENT_NAME: ${{ github.event_name }}
+          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          # Manual dispatch: trust the provided tag.
           if ($env:EVENT_NAME -eq 'workflow_dispatch') {
             $tag = $env:INPUT_TAG.Trim()
             if ([string]::IsNullOrEmpty($tag)) { throw "workflow_dispatch requires release_tag input" }
-            git fetch origin "$tag" --tags --force
-            git checkout "$tag"
-            "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
-            "release_tag=$tag" >> $env:GITHUB_OUTPUT
-            Write-Host "::notice::Manual build for $tag"
-            return
+          } else {
+            $drafts = gh release list --limit 50 --json tagName,isDraft `
+              | ConvertFrom-Json | Where-Object { $_.isDraft -and $_.tagName -match '^v\d+\.\d+\.\d+$' }
+            if (-not $drafts) {
+              Write-Host "::notice::No actionable draft release; skipping build."
+              "release_tag=" >> $env:GITHUB_OUTPUT
+              return
+            }
+            $tag = $drafts[0].tagName
           }
-
-          # Auto path (workflow_run): find the latest draft release. If there is
-          # none, skip gracefully. Always rebuild an existing draft so publishing
-          # remains bound to eligibility evidence produced by this run.
-          $drafts = gh release list --limit 50 --json tagName,isDraft `
-            | ConvertFrom-Json | Where-Object { $_.isDraft -and $_.tagName -match '^v\d+\.\d+\.\d+$' }
-          if (-not $drafts) {
-            Write-Host "::notice::No actionable draft release; skipping build."
-            "RELEASE_TAG=" >> $env:GITHUB_ENV
-            "release_tag=" >> $env:GITHUB_OUTPUT
-            return
+          git fetch origin "refs/tags/$tag:refs/tags/$tag" --force
+          git checkout --detach "$tag"
+          if ($env:EVENT_NAME -eq 'workflow_run') {
+            $tagCommit = (git rev-parse HEAD).Trim()
+            if ($tagCommit -ne $env:TRIGGER_SHA) {
+              throw "Draft tag $tag resolves to $tagCommit, not triggering main commit $env:TRIGGER_SHA"
+            }
           }
-          $tag = $drafts[0].tagName
-          git fetch origin "$tag" --tags --force
-          git checkout "$tag"
-          "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
           "release_tag=$tag" >> $env:GITHUB_OUTPUT
-          Write-Host "::notice::Auto build for draft $tag"
-
-      - uses: actions/setup-node@v6
-        if: env.RELEASE_TAG != ''
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: desktop/web-grid/package-lock.json
-
-      - uses: actions/setup-go@v6
-        if: env.RELEASE_TAG != ''
-        with:
-          go-version-file: sidecar/go.mod
-          cache-dependency-path: sidecar/go.sum
-
-      - uses: actions/setup-dotnet@v5
-        if: env.RELEASE_TAG != ''
-        with:
-          global-json-file: global.json
+          Write-Host "::notice::Resolved immutable candidate tag $tag"
 
       - name: Verify tag and draft Release
         id: identity
-        if: env.RELEASE_TAG != ''
+        if: steps.resolve.outputs.release_tag != ''
         env:
-          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          RELEASE_TAG: ${{ steps.resolve.outputs.release_tag }}
         run: |
           $version = (python -c "from backend._version import __version__; print(__version__)").Trim()
           if ($env:RELEASE_TAG -ne "v$version") {
@@ -115,51 +88,51 @@ jobs:
           }
           $isDraft = (gh release view $env:RELEASE_TAG --json isDraft --jq '.isDraft').Trim()
           if ($isDraft -ne "true") {
-            throw "Release $env:RELEASE_TAG must exist and remain a draft before assets are uploaded"
+            throw "Release $env:RELEASE_TAG must remain a draft"
           }
           "version=$version" >> $env:GITHUB_OUTPUT
+          "commit=$((git rev-parse HEAD).Trim())" >> $env:GITHUB_OUTPUT
 
-      - name: Install pinned Windows race toolchain
-        if: env.RELEASE_TAG != ''
-        run: |
-          $archive = Join-Path $env:RUNNER_TEMP "w64devkit-x64-2.8.0.7z.exe"
-          $destination = Join-Path $PWD ".tools\w64devkit"
-          $expected = "6252bf34fe2231a55ac7f03d482b36d2c7c58697990551bba508102cfb3f342e"
-          Invoke-WebRequest `
-            -Uri "https://github.com/skeeto/w64devkit/releases/download/v2.8.0/w64devkit-x64-2.8.0.7z.exe" `
-            -OutFile $archive
-          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) {
-            throw "w64devkit checksum mismatch: expected $expected, got $actual"
-          }
-          New-Item -ItemType Directory -Force -Path $destination | Out-Null
-          7z x $archive "-o$destination" -y
-          if ($LASTEXITCODE -ne 0 -or !(Test-Path "$destination\w64devkit\bin\gcc.exe")) {
-            throw "w64devkit extraction did not produce the pinned gcc.exe"
-          }
+      - uses: actions/setup-node@v7
+        if: steps.resolve.outputs.release_tag != ''
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/web-grid/package-lock.json
+
+      - uses: actions/setup-go@v7
+        if: steps.resolve.outputs.release_tag != ''
+        with:
+          go-version-file: sidecar/go.mod
+          cache-dependency-path: sidecar/go.sum
+
+      - uses: actions/setup-dotnet@v6
+        if: steps.resolve.outputs.release_tag != ''
+        with:
+          global-json-file: global.json
 
       - name: Set up uv
-        if: env.RELEASE_TAG != ''
+        if: steps.resolve.outputs.release_tag != ''
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: "0.11.16"
           enable-cache: true
 
-      - name: Install locked build and verification dependencies
-        if: env.RELEASE_TAG != ''
+      - name: Install locked build dependencies
+        if: steps.resolve.outputs.release_tag != ''
         run: uv sync --frozen --group build --group dev
 
       - name: Install locked web dependencies
-        if: env.RELEASE_TAG != ''
+        if: steps.resolve.outputs.release_tag != ''
         working-directory: desktop/web-grid
         run: npm ci
 
       - name: Build immutable release candidate
-        if: env.RELEASE_TAG != ''
+        if: steps.resolve.outputs.release_tag != ''
         run: uv run python scripts/build_next.py --release
 
       - name: Archive immutable release candidate
-        if: env.RELEASE_TAG != ''
+        if: steps.resolve.outputs.release_tag != ''
         env:
           PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
         run: >
@@ -167,90 +140,307 @@ jobs:
           --package-root dist/VibeTable.Next
           --archive $env:PACKAGE_ARCHIVE
 
-      - name: Run complete release eligibility gate
-        if: env.RELEASE_TAG != ''
+      - name: Upload immutable candidate
+        if: steps.resolve.outputs.release_tag != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/VibeTable.Next
+            dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
+            dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip.sha256
+          if-no-files-found: error
+          retention-days: 3
+
+  core:
+    name: Core release gate
+    needs: build
+    if: needs.build.outputs.release_tag != ''
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build.outputs.release_tag }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/web-grid/package-lock.json
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: sidecar/go.mod
+          cache-dependency-path: sidecar/go.sum
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.16"
+          enable-cache: true
+      - run: uv sync --frozen --group build --group dev
+      - working-directory: desktop/web-grid
+        run: npm ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist
+      - name: Run core release eligibility lane
+        env:
+          VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER: "1"
+          PACKAGE_ARCHIVE: dist/VibeTable-v${{ needs.build.outputs.version }}-win-x64.zip
+        run: >
+          uv run python qa/next.py --lane core
+          --package-root dist/VibeTable.Next
+          --package-archive $env:PACKAGE_ARCHIVE
+          --json-report build/qa/lane-core.json
+      - name: Upload core lane evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-lane-core-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/qa/lane-core.json
+          if-no-files-found: error
+          retention-days: 30
+
+  race:
+    name: Go race release gate
+    needs: build
+    if: needs.build.outputs.release_tag != ''
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build.outputs.release_tag }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: sidecar/go.mod
+          cache-dependency-path: sidecar/go.sum
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.16"
+          enable-cache: true
+      - run: uv sync --frozen --group build --group dev
+      - name: Install pinned Windows race toolchain
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "w64devkit-x64-2.8.0.7z.exe"
+          $destination = Join-Path $PWD ".tools\w64devkit"
+          $expected = "6252bf34fe2231a55ac7f03d482b36d2c7c58697990551bba508102cfb3f342e"
+          Invoke-WebRequest -Uri "https://github.com/skeeto/w64devkit/releases/download/v2.8.0/w64devkit-x64-2.8.0.7z.exe" -OutFile $archive
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "w64devkit checksum mismatch" }
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          7z x $archive "-o$destination" -y
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path "$destination\w64devkit\bin\gcc.exe")) {
+            throw "w64devkit extraction did not produce the pinned gcc.exe"
+          }
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist
+      - name: Run race release eligibility lane
+        env:
+          VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER: "1"
+          PACKAGE_ARCHIVE: dist/VibeTable-v${{ needs.build.outputs.version }}-win-x64.zip
+        run: >
+          uv run python qa/next.py --lane race
+          --package-root dist/VibeTable.Next
+          --package-archive $env:PACKAGE_ARCHIVE
+          --json-report build/qa/lane-race.json
+      - name: Upload race lane evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-lane-race-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/qa/lane-race.json
+          if-no-files-found: error
+          retention-days: 30
+
+  resilience:
+    name: Resilience and product E2E gate
+    needs: build
+    if: needs.build.outputs.release_tag != ''
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build.outputs.release_tag }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: sidecar/go.mod
+          cache-dependency-path: sidecar/go.sum
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.16"
+          enable-cache: true
+      - run: uv sync --frozen --group build --group dev
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist
+      - name: Run resilience release eligibility lane
+        env:
+          PACKAGE_ARCHIVE: dist/VibeTable-v${{ needs.build.outputs.version }}-win-x64.zip
+        run: >
+          uv run python qa/next.py --lane resilience
+          --package-root dist/VibeTable.Next
+          --package-archive $env:PACKAGE_ARCHIVE
+          --json-report build/qa/lane-resilience.json
+      - name: Upload resilience lane evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-lane-resilience-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/qa/lane-resilience.json
+          if-no-files-found: error
+          retention-days: 30
+
+  gate:
+    name: Require every parallel lane
+    needs: [build, core, race, resilience]
+    if: always() && needs.build.outputs.release_tag != ''
+    runs-on: windows-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Reject failed or skipped release lanes
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          CORE_RESULT: ${{ needs.core.result }}
+          RACE_RESULT: ${{ needs.race.result }}
+          RESILIENCE_RESULT: ${{ needs.resilience.result }}
+        run: |
+          $results = @($env:BUILD_RESULT, $env:CORE_RESULT, $env:RACE_RESULT, $env:RESILIENCE_RESULT)
+          if (@($results | Where-Object { $_ -ne 'success' }).Count -gt 0) {
+            throw "Release lanes did not all succeed: $($results -join ', ')"
+          }
+
+  release:
+    name: Aggregate evidence and publish
+    needs: [build, gate]
+    if: needs.gate.result == 'success' && needs.build.outputs.release_tag != ''
+    runs-on: windows-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+      PACKAGE_ARCHIVE: dist/VibeTable-v${{ needs.build.outputs.version }}-win-x64.zip
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build.outputs.release_tag }}
+          fetch-depth: 0
+      - name: Revalidate immutable tag and draft Release
+        run: |
+          git fetch origin "refs/tags/$env:RELEASE_TAG:refs/tags/$env:RELEASE_TAG" --force
+          $tagCommit = (git rev-list -n 1 $env:RELEASE_TAG).Trim()
+          if ($tagCommit -ne '${{ needs.build.outputs.commit }}') {
+            throw "Release tag moved after the candidate was built"
+          }
+          $release = gh release view $env:RELEASE_TAG --json isDraft | ConvertFrom-Json
+          if (-not $release.isDraft) { throw "Release $env:RELEASE_TAG must remain a draft" }
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.16"
+          enable-cache: true
+      - run: uv sync --frozen --group build --group dev
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-lane-core-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/qa/lanes/core
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-lane-race-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/qa/lanes/race
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-lane-resilience-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/qa/lanes/resilience
+      - name: Run protected package eligibility lane
         env:
           VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY: ${{ secrets.PROVIDER_EVIDENCE_HMAC_KEY }}
           VIBETABLE_PROVIDER_EVIDENCE_KEY_ID: ${{ vars.PROVIDER_EVIDENCE_KEY_ID }}
-          VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER: "1"
-          PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
         run: >
-          uv run python qa/next.py --ci
+          uv run python qa/next.py --lane release
+          --package-root dist/VibeTable.Next
+          --package-archive $env:PACKAGE_ARCHIVE
+          --json-report build/qa/lanes/release/lane-release.json
+      - name: Aggregate immutable candidate evidence
+        run: >
+          uv run python qa/release_eligibility.py
+          --reports-dir build/qa/lanes
           --package-root dist/VibeTable.Next
           --package-archive $env:PACKAGE_ARCHIVE
           --json-report build/qa/release-eligibility.json
-
+          --github-summary $env:GITHUB_STEP_SUMMARY
       - name: Verify eligibility is bound to the immutable candidate
-        if: env.RELEASE_TAG != ''
-        env:
-          PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
         run: >
           uv run python qa/release_candidate.py verify
           --package-root dist/VibeTable.Next
           --archive $env:PACKAGE_ARCHIVE
           --eligibility-report build/qa/release-eligibility.json
-
       - name: Upload release eligibility evidence
-        if: env.RELEASE_TAG != ''
-        uses: actions/upload-artifact@v6
-        with:
-          name: release-eligibility-${{ steps.resolve.outputs.release_tag }}
-          path: build/qa/release-eligibility.json
-          if-no-files-found: error
-
-      - name: Upload workflow artifact
-        if: env.RELEASE_TAG != ''
         uses: actions/upload-artifact@v7
         with:
-          name: VibeTable-${{ steps.resolve.outputs.release_tag }}
-          path: |
-            dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
-            dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip.sha256
+          name: release-eligibility-${{ needs.build.outputs.release_tag }}
+          path: build/qa/release-eligibility.json
           if-no-files-found: error
           retention-days: 30
-
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: VibeTable-${{ needs.build.outputs.release_tag }}
+          path: |
+            dist/VibeTable-v${{ needs.build.outputs.version }}-win-x64.zip
+            dist/VibeTable-v${{ needs.build.outputs.version }}-win-x64.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
       - name: Attach assets to draft Release
-        if: env.RELEASE_TAG != ''
-        env:
-          RELEASE_TAG: ${{ env.RELEASE_TAG }}
-          PACKAGE_ARCHIVE: dist/VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
         run: |
           $release = gh release view $env:RELEASE_TAG --json isDraft | ConvertFrom-Json
-          if (-not $release.isDraft) {
-            throw "Release $env:RELEASE_TAG was published before its verified assets were ready"
-          }
-          gh release upload $env:RELEASE_TAG `
-            $env:PACKAGE_ARCHIVE `
-            "$env:PACKAGE_ARCHIVE.sha256" `
-            --clobber
-
+          if (-not $release.isDraft) { throw "Release was published before assets were ready" }
+          gh release upload $env:RELEASE_TAG $env:PACKAGE_ARCHIVE "$env:PACKAGE_ARCHIVE.sha256" --clobber
       - name: Verify attached Release assets
-        if: env.RELEASE_TAG != ''
         env:
-          RELEASE_TAG: ${{ env.RELEASE_TAG }}
-          PACKAGE_ARCHIVE_NAME: VibeTable-v${{ steps.identity.outputs.version }}-win-x64.zip
+          PACKAGE_ARCHIVE_NAME: VibeTable-v${{ needs.build.outputs.version }}-win-x64.zip
         run: |
           $release = gh release view $env:RELEASE_TAG --json isDraft,assets | ConvertFrom-Json
-          if (-not $release.isDraft) {
-            throw "Release $env:RELEASE_TAG was published before asset verification completed"
-          }
+          if (-not $release.isDraft) { throw "Release was published before asset verification" }
           $assetNames = @($release.assets | ForEach-Object { $_.name })
           $expected = @($env:PACKAGE_ARCHIVE_NAME, "$($env:PACKAGE_ARCHIVE_NAME).sha256")
           $missing = @($expected | Where-Object { $_ -notin $assetNames })
-          if ($missing.Count -gt 0) {
-            throw "Release $env:RELEASE_TAG is missing required assets: $($missing -join ', ')"
-          }
-          Write-Host "::notice::Verified required assets for $env:RELEASE_TAG"
-
+          if ($missing.Count -gt 0) { throw "Missing Release assets: $($missing -join ', ')" }
       - name: Publish verified Release
-        if: env.RELEASE_TAG != '' && github.event_name == 'workflow_run'
-        env:
-          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        if: github.event_name == 'workflow_run'
         run: |
           gh release edit $env:RELEASE_TAG --draft=false --latest
-          $release = gh release view $env:RELEASE_TAG --json isDraft,publishedAt `
-            | ConvertFrom-Json
+          $release = gh release view $env:RELEASE_TAG --json isDraft,publishedAt | ConvertFrom-Json
           if ($release.isDraft -or [string]::IsNullOrEmpty($release.publishedAt)) {
             throw "Release $env:RELEASE_TAG was not published"
           }
-          Write-Host "::notice::Published verified Release $env:RELEASE_TAG"

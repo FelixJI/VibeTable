@@ -209,6 +209,8 @@ def verify_eligibility_report(
         raise CandidateError(f"release eligibility report is invalid: {exc}") from exc
     if report.get("releaseEligible") is not True:
         raise CandidateError("release eligibility report is not eligible")
+    if report.get("reportKind") != "aggregate":
+        raise CandidateError("release eligibility report is not an aggregate")
     if report.get("releaseCandidate") != evidence:
         raise CandidateError("release eligibility report is not bound to this candidate")
     return evidence
