@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using VibeTable.Contracts;
 
 namespace VibeTable.Infrastructure.Workspace;
@@ -6,16 +8,24 @@ namespace VibeTable.Infrastructure.Workspace;
 public sealed class WorkspaceStorageProbe
 {
     private readonly Func<string, bool> _isRegisteredCloudPath;
+    private readonly Func<SafeFileHandle, WorkspaceRemoteProtocol>
+        _remoteProtocolProbe;
 
     public WorkspaceStorageProbe()
-        : this(WindowsCloudFilesPathProbe.IsUnderRegisteredSyncRoot)
+        : this(
+            WindowsCloudFilesPathProbe.IsUnderRegisteredSyncRoot,
+            WindowsRemoteProtocolProbe.Detect)
     {
     }
 
-    internal WorkspaceStorageProbe(Func<string, bool> isRegisteredCloudPath)
+    internal WorkspaceStorageProbe(
+        Func<string, bool> isRegisteredCloudPath,
+        Func<SafeFileHandle, WorkspaceRemoteProtocol>? remoteProtocolProbe = null)
     {
         _isRegisteredCloudPath = isRegisteredCloudPath
             ?? throw new ArgumentNullException(nameof(isRegisteredCloudPath));
+        _remoteProtocolProbe = remoteProtocolProbe
+            ?? WindowsRemoteProtocolProbe.Detect;
     }
 
     public WorkspaceStorageObservation Probe(
@@ -50,14 +60,17 @@ public sealed class WorkspaceStorageProbe
         var coordination = kind == WorkspaceStorageKind.Fixed
             ? WorkspaceCoordinationStrength.Strong
             : WorkspaceCoordinationStrength.Advisory;
-        ProbeDurableRename(root);
+        WorkspaceRemoteProtocol? remoteProtocol = ProbeDurableRename(
+            root,
+            kind == WorkspaceStorageKind.Network);
         return new WorkspaceStorageObservation(
             kind,
             coordination,
             drive.AvailableFreeSpace,
             File.GetAttributes(root).HasFlag(FileAttributes.ReparsePoint),
             DateTimeOffset.UtcNow,
-            cloudRoot);
+            cloudRoot,
+            remoteProtocol);
     }
 
     private static bool IsWithin(string path, string candidateRoot)
@@ -69,10 +82,13 @@ public sealed class WorkspaceStorageProbe
                 !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal));
     }
 
-    private static void ProbeDurableRename(string root)
+    private WorkspaceRemoteProtocol? ProbeDurableRename(
+        string root,
+        bool detectRemoteProtocol)
     {
         var source = Path.Combine(root, $".vibetable-probe-{Guid.NewGuid():N}.tmp");
         var destination = source + ".renamed";
+        WorkspaceRemoteProtocol? remoteProtocol = null;
         try
         {
             using (var stream = new FileStream(
@@ -85,6 +101,8 @@ public sealed class WorkspaceStorageProbe
             {
                 stream.WriteByte(0x56);
                 stream.Flush(flushToDisk: true);
+                if (detectRemoteProtocol)
+                    remoteProtocol = _remoteProtocolProbe(stream.SafeFileHandle);
             }
             File.Move(source, destination);
             using var read = new FileStream(
@@ -110,7 +128,14 @@ public sealed class WorkspaceStorageProbe
             if (File.Exists(destination))
                 File.Delete(destination);
         }
+        return remoteProtocol;
     }
+}
+
+public enum WorkspaceRemoteProtocol
+{
+    Smb,
+    Other,
 }
 
 public sealed record WorkspaceStorageObservation(
@@ -119,7 +144,58 @@ public sealed record WorkspaceStorageObservation(
     long AvailableBytes,
     bool IsReparsePoint,
     DateTimeOffset ObservedAt,
-    string? RegisteredCloudRoot = null);
+    string? RegisteredCloudRoot = null,
+    WorkspaceRemoteProtocol? RemoteProtocol = null);
+
+internal static class WindowsRemoteProtocolProbe
+{
+    private const int FileRemoteProtocolInfo = 13;
+    private const uint WnncNetSmb = 0x00020000;
+
+    public static WorkspaceRemoteProtocol Detect(SafeFileHandle fileHandle)
+    {
+        ArgumentNullException.ThrowIfNull(fileHandle);
+        if (fileHandle.IsInvalid || fileHandle.IsClosed)
+            throw new ArgumentException(
+                "A valid file handle is required.",
+                nameof(fileHandle));
+        if (!GetFileInformationByHandleEx(
+                fileHandle,
+                FileRemoteProtocolInfo,
+                out FileRemoteProtocolInformation information,
+                (uint)Marshal.SizeOf<FileRemoteProtocolInformation>()))
+        {
+            throw new WorkspaceRegistryException(
+                "workspace.storage_protocol_probe_failed",
+                "Windows could not identify the remote storage protocol.",
+                new Win32Exception(Marshal.GetLastWin32Error()));
+        }
+        return Classify(information.Protocol);
+    }
+
+    internal static WorkspaceRemoteProtocol Classify(uint protocol)
+        => protocol == WnncNetSmb
+            ? WorkspaceRemoteProtocol.Smb
+            : WorkspaceRemoteProtocol.Other;
+
+    [DllImport(
+        "Kernel32.dll",
+        ExactSpelling = true,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandleEx(
+        SafeFileHandle fileHandle,
+        int fileInformationClass,
+        out FileRemoteProtocolInformation fileInformation,
+        uint bufferSize);
+
+    [StructLayout(LayoutKind.Explicit, Size = 180)]
+    private struct FileRemoteProtocolInformation
+    {
+        [FieldOffset(4)]
+        public uint Protocol;
+    }
+}
 
 internal static class WindowsCloudFilesPathProbe
 {

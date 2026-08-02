@@ -458,7 +458,9 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
             _managedWorkspaceRoot,
             ".creating-" + workspaceId.ToString("D"));
         WorkspaceStorageObservation storage =
-            _providerPolicy.ProbeCreateTargetAndEnsureSupported(root);
+            _providerPolicy.ProbeCreateTargetAndEnsureSupported(
+                root,
+                WorkspaceStorageMode.Direct);
         Directory.CreateDirectory(_managedWorkspaceRoot);
         WorkspaceLayoutResult layout;
         string creationJournal = CreationJournalPath(

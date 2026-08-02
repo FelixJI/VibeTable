@@ -87,7 +87,10 @@ public sealed class WorkspaceStorageBroker
                 string conversionTarget = Path.GetFullPath(selectedRoot);
                 WorkspaceStorageObservation conversionStorage =
                     _providerPolicy.ProbeCreateTargetAndEnsureSupported(
-                        conversionTarget);
+                        conversionTarget,
+                        expectedTargetMode == "mirrored"
+                            ? WorkspaceStorageMode.Mirrored
+                            : WorkspaceStorageMode.Direct);
                 WorkspaceStoragePlan? conversionCopyPlan = null;
                 string sourceMode = topologyWorkspace.ActivityRoot is null
                     ? "direct"
@@ -219,7 +222,9 @@ public sealed class WorkspaceStorageBroker
             }
             string target = Path.GetFullPath(selectedRoot);
             WorkspaceStorageObservation targetStorage =
-                _providerPolicy.ProbeCreateTargetAndEnsureSupported(target);
+                _providerPolicy.ProbeCreateTargetAndEnsureSupported(
+                    target,
+                    WorkspaceStorageMode.Direct);
             if (targetStorage.StorageKind != WorkspaceStorageKind.Fixed
                 || targetStorage.CoordinationStrength
                     != WorkspaceCoordinationStrength.Strong)
@@ -353,7 +358,8 @@ public sealed class WorkspaceStorageBroker
 
             WorkspaceStorageObservation targetStorage =
                 _providerPolicy.ProbeCreateTargetAndEnsureSupported(
-                    plan.TargetSelectedRoot);
+                    plan.TargetSelectedRoot,
+                    WorkspaceStorageMode.Direct);
             if (targetStorage.StorageKind != plan.TargetStorageKind
                 || targetStorage.CoordinationStrength
                     != plan.TargetCoordinationStrength
@@ -390,7 +396,8 @@ public sealed class WorkspaceStorageBroker
                 throw StalePlan();
             targetStorage =
                 _providerPolicy.ProbeCreateTargetAndEnsureSupported(
-                    plan.TargetSelectedRoot);
+                    plan.TargetSelectedRoot,
+                    WorkspaceStorageMode.Direct);
             if (targetStorage.StorageKind != plan.TargetStorageKind
                 || targetStorage.CoordinationStrength
                     != plan.TargetCoordinationStrength
@@ -416,7 +423,8 @@ public sealed class WorkspaceStorageBroker
             _failureInjector.Checkpoint("after-copy");
             WorkspaceStorageObservation publishStorage =
                 _providerPolicy.ProbeAndEnsureSupported(
-                    plan.TargetSelectedRoot);
+                    plan.TargetSelectedRoot,
+                    WorkspaceStorageMode.Direct);
             if (publishStorage.StorageKind != plan.TargetStorageKind
                 || publishStorage.CoordinationStrength
                     != plan.TargetCoordinationStrength
@@ -549,7 +557,8 @@ public sealed class WorkspaceStorageBroker
                 _failureInjector.Checkpoint("after-replica-verify");
                 WorkspaceStorageObservation storage =
                     _providerPolicy.ProbeAndEnsureSupported(
-                        plan.TargetSelectedRoot);
+                        plan.TargetSelectedRoot,
+                        WorkspaceStorageMode.Mirrored);
                 WorkspaceRegistryEntryV2 updated = _registry.Relink(
                     plan.WorkspaceId,
                     plan.TargetSelectedRoot,
@@ -652,7 +661,8 @@ public sealed class WorkspaceStorageBroker
                 throw StalePlan();
             WorkspaceStorageObservation storage =
                 _providerPolicy.ProbeAndEnsureSupported(
-                    plan.TargetSelectedRoot);
+                    plan.TargetSelectedRoot,
+                    WorkspaceStorageMode.Direct);
             WorkspaceRegistryEntryV2 updated = _registry.Relink(
                 plan.WorkspaceId,
                 plan.TargetSelectedRoot,

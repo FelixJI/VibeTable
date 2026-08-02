@@ -30,6 +30,17 @@ MODULE_VERSION = {
 }
 ATTESTATION_KEY_ENV = "VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY"
 ATTESTATION_KEY_ID_ENV = "VIBETABLE_PROVIDER_EVIDENCE_KEY_ID"
+REQUIRED_EVIDENCE_STAGES = {
+    "hardware.smb-v1": frozenset(
+        {
+            "protocol-identification",
+            "durable-write-rename-readback",
+            "immutable-no-replace-publish",
+            "disconnect-reconnect-recovery",
+            "independent-reopen-root-verification",
+        }
+    ),
+}
 
 
 def _timestamp(value: Any) -> datetime:
@@ -228,6 +239,7 @@ def _validate_evidence(
         errors.append(f"{evidence_id}: no hardware runs")
     else:
         required = {"stage", "oracle", "timeoutSeconds", "result", "logSha256"}
+        passed_stages: set[str] = set()
         for index, run in enumerate(runs):
             if not isinstance(run, dict) or set(run) != required:
                 errors.append(f"{evidence_id}: run {index} fields are not exact")
@@ -245,11 +257,20 @@ def _validate_evidence(
                 or not SHA256.fullmatch(run["logSha256"])
             ):
                 errors.append(f"{evidence_id}: run {index} is invalid")
+            else:
+                passed_stages.add(run["stage"])
             log = evidence_root / "logs" / f"{run['logSha256']}.log"
             if not log.is_file():
                 errors.append(f"{evidence_id}: run {index} log is missing")
             elif hashlib.sha256(log.read_bytes()).hexdigest() != run["logSha256"]:
                 errors.append(f"{evidence_id}: run {index} log hash mismatch")
+        missing_stages = sorted(
+            REQUIRED_EVIDENCE_STAGES.get(evidence_id, frozenset()) - passed_stages
+        )
+        if missing_stages:
+            errors.append(
+                f"{evidence_id}: missing required hardware stages: " + ", ".join(missing_stages)
+            )
     errors.extend(
         _validate_attestation(
             evidence_id=evidence_id,
@@ -303,6 +324,9 @@ def check(
         if provider == "fixed":
             if creation != "enabled" or policy.get("coordinationStrength") != "strong":
                 errors.append("fixed provider must be enabled with strong coordination")
+            continue
+        if provider == "network" and policy.get("protocol") != "smb":
+            errors.append("network: protocol must be smb")
             continue
         evidence_id = policy.get("requiredEvidence")
         if not isinstance(evidence_id, str) or not evidence_id:

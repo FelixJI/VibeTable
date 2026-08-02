@@ -45,6 +45,12 @@ public sealed class WorkspaceProviderPolicy
         _probe = probe ?? storageProbe.Probe;
     }
 
+    public bool MirroredCreationEnabled =>
+        _rules.TryGetValue(
+            WorkspaceStorageKind.Network,
+            out ProviderRule? network)
+        && network.CreationEnabled;
+
     public static WorkspaceProviderPolicy Load(string baseDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(baseDirectory);
@@ -93,6 +99,15 @@ public sealed class WorkspaceProviderPolicy
                     : "advisory";
             if (coordination.GetString() != expectedName)
                 throw InvalidPolicy();
+            if (kind == WorkspaceStorageKind.Network
+                && (!provider.TryGetProperty(
+                        "protocol",
+                        out JsonElement protocol)
+                    || protocol.ValueKind != JsonValueKind.String
+                    || protocol.GetString() != "smb"))
+            {
+                throw InvalidPolicy();
+            }
             rules.Add(
                 kind,
                 new ProviderRule(
@@ -127,12 +142,50 @@ public sealed class WorkspaceProviderPolicy
         string root,
         bool userMarkedSync = false,
         IEnumerable<string>? registeredCloudRoots = null)
+        => ProbeAndEnsureSupportedCore(
+            root,
+            storageMode: null,
+            userMarkedSync,
+            registeredCloudRoots);
+
+    public WorkspaceStorageObservation ProbeAndEnsureSupported(
+        string root,
+        WorkspaceStorageMode storageMode,
+        bool userMarkedSync = false,
+        IEnumerable<string>? registeredCloudRoots = null)
+        => ProbeAndEnsureSupportedCore(
+            root,
+            storageMode,
+            userMarkedSync,
+            registeredCloudRoots);
+
+    private WorkspaceStorageObservation ProbeAndEnsureSupportedCore(
+        string root,
+        WorkspaceStorageMode? storageMode,
+        bool userMarkedSync,
+        IEnumerable<string>? registeredCloudRoots)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         WorkspaceStorageObservation observation = _probe(
             Path.GetFullPath(root),
             userMarkedSync,
             registeredCloudRoots);
+        if (storageMode == WorkspaceStorageMode.Direct
+            && (observation.StorageKind != WorkspaceStorageKind.Fixed
+                || observation.CoordinationStrength !=
+                WorkspaceCoordinationStrength.Strong))
+        {
+            throw new WorkspaceRegistryException(
+                "workspace.storage_requires_mirrored",
+                "This non-fixed location requires mirrored storage mode.");
+        }
+        if (observation.StorageKind == WorkspaceStorageKind.Network
+            && observation.RemoteProtocol != WorkspaceRemoteProtocol.Smb)
+        {
+            throw new WorkspaceRegistryException(
+                "workspace.network_protocol_unsupported",
+                "Only SMB network locations are supported for mirrored workspaces.");
+        }
         if (!_rules.TryGetValue(
                 observation.StorageKind,
                 out ProviderRule? rule)
@@ -150,6 +203,24 @@ public sealed class WorkspaceProviderPolicy
     public WorkspaceStorageObservation ProbeCreateTargetAndEnsureSupported(
         string root,
         bool userMarkedSync = false)
+        => ProbeCreateTargetAndEnsureSupportedCore(
+            root,
+            storageMode: null,
+            userMarkedSync);
+
+    public WorkspaceStorageObservation ProbeCreateTargetAndEnsureSupported(
+        string root,
+        WorkspaceStorageMode storageMode,
+        bool userMarkedSync = false)
+        => ProbeCreateTargetAndEnsureSupportedCore(
+            root,
+            storageMode,
+            userMarkedSync);
+
+    private WorkspaceStorageObservation ProbeCreateTargetAndEnsureSupportedCore(
+        string root,
+        WorkspaceStorageMode? storageMode,
+        bool userMarkedSync)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         string fullPath = Path.GetFullPath(root);
@@ -157,9 +228,12 @@ public sealed class WorkspaceProviderPolicy
         Directory.CreateDirectory(fullPath);
         try
         {
-            return ProbeAndEnsureSupported(
-                fullPath,
-                userMarkedSync);
+            return storageMode is null
+                ? ProbeAndEnsureSupported(fullPath, userMarkedSync)
+                : ProbeAndEnsureSupported(
+                    fullPath,
+                    storageMode.Value,
+                    userMarkedSync);
         }
         catch
         {

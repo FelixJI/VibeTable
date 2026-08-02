@@ -47,6 +47,19 @@ export function relationLookupErrorMessage(error: unknown): string | null {
   return t("workspace.notification.relationLookupFailed");
 }
 
+/** Map workspace topology/provider failures to stable, actionable UI copy. */
+export function workspaceV2ErrorMessage(error: unknown): string {
+  if (error instanceof BridgeOperationError) {
+    if (error.code === "workspace.storage_requires_mirrored") {
+      return t("workspaceV2.error.storageRequiresMirrored");
+    }
+    if (error.code === "workspace.network_protocol_unsupported") {
+      return t("workspaceV2.error.networkProtocolUnsupported");
+    }
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function mutationRejectionMessage(error: MutationErrorPayload): string {
   switch (error.kind) {
     case "edit_conflict":

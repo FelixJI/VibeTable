@@ -1258,11 +1258,6 @@ public partial class MainWindow : Window
         bool userMarkedSync = ReadRequiredBoolean(
             parameters,
             "userMarkedSync");
-        WorkspaceStorageObservation selectedStorage =
-            ProbeCreateTarget(
-                _providerPolicy,
-                selectedRoot,
-                userMarkedSync);
         string displayName = ReadString(parameters, "displayName")?.Trim()
             ?? string.Empty;
         if (displayName.Length is < 1 or > 120)
@@ -1278,6 +1273,12 @@ public partial class MainWindow : Window
                     "workspace.request_invalid",
                     "Workspace storage mode is invalid."),
             };
+        WorkspaceStorageObservation selectedStorage =
+            ProbeCreateTarget(
+                _providerPolicy,
+                selectedRoot,
+                storageMode,
+                userMarkedSync);
         WorkspaceEncryptionMode encryptionMode =
             ReadString(parameters, "encryptionMode") switch
             {
@@ -1292,7 +1293,10 @@ public partial class MainWindow : Window
             ? ManagedActivityRoot(_activityRootBase, workspaceId)
             : null;
         if (activityRoot is not null)
-            _ = ProbeCreateTarget(_providerPolicy, activityRoot);
+            _ = ProbeCreateTarget(
+                _providerPolicy,
+                activityRoot,
+                WorkspaceStorageMode.Direct);
         WorkspaceLayoutResult layout = WorkspaceLayout.Create(
             selectedRoot,
             displayName,
@@ -1469,17 +1473,22 @@ public partial class MainWindow : Window
             "workspace.register",
             operationId,
             "workspace-root");
-        WorkspaceStorageObservation selectedStorage =
-            _providerPolicy.ProbeAndEnsureSupported(selectedRoot);
         WorkspaceManifestV2 manifest = WorkspaceLayout.ReadManifest(
             selectedRoot);
+        WorkspaceStorageObservation selectedStorage =
+            _providerPolicy.ProbeAndEnsureSupported(
+                selectedRoot,
+                manifest.StorageMode);
         string? activityRoot = null;
         if (manifest.StorageMode == WorkspaceStorageMode.Mirrored)
         {
             activityRoot = ManagedActivityRoot(
                 _activityRootBase,
                 manifest.WorkspaceId);
-            _ = ProbeCreateTarget(_providerPolicy, activityRoot);
+            _ = ProbeCreateTarget(
+                _providerPolicy,
+                activityRoot,
+                WorkspaceStorageMode.Direct);
         }
         var entry = new WorkspaceRegistryEntryV2
         {
@@ -1558,7 +1567,9 @@ public partial class MainWindow : Window
         if (selectedManifest.StorageMode == WorkspaceStorageMode.Mirrored)
         {
             WorkspaceStorageObservation selectedStorage =
-                _providerPolicy.ProbeAndEnsureSupported(selectedRoot);
+                _providerPolicy.ProbeAndEnsureSupported(
+                    selectedRoot,
+                    selectedManifest.StorageMode);
             string activityRoot = string.IsNullOrWhiteSpace(current.ActivityRoot)
                 ? ManagedActivityRoot(_activityRootBase, workspaceId)
                 : current.ActivityRoot;
@@ -1635,10 +1646,12 @@ public partial class MainWindow : Window
             ?? throw new WorkspaceRegistryException(
                 "workspace.not_registered",
                 "Workspace is not registered on this device.");
-        WorkspaceStorageObservation selectedStorage =
-            providerPolicy.ProbeAndEnsureSupported(selectedRoot);
         WorkspaceManifestV2 manifest = WorkspaceLayout.ReadManifest(
             selectedRoot);
+        WorkspaceStorageObservation selectedStorage =
+            providerPolicy.ProbeAndEnsureSupported(
+                selectedRoot,
+                manifest.StorageMode);
         if (manifest.WorkspaceId != workspaceId)
             throw new WorkspaceRegistryException(
                 "workspace.identity_mismatch",
@@ -1659,7 +1672,9 @@ public partial class MainWindow : Window
             }
             else
             {
-                _ = providerPolicy.ProbeAndEnsureSupported(activityRoot);
+                _ = providerPolicy.ProbeAndEnsureSupported(
+                    activityRoot,
+                    WorkspaceStorageMode.Direct);
                 WorkspaceManifestV2 activityManifest =
                     WorkspaceLayout.ReadManifest(activityRoot);
                 if (activityManifest.WorkspaceId != workspaceId)
@@ -1735,9 +1750,11 @@ public partial class MainWindow : Window
     private static WorkspaceStorageObservation ProbeCreateTarget(
         WorkspaceProviderPolicy providerPolicy,
         string root,
+        WorkspaceStorageMode storageMode,
         bool userMarkedSync = false)
         => providerPolicy.ProbeCreateTargetAndEnsureSupported(
             root,
+            storageMode,
             userMarkedSync);
 
     private object RemoveWorkspace(JsonElement parameters)
@@ -1981,11 +1998,12 @@ public partial class MainWindow : Window
         {
             "workspace.session.v2",
             "snapshot.package.v2",
-            "workspace.storage.mirrored-create.v2",
             "workspace.storage.relocate.v2",
             "workspace.storage.topology.v2",
             "workspace.storage.release-cache.v2",
         };
+        if (_providerPolicy.MirroredCreationEnabled)
+            capabilities.Add("workspace.storage.mirrored-create.v2");
         if (ContainsEvery(
                 methods,
                 "snapshot.request",
