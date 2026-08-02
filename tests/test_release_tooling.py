@@ -634,6 +634,12 @@ def test_release_workflows_open_direct_release_prs_and_only_fill_draft_releases(
     release_config = json.loads(
         (REPO_ROOT / "release-please-config.json").read_text(encoding="utf-8")
     )
+    strategy_configs = {
+        bump: json.loads(
+            (REPO_ROOT / f"release-please-config-{bump}.json").read_text(encoding="utf-8")
+        )
+        for bump in ("patch", "minor", "major")
+    }
     assert {path.name for path in workflows.glob("*.yml")} == {
         "ci.yml",
         "mirror.yml",
@@ -681,7 +687,8 @@ def test_release_workflows_open_direct_release_prs_and_only_fill_draft_releases(
     assert "git push" not in workflow
 
     assert "workflow_dispatch:" in release_please
-    assert "options: [patch, minor, major]" not in release_please
+    assert "options: [patch, minor, major]" in release_please
+    assert "config-file: release-please-config-${{ inputs.bump }}.json" in release_please
     assert "Compute requested version" not in release_please
     assert "git commit --allow-empty" not in release_please
     assert "git push origin HEAD:main" not in release_please
@@ -716,6 +723,17 @@ def test_release_workflows_open_direct_release_prs_and_only_fill_draft_releases(
         'git config user.name "github-actions[bot]"'
     ) < refresh_changelog.index('git commit -m "chore(release): refresh generated changelog"')
     assert release_config["packages"]["."]["skip-changelog"] is True
+    assert "versioning-strategy" not in release_config["packages"]["."]
+    expected_strategies = {
+        "patch": "always-bump-patch",
+        "minor": "always-bump-minor",
+        "major": "always-bump-major",
+    }
+    assert set(strategy_configs) == set(expected_strategies)
+    for bump, strategy_config in strategy_configs.items():
+        assert strategy_config["packages"]["."]["versioning-strategy"] == expected_strategies[bump]
+        strategy_config["packages"]["."].pop("versioning-strategy")
+        assert strategy_config == release_config
     assert "--generate-notes" not in workflow
     # RELEASE_TAG is resolved by the "Resolve release tag" step (supports both
     # manual dispatch and the Release Please workflow_run hook) and flows through
