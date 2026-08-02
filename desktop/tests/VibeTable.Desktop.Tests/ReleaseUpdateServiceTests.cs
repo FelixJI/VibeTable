@@ -28,7 +28,7 @@ public sealed class ReleaseUpdateServiceTests
         string json = $$"""
             [
               {"tag_name":"v1.2.0","name":"March","body":"one","html_url":"https://github.com/FelixJI/VibeTable/releases/tag/v1.2.0","draft":false,"prerelease":false,"published_at":"2026-03-01T00:00:00Z","assets":[]},
-              {"tag_name":"v1.10.0","name":"October","body":"two","html_url":"https://github.com/FelixJI/VibeTable/releases/tag/v1.10.0","draft":false,"prerelease":false,"published_at":"2026-10-01T00:00:00Z","assets":[{"name":"VibeTable-v1.10.0-win-x64.zip","state":"uploaded","size":{{package.Length}},"digest":"sha256:{{digest}}","browser_download_url":"https://github.com/FelixJI/VibeTable/releases/download/v1.10.0/VibeTable-v1.10.0-win-x64.zip"}]},
+              {"tag_name":"v1.10.0","name":"October","body":"two","html_url":"https://github.com/FelixJI/VibeTable/releases/tag/v1.10.0","draft":false,"prerelease":false,"published_at":"2026-10-01T00:00:00Z","assets":[{"name":"VibeTable-v1.10.0-win-x64.zip","state":"uploaded","size":{{package.Length}},"digest":"sha256:{{digest}}","browser_download_url":"https://github.com/FelixJI/VibeTable/releases/download/v1.10.0/VibeTable-v1.10.0-win-x64.zip"},{"name":"VibeTable-v1.10.0-win-x64.zip.sha256","state":"uploaded","size":100,"digest":null,"browser_download_url":"https://github.com/FelixJI/VibeTable/releases/download/v1.10.0/VibeTable-v1.10.0-win-x64.zip.sha256"}]},
               {"tag_name":"v2.0.0","name":"Preview","body":"skip","html_url":"https://github.com/FelixJI/VibeTable/releases/tag/v2.0.0","draft":false,"prerelease":true,"published_at":"2026-11-01T00:00:00Z","assets":[]},
               {"tag_name":"v1.0.0","name":"Current","body":"current","html_url":"https://github.com/FelixJI/VibeTable/releases/tag/v1.0.0","draft":false,"prerelease":false,"published_at":"2026-01-01T00:00:00Z","assets":[]}
             ]
@@ -49,6 +49,7 @@ public sealed class ReleaseUpdateServiceTests
         Assert.IsNotNull(candidate);
         Assert.AreEqual("1.10.0", candidate.Version.ToString());
         Assert.StartsWith("https://ghproxy.net/https://github.com/", candidate.DownloadUri.AbsoluteUri);
+        Assert.StartsWith("https://ghproxy.net/https://github.com/", candidate.ChecksumUri.AbsoluteUri);
         CollectionAssert.AreEqual(
             new[] { "1.10.0", "1.2.0" },
             candidate.Releases.Select(item => item.Version).ToArray());
@@ -72,6 +73,27 @@ public sealed class ReleaseUpdateServiceTests
                 CancellationToken.None));
 
         Assert.AreEqual("UPDATE_ASSET_INVALID", exception.Code);
+    }
+
+    [TestMethod]
+    public async Task ClientRejectsReleaseWithoutSameChannelChecksumAsset()
+    {
+        byte[] package = Encoding.UTF8.GetBytes("package");
+        string digest = Convert.ToHexString(SHA256.HashData(package)).ToLowerInvariant();
+        string json = $$"""
+            [{"tag_name":"v1.1.0","name":"missing checksum","body":"","html_url":"https://github.com/FelixJI/VibeTable/releases/tag/v1.1.0","draft":false,"prerelease":false,"published_at":"2026-01-01T00:00:00Z","assets":[{"name":"VibeTable-v1.1.0-win-x64.zip","state":"uploaded","size":{{package.Length}},"digest":"sha256:{{digest}}","browser_download_url":"https://github.com/FelixJI/VibeTable/releases/download/v1.1.0/VibeTable-v1.1.0-win-x64.zip"}]}]
+            """;
+        using var http = new HttpClient(new DelegateHandler((_, _) => JsonResponse(json)));
+        var client = new GitHubReleaseUpdateClient(http);
+
+        ReleaseUpdateException exception = await Assert.ThrowsExactlyAsync<ReleaseUpdateException>(
+            () => client.CheckAsync(
+                "1.0.0",
+                UpdateProxyOptions.GhProxyNet,
+                null,
+                CancellationToken.None));
+
+        Assert.AreEqual("UPDATE_CHECKSUM_ASSET_INVALID", exception.Code);
     }
 
     [TestMethod]
@@ -145,15 +167,19 @@ public sealed class ReleaseUpdateServiceTests
         byte[] archive = CreatePackageArchive("1.1.0");
         string digest = Convert.ToHexString(SHA256.HashData(archive)).ToLowerInvariant();
         string installRoot = CreateInstalledPackage("1.0.0");
-        using var http = new HttpClient(new DelegateHandler((_, _) =>
+        using var http = new HttpClient(new DelegateHandler((request, _) =>
             new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new ByteArrayContent(archive),
+                Content = request.RequestUri!.AbsoluteUri.EndsWith(".sha256", StringComparison.Ordinal)
+                    ? new StringContent($"{digest}  VibeTable-v1.1.0-win-x64.zip\n", Encoding.UTF8)
+                    : new ByteArrayContent(archive),
             }));
         var stager = new ReleasePackageStager(http);
         var candidate = new ReleaseUpdateCandidate(
             new StableReleaseVersion(1, 1, 0),
+            "VibeTable-v1.1.0-win-x64.zip",
             new Uri("https://github.com/update.zip"),
+            new Uri("https://github.com/update.zip.sha256"),
             digest,
             archive.Length,
             "https://github.com/release",
@@ -171,6 +197,68 @@ public sealed class ReleaseUpdateServiceTests
         Assert.AreEqual("1.1.0", plan.TargetVersion);
         Assert.IsTrue(File.Exists(Path.Combine(plan.SourceRoot, "VibeTable.Next.exe")));
         Assert.AreEqual("user", File.ReadAllText(Path.Combine(installRoot, "user-data.db")));
+    }
+
+    [TestMethod]
+    public async Task StagerRejectsChecksumThatDisagreesWithGitHubDigest()
+    {
+        byte[] archive = CreatePackageArchive("1.1.0");
+        string digest = Convert.ToHexString(SHA256.HashData(archive)).ToLowerInvariant();
+        string installRoot = CreateInstalledPackage("1.0.0");
+        using var http = new HttpClient(new DelegateHandler((request, _) =>
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = request.RequestUri!.AbsoluteUri.EndsWith(".sha256", StringComparison.Ordinal)
+                    ? new StringContent($"{new string('0', 64)}  VibeTable-v1.1.0-win-x64.zip\n", Encoding.UTF8)
+                    : new ByteArrayContent(archive),
+            }));
+        var stager = new ReleasePackageStager(http);
+        var candidate = new ReleaseUpdateCandidate(
+            new StableReleaseVersion(1, 1, 0),
+            "VibeTable-v1.1.0-win-x64.zip",
+            new Uri("https://github.com/update.zip"),
+            new Uri("https://github.com/update.zip.sha256"),
+            digest,
+            archive.Length,
+            "https://github.com/release",
+            [],
+            false);
+
+        ReleaseUpdateException exception = await Assert.ThrowsExactlyAsync<ReleaseUpdateException>(
+            () => stager.StageAsync(candidate, installRoot, "1.0.0", 123, CancellationToken.None));
+
+        Assert.AreEqual("UPDATE_CHECKSUM_DIGEST_MISMATCH", exception.Code);
+    }
+
+    [TestMethod]
+    public async Task StagerRejectsChecksumForAnotherArchiveName()
+    {
+        byte[] archive = CreatePackageArchive("1.1.0");
+        string digest = Convert.ToHexString(SHA256.HashData(archive)).ToLowerInvariant();
+        string installRoot = CreateInstalledPackage("1.0.0");
+        using var http = new HttpClient(new DelegateHandler((request, _) =>
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = request.RequestUri!.AbsoluteUri.EndsWith(".sha256", StringComparison.Ordinal)
+                    ? new StringContent($"{digest}  another.zip\n", Encoding.UTF8)
+                    : new ByteArrayContent(archive),
+            }));
+        var stager = new ReleasePackageStager(http);
+        var candidate = new ReleaseUpdateCandidate(
+            new StableReleaseVersion(1, 1, 0),
+            "VibeTable-v1.1.0-win-x64.zip",
+            new Uri("https://github.com/update.zip"),
+            new Uri("https://github.com/update.zip.sha256"),
+            digest,
+            archive.Length,
+            "https://github.com/release",
+            [],
+            false);
+
+        ReleaseUpdateException exception = await Assert.ThrowsExactlyAsync<ReleaseUpdateException>(
+            () => stager.StageAsync(candidate, installRoot, "1.0.0", 123, CancellationToken.None));
+
+        Assert.AreEqual("UPDATE_CHECKSUM_INVALID", exception.Code);
     }
 
     [TestMethod]

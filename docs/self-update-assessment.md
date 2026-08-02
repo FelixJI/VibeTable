@@ -9,8 +9,9 @@ VibeTable 已具备端到端的稳定版自我更新能力。用户可在“设�
 手动检查 GitHub Releases，查看当前版本到目标版本之间仍可取得的各版 Release 日志，
 选择直连或常用 GitHub 下载代理，并在校验通过后退出、替换程序文件和重启。
 
-该能力复用现有发布资产 `VibeTable-v<version>-win-x64.zip`。版本元数据始终从
-GitHub 官方 REST API 读取；代理只处理 ZIP 下载，不能提供版本号、下载地址或摘要。
+该能力复用发布资产 `VibeTable-v<version>-win-x64.zip` 及其同名 `.sha256` 文件。
+版本元数据始终从 GitHub 官方 REST API 读取；ZIP 与校验文件使用用户选择的同一
+下载通道，代理不能提供版本号、资产地址或作为最终信任根的摘要。
 
 ![软件更新设置界面](assets/screenshots/vibetable-self-update-settings.png)
 
@@ -20,13 +21,14 @@ GitHub 官方 REST API 读取；代理只处理 ZIP 下载，不能提供版本�
 
 1. 宿主直连 `api.github.com/repos/FelixJI/VibeTable/releases`，忽略 draft、
    prerelease 和非三段数字 SemVer 的条目，并按语义版本选择最高稳定版。
-2. 宿主要求目标 Release 包含名称精确匹配的 Windows x64 ZIP，以及 GitHub asset
-   元数据中的 `sha256:<hex>` digest。
+2. 宿主要求目标 Release 包含名称精确匹配的 Windows x64 ZIP、同名 `.sha256`
+   文件，以及 ZIP 的 GitHub asset 元数据 `sha256:<hex>` digest。
 3. 设置页展示 `(当前版本, 目标版本]` 范围内每个已发布版本的标题、日期和 Release
    body。当前版本早于 GitHub 仍保留的历史时，界面明确提示日志可能不完整。
-4. ZIP 可直连下载，也可由用户显式选择 `ghproxy.net`、`gh-proxy.com` 或自定义
-   HTTPS 前缀代理。第三方只能改变传输路径，下载结果仍与 GitHub API digest 做
-   固定时间 SHA-256 比较。
+4. ZIP 与 `.sha256` 文件会同时直连下载，或同时经过用户显式选择的 `ghproxy.net`、
+   `gh-proxy.com` 或自定义 HTTPS 前缀代理。宿主严格校验校验文件只含一行
+   `<64hex>  <精确 ZIP 文件名>`，先将其中摘要与 GitHub API digest 固定时间比较，
+   再校验实际 ZIP；任一来源或文件不一致都会拒绝安装。
 5. 校验通过后，ZIP 解压到应用安装目录的同级唯一 staging。解压器拒绝绝对路径、
    `..`、反斜线、符号链接、Windows 非法/ADS 文件名、大小写重复文件，以及超出
    文件数、下载大小或展开大小上限的包。
@@ -49,13 +51,14 @@ GitHub 官方 REST API 读取；代理只处理 ZIP 下载，不能提供版本�
 
 ## 代理与信任边界
 
-- “GitHub 直连”不会把下载 URL 交给第三方。
+- “GitHub 直连”不会把 ZIP 或校验文件 URL 交给第三方。
 - 固定代理和自定义代理均由用户手动选择；设置页披露第三方可能看到完整下载 URL。
 - 自定义代理必须是无账号、无 query、无 fragment 的 HTTPS 前缀。
 - 安装 RPC 不能提交 asset URL、digest、PID、staging 或目标路径；自定义代理只可通过
   受校验的 HTTPS 偏好设置，且宿主始终在其后追加 GitHub 返回的完整 asset URL。
   安装只使用宿主最近一次检查缓存的不可变候选。
-- 当前信任根是 GitHub 官方 API 的 TLS 响应和 asset SHA-256 digest。现有 Release
+- 当前信任根是 GitHub 官方 API 的 TLS 响应和 ZIP asset SHA-256 digest；同通道
+  `.sha256` 文件提供传输一致性与发布资产配对检查。现有 Release
   尚未提供独立的代码签名/离线签名，因此仓库或 GitHub 发布权限失陷不在该校验的
   防护范围内。
 
@@ -71,7 +74,8 @@ GitHub 官方 REST API 读取；代理只处理 ZIP 下载，不能提供版本�
 
 ## 回归覆盖
 
-.NET 测试覆盖 SemVer 选择、draft/prerelease 过滤、digest 必需、代理重写、
+.NET 测试覆盖 SemVer 选择、draft/prerelease 过滤、ZIP 与 `.sha256` 资产必需、
+同通道代理重写、校验文件格式及与 API digest 的交叉校验、
 无更新结果、包身份、Zip Slip/ADS 拒绝、只替换包拥有入口、未知文件保留、复制失败
 回滚和成功更新后的 cleanup 身份。Web 测试覆盖代理保存、手动检查、两版本间多版
 日志、第三方披露和安装 RPC。

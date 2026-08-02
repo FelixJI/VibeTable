@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildMonthDays,
@@ -70,5 +72,11 @@ describe("workCalendar", () => {
     expect(parseFlexibleMonthKey("hello")).toBeNull();
     expect(parseFlexibleMonthKey("")).toBeNull();
     expect(parseFlexibleMonthKey("  2026-7  ")).toBe("2026-07");  // 前后空格容错
+  });
+
+  it("uses the product primary color for selected dates instead of a purple override", () => {
+    const css = readFileSync(resolve(import.meta.dirname, "../components/calendar/work-calendar.css"), "utf8");
+    expect(css).toContain("--work-calendar-selected: var(--vt-color-primary-500)");
+    expect(css).not.toContain("#7a5af8");
   });
 });

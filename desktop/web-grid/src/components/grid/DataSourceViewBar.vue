@@ -1,7 +1,16 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
-import { NButton, NDropdown, NIcon, NInput, NModal, NTag } from "naive-ui";
-import { Check, MoreHorizontal, Plus, Table2 } from "lucide-vue-next";
+import { computed, ref, watch } from "vue";
+import { NButton, NDropdown, NIcon, NInput, NModal, NSelect, NTag } from "naive-ui";
+import {
+  CalendarDays,
+  Check,
+  GalleryHorizontal,
+  GanttChart,
+  Kanban,
+  MoreHorizontal,
+  Plus,
+  Table2,
+} from "lucide-vue-next";
 import type { PresetEntry } from "@/contracts";
 import { t } from "@/i18n";
 
@@ -11,9 +20,22 @@ const props = defineProps<{
   activeId: string | null;
   loading: boolean;
   dirty: boolean;
+  dateFields?: readonly { label: string; value: string }[];
+  titleFields?: readonly { label: string; value: string }[];
+  groupFields?: readonly { label: string; value: string }[];
+  coverFields?: readonly { label: string; value: string }[];
 }>();
+interface CreateViewRequest {
+  readonly name: string;
+  readonly kind: "table" | "calendar" | "timeline" | "kanban" | "gallery";
+  readonly dateField: string | null;
+  readonly endDateField: string | null;
+  readonly titleField: string | null;
+  readonly groupField: string | null;
+  readonly coverField: string | null;
+}
 const emit = defineEmits<{
-  create: [name: string];
+  create: [request: CreateViewRequest];
   switch: [view: PresetEntry];
   save: [view: PresetEntry];
   duplicate: [view: PresetEntry, name: string];
@@ -25,6 +47,21 @@ const emit = defineEmits<{
 const dialog = ref<"create" | "duplicate" | "rename" | "delete" | null>(null);
 const input = ref("");
 const target = ref<PresetEntry | null>(null);
+const viewKind = ref<CreateViewRequest["kind"]>("table");
+const dateField = ref<string | null>(null);
+const endDateField = ref<string | null>(null);
+const titleField = ref<string | null>(null);
+const groupField = ref<string | null>(null);
+const coverField = ref<string | null>(null);
+const selectableDateFields = computed(() => [...(props.dateFields ?? [])]);
+const selectableTitleFields = computed(() => [...(props.titleFields ?? [])]);
+const selectableGroupFields = computed(() => [...(props.groupFields ?? [])]);
+const selectableCoverFields = computed(() => [...(props.coverFields ?? [])]);
+const isTemporalView = computed(() => viewKind.value === "calendar" || viewKind.value === "timeline");
+const createConfigurationMissing = computed(() => (
+  (isTemporalView.value && !dateField.value)
+  || (viewKind.value === "kanban" && !groupField.value)
+));
 const options = [
   { label: t("views.action.save"), key: "save" },
   { label: t("views.action.duplicate"), key: "duplicate" },
@@ -48,6 +85,14 @@ function open(kind: typeof dialog.value, view: PresetEntry | null = null): void 
     : kind === "duplicate"
       ? `${view?.name ?? ""} ${t("views.copySuffix")}`
       : "";
+  if (kind === "create") {
+    viewKind.value = "table";
+    dateField.value = props.dateFields?.[0]?.value ?? null;
+    endDateField.value = null;
+    titleField.value = props.titleFields?.[0]?.value ?? null;
+    groupField.value = props.groupFields?.[0]?.value ?? null;
+    coverField.value = null;
+  }
 }
 
 function menu(key: string, view: PresetEntry): void {
@@ -63,7 +108,15 @@ function confirm(): void {
   else {
     const name = input.value.trim();
     if (!name) return;
-    if (dialog.value === "create") emit("create", name);
+    if (dialog.value === "create") emit("create", {
+      name,
+      kind: viewKind.value,
+      dateField: isTemporalView.value ? dateField.value : null,
+      endDateField: viewKind.value === "timeline" ? endDateField.value : null,
+      titleField: viewKind.value === "table" ? null : titleField.value,
+      groupField: viewKind.value === "kanban" ? groupField.value : null,
+      coverField: viewKind.value === "gallery" ? coverField.value : null,
+    });
     else if (dialog.value === "duplicate" && target.value) emit("duplicate", target.value, name);
     else if (dialog.value === "rename" && target.value) emit("rename", target.value, name);
   }
@@ -95,8 +148,34 @@ function confirm(): void {
     </NButton>
     <NModal :show="dialog !== null" preset="card" class="view-dialog" :title="dialog ? t(`views.dialog.${dialog}`) : ''" @update:show="show => { if (!show) dialog = null }">
       <p v-if="dialog === 'delete'">{{ t("views.deleteConfirm", { name: target?.name ?? '' }) }}</p>
-      <NInput v-else v-model:value="input" autofocus :placeholder="t('views.namePlaceholder')" @keyup.enter="confirm" />
-      <template #footer><div class="dialog-actions"><NButton @click="dialog = null">{{ t("common.cancel") }}</NButton><NButton :type="dialog === 'delete' ? 'error' : 'primary'" :disabled="dialog !== 'delete' && !input.trim()" data-testid="view-dialog-confirm" @click="confirm">{{ t("common.confirm") }}</NButton></div></template>
+      <div v-else class="view-dialog-fields">
+        <NInput v-model:value="input" autofocus :placeholder="t('views.namePlaceholder')" @keyup.enter="confirm" />
+        <template v-if="dialog === 'create'">
+          <div class="view-kind-options" :aria-label="t('views.kind.label')">
+            <button type="button" :class="{ active: viewKind === 'table' }" :aria-pressed="viewKind === 'table'" data-testid="view-kind-table" @click="viewKind = 'table'"><Table2 :size="17" />{{ t("views.kind.table") }}</button>
+            <button type="button" :class="{ active: viewKind === 'calendar' }" :aria-pressed="viewKind === 'calendar'" data-testid="view-kind-calendar" :disabled="!dateFields?.length" @click="viewKind = 'calendar'"><CalendarDays :size="17" />{{ t("views.kind.calendar") }}</button>
+            <button type="button" :class="{ active: viewKind === 'timeline' }" :aria-pressed="viewKind === 'timeline'" data-testid="view-kind-timeline" :disabled="!dateFields?.length" @click="viewKind = 'timeline'"><GanttChart :size="17" />{{ t("views.kind.timeline") }}</button>
+            <button type="button" :class="{ active: viewKind === 'kanban' }" :aria-pressed="viewKind === 'kanban'" data-testid="view-kind-kanban" :disabled="!groupFields?.length" @click="viewKind = 'kanban'"><Kanban :size="17" />{{ t("views.kind.kanban") }}</button>
+            <button type="button" :class="{ active: viewKind === 'gallery' }" :aria-pressed="viewKind === 'gallery'" data-testid="view-kind-gallery" @click="viewKind = 'gallery'"><GalleryHorizontal :size="17" />{{ t("views.kind.gallery") }}</button>
+          </div>
+          <div v-if="isTemporalView" class="view-field-options">
+            <label><span>{{ t("views.field.date") }}</span><NSelect v-model:value="dateField" :options="selectableDateFields" /></label>
+            <label v-if="viewKind === 'timeline'"><span>{{ t("views.field.endDate") }}</span><NSelect v-model:value="endDateField" :options="selectableDateFields" clearable /></label>
+            <label><span>{{ t("views.field.title") }}</span><NSelect v-model:value="titleField" :options="selectableTitleFields" clearable /></label>
+          </div>
+          <div v-else-if="viewKind === 'kanban'" class="view-field-options">
+            <label><span>{{ t("views.field.group") }}</span><NSelect v-model:value="groupField" :options="selectableGroupFields" /></label>
+            <label><span>{{ t("views.field.title") }}</span><NSelect v-model:value="titleField" :options="selectableTitleFields" clearable /></label>
+          </div>
+          <div v-else-if="viewKind === 'gallery'" class="view-field-options">
+            <label><span>{{ t("views.field.cover") }}</span><NSelect v-model:value="coverField" :options="selectableCoverFields" clearable /></label>
+            <label><span>{{ t("views.field.title") }}</span><NSelect v-model:value="titleField" :options="selectableTitleFields" clearable /></label>
+          </div>
+          <small v-if="isTemporalView && !dateFields?.length" class="view-kind-hint">{{ t("views.kind.noDateFields") }}</small>
+          <small v-if="viewKind === 'kanban' && !groupFields?.length" class="view-kind-hint">{{ t("views.kind.noGroupFields") }}</small>
+        </template>
+      </div>
+      <template #footer><div class="dialog-actions"><NButton @click="dialog = null">{{ t("common.cancel") }}</NButton><NButton :type="dialog === 'delete' ? 'error' : 'primary'" :disabled="dialog !== 'delete' && (!input.trim() || (dialog === 'create' && createConfigurationMissing))" data-testid="view-dialog-confirm" @click="confirm">{{ t("common.confirm") }}</NButton></div></template>
     </NModal>
   </nav>
 </template>
@@ -113,10 +192,19 @@ function confirm(): void {
 .view-tab span { overflow: hidden; text-overflow: ellipsis; }
 .view-tab i { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--vt-color-warning); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
-:global(.view-dialog) { width: min(400px, calc(100vw - 28px)); }
+.view-dialog-fields { display: grid; gap: 14px; }
+.view-kind-options { display: grid; grid-template-columns: repeat(5, minmax(76px, 1fr)); gap: 8px; }
+.view-kind-options button { display: flex; min-height: 64px; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--vt-fg-muted); border: 1px solid var(--vt-border); border-radius: var(--vt-radius-md); background: var(--vt-bg); cursor: pointer; }
+.view-kind-options button.active { color: var(--vt-fg-accent-strong); border-color: var(--vt-color-primary-500); background: var(--vt-color-primary-50); }
+.view-kind-options button:disabled { opacity: .45; cursor: not-allowed; }
+.view-field-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.view-field-options label { display: grid; gap: 5px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
+.view-kind-hint { color: var(--vt-fg-muted); }
+:global(.view-dialog) { width: min(560px, calc(100vw - 28px)); }
 @media (max-width: 720px) {
   .data-source-view-bar { flex-wrap: wrap; }
   .view-context { border-right: 0; }
   .view-scroll { order: 3; flex-basis: 100%; padding-bottom: 2px; }
+  .view-kind-options { grid-template-columns: repeat(2, 1fr); }
 }
 </style>

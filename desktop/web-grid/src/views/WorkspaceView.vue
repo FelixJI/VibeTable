@@ -30,6 +30,10 @@ import AppToolbar from "@/components/layout/AppToolbar.vue";
 import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import GridHost from "@/components/grid/GridHost.vue";
 import DataSourceViewBar from "@/components/grid/DataSourceViewBar.vue";
+import RecordCalendarView from "@/components/grid/RecordCalendarView.vue";
+import RecordGalleryView from "@/components/grid/RecordGalleryView.vue";
+import RecordKanbanView from "@/components/grid/RecordKanbanView.vue";
+import RecordTimelineView from "@/components/grid/RecordTimelineView.vue";
 import RelationEditorPanel from "@/components/grid/RelationEditorPanel.vue";
 import FieldSettingsDrawer from "@/field-settings/FieldSettingsDrawer.vue";
 import { useFieldSettingsService } from "@/field-settings/service";
@@ -117,6 +121,7 @@ import {
   captureDataSourceView,
   type DataSourceViewGrid,
 } from "@/grid/dataSourceViewState";
+import { projectPresetRows } from "@/grid/projectPresetRows";
 import type { PresetEntry, PresetView } from "@/contracts";
 import {
   classifyClipboard,
@@ -159,7 +164,7 @@ const revisionHistoryService = useRevisionHistoryService();
 const dashboardService = useDashboardService();
 provideDashboardService(dashboardService);
 const relationLookupService = useRelationLookupService();
-const fieldSettingsService = useFieldSettingsService();
+const fieldSettingsService = useFieldSettingsService({ onCommitted: refreshTable });
 const ui = useUiStore();
 const admin = useTableAdminStore();
 const paste = usePasteStore();
@@ -746,14 +751,48 @@ const memoryDefaultViews = new Map<string, PresetView>();
 let presetLoadGeneration = 0;
 let applyingPresetView = false;
 
-function captureCurrentView(isDefault = false): PresetView {
+const activePresetView = computed(() => presetViews.presets
+  .find((item) => item.id === presetViews.activePresetId)?.view ?? null);
+const activeViewKind = computed(() => activePresetView.value?.kind ?? "table");
+const projectedPresetRows = computed(() => activePresetView.value
+  ? projectPresetRows(tableStore.allRows, activePresetView.value)
+  : tableStore.allRows);
+const dateFieldOptions = computed(() => (tableStore.schema ?? [])
+  .filter((column) => column.dataType === "date" || column.dataType === "datetime")
+  .map((column) => ({ label: column.title, value: column.name })));
+const titleFieldOptions = computed(() => (tableStore.schema ?? [])
+  .filter((column) => column.dataType === "text")
+  .map((column) => ({ label: column.title, value: column.name })));
+const groupFieldOptions = computed(() => (tableStore.schema ?? [])
+  .filter((column) => (
+    column.kind !== "attachment"
+    && column.kind !== "relation"
+    && column.kind !== "lookup"
+    && (column.dataType === "text" || column.dataType === "integer" || column.dataType === "boolean")
+  ))
+  .map((column) => ({ label: column.title, value: column.name })));
+const coverFieldOptions = computed(() => (tableStore.schema ?? [])
+  .filter((column) => column.kind === "attachment" || column.dataType === "text")
+  .map((column) => ({ label: column.title, value: column.name })));
+
+function captureTableView(isDefault = false): PresetView {
   return captureDataSourceView(
     tabulator.value as unknown as DataSourceViewGrid | null,
     { isDefault, density: ui.density },
   );
 }
 
+function captureCurrentView(isDefault = false): PresetView {
+  return activePresetView.value && activeViewKind.value !== "table"
+    ? { ...activePresetView.value, isDefault }
+    : captureTableView(isDefault);
+}
+
 async function applyView(view: PresetView): Promise<void> {
+  if (view.kind && view.kind !== "table") {
+    pendingPresetView.value = null;
+    return;
+  }
   const grid = tabulator.value as unknown as DataSourceViewGrid | null;
   if (!grid) {
     pendingPresetView.value = view;
@@ -861,13 +900,31 @@ async function switchView(view: PresetEntry): Promise<void> {
   await applyView(view.view);
 }
 
-async function createView(name: string): Promise<void> {
+async function createView(request: {
+  readonly name: string;
+  readonly kind: "table" | "calendar" | "timeline" | "kanban" | "gallery";
+  readonly dateField: string | null;
+  readonly endDateField: string | null;
+  readonly titleField: string | null;
+  readonly groupField: string | null;
+  readonly coverField: string | null;
+}): Promise<void> {
   const collection = workspace.currentTable;
   if (!collection) return;
+  const view: PresetView = {
+    ...captureTableView(presetViews.presets.length === 0),
+    kind: request.kind,
+    layout: request.kind,
+    dateField: request.dateField,
+    endDateField: request.endDateField,
+    titleField: request.titleField,
+    groupField: request.groupField,
+    coverField: request.coverField,
+  };
   const saved = await persistView(
     collection,
-    name,
-    captureCurrentView(presetViews.presets.length === 0),
+    request.name,
+    view,
   );
   if (!saved) return;
   presetViews.activatePreset(saved.id);
@@ -1975,6 +2032,10 @@ useKeyboard({
               :active-id="presetViews.activePresetId"
               :loading="presetViews.loading"
               :dirty="presetViews.dirty"
+              :date-fields="dateFieldOptions"
+              :title-fields="titleFieldOptions"
+              :group-fields="groupFieldOptions"
+              :cover-fields="coverFieldOptions"
               @create="createView"
               @switch="switchView"
               @save="saveView"
@@ -2038,21 +2099,47 @@ useKeyboard({
               <p>{{ t("table.empty.description") }}</p>
               <NButton type="primary" size="small" @click="onNewTable">{{ t("sidebar.newTable") }}</NButton>
             </div>
-            <GridHost
-              v-else
-              :on-cell-edited="onCellEdited"
-              :insert-row-disabled="insertRowDisabled"
-              @selection-change="onHistorySelection"
-              :on-validation-error="onValidationError"
-              @row-context="openPluginContextMenu"
-              @column-context="openColumnContextMenu"
-              @relation-edit="openRelationEditor"
-              @attachment-open="openAttachmentPanel"
-              @json-edit="openJsonEditor"
-              @lookup-source="navigateLookupSource"
-              @view-query-change="onGridViewQueryChanged"
-              @insert-first-row="mutationService.insertRow({})"
-            />
+            <template v-else>
+              <GridHost
+                v-show="activeViewKind === 'table'"
+                :on-cell-edited="onCellEdited"
+                :insert-row-disabled="insertRowDisabled"
+                @selection-change="onHistorySelection"
+                :on-validation-error="onValidationError"
+                @row-context="openPluginContextMenu"
+                @column-context="openColumnContextMenu"
+                @relation-edit="openRelationEditor"
+                @attachment-open="openAttachmentPanel"
+                @json-edit="openJsonEditor"
+                @lookup-source="navigateLookupSource"
+                @view-query-change="onGridViewQueryChanged"
+                @insert-first-row="mutationService.insertRow({})"
+              />
+              <RecordCalendarView
+                v-if="activeViewKind === 'calendar' && activePresetView"
+                :rows="projectedPresetRows"
+                :schema="tableStore.schema ?? []"
+                :view="activePresetView"
+              />
+              <RecordTimelineView
+                v-else-if="activeViewKind === 'timeline' && activePresetView"
+                :rows="projectedPresetRows"
+                :schema="tableStore.schema ?? []"
+                :view="activePresetView"
+              />
+              <RecordKanbanView
+                v-else-if="activeViewKind === 'kanban' && activePresetView"
+                :rows="projectedPresetRows"
+                :schema="tableStore.schema ?? []"
+                :view="activePresetView"
+              />
+              <RecordGalleryView
+                v-else-if="activeViewKind === 'gallery' && activePresetView"
+                :rows="projectedPresetRows"
+                :schema="tableStore.schema ?? []"
+                :view="activePresetView"
+              />
+            </template>
             <div v-if="workspace.currentTable && tableStore.datasetReady" class="table-summary" data-testid="table-summary">
               {{ t("toolbar.rowCount", { count: tableStore.rowCount }) }}
             </div>

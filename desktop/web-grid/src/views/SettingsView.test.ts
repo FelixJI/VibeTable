@@ -185,7 +185,9 @@ describe("SettingsView", () => {
     expect(notes).toContain("v0.2.0");
     expect(notes).toContain("改进工作区恢复");
     expect(wrapper.get('[data-testid="release-update-card"]').text())
-      .toContain("GitHub API 提供的 SHA-256");
+      .toContain("同一通道下载发布包和 SHA-256 文件");
+    expect(wrapper.get('[data-testid="release-update-card"]').text())
+      .toContain("GitHub API 中的摘要交叉校验");
 
     await wrapper.get('[data-testid="install-update-button"]').trigger("click");
     await flushPromises();

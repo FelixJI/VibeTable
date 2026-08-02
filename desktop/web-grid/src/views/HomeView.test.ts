@@ -92,6 +92,18 @@ describe("HomeView", () => {
     expect(loadDailyQuote).toHaveBeenCalledTimes(3);
   });
 
+  it("keeps the selected online source visible when offline fallback is used", async () => {
+    const ui = useUiStore();
+    ui.setDailyQuoteSource("hitokoto");
+    const wrapper = mount(HomeView);
+    await flushPromises();
+
+    const footer = wrapper.get(".quote-card footer").text();
+    expect(footer).toContain("一言");
+    expect(footer).toContain("离线语录");
+    expect(footer).not.toBe("内置精选");
+  });
+
   it("shows the shared holiday and adjusted-workday markers", async () => {
     const calendar = useWorkCalendarStore();
     const today = formatDateKey(new Date());

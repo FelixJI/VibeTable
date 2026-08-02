@@ -7,8 +7,8 @@
   --work-calendar-rest-marker-bg: rgba(185, 74, 72, 0.09);
   --work-calendar-work-marker: #2f67a8;
   --work-calendar-work-marker-bg: rgba(47, 103, 168, 0.1);
-  --work-calendar-selected: #7a5af8;
-  --work-calendar-selected-bg: color-mix(in srgb, #7a5af8 16%, transparent);
+  --work-calendar-selected: var(--vt-color-primary-500);
+  --work-calendar-selected-bg: color-mix(in srgb, var(--vt-color-primary-500) 16%, transparent);
   width: 100%;
   color: var(--vt-fg);
   font-variant-numeric: tabular-nums;
