@@ -45,7 +45,7 @@
 - Commit 使用 `<type>(<scope>): <简体中文动词短语>`，例如 `fix(ci): 修复候选产物绑定`、`docs(agents): 补充仓库治理规则`。一个 commit 只表达一个完整意图。
 - PR 标题采用中文 Conventional Commit；正文至少包含背景与根因、变更内容、影响与风险、精确验证命令及结果。UI 可见改动附截图；未执行项说明原因，pending 不得写成 passed。
 - 只允许 squash merge。合并前必须通过严格同步 `main` 的 `required` check，处理所有 review conversation，不使用 admin/bypass 绕过保护。普通 PR 合并后确认 `main` CI 与 CD 哨兵成功且未意外发布；`automation/release` PR 合并后则必须确认 CD 完成正式发布。
-- worktree 只在工作树干净且能用 `git merge-base --is-ancestor` 证明已合并后移除；否则保留并报告。远端分支删除不等于本地提交可安全删除。
+- worktree 只在工作树干净且 PR 已确认 `MERGED` 后移除。由于只允许 squash merge，必须验证 PR 的 `mergeCommit` 可从最新远端 `main` 到达，并用 `git diff --quiet <branch-head> <mergeCommit>` 确认 tree 等价；不能要求分支 HEAD 本身是 `main` 祖先。远端分支删除不等于本地提交可安全删除。
 
 ### Secret 与远端治理
 
@@ -69,7 +69,7 @@
 - 开发中间产物只放 `build/`，发布包放 `dist/`，本地展开包放 `VibeTable.Next/`。不要把 exe、sidecar 或打包 Python runtime 复制到 `%TEMP%`、用户数据或系统目录；验证结束前保留最新候选和 QA 证据，避免重复生成可执行文件触发误报。
 - 不编写自动删除/移动隔离文件、关闭杀软或宽泛配置排除的脚本。误报时记录精确路径、SHA-256、构建命令和 QA 报告，只按组织策略对精确仓库产物目录设置排除；重建前先确认隔离状态。
 - 每周清理先运行 `uv run python scripts/clean_workspace.py --scope all` 预览，再显式加 `--apply`，且只处理超过 3 天的白名单缓存/构建产物并保留 `build/qa/` 最近 2 个运行目录；需要立即回收时传 `--older-than-days 0`。完整门禁结束且证据归档后执行；失败时先排查占用进程，禁止改用宽泛递归删除。禁止删除 `.git/`、`.venv/`、`.tools/`、`node_modules/`、用户数据或隔离区。
-- worktree 不由清理脚本处理。只有工作树干净且 `git merge-base --is-ancestor <head> main` 成功时，才使用 `git worktree remove` 与 `git worktree prune`。
+- worktree 不由清理脚本处理。按统一 squash 证据确认 PR merge commit 已进入最新远端 `main`、分支 tree 与 merge commit 等价且工作树干净后，才使用 `git worktree remove` 与 `git worktree prune`。
 - 原 clone 已安装 pre-commit，覆盖 Ruff format/check、version consistency 和 package contract；提交必须让 hook 正常执行。WPF/Web 可见改动需在 PR 附截图。
 
 ## 六仓关系
