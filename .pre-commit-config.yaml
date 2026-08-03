@@ -6,7 +6,7 @@ repos:
         entry: python qa/precommit.py ruff-format
         language: system
         types: [python]
-        exclude: ^runtime/node/node_modules/
+        exclude: ^(?:runtime/node/node_modules/|scripts/automation_core\.py$)
         pass_filenames: true
 
       - id: ruff-check

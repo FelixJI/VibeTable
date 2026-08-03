@@ -70,36 +70,22 @@ def test_github_workflows_keep_release_build_on_windows() -> None:
     workflow_dir = next_gate.REPO_ROOT / ".github" / "workflows"
     workflow_paths = sorted([*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")])
     workflows = {path.name: path.read_text(encoding="utf-8") for path in workflow_paths}
-    assert workflows
+    assert set(workflows) == {"ci.yml", "cd.yml"}
     for workflow in workflows.values():
         runner_lines = [
             line.strip() for line in workflow.splitlines() if line.strip().startswith("runs-on:")
         ]
         assert runner_lines
-        assert set(runner_lines) <= {
-            "runs-on: windows-latest",
-            "runs-on: ubuntu-latest",
-        }
+        assert set(runner_lines) == {"runs-on: windows-latest"}
         assert "macos-" not in workflow
 
-    release_workflow = workflows["release.yml"]
-    release_runner_lines = [
-        line.strip()
-        for line in release_workflow.splitlines()
-        if line.strip().startswith("runs-on:")
-    ]
-    assert set(release_runner_lines) == {"runs-on: windows-latest"}
-    assert "runs-on: ubuntu-latest" not in release_workflow
-    for workflow_name in ("mirror.yml", "release-cleanup.yml", "release-please.yml"):
-        assert "runs-on: ubuntu-latest" in workflows[workflow_name]
-    assert "\ndefaults:\n  run:\n    shell: pwsh\n" in release_workflow
-
     ci_workflow = workflows["ci.yml"]
-    python_job = ci_workflow.split("\n  web:\n", maxsplit=1)[0]
-    assert "--ignore=tests/e2e/test_next_readonly_smoke.py" in python_job
-    assert ci_workflow.count("--ignore=tests/e2e/") == 1
-    assert "mkdir -p" not in ci_workflow
-    assert "build/ci/vibetable-pb.exe" in ci_workflow
+    cd_workflow = workflows["cd.yml"]
+    assert "python scripts/automation.py ci" in ci_workflow
+    assert "scripts/automation_project.py" not in ci_workflow
+    assert "environment: release" in cd_workflow
+    assert "python scripts/automation.py release publish" in cd_workflow
+    assert "release-please" not in (ci_workflow + cd_workflow).lower()
 
     command, cwd = next_gate.stage_command("smoke")
     assert str(next_gate.E2E_SMOKE) in command
@@ -295,37 +281,20 @@ def test_source_only_go_stages_do_not_fabricate_recovery_tool_paths() -> None:
 
 
 def test_release_gate_enables_required_windows_credential_manager_tests() -> None:
-    workflow = (next_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    build_job = workflow.split("  build:", maxsplit=1)[1].split("\n  core:", maxsplit=1)[0]
-    assert "timeout-minutes: 45" in build_job.split("    steps:", maxsplit=1)[0]
-    assert "environment: release" not in build_job
-    assert "contents: write" not in build_job
-    assert workflow.count('VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER: "1"') == 2
-    protected_step = workflow.split(
-        "- name: Run protected package eligibility lane",
-        maxsplit=1,
-    )[1].split("- name:", maxsplit=1)[0]
-    assert "VIBETABLE_PROVIDER_EVIDENCE_HMAC_KEY" in protected_step
-    assert "environment: release" in workflow.split("  release:", maxsplit=1)[1]
-    gate_job = workflow.split("  gate:", maxsplit=1)[1].split("\n  release:", maxsplit=1)[0]
-    assert "if: always()" in gate_job
-    assert "environment: release" not in gate_job
-    assert "contents: write" not in gate_job
-    release_header = workflow.split("  release:", maxsplit=1)[1].split("    steps:", maxsplit=1)[0]
-    assert "needs: [build, gate]" in release_header
-    assert "needs.gate.result == 'success'" in release_header
+    adapter = (next_gate.REPO_ROOT / "scripts/automation_project.py").read_text(encoding="utf-8")
+    workflow = (next_gate.REPO_ROOT / ".github/workflows/cd.yml").read_text(encoding="utf-8")
+    assert 'env={"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"}' in adapter
+    assert "environment: release" in workflow
+    assert "contents: write" in workflow
 
 
 def test_release_workflow_runs_each_stage_in_one_candidate_bound_lane() -> None:
-    workflow = (next_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-
-    for lane in next_gate.LANE_STAGES:
-        assert workflow.count(f"qa/next.py --lane {lane}") == 1
-    assert "qa/next.py --ci" not in workflow
-    assert workflow.count("qa/release_eligibility.py") == 1
-    assert workflow.index("Aggregate immutable candidate evidence") < workflow.index(
-        "Verify eligibility is bound to the immutable candidate"
-    )
+    adapter = (next_gate.REPO_ROOT / "scripts/automation_project.py").read_text(encoding="utf-8")
+    assert '"qa/next.py",' in adapter
+    assert '"--ci",' in adapter
+    assert '"--package-root",' in adapter
+    assert '"--package-archive",' in adapter
+    assert "--lane" not in adapter
 
 
 def test_race_stage_compiles_each_package_once_and_runs_every_test_in_isolation(

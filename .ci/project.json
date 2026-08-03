@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "project": {
+    "component": "vibetable",
+    "repository": "FelixJI/vibetable"
+  },
+  "ci": {
+    "bootstrap": [
+      ["python", "scripts/automation_project.py", "bootstrap"]
+    ],
+    "quality": [
+      ["uv", "run", "python", "scripts/automation_project.py", "quality"]
+    ],
+    "e2e": [],
+    "release_build": [
+      ["uv", "run", "python", "scripts/automation_project.py", "build"]
+    ],
+    "release_smoke": [
+      ["uv", "run", "python", "scripts/automation_project.py", "smoke"]
+    ]
+  },
+  "release": {
+    "version_sources": [
+      {
+        "kind": "python",
+        "path": "backend/_version.py",
+        "key": "__version__"
+      }
+    ],
+    "generated_commands": [
+      ["uv", "run", "python", "scripts/release.py", "--version", "{version}"],
+      ["uv", "run", "python", "scripts/changelog.py", "--write-json"]
+    ],
+    "identity_asset": "build-identity.json",
+    "required_assets": [
+      "VibeTable-v{version}-win-x64.zip",
+      "VibeTable-v{version}-win-x64.zip.sha256",
+      "build-identity.json",
+      "SBOM.spdx.json"
+    ],
+    "mirrors": [
+      {
+        "name": "Gitee",
+        "url_env": "GITEE_URL",
+        "user_env": "GITEE_USER",
+        "token_env": "GITEE_TOKEN"
+      },
+      {
+        "name": "CNB",
+        "url_env": "CNB_URL",
+        "user": "cnb",
+        "token_env": "CNB_TOKEN"
+      }
+    ]
+  }
+}

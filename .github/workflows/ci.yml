@@ -2,218 +2,59 @@ name: CI
 
 on:
   pull_request:
+  push:
     branches: [main]
 
 permissions:
   contents: read
 
-env:
-  PYTHONUTF8: "1"
-  PYTHONIOENCODING: "utf-8"
-
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-defaults:
-  run:
-    shell: pwsh
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  python:
-    name: Python / contracts
+  required:
+    name: required
     runs-on: windows-latest
-    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version-file: .python-version
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           version: "0.11.16"
           enable-cache: true
-
-      - name: Install locked dependencies
-        run: uv sync --frozen --group dev
-
-      - name: Version and package metadata
-        run: |
-          uv run python scripts/release.py --check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          uv run python qa/version_check.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          uv run python qa/package_check.py
-
-      - name: Release changelog freshness
-        if: startsWith(github.head_ref, 'release-please--branches--')
-        run: uv run python scripts/changelog.py --check
-
-      - name: Format and lint
-        run: |
-          uv run ruff format --check .
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          uv run ruff check .
-
-      - name: Type check
-        run: |
-          uv run pyright backend
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          uv run mypy backend
-
-      - name: Test with coverage
-        run: |
-          New-Item -ItemType Directory -Force build/ci | Out-Null
-          uv run pytest --ignore=tests/e2e/test_next_readonly_smoke.py --junitxml=build/ci/python-junit.xml --cov-report=xml:build/ci/python-coverage.xml
-
-      - name: Upload Python reports
-        if: always()
-        uses: actions/upload-artifact@v7
+          cache-dependency-glob: uv.lock
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        if: hashFiles('global.json') != ''
         with:
-          name: python-quality-reports
-          path: |
-            build/ci/python-junit.xml
-            build/ci/python-coverage.xml
-            htmlcov/
-          if-no-files-found: warn
-          retention-days: 14
-
-  web:
-    name: Web grid
-    runs-on: windows-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v6
+          global-json-file: global.json
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        if: hashFiles('**/package-lock.json') != ''
         with:
-          node-version: 24
+          node-version-file: .node-version
           cache: npm
-          cache-dependency-path: desktop/web-grid/package-lock.json
-
-      - name: Install locked dependencies
-        working-directory: desktop/web-grid
-        run: npm ci
-
-      - name: Unit tests
-        working-directory: desktop/web-grid
-        run: npm run test
-
-      - name: Typecheck and production build
-        working-directory: desktop/web-grid
-        run: npm run build
-
-  plugin-sdk:
-    name: Plugin / ${{ matrix.name }}
-    runs-on: windows-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: sdk
-            path: sdk/plugin
-            test: false
-          - name: data-overview
-            path: examples/plugins/data-overview
-            test: true
-          - name: normalize-text
-            path: examples/plugins/normalize-text
-            test: true
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: ${{ matrix.path }}/package-lock.json
-
-      - name: Install locked dependencies
-        working-directory: ${{ matrix.path }}
-        run: npm ci
-
-      - name: Typecheck
-        working-directory: ${{ matrix.path }}
-        run: npm run typecheck
-
-      - name: Offline tests
-        if: matrix.test
-        working-directory: ${{ matrix.path }}
-        run: npm run test
-
-  sidecar:
-    name: Go sidecar
-    runs-on: windows-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-go@v6
+          cache-dependency-path: '**/package-lock.json'
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        if: hashFiles('sidecar/go.mod') != ''
         with:
           go-version-file: sidecar/go.mod
           cache-dependency-path: sidecar/go.sum
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Formatting
-        run: python qa/go_format_check.py
-
-      - name: Vet
-        working-directory: sidecar
-        run: go vet ./...
-
-      - name: Tests
-        run: python qa/next.py --stage go-test
-
-      - name: Build
-        working-directory: sidecar
-        run: |
-          New-Item -ItemType Directory -Force ../build/ci | Out-Null
-          go build -trimpath -buildvcs=true -o ../build/ci/vibetable-pb.exe ./cmd/vibetable-pb
-
-  dotnet:
-    name: Windows / .NET
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-dotnet@v5
-        with:
-          global-json-file: global.json
-
-      - name: Restore
-        run: dotnet restore desktop/VibeTable.Desktop.sln
-
-      - name: Test release configuration with coverage thresholds
-        run: >
-          dotnet test desktop/VibeTable.Desktop.sln
-          --configuration Release
-          --no-restore
-          /p:CollectCoverage=true
-          /p:CoverletOutputFormat=cobertura
-
-  required:
-    name: required
-    if: always()
-    needs: [python, web, plugin-sdk, sidecar, dotnet]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require every CI job
-        shell: bash
+      - name: Verify repository
         env:
-          PYTHON_RESULT: ${{ needs.python.result }}
-          WEB_RESULT: ${{ needs.web.result }}
-          PLUGIN_SDK_RESULT: ${{ needs['plugin-sdk'].result }}
-          SIDECAR_RESULT: ${{ needs.sidecar.result }}
-          DOTNET_RESULT: ${{ needs.dotnet.result }}
-        run: |
-          results="$PYTHON_RESULT,$WEB_RESULT,$PLUGIN_SDK_RESULT,$SIDECAR_RESULT,$DOTNET_RESULT"
-          if [[ "$results" != "success,success,success,success,success" ]]; then
-            echo "::error::One or more required CI jobs did not succeed: $results"
-            exit 1
-          fi
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/automation.py ci
+          --event '${{ github.event_name }}'
+          --source-sha '${{ github.sha }}'
+      - name: Upload main release candidate
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-candidate
+          path: build/automation/release-candidate
+          if-no-files-found: error
+          retention-days: 14
