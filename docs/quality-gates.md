@@ -1,45 +1,31 @@
 # 质量门禁
 
-VibeTable 是仅支持 Windows 10/11 的桌面产品，同时包含 Python、Vue/TypeScript、Go 和 Windows/.NET。所有 GitHub 门禁统一在 Windows runner 上执行；门禁仍按反馈速度和桌面会话要求分层，避免把耗时且依赖完整交互式桌面的场景塞进每个 PR，也避免只测前端和 Python 就误判为可发布。
+VibeTable 是仅支持 Windows 10/11 的桌面产品，同时包含 Python、Vue/TypeScript、Go 和 Windows/.NET。所有 GitHub 门禁统一在 Windows runner 上执行；单一必需检查覆盖从静态质量到真实发布构建/产品 smoke 的完整资格链，避免只测前端和 Python 就误判为可发布。
 
-## PR 必需门禁
+## PR 与 main 必需门禁
 
-`.github/workflows/ci.yml` 在 `pull_request` 和 `main` push 上运行，仓库分支保护应要求以下检查全部通过：
+`.github/workflows/ci.yml` 在 `pull_request` 和 `main` push 上运行单一 `required` job。workflow 只负责固定工具链和编排入口；项目阶段由 `.ci/project.json` 与 `scripts/automation_project.py` 定义，并依次 fail closed：
 
-| 检查 | 覆盖 |
+| 阶段 | 覆盖 |
 |---|---|
-| `Python / contracts` | 版本/包清单、Ruff format/lint、Pyright、mypy、pytest 与 85% 后端覆盖率 |
-| `Web grid` | 锁定依赖、Vitest、Vue/TypeScript 类型检查、生产构建 |
-| `Plugin / sdk` | 插件 SDK 类型契约 |
-| `Plugin / data-overview` | 示例插件类型与离线测试 |
-| `Plugin / normalize-text` | 示例插件类型与离线测试 |
-| `Go sidecar` | gofmt、vet、全量普通测试、可发布入口构建 |
-| `Windows / .NET` | Windows runner 上的 Release solution 测试与各项目覆盖率阈值 |
+| `bootstrap` | 锁定 Python、Node、Go 与 .NET 依赖及项目所需工具 |
+| `quality` | 版本/包契约、Ruff、Pyright、mypy、Python 覆盖率、四个 Node 项目、Go format/vet/test/build、.NET tests |
+| `e2e` | 当前无独立命令；产品级 E2E 由 release smoke 统一执行 |
+| `release_build` | 构建真实 Windows x64 离线发布包及 identity/checksum/SBOM |
+| `release_smoke` | 执行 `qa/next.py --ci`，覆盖 Go race、sidecar、升级/故障注入、WPF/WebView2 E2E、包契约和最终只读 smoke |
 
-CI 使用 `windows-latest`、最小 `contents: read` 权限、PowerShell、按 workflow/ref 取消过期运行、锁文件安装和明确超时，并保留 Python JUnit/coverage 报告 14 天。普通 Python job 只排除 `tests/e2e/test_next_readonly_smoke.py`：该测试会启动发布包中的 WPF/WebView2，依赖完整桌面会话，并由下述重型门禁的 `smoke` 阶段继续强制执行；其余 Python 测试仍由 PR 门禁自动发现和覆盖。
+CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号陈旧运行可以取消，`main` 运行使用唯一 run id，绝不互相取消。PR 会完整执行 release build/smoke，但不会上传正式候选；只有 `main` push 会把与 source SHA 绑定的固定名 `release-candidate` 保留 14 天。完整矩阵以严格分支保护要求的 `required` check 为权威。
 
-## 重型发布门禁
-
-`python qa/next.py --ci --json-report build/qa/report.json` 是源码冻结后的完整本机门禁，额外包含 Go race、打包 sidecar 矩阵、升级 smoke、故障注入、WPF/WebView2 产品 E2E 和最终只读 smoke。它依赖完整 Windows 桌面环境及仓库文档中声明的工具链，不作为每个 PR 的 GitHub-hosted 必需检查。
-
-出现以下变更时，合并前应额外运行完整门禁：
-
-- PocketBase migration、mutation kernel、附件或备份/恢复；
-- WPF/WebView2 生命周期、进程监督或数据目录迁移；
-- 打包布局、升级、发布清单或 release identity；
-- 权限边界、插件 worker、原生文件能力。
+本地改动先运行最小相关测试；涉及 PocketBase migration、mutation kernel、WPF/WebView2 生命周期、打包布局、升级、发布 identity、权限边界或原生文件能力时，合并前还应本地执行 `uv run python qa/next.py --ci --json-report build/qa/report.json`，并保留 QA 证据。
 
 ## CD
 
-`.github/workflows/release.yml` 只有一个入口：推送与仓库版本一致的 `vX.Y.Z` tag。工作流会在 Windows 上重新执行关键 Python/契约、web、Go 和 .NET 验证，再构建并校验包，生成 ZIP、SHA-256 和包内 SBOM，最后通过受保护的 `release` Environment 发布 GitHub Release。
+`.github/workflows/cd.yml` 有两个入口，但不重建候选：
 
-建议发布流程：
+1. 手动运行并选择 `patch`、`minor` 或 `major`，创建或刷新唯一的 `automation/release` 版本/changelog PR。
+2. 该 PR 合并后，成功的 `main` CI 触发 publish job；它只下载触发运行上传的同一 source SHA 候选，验证 release plan 与资产身份，生成 provenance/SBOM attestation，然后直接发布正式、非草稿 Release 并同步镜像。
 
-1. `main` 的全部必需检查通过，并完成适用的重型门禁。
-2. 在干净工作树执行 `python scripts/release.py --bump patch --push`（或 `major`/`minor`）。
-3. tag CD 校验 tag 与版本、重新验证、构建并发布。
-
-发布工作流不会自行修改版本或推送 tag，避免一次操作触发两条相互竞争的发布链。重复运行同一 tag 时会覆盖同名资产，不创建第二个 Release。
+普通 `main` push 没有匹配 release plan 时，CD 作为成功哨兵退出而不发布。稳定版本基线同时考虑当前版本、稳定 tag 和已发布正式 Release；若已有稳定 tag 但没有正式 Release，则继续升到下一语义化版本，不删除或复用受保护 tag。不得手工提升版本、打正式 tag 或创建 Release。
 
 ## 当前阈值评价
 

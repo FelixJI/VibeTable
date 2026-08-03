@@ -120,8 +120,12 @@ function mountView() {
       return h(NMessageProvider, () => h(WorkspaceView));
     },
   });
-  return mount(Host, { attachTo: document.body });
+  const wrapper = mount(Host, { attachTo: document.body });
+  mountedViews.push(wrapper);
+  return wrapper;
 }
+
+const mountedViews: ReturnType<typeof mount>[] = [];
 
 /** Build a valid `PastePlan` carrying a non-consumed token for apply tests. */
 function makePlan(token = "tok-xyz"): PastePlan {
@@ -160,6 +164,8 @@ describe("WorkspaceView", () => {
   });
 
   afterEach(() => {
+    for (const wrapper of mountedViews.splice(0)) wrapper.unmount();
+    document.body.innerHTML = "";
     setHostBridgeForTesting(null);
     vi.restoreAllMocks();
   });

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -22,7 +23,7 @@ JSON_OUTPUT = Path("desktop/web-grid/src/generated/changelog.json")
 MARKDOWN_OUTPUT = Path("CHANGELOG.md")
 SEMVER_TAG = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 CONVENTIONAL_SUBJECT = re.compile(
-    r"^(?P<type>[a-z][a-z0-9-]*)(?:\([^)]+\))?(?P<breaking>!)?:\s+\S",
+    r"^(?P<type>[a-z][a-z0-9-]*)(?:\((?P<scope>[^)]+)\))?(?P<breaking>!)?:\s+\S",
     flags=re.IGNORECASE,
 )
 CHANGELOG_DIRECTIVE = re.compile(
@@ -30,27 +31,33 @@ CHANGELOG_DIRECTIVE = re.compile(
 )
 BREAKING_CHANGE = re.compile(r"^BREAKING(?: |-)?CHANGE:\s+\S", flags=re.IGNORECASE | re.MULTILINE)
 USER_VISIBLE_TYPES = frozenset({"feat", "fix", "perf", "revert"})
+DEPENDENCY_TYPES = frozenset({"deps", "dependencies"})
 
 
 @dataclass(frozen=True)
 class ChangelogEntry:
     subject: str
     commit: str | None
+    category: str = "changes"
 
 
-def _is_user_visible(subject: str, message: str) -> bool:
+def _category(subject: str, message: str) -> str | None:
     directives = CHANGELOG_DIRECTIVE.findall(message)
     if directives:
-        return directives[-1].lower() == "include"
+        return "changes" if directives[-1].lower() == "include" else None
 
     match = CONVENTIONAL_SUBJECT.match(subject)
     if match is None:
-        return False
-    return (
-        match.group("type").lower() in USER_VISIBLE_TYPES
-        or match.group("breaking") == "!"
-        or BREAKING_CHANGE.search(message) is not None
-    )
+        return None
+    change_type = match.group("type").lower()
+    scope = (match.group("scope") or "").lower()
+    if match.group("breaking") == "!" or BREAKING_CHANGE.search(message) is not None:
+        return "breaking"
+    if change_type in DEPENDENCY_TYPES or scope in DEPENDENCY_TYPES:
+        return "dependencies"
+    if change_type in USER_VISIBLE_TYPES:
+        return "changes"
+    return None
 
 
 def _git(repo_root: Path, *args: str) -> str:
@@ -69,6 +76,11 @@ def _git(repo_root: Path, *args: str) -> str:
 
 
 def _previous_release_tag(repo_root: Path, version: str) -> str | None:
+    configured = os.environ.get("AUTOMATION_CHANGELOG_BASE_TAG", "").strip()
+    if configured:
+        if SEMVER_TAG.fullmatch(configured) is None:
+            raise ValueError(f"invalid AUTOMATION_CHANGELOG_BASE_TAG: {configured}")
+        return configured
     target = tuple(int(part) for part in version.split("."))
     tags = _git(
         repo_root,
@@ -91,9 +103,6 @@ def _previous_release_tag(repo_root: Path, version: str) -> str | None:
 
 def collect_changelog(repo_root: Path, version: str) -> list[ChangelogEntry]:
     previous = _previous_release_tag(repo_root, version)
-    if previous is None:
-        return [ChangelogEntry(subject=FIRST_RELEASE_SUBJECT, commit=None)]
-
     revision_range = f"{previous}..HEAD" if previous else "HEAD"
     output = _git(
         repo_root,
@@ -107,14 +116,14 @@ def collect_changelog(repo_root: Path, version: str) -> list[ChangelogEntry]:
         commit, separator, remainder = record.strip("\r\n").partition("\x1f")
         subject, message_separator, message = remainder.partition("\x1f")
         normalized = subject.strip()
-        if (
-            not separator
-            or not message_separator
-            or not normalized
-            or not _is_user_visible(normalized, message)
-        ):
+        if not separator or not message_separator or not normalized:
             continue
-        entries.append(ChangelogEntry(subject=normalized, commit=commit.strip()[:8]))
+        category = _category(normalized, message)
+        if category is None:
+            continue
+        entries.append(
+            ChangelogEntry(subject=normalized, commit=commit.strip()[:8], category=category)
+        )
     return entries
 
 
@@ -131,13 +140,23 @@ def render_json(entries: list[ChangelogEntry]) -> str:
 
 def render_markdown(version: str, entries: list[ChangelogEntry]) -> str:
     lines = [f"# VibeTable {version}", ""]
-    if entries:
+    sections = (
+        ("breaking", "破坏性变更"),
+        ("changes", "变更"),
+        ("dependencies", "依赖更新"),
+    )
+    for category, title in sections:
+        selected = [entry for entry in entries if entry.category == category]
+        if not selected:
+            continue
+        lines.extend((f"## {title}", ""))
         lines.extend(
             f"- {entry.subject}" + (f" (`{entry.commit}`)" if entry.commit is not None else "")
-            for entry in entries
+            for entry in selected
         )
-    else:
-        lines.append("- 暂无用户可见变更")
+        lines.append("")
+    if not entries:
+        lines.append("- 内部改进与维护")
     return "\n".join(lines) + "\n"
 
 
@@ -160,6 +179,17 @@ def write_changelog(repo_root: Path, version: str) -> list[Path]:
     return changed
 
 
+def write_changelog_json(repo_root: Path, version: str) -> list[Path]:
+    """只更新应用内消费的 JSON；累计 CHANGELOG.md 由公共发布核心维护。"""
+    path = repo_root / JSON_OUTPUT
+    content = render_json(collect_changelog(repo_root, version))
+    if path.is_file() and path.read_text(encoding="utf-8") == content:
+        return []
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8", newline="")
+    return [path]
+
+
 def check_changelog(repo_root: Path, version: str) -> list[str]:
     errors: list[str] = []
     for path, expected in generated_contents(repo_root, version).items():
@@ -174,6 +204,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--write", action="store_true")
+    action.add_argument("--write-json", action="store_true")
     action.add_argument("--check", action="store_true")
     return parser
 
@@ -184,6 +215,10 @@ def main(argv: list[str] | None = None) -> int:
         version = read_project_version(REPO_ROOT)
         if args.write:
             for path in write_changelog(REPO_ROOT, version):
+                print(path.relative_to(REPO_ROOT))
+            return 0
+        if args.write_json:
+            for path in write_changelog_json(REPO_ROOT, version):
                 print(path.relative_to(REPO_ROOT))
             return 0
         errors = check_changelog(REPO_ROOT, version)

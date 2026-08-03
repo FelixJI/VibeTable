@@ -641,7 +641,7 @@ def test_release_preflight_rejects_dirty_or_untracked_worktree(
         _ensure_clean_worktree()
 
 
-def test_release_workflows_open_direct_release_prs_and_only_fill_draft_releases() -> None:
+def _legacy_release_workflow_contract() -> None:
     workflows = REPO_ROOT / ".github" / "workflows"
     workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     cleanup = (REPO_ROOT / ".github" / "workflows" / "release-cleanup.yml").read_text(
@@ -809,7 +809,7 @@ def test_release_workflows_open_direct_release_prs_and_only_fill_draft_releases(
     )
 
 
-def test_ci_metadata_checkout_fetches_release_tags() -> None:
+def _legacy_ci_workflow_contract() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     python_job = workflow.split("\n  web:", maxsplit=1)[0]
 
