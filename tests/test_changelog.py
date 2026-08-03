@@ -9,7 +9,7 @@ from scripts import changelog
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_first_release_has_the_project_initialization_entry(
+def test_first_formal_release_uses_visible_history_from_head(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -17,11 +17,19 @@ def test_first_release_has_the_project_initialization_entry(
         "_previous_release_tag",
         lambda _repo_root, _version: None,
     )
+    commit = "a" * 40
+    monkeypatch.setattr(
+        changelog,
+        "_git",
+        lambda _repo_root, *args: f"{commit}\x1ffeat: 初始化项目\x1ffeat: 初始化项目\x1e",
+    )
 
     entries = changelog.collect_changelog(REPO_ROOT, "0.1.0")
 
-    assert entries == [changelog.ChangelogEntry(subject="初始化项目", commit=None)]
-    assert changelog.render_markdown("0.1.0", entries) == ("# VibeTable 0.1.0\n\n- 初始化项目\n")
+    assert entries == [changelog.ChangelogEntry(subject="feat: 初始化项目", commit="aaaaaaaa")]
+    assert changelog.render_markdown("0.1.0", entries) == (
+        "# VibeTable 0.1.0\n\n## 变更\n\n- feat: 初始化项目 (`aaaaaaaa`)\n\n"
+    )
 
 
 def test_changelog_uses_user_visible_conventional_types_and_directives(
@@ -72,8 +80,16 @@ def test_changelog_uses_user_visible_conventional_types_and_directives(
     assert entries == [
         changelog.ChangelogEntry(subject="feat: 新增筛选器", commit="a1b2c3d0"),
         changelog.ChangelogEntry(subject="fix(export): 修复导出", commit="b2c3d4e0"),
-        changelog.ChangelogEntry(subject="perf!: 重写大型表格渲染", commit="c3d4e5f0"),
+        changelog.ChangelogEntry(
+            subject="perf!: 重写大型表格渲染",
+            commit="c3d4e5f0",
+            category="breaking",
+        ),
         changelog.ChangelogEntry(subject="revert: 回退不兼容的导入器", commit="d4e5f6a0"),
         changelog.ChangelogEntry(subject="docs: 发布用户迁移指南", commit="d0e1f2a0"),
-        changelog.ChangelogEntry(subject="chore(storage): 迁移本地索引", commit="f2a3b4c0"),
+        changelog.ChangelogEntry(
+            subject="chore(storage): 迁移本地索引",
+            commit="f2a3b4c0",
+            category="breaking",
+        ),
     ]
