@@ -1342,14 +1342,11 @@ func writeImmutable(path string, content []byte) error {
 	if err := file.Close(); err != nil {
 		return err
 	}
-	if err := os.Link(temp, path); err != nil {
+	if err := publishImmutable(temp, path); err != nil {
 		if existing, readErr := os.ReadFile(path); readErr == nil &&
 			bytes.Equal(existing, content) {
 			return nil
 		}
-		return err
-	}
-	if err := os.Remove(temp); err != nil {
 		return err
 	}
 	removeTemp = false

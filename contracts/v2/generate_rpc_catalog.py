@@ -491,7 +491,7 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
                 "encryption": "convenient",
                 "keyVersion": 1,
                 "pendingSync": False,
-                "remoteVerified": True,
+                "replicaVerified": True,
             },
         },
     ),

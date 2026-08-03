@@ -16,10 +16,11 @@ def check(
     *,
     support_path: Path | None = None,
 ) -> list[str]:
-    """Return structural policy errors without inventing a local trust ceremony.
+    """Return structural policy errors for directory-backed workspace copies.
 
-    Provider availability is a product capability decision; it is not
-    authenticated by a secret stored beside the plaintext application.
+    The application verifies files in the selected directory. It deliberately
+    makes no claim about a sync client's cloud state or a removable device's
+    lifecycle, so the matrix must not contain attestation-shaped fields.
     """
 
     root = root.resolve()
@@ -37,6 +38,9 @@ def check(
         return ["provider support matrix has no providers"]
 
     errors: list[str] = []
+    for field in ("evidenceContract", "evidenceDirectory"):
+        if field in support:
+            errors.append(f"provider support matrix must not define {field}")
     fixed = providers.get("fixed")
     if not isinstance(fixed, dict) or fixed.get("creation") != "enabled":
         errors.append("fixed provider must be enabled")
@@ -53,19 +57,20 @@ def check(
             errors.append("network provider must use advisory coordination")
         if network.get("protocol") != "smb":
             errors.append("network: protocol must be smb")
-        if "requiredEvidence" in network:
-            errors.append("network provider must not depend on local attestation evidence")
+        if "requiredEvidence" in network or "evidence" in network:
+            errors.append("network provider must not define attestation evidence")
 
     for provider in ("registeredCloud", "userMarkedSync", "removable"):
         policy = providers.get(provider)
         if not isinstance(policy, dict):
             errors.append(f"{provider}: provider policy is missing")
             continue
-        if policy.get("creation") != "blockedPendingLab":
-            errors.append(f"{provider}: provider must remain blockedPendingLab")
-        evidence = policy.get("requiredEvidence")
-        if not isinstance(evidence, str) or not evidence.startswith("hardware."):
-            errors.append(f"{provider}: requiredEvidence is missing")
+        if policy.get("creation") != "enabled":
+            errors.append(f"{provider}: directory replica provider must be enabled")
+        if policy.get("coordinationStrength") != "advisory":
+            errors.append(f"{provider}: provider must use advisory coordination")
+        if "requiredEvidence" in policy or "evidence" in policy:
+            errors.append(f"{provider}: provider must not define attestation evidence")
     return errors
 
 

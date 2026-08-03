@@ -1,17 +1,10 @@
 {
   "contractVersion": "2.0",
-  "policyRevision": 3,
-  "evidenceContract": "provider-lab-evidence.schema.json",
-  "evidenceDirectory": "qa/provider-evidence",
+  "policyRevision": 4,
   "providers": {
     "fixed": {
       "creation": "enabled",
-      "coordinationStrength": "strong",
-      "evidence": [
-        "automated.fixed-durable-rename",
-        "automated.sqlite-fixed-read-view",
-        "automated.repository-cross-process-cas"
-      ]
+      "coordinationStrength": "strong"
     },
     "network": {
       "creation": "enabled",
@@ -19,19 +12,16 @@
       "protocol": "smb"
     },
     "registeredCloud": {
-      "creation": "blockedPendingLab",
-      "coordinationStrength": "advisory",
-      "requiredEvidence": "hardware.cloud-files-v1"
+      "creation": "enabled",
+      "coordinationStrength": "advisory"
     },
     "userMarkedSync": {
-      "creation": "blockedPendingLab",
-      "coordinationStrength": "advisory",
-      "requiredEvidence": "hardware.sync-folder-v1"
+      "creation": "enabled",
+      "coordinationStrength": "advisory"
     },
     "removable": {
-      "creation": "blockedPendingLab",
-      "coordinationStrength": "advisory",
-      "requiredEvidence": "hardware.removable-v1"
+      "creation": "enabled",
+      "coordinationStrength": "advisory"
     }
   }
 }

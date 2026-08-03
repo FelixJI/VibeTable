@@ -45,11 +45,8 @@ public sealed class WorkspaceProviderPolicy
         _probe = probe ?? storageProbe.Probe;
     }
 
-    public bool MirroredCreationEnabled =>
-        _rules.TryGetValue(
-            WorkspaceStorageKind.Network,
-            out ProviderRule? network)
-        && network.CreationEnabled;
+    public bool MirroredCreationEnabled => _rules.Any(rule =>
+        rule.Key != WorkspaceStorageKind.Fixed && rule.Value.CreationEnabled);
 
     public static WorkspaceProviderPolicy Load(string baseDirectory)
     {
@@ -193,7 +190,7 @@ public sealed class WorkspaceProviderPolicy
         {
             throw new WorkspaceRegistryException(
                 "workspace.provider_blocked",
-                "This storage provider is blocked until its hardware lab evidence is release-eligible.");
+                "This directory type is not enabled for mirrored workspaces in this build.");
         }
         if (rule.CoordinationStrength != observation.CoordinationStrength)
             throw InvalidPolicy();

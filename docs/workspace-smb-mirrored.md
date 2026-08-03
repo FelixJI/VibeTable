@@ -1,37 +1,34 @@
-# SMB 镜像工作区安全边界
+# 目录镜像工作区边界
 
 ## 用户可见行为
 
-- 直接模式只允许 Windows 报告为 `Fixed` 且具备 strong coordination 的本机磁盘。
-- SMB、WebDAV 等网络位置都属于非固定存储。若对这类位置请求直接模式，宿主返回
-  `workspace.storage_requires_mirrored`，界面提示改用镜像模式，而不是按盘符或路径字符串拒绝。
-- 镜像模式只把本机固定磁盘上的 activity root 作为可写工作区；所选 SMB 根仅承载可独立重开的
-  恢复副本。
-- WebDAV 和其他非 SMB 网络协议返回 `workspace.network_protocol_unsupported`，不会随 SMB 一起
-  放开。
+- 直接模式只允许 Windows 报告为 `Fixed` 的本机磁盘。
+- 镜像模式把本机固定磁盘上的 activity root 作为可写工作区，并在用户选择的目录中维护可独立重开的恢复副本。
+- `network`、`registeredCloud`、`userMarkedSync` 和 `removable` 共用同一目录副本实现。程序只负责读写所选目录，不判断目录是否已经上传到云端，也不管理设备热插拔或盘符变化。
+- 可移动盘盘符变化时，用户关闭工作区后重新选择包含同一 workspace UUID 的目录。
+- network provider 仍只接受 Windows 句柄探测为 SMB 的位置；WebDAV 等协议返回 `workspace.network_protocol_unsupported`。
 
-## 协议识别
+## 写入频次
 
-路径分类不匹配 `C:\\`、UNC 前缀、盘符或 `DavWWWRoot` 字符串。探针在实际文件句柄上调用
-Windows `GetFileInformationByHandleEx(FileRemoteProtocolInfo)`，仅将
-`WNNC_NET_SMB (0x00020000)` 识别为 SMB。无法识别的远端协议一律 fail-closed。
+- 工作区启动、本地快照完成、用户手动更新副本和冲突处理会立即唤醒复制器。
+- 没有事件时每 30 秒扫描一次所选目录，用于发现另一端写入的变化。
+- 目录不可用或写入失败时按 2、4、8 秒指数退避，最长 60 秒；本地工作不因此回滚。
 
-## 发布门禁
+该频次描述的是应用对所选目录的读写，不代表云同步软件的上传频次或远端完成状态。
 
-`contracts/v2/provider-support.json` 必须为 network provider 显式声明 `protocol: smb`。只有
-`creation: enabled` 时，Desktop 才向 Web 宣告 `workspace.storage.mirrored-create.v2`；当前矩阵已
-正式启用 SMB advisory 镜像。registered cloud、用户标记同步目录和 removable provider 仍保持
-阻断，不能借网络路径分类绕过。
+## 一致性与损坏防御
 
-SMB 镜像的有效性由实际数据路径和自动化回归约束，而不是由本地认证文件证明：
+目录副本面向断线、部分写入、并发发布和自然损坏：
 
-1. 仅接受句柄探测为 SMB 的 network provider；
-2. checkpoint 先完整写入临时文件、同步，再以 no-replace hard link 发布；
-3. 同一路径的不同并发内容最多一个发布成功，既有内容绝不覆盖；
-4. publication 使用规范载荷 SHA-256、父节点存在性和 checkpoint digest 发现自然损坏/部分写入；
-5. 断线只留下本地 pending queue，重连后幂等继续，不回滚已提交的本地工作；
-6. 多设备并发发布保留多个 DAG heads，进入显式冲突流程，不伪装成排他锁；
-7. 验证和恢复必须重新打开 SMB 根并读取完整恢复闭包，不能依赖 activity root 或本地 DAG 数据库。
+1. 内容先写入目标同目录临时文件并执行 `fsync`，再用不覆盖既有目标的原子发布完成提交；Windows 使用 no-replace `MoveFile`，不要求可移动盘支持硬链接。
+2. 同一路径的不同并发内容最多一个发布成功，既有不可变内容不会被覆盖。
+3. publication 使用规范载荷 SHA-256、父节点存在性和 checkpoint digest 检测截断、部分写入和自然损坏。
+4. 断线只留下本地 pending queue，目录恢复后幂等继续。
+5. 多设备并发发布保留多个 DAG heads 并进入显式冲突流程，不伪装成分布式排他锁。
+6. 验证和恢复会重新打开用户选择的目录并读取完整恢复闭包，不依赖 activity root 或本地 DAG 数据库。
 
-这些约束防御的是本地办公软件实际面对的断线、部分写入、并发发布和自然损坏。镜像内容本身不加密，
-也不把同机密钥包装成远端发布来源认证；需要机密性时应依赖受支持的工作区加密模式和组织存储策略。
+SHA-256 在这里用于完整性和内容寻址，不用于证明发布者身份。人为伪造、云账户安全、同步软件行为、设备防盗和数据保密不属于目录镜像的安全边界；界面和 RPC 状态只声明“目录副本已验证”，不得表达“云端已上传”或“远端已认证”。
+
+## 支持矩阵
+
+`contracts/v2/provider-support.json` 是创建能力的唯一矩阵。四类非固定位置均为 `enabled` + `advisory`；它们没有实验室证据字段，也没有 provider 专属运行时。实际创建仍会验证目录可写、空间充足和不可覆盖发布能力。

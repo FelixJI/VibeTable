@@ -26,8 +26,8 @@ import (
 )
 
 var (
-	ErrRemoteUnavailable       = errors.New("replica.remote_unavailable")
-	ErrRemoteIdentityInvalid   = errors.New("replica.remote_identity_invalid")
+	ErrRemoteUnavailable       = errors.New("replica.directory_unavailable")
+	ErrRemoteIdentityInvalid   = errors.New("replica.directory_identity_invalid")
 	ErrVerificationInvalid     = errors.New("replica.verification_invalid")
 	ErrReplicationUnavailable  = errors.New("replica.replication_unavailable")
 	ErrTakeoverModeInvalid     = errors.New("replica.takeover_mode_invalid")

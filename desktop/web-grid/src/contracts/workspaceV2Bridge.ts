@@ -322,7 +322,7 @@ export interface WorkspaceStorageProjection {
   readonly encryption: WorkspaceEncryptionMode;
   readonly keyVersion: number;
   readonly pendingSync: boolean;
-  readonly remoteVerified: boolean;
+  readonly replicaVerified: boolean;
 }
 
 export interface WorkspaceStorageLocation {
@@ -767,7 +767,7 @@ function parseStorage(value: unknown): WorkspaceStorageProjection {
   exact(source, [
     "location", "activityRoot", "mode", "provider", "health", "logicalSize",
     "physicalSize", "reclaimableSize", "encryption", "keyVersion",
-    "pendingSync", "remoteVerified",
+    "pendingSync", "replicaVerified",
   ], "storage projection");
   return {
     location: text(source.location, "storage location"),
@@ -781,7 +781,7 @@ function parseStorage(value: unknown): WorkspaceStorageProjection {
     encryption: oneOf(source.encryption, ["none", "convenient", "protected"], "encryption"),
     keyVersion: integer(source.keyVersion, "keyVersion"),
     pendingSync: bool(source.pendingSync, "pendingSync"),
-    remoteVerified: bool(source.remoteVerified, "remoteVerified"),
+    replicaVerified: bool(source.replicaVerified, "replicaVerified"),
   };
 }
 

@@ -29,9 +29,9 @@ public sealed class WorkspaceProviderPolicyTests
               "providers": {
                 "fixed": {"creation": "enabled", "coordinationStrength": "strong"},
                 "network": {"creation": "enabled", "coordinationStrength": "advisory", "protocol": "smb"},
-                "registeredCloud": {"creation": "blockedPendingLab", "coordinationStrength": "advisory"},
-                "userMarkedSync": {"creation": "blockedPendingLab", "coordinationStrength": "advisory"},
-                "removable": {"creation": "blockedPendingLab", "coordinationStrength": "advisory"}
+                "registeredCloud": {"creation": "enabled", "coordinationStrength": "advisory"},
+                "userMarkedSync": {"creation": "enabled", "coordinationStrength": "advisory"},
+                "removable": {"creation": "enabled", "coordinationStrength": "advisory"}
               }
             }
             """);
@@ -108,7 +108,7 @@ public sealed class WorkspaceProviderPolicyTests
     }
 
     [TestMethod]
-    public void NonFixedProviderIsBlockedByCurrentEvidencePolicy()
+    public void DisabledProviderIsBlockedByAvailabilityPolicy()
     {
         WorkspaceProviderPolicy policy = WorkspaceProviderPolicy.CreateForTests(
             new Dictionary<WorkspaceStorageKind, bool>
@@ -151,6 +151,36 @@ public sealed class WorkspaceProviderPolicyTests
             WorkspaceStorageMode.Mirrored);
 
         Assert.AreEqual(WorkspaceRemoteProtocol.Smb, result.RemoteProtocol);
+        Assert.IsTrue(policy.MirroredCreationEnabled);
+    }
+
+    [TestMethod]
+    [DataRow(WorkspaceStorageKind.RegisteredCloud)]
+    [DataRow(WorkspaceStorageKind.UserMarkedSync)]
+    [DataRow(WorkspaceStorageKind.Removable)]
+    public void EnabledDirectoryProviderUsesMirroredAdvisoryStorage(
+        WorkspaceStorageKind kind)
+    {
+        WorkspaceProviderPolicy policy = WorkspaceProviderPolicy.CreateForTests(
+            new Dictionary<WorkspaceStorageKind, bool>
+            {
+                [kind] = true,
+            },
+            (root, _, _) => new WorkspaceStorageObservation(
+                kind,
+                WorkspaceCoordinationStrength.Advisory,
+                1024,
+                false,
+                DateTimeOffset.UtcNow));
+
+        WorkspaceStorageObservation result = policy.ProbeAndEnsureSupported(
+            Path.GetTempPath(),
+            WorkspaceStorageMode.Mirrored);
+
+        Assert.AreEqual(kind, result.StorageKind);
+        Assert.AreEqual(
+            WorkspaceCoordinationStrength.Advisory,
+            result.CoordinationStrength);
         Assert.IsTrue(policy.MirroredCreationEnabled);
     }
 
@@ -198,7 +228,7 @@ public sealed class WorkspaceProviderPolicyTests
     }
 
     [TestMethod]
-    public void DirectNetworkTargetRequiresMirroredBeforeProviderEvidenceCheck()
+    public void DirectNetworkTargetRequiresMirroredBeforeProviderAvailabilityCheck()
     {
         WorkspaceProviderPolicy policy = WorkspaceProviderPolicy.CreateForTests(
             new Dictionary<WorkspaceStorageKind, bool>

@@ -296,7 +296,6 @@ def check_package(
                 "v1-frozen.sha256",
                 "negative-fixtures.json",
                 "provider-support.json",
-                "provider-lab-evidence.schema.json",
                 "compatibility-corpus.json",
                 "legacy-surface.json",
             ):

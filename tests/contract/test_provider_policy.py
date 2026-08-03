@@ -14,7 +14,7 @@ def _support(root: Path) -> Path:
     return target
 
 
-def test_repository_policy_enables_advisory_smb_without_attestation() -> None:
+def test_repository_policy_enables_directory_replica_providers_without_attestation() -> None:
     assert provider_policy_check.check(provider_policy_check.PROJECT_ROOT) == []
 
 
@@ -27,23 +27,34 @@ def test_network_provider_requires_explicit_smb_protocol(tmp_path: Path) -> None
     assert provider_policy_check.check(tmp_path) == ["network: protocol must be smb"]
 
 
-def test_network_provider_cannot_restore_local_attestation_gate(tmp_path: Path) -> None:
+def test_provider_matrix_cannot_restore_local_attestation_gate(tmp_path: Path) -> None:
     path = _support(tmp_path)
     support = json.loads(path.read_text(encoding="utf-8"))
     support["providers"]["network"]["requiredEvidence"] = "hardware.smb-v1"
     path.write_text(json.dumps(support), encoding="utf-8")
 
     assert provider_policy_check.check(tmp_path) == [
-        "network provider must not depend on local attestation evidence"
+        "network provider must not define attestation evidence"
     ]
 
 
-def test_unvalidated_sync_provider_remains_blocked(tmp_path: Path) -> None:
+def test_directory_replica_provider_must_remain_enabled(tmp_path: Path) -> None:
     path = _support(tmp_path)
     support = json.loads(path.read_text(encoding="utf-8"))
-    support["providers"]["registeredCloud"]["creation"] = "enabled"
+    support["providers"]["registeredCloud"]["creation"] = "disabled"
     path.write_text(json.dumps(support), encoding="utf-8")
 
     assert provider_policy_check.check(tmp_path) == [
-        "registeredCloud: provider must remain blockedPendingLab"
+        "registeredCloud: directory replica provider must be enabled"
+    ]
+
+
+def test_directory_replica_provider_cannot_add_attestation_field(tmp_path: Path) -> None:
+    path = _support(tmp_path)
+    support = json.loads(path.read_text(encoding="utf-8"))
+    support["providers"]["removable"]["requiredEvidence"] = "hardware.removable-v1"
+    path.write_text(json.dumps(support), encoding="utf-8")
+
+    assert provider_policy_check.check(tmp_path) == [
+        "removable: provider must not define attestation evidence"
     ]

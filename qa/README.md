@@ -87,11 +87,11 @@ empty” 清理诊断。出现 `WARNING: DATA RACE`、panic、业务断言或第
 CycloneDX SBOM，以及安装目录与可变数据隔离策略。发布布局禁止旧提供方运行
 时、Node/npm 或 `node_modules`。
 
-provider gate 校验打包后的支持矩阵与源码一致。SMB network provider 是正式支持的
-advisory 镜像：必须显式标记 `protocol: smb`，并依赖不可变 no-replace 发布、独立 reopen、
-checkpoint SHA-256 和冲突 heads 防御断线、部分写入、并发发布与自然损坏。它不依赖与明文
-应用一起保存的本地认证密钥。registered cloud、用户标记同步目录和 removable provider
-仍保持 `blockedPendingLab`，不得借 SMB 支持顺带放开。
+provider gate 校验打包后的支持矩阵与源码一致。SMB network、registered cloud、用户标记同步
+目录和 removable provider 都使用同一 advisory 目录副本实现；程序只验证并读写用户选择的
+目录，不推断云端上传状态或设备生命周期。实现依赖不可变 no-replace 发布、独立 reopen、
+checkpoint SHA-256 和冲突 heads 防御断线、部分写入、并发发布与自然损坏，不把摘要表达为
+发布者认证。
 
 正式安装器生成与签名、Windows SmartScreen/杀毒软件验证、全新用户安装/升级/
 卸载 UI、跨版本真实数据恢复和断电/磁盘满注入仍需在发布环境保留独立证据。

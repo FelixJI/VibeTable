@@ -171,7 +171,7 @@ function fakeBridge() {
           encryption: "convenient",
           keyVersion: 1,
           pendingSync: false,
-          remoteVerified: true,
+          replicaVerified: true,
         },
       };
     } else {
@@ -454,7 +454,7 @@ describe("workspace v2 production host adapter", () => {
         encryption: "convenient",
         keyVersion: 1,
         pendingSync: false,
-        remoteVerified: true,
+        replicaVerified: true,
       },
     });
     const event = (
@@ -488,13 +488,13 @@ describe("workspace v2 production host adapter", () => {
     expect(useWorkspaceProtectionStore().storage).toMatchObject({
       health: "attention",
       pendingSync: true,
-      remoteVerified: false,
+      replicaVerified: false,
     });
     fake.handlers.get("workspace.v2.event")!(event(2, "replicated", false));
     expect(useWorkspaceProtectionStore().storage).toMatchObject({
       health: "healthy",
       pendingSync: false,
-      remoteVerified: true,
+      replicaVerified: true,
     });
   });
 

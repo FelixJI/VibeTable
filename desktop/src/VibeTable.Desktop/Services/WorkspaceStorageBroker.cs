@@ -1067,7 +1067,7 @@ public sealed class WorkspaceStorageBroker
             keyVersion = manifest.EncryptionMode
                 == WorkspaceEncryptionMode.None ? 0 : 1,
             pendingSync = workspace.PendingSync,
-            remoteVerified =
+            replicaVerified =
                 manifest.StorageMode == WorkspaceStorageMode.Direct ||
                 (!workspace.PendingSync &&
                  workspace.LastSyncAt is not null),
