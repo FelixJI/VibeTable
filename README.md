@@ -106,11 +106,9 @@ uv run python scripts/build_next.py --release
 $version = (uv run python scripts/release.py --current).Trim()
 uv run python qa/package_check.py "dist/VibeTable.Next-v$version-win-x64"
 
-# 在干净工作树提升版本、提交、打 tag 并推送
-uv run python scripts/release.py --bump patch --push
 ```
 
-`.github/workflows/ci.yml` 在 Windows runner 上分别验证 Python/契约、Web、插件 SDK、Go sidecar 和 Windows/.NET。`.github/workflows/release.yml` 只响应与仓库版本一致的 `vX.Y.Z` tag，在 Windows 上重新验证并构建 ZIP、SHA-256 与包内 SBOM，然后发布 GitHub Release。
+`.github/workflows/ci.yml` 在 PR 与 `main` push 上执行项目完整质量门禁、真实发布构建和 smoke；只有 `main` CI 会上传与 source SHA 绑定的 `release-candidate`。需要发版时，在 GitHub Actions 手动运行 `.github/workflows/cd.yml` 并选择 `patch`、`minor` 或 `major`：它会创建或刷新唯一的 `automation/release` 版本/changelog PR；该 PR 合并后，CD 直接复用对应 `main` CI 候选，完成 attestation 并发布正式、非草稿 GitHub Release，无需额外确认。不要手工提交版本、打正式 tag 或创建 Release。
 
 已安装的 Windows x64 便携包可在“设置 → 关于 → 软件更新”手动读取 GitHub Releases、查看当前版本到目标版本之间的更新日志，并选择 GitHub 直连、`ghproxy.net`、`gh-proxy.com` 或自定义 HTTPS 下载通道。ZIP 与同名 `.sha256` 文件始终使用同一通道，校验文件摘要还会与 GitHub API 提供的 digest 交叉核对；更新事务不会触碰 `%LOCALAPPDATA%\VibeTable` 用户数据。详细安全边界见 [自我更新能力说明](docs/self-update-assessment.md)。
 
