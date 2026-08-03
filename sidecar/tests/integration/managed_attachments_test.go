@@ -57,7 +57,6 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	failAfterMetadata := false
 	failAfterVersionArchive := false
 	manager, err := attachments.New(
-		[]byte(strings.Repeat("b", 32)),
 		attachments.WithClock(func() time.Time { return now }),
 		attachments.WithFaultInjector(func(point string) error {
 			if failAfterMetadata && point == "after_metadata" {
@@ -373,10 +372,10 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 		app,
 		kernel,
 		mutation.MetadataSchemaSource{},
-		[]byte(strings.Repeat("h", 32)),
+
 		audit.WithClock(func() time.Time { return now }),
-		audit.WithAttachmentHistory(manager),
-	)
+		audit.WithAttachmentHistory(manager))
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -710,9 +709,9 @@ func TestManagedAttachmentOpenRejectsTamperedProtectedOriginalAndThumbnail(
 	}
 	now := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
 	manager, err := attachments.New(
-		[]byte(strings.Repeat("p", 32)),
-		attachments.WithClock(func() time.Time { return now }),
-	)
+
+		attachments.WithClock(func() time.Time { return now }))
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -913,7 +912,7 @@ func assertAttachmentOpenError(
 }
 
 func TestManagedAttachmentsRejectsDetectedMIMEAndLimits(t *testing.T) {
-	manager, err := attachments.New([]byte(strings.Repeat("c", 32)))
+	manager, err := attachments.New()
 	if err != nil {
 		t.Fatal(err)
 	}

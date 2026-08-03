@@ -90,7 +90,6 @@ func (authority *productionAuthority) ApplyReplicaClaim(
 type productionRemote struct {
 	mu            sync.Mutex
 	identity      RemoteIdentity
-	store         LeaseCASStore
 	identityErr   error
 	verifyInvalid bool
 	replicateErr  error
@@ -106,10 +105,6 @@ func (remote *productionRemote) VerifyIdentity(
 		return RemoteIdentity{}, remote.identityErr
 	}
 	return remote.identity, nil
-}
-
-func (remote *productionRemote) LeaseStore() LeaseCASStore {
-	return remote.store
 }
 
 func (remote *productionRemote) ReplicateCheckpoint(
@@ -235,15 +230,13 @@ func productionManagerFixture(
 	root := strictRecord.ObjectMap["database"]
 	directory := t.TempDir()
 	options := ManagerOptions{
-		WorkspaceID:     workspaceID,
-		DeviceID:        "33333333-3333-4333-8333-333333333333",
-		QueuePath:       filepath.Join(directory, "queue.db"),
-		StatePath:       filepath.Join(directory, "state.db"),
-		PublicationPath: filepath.Join(directory, "publications.db"),
-		PublicationKey:  publicationKey(),
-		Remote:          remote,
-		Catalog:         productionCatalog{records: []snapshot.Record{strictRecord}},
-		Repository:      repository,
+		WorkspaceID: workspaceID,
+		DeviceID:    "33333333-3333-4333-8333-333333333333",
+		QueuePath:   filepath.Join(directory, "queue.db"),
+		StatePath:   filepath.Join(directory, "state.db"),
+		Remote:      remote,
+		Catalog:     productionCatalog{records: []snapshot.Record{strictRecord}},
+		Repository:  repository,
 		Authority: &productionAuthority{
 			value: AuthorityState{
 				WorkspaceID: workspaceID,
@@ -272,128 +265,6 @@ func incomingSnapshot(
 		strictSnapshotDatabase(t, "incoming durable root"),
 		nil,
 	)
-}
-
-func TestProductionStrongSyncPersistsVerifiedReceiptAndReleasesPin(t *testing.T) {
-	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
-	store := newMemoryLeaseStore()
-	lease, err := NewStrongLeaseWithStore(store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lease.now = func() time.Time { return now }
-	claim, err := lease.Acquire(Claim{
-		WorkspaceID: "11111111-1111-4111-8111-111111111111",
-		DeviceID:    "33333333-3333-4333-8333-333333333333",
-		ClaimID:     "22222222-2222-4222-8222-222222222222",
-		Nonce:       "nonce",
-		Strength:    Strong,
-		Mode:        Writable,
-		ExpiresAt:   now.Add(time.Hour),
-	}, false)
-	if err != nil || claim.FenceEpoch != 1 {
-		t.Fatal(err)
-	}
-	remote := &productionRemote{
-		identity: RemoteIdentity{
-			WorkspaceID: claim.WorkspaceID,
-			ReplicaID:   "replica-a",
-			Strength:    Strong,
-		},
-		store: store,
-	}
-	options, repository, _ := productionManagerFixture(
-		t, remote, now,
-	)
-	manager, err := OpenManager(context.Background(), options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.Synchronize(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	status, err := manager.Status(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.SyncState != "replicated" ||
-		status.PendingSync ||
-		status.LastVerifiedAt == nil {
-		t.Fatalf("status = %#v", status)
-	}
-	syncState, err := manager.SnapshotSyncState(
-		context.Background(),
-		options.Catalog.(productionCatalog).records[0],
-	)
-	if err != nil || syncState != "replicated" {
-		t.Fatalf("snapshot sync state = %q, %v", syncState, err)
-	}
-	pins, err := repository.ListPins(context.Background())
-	if err != nil || len(pins) != 0 {
-		t.Fatalf("pins=%#v err=%v", pins, err)
-	}
-	if err := manager.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := OpenManager(context.Background(), options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	if err := reopened.Synchronize(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if remote.replications != 1 {
-		t.Fatalf("restart duplicated replication: %d", remote.replications)
-	}
-}
-
-func TestProductionStrongMirrorPausesWhenIntegrityIsCorrupt(t *testing.T) {
-	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
-	store := newMemoryLeaseStore()
-	lease, err := NewStrongLeaseWithStore(store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lease.now = func() time.Time { return now }
-	claim, err := lease.Acquire(Claim{
-		WorkspaceID: "11111111-1111-4111-8111-111111111111",
-		DeviceID:    "33333333-3333-4333-8333-333333333333",
-		ClaimID:     "22222222-2222-4222-8222-222222222222",
-		Nonce:       "nonce",
-		Strength:    Strong,
-		Mode:        Writable,
-		ExpiresAt:   now.Add(time.Hour),
-	}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	remote := &productionRemote{
-		identity: RemoteIdentity{
-			WorkspaceID: claim.WorkspaceID,
-			ReplicaID:   "replica-a",
-			Strength:    Strong,
-		},
-		store: store,
-	}
-	options, _, _ := productionManagerFixture(t, remote, now)
-	integrityErr := errors.New("retention.integrity_corrupt")
-	options.DestructiveSafe = func(context.Context) error {
-		return integrityErr
-	}
-	manager, err := OpenManager(context.Background(), options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer manager.Close()
-	if err := manager.Synchronize(
-		context.Background(),
-	); !errors.Is(err, integrityErr) {
-		t.Fatalf("Synchronize error = %v", err)
-	}
-	if remote.replications != 0 {
-		t.Fatalf("corrupt mirror replicated %d checkpoints", remote.replications)
-	}
 }
 
 func TestQueueSynchronizePersistsWithoutRunningRemoteIO(t *testing.T) {
@@ -496,7 +367,7 @@ func TestReadPersistedTakeoverClaimRestoresOfflineModeAndRejectsTampering(
 		t.Fatal(err)
 	}
 	got, found, err := ReadPersistedTakeoverClaim(ctx, path)
-	if err != nil || !found || !sameLeaseIdentity(got, claim) {
+	if err != nil || !found || !sameClaimIdentity(got, claim) {
 		t.Fatalf("persisted claim = %#v, %t, %v", got, found, err)
 	}
 
@@ -523,28 +394,12 @@ func TestReadPersistedTakeoverClaimRestoresOfflineModeAndRejectsTampering(
 
 func TestProductionSyncFailsClosedOnInvalidIndependentVerification(t *testing.T) {
 	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
-	store := newMemoryLeaseStore()
-	lease, _ := NewStrongLeaseWithStore(store)
-	lease.now = func() time.Time { return now }
-	_, err := lease.Acquire(Claim{
-		WorkspaceID: "11111111-1111-4111-8111-111111111111",
-		DeviceID:    "33333333-3333-4333-8333-333333333333",
-		ClaimID:     "22222222-2222-4222-8222-222222222222",
-		Nonce:       "nonce",
-		Strength:    Strong,
-		Mode:        Writable,
-		ExpiresAt:   now.Add(time.Hour),
-	}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
 	remote := &productionRemote{
 		identity: RemoteIdentity{
 			WorkspaceID: "11111111-1111-4111-8111-111111111111",
 			ReplicaID:   "replica-a",
-			Strength:    Strong,
+			Strength:    Advisory,
 		},
-		store:         store,
 		verifyInvalid: true,
 	}
 	options, repository, _ := productionManagerFixture(t, remote, now)
@@ -595,28 +450,17 @@ func TestProductionManagerRejectsUnverifiedOrMismatchedRemote(t *testing.T) {
 
 func TestProductionSyncPersistsVerifiedThreeWayCandidatesAndPinsRecovery(t *testing.T) {
 	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
-	store := newMemoryLeaseStore()
-	lease, _ := NewStrongLeaseWithStore(store)
-	lease.now = func() time.Time { return now }
-	claim, err := lease.Acquire(Claim{
+	claim := Claim{
 		WorkspaceID: "11111111-1111-4111-8111-111111111111",
-		DeviceID:    "33333333-3333-4333-8333-333333333333",
 		ClaimID:     "22222222-2222-4222-8222-222222222222",
-		Nonce:       "nonce",
-		Strength:    Strong,
-		Mode:        Writable,
-		ExpiresAt:   now.Add(time.Hour),
-	}, false)
-	if err != nil {
-		t.Fatal(err)
+		FenceEpoch:  1,
 	}
 	remote := &productionRemote{
 		identity: RemoteIdentity{
 			WorkspaceID: claim.WorkspaceID,
 			ReplicaID:   "replica-a",
-			Strength:    Strong,
+			Strength:    Advisory,
 		},
-		store: store,
 	}
 	options, repository, localRoot := productionManagerFixture(
 		t, remote, now,
@@ -758,114 +602,6 @@ func TestProductionSyncPersistsVerifiedThreeWayCandidatesAndPinsRecovery(t *test
 		context.Background(), conflictID,
 	); err != nil {
 		t.Fatalf("candidate lost after restart: %v", err)
-	}
-}
-
-func TestProductionTakeoverJournalRecoversEveryRemoteCASKillWindow(t *testing.T) {
-	for _, afterRemoteCAS := range []bool{false, true} {
-		t.Run(map[bool]string{
-			false: "before-remote-cas",
-			true:  "after-remote-cas",
-		}[afterRemoteCAS], func(t *testing.T) {
-			issued := time.Date(
-				2026, 7, 28, 0, 0, 0, 0, time.UTC,
-			)
-			now := issued.Add(2 * time.Minute)
-			store := newMemoryLeaseStore()
-			lease, _ := NewStrongLeaseWithStore(store)
-			lease.now = func() time.Time { return issued }
-			oldClaim, err := lease.Acquire(Claim{
-				WorkspaceID: "11111111-1111-4111-8111-111111111111",
-				DeviceID:    "33333333-3333-4333-8333-333333333333",
-				ClaimID:     "22222222-2222-4222-8222-222222222222",
-				Nonce:       "old",
-				Strength:    Strong,
-				Mode:        Writable,
-				ExpiresAt:   issued.Add(time.Minute),
-			}, false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			remote := &productionRemote{
-				identity: RemoteIdentity{
-					WorkspaceID: oldClaim.WorkspaceID,
-					ReplicaID:   "replica-a",
-					Strength:    Strong,
-				},
-				store: store,
-			}
-			options, _, _ := productionManagerFixture(
-				t, remote, now,
-			)
-			next := Claim{
-				WorkspaceID:     oldClaim.WorkspaceID,
-				DeviceID:        "33333333-3333-4333-8333-333333333333",
-				ClaimID:         "88888888-8888-4888-8888-888888888888",
-				FenceEpoch:      oldClaim.FenceEpoch + 1,
-				Nonce:           "next",
-				Strength:        Strong,
-				Mode:            Writable,
-				IssuedAt:        now,
-				HeartbeatAt:     now,
-				ExpiresAt:       now.Add(5 * time.Minute),
-				PreviousClaimID: oldClaim.ClaimID,
-			}
-			state, err := openProductionState(options.StatePath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			previous := options.Authority.CurrentAuthority()
-			if err := state.prepareTakeover(
-				context.Background(),
-				previous,
-				next,
-				protocolv2.OperationReceipt{},
-			); err != nil {
-				t.Fatal(err)
-			}
-			if err := state.close(); err != nil {
-				t.Fatal(err)
-			}
-			if afterRemoteCAS {
-				record, found, err := store.Load(
-					context.Background(), oldClaim.WorkspaceID,
-				)
-				if err != nil || !found {
-					t.Fatal(err)
-				}
-				if _, err := store.CompareAndSwap(
-					context.Background(),
-					oldClaim.WorkspaceID,
-					record.Revision,
-					true,
-					next,
-				); err != nil {
-					t.Fatal(err)
-				}
-			}
-			manager, err := OpenManager(
-				context.Background(), options,
-			)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer manager.Close()
-			got := options.Authority.CurrentAuthority()
-			if got.FenceEpoch != next.FenceEpoch ||
-				got.ClaimID != next.ClaimID {
-				t.Fatalf("authority not recovered: %#v", got)
-			}
-			record, found, err := store.Load(
-				context.Background(), oldClaim.WorkspaceID,
-			)
-			if err != nil || !found ||
-				!sameLeaseIdentity(record.Claim, next) {
-				t.Fatalf(
-					"remote claim not recovered: %#v %v",
-					record, err,
-				)
-			}
-		})
 	}
 }
 

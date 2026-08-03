@@ -1,6 +1,6 @@
 {
   "contractVersion": "2.0",
-  "policyRevision": 2,
+  "policyRevision": 3,
   "evidenceContract": "provider-lab-evidence.schema.json",
   "evidenceDirectory": "qa/provider-evidence",
   "providers": {
@@ -14,10 +14,9 @@
       ]
     },
     "network": {
-      "creation": "blockedPendingLab",
+      "creation": "enabled",
       "coordinationStrength": "advisory",
-      "protocol": "smb",
-      "requiredEvidence": "hardware.smb-v1"
+      "protocol": "smb"
     },
     "registeredCloud": {
       "creation": "blockedPendingLab",

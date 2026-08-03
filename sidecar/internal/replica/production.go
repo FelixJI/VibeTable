@@ -81,7 +81,6 @@ type VerificationReceipt struct {
 // that target before attesting that every requested root is readable.
 type VerifiedRemote interface {
 	VerifyIdentity(context.Context) (RemoteIdentity, error)
-	LeaseStore() LeaseCASStore
 	ReplicateCheckpoint(context.Context, Checkpoint) (ReplicationReceipt, error)
 	ReopenAndVerifyRoots(context.Context, Checkpoint, ReplicationReceipt) (VerificationReceipt, error)
 	AppendPublication(context.Context, Publication) error
@@ -155,8 +154,6 @@ type ManagerOptions struct {
 	DeviceID            string
 	QueuePath           string
 	StatePath           string
-	PublicationPath     string
-	PublicationKey      []byte
 	Remote              VerifiedRemote
 	Catalog             SnapshotCatalog
 	Repository          objectrepo.Repository
@@ -164,7 +161,6 @@ type ManagerOptions struct {
 	ProvisionalAcceptor ProvisionalPublicationAcceptor
 	Conflicts           ConflictSink
 	DependencyScanner   ConflictDependencyScanner
-	DestructiveSafe     func(context.Context) error
 	Now                 func() time.Time
 }
 
@@ -188,10 +184,8 @@ type Manager struct {
 	conflicts           ConflictSink
 	conflictRemote      ConflictRemote
 	dependencyScanner   ConflictDependencyScanner
-	destructiveSafe     func(context.Context) error
 	queue               *Queue
 	state               *productionState
-	strong              *StrongLease
 	advisory            *AdvisoryDAG
 	now                 func() time.Time
 }
@@ -205,18 +199,13 @@ func OpenManager(ctx context.Context, options ManagerOptions) (_ *Manager, err e
 		options.Authority == nil {
 		return nil, ErrReplicationUnavailable
 	}
-	if receiver, ok := options.Remote.(interface {
-		setPublicationKey([]byte)
-	}); ok {
-		receiver.setPublicationKey(options.PublicationKey)
-	}
 	identity, err := options.Remote.VerifyIdentity(ctx)
 	if err != nil {
 		return nil, errors.Join(ErrReplicationUnavailable, err)
 	}
 	if identity.WorkspaceID != options.WorkspaceID ||
 		strings.TrimSpace(identity.ReplicaID) == "" ||
-		(identity.Strength != Strong && identity.Strength != Advisory) {
+		identity.Strength != Advisory {
 		return nil, ErrRemoteIdentityInvalid
 	}
 	queue, err := OpenPersistentQueue(options.QueuePath)
@@ -239,7 +228,6 @@ func OpenManager(ctx context.Context, options ManagerOptions) (_ *Manager, err e
 		provisionalAcceptor: options.ProvisionalAcceptor,
 		conflicts:           options.Conflicts,
 		dependencyScanner:   options.DependencyScanner,
-		destructiveSafe:     options.DestructiveSafe,
 		queue:               queue,
 		state:               state,
 		now:                 options.Now,
@@ -252,23 +240,7 @@ func OpenManager(ctx context.Context, options ManagerOptions) (_ *Manager, err e
 			_ = manager.Close()
 		}
 	}()
-	if identity.Strength == Strong {
-		store := options.Remote.LeaseStore()
-		if store == nil {
-			return nil, ErrReplicationUnavailable
-		}
-		manager.strong, err = NewStrongLeaseWithStore(store)
-	} else {
-		if options.Remote.LeaseStore() != nil ||
-			len(options.PublicationKey) < minimumPublicationKeyBytes {
-			return nil, ErrReplicationUnavailable
-		}
-		manager.advisory, err = OpenPersistentAdvisoryDAG(
-			options.PublicationPath,
-			options.WorkspaceID,
-			options.PublicationKey,
-		)
-	}
+	manager.advisory, err = NewAdvisoryDAG(options.WorkspaceID)
 	if candidate, ok := options.Remote.(ConflictRemote); ok &&
 		options.Conflicts != nil {
 		manager.conflictRemote = candidate
@@ -344,9 +316,6 @@ func (manager *Manager) Synchronize(ctx context.Context) error {
 	if _, err := manager.verifyIdentity(ctx); err != nil {
 		return err
 	}
-	if err := manager.ensureDestructiveSafe(ctx); err != nil {
-		return err
-	}
 	if err := manager.queuePublishedSnapshots(ctx); err != nil {
 		return err
 	}
@@ -365,9 +334,6 @@ func (manager *Manager) QueuePublishedSnapshots(ctx context.Context) error {
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if err := manager.ensureDestructiveSafe(ctx); err != nil {
-		return err
-	}
 	return manager.queuePublishedSnapshots(ctx)
 }
 
@@ -850,9 +816,6 @@ func (manager *Manager) QueueSynchronize(
 		len(receipt.Result) == 0 {
 		return errors.New("replica.operation_receipt_invalid")
 	}
-	if err := manager.ensureDestructiveSafe(ctx); err != nil {
-		return err
-	}
 	if err := manager.state.storeOperationReceipt(ctx, receipt); err != nil {
 		return err
 	}
@@ -878,21 +841,6 @@ func (manager *Manager) Sync(ctx context.Context, task SyncTask) error {
 	authority := manager.authority.CurrentAuthority()
 	if authority.WorkspaceID != manager.workspace {
 		return ErrWorkspaceMismatch
-	}
-	if identity.Strength == Strong {
-		if err := manager.ensureDestructiveSafe(ctx); err != nil {
-			return err
-		}
-		current, found, err := manager.strong.store.Load(ctx, manager.workspace)
-		if err != nil {
-			return err
-		}
-		if !found ||
-			current.Claim.FenceEpoch != authority.FenceEpoch ||
-			current.Claim.ClaimID != authority.ClaimID ||
-			current.Claim.ExpiresAt.Before(manager.now().UTC()) {
-			return ErrStaleClaim
-		}
 	}
 	checkpoint, err := makeCheckpoint(
 		ctx,
@@ -921,12 +869,10 @@ func (manager *Manager) Sync(ctx context.Context, task SyncTask) error {
 	); err != nil {
 		return err
 	}
-	if identity.Strength == Advisory {
-		if err := manager.publishAdvisory(
-			ctx, record, authority, replication,
-		); err != nil {
-			return err
-		}
+	if err := manager.publishAdvisory(
+		ctx, record, authority, replication,
+	); err != nil {
+		return err
 	}
 	if err := manager.state.markVerified(
 		context.WithoutCancel(ctx),
@@ -1005,7 +951,7 @@ func (manager *Manager) forceTakeover(
 			ClaimID:         uuid.NewString(),
 			FenceEpoch:      current.FenceEpoch + 1,
 			Nonce:           uuid.NewString(),
-			Strength:        manager.identity.Strength,
+			Strength:        Advisory,
 			Mode:            Provisional,
 			IssuedAt:        now,
 			HeartbeatAt:     now,
@@ -1034,52 +980,7 @@ func (manager *Manager) forceTakeover(
 	if identity != manager.identity {
 		return Claim{}, ErrRemoteIdentityInvalid
 	}
-	if identity.Strength != Strong {
-		return Claim{}, ErrTakeoverUnsafe
-	}
-	if err := manager.ensureDestructiveSafe(ctx); err != nil {
-		return Claim{}, err
-	}
-	next := Claim{
-		WorkspaceID:     manager.workspace,
-		DeviceID:        manager.device,
-		ClaimID:         uuid.NewString(),
-		Nonce:           uuid.NewString(),
-		Strength:        Strong,
-		Mode:            mode,
-		ExpiresAt:       now.Add(5 * time.Minute),
-		PreviousClaimID: current.ClaimID,
-	}
-	// Persist the exact normalized claim before the remote CAS. This closes
-	// the remote-acquired/local-journal-missing kill window.
-	next.IssuedAt = now
-	next.HeartbeatAt = now
-	next.FenceEpoch = current.FenceEpoch + 1
-	receipt, err := buildTakeoverReceipt(build, next)
-	if err != nil {
-		return Claim{}, err
-	}
-	if err := manager.state.prepareTakeover(
-		ctx, current, next, receipt,
-	); err != nil {
-		return Claim{}, err
-	}
-	claim, err := manager.acquireExactStrong(ctx, current, next)
-	if err != nil {
-		return Claim{}, err
-	}
-	if claim.FenceEpoch != current.FenceEpoch+1 {
-		return Claim{}, ErrStaleClaim
-	}
-	if err := manager.authority.ApplyReplicaClaim(ctx, claim); err != nil {
-		return Claim{}, err
-	}
-	if err := manager.state.completeTakeover(
-		context.WithoutCancel(ctx), claim,
-	); err != nil {
-		return Claim{}, err
-	}
-	return claim, nil
+	return Claim{}, ErrTakeoverUnsafe
 }
 
 func buildTakeoverReceipt(
@@ -1104,43 +1005,6 @@ func buildTakeoverReceipt(
 	return receipt, nil
 }
 
-func (manager *Manager) acquireExactStrong(
-	ctx context.Context,
-	current AuthorityState,
-	next Claim,
-) (Claim, error) {
-	record, found, err := manager.strong.store.Load(ctx, manager.workspace)
-	if err != nil {
-		return Claim{}, err
-	}
-	if !found ||
-		record.Claim.FenceEpoch != current.FenceEpoch ||
-		record.Claim.ClaimID != current.ClaimID {
-		if found && sameLeaseIdentity(record.Claim, next) {
-			return record.Claim, nil
-		}
-		return Claim{}, ErrStaleClaim
-	}
-	if record.Claim.ExpiresAt.After(manager.now().UTC()) {
-		return Claim{}, ErrTakeoverUnsafe
-	}
-	updated, err := manager.strong.store.CompareAndSwap(
-		ctx,
-		manager.workspace,
-		record.Revision,
-		true,
-		next,
-	)
-	if err != nil {
-		return Claim{}, err
-	}
-	if !sameLeaseIdentity(updated.Claim, next) ||
-		updated.Revision != record.Revision+1 {
-		return Claim{}, ErrCASConflict
-	}
-	return updated.Claim, nil
-}
-
 func (manager *Manager) recoverTakeover(ctx context.Context) error {
 	previous, claim, state, found, err :=
 		manager.state.loadTakeover(ctx)
@@ -1158,20 +1022,8 @@ func (manager *Manager) recoverTakeover(ctx context.Context) error {
 	if current != previous {
 		return ErrStaleClaim
 	}
-	if claim.Strength == Strong {
-		record, remoteFound, err := manager.strong.store.Load(
-			ctx, manager.workspace,
-		)
-		if err != nil {
-			return err
-		}
-		if !remoteFound || !sameLeaseIdentity(record.Claim, claim) {
-			if _, err := manager.acquireExactStrong(
-				ctx, previous, claim,
-			); err != nil {
-				return err
-			}
-		}
+	if claim.Strength != Advisory || claim.Mode != Provisional {
+		return ErrStaleClaim
 	}
 	if err := manager.authority.ApplyReplicaClaim(ctx, claim); err != nil {
 		return err
@@ -1239,15 +1091,6 @@ func (manager *Manager) SnapshotSyncState(
 	return "localOnly", nil
 }
 
-func (manager *Manager) ensureDestructiveSafe(ctx context.Context) error {
-	if manager == nil ||
-		manager.identity.Strength != Strong ||
-		manager.destructiveSafe == nil {
-		return nil
-	}
-	return manager.destructiveSafe(ctx)
-}
-
 func (manager *Manager) cleanupVerifiedPins(ctx context.Context) error {
 	pending, err := manager.state.verifiedPendingPins(ctx)
 	if err != nil {
@@ -1283,13 +1126,7 @@ func (manager *Manager) Close() error {
 		manager.queue = nil
 	}
 	if manager.advisory != nil {
-		errs = append(errs, manager.advisory.Close())
 		manager.advisory = nil
-	}
-	// A strong lease store is owned by the remote adapter, not Manager.
-	if manager.strong != nil {
-		manager.strong.store = nil
-		manager.strong = nil
 	}
 	if manager.state != nil {
 		errs = append(errs, manager.state.close())
@@ -1369,7 +1206,7 @@ func (manager *Manager) publishAdvisory(
 		CatalogRevision:         record.CatalogRevision,
 		CheckpointID:            replication.CheckpointID,
 		CreatedAt:               now,
-	}, manager.advisory.macKey)
+	})
 	if err != nil {
 		return err
 	}
@@ -1398,7 +1235,7 @@ func (manager *Manager) publishAdvisory(
 }
 
 func (manager *Manager) refreshAdvisory(ctx context.Context) error {
-	if manager == nil || manager.identity.Strength != Advisory {
+	if manager == nil {
 		return nil
 	}
 	publications, err := manager.remote.ListPublications(
@@ -1414,12 +1251,16 @@ func (manager *Manager) refreshAdvisory(ctx context.Context) error {
 		}
 		return publications[i].CreatedAt.Before(publications[j].CreatedAt)
 	})
+	refreshed, err := NewAdvisoryDAG(manager.workspace)
+	if err != nil {
+		return err
+	}
 	pending := append([]Publication(nil), publications...)
 	for len(pending) > 0 {
 		progress := false
 		next := pending[:0]
 		for _, publication := range pending {
-			err := manager.advisory.PublishContext(ctx, publication)
+			err := refreshed.PublishContext(ctx, publication)
 			if err == nil || errors.Is(err, ErrPublicationExists) {
 				progress = true
 				continue
@@ -1435,6 +1276,7 @@ func (manager *Manager) refreshAdvisory(ctx context.Context) error {
 		}
 		pending = next
 	}
+	manager.advisory = refreshed
 	return nil
 }
 
@@ -2120,7 +1962,7 @@ func (state *productionState) prepareTakeover(
 	}
 	if !found || existingState != "prepared" ||
 		existingPrevious != previous ||
-		!sameLeaseIdentity(existingClaim, claim) {
+		!sameClaimIdentity(existingClaim, claim) {
 		return ErrStaleClaim
 	}
 	return nil

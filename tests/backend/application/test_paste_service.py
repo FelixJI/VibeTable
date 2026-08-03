@@ -392,10 +392,13 @@ def test_token_store_rejects_tampering_and_expiry() -> None:
         store.resolve(token.token)
     assert expired.value.code == "paste_token_expired"
 
-    raw, _, _ = token.token.rpartition(".")
     with pytest.raises(PasteError) as tampered:
-        store.resolve(f"{raw}.{'0' * 64}")
-    assert tampered.value.code == "paste_token_invalid"
+        store.resolve(token.token[:-1] + ("A" if token.token[-1] != "A" else "B"))
+    assert tampered.value.code == "paste_token_unknown"
+
+    with pytest.raises(PasteError) as malformed:
+        store.resolve("pst1.not+url-safe")
+    assert malformed.value.code == "paste_token_invalid"
 
 
 @pytest.mark.asyncio

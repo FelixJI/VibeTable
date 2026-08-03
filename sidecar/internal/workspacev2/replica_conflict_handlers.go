@@ -106,11 +106,7 @@ func openProductionReplicaConflict(
 		QueuePath: joinCoordination(
 			paths, "replica-queue.db",
 		),
-		StatePath: replicaStatePath,
-		PublicationPath: joinCoordination(
-			paths, "replica-publications.db",
-		),
-		PublicationKey:      append([]byte(nil), options.ReplicaPublicationKey...),
+		StatePath:           replicaStatePath,
 		Remote:              options.ReplicaRemote,
 		Catalog:             runtime.catalog,
 		Repository:          runtime.repository,
@@ -118,9 +114,6 @@ func openProductionReplicaConflict(
 		ProvisionalAcceptor: runtimeProvisionalAcceptor{runtime: runtime},
 		Conflicts:           conflicts,
 		DependencyScanner:   options.ReplicaDependencyScanner,
-		DestructiveSafe: func(ctx context.Context) error {
-			return runtime.retention.store.EnsureIntegrityHealthy(ctx)
-		},
 	}
 	persistedClaim, found, err := replica.ReadPersistedTakeoverClaim(
 		ctx, replicaStatePath,

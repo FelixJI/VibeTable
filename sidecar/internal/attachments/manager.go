@@ -3,7 +3,7 @@ package attachments
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
@@ -37,6 +37,7 @@ const (
 	maxStagedFiles      = 1000
 	maxStagedBytes      = 100 << 20
 	maxTotalStagedBytes = 256 << 20
+	maxCapabilities     = 4096
 	capabilityTTL       = 5 * time.Minute
 )
 
@@ -56,13 +57,13 @@ type stagedFile struct {
 }
 
 type Manager struct {
-	secret []byte
-	now    func() time.Time
-	fault  func(string) error
+	now   func() time.Time
+	fault func(string) error
 
-	mu     sync.RWMutex
-	staged map[string]stagedFile
-	bytes  int64
+	mu           sync.RWMutex
+	staged       map[string]stagedFile
+	capabilities map[string]capabilityClaims
+	bytes        int64
 }
 
 type Option func(*Manager)
@@ -75,15 +76,12 @@ func WithFaultInjector(injector func(string) error) Option {
 	return func(manager *Manager) { manager.fault = injector }
 }
 
-func New(secret []byte, options ...Option) (*Manager, error) {
-	if len(secret) < 32 {
-		return nil, errors.New("attachment capability secret must contain at least 32 bytes")
-	}
+func New(options ...Option) (*Manager, error) {
 	manager := &Manager{
-		secret: append([]byte(nil), secret...),
-		now:    func() time.Time { return time.Now().UTC() },
-		fault:  func(string) error { return nil },
-		staged: map[string]stagedFile{},
+		now:          func() time.Time { return time.Now().UTC() },
+		fault:        func(string) error { return nil },
+		staged:       map[string]stagedFile{},
+		capabilities: map[string]capabilityClaims{},
 	}
 	for _, option := range options {
 		option(manager)
@@ -1149,20 +1147,33 @@ type capabilityClaims struct {
 func (manager *Manager) capability(
 	tableID, recordID, fieldID, storedName, variant string,
 ) (string, error) {
-	raw, err := json.Marshal(capabilityClaims{
+	claims := capabilityClaims{
 		TableID: tableID, RecordID: recordID, FieldID: fieldID,
 		StoredName: storedName, Variant: variant,
 		ExpiresAt: manager.now().Add(capabilityTTL).Unix(),
-	})
-	if err != nil {
+	}
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
 		return "", attachmentError(
 			"attachment.capability_failed", "download capability could not be created", true,
 		)
 	}
-	payload := base64.RawURLEncoding.EncodeToString(raw)
-	mac := hmac.New(sha256.New, manager.secret)
-	_, _ = mac.Write([]byte(payload))
-	return "att1." + payload + "." + hex.EncodeToString(mac.Sum(nil)), nil
+	token := "att1." + base64.RawURLEncoding.EncodeToString(nonce)
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	now := manager.now().Unix()
+	for existing, stored := range manager.capabilities {
+		if now >= stored.ExpiresAt {
+			delete(manager.capabilities, existing)
+		}
+	}
+	if len(manager.capabilities) >= maxCapabilities {
+		return "", attachmentError(
+			"attachment.capability_failed", "download capability capacity is exhausted", true,
+		)
+	}
+	manager.capabilities[token] = claims
+	return token, nil
 }
 
 func (manager *Manager) Open(
@@ -1309,47 +1320,27 @@ func (reader *filesystemReader) Close() error {
 
 func (manager *Manager) verifyCapability(value string) (capabilityClaims, error) {
 	parts := strings.Split(value, ".")
-	if len(parts) != 3 || parts[0] != "att1" {
+	if len(parts) != 2 || parts[0] != "att1" {
 		return capabilityClaims{}, attachmentError(
 			"attachment.capability_invalid", "download capability is invalid", false,
 		)
 	}
-	signature, err := hex.DecodeString(parts[2])
-	if err != nil {
+	nonce, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || len(nonce) != 32 {
 		return capabilityClaims{}, attachmentError(
 			"attachment.capability_invalid", "download capability is invalid", false,
 		)
 	}
-	mac := hmac.New(sha256.New, manager.secret)
-	_, _ = mac.Write([]byte(parts[1]))
-	if !hmac.Equal(signature, mac.Sum(nil)) {
-		return capabilityClaims{}, attachmentError(
-			"attachment.capability_invalid", "download capability is invalid", false,
-		)
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return capabilityClaims{}, attachmentError(
-			"attachment.capability_invalid", "download capability is invalid", false,
-		)
-	}
-	var claims capabilityClaims
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&claims); err != nil ||
-		claims.TableID == "" || claims.RecordID == "" || claims.FieldID == "" ||
-		claims.StoredName == "" {
-		return capabilityClaims{}, attachmentError(
-			"attachment.capability_invalid", "download capability is invalid", false,
-		)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	claims, ok := manager.capabilities[value]
+	if !ok {
 		return capabilityClaims{}, attachmentError(
 			"attachment.capability_invalid", "download capability is invalid", false,
 		)
 	}
 	if manager.now().Unix() >= claims.ExpiresAt {
+		delete(manager.capabilities, value)
 		return capabilityClaims{}, attachmentError(
 			"attachment.capability_expired", "download capability has expired", false,
 		)

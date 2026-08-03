@@ -94,23 +94,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 	if err := formula.ValidateRuntime(); err != nil {
 		return nil, err
 	}
-	snapshotKey, err := options.Session.DeriveKey("query-snapshot")
-	if err != nil {
-		return nil, err
-	}
-	attachmentKey, err := options.Session.DeriveKey("attachment-capability")
-	if err != nil {
-		return nil, err
-	}
-	restoreKey, err := options.Session.DeriveKey("history-restore")
-	if err != nil {
-		return nil, err
-	}
-	backupReceiptKey, err := options.Session.DeriveKey("backup-receipt")
-	if err != nil {
-		return nil, err
-	}
-	attachmentManager, err := attachments.New(attachmentKey)
+	attachmentManager, err := attachments.New()
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +112,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		HideStartBanner: true,
 	})
 	migrations.Register(pb)
-	queryPort := query.NewPort(pb, querySource, snapshotKey)
+	queryPort := query.NewPort(pb, querySource)
 	realtimeHub := realtime.New(pb)
 	jobService := jobs.New(
 		pb,
@@ -188,7 +172,6 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		pb,
 		mutationKernel,
 		mutation.MetadataSchemaSource{},
-		restoreKey,
 		auditOptions...,
 	)
 	if err != nil {
@@ -374,7 +357,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			}
 		}
 		registerFieldRoutes(
-			event.Router, pb, fieldMigration, backupReceiptKey, options.Logger,
+			event.Router, pb, fieldMigration, options.Logger,
 			fieldProtectionVerifier,
 			businessGate,
 		)

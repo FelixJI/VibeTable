@@ -126,11 +126,6 @@ func (runtime *Runtime) exportSnapshot(
 	if err != nil {
 		return nil, err
 	}
-	key, err := runtime.snapshotPackageKey(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer clearBytes(key)
 	if err := validateExportTarget(target); err != nil {
 		return nil, err
 	}
@@ -158,7 +153,7 @@ func (runtime *Runtime) exportSnapshot(
 	var exportErr error
 	if params.Encryption == "none" {
 		exportErr = snapshotpkg.Export(
-			io.MultiWriter(output, hasher), metadata, entries, key,
+			io.MultiWriter(output, hasher), metadata, entries,
 		)
 	} else {
 		exportErr = runtime.exportAgeSnapshot(
@@ -166,7 +161,6 @@ func (runtime *Runtime) exportSnapshot(
 			hasher,
 			metadata,
 			entries,
-			key,
 			params.Recipients,
 			credential,
 		)
@@ -231,7 +225,6 @@ func (runtime *Runtime) exportAgeSnapshot(
 	hasher io.Writer,
 	metadata snapshotpkg.Metadata,
 	entries map[string][]byte,
-	key []byte,
 	recipients []string,
 	credential string,
 ) error {
@@ -239,7 +232,6 @@ func (runtime *Runtime) exportAgeSnapshot(
 		io.MultiWriter(output, hasher),
 		metadata,
 		entries,
-		key,
 		recipients,
 		credential,
 	)
@@ -383,12 +375,7 @@ func (runtime *Runtime) inspectSnapshotPackage(
 		return nil, err
 	}
 	defer prepared.Close()
-	key, err := runtime.snapshotPackageKey(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer clearBytes(key)
-	inspection, _, err := inspectPreparedPackage(prepared, key, false)
+	inspection, _, err := inspectPreparedPackage(prepared, false)
 	if err != nil {
 		return nil, err
 	}
@@ -397,7 +384,6 @@ func (runtime *Runtime) inspectSnapshotPackage(
 	}
 	result := map[string]any{
 		"planId":           planID,
-		"trusted":          inspection.TrustedForOriginalWorkspace,
 		"workspaceId":      inspection.Manifest.Metadata.WorkspaceID,
 		"sourceSnapshotId": inspection.Manifest.Metadata.SnapshotID,
 		"snapshotCount":    1,
@@ -496,12 +482,7 @@ func (runtime *Runtime) importSnapshotPackage(
 		return nil, err
 	}
 	defer prepared.Close()
-	key, err := runtime.snapshotPackageKey(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer clearBytes(key)
-	inspection, entries, err := inspectPreparedPackage(prepared, key, true)
+	inspection, entries, err := inspectPreparedPackage(prepared, true)
 	if err != nil {
 		return nil, err
 	}
@@ -527,9 +508,6 @@ func (runtime *Runtime) importSnapshotPackage(
 	case snapshotpkg.TargetCurrentWorkspace:
 		if sourceWorkspaceID != runtime.manifest.WorkspaceID {
 			return nil, snapshotpkg.ErrWorkspaceConflict
-		}
-		if err := snapshotpkg.RequireOriginalWorkspaceTrust(inspection); err != nil {
-			return nil, err
 		}
 	case snapshotpkg.TargetNewWorkspace:
 		if sourceWorkspaceID == runtime.manifest.WorkspaceID {
@@ -727,22 +705,6 @@ func (runtime *Runtime) snapshotPackageEntries(
 	return entries, manifest, nil
 }
 
-func (runtime *Runtime) snapshotPackageKey(
-	ctx context.Context,
-) ([]byte, error) {
-	mode := objectrepo.EncryptionMode(runtime.manifest.EncryptionMode)
-	if mode != objectrepo.EncryptionProtected {
-		return nil, nil
-	}
-	keys, err := objectrepo.NewKeyProvider(
-		objectrepo.WindowsCredentialVault{},
-	).Open(ctx, runtime.manifest.WorkspaceID, mode)
-	if err != nil {
-		return nil, err
-	}
-	return keys.Password, nil
-}
-
 func clearBytes(value []byte) {
 	for index := range value {
 		value[index] = 0
@@ -751,7 +713,6 @@ func clearBytes(value []byte) {
 
 func inspectPreparedPackage(
 	prepared *preparedSnapshotPackage,
-	key []byte,
 	readEntries bool,
 ) (snapshotpkg.Inspection, map[string][]byte, error) {
 	if prepared == nil ||
@@ -785,7 +746,6 @@ func inspectPreparedPackage(
 		prepared.ReaderAt(),
 		prepared.Size(),
 		limits,
-		key,
 	)
 	if err != nil {
 		return inspection, nil, err

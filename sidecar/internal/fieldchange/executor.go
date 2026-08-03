@@ -25,13 +25,12 @@ import (
 const fieldOperationTTL = 24 * time.Hour
 
 type Executor struct {
-	app              core.App
-	store            PlanStore
-	migration        MigrationScheduler
-	clock            func() time.Time
-	backupReceiptKey []byte
-	protectionProof  ProtectionSnapshotVerifier
-	logger           *slog.Logger
+	app             core.App
+	store           PlanStore
+	migration       MigrationScheduler
+	clock           func() time.Time
+	protectionProof ProtectionSnapshotVerifier
+	logger          *slog.Logger
 }
 
 type ProtectionSnapshotVerifier func(context.Context, string) error
@@ -57,12 +56,6 @@ func WithExecutorClock(clock func() time.Time) ExecutorOption {
 func WithMigrationScheduler(scheduler MigrationScheduler) ExecutorOption {
 	return func(executor *Executor) {
 		executor.migration = scheduler
-	}
-}
-
-func WithBackupReceiptKey(key []byte) ExecutorOption {
-	return func(executor *Executor) {
-		executor.backupReceiptKey = append([]byte(nil), key...)
 	}
 }
 
@@ -232,7 +225,6 @@ func (executor *Executor) apply(
 			} else {
 				verifyErr = backupreceipt.Verify(
 					ctx, txApp, plan.Intent.BackupReceipt,
-					executor.backupReceiptKey,
 				)
 			}
 			if verifyErr != nil {

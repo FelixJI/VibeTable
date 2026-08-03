@@ -28,16 +28,17 @@ public sealed class WorkspaceProviderPolicyTests
               "contractVersion": "2.0",
               "providers": {
                 "fixed": {"creation": "enabled", "coordinationStrength": "strong"},
-                "network": {"creation": "disabled", "coordinationStrength": "advisory", "protocol": "smb"},
-                "registeredCloud": {"creation": "disabled", "coordinationStrength": "advisory"},
-                "userMarkedSync": {"creation": "disabled", "coordinationStrength": "advisory"},
-                "removable": {"creation": "disabled", "coordinationStrength": "advisory"}
+                "network": {"creation": "enabled", "coordinationStrength": "advisory", "protocol": "smb"},
+                "registeredCloud": {"creation": "blockedPendingLab", "coordinationStrength": "advisory"},
+                "userMarkedSync": {"creation": "blockedPendingLab", "coordinationStrength": "advisory"},
+                "removable": {"creation": "blockedPendingLab", "coordinationStrength": "advisory"}
               }
             }
             """);
         try
         {
-            Assert.IsNotNull(WorkspaceProviderPolicy.Load(root));
+            WorkspaceProviderPolicy policy = WorkspaceProviderPolicy.Load(root);
+            Assert.IsTrue(policy.MirroredCreationEnabled);
         }
         finally
         {

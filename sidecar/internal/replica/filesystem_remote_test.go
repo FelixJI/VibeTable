@@ -1,7 +1,6 @@
 package replica
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -156,7 +155,6 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 		ctx,
 		snapshotID,
 		1,
-		publicationKey(),
 	); !errors.Is(err, ErrVerificationInvalid) {
 		t.Fatalf("unpublished recovery error = %v", err)
 	}
@@ -179,7 +177,7 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 		CatalogRevision: 1,
 		CheckpointID:    replication.CheckpointID,
 		CreatedAt:       publicationNow,
-	}, publicationKey())
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +221,7 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 		CatalogRevision:         2,
 		CheckpointID:            replication2.CheckpointID,
 		CreatedAt:               publication2Now,
-	}, publicationKey())
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,16 +262,6 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 		ctx,
 		snapshotID,
 		1,
-		bytes.Repeat([]byte{0x6a}, minimumPublicationKeyBytes),
-	)
-	if !errors.Is(err, ErrPublicationTampered) {
-		t.Fatalf("forged recovery key error = %v", err)
-	}
-	bundle, err = reopened.RecoverCheckpoint(
-		ctx,
-		snapshotID,
-		1,
-		publicationKey(),
 	)
 	if err != nil {
 		t.Fatalf("remote-only recovery failed: %v", err)
@@ -282,9 +270,8 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 		ctx,
 		snapshotID,
 		2,
-		publicationKey(),
 	); err != nil {
-		t.Fatalf("second revision authenticated recovery failed: %v", err)
+		t.Fatalf("second revision verified recovery failed: %v", err)
 	}
 	if string(bundle.Objects[record.ObjectMap["database"]]) !=
 		string(databaseContent) ||
@@ -544,7 +531,7 @@ func TestFilesystemRemotePublicationsAreImmutable(t *testing.T) {
 		CatalogRevision: 1,
 		CheckpointID:    checkpointID,
 		CreatedAt:       now,
-	}, publicationKey())
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -555,7 +542,7 @@ func TestFilesystemRemotePublicationsAreImmutable(t *testing.T) {
 		t.Fatalf("exact replay failed: %v", err)
 	}
 	changed := publication
-	changed.MAC += "changed"
+	changed.SnapshotID += "-changed"
 	if err := remote.AppendPublication(
 		ctx,
 		changed,
@@ -663,7 +650,7 @@ func sealFilesystemBranchPublication(
 		CatalogRevision:         1,
 		CheckpointID:            checkpointID,
 		CreatedAt:               now,
-	}, publicationKey())
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

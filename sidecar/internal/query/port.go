@@ -2,7 +2,6 @@ package query
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -40,16 +39,12 @@ type QueryPort interface {
 }
 
 type Port struct {
-	app         core.App
-	source      SchemaSource
-	snapshotKey []byte
+	app    core.App
+	source SchemaSource
 }
 
-func NewPort(app core.App, source SchemaSource, snapshotKey []byte) *Port {
-	return &Port{
-		app: app, source: source,
-		snapshotKey: append([]byte(nil), snapshotKey...),
-	}
+func NewPort(app core.App, source SchemaSource) *Port {
+	return &Port{app: app, source: source}
 }
 
 func (port *Port) QueryPage(
@@ -286,14 +281,6 @@ func (port *Port) validateConfigured() error {
 	if port.app == nil || port.source == nil {
 		return productError("query.port.unconfigured", "", "query port is not configured", nil)
 	}
-	if len(port.snapshotKey) < 32 {
-		return productError(
-			"query.port.unconfigured",
-			"snapshotKey",
-			"query snapshot signing key must contain at least 32 bytes",
-			nil,
-		)
-	}
 	return nil
 }
 
@@ -482,7 +469,7 @@ func (port *Port) buildSnapshot(
 		DataRevision:    descriptor.DataRevision,
 		NormalizedQuery: normalized,
 	}
-	digest, err := snapshotDigest(port.snapshotKey, snapshot)
+	digest, err := snapshotDigest(snapshot)
 	if err != nil {
 		return QuerySnapshot{}, err
 	}
@@ -490,7 +477,7 @@ func (port *Port) buildSnapshot(
 	return snapshot, nil
 }
 
-func snapshotDigest(key []byte, snapshot QuerySnapshot) (string, error) {
+func snapshotDigest(snapshot QuerySnapshot) (string, error) {
 	payload := struct {
 		SnapshotID     string     `json:"snapshotId"`
 		DatabaseID     string     `json:"databaseId"`
@@ -511,9 +498,8 @@ func snapshotDigest(key []byte, snapshot QuerySnapshot) (string, error) {
 		return "", productError(
 			"query.snapshot.failed", "", "query snapshot could not be encoded", nil)
 	}
-	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write(raw)
-	return hex.EncodeToString(mac.Sum(nil)), nil
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func (port *Port) validateSnapshotSignature(snapshot QuerySnapshot) error {
@@ -524,16 +510,16 @@ func (port *Port) validateSnapshotSignature(snapshot QuerySnapshot) error {
 	provided, err := hex.DecodeString(snapshot.Digest)
 	if err != nil || len(provided) != sha256.Size {
 		return productError(
-			"query.snapshot.invalid", "digest", "query snapshot signature is invalid", nil)
+			"query.snapshot.invalid", "digest", "query snapshot digest is invalid", nil)
 	}
-	expected, err := snapshotDigest(port.snapshotKey, snapshot)
+	expected, err := snapshotDigest(snapshot)
 	if err != nil {
 		return err
 	}
 	expectedBytes, _ := hex.DecodeString(expected)
-	if !hmac.Equal(provided, expectedBytes) {
+	if string(provided) != string(expectedBytes) {
 		return productError(
-			"query.snapshot.invalid", "digest", "query snapshot signature is invalid", nil)
+			"query.snapshot.invalid", "digest", "query snapshot digest is invalid", nil)
 	}
 	return nil
 }

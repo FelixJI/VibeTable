@@ -3,7 +3,6 @@ package snapshotpkg
 import (
 	"archive/zip"
 	"bytes"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -17,7 +16,6 @@ import (
 
 var (
 	ErrInvalidPackage = errors.New("snapshot.package_invalid")
-	ErrUntrusted      = errors.New("snapshot.package_untrusted")
 	ErrResourceLimit  = errors.New("snapshot.package_resource_limit")
 )
 
@@ -69,21 +67,19 @@ type Metadata struct {
 }
 
 type Manifest struct {
-	Metadata     Metadata          `json:"metadata"`
-	Entries      map[string]string `json:"entries"`
-	WorkspaceMAC string            `json:"workspaceMac,omitempty"`
+	Metadata Metadata          `json:"metadata"`
+	Entries  map[string]string `json:"entries"`
 }
 
 type Inspection struct {
-	Manifest                    Manifest `json:"manifest"`
-	TrustedForOriginalWorkspace bool     `json:"trustedForOriginalWorkspace"`
-	UncompressedBytes           int64    `json:"uncompressedBytes"`
+	Manifest          Manifest `json:"manifest"`
+	UncompressedBytes int64    `json:"uncompressedBytes"`
 	// PayloadBytes excludes manifest.json so callers can apply the same
 	// application payload budget used by Export.
 	PayloadBytes int64 `json:"-"`
 }
 
-func Export(writer io.Writer, metadata Metadata, entries map[string][]byte, workspaceKey []byte) error {
+func Export(writer io.Writer, metadata Metadata, entries map[string][]byte) error {
 	if metadata.FormatVersion != 2 || metadata.WorkspaceID == "" || metadata.SnapshotID == "" {
 		return ErrInvalidPackage
 	}
@@ -109,9 +105,6 @@ func Export(writer io.Writer, metadata Metadata, entries map[string][]byte, work
 	}
 	sort.Strings(names)
 	manifest := Manifest{Metadata: metadata, Entries: hashes}
-	if len(workspaceKey) > 0 {
-		manifest.WorkspaceMAC = computeMAC(metadata, hashes, workspaceKey)
-	}
 	manifestRaw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
@@ -138,7 +131,7 @@ func Export(writer io.Writer, metadata Metadata, entries map[string][]byte, work
 	return archive.Close()
 }
 
-func Inspect(reader io.ReaderAt, size int64, limits Limits, workspaceKey []byte) (Inspection, error) {
+func Inspect(reader io.ReaderAt, size int64, limits Limits) (Inspection, error) {
 	limits = limits.withDefaults()
 	archive, err := zip.NewReader(reader, size)
 	if err != nil {
@@ -216,21 +209,11 @@ func Inspect(reader io.ReaderAt, size int64, limits Limits, workspaceKey []byte)
 			return Inspection{}, ErrInvalidPackage
 		}
 	}
-	trusted := len(workspaceKey) > 0 && manifest.WorkspaceMAC != "" &&
-		hmac.Equal([]byte(manifest.WorkspaceMAC), []byte(computeMAC(manifest.Metadata, manifest.Entries, workspaceKey)))
 	return Inspection{
-		Manifest:                    manifest,
-		TrustedForOriginalWorkspace: trusted,
-		UncompressedBytes:           total,
-		PayloadBytes:                payloadTotal,
+		Manifest:          manifest,
+		UncompressedBytes: total,
+		PayloadBytes:      payloadTotal,
 	}, nil
-}
-
-func RequireOriginalWorkspaceTrust(inspection Inspection) error {
-	if !inspection.TrustedForOriginalWorkspace {
-		return ErrUntrusted
-	}
-	return nil
 }
 
 func safeName(name string) bool {
@@ -240,20 +223,4 @@ func safeName(name string) bool {
 	clean := path.Clean(name)
 	return clean == name && !strings.HasPrefix(clean, "/") && clean != ".." &&
 		!strings.HasPrefix(clean, "../")
-}
-
-func computeMAC(metadata Metadata, entries map[string]string, key []byte) string {
-	names := make([]string, 0, len(entries))
-	for name := range entries {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	mac := hmac.New(sha256.New, key)
-	fmt.Fprintf(mac, "%d\x00%s\x00%s\x00%s\x00%s\x00",
-		metadata.FormatVersion, metadata.WorkspaceID, metadata.SnapshotID,
-		metadata.WriterVersion, metadata.MinimumAppVersion)
-	for _, name := range names {
-		fmt.Fprintf(mac, "%s\x00%s\x00", name, entries[name])
-	}
-	return hex.EncodeToString(mac.Sum(nil))
 }

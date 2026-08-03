@@ -1,9 +1,7 @@
 package auth
 
 import (
-	"crypto/subtle"
 	"encoding/hex"
-	"errors"
 	"strings"
 	"testing"
 )
@@ -62,46 +60,5 @@ func TestMatchesRejectsDifferentOrMalformedSecret(t *testing.T) {
 	}
 	if secret.IsZero() {
 		t.Fatal("nonzero secret reported as zero")
-	}
-}
-
-func TestDeriveKeyIsPurposeSeparatedAndStable(t *testing.T) {
-	secret, _, err := Generate()
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := secret.DeriveKey("query-snapshot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	again, err := secret.DeriveKey("query-snapshot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	other, err := secret.DeriveKey("another-purpose")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(first) != 32 {
-		t.Fatalf("derived key length = %d, want 32", len(first))
-	}
-	if subtle.ConstantTimeCompare(first, again) != 1 {
-		t.Fatal("same purpose did not produce the same key")
-	}
-	if subtle.ConstantTimeCompare(first, other) == 1 {
-		t.Fatal("different purposes produced the same key")
-	}
-}
-
-func TestDeriveKeyRejectsMissingInputs(t *testing.T) {
-	if _, err := (Secret{}).DeriveKey("query-snapshot"); !errors.Is(err, ErrInvalidSecret) {
-		t.Fatalf("zero secret error = %v, want ErrInvalidSecret", err)
-	}
-	secret, _, err := Generate()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := secret.DeriveKey(""); err == nil {
-		t.Fatal("empty purpose was accepted")
 	}
 }

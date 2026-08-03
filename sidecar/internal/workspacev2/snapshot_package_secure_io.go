@@ -332,7 +332,6 @@ func streamAgeSnapshotPackage(
 	output io.Writer,
 	metadata snapshotpkg.Metadata,
 	entries map[string][]byte,
-	workspaceKey []byte,
 	recipients []string,
 	credential string,
 ) error {
@@ -343,7 +342,6 @@ func streamAgeSnapshotPackage(
 			plaintextWriter,
 			metadata,
 			entries,
-			workspaceKey,
 		)
 		closeErr := plaintextWriter.CloseWithError(exportErr)
 		exportDone <- errors.Join(exportErr, closeErr)

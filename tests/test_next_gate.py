@@ -113,7 +113,7 @@ def test_go_commands_target_sidecar_module() -> None:
     assert Path(cwd) == next_gate.REPO_ROOT
 
 
-def test_package_stage_binds_provider_evidence_to_the_release_archive(
+def test_package_stage_binds_release_candidate_to_the_archive(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "VibeTable.Next"

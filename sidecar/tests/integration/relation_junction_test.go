@@ -264,9 +264,8 @@ func TestJunctionAndM2ADeltaUseMutationKernelAuditReplayAndRollback(t *testing.T
 	service := relation.New(
 		app,
 		query.NewPort(
-			app, sourceQuery,
-			[]byte("0123456789abcdef0123456789abcdef"),
-		),
+			app, sourceQuery),
+
 		kernel,
 	)
 	add := relation.DeltaRequest{

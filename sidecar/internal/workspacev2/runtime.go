@@ -5,8 +5,6 @@ package workspacev2
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -47,7 +45,6 @@ type Options struct {
 	ReplicaRemoteFactory     func(context.Context) (replica.VerifiedRemote, error)
 	ReplicaRoot              string
 	ReplicaDeviceID          string
-	ReplicaPublicationKey    []byte
 	ReplicaDependencyScanner replica.ConflictDependencyScanner
 	DisableReplicaWorker     bool
 }
@@ -252,13 +249,6 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 		if strings.TrimSpace(options.ReplicaRoot) == "" {
 			return nil, errors.New("replica.selected_root_required")
 		}
-		options.ReplicaPublicationKey, err = deriveReplicaPublicationKey(
-			ctx,
-			manifest,
-		)
-		if err != nil {
-			return nil, err
-		}
 		options.ReplicaRemoteFactory = func(
 			openCtx context.Context,
 		) (replica.VerifiedRemote, error) {
@@ -411,28 +401,6 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 		result.replicaConflict.startWorker()
 	}
 	return result, nil
-}
-
-func deriveReplicaPublicationKey(
-	ctx context.Context,
-	manifest contractsv2.WorkspaceManifest,
-) ([]byte, error) {
-	keys, err := objectrepo.NewKeyProvider(
-		objectrepo.WindowsCredentialVault{},
-	).Open(
-		ctx,
-		manifest.WorkspaceID,
-		objectrepo.EncryptionMode(manifest.EncryptionMode),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer clearBytes(keys.Password)
-	authenticator := hmac.New(sha256.New, keys.Password)
-	_, _ = authenticator.Write([]byte(
-		"VibeTable replica publication v2\x00" + manifest.WorkspaceID,
-	))
-	return authenticator.Sum(nil), nil
 }
 
 func (runtime *Runtime) Dispatcher() *protocolv2.Dispatcher {

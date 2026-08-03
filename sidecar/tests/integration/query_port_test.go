@@ -2,8 +2,6 @@ package integration_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,8 +114,7 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 			},
 		},
 	}}
-	snapshotKey := []byte("0123456789abcdef0123456789abcdef")
-	port := query.NewPort(app, source, snapshotKey)
+	port := query.NewPort(app, source)
 	ctx := context.Background()
 	nullsLast := true
 	input := query.TableQuery{
@@ -280,16 +277,16 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 	assertInvalidSnapshotError(t, validation, err)
 	tampered = pageOne.Snapshot
 	tampered.NormalizedQuery.Keyword = "forged"
-	tampered.Digest = unkeyedSnapshotDigest(t, tampered)
 	validation, err = port.ValidateSnapshot(ctx, tampered, nil)
 	assertInvalidSnapshotError(t, validation, err)
 	restartedPort := query.NewPort(
 		app,
-		source,
-		[]byte("abcdef0123456789abcdef0123456789"),
-	)
+		source)
+
 	validation, err = restartedPort.ValidateSnapshot(ctx, pageOne.Snapshot, nil)
-	assertInvalidSnapshotError(t, validation, err)
+	if err != nil || !validation.Valid {
+		t.Fatalf("snapshot digest did not survive restart: %#v err=%v", validation, err)
+	}
 	repeated, err := port.QueryPage(ctx, "orders", currentQuery)
 	if err != nil || repeated.Snapshot.SnapshotID == pageOne.Snapshot.SnapshotID {
 		t.Fatalf("snapshot nonce was reused: %#v err=%v", repeated.Snapshot, err)
@@ -359,9 +356,8 @@ func TestQueryPortAggregateResultLimit(t *testing.T) {
 	}}
 	port := query.NewPort(
 		app,
-		source,
-		[]byte("0123456789abcdef0123456789abcdef"),
-	)
+		source)
+
 	input := query.AggregateQuery{
 		GroupBy: []string{"group_key"},
 		Metrics: []query.AggregateMetric{{
@@ -425,9 +421,8 @@ func TestQueryPortPagesFiltersAndSortsTwentyFiveThousandRows(t *testing.T) {
 	}}
 	port := query.NewPort(
 		app,
-		source,
-		[]byte("0123456789abcdef0123456789abcdef"),
-	)
+		source)
+
 	input := query.TableQuery{
 		Filters: []query.FilterExpression{{
 			Field: "group_name", Operator: query.OperatorEqual, Value: "even",
@@ -501,9 +496,8 @@ func TestQueryPageUsesOneConsistentTransaction(t *testing.T) {
 	}
 	port := query.NewPort(
 		app,
-		source,
-		[]byte("0123456789abcdef0123456789abcdef"),
-	)
+		source)
+
 	page, err := port.QueryPage(
 		context.Background(),
 		"consistency",
@@ -666,31 +660,6 @@ func containsRowID(rows []map[string]any, id string) bool {
 		}
 	}
 	return false
-}
-
-func unkeyedSnapshotDigest(t *testing.T, snapshot query.QuerySnapshot) string {
-	t.Helper()
-	payload := struct {
-		SnapshotID     string           `json:"snapshotId"`
-		DatabaseID     string           `json:"databaseId"`
-		Table          string           `json:"table"`
-		SchemaRevision string           `json:"schemaRevision"`
-		DataRevision   int64            `json:"dataRevision"`
-		Query          query.TableQuery `json:"query"`
-	}{
-		snapshot.SnapshotID,
-		snapshot.DatabaseID,
-		snapshot.Table,
-		snapshot.SchemaRevision,
-		snapshot.DataRevision,
-		snapshot.NormalizedQuery,
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal forged snapshot: %v", err)
-	}
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
 }
 
 func newBootstrappedApp(t *testing.T) *pocketbase.PocketBase {

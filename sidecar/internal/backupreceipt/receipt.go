@@ -3,7 +3,6 @@ package backupreceipt
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -26,7 +25,6 @@ type payload struct {
 	Name           string `json:"name"`
 	SHA256         string `json:"sha256"`
 	RevisionDigest string `json:"revisionDigest"`
-	Checksum       string `json:"checksum"`
 }
 
 func SnapshotDigest(app core.App) (string, error) {
@@ -52,18 +50,15 @@ func Encode(
 	name string,
 	archiveSHA256 string,
 	revisionDigest string,
-	signingKey []byte,
 ) (string, error) {
 	value := payload{
 		Name: name, SHA256: archiveSHA256, RevisionDigest: revisionDigest,
 	}
 	if !validName(value.Name) ||
 		!validDigest(value.SHA256) ||
-		!validDigest(value.RevisionDigest) ||
-		len(signingKey) < 32 {
+		!validDigest(value.RevisionDigest) {
 		return "", errors.New("backup receipt inputs are invalid")
 	}
-	value.Checksum = checksum(value, signingKey)
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -77,9 +72,8 @@ func Verify(
 	ctx context.Context,
 	app core.App,
 	receipt string,
-	signingKey []byte,
 ) error {
-	value, err := decode(receipt, signingKey)
+	value, err := decode(receipt)
 	if err != nil {
 		return err
 	}
@@ -112,10 +106,9 @@ func Verify(
 	return nil
 }
 
-func decode(receipt string, signingKey []byte) (payload, error) {
+func decode(receipt string) (payload, error) {
 	if !strings.HasPrefix(receipt, "vbr1.") ||
-		len(receipt) > 2048 ||
-		len(signingKey) < 32 {
+		len(receipt) > 2048 {
 		return payload{}, errors.New("backup receipt format is invalid")
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(
@@ -136,25 +129,10 @@ func decode(receipt string, signingKey []byte) (payload, error) {
 	}
 	if !validName(value.Name) ||
 		!validDigest(value.SHA256) ||
-		!validDigest(value.RevisionDigest) ||
-		!validDigest(value.Checksum) ||
-		!hmac.Equal(
-			[]byte(value.Checksum),
-			[]byte(checksum(value, signingKey)),
-		) {
+		!validDigest(value.RevisionDigest) {
 		return payload{}, errors.New("backup receipt verification failed")
 	}
 	return value, nil
-}
-
-func checksum(value payload, signingKey []byte) string {
-	mac := hmac.New(sha256.New, signingKey)
-	_, _ = io.WriteString(
-		mac,
-		"vibetable-backup-receipt-v1\x00"+
-			value.Name+"\x00"+value.SHA256+"\x00"+value.RevisionDigest,
-	)
-	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func validName(value string) bool {

@@ -9,7 +9,7 @@ import (
 )
 
 func TestStageReferenceCountsIdenticalConcurrentUploads(t *testing.T) {
-	manager, err := New([]byte(strings.Repeat("s", 32)))
+	manager, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestStageReferenceCountsIdenticalConcurrentUploads(t *testing.T) {
 }
 
 func TestStageRejectsConflictsAndUnsafeNames(t *testing.T) {
-	manager, err := New([]byte(strings.Repeat("s", 32)))
+	manager, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}

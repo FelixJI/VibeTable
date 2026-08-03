@@ -240,9 +240,8 @@ func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing
 		t.Fatal(err)
 	}
 	port := query.NewPort(
-		app, querySource,
-		[]byte("0123456789abcdef0123456789abcdef"),
-	)
+		app, querySource)
+
 	offsetValue := createdAt.In(time.FixedZone("UTC+8", 8*60*60)).
 		Format(time.RFC3339Nano)
 	page, err := port.QueryPage(ctx, definition.TableID, query.TableQuery{

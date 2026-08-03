@@ -2,9 +2,7 @@
 package auth
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
@@ -53,22 +51,6 @@ func (secret Secret) Matches(candidate string) bool {
 func (secret Secret) IsZero() bool {
 	var zero [secretSize]byte
 	return subtle.ConstantTimeCompare(secret.value[:], zero[:]) == 1
-}
-
-// DeriveKey creates a purpose-separated key without exposing or reusing the
-// raw session credential. It is useful for process-local signed capabilities
-// that must become invalid when a new sidecar session starts.
-func (secret Secret) DeriveKey(purpose string) ([]byte, error) {
-	if secret.IsZero() {
-		return nil, ErrInvalidSecret
-	}
-	if purpose == "" {
-		return nil, errors.New("key derivation purpose is required")
-	}
-	mac := hmac.New(sha256.New, secret.value[:])
-	_, _ = mac.Write([]byte("vibetable-sidecar-key-v1\x00"))
-	_, _ = mac.Write([]byte(purpose))
-	return mac.Sum(nil), nil
 }
 
 func decode(encoded string) ([]byte, error) {

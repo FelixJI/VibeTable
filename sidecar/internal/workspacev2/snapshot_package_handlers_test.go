@@ -108,16 +108,14 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 	tamperedEntries[databaseEntry][len(tamperedEntries[databaseEntry])-1] ^= 0xff
 	var tamperedPackage bytes.Buffer
 	if err := snapshotpkg.Export(
-		&tamperedPackage, metadata, tamperedEntries, nil,
-	); err != nil {
+		&tamperedPackage, metadata, tamperedEntries); err != nil {
 		t.Fatal(err)
 	}
 	outerInspection, err := snapshotpkg.Inspect(
 		bytes.NewReader(tamperedPackage.Bytes()),
 		int64(tamperedPackage.Len()),
-		snapshotpkg.DefaultLimits(),
-		nil,
-	)
+		snapshotpkg.DefaultLimits())
+
 	if err != nil {
 		t.Fatalf("outer package hashes should be self-consistent: %v", err)
 	}

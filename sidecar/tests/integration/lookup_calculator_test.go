@@ -150,7 +150,7 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 	}
 	relationService := relation.New(
 		app,
-		query.NewPort(app, querySource, []byte("0123456789abcdef0123456789abcdef")),
+		query.NewPort(app, querySource),
 		kernel,
 	)
 	catalogResult, err := relationService.Describe(ctx, "articles")
@@ -341,9 +341,8 @@ func TestLookupCalculatorTraversesSavedMultiHopPath(t *testing.T) {
 		app,
 		query.NewPort(
 			app,
-			querySource,
-			[]byte("0123456789abcdef0123456789abcdef"),
-		),
+			querySource),
+
 		kernel,
 	).Describe(ctx, "lookup_orders")
 	if err != nil || len(described.Lookups) != 1 ||

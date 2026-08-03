@@ -35,7 +35,7 @@ func TestSnapshotPackageBudgetsKeepExportAndImportMemoryCompatible(
 func TestPrepareSnapshotPackageSourceKeepsPlainPackageOnGrantedFile(t *testing.T) {
 	metadata, entries := secureSnapshotPackageFixture()
 	var archive bytes.Buffer
-	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+	if err := snapshotpkg.Export(&archive, metadata, entries); err != nil {
 		t.Fatal(err)
 	}
 	source := filepath.Join(t.TempDir(), "snapshot.zip")
@@ -60,9 +60,8 @@ func TestPrepareSnapshotPackageSourceKeepsPlainPackageOnGrantedFile(t *testing.T
 	inspection, err := snapshotpkg.Inspect(
 		prepared.ReaderAt(),
 		prepared.Size(),
-		snapshotpkg.DefaultLimits(),
-		nil,
-	)
+		snapshotpkg.DefaultLimits())
+
 	if err != nil || inspection.Manifest.Metadata != metadata {
 		t.Fatalf("inspection=%#v err=%v", inspection, err)
 	}
@@ -87,7 +86,7 @@ func TestSnapshotPackageSourceBindingDistinguishesIdenticalReplacement(
 ) {
 	metadata, entries := secureSnapshotPackageFixture()
 	var archive bytes.Buffer
-	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+	if err := snapshotpkg.Export(&archive, metadata, entries); err != nil {
 		t.Fatal(err)
 	}
 	var agePackage bytes.Buffer
@@ -154,7 +153,7 @@ func TestSnapshotPackageSourceReadsFromImmutableStaging(
 ) {
 	metadata, entries := secureSnapshotPackageFixture()
 	var archive bytes.Buffer
-	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+	if err := snapshotpkg.Export(&archive, metadata, entries); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "snapshot.zip")
@@ -187,9 +186,7 @@ func TestSnapshotPackageSourceReadsFromImmutableStaging(
 	if _, err := snapshotpkg.Inspect(
 		prepared.ReaderAt(),
 		prepared.Size(),
-		snapshotpkg.DefaultLimits(),
-		nil,
-	); err != nil {
+		snapshotpkg.DefaultLimits()); err != nil {
 		t.Fatalf("immutable staged package was not retained: %v", err)
 	}
 	if err := source.VerifyUnchanged(); err == nil {
@@ -208,7 +205,7 @@ func TestSnapshotPackageSourceReadsFromImmutableStaging(
 func TestPrepareSnapshotPackageSourceDecryptsOnlyIntoClearableMemory(t *testing.T) {
 	metadata, entries := secureSnapshotPackageFixture()
 	var archive bytes.Buffer
-	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+	if err := snapshotpkg.Export(&archive, metadata, entries); err != nil {
 		t.Fatal(err)
 	}
 	var encrypted bytes.Buffer
@@ -272,9 +269,7 @@ func TestPrepareSnapshotPackageSourceDecryptsOnlyIntoClearableMemory(t *testing.
 	if _, err := snapshotpkg.Inspect(
 		prepared.ReaderAt(),
 		prepared.Size(),
-		snapshotpkg.DefaultLimits(),
-		nil,
-	); err != nil {
+		snapshotpkg.DefaultLimits()); err != nil {
 		t.Fatal(err)
 	}
 	plaintext := prepared.plaintext
@@ -297,7 +292,7 @@ func TestInspectPreparedPackageRejectsAggregateWorkingSetOverflow(
 ) {
 	metadata, entries := secureSnapshotPackageFixture()
 	var archive bytes.Buffer
-	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+	if err := snapshotpkg.Export(&archive, metadata, entries); err != nil {
 		t.Fatal(err)
 	}
 	prepared := &preparedSnapshotPackage{
@@ -307,7 +302,6 @@ func TestInspectPreparedPackageRejectsAggregateWorkingSetOverflow(
 	}
 	if _, _, err := inspectPreparedPackage(
 		prepared,
-		nil,
 		true,
 	); !errors.Is(err, snapshotpkg.ErrResourceLimit) {
 		t.Fatalf("aggregate budget error = %v", err)
@@ -319,7 +313,7 @@ func TestInspectPreparedPackageBoundsDecompressionByRemainingWorkingSet(
 ) {
 	metadata, entries := secureSnapshotPackageFixture()
 	var archive bytes.Buffer
-	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+	if err := snapshotpkg.Export(&archive, metadata, entries); err != nil {
 		t.Fatal(err)
 	}
 	prepared := &preparedSnapshotPackage{
@@ -331,7 +325,6 @@ func TestInspectPreparedPackageBoundsDecompressionByRemainingWorkingSet(
 	}
 	if _, _, err := inspectPreparedPackage(
 		prepared,
-		nil,
 		true,
 	); !errors.Is(err, snapshotpkg.ErrResourceLimit) {
 		t.Fatalf("remaining working-set budget error = %v", err)
@@ -344,9 +337,7 @@ func TestInspectPreparedPackageAllocatesEntriesAtVerifiedSize(t *testing.T) {
 	if err := snapshotpkg.Export(
 		&archive,
 		metadata,
-		fixtureEntries,
-		nil,
-	); err != nil {
+		fixtureEntries); err != nil {
 		t.Fatal(err)
 	}
 	prepared := &preparedSnapshotPackage{
@@ -354,7 +345,7 @@ func TestInspectPreparedPackageAllocatesEntriesAtVerifiedSize(t *testing.T) {
 		size:            int64(archive.Len()),
 		workingSetBytes: int64(archive.Len()),
 	}
-	_, entries, err := inspectPreparedPackage(prepared, nil, true)
+	_, entries, err := inspectPreparedPackage(prepared, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +367,7 @@ func TestInspectPreparedPackageAcceptsBoundedHighlyCompressiblePayload(
 	metadata, entries := secureSnapshotPackageFixture()
 	entries["objects/compressible"] = bytes.Repeat([]byte{0}, 1<<20)
 	var archive bytes.Buffer
-	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+	if err := snapshotpkg.Export(&archive, metadata, entries); err != nil {
 		t.Fatal(err)
 	}
 	prepared := &preparedSnapshotPackage{
@@ -386,7 +377,6 @@ func TestInspectPreparedPackageAcceptsBoundedHighlyCompressiblePayload(
 	}
 	if _, decoded, err := inspectPreparedPackage(
 		prepared,
-		nil,
 		true,
 	); err != nil {
 		t.Fatalf("bounded compressible package rejected: %v", err)
@@ -398,7 +388,7 @@ func TestInspectPreparedPackageAcceptsBoundedHighlyCompressiblePayload(
 func TestPrepareSnapshotPackageSourceFailsClosedAtPlaintextLimit(t *testing.T) {
 	metadata, entries := secureSnapshotPackageFixture()
 	var archive bytes.Buffer
-	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+	if err := snapshotpkg.Export(&archive, metadata, entries); err != nil {
 		t.Fatal(err)
 	}
 	var encrypted bytes.Buffer
@@ -439,7 +429,7 @@ func TestPrepareSnapshotPackageSourceFailsClosedAtPlaintextLimit(t *testing.T) {
 func TestPrepareSnapshotPackageSourceAcceptsAgeIdentity(t *testing.T) {
 	metadata, entries := secureSnapshotPackageFixture()
 	var archive bytes.Buffer
-	if err := snapshotpkg.Export(&archive, metadata, entries, nil); err != nil {
+	if err := snapshotpkg.Export(&archive, metadata, entries); err != nil {
 		t.Fatal(err)
 	}
 	identity, recipient, err := snapshotpkg.GenerateAgeIdentity()
@@ -470,9 +460,7 @@ func TestPrepareSnapshotPackageSourceAcceptsAgeIdentity(t *testing.T) {
 	if _, err := snapshotpkg.Inspect(
 		prepared.ReaderAt(),
 		prepared.Size(),
-		snapshotpkg.DefaultLimits(),
-		nil,
-	); err != nil {
+		snapshotpkg.DefaultLimits()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -488,7 +476,6 @@ func TestStreamAgeSnapshotPackageProducesInspectablePackage(t *testing.T) {
 		&encrypted,
 		metadata,
 		entries,
-		nil,
 		[]string{recipient},
 		"",
 	); err != nil {
@@ -506,9 +493,8 @@ func TestStreamAgeSnapshotPackageProducesInspectablePackage(t *testing.T) {
 	inspection, err := snapshotpkg.Inspect(
 		reader,
 		int64(reader.Len()),
-		snapshotpkg.DefaultLimits(),
-		nil,
-	)
+		snapshotpkg.DefaultLimits())
+
 	if err != nil || inspection.Manifest.Metadata != metadata {
 		t.Fatalf("inspection=%#v err=%v", inspection, err)
 	}
@@ -522,7 +508,6 @@ func TestStreamAgeSnapshotPackageSupportsPassphrase(t *testing.T) {
 		&encrypted,
 		metadata,
 		entries,
-		nil,
 		nil,
 		passphrase,
 	); err != nil {
@@ -540,9 +525,7 @@ func TestStreamAgeSnapshotPackageSupportsPassphrase(t *testing.T) {
 	if _, err := snapshotpkg.Inspect(
 		reader,
 		int64(reader.Len()),
-		snapshotpkg.DefaultLimits(),
-		nil,
-	); err != nil {
+		snapshotpkg.DefaultLimits()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -560,7 +543,6 @@ func TestStreamAgeSnapshotPackageJoinsProducerOnConsumerFailure(t *testing.T) {
 			failingSnapshotPackageWriter{err: sentinel},
 			metadata,
 			entries,
-			nil,
 			[]string{recipient},
 			"",
 		)
@@ -579,7 +561,6 @@ func TestStreamAgeSnapshotPackageJoinsProducerOnConsumerFailure(t *testing.T) {
 		io.Discard,
 		metadata,
 		invalidEntries,
-		nil,
 		[]string{recipient},
 		"",
 	); !errors.Is(err, snapshotpkg.ErrInvalidPackage) {

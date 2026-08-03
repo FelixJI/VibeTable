@@ -22,7 +22,6 @@ func registerFieldRoutes(
 	r *router.Router[*core.RequestEvent],
 	app core.App,
 	migration *fieldchange.MigrationService,
-	backupReceiptKey []byte,
 	logger *slog.Logger,
 	protectionVerifier fieldchange.ProtectionSnapshotVerifier,
 	gates ...businessWriteGate,
@@ -35,7 +34,6 @@ func registerFieldRoutes(
 	)
 	executorOptions := []fieldchange.ExecutorOption{
 		fieldchange.WithMigrationScheduler(migration),
-		fieldchange.WithBackupReceiptKey(backupReceiptKey),
 		fieldchange.WithExecutorLogger(logger),
 	}
 	if protectionVerifier != nil {

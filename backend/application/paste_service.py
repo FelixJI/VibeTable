@@ -8,7 +8,7 @@
 
 The bulk endpoint runs in one server transaction (all-or-nothing) and honours
 an idempotency key for safe retries. The Python layer never holds raw payload
-material in the token itself — the token is an opaque signed handle that the
+material in the token itself — the token is an opaque random handle that the
 service resolves to its in-memory plan.
 
 Tokens live in-process (the Python broker is the single session owner) and
@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import hmac
 import json
 import re
 import secrets as pysecrets
@@ -114,30 +113,24 @@ class _StoredPlan:
 
 
 class PasteTokenStore:
-    """In-memory store of signed, single-use preview tokens.
+    """In-memory store of opaque, single-use preview tokens.
 
-    Each token is an opaque random handle plus an HMAC tag derived from a
-    per-process secret, so a token minted by one process cannot be replayed
-    against another. The store also retains the bound plan so apply can resolve
-    the token without trusting host-supplied payload material.
+    The random token is only a lookup handle. The bound plan remains server-side,
+    so apply never trusts host-supplied payload material.
     """
 
     def __init__(
         self,
         *,
-        secret: bytes | None = None,
         clock: Callable[[], float] = time.time,
         ttl_seconds: float = TOKEN_TTL_SECONDS,
     ) -> None:
-        self._secret = secret or pysecrets.token_bytes(32)
         self._clock = clock
         self._ttl_seconds = ttl_seconds
         self._plans: dict[str, _StoredPlan] = {}
 
     def mint(self, plan: _StoredPlan) -> PasteToken:
-        raw = pysecrets.token_urlsafe(24)
-        tag = hmac.new(self._secret, raw.encode("ascii"), hashlib.sha256).hexdigest()
-        token = f"{raw}.{tag}"
+        token = f"pst1.{pysecrets.token_urlsafe(32)}"
         self._plans[token] = plan
         return PasteToken(token=token, expires_at=plan.expires_at, consumed=False)
 
@@ -150,11 +143,7 @@ class PasteTokenStore:
         return self._clock()
 
     def resolve(self, token: str) -> _StoredPlan:
-        if "." not in token:
-            raise PasteError("invalid paste token", code="paste_token_invalid")
-        raw, _, tag = token.rpartition(".")
-        expected = hmac.new(self._secret, raw.encode("ascii"), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected, tag):
+        if not re.fullmatch(r"pst1\.[A-Za-z0-9_-]{40,48}", token):
             raise PasteError("invalid paste token", code="paste_token_invalid")
         plan = self._plans.get(token)
         if plan is None:

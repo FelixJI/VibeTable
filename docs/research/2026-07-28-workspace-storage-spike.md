@@ -22,7 +22,7 @@
 
 - memory/fault 与 filesystem repository adapter 的内容去重、fencing、flush/reopen、publication 原子性、损坏/缺失检测和 root pin。
 - SQLite 固定读事务：写入并发发生后，读事务仍看到 barrier 时的稳定视图；新事务看到新提交。
-- Snapshot package 的 ZIP64、逐 entry SHA-256、workspace MAC、路径穿越、重复 entry、符号链接和资源限制。
+- Snapshot package 的 ZIP64、逐 entry SHA-256、路径穿越、重复 entry、符号链接和资源限制。
 - direct/mirrored 布局、fixed/network/removable/user-marked/registered cloud nested root 分类，以及 storage move/release-cache plan 的 stale 校验。
 - Kopia façade 写入的仓库可由固定 `kopia v0.23.1` CLI 重开并读取 manifest。
 - age 原生 API 与固定 `age v1.3.1` CLI 双向加解密互操作。

@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -15,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from qa.legacy_surface_check import check as check_legacy_surface
-from qa.provider_evidence_check import check as check_provider_evidence
+from qa.provider_policy_check import check as check_provider_policy
 from qa.release_candidate import CandidateError, candidate_evidence
 from scripts.build_next import (
     AGE_VERSION,
@@ -53,7 +52,7 @@ def _inside(root: Path, candidate: Path) -> bool:
 def check_source(root: Path = PROJECT_ROOT) -> list[str]:
     errors = check_versions(root)
     errors.extend(check_legacy_surface(root))
-    errors.extend(check_provider_evidence(root))
+    errors.extend(check_provider_policy(root))
     required = (
         root / "backend" / "_version.py",
         root / "CHANGELOG.md",
@@ -112,9 +111,6 @@ def _pe_machine(path: Path) -> int | None:
 def check_packaged_provider_support(
     provider_path: Path,
     source_root: Path,
-    *,
-    now: datetime | None = None,
-    expected_artifact_hashes: dict[str, str] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     try:
@@ -127,18 +123,15 @@ def check_packaged_provider_support(
     except (KeyError, OSError, json.JSONDecodeError, TypeError):
         return ["provider support matrix is invalid"]
     errors.extend(
-        check_provider_evidence(
+        check_provider_policy(
             source_root,
-            now=now,
             support_path=provider_path,
-            expected_artifact_hashes=expected_artifact_hashes,
-            require_artifact_hashes=True,
         )
     )
     return errors
 
 
-def _provider_artifact_hashes(package_root: Path, package_archive: Path) -> dict[str, str]:
+def _release_artifact_hashes(package_root: Path, package_archive: Path) -> dict[str, str]:
     evidence = candidate_evidence(package_root, package_archive)
     archive = evidence["archive"]
     if not isinstance(archive, dict):
@@ -166,10 +159,9 @@ def check_package(
 ) -> list[str]:
     root = package_root.resolve()
     errors: list[str] = []
-    provider_artifact_hashes: dict[str, str] | None = None
     if package_archive is not None:
         try:
-            provider_artifact_hashes = _provider_artifact_hashes(root, package_archive)
+            _release_artifact_hashes(root, package_archive)
         except CandidateError as exc:
             errors.append(f"release candidate identity is invalid: {exc}")
     root_entries = {path.name: path for path in root.iterdir()}
@@ -316,7 +308,6 @@ def check_package(
                     check_packaged_provider_support(
                         provider_path,
                         source_root,
-                        expected_artifact_hashes=provider_artifact_hashes,
                     )
                 )
             corpus_path = contracts_root / "compatibility-corpus.json"
