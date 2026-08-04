@@ -4,22 +4,23 @@ package workspacev2
 
 import (
 	"path/filepath"
+	"syscall"
 
-	"golang.org/x/sys/windows"
+	"github.com/vibetable/vibetable/sidecar/internal/winapi"
 )
 
 func replaceGrantedFile(source string, destination string) error {
-	from, err := windows.UTF16PtrFromString(filepath.Clean(source))
+	from, err := syscall.UTF16PtrFromString(filepath.Clean(source))
 	if err != nil {
 		return err
 	}
-	to, err := windows.UTF16PtrFromString(filepath.Clean(destination))
+	to, err := syscall.UTF16PtrFromString(filepath.Clean(destination))
 	if err != nil {
 		return err
 	}
-	return windows.MoveFileEx(
+	return winapi.MoveFileEx(
 		from,
 		to,
-		windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH,
+		winapi.MoveFileReplaceExisting|winapi.MoveFileWriteThrough,
 	)
 }
