@@ -93,7 +93,7 @@ def test_repository_versions_are_consistent() -> None:
     assert check_versions(REPO_ROOT) == []
     versions = collect_release_versions(REPO_ROOT)
     assert versions.pocketbase == "0.39.9"
-    assert versions.cel == "0.26.1"
+    assert versions.cel == "0.29.0"
     assert versions.contract == "v1"
     assert versions.schema == "6"
     assert len(versions.migration_hash) == 64
@@ -157,7 +157,7 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
     assert manifest["components"]["sidecar"] == {
         "version": version,
         "pocketBaseVersion": "0.39.9",
-        "celVersion": "0.26.1",
+        "celVersion": "0.29.0",
         "contractVersion": "2.0",
         "schemaVersion": "6",
         "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
@@ -394,7 +394,7 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
         }
         for name, version in (
             ("github.com/pocketbase/pocketbase", "v0.39.9"),
-            ("github.com/google/cel-go", "v0.26.1"),
+            ("github.com/google/cel-go", "v0.29.0"),
             ("github.com/kopia/kopia", build_next.KOPIA_VERSION),
             ("filippo.io/age", build_next.AGE_VERSION),
         )

@@ -668,6 +668,19 @@ def test_fault_injection_evidence_uses_isolated_gate_temp(
     assert environment["VIBETABLE_FAULT_EVIDENCE_ROOT"] == str(tmp_path / "fault-injection")
 
 
+def test_fault_injection_uses_the_selected_immutable_candidate(tmp_path: Path) -> None:
+    package_root = tmp_path / "candidate"
+
+    command, _cwd = next_gate.stage_command("fault-injection", package_root)
+
+    assert command == [
+        next_gate.sys.executable,
+        str(next_gate.FAULT_INJECTION),
+        "--package-root",
+        str(package_root),
+    ]
+
+
 def test_go_test_retries_only_the_narrow_windows_tempdir_cleanup_flake(
     monkeypatch,
 ) -> None:
