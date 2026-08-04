@@ -1157,7 +1157,7 @@ func (catalog *Catalog) compileViewQuery(
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	columns := make([]string, 0, len(definition.Fields)+1)
+	columns := make([]string, 0, len(definition.Fields))
 	columns = append(columns, "`id`")
 	for _, field := range definition.Fields {
 		columns = append(columns, "`"+field.PhysicalName+"`")

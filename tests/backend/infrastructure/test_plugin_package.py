@@ -13,6 +13,7 @@ import pytest
 from backend.infrastructure.plugin_package import (
     PackagePolicy,
     PluginPackageError,
+    _is_valid_plugin_id,
     inspect_plugin_package,
     pack_plugin,
 )
@@ -79,6 +80,31 @@ def test_inspect_local_package_returns_normalized_files_and_hash(tmp_path: Path)
     expected = hashlib.sha256(b"export default async function run() {}").hexdigest()
     assert inspected.files[0].sha256 == expected
     assert inspected.package_hash.startswith("sha256:")
+
+
+@pytest.mark.parametrize(
+    ("plugin_id", "expected"),
+    [
+        ("com.example.reader", True),
+        ("a-b", True),
+        ("com.example.reader--", True),
+        ("single", False),
+        ("com..reader", False),
+        ("com.example_reader", False),
+        ("Com.example.reader", False),
+    ],
+)
+def test_plugin_id_validation_preserves_reverse_domain_contract(
+    plugin_id: str,
+    expected: bool,
+) -> None:
+    assert _is_valid_plugin_id(plugin_id) is expected
+
+
+def test_plugin_id_validation_rejects_long_hostile_input_without_regex_backtracking() -> None:
+    hostile = "0" + "-0" * 100_000 + "!"
+
+    assert not _is_valid_plugin_id(hostile)
 
 
 @pytest.mark.parametrize("member", ["/absolute.json", "../escape.json", "C:/drive.json"])

@@ -70,7 +70,7 @@ func (service *Service) Preview(
 	if err != nil {
 		return Result{}, err
 	}
-	byReference := make(map[string]v2.FieldDefinition, len(fields)*2)
+	byReference := make(map[string]v2.FieldDefinition, len(fields))
 	for _, definition := range fields {
 		byReference[definition.Identity.FieldID] = definition
 		byReference[definition.Identity.PhysicalName] = definition

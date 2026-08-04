@@ -280,6 +280,27 @@ def test_source_only_go_stages_do_not_fabricate_recovery_tool_paths() -> None:
     assert "VIBETABLE_AGE_CLI" not in environment
 
 
+def test_go_stages_reuse_the_callers_restored_build_cache(monkeypatch) -> None:
+    monkeypatch.setenv("GOCACHE", "restored-setup-go-cache")
+
+    environment = next_gate._stage_environment("go-test", ["go"])
+
+    assert environment["GOCACHE"] == "restored-setup-go-cache"
+    assert environment["GOTMPDIR"] == str(next_gate.REPO_ROOT / "build" / "qa" / "go-tmp")
+
+
+def test_go_stages_leave_the_default_build_cache_unset(monkeypatch) -> None:
+    monkeypatch.delenv("GOCACHE", raising=False)
+
+    environment = next_gate._stage_environment("go-race", ["go"])
+
+    assert "GOCACHE" not in environment
+
+
+def test_race_stage_uses_three_isolated_package_workers_by_default() -> None:
+    assert next_gate.RACE_PACKAGE_WORKERS == 3
+
+
 def test_release_gate_enables_required_windows_credential_manager_tests() -> None:
     adapter = (next_gate.REPO_ROOT / "scripts/automation_project.py").read_text(encoding="utf-8")
     workflow = (next_gate.REPO_ROOT / ".github/workflows/cd.yml").read_text(encoding="utf-8")

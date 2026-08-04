@@ -50,7 +50,7 @@ RACE_COMMAND_TIMEOUT_SECONDS = 7 * 60
 RACE_LONG_COMMAND_TIMEOUT_SECONDS = 16 * 60
 RACE_LONG_TEST_TIMEOUT = "15m"
 RACE_BINARY_DIR = REPO_ROOT / "build" / "qa" / "race-tests"
-RACE_PACKAGE_WORKERS = 2
+RACE_PACKAGE_WORKERS = 3
 RACE_LONG_TESTS = frozenset(
     {
         "TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit",
@@ -295,11 +295,8 @@ def _stage_environment(
     if stage == "fault-injection":
         environment["VIBETABLE_FAULT_EVIDENCE_ROOT"] = str(qa_tmp / "fault-injection")
     if stage.startswith("go-"):
-        go_cache = REPO_ROOT / "build" / "qa" / "go-cache"
         go_tmp = REPO_ROOT / "build" / "qa" / "go-tmp"
-        go_cache.mkdir(parents=True, exist_ok=True)
         go_tmp.mkdir(parents=True, exist_ok=True)
-        environment["GOCACHE"] = str(go_cache)
         environment["GOTMPDIR"] = str(go_tmp)
     if stage in {"go-test", "go-race"} and package_root is not None:
         layout_path = package_root / "resources" / "publish-layout.json"

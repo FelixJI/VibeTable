@@ -6,8 +6,26 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestWorkspaceBackupProofUsesSaltedArgon2idAndDetectsChanges(t *testing.T) {
+	raw := []byte("password-format-backup")
+	proof, err := workspaceBackupProof(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(proof, "argon2id$") {
+		t.Fatalf("proof format = %q", proof)
+	}
+	if !verifyWorkspaceBackupProof(raw, proof) {
+		t.Fatal("proof did not verify its source")
+	}
+	if verifyWorkspaceBackupProof([]byte("changed"), proof) {
+		t.Fatal("proof accepted changed backup content")
+	}
+}
 
 func TestWorkspaceRepositoryFactoryCreatesOnceAndReopens(t *testing.T) {
 	ctx := context.Background()

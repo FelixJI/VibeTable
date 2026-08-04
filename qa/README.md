@@ -47,13 +47,15 @@ Windows 上的 Go race detector 需要启用 cgo，并使用包含
 否则使用 `PATH` 中的 `gcc`。没有合格编译器时必须失败，不能把 race 标成
 跳过。当前验证基线是 w64devkit 2.8.0 x64（GCC 16.1.0），下载包 SHA-256：
 `6252bf34fe2231a55ac7f03d482b36d2c7c58697990551bba508102cfb3f342e`。
+Go 阶段只隔离 `GOTMPDIR`，不会覆盖调用者的 `GOCACHE`；CI 因而复用
+`setup-go` 恢复的默认 build cache，本地显式设置的缓存路径也会原样继承。
 
 PocketBase 的每个集成测试 app 会启动文件系统 watcher。为避免单一测试进程
 累计 watcher 并触发 Go 的 10 分钟测试超时，race 门会：
 
 1. 动态枚举 `go list ./...` 返回的全部包及其源码目录；
 2. 对每个包动态枚举 `Test`、`Example` 与默认执行的 `Fuzz` seed；
-3. 每个包只用 `go test -c -race` 编译一次；最多两个包并行，不同包可以并行，
+3. 每个包只用 `go test -c -race` 编译一次；最多三个包并行，不同包可以并行，
    同一包内仍逐测试串行；
 4. Windows 上每个命名测试使用编译后 race 二进制的独立进程（仍为
    `-test.count=1 -test.parallel=1`），包括 migrations 与 integration，避免
@@ -69,6 +71,11 @@ Windows 偶发的 PocketBase watcher 与 Go `TempDir` 删除竞争只允许对�
 race 命令最多重试两次；识别条件严格限定为 `testing.go` 的 “directory is not
 empty” 清理诊断。出现 `WARNING: DATA RACE`、panic、业务断言或第三次仍失败时
 一律失败。
+
+2026-08-04 的同机验证中，默认 Go cache 加三个 package worker 的完整 race 阶段
+耗时 815.219 秒（13.59 分钟），相对历史两个 worker 的 994.422 秒下降 18.02%。
+本次覆盖 46 个有测试包、575 个当前源码中的命名测试和 3 个无命名测试包；历史
+报告来自不同源码版本，测试数量不可直接做增减比较，本次变更本身未删除测试。
 
 ## Fault injection
 

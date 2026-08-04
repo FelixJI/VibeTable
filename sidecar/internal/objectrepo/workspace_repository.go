@@ -2,11 +2,15 @@ package objectrepo
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"golang.org/x/crypto/argon2"
 )
 
 const workspaceRepositoryFormat = "kopia-v3"
@@ -188,8 +192,13 @@ func AcquireWorkspaceRepositorySession(
 }
 
 type WorkspaceRepositoryRotationProof struct {
-	PrimaryHash   string
-	SecondaryHash string
+	PrimaryProof   string
+	SecondaryProof string
+}
+
+func (proof WorkspaceRepositoryRotationProof) ValidFormat() bool {
+	return validWorkspaceBackupProof(proof.PrimaryProof) &&
+		validWorkspaceBackupProof(proof.SecondaryProof)
 }
 
 // WorkspaceRepositoryRotation is the offline password-rotation boundary.
@@ -242,6 +251,14 @@ func (rotation *workspaceRepositoryRotation) Backup(
 	if err != nil {
 		return WorkspaceRepositoryRotationProof{}, err
 	}
+	primaryProof, err := workspaceBackupProof(backup.Repository)
+	if err != nil {
+		return WorkspaceRepositoryRotationProof{}, err
+	}
+	secondaryProof, err := workspaceBackupProof(backup.BlobConfig)
+	if err != nil {
+		return WorkspaceRepositoryRotationProof{}, err
+	}
 	if err := os.MkdirAll(backupRoot, 0o700); err != nil {
 		return WorkspaceRepositoryRotationProof{}, err
 	}
@@ -258,8 +275,8 @@ func (rotation *workspaceRepositoryRotation) Backup(
 		return WorkspaceRepositoryRotationProof{}, err
 	}
 	return WorkspaceRepositoryRotationProof{
-		PrimaryHash:   workspaceBackupHash(backup.Repository),
-		SecondaryHash: workspaceBackupHash(backup.BlobConfig),
+		PrimaryProof:   primaryProof,
+		SecondaryProof: secondaryProof,
 	}, nil
 }
 
@@ -334,7 +351,7 @@ func (rotation *workspaceRepositoryRotation) Restore(
 		filepath.Join(backupRoot, "kopia.repository"),
 	)
 	if err != nil ||
-		workspaceBackupHash(repositoryBlob) != proof.PrimaryHash {
+		!verifyWorkspaceBackupProof(repositoryBlob, proof.PrimaryProof) {
 		return errors.Join(
 			errors.New("repository.rotation_backup_corrupt"),
 			err,
@@ -344,7 +361,7 @@ func (rotation *workspaceRepositoryRotation) Restore(
 		filepath.Join(backupRoot, "kopia.blobcfg"),
 	)
 	if err != nil ||
-		workspaceBackupHash(blobConfig) != proof.SecondaryHash {
+		!verifyWorkspaceBackupProof(blobConfig, proof.SecondaryProof) {
 		return errors.Join(
 			errors.New("repository.rotation_backup_corrupt"),
 			err,
@@ -419,7 +436,69 @@ func writePrivateBackup(path string, raw []byte) error {
 	return file.Close()
 }
 
-func workspaceBackupHash(raw []byte) string {
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
+const (
+	workspaceBackupProofPrefix      = "argon2id"
+	workspaceBackupProofSaltBytes   = 16
+	workspaceBackupProofKeyBytes    = 32
+	workspaceBackupProofIterations  = 1
+	workspaceBackupProofMemoryKiB   = 64 * 1024
+	workspaceBackupProofParallelism = 2
+)
+
+func workspaceBackupProof(raw []byte) (string, error) {
+	salt := make([]byte, workspaceBackupProofSaltBytes)
+	if _, err := rand.Read(salt); err != nil {
+		return "", err
+	}
+	derived := argon2.IDKey(
+		raw,
+		salt,
+		workspaceBackupProofIterations,
+		workspaceBackupProofMemoryKiB,
+		workspaceBackupProofParallelism,
+		workspaceBackupProofKeyBytes,
+	)
+	defer clear(derived)
+	return strings.Join([]string{
+		workspaceBackupProofPrefix,
+		base64.RawStdEncoding.EncodeToString(salt),
+		base64.RawStdEncoding.EncodeToString(derived),
+	}, "$"), nil
+}
+
+func verifyWorkspaceBackupProof(raw []byte, proof string) bool {
+	salt, expected, valid := parseWorkspaceBackupProof(proof)
+	if !valid {
+		return false
+	}
+	derived := argon2.IDKey(
+		raw,
+		salt,
+		workspaceBackupProofIterations,
+		workspaceBackupProofMemoryKiB,
+		workspaceBackupProofParallelism,
+		workspaceBackupProofKeyBytes,
+	)
+	defer clear(derived)
+	return subtle.ConstantTimeCompare(derived, expected) == 1
+}
+
+func validWorkspaceBackupProof(proof string) bool {
+	_, _, valid := parseWorkspaceBackupProof(proof)
+	return valid
+}
+
+func parseWorkspaceBackupProof(proof string) ([]byte, []byte, bool) {
+	parts := strings.Split(proof, "$")
+	if len(parts) != 3 || parts[0] != workspaceBackupProofPrefix {
+		return nil, nil, false
+	}
+	salt, saltErr := base64.RawStdEncoding.DecodeString(parts[1])
+	derived, derivedErr := base64.RawStdEncoding.DecodeString(parts[2])
+	if saltErr != nil || derivedErr != nil ||
+		len(salt) != workspaceBackupProofSaltBytes ||
+		len(derived) != workspaceBackupProofKeyBytes {
+		return nil, nil, false
+	}
+	return salt, derived, true
 }

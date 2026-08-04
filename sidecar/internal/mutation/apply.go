@@ -1364,7 +1364,7 @@ func productRow(
 			context.Background(), app, definition.TableID,
 		)
 		if err == nil {
-			physical := make(map[string]any, len(v2Fields)*2)
+			physical := make(map[string]any, len(v2Fields))
 			for _, field := range v2Fields {
 				physical[field.Identity.PhysicalName] =
 					record.GetRaw(field.Identity.PhysicalName)
