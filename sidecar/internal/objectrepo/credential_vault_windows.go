@@ -6,8 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -20,7 +21,7 @@ type windowsCredential struct {
 	Type               uint32
 	TargetName         *uint16
 	Comment            *uint16
-	LastWritten        syscall.Filetime
+	LastWritten        windows.Filetime
 	CredentialBlobSize uint32
 	CredentialBlob     *byte
 	Persist            uint32
@@ -31,12 +32,12 @@ type windowsCredential struct {
 }
 
 var (
-	advapi32       = syscall.NewLazyDLL("advapi32.dll")
+	advapi32       = windows.NewLazySystemDLL("advapi32.dll")
 	credWriteW     = advapi32.NewProc("CredWriteW")
 	credReadW      = advapi32.NewProc("CredReadW")
 	credDeleteW    = advapi32.NewProc("CredDeleteW")
 	credFree       = advapi32.NewProc("CredFree")
-	errCredMissing = syscall.Errno(1168)
+	errCredMissing = windows.Errno(1168)
 )
 
 // WindowsCredentialVault stores protected repository keys in the current
@@ -48,7 +49,7 @@ func (WindowsCredentialVault) Read(ctx context.Context, name string) ([]byte, er
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	target, err := syscall.UTF16PtrFromString(name)
+	target, err := windows.UTF16PtrFromString(name)
 	if err != nil {
 		return nil, err
 	}
@@ -80,11 +81,11 @@ func (WindowsCredentialVault) Write(ctx context.Context, name string, value []by
 	if len(value) == 0 {
 		return ErrKeyMissing
 	}
-	target, err := syscall.UTF16PtrFromString(name)
+	target, err := windows.UTF16PtrFromString(name)
 	if err != nil {
 		return err
 	}
-	username, err := syscall.UTF16PtrFromString("VibeTable")
+	username, err := windows.UTF16PtrFromString("VibeTable")
 	if err != nil {
 		return err
 	}
@@ -107,7 +108,7 @@ func (WindowsCredentialVault) Delete(ctx context.Context, name string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	target, err := syscall.UTF16PtrFromString(name)
+	target, err := windows.UTF16PtrFromString(name)
 	if err != nil {
 		return err
 	}

@@ -4,24 +4,23 @@ package filehistory
 
 import (
 	"path/filepath"
-	"syscall"
 
-	"github.com/vibetable/vibetable/sidecar/internal/winapi"
+	"golang.org/x/sys/windows"
 )
 
 func replaceMaterializedFile(source string, destination string) error {
-	from, err := syscall.UTF16PtrFromString(filepath.Clean(source))
+	from, err := windows.UTF16PtrFromString(filepath.Clean(source))
 	if err != nil {
 		return err
 	}
-	to, err := syscall.UTF16PtrFromString(filepath.Clean(destination))
+	to, err := windows.UTF16PtrFromString(filepath.Clean(destination))
 	if err != nil {
 		return err
 	}
-	return winapi.MoveFileEx(
+	return windows.MoveFileEx(
 		from,
 		to,
-		winapi.MoveFileReplaceExisting|winapi.MoveFileWriteThrough,
+		windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH,
 	)
 }
 
@@ -30,11 +29,11 @@ func syncDirectoryDurable(string) error {
 }
 
 func pathHasReparsePoint(path string) bool {
-	value, err := syscall.UTF16PtrFromString(filepath.Clean(path))
+	value, err := windows.UTF16PtrFromString(filepath.Clean(path))
 	if err != nil {
 		return true
 	}
-	attributes, err := syscall.GetFileAttributes(value)
+	attributes, err := windows.GetFileAttributes(value)
 	return err != nil ||
-		attributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0
+		attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0
 }

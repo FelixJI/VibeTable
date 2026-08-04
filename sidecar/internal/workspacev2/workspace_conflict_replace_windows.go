@@ -2,25 +2,21 @@
 
 package workspacev2
 
-import (
-	"syscall"
-
-	"github.com/vibetable/vibetable/sidecar/internal/winapi"
-)
+import "golang.org/x/sys/windows"
 
 func replaceConflictFile(source string, target string) error {
-	sourcePtr, err := syscall.UTF16PtrFromString(source)
+	sourcePtr, err := windows.UTF16PtrFromString(source)
 	if err != nil {
 		return err
 	}
-	targetPtr, err := syscall.UTF16PtrFromString(target)
+	targetPtr, err := windows.UTF16PtrFromString(target)
 	if err != nil {
 		return err
 	}
-	return winapi.MoveFileEx(
+	return windows.MoveFileEx(
 		sourcePtr,
 		targetPtr,
-		winapi.MoveFileReplaceExisting|
-			winapi.MoveFileWriteThrough,
+		windows.MOVEFILE_REPLACE_EXISTING|
+			windows.MOVEFILE_WRITE_THROUGH,
 	)
 }

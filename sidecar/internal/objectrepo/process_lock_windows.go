@@ -3,15 +3,30 @@
 package objectrepo
 
 import (
+	"errors"
 	"os"
 
-	"github.com/vibetable/vibetable/sidecar/internal/winapi"
+	"golang.org/x/sys/windows"
 )
 
 func tryPlatformFileLock(file *os.File) (bool, error) {
-	return winapi.TryLockFile(file.Fd())
+	overlapped := new(windows.Overlapped)
+	err := windows.LockFileEx(
+		windows.Handle(file.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0,
+		1,
+		0,
+		overlapped,
+	)
+	if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func unlockPlatformFile(file *os.File) error {
-	return winapi.UnlockFile(file.Fd())
+	return windows.UnlockFileEx(
+		windows.Handle(file.Fd()), 0, 1, 0, new(windows.Overlapped),
+	)
 }

@@ -2,24 +2,20 @@
 
 package objectrepo
 
-import (
-	"syscall"
-
-	"github.com/vibetable/vibetable/sidecar/internal/winapi"
-)
+import "golang.org/x/sys/windows"
 
 func replaceFileDurable(source, destination string) error {
-	sourceUTF16, err := syscall.UTF16PtrFromString(source)
+	sourceUTF16, err := windows.UTF16PtrFromString(source)
 	if err != nil {
 		return err
 	}
-	destinationUTF16, err := syscall.UTF16PtrFromString(destination)
+	destinationUTF16, err := windows.UTF16PtrFromString(destination)
 	if err != nil {
 		return err
 	}
-	return winapi.MoveFileEx(
+	return windows.MoveFileEx(
 		sourceUTF16,
 		destinationUTF16,
-		winapi.MoveFileReplaceExisting|winapi.MoveFileWriteThrough,
+		windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH,
 	)
 }

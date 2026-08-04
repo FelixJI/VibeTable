@@ -5,16 +5,17 @@ package workspacev2
 import (
 	"fmt"
 	"os"
-	"syscall"
+
+	"golang.org/x/sys/windows"
 )
 
 func snapshotSourceFileIdentity(
 	file *os.File,
 	_ os.FileInfo,
 ) (string, error) {
-	var information syscall.ByHandleFileInformation
-	if err := syscall.GetFileInformationByHandle(
-		syscall.Handle(file.Fd()),
+	var information windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(
+		windows.Handle(file.Fd()),
 		&information,
 	); err != nil {
 		return "", err

@@ -4,24 +4,23 @@ package restore
 
 import (
 	"path/filepath"
-	"syscall"
 
-	"github.com/vibetable/vibetable/sidecar/internal/winapi"
+	"golang.org/x/sys/windows"
 )
 
 func replaceJournalFile(source, destination string) error {
-	from, err := syscall.UTF16PtrFromString(filepath.Clean(source))
+	from, err := windows.UTF16PtrFromString(filepath.Clean(source))
 	if err != nil {
 		return err
 	}
-	to, err := syscall.UTF16PtrFromString(filepath.Clean(destination))
+	to, err := windows.UTF16PtrFromString(filepath.Clean(destination))
 	if err != nil {
 		return err
 	}
-	return winapi.MoveFileEx(
+	return windows.MoveFileEx(
 		from,
 		to,
-		winapi.MoveFileReplaceExisting|winapi.MoveFileWriteThrough,
+		windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH,
 	)
 }
 
