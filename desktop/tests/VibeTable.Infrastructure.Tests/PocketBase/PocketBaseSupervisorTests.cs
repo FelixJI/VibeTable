@@ -480,7 +480,7 @@ public sealed class PocketBaseSupervisorTests
                 buildTime = "unknown",
                 contractVersion = "v1",
                 pocketBaseVersion = "0.39.9",
-                celVersion = "0.26.1",
+                celVersion = "0.29.0",
                 schemaVersion = "1",
                 migrationHash,
             },
