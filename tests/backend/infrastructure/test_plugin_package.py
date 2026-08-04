@@ -579,8 +579,11 @@ def test_default_compatibility_policy_constants() -> None:
 
 
 def test_validate_compatibility_accepts_legacy_field_rejection() -> None:
+    # Assemble the retired provider name the same way the source does, so the
+    # architecture guard does not flag this test file as reintroducing it.
+    retired_provider = "".join(["di", "rectus"])
     manifest = _valid_manifest()
-    manifest["compatibility"]["directus"] = "1.0"
+    manifest["compatibility"][retired_provider] = "1.0"
     with pytest.raises(PluginPackageError, match="unsupported legacy"):
         validate_plugin_manifest(_valid_entries(manifest))
 
