@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -103,9 +102,9 @@ func TestWorkspaceV2LedgerHistorySurvivesBusinessAuditRollback(
 		app,
 		kernel,
 		mutation.MetadataSchemaSource{},
-		[]byte(strings.Repeat("l", 32)),
-		audit.WithLedgerHistory(ledger),
-	)
+
+		audit.WithLedgerHistory(ledger))
+
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -90,7 +90,6 @@ func (importer *Importer) Import(
 	ctx context.Context,
 	pathGrant string,
 	credential *string,
-	workspaceKey []byte,
 	mode TargetMode,
 	currentWorkspaceID string,
 ) (operation ImportOperation, err error) {
@@ -108,7 +107,7 @@ func (importer *Importer) Import(
 		err = errors.Join(err, source.Close())
 	}()
 
-	inspection, err := Inspect(source, source.Size(), importer.limits, workspaceKey)
+	inspection, err := Inspect(source, source.Size(), importer.limits)
 	if err != nil {
 		return ImportOperation{}, err
 	}
@@ -116,9 +115,6 @@ func (importer *Importer) Import(
 		if currentWorkspaceID == "" ||
 			inspection.Manifest.Metadata.WorkspaceID != currentWorkspaceID {
 			return ImportOperation{}, ErrWorkspaceConflict
-		}
-		if err := RequireOriginalWorkspaceTrust(inspection); err != nil {
-			return ImportOperation{}, err
 		}
 	}
 

@@ -1,39 +1,34 @@
-# SMB 镜像工作区安全边界
+# 目录镜像工作区边界
 
 ## 用户可见行为
 
-- 直接模式只允许 Windows 报告为 `Fixed` 且具备 strong coordination 的本机磁盘。
-- SMB、WebDAV 等网络位置都属于非固定存储。若对这类位置请求直接模式，宿主返回
-  `workspace.storage_requires_mirrored`，界面提示改用镜像模式，而不是按盘符或路径字符串拒绝。
-- 镜像模式只把本机固定磁盘上的 activity root 作为可写工作区；所选 SMB 根仅承载可独立重开的
-  恢复副本。
-- WebDAV 和其他非 SMB 网络协议返回 `workspace.network_protocol_unsupported`，不会随 SMB 一起
-  放开。
+- 直接模式只允许 Windows 报告为 `Fixed` 的本机磁盘。
+- 镜像模式把本机固定磁盘上的 activity root 作为可写工作区，并在用户选择的目录中维护可独立重开的恢复副本。
+- `network`、`registeredCloud`、`userMarkedSync` 和 `removable` 共用同一目录副本实现。程序只负责读写所选目录，不判断目录是否已经上传到云端，也不管理设备热插拔或盘符变化。
+- 可移动盘盘符变化时，用户关闭工作区后重新选择包含同一 workspace UUID 的目录。
+- network provider 仍只接受 Windows 句柄探测为 SMB 的位置；WebDAV 等协议返回 `workspace.network_protocol_unsupported`。
 
-## 协议识别
+## 写入频次
 
-路径分类不匹配 `C:\\`、UNC 前缀、盘符或 `DavWWWRoot` 字符串。探针在实际文件句柄上调用
-Windows `GetFileInformationByHandleEx(FileRemoteProtocolInfo)`，仅将
-`WNNC_NET_SMB (0x00020000)` 识别为 SMB。无法识别的远端协议一律 fail-closed。
+- 工作区启动、本地快照完成、用户手动更新副本和冲突处理会立即唤醒复制器。
+- 没有事件时每 30 秒扫描一次所选目录，用于发现另一端写入的变化。
+- 目录不可用或写入失败时按 2、4、8 秒指数退避，最长 60 秒；本地工作不因此回滚。
 
-## 发布门禁
+该频次描述的是应用对所选目录的读写，不代表云同步软件的上传频次或远端完成状态。
 
-`contracts/v2/provider-support.json` 必须为 network provider 显式声明 `protocol: smb`。只有
-`creation` 被受保护的发布流程改为 `enabled` 时，Desktop 才向 Web 宣告
-`workspace.storage.mirrored-create.v2`。
+## 一致性与损坏防御
 
-`hardware.smb-v1` evidence 必须绑定当前 commit、源码树、候选包哈希和受保护签名，并包含以下全部
-通过阶段：
+目录副本面向断线、部分写入、并发发布和自然损坏：
 
-1. `protocol-identification`
-2. `durable-write-rename-readback`
-3. `immutable-no-replace-publish`
-4. `disconnect-reconnect-recovery`
-5. `independent-reopen-root-verification`
+1. 内容先写入目标同目录临时文件并执行 `fsync`，再用不覆盖既有目标的原子发布完成提交；Windows 使用 no-replace `MoveFile`，不要求可移动盘支持硬链接。
+2. 同一路径的不同并发内容最多一个发布成功，既有不可变内容不会被覆盖。
+3. publication 使用规范载荷 SHA-256、父节点存在性和 checkpoint digest 检测截断、部分写入和自然损坏。
+4. 断线只留下本地 pending queue，目录恢复后幂等继续。
+5. 多设备并发发布保留多个 DAG heads 并进入显式冲突流程，不伪装成分布式排他锁。
+6. 验证和恢复会重新打开用户选择的目录并读取完整恢复闭包，不依赖 activity root 或本地 DAG 数据库。
 
-其中 immutable publish 必须覆盖 sidecar 使用的“完整临时文件 + 原子 no-replace hard link”语义，
-确认并发不同内容只有一个发布者成功且最终文件不会被覆盖。实验还需在断线、重连和进程独立重开后，
-仅依赖 SMB 根验证恢复闭包中的所有对象。
+SHA-256 在这里用于完整性和内容寻址，不用于证明发布者身份。人为伪造、云账户安全、同步软件行为、设备防盗和数据保密不属于目录镜像的安全边界；界面和 RPC 状态只声明“目录副本已验证”，不得表达“云端已上传”或“远端已认证”。
 
-在这些 evidence 尚未生成并通过受保护签名之前，矩阵保持 `blockedPendingLab`，UI 不提供镜像创建
-选项；这不是路径识别失败，而是发布资格尚未满足。
+## 支持矩阵
+
+`contracts/v2/provider-support.json` 是创建能力的唯一矩阵。四类非固定位置均为 `enabled` + `advisory`；它们没有实验室证据字段，也没有 provider 专属运行时。实际创建仍会验证目录可写、空间充足和不可覆盖发布能力。

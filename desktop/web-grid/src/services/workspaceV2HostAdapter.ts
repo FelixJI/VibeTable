@@ -371,7 +371,7 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
       ...protection.storage,
       health,
       pendingSync,
-      remoteVerified: syncState === "replicated" && !pendingSync,
+      replicaVerified: syncState === "replicated" && !pendingSync,
     });
   }
 

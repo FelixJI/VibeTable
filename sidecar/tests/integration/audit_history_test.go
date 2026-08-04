@@ -98,9 +98,8 @@ func TestAuditHistoryRestoresRelationAndRecalculatesDependentFormula(t *testing.
 		mutation.OperationUpdate, map[string]any{"author": "historyauthorb0"},
 	)
 	service, err := audit.New(
-		app, kernel, mutation.MetadataSchemaSource{},
-		[]byte(strings.Repeat("r", 32)),
-	)
+		app, kernel, mutation.MetadataSchemaSource{})
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,9 +228,9 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 
 	service, err := audit.New(
 		app, kernel, mutation.MetadataSchemaSource{},
-		[]byte(strings.Repeat("a", 32)),
-		audit.WithClock(func() time.Time { return now }),
-	)
+
+		audit.WithClock(func() time.Time { return now }))
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,9 +496,8 @@ func TestAuditHistoryArchivedRestoreUsesHistoricalSnapshotAndRestoreAction(t *te
 	})
 
 	service, err := audit.New(
-		app, kernel, mutation.MetadataSchemaSource{},
-		[]byte(strings.Repeat("b", 32)),
-	)
+		app, kernel, mutation.MetadataSchemaSource{})
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,9 +589,8 @@ func TestAuditHistoryRestoreReportsSchemaDriftBeforeDigestConflict(t *testing.T)
 		t.Fatal(err)
 	}
 	service, err := audit.New(
-		app, kernel, mutation.MetadataSchemaSource{},
-		[]byte(strings.Repeat("c", 32)),
-	)
+		app, kernel, mutation.MetadataSchemaSource{})
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -671,9 +668,8 @@ func TestAuditHistoryRestoresHardDeletedRecordAndRecalculatesFormula(t *testing.
 		t.Fatal(err)
 	}
 	service, err := audit.New(
-		app, kernel, mutation.MetadataSchemaSource{},
-		[]byte(strings.Repeat("d", 32)),
-	)
+		app, kernel, mutation.MetadataSchemaSource{})
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -738,9 +734,8 @@ func TestAuditHistoryRejectsOversizedRestoreState(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := audit.New(
-		app, kernel, mutation.MetadataSchemaSource{},
-		[]byte(strings.Repeat("e", 32)),
-	)
+		app, kernel, mutation.MetadataSchemaSource{})
+
 	if err != nil {
 		t.Fatal(err)
 	}

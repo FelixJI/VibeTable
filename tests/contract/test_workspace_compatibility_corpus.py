@@ -60,14 +60,21 @@ def test_pre_release_gap_is_explicit_not_a_fabricated_formal_fixture() -> None:
     assert "first-release baseline" in note
 
 
-def test_unverified_hardware_providers_are_release_blocked() -> None:
+def test_directory_replica_providers_are_enabled_without_attestation_contracts() -> None:
     payload = json.loads(PROVIDER_SUPPORT.read_text(encoding="utf-8"))
     assert payload["contractVersion"] == "2.0"
     assert payload["policyRevision"] >= 1
     providers = payload["providers"]
     assert providers["fixed"]["creation"] == "enabled"
-    for name in ("network", "registeredCloud", "userMarkedSync", "removable"):
-        provider = providers[name]
-        assert provider["creation"] == "blockedPendingLab"
-        assert provider["coordinationStrength"] == "advisory"
-        assert provider["requiredEvidence"].startswith("hardware.")
+    assert providers["network"] == {
+        "creation": "enabled",
+        "coordinationStrength": "advisory",
+        "protocol": "smb",
+    }
+    for name in ("registeredCloud", "userMarkedSync", "removable"):
+        assert providers[name] == {
+            "creation": "enabled",
+            "coordinationStrength": "advisory",
+        }
+    assert "evidenceContract" not in payload
+    assert "evidenceDirectory" not in payload

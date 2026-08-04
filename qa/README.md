@@ -87,20 +87,11 @@ empty” 清理诊断。出现 `WARNING: DATA RACE`、panic、业务断言或第
 CycloneDX SBOM，以及安装目录与可变数据隔离策略。发布布局禁止旧提供方运行
 时、Node/npm 或 `node_modules`。
 
-启用任一非 fixed provider 时，必须同时传入 `--package-archive`。provider lab
-证据的 `sourceHash` 会按 handoff 的 release source identity 重算（排除
-`qa/provider-evidence` 本身以避免自引用），`artifactHashes` 必须精确等于发布
-候选的 package tree hash 和 ZIP SHA-256。每份
-`<evidence-id>.json` 还必须带同目录
-`<evidence-id>.attestation.json`，其中记录固定的 Go、Kopia、age、SQLite
-版本和证据文件 SHA-256，并以 HMAC-SHA256 签名。release Environment 需要提供：
-
-- secret `PROVIDER_EVIDENCE_HMAC_KEY`：硬件实验室与受保护发布门共享的高熵密钥；
-- variable `PROVIDER_EVIDENCE_KEY_ID`：当前受信密钥标识。
-
-工作流只在受保护的 `release` Environment 中把它们映射到校验器环境变量。
-证据过期、源码或候选产物变化、版本缺失、key id 不匹配、密钥缺失或签名不可信
-都会 fail closed。非 fixed provider 仍为 `blockedPendingLab` 时不要求伪造证据。
+provider gate 校验打包后的支持矩阵与源码一致。SMB network、registered cloud、用户标记同步
+目录和 removable provider 都使用同一 advisory 目录副本实现；程序只验证并读写用户选择的
+目录，不推断云端上传状态或设备生命周期。实现依赖不可变 no-replace 发布、独立 reopen、
+checkpoint SHA-256 和冲突 heads 防御断线、部分写入、并发发布与自然损坏，不把摘要表达为
+发布者认证。
 
 正式安装器生成与签名、Windows SmartScreen/杀毒软件验证、全新用户安装/升级/
 卸载 UI、跨版本真实数据恢复和断电/磁盘满注入仍需在发布环境保留独立证据。

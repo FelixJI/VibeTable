@@ -236,6 +236,9 @@ watch(locationPolicy, (policy) => {
     userMarkedSync.value = false;
   }
 });
+watch(userMarkedSync, (marked) => {
+  if (marked) storageMode.value = "mirrored";
+});
 watch(
   () => protection.snapshotPackagePlan,
   (next, previous) => {
@@ -358,6 +361,7 @@ watch(
               v-if="workspace.lastKnownHealth !== 'healthy'"
               size="small"
               quaternary
+              :title="t('workspaceV2.center.relinkHint')"
               :data-testid="`workspace-relink-${workspace.workspaceId}`"
               @click="emit('action', {
                 method: 'workspace.relink',

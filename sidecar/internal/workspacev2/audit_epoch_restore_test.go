@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -87,7 +86,6 @@ func TestBusinessAuditEpochRotatesAcrossSnapshotRestoreAndHistoryContinues(
 			app,
 			kernel,
 			mutation.MetadataSchemaSource{},
-			[]byte(strings.Repeat("a", 32)),
 			audit.WithLedgerHistory(ledger),
 		)
 		if serviceErr != nil {

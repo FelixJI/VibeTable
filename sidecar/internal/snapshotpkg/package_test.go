@@ -99,17 +99,16 @@ func (staging *memoryImportStaging) Abort(context.Context) error {
 	return nil
 }
 
-func TestRoundTripVerifiesHashesAndWorkspaceMAC(t *testing.T) {
+func TestRoundTripVerifiesContentHashes(t *testing.T) {
 	var output bytes.Buffer
-	key := []byte("workspace-secret")
 	if err := Export(&output, Metadata{
 		FormatVersion: 2, WorkspaceID: "w", SnapshotID: "s",
 		WriterVersion: "2.0.0", MinimumAppVersion: "2.0.0",
-	}, map[string][]byte{"objects/a": []byte("content"), "metadata/readme.txt": []byte("hello")}, key); err != nil {
+	}, map[string][]byte{"objects/a": []byte("content"), "metadata/readme.txt": []byte("hello")}); err != nil {
 		t.Fatal(err)
 	}
-	inspection, err := Inspect(bytes.NewReader(output.Bytes()), int64(output.Len()), DefaultLimits(), key)
-	if err != nil || !inspection.TrustedForOriginalWorkspace {
+	inspection, err := Inspect(bytes.NewReader(output.Bytes()), int64(output.Len()), DefaultLimits())
+	if err != nil {
 		t.Fatalf("inspection failed: %#v %v", inspection, err)
 	}
 	if inspection.PayloadBytes != int64(len("content")+len("hello")) {
@@ -121,14 +120,6 @@ func TestRoundTripVerifiesHashesAndWorkspaceMAC(t *testing.T) {
 			inspection,
 		)
 	}
-	if err := RequireOriginalWorkspaceTrust(inspection); err != nil {
-		t.Fatal(err)
-	}
-	thirdParty, err := Inspect(bytes.NewReader(output.Bytes()), int64(output.Len()), DefaultLimits(), nil)
-	if err != nil || thirdParty.TrustedForOriginalWorkspace ||
-		!errors.Is(RequireOriginalWorkspaceTrust(thirdParty), ErrUntrusted) {
-		t.Fatalf("third-party package trust confusion: %#v %v", thirdParty, err)
-	}
 }
 
 func TestInspectRejectsTraversalDuplicateAndResourceBomb(t *testing.T) {
@@ -138,7 +129,7 @@ func TestInspectRejectsTraversalDuplicateAndResourceBomb(t *testing.T) {
 		part, _ := archive.Create(name)
 		_, _ = part.Write([]byte("bad"))
 		_ = archive.Close()
-		if _, err := Inspect(bytes.NewReader(output.Bytes()), int64(output.Len()), DefaultLimits(), nil); err == nil {
+		if _, err := Inspect(bytes.NewReader(output.Bytes()), int64(output.Len()), DefaultLimits()); err == nil {
 			t.Fatalf("accepted unsafe name %q", name)
 		}
 	}
@@ -149,7 +140,7 @@ func TestInspectRejectsTraversalDuplicateAndResourceBomb(t *testing.T) {
 	second, _ := archive.Create("same")
 	_, _ = second.Write([]byte("two"))
 	_ = archive.Close()
-	if _, err := Inspect(bytes.NewReader(output.Bytes()), int64(output.Len()), DefaultLimits(), nil); err == nil {
+	if _, err := Inspect(bytes.NewReader(output.Bytes()), int64(output.Len()), DefaultLimits()); err == nil {
 		t.Fatal("accepted duplicate entry")
 	}
 }
@@ -169,9 +160,7 @@ func TestInspectRejectsExcessivePathAndCompressionRatio(t *testing.T) {
 		if _, err := Inspect(
 			bytes.NewReader(output.Bytes()),
 			int64(output.Len()),
-			limits,
-			nil,
-		); !errors.Is(err, ErrInvalidPackage) {
+			limits); !errors.Is(err, ErrInvalidPackage) {
 			t.Fatalf("long path was accepted: %v", err)
 		}
 	})
@@ -183,7 +172,7 @@ func TestInspectRejectsExcessivePathAndCompressionRatio(t *testing.T) {
 		if err := Export(&output, Metadata{
 			FormatVersion: 2, WorkspaceID: "w", SnapshotID: "s",
 			WriterVersion: "2.0.0", MinimumAppVersion: "2.0.0",
-		}, entries, nil); err != nil {
+		}, entries); err != nil {
 			t.Fatal(err)
 		}
 		limits := DefaultLimits()
@@ -191,9 +180,7 @@ func TestInspectRejectsExcessivePathAndCompressionRatio(t *testing.T) {
 		if _, err := Inspect(
 			bytes.NewReader(output.Bytes()),
 			int64(output.Len()),
-			limits,
-			nil,
-		); !errors.Is(err, ErrResourceLimit) {
+			limits); !errors.Is(err, ErrResourceLimit) {
 			t.Fatalf("compression bomb was accepted: %v", err)
 		}
 	})
@@ -211,9 +198,8 @@ func TestExportAppliesImporterStructuralLimits(t *testing.T) {
 			metadata,
 			map[string][]byte{
 				strings.Repeat("a", DefaultLimits().MaxPathBytes+1): nil,
-			},
-			nil,
-		)
+			})
+
 		if !errors.Is(err, ErrResourceLimit) {
 			t.Fatalf("long export path error = %v", err)
 		}
@@ -226,9 +212,7 @@ func TestExportAppliesImporterStructuralLimits(t *testing.T) {
 		if err := Export(
 			io.Discard,
 			metadata,
-			entries,
-			nil,
-		); !errors.Is(err, ErrResourceLimit) {
+			entries); !errors.Is(err, ErrResourceLimit) {
 			t.Fatalf("entry-count export error = %v", err)
 		}
 	})
@@ -246,9 +230,7 @@ func TestExportAppliesImporterStructuralLimits(t *testing.T) {
 		if err := Export(
 			io.Discard,
 			metadata,
-			entries,
-			nil,
-		); !errors.Is(err, ErrResourceLimit) {
+			entries); !errors.Is(err, ErrResourceLimit) {
 			t.Fatalf("manifest-size export error = %v", err)
 		}
 	})
@@ -260,7 +242,7 @@ func TestInspectClassifiesChecksumCorruptionAsInvalidPackage(t *testing.T) {
 		FormatVersion: 2,
 		WorkspaceID:   "w",
 		SnapshotID:    "s",
-	}, map[string][]byte{"objects/a": []byte("content")}, nil); err != nil {
+	}, map[string][]byte{"objects/a": []byte("content")}); err != nil {
 		t.Fatal(err)
 	}
 	const centralDirectorySignature = "PK\x01\x02"
@@ -291,9 +273,8 @@ func TestInspectClassifiesChecksumCorruptionAsInvalidPackage(t *testing.T) {
 			_, err := Inspect(
 				bytes.NewReader(raw),
 				int64(len(raw)),
-				DefaultLimits(),
-				nil,
-			)
+				DefaultLimits())
+
 			if !errors.Is(err, ErrInvalidPackage) ||
 				errors.Is(err, ErrResourceLimit) {
 				t.Fatalf("checksum corruption error = %v", err)
@@ -306,14 +287,14 @@ func TestTamperedEntryFailsBeforeImport(t *testing.T) {
 	var output bytes.Buffer
 	if err := Export(&output, Metadata{
 		FormatVersion: 2, WorkspaceID: "w", SnapshotID: "s",
-	}, map[string][]byte{"object": []byte("content")}, nil); err != nil {
+	}, map[string][]byte{"object": []byte("content")}); err != nil {
 		t.Fatal(err)
 	}
 	raw := bytes.Replace(output.Bytes(), []byte("content"), []byte("altered"), 1)
 	if bytes.Equal(raw, output.Bytes()) {
 		t.Skip("compressed content not directly replaceable")
 	}
-	if _, err := Inspect(bytes.NewReader(raw), int64(len(raw)), DefaultLimits(), nil); err == nil {
+	if _, err := Inspect(bytes.NewReader(raw), int64(len(raw)), DefaultLimits()); err == nil {
 		t.Fatal("accepted tampered package")
 	}
 }
@@ -415,7 +396,7 @@ func TestImporterConsumesPathGrantVerifiesThenCommitsStaging(t *testing.T) {
 	var archive bytes.Buffer
 	if err := Export(&archive, Metadata{
 		FormatVersion: 2, WorkspaceID: "workspace-1", SnapshotID: "snapshot-1",
-	}, map[string][]byte{"objects/a": []byte("content")}, nil); err != nil {
+	}, map[string][]byte{"objects/a": []byte("content")}); err != nil {
 		t.Fatal(err)
 	}
 	paths := &memoryPathResolver{raw: archive.Bytes()}
@@ -425,7 +406,7 @@ func TestImporterConsumesPathGrantVerifiesThenCommitsStaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	operation, err := importer.Import(
-		context.Background(), "grant-import-1", nil, nil,
+		context.Background(), "grant-import-1", nil,
 		TargetNewWorkspace, "",
 	)
 	if err != nil {
@@ -442,11 +423,10 @@ func TestImporterConsumesPathGrantVerifiesThenCommitsStaging(t *testing.T) {
 	}
 }
 
-func TestImporterFailsBeforeStagingForCorruptOrUntrustedCurrentPackage(t *testing.T) {
+func TestImporterFailsBeforeStagingForCorruptOrWrongWorkspacePackage(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		raw      []byte
-		key      []byte
 		mode     TargetMode
 		current  string
 		expected error
@@ -454,10 +434,6 @@ func TestImporterFailsBeforeStagingForCorruptOrUntrustedCurrentPackage(t *testin
 		{
 			name: "truncated", raw: []byte("not a zip"), mode: TargetNewWorkspace,
 			expected: ErrInvalidPackage,
-		},
-		{
-			name: "untrusted current", mode: TargetCurrentWorkspace, current: "workspace-1",
-			expected: ErrUntrusted,
 		},
 		{
 			name: "wrong workspace", mode: TargetCurrentWorkspace, current: "workspace-2",
@@ -470,7 +446,7 @@ func TestImporterFailsBeforeStagingForCorruptOrUntrustedCurrentPackage(t *testin
 				var archive bytes.Buffer
 				if err := Export(&archive, Metadata{
 					FormatVersion: 2, WorkspaceID: "workspace-1", SnapshotID: "snapshot-1",
-				}, map[string][]byte{"objects/a": []byte("content")}, []byte("workspace-key")); err != nil {
+				}, map[string][]byte{"objects/a": []byte("content")}); err != nil {
 					t.Fatal(err)
 				}
 				raw = archive.Bytes()
@@ -482,13 +458,13 @@ func TestImporterFailsBeforeStagingForCorruptOrUntrustedCurrentPackage(t *testin
 				t.Fatal(err)
 			}
 			_, err = importer.Import(
-				context.Background(), "grant", nil, test.key, test.mode, test.current,
+				context.Background(), "grant", nil, test.mode, test.current,
 			)
 			if !errors.Is(err, test.expected) {
 				t.Fatalf("error = %v, want %v", err, test.expected)
 			}
 			if target.beginCalls != 0 {
-				t.Fatal("formal target was reached before package trust was established")
+				t.Fatal("formal target was reached before package integrity was established")
 			}
 		})
 	}
@@ -498,7 +474,7 @@ func TestImporterAbortsStagingWhenPublicationReceiptIsInvalid(t *testing.T) {
 	var archive bytes.Buffer
 	if err := Export(&archive, Metadata{
 		FormatVersion: 2, WorkspaceID: "workspace-1", SnapshotID: "snapshot-1",
-	}, map[string][]byte{"objects/a": []byte("content")}, nil); err != nil {
+	}, map[string][]byte{"objects/a": []byte("content")}); err != nil {
 		t.Fatal(err)
 	}
 	paths := &memoryPathResolver{raw: archive.Bytes()}
@@ -514,7 +490,7 @@ func TestImporterAbortsStagingWhenPublicationReceiptIsInvalid(t *testing.T) {
 	badTarget := &receiptMutatingTarget{inner: target}
 	importer.target = badTarget
 	if _, err := importer.Import(
-		context.Background(), "grant", nil, nil, TargetNewWorkspace, "",
+		context.Background(), "grant", nil, TargetNewWorkspace, "",
 	); err == nil {
 		t.Fatal("invalid publication receipt was accepted")
 	}
@@ -537,7 +513,7 @@ func TestFirstReleaseCompatibilityCorpusIsReadableByImporterAndStandardZip(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	inspection, err := Inspect(file, info.Size(), DefaultLimits(), nil)
+	inspection, err := Inspect(file, info.Size(), DefaultLimits())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -647,10 +647,6 @@ func (remote *verifiedAdvisoryRemote) VerifyIdentity(
 	return remote.identity, remote.identityErr
 }
 
-func (*verifiedAdvisoryRemote) LeaseStore() replica.LeaseCASStore {
-	return nil
-}
-
 func (remote *verifiedAdvisoryRemote) ReplicateCheckpoint(
 	_ context.Context,
 	checkpoint replica.Checkpoint,
@@ -733,16 +729,15 @@ func TestRuntimeRegistersReplicaAndConflictOnlyForVerifiedRemote(t *testing.T) {
 		},
 	}
 	runtime, err := Open(context.Background(), Options{
-		App:                   app,
-		DataDir:               dataDir,
-		WorkspaceID:           testWorkspaceID,
-		SessionEpoch:          7,
-		FenceEpoch:            3,
-		ClaimID:               testClaimID,
-		Ledger:                ledger,
-		ReplicaRemote:         remote,
-		ReplicaDeviceID:       "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-		ReplicaPublicationKey: []byte("0123456789abcdef0123456789abcdef"),
+		App:             app,
+		DataDir:         dataDir,
+		WorkspaceID:     testWorkspaceID,
+		SessionEpoch:    7,
+		FenceEpoch:      3,
+		ClaimID:         testClaimID,
+		Ledger:          ledger,
+		ReplicaRemote:   remote,
+		ReplicaDeviceID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -865,8 +860,7 @@ func TestRuntimeKeepsLocalWorkspaceAvailableWhenReplicaIsOffline(t *testing.T) {
 		ReplicaRemote: &verifiedAdvisoryRemote{
 			identityErr: replica.ErrRemoteUnavailable,
 		},
-		ReplicaDeviceID:       "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-		ReplicaPublicationKey: []byte("0123456789abcdef0123456789abcdef"),
+		ReplicaDeviceID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 	})
 	if err != nil {
 		t.Fatalf("offline replica blocked local runtime: %v", err)

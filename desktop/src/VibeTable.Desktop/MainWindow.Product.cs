@@ -2218,7 +2218,7 @@ public partial class MainWindow : Window
             keyVersion = manifest.EncryptionMode
                 == WorkspaceEncryptionMode.None ? 0 : 1,
             pendingSync = workspace.PendingSync,
-            remoteVerified =
+            replicaVerified =
                 manifest.StorageMode == WorkspaceStorageMode.Direct,
         };
     }

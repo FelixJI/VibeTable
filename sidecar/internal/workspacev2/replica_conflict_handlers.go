@@ -41,6 +41,12 @@ type productionReplicaConflict struct {
 	conflictApplyFault    func(string) error
 }
 
+const (
+	replicaIdlePollInterval  = 30 * time.Second
+	replicaRetryBaseInterval = time.Second
+	replicaRetryMaxInterval  = time.Minute
+)
+
 func openProductionReplicaConflict(
 	ctx context.Context,
 	runtime *Runtime,
@@ -106,11 +112,7 @@ func openProductionReplicaConflict(
 		QueuePath: joinCoordination(
 			paths, "replica-queue.db",
 		),
-		StatePath: replicaStatePath,
-		PublicationPath: joinCoordination(
-			paths, "replica-publications.db",
-		),
-		PublicationKey:      append([]byte(nil), options.ReplicaPublicationKey...),
+		StatePath:           replicaStatePath,
 		Remote:              options.ReplicaRemote,
 		Catalog:             runtime.catalog,
 		Repository:          runtime.repository,
@@ -118,9 +120,6 @@ func openProductionReplicaConflict(
 		ProvisionalAcceptor: runtimeProvisionalAcceptor{runtime: runtime},
 		Conflicts:           conflicts,
 		DependencyScanner:   options.ReplicaDependencyScanner,
-		DestructiveSafe: func(ctx context.Context) error {
-			return runtime.retention.store.EnsureIntegrityHealthy(ctx)
-		},
 	}
 	persistedClaim, found, err := replica.ReadPersistedTakeoverClaim(
 		ctx, replicaStatePath,
@@ -155,7 +154,7 @@ func openProductionReplicaConflict(
 		}
 	}
 	if result.manager == nil {
-		if err := result.markPending("replica.remote_unavailable"); err != nil {
+		if err := result.markPending("replica.directory_unavailable"); err != nil {
 			return nil, err
 		}
 	} else {
@@ -202,19 +201,21 @@ func (owner *productionReplicaConflict) startWorker() {
 
 func (owner *productionReplicaConflict) runWorker(ctx context.Context) {
 	defer owner.wg.Done()
-	delay := time.Second
+	retryDelay := replicaRetryBaseInterval
 	for {
 		err := owner.synchronizeOnce(ctx)
+		delay := replicaIdlePollInterval
 		if err == nil {
-			delay = time.Second
+			retryDelay = replicaRetryBaseInterval
 		} else {
 			_ = owner.markPending(err.Error())
-			if delay < time.Minute {
-				delay *= 2
-				if delay > time.Minute {
-					delay = time.Minute
+			if retryDelay < replicaRetryMaxInterval {
+				retryDelay *= 2
+				if retryDelay > replicaRetryMaxInterval {
+					retryDelay = replicaRetryMaxInterval
 				}
 			}
+			delay = retryDelay
 		}
 		timer := time.NewTimer(delay)
 		select {
@@ -227,7 +228,7 @@ func (owner *productionReplicaConflict) runWorker(ctx context.Context) {
 			if !timer.Stop() {
 				<-timer.C
 			}
-			delay = time.Second
+			retryDelay = replicaRetryBaseInterval
 		case <-timer.C:
 		}
 	}
@@ -268,7 +269,7 @@ func (owner *productionReplicaConflict) synchronizeOnce(
 	// An empty replica queue only proves that every *published snapshot* was
 	// copied. A canonical write can advance the coordinator before the idle
 	// snapshot scheduler publishes the next snapshot. Keep the durable marker
-	// until a remotely verified snapshot covers that exact mutation high-water
+	// until a verified directory replica covers that exact mutation high-water
 	// mark; otherwise an advisory workspace could be closed and its activity
 	// cache released while the newest write exists only on this device.
 	if !found || latest.MutationRevision < counters.MutationRevision {
@@ -376,7 +377,7 @@ func (owner *productionReplicaConflict) queuePublishedSnapshots(
 	})
 	if errors.Is(err, replica.ErrRemoteUnavailable) {
 		if markerErr := owner.markPending(
-			"replica.remote_unavailable",
+			"replica.directory_unavailable",
 		); markerErr != nil {
 			return markerErr
 		}
@@ -595,7 +596,7 @@ func (owner *productionReplicaConflict) synchronize(
 		return manager.QueueSynchronize(ctx, receipt)
 	})
 	if errors.Is(err, replica.ErrRemoteUnavailable) {
-		if err := owner.markPending("replica.remote_unavailable"); err != nil {
+		if err := owner.markPending("replica.directory_unavailable"); err != nil {
 			return nil, err
 		}
 	} else if err != nil {

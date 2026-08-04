@@ -178,16 +178,10 @@ func InitializeWorkspaceReplica(
 		return ReplicaOneShotReceipt{},
 			errors.New("replica.filesystem_remote_required")
 	}
-	publicationKey, err := deriveReplicaPublicationKey(ctx, manifest)
-	if err != nil {
-		return ReplicaOneShotReceipt{}, err
-	}
-	defer clearBytes(publicationKey)
 	selection, err := selectReplicaCheckpoint(
 		ctx,
 		remote,
 		options.WorkspaceID,
-		publicationKey,
 	)
 	if err != nil {
 		return ReplicaOneShotReceipt{}, err
@@ -220,18 +214,6 @@ func VerifyWorkspaceReplica(
 	if err != nil {
 		return ReplicaOneShotReceipt{}, err
 	}
-	manifest, err := readReplicaManifest(
-		options.ReplicaRoot,
-		options.WorkspaceID,
-	)
-	if err != nil {
-		return ReplicaOneShotReceipt{}, err
-	}
-	publicationKey, err := deriveReplicaPublicationKey(ctx, manifest)
-	if err != nil {
-		return ReplicaOneShotReceipt{}, err
-	}
-	defer clearBytes(publicationKey)
 	remote, err := replica.OpenFilesystemRemoteReadOnly(
 		ctx,
 		options.ReplicaRoot,
@@ -244,7 +226,6 @@ func VerifyWorkspaceReplica(
 		ctx,
 		remote,
 		options.WorkspaceID,
-		publicationKey,
 	)
 	if err != nil {
 		return ReplicaOneShotReceipt{}, err
@@ -272,11 +253,6 @@ func RecoverWorkspaceReplica(
 	if err != nil {
 		return ReplicaOneShotReceipt{}, err
 	}
-	publicationKey, err := deriveReplicaPublicationKey(ctx, manifest)
-	if err != nil {
-		return ReplicaOneShotReceipt{}, err
-	}
-	defer clearBytes(publicationKey)
 	remote, err := replica.OpenFilesystemRemoteReadOnly(
 		ctx,
 		options.ReplicaRoot,
@@ -289,7 +265,6 @@ func RecoverWorkspaceReplica(
 		ctx,
 		remote,
 		options.WorkspaceID,
-		publicationKey,
 	)
 	if err != nil {
 		return ReplicaOneShotReceipt{}, err
@@ -534,7 +509,6 @@ func selectReplicaCheckpoint(
 	ctx context.Context,
 	remote *replica.FilesystemRemote,
 	workspaceID string,
-	publicationKey []byte,
 ) (replicaOneShotSelection, error) {
 	identity, err := remote.VerifyIdentity(ctx)
 	if err != nil {
@@ -553,11 +527,10 @@ func selectReplicaCheckpoint(
 			publications[right].CreatedAt,
 		)
 	})
-	dag, err := replica.NewAdvisoryDAG(workspaceID, publicationKey)
+	dag, err := replica.NewAdvisoryDAG(workspaceID)
 	if err != nil {
 		return replicaOneShotSelection{}, err
 	}
-	defer dag.Close()
 	pending := append([]replica.Publication(nil), publications...)
 	for len(pending) != 0 {
 		progress := false
@@ -594,7 +567,6 @@ func selectReplicaCheckpoint(
 			ctx,
 			candidate.SnapshotID,
 			candidate.CatalogRevision,
-			publicationKey,
 		)
 		if err != nil {
 			return replicaOneShotSelection{}, err

@@ -903,7 +903,7 @@ function applyStoragePlan(): void {
             && protection.storage?.mode === 'mirrored'"
           size="small"
           :disabled="busy || session.isTransitioning
-            || protection.storage?.pendingSync || !protection.storage?.remoteVerified"
+            || protection.storage?.pendingSync || !protection.storage?.replicaVerified"
           :title="t('workspaceV2.storage.releaseBlocked')"
           data-testid="workspace-storage-release-cache-preview"
           @click="previewActivityCacheRelease"

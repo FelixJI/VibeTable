@@ -14,7 +14,7 @@ describe("workspace protection UI capability gates", () => {
     setActivePinia(createPinia());
   });
 
-  it("shows Workspace Center cards with health, sync, and location context", async () => {
+  it("shows Workspace Center cards with health, replica, and location context", async () => {
     const session = useWorkspaceSessionStore();
     session.configureCapabilities(["workspace.session.v2"]);
     session.setWorkspaces([{
@@ -34,7 +34,7 @@ describe("workspace protection UI capability gates", () => {
     const wrapper = mount(WorkspaceCenter);
 
     expect(wrapper.text()).toContain("季度规划");
-    expect(wrapper.text()).toContain("待同步");
+    expect(wrapper.text()).toContain("待写入目录副本");
     expect(wrapper.text()).toContain("建议性协调");
     await wrapper.get(
       '[data-testid="workspace-relink-11111111-1111-4111-8111-111111111111"]',
@@ -119,7 +119,7 @@ describe("workspace protection UI capability gates", () => {
     )!.click();
     await wrapper.vm.$nextTick();
     expect(document.body.querySelector(".workspace-flow-modal")?.textContent).toContain(
-      "SMB 等网络位置属于非固定存储，必须使用镜像模式",
+      "SMB、云同步目录和可移动盘等位置使用镜像模式",
     );
     document.body.querySelector<HTMLButtonElement>(
       '[data-testid="workspace-flow-confirm"]',
@@ -142,7 +142,10 @@ describe("workspace protection UI capability gates", () => {
 
   it("marks an other location as sync-managed only after explicit consent", async () => {
     const session = useWorkspaceSessionStore();
-    session.configureCapabilities(["workspace.session.v2"]);
+    session.configureCapabilities([
+      "workspace.session.v2",
+      "workspace.storage.mirrored-create.v2",
+    ]);
     const wrapper = mount(WorkspaceCenter, { attachTo: document.body });
 
     await wrapper.get('[data-testid="workspace-create"]').trigger("click");
@@ -155,10 +158,11 @@ describe("workspace protection UI capability gates", () => {
       '[data-testid="workspace-location-policy"] input[value="other"]',
     )!.click();
     await wrapper.vm.$nextTick();
-    expect(document.body.textContent).toContain("此目录由同步软件管理");
+    expect(document.body.textContent).toContain("将此目录标记为同步目录");
     document.body.querySelector<HTMLElement>(
       '[data-testid="workspace-user-marked-sync"]',
     )!.click();
+    await wrapper.vm.$nextTick();
     document.body.querySelector<HTMLButtonElement>(
       '[data-testid="workspace-flow-confirm"]',
     )!.click();
@@ -168,6 +172,7 @@ describe("workspace protection UI capability gates", () => {
       method: "workspace.create",
       params: {
         locationPolicy: "other",
+        storageMode: "mirrored",
         userMarkedSync: true,
       },
     });
@@ -708,7 +713,7 @@ describe("workspace protection UI capability gates", () => {
       encryption: "convenient",
       keyVersion: 1,
       pendingSync: false,
-      remoteVerified: true,
+      replicaVerified: true,
     });
     const wrapper = mount(WorkspaceProtectionSettings, {
       props: { mode: "storage" },
@@ -749,7 +754,7 @@ describe("workspace protection UI capability gates", () => {
       encryption: "protected",
       keyVersion: 3,
       pendingSync: false,
-      remoteVerified: true,
+      replicaVerified: true,
     });
     const wrapper = mount(WorkspaceProtectionSettings, {
       props: { mode: "storage" },
@@ -827,7 +832,7 @@ describe("workspace protection UI capability gates", () => {
       encryption: "convenient",
       keyVersion: 1,
       pendingSync: false,
-      remoteVerified: true,
+      replicaVerified: true,
     });
     const wrapper = mount(WorkspaceProtectionSettings, {
       props: { mode: "storage" },
@@ -934,14 +939,14 @@ describe("workspace protection UI capability gates", () => {
       encryption: "protected",
       keyVersion: 2,
       pendingSync: false,
-      remoteVerified: true,
+      replicaVerified: true,
     });
     const wrapper = mount(WorkspaceProtectionSettings, {
       props: { mode: "storage" },
       attachTo: document.body,
     });
 
-    expect(wrapper.get('[data-testid="workspace-storage-sync"]').text()).toContain("同步镜像副本");
+    expect(wrapper.get('[data-testid="workspace-storage-sync"]').text()).toContain("更新目录副本");
 
     await wrapper.get('[data-testid="workspace-storage-convert-preview"]').trigger("click");
     await wrapper.get('[data-testid="workspace-storage-release-cache-preview"]').trigger("click");

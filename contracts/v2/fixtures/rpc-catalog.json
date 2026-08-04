@@ -1311,7 +1311,7 @@
               "encryption",
               "keyVersion",
               "pendingSync",
-              "remoteVerified"
+              "replicaVerified"
             ],
             "properties": {
               "location": {
@@ -1347,7 +1347,7 @@
               "pendingSync": {
                 "type": "boolean"
               },
-              "remoteVerified": {
+              "replicaVerified": {
                 "type": "boolean"
               }
             }
@@ -1391,7 +1391,7 @@
             "encryption": "convenient",
             "keyVersion": 1,
             "pendingSync": false,
-            "remoteVerified": true
+            "replicaVerified": true
           }
         }
       },

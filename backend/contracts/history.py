@@ -241,7 +241,7 @@ class RestorePreview(HistoryModel):
 
     ``current_hash`` binds the preview to the item's current state; apply
     rejects if it changed. ``schema_revision`` binds to the capability
-    manifest revision. ``token`` is a single-use HMAC token.
+    manifest revision. ``token`` is a single-use opaque server-side handle.
     """
 
     collection: str = Field(min_length=1, max_length=128)

@@ -3,7 +3,6 @@ package integration_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/pocketbase/dbx"
@@ -78,7 +77,7 @@ func TestFileFieldPurgeRequiresCurrentBackupAndRemovesEveryPhysicalResource(
 	}
 	field := *createReceipt.Definition
 
-	manager, err := attachments.New([]byte(strings.Repeat("p", 32)))
+	manager, err := attachments.New()
 	if err != nil {
 		t.Fatal(err)
 	}

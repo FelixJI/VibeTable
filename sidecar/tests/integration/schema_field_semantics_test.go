@@ -98,9 +98,8 @@ func TestTypedSelectValuesRoundTripThroughRealPocketBase(t *testing.T) {
 	}
 	port := query.NewPort(
 		app,
-		source,
-		[]byte("0123456789abcdef0123456789abcdef"),
-	)
+		source)
+
 	page, err := port.QueryPage(ctx, definition.TableID, query.TableQuery{
 		Sorts: []query.SortCondition{{Field: "id", Direction: query.SortAscending}},
 		Limit: 10,

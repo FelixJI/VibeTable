@@ -90,7 +90,6 @@ func newAttachmentFaultFixture(
 		t.Fatalf("create attachment fault table: %v", err)
 	}
 	manager, err := attachments.New(
-		[]byte(strings.Repeat("f", 32)),
 		options...,
 	)
 	if err != nil {
@@ -342,7 +341,7 @@ func TestManagedAttachmentsProcessExitDuringUploadLeavesNoDurableState(t *testin
 	runAttachmentCrashHelper(t, "upload", dataDir, "", 31)
 	app := bootstrapApp(t, dataDir)
 	defer resetApp(t, app)
-	manager, err := attachments.New([]byte(strings.Repeat("f", 32)))
+	manager, err := attachments.New()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +358,7 @@ func TestManagedAttachmentsProcessExitDuringCommitReportsAndRecoversOrphans(t *t
 	runAttachmentCrashHelper(t, "commit", dataDir, "", 32)
 	app := bootstrapApp(t, dataDir)
 	defer resetApp(t, app)
-	manager, err := attachments.New([]byte(strings.Repeat("f", 32)))
+	manager, err := attachments.New()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +390,7 @@ func TestManagedAttachmentsProcessExitDuringCleanupReportsAndRecoversOrphans(t *
 	oldName := strings.TrimSpace(string(oldNameBytes))
 	app := bootstrapApp(t, dataDir)
 	defer resetApp(t, app)
-	manager, err := attachments.New([]byte(strings.Repeat("f", 32)))
+	manager, err := attachments.New()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -669,7 +668,7 @@ func TestManagedAttachmentsWholeBackupRestorePreservesReferencesHashesContentAnd
 	}
 	restoredApp := bootstrapApp(t, restoredDir)
 	defer resetApp(t, restoredApp)
-	restoredManager, err := attachments.New([]byte(strings.Repeat("f", 32)))
+	restoredManager, err := attachments.New()
 	if err != nil {
 		t.Fatal(err)
 	}

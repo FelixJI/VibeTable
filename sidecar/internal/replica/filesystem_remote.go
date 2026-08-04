@@ -57,13 +57,12 @@ type FilesystemRecoveryBundle struct {
 // immutable, so ordinary sync-folder semantics cannot be mistaken for strong
 // linearizable coordination.
 type FilesystemRemote struct {
-	root           string
-	home           string
-	workspace      string
-	replicaID      string
-	repository     objectrepo.Repository
-	publicationKey []byte
-	now            func() time.Time
+	root       string
+	home       string
+	workspace  string
+	replicaID  string
+	repository objectrepo.Repository
+	now        func() time.Time
 }
 
 func OpenFilesystemRemote(
@@ -211,12 +210,6 @@ func (remote *FilesystemRemote) VerifyIdentity(
 	}, nil
 }
 
-func (remote *FilesystemRemote) setPublicationKey(key []byte) {
-	remote.publicationKey = append(remote.publicationKey[:0], key...)
-}
-
-func (*FilesystemRemote) LeaseStore() LeaseCASStore { return nil }
-
 func (remote *FilesystemRemote) ReplicateCheckpoint(
 	ctx context.Context,
 	checkpoint Checkpoint,
@@ -346,7 +339,6 @@ func (remote *FilesystemRemote) RecoverCheckpoint(
 	ctx context.Context,
 	snapshotID string,
 	catalogRevision uint64,
-	publicationKey []byte,
 ) (FilesystemRecoveryBundle, error) {
 	bundle, stored, err := remote.recoverCheckpoint(
 		ctx,
@@ -361,7 +353,6 @@ func (remote *FilesystemRemote) RecoverCheckpoint(
 		snapshotID,
 		catalogRevision,
 		stored.CheckpointID,
-		publicationKey,
 	); err != nil {
 		return FilesystemRecoveryBundle{}, err
 	}
@@ -497,6 +488,10 @@ func (remote *FilesystemRemote) AppendPublication(
 	if _, err := uuid.Parse(publication.SnapshotID); err != nil {
 		return ErrPublicationTampered
 	}
+	sealed, err := SealPublication(publication)
+	if err != nil || sealed.CanonicalHash != publication.CanonicalHash {
+		return ErrPublicationTampered
+	}
 	raw, err := json.Marshal(publication)
 	if err != nil {
 		return err
@@ -567,8 +562,7 @@ func (remote *FilesystemRemote) DiscoverConflicts(
 		scan.WorkspaceID != remote.workspace ||
 		scan.ReplicaID != remote.replicaID ||
 		scan.LocalSnapshotID == "" ||
-		scan.LocalCatalogRevision == 0 ||
-		len(remote.publicationKey) < minimumPublicationKeyBytes {
+		scan.LocalCatalogRevision == 0 {
 		return nil, ErrReplicationUnavailable
 	}
 	publications, err := remote.ListPublications(ctx, remote.workspace)
@@ -588,7 +582,6 @@ func (remote *FilesystemRemote) DiscoverConflicts(
 			publication.SnapshotID,
 			publication.CatalogRevision,
 			publication.CheckpointID,
-			remote.publicationKey,
 		); err != nil {
 			return nil, err
 		}
@@ -913,20 +906,15 @@ func (remote *FilesystemRemote) verifyRecoveryPublication(
 	snapshotID string,
 	catalogRevision uint64,
 	checkpointID string,
-	publicationKey []byte,
 ) error {
-	if len(publicationKey) < minimumPublicationKeyBytes {
-		return errors.New("replica.publication_key_invalid")
-	}
 	publications, err := remote.ListPublications(ctx, remote.workspace)
 	if err != nil {
 		return err
 	}
-	dag, err := NewAdvisoryDAG(remote.workspace, publicationKey)
+	dag, err := NewAdvisoryDAG(remote.workspace)
 	if err != nil {
 		return err
 	}
-	defer dag.Close()
 	pending := append([]Publication(nil), publications...)
 	for len(pending) > 0 {
 		progress := false
@@ -1354,14 +1342,11 @@ func writeImmutable(path string, content []byte) error {
 	if err := file.Close(); err != nil {
 		return err
 	}
-	if err := os.Link(temp, path); err != nil {
+	if err := publishImmutable(temp, path); err != nil {
 		if existing, readErr := os.ReadFile(path); readErr == nil &&
 			bytes.Equal(existing, content) {
 			return nil
 		}
-		return err
-	}
-	if err := os.Remove(temp); err != nil {
 		return err
 	}
 	removeTemp = false

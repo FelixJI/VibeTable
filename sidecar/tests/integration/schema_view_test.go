@@ -91,7 +91,7 @@ func TestSchemaCatalogPersistsQueryableReadOnlyView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := query.NewPort(app, querySource, []byte("0123456789abcdef0123456789abcdef"))
+	port := query.NewPort(app, querySource)
 	page, err := port.QueryPage(ctx, created.TableID, query.TableQuery{Limit: 10})
 	if err != nil || len(page.Rows) != 2 {
 		t.Fatalf("query view rows=%#v err=%v", page.Rows, err)

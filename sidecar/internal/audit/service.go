@@ -2,7 +2,6 @@ package audit
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -54,7 +53,6 @@ type Service struct {
 	schemas SchemaSource
 	files   AttachmentHistory
 	ledger  *auditledger.Ledger
-	secret  []byte
 	now     func() time.Time
 
 	mu         sync.Mutex
@@ -116,18 +114,13 @@ func New(
 	app core.App,
 	kernel MutationKernel,
 	schemas SchemaSource,
-	secret []byte,
 	options ...Option,
 ) (*Service, error) {
 	if app == nil || kernel == nil || schemas == nil {
 		return nil, errors.New("audit service dependencies are required")
 	}
-	if len(secret) < 32 {
-		return nil, errors.New("audit restore secret must contain at least 32 bytes")
-	}
 	service := &Service{
 		app: app, kernel: kernel, schemas: schemas,
-		secret: append([]byte(nil), secret...),
 		now:    func() time.Time { return time.Now().UTC() },
 		tokens: map[string]restoreState{},
 	}
@@ -746,9 +739,7 @@ func (service *Service) issueToken(state restoreState) (string, error) {
 		return "", err
 	}
 	payload := base64.RawURLEncoding.EncodeToString(nonce)
-	mac := hmac.New(sha256.New, service.secret)
-	_, _ = mac.Write([]byte(payload))
-	token := "rst1." + payload + "." + hex.EncodeToString(mac.Sum(nil))
+	token := "rst1." + payload
 	service.tokens[token] = state
 	service.tokenBytes += state.size
 	return token, nil
@@ -756,16 +747,11 @@ func (service *Service) issueToken(state restoreState) (string, error) {
 
 func (service *Service) validToken(token string) bool {
 	parts := strings.Split(token, ".")
-	if len(parts) != 3 || parts[0] != "rst1" {
+	if len(parts) != 2 || parts[0] != "rst1" {
 		return false
 	}
-	provided, err := hex.DecodeString(parts[2])
-	if err != nil {
-		return false
-	}
-	mac := hmac.New(sha256.New, service.secret)
-	_, _ = mac.Write([]byte(parts[1]))
-	return hmac.Equal(provided, mac.Sum(nil))
+	nonce, err := base64.RawURLEncoding.DecodeString(parts[1])
+	return err == nil && len(nonce) == 24
 }
 
 func (service *Service) readCurrentByTableID(
