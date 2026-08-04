@@ -366,6 +366,7 @@ def _prepare_smoke_lane(lane: str) -> None:
         _install_w64devkit()
     elif lane == "resilience":
         _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
+        _run("npm", "ci", cwd=REPO_ROOT / "desktop" / "web-grid")
     elif lane != "release":
         raise RuntimeError(f"unknown release smoke lane: {lane}")
 

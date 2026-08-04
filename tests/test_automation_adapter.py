@@ -92,6 +92,13 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
         "resilience",
         "release",
     ]
+    resilience = next(lane for lane in shards["lanes"] if lane["name"] == "resilience")
+    assert {name for name in ("uv", "node", "dotnet", "go") if resilience.get(name)} == {
+        "uv",
+        "node",
+        "dotnet",
+        "go",
+    }
     assert shards["handoff_paths"] == [
         "build/automation/artifacts",
         "dist/VibeTable.Next",
@@ -119,15 +126,15 @@ def test_artifacts_directory_is_explicit_and_repository_relative(
 @pytest.mark.parametrize(
     ("lane", "expected"),
     [
-        ("core", "bootstrap"),
-        ("race", "w64devkit"),
-        ("resilience", "uv-sync"),
-        ("release", None),
+        ("core", ["bootstrap"]),
+        ("race", ["w64devkit"]),
+        ("resilience", ["uv-sync", "npm-ci"]),
+        ("release", []),
     ],
 )
 def test_smoke_lane_prepares_only_its_required_toolchain(
     lane: str,
-    expected: str | None,
+    expected: list[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[str] = []
@@ -141,13 +148,17 @@ def test_smoke_lane_prepares_only_its_required_toolchain(
         automation_project,
         "_run",
         lambda *command, **_kwargs: observed.append(
-            "uv-sync" if command[:2] == ("uv", "sync") else "unexpected"
+            "uv-sync"
+            if command[:2] == ("uv", "sync")
+            else "npm-ci"
+            if command[:2] == ("npm", "ci")
+            else "unexpected"
         ),
     )
 
     automation_project._prepare_smoke_lane(lane)
 
-    assert observed == ([] if expected is None else [expected])
+    assert observed == expected
 
 
 def test_smoke_lane_binds_report_to_the_declared_candidate(
