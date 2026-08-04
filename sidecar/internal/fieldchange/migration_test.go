@@ -385,6 +385,7 @@ func TestFieldMigrationResumePendingRecoversInterruptedRunningJob(t *testing.T) 
 	}
 
 	restarted := NewMigrationService(app, NewPocketBasePlanStore(app))
+	t.Cleanup(restarted.Shutdown)
 	if err := restarted.ResumePending(context.Background()); err != nil {
 		t.Fatal(err)
 	}
