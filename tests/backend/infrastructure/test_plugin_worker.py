@@ -12,10 +12,15 @@ from typing import Any
 import pytest
 
 from backend.contracts.data_profile import CollectionProfile
-from backend.contracts.plugin import PluginPrivateSetting
+from backend.contracts.plugin import (
+    ConfirmationPreview,
+    PluginPrivateSetting,
+)
 from backend.infrastructure.plugin_worker import (
+    InMemoryPluginWorkerAdapter,
     NodePluginWorkerAdapter,
     PluginWorkerError,
+    _ResolvedWorker,
 )
 
 
@@ -559,3 +564,651 @@ async def test_worker_times_out_and_terminates_infinite_code(tmp_path: Path) -> 
             {},
             execution=_execution(),
         )
+
+
+# ===========================================================================
+# Pure-Python unit tests (no Node required) for the closed capability surface.
+# These cover the validation, dispatch, and grant logic that does not depend on
+# a live subprocess.
+# ===========================================================================
+
+
+def _resolved(permissions: dict[str, Any] | None = None) -> _ResolvedWorker:
+    return _ResolvedWorker(
+        project_key="project-a",
+        plugin_id="com.example.safe-worker",
+        permissions=permissions or {},
+        source="// worker",
+    )
+
+
+def _make_adapter(**kwargs: Any) -> NodePluginWorkerAdapter:
+    """Build an adapter without invoking Node — store/client are unused for most tests.
+
+    Callers may override any keyword (store, profiles, client, file_adapter, …).
+    """
+    defaults: dict[str, Any] = {
+        "store": SimpleNamespace(),
+        "profiles": {},
+        "client": SimpleNamespace(),
+        "node_executable": "node",
+    }
+    defaults.update(kwargs)
+    return NodePluginWorkerAdapter(**defaults)
+
+
+# ---------------------------------------------------------------------------
+# Constructor validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"timeout_seconds": 0}, "timeout must be positive"),
+        ({"max_concurrency": 0}, "concurrency must be at least one"),
+        ({"max_message_bytes": 512}, "message limit is too small"),
+        ({"max_capability_calls": 0}, "capability-call limit must be at least one"),
+    ],
+)
+def test_adapter_rejects_invalid_configuration(kwargs: dict[str, Any], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        _make_adapter(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_capability error branches (pure-Python, no Node)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_direct_data_mutate() -> None:
+    adapter = _make_adapter()
+    with pytest.raises(PluginWorkerError, match="cannot write directly"):
+        await adapter._dispatch_capability(_resolved(), {}, {}, "data.mutate", {})
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_progress_without_reporter() -> None:
+    adapter = _make_adapter()
+    with pytest.raises(PluginWorkerError, match="progress reporter is unavailable"):
+        await adapter._dispatch_capability(
+            _resolved(), {}, {}, "ui.reportProgress", {"current": 1, "total": 2}
+        )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_unknown_capability() -> None:
+    adapter = _make_adapter()
+    with pytest.raises(PluginWorkerError, match="is unavailable"):
+        await adapter._dispatch_capability(_resolved(), {}, {}, "magic.power", {})
+
+
+@pytest.mark.asyncio
+async def test_dispatch_context_read_returns_context() -> None:
+    adapter = _make_adapter()
+    ctx = {"collection": "orders"}
+    result = await adapter._dispatch_capability(_resolved(), ctx, {}, "context.read", None)
+    assert result is ctx
+
+
+# ---------------------------------------------------------------------------
+# _file_capability error matrix
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_file_capability_rejects_when_adapter_missing() -> None:
+    adapter = _make_adapter()  # no file_adapter
+    with pytest.raises(PluginWorkerError, match="file picker is unavailable"):
+        await adapter._file_capability(_resolved(), {}, "file.read", {})
+
+
+@pytest.mark.asyncio
+async def test_file_capability_rejects_when_adapter_unavailable() -> None:
+    adapter = _make_adapter(file_adapter=SimpleNamespace(available=False))
+    with pytest.raises(PluginWorkerError, match="file picker is unavailable"):
+        await adapter._file_capability(_resolved(), {}, "file.read", {})
+
+
+@pytest.mark.asyncio
+async def test_file_capability_rejects_non_dict_args() -> None:
+    adapter = _make_adapter(file_adapter=FakeFileAdapter())
+    with pytest.raises(PluginWorkerError, match="arguments must be an object"):
+        await adapter._file_capability(_resolved(), {}, "file.read", "not-a-dict")
+
+
+@pytest.mark.asyncio
+async def test_file_capability_pick_read_rejects_undeclared() -> None:
+    adapter = _make_adapter(file_adapter=FakeFileAdapter())
+    resolved = _resolved({"files": []})
+    with pytest.raises(PluginWorkerError, match=r"did not declare file.pickRead"):
+        await adapter._file_capability(resolved, {}, "file.pickRead", {})
+
+
+@pytest.mark.asyncio
+async def test_file_capability_pick_write_rejects_undeclared() -> None:
+    adapter = _make_adapter(file_adapter=FakeFileAdapter())
+    resolved = _resolved({"files": []})
+    with pytest.raises(PluginWorkerError, match=r"did not declare file.pickWrite"):
+        await adapter._file_capability(resolved, {}, "file.pickWrite", {})
+
+
+@pytest.mark.asyncio
+async def test_file_capability_read_rejects_missing_grant_id() -> None:
+    adapter = _make_adapter(file_adapter=FakeFileAdapter())
+    resolved = _resolved({"files": ["pickRead"]})
+    with pytest.raises(PluginWorkerError, match="grantId is required"):
+        await adapter._file_capability(resolved, {}, "file.read", {})
+
+
+@pytest.mark.asyncio
+async def test_file_capability_read_rejects_undeclared_pick_read() -> None:
+    adapter = _make_adapter(file_adapter=FakeFileAdapter())
+    resolved = _resolved({"files": []})
+    with pytest.raises(PluginWorkerError, match=r"did not declare file.pickRead"):
+        await adapter._file_capability(resolved, {}, "file.read", {"grantId": "g1"})
+
+
+@pytest.mark.asyncio
+async def test_file_capability_write_rejects_undeclared_pick_write() -> None:
+    adapter = _make_adapter(file_adapter=FakeFileAdapter())
+    resolved = _resolved({"files": []})
+    with pytest.raises(PluginWorkerError, match=r"did not declare file.pickWrite"):
+        await adapter._file_capability(resolved, {}, "file.write", {"grantId": "g1"})
+
+
+@pytest.mark.asyncio
+async def test_file_capability_write_rejects_non_string_base64() -> None:
+    adapter = _make_adapter(file_adapter=FakeFileAdapter())
+    resolved = _resolved({"files": ["pickWrite"]})
+    with pytest.raises(PluginWorkerError, match="file content is required"):
+        await adapter._file_capability(resolved, {}, "file.write", {"grantId": "g1", "base64": 123})
+
+
+# ---------------------------------------------------------------------------
+# _data_read validation + query_page fallback branch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_data_read_rejects_non_dict_request() -> None:
+    adapter = _make_adapter()
+    with pytest.raises(PluginWorkerError, match="request must be an object"):
+        await adapter._data_read(_resolved(), {}, "not-a-dict")
+
+
+@pytest.mark.asyncio
+async def test_data_read_rejects_unsupported_fields() -> None:
+    adapter = _make_adapter()
+    with pytest.raises(PluginWorkerError, match="unsupported fields"):
+        await adapter._data_read(_resolved(), {}, {"collection": "x", "evil": True})
+
+
+@pytest.mark.asyncio
+async def test_data_read_rejects_empty_collection() -> None:
+    adapter = _make_adapter()
+    with pytest.raises(PluginWorkerError, match="collection is required"):
+        await adapter._data_read(_resolved(), {}, {"collection": ""})
+
+
+@pytest.mark.asyncio
+async def test_data_read_rejects_non_list_fields() -> None:
+    adapter = _make_adapter(
+        profiles={
+            "orders": CollectionProfile(
+                collection="orders",
+                fields=["id", "name"],
+                archive_field=None,
+                date_updated_field=None,
+            )
+        }
+    )
+    resolved = _resolved(
+        {"data": [{"collection": "orders", "operations": ["read"], "fields": ["$configured"]}]}
+    )
+    with pytest.raises(PluginWorkerError, match="fields must be a string array"):
+        await adapter._data_read(resolved, {}, {"collection": "orders", "fields": "id"})
+
+
+@pytest.mark.asyncio
+async def test_data_read_rejects_undeclared_fields() -> None:
+    adapter = _make_adapter(
+        profiles={
+            "orders": CollectionProfile(
+                collection="orders",
+                fields=["id", "name"],
+                archive_field=None,
+                date_updated_field=None,
+            )
+        }
+    )
+    resolved = _resolved(
+        {"data": [{"collection": "orders", "operations": ["read"], "fields": ["id"]}]}
+    )
+    with pytest.raises(PluginWorkerError, match="not declared"):
+        await adapter._data_read(resolved, {}, {"collection": "orders", "fields": ["secret"]})
+
+
+@pytest.mark.asyncio
+async def test_data_read_rejects_non_empty_filter() -> None:
+    adapter = _make_adapter(
+        profiles={
+            "orders": CollectionProfile(
+                collection="orders",
+                fields=["id"],
+                archive_field=None,
+                date_updated_field=None,
+            )
+        }
+    )
+    resolved = _resolved(
+        {"data": [{"collection": "orders", "operations": ["read"], "fields": ["id"]}]}
+    )
+    with pytest.raises(PluginWorkerError, match="filter is unavailable"):
+        await adapter._data_read(
+            resolved, {}, {"collection": "orders", "fields": ["id"], "filter": {"a": 1}}
+        )
+
+
+@pytest.mark.asyncio
+async def test_data_read_rejects_non_integer_page_size() -> None:
+    adapter = _make_adapter(
+        profiles={
+            "orders": CollectionProfile(
+                collection="orders",
+                fields=["id"],
+                archive_field=None,
+                date_updated_field=None,
+            )
+        }
+    )
+    resolved = _resolved(
+        {"data": [{"collection": "orders", "operations": ["read"], "fields": ["id"]}]}
+    )
+    with pytest.raises(PluginWorkerError, match="pageSize must be an integer"):
+        await adapter._data_read(
+            resolved, {}, {"collection": "orders", "fields": ["id"], "pageSize": "10"}
+        )
+
+
+@pytest.mark.asyncio
+async def test_data_read_rejects_invalid_cursor_type() -> None:
+    adapter = _make_adapter(
+        profiles={
+            "orders": CollectionProfile(
+                collection="orders",
+                fields=["id"],
+                archive_field=None,
+                date_updated_field=None,
+            )
+        }
+    )
+    resolved = _resolved(
+        {"data": [{"collection": "orders", "operations": ["read"], "fields": ["id"]}]}
+    )
+    with pytest.raises(PluginWorkerError, match="cursor is invalid"):
+        await adapter._data_read(
+            resolved, {}, {"collection": "orders", "fields": ["id"], "cursor": [1, 2]}
+        )
+
+
+@pytest.mark.asyncio
+async def test_data_read_query_page_fallback_projects_rows() -> None:
+    """Covers the else-branch: client without read_items_with_fields uses query_page."""
+
+    class QueryPageOnlyClient:
+        async def query_page(self, *, table_id: str, query: dict[str, Any]) -> Any:
+            assert table_id == "orders"
+            return SimpleNamespace(rows=[{"id": "r1", "name": "Ada"}, {"id": "r2"}])
+
+    adapter = _make_adapter(
+        profiles={
+            "orders": CollectionProfile(
+                collection="orders",
+                fields=["id", "name"],
+                archive_field=None,
+                date_updated_field=None,
+            )
+        },
+        client=QueryPageOnlyClient(),
+    )
+    resolved = _resolved(
+        {"data": [{"collection": "orders", "operations": ["read"], "fields": ["$configured"]}]}
+    )
+    result = await adapter._data_read(
+        resolved, {}, {"collection": "orders", "fields": ["id", "name"]}
+    )
+    assert len(result["items"]) == 2
+    assert result["items"][0] == {"id": "r1", "name": "Ada"}
+
+
+# ---------------------------------------------------------------------------
+# _storage error branches
+# ---------------------------------------------------------------------------
+
+
+def test_storage_rejects_undeclared_private_storage() -> None:
+    adapter = _make_adapter()
+    with pytest.raises(PluginWorkerError, match="did not declare privateStorage"):
+        adapter._storage(_resolved(), "storage.private.get", {"key": "k"})
+
+
+def test_storage_rejects_non_dict_args() -> None:
+    adapter = _make_adapter()
+    resolved = _resolved({"privateStorage": True})
+    with pytest.raises(PluginWorkerError, match="key is required"):
+        adapter._storage(resolved, "storage.private.get", "not-a-dict")
+
+
+def test_storage_rejects_invalid_key_format() -> None:
+    adapter = _make_adapter()
+    resolved = _resolved({"privateStorage": True})
+    with pytest.raises(PluginWorkerError, match="key is invalid"):
+        adapter._storage(resolved, "storage.private.get", {"key": "bad key!"})
+
+
+# ---------------------------------------------------------------------------
+# _validate_mutation_plan branches
+# ---------------------------------------------------------------------------
+
+
+def _mutation_plan(
+    *,
+    collection: str = "orders",
+    affected_count: int = 1,
+    operations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "contract": "vibetable.mutation-plan.v1",
+        "collection": collection,
+        "operations": operations or [{"kind": "create", "values": {"name": "x"}}],
+        "preview": ConfirmationPreview(affected_count=affected_count).model_dump(
+            by_alias=True, mode="json"
+        ),
+    }
+
+
+def _orders_profile() -> CollectionProfile:
+    """A minimal writable profile so _profile returns without describe_table."""
+    return CollectionProfile(
+        collection="orders",
+        fields=["id", "name"],
+        create_fields=["name"],
+        update_fields=["name"],
+        archive_field=None,
+        date_updated_field=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_mutation_plan_rejects_invalid_plan() -> None:
+    adapter = _make_adapter(profiles={"orders": _orders_profile()})
+    with pytest.raises(PluginWorkerError, match="invalid mutation plan"):
+        await adapter._validate_mutation_plan(_resolved(), {}, {"contract": "wrong"})
+
+
+@pytest.mark.asyncio
+async def test_validate_mutation_plan_rejects_count_mismatch() -> None:
+    adapter = _make_adapter(profiles={"orders": _orders_profile()})
+    with pytest.raises(PluginWorkerError, match="affectedCount must match"):
+        await adapter._validate_mutation_plan(_resolved(), {}, _mutation_plan(affected_count=5))
+
+
+@pytest.mark.asyncio
+async def test_validate_mutation_plan_rejects_undeclared_collection() -> None:
+    adapter = _make_adapter(profiles={"orders": _orders_profile()})
+    resolved = _resolved({"data": []})  # no write grant
+    with pytest.raises(PluginWorkerError, match="not declared for mutation"):
+        await adapter._validate_mutation_plan(resolved, {}, _mutation_plan())
+
+
+@pytest.mark.asyncio
+async def test_validate_mutation_plan_rejects_undeclared_operation() -> None:
+    adapter = _make_adapter(profiles={"orders": _orders_profile()})
+    resolved = _resolved(
+        {"data": [{"collection": "orders", "operations": ["update"], "fields": ["name"]}]}
+    )
+    plan = _mutation_plan(operations=[{"kind": "create", "values": {"name": "x"}}])
+    with pytest.raises(PluginWorkerError, match="was not declared"):
+        await adapter._validate_mutation_plan(resolved, {}, plan)
+
+
+@pytest.mark.asyncio
+async def test_validate_mutation_plan_rejects_undeclared_fields() -> None:
+    adapter = _make_adapter(profiles={"orders": _orders_profile()})
+    resolved = _resolved(
+        {"data": [{"collection": "orders", "operations": ["create"], "fields": ["name"]}]}
+    )
+    plan = _mutation_plan(operations=[{"kind": "create", "values": {"secret": "x"}}])
+    with pytest.raises(PluginWorkerError, match="fields were not declared"):
+        await adapter._validate_mutation_plan(resolved, {}, plan)
+
+
+# ---------------------------------------------------------------------------
+# _resolve error matrix
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_rejects_missing_project_key() -> None:
+    adapter = _make_adapter()
+    with pytest.raises(PluginWorkerError, match="no projectKey"):
+        adapter._resolve("worker.js", {"projectKey": ""}, _execution())
+
+
+def test_resolve_rejects_non_dict_execution() -> None:
+    adapter = _make_adapter()
+    with pytest.raises(PluginWorkerError, match="execution identity is unavailable"):
+        adapter._resolve("worker.js", {"projectKey": "p"}, None)  # type: ignore[arg-type]
+
+
+def test_resolve_rejects_incomplete_execution_fields(tmp_path: Path) -> None:
+    adapter = _make_adapter(store=FakePluginStore(tmp_path, permissions={}))
+    ctx = {"projectKey": "project-a"}
+    with pytest.raises(PluginWorkerError, match="identity is invalid"):
+        adapter._resolve("worker.js", ctx, {**_execution(), "pluginId": ""})
+
+
+def test_resolve_rejects_project_key_mismatch(tmp_path: Path) -> None:
+    adapter = _make_adapter(store=FakePluginStore(tmp_path, permissions={}))
+    ctx = {"projectKey": "project-a"}
+    with pytest.raises(PluginWorkerError, match="project identity does not match"):
+        adapter._resolve("worker.js", ctx, {**_execution(), "projectKey": "other"})
+
+
+def test_resolve_rejects_missing_installation(tmp_path: Path) -> None:
+    adapter = _make_adapter(store=FakePluginStore(tmp_path, permissions={}))
+    ctx = {"projectKey": "project-x"}
+    exec_bad = {**_execution(), "projectKey": "project-x"}
+    with pytest.raises(PluginWorkerError, match="installation is unavailable"):
+        adapter._resolve("worker.js", ctx, exec_bad)
+
+
+def test_resolve_rejects_stale_package_identity(tmp_path: Path) -> None:
+    store = FakePluginStore(tmp_path, permissions={})
+    adapter = _make_adapter(store=store)
+    ctx = {"projectKey": "project-a"}
+    exec_stale = {**_execution(), "packageHash": "sha256:different"}
+    with pytest.raises(PluginWorkerError, match="package identity is stale"):
+        adapter._resolve("worker.js", ctx, exec_stale)
+
+
+def test_resolve_rejects_unowned_worker_entry(tmp_path: Path) -> None:
+    store = FakePluginStore(tmp_path, permissions={})
+    adapter = _make_adapter(store=store)
+    ctx = {"projectKey": "project-a"}
+    with pytest.raises(PluginWorkerError, match="does not own"):
+        adapter._resolve("dist/other.js", ctx, _execution())
+
+
+def test_resolve_rejects_unloadable_worker_entry(tmp_path: Path) -> None:
+    store = FakePluginStore(tmp_path, permissions={})
+    # Point local_path at a non-existent directory.
+    store.revision.local_path = str(tmp_path / "missing")
+    adapter = _make_adapter(store=store)
+    ctx = {"projectKey": "project-a"}
+    with pytest.raises(PluginWorkerError, match="could not be loaded"):
+        adapter._resolve("dist/worker.js", ctx, _execution())
+
+
+def test_resolve_rejects_oversized_worker_entry(tmp_path: Path) -> None:
+    # Create a real package whose worker entry exceeds the minimum byte limit.
+    big_source = "export async function run() { return {}; }\n" + "// " + ("x" * 1200)
+    package = _package(tmp_path / "big", big_source)
+    store = FakePluginStore(package, permissions={})
+    adapter = _make_adapter(store=store, max_message_bytes=1024)
+    ctx = {"projectKey": "project-a"}
+    with pytest.raises(PluginWorkerError, match="exceeds the size limit"):
+        adapter._resolve("dist/worker.js", ctx, _execution())
+
+
+# ---------------------------------------------------------------------------
+# Static grant helpers
+# ---------------------------------------------------------------------------
+
+
+def test_read_grant_returns_none_when_data_not_a_list() -> None:
+    assert NodePluginWorkerAdapter._read_grant({"data": "x"}, {}, "orders") is None
+
+
+def test_read_grant_matches_active_collection() -> None:
+    grant = {"collection": "$active", "operations": ["read"], "fields": ["id"]}
+    result = NodePluginWorkerAdapter._read_grant(
+        {"data": [grant]}, {"collection": "orders"}, "orders"
+    )
+    assert result is grant
+
+
+def test_write_grant_returns_none_when_data_not_a_list() -> None:
+    assert NodePluginWorkerAdapter._write_grant({"data": "x"}, {}, "orders") is None
+
+
+def test_write_grant_matches_create_or_update() -> None:
+    grant = {"collection": "orders", "operations": ["create"], "fields": ["name"]}
+    result = NodePluginWorkerAdapter._write_grant({"data": [grant]}, {}, "orders")
+    assert result is grant
+
+
+def test_write_grant_skips_grants_without_create_or_update() -> None:
+    grant = {"collection": "orders", "operations": ["read"], "fields": ["id"]}
+    assert NodePluginWorkerAdapter._write_grant({"data": [grant]}, {}, "orders") is None
+
+
+def test_allowed_fields_returns_intersection_for_explicit_list() -> None:
+    grant = {"fields": ["id", "secret"]}
+    profile = SimpleNamespace(fields=["id", "name"])
+    result = NodePluginWorkerAdapter._allowed_fields(grant, profile)
+    assert result == {"id"}
+
+
+def test_allowed_fields_returns_empty_when_not_a_list() -> None:
+    grant = {"fields": "id"}
+    profile = SimpleNamespace(fields=["id"])
+    assert NodePluginWorkerAdapter._allowed_fields(grant, profile) == set()
+
+
+# ---------------------------------------------------------------------------
+# Additional edge branches
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_file_capability_tolerates_non_list_files_permission() -> None:
+    """When permissions['files'] is not a list, declared falls back to []."""
+    adapter = _make_adapter(file_adapter=FakeFileAdapter())
+    resolved = _resolved({"files": "not-a-list"})
+    with pytest.raises(PluginWorkerError, match=r"did not declare file.pickRead"):
+        await adapter._file_capability(resolved, {}, "file.pickRead", {})
+
+
+@pytest.mark.asyncio
+async def test_profile_rejects_collection_outside_schema() -> None:
+    class BadClient:
+        async def describe_table(self, table_id: str) -> dict[str, Any]:
+            return {"tableId": table_id, "fields": "not-a-list"}
+
+    adapter = _make_adapter(profiles={}, client=BadClient())
+    with pytest.raises(PluginWorkerError, match="outside the product schema"):
+        await adapter._profile("unknown-collection")
+
+
+def test_resolve_rejects_missing_current_revision(tmp_path: Path) -> None:
+    store = FakePluginStore(tmp_path, permissions={})
+    # Revision exists but state is not "current".
+    store.revision.state = "stale"
+    adapter = _make_adapter(store=store)
+    ctx = {"projectKey": "project-a"}
+    with pytest.raises(PluginWorkerError, match="revision is unavailable"):
+        adapter._resolve("dist/worker.js", ctx, _execution())
+
+
+def test_read_grant_skips_grant_without_read_operation() -> None:
+    grant = {"collection": "orders", "operations": ["create"], "fields": ["id"]}
+    result = NodePluginWorkerAdapter._read_grant({"data": [grant]}, {}, "orders")
+    assert result is None
+
+
+def test_write_grant_skips_grant_with_non_list_operations() -> None:
+    grant = {"collection": "orders", "operations": "create", "fields": ["name"]}
+    result = NodePluginWorkerAdapter._write_grant({"data": [grant]}, {}, "orders")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _bounded_json error branches
+# ---------------------------------------------------------------------------
+
+
+def test_bounded_json_rejects_non_serializable_value() -> None:
+    adapter = _make_adapter()
+    with pytest.raises(PluginWorkerError, match="is not valid JSON"):
+        adapter._bounded_json(object(), "test-label")
+
+
+def test_bounded_json_rejects_oversized_value() -> None:
+    adapter = _make_adapter()
+    with pytest.raises(PluginWorkerError, match="exceeds the size limit"):
+        adapter._bounded_json("x" * 200, "test-label", limit=8)
+
+
+# ---------------------------------------------------------------------------
+# cancel + InMemoryPluginWorkerAdapter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancel_returns_false_for_unknown_run() -> None:
+    adapter = _make_adapter()
+    assert await adapter.cancel("unknown-run") is False
+
+
+@pytest.mark.asyncio
+async def test_in_memory_adapter_prepare_appends_execution_and_trace() -> None:
+    trace: list[str] = []
+    adapter = InMemoryPluginWorkerAdapter(trace=trace)
+    result = await adapter.prepare(
+        "dist/worker.js", {"projectKey": "p"}, {}, execution={"runId": "r1"}
+    )
+    assert result == {}
+    assert "worker.prepare" in trace
+    assert adapter.executions == [{"runId": "r1"}]
+
+
+@pytest.mark.asyncio
+async def test_in_memory_adapter_prepare_returns_seeded_result() -> None:
+    adapter = InMemoryPluginWorkerAdapter(prepare_results={"dist/worker.js": {"ok": True}})
+    result = await adapter.prepare("dist/worker.js", {}, {})
+    assert result == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_in_memory_adapter_run_appends_trace() -> None:
+    trace: list[str] = []
+    adapter = InMemoryPluginWorkerAdapter(run_results={"dist/worker.js": {"ok": True}}, trace=trace)
+    result = await adapter.run("dist/worker.js", {}, {})
+    assert trace == ["worker.run"]
+    assert result == {"ok": True}
+
+
+def test_in_memory_adapter_is_available() -> None:
+    assert InMemoryPluginWorkerAdapter().available is True
