@@ -53,3 +53,19 @@ func TestStageRejectsConflictsAndUnsafeNames(t *testing.T) {
 		}
 	}
 }
+
+func TestThumbnailSafeMIMERejectsTIFF(t *testing.T) {
+	for _, mime := range []string{"image/tiff", "image/x-tiff"} {
+		if thumbnailSafeMIME(mime) {
+			t.Fatalf("unsafe thumbnail MIME %q was accepted", mime)
+		}
+	}
+	for _, mime := range []string{"image/png", "image/jpeg", "image/webp"} {
+		if !thumbnailSafeMIME(mime) {
+			t.Fatalf("safe thumbnail MIME %q was rejected", mime)
+		}
+	}
+	if thumbnailSafeMIME("application/pdf") {
+		t.Fatal("non-image MIME was accepted for thumbnails")
+	}
+}
