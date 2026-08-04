@@ -122,7 +122,7 @@ func (plan *Plan) Evaluate(
 	row map[string]any,
 	changedFieldIDs []string,
 ) (map[string]any, *Error) {
-	activation := make(map[string]any, len(row)+len(plan.Formulas))
+	activation := make(map[string]any, len(row))
 	for key, value := range row {
 		field, declared := plan.fields[key]
 		if !declared {

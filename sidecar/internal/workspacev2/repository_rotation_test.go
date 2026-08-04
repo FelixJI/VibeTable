@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pocketbase/pocketbase"
@@ -113,6 +114,15 @@ func TestProtectedKeyRotationRecoversKillAfterKopiaChangeBeforeJournal(
 	)
 	if !errors.Is(err, injected) {
 		t.Fatalf("fault result = %v", err)
+	}
+	journal, found, journalErr := readKeyRotationJournal(paths)
+	if journalErr != nil || !found {
+		t.Fatalf("rotation journal missing after fault: %#v %v", journal, journalErr)
+	}
+	if journal.FormatVersion != 2 ||
+		!strings.HasPrefix(journal.BackupPrimary, "argon2id$") ||
+		!strings.HasPrefix(journal.BackupSecond, "argon2id$") {
+		t.Fatalf("rotation journal did not use the secure proof format: %#v", journal)
 	}
 	current, err := provider.Open(
 		ctx,

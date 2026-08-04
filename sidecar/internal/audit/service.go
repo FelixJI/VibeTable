@@ -1274,7 +1274,7 @@ func productRow(
 	definition schema.TableDefinition,
 	record *core.Record,
 ) map[string]any {
-	result := make(map[string]any, len(definition.Fields)+1)
+	result := make(map[string]any, len(definition.Fields))
 	result["id"] = record.Id
 	for _, field := range definition.Fields {
 		result[field.PhysicalName] = record.GetRaw(field.PhysicalName)

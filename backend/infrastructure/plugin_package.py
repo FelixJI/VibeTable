@@ -46,7 +46,6 @@ class PluginCompatibilityPolicy:
 
 DEFAULT_COMPATIBILITY_POLICY = PluginCompatibilityPolicy()
 
-_PLUGIN_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:[.-][a-z0-9][a-z0-9-]*)+$")
 _SEMVER_PATTERN = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
@@ -62,6 +61,34 @@ _LOCAL_DEVELOPMENT_FILES = {
     "package.json",
     "tsconfig.json",
 }
+
+
+def _is_plugin_id_alphanumeric(value: str) -> bool:
+    return "a" <= value <= "z" or "0" <= value <= "9"
+
+
+def _is_valid_plugin_id(value: str) -> bool:
+    """Validate the reverse-domain dialect in linear time."""
+
+    length = len(value)
+    position = 0
+    while position < length and _is_plugin_id_alphanumeric(value[position]):
+        position += 1
+    if position == 0 or position == length:
+        return False
+
+    while position < length:
+        if value[position] not in {".", "-"}:
+            return False
+        position += 1
+        if position == length or not _is_plugin_id_alphanumeric(value[position]):
+            return False
+        position += 1
+        while position < length and (
+            _is_plugin_id_alphanumeric(value[position]) or value[position] == "-"
+        ):
+            position += 1
+    return True
 
 
 def _version_tuple(value: str) -> tuple[int, int, int] | None:
@@ -281,7 +308,7 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
     if manifest.get("$schema") != "vibetable.plugin-manifest.v1":
         raise PluginPackageError("manifest_schema", "unsupported plugin manifest schema")
     plugin_id = manifest.get("pluginId")
-    if not isinstance(plugin_id, str) or not _PLUGIN_ID_PATTERN.fullmatch(plugin_id):
+    if not isinstance(plugin_id, str) or not _is_valid_plugin_id(plugin_id):
         raise PluginPackageError("plugin_id", "pluginId must be a reverse-domain identifier")
     version = manifest.get("version")
     if not isinstance(version, str) or not _SEMVER_PATTERN.fullmatch(version):

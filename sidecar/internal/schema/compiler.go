@@ -170,7 +170,7 @@ func CompileIndexes(definition TableDefinition) []string {
 	for _, field := range definition.Fields {
 		fieldNames[field.FieldID] = field.PhysicalName
 	}
-	result := make([]string, 0, len(definition.Indexes)+len(definition.Fields))
+	result := make([]string, 0, len(definition.Indexes))
 	for _, index := range definition.Indexes {
 		result = append(result, compileIndex(index.Name, index.FieldIDs, index.Unique, definition.PhysicalName, fieldNames))
 	}

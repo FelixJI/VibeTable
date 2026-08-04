@@ -32,8 +32,8 @@ type keyRotationJournal struct {
 	WorkspaceID   string `json:"workspaceId"`
 	RotationID    string `json:"rotationId"`
 	Phase         string `json:"phase"`
-	BackupPrimary string `json:"repositoryHash"`
-	BackupSecond  string `json:"blobConfigHash"`
+	BackupPrimary string `json:"repositoryProof"`
+	BackupSecond  string `json:"blobConfigProof"`
 }
 
 type keyRotationFault func(string) error
@@ -327,12 +327,12 @@ func prepareKeyRotation(
 		return keyRotationJournal{}, err
 	}
 	journal := keyRotationJournal{
-		FormatVersion: 1,
+		FormatVersion: 2,
 		WorkspaceID:   workspaceID,
 		RotationID:    rotationID,
 		Phase:         keyRotationPrepared,
-		BackupPrimary: proof.PrimaryHash,
-		BackupSecond:  proof.SecondaryHash,
+		BackupPrimary: proof.PrimaryProof,
+		BackupSecond:  proof.SecondaryProof,
 	}
 	if err := writeKeyRotationJournal(paths, journal); err != nil {
 		_ = provider.DiscardStagedProtectedRotation(
@@ -355,8 +355,8 @@ func restoreKeyRotationFormat(
 		ctx,
 		keyRotationRoot(paths, journal.RotationID),
 		objectrepo.WorkspaceRepositoryRotationProof{
-			PrimaryHash:   journal.BackupPrimary,
-			SecondaryHash: journal.BackupSecond,
+			PrimaryProof:   journal.BackupPrimary,
+			SecondaryProof: journal.BackupSecond,
 		},
 	)
 }
@@ -436,11 +436,14 @@ func readKeyRotationJournal(
 }
 
 func validateKeyRotationJournal(journal keyRotationJournal) error {
-	if journal.FormatVersion != 1 ||
+	proof := objectrepo.WorkspaceRepositoryRotationProof{
+		PrimaryProof:   journal.BackupPrimary,
+		SecondaryProof: journal.BackupSecond,
+	}
+	if journal.FormatVersion != 2 ||
 		!validUUID(journal.WorkspaceID) ||
 		!validUUID(journal.RotationID) ||
-		len(journal.BackupPrimary) != 64 ||
-		len(journal.BackupSecond) != 64 {
+		!proof.ValidFormat() {
 		return errors.New("repository.rotation_journal_corrupt")
 	}
 	switch journal.Phase {

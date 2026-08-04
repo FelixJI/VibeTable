@@ -257,7 +257,7 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 			return PreviewResult{}, err
 		}
 	}
-	fields := make(map[string]schema.FieldDefinition, len(definition.Fields)*2)
+	fields := make(map[string]schema.FieldDefinition, len(definition.Fields))
 	for _, field := range definition.Fields {
 		fields[field.FieldID] = field
 		fields[field.PhysicalName] = field
@@ -266,7 +266,7 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 	if err != nil {
 		return PreviewResult{}, err
 	}
-	v2ByAlias := make(map[string]v2.FieldDefinition, len(v2Fields)*2)
+	v2ByAlias := make(map[string]v2.FieldDefinition, len(v2Fields))
 	for _, field := range v2Fields {
 		v2ByAlias[field.Identity.FieldID] = field
 		v2ByAlias[field.Identity.PhysicalName] = field

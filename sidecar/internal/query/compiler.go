@@ -1176,7 +1176,9 @@ func sortedFieldNames(fields map[string]FieldDescriptor) []string {
 	return names
 }
 
-func quote(identifier string) string { return `"` + identifier + `"` }
+func quote(identifier string) string {
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
+}
 
 func optionalWhere(where string) string {
 	if where == "" {

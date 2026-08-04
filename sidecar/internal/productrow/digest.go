@@ -21,7 +21,7 @@ const DigestField = "__vibetableDigest"
 // Secret fields participate in the digest without their values crossing the
 // product API boundary.
 func FromRecord(fieldNames []string, record *core.Record) map[string]any {
-	row := make(map[string]any, len(fieldNames)+1)
+	row := make(map[string]any, len(fieldNames))
 	row["id"] = record.Id
 	for _, name := range fieldNames {
 		field := record.Collection().Fields.GetByName(name)

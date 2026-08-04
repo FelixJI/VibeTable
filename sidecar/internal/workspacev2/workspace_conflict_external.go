@@ -22,7 +22,6 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
-	"golang.org/x/sys/windows"
 )
 
 type workspaceConflictExternalStage struct {
@@ -625,20 +624,7 @@ func atomicReplaceConflictFile(target string, content []byte) error {
 	if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
 		return err
 	}
-	sourcePtr, err := windows.UTF16PtrFromString(temp)
-	if err != nil {
-		return err
-	}
-	targetPtr, err := windows.UTF16PtrFromString(target)
-	if err != nil {
-		return err
-	}
-	return windows.MoveFileEx(
-		sourcePtr,
-		targetPtr,
-		windows.MOVEFILE_REPLACE_EXISTING|
-			windows.MOVEFILE_WRITE_THROUGH,
-	)
+	return replaceConflictFile(temp, target)
 }
 
 func (appender *workspaceConflictAppender) requestConflictShutdown() {
@@ -880,7 +866,7 @@ func applyConflictTables(
 	if err != nil {
 		return err
 	}
-	configs := make([]map[string]any, 0, len(current)+len(replacements))
+	configs := make([]map[string]any, 0, len(current))
 	seen := map[string]struct{}{}
 	for _, collection := range current {
 		if collection.System {

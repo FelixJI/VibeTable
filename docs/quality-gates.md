@@ -33,7 +33,7 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
 - .NET 45%/65%/80% 分项目阈值：按模块可测试性分层，比单一总阈值合理；新增数据目录事务逻辑必须有独立单测。
 - Web：现阶段以全量 Vitest + typecheck + production build 为主；建议后续在覆盖率稳定后按核心 service/store 设置增量阈值，不宜立即用全局高阈值阻断 UI 重构。
 - Go race：价值高但成本显著，放在源码冻结/高风险变更门禁，不放普通 PR。门禁按包
-  复用 race 编译、以两个 package worker 执行，但每个包内仍逐测试独立进程串行；
+  复用 race 编译、以三个 package worker 执行，但每个包内仍逐测试独立进程串行；
   不减少测试、不关闭 race detector。
 - 产品 E2E：必须作为发布证据，但依赖真实 Windows/WebView2 桌面会话，不伪装成 Ubuntu 单元门禁。
 
@@ -41,6 +41,11 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
 测试和 3 个无命名测试包，耗时 16.57 分钟；此前逐测试重复编译的远端基线为
 69.12 分钟。若同规格 runner 连续三次超过 25 分钟，应先检查 package worker、
 Go build cache 与临时二进制清理，不得通过跳过测试或放宽 race 门禁恢复速度。
+
+2026-08-04 在同机启用三个 package worker，并让 QA 继承 Go 默认 build cache 后，
+完整 race 阶段为 815.219 秒（13.59 分钟），较两个 worker 报告的 994.422 秒下降
+18.02%。该次覆盖 46 个有测试包、575 个当前源码命名测试和 3 个无命名测试包；
+两个报告对应不同源码提交，数量只用于证明当次完整枚举，不能作为测试删减比较。
 
 ## 产品 E2E 稳定性与性能预算
 

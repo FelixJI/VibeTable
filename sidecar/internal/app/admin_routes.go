@@ -2,13 +2,30 @@ package app
 
 import (
 	"encoding/json"
-	"fmt"
+	"html/template"
 	"net/http"
+	"strings"
 
 	"github.com/pocketbase/pocketbase/core"
 )
 
 const desktopSuperuserEmail = "desktop-admin@vibetable.local"
+
+var adminBootstrapTemplate = template.Must(template.New("admin-bootstrap").Parse(
+	`<!doctype html><meta charset="utf-8"><title>VibeTable Data Management</title>` +
+		`<meta id="vibetable-admin-bootstrap" data-auth="{{.}}">` +
+		`<script>const bootstrap=document.getElementById("vibetable-admin-bootstrap");` +
+		`localStorage.setItem("__pb_superusers__/_",bootstrap.dataset.auth);` +
+		`location.replace("/_/");</script>`,
+))
+
+func renderAdminBootstrap(authValue []byte) (string, error) {
+	var page strings.Builder
+	if err := adminBootstrapTemplate.Execute(&page, string(authValue)); err != nil {
+		return "", err
+	}
+	return page.String(), nil
+}
 
 func registerAdminRoutes(event *core.ServeEvent) {
 	event.Router.GET(
@@ -67,10 +84,10 @@ func registerAdminRoutes(event *core.ServeEvent) {
 					err,
 				)
 			}
-			javascriptValue, err := json.Marshal(string(authValue))
+			page, err := renderAdminBootstrap(authValue)
 			if err != nil {
 				return request.InternalServerError(
-					"Failed to encode the local administrator session.",
+					"Failed to render the local administrator session.",
 					err,
 				)
 			}
@@ -80,10 +97,7 @@ func registerAdminRoutes(event *core.ServeEvent) {
 				"Content-Security-Policy",
 				"default-src 'none'; script-src 'unsafe-inline'",
 			)
-			return request.HTML(http.StatusOK, fmt.Sprintf(
-				`<!doctype html><meta charset="utf-8"><title>VibeTable Data Management</title><script>localStorage.setItem("__pb_superusers__/_",%s);location.replace("/_/");</script>`,
-				javascriptValue,
-			))
+			return request.HTML(http.StatusOK, page)
 		},
 	)
 }
