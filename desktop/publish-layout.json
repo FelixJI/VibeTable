@@ -13,7 +13,7 @@
     "sidecar": {
       "version": "0.4.1",
       "pocketBaseVersion": "0.39.9",
-      "celVersion": "0.26.1",
+      "celVersion": "0.29.0",
       "contractVersion": "2.0",
       "schemaVersion": "6",
       "migrationHash": "9bf1f4b24141a3d4bd9ee64c1fa2d0935e132152b1d91df9c1531ed465bd4938",

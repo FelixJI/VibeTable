@@ -359,14 +359,79 @@ def release_smoke() -> None:
     )
 
 
+def _prepare_smoke_lane(lane: str) -> None:
+    if lane == "core":
+        bootstrap()
+    elif lane == "race":
+        _install_w64devkit()
+    elif lane == "resilience":
+        _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
+        _run("npm", "ci", cwd=REPO_ROOT / "desktop" / "web-grid")
+    elif lane != "release":
+        raise RuntimeError(f"unknown release smoke lane: {lane}")
+
+
+def release_smoke_lane(lane: str, json_report: Path) -> None:
+    version = read_project_version(REPO_ROOT)
+    artifacts = _artifacts_dir()
+    archive = artifacts / f"VibeTable-v{version}-win-x64.zip"
+    _verify_release_metadata(artifacts, version, archive)
+    _prepare_smoke_lane(lane)
+    python = ("uv", "run", "python") if lane in {"core", "resilience"} else (sys.executable,)
+    _run(
+        *python,
+        "qa/next.py",
+        "--lane",
+        lane,
+        "--package-root",
+        "dist/VibeTable.Next",
+        "--package-archive",
+        str(archive),
+        "--json-report",
+        str(json_report),
+        env={"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"},
+    )
+
+
+def aggregate_release_smoke(reports_dir: Path) -> None:
+    version = read_project_version(REPO_ROOT)
+    artifacts = _artifacts_dir()
+    archive = artifacts / f"VibeTable-v{version}-win-x64.zip"
+    _verify_release_metadata(artifacts, version, archive)
+    command = [
+        sys.executable,
+        "qa/release_eligibility.py",
+        "--reports-dir",
+        str(reports_dir),
+        "--package-root",
+        "dist/VibeTable.Next",
+        "--package-archive",
+        str(archive),
+        "--json-report",
+        "build/automation/vibetable-release-eligibility.json",
+    ]
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        command.extend(("--github-summary", summary))
+    _run(*command)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("bootstrap", "quality", "build", "smoke"))
+    parser.add_argument(
+        "command",
+        choices=("bootstrap", "quality", "build", "smoke", "smoke-lane", "smoke-aggregate"),
+    )
+    parser.add_argument("--lane", choices=("core", "race", "resilience", "release"))
+    parser.add_argument("--json-report", type=Path)
+    parser.add_argument("--reports-dir", type=Path)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    command = _parser().parse_args(argv).command
+    parser = _parser()
+    args = parser.parse_args(argv)
+    command = args.command
     actions = {
         "bootstrap": bootstrap,
         "quality": quality,
@@ -374,7 +439,16 @@ def main(argv: list[str] | None = None) -> int:
         "smoke": release_smoke,
     }
     try:
-        actions[command]()
+        if command == "smoke-lane":
+            if args.lane is None or args.json_report is None:
+                parser.error("smoke-lane requires --lane and --json-report")
+            release_smoke_lane(args.lane, args.json_report)
+        elif command == "smoke-aggregate":
+            if args.reports_dir is None:
+                parser.error("smoke-aggregate requires --reports-dir")
+            aggregate_release_smoke(args.reports_dir)
+        else:
+            actions[command]()
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f"[FAIL] VibeTable automation: {exc}", file=sys.stderr)
         return 1

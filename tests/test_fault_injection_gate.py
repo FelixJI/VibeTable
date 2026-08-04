@@ -91,9 +91,10 @@ def test_product_gate_requires_exact_passed_scenario_report(
     tmp_path: Path,
 ) -> None:
     def fake_run(
-        _command: list[str],
+        command: list[str],
         _cwd: Path,
     ) -> tuple[subprocess.CompletedProcess[str], float]:
+        assert command[-2:] == ["--package-root", str(tmp_path / "package")]
         report = tmp_path / "real-product" / "run" / "product-e2e-report.json"
         report.parent.mkdir(parents=True)
         report.write_text(
@@ -121,7 +122,7 @@ def test_product_gate_requires_exact_passed_scenario_report(
 
     monkeypatch.setattr(fault_injection, "_run", fake_run)
 
-    result = fault_injection._run_product(tmp_path)
+    result = fault_injection._run_product(tmp_path, tmp_path / "package")
 
     assert result.status == "passed"
 

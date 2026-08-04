@@ -115,10 +115,22 @@ def collect_versions(repo_root: Path) -> VersionSnapshot:
 
 def check_versions(repo_root: Path) -> list[str]:
     snapshot = collect_versions(repo_root)
+    release_versions = collect_release_versions(repo_root)
     errors = [
         f"{name}: {actual!r}, expected {snapshot.expected!r}"
         for name, actual in snapshot.mismatches.items()
     ]
+    go_mod = (repo_root / "sidecar" / "go.mod").read_text(encoding="utf-8")
+    cel_dependency = _extract(
+        r"^\s*github\.com/google/cel-go\s+v([^\s]+)",
+        go_mod,
+        "cel-go module version",
+    )
+    if cel_dependency != release_versions.cel:
+        errors.append(
+            "sidecar CEL version metadata: "
+            f"{release_versions.cel!r}, expected direct dependency {cel_dependency!r}"
+        )
     pyproject = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
     if 'dynamic = ["version"]' not in pyproject or (
         'version = {attr = "backend._version.__version__"}' not in pyproject

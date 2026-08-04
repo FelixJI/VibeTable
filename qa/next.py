@@ -248,7 +248,10 @@ def stage_command(
     if stage == "web-build":
         return [_resolve("npm"), "run", "build"], str(WEB_GRID_DIR)
     if stage == "fault-injection":
-        return [sys.executable, str(FAULT_INJECTION)], str(REPO_ROOT)
+        command = [sys.executable, str(FAULT_INJECTION)]
+        if package_root is not None:
+            command.extend(["--package-root", str(package_root)])
+        return command, str(REPO_ROOT)
     if stage == "product-e2e":
         command = [
             sys.executable,

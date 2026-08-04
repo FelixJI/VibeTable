@@ -313,7 +313,7 @@ def _run_dotnet(run_root: Path) -> CaseResult:
     )
 
 
-def _run_product(run_root: Path) -> CaseResult:
+def _run_product(run_root: Path, package_root: Path | None = None) -> CaseResult:
     product_evidence = run_root / "real-product"
     command = [
         sys.executable,
@@ -323,6 +323,8 @@ def _run_product(run_root: Path) -> CaseResult:
         "--evidence-root",
         str(product_evidence),
     ]
+    if package_root is not None:
+        command.extend(["--package-root", str(package_root)])
     completed, elapsed = _run(command, ROOT)
     evidence = run_root / "product-sidecar-kill.log"
     output = completed.stdout + completed.stderr
@@ -356,12 +358,16 @@ def _run_product(run_root: Path) -> CaseResult:
     )
 
 
-def run_gate(*, include_product: bool = True) -> tuple[int, Path, list[CaseResult]]:
+def run_gate(
+    *,
+    include_product: bool = True,
+    package_root: Path | None = None,
+) -> tuple[int, Path, list[CaseResult]]:
     run_root = EVIDENCE_ROOT / datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     run_root.mkdir(parents=True, exist_ok=False)
     results = [_run_go(run_root), _run_dotnet(run_root)]
     if include_product and all(result.status == "passed" for result in results):
-        results.append(_run_product(run_root))
+        results.append(_run_product(run_root, package_root))
     elif include_product:
         results.append(
             CaseResult(
@@ -401,6 +407,7 @@ def _parser() -> argparse.ArgumentParser:
         help="run only named Go/.NET component gates; release CI must not use this",
     )
     parser.add_argument("--list", action="store_true")
+    parser.add_argument("--package-root", type=Path)
     return parser
 
 
@@ -409,7 +416,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.list:
         print("\n".join((*GO_TESTS, DOTNET_TEST, PRODUCT_SCENARIO)))
         return 0
-    code, report, results = run_gate(include_product=not args.component_only)
+    code, report, results = run_gate(
+        include_product=not args.component_only,
+        package_root=args.package_root,
+    )
     for result in results:
         print(
             f"[{result.status.upper()}] {result.name} "
