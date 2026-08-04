@@ -85,6 +85,19 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
         ["uv", "run", "python", "scripts/automation_project.py", "build"],
         ["uv", "run", "python", "scripts/automation_project.py", "smoke"],
     ]
+    shards = config["ci_shards"]
+    assert [lane["name"] for lane in shards["lanes"]] == [
+        "core",
+        "race",
+        "resilience",
+        "release",
+    ]
+    assert shards["handoff_paths"] == [
+        "build/automation/artifacts",
+        "dist/VibeTable.Next",
+    ]
+    assert shards["run"][0][-4:] == ["--lane", "{lane}", "--json-report", "{lane_report}"]
+    assert "{reports_dir}" in shards["aggregate"][0]
     assert config["release"]["required_assets"] == [
         "VibeTable-v{version}-win-x64.zip",
         "VibeTable-v{version}-win-x64.zip.sha256",
@@ -101,6 +114,69 @@ def test_artifacts_directory_is_explicit_and_repository_relative(
     assert (
         automation_project._artifacts_dir() == (REPO_ROOT / "build/automation/artifacts").resolve()
     )
+
+
+@pytest.mark.parametrize(
+    ("lane", "expected"),
+    [
+        ("core", "bootstrap"),
+        ("race", "w64devkit"),
+        ("resilience", "uv-sync"),
+        ("release", None),
+    ],
+)
+def test_smoke_lane_prepares_only_its_required_toolchain(
+    lane: str,
+    expected: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[str] = []
+    monkeypatch.setattr(automation_project, "bootstrap", lambda: observed.append("bootstrap"))
+    monkeypatch.setattr(
+        automation_project,
+        "_install_w64devkit",
+        lambda: observed.append("w64devkit"),
+    )
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, **_kwargs: observed.append(
+            "uv-sync" if command[:2] == ("uv", "sync") else "unexpected"
+        ),
+    )
+
+    automation_project._prepare_smoke_lane(lane)
+
+    assert observed == ([] if expected is None else [expected])
+
+
+def test_smoke_lane_binds_report_to_the_declared_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    report = tmp_path / "race.json"
+    observed: list[tuple[str, ...]] = []
+    monkeypatch.setenv("AUTOMATION_ARTIFACTS_DIR", str(artifacts))
+    monkeypatch.setattr(automation_project, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(automation_project, "read_project_version", lambda _root: "1.2.3")
+    monkeypatch.setattr(automation_project, "_verify_release_metadata", lambda *_args: None)
+    monkeypatch.setattr(automation_project, "_prepare_smoke_lane", lambda _lane: None)
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, **_kwargs: observed.append(command),
+    )
+
+    automation_project.release_smoke_lane("race", report)
+
+    assert len(observed) == 1
+    command = observed[0]
+    assert command[0] == automation_project.sys.executable
+    assert command[1:5] == ("qa/next.py", "--lane", "race", "--package-root")
+    assert "--package-archive" in command
+    assert command[-2:] == ("--json-report", str(report))
 
 
 def test_spdx_is_derived_from_the_built_package_sbom(

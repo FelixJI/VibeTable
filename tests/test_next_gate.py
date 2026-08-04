@@ -309,13 +309,14 @@ def test_release_gate_enables_required_windows_credential_manager_tests() -> Non
     assert "contents: write" in workflow
 
 
-def test_release_workflow_runs_each_stage_in_one_candidate_bound_lane() -> None:
+def test_release_workflow_runs_candidate_bound_shards_and_aggregates_them() -> None:
     adapter = (next_gate.REPO_ROOT / "scripts/automation_project.py").read_text(encoding="utf-8")
     assert '"qa/next.py",' in adapter
-    assert '"--ci",' in adapter
+    assert '"--lane",' in adapter
     assert '"--package-root",' in adapter
     assert '"--package-archive",' in adapter
-    assert "--lane" not in adapter
+    assert '"qa/release_eligibility.py",' in adapter
+    assert '"--reports-dir",' in adapter
 
 
 def test_race_stage_compiles_each_package_once_and_runs_every_test_in_isolation(
