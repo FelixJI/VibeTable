@@ -174,7 +174,7 @@ public sealed class DailyQuoteHostClientTests
         using var http = new HttpClient(new DelegateHandler(
             async (_, cancellationToken) =>
             {
-                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
                 return JsonResponse("{}");
             }));
         using var client = new DailyQuoteHostClient(

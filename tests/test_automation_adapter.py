@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from scripts import automation_project, changelog
+from scripts.automation_core import Automation, SemVer
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -85,6 +87,26 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
         ["uv", "run", "python", "scripts/automation_project.py", "build"],
         ["uv", "run", "python", "scripts/automation_project.py", "smoke"],
     ]
+    shards = config["ci_shards"]
+    assert [lane["name"] for lane in shards["lanes"]] == [
+        "core",
+        "race",
+        "resilience",
+        "release",
+    ]
+    resilience = next(lane for lane in shards["lanes"] if lane["name"] == "resilience")
+    assert {name for name in ("uv", "node", "dotnet", "go") if resilience.get(name)} == {
+        "uv",
+        "node",
+        "dotnet",
+        "go",
+    }
+    assert shards["handoff_paths"] == [
+        "build/automation/artifacts",
+        "dist/VibeTable.Next",
+    ]
+    assert shards["run"][0][-4:] == ["--lane", "{lane}", "--json-report", "{lane_report}"]
+    assert "{reports_dir}" in shards["aggregate"][0]
     assert config["release"]["required_assets"] == [
         "VibeTable-v{version}-win-x64.zip",
         "VibeTable-v{version}-win-x64.zip.sha256",
@@ -101,6 +123,73 @@ def test_artifacts_directory_is_explicit_and_repository_relative(
     assert (
         automation_project._artifacts_dir() == (REPO_ROOT / "build/automation/artifacts").resolve()
     )
+
+
+@pytest.mark.parametrize(
+    ("lane", "expected"),
+    [
+        ("core", ["bootstrap"]),
+        ("race", ["w64devkit"]),
+        ("resilience", ["uv-sync", "npm-ci"]),
+        ("release", []),
+    ],
+)
+def test_smoke_lane_prepares_only_its_required_toolchain(
+    lane: str,
+    expected: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[str] = []
+    monkeypatch.setattr(automation_project, "bootstrap", lambda: observed.append("bootstrap"))
+    monkeypatch.setattr(
+        automation_project,
+        "_install_w64devkit",
+        lambda: observed.append("w64devkit"),
+    )
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, **_kwargs: observed.append(
+            "uv-sync"
+            if command[:2] == ("uv", "sync")
+            else "npm-ci"
+            if command[:2] == ("npm", "ci")
+            else "unexpected"
+        ),
+    )
+
+    automation_project._prepare_smoke_lane(lane)
+
+    assert observed == expected
+
+
+def test_smoke_lane_binds_report_to_the_declared_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    report = tmp_path / "race.json"
+    observed: list[tuple[str, ...]] = []
+    monkeypatch.setenv("AUTOMATION_ARTIFACTS_DIR", str(artifacts))
+    monkeypatch.setattr(automation_project, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(automation_project, "read_project_version", lambda _root: "1.2.3")
+    monkeypatch.setattr(automation_project, "_verify_release_metadata", lambda *_args: None)
+    monkeypatch.setattr(automation_project, "_prepare_smoke_lane", lambda _lane: None)
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, **_kwargs: observed.append(command),
+    )
+
+    automation_project.release_smoke_lane("race", report)
+
+    assert len(observed) == 1
+    command = observed[0]
+    assert command[0] == automation_project.sys.executable
+    assert command[1:5] == ("qa/next.py", "--lane", "race", "--package-root")
+    assert "--package-archive" in command
+    assert command[-2:] == ("--json-report", str(report))
 
 
 def test_spdx_is_derived_from_the_built_package_sbom(
@@ -167,11 +256,84 @@ def test_release_metadata_binds_archive_identity_and_spdx(
     automation_project._write_build_identity(artifacts / "build-identity.json", "1.2.3", archive)
     automation_project._write_spdx(artifacts / "SBOM.spdx.json", "1.2.3", archive)
 
+    build_identity = json.loads((artifacts / "build-identity.json").read_text(encoding="utf-8"))
+    project_config = json.loads((REPO_ROOT / ".ci/project.json").read_text(encoding="utf-8"))
+    assert (
+        build_identity["project"]["repository"]
+        == project_config["project"]["repository"]
+        == "FelixJI/VibeTable"
+    )
+
     automation_project._verify_release_metadata(artifacts, "1.2.3", archive)
 
     (artifacts / "SBOM.spdx.json").write_text('{"spdxVersion":"SPDX-2.3"}', encoding="utf-8")
     with pytest.raises(RuntimeError, match="complete SPDX"):
         automation_project._verify_release_metadata(artifacts, "1.2.3", archive)
+
+
+def test_release_stage_accepts_canonical_github_repository_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = json.loads((REPO_ROOT / ".ci/project.json").read_text(encoding="utf-8"))
+    automation = Automation(tmp_path, config)
+    version = SemVer.parse("1.2.3")
+    source_sha = "a" * 40
+    plan = {
+        "schema_version": 1,
+        "state": "pending",
+        "bump": "patch",
+        "baseline_version": "1.2.2",
+        "version": str(version),
+        "tag": f"v{version}",
+        "changelog_base_tag": "v1.2.2",
+        "prepared_from_sha": "b" * 40,
+        "release_branch": "automation/release",
+    }
+    release_dir = tmp_path / ".release"
+    release_dir.mkdir()
+    (release_dir / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    archive = artifacts / f"VibeTable-v{version}-win-x64.zip"
+    archive.write_bytes(b"immutable candidate")
+    archive.with_name(f"{archive.name}.sha256").write_text(
+        "placeholder checksum\n", encoding="utf-8"
+    )
+    (artifacts / "SBOM.spdx.json").write_text("{}", encoding="utf-8")
+    (artifacts / "build-identity.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "project": {
+                    "component": config["project"]["component"],
+                    "repository": config["project"]["repository"],
+                    "version": str(version),
+                    "source_sha": source_sha,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GITHUB_REPOSITORY", "FelixJI/VibeTable")
+    monkeypatch.setenv("GITHUB_WORKFLOW", "CI")
+    monkeypatch.setenv("GITHUB_RUN_ID", "30918120117")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    manifest = automation._build_candidate_manifest(
+        artifacts_dir=artifacts,
+        plan=plan,
+        source_sha=source_sha,
+        version=version,
+    )
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    for artifact in artifacts.iterdir():
+        shutil.copyfile(artifact, candidate / artifact.name)
+    (candidate / "release-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    automation._write_checksums(candidate)
+    monkeypatch.setattr(automation, "_tag_sha", lambda _tag: None)
+
+    automation.stage(candidate_dir=str(candidate), source_sha=source_sha)
 
 
 def test_changelog_groups_breaking_dependencies_and_empty_release() -> None:
