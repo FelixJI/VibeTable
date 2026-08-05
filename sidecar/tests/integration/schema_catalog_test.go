@@ -1038,7 +1038,7 @@ func TestSchemaCatalogRejectsHashLookupTarget(t *testing.T) {
 	lookup.Lookup = &schema.LookupSpec{
 		RelationFieldID: "parent_id",
 		TargetFieldID:   "hash_id",
-			Aggregate:       "none",
+		Aggregate:       "none",
 	}
 	_, err := schemaapi.New(app).ValidateChange(
 		context.Background(),
