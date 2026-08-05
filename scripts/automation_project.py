@@ -38,6 +38,13 @@ NPM_PROJECTS = (
     Path("examples/plugins/data-overview"),
     Path("examples/plugins/normalize-text"),
 )
+PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
+
+
+def _resolve_executable(name: str, *, path: str | None = None) -> str:
+    if name.casefold() == "dotnet" and PREFERRED_DOTNET.is_file():
+        return str(PREFERRED_DOTNET)
+    return shutil.which(name, path=path) or name
 
 
 def _run(
@@ -47,8 +54,8 @@ def _run(
 ) -> None:
     print(f"+ {' '.join(command)}", flush=True)
     merged_env = {**os.environ, **(env or {})}
-    executable = shutil.which(command[0], path=merged_env.get("PATH"))
-    resolved = (executable, *command[1:]) if executable is not None else command
+    executable = _resolve_executable(command[0], path=merged_env.get("PATH"))
+    resolved = (executable, *command[1:])
     subprocess.run(resolved, cwd=cwd, env=merged_env, check=True)
 
 
