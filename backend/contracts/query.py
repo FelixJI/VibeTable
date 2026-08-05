@@ -111,6 +111,7 @@ class FilterGroup(CamelModel):
     """One recursively nested AND/OR filter group."""
 
     group_logic: FilterLogic = "AND"
+    logic: FilterLogic | None = Field(default=None, exclude_if=lambda value: value is None)
     filters: list[FilterCondition | FilterGroup] = Field(min_length=1, max_length=50)
 
 

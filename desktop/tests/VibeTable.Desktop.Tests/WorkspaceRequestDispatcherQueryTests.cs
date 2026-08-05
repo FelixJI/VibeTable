@@ -147,6 +147,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
               "query": {
                 "filters": [
                   {
+                    "logic": "OR",
                     "groupLogic": "OR",
                     "filters": [
                       {"field": "status", "operator": "eq", "value": "open"},
@@ -166,6 +167,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         await Task.Delay(GridStateCoordinator.QueryDebounceMs + 150);
 
         var group = gateway.QueryTablePageQueries.Single().Filters!.Single();
+        Assert.AreEqual("OR", group.Logic);
         Assert.AreEqual("OR", group.GroupLogic);
         Assert.AreEqual(2, group.Filters!.Count);
         Assert.AreEqual("status", group.Filters[0].Field);

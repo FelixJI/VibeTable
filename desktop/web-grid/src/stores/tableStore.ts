@@ -10,6 +10,7 @@ import type {
   LookupQueryResult,
   TablePage,
   UpdateCellResult,
+  ViewGroupRow,
 } from "@/contracts";
 
 const LOOKUP_STABLE_KEY_ERROR =
@@ -67,6 +68,9 @@ export const useTableStore = defineStore("table", () => {
   const loadGeneration = ref(0);
   /** Authoritative group nodes returned by the server-side Lookup executor. */
   const lookupGroups = ref<LookupQueryResult["groups"]>([]);
+  /** Independently paged group combinations from the authoritative ViewQuery. */
+  const viewGroups = ref<ViewGroupRow[]>([]);
+  const hasMoreViewGroups = ref(false);
 
   /** All accumulated rows across pages, flattened in order. */
   const allRows = computed<ReadonlyArray<Record<string, unknown>>>(() =>
@@ -83,6 +87,8 @@ export const useTableStore = defineStore("table", () => {
     rowCount.value = 0;
     error.value = null;
     lookupGroups.value = [];
+    viewGroups.value = [];
+    hasMoreViewGroups.value = false;
   }
 
   /**
@@ -140,6 +146,12 @@ export const useTableStore = defineStore("table", () => {
       return false;
     }
     pages.value = [payload];
+    if (payload.groupRows) {
+      viewGroups.value = (payload.groupOffset ?? 0) > 0
+        ? [...viewGroups.value, ...payload.groupRows]
+        : [...payload.groupRows];
+      hasMoreViewGroups.value = payload.hasMoreGroups ?? false;
+    }
     schema.value = payload.columns;
     rowCount.value = payload.totalRows;
     datasetReady.value = true;
@@ -176,6 +188,8 @@ export const useTableStore = defineStore("table", () => {
       revisionFloor.value = null;
     }
     lookupGroups.value = [];
+    viewGroups.value = [];
+    hasMoreViewGroups.value = false;
   }
 
   /**
@@ -443,6 +457,8 @@ export const useTableStore = defineStore("table", () => {
     revision,
     loadGeneration,
     lookupGroups,
+    viewGroups,
+    hasMoreViewGroups,
     allRows,
     beginLoad,
     appendPage,

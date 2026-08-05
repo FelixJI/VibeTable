@@ -135,6 +135,10 @@ export interface TablePageLoadedPayload {
   readonly filteredRows?: number | null;
   readonly querySnapshot?: QuerySnapshot | null;
   readonly revision?: MutationRevision | null;
+  readonly groupRows?: readonly ViewGroupRow[] | null;
+  readonly groupOffset?: number;
+  readonly groupLimit?: number;
+  readonly hasMoreGroups?: boolean;
 }
 
 /**
@@ -426,6 +430,7 @@ export interface FilterCondition {
 /** One recursively nested filter group. Mirrors `FilterGroup`. */
 export interface FilterGroup {
   readonly groupLogic?: "AND" | "OR";
+  readonly logic?: "AND" | "OR";
   readonly filters: readonly FilterExpression[];
 }
 

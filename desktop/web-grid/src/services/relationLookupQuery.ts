@@ -66,6 +66,7 @@ function mapFilterExpression(
     if (filters.length === 0) return null;
     return {
       groupLogic: value.groupLogic === "OR" ? "OR" : "AND",
+      ...(value.logic === "OR" ? { logic: "OR" as const } : {}),
       filters,
     };
   }

@@ -35,6 +35,7 @@ describe("buildAuthoritativeLookupViewQuery", () => {
         filters: [
           { field: "status", operator: "eq", value: "signed" },
           {
+            logic: "OR",
             groupLogic: "AND",
             filters: [
               { field: "amount", operator: "gte", value: 100 },
@@ -53,6 +54,7 @@ describe("buildAuthoritativeLookupViewQuery", () => {
       filters: [
         { field: "orders.status", operator: "eq", value: "signed" },
         {
+          logic: "OR",
           groupLogic: "AND",
           filters: [
             { field: "orders.amount", operator: "gte", value: 100 },

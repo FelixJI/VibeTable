@@ -30,6 +30,8 @@ import AppToolbar from "@/components/layout/AppToolbar.vue";
 import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import GridHost from "@/components/grid/GridHost.vue";
 import DataSourceViewBar from "@/components/grid/DataSourceViewBar.vue";
+import ViewQueryControls from "@/components/grid/ViewQueryControls.vue";
+import ViewGroupPanel from "@/components/grid/ViewGroupPanel.vue";
 import RecordCalendarView from "@/components/grid/RecordCalendarView.vue";
 import RecordGalleryView from "@/components/grid/RecordGalleryView.vue";
 import RecordKanbanView from "@/components/grid/RecordKanbanView.vue";
@@ -104,6 +106,7 @@ import { useDashboardDraftStore, useDashboardStore } from "@/stores/dashboardSto
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
+import { cloneFilterExpressions, useViewQueryStore } from "@/stores/viewQueryStore";
 import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
 import {
   registerWorkspaceEpochReset,
@@ -121,7 +124,6 @@ import {
   captureDataSourceView,
   type DataSourceViewGrid,
 } from "@/grid/dataSourceViewState";
-import { projectPresetRows } from "@/grid/projectPresetRows";
 import type { PresetEntry, PresetView } from "@/contracts";
 import {
   classifyClipboard,
@@ -144,6 +146,8 @@ import type {
   ManagedAttachmentRef,
   AttachmentListResult,
   MutationErrorPayload,
+  SummaryCondition,
+  TableQuery,
 } from "@/contracts";
 import { normalizeTargets } from "@/grid/relationLookupRenderer";
 import { t } from "@/i18n";
@@ -177,6 +181,7 @@ const dashboards = useDashboardStore();
 const dashboardDraft = useDashboardDraftStore();
 const realtime = useRealtimeStore();
 const presetViews = usePresetVersionStore();
+const viewQuery = useViewQueryStore();
 const documentWorkspace = useDocumentWorkspaceStore();
 const workspaceSession = useWorkspaceSessionStore();
 const workspaceProtection = useWorkspaceProtectionStore();
@@ -541,11 +546,7 @@ const lookupSourceNavigation = ref<{
   source: LookupValueProvenance;
   queryRequested: boolean;
 } | null>(null);
-const interactiveGridQuery = ref<{
-  filters: readonly FilterExpression[];
-  sorts: readonly SortCondition[];
-  groups: readonly GroupCondition[];
-} | null>(null);
+const interactiveGridQuery = ref<TableQuery | null>(null);
 
 watch(
   () => workspace.currentTable,
@@ -642,22 +643,16 @@ function onGridViewQueryChanged(query: {
   readonly groups: readonly GroupCondition[];
 }): void {
   const table = workspace.currentTable;
-  if (!table) return;
-  interactiveGridQuery.value = query;
+  if (!table || applyingPresetView) return;
+  viewQuery.updateRuntime(query);
+  const normalized = viewQuery.toQuery();
+  interactiveGridQuery.value = normalized;
   if (!applyingPresetView) presetViews.markDirty();
   hostBridge.notify("table.queryRequested", {
     table,
     // Standard table.query is page-bounded (backend max 500) but compiles the
     // sort/filter on the data service, so the page is selected from the full dataset.
-    query: {
-      filters: query.filters,
-      sorts: query.sorts,
-      groups: query.groups,
-      offset: 0,
-      limit: 500,
-      groupOffset: 0,
-      groupLimit: 100,
-    },
+    query: normalized,
   });
   void refreshAuthoritativeLookupRows();
 }
@@ -762,9 +757,7 @@ let applyingPresetView = false;
 const activePresetView = computed(() => presetViews.presets
   .find((item) => item.id === presetViews.activePresetId)?.view ?? null);
 const activeViewKind = computed(() => activePresetView.value?.kind ?? "table");
-const projectedPresetRows = computed(() => activePresetView.value
-  ? projectPresetRows(tableStore.allRows, activePresetView.value)
-  : tableStore.allRows);
+const projectedPresetRows = computed(() => tableStore.allRows);
 const dateFieldOptions = computed(() => (tableStore.schema ?? [])
   .filter((column) => column.dataType === "date" || column.dataType === "datetime")
   .map((column) => ({ label: column.title, value: column.name })));
@@ -783,22 +776,77 @@ const coverFieldOptions = computed(() => (tableStore.schema ?? [])
   .filter((column) => column.kind === "attachment" || column.dataType === "text")
   .map((column) => ({ label: column.title, value: column.name })));
 
+watch(
+  () => tableStore.schema,
+  (columns) => {
+    const collection = workspace.currentTable;
+    if (!collection || !columns || viewQuery.visibleFields.length > 0) return;
+    const fields = columns.map((column) => column.name);
+    if (activePresetView.value) viewQuery.replace(collection, activePresetView.value, fields);
+    else viewQuery.reset(collection, fields);
+  },
+);
+
 function captureTableView(isDefault = false): PresetView {
-  return captureDataSourceView(
+  const captured = captureDataSourceView(
     tabulator.value as unknown as DataSourceViewGrid | null,
     { isDefault, density: ui.density },
   );
+  return {
+    ...captured,
+    columns: captured.columns?.map((column) => ({
+      ...column,
+      visible: viewQuery.visibleFields.includes(column.name),
+    })),
+    filters: cloneFilterExpressions(viewQuery.filters),
+    sorts: [...viewQuery.sorts],
+    groups: [...viewQuery.groups],
+    summaries: [...viewQuery.summaries],
+    search: viewQuery.search,
+    visibleFields: [...viewQuery.visibleFields],
+  };
 }
 
 function captureCurrentView(isDefault = false): PresetView {
-  return activePresetView.value && activeViewKind.value !== "table"
-    ? { ...activePresetView.value, isDefault }
+  const base = activePresetView.value && activeViewKind.value !== "table"
+    ? activePresetView.value
     : captureTableView(isDefault);
+  return {
+    ...base,
+    filters: cloneFilterExpressions(viewQuery.filters),
+    sorts: [...viewQuery.sorts],
+    groups: [...viewQuery.groups],
+    summaries: [...viewQuery.summaries],
+    search: viewQuery.search,
+    visibleFields: [...viewQuery.visibleFields],
+    isDefault,
+  };
+}
+
+function requestAuthoritativeView(groupOffset = 0): void {
+  const table = workspace.currentTable;
+  if (!table) return;
+  const query = viewQuery.toQuery(groupOffset);
+  interactiveGridQuery.value = query;
+  hostBridge.notify("table.queryRequested", { table, query });
+  void refreshAuthoritativeLookupRows();
+}
+
+function loadMoreViewGroups(): void {
+  requestAuthoritativeView(tableStore.viewGroups.length);
 }
 
 async function applyView(view: PresetView): Promise<void> {
+  const collection = workspace.currentTable;
+  if (!collection) return;
+  viewQuery.replace(
+    collection,
+    view,
+    (tableStore.schema ?? []).map((column) => column.name),
+  );
   if (view.kind && view.kind !== "table") {
     pendingPresetView.value = null;
+    requestAuthoritativeView();
     return;
   }
   const grid = tabulator.value as unknown as DataSourceViewGrid | null;
@@ -814,6 +862,28 @@ async function applyView(view: PresetView): Promise<void> {
   } finally {
     applyingPresetView = false;
   }
+  requestAuthoritativeView();
+}
+
+async function onViewDefinitionChanged(value: {
+  filters: FilterExpression[];
+  groups: GroupCondition[];
+  summaries: SummaryCondition[];
+  visibleFields: string[];
+}): Promise<void> {
+  viewQuery.updateDefinition(value);
+  presetViews.markDirty();
+  const grid = tabulator.value as unknown as DataSourceViewGrid | null;
+  if (grid && activeViewKind.value === "table") {
+    applyingPresetView = true;
+    try {
+      await applyDataSourceView(grid, captureTableView());
+      await nextTick();
+    } finally {
+      applyingPresetView = false;
+    }
+  }
+  requestAuthoritativeView();
 }
 
 watch(tabulator, (grid) => {
@@ -852,6 +922,7 @@ watch(
   (collection) => {
     pendingPresetView.value = null;
     presetViews.clearPresets(collection ?? "");
+    viewQuery.reset(collection ?? "");
     if (collection) void loadCollectionViews(collection);
   },
   { immediate: true },
@@ -2050,6 +2121,24 @@ useKeyboard({
               @rename="renameView"
               @delete="deleteView"
               @set-default="setDefaultView"
+            />
+            <ViewQueryControls
+              v-if="workspace.currentTable"
+              :columns="tableStore.schema ?? []"
+              :filters="viewQuery.filters"
+              :groups="viewQuery.groups"
+              :summaries="viewQuery.summaries"
+              :visible-fields="viewQuery.visibleFields"
+              @change="onViewDefinitionChanged"
+            />
+            <ViewGroupPanel
+              v-if="workspace.currentTable"
+              :rows="tableStore.viewGroups"
+              :groups="viewQuery.groups"
+              :summaries="viewQuery.summaries"
+              :columns="tableStore.schema ?? []"
+              :has-more="tableStore.hasMoreViewGroups"
+              @more="loadMoreViewGroups"
             />
             <section
               v-if="editRejection"

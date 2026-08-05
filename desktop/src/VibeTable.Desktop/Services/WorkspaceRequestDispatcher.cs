@@ -1888,7 +1888,18 @@ public sealed class WorkspaceRequestDispatcher
                         StringComparison.OrdinalIgnoreCase)
                         ? "OR"
                         : "AND";
-                result.Add(new FilterExpression(Filters: children, GroupLogic: groupLogic));
+                string groupConnector = item.TryGetProperty("logic", out var groupConnectorElement)
+                    && groupConnectorElement.ValueKind == JsonValueKind.String
+                    && string.Equals(
+                        groupConnectorElement.GetString(),
+                        "OR",
+                        StringComparison.OrdinalIgnoreCase)
+                        ? "OR"
+                        : "AND";
+                result.Add(new FilterExpression(
+                    Logic: groupConnector,
+                    Filters: children,
+                    GroupLogic: groupLogic));
                 continue;
             }
             if (!item.TryGetProperty("field", out var fieldElement)
