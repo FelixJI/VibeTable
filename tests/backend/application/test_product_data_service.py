@@ -65,9 +65,15 @@ def test_schema_v2_plan_params_defer_domain_validation_but_keep_transport_closed
             "conversionRule": "",
             "confirmation": "",
             "backupReceipt": "",
+            "relationPair": {
+                "reciprocalDisplayName": "订单",
+                "reciprocalCardinality": "many",
+                "sourceDisplayFieldId": "fld_order_number",
+            },
         }
     )
     assert accepted.root["draft"] == {}
+    assert accepted.root["relationPair"]["sourceDisplayFieldId"] == "fld_order_number"
 
     with pytest.raises(ValidationError):
         PRODUCT_PARAM_MODELS["field.change.plan"].model_validate(
@@ -125,6 +131,11 @@ async def test_field_settings_methods_use_only_frozen_v2_routes() -> None:
             "conversionRule": "",
             "confirmation": "",
             "backupReceipt": "",
+            "relationPair": {
+                "reciprocalDisplayName": "订单",
+                "reciprocalCardinality": "many",
+                "sourceDisplayFieldId": "fld_order_number",
+            },
         }
     )
     apply = PRODUCT_PARAM_MODELS["field.change.apply"].model_validate(
@@ -149,6 +160,11 @@ async def test_field_settings_methods_use_only_frozen_v2_routes() -> None:
         "/api/vibetable/v2/field-change/apply",
         "/api/vibetable/v2/field-recycle-bin/orders",
     ]
+    assert transport.requests[1]["json_body"]["relationPair"] == {
+        "reciprocalDisplayName": "订单",
+        "reciprocalCardinality": "many",
+        "sourceDisplayFieldId": "fld_order_number",
+    }
 
 
 def test_renderer_columns_use_composite_relation_and_lookup_catalog_ids() -> None:

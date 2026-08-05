@@ -196,6 +196,97 @@ public sealed class JsonRpcProductDataGatewayTests
     }
 
     [TestMethod]
+    public async Task FieldChangePlanAcceptsFormulaDraftWithoutCompiledResultType()
+    {
+        var transport = new AutoRespondTransport();
+        transport.Results["field.change.plan"] =
+            """
+            {
+              "contract":"vibetable.schema.v2",
+              "planId":"plan_formula","planHash":"sha256:formula","expiresAt":"2026-08-05T16:00:00Z",
+              "intent":{
+                "action":"create","tableId":"tbl_orders","fieldId":"",
+                "expectedSchemaRevision":"schema_7","expectedDataRevision":0,
+                "draft":{
+                  "displayName":"Upper title","help":"","logicalType":"formula",
+                  "value":{
+                    "required":false,
+                    "default":{"enabled":false,"value":null,"source":"recommended","defaultsVersion":1},
+                    "presence":{"mode":"none"}
+                  },
+                  "constraints":{
+                    "unique":{"enabled":false,"blankPolicy":"ignoreMissing"},
+                    "range":{"min":null,"max":null},
+                    "length":{"min":null,"max":null},
+                    "pattern":{"enabled":false,"value":""},
+                    "domains":{"only":[],"except":[]},
+                    "selection":{"min":0,"max":null}
+                  },
+                  "storage":{"kind":"computed","options":{"onlyInt":false,"maxSize":0,"convertURLs":false,"presentable":false}},
+                  "display":{
+                    "kind":"text","preset":"plain","displayScale":0,"scaleMode":"fixed",
+                    "trimTrailingZeros":false,"useGrouping":false,"currency":"",
+                    "percentStorage":"ratio","unit":null,"precision":"exact","timezone":"",
+                    "mode":"","trueLabel":"","falseLabel":""
+                  },
+                  "formula":{"language":"cel-v1","source":"upper(f_title)"}
+                },
+                "actor":{"id":"local-user","kind":"user"},
+                "conversionRule":"","confirmation":"","backupReceipt":""
+              },
+              "before":null,
+              "after":{
+                "contract":"vibetable.schema.v2",
+                "identity":{"fieldId":"fld_formula","physicalName":"f_formula","providerFieldId":""},
+                "displayName":"Upper title","help":"","logicalType":"formula",
+                "lifecycle":{"state":"active","retiredAt":null},
+                "value":{
+                  "required":false,
+                  "default":{"enabled":false,"value":null,"source":"recommended","defaultsVersion":1},
+                  "presence":{"mode":"none"}
+                },
+                "constraints":{
+                  "unique":{"enabled":false,"blankPolicy":"ignoreMissing"},
+                  "range":{"min":null,"max":null},
+                  "length":{"min":null,"max":null},
+                  "pattern":{"enabled":false,"value":""},
+                  "domains":{"only":[],"except":[]},
+                  "selection":{"min":0,"max":null}
+                },
+                "storage":{"kind":"computed","options":{"onlyInt":false,"maxSize":0,"convertURLs":false,"presentable":false}},
+                "display":{
+                  "kind":"text","preset":"plain","displayScale":0,"scaleMode":"fixed",
+                  "trimTrailingZeros":false,"useGrouping":false,"currency":"",
+                  "percentStorage":"ratio","unit":null,"precision":"exact","timezone":"",
+                  "mode":"","trueLabel":"","falseLabel":""
+                },
+                "formula":{"language":"cel-v1","source":"upper(f_title)","resultType":"text"}
+              },
+              "classes":["schema"],"expectedSchemaRevision":"schema_7","expectedDataRevision":0,
+              "impact":{"records":0,"missing":0,"ambiguous":0,"failures":[],"dependencies":[]},
+              "steps":[],"warnings":[],"errors":[],"confirmations":[],
+              "createsMigration":false,"canApply":true
+            }
+            """;
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+
+        JsonElement result = await gateway.PlanFieldChangeAsync(
+            JsonDocument.Parse("""{"tableId":"tbl_orders"}""").RootElement.Clone(),
+            CancellationToken.None);
+
+        JsonElement draftFormula = result
+            .GetProperty("intent")
+            .GetProperty("draft")
+            .GetProperty("formula");
+        Assert.AreEqual("upper(f_title)", draftFormula.GetProperty("source").GetString());
+        Assert.IsFalse(draftFormula.TryGetProperty("resultType", out _));
+        Assert.AreEqual(
+            "text",
+            result.GetProperty("after").GetProperty("formula").GetProperty("resultType").GetString());
+    }
+
+    [TestMethod]
     public async Task CancellationIsPropagatedBeforeTransportWrite()
     {
         var transport = new AutoRespondTransport();

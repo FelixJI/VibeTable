@@ -273,6 +273,10 @@ public sealed record FieldFormulaV2(
     string Source,
     string ResultType);
 
+public sealed record FieldFormulaDraftV2(
+    string Language,
+    string Source);
+
 public sealed record FieldLookupV2(
     IReadOnlyList<FieldLookupPathStepV2> Path,
     string TargetFieldId);
@@ -311,7 +315,7 @@ public sealed record FieldDraftV2(
     FieldFileV2? File = null,
     FieldJsonV2? Json = null,
     FieldAutoDateV2? AutoDate = null,
-    FieldFormulaV2? Formula = null,
+    FieldFormulaDraftV2? Formula = null,
     FieldLookupV2? Lookup = null);
 
 public sealed record FieldRecommendedValuesV2(

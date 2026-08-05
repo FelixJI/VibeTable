@@ -475,6 +475,29 @@ async function createV2Field(
     };
   }
   draft = customize(cloneJson(draft));
+  let relationPair;
+  if (logicalType === "relation") {
+    const sourceSchema = await rawBridgeRequest(page, "schema.describe", {
+      collection: tableId,
+      requestGeneration: 0,
+      accepts: [
+        "vibetable.relation-capabilities.v1",
+        "vibetable.lookup-query.v1",
+      ],
+    });
+    const sourceDisplayFieldId = sourceSchema.payload?.schema?.primaryDisplayFieldId
+      || sourceSchema.payload?.schema?.columns?.find(
+        (column) => column.fieldId && column.kind !== "system",
+      )?.fieldId;
+    if (!sourceDisplayFieldId) {
+      throw new Error(`relation source display field is unavailable for ${tableId}`);
+    }
+    relationPair = {
+      reciprocalDisplayName: `${displayName} 来源`,
+      reciprocalCardinality: "many",
+      sourceDisplayFieldId,
+    };
+  }
   const intent = {
     action: "create",
     tableId,
@@ -486,6 +509,7 @@ async function createV2Field(
     conversionRule: "",
     confirmation: "",
     backupReceipt: "",
+    ...(relationPair ? { relationPair } : {}),
   };
   const planned = await rawBridgeRequest(page, "field.change.plan", intent);
   if (planned.type === "operation.failed" || !planned.payload?.canApply) {
@@ -736,16 +760,13 @@ async function scenario02(page, recorder, _network, runtime) {
         draft.formula = {
           language: "cel-v1",
           source: `upper(${title.physicalName})`,
-          resultType: "text",
         };
       }
       if (logicalType === "lookup") {
         const relation = created.find((field) => field.definition?.logicalType === "relation");
         draft.lookup = {
-          relationFieldId: relation.fieldId,
+          path: [{ relationFieldId: relation.fieldId }],
           targetFieldId: target.field.fieldId,
-          aggregate: "first",
-          resultType: "text",
         };
       }
       return draft;
@@ -775,7 +796,7 @@ async function scenario02(page, recorder, _network, runtime) {
       && computed.find((field) => field.definition?.logicalType === "formula")
         ?.definition?.formula?.language === "cel-v1"
       && computed.find((field) => field.definition?.logicalType === "lookup")
-        ?.definition?.lookup?.relationFieldId
+        ?.definition?.lookup?.path?.[0]?.relationFieldId
         === created.find((field) => field.definition?.logicalType === "relation")?.fieldId,
     { computed },
   );
@@ -2351,6 +2372,7 @@ async function scenario06(page, recorder) {
   const authors = await createSimpleTable(page, "E2E Authors V2", "Name");
   const articleTableId = await createEmptyTable(page, "E2E Articles V2");
   await closeFieldSettingsDrawer(page);
+  await createV2Field(page, articleTableId, "Title", "text");
   const relation = await createV2Field(
     page,
     articleTableId,
@@ -3246,7 +3268,6 @@ async function scenario12(page, recorder, _network, runtime) {
       draft.formula = {
         language: "cel-v1",
         source: `${valueField.physicalName} * 2.0`,
-        resultType: "number",
       };
       return draft;
     },
