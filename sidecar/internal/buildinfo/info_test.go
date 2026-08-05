@@ -12,7 +12,7 @@ func TestCurrentContainsPinnedDependencies(t *testing.T) {
 	if info.PocketBaseVersion != "0.39.9" {
 		t.Fatalf("PocketBase version = %q", info.PocketBaseVersion)
 	}
-	if info.CELVersion != "0.26.1" {
+	if info.CELVersion != "0.29.0" {
 		t.Fatalf("CEL version = %q", info.CELVersion)
 	}
 	if info.SchemaVersion != "6" {

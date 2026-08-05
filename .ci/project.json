@@ -2,7 +2,7 @@
   "schema_version": 1,
   "project": {
     "component": "vibetable",
-    "repository": "FelixJI/vibetable"
+    "repository": "FelixJI/VibeTable"
   },
   "ci": {
     "bootstrap": [
@@ -17,6 +17,55 @@
     ],
     "release_smoke": [
       ["uv", "run", "python", "scripts/automation_project.py", "smoke"]
+    ]
+  },
+  "ci_shards": {
+    "handoff_paths": [
+      "build/automation/artifacts",
+      "dist/VibeTable.Next"
+    ],
+    "lanes": [
+      {
+        "name": "core",
+        "uv": true,
+        "node": true,
+        "dotnet": true,
+        "go": true
+      },
+      {
+        "name": "race",
+        "go": true
+      },
+      {
+        "name": "resilience",
+        "uv": true,
+        "node": true,
+        "dotnet": true,
+        "go": true
+      },
+      {
+        "name": "release"
+      }
+    ],
+    "run": [
+      [
+        "python",
+        "scripts/automation_project.py",
+        "smoke-lane",
+        "--lane",
+        "{lane}",
+        "--json-report",
+        "{lane_report}"
+      ]
+    ],
+    "aggregate": [
+      [
+        "python",
+        "scripts/automation_project.py",
+        "smoke-aggregate",
+        "--reports-dir",
+        "{reports_dir}"
+      ]
     ]
   },
   "release": {

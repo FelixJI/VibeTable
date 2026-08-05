@@ -1383,7 +1383,7 @@ onBeforeUnmount(() => {
   unregisterWorkspaceEpochReset();
   tableService.dispose();
   relationLookupService.dispose();
-  revisionHistoryService.invalidate();
+  revisionHistoryService.dispose();
   pluginService.dispose();
   dashboardService.dispose();
   fieldSettingsService.dispose();
@@ -1660,7 +1660,6 @@ const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
     tableStore.reset();
     history.clear();
     documentWorkspace.clear();
-    revisionHistory.reset();
     relationLookup.reset();
     dashboards.reset();
     dashboardDraft.stop();

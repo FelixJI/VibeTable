@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { createHostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
-import { useRevisionHistoryService } from "./revisionHistoryService";
+import { useRevisionHistoryService as createRevisionHistoryService } from "./revisionHistoryService";
 import {
   setWorkspaceV2UiPort,
   type WorkspaceV2UiPort,
@@ -35,6 +35,27 @@ function setupBridge() {
 }
 
 const activeBridges: ReturnType<typeof createHostBridge>[] = [];
+const activeServices: ReturnType<typeof createRevisionHistoryService>[] = [];
+const workspaceEntry: WorkspaceRegistryEntryV2 = {
+  contractVersion: "2.0",
+  workspaceId: "11111111-1111-4111-8111-111111111111",
+  displayName: "项目 A",
+  selectedRoot: "D:\\Workspaces\\A",
+  activityRoot: null,
+  storageKind: "fixed",
+  coordinationStrength: "strong",
+  lastOpenedAt: null,
+  lastKnownHealth: "healthy",
+  lastSnapshotAt: null,
+  lastSyncAt: null,
+  pendingSync: false,
+};
+
+function useRevisionHistoryService(): ReturnType<typeof createRevisionHistoryService> {
+  const service = createRevisionHistoryService();
+  activeServices.push(service);
+  return service;
+}
 
 function replyToLast(
   harness: ReturnType<typeof setupBridge>,
@@ -49,6 +70,7 @@ function replyToLast(
 describe("revisionHistoryService", () => {
   beforeEach(() => setActivePinia(createPinia()));
   afterEach(() => {
+    for (const service of activeServices.splice(0)) service.dispose();
     for (const bridge of activeBridges.splice(0)) bridge.stop();
     setHostBridgeForTesting(null);
     setWorkspaceV2UiPort(null);
@@ -282,6 +304,119 @@ describe("revisionHistoryService", () => {
       },
     });
     expect(store.lastApplied?.item.status).toBe("new");
+  });
+
+  it("keeps an open history intent and requeries after the same workspace rotates epoch", async () => {
+    const harness = setupBridge();
+    setHostBridgeForTesting(harness.bridge);
+    const workspace = useWorkspaceStore();
+    workspace.selectTable("orders");
+    const sessionStore = useWorkspaceSessionStore();
+    sessionStore.configureCapabilities([
+      "workspace.session.v2",
+      "history.restore.v2",
+    ]);
+    sessionStore.setWorkspaces([workspaceEntry]);
+    sessionStore.applySession({
+      contractVersion: "2.0",
+      workspaceId: workspaceEntry.workspaceId,
+      sessionEpoch: 7,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+    const page: HistoryPage = {
+      collection: "orders",
+      scope: "table",
+      changeSets: [],
+      total: 0,
+      hasMore: false,
+      capabilityHash: "sha256:capability",
+      schemaRevision: "schema:1",
+      archivedDefaultRevisionIds: {},
+    };
+    const request = vi.fn()
+      .mockImplementationOnce(() => new Promise<HistoryPage>(() => undefined))
+      .mockResolvedValueOnce(page);
+    setWorkspaceV2UiPort({ request } as unknown as WorkspaceV2UiPort);
+    const store = useRevisionHistoryStore();
+    const service = useRevisionHistoryService();
+
+    service.open({ scope: "table" });
+    expect(request).toHaveBeenCalledTimes(1);
+    sessionStore.applySession({
+      contractVersion: "2.0",
+      workspaceId: workspaceEntry.workspaceId,
+      sessionEpoch: 8,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(store.phase).toBe("empty"));
+    expect(store.panelOpen).toBe(true);
+  });
+
+  it("defers a user history query until a transitioning workspace becomes ready", async () => {
+    const harness = setupBridge();
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const sessionStore = useWorkspaceSessionStore();
+    sessionStore.configureCapabilities([
+      "workspace.session.v2",
+      "history.restore.v2",
+    ]);
+    sessionStore.setWorkspaces([workspaceEntry]);
+    sessionStore.applySession({
+      contractVersion: "2.0",
+      workspaceId: workspaceEntry.workspaceId,
+      sessionEpoch: 7,
+      state: "switching",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "verifying",
+      errorCode: null,
+    });
+    const page: HistoryPage = {
+      collection: "orders",
+      scope: "table",
+      changeSets: [],
+      total: 0,
+      hasMore: false,
+      capabilityHash: "sha256:capability",
+      schemaRevision: "schema:1",
+      archivedDefaultRevisionIds: {},
+    };
+    const request = vi.fn().mockResolvedValue(page);
+    setWorkspaceV2UiPort({ request } as unknown as WorkspaceV2UiPort);
+    const store = useRevisionHistoryStore();
+    const service = useRevisionHistoryService();
+
+    service.open({ scope: "table" });
+    expect(request).not.toHaveBeenCalled();
+    expect(store.panelOpen).toBe(true);
+    sessionStore.applySession({
+      contractVersion: "2.0",
+      workspaceId: workspaceEntry.workspaceId,
+      sessionEpoch: 8,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(store.phase).toBe("empty"));
   });
 
   it("fails V2 history queries closed without falling back to legacy history", async () => {

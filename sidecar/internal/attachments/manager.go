@@ -1044,7 +1044,7 @@ func (manager *Manager) Refs(
 			return nil, err
 		}
 		thumbnails := []Thumbnail{}
-		if strings.HasPrefix(item.GetString("mime"), "image/") {
+		if thumbnailSafeMIME(item.GetString("mime")) {
 			thumbnails = make(
 				[]Thumbnail, 0, len(field.AttachmentPolicy.ThumbnailVariants),
 			)
@@ -1127,7 +1127,7 @@ func (manager *Manager) Token(
 			"attachment.metadata_missing", "attachment metadata is missing", false,
 		)
 	}
-	if variant != "" && !strings.HasPrefix(metadata.GetString("mime"), "image/") {
+	if variant != "" && !thumbnailSafeMIME(metadata.GetString("mime")) {
 		return "", attachmentError(
 			"attachment.thumbnail_not_found", "attachment thumbnail variant was not found", false,
 		)
@@ -1217,8 +1217,7 @@ func (manager *Manager) Open(
 			"attachment.metadata_missing", "attachment metadata is missing", false,
 		)
 	}
-	if claims.Variant != "" &&
-		!strings.HasPrefix(metadata.GetString("mime"), "image/") {
+	if claims.Variant != "" && !thumbnailSafeMIME(metadata.GetString("mime")) {
 		return nil, attachmentError(
 			"attachment.thumbnail_not_found", "attachment thumbnail variant was not found", false,
 		)
@@ -1990,6 +1989,13 @@ func mimeAllowed(detected string, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+func thumbnailSafeMIME(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(normalized, "image/") &&
+		normalized != "image/tiff" &&
+		normalized != "image/x-tiff"
 }
 
 func duplicates(values []string) bool {

@@ -309,13 +309,14 @@ def test_release_gate_enables_required_windows_credential_manager_tests() -> Non
     assert "contents: write" in workflow
 
 
-def test_release_workflow_runs_each_stage_in_one_candidate_bound_lane() -> None:
+def test_release_workflow_runs_candidate_bound_shards_and_aggregates_them() -> None:
     adapter = (next_gate.REPO_ROOT / "scripts/automation_project.py").read_text(encoding="utf-8")
     assert '"qa/next.py",' in adapter
-    assert '"--ci",' in adapter
+    assert '"--lane",' in adapter
     assert '"--package-root",' in adapter
     assert '"--package-archive",' in adapter
-    assert "--lane" not in adapter
+    assert '"qa/release_eligibility.py",' in adapter
+    assert '"--reports-dir",' in adapter
 
 
 def test_race_stage_compiles_each_package_once_and_runs_every_test_in_isolation(
@@ -665,6 +666,19 @@ def test_fault_injection_evidence_uses_isolated_gate_temp(
     environment = next_gate._stage_environment("fault-injection", command)
 
     assert environment["VIBETABLE_FAULT_EVIDENCE_ROOT"] == str(tmp_path / "fault-injection")
+
+
+def test_fault_injection_uses_the_selected_immutable_candidate(tmp_path: Path) -> None:
+    package_root = tmp_path / "candidate"
+
+    command, _cwd = next_gate.stage_command("fault-injection", package_root)
+
+    assert command == [
+        next_gate.sys.executable,
+        str(next_gate.FAULT_INJECTION),
+        "--package-root",
+        str(package_root),
+    ]
 
 
 def test_go_test_retries_only_the_narrow_windows_tempdir_cleanup_flake(
