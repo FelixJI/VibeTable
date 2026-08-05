@@ -695,7 +695,9 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
         lookup = {
             "relationFieldId": "customer_id",
             "targetFieldId": "name_id",
-            "aggregate": "first",
+            # v1 keeps the wire member frozen, but product semantics no longer
+            # permit Lookup aggregation. A one-valued path is scalar by shape.
+            "aggregate": "none",
         }
         attachment = {
             "maxFiles": 2,
@@ -820,7 +822,10 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
                 "query": {"filters": [], "sorts": [], "offset": 0, "limit": 100},
             },
         ).json()
-        assert lookup_page["rows"][0]["customer_name"] == "Ada"
+        lookup_cell = lookup_page["rows"][0]["customer_name"]
+        assert lookup_cell["state"] == "ok", lookup_cell
+        assert lookup_cell["value"] == "Ada", lookup_cell
+        assert lookup_cell["provenance"][0]["recordLabel"] == "Ada", lookup_cell
         coverage["record-crud-query+relation-lookup"] = "passed"
 
         rollback = _apply(
