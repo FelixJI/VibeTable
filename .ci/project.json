@@ -2,7 +2,7 @@
   "schema_version": 1,
   "project": {
     "component": "vibetable",
-    "repository": "FelixJI/vibetable"
+    "repository": "FelixJI/VibeTable"
   },
   "ci": {
     "bootstrap": [

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from scripts import automation_project, changelog
+from scripts.automation_core import Automation, SemVer
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -254,11 +256,84 @@ def test_release_metadata_binds_archive_identity_and_spdx(
     automation_project._write_build_identity(artifacts / "build-identity.json", "1.2.3", archive)
     automation_project._write_spdx(artifacts / "SBOM.spdx.json", "1.2.3", archive)
 
+    build_identity = json.loads((artifacts / "build-identity.json").read_text(encoding="utf-8"))
+    project_config = json.loads((REPO_ROOT / ".ci/project.json").read_text(encoding="utf-8"))
+    assert (
+        build_identity["project"]["repository"]
+        == project_config["project"]["repository"]
+        == "FelixJI/VibeTable"
+    )
+
     automation_project._verify_release_metadata(artifacts, "1.2.3", archive)
 
     (artifacts / "SBOM.spdx.json").write_text('{"spdxVersion":"SPDX-2.3"}', encoding="utf-8")
     with pytest.raises(RuntimeError, match="complete SPDX"):
         automation_project._verify_release_metadata(artifacts, "1.2.3", archive)
+
+
+def test_release_stage_accepts_canonical_github_repository_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = json.loads((REPO_ROOT / ".ci/project.json").read_text(encoding="utf-8"))
+    automation = Automation(tmp_path, config)
+    version = SemVer.parse("1.2.3")
+    source_sha = "a" * 40
+    plan = {
+        "schema_version": 1,
+        "state": "pending",
+        "bump": "patch",
+        "baseline_version": "1.2.2",
+        "version": str(version),
+        "tag": f"v{version}",
+        "changelog_base_tag": "v1.2.2",
+        "prepared_from_sha": "b" * 40,
+        "release_branch": "automation/release",
+    }
+    release_dir = tmp_path / ".release"
+    release_dir.mkdir()
+    (release_dir / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    archive = artifacts / f"VibeTable-v{version}-win-x64.zip"
+    archive.write_bytes(b"immutable candidate")
+    archive.with_name(f"{archive.name}.sha256").write_text(
+        "placeholder checksum\n", encoding="utf-8"
+    )
+    (artifacts / "SBOM.spdx.json").write_text("{}", encoding="utf-8")
+    (artifacts / "build-identity.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "project": {
+                    "component": config["project"]["component"],
+                    "repository": config["project"]["repository"],
+                    "version": str(version),
+                    "source_sha": source_sha,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GITHUB_REPOSITORY", "FelixJI/VibeTable")
+    monkeypatch.setenv("GITHUB_WORKFLOW", "CI")
+    monkeypatch.setenv("GITHUB_RUN_ID", "30918120117")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    manifest = automation._build_candidate_manifest(
+        artifacts_dir=artifacts,
+        plan=plan,
+        source_sha=source_sha,
+        version=version,
+    )
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    for artifact in artifacts.iterdir():
+        shutil.copyfile(artifact, candidate / artifact.name)
+    (candidate / "release-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    automation._write_checksums(candidate)
+    monkeypatch.setattr(automation, "_tag_sha", lambda _tag: None)
+
+    automation.stage(candidate_dir=str(candidate), source_sha=source_sha)
 
 
 def test_changelog_groups_breaking_dependencies_and_empty_release() -> None:
