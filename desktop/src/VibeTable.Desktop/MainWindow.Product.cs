@@ -342,7 +342,7 @@ public partial class MainWindow : Window
         if (_router.IsReady)
         {
             PostRuntimeReady();
-            _ = OpenProductWorkspaceAsync();
+            OpenProductWorkspaceWhenReady();
         }
     }
 
@@ -459,7 +459,7 @@ public partial class MainWindow : Window
                 && _productGateway is not null)
             {
                 PostRuntimeReady();
-                _ = OpenProductWorkspaceAsync();
+                OpenProductWorkspaceWhenReady();
             }
             else
             {
@@ -1832,7 +1832,13 @@ public partial class MainWindow : Window
         ConfigureReplicaStatusPolling(args.Session);
         if (Volatile.Read(ref _closing) != 0 || !_router.IsReady)
             return;
-        Dispatcher.BeginInvoke(PostWorkspaceV2Bootstrap);
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (Volatile.Read(ref _closing) != 0 || !_router.IsReady)
+                return;
+            PostWorkspaceV2Bootstrap();
+            OpenProductWorkspaceWhenReady();
+        });
     }
 
     private void ConfigureReplicaStatusPolling(WorkspaceSessionV2 session)
@@ -3019,6 +3025,19 @@ public partial class MainWindow : Window
             && name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
                 ? name
                 : null;
+    }
+
+    private void OpenProductWorkspaceWhenReady()
+    {
+        WorkspaceSessionV2 session = _workspaceSessions.Current;
+        if (Volatile.Read(ref _closing) != 0 ||
+            !_router.IsReady ||
+            _runtime.CurrentBackend?.State != BackendState.Ready ||
+            _productGateway is null ||
+            _runtime.CurrentWorkspace?.WorkspaceId != session.WorkspaceId ||
+            !ProductWorkspaceOpenPolicy.CanProject(session))
+            return;
+        _ = OpenProductWorkspaceAsync();
     }
 
     private async Task OpenProductWorkspaceAsync()
