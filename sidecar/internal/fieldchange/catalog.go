@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
@@ -20,8 +22,221 @@ type Catalog struct {
 	app core.App
 }
 
+type FormulaDraftInspection struct {
+	CanonicalSource        string         `json:"canonicalSource"`
+	ResultType             v2.LogicalType `json:"resultType"`
+	Dependencies           []string       `json:"dependencies"`
+	RelationAggregatePaths []string       `json:"relationAggregatePaths"`
+}
+
 func NewCatalog(app core.App) *Catalog {
 	return &Catalog{app: app}
+}
+
+func (catalog *Catalog) InspectFormulaDraft(
+	ctx context.Context,
+	tableID string,
+	displaySource string,
+) (FormulaDraftInspection, error) {
+	draft := &v2.FieldDefinition{
+		Identity: v2.FieldIdentity{
+			FieldID: "fld_formula_preview", PhysicalName: "f_formula_preview",
+			ProviderFieldID: "pb_formula_preview",
+		},
+		DisplayName: "Formula preview", LogicalType: v2.LogicalFormula,
+		Formula: &v2.FormulaSpec{Language: "cel-v1", Source: displaySource},
+	}
+	if err := catalog.NormalizeDefinition(ctx, tableID, draft); err != nil {
+		return FormulaDraftInspection{}, err
+	}
+	legacy, err := catalog.legacyDefinition(tableID)
+	if err != nil {
+		return FormulaDraftInspection{}, err
+	}
+	upsertLegacyField(&legacy, toLegacyField(*draft))
+	plan, formulaErr := formula.NewCompiler(formula.DefaultLimits()).CompileTable(legacy)
+	if formulaErr != nil {
+		return FormulaDraftInspection{}, formulaErr
+	}
+	for _, compiled := range plan.Formulas {
+		if compiled.FieldID == draft.Identity.FieldID {
+			return FormulaDraftInspection{
+				CanonicalSource: compiled.CanonicalSource,
+				ResultType:      draft.Formula.ResultType,
+				Dependencies:    append([]string(nil), compiled.Dependencies...),
+				RelationAggregatePaths: append(
+					[]string(nil), compiled.RelationAggregatePaths...,
+				),
+			}, nil
+		}
+	}
+	return FormulaDraftInspection{}, productError(
+		"formula.runtime", "displaySource", "formula preview plan is unavailable", nil,
+	)
+}
+
+func (catalog *Catalog) NormalizeDefinition(
+	ctx context.Context,
+	tableID string,
+	definition *v2.FieldDefinition,
+) error {
+	if definition == nil || definition.LogicalType != v2.LogicalFormula ||
+		definition.Formula == nil {
+		return nil
+	}
+	legacy, err := catalog.legacyDefinition(tableID)
+	if err != nil {
+		return err
+	}
+	targets := make(map[string]schema.TableDefinition)
+	for _, field := range legacy.Fields {
+		if field.Kind != schema.FieldKindRelation || field.Relation == nil {
+			continue
+		}
+		target := legacy
+		if field.Relation.TargetTableID != tableID {
+			target, err = catalog.legacyDefinition(field.Relation.TargetTableID)
+			if err != nil {
+				return err
+			}
+		}
+		targets[field.PhysicalName] = target
+	}
+	canonical, formulaErr := formula.CanonicalizeDisplaySource(
+		legacy, targets, definition.Formula.Source,
+	)
+	if formulaErr != nil {
+		return formulaErr
+	}
+	withoutCurrent := legacy
+	withoutCurrent.Fields = append([]schema.FieldDefinition(nil), legacy.Fields...)
+	removeLegacyField(&withoutCurrent, definition.Identity.FieldID)
+	resultType, formulaErr := formula.NewCompiler(formula.DefaultLimits()).InferSource(
+		withoutCurrent, canonical,
+	)
+	if formulaErr != nil {
+		return formulaErr
+	}
+	logicalType, ok := v2LogicalTypeForFormulaResult(resultType)
+	if !ok {
+		return productError(
+			"formula.type", "draft.formula.source",
+			"formula result type is not supported by a computed field",
+			map[string]any{"resultType": resultType},
+		)
+	}
+	definition.Formula.Source = canonical
+	definition.Formula.ResultType = logicalType
+	candidate := withoutCurrent
+	upsertLegacyField(&candidate, toLegacyField(*definition))
+	plan, formulaErr := formula.NewCompiler(formula.DefaultLimits()).CompileTable(candidate)
+	if formulaErr != nil {
+		return formulaErr
+	}
+	for _, compiled := range plan.Formulas {
+		if compiled.FieldID != definition.Identity.FieldID {
+			continue
+		}
+		for _, reference := range compiled.ReferencePaths {
+			if err := validateAuthoredRelationReference(
+				legacy, targets, reference, false,
+			); err != nil {
+				return err
+			}
+		}
+		for _, reference := range compiled.RelationAggregatePaths {
+			if err := validateAuthoredRelationReference(
+				legacy, targets, reference, true,
+			); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (catalog *Catalog) legacyDefinition(tableID string) (schema.TableDefinition, error) {
+	record, err := catalog.tableRecord(catalog.app, tableID)
+	if err != nil {
+		return schema.TableDefinition{}, err
+	}
+	raw, err := json.Marshal(record.GetRaw("definition_json"))
+	if err != nil {
+		return schema.TableDefinition{}, fmt.Errorf("encode stored table definition: %w", err)
+	}
+	var definition schema.TableDefinition
+	if err := json.Unmarshal(raw, &definition); err != nil {
+		return schema.TableDefinition{}, fmt.Errorf("decode stored table definition: %w", err)
+	}
+	return definition, nil
+}
+
+func v2LogicalTypeForFormulaResult(result schema.DataType) (v2.LogicalType, bool) {
+	switch result {
+	case schema.DataTypeBoolean:
+		return v2.LogicalBool, true
+	case schema.DataTypeInteger, schema.DataTypeFloat, schema.DataTypeDecimal:
+		return v2.LogicalNumber, true
+	case schema.DataTypeDate:
+		return v2.LogicalDate, true
+	case schema.DataTypeDateTime, schema.DataTypeAutoDate:
+		return v2.LogicalDateTime, true
+	case schema.DataTypeTime:
+		return v2.LogicalTime, true
+	case schema.DataTypeShortText, schema.DataTypeLongText, schema.DataTypeRichText,
+		schema.DataTypeEmail, schema.DataTypeURL:
+		return v2.LogicalText, true
+	default:
+		return "", false
+	}
+}
+
+func validateAuthoredRelationReference(
+	definition schema.TableDefinition,
+	targets map[string]schema.TableDefinition,
+	reference string,
+	aggregate bool,
+) error {
+	parts := strings.Split(reference, ".")
+	if len(parts) != 2 {
+		return productError(
+			"formula.dependency", "draft.formula.source",
+			"formula relation reference must select one target field",
+			map[string]any{"reference": reference},
+		)
+	}
+	var relation *schema.FieldDefinition
+	for index := range definition.Fields {
+		if definition.Fields[index].PhysicalName == parts[0] {
+			relation = &definition.Fields[index]
+			break
+		}
+	}
+	if relation == nil || relation.Kind != schema.FieldKindRelation || relation.Relation == nil {
+		return productError(
+			"formula.dependency", "draft.formula.source",
+			"formula relation field is unavailable", map[string]any{"reference": reference},
+		)
+	}
+	if !aggregate && relation.Relation.Cardinality != "one" {
+		return productError(
+			"schema.formula.relation_cardinality", "draft.formula.source",
+			"many relations require an aggregate formula function",
+			map[string]any{"reference": reference},
+		)
+	}
+	target := targets[relation.PhysicalName]
+	for _, field := range target.Fields {
+		if field.PhysicalName == parts[1] && field.DataType != schema.DataTypeSecret &&
+			field.DataType != schema.DataTypeHash && field.Kind != schema.FieldKindRelation {
+			return nil
+		}
+	}
+	return productError(
+		"schema.formula.target_field_not_found", "draft.formula.source",
+		"formula relation target field was not found",
+		map[string]any{"reference": reference},
+	)
 }
 
 func (catalog *Catalog) Revisions(

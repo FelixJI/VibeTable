@@ -70,6 +70,60 @@ func TestCompilerStoresStableSelectOptionIDsInsteadOfLabels(t *testing.T) {
 	}
 }
 
+func TestCompilerMapsUnboundedManyRelationToPocketBaseMultiValueStorage(t *testing.T) {
+	t.Parallel()
+	definition := validNumberDefinition()
+	presence := definition.Value.Presence
+	recommended, err := v2.RecommendedDefaults(v2.LogicalRelation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition.LogicalType = v2.LogicalRelation
+	definition.Value = recommended.Value
+	definition.Value.Presence = presence
+	definition.Constraints = recommended.Constraints
+	definition.Storage = recommended.Storage
+	definition.Display = recommended.Display
+	definition.Relation = &v2.RelationSpec{
+		TargetTableID: "tbl_lines", Cardinality: "many",
+		DeletePolicy: "setNull", DisplayField: "fld_line_name",
+	}
+	compiled, err := v2.CompileField(definition, func(string) (string, error) {
+		return "lines_collection", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relation, ok := compiled.Value.(*core.RelationField)
+	if !ok || !relation.IsMultiple() || relation.MaxSelect != int(1<<53-1) {
+		t.Fatalf("compiled many relation = %#v", compiled.Value)
+	}
+}
+
+func TestCompilerStoresFormulaInNullableComputedEnvelope(t *testing.T) {
+	t.Parallel()
+	definition := validNumberDefinition()
+	recommended, err := v2.RecommendedDefaults(v2.LogicalFormula)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition.LogicalType = v2.LogicalFormula
+	definition.Value = recommended.Value
+	definition.Constraints = recommended.Constraints
+	definition.Storage = recommended.Storage
+	definition.Display = recommended.Display
+	definition.Formula = &v2.FormulaSpec{
+		Language: "cel-v1", Source: "f_amount * 2.0", ResultType: v2.LogicalNumber,
+	}
+	compiled, err := v2.CompileField(definition, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := compiled.Value.(*core.JSONField); !ok {
+		t.Fatalf("compiled formula storage = %#v", compiled.Value)
+	}
+}
+
 func TestCompileUniqueIndexIgnoresMissingButIncludesExplicitZero(t *testing.T) {
 	t.Parallel()
 	definition := validNumberDefinition()

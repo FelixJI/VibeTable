@@ -273,6 +273,12 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
     service, transport = _service(
         [
             {"definition": {}, "capabilities": {}},
+            {
+                "canonicalSource": 'relationSum(f_lines, "f_amount")',
+                "resultType": "number",
+                "dependencies": [],
+                "relationAggregatePaths": ["f_lines.f_amount"],
+            },
             {"values": {"subtotal": 12}},
             {"contractVersion": "1.0", "downloadCapability": "cap"},
         ]
@@ -280,6 +286,11 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
 
     await service.validate_schema(
         ProductParams.model_validate({"definition": {}, "expectedRevision": 0})
+    )
+    inspected = await service.validate_formula_draft(
+        PRODUCT_PARAM_MODELS["formula.draft.validate"].model_validate(
+            {"tableId": "orders", "displaySource": "SUM({明细}.{金额})"}
+        )
     )
     await service.preview_formula(
         ProductParams.model_validate({"definition": {}, "row": {}, "changedFieldIds": []})
@@ -296,8 +307,10 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
     )
 
     assert token["downloadCapability"] == "cap"
+    assert inspected["resultType"] == "number"
     assert [request["path"] for request in transport.requests] == [
         "/api/vibetable/v1/schema/validate",
+        "/api/vibetable/v1/formulas/draft/validate",
         "/api/vibetable/v1/formulas/preview",
         "/api/vibetable/v1/files/token",
     ]

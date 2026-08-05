@@ -311,6 +311,12 @@ PRODUCT_PARAM_MODELS: dict[str, type[ProductParams]] = {
         required=("definition",),
         field_types={"definition": (dict,)},
     ),
+    "formula.draft.validate": _closed_params(
+        "FormulaDraftValidateParams",
+        allowed=("tableId", "displaySource"),
+        required=("tableId", "displaySource"),
+        field_types={"tableId": (str,), "displaySource": (str,)},
+    ),
     "formula.preview": _closed_params(
         "FormulaPreviewParams",
         allowed=("definition", "row", "changedFieldIds"),
@@ -732,6 +738,9 @@ class PocketBaseProductDataService:
 
     async def validate_formula(self, params: ProductParams) -> dict[str, Any]:
         return await self._post("/api/vibetable/v1/formulas/validate", params.root)
+
+    async def validate_formula_draft(self, params: ProductParams) -> dict[str, Any]:
+        return await self._post("/api/vibetable/v1/formulas/draft/validate", params.root)
 
     async def preview_formula(self, params: ProductParams) -> dict[str, Any]:
         return await self._post("/api/vibetable/v1/formulas/preview", params.root)

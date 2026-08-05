@@ -10,6 +10,7 @@ import type {
   FieldMigrationStatusV2,
   FieldSettingsDescribeResultV2,
   LogicalTypeV2,
+  FormulaDraftValidationResult,
   SchemaSnapshot,
 } from "@/contracts";
 import {
@@ -65,6 +66,14 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const lookupSchemas = ref<readonly SchemaSnapshot[]>([]);
   const lookupCatalogLoading = ref(false);
   const lookupCatalogError = ref<string | null>(null);
+  const formulaSourceSchema = ref<SchemaSnapshot | null>(null);
+  const formulaTargetSchemas = ref<Readonly<Record<string, SchemaSnapshot>>>({});
+  const formulaCatalogLoading = ref(false);
+  const formulaCatalogError = ref<string | null>(null);
+  const formulaValidation = ref<FormulaDraftValidationResult | null>(null);
+  const formulaValidatedSource = ref("");
+  const formulaValidating = ref(false);
+  const formulaValidationError = ref<string | null>(null);
 
   const capabilities = computed<readonly CapabilityV2[]>(
     () => result.value?.capabilities ?? [],
@@ -93,6 +102,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
       || !!draft.value.lookup?.path.length
       && draft.value.lookup.path.length <= 8
       && draft.value.lookup.path.every(step => !!step.relationFieldId))
+    && (draft.value?.logicalType !== "formula" || !!draft.value.formula?.source.trim())
     && (action.value !== "create" || draft.value?.logicalType !== "relation"
       || !!relationPair.value?.reciprocalDisplayName.trim()
       && !!relationPair.value?.sourceDisplayFieldId)
@@ -131,6 +141,14 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     lookupSchemas.value = [];
     lookupCatalogLoading.value = false;
     lookupCatalogError.value = null;
+    formulaSourceSchema.value = null;
+    formulaTargetSchemas.value = {};
+    formulaCatalogLoading.value = false;
+    formulaCatalogError.value = null;
+    formulaValidation.value = null;
+    formulaValidatedSource.value = "";
+    formulaValidating.value = false;
+    formulaValidationError.value = null;
   }
 
   function load(described: FieldSettingsDescribeResultV2): void {
@@ -218,6 +236,47 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     lookupCatalogError.value = reason instanceof Error ? reason.message : String(reason);
   }
 
+  function beginFormulaCatalog(): void {
+    formulaCatalogLoading.value = true;
+    formulaCatalogError.value = null;
+  }
+
+  function setFormulaCatalog(
+    source: SchemaSnapshot,
+    targets: Readonly<Record<string, SchemaSnapshot>>,
+  ): void {
+    formulaSourceSchema.value = source;
+    formulaTargetSchemas.value = targets;
+    formulaCatalogLoading.value = false;
+    formulaCatalogError.value = null;
+  }
+
+  function failFormulaCatalog(reason: unknown): void {
+    formulaCatalogLoading.value = false;
+    formulaCatalogError.value = reason instanceof Error ? reason.message : String(reason);
+  }
+
+  function beginFormulaValidation(source: string): void {
+    formulaValidatedSource.value = source;
+    formulaValidation.value = null;
+    formulaValidating.value = true;
+    formulaValidationError.value = null;
+  }
+
+  function setFormulaValidation(source: string, value: FormulaDraftValidationResult): void {
+    formulaValidatedSource.value = source;
+    formulaValidation.value = value;
+    formulaValidating.value = false;
+    formulaValidationError.value = null;
+  }
+
+  function failFormulaValidation(source: string, reason: unknown): void {
+    formulaValidatedSource.value = source;
+    formulaValidation.value = null;
+    formulaValidating.value = false;
+    formulaValidationError.value = reason instanceof Error ? reason.message : String(reason);
+  }
+
   function patchDraft(patch: Partial<FieldDraftV2>): void {
     if (!draft.value) return;
     draft.value = { ...draft.value, ...patch };
@@ -283,6 +342,14 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     lookupSchemas.value = [];
     lookupCatalogLoading.value = false;
     lookupCatalogError.value = null;
+    formulaSourceSchema.value = null;
+    formulaTargetSchemas.value = {};
+    formulaCatalogLoading.value = false;
+    formulaCatalogError.value = null;
+    formulaValidation.value = null;
+    formulaValidatedSource.value = "";
+    formulaValidating.value = false;
+    formulaValidationError.value = null;
   }
 
   function setPlan(next: FieldChangePlanV2): void {
@@ -362,11 +429,16 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     errorCode, relationPair, relationTables, relationSourceSchema, relationTargetSchema,
     relationCatalogLoading, relationCatalogError, lookupSchemas,
     lookupCatalogLoading, lookupCatalogError,
+    formulaSourceSchema, formulaTargetSchemas, formulaCatalogLoading,
+    formulaCatalogError, formulaValidation, formulaValidatedSource,
+    formulaValidating, formulaValidationError,
     capabilities, capability, sourceCapability, dirty, isExisting, canPlan,
     confirmationsComplete, canApply, beginOpen, load, changeType, patchDraft,
     restoreRecommended, patchRelationPair, setRelationTables, beginRelationCatalog,
     setRelationSchema, failRelationCatalog,
     beginLookupCatalog, setLookupSchemas, failLookupCatalog,
+    beginFormulaCatalog, setFormulaCatalog, failFormulaCatalog,
+    beginFormulaValidation, setFormulaValidation, failFormulaValidation,
     invalidatePlan, setConversionRule, setConfirmation, setBackupReceipt,
     beginPlan, setPlan, beginApply, setReceipt, setMigration,
     setRecycled, fail, resetFailure, close,

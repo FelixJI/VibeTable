@@ -461,6 +461,32 @@ func TestRevisionFormatParsesStably(t *testing.T) {
 	}
 }
 
+func TestCompileManyRelationUsesPocketBaseMultiValueStorage(t *testing.T) {
+	definition := schema.FieldDefinition{
+		FieldID: "lines_id", PhysicalName: "lines", DisplayName: "Lines",
+		Kind: schema.FieldKindRelation, DataType: schema.DataTypeRelation,
+		StorageType: schema.StorageRelation, Nullable: true,
+		Constraints: []schema.FieldConstraint{{
+			Kind: schema.ConstraintRelation, TargetTableID: "lines_table",
+			Cardinality: "many", DeletePolicy: "setNull",
+		}},
+		Editor: schema.EditorDefinition{Kind: "relation", Config: map[string]any{}},
+		Relation: &schema.RelationSpec{
+			TargetTableID: "lines_table", Cardinality: "many", DeletePolicy: "setNull",
+		},
+	}
+	compiled, err := schema.CompileField(definition, func(string) (string, error) {
+		return "lines_collection", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relation, ok := compiled.(*core.RelationField)
+	if !ok || !relation.IsMultiple() || relation.MaxSelect != int(1<<53-1) {
+		t.Fatalf("compiled many relation = %#v", compiled)
+	}
+}
+
 func TestValidateReportsEmptyFormulaAtTheSourcePath(t *testing.T) {
 	definition := validDefinition()
 	definition.Fields[0] = schema.FieldDefinition{

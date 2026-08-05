@@ -39,6 +39,7 @@ public interface IProductDataRpcGateway : IDisposable, IRelationLookupRpcGateway
     Task<JsonElement> PreviewMutationAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ApplyMutationAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ValidateFormulaAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> ValidateFormulaDraftAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> PreviewFormulaAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ListAttachmentRefsAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> CreateFileTokenAsync(JsonElement parameters, CancellationToken token);

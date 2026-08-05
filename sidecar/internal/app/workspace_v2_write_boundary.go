@@ -13,6 +13,7 @@ const workspaceV2FieldCancelPrefix = "/api/vibetable/v2/field-change/cancel/"
 var workspaceV2ReadOnlyPosts = map[string]struct{}{
 	"/api/vibetable/v1/formulas/validate":        {},
 	"/api/vibetable/v1/formulas/preview":         {},
+	"/api/vibetable/v1/formulas/draft/validate":  {},
 	"/api/vibetable/v1/query":                    {},
 	"/api/vibetable/v1/query/validate-snapshot":  {},
 	"/api/vibetable/v1/relations/search-targets": {},

@@ -13,7 +13,9 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
+	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 )
 
 const maxFieldRequestBytes = 1 << 20
@@ -22,6 +24,7 @@ func registerFieldRoutes(
 	r *router.Router[*core.RequestEvent],
 	app core.App,
 	migration *fieldchange.MigrationService,
+	formulaJobs *jobs.Service,
 	logger *slog.Logger,
 	protectionVerifier fieldchange.ProtectionSnapshotVerifier,
 	gates ...businessWriteGate,
@@ -134,6 +137,25 @@ func registerFieldRoutes(
 		)
 		if err != nil {
 			return writeFieldError(request, err)
+		}
+		definition, err := schemaapi.New(app).Describe(
+			request.Request.Context(), receipt.TableID,
+		)
+		if err != nil {
+			return writeFieldError(request, err)
+		}
+		if definitionNeedsBackfill(definition) {
+			backfill, startErr := formulaJobs.StartFormulaBackfill(
+				request.Request.Context(), definition.TableID, definition.SchemaRevision,
+			)
+			if startErr != nil {
+				return writeJobError(request, startErr)
+			}
+			if dispatchErr := dispatchFormulaBackfill(
+				request.Request.Context(), formulaJobs, backfill,
+			); dispatchErr != nil {
+				return writeJobError(request, dispatchErr)
+			}
 		}
 		return request.JSON(http.StatusOK, receipt)
 	})

@@ -176,6 +176,10 @@ func (source *Source) describeField(
 		Type:         fieldType,
 		AutoDate:     field.DataType == schema.DataTypeAutoDate,
 		Searchable:   isSearchable(field),
+		ComputedEnvelope: field.Kind == schema.FieldKindFormula ||
+			field.Kind == schema.FieldKindLookup,
+		ComputedReady: field.Kind != schema.FieldKindFormula ||
+			(field.Formula != nil && field.Formula.Status == "ready"),
 	}
 	if field.DataType == schema.DataTypeSelect ||
 		field.DataType == schema.DataTypeMultiSelect {
@@ -222,6 +226,10 @@ func (source *Source) describeField(
 			Type:         targetType,
 			AutoDate:     targetField.DataType == schema.DataTypeAutoDate,
 			Searchable:   isSearchable(targetField),
+			ComputedEnvelope: targetField.Kind == schema.FieldKindFormula ||
+				targetField.Kind == schema.FieldKindLookup,
+			ComputedReady: targetField.Kind != schema.FieldKindFormula ||
+				(targetField.Formula != nil && targetField.Formula.Status == "ready"),
 		}
 		if targetField.DataType == schema.DataTypeSelect ||
 			targetField.DataType == schema.DataTypeMultiSelect {

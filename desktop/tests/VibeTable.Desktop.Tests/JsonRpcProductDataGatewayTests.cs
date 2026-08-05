@@ -41,6 +41,7 @@ public sealed class JsonRpcProductDataGatewayTests
         await gateway.PreviewMutationAsync(payload, CancellationToken.None);
         await gateway.ApplyMutationAsync(payload, CancellationToken.None);
         await gateway.ValidateFormulaAsync(payload, CancellationToken.None);
+        await gateway.ValidateFormulaDraftAsync(payload, CancellationToken.None);
         await gateway.PreviewFormulaAsync(payload, CancellationToken.None);
         await gateway.ListAttachmentRefsAsync(payload, CancellationToken.None);
         await gateway.CreateFileTokenAsync(payload, CancellationToken.None);
@@ -69,7 +70,7 @@ public sealed class JsonRpcProductDataGatewayTests
                 "schema.getTable",
                 "query.page", "query.view", "query.readRows", "query.validateSnapshot",
                 "mutation.preview", "mutation.apply",
-                "formula.validate", "formula.preview",
+                "formula.validate", "formula.draft.validate", "formula.preview",
                 "file.list", "file.token",
                 "file.applyHostChange", "file.saveHostFile",
                 "events.reconcile",

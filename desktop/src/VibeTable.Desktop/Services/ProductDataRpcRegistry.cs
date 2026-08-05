@@ -92,6 +92,10 @@ internal static class ProductDataRpcRegistry
             (g, p, t) => g.GetTaskStatusAsync(p, t)),
         new("formula.validate", p => Safe(p) && HasObject(p, "definition"),
             (g, p, t) => g.ValidateFormulaAsync(p, t)),
+        new("formula.draft.validate", p => Safe(p)
+            && HasStrings(p, "tableId", "displaySource")
+            && HasExactProperties(p, "tableId", "displaySource"),
+            (g, p, t) => g.ValidateFormulaDraftAsync(p, t)),
         new("formula.preview", p => Safe(p) && HasObject(p, "definition") && HasObject(p, "row") && HasArray(p, "changedFieldIds"),
             (g, p, t) => g.PreviewFormulaAsync(p, t)),
         new("file.list", p => Safe(p) && HasStrings(p, "tableId", "recordId", "fieldId"),

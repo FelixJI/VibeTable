@@ -20,7 +20,7 @@ public sealed class ProductDataRpcRegistryTests
             "mutation.preview", "mutation.apply",
             "data.previewImport", "data.applyImport", "data.export",
             "task.create", "task.cancel", "task.status",
-            "formula.validate", "formula.preview",
+            "formula.validate", "formula.draft.validate", "formula.preview",
             "file.list", "file.token", "events.reconcile",
             "preset.list", "preset.save", "preset.delete",
             "version.list", "version.create", "version.save", "version.compare",
@@ -37,6 +37,18 @@ public sealed class ProductDataRpcRegistryTests
             Assert.IsTrue(ProductDataRpcRegistry.TryGet(type, out var endpoint), type);
             Assert.AreEqual(type, endpoint.Type);
         }
+    }
+
+    [TestMethod]
+    public void FormulaDraftValidatorRequiresOnlyVisualAuthoringInputs()
+    {
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet("formula.draft.validate", out var endpoint));
+        Assert.IsTrue(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"tableId":"tbl_orders","displaySource":"SUM({明细}.{金额})"}""").RootElement));
+        Assert.IsFalse(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"tableId":"tbl_orders","displaySource":"SUM({明细}.{金额})","fieldId":"raw"}""").RootElement));
+        Assert.IsFalse(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"tableId":"tbl_orders","displaySource":7}""").RootElement));
     }
 
     [TestMethod]

@@ -412,6 +412,105 @@ describe("field settings service", () => {
     expect(JSON.stringify(store.lookupSchemas)).not.toContain("tbl_regions.fld_region_name");
   });
 
+  it("loads the visual formula catalog and ignores stale sidecar validation results", async () => {
+    const base = fixture<CapabilityV2>("capability.json");
+    const formulaCapability: CapabilityV2 = {
+      ...base,
+      logicalType: "formula",
+      userCreatable: true,
+      advancedSettings: ["source", "autoType"],
+    };
+    const described: FieldSettingsDescribeResultV2 = {
+      ...describeResult(false), capabilities: [formulaCapability],
+    };
+    const sourceSchema = {
+      contract: "vibetable.schema-describe.v1",
+      collection: "tbl_opaque",
+      requestGeneration: 0,
+      schema: {
+        collection: "tbl_opaque", primaryKey: "id", primaryDisplayFieldId: "fld_price",
+        columns: [
+          {
+            name: "f_price", title: "单价", fieldId: "fld_price", kind: "scalar" as const,
+            dataType: "number" as const, editable: true, nullable: false,
+          },
+          {
+            name: "f_lines", title: "明细", fieldId: "fld_lines", kind: "relation" as const,
+            dataType: "relation" as const, editable: true, nullable: true,
+            relationId: "tbl_opaque.fld_lines",
+          },
+        ],
+        normalizedRelations: [{
+          relationId: "tbl_opaque.fld_lines", kind: "o2m" as const,
+          relatedCollection: "tbl_lines", relatedCollectionDisplayName: "明细",
+          junction: null,
+        }],
+        schemaRevision: "schema_2", permissionRevision: "schema_2",
+        capabilityHash: "cap", lookupRevision: "lookup",
+      },
+      capabilities: {
+        contract: "vibetable.relation-capabilities.v1",
+        relationReadV1: true, relationEditV1: true, lookupQueryV1: true, reason: null,
+      },
+    };
+    const targetSchema = {
+      ...sourceSchema,
+      collection: "tbl_lines",
+      schema: {
+        ...sourceSchema.schema,
+        collection: "tbl_lines",
+        primaryDisplayFieldId: "fld_amount",
+        columns: [{
+          name: "f_amount", title: "金额", fieldId: "fld_amount", kind: "scalar" as const,
+          dataType: "number" as const, editable: true, nullable: false,
+        }],
+        normalizedRelations: [],
+      },
+    };
+    let resolveFirst!: (value: unknown) => void;
+    let resolveSecond!: (value: unknown) => void;
+    const first = new Promise(resolve => { resolveFirst = resolve; });
+    const second = new Promise(resolve => { resolveSecond = resolve; });
+    request.mockImplementation((method: string, params: Record<string, unknown>) => {
+      if (method === "field.settings.describe") return Promise.resolve(described);
+      if (method === "schema.describe") {
+        return Promise.resolve(params.collection === "tbl_opaque" ? sourceSchema : targetSchema);
+      }
+      if (method === "formula.draft.validate") {
+        return params.displaySource === "{单价} * 2" ? first : second;
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+
+    await service.openCreate("tbl_opaque", "formula");
+    await service.loadFormulaCatalog();
+
+    expect(store.formulaSourceSchema?.columns.map(column => column.title))
+      .toEqual(["单价", "明细"]);
+    expect(store.formulaTargetSchemas.fld_lines?.columns[0]?.title).toBe("金额");
+
+    const older = service.validateFormulaDraft("{单价} * 2");
+    const newer = service.validateFormulaDraft("SUM({明细}.{金额})");
+    resolveSecond({
+      canonicalSource: 'relationSum(f_lines, "f_amount")',
+      resultType: "number",
+      dependencies: [],
+      relationAggregatePaths: ["f_lines.f_amount"],
+    });
+    await newer;
+    resolveFirst({
+      canonicalSource: "f_price * 2", resultType: "number",
+      dependencies: ["f_price"], relationAggregatePaths: [],
+    });
+    await older;
+
+    expect(store.formulaValidatedSource).toBe("SUM({明细}.{金额})");
+    expect(store.formulaValidation?.canonicalSource)
+      .toBe('relationSum(f_lines, "f_amount")');
+  });
+
   it("surfaces typed same-operation field errors without mis-parsing them as results", async () => {
     request
       .mockResolvedValueOnce(describeResult(true))

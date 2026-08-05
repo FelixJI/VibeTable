@@ -25,6 +25,7 @@ import type {
   FieldMigrationStatusV2,
   FieldRecycleBinResultV2,
   FieldSettingsDescribeResultV2,
+  LogicalTypeV2,
 } from "./schemaV2";
 
 /**
@@ -803,6 +804,18 @@ export interface FormulaPreviewRpcPayload {
   readonly changedFieldIds: readonly string[];
 }
 
+export interface FormulaDraftValidateParams {
+  readonly tableId: string;
+  readonly displaySource: string;
+}
+
+export interface FormulaDraftValidationResult {
+  readonly canonicalSource: string;
+  readonly resultType: LogicalTypeV2;
+  readonly dependencies: readonly string[];
+  readonly relationAggregatePaths: readonly string[];
+}
+
 /** Unicode display-name rule. Physical identifiers are host-owned. */
 export const TABLE_NAME_PATTERN = /^[^\u0000-\u001F\u007F-\u009F]{1,128}$/u;
 
@@ -1434,6 +1447,7 @@ export type WebMessageType =
   | "mutation.preview"
   | "mutation.apply"
   | "formula.validate"
+  | "formula.draft.validate"
   | "formula.preview"
   | "file.list"
   | "file.token"
@@ -1558,6 +1572,7 @@ export type HostMessageType =
   | "mutation.preview"
   | "mutation.apply"
   | "formula.validate"
+  | "formula.draft.validate"
   | "formula.preview"
   | "file.list"
   | "file.token"
@@ -1792,6 +1807,7 @@ export interface HostPayloadMap {
   "mutation.preview": Readonly<Record<string, unknown>>;
   "mutation.apply": MutationReceipt;
   "formula.validate": Readonly<Record<string, unknown>>;
+  "formula.draft.validate": FormulaDraftValidationResult;
   "formula.preview": { readonly values: Readonly<Record<string, unknown>> };
   "file.list": AttachmentListResult;
   "file.token": Readonly<Record<string, unknown>>;
@@ -1882,6 +1898,7 @@ export interface WebPayloadMap {
   "mutation.preview": Readonly<Record<string, unknown>>;
   "mutation.apply": Readonly<Record<string, unknown>>;
   "formula.validate": { readonly definition: Readonly<Record<string, unknown>> };
+  "formula.draft.validate": FormulaDraftValidateParams;
   "formula.preview": FormulaPreviewRpcPayload;
   "file.list": {
     readonly tableId: string;

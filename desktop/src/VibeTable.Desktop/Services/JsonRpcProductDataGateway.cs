@@ -55,6 +55,7 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
     public Task<JsonElement> PreviewMutationAsync(JsonElement p, CancellationToken t) => Invoke("mutation.preview", p, t);
     public Task<JsonElement> ApplyMutationAsync(JsonElement p, CancellationToken t) => Invoke("mutation.apply", p, t);
     public Task<JsonElement> ValidateFormulaAsync(JsonElement p, CancellationToken t) => Invoke("formula.validate", p, t);
+    public Task<JsonElement> ValidateFormulaDraftAsync(JsonElement p, CancellationToken t) => Invoke("formula.draft.validate", p, t);
     public Task<JsonElement> PreviewFormulaAsync(JsonElement p, CancellationToken t) => Invoke("formula.preview", p, t);
     public Task<JsonElement> ListAttachmentRefsAsync(JsonElement p, CancellationToken t) => Invoke("file.list", p, t);
     public Task<JsonElement> CreateFileTokenAsync(JsonElement p, CancellationToken t) => Invoke("file.token", p, t);

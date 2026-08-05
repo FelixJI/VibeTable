@@ -219,6 +219,7 @@ def _register_pocketbase_product_methods(
         "mutation.preview": service.preview_mutation,
         "mutation.apply": service.apply_mutation,
         "formula.validate": service.validate_formula,
+        "formula.draft.validate": service.validate_formula_draft,
         "formula.preview": service.preview_formula,
         "file.list": service.list_attachment_refs,
         "file.token": service.create_file_token,

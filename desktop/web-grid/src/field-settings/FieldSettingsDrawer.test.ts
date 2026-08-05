@@ -187,7 +187,7 @@ describe("FieldSettingsDrawer", () => {
     if (type === "autoDate") expect(wrapper.html()).toContain("createdAt");
     if (type === "formula") {
       expect(wrapper.get('[data-testid="formula-editor-entry"]').text())
-        .toContain("公式编辑器");
+        .toContain("公式工作台");
       expect(wrapper.find('[data-testid="formula-source"]').exists()).toBe(false);
       expect(wrapper.find('[data-testid="field-default-enabled"]').exists()).toBe(false);
       expect(wrapper.text()).not.toContain("恢复当前类型推荐值");

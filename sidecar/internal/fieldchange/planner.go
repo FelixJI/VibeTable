@@ -43,6 +43,14 @@ type Preflight interface {
 	) (v2.Impact, []v2.Diagnostic, []v2.Diagnostic, error)
 }
 
+type DefinitionNormalizer interface {
+	NormalizeDefinition(
+		ctx context.Context,
+		tableID string,
+		definition *v2.FieldDefinition,
+	) error
+}
+
 type PlanStore interface {
 	FindActive(ctx context.Context, intentHash string, now time.Time) (*v2.FieldChangePlan, error)
 	Save(
@@ -353,7 +361,8 @@ func (planner *Planner) normalizeRelated(
 			DisplayField:  pair.SourceDisplayFieldID,
 		}
 		reverse, err := planner.definitionFromDraft(
-			ctx, v2.FieldIdentity{}, nil, &reverseDraft,
+			ctx, after.Relation.TargetTableID,
+			v2.FieldIdentity{}, nil, &reverseDraft,
 		)
 		if err != nil {
 			return nil, err
@@ -460,7 +469,9 @@ func (planner *Planner) normalize(
 	}
 	switch intent.Action {
 	case v2.ActionCreate:
-		after, err := planner.definitionFromDraft(ctx, v2.FieldIdentity{}, nil, intent.Draft)
+		after, err := planner.definitionFromDraft(
+			ctx, intent.TableID, v2.FieldIdentity{}, nil, intent.Draft,
+		)
 		return nil, after, err
 	case v2.ActionUpdate:
 		if before == nil {
@@ -472,7 +483,9 @@ func (planner *Planner) normalize(
 				"logical type change requires convert action", nil,
 			)
 		}
-		after, err := planner.definitionFromDraft(ctx, before.Identity, before, intent.Draft)
+		after, err := planner.definitionFromDraft(
+			ctx, intent.TableID, before.Identity, before, intent.Draft,
+		)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -517,7 +530,9 @@ func (planner *Planner) normalize(
 				"this conversion requires an explicit conversion rule", nil,
 			)
 		}
-		after, err := planner.definitionFromDraft(ctx, before.Identity, before, intent.Draft)
+		after, err := planner.definitionFromDraft(
+			ctx, intent.TableID, before.Identity, before, intent.Draft,
+		)
 		return before, after, err
 	case v2.ActionRetire:
 		if before.Lifecycle.State == v2.LifecycleRetired {
@@ -551,6 +566,7 @@ func (planner *Planner) normalize(
 
 func (planner *Planner) definitionFromDraft(
 	ctx context.Context,
+	tableID string,
 	identity v2.FieldIdentity,
 	before *v2.FieldDefinition,
 	draft *v2.FieldDraft,
@@ -666,6 +682,11 @@ func (planner *Planner) definitionFromDraft(
 		File: normalizedDraft.File, JSON: normalizedDraft.JSON,
 		AutoDate: normalizedDraft.AutoDate, Formula: normalizedDraft.Formula,
 		Lookup: normalizedDraft.Lookup,
+	}
+	if normalizer, ok := planner.source.(DefinitionNormalizer); ok {
+		if err := normalizer.NormalizeDefinition(ctx, tableID, definition); err != nil {
+			return nil, err
+		}
 	}
 	if err := v2.Validate(*definition); err != nil {
 		var contractErr *v2.ProductError
@@ -797,6 +818,12 @@ func classify(
 		!reflect.DeepEqual(before.Relation, after.Relation) ||
 		!reflect.DeepEqual(before.File, after.File) ||
 		!reflect.DeepEqual(before.JSON, after.JSON) {
+		classes[v2.ClassSchema] = struct{}{}
+	}
+	if !reflect.DeepEqual(before.Formula, after.Formula) {
+		// Formula source and inferred result type are authoritative schema
+		// changes even when the provider field shape happens to stay the same.
+		// They must advance the revision and trigger a fresh materialization.
 		classes[v2.ClassSchema] = struct{}{}
 	}
 	if relationCascadeIntroduced(before, after) {

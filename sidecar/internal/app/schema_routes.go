@@ -138,8 +138,10 @@ func registerSchemaRoutes(
 				}
 			}
 		}
-		if backfill.State == "queued" {
-			jobService.Start(backfill.JobID)
+		if err := dispatchFormulaBackfill(
+			request.Request.Context(), jobService, backfill,
+		); err != nil {
+			return writeJobError(request, err)
 		}
 		return request.JSON(http.StatusOK, definition)
 	})
@@ -180,6 +182,23 @@ func registerSchemaRoutes(
 		}
 		return request.JSON(http.StatusOK, result)
 	})
+}
+
+const synchronousFormulaBackfillMaxRecords = 100
+
+func dispatchFormulaBackfill(
+	ctx context.Context,
+	service *jobs.Service,
+	snapshot jobs.Snapshot,
+) error {
+	if service == nil || snapshot.State != "queued" || snapshot.JobID == "" {
+		return nil
+	}
+	if snapshot.Progress.Total <= synchronousFormulaBackfillMaxRecords {
+		return service.Run(ctx, snapshot.JobID)
+	}
+	service.Start(snapshot.JobID)
+	return nil
 }
 
 func schemaChangeIdentity(change schemaapi.Change) string {

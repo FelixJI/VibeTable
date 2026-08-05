@@ -2450,6 +2450,8 @@ useKeyboard({
       @select-relation-target="fieldSettingsService.selectRelationTarget"
       @load-lookup-catalog="fieldSettingsService.loadLookupCatalog"
       @resolve-lookup-path="fieldSettingsService.resolveLookupPath"
+      @load-formula-catalog="fieldSettingsService.loadFormulaCatalog"
+      @validate-formula="fieldSettingsService.validateFormulaDraft"
     />
     <NDropdown
       trigger="manual"

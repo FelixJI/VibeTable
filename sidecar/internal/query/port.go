@@ -598,6 +598,22 @@ func decodeValue(value any, fieldType FieldType) any {
 }
 
 func decodeFieldValue(value any, field FieldDescriptor) any {
+	if field.ComputedEnvelope {
+		if !field.ComputedReady {
+			return nil
+		}
+		var decoded any
+		switch typed := value.(type) {
+		case string:
+			if json.Unmarshal([]byte(typed), &decoded) == nil {
+				value = decoded
+			}
+		case []byte:
+			if json.Unmarshal(typed, &decoded) == nil {
+				value = decoded
+			}
+		}
+	}
 	if field.AutoDate && value != nil {
 		var raw string
 		switch typed := value.(type) {

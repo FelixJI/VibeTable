@@ -36,6 +36,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "file.applyHostChange",
         "file.saveHostFile",
         "formula.preview",
+        "formula.draft.validate",
         "formula.validate",
         "lookup.list",
         "lookup.validate",

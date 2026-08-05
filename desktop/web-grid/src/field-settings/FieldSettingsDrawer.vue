@@ -39,6 +39,8 @@ const emit = defineEmits<{
   selectRelationTarget: [tableId: string];
   loadLookupCatalog: [];
   resolveLookupPath: [path: readonly { readonly relationFieldId: string }[]];
+  loadFormulaCatalog: [];
+  validateFormula: [displaySource: string];
 }>();
 
 const store = useFieldSettingsStore();
@@ -66,6 +68,10 @@ watch(
     if (open && logicalType === "lookup"
       && (previous?.[0] !== open || previous?.[1] !== logicalType)) {
       emit("loadLookupCatalog");
+    }
+    if (open && logicalType === "formula"
+      && (previous?.[0] !== open || previous?.[1] !== logicalType)) {
+      emit("loadFormulaCatalog");
     }
   },
 );
@@ -146,6 +152,38 @@ const lookupTargetFieldOptions = computed(() => {
     .filter(column => column.fieldId && column.kind !== "system" && column.kind !== "relation")
     .map(column => ({ label: column.title, value: column.fieldId! }));
 });
+const formulaLocalFields = computed(() => (store.formulaSourceSchema?.columns ?? [])
+  .filter(column => column.fieldId
+    && column.fieldId !== store.result?.fieldId
+    && column.kind !== "system"
+    && column.kind !== "relation")
+  .map(column => ({
+    label: column.title,
+    canonicalName: column.name,
+    dataType: column.dataType,
+  })));
+const formulaRelations = computed(() => (store.formulaSourceSchema?.columns ?? [])
+  .filter(column => column.fieldId && column.kind === "relation" && column.relationId)
+  .flatMap(column => {
+    const descriptor = store.formulaSourceSchema?.normalizedRelations.find(
+      item => item.relationId === column.relationId,
+    );
+    const target = store.formulaTargetSchemas[column.fieldId!];
+    if (!descriptor?.relatedCollection || descriptor.kind === "m2a"
+      || descriptor.junction || !target) return [];
+    return [{
+      label: column.title,
+      canonicalName: column.name,
+      many: descriptor.kind !== "m2o",
+      targetFields: target.columns
+        .filter(item => item.fieldId && item.kind !== "system" && item.kind !== "relation")
+        .map(item => ({
+          label: item.title,
+          canonicalName: item.name,
+          dataType: item.dataType,
+        })),
+    }];
+  }));
 
 function patch(patchValue: Partial<FieldDraftV2>): void {
   store.patchDraft(patchValue);
@@ -745,7 +783,14 @@ function isTextual(type: LogicalTypeV2): boolean {
                   </div>
                   <FormulaFieldEditor
                     :value="store.draft.formula"
+                    :local-fields="formulaLocalFields"
+                    :relations="formulaRelations"
+                    :validation="store.formulaValidation"
+                    :validated-source="store.formulaValidatedSource"
+                    :validating="store.formulaValidating || store.formulaCatalogLoading"
+                    :error="store.formulaValidationError || store.formulaCatalogError"
                     @commit="patch({ formula: $event })"
+                    @validate="emit('validateFormula', $event)"
                   />
                 </section>
 

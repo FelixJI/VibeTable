@@ -1256,10 +1256,18 @@ func (c *compiler) resolve(fieldPath string, path string) (resolvedField, error)
 		if !ok {
 			return resolvedField{}, unknownField(path, fieldPath)
 		}
+		targetSQL := "r0." + quote(target.PhysicalName)
+		if target.ComputedEnvelope {
+			if !target.ComputedReady {
+				targetSQL = "NULL"
+			} else {
+				targetSQL = "json_extract(" + targetSQL + ", '$')"
+			}
+		}
 		return resolvedField{
 			sql: fmt.Sprintf(
-				"(SELECT r0.%s FROM %s r0 WHERE r0.%s = %s LIMIT 1)",
-				quote(target.PhysicalName),
+				"(SELECT %s FROM %s r0 WHERE r0.%s = %s LIMIT 1)",
+				targetSQL,
 				quote(field.Relation.TableName),
 				quote(field.Relation.PrimaryKey),
 				sql,
@@ -1277,6 +1285,12 @@ func (c *compiler) resolve(fieldPath string, path string) (resolvedField, error)
 // explicit zero, false, empty string and empty container values.
 func (c *compiler) productValueSQL(productName, physicalName string) string {
 	value := quote(physicalName)
+	if field, ok := c.descriptor.Fields[productName]; ok && field.ComputedEnvelope {
+		if !field.ComputedReady {
+			return "NULL"
+		}
+		value = "json_extract(" + value + ", '$')"
+	}
 	presence, ok := c.descriptor.PresenceFields[productName]
 	if !ok || presence == "" {
 		return value

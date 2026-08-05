@@ -2,6 +2,7 @@ import { BridgeOperationError } from "@/bridge/hostBridge";
 import type {
   FieldApplyReceiptV2,
   FieldChangeActionV2,
+  FormulaDraftValidationResult,
   LogicalTypeV2,
   SchemaDescribeResult,
   SchemaSnapshot,
@@ -58,6 +59,8 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   selectRelationTarget: (tableId: string) => Promise<void>;
   loadLookupCatalog: () => Promise<void>;
   resolveLookupPath: (path: readonly { readonly relationFieldId: string }[]) => Promise<void>;
+  loadFormulaCatalog: () => Promise<void>;
+  validateFormulaDraft: (displaySource: string) => Promise<void>;
   dispose: () => void;
 } {
   const bridge = useHostBridge();
@@ -66,6 +69,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let generation = 0;
   let frozenOperationId: string | null = null;
+  let formulaValidationGeneration = 0;
 
   async function describe(
     tableId: string,
@@ -338,6 +342,56 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     }
   }
 
+  async function loadFormulaCatalog(): Promise<void> {
+    if (!store.result || store.draft?.logicalType !== "formula") return;
+    try {
+      store.beginFormulaCatalog();
+      const source = await describeRelationTable(store.result.tableId);
+      const relations = source.columns.flatMap(column => {
+        if (!column.fieldId || column.kind !== "relation" || !column.relationId) return [];
+        const descriptor = source.normalizedRelations.find(
+          item => item.relationId === column.relationId,
+        );
+        if (!descriptor?.relatedCollection || descriptor.kind === "m2a" || descriptor.junction) {
+          return [];
+        }
+        return [{ fieldId: column.fieldId, tableId: descriptor.relatedCollection }];
+      });
+      const resolved = await Promise.all(relations.map(async relation => ({
+        fieldId: relation.fieldId,
+        schema: await describeRelationTable(relation.tableId),
+      })));
+      store.setFormulaCatalog(source, Object.fromEntries(
+        resolved.map(item => [item.fieldId, item.schema]),
+      ));
+    } catch (error) {
+      store.failFormulaCatalog(error);
+    }
+  }
+
+  async function validateFormulaDraft(displaySource: string): Promise<void> {
+    const tableId = store.result?.tableId;
+    if (!tableId || store.draft?.logicalType !== "formula") return;
+    const current = ++formulaValidationGeneration;
+    store.beginFormulaValidation(displaySource);
+    try {
+      const result = unwrapFieldResult(await bridge.request("formula.draft.validate", {
+        tableId,
+        displaySource,
+      }));
+      if (!isFormulaDraftValidation(result)) {
+        throw new Error("公式校验返回了无效结果");
+      }
+      if (current === formulaValidationGeneration) {
+        store.setFormulaValidation(displaySource, result);
+      }
+    } catch (error) {
+      if (current === formulaValidationGeneration) {
+        store.failFormulaValidation(displaySource, error);
+      }
+    }
+  }
+
   async function describeRelationTable(tableId: string) {
     const result = await bridge.request("schema.describe", {
       collection: tableId,
@@ -352,6 +406,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
 
   function dispose(): void {
     generation += 1;
+    formulaValidationGeneration += 1;
     stopPolling();
     frozenOperationId = null;
   }
@@ -359,6 +414,16 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   return {
     openCreate, openEdit, requestClose, plan, apply, refreshMigration,
     cancelMigration, loadRecycleBin, restore, loadRelationCatalog,
-    selectRelationTarget, loadLookupCatalog, resolveLookupPath, dispose,
+    selectRelationTarget, loadLookupCatalog, resolveLookupPath,
+    loadFormulaCatalog, validateFormulaDraft, dispose,
   };
+}
+
+function isFormulaDraftValidation(value: unknown): value is FormulaDraftValidationResult {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<FormulaDraftValidationResult>;
+  return typeof candidate.canonicalSource === "string"
+    && typeof candidate.resultType === "string"
+    && Array.isArray(candidate.dependencies)
+    && Array.isArray(candidate.relationAggregatePaths);
 }

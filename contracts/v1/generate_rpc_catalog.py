@@ -407,6 +407,15 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
             "FormulaPreviewResult",
             {"values": {"subtotal": 12.5}},
         ),
+        "formula.draft.validate": _manual(
+            "FormulaDraftValidationResult",
+            {
+                "canonicalSource": 'relationSum(f_lines, "f_amount")',
+                "resultType": "number",
+                "dependencies": ["fld_lines"],
+                "relationAggregatePaths": ["f_lines.f_amount"],
+            },
+        ),
         "formula.validate": _manual(
             "FormulaValidationResult",
             {

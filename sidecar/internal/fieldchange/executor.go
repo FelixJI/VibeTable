@@ -20,6 +20,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldresource"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 )
 
 const fieldOperationTTL = 24 * time.Hour
@@ -318,7 +319,7 @@ func (executor *Executor) apply(
 			}
 			relatedRevision++
 			if saveErr := saveTableRevisionAndLegacy(
-				txApp, relatedPlan, relatedRevision,
+				ctx, txApp, relatedPlan, relatedRevision,
 			); saveErr != nil {
 				return saveErr
 			}
@@ -329,7 +330,7 @@ func (executor *Executor) apply(
 			})
 		}
 		if saveErr := saveTableRevisionAndLegacy(
-			txApp, *plan, nextRevision,
+			ctx, txApp, *plan, nextRevision,
 		); saveErr != nil {
 			return saveErr
 		}
@@ -430,6 +431,13 @@ func (executor *Executor) applyFrozenPlan(
 		}
 		if err := replaceCompiledField(app, collection, *plan.Before, *plan.After); err != nil {
 			return nil, err
+		}
+		if formulaDefinitionChanged(plan.Before, plan.After) {
+			if err := clearComputedPhysicalValue(
+				ctx, app, collection.Name, plan.After.Identity.PhysicalName,
+			); err != nil {
+				return nil, err
+			}
 		}
 		if err := saveDefinitionMetadata(app, plan.Intent.TableID, *plan.After); err != nil {
 			return nil, err
@@ -758,6 +766,7 @@ func legacyKind(definition v2.FieldDefinition) string {
 }
 
 func saveTableRevisionAndLegacy(
+	ctx context.Context,
 	app core.App,
 	plan v2.FieldChangePlan,
 	nextRevision int64,
@@ -776,11 +785,30 @@ func saveTableRevisionAndLegacy(
 		return fmt.Errorf("decode legacy table definition: %w", err)
 	}
 	definition.SchemaRevision = schema.FormatSchemaRevision(nextRevision)
+	var projected *schema.FieldDefinition
+	if plan.After != nil {
+		value := toLegacyField(*plan.After)
+		if value.Formula != nil {
+			for _, existingField := range definition.Fields {
+				if existingField.FieldID != value.FieldID || existingField.Formula == nil {
+					continue
+				}
+				if !formulaDefinitionChanged(plan.Before, plan.After) {
+					value.Formula.Version = existingField.Formula.Version
+					value.Formula.Status = existingField.Formula.Status
+				} else {
+					value.Formula.Version = max(existingField.Formula.Version, 1) + 1
+				}
+				break
+			}
+		}
+		projected = &value
+	}
 	switch plan.Intent.Action {
 	case v2.ActionCreate:
-		definition.Fields = append(definition.Fields, toLegacyField(*plan.After))
+		definition.Fields = append(definition.Fields, *projected)
 	case v2.ActionUpdate, v2.ActionConvert, v2.ActionRestore:
-		upsertLegacyField(&definition, toLegacyField(*plan.After))
+		upsertLegacyField(&definition, *projected)
 	case v2.ActionRetire, v2.ActionPurge:
 		removeLegacyField(&definition, plan.Intent.FieldID)
 	}
@@ -796,7 +824,7 @@ func saveTableRevisionAndLegacy(
 	if err := app.Save(record); err != nil {
 		return fmt.Errorf("save table schema revision: %w", err)
 	}
-	return nil
+	return schemaapi.New(app).SyncComputedMetadata(ctx, definition)
 }
 
 func selectPrimaryDisplayField(
@@ -860,13 +888,14 @@ func toLegacyField(definition v2.FieldDefinition) schema.FieldDefinition {
 		}
 	}
 	if definition.Formula != nil {
-		resultType, _ := legacyTypes(definition.Formula.ResultType)
+		resultType, resultStorage := legacyTypes(definition.Formula.ResultType)
+		field.StorageType = resultStorage
 		field.Formula = &schema.FormulaSpec{
 			Language:   definition.Formula.Language,
 			Source:     definition.Formula.Source,
 			ResultType: resultType,
 			Version:    1,
-			Status:     "valid",
+			Status:     "backfilling",
 		}
 	}
 	if definition.Lookup != nil {
@@ -908,6 +937,32 @@ func toLegacyField(definition v2.FieldDefinition) schema.FieldDefinition {
 		})
 	}
 	return field
+}
+
+func formulaDefinitionChanged(before, after *v2.FieldDefinition) bool {
+	if before == nil || after == nil || before.Formula == nil || after.Formula == nil {
+		return false
+	}
+	return before.Formula.Language != after.Formula.Language ||
+		before.Formula.Source != after.Formula.Source ||
+		before.Formula.ResultType != after.Formula.ResultType
+}
+
+func clearComputedPhysicalValue(
+	ctx context.Context,
+	app core.App,
+	collectionName string,
+	physicalName string,
+) error {
+	query := fmt.Sprintf(
+		"UPDATE `%s` SET `%s` = NULL",
+		strings.ReplaceAll(collectionName, "`", "``"),
+		strings.ReplaceAll(physicalName, "`", "``"),
+	)
+	if _, err := app.DB().NewQuery(query).WithContext(ctx).Execute(); err != nil {
+		return fmt.Errorf("clear stale computed values: %w", err)
+	}
+	return nil
 }
 
 func legacyTypes(logical v2.LogicalType) (schema.DataType, schema.StorageType) {

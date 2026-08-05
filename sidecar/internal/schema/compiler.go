@@ -151,7 +151,10 @@ func CompileField(definition FieldDefinition, resolveRelation RelationCollection
 		if err != nil {
 			return nil, err
 		}
-		maxSelect := 0
+		// PocketBase treats MaxSelect <= 1 as scalar. Product-level many
+		// relations intentionally have no fixed record-count cap, so represent
+		// that contract with PocketBase's maximum JSON-safe integer.
+		maxSelect := int(1<<53 - 1)
 		if definition.Relation.Cardinality == "one" {
 			maxSelect = 1
 		}

@@ -192,7 +192,8 @@
       "sidecar/migrations/2026072403_internal_metadata_channel.go",
       "sidecar/migrations/2026072404_realtime_outbox_retention.go",
       "sidecar/migrations/2026072801_field_settings_v2_metadata.go",
-      "sidecar/migrations/2026072805_audit_outbox.go"
+      "sidecar/migrations/2026072805_audit_outbox.go",
+      "sidecar/migrations/2026080501_relation_pairs.go"
     ],
     "capabilities": [
       "sidecar/internal/schema/capabilities.go",

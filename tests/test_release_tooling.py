@@ -95,7 +95,7 @@ def test_repository_versions_are_consistent() -> None:
     assert versions.pocketbase == "0.39.9"
     assert versions.cel == "0.29.0"
     assert versions.contract == "v1"
-    assert versions.schema == "6"
+    assert versions.schema == "7"
     assert len(versions.migration_hash) == 64
 
 
