@@ -132,8 +132,8 @@ import { resolvePasteContext } from "@/grid/pasteContext";
 import { canLeaveDashboardDraft } from "@/dashboard/navigationGuard";
 import type {
   NormalizedRelationDescriptor,
-  FilterCondition,
-  LookupGroup,
+  FilterExpression,
+  GroupCondition,
   LookupValueProvenance,
   SortCondition,
   PasteCellPayload,
@@ -542,9 +542,9 @@ const lookupSourceNavigation = ref<{
   queryRequested: boolean;
 } | null>(null);
 const interactiveGridQuery = ref<{
-  filters: readonly FilterCondition[];
+  filters: readonly FilterExpression[];
   sorts: readonly SortCondition[];
-  groups: readonly LookupGroup[];
+  groups: readonly GroupCondition[];
 } | null>(null);
 
 watch(
@@ -637,9 +637,9 @@ async function refreshAuthoritativeLookupRows(): Promise<void> {
 }
 
 function onGridViewQueryChanged(query: {
-  readonly filters: readonly FilterCondition[];
+  readonly filters: readonly FilterExpression[];
   readonly sorts: readonly SortCondition[];
-  readonly groups: readonly LookupGroup[];
+  readonly groups: readonly GroupCondition[];
 }): void {
   const table = workspace.currentTable;
   if (!table) return;
@@ -649,7 +649,15 @@ function onGridViewQueryChanged(query: {
     table,
     // Standard table.query is page-bounded (backend max 500) but compiles the
     // sort/filter on the data service, so the page is selected from the full dataset.
-    query: { filters: query.filters, sorts: query.sorts, offset: 0, limit: 500 },
+    query: {
+      filters: query.filters,
+      sorts: query.sorts,
+      groups: query.groups,
+      offset: 0,
+      limit: 500,
+      groupOffset: 0,
+      groupLimit: 100,
+    },
   });
   void refreshAuthoritativeLookupRows();
 }

@@ -2,6 +2,7 @@ package query_test
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,37 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 )
+
+func TestNormalizeEnforcesProductFilterTreeBudgets(t *testing.T) {
+	fiftyOne := make([]query.FilterExpression, 51)
+	for index := range fiftyOne {
+		fiftyOne[index] = query.FilterExpression{
+			Field: "amount", Operator: query.OperatorEqual, Value: index,
+		}
+	}
+	tooDeep := query.FilterExpression{Filters: []query.FilterExpression{{
+		Filters: []query.FilterExpression{{
+			Filters: []query.FilterExpression{{
+				Filters: []query.FilterExpression{{
+					Field: "amount", Operator: query.OperatorEqual, Value: 1,
+				}},
+			}},
+		}},
+	}}}
+	for name, filters := range map[string][]query.FilterExpression{
+		"more than 50 predicates":  {{Filters: fiftyOne}},
+		"more than 3 group levels": {tooDeep},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := query.Normalize(query.TableQuery{Filters: filters})
+			var productErr *query.ProductError
+			if !errors.As(err, &productErr) ||
+				(productErr.Code != "query.filter.limit" && productErr.Code != "query.filter.depth") {
+				t.Fatalf("Normalize() error = %#v", err)
+			}
+		})
+	}
+}
 
 func TestCompilerMatchesGoldenOperatorsAndParameterizesValues(t *testing.T) {
 	descriptor := descriptorFixture()

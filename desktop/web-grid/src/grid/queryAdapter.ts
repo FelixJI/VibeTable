@@ -18,6 +18,7 @@ import type {
   SortCondition,
   TableQuery,
 } from "@/contracts";
+import { ungroupedFilterConditions } from "./viewQuery";
 
 /**
  * A Tabulator sort descriptor as exposed by `table.getSorters()`.
@@ -104,7 +105,9 @@ export function queryToTabulator(query: TableQuery): {
     field: s.field,
     dir: s.direction ?? "asc",
   }));
-  const headerFilters: TabulatorHeaderFilter[] = (query.filters ?? [])
+  const headerFilters: TabulatorHeaderFilter[] = ungroupedFilterConditions(
+    query.filters ?? [],
+  )
     .filter((f) => f.operator === "eq" || f.operator === "contains")
     .map((f) => ({ field: f.field, value: f.value }));
   return { sorters, headerFilters };

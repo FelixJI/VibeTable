@@ -16,7 +16,7 @@ public sealed class ProductDataRpcRegistryTests
         [
             "field.settings.describe", "field.change.plan", "field.change.apply",
             "field.change.status", "field.change.cancel", "field.recycleBin.list",
-            "schema.getTable", "query.page",
+            "schema.getTable", "query.page", "query.view",
             "mutation.preview", "mutation.apply",
             "data.previewImport", "data.applyImport", "data.export",
             "task.create", "task.cancel", "task.status",
@@ -114,7 +114,7 @@ public sealed class ProductDataRpcRegistryTests
                  {
                      "field.settings.describe", "field.change.status",
                      "field.recycleBin.list",
-                     "mutation.preview", "query.page",
+                     "mutation.preview", "query.page", "query.view",
                      "data.previewImport", "data.export", "task.status",
                  })
         {

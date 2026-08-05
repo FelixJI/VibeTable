@@ -1,5 +1,6 @@
-import type { ColumnState, PresetView } from "@/contracts";
+import type { ColumnState, FilterCondition, PresetView } from "@/contracts";
 import { ROW_NUMBER_FIELD } from "./createGrid";
+import { headerFilterConditions } from "./viewQuery";
 
 interface ViewColumn {
   getField(): string;
@@ -48,7 +49,9 @@ export function captureDataSourceView(
   const sorts = (canReadRuntimeState ? grid?.getSorters?.() ?? [] : [])
     .filter((sorter) => isDataField(sorter.field))
     .map((sorter) => ({ field: sorter.field, direction: sorter.dir }));
-  const filters = (canReadRuntimeState ? grid?.getHeaderFilters?.() ?? [] : [])
+  const filters: FilterCondition[] = (
+    canReadRuntimeState ? grid?.getHeaderFilters?.() ?? [] : []
+  )
     .filter((filter) => isDataField(filter.field))
     .map((filter) => ({ field: filter.field, operator: "eq", value: filter.value }));
 
@@ -120,9 +123,9 @@ export async function applyDataSourceView(
   })).filter((sort) => currentFields.has(sort.field));
   await grid.setSort?.(sorters);
   grid.clearHeaderFilter?.();
-  for (const filter of view.filters) {
-    const field = typeof filter.field === "string" ? filter.field : "";
-    if (currentFields.has(field) && filter.operator === "eq") {
+  for (const filter of headerFilterConditions(view.filters)) {
+    const field = filter.field;
+    if (currentFields.has(field)) {
       grid.setHeaderFilterValue?.(field, filter.value);
     }
   }

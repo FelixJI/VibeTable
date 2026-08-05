@@ -14,12 +14,19 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
-from backend.contracts.query import FilterCondition, SortCondition
+from backend.contracts.query import (
+    FilterCondition,
+    FilterExpression,
+    FilterGroup,
+    GroupCondition,
+    SortCondition,
+    SummaryCondition,
+)
 
 
 def _camel_config() -> ConfigDict:
@@ -45,8 +52,10 @@ PresetScope = Literal["personal", "system", "role"]
 class PresetView(CamelModel):
     """A reusable table presentation for one local data source."""
 
-    filters: list[dict[str, Any]] = Field(default_factory=list)
-    sorts: list[dict[str, Any]] = Field(default_factory=list)
+    filters: list[FilterExpression] = Field(default_factory=list, max_length=50)
+    sorts: list[SortCondition] = Field(default_factory=list, max_length=16)
+    groups: list[GroupCondition] = Field(default_factory=list, max_length=2)
+    summaries: list[SummaryCondition] = Field(default_factory=list, max_length=3)
     search: str = Field(default="", max_length=256)
     visible_fields: list[str] = Field(default_factory=list, max_length=128)
     layout: str = Field(default="table", max_length=32)
@@ -59,6 +68,23 @@ class PresetView(CamelModel):
     columns: list[dict[str, Any]] = Field(default_factory=list, max_length=128)
     density: Literal["compact", "comfortable", "cozy"] = "comfortable"
     is_default: bool = False
+
+    @model_validator(mode="after")
+    def validate_filter_tree(self) -> Self:
+        def walk(expression: FilterExpression, parent_depth: int) -> int:
+            if isinstance(expression, FilterCondition):
+                return 1
+            if not isinstance(expression, FilterGroup):
+                raise TypeError("unknown filter expression")
+            depth = parent_depth + 1
+            if depth > 3:
+                raise ValueError("filter groups support at most 3 levels")
+            return sum(walk(child, depth) for child in expression.filters)
+
+        condition_count = sum(walk(expression, 0) for expression in self.filters)
+        if condition_count > 50:
+            raise ValueError("filter trees support at most 50 conditions")
+        return self
 
 
 class PresetEntry(CamelModel):

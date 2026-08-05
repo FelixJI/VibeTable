@@ -65,6 +65,9 @@ internal static class ProductDataRpcRegistry
             (g, p, t) => g.GetTableSchemaAsync(p, t)),
         new("query.page", p => Safe(p) && HasString(p, "tableId") && HasObject(p, "query"),
             (g, p, t) => g.QueryPageAsync(p, t)),
+        new("query.view", p => Safe(p) && HasExactProperties(p, "tableId", "view")
+            && HasString(p, "tableId") && HasObject(p, "view"),
+            (g, p, t) => g.QueryViewAsync(p, t)),
         new("mutation.preview", p => Safe(p) && HasString(p, "tableId") && HasArray(p, "operations"),
             (g, p, t) => g.PreviewMutationAsync(p, t)),
         new("mutation.apply", p => Safe(p) && HasString(p, "tableId") && HasArray(p, "operations"),

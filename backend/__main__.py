@@ -213,6 +213,7 @@ def _register_pocketbase_product_methods(
         "schema.getTable": service.get_table_schema,
         "schema.describe": service.describe_schema,
         "query.page": service.query_page,
+        "query.view": service.query_view,
         "query.readRows": service.read_rows,
         "query.validateSnapshot": service.validate_snapshot,
         "mutation.preview": service.preview_mutation,

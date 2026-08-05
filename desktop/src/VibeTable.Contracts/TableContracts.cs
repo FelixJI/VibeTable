@@ -76,4 +76,8 @@ public sealed record TablePage(
     string Mode,
     int? FilteredRows = null,
     QuerySnapshot? QuerySnapshot = null,
-    MutationRevision? Revision = null);
+    MutationRevision? Revision = null,
+    IReadOnlyList<GroupRow>? GroupRows = null,
+    int GroupOffset = 0,
+    int GroupLimit = 100,
+    bool HasMoreGroups = false);

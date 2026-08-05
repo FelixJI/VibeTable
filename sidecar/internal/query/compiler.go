@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	maxFilters           = 64
+	maxFilters           = 50
+	maxFilterDepth       = 3
 	maxSorts             = 16
 	maxInValues          = 200
 	defaultAggregateRows = 1000
@@ -266,6 +267,203 @@ func CompileAggregate(
 	return sql, c.params, nil
 }
 
+type compiledViewGroups struct {
+	sql          string
+	params       map[string]any
+	groupFields  []FieldDescriptor
+	groupBuckets []GroupBucket
+	summaryCount int
+}
+
+func compileViewGroups(
+	descriptor TableDescriptor,
+	input TableQuery,
+	groups []GroupSpec,
+	summaries []SummarySpec,
+	offset int,
+	limit int,
+) (compiledViewGroups, error) {
+	if err := validateDescriptor(descriptor); err != nil {
+		return compiledViewGroups{}, err
+	}
+	if len(groups) > 2 {
+		return compiledViewGroups{}, productError(
+			"view.group.limit", "groups", "at most 2 group fields are allowed", nil,
+		)
+	}
+	if len(summaries) > 3 {
+		return compiledViewGroups{}, productError(
+			"view.summary.limit", "summaries", "at most 3 summaries are allowed", nil,
+		)
+	}
+	c := &compiler{descriptor: descriptor, params: make(map[string]any)}
+	where, err := c.compileFilterList(input.Filters, "query.filters")
+	if err != nil {
+		return compiledViewGroups{}, err
+	}
+	archiveWhere, err := c.compileArchive()
+	if err != nil {
+		return compiledViewGroups{}, err
+	}
+	if archiveWhere != "" {
+		if where == "" {
+			where = archiveWhere
+		} else {
+			where = "(" + where + ") AND (" + archiveWhere + ")"
+		}
+	}
+	if keyword := strings.TrimSpace(input.Keyword); keyword != "" {
+		pattern := "%" + escapeLike(keyword) + "%"
+		parts := make([]string, 0)
+		for _, name := range sortedFieldNames(descriptor.Fields) {
+			field := descriptor.Fields[name]
+			if field.Searchable && field.Type == FieldTypeText {
+				parts = append(parts, fmt.Sprintf(
+					`LOWER(CAST(%s AS TEXT)) LIKE LOWER(%s) ESCAPE '\'`,
+					c.productValueSQL(name, field.PhysicalName), c.bind(pattern),
+				))
+			}
+		}
+		if len(parts) == 0 {
+			return compiledViewGroups{}, productError(
+				"query.keyword.unsupported", "query.keyword",
+				"table has no searchable fields", nil,
+			)
+		}
+		keywordWhere := "(" + strings.Join(parts, " OR ") + ")"
+		if where == "" {
+			where = keywordWhere
+		} else {
+			where = "(" + where + ") AND " + keywordWhere
+		}
+	}
+
+	selects := make([]string, 0, len(groups)+len(summaries)+1)
+	groupExpressions := make([]string, 0, len(groups))
+	orderExpressions := make([]string, 0, len(groups))
+	groupFields := make([]FieldDescriptor, 0, len(groups))
+	groupBuckets := make([]GroupBucket, 0, len(groups))
+	seenGroups := make(map[string]struct{}, len(groups))
+	for index, group := range groups {
+		if _, exists := seenGroups[group.Field]; exists {
+			return compiledViewGroups{}, productError(
+				"view.group.duplicate", fmt.Sprintf("groups[%d].field", index),
+				"group fields must be unique", nil,
+			)
+		}
+		field, err := c.resolve(group.Field, fmt.Sprintf("groups[%d].field", index))
+		if err != nil {
+			return compiledViewGroups{}, err
+		}
+		if !aggregateGroupTypeAllowed(field.descriptor.Type) {
+			return compiledViewGroups{}, productError(
+				"view.group.unsupported_field", fmt.Sprintf("groups[%d].field", index),
+				"field type cannot be used for grouping", nil,
+			)
+		}
+		bucket := group.Bucket
+		if bucket == "" {
+			bucket = GroupBucketValue
+		}
+		expression, err := viewGroupExpression(field, bucket, fmt.Sprintf("groups[%d].bucket", index))
+		if err != nil {
+			return compiledViewGroups{}, err
+		}
+		direction := group.Direction
+		if direction == "" {
+			direction = SortAscending
+		}
+		if direction != SortAscending && direction != SortDescending {
+			return compiledViewGroups{}, productError(
+				"view.group.invalid_direction", fmt.Sprintf("groups[%d].direction", index),
+				"direction must be asc or desc", nil,
+			)
+		}
+		alias := fmt.Sprintf("group_%d", index)
+		selects = append(selects, expression+" AS "+quote(alias))
+		groupExpressions = append(groupExpressions, expression)
+		orderExpressions = append(orderExpressions, expression+" "+strings.ToUpper(string(direction)))
+		groupFields = append(groupFields, field.descriptor)
+		groupBuckets = append(groupBuckets, bucket)
+		seenGroups[group.Field] = struct{}{}
+	}
+	selects = append(selects, "COUNT(*) AS "+quote("row_count"))
+	for index, summary := range summaries {
+		field, err := c.resolve(summary.Field, fmt.Sprintf("summaries[%d].field", index))
+		if err != nil {
+			return compiledViewGroups{}, err
+		}
+		if field.descriptor.Type != FieldTypeNumber {
+			return compiledViewGroups{}, productError(
+				"view.summary.unsupported_field", fmt.Sprintf("summaries[%d].field", index),
+				"summary field must be numeric", nil,
+			)
+		}
+		switch summary.Function {
+		case AggregateSum, AggregateAvg, AggregateMin, AggregateMax:
+		default:
+			return compiledViewGroups{}, productError(
+				"view.summary.invalid_function", fmt.Sprintf("summaries[%d].function", index),
+				"function must be sum, avg, min, or max", nil,
+			)
+		}
+		selects = append(selects, fmt.Sprintf(
+			"%s(%s) AS %s",
+			strings.ToUpper(string(summary.Function)), field.sql, quote(fmt.Sprintf("summary_%d", index)),
+		))
+	}
+
+	sql := "SELECT " + strings.Join(selects, ", ") + " FROM " + quote(descriptor.PhysicalName)
+	if where != "" {
+		sql += " WHERE " + where
+	}
+	if len(groupExpressions) > 0 {
+		sql += " GROUP BY " + strings.Join(groupExpressions, ", ")
+		sql += " ORDER BY " + strings.Join(orderExpressions, ", ")
+	}
+	c.params["group_limit"] = limit
+	c.params["group_offset"] = offset
+	sql += " LIMIT {:group_limit} OFFSET {:group_offset}"
+	return compiledViewGroups{
+		sql: sql, params: c.params, groupFields: groupFields,
+		groupBuckets: groupBuckets, summaryCount: len(summaries),
+	}, nil
+}
+
+func viewGroupExpression(
+	field resolvedField,
+	bucket GroupBucket,
+	path string,
+) (string, error) {
+	if bucket == GroupBucketValue {
+		return field.sql, nil
+	}
+	if field.descriptor.Type != FieldTypeDate {
+		return "", productError(
+			"view.group.invalid_bucket", path, "date buckets require a date field", nil,
+		)
+	}
+	switch bucket {
+	case GroupBucketYear:
+		return "strftime('%Y', " + field.sql + ")", nil
+	case GroupBucketQuarter:
+		return "strftime('%Y', " + field.sql + ") || '-Q' || " +
+			"(((CAST(strftime('%m', " + field.sql + ") AS INTEGER) - 1) / 3) + 1)", nil
+	case GroupBucketMonth:
+		return "strftime('%Y-%m', " + field.sql + ")", nil
+	case GroupBucketWeek:
+		return "strftime('%Y-W%W', " + field.sql + ")", nil
+	case GroupBucketDay:
+		return "strftime('%Y-%m-%d', " + field.sql + ")", nil
+	case GroupBucketHour:
+		return "strftime('%Y-%m-%dT%H', " + field.sql + ")", nil
+	default:
+		return "", productError(
+			"view.group.invalid_bucket", path, "unsupported group bucket", nil,
+		)
+	}
+}
+
 func Normalize(input TableQuery) (TableQuery, error) {
 	if input.Offset < 0 {
 		return TableQuery{}, productError("query.page.invalid", "offset", "offset cannot be negative", nil)
@@ -333,11 +531,13 @@ func normalizeFilter(
 	depth int,
 	count *int,
 ) error {
-	*count++
-	if *count > maxFilters {
-		return productError("query.filter.limit", "filters", "too many filters", nil)
+	if len(filter.Filters) == 0 {
+		*count++
+		if *count > maxFilters {
+			return productError("query.filter.limit", "filters", "too many filters", nil)
+		}
 	}
-	if depth > 8 {
+	if depth > maxFilterDepth {
 		return productError("query.filter.depth", path, "filter nesting is too deep", nil)
 	}
 	if filter.Logic == "" {

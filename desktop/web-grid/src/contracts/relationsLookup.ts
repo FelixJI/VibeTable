@@ -4,7 +4,7 @@
  * Keep these names aligned with backend/contracts/{relation_admin,lookup}.py.
  * In particular, `m2a` is always lower-case on the wire.
  */
-import type { ColumnSchema, FilterCondition, SortCondition } from "./index";
+import type { ColumnSchema, FilterExpression, SortCondition } from "./index";
 
 export type RelationKind = "m2o" | "o2m" | "m2m" | "m2a";
 export type RelationPreset = "standard" | "file" | "files" | "translations";
@@ -171,7 +171,7 @@ export interface LookupQueryParams {
   readonly collection: string;
   readonly fieldRefs: readonly string[];
   readonly query: {
-    readonly filters: readonly FilterCondition[];
+    readonly filters: readonly FilterExpression[];
     readonly sorts: readonly SortCondition[];
     readonly groups: readonly LookupGroup[];
     readonly offset: number;

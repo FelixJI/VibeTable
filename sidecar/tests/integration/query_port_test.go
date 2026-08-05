@@ -49,6 +49,7 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 		&core.TextField{Name: "notes"},
 		&core.TextField{Name: "archive_status"},
 		&core.DateField{Name: "deleted_at"},
+		&core.DateField{Name: "order_date"},
 		&core.JSONField{Name: "payload"},
 		&core.RelationField{Name: "customer", CollectionId: customers.Id, MaxSelect: 1},
 		&core.RelationField{Name: "watchers", CollectionId: customers.Id, MaxSelect: 5},
@@ -58,18 +59,21 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 	}
 	first := saveRecord(t, app, orders, map[string]any{
 		"name": "Alpha", "amount": 100, "status": "open",
-		"payload":  types.JSONRaw(`{"nested":{"rank":2}}`),
-		"customer": alice.Id, "watchers": []string{alice.Id, bob.Id},
+		"order_date": "2026-01-05 10:00:00.000Z",
+		"payload":    types.JSONRaw(`{"nested":{"rank":2}}`),
+		"customer":   alice.Id, "watchers": []string{alice.Id, bob.Id},
 	})
 	second := saveRecord(t, app, orders, map[string]any{
 		"name": "Beta", "amount": 100, "status": "closed",
-		"payload":  types.JSONRaw(`{"nested":{"rank":3},"optional":null}`),
-		"customer": alice.Id, "watchers": []string{bob.Id},
+		"order_date": "2026-01-20 10:00:00.000Z",
+		"payload":    types.JSONRaw(`{"nested":{"rank":3},"optional":null}`),
+		"customer":   alice.Id, "watchers": []string{bob.Id},
 	})
 	saveRecord(t, app, orders, map[string]any{
 		"name": "Gamma", "amount": 80, "status": "closed",
-		"payload":  types.JSONRaw(`{"nested":{"rank":1}}`),
-		"customer": bob.Id, "watchers": []string{alice.Id},
+		"order_date": "2026-02-01 10:00:00.000Z",
+		"payload":    types.JSONRaw(`{"nested":{"rank":1}}`),
+		"customer":   bob.Id, "watchers": []string{alice.Id},
 	})
 	emptyRelations := saveRecord(t, app, orders, map[string]any{
 		"name": "No relations", "amount": 40, "status": "open",
@@ -95,6 +99,7 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 			"notes":          {PhysicalName: "notes", Type: query.FieldTypeText},
 			"archive_status": {PhysicalName: "archive_status", Type: query.FieldTypeText},
 			"deleted_at":     {PhysicalName: "deleted_at", Type: query.FieldTypeDate},
+			"order_date":     {PhysicalName: "order_date", Type: query.FieldTypeDate},
 			"payload":        {PhysicalName: "payload", Type: query.FieldTypeJSON},
 			"customer": {
 				PhysicalName: "customer", Type: query.FieldTypeRelation,
@@ -155,6 +160,66 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 	wantIDs := []any{sortedIDs[0], sortedIDs[1]}
 	if gotIDs[0] != wantIDs[0] || gotIDs[1] != wantIDs[1] {
 		t.Fatalf("stable pages = %#v, want %#v", gotIDs, wantIDs)
+	}
+	view, err := port.ExecuteViewQuery(ctx, "orders", query.ViewQuery{
+		Query: query.TableQuery{
+			Filters: []query.FilterExpression{{
+				Field: "amount", Operator: query.OperatorGreaterEq, Value: 80,
+			}},
+			Sorts: []query.SortCondition{{
+				Field: "amount", Direction: query.SortDescending,
+			}},
+			Limit: 1,
+		},
+		Groups:     []query.GroupSpec{{Field: "status", Direction: query.SortAscending}},
+		Summaries:  []query.SummarySpec{{Field: "amount", Function: query.AggregateSum}},
+		GroupLimit: 1,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteViewQuery(first groups page): %v", err)
+	}
+	if len(view.Page.Rows) != 1 || view.Page.FilteredRows != 3 ||
+		len(view.GroupRows) != 1 || !view.HasMoreGroups {
+		t.Fatalf("view page/group cardinality = %#v", view)
+	}
+	if fmt.Sprint(view.GroupRows[0].Key[0]) != "closed" ||
+		view.GroupRows[0].Count != 2 ||
+		fmt.Sprint(view.GroupRows[0].Summaries[0]) != "180" {
+		t.Fatalf("first full-result group = %#v", view.GroupRows[0])
+	}
+	secondGroups, err := port.ExecuteViewQuery(ctx, "orders", query.ViewQuery{
+		Query: query.TableQuery{
+			Filters: []query.FilterExpression{{
+				Field: "amount", Operator: query.OperatorGreaterEq, Value: 80,
+			}},
+			Limit: 1,
+		},
+		Groups:      []query.GroupSpec{{Field: "status", Direction: query.SortAscending}},
+		Summaries:   []query.SummarySpec{{Field: "amount", Function: query.AggregateSum}},
+		GroupOffset: 1,
+		GroupLimit:  1,
+	})
+	if err != nil || len(secondGroups.GroupRows) != 1 || secondGroups.HasMoreGroups ||
+		fmt.Sprint(secondGroups.GroupRows[0].Key[0]) != "open" ||
+		secondGroups.GroupRows[0].Count != 1 ||
+		fmt.Sprint(secondGroups.GroupRows[0].Summaries[0]) != "100" {
+		t.Fatalf("second full-result group page = %#v err=%v", secondGroups, err)
+	}
+	dateGroups, err := port.ExecuteViewQuery(ctx, "orders", query.ViewQuery{
+		Query: query.TableQuery{
+			Filters: []query.FilterExpression{{
+				Field: "amount", Operator: query.OperatorGreaterEq, Value: 80,
+			}},
+			Limit: 1,
+		},
+		Groups: []query.GroupSpec{{Field: "order_date", Bucket: query.GroupBucketMonth}},
+	})
+	if err != nil || len(dateGroups.GroupRows) != 2 ||
+		fmt.Sprint(dateGroups.GroupRows[0].Key[0]) != "2026-01" ||
+		dateGroups.GroupRows[0].Count != 2 ||
+		fmt.Sprint(dateGroups.GroupRows[1].Key[0]) != "2026-02" ||
+		dateGroups.GroupRows[1].Count != 1 {
+		t.Fatalf("date bucket groups = %#v err=%v", dateGroups.GroupRows, err)
 	}
 	if _, ok := pageOne.Rows[0]["payload"].(map[string]any); !ok {
 		t.Fatalf("JSON did not round-trip as structured data: %#v", pageOne.Rows[0]["payload"])

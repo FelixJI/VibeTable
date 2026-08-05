@@ -360,6 +360,10 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
         return ReadTablePageAsync(table, offset, limit, token);
     }
 
+    public Task<TablePage> QueryTableViewAsync(
+        string table, int offset, int limit, TableQuery query, CancellationToken token)
+        => QueryTablePageAsync(table, offset, limit, query, token);
+
     public Task<SnapshotValidation> ValidateSnapshotAsync(
         QuerySnapshot snapshot, int? currentRevision, CancellationToken token)
     {

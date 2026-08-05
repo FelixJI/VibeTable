@@ -255,6 +255,12 @@ PRODUCT_PARAM_MODELS: dict[str, type[ProductParams]] = {
         required=("tableId", "query"),
         field_types={"tableId": (str,), "query": (dict,)},
     ),
+    "query.view": _closed_params(
+        "QueryViewParams",
+        allowed=("tableId", "view"),
+        required=("tableId", "view"),
+        field_types={"tableId": (str,), "view": (dict,)},
+    ),
     "query.readRows": _closed_params(
         "QueryReadRowsParams",
         allowed=("tableId", "rowIds"),
@@ -663,6 +669,26 @@ class PocketBaseProductDataService:
             "filteredRows": page.filtered_rows,
             "totalRows": page.total_rows,
             "snapshot": page.snapshot,
+        }
+
+    async def query_view(self, params: ProductParams) -> dict[str, Any]:
+        table_id = _text(params.root, "tableId")
+        view = _object(params.root, "view")
+        result = await self._client.execute_view(table_id=table_id, view=view)
+        page = result.page
+        return {
+            "page": {
+                "rows": page.rows,
+                "offset": page.offset,
+                "limit": page.limit,
+                "filteredRows": page.filtered_rows,
+                "totalRows": page.total_rows,
+                "snapshot": page.snapshot,
+            },
+            "groupRows": result.group_rows,
+            "groupOffset": result.group_offset,
+            "groupLimit": result.group_limit,
+            "hasMoreGroups": result.has_more_groups,
         }
 
     async def read_rows(self, params: ProductParams) -> dict[str, Any]:

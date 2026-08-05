@@ -21,7 +21,7 @@ import type { TabulatorFull } from "tabulator-tables";
 import { useTabulator } from "@/composables/useTabulator";
 import type { CellEditedHandler, CellValidationErrorHandler } from "@/grid/createGrid";
 import type { ColumnSchema, LookupValueProvenance, NormalizedRelationDescriptor } from "@/contracts";
-import type { FilterCondition, LookupGroup, SortCondition } from "@/contracts";
+import type { FilterExpression, GroupCondition, SortCondition } from "@/contracts";
 import { ROW_NUMBER_FIELD } from "@/grid/createGrid";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -61,9 +61,9 @@ const emit = defineEmits<{
     trigger: HTMLElement | null;
   }];
   viewQueryChange: [query: {
-    readonly filters: readonly FilterCondition[];
+    readonly filters: readonly FilterExpression[];
     readonly sorts: readonly SortCondition[];
-    readonly groups: readonly LookupGroup[];
+    readonly groups: readonly GroupCondition[];
   }];
   insertFirstRow: [];
   columnContext: [payload: { field: string; x: number; y: number }];

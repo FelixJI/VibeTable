@@ -220,7 +220,7 @@ public sealed class GridStateCoordinator
     {
         try
         {
-            var page = await _gateway.QueryTablePageAsync(
+            var page = await _gateway.QueryTableViewAsync(
                 table, query.Offset, Math.Min(
                     Math.Max(query.Limit, 1), TableWorkspaceLimits.MaxPageLimit),
                 query, token).ConfigureAwait(true);

@@ -109,6 +109,10 @@ export interface TablePage {
   readonly filteredRows?: number | null;
   readonly querySnapshot?: QuerySnapshot | null;
   readonly revision?: MutationRevision | null;
+  readonly groupRows?: readonly ViewGroupRow[] | null;
+  readonly groupOffset?: number;
+  readonly groupLimit?: number;
+  readonly hasMoreGroups?: boolean;
 }
 
 /**
@@ -419,6 +423,15 @@ export interface FilterCondition {
   readonly logic?: "AND" | "OR";
 }
 
+/** One recursively nested filter group. Mirrors `FilterGroup`. */
+export interface FilterGroup {
+  readonly groupLogic?: "AND" | "OR";
+  readonly filters: readonly FilterExpression[];
+}
+
+/** One predicate or nested group in a persisted view filter tree. */
+export type FilterExpression = FilterCondition | FilterGroup;
+
 /** One sort condition. Mirrors `SortCondition`. */
 export interface SortCondition {
   readonly field: string;
@@ -426,13 +439,36 @@ export interface SortCondition {
   readonly nullsLast?: boolean;
 }
 
+/** One ordered, read-only grouping level in a persisted view. */
+export interface GroupCondition {
+  readonly field: string;
+  readonly direction?: "asc" | "desc";
+  readonly bucket?: "value" | "year" | "quarter" | "month" | "week" | "day" | "hour";
+}
+
+/** One numeric summary displayed for every group. */
+export interface SummaryCondition {
+  readonly field: string;
+  readonly function: "sum" | "avg" | "min" | "max";
+}
+
+export interface ViewGroupRow {
+  readonly key: readonly unknown[];
+  readonly count: number;
+  readonly summaries: readonly unknown[];
+}
+
 /** The typed query AST. Mirrors `TableQuery`. */
 export interface TableQuery {
   readonly keyword?: string | null;
-  readonly filters?: readonly FilterCondition[];
+  readonly filters?: readonly FilterExpression[];
   readonly sorts?: readonly SortCondition[];
   readonly offset?: number;
   readonly limit?: number;
+  readonly groups?: readonly GroupCondition[];
+  readonly summaries?: readonly SummaryCondition[];
+  readonly groupOffset?: number;
+  readonly groupLimit?: number;
 }
 
 /** A stable query-view snapshot. Mirrors `QuerySnapshot`. */
@@ -1261,8 +1297,10 @@ export interface PluginEventEnvelope {
 // ---------------------------------------------------------------------------
 
 export interface PresetView {
-  readonly filters: readonly Readonly<Record<string, unknown>>[];
-  readonly sorts: readonly Readonly<Record<string, unknown>>[];
+  readonly filters: readonly FilterExpression[];
+  readonly sorts: readonly SortCondition[];
+  readonly groups?: readonly GroupCondition[];
+  readonly summaries?: readonly SummaryCondition[];
   readonly search: string;
   readonly visibleFields: readonly string[];
   readonly layout: string;

@@ -158,6 +158,55 @@ async def test_aggregate_uses_frozen_query_port_operation() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_view_query_returns_independently_paged_full_result_groups() -> None:
+    page_payload = {
+        "rows": [{"id": "order-1"}],
+        "offset": 0,
+        "limit": 1,
+        "filteredRows": 12_500,
+        "totalRows": 25_000,
+        "querySnapshot": {
+            "snapshotId": "0" * 32,
+            "databaseId": "db",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {"filters": [], "sorts": [], "offset": 0, "limit": 1},
+            "digest": "d" * 64,
+        },
+    }
+    transport = FakeTransport(
+        [
+            {
+                "page": page_payload,
+                "groupRows": [{"key": ["east"], "count": 7000, "summaries": [12345]}],
+                "groupOffset": 0,
+                "groupLimit": 100,
+                "hasMoreGroups": False,
+            }
+        ]
+    )
+    client = PocketBaseClient(transport=transport, session_secret="e" * 64)
+    view = {
+        "query": {"filters": [], "sorts": [], "offset": 0, "limit": 1},
+        "groups": [{"field": "region"}],
+        "summaries": [{"field": "amount", "function": "sum"}],
+        "groupOffset": 0,
+        "groupLimit": 100,
+    }
+
+    result = await client.execute_view(table_id="orders", view=view)
+
+    assert result.page.filtered_rows == 12_500
+    assert result.group_rows[0]["count"] == 7000
+    assert transport.requests[0]["json_body"] == {
+        "operation": "view",
+        "tableId": "orders",
+        "view": view,
+    }
+
+
 def test_product_error_keeps_safe_structured_details() -> None:
     error = PocketBaseProductError(
         status=409,

@@ -97,6 +97,15 @@ class QueryPageResult:
     snapshot: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ViewQueryResult:
+    page: QueryPageResult
+    group_rows: list[dict[str, Any]]
+    group_offset: int
+    group_limit: int
+    has_more_groups: bool
+
+
 class PocketBaseClient:
     """Calls only frozen product routes; it never accesses PB collections."""
 
@@ -142,6 +151,41 @@ class PocketBaseClient:
             "query page",
         )
         return _query_page(payload)
+
+    async def execute_view(
+        self,
+        *,
+        table_id: str,
+        view: Mapping[str, Any],
+    ) -> ViewQueryResult:
+        payload = _object(
+            await self._post(
+                QUERY_PATH,
+                {
+                    "operation": "view",
+                    "tableId": table_id,
+                    "view": view,
+                },
+            ),
+            "view query result",
+        )
+        page = payload.get("page")
+        group_rows = payload.get("groupRows")
+        has_more_groups = payload.get("hasMoreGroups")
+        if (
+            not isinstance(page, dict)
+            or not isinstance(group_rows, list)
+            or not all(_valid_group_row(row) for row in group_rows)
+            or not isinstance(has_more_groups, bool)
+        ):
+            raise ValueError("PocketBase returned an invalid view query result")
+        return ViewQueryResult(
+            page=_query_page(page),
+            group_rows=[_freeze_json(row) for row in group_rows],
+            group_offset=_integer(payload.get("groupOffset"), "groupOffset"),
+            group_limit=_integer(payload.get("groupLimit"), "groupLimit"),
+            has_more_groups=has_more_groups,
+        )
 
     async def read_rows(self, *, table_id: str, row_ids: list[str]) -> list[dict[str, Any]]:
         payload = _object(
@@ -444,6 +488,16 @@ def _query_page(payload: Mapping[str, Any]) -> QueryPageResult:
     )
 
 
+def _valid_group_row(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("key"), list)
+        and isinstance(value.get("summaries"), list)
+        and isinstance(value.get("count"), int)
+        and not isinstance(value.get("count"), bool)
+    )
+
+
 def _integer(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"PocketBase returned an invalid {name}")
@@ -475,4 +529,5 @@ __all__ = [
     "PocketBaseProductError",
     "PocketBaseTransport",
     "QueryPageResult",
+    "ViewQueryResult",
 ]

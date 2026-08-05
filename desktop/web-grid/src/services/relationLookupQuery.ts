@@ -1,4 +1,10 @@
-import type { FilterCondition, LookupDefinition, LookupGroup, SortCondition } from "@/contracts";
+import type {
+  FilterCondition,
+  FilterExpression,
+  LookupDefinition,
+  LookupGroup,
+  SortCondition,
+} from "@/contracts";
 
 /**
  * `lookup.query.fieldRefs` is a projection of Lookup outputs only. Regular
@@ -21,13 +27,13 @@ export function buildAuthoritativeLookupViewQuery(
   normalized: Readonly<Record<string, unknown>>,
   fieldRefByName: ReadonlyMap<string, string>,
 ): {
-  filters: FilterCondition[];
+  filters: FilterExpression[];
   sorts: SortCondition[];
   groups: LookupGroup[];
 } {
   const filters = array(normalized.filters).flatMap((item) => {
-    if (!record(item) || typeof item.field !== "string" || typeof item.operator !== "string") return [];
-    return [{ ...item, field: fieldRefByName.get(item.field) ?? item.field }] as unknown as FilterCondition[];
+    const mapped = mapFilterExpression(item, fieldRefByName);
+    return mapped ? [mapped] : [];
   });
   const sorts = array(normalized.sorts).flatMap((item) => {
     if (!record(item) || typeof item.field !== "string") return [];
@@ -45,6 +51,29 @@ export function buildAuthoritativeLookupViewQuery(
     }];
   });
   return { filters, sorts, groups };
+}
+
+function mapFilterExpression(
+  value: unknown,
+  fieldRefByName: ReadonlyMap<string, string>,
+): FilterExpression | null {
+  if (!record(value)) return null;
+  if (Array.isArray(value.filters)) {
+    const filters = value.filters.flatMap((child) => {
+      const mapped = mapFilterExpression(child, fieldRefByName);
+      return mapped ? [mapped] : [];
+    });
+    if (filters.length === 0) return null;
+    return {
+      groupLogic: value.groupLogic === "OR" ? "OR" : "AND",
+      filters,
+    };
+  }
+  if (typeof value.field !== "string" || typeof value.operator !== "string") return null;
+  return {
+    ...value,
+    field: fieldRefByName.get(value.field) ?? value.field,
+  } as unknown as FilterCondition;
 }
 
 function array(value: unknown): unknown[] {

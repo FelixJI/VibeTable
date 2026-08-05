@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Threading.Channels;
+using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 using VibeTable.Infrastructure.Rpc;
 
@@ -537,6 +538,51 @@ public sealed class PocketBaseTableGatewayTests
         var formula = page.Columns.Single(column => column.Name == "doubled");
         Assert.AreEqual("integer", formula.DataType);
         Assert.IsFalse(formula.Editable);
+    }
+
+    [TestMethod]
+    public async Task ViewQueryCarriesGroupsAndParsesFullResultSummaries()
+    {
+        var transport = new ProductTransport();
+        transport.Respond("schema.getTable", Schema("orders"));
+        transport.Respond(
+            "query.view",
+            """
+            {
+              "page":{"rows":[{"id":"row-1","title":"Hello"}],
+                "offset":0,"limit":1,"filteredRows":12500,"totalRows":25000,
+                "snapshot":{"snapshotId":"00000000000000000000000000000000",
+                  "digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "databaseId":"local","table":"orders","schemaRevision":"schema_0001",
+                  "dataRevision":1,"normalizedQuery":{"offset":0,"limit":1}}},
+              "groupRows":[{"key":["east"],"count":7000,"summaries":[12345]}],
+              "groupOffset":0,"groupLimit":100,"hasMoreGroups":false
+            }
+            """);
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client),
+            new JsonRpcWorkspaceSupportGateway(client));
+
+        var page = await gateway.QueryTableViewAsync(
+            "orders",
+            0,
+            1,
+            new TableQuery(
+                Limit: 1,
+                Groups: new[] { new GroupCondition("title") },
+                Summaries: new[] { new SummaryCondition("amount", "sum") }),
+            CancellationToken.None);
+
+        Assert.AreEqual(12500, page.FilteredRows);
+        Assert.AreEqual("east", page.GroupRows![0].Key[0]);
+        Assert.AreEqual(7000L, page.GroupRows[0].Count);
+        Assert.AreEqual(12345L, page.GroupRows[0].Summaries[0]);
+        CollectionAssert.AreEqual(
+            new[] { "schema.getTable", "query.view" },
+            transport.Methods);
+        StringAssert.Contains(transport.Serialized, "\"groups\"");
+        StringAssert.Contains(transport.Serialized, "\"summaries\"");
     }
 
     private static string Schema(string table) =>

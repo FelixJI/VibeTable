@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace VibeTable.Contracts;
 
@@ -34,7 +35,26 @@ public sealed record FilterCondition(
     string Field,
     string Operator,
     object? Value = null,
-    string Logic = "AND");
+    string Logic = "AND") : FilterExpression(Field, Operator, Value, Logic);
+
+/// <summary>
+/// One predicate or recursively nested AND/OR group in the product query AST.
+/// Null branch properties are omitted so the wire shape matches the Go
+/// <c>query.FilterExpression</c> closed object without a transport discriminator.
+/// </summary>
+public record FilterExpression(
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Field = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Operator = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    object? Value = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Logic = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<FilterExpression>? Filters = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? GroupLogic = null);
 
 /// <summary>
 /// One sort condition in the typed query AST. Mirrors
@@ -45,6 +65,20 @@ public sealed record SortCondition(
     string Field,
     string Direction = "asc",
     bool NullsLast = true);
+
+public sealed record GroupCondition(
+    string Field,
+    string Direction = "asc",
+    string Bucket = "value");
+
+public sealed record SummaryCondition(
+    string Field,
+    string Function);
+
+public sealed record GroupRow(
+    IReadOnlyList<object?> Key,
+    long Count,
+    IReadOnlyList<object?> Summaries);
 
 /// <summary>
 /// The typed query AST compiled by the product table gateway. Mirrors
@@ -59,10 +93,14 @@ public sealed record SortCondition(
 /// </remarks>
 public sealed record TableQuery(
     string? Keyword = null,
-    IReadOnlyList<FilterCondition>? Filters = null,
+    IReadOnlyList<FilterExpression>? Filters = null,
     IReadOnlyList<SortCondition>? Sorts = null,
     int Offset = 0,
-    int Limit = 100);
+    int Limit = 100,
+    IReadOnlyList<GroupCondition>? Groups = null,
+    IReadOnlyList<SummaryCondition>? Summaries = null,
+    int GroupOffset = 0,
+    int GroupLimit = 100);
 
 /// <summary>
 /// A stable reference to a query view of a table. Mirrors

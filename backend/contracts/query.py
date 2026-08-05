@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -77,6 +77,13 @@ SortDirection = Literal["asc", "desc"]
 #: Logic connector between sibling filters.
 FilterLogic = Literal["AND", "OR"]
 
+#: View grouping buckets. ``value`` groups exact product values; date buckets
+#: are explicit so adapters never infer grouping semantics.
+GroupBucket = Literal["value", "year", "quarter", "month", "week", "day", "hour"]
+
+#: Supported per-group numeric summaries.
+SummaryFunction = Literal["sum", "avg", "min", "max"]
+
 
 class FilterCondition(CamelModel):
     """One filter condition in the query AST.
@@ -100,6 +107,16 @@ class FilterCondition(CamelModel):
     logic: FilterLogic = "AND"
 
 
+class FilterGroup(CamelModel):
+    """One recursively nested AND/OR filter group."""
+
+    group_logic: FilterLogic = "AND"
+    filters: list[FilterCondition | FilterGroup] = Field(min_length=1, max_length=50)
+
+
+FilterExpression = FilterCondition | FilterGroup
+
+
 class SortCondition(CamelModel):
     """One sort condition in the query AST.
 
@@ -117,6 +134,21 @@ class SortCondition(CamelModel):
     nulls_last: bool = True
 
 
+class GroupCondition(CamelModel):
+    """One ordered, read-only grouping level in a persisted view."""
+
+    field: str = Field(min_length=1, max_length=128)
+    direction: SortDirection = "asc"
+    bucket: GroupBucket = "value"
+
+
+class SummaryCondition(CamelModel):
+    """One numeric summary displayed for every group in a view."""
+
+    field: str = Field(min_length=1, max_length=128)
+    function: SummaryFunction
+
+
 class TableQuery(CamelModel):
     """The typed query AST compiled to product query parameters.
 
@@ -128,14 +160,47 @@ class TableQuery(CamelModel):
          "offset": 0, "limit": 100}
 
     * ``keyword`` is an optional full-text search term.
-    * ``filters`` is an ordered list of conditions (see :class:`FilterCondition`).
+    * ``filters`` is an ordered list of predicates or nested groups.
     * ``sorts`` is ordered; the adapter appends the collection primary key as
       a final tie-breaker.
     * ``offset`` / ``limit`` are validated page bounds.
     """
 
     keyword: str | None = Field(default=None, max_length=256)
-    filters: list[FilterCondition] = Field(default_factory=list, max_length=64)
+    filters: list[FilterExpression] = Field(default_factory=list, max_length=50)
     sorts: list[SortCondition] = Field(default_factory=list, max_length=16)
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=100, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def validate_filter_tree(self) -> TableQuery:
+        max_depth = 0
+        condition_count = 0
+
+        def walk(expression: FilterExpression, parent_depth: int) -> None:
+            nonlocal max_depth, condition_count
+            if isinstance(expression, FilterCondition):
+                condition_count += 1
+                return
+            depth = parent_depth + 1
+            max_depth = max(max_depth, depth)
+            for child in expression.filters:
+                walk(child, depth)
+
+        for expression in self.filters:
+            walk(expression, 0)
+        if max_depth > 3:
+            raise ValueError("filter group nesting cannot exceed 3 levels")
+        if condition_count > 50:
+            raise ValueError("filter tree cannot contain more than 50 conditions")
+        return self
+
+
+class ViewQuery(CamelModel):
+    """One authoritative page plus independently paged full-result groups."""
+
+    query: TableQuery = Field(default_factory=TableQuery)
+    groups: list[GroupCondition] = Field(default_factory=list, max_length=2)
+    summaries: list[SummaryCondition] = Field(default_factory=list, max_length=3)
+    group_offset: int = Field(default=0, ge=0)
+    group_limit: int = Field(default=100, ge=1, le=5000)

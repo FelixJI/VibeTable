@@ -556,7 +556,7 @@ describe("WorkspaceView", () => {
     wrapper.findComponent(GridHost).vm.$emit("viewQueryChange", {
       filters: [{ field: "status", operator: "eq", value: "signed", logic: "AND" }],
       sorts: [{ field: "contract_price", direction: "desc", nullsLast: true }],
-      groups: [{ fieldRef: "customer", direction: "asc" }],
+      groups: [{ field: "customer", direction: "asc", bucket: "value" }],
     });
     await flushPromises();
 
@@ -567,8 +567,11 @@ describe("WorkspaceView", () => {
         query: {
           filters: [{ field: "status", operator: "eq", value: "signed", logic: "AND" }],
           sorts: [{ field: "contract_price", direction: "desc", nullsLast: true }],
+          groups: [{ field: "customer", direction: "asc", bucket: "value" }],
           offset: 0,
           limit: 500,
+          groupOffset: 0,
+          groupLimit: 100,
         },
       },
     });

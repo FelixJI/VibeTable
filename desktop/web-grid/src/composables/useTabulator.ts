@@ -5,7 +5,7 @@ import { useTableStore } from "@/stores/tableStore";
 import { buildTabulatorColumns, createGrid } from "@/grid/createGrid";
 import type { CellEditedHandler, CellValidationErrorHandler, RelationLookupGridContext } from "@/grid/createGrid";
 import type { ColumnEditSchema, ColumnSchema, LookupValueProvenance, NormalizedRelationDescriptor, TablePage } from "@/contracts";
-import type { FilterCondition, LookupGroup, SortCondition } from "@/contracts";
+import type { FilterExpression, GroupCondition, SortCondition } from "@/contracts";
 import { buildQuery } from "@/grid/queryAdapter";
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import { currentLocale, t } from "@/i18n";
@@ -98,9 +98,9 @@ export interface UseTabulatorOptions {
   ) => void;
   /** User sort/filter/group intent; always executed against the full dataset. */
   readonly onViewQueryChanged?: (query: {
-    readonly filters: readonly FilterCondition[];
+    readonly filters: readonly FilterExpression[];
     readonly sorts: readonly SortCondition[];
-    readonly groups: readonly LookupGroup[];
+    readonly groups: readonly GroupCondition[];
   }) => void;
   /**
    * Optional EXTERNAL ref to populate with the Tabulator instance. When
@@ -187,7 +187,7 @@ export function useTabulator(
   let applyingColumns: Promise<void> | null = null;
   let queuedRows: ReadonlyArray<Record<string, unknown>> | null = null;
   let applyingRows: Promise<void> | null = null;
-  let activeGroups: LookupGroup[] = [];
+  let activeGroups: GroupCondition[] = [];
   let lastViewQuerySignature = "";
   let gridReady = false;
   let gridOperationsReady = false;
@@ -574,7 +574,7 @@ function refreshLocalizedPlaceholder(
   if (contents) contents.textContent = copy;
 }
 
-function collectGroupFields(raw: unknown): LookupGroup[] {
+function collectGroupFields(raw: unknown): GroupCondition[] {
   if (!Array.isArray(raw)) return [];
   const fields = new Set<string>();
   const visit = (groups: unknown[]): void => {
@@ -587,5 +587,5 @@ function collectGroupFields(raw: unknown): LookupGroup[] {
     }
   };
   visit(raw);
-  return [...fields].map((fieldRef) => ({ fieldRef, direction: "asc" }));
+  return [...fields].map((field) => ({ field, direction: "asc", bucket: "value" }));
 }

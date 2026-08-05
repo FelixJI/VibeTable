@@ -294,6 +294,54 @@ type AggregateResult struct {
 	Rows []map[string]any `json:"rows"`
 }
 
+type GroupBucket string
+
+const (
+	GroupBucketValue   GroupBucket = "value"
+	GroupBucketYear    GroupBucket = "year"
+	GroupBucketQuarter GroupBucket = "quarter"
+	GroupBucketMonth   GroupBucket = "month"
+	GroupBucketWeek    GroupBucket = "week"
+	GroupBucketDay     GroupBucket = "day"
+	GroupBucketHour    GroupBucket = "hour"
+)
+
+type GroupSpec struct {
+	Field     string        `json:"field"`
+	Direction SortDirection `json:"direction,omitempty"`
+	Bucket    GroupBucket   `json:"bucket,omitempty"`
+}
+
+type SummarySpec struct {
+	Field    string            `json:"field"`
+	Function AggregateFunction `json:"function"`
+}
+
+// ViewQuery is the single authoritative read model used by every product
+// layout. Record and group pagination are independent; summaries always use
+// the complete filtered result rather than the current record page.
+type ViewQuery struct {
+	Query       TableQuery    `json:"query"`
+	Groups      []GroupSpec   `json:"groups,omitempty"`
+	Summaries   []SummarySpec `json:"summaries,omitempty"`
+	GroupOffset int           `json:"groupOffset,omitempty"`
+	GroupLimit  int           `json:"groupLimit,omitempty"`
+}
+
+type GroupRow struct {
+	Key       []any `json:"key"`
+	Count     int64 `json:"count"`
+	Summaries []any `json:"summaries"`
+}
+
+type ViewResult struct {
+	Page          Page       `json:"page"`
+	GroupRows     []GroupRow `json:"groupRows"`
+	GroupOffset   int        `json:"groupOffset"`
+	GroupLimit    int        `json:"groupLimit"`
+	HasMoreGroups bool       `json:"hasMoreGroups"`
+}
+
 type ProductError struct {
 	Code      string         `json:"code"`
 	Path      string         `json:"path"`

@@ -74,6 +74,28 @@ describe("dataSourceViewState", () => {
     expect(setHeaderFilterValue).toHaveBeenCalledWith("name", "A");
   });
 
+  it("does not flatten an advanced filter group into incorrect header filters", async () => {
+    const setHeaderFilterValue = vi.fn();
+    await applyDataSourceView({
+      getColumns: () => [{ getField: () => "status" }, { getField: () => "priority" }],
+      setHeaderFilterValue,
+    }, {
+      layout: "table",
+      search: "",
+      visibleFields: ["status", "priority"],
+      sorts: [],
+      filters: [{
+        groupLogic: "OR",
+        filters: [
+          { field: "status", operator: "eq", value: "open" },
+          { field: "priority", operator: "eq", value: "urgent" },
+        ],
+      }],
+    });
+
+    expect(setHeaderFilterValue).not.toHaveBeenCalled();
+  });
+
   it("adapts legacy visibleFields and ignores removed fields", async () => {
     const setColumnLayout = vi.fn();
     const setSort = vi.fn();

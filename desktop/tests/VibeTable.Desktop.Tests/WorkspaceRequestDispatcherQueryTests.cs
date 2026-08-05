@@ -49,8 +49,17 @@ public sealed class WorkspaceRequestDispatcherQueryTests
                 "sorts": [
                   {"field": "payload", "direction": "desc", "nullsLast": false}
                 ],
+                "groups": [
+                  {"field": "status", "direction": "asc"},
+                  {"field": "created", "direction": "desc", "bucket": "month"}
+                ],
+                "summaries": [
+                  {"field": "amount", "function": "sum"}
+                ],
                 "offset": 25,
                 "limit": 500,
+                "groupOffset": 100,
+                "groupLimit": 50,
                 "ignored": "not-forwarded"
               }
             }
@@ -81,6 +90,13 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         Assert.AreEqual("payload", query.Sorts![0].Field);
         Assert.AreEqual("desc", query.Sorts[0].Direction);
         Assert.IsFalse(query.Sorts[0].NullsLast);
+        Assert.AreEqual(2, query.Groups?.Count);
+        Assert.AreEqual("created", query.Groups![1].Field);
+        Assert.AreEqual("month", query.Groups[1].Bucket);
+        Assert.AreEqual(1, query.Summaries?.Count);
+        Assert.AreEqual("sum", query.Summaries![0].Function);
+        Assert.AreEqual(100, query.GroupOffset);
+        Assert.AreEqual(50, query.GroupLimit);
     }
 
     [TestMethod]
@@ -113,6 +129,47 @@ public sealed class WorkspaceRequestDispatcherQueryTests
 
         var query = gateway.QueryTablePageQueries.Single();
         Assert.AreEqual(0, query.Filters?.Count);
+    }
+
+    [TestMethod]
+    public async Task TableQuery_ForwardsNestedFilterGroupsWithoutFlatteningThem()
+    {
+        var gateway = new FakeTableRpcGateway();
+        var coordinator = new GridStateCoordinator(gateway, _ => { });
+        var dispatcher = new WorkspaceRequestDispatcher(
+            new TableWorkspaceService(gateway),
+            new FakeDatabasePicker("local://configured"),
+            new FakeWebReplySink(),
+            coordinator);
+        using var document = JsonDocument.Parse("""
+            {
+              "table": "records",
+              "query": {
+                "filters": [
+                  {
+                    "groupLogic": "OR",
+                    "filters": [
+                      {"field": "status", "operator": "eq", "value": "open"},
+                      {"field": "priority", "operator": "eq", "value": "urgent"}
+                    ]
+                  }
+                ]
+              }
+            }
+            """);
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "table.queryRequested",
+            "query-nested",
+            document.RootElement.Clone(),
+            string.Empty));
+        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 150);
+
+        var group = gateway.QueryTablePageQueries.Single().Filters!.Single();
+        Assert.AreEqual("OR", group.GroupLogic);
+        Assert.AreEqual(2, group.Filters!.Count);
+        Assert.AreEqual("status", group.Filters[0].Field);
+        Assert.AreEqual("priority", group.Filters[1].Field);
     }
 
     [TestMethod]
