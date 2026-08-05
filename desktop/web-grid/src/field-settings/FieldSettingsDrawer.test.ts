@@ -49,7 +49,9 @@ function definition(type: LogicalTypeV2 = "number"): FieldDefinitionV2 {
   if (type === "json") field.json = { rootType: "object", maxSize: 8192, schema: {} };
   if (type === "autoDate") field.autoDate = { role: "createdAt" };
   if (type === "formula") field.formula = { language: "cel-v1", source: "record.price * 2", resultType: "number" };
-  if (type === "lookup") field.lookup = { relationFieldId: "fld_customer", targetFieldId: "fld_name", aggregate: "first", resultType: "text" };
+  if (type === "lookup") field.lookup = {
+    path: [{ relationFieldId: "fld_customer" }], targetFieldId: "fld_name",
+  };
   return field as unknown as FieldDefinitionV2;
 }
 
@@ -200,21 +202,17 @@ describe("FieldSettingsDrawer", () => {
     if (type === "lookup") {
       expect(wrapper.get('[data-testid="lookup-editor-entry"]').text())
         .toContain("查找引用编辑器");
-      expect(wrapper.find('[data-testid="lookup-relation-field"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="lookup-relation-step-0"]').exists()).toBe(false);
       expect(wrapper.find('[data-testid="field-default-enabled"]').exists()).toBe(false);
       expect(wrapper.text()).not.toContain("恢复当前类型推荐值");
       wrapper.findComponent(LookupFieldEditor).vm.$emit("commit", {
-        relationFieldId: "fld_account",
+        path: [{ relationFieldId: "fld_account" }],
         targetFieldId: "fld_balance",
-        aggregate: "sum",
-        resultType: "number",
       });
       await wrapper.vm.$nextTick();
       expect(store.draft?.lookup).toMatchObject({
-        relationFieldId: "fld_account",
+        path: [{ relationFieldId: "fld_account" }],
         targetFieldId: "fld_balance",
-        aggregate: "sum",
-        resultType: "number",
       });
     }
   });

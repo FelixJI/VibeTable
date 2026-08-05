@@ -234,7 +234,7 @@ describe("field settings model", () => {
       language: "cel-v1", source: "", resultType: "text",
     });
     expect(draftFromCapability(lookup, "客户名称").lookup).toEqual({
-      relationFieldId: "", targetFieldId: "", aggregate: "first", resultType: "text",
+      path: [{ relationFieldId: "" }], targetFieldId: "",
     });
   });
 

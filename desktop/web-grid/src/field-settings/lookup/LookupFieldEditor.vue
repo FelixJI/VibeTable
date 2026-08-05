@@ -1,62 +1,95 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { NButton, NInput, NSelect, NTag } from "naive-ui";
-import { ArrowRight, ChevronLeft, GitBranch, PencilLine } from "lucide-vue-next";
-import type { FieldDraftV2, LogicalTypeV2 } from "@/contracts";
+import { NAlert, NButton, NSelect, NTag } from "naive-ui";
+import type { SelectOption } from "naive-ui";
+import { ArrowRight, ChevronLeft, GitBranch, Minus, PencilLine, Plus } from "lucide-vue-next";
+import type { FieldDraftV2 } from "@/contracts";
 
 type LookupDefinition = NonNullable<FieldDraftV2["lookup"]>;
 
-const props = defineProps<{ value: LookupDefinition }>();
-const emit = defineEmits<{ commit: [value: LookupDefinition] }>();
+interface LookupOption extends SelectOption {
+  readonly label: string;
+  readonly value: string;
+  readonly many?: boolean;
+}
+
+const props = defineProps<{
+  value: LookupDefinition;
+  relationOptions: LookupOption[][];
+  targetFieldOptions: LookupOption[];
+  loading?: boolean;
+  error?: string | null;
+}>();
+const emit = defineEmits<{
+  commit: [value: LookupDefinition];
+  pathChange: [path: LookupDefinition["path"]];
+}>();
 
 const editing = ref(false);
-const working = ref<LookupDefinition>({ ...props.value });
-const aggregateOptions = [
-  "none", "first", "distinct", "count", "sum", "avg", "min", "max",
-].map(value => ({ label: value, value }));
-const resultTypeOptions: {
-  label: string;
-  value: LogicalTypeV2;
-}[] = [
-  { label: "单行文本", value: "text" },
-  { label: "数字", value: "number" },
-  { label: "勾选", value: "bool" },
-  { label: "日期", value: "date" },
-  { label: "日期时间", value: "dateTime" },
-  { label: "时间", value: "time" },
-  { label: "JSON", value: "json" },
-];
+const working = ref<LookupDefinition>(cloneLookup(props.value));
 const canCommit = computed(() =>
-  working.value.relationFieldId.trim().length > 0
+  working.value.path.length > 0
+  && working.value.path.length <= 8
+  && working.value.path.every(step => step.relationFieldId.length > 0)
   && working.value.targetFieldId.trim().length > 0);
+const producesList = computed(() => working.value.path.some((step, index) =>
+  props.relationOptions[index]?.find(option => option.value === step.relationFieldId)?.many));
+const targetFieldLabel = computed(() => props.targetFieldOptions.find(
+  option => option.value === props.value.targetFieldId,
+)?.label ?? "目标字段");
 
 watch(
   () => props.value,
   (value) => {
-    if (!editing.value) working.value = { ...value };
+    if (!editing.value) working.value = cloneLookup(value);
   },
   { deep: true },
 );
 
 function beginEditing(): void {
-  working.value = { ...props.value };
+  working.value = cloneLookup(props.value);
   editing.value = true;
 }
 
 function cancel(): void {
-  working.value = { ...props.value };
+  working.value = cloneLookup(props.value);
   editing.value = false;
 }
 
 function commit(): void {
   if (!canCommit.value) return;
   emit("commit", {
-    relationFieldId: working.value.relationFieldId.trim(),
+    path: working.value.path.map(step => ({ relationFieldId: step.relationFieldId })),
     targetFieldId: working.value.targetFieldId.trim(),
-    aggregate: working.value.aggregate,
-    resultType: working.value.resultType,
   });
   editing.value = false;
+}
+
+function selectStep(index: number, relationFieldId: string): void {
+  const path = working.value.path.slice(0, index + 1).map(step => ({ ...step }));
+  path[index] = { relationFieldId };
+  working.value = { path, targetFieldId: "" };
+  emit("pathChange", path);
+}
+
+function addStep(): void {
+  if (working.value.path.length >= 8) return;
+  const path = [...working.value.path, { relationFieldId: "" }];
+  working.value = { path, targetFieldId: "" };
+}
+
+function removeStep(): void {
+  if (working.value.path.length <= 1) return;
+  const path = working.value.path.slice(0, -1);
+  working.value = { path, targetFieldId: "" };
+  emit("pathChange", path);
+}
+
+function cloneLookup(value: LookupDefinition): LookupDefinition {
+  return {
+    path: value.path.map(step => ({ ...step })),
+    targetFieldId: value.targetFieldId,
+  };
 }
 </script>
 
@@ -69,12 +102,14 @@ function commit(): void {
           <span class="eyebrow">LOOKUP MODULE</span>
           <strong>引用路径</strong>
           <small class="path-summary">
-            <code>{{ value.relationFieldId || "关系字段" }}</code>
-            <ArrowRight :size="12" />
-            <code>{{ value.targetFieldId || "目标字段" }}</code>
+            <template v-for="(step, index) in value.path" :key="index">
+              <code>{{ relationOptions[index]?.find(option => option.value === step.relationFieldId)?.label || "关系字段" }}</code>
+              <ArrowRight :size="12" />
+            </template>
+            <code>{{ targetFieldLabel }}</code>
           </small>
         </div>
-        <NTag size="small" :bordered="false">{{ value.aggregate }} · {{ value.resultType }}</NTag>
+        <NTag size="small" :bordered="false">自动类型</NTag>
       </div>
       <NButton secondary data-testid="lookup-editor-entry" @click="beginEditing">
         <PencilLine :size="15" />
@@ -90,52 +125,44 @@ function commit(): void {
         </NButton>
         <NTag size="small" :bordered="false">结构化路径</NTag>
       </div>
-      <div class="path-grid">
-        <label>
-          <span>关系字段 ID</span>
-          <NInput
-            :value="working.relationFieldId"
-            placeholder="fld_customer"
-            data-testid="lookup-relation-field"
-            @update:value="working = { ...working, relationFieldId: $event }"
+      <NAlert v-if="error" type="error" :show-icon="false">{{ error }}</NAlert>
+      <div class="lookup-path">
+        <label v-for="(step, index) in working.path" :key="index">
+          <span>第 {{ index + 1 }} 跳关系</span>
+          <NSelect
+            :value="step.relationFieldId || null"
+            :options="relationOptions[index] ?? []"
+            :loading="loading"
+            :placeholder="`选择第 ${index + 1} 跳关系`"
+            :data-testid="`lookup-relation-step-${index}`"
+            @update:value="selectStep(index, String($event))"
           />
         </label>
-        <span class="path-arrow"><ArrowRight :size="16" /></span>
         <label>
-          <span>目标字段 ID</span>
-          <NInput
-            :value="working.targetFieldId"
-            placeholder="fld_name"
+          <span>引用目标字段</span>
+          <NSelect
+            :value="working.targetFieldId || null"
+            :options="targetFieldOptions"
+            :loading="loading"
+            placeholder="选择目标字段"
             data-testid="lookup-target-field"
-            @update:value="working = { ...working, targetFieldId: $event }"
+            @update:value="working = { ...working, targetFieldId: String($event) }"
           />
         </label>
       </div>
-      <div class="two-column">
-        <label>
-          <span>聚合</span>
-          <NSelect
-            :value="working.aggregate"
-            :options="aggregateOptions"
-            data-testid="lookup-aggregate"
-            @update:value="working = { ...working, aggregate: $event }"
-          />
-        </label>
-        <label>
-          <span>结果类型</span>
-          <NSelect
-            :value="working.resultType"
-            :options="resultTypeOptions"
-            data-testid="lookup-result-type"
-            @update:value="working = {
-              ...working,
-              resultType: $event as LogicalTypeV2,
-            }"
-          />
-        </label>
+      <div class="path-actions">
+        <NButton size="small" secondary :disabled="working.path.length >= 8" @click="addStep">
+          <Plus :size="14" />继续关联
+        </NButton>
+        <NButton size="small" quaternary :disabled="working.path.length <= 1" @click="removeStep">
+          <Minus :size="14" />移除末跳
+        </NButton>
+        <NTag size="small" :bordered="false">
+          {{ producesList ? "多值 · 类型化列表" : "单值 · 自动类型" }}
+        </NTag>
       </div>
       <div class="editor-actions">
-        <small>确认后写回同一份 Schema v2 字段草稿。</small>
+        <small>最多 8 跳；类型和单值/列表形状由路径自动推导，不在 Lookup 内聚合。</small>
         <NButton
           type="primary"
           :disabled="!canCommit"
@@ -160,7 +187,7 @@ function commit(): void {
     linear-gradient(135deg, color-mix(in srgb, #0ea5e9 7%, transparent), transparent 55%),
     var(--vt-bg-elevated);
 }
-.editor-summary,.editor-heading,.editor-actions,.path-summary {
+.editor-summary,.editor-heading,.editor-actions,.path-summary,.path-actions {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -182,14 +209,8 @@ function commit(): void {
   background: color-mix(in srgb, #0ea5e9 12%, var(--vt-bg-subtle));
 }
 .editor-heading,.editor-actions { justify-content: space-between; }
-.path-grid {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: end;
-  gap: 10px;
-}
-.path-arrow { padding-bottom: 10px; color: var(--vt-fg-muted); }
-.two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.lookup-path { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.path-actions { flex-wrap: wrap; }
 label {
   display: flex;
   flex-direction: column;
@@ -212,7 +233,6 @@ label {
 }
 small { color: var(--vt-fg-muted); }
 @media(max-width:720px) {
-  .path-grid,.two-column { grid-template-columns: 1fr; }
-  .path-arrow { display: none; }
+  .lookup-path { grid-template-columns: 1fr; }
 }
 </style>

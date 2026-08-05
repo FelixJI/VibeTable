@@ -172,10 +172,8 @@ export interface FieldDefinitionV2 {
     readonly resultType: LogicalTypeV2;
   };
   readonly lookup?: {
-    readonly relationFieldId: string;
+    readonly path: readonly { readonly relationFieldId: string }[];
     readonly targetFieldId: string;
-    readonly aggregate: "none" | "first" | "distinct" | "count" | "sum" | "avg" | "min" | "max";
-    readonly resultType: LogicalTypeV2;
   };
 }
 
@@ -743,19 +741,14 @@ function validateOptionalFieldSpecs(field: Readonly<Record<string, unknown>>): v
     );
   }
   if (field.lookup !== undefined) {
-    const lookup = exactObject(field.lookup, "$.lookup", [
-      "relationFieldId", "targetFieldId", "aggregate", "resultType",
-    ]);
-    expectString(lookup.relationFieldId, "$.lookup.relationFieldId");
+    const lookup = exactObject(field.lookup, "$.lookup", ["path", "targetFieldId"]);
+    const path = expectArray(lookup.path, "$.lookup.path");
+    if (path.length < 1 || path.length > 8) fail("$.lookup.path", "expected one to eight steps");
+    path.forEach((item, index) => {
+      const step = exactObject(item, `$.lookup.path[${index}]`, ["relationFieldId"]);
+      expectString(step.relationFieldId, `$.lookup.path[${index}].relationFieldId`);
+    });
     expectString(lookup.targetFieldId, "$.lookup.targetFieldId");
-    expectEnum(lookup.aggregate, "$.lookup.aggregate", [
-      "none", "first", "distinct", "count", "sum", "avg", "min", "max",
-    ]);
-    expectEnum(
-      lookup.resultType,
-      "$.lookup.resultType",
-      SCHEMA_V2_LOGICAL_TYPES,
-    );
   }
 }
 

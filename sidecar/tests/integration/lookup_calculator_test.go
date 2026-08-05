@@ -143,6 +143,17 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 	if err != nil || record.GetString("author_name") != "Ada" {
 		t.Fatalf("stored lookup = %#v, err=%v", record, err)
 	}
+	cells, err := lookup.NewCalculator().CalculateCells(ctx, app, articles, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cell := cells["author_name"]
+	if cell.State != "ok" || cell.Value != "Ada" || len(cell.Provenance) != 1 ||
+		cell.Provenance[0].Collection != authors.TableID ||
+		cell.Provenance[0].ItemID != authorID ||
+		cell.Provenance[0].Value != "Ada" {
+		t.Fatalf("lookup provenance = %#v", cell)
+	}
 
 	querySource, err := queryschema.New(app.DataDir())
 	if err != nil {
@@ -182,6 +193,18 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 	if err != nil || len(createdSearch.Items) != 1 ||
 		createdSearch.Items[0].RecordID != createdTarget.Target.RecordID {
 		t.Fatalf("created target search = %#v, err=%v", createdSearch, err)
+	}
+	lookupPage, err := relationService.QueryLookups(ctx, relation.LookupQueryRequest{
+		TableID: "articles", SchemaRevision: articles.SchemaRevision,
+		Query: query.TableQuery{Limit: 100},
+	})
+	if err != nil || len(lookupPage.Rows) != 1 {
+		t.Fatalf("lookup query = %#v, err=%v", lookupPage, err)
+	}
+	queryCell, ok := lookupPage.Rows[0]["author_name"].(lookup.CellValue)
+	if !ok || queryCell.Value != "Ada" || len(queryCell.Provenance) != 1 ||
+		queryCell.Provenance[0].ItemID != authorID {
+		t.Fatalf("lookup query cell = %#v", lookupPage.Rows[0]["author_name"])
 	}
 	delta := relation.DeltaRequest{
 		RelationID:     "articles.author_id",

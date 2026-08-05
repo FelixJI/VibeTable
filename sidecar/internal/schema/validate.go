@@ -546,6 +546,9 @@ func validateConstraints(
 		if len(path) == 0 {
 			return productError("schema.field.invalid_lookup", prefix+".lookup.path", "lookup path must contain at least one relation", nil)
 		}
+		if len(path) > 8 {
+			return productError("schema.field.invalid_lookup", prefix+".lookup.path", "lookup path supports at most eight relations", nil)
+		}
 		if field.Lookup.RelationFieldID != path[0].RelationFieldID {
 			return productError("schema.field.invalid_lookup", prefix+".lookup.relationFieldId", "lookup relationFieldId must match the first path step", nil)
 		}

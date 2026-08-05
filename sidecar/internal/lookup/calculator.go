@@ -16,12 +16,24 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 )
 
-const maxRelatedRecords = 1000
+const maxRelatedRecords = 100000
 
 type Calculator struct{}
 
 func NewCalculator() *Calculator {
 	return &Calculator{}
+}
+
+type ValueProvenance struct {
+	Collection string `json:"collection"`
+	ItemID     string `json:"itemId"`
+	Value      any    `json:"value"`
+}
+
+type CellValue struct {
+	State      string            `json:"state"`
+	Value      any               `json:"value"`
+	Provenance []ValueProvenance `json:"provenance"`
 }
 
 func (calculator *Calculator) Calculate(
@@ -30,26 +42,55 @@ func (calculator *Calculator) Calculate(
 	definition schema.TableDefinition,
 	record *core.Record,
 ) (map[string]any, error) {
+	cells, err := calculator.CalculateCells(ctx, app, definition, record)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]any, len(cells))
+	for physicalName, cell := range cells {
+		result[physicalName] = cell.Value
+	}
+	return result, nil
+}
+
+func (calculator *Calculator) CalculateCells(
+	ctx context.Context,
+	app core.App,
+	definition schema.TableDefinition,
+	record *core.Record,
+) (map[string]CellValue, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	budget := &fanoutBudget{remaining: maxRelatedRecords}
-	result := map[string]any{}
+	result := map[string]CellValue{}
 	for _, field := range definition.Fields {
 		if field.Kind != schema.FieldKindLookup || field.Lookup == nil {
 			continue
 		}
-		values, err := lookupPathValues(
+		resolved, err := lookupPathValues(
 			ctx, app, definition, record, field, budget,
 		)
 		if err != nil {
 			return nil, err
 		}
+		values := make([]any, 0, len(resolved))
+		provenance := make([]ValueProvenance, 0, len(resolved))
+		for _, item := range resolved {
+			values = append(values, item.value)
+			provenance = append(provenance, ValueProvenance{
+				Collection: item.collection,
+				ItemID:     item.itemID,
+				Value:      item.value,
+			})
+		}
 		value, err := aggregate(field.Lookup.Aggregate, field.StorageType, values)
 		if err != nil {
 			return nil, err
 		}
-		result[field.PhysicalName] = value
+		result[field.PhysicalName] = CellValue{
+			State: "ok", Value: value, Provenance: provenance,
+		}
 	}
 	return result, nil
 }
@@ -79,6 +120,12 @@ type junctionNode struct {
 	record     *core.Record
 }
 
+type lookupPathValue struct {
+	collection string
+	itemID     string
+	value      any
+}
+
 func lookupPathValues(
 	ctx context.Context,
 	app core.App,
@@ -86,7 +133,7 @@ func lookupPathValues(
 	record *core.Record,
 	lookupField schema.FieldDefinition,
 	budget *fanoutBudget,
-) ([]any, error) {
+) ([]lookupPathValue, error) {
 	path := lookupField.Lookup.EffectivePath()
 	if len(path) == 0 {
 		return nil, lookupError(
@@ -114,7 +161,7 @@ func lookupPathValues(
 		}
 	}
 	if lookupField.Lookup.JunctionFieldID != "" {
-		values := make([]any, 0, len(junctions))
+		values := make([]lookupPathValue, 0, len(junctions))
 		for _, junction := range junctions {
 			field, found := fieldByID(
 				junction.definition,
@@ -131,11 +178,15 @@ func lookupPathValues(
 				field.DataType == schema.DataTypeMultiSelect {
 				value = schema.DecodeSelectValueFromStorage(field, value)
 			}
-			values = append(values, value)
+			values = append(values, lookupPathValue{
+				collection: junction.definition.TableID,
+				itemID:     junction.record.Id,
+				value:      value,
+			})
 		}
 		return values, nil
 	}
-	values := make([]any, 0, len(nodes))
+	values := make([]lookupPathValue, 0, len(nodes))
 	for _, node := range nodes {
 		fieldID := lookupField.Lookup.TargetFieldID
 		if len(lookupField.Lookup.TargetFieldIDs) != 0 {
@@ -153,7 +204,11 @@ func lookupPathValues(
 			targetField.DataType == schema.DataTypeMultiSelect {
 			value = schema.DecodeSelectValueFromStorage(targetField, value)
 		}
-		values = append(values, value)
+		values = append(values, lookupPathValue{
+			collection: node.definition.TableID,
+			itemID:     node.record.Id,
+			value:      value,
+		})
 	}
 	return values, nil
 }

@@ -318,6 +318,100 @@ describe("field settings service", () => {
     ]);
   });
 
+  it("resolves an eight-hop-capable Lookup catalog by display metadata without mutating the draft", async () => {
+    const base = fixture<CapabilityV2>("capability.json");
+    const lookupCapability: CapabilityV2 = {
+      ...base,
+      logicalType: "lookup",
+      userCreatable: true,
+      advancedSettings: ["path", "targetField"],
+    };
+    const described: FieldSettingsDescribeResultV2 = {
+      ...describeResult(false), capabilities: [lookupCapability],
+    };
+    const schema = (
+      collection: string,
+      relation?: { fieldId: string; title: string; target: string },
+      scalar?: { fieldId: string; title: string },
+    ) => ({
+      contract: "vibetable.schema-describe.v1",
+      collection,
+      requestGeneration: 0,
+      schema: {
+        collection,
+        primaryKey: "id",
+        primaryDisplayFieldId: scalar?.fieldId ?? "",
+        columns: [
+          ...(relation ? [{
+            name: `f_${relation.fieldId}`, title: relation.title,
+            fieldId: relation.fieldId, kind: "relation" as const,
+            dataType: "relation" as const, editable: true, nullable: true,
+            relationId: `${collection}.${relation.fieldId}`,
+          }] : []),
+          ...(scalar ? [{
+            name: `f_${scalar.fieldId}`, title: scalar.title,
+            fieldId: scalar.fieldId, kind: "scalar" as const,
+            dataType: "text" as const, editable: true, nullable: true,
+          }] : []),
+        ],
+        normalizedRelations: relation ? [{
+          relationId: `${collection}.${relation.fieldId}`,
+          kind: "m2o" as const,
+          relatedCollection: relation.target,
+          relatedCollectionDisplayName: relation.target,
+          junction: null,
+        }] : [],
+        schemaRevision: "schema_2", permissionRevision: "schema_2",
+        capabilityHash: "cap", lookupRevision: "lookup",
+      },
+      capabilities: {
+        contract: "vibetable.relation-capabilities.v1",
+        relationReadV1: true, relationEditV1: true, lookupQueryV1: true, reason: null,
+      },
+    });
+    const orders = schema("tbl_opaque", {
+      fieldId: "fld_customer", title: "客户", target: "tbl_customers",
+    });
+    const customers = schema("tbl_customers", {
+      fieldId: "fld_region", title: "区域", target: "tbl_regions",
+    });
+    const regions = schema("tbl_regions", undefined, {
+      fieldId: "fld_region_name", title: "区域名称",
+    });
+    request
+      .mockResolvedValueOnce(described)
+      .mockResolvedValueOnce(orders)
+      .mockResolvedValueOnce(customers)
+      .mockResolvedValueOnce(regions)
+      .mockResolvedValueOnce(orders)
+      .mockResolvedValueOnce(customers);
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+
+    await service.openCreate("tbl_opaque", "lookup");
+    store.patchDraft({
+      lookup: {
+        path: [
+          { relationFieldId: "fld_customer" },
+          { relationFieldId: "fld_region" },
+        ],
+        targetFieldId: "fld_region_name",
+      },
+    });
+    await service.loadLookupCatalog();
+
+    expect(store.lookupSchemas.map(item => item.collection)).toEqual([
+      "tbl_opaque", "tbl_customers", "tbl_regions",
+    ]);
+    const originalLookup = JSON.parse(JSON.stringify(store.draft?.lookup)) as unknown;
+    await service.resolveLookupPath([{ relationFieldId: "fld_customer" }]);
+    expect(store.draft?.lookup).toEqual(originalLookup);
+    expect(store.lookupSchemas.map(item => item.collection)).toEqual([
+      "tbl_opaque", "tbl_customers",
+    ]);
+    expect(JSON.stringify(store.lookupSchemas)).not.toContain("tbl_regions.fld_region_name");
+  });
+
   it("surfaces typed same-operation field errors without mis-parsing them as results", async () => {
     request
       .mockResolvedValueOnce(describeResult(true))

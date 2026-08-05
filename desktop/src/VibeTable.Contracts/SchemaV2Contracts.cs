@@ -156,6 +156,14 @@ public static class SchemaV2Contract
                 return false;
             }
         }
+        if (field.Lookup is not null
+            && (field.Lookup.Path.Count is < 1 or > 8
+                || field.Lookup.Path.Any(step => string.IsNullOrWhiteSpace(step.RelationFieldId))
+                || string.IsNullOrWhiteSpace(field.Lookup.TargetFieldId)))
+        {
+            reason = "Lookup requires one to eight relation path steps and a target field";
+            return false;
+        }
         return true;
     }
 }
@@ -266,10 +274,10 @@ public sealed record FieldFormulaV2(
     string ResultType);
 
 public sealed record FieldLookupV2(
-    string RelationFieldId,
-    string TargetFieldId,
-    string Aggregate,
-    string ResultType);
+    IReadOnlyList<FieldLookupPathStepV2> Path,
+    string TargetFieldId);
+
+public sealed record FieldLookupPathStepV2(string RelationFieldId);
 
 public sealed record FieldDefinitionV2(
     string Contract,

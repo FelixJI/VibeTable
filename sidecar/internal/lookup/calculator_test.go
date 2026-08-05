@@ -83,3 +83,13 @@ func TestFanoutBudgetIsSharedAcrossPathHops(t *testing.T) {
 		t.Fatalf("remaining budget = %d", budget.remaining)
 	}
 }
+
+func TestFanoutBudgetSupportsInventoryScaleRelations(t *testing.T) {
+	budget := &fanoutBudget{remaining: maxRelatedRecords}
+	if err := budget.consume(10_001); err != nil {
+		t.Fatalf("10,001 related inventory records must fit the resource budget: %v", err)
+	}
+	if budget.remaining != maxRelatedRecords-10_001 {
+		t.Fatalf("remaining budget = %d", budget.remaining)
+	}
+}

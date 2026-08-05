@@ -870,10 +870,15 @@ func toLegacyField(definition v2.FieldDefinition) schema.FieldDefinition {
 		}
 	}
 	if definition.Lookup != nil {
+		path := make([]schema.LookupPathStep, 0, len(definition.Lookup.Path))
+		for _, step := range definition.Lookup.Path {
+			path = append(path, schema.LookupPathStep{RelationFieldID: step.RelationFieldID})
+		}
 		field.Lookup = &schema.LookupSpec{
-			RelationFieldID: definition.Lookup.RelationFieldID,
+			RelationFieldID: path[0].RelationFieldID,
+			Path:            path,
 			TargetFieldID:   definition.Lookup.TargetFieldID,
-			Aggregate:       definition.Lookup.Aggregate,
+			Aggregate:       "none",
 		}
 	}
 	if definition.File != nil {

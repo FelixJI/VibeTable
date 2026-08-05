@@ -228,6 +228,52 @@ func TestValidateRejectsUnsupportedUniqueAndUnstableSelectOptions(t *testing.T) 
 	}
 }
 
+func TestLookupUsesOneToEightRelationStepsAndRejectsLegacyAggregateSettings(t *testing.T) {
+	t.Parallel()
+	definition := validNumberDefinition()
+	recommended, err := v2.RecommendedDefaults(v2.LogicalLookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition.LogicalType = v2.LogicalLookup
+	definition.Value = recommended.Value
+	definition.Constraints = recommended.Constraints
+	definition.Storage = recommended.Storage
+	definition.Display = recommended.Display
+	definition.Lookup = &v2.LookupSpec{TargetFieldID: "fld_target"}
+	for index := 0; index < 8; index++ {
+		definition.Lookup.Path = append(definition.Lookup.Path, v2.LookupPathStep{
+			RelationFieldID: "fld_relation_" + string(rune('a'+index)),
+		})
+	}
+	if err := v2.Validate(definition); err != nil {
+		t.Fatalf("eight-hop Lookup was rejected: %v", err)
+	}
+	definition.Lookup.Path = append(definition.Lookup.Path, v2.LookupPathStep{
+		RelationFieldID: "fld_relation_ninth",
+	})
+	var productErr *v2.ProductError
+	if err := v2.Validate(definition); !errors.As(err, &productErr) ||
+		productErr.Path != "lookup" {
+		t.Fatalf("expected stable path limit error, got %#v", err)
+	}
+
+	raw, err := json.Marshal(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil {
+		t.Fatal(err)
+	}
+	object["lookup"].(map[string]any)["aggregate"] = "sum"
+	raw, _ = json.Marshal(object)
+	var decoded v2.FieldDefinition
+	if err := v2.StrictDecode(raw, &decoded); err == nil {
+		t.Fatal("legacy Lookup aggregate setting was accepted")
+	}
+}
+
 func validNumberDefinition() v2.FieldDefinition {
 	identity := v2.FieldIdentity{
 		FieldID: "fld_01JABCDE", PhysicalName: "f_01jabcde", ProviderFieldID: "pb_01JABCDE",

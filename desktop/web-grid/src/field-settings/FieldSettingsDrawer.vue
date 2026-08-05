@@ -37,6 +37,8 @@ const emit = defineEmits<{
   restore: [fieldId: string];
   loadRelationCatalog: [];
   selectRelationTarget: [tableId: string];
+  loadLookupCatalog: [];
+  resolveLookupPath: [path: readonly { readonly relationFieldId: string }[]];
 }>();
 
 const store = useFieldSettingsStore();
@@ -60,6 +62,10 @@ watch(
     if (open && logicalType === "relation"
       && (previous?.[0] !== open || previous?.[1] !== logicalType)) {
       emit("loadRelationCatalog");
+    }
+    if (open && logicalType === "lookup"
+      && (previous?.[0] !== open || previous?.[1] !== logicalType)) {
+      emit("loadLookupCatalog");
     }
   },
 );
@@ -123,6 +129,23 @@ const relationSourceFieldOptions = computed(() => (store.relationSourceSchema?.c
 const relationTargetFieldOptions = computed(() => (store.relationTargetSchema?.columns ?? [])
   .filter(column => column.fieldId && column.kind !== "system" && column.kind !== "relation")
   .map(column => ({ label: column.title, value: column.fieldId! })));
+const lookupRelationOptions = computed(() => store.lookupSchemas.map(schema => schema.columns
+  .filter(column => column.kind === "relation" && column.fieldId && column.relationId)
+  .flatMap(column => {
+    const relation = schema.normalizedRelations.find(item => item.relationId === column.relationId);
+    if (!relation?.relatedCollection || relation.kind === "m2a" || relation.junction) return [];
+    return [{
+      label: column.title,
+      value: column.fieldId!,
+      many: relation.kind !== "m2o",
+    }];
+  })));
+const lookupTargetFieldOptions = computed(() => {
+  const schema = store.lookupSchemas.at(-1);
+  return (schema?.columns ?? [])
+    .filter(column => column.fieldId && column.kind !== "system" && column.kind !== "relation")
+    .map(column => ({ label: column.title, value: column.fieldId! }));
+});
 
 function patch(patchValue: Partial<FieldDraftV2>): void {
   store.patchDraft(patchValue);
@@ -730,12 +753,17 @@ function isTextual(type: LogicalTypeV2): boolean {
                   <div class="section-title">
                     <div>
                       <strong>查找引用</strong>
-                      <small>引用路径与聚合规则由专用模块维护，保存仍通过同一冻结 FieldChangePlan</small>
+                      <small>可视化选择最多 8 跳关系；结果类型和单值/列表形状自动推导</small>
                     </div>
                   </div>
                   <LookupFieldEditor
                     :value="store.draft.lookup"
+                    :relation-options="lookupRelationOptions"
+                    :target-field-options="lookupTargetFieldOptions"
+                    :loading="store.lookupCatalogLoading"
+                    :error="store.lookupCatalogError"
                     @commit="patch({ lookup: $event })"
+                    @path-change="emit('resolveLookupPath', $event)"
                   />
                 </section>
               </NTabPane>

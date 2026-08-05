@@ -62,6 +62,9 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const relationTargetSchema = ref<SchemaSnapshot | null>(null);
   const relationCatalogLoading = ref(false);
   const relationCatalogError = ref<string | null>(null);
+  const lookupSchemas = ref<readonly SchemaSnapshot[]>([]);
+  const lookupCatalogLoading = ref(false);
+  const lookupCatalogError = ref<string | null>(null);
 
   const capabilities = computed<readonly CapabilityV2[]>(
     () => result.value?.capabilities ?? [],
@@ -85,6 +88,11 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     && !!draft.value?.displayName.trim()
     && (draft.value?.logicalType !== "relation" || !!draft.value.relation?.targetTableId)
     && (draft.value?.logicalType !== "relation" || !!draft.value.relation?.displayFieldId)
+    && (draft.value?.logicalType !== "lookup" || !!draft.value.lookup?.targetFieldId)
+    && (draft.value?.logicalType !== "lookup"
+      || !!draft.value.lookup?.path.length
+      && draft.value.lookup.path.length <= 8
+      && draft.value.lookup.path.every(step => !!step.relationFieldId))
     && (action.value !== "create" || draft.value?.logicalType !== "relation"
       || !!relationPair.value?.reciprocalDisplayName.trim()
       && !!relationPair.value?.sourceDisplayFieldId)
@@ -120,6 +128,9 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     relationTargetSchema.value = null;
     relationCatalogLoading.value = false;
     relationCatalogError.value = null;
+    lookupSchemas.value = [];
+    lookupCatalogLoading.value = false;
+    lookupCatalogError.value = null;
   }
 
   function load(described: FieldSettingsDescribeResultV2): void {
@@ -191,6 +202,22 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     relationCatalogError.value = reason instanceof Error ? reason.message : String(reason);
   }
 
+  function beginLookupCatalog(): void {
+    lookupCatalogLoading.value = true;
+    lookupCatalogError.value = null;
+  }
+
+  function setLookupSchemas(values: readonly SchemaSnapshot[]): void {
+    lookupSchemas.value = values;
+    lookupCatalogLoading.value = false;
+    lookupCatalogError.value = null;
+  }
+
+  function failLookupCatalog(reason: unknown): void {
+    lookupCatalogLoading.value = false;
+    lookupCatalogError.value = reason instanceof Error ? reason.message : String(reason);
+  }
+
   function patchDraft(patch: Partial<FieldDraftV2>): void {
     if (!draft.value) return;
     draft.value = { ...draft.value, ...patch };
@@ -253,6 +280,9 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     relationTargetSchema.value = null;
     relationCatalogLoading.value = false;
     relationCatalogError.value = null;
+    lookupSchemas.value = [];
+    lookupCatalogLoading.value = false;
+    lookupCatalogError.value = null;
   }
 
   function setPlan(next: FieldChangePlanV2): void {
@@ -330,11 +360,13 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     open, phase, result, original, draft, action, conversionRule, confirmation,
     backupReceipt, plan, receipt, migration, recycled, confirmations, error,
     errorCode, relationPair, relationTables, relationSourceSchema, relationTargetSchema,
-    relationCatalogLoading, relationCatalogError,
+    relationCatalogLoading, relationCatalogError, lookupSchemas,
+    lookupCatalogLoading, lookupCatalogError,
     capabilities, capability, sourceCapability, dirty, isExisting, canPlan,
     confirmationsComplete, canApply, beginOpen, load, changeType, patchDraft,
     restoreRecommended, patchRelationPair, setRelationTables, beginRelationCatalog,
     setRelationSchema, failRelationCatalog,
+    beginLookupCatalog, setLookupSchemas, failLookupCatalog,
     invalidatePlan, setConversionRule, setConfirmation, setBackupReceipt,
     beginPlan, setPlan, beginApply, setReceipt, setMigration,
     setRecycled, fail, resetFailure, close,

@@ -328,10 +328,12 @@ type FormulaSpec struct {
 }
 
 type LookupSpec struct {
-	RelationFieldID string      `json:"relationFieldId"`
-	TargetFieldID   string      `json:"targetFieldId"`
-	Aggregate       string      `json:"aggregate"`
-	ResultType      LogicalType `json:"resultType"`
+	Path          []LookupPathStep `json:"path"`
+	TargetFieldID string           `json:"targetFieldId"`
+}
+
+type LookupPathStep struct {
+	RelationFieldID string `json:"relationFieldId"`
 }
 
 type Capability struct {

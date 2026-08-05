@@ -4,6 +4,7 @@ import type {
   FieldChangeActionV2,
   LogicalTypeV2,
   SchemaDescribeResult,
+  SchemaSnapshot,
 } from "@/contracts";
 import {
   parseFieldApplyReceiptV2,
@@ -55,6 +56,8 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   restore: (fieldId: string) => Promise<void>;
   loadRelationCatalog: () => Promise<void>;
   selectRelationTarget: (tableId: string) => Promise<void>;
+  loadLookupCatalog: () => Promise<void>;
+  resolveLookupPath: (path: readonly { readonly relationFieldId: string }[]) => Promise<void>;
   dispose: () => void;
 } {
   const bridge = useHostBridge();
@@ -299,6 +302,42 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     }
   }
 
+  async function loadLookupCatalog(): Promise<void> {
+    if (!store.result || store.draft?.logicalType !== "lookup" || !store.draft.lookup) return;
+    await loadLookupSchemas(store.draft.lookup.path);
+  }
+
+  async function resolveLookupPath(
+    path: readonly { readonly relationFieldId: string }[],
+  ): Promise<void> {
+    if (!store.result || store.draft?.logicalType !== "lookup" || !store.draft.lookup) return;
+    await loadLookupSchemas(path);
+  }
+
+  async function loadLookupSchemas(
+    path: readonly { readonly relationFieldId: string }[],
+  ): Promise<void> {
+    if (!store.result) return;
+    try {
+      store.beginLookupCatalog();
+      const schemas: SchemaSnapshot[] = [await describeRelationTable(store.result.tableId)];
+      for (const [index, step] of path.entries()) {
+        if (!step.relationFieldId) break;
+        const current = schemas[index]!;
+        const relation = current.normalizedRelations.find(
+          item => item.relationId === `${current.collection}.${step.relationFieldId}`,
+        );
+        if (!relation?.relatedCollection || relation.kind === "m2a" || relation.junction) {
+          throw new Error(`第 ${index + 1} 跳不是可用于 Lookup 的直接关系`);
+        }
+        schemas.push(await describeRelationTable(relation.relatedCollection));
+      }
+      store.setLookupSchemas(schemas);
+    } catch (error) {
+      store.failLookupCatalog(error);
+    }
+  }
+
   async function describeRelationTable(tableId: string) {
     const result = await bridge.request("schema.describe", {
       collection: tableId,
@@ -320,6 +359,6 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   return {
     openCreate, openEdit, requestClose, plan, apply, refreshMigration,
     cancelMigration, loadRecycleBin, restore, loadRelationCatalog,
-    selectRelationTarget, dispose,
+    selectRelationTarget, loadLookupCatalog, resolveLookupPath, dispose,
   };
 }

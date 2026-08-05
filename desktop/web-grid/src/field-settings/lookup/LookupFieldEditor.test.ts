@@ -9,11 +9,17 @@ function mountEditor(): VueWrapper {
   const wrapper = mount(LookupFieldEditor, {
     props: {
       value: {
-        relationFieldId: "fld_customer",
+        path: [{ relationFieldId: "fld_customer" }],
         targetFieldId: "fld_name",
-        aggregate: "first",
-        resultType: "text",
       },
+      relationOptions: [[
+        { label: "客户", value: "fld_customer" },
+        { label: "账户", value: "fld_account", many: true },
+      ]],
+      targetFieldOptions: [
+        { label: "名称", value: "fld_name" },
+        { label: "余额", value: "fld_balance" },
+      ],
     },
   });
   mounted.push(wrapper);
@@ -27,28 +33,22 @@ afterEach(() => {
 describe("LookupFieldEditor", () => {
   it("通过专用入口展示并编辑结构化引用路径", async () => {
     const wrapper = mountEditor();
-    expect(wrapper.text()).toContain("fld_customer");
-    expect(wrapper.text()).toContain("fld_name");
-    expect(wrapper.find('[data-testid="lookup-relation-field"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain("客户");
+    expect(wrapper.text()).toContain("名称");
+    expect(wrapper.text()).not.toContain("fld_name");
+    expect(wrapper.find('[data-testid="lookup-relation-step-0"]').exists()).toBe(false);
 
     await wrapper.get('[data-testid="lookup-editor-entry"]').trigger("click");
-    await wrapper.get('[data-testid="lookup-relation-field"]').find("input")
-      .setValue("fld_account");
-    await wrapper.get('[data-testid="lookup-target-field"]').find("input")
-      .setValue("fld_balance");
-
     const selects = wrapper.findAllComponents(NSelect);
-    selects[0]!.vm.$emit("update:value", "sum");
-    selects[1]!.vm.$emit("update:value", "number");
+    selects[0]!.vm.$emit("update:value", "fld_account");
+    selects[1]!.vm.$emit("update:value", "fld_balance");
     await wrapper.vm.$nextTick();
     await wrapper.get('[data-testid="lookup-editor-commit"]').trigger("click");
 
     expect(wrapper.emitted("commit")).toEqual([[
       {
-        relationFieldId: "fld_account",
+        path: [{ relationFieldId: "fld_account" }],
         targetFieldId: "fld_balance",
-        aggregate: "sum",
-        resultType: "number",
       },
     ]]);
   });
@@ -56,12 +56,13 @@ describe("LookupFieldEditor", () => {
   it("取消编辑时保留原始路径，路径不完整时禁止确认", async () => {
     const wrapper = mountEditor();
     await wrapper.get('[data-testid="lookup-editor-entry"]').trigger("click");
-    await wrapper.get('[data-testid="lookup-relation-field"]').find("input").setValue("");
+    wrapper.findAllComponents(NSelect)[0]!.vm.$emit("update:value", "");
+    await wrapper.vm.$nextTick();
     expect(wrapper.get('[data-testid="lookup-editor-commit"]').attributes("disabled"))
       .toBeDefined();
 
     await wrapper.get('[data-testid="lookup-editor-cancel"]').trigger("click");
     expect(wrapper.emitted("commit")).toBeUndefined();
-    expect(wrapper.text()).toContain("fld_customer");
+    expect(wrapper.text()).toContain("客户");
   });
 });

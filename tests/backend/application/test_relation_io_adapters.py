@@ -107,7 +107,13 @@ class FakeProductClient:
                 {
                     "rowKey": "order-1",
                     "id": "order-1",
-                    "contract_price": "12.50",
+                    "contract_price": {
+                        "state": "ok",
+                        "value": "12.50",
+                        "provenance": [
+                            {"collection": "contracts", "itemId": "contract-1", "value": "12.50"}
+                        ],
+                    },
                 }
             ]
         )

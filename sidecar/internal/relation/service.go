@@ -349,7 +349,11 @@ func (service *Service) QueryLookups(
 			"lookup schema revision does not match",
 		)
 	}
-	return service.queries.QueryPage(ctx, request.TableID, request.Query)
+	page, err := service.queries.QueryPage(ctx, request.TableID, request.Query)
+	if err != nil {
+		return query.Page{}, err
+	}
+	return service.attachLookupCells(ctx, definition, page, nil)
 }
 
 func (service *Service) PreviewLookups(
@@ -392,18 +396,29 @@ func (service *Service) PreviewLookups(
 	if err != nil {
 		return query.Page{}, err
 	}
+	selectedIDs := make(map[string]bool, len(selected))
+	for fieldID := range selected {
+		selectedIDs[fieldID] = true
+	}
+	return service.attachLookupCells(ctx, request.Definition, page, selectedIDs)
+}
+
+func (service *Service) attachLookupCells(
+	ctx context.Context,
+	definition schema.TableDefinition,
+	page query.Page,
+	selected map[string]bool,
+) (query.Page, error) {
 	meta, err := service.app.FindFirstRecordByFilter(
 		"vibetable_tables", "table_id={:table}",
-		dbx.Params{"table": request.Definition.TableID},
+		dbx.Params{"table": definition.TableID},
 	)
 	if err != nil {
 		return query.Page{}, relationError(
 			"lookup.storage_failed", "lookup source storage is unavailable",
 		)
 	}
-	collection, err := service.app.FindCollectionByNameOrId(
-		meta.GetString("collection_id"),
-	)
+	collection, err := service.app.FindCollectionByNameOrId(meta.GetString("collection_id"))
 	if err != nil {
 		return query.Page{}, relationError(
 			"lookup.storage_failed", "lookup source storage is unavailable",
@@ -423,15 +438,18 @@ func (service *Service) PreviewLookups(
 				"lookup.storage_failed", "lookup source row could not be read",
 			)
 		}
-		values, calculateErr := calculator.Calculate(
-			ctx, service.app, request.Definition, record,
+		values, calculateErr := calculator.CalculateCells(
+			ctx, service.app, definition, record,
 		)
 		if calculateErr != nil {
 			return query.Page{}, calculateErr
 		}
-		for fieldID, field := range selected {
+		for _, field := range definition.Fields {
+			if field.Kind != schema.FieldKindLookup || field.Lookup == nil ||
+				(selected != nil && !selected[field.FieldID]) {
+				continue
+			}
 			row[field.PhysicalName] = values[field.PhysicalName]
-			_ = fieldID
 		}
 	}
 	return page, nil

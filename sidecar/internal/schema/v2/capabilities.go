@@ -92,8 +92,10 @@ func CapabilityFor(logicalType LogicalType) (Capability, error) {
 		capability.AdvancedSettings = []string{"rootType", "maxSize", "jsonSchema", "editorMode", "indent"}
 	case LogicalAutoDate:
 		capability.AdvancedSettings = []string{"role"}
-	case LogicalFormula, LogicalLookup:
+	case LogicalFormula:
 		capability.AdvancedSettings = []string{"resultType", "source"}
+	case LogicalLookup:
+		capability.AdvancedSettings = []string{"path", "targetField"}
 	}
 	return capability, nil
 }

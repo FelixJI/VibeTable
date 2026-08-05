@@ -71,10 +71,8 @@ function specializedDefaults(
     case "lookup":
       return {
         lookup: {
-          relationFieldId: "",
+          path: [{ relationFieldId: "" }],
           targetFieldId: "",
-          aggregate: "first",
-          resultType: "text",
         },
       };
     default:

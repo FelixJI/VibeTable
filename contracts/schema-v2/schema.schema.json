@@ -310,15 +310,23 @@
     "LookupSpec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["relationFieldId", "targetFieldId", "aggregate", "resultType"],
+      "required": ["path", "targetFieldId"],
       "properties": {
-        "relationFieldId": {"type": "string", "minLength": 1},
-        "targetFieldId": {"type": "string", "minLength": 1},
-        "aggregate": {
-          "type": "string",
-          "enum": ["none", "first", "distinct", "count", "sum", "avg", "min", "max"]
+        "path": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {"$ref": "#/$defs/LookupPathStep"}
         },
-        "resultType": {"$ref": "#/$defs/LogicalType"}
+        "targetFieldId": {"type": "string", "minLength": 1}
+      }
+    },
+    "LookupPathStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relationFieldId"],
+      "properties": {
+        "relationFieldId": {"type": "string", "minLength": 1}
       }
     },
     "FieldDefinition": {

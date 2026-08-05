@@ -238,11 +238,13 @@ class FormulaSpecV2(SchemaV2Model):
     result_type: LogicalType
 
 
-class LookupSpecV2(SchemaV2Model):
+class LookupPathStepV2(SchemaV2Model):
     relation_field_id: str
+
+
+class LookupSpecV2(SchemaV2Model):
+    path: list[LookupPathStepV2] = Field(min_length=1, max_length=8)
     target_field_id: str
-    aggregate: Literal["none", "first", "distinct", "count", "sum", "avg", "min", "max"]
-    result_type: LogicalType
 
 
 class FieldDefinitionV2(SchemaV2Model):

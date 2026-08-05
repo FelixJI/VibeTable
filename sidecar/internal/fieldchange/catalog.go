@@ -243,38 +243,44 @@ func (catalog *Catalog) checkLookupTargets(
 	tableID string,
 	definition v2.FieldDefinition,
 ) ([]v2.Diagnostic, error) {
-	fields, err := catalog.Fields(ctx, tableID, false)
-	if err != nil {
-		return nil, err
-	}
-	var relation *v2.FieldDefinition
-	for index := range fields {
-		if fields[index].Identity.FieldID == definition.Lookup.RelationFieldID {
-			relation = &fields[index]
-			break
+	currentTableID := tableID
+	for index, step := range definition.Lookup.Path {
+		fields, err := catalog.Fields(ctx, currentTableID, false)
+		if err != nil {
+			return nil, err
 		}
+		var relation *v2.FieldDefinition
+		for fieldIndex := range fields {
+			if fields[fieldIndex].Identity.FieldID == step.RelationFieldID {
+				relation = &fields[fieldIndex]
+				break
+			}
+		}
+		if relation == nil || relation.LogicalType != v2.LogicalRelation ||
+			relation.Relation == nil {
+			return []v2.Diagnostic{{
+				Code:    "field.lookup.relation_invalid",
+				Path:    fmt.Sprintf("draft.lookup.path[%d].relationFieldId", index),
+				Message: "lookup path step must reference an active direct relation",
+				Details: map[string]any{"tableId": currentTableID},
+			}}, nil
+		}
+		currentTableID = relation.Relation.TargetTableID
 	}
-	if relation == nil || relation.LogicalType != v2.LogicalRelation ||
-		relation.Relation == nil {
-		return []v2.Diagnostic{{
-			Code: "field.lookup.relation_invalid", Path: "draft.lookup.relationFieldId",
-			Message: "lookup relation field must reference an active relation",
-			Details: map[string]any{},
-		}}, nil
-	}
-	targetFields, err := catalog.Fields(ctx, relation.Relation.TargetTableID, false)
+	targetFields, err := catalog.Fields(ctx, currentTableID, false)
 	if err != nil {
 		return nil, err
 	}
 	for _, target := range targetFields {
-		if target.Identity.FieldID == definition.Lookup.TargetFieldID {
+		if target.Identity.FieldID == definition.Lookup.TargetFieldID &&
+			target.LogicalType != v2.LogicalRelation {
 			return []v2.Diagnostic{}, nil
 		}
 	}
 	return []v2.Diagnostic{{
 		Code: "field.lookup.target_invalid", Path: "draft.lookup.targetFieldId",
-		Message: "lookup target field must exist and be active in the relation target table",
-		Details: map[string]any{"targetTableId": relation.Relation.TargetTableID},
+		Message: "lookup target must be an active non-relation field at the end of the path",
+		Details: map[string]any{"targetTableId": currentTableID},
 	}}, nil
 }
 

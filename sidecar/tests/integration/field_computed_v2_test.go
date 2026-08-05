@@ -14,6 +14,16 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
+	region, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
+		Definition: baseTable(
+			"tbl_v2_computed_region", "t_v2_computed_region",
+			[]schema.FieldDefinition{},
+		),
+		ExpectedRevision: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	target, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
 		Definition: baseTable(
 			"tbl_v2_computed_target", "t_v2_computed_target",
@@ -42,6 +52,11 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 	executor := fieldchange.NewExecutor(app, store)
 	actor := v2.Actor{ID: "local-user", Kind: "user"}
 
+	regionName := applyCreatedField(
+		t, ctx, catalog, planner, executor, region.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Region name"),
+		actor, "op_v2_region_name",
+	)
 	title := applyCreatedField(
 		t, ctx, catalog, planner, executor, target.TableID,
 		fieldDraftForIntegration(t, v2.LogicalText, "Title"),
@@ -52,6 +67,33 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 		fieldDraftForIntegration(t, v2.LogicalText, "Name"),
 		actor, "op_v2_source_name",
 	)
+	regionRelationDraft := fieldDraftForIntegration(t, v2.LogicalRelation, "Region")
+	regionRelationDraft.Relation = &v2.RelationSpec{
+		TargetTableID: region.TableID, Cardinality: "one",
+		DeletePolicy: "setNull", DisplayField: regionName.FieldID,
+	}
+	targetRevisions, err := catalog.Revisions(ctx, target.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regionRelationPlan, err := planner.Plan(ctx, v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: target.TableID,
+		ExpectedSchemaRev: targetRevisions.Schema, Draft: &regionRelationDraft, Actor: actor,
+		RelationPair: &v2.RelationPairDraft{
+			ReciprocalDisplayName: "Customers", ReciprocalCardinality: "many",
+			SourceDisplayFieldID: title.FieldID,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	regionRelation, err := executor.Apply(ctx, v2.ApplyRequest{
+		PlanID: regionRelationPlan.PlanID, PlanHash: regionRelationPlan.PlanHash,
+		OperationID: "op_v2_region_relation", Actor: actor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	relationDraft := fieldDraftForIntegration(t, v2.LogicalRelation, "Customer")
 	relationDraft.Relation = &v2.RelationSpec{
 		TargetTableID: target.TableID, Cardinality: "one",
@@ -90,8 +132,11 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 	)
 	lookupDraft := fieldDraftForIntegration(t, v2.LogicalLookup, "Customer title")
 	lookupDraft.Lookup = &v2.LookupSpec{
-		RelationFieldID: relation.FieldID, TargetFieldID: title.FieldID,
-		Aggregate: "first", ResultType: v2.LogicalText,
+		Path: []v2.LookupPathStep{
+			{RelationFieldID: relation.FieldID},
+			{RelationFieldID: regionRelation.FieldID},
+		},
+		TargetFieldID: regionName.FieldID,
 	}
 	lookup := applyCreatedField(
 		t, ctx, catalog, planner, executor, source.TableID,
