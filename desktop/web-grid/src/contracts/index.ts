@@ -8,6 +8,8 @@ import type {
   RelationDelta,
   RelationDeltaPreview,
   RelationDeltaResult,
+  RelationCreateTargetParams,
+  RelationCreateTargetResult,
   RelationSearchParams,
   RelationSearchResult,
   RelationSingleUpdateResult,
@@ -1443,6 +1445,7 @@ export type WebMessageType =
   | "events.reconcile"
   | "schema.describe"
   | "relation.searchTargets"
+  | "relation.createTarget"
   | "relation.updateSingle"
   | "relation.previewDelta"
   | "relation.applyDelta"
@@ -1564,6 +1567,7 @@ export type HostMessageType =
   | "events.reconcile"
   | "schema.describe"
   | "relation.searchTargets"
+  | "relation.createTarget"
   | "relation.updateSingle"
   | "relation.previewDelta"
   | "relation.applyDelta"
@@ -1797,6 +1801,7 @@ export interface HostPayloadMap {
   "events.reconcile": Readonly<Record<string, unknown>>;
   "schema.describe": SchemaDescribeResult;
   "relation.searchTargets": RelationSearchResult;
+  "relation.createTarget": RelationCreateTargetResult;
   "relation.updateSingle": RelationSingleUpdateResult;
   "relation.previewDelta": RelationDeltaPreview;
   "relation.applyDelta": RelationDeltaResult;
@@ -1902,6 +1907,7 @@ export interface WebPayloadMap {
   };
   "schema.describe": SchemaDescribeParams;
   "relation.searchTargets": RelationSearchParams;
+  "relation.createTarget": RelationCreateTargetParams;
   "relation.updateSingle": RelationUpdateSingleParams;
   "relation.previewDelta": RelationDelta;
   "relation.applyDelta": RelationDelta;

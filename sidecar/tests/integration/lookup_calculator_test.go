@@ -166,6 +166,23 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 		search.Items[0].Label != "Ada" {
 		t.Fatalf("relation search = %#v, err=%v", search, err)
 	}
+	createdTarget, err := relationService.CreateTarget(ctx, relation.CreateTargetRequest{
+		RelationID: "articles.author_id", Label: "Grace",
+		RequestID: "create-related-author", IdempotencyKey: "create-related-author",
+		Actor: mutation.Actor{Type: "user", ID: "local"},
+	})
+	if err != nil || createdTarget.Target.TableID != "authors" ||
+		createdTarget.Target.RecordID == "" || createdTarget.Target.Label != "Grace" ||
+		createdTarget.Receipt.Status != mutation.StatusApplied {
+		t.Fatalf("created relation target = %#v, err=%v", createdTarget, err)
+	}
+	createdSearch, err := relationService.SearchTargets(ctx, relation.SearchRequest{
+		RelationID: "articles.author_id", Query: "Grace", Limit: 20,
+	})
+	if err != nil || len(createdSearch.Items) != 1 ||
+		createdSearch.Items[0].RecordID != createdTarget.Target.RecordID {
+		t.Fatalf("created target search = %#v, err=%v", createdSearch, err)
+	}
 	delta := relation.DeltaRequest{
 		RelationID:     "articles.author_id",
 		SourceRecordID: articleID,

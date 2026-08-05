@@ -125,6 +125,7 @@ export function buildFieldChangeIntent(input: {
   readonly conversionRule?: string;
   readonly confirmation?: string;
   readonly backupReceipt?: string;
+  readonly relationPair?: FieldChangeIntentV2["relationPair"] | null;
 }): FieldChangeIntentV2 {
   return {
     action: input.action,
@@ -137,5 +138,6 @@ export function buildFieldChangeIntent(input: {
     conversionRule: input.conversionRule ?? "",
     confirmation: input.confirmation ?? "",
     backupReceipt: input.backupReceipt ?? "",
+    ...(input.relationPair ? { relationPair: clone(input.relationPair) } : {}),
   };
 }

@@ -215,6 +215,25 @@ func (executor *Executor) apply(
 				},
 			)
 		}
+		for _, related := range plan.RelatedChanges {
+			relatedRevisions, relatedRevisionErr := NewCatalog(txApp).Revisions(
+				ctx, related.TableID,
+			)
+			if relatedRevisionErr != nil {
+				return relatedRevisionErr
+			}
+			if relatedRevisions.Schema != related.ExpectedSchemaRevision {
+				return productError(
+					"field.change.schema_conflict", "relatedChanges",
+					"reciprocal table schema revision changed after planning",
+					map[string]any{
+						"tableId":  related.TableID,
+						"expected": related.ExpectedSchemaRevision,
+						"actual":   relatedRevisions.Schema,
+					},
+				)
+			}
+		}
 		if plan.Intent.Action == v2.ActionPurge {
 			var verifyErr error
 			if executor.protectionProof != nil {
@@ -283,6 +302,32 @@ func (executor *Executor) apply(
 			SchemaRevision: schema.FormatSchemaRevision(nextRevision),
 			Definition:     applied,
 		}
+		for _, related := range plan.RelatedChanges {
+			relatedPlan := pairedPlan(*plan, related)
+			relatedDefinition, relatedApplyErr := executor.applyFrozenPlan(
+				ctx, txApp, relatedPlan,
+			)
+			if relatedApplyErr != nil {
+				return relatedApplyErr
+			}
+			relatedRevision, relatedParseErr := schema.ParseSchemaRevision(
+				related.ExpectedSchemaRevision,
+			)
+			if relatedParseErr != nil {
+				return relatedParseErr
+			}
+			relatedRevision++
+			if saveErr := saveTableRevisionAndLegacy(
+				txApp, relatedPlan, relatedRevision,
+			); saveErr != nil {
+				return saveErr
+			}
+			receipt.Related = append(receipt.Related, v2.RelatedApplyReceipt{
+				TableID: related.TableID, FieldID: related.FieldID,
+				SchemaRevision: schema.FormatSchemaRevision(relatedRevision),
+				Definition:     relatedDefinition,
+			})
+		}
 		if saveErr := saveTableRevisionAndLegacy(
 			txApp, *plan, nextRevision,
 		); saveErr != nil {
@@ -323,6 +368,21 @@ func (executor *Executor) apply(
 		_ = fieldresource.RunPendingAttachmentCleanup(ctx, executor.app)
 	}
 	return receipt, nil
+}
+
+func pairedPlan(
+	plan v2.FieldChangePlan,
+	related v2.RelatedFieldChange,
+) v2.FieldChangePlan {
+	plan.Intent.TableID = related.TableID
+	plan.Intent.FieldID = related.FieldID
+	plan.Intent.RelationPair = nil
+	plan.Before = related.Before
+	plan.After = related.After
+	plan.ExpectedSchemaRev = related.ExpectedSchemaRevision
+	plan.ExpectedDataRevision = nil
+	plan.RelatedChanges = nil
+	return plan
 }
 
 func (executor *Executor) applyFrozenPlan(
@@ -674,6 +734,8 @@ func syncRelationMetadata(
 	record.Set("cardinality", definition.Relation.Cardinality)
 	record.Set("junction_table_id", "")
 	record.Set("delete_policy", definition.Relation.DeletePolicy)
+	record.Set("pair_id", definition.Relation.PairID)
+	record.Set("reciprocal_field_id", definition.Relation.ReciprocalFieldID)
 	if err := app.Save(record); err != nil {
 		return fmt.Errorf("save relation metadata: %w", err)
 	}
@@ -722,6 +784,10 @@ func saveTableRevisionAndLegacy(
 	case v2.ActionRetire, v2.ActionPurge:
 		removeLegacyField(&definition, plan.Intent.FieldID)
 	}
+	definition.PrimaryDisplayFieldID = selectPrimaryDisplayField(
+		definition.Fields, definition.PrimaryDisplayFieldID,
+	)
+	record.Set("primary_display_field_id", definition.PrimaryDisplayFieldID)
 	definitionRaw, err := json.Marshal(definition)
 	if err != nil {
 		return fmt.Errorf("encode updated legacy table definition: %w", err)
@@ -731,6 +797,27 @@ func saveTableRevisionAndLegacy(
 		return fmt.Errorf("save table schema revision: %w", err)
 	}
 	return nil
+}
+
+func selectPrimaryDisplayField(
+	fields []schema.FieldDefinition,
+	current string,
+) string {
+	for _, field := range fields {
+		if field.FieldID == current && !field.ReadOnly &&
+			field.Kind != schema.FieldKindRelation {
+			return current
+		}
+	}
+	for _, field := range fields {
+		if !field.ReadOnly && field.Kind != schema.FieldKindRelation {
+			return field.FieldID
+		}
+	}
+	if len(fields) != 0 {
+		return fields[0].FieldID
+	}
+	return ""
 }
 
 func toLegacyField(definition v2.FieldDefinition) schema.FieldDefinition {
@@ -765,9 +852,11 @@ func toLegacyField(definition v2.FieldDefinition) schema.FieldDefinition {
 	}
 	if definition.Relation != nil {
 		field.Relation = &schema.RelationSpec{
-			TargetTableID: definition.Relation.TargetTableID,
-			Cardinality:   definition.Relation.Cardinality,
-			DeletePolicy:  definition.Relation.DeletePolicy,
+			TargetTableID:     definition.Relation.TargetTableID,
+			Cardinality:       definition.Relation.Cardinality,
+			DeletePolicy:      definition.Relation.DeletePolicy,
+			PairID:            definition.Relation.PairID,
+			ReciprocalFieldID: definition.Relation.ReciprocalFieldID,
 		}
 	}
 	if definition.Formula != nil {

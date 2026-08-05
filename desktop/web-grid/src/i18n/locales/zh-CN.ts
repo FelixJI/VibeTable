@@ -551,6 +551,7 @@ export const messages: Record<string, string> = {
   "relationEditor.clear": "清空",
   "relationEditor.cancel": "取消",
   "relationEditor.apply": "应用 {count} 项",
+  "relationEditor.create": "新建“{label}”并关联",
   "workspace.attachment.invalidField": "附件字段配置无效",
   "workspace.attachment.invalidResponse": "附件列表响应无效",
   "workspace.attachment.staleRow": "缺少最新行版本，请刷新后重试",

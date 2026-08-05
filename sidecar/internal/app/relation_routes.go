@@ -68,6 +68,28 @@ func registerRelationRoutes(
 		}
 		return request.JSON(http.StatusOK, result)
 	})
+	r.POST("/api/vibetable/v1/relations/create-target", func(request *core.RequestEvent) error {
+		var input relation.CreateTargetRequest
+		if err := decodeRelationBody(request, &input); err != nil {
+			return writeMutationError(request, err)
+		}
+		var result relation.CreateTargetResult
+		err := runBusinessWrite(
+			request.Request.Context(),
+			gates,
+			"relation.create-target",
+			input.IdempotencyKey,
+			func(ctx context.Context) error {
+				var createErr error
+				result, createErr = service.CreateTarget(ctx, input)
+				return createErr
+			},
+		)
+		if err != nil {
+			return writeMutationError(request, err)
+		}
+		return request.JSON(http.StatusOK, result)
+	})
 	r.POST("/api/vibetable/v1/relations/preview-delta", func(request *core.RequestEvent) error {
 		var input relation.DeltaRequest
 		if err := decodeRelationBody(request, &input); err != nil {

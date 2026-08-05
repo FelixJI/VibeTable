@@ -59,6 +59,14 @@ public sealed class ProductDataRpcRegistryTests
             {"action":"update","tableId":"tbl_orders","fieldId":"fld_status",
              "expectedSchemaRevision":"schema_7","draft":{},"actor":{"id":"user_1","kind":"user"}}
             """).RootElement));
+        Assert.IsTrue(plan.IsValidPayload(JsonDocument.Parse(
+            """
+            {"action":"create","tableId":"tbl_orders","fieldId":"",
+             "expectedSchemaRevision":"schema_7","draft":{},
+             "actor":{"id":"user_1","kind":"user"},
+             "relationPair":{"reciprocalDisplayName":"订单","reciprocalCardinality":"many",
+              "sourceDisplayFieldId":"fld_order_number"}}
+            """).RootElement));
         Assert.IsFalse(plan.IsValidPayload(JsonDocument.Parse(
             """
             {"action":"update","tableId":"tbl_orders","expectedSchemaRevision":"schema_7",

@@ -551,6 +551,7 @@ export const messages: Record<string, string> = {
   "relationEditor.clear": "Clear",
   "relationEditor.cancel": "Cancel",
   "relationEditor.apply": "Apply {count} items",
+  "relationEditor.create": "Create “{label}” and link",
   "workspace.attachment.invalidField": "The attachment field configuration is invalid",
   "workspace.attachment.invalidResponse": "The attachment list response is invalid",
   "workspace.attachment.staleRow": "The latest row version is missing. Refresh and try again.",

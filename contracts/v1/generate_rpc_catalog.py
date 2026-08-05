@@ -24,25 +24,11 @@ from backend.application.product_data_service import (  # noqa: E402
     PRODUCT_PARAM_MODELS,
     ProductParams,
 )
-from backend.contracts.backup import (  # noqa: E402
-    BackupCreateResult,
-    BackupDeleteResult,
-    BackupListResult,
-    BackupRestoreResult,
-)
 from backend.contracts.data_io import (  # noqa: E402
     ApplyImportResult,
     ExportResult,
     ImportPlan,
     TemplateResult,
-)
-from backend.contracts.document_workspace import (  # noqa: E402
-    DocumentHistoryResult,
-    DocumentListResult,
-    FolderResult,
-    LinkResult,
-    PublishIndexBatchResult,
-    RegisterDocumentResult,
 )
 from backend.contracts.grid_state import GridStateResult  # noqa: E402
 from backend.contracts.history import (  # noqa: E402
@@ -52,7 +38,6 @@ from backend.contracts.history import (  # noqa: E402
 )
 from backend.contracts.lookup import (  # noqa: E402
     LookupListResult,
-    LookupMutationResult,
     LookupQueryResult,
     LookupValidationResult,
 )
@@ -81,8 +66,7 @@ from backend.contracts.presets_versions_dashboards import (  # noqa: E402
     VersionsResult,
 )
 from backend.contracts.relation_admin import (  # noqa: E402
-    RelationChangePlan,
-    RelationChangeResult,
+    RelationCreateTargetResult,
     RelationDeltaPreview,
     RelationDeltaResult,
     RelationSearchResult,
@@ -315,6 +299,17 @@ def _typed(annotation: object, name: str | None = None) -> ResultSpec:
 
 
 def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
+    existing_catalog = json.loads((fixtures / "rpc-catalog.json").read_text(encoding="utf-8"))
+    existing_cases = {case["method"]: case for case in existing_catalog["rpcCases"]}
+
+    def retired(method: str) -> ResultSpec:
+        case = existing_cases[method]
+        return ResultSpec(
+            model_name=case["resultModel"],
+            example=case["success"]["result"],
+            schema=case["resultSchema"],
+        )
+
     table = json.loads((fixtures / "table-definition.json").read_text(encoding="utf-8"))
     mutation_receipt = json.loads((fixtures / "mutation-receipt.json").read_text(encoding="utf-8"))
     restore_result = _model_payload(RestoreResult)
@@ -349,14 +344,10 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         },
     }
     specs: dict[str, ResultSpec] = {
-        "backup.create": _typed(BackupCreateResult),
-        "backup.delete": _manual(
-            "BackupDeleteResult",
-            {"deleted": "manual_20260724_101500.zip"},
-            BackupDeleteResult.model_json_schema(),
-        ),
-        "backup.list": _typed(BackupListResult),
-        "backup.restore": _typed(BackupRestoreResult),
+        "backup.create": retired("backup.create"),
+        "backup.delete": retired("backup.delete"),
+        "backup.list": retired("backup.list"),
+        "backup.restore": retired("backup.restore"),
         "command.list": _typed(CommandsResult),
         "command.run": _typed(CommandResult),
         "data.applyImport": _typed(ApplyImportResult),
@@ -447,12 +438,12 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "insights.panelManifest": _typed(PanelManifestResult),
         "insights.readDashboardWorkspace": _typed(DashboardWorkspaceResult),
         "insights.saveDashboardDraft": _typed(SaveDashboardDraftResult),
-        "lookup.create": _typed(LookupMutationResult),
-        "lookup.delete": _typed(LookupMutationResult),
+        "lookup.create": retired("lookup.create"),
+        "lookup.delete": retired("lookup.delete"),
         "lookup.list": _typed(LookupListResult),
         "lookup.preview": _typed(LookupQueryResult),
         "lookup.query": _typed(LookupQueryResult),
-        "lookup.update": _typed(LookupMutationResult),
+        "lookup.update": retired("lookup.update"),
         "lookup.validate": _typed(LookupValidationResult),
         "mutation.apply": _manual("MutationReceipt", mutation_receipt, receipt_schema),
         "mutation.preview": _manual(
@@ -495,6 +486,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "preset.list": _typed(PresetsResult),
         "preset.save": _typed(PresetEntry),
         "query.page": _manual("QueryPageResult", query_page),
+        "query.view": _manual("QueryViewResult", query_page),
         "query.readRows": _manual(
             "QueryRowsResult",
             {"rows": [{"id": "row-1", "name": "Ada"}]},
@@ -509,6 +501,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
             },
         ),
         "relation.applyDelta": _typed(RelationDeltaResult),
+        "relation.createTarget": _typed(RelationCreateTargetResult),
         "relation.previewDelta": _typed(RelationDeltaPreview),
         "relation.searchTargets": _typed(RelationSearchResult),
         "relation.updateSingle": _typed(RelationSingleUpdateResult),
@@ -578,8 +571,8 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "system.handshake": _typed(HandshakeResult),
         "table.applyPaste": _typed(ApplyPasteResult),
         "table.previewPaste": _typed(PastePlan),
-        "table_admin.applyRelationChange": _typed(RelationChangeResult),
-        "table_admin.previewRelationChange": _typed(RelationChangePlan),
+        "table_admin.applyRelationChange": retired("table_admin.applyRelationChange"),
+        "table_admin.previewRelationChange": retired("table_admin.previewRelationChange"),
         "task.cancel": _typed(TaskStatus),
         "task.create": _typed(TaskStatus),
         "task.status": _typed(TaskStatus),
@@ -606,12 +599,12 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
                 "emittedEvents": ["data.changed"],
             },
         ),
-        "workspace.linkDocument": _typed(LinkResult),
-        "workspace.publishIndexBatch": _typed(PublishIndexBatchResult),
-        "workspace.readDocumentHistory": _typed(DocumentHistoryResult),
-        "workspace.readDocuments": _typed(DocumentListResult),
-        "workspace.readFolder": _typed(FolderResult),
-        "workspace.registerDocument": _typed(RegisterDocumentResult),
+        "workspace.linkDocument": retired("workspace.linkDocument"),
+        "workspace.publishIndexBatch": retired("workspace.publishIndexBatch"),
+        "workspace.readDocumentHistory": retired("workspace.readDocumentHistory"),
+        "workspace.readDocuments": retired("workspace.readDocuments"),
+        "workspace.readFolder": retired("workspace.readFolder"),
+        "workspace.registerDocument": retired("workspace.registerDocument"),
         "workspace.unlinkDocument": _manual(
             "UnlinkDocumentResult",
             {"deleted": "link-1"},
@@ -662,8 +655,35 @@ def _event_cases(fixtures: Path, topics: list[str]) -> list[dict[str, object]]:
 def main() -> None:
     path = Path(__file__).with_name("fixtures") / "rpc-catalog.json"
     catalog = json.loads(path.read_text(encoding="utf-8"))
+    existing_cases = {case["method"]: case for case in catalog["rpcCases"]}
     models = _registered_models()
-    methods = sorted(models)
+    schema_v2_methods = {
+        "field.change.apply",
+        "field.change.cancel",
+        "field.change.plan",
+        "field.change.status",
+        "field.recycleBin.list",
+        "field.settings.describe",
+    }
+    retired_v1_methods = {
+        "backup.create",
+        "backup.delete",
+        "backup.list",
+        "backup.restore",
+        "lookup.create",
+        "lookup.delete",
+        "lookup.update",
+        "table_admin.applyRelationChange",
+        "table_admin.previewRelationChange",
+        "workspace.linkDocument",
+        "workspace.publishIndexBatch",
+        "workspace.readDocumentHistory",
+        "workspace.readDocuments",
+        "workspace.readFolder",
+        "workspace.registerDocument",
+        "workspace.unlinkDocument",
+    }
+    methods = sorted((set(models) - schema_v2_methods) | retired_v1_methods)
     result_specs = _result_specs(path.parent)
     missing_results = sorted(set(methods) - result_specs.keys())
     stale_results = sorted(result_specs.keys() - set(methods))
@@ -676,6 +696,9 @@ def main() -> None:
     catalog["rpcMethods"] = methods
     catalog["rpcCases"] = []
     for index, method in enumerate(methods, start=1):
+        if method in retired_v1_methods:
+            catalog["rpcCases"].append(existing_cases[method])
+            continue
         request_id = f"rpc-{index:03d}"
         model = models[method]
         params = _model_payload(model)

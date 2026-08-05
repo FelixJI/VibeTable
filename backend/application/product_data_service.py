@@ -423,6 +423,17 @@ PRODUCT_PARAM_MODELS: dict[str, type[ProductParams]] = {
             "limit": (int,),
         },
     ),
+    "relation.createTarget": _closed_params(
+        "RelationCreateTargetParams",
+        allowed=("relationId", "collection", "label", "idempotencyKey"),
+        required=("relationId", "label", "idempotencyKey"),
+        field_types={
+            "relationId": (str,),
+            "collection": (str, type(None)),
+            "label": (str,),
+            "idempotencyKey": (str,),
+        },
+    ),
     "relation.updateSingle": _closed_params(
         "RelationUpdateSingleParams",
         allowed=(
@@ -897,6 +908,7 @@ class PocketBaseProductDataService:
             "schema": {
                 "collection": table_id,
                 "primaryKey": "id",
+                "primaryDisplayFieldId": _primary_display_field_id(definition),
                 "columns": _renderer_columns(definition),
                 "normalizedRelations": [
                     _renderer_relation(item, definition)
@@ -980,6 +992,34 @@ class PocketBaseProductDataService:
                 if isinstance(item, dict)
             ],
             "total": _integer(result, "total"),
+        }
+
+    async def create_relation_target(self, params: ProductParams) -> dict[str, Any]:
+        raw = params.root
+        target_table = raw.get("collection")
+        if target_table is not None and (not isinstance(target_table, str) or not target_table):
+            raise ValueError("collection must be a non-empty string")
+        request_id = _text(raw, "idempotencyKey")
+        body: dict[str, Any] = {
+            "relationId": _text(raw, "relationId"),
+            "label": _text(raw, "label"),
+            "requestId": request_id,
+            "idempotencyKey": request_id,
+            "actor": {"type": "user", "id": "local-user", "displayName": None},
+        }
+        if target_table is not None:
+            body["targetTableId"] = target_table
+        result = await self._post(
+            "/api/vibetable/v1/relations/create-target",
+            body,
+        )
+        target = result.get("target")
+        if not isinstance(target, dict):
+            raise ValueError("PocketBase returned an invalid created relation target")
+        return {
+            "outcome": "committed",
+            "target": _renderer_target(target),
+            "requestId": request_id,
         }
 
     async def preview_relation_delta(self, params: ProductParams) -> dict[str, Any]:
@@ -1585,10 +1625,38 @@ def _renderer_relation(
         "preset": "standard",
         "selfRelation": target_table == value.get("sourceTableId"),
         "managed": True,
+        "pairId": value.get("pairId") if isinstance(value.get("pairId"), str) else "",
+        "reciprocalFieldId": (
+            value.get("reciprocalFieldId")
+            if isinstance(value.get("reciprocalFieldId"), str)
+            else ""
+        ),
         "state": "valid",
         "displayTemplate": None,
         "diagnostics": [],
     }
+
+
+def _primary_display_field_id(definition: dict[str, Any]) -> str:
+    fields = definition.get("fields")
+    if not isinstance(fields, list):
+        raise ValueError("PocketBase returned an invalid field catalog")
+    configured = definition.get("primaryDisplayFieldId")
+    if isinstance(configured, str) and configured:
+        for field in fields:
+            if isinstance(field, dict) and field.get("fieldId") == configured:
+                return configured
+    for field in fields:
+        if (
+            isinstance(field, dict)
+            and field.get("readOnly") is not True
+            and field.get("kind") != "relation"
+        ):
+            return _text(field, "fieldId")
+    for field in fields:
+        if isinstance(field, dict):
+            return _text(field, "fieldId")
+    return ""
 
 
 def _renderer_columns(definition: dict[str, Any]) -> list[dict[str, Any]]:

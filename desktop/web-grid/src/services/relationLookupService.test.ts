@@ -51,6 +51,37 @@ describe("relationLookupService", () => {
     });
   });
 
+  it("creates a relation target from its visual label without exposing row or field ids", async () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("orders");
+    store.acceptContext(generation, {
+      collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [],
+      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+    }, [], {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+    });
+    request.mockResolvedValue({
+      outcome: "committed",
+      target: { collection: "customers", itemId: "c-2", label: "Grace", junctionValues: {} },
+      requestId: "create-1",
+    });
+
+    const result = await useRelationLookupService().createTarget(
+      "orders.customer",
+      "  Grace  ",
+      "customers",
+    );
+
+    expect(result.target.label).toBe("Grace");
+    expect(request).toHaveBeenCalledWith("relation.createTarget", {
+      relationId: "orders.customer",
+      label: "Grace",
+      collection: "customers",
+      idempotencyKey: expect.any(String),
+    });
+  });
+
   it("loads an authoritative Lookup dataset through backend-bounded pages", async () => {
     const store = useRelationLookupStore();
     const generation = store.beginContext("orders");

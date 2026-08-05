@@ -143,6 +143,33 @@ describe("field settings model", () => {
     expect(intent.draft).not.toHaveProperty("identity");
   });
 
+  it("freezes a visual reciprocal relation draft without exposing provider names", () => {
+    const definition = field();
+    const described: FieldSettingsDescribeResultV2 = {
+      contract: "vibetable.schema.v2",
+      tableId: "tbl_orders",
+      fieldId: "",
+      schemaRevision: "schema_7",
+      dataRevision: 12,
+      definition: null,
+      capabilities: [capability(definition)],
+      recommendedDefaultsVersion: 1,
+    };
+    const relationPair = {
+      reciprocalDisplayName: "订单",
+      reciprocalCardinality: "many" as const,
+      sourceDisplayFieldId: "fld_order_number",
+    };
+    const intent = buildFieldChangeIntent({
+      action: "create", result: described, draft: null, relationPair,
+    });
+
+    expect(intent.relationPair).toEqual(relationPair);
+    relationPair.reciprocalDisplayName = "changed";
+    expect(intent.relationPair?.reciprocalDisplayName).toBe("订单");
+    expect(JSON.stringify(intent)).not.toContain("physicalName");
+  });
+
   it("chooses the preferred user-creatable capability and falls back safely", () => {
     const definition = field();
     const text: CapabilityV2 = {

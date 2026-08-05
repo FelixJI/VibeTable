@@ -38,6 +38,10 @@ internal static class RelationLookupRpcRegistry
             payload => HasString(payload, "relationId"),
             (gateway, payload, token) => gateway.SearchRelationTargetsAsync(payload, token)),
         new(
+            "relation.createTarget",
+            payload => HasStrings(payload, "relationId", "label", "idempotencyKey"),
+            (gateway, payload, token) => gateway.CreateRelationTargetAsync(payload, token)),
+        new(
             "relation.updateSingle",
             payload => HasStrings(
                     payload,

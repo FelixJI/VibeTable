@@ -68,7 +68,9 @@
     "query.page",
     "query.readRows",
     "query.validateSnapshot",
+    "query.view",
     "relation.applyDelta",
+    "relation.createTarget",
     "relation.previewDelta",
     "relation.searchTargets",
     "relation.updateSingle",
@@ -5721,6 +5723,46 @@
               "count"
             ],
             "type": "object"
+          },
+          "QuerySnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "snapshotId": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string"
+              },
+              "databaseId": {
+                "type": "string"
+              },
+              "table": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "schemaRevision": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "dataRevision": {
+                "type": "integer"
+              },
+              "normalizedQuery": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            },
+            "required": [
+              "snapshotId",
+              "digest",
+              "databaseId",
+              "table",
+              "schemaRevision",
+              "dataRevision",
+              "normalizedQuery"
+            ],
+            "type": "object"
           }
         },
         "additionalProperties": false,
@@ -5780,6 +5822,9 @@
           "totalRows": {
             "minimum": 0,
             "type": "integer"
+          },
+          "snapshot": {
+            "$ref": "#/$defs/QuerySnapshot"
           }
         },
         "required": [
@@ -5793,7 +5838,8 @@
           "offset",
           "limit",
           "filteredRows",
-          "totalRows"
+          "totalRows",
+          "snapshot"
         ],
         "type": "object"
       },
@@ -5840,7 +5886,16 @@
           "offset": 1,
           "limit": 1,
           "filteredRows": 1,
-          "totalRows": 1
+          "totalRows": 1,
+          "snapshot": {
+            "snapshotId": "00000000-0000-4000-8000-000000000001",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "databaseId": "00000000-0000-4000-8000-000000000001",
+            "table": "sample-value",
+            "schemaRevision": "schema_0001",
+            "dataRevision": 1,
+            "normalizedQuery": {}
+          }
         }
       },
       "error": {
@@ -5951,6 +6006,46 @@
               "count"
             ],
             "type": "object"
+          },
+          "QuerySnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "snapshotId": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string"
+              },
+              "databaseId": {
+                "type": "string"
+              },
+              "table": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "schemaRevision": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "dataRevision": {
+                "type": "integer"
+              },
+              "normalizedQuery": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            },
+            "required": [
+              "snapshotId",
+              "digest",
+              "databaseId",
+              "table",
+              "schemaRevision",
+              "dataRevision",
+              "normalizedQuery"
+            ],
+            "type": "object"
           }
         },
         "additionalProperties": false,
@@ -6010,6 +6105,9 @@
           "totalRows": {
             "minimum": 0,
             "type": "integer"
+          },
+          "snapshot": {
+            "$ref": "#/$defs/QuerySnapshot"
           }
         },
         "required": [
@@ -6023,7 +6121,8 @@
           "offset",
           "limit",
           "filteredRows",
-          "totalRows"
+          "totalRows",
+          "snapshot"
         ],
         "type": "object"
       },
@@ -6069,7 +6168,16 @@
           "offset": 1,
           "limit": 1,
           "filteredRows": 1,
-          "totalRows": 1
+          "totalRows": 1,
+          "snapshot": {
+            "snapshotId": "00000000-0000-4000-8000-000000000001",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "databaseId": "00000000-0000-4000-8000-000000000001",
+            "table": "sample-value",
+            "schemaRevision": "schema_0001",
+            "dataRevision": 1,
+            "normalizedQuery": {}
+          }
         }
       },
       "error": {
@@ -11398,6 +11506,133 @@
       "resultModel": "PresetsResult",
       "resultSchema": {
         "$defs": {
+          "FilterCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "contains",
+                  "eq",
+                  "ne",
+                  "starts_with",
+                  "ends_with",
+                  "gt",
+                  "lt",
+                  "gte",
+                  "lte",
+                  "between",
+                  "in",
+                  "is_null",
+                  "is_not_null",
+                  "regex"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "default": null
+              },
+              "logic": {
+                "default": "AND",
+                "enum": [
+                  "AND",
+                  "OR"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "operator"
+            ],
+            "type": "object"
+          },
+          "FilterGroup": {
+            "additionalProperties": false,
+            "properties": {
+              "groupLogic": {
+                "default": "AND",
+                "enum": [
+                  "AND",
+                  "OR"
+                ],
+                "type": "string"
+              },
+              "logic": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "AND",
+                      "OR"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "filters": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/FilterCondition"
+                    },
+                    {
+                      "$ref": "#/$defs/FilterGroup"
+                    }
+                  ]
+                },
+                "maxItems": 50,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "filters"
+            ],
+            "type": "object"
+          },
+          "GroupCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "direction": {
+                "default": "asc",
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "type": "string"
+              },
+              "bucket": {
+                "default": "value",
+                "enum": [
+                  "value",
+                  "year",
+                  "quarter",
+                  "month",
+                  "week",
+                  "day",
+                  "hour"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "field"
+            ],
+            "type": "object"
+          },
           "PresetEntry": {
             "additionalProperties": false,
             "properties": {
@@ -11475,16 +11710,37 @@
             "properties": {
               "filters": {
                 "items": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/FilterCondition"
+                    },
+                    {
+                      "$ref": "#/$defs/FilterGroup"
+                    }
+                  ]
                 },
+                "maxItems": 50,
                 "type": "array"
               },
               "sorts": {
                 "items": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "$ref": "#/$defs/SortCondition"
                 },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "groups": {
+                "items": {
+                  "$ref": "#/$defs/GroupCondition"
+                },
+                "maxItems": 2,
+                "type": "array"
+              },
+              "summaries": {
+                "items": {
+                  "$ref": "#/$defs/SummaryCondition"
+                },
+                "maxItems": 3,
                 "type": "array"
               },
               "search": {
@@ -11505,9 +11761,75 @@
                 "type": "string"
               },
               "kind": {
-                "const": "table",
                 "default": "table",
+                "enum": [
+                  "table",
+                  "calendar",
+                  "timeline",
+                  "kanban",
+                  "gallery"
+                ],
                 "type": "string"
+              },
+              "dateField": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "endDateField": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "titleField": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "groupField": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "coverField": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "columns": {
                 "items": {
@@ -11531,6 +11853,56 @@
                 "type": "boolean"
               }
             },
+            "type": "object"
+          },
+          "SortCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "direction": {
+                "default": "asc",
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "type": "string"
+              },
+              "nullsLast": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "field"
+            ],
+            "type": "object"
+          },
+          "SummaryCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "function": {
+                "enum": [
+                  "sum",
+                  "avg",
+                  "min",
+                  "max"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "function"
+            ],
             "type": "object"
           }
         },
@@ -11589,21 +11961,169 @@
       "resultModel": "PresetEntry",
       "resultSchema": {
         "$defs": {
+          "FilterCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "contains",
+                  "eq",
+                  "ne",
+                  "starts_with",
+                  "ends_with",
+                  "gt",
+                  "lt",
+                  "gte",
+                  "lte",
+                  "between",
+                  "in",
+                  "is_null",
+                  "is_not_null",
+                  "regex"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "default": null
+              },
+              "logic": {
+                "default": "AND",
+                "enum": [
+                  "AND",
+                  "OR"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "operator"
+            ],
+            "type": "object"
+          },
+          "FilterGroup": {
+            "additionalProperties": false,
+            "properties": {
+              "groupLogic": {
+                "default": "AND",
+                "enum": [
+                  "AND",
+                  "OR"
+                ],
+                "type": "string"
+              },
+              "logic": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "AND",
+                      "OR"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "filters": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/FilterCondition"
+                    },
+                    {
+                      "$ref": "#/$defs/FilterGroup"
+                    }
+                  ]
+                },
+                "maxItems": 50,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "filters"
+            ],
+            "type": "object"
+          },
+          "GroupCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "direction": {
+                "default": "asc",
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "type": "string"
+              },
+              "bucket": {
+                "default": "value",
+                "enum": [
+                  "value",
+                  "year",
+                  "quarter",
+                  "month",
+                  "week",
+                  "day",
+                  "hour"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "field"
+            ],
+            "type": "object"
+          },
           "PresetView": {
             "additionalProperties": false,
             "properties": {
               "filters": {
                 "items": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/FilterCondition"
+                    },
+                    {
+                      "$ref": "#/$defs/FilterGroup"
+                    }
+                  ]
                 },
+                "maxItems": 50,
                 "type": "array"
               },
               "sorts": {
                 "items": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "$ref": "#/$defs/SortCondition"
                 },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "groups": {
+                "items": {
+                  "$ref": "#/$defs/GroupCondition"
+                },
+                "maxItems": 2,
+                "type": "array"
+              },
+              "summaries": {
+                "items": {
+                  "$ref": "#/$defs/SummaryCondition"
+                },
+                "maxItems": 3,
                 "type": "array"
               },
               "search": {
@@ -11624,9 +12144,75 @@
                 "type": "string"
               },
               "kind": {
-                "const": "table",
                 "default": "table",
+                "enum": [
+                  "table",
+                  "calendar",
+                  "timeline",
+                  "kanban",
+                  "gallery"
+                ],
                 "type": "string"
+              },
+              "dateField": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "endDateField": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "titleField": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "groupField": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "coverField": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "columns": {
                 "items": {
@@ -11650,6 +12236,56 @@
                 "type": "boolean"
               }
             },
+            "type": "object"
+          },
+          "SortCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "direction": {
+                "default": "asc",
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "type": "string"
+              },
+              "nullsLast": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "field"
+            ],
+            "type": "object"
+          },
+          "SummaryCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "function": {
+                "enum": [
+                  "sum",
+                  "avg",
+                  "min",
+                  "max"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "function"
+            ],
             "type": "object"
           }
         },
@@ -11734,10 +12370,17 @@
           "view": {
             "filters": [],
             "sorts": [],
+            "groups": [],
+            "summaries": [],
             "search": "",
             "visibleFields": [],
             "layout": "table",
             "kind": "table",
+            "dateField": null,
+            "endDateField": null,
+            "titleField": null,
+            "groupField": null,
+            "coverField": null,
             "columns": [],
             "density": "comfortable",
             "isDefault": false
@@ -11757,10 +12400,17 @@
           "view": {
             "filters": [],
             "sorts": [],
+            "groups": [],
+            "summaries": [],
             "search": "",
             "visibleFields": [],
             "layout": "table",
             "kind": "table",
+            "dateField": null,
+            "endDateField": null,
+            "titleField": null,
+            "groupField": null,
+            "coverField": null,
             "columns": [],
             "density": "comfortable",
             "isDefault": false
@@ -12079,6 +12729,172 @@
       }
     },
     {
+      "method": "query.view",
+      "paramsModel": "QueryViewParams",
+      "resultModel": "QueryViewResult",
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "filteredRows",
+          "limit",
+          "offset",
+          "rows",
+          "snapshot",
+          "totalRows"
+        ],
+        "properties": {
+          "filteredRows": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "name"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "snapshot": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "dataRevision",
+              "databaseId",
+              "digest",
+              "normalizedQuery",
+              "schemaRevision",
+              "snapshotId",
+              "table"
+            ],
+            "properties": {
+              "dataRevision": {
+                "type": "integer"
+              },
+              "databaseId": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string"
+              },
+              "normalizedQuery": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "filters",
+                  "keyword",
+                  "limit",
+                  "offset",
+                  "sorts"
+                ],
+                "properties": {
+                  "filters": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "keyword": {
+                    "type": "string"
+                  },
+                  "limit": {
+                    "type": "integer"
+                  },
+                  "offset": {
+                    "type": "integer"
+                  },
+                  "sorts": {
+                    "type": "array",
+                    "items": {}
+                  }
+                }
+              },
+              "schemaRevision": {
+                "type": "string"
+              },
+              "snapshotId": {
+                "type": "string"
+              },
+              "table": {
+                "type": "string"
+              }
+            }
+          },
+          "totalRows": {
+            "type": "integer"
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "rpc-068",
+        "method": "query.view",
+        "params": {
+          "tableId": "00000000-0000-4000-8000-000000000001",
+          "view": {}
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "rpc-068",
+        "result": {
+          "rows": [
+            {
+              "id": "row-1",
+              "name": "Ada"
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 1,
+          "snapshot": {
+            "snapshotId": "snapshot-1",
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "databaseId": "local",
+            "table": "orders",
+            "schemaRevision": "schema_0001",
+            "dataRevision": 1,
+            "normalizedQuery": {
+              "keyword": "",
+              "filters": [],
+              "sorts": [],
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "rpc-068",
+        "error": {
+          "code": "request.invalid",
+          "message": "query.view request validation failed.",
+          "data": {
+            "method": "query.view",
+            "path": "params",
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
       "method": "relation.applyDelta",
       "paramsModel": "RelationApplyDeltaParams",
       "resultModel": "RelationDeltaResult",
@@ -12164,7 +12980,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-068",
+        "id": "rpc-069",
         "method": "relation.applyDelta",
         "params": {
           "adds": "sample-value",
@@ -12178,7 +12994,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-068",
+        "id": "rpc-069",
         "result": {
           "outcome": "committed",
           "current": [
@@ -12197,12 +13013,126 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-068",
+        "id": "rpc-069",
         "error": {
           "code": "request.invalid",
           "message": "relation.applyDelta request validation failed.",
           "data": {
             "method": "relation.applyDelta",
+            "path": "params",
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "method": "relation.createTarget",
+      "paramsModel": "RelationCreateTargetParams",
+      "resultModel": "RelationCreateTargetResult",
+      "resultSchema": {
+        "$defs": {
+          "RelationTargetRef": {
+            "additionalProperties": false,
+            "properties": {
+              "collection": {
+                "type": "string"
+              },
+              "itemId": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "junctionId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "junctionRevision": {
+                "anyOf": [
+                  {
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "junctionValues": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            },
+            "required": [
+              "collection",
+              "itemId",
+              "label"
+            ],
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "outcome": {
+            "const": "committed",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/$defs/RelationTargetRef"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "target",
+          "requestId"
+        ],
+        "type": "object"
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "rpc-070",
+        "method": "relation.createTarget",
+        "params": {
+          "idempotencyKey": "00000000-0000-4000-8000-000000000001",
+          "label": "sample-value",
+          "relationId": "00000000-0000-4000-8000-000000000001"
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "rpc-070",
+        "result": {
+          "outcome": "committed",
+          "target": {
+            "collection": "orders",
+            "itemId": "00000000-0000-4000-8000-000000000001",
+            "label": "sample-value",
+            "junctionId": null,
+            "junctionRevision": null,
+            "junctionValues": {}
+          },
+          "requestId": "00000000-0000-4000-8000-000000000001"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "rpc-070",
+        "error": {
+          "code": "request.invalid",
+          "message": "relation.createTarget request validation failed.",
+          "data": {
+            "method": "relation.createTarget",
             "path": "params",
             "retryable": false
           }
@@ -12465,7 +13395,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-069",
+        "id": "rpc-071",
         "method": "relation.previewDelta",
         "params": {
           "adds": "sample-value",
@@ -12479,7 +13409,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-069",
+        "id": "rpc-071",
         "result": {
           "delta": {
             "relationId": "00000000-0000-4000-8000-000000000001",
@@ -12504,7 +13434,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-069",
+        "id": "rpc-071",
         "error": {
           "code": "request.invalid",
           "message": "relation.previewDelta request validation failed.",
@@ -12591,7 +13521,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-070",
+        "id": "rpc-072",
         "method": "relation.searchTargets",
         "params": {
           "relationId": "00000000-0000-4000-8000-000000000001"
@@ -12599,7 +13529,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-070",
+        "id": "rpc-072",
         "result": {
           "items": [
             {
@@ -12616,7 +13546,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-070",
+        "id": "rpc-072",
         "error": {
           "code": "request.invalid",
           "message": "relation.searchTargets request validation failed.",
@@ -12718,7 +13648,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-071",
+        "id": "rpc-073",
         "method": "relation.updateSingle",
         "params": {
           "expectedSchemaRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -12730,7 +13660,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-071",
+        "id": "rpc-073",
         "result": {
           "outcome": "committed",
           "current": null,
@@ -12740,7 +13670,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-071",
+        "id": "rpc-073",
         "error": {
           "code": "request.invalid",
           "message": "relation.updateSingle request validation failed.",
@@ -12761,7 +13691,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-072",
+        "id": "rpc-074",
         "method": "schema.apply",
         "params": {
           "definition": {},
@@ -12770,7 +13700,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-072",
+        "id": "rpc-074",
         "result": {
           "contractVersion": "1.0",
           "tableId": "tbl_order_lines",
@@ -13165,7 +14095,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-072",
+        "id": "rpc-074",
         "error": {
           "code": "request.invalid",
           "message": "schema.apply request validation failed.",
@@ -13199,7 +14129,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-073",
+        "id": "rpc-075",
         "method": "schema.delete",
         "params": {
           "expectedRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -13208,7 +14138,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-073",
+        "id": "rpc-075",
         "result": {
           "deleted": true,
           "tableId": "orders"
@@ -13216,7 +14146,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-073",
+        "id": "rpc-075",
         "error": {
           "code": "request.invalid",
           "message": "schema.delete request validation failed.",
@@ -13503,6 +14433,14 @@
                 "default": false,
                 "type": "boolean"
               },
+              "pairId": {
+                "default": "",
+                "type": "string"
+              },
+              "reciprocalFieldId": {
+                "default": "",
+                "type": "string"
+              },
               "state": {
                 "default": "valid",
                 "enum": [
@@ -13618,6 +14556,10 @@
               "primaryKey": {
                 "type": "string"
               },
+              "primaryDisplayFieldId": {
+                "default": "",
+                "type": "string"
+              },
               "columns": {
                 "items": {
                   "$ref": "#/$defs/ColumnSchema"
@@ -13686,7 +14628,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-074",
+        "id": "rpc-076",
         "method": "schema.describe",
         "params": {
           "accepts": [],
@@ -13696,7 +14638,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-074",
+        "id": "rpc-076",
         "result": {
           "contract": "vibetable.schema-describe.v1",
           "collection": "orders",
@@ -13737,7 +14679,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-074",
+        "id": "rpc-076",
         "error": {
           "code": "request.invalid",
           "message": "schema.describe request validation failed.",
@@ -13758,7 +14700,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-075",
+        "id": "rpc-077",
         "method": "schema.getTable",
         "params": {
           "tableId": "00000000-0000-4000-8000-000000000001"
@@ -13766,7 +14708,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-075",
+        "id": "rpc-077",
         "result": {
           "contractVersion": "1.0",
           "tableId": "tbl_order_lines",
@@ -14161,7 +15103,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-075",
+        "id": "rpc-077",
         "error": {
           "code": "request.invalid",
           "message": "schema.getTable request validation failed.",
@@ -14194,13 +15136,13 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-076",
+        "id": "rpc-078",
         "method": "schema.list",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-076",
+        "id": "rpc-078",
         "result": {
           "tables": [
             {
@@ -14599,7 +15541,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-076",
+        "id": "rpc-078",
         "error": {
           "code": "request.invalid",
           "message": "schema.list request validation failed.",
@@ -14652,7 +15594,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-077",
+        "id": "rpc-079",
         "method": "schema.validate",
         "params": {
           "definition": {},
@@ -14661,7 +15603,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-077",
+        "id": "rpc-079",
         "result": {
           "definition": {
             "contractVersion": "1.0",
@@ -15065,7 +16007,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-077",
+        "id": "rpc-079",
         "error": {
           "code": "request.invalid",
           "message": "schema.validate request validation failed.",
@@ -15142,13 +16084,13 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-078",
+        "id": "rpc-080",
         "method": "settings.readDevice",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-078",
+        "id": "rpc-080",
         "result": {
           "schemaVersion": 1,
           "theme": {
@@ -15163,7 +16105,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-078",
+        "id": "rpc-080",
         "error": {
           "code": "request.invalid",
           "message": "settings.readDevice request validation failed.",
@@ -15226,7 +16168,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-079",
+        "id": "rpc-081",
         "method": "settings.readShared",
         "params": {
           "collection": "vibetable_settings",
@@ -15235,7 +16177,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-079",
+        "id": "rpc-081",
         "result": {
           "settings": [],
           "cachedOn": "",
@@ -15244,7 +16186,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-079",
+        "id": "rpc-081",
         "error": {
           "code": "request.invalid",
           "message": "settings.readShared request validation failed.",
@@ -15321,7 +16263,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-080",
+        "id": "rpc-082",
         "method": "settings.saveDevice",
         "params": {
           "settings": {
@@ -15339,7 +16281,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-080",
+        "id": "rpc-082",
         "result": {
           "schemaVersion": 1,
           "theme": {
@@ -15354,7 +16296,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-080",
+        "id": "rpc-082",
         "error": {
           "code": "request.invalid",
           "message": "settings.saveDevice request validation failed.",
@@ -15384,7 +16326,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-081",
+        "id": "rpc-083",
         "method": "shortcut.delete",
         "params": {
           "shortcutId": "00000000-0000-4000-8000-000000000001"
@@ -15392,14 +16334,14 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-081",
+        "id": "rpc-083",
         "result": {
           "deleted": "shortcut-1"
         }
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-081",
+        "id": "rpc-083",
         "error": {
           "code": "request.invalid",
           "message": "shortcut.delete request validation failed.",
@@ -15447,7 +16389,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-082",
+        "id": "rpc-084",
         "method": "shortcut.launch",
         "params": {
           "shortcutId": "00000000-0000-4000-8000-000000000001"
@@ -15455,7 +16397,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-082",
+        "id": "rpc-084",
         "result": {
           "shortcutId": "00000000-0000-4000-8000-000000000001",
           "launched": false,
@@ -15464,7 +16406,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-082",
+        "id": "rpc-084",
         "error": {
           "code": "request.invalid",
           "message": "shortcut.launch request validation failed.",
@@ -15553,20 +16495,20 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-083",
+        "id": "rpc-085",
         "method": "shortcut.list",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-083",
+        "id": "rpc-085",
         "result": {
           "shortcuts": []
         }
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-083",
+        "id": "rpc-085",
         "error": {
           "code": "request.invalid",
           "message": "shortcut.list request validation failed.",
@@ -15641,7 +16583,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-084",
+        "id": "rpc-086",
         "method": "shortcut.save",
         "params": {
           "shortcut": {
@@ -15656,7 +16598,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-084",
+        "id": "rpc-086",
         "result": {
           "shortcutId": "00000000-0000-4000-8000-000000000001",
           "target": "built-in-command",
@@ -15668,7 +16610,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-084",
+        "id": "rpc-086",
         "error": {
           "code": "request.invalid",
           "message": "shortcut.save request validation failed.",
@@ -15709,7 +16651,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-085",
+        "id": "rpc-087",
         "method": "system.handshake",
         "params": {
           "clientVersion": "sample-value",
@@ -15718,7 +16660,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-085",
+        "id": "rpc-087",
         "result": {
           "backendVersion": "sample-value",
           "protocolVersion": "sample-value",
@@ -15729,7 +16671,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-085",
+        "id": "rpc-087",
         "error": {
           "code": "request.invalid",
           "message": "system.handshake request validation failed.",
@@ -15857,7 +16799,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-086",
+        "id": "rpc-088",
         "method": "table.applyPaste",
         "params": {
           "collection": "orders",
@@ -15867,7 +16809,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-086",
+        "id": "rpc-088",
         "result": {
           "collection": "orders",
           "outcome": "committed",
@@ -15880,7 +16822,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-086",
+        "id": "rpc-088",
         "error": {
           "code": "request.invalid",
           "message": "table.applyPaste request validation failed.",
@@ -16099,7 +17041,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-087",
+        "id": "rpc-089",
         "method": "table.previewPaste",
         "params": {
           "collection": "orders",
@@ -16124,7 +17066,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-087",
+        "id": "rpc-089",
         "result": {
           "collection": "orders",
           "schemaRevision": "schema_0001",
@@ -16156,7 +17098,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-087",
+        "id": "rpc-089",
         "error": {
           "code": "request.invalid",
           "message": "table.previewPaste request validation failed.",
@@ -16774,7 +17716,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-090",
+        "id": "rpc-092",
         "method": "task.cancel",
         "params": {
           "taskId": "00000000-0000-4000-8000-000000000001"
@@ -16782,7 +17724,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-090",
+        "id": "rpc-092",
         "result": {
           "taskId": "00000000-0000-4000-8000-000000000001",
           "kind": "data.import",
@@ -16798,7 +17740,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-090",
+        "id": "rpc-092",
         "error": {
           "code": "request.invalid",
           "message": "task.cancel request validation failed.",
@@ -16889,7 +17831,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-091",
+        "id": "rpc-093",
         "method": "task.create",
         "params": {
           "kind": "data.import",
@@ -16898,7 +17840,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-091",
+        "id": "rpc-093",
         "result": {
           "taskId": "00000000-0000-4000-8000-000000000001",
           "kind": "data.import",
@@ -16914,7 +17856,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-091",
+        "id": "rpc-093",
         "error": {
           "code": "request.invalid",
           "message": "task.create request validation failed.",
@@ -17005,7 +17947,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-092",
+        "id": "rpc-094",
         "method": "task.status",
         "params": {
           "taskId": "00000000-0000-4000-8000-000000000001"
@@ -17013,7 +17955,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-092",
+        "id": "rpc-094",
         "result": {
           "taskId": "00000000-0000-4000-8000-000000000001",
           "kind": "data.import",
@@ -17029,7 +17971,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-092",
+        "id": "rpc-094",
         "error": {
           "code": "request.invalid",
           "message": "task.status request validation failed.",
@@ -17089,7 +18031,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-093",
+        "id": "rpc-095",
         "method": "version.compare",
         "params": {
           "collection": "orders",
@@ -17100,7 +18042,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-093",
+        "id": "rpc-095",
         "result": {
           "collection": "orders",
           "itemId": "00000000-0000-4000-8000-000000000001",
@@ -17112,7 +18054,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-093",
+        "id": "rpc-095",
         "error": {
           "code": "request.invalid",
           "message": "version.compare request validation failed.",
@@ -17186,7 +18128,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-094",
+        "id": "rpc-096",
         "method": "version.create",
         "params": {
           "collection": "orders",
@@ -17198,7 +18140,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-094",
+        "id": "rpc-096",
         "result": {
           "id": "sample-value",
           "key": "",
@@ -17212,7 +18154,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-094",
+        "id": "rpc-096",
         "error": {
           "code": "request.invalid",
           "message": "version.create request validation failed.",
@@ -17257,7 +18199,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-095",
+        "id": "rpc-097",
         "method": "version.delete",
         "params": {
           "collection": "orders",
@@ -17269,7 +18211,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-095",
+        "id": "rpc-097",
         "result": {
           "deleted": "00000000-0000-4000-8000-000000000001",
           "revision": "revision-1",
@@ -17281,7 +18223,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-095",
+        "id": "rpc-097",
         "error": {
           "code": "request.invalid",
           "message": "version.delete request validation failed.",
@@ -17383,7 +18325,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-096",
+        "id": "rpc-098",
         "method": "version.list",
         "params": {
           "collection": "orders",
@@ -17392,7 +18334,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-096",
+        "id": "rpc-098",
         "result": {
           "collection": "orders",
           "itemId": "00000000-0000-4000-8000-000000000001",
@@ -17401,7 +18343,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-096",
+        "id": "rpc-098",
         "error": {
           "code": "request.invalid",
           "message": "version.list request validation failed.",
@@ -17465,7 +18407,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-097",
+        "id": "rpc-099",
         "method": "version.promote",
         "params": {
           "collection": "orders",
@@ -17477,7 +18419,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-097",
+        "id": "rpc-099",
         "result": {
           "promoted": "version-1",
           "restoredToRevision": "revision-1",
@@ -17492,7 +18434,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-097",
+        "id": "rpc-099",
         "error": {
           "code": "request.invalid",
           "message": "version.promote request validation failed.",
@@ -17545,7 +18487,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-098",
+        "id": "rpc-100",
         "method": "version.save",
         "params": {
           "collection": "orders",
@@ -17557,7 +18499,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-098",
+        "id": "rpc-100",
         "result": {
           "saved": "version-1",
           "changeSetId": "change-set-1",
@@ -17571,7 +18513,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-098",
+        "id": "rpc-100",
         "error": {
           "code": "request.invalid",
           "message": "version.save request validation failed.",

@@ -3,6 +3,7 @@ import type {
   FieldApplyReceiptV2,
   FieldChangeActionV2,
   LogicalTypeV2,
+  SchemaDescribeResult,
 } from "@/contracts";
 import {
   parseFieldApplyReceiptV2,
@@ -14,6 +15,12 @@ import {
 import { useHostBridge } from "@/services/bridgeContext";
 import { useFieldSettingsStore } from "./store";
 import { buildFieldChangeIntent } from "./model";
+import { useWorkspaceStore } from "@/stores/workspaceStore";
+
+const RELATION_ACCEPTS = [
+  "vibetable.relation-capabilities.v1",
+  "vibetable.lookup-query.v1",
+] as const;
 
 function operationId(): string {
   return globalThis.crypto?.randomUUID?.()
@@ -46,10 +53,13 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   cancelMigration: () => Promise<void>;
   loadRecycleBin: () => Promise<void>;
   restore: (fieldId: string) => Promise<void>;
+  loadRelationCatalog: () => Promise<void>;
+  selectRelationTarget: (tableId: string) => Promise<void>;
   dispose: () => void;
 } {
   const bridge = useHostBridge();
   const store = useFieldSettingsStore();
+  const workspace = useWorkspaceStore();
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let generation = 0;
   let frozenOperationId: string | null = null;
@@ -107,6 +117,9 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
         conversionRule: store.conversionRule,
         confirmation: store.confirmation,
         backupReceipt: store.backupReceipt,
+        relationPair: action === "create" && store.draft?.logicalType === "relation"
+          ? store.relationPair
+          : null,
       });
       store.setPlan(parseFieldChangePlanV2(
         unwrapFieldResult(await bridge.request("field.change.plan", intent)),
@@ -229,6 +242,75 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     }
   }
 
+  async function loadRelationCatalog(): Promise<void> {
+    if (!store.result || store.draft?.logicalType !== "relation") return;
+    const tableId = store.result.tableId;
+    const tables = workspace.collections.map(item => ({
+      tableId: item.collection,
+      displayName: item.displayName ?? workspace.displayNames[item.collection] ?? item.collection,
+    }));
+    if (!tables.some(item => item.tableId === tableId)) {
+      tables.unshift({ tableId, displayName: workspace.displayNames[tableId] ?? tableId });
+    }
+    store.setRelationTables(tables);
+    if (store.relationPair && !store.relationPair.reciprocalDisplayName) {
+      const source = tables.find(item => item.tableId === tableId);
+      store.patchRelationPair({ reciprocalDisplayName: source?.displayName ?? "关联记录" });
+    }
+    try {
+      store.beginRelationCatalog();
+      const sourceSchema = await describeRelationTable(tableId);
+      store.setRelationSchema("source", sourceSchema);
+      if (store.relationPair && !store.relationPair.sourceDisplayFieldId) {
+        store.patchRelationPair({
+          sourceDisplayFieldId: sourceSchema.primaryDisplayFieldId
+            || sourceSchema.columns.find(column => column.fieldId && column.kind !== "system")?.fieldId
+            || "",
+        });
+      }
+      const targetTableId = store.draft.relation?.targetTableId;
+      if (targetTableId) await selectRelationTarget(targetTableId);
+    } catch (error) {
+      store.failRelationCatalog(error);
+    }
+  }
+
+  async function selectRelationTarget(tableId: string): Promise<void> {
+    if (!store.draft?.relation) return;
+    store.patchDraft({
+      relation: { ...store.draft.relation, targetTableId: tableId, displayFieldId: "" },
+    });
+    try {
+      store.beginRelationCatalog();
+      const schema = tableId === store.result?.tableId && store.relationSourceSchema
+        ? store.relationSourceSchema
+        : await describeRelationTable(tableId);
+      store.setRelationSchema("target", schema);
+      store.patchDraft({
+        relation: {
+          ...store.draft.relation,
+          displayFieldId: schema.primaryDisplayFieldId
+            || schema.columns.find(column => column.fieldId && column.kind !== "system")?.fieldId
+            || "",
+        },
+      });
+    } catch (error) {
+      store.failRelationCatalog(error);
+    }
+  }
+
+  async function describeRelationTable(tableId: string) {
+    const result = await bridge.request("schema.describe", {
+      collection: tableId,
+      requestGeneration: 0,
+      accepts: RELATION_ACCEPTS,
+    }) as SchemaDescribeResult;
+    if (result.contract !== "vibetable.schema-describe.v1" || result.collection !== tableId) {
+      throw new Error("关联字段目录响应与所选数据表不匹配");
+    }
+    return result.schema;
+  }
+
   function dispose(): void {
     generation += 1;
     stopPolling();
@@ -237,6 +319,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
 
   return {
     openCreate, openEdit, requestClose, plan, apply, refreshMigration,
-    cancelMigration, loadRecycleBin, restore, dispose,
+    cancelMigration, loadRecycleBin, restore, loadRelationCatalog,
+    selectRelationTarget, dispose,
   };
 }

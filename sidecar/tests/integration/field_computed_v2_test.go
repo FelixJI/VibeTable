@@ -57,10 +57,28 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 		TargetTableID: target.TableID, Cardinality: "one",
 		DeletePolicy: "setNull", DisplayField: title.FieldID,
 	}
-	relation := applyCreatedField(
-		t, ctx, catalog, planner, executor, source.TableID,
-		relationDraft, actor, "op_v2_relation",
-	)
+	sourceRevisions, err := catalog.Revisions(ctx, source.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relationPlan, err := planner.Plan(ctx, v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: source.TableID,
+		ExpectedSchemaRev: sourceRevisions.Schema, Draft: &relationDraft, Actor: actor,
+		RelationPair: &v2.RelationPairDraft{
+			ReciprocalDisplayName: "Sources", ReciprocalCardinality: "many",
+			SourceDisplayFieldID: name.FieldID,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relation, err := executor.Apply(ctx, v2.ApplyRequest{
+		PlanID: relationPlan.PlanID, PlanHash: relationPlan.PlanHash,
+		OperationID: "op_v2_relation", Actor: actor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	formulaDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "Upper name")
 	formulaDraft.Formula = &v2.FormulaSpec{
 		Language: "cel-v1", Source: "upper(" + name.Definition.Identity.PhysicalName + ")",

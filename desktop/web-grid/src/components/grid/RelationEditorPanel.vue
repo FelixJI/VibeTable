@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { NButton, NEmpty, NInput, NModal, NSelect, NSpin } from "naive-ui";
-import { Check, Link2, Search, X } from "lucide-vue-next";
+import { Check, Link2, Plus, Search, X } from "lucide-vue-next";
 import type { NormalizedRelationDescriptor, RelationTargetRef } from "@/contracts";
 import { targetKey } from "@/stores/relationLookupStore";
 import { t } from "@/i18n";
@@ -11,6 +11,7 @@ const props = defineProps<{
   descriptor: NormalizedRelationDescriptor | null;
   selected: readonly RelationTargetRef[];
   candidates: readonly RelationTargetRef[];
+  total?: number;
   loading?: boolean;
   applying?: boolean;
   error?: string | null;
@@ -26,6 +27,8 @@ const emit = defineEmits<{
   patchJunction: [target: RelationTargetRef, field: string, value: string];
   apply: [];
   collectionChange: [collection: string];
+  loadMore: [];
+  create: [label: string];
 }>();
 
 const multi = computed(() => props.descriptor?.kind !== "m2o");
@@ -89,6 +92,18 @@ function onQuery(value: string): void {
         <template #prefix><Search :size="14" /></template>
       </NInput>
 
+      <NButton
+        v-if="query?.trim() && descriptor.kind !== 'm2a' && !descriptor.junction"
+        secondary
+        type="primary"
+        :loading="applying"
+        data-testid="relation-create-target"
+        @click="emit('create', query.trim())"
+      >
+        <template #icon><Plus :size="14" /></template>
+        {{ t("relationEditor.create", { label: query.trim() }) }}
+      </NButton>
+
       <div v-if="selected.length" class="relation-editor__selected">
         <div v-for="target in selected" :key="targetKey(target)" class="relation-editor__selected-row">
           <span class="relation-editor__token">
@@ -139,6 +154,15 @@ function onQuery(value: string): void {
             :description="t('relationEditor.empty')"
             size="small"
           />
+          <NButton
+            v-if="!loading && candidates.length < (total ?? 0)"
+            quaternary
+            size="small"
+            data-testid="relation-load-more"
+            @click="emit('loadMore')"
+          >
+            加载更多（{{ candidates.length }} / {{ total }}）
+          </NButton>
         </div>
       </NSpin>
 

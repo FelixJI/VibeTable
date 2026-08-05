@@ -32,6 +32,8 @@ class NormalizedRelationDescriptor(CamelModel):
     preset: Literal["standard", "file", "files", "translations"] = "standard"
     self_relation: bool = False
     managed: bool = False
+    pair_id: str = Field(default="", exclude_if=lambda value: not value)
+    reciprocal_field_id: str = Field(default="", exclude_if=lambda value: not value)
     state: Literal["valid", "readonly", "invalid"] = "valid"
     display_template: str | None = None
     diagnostics: list[RelationDiagnostic] = Field(default_factory=list)
@@ -40,6 +42,7 @@ class NormalizedRelationDescriptor(CamelModel):
 class SchemaSnapshot(CamelModel):
     collection: str
     primary_key: str
+    primary_display_field_id: str = Field(default="", exclude_if=lambda value: not value)
     columns: list[ColumnSchema]
     normalized_relations: list[NormalizedRelationDescriptor] = Field(default_factory=list)
     schema_revision: str
@@ -97,6 +100,12 @@ class RelationSearchParams(CamelModel):
 class RelationSearchResult(CamelModel):
     items: list[RelationTargetRef]
     total: int = Field(ge=0)
+
+
+class RelationCreateTargetResult(CamelModel):
+    outcome: Literal["committed"]
+    target: RelationTargetRef
+    request_id: str
 
 
 class RelationSingleUpdateParams(CamelModel):
@@ -164,6 +173,7 @@ class RelationDeltaPreview(CamelModel):
 __all__ = [
     "NormalizedRelationDescriptor",
     "RelationAdd",
+    "RelationCreateTargetResult",
     "RelationDelta",
     "RelationDeltaPreview",
     "RelationDeltaResult",

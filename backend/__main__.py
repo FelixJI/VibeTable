@@ -229,6 +229,7 @@ def _register_pocketbase_product_methods(
         "history.applyRestore": service.apply_history_restore,
         "events.reconcile": service.reconcile,
         "relation.searchTargets": service.search_relation_targets,
+        "relation.createTarget": service.create_relation_target,
         "relation.updateSingle": service.update_single_relation,
         "relation.previewDelta": service.preview_relation_delta,
         "relation.applyDelta": service.apply_relation_delta,

@@ -10,6 +10,7 @@ import type {
   FieldMigrationStatusV2,
   FieldSettingsDescribeResultV2,
   LogicalTypeV2,
+  SchemaSnapshot,
 } from "@/contracts";
 import {
   draftFromCapability,
@@ -29,6 +30,15 @@ export type FieldSettingsPhase =
   | "migrating"
   | "failed";
 
+export type RelationPairDraft = NonNullable<
+  import("@/contracts").FieldChangeIntentV2["relationPair"]
+>;
+
+export interface RelationTableOption {
+  readonly tableId: string;
+  readonly displayName: string;
+}
+
 export const useFieldSettingsStore = defineStore("field-settings", () => {
   const open = ref(false);
   const phase = ref<FieldSettingsPhase>("idle");
@@ -46,6 +56,12 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const confirmations = ref<string[]>([]);
   const error = ref<string | null>(null);
   const errorCode = ref<string | null>(null);
+  const relationPair = ref<RelationPairDraft | null>(null);
+  const relationTables = ref<readonly RelationTableOption[]>([]);
+  const relationSourceSchema = ref<SchemaSnapshot | null>(null);
+  const relationTargetSchema = ref<SchemaSnapshot | null>(null);
+  const relationCatalogLoading = ref(false);
+  const relationCatalogError = ref<string | null>(null);
 
   const capabilities = computed<readonly CapabilityV2[]>(
     () => result.value?.capabilities ?? [],
@@ -67,6 +83,11 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     && phase.value !== "planning"
     && phase.value !== "applying"
     && !!draft.value?.displayName.trim()
+    && (draft.value?.logicalType !== "relation" || !!draft.value.relation?.targetTableId)
+    && (draft.value?.logicalType !== "relation" || !!draft.value.relation?.displayFieldId)
+    && (action.value !== "create" || draft.value?.logicalType !== "relation"
+      || !!relationPair.value?.reciprocalDisplayName.trim()
+      && !!relationPair.value?.sourceDisplayFieldId)
     && (action.value !== "convert"
       || sourceCapability.value?.conversionRules.length === 0
       || conversionRule.value.length > 0),
@@ -93,6 +114,12 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     receipt.value = null;
     migration.value = null;
     confirmations.value = [];
+    relationPair.value = null;
+    relationTables.value = [];
+    relationSourceSchema.value = null;
+    relationTargetSchema.value = null;
+    relationCatalogLoading.value = false;
+    relationCatalogError.value = null;
   }
 
   function load(described: FieldSettingsDescribeResultV2): void {
@@ -101,6 +128,13 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     original.value = described.definition ? draftFromDefinition(described.definition) : null;
     draft.value = next;
     action.value = described.definition ? "update" : "create";
+    relationPair.value = !described.definition && next.logicalType === "relation"
+      ? {
+        reciprocalDisplayName: "",
+        reciprocalCardinality: "many",
+        sourceDisplayFieldId: "",
+      }
+      : null;
     phase.value = "editing";
     error.value = null;
     errorCode.value = null;
@@ -120,7 +154,41 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
       result.value?.definition ? "update" : "create"
     );
     conversionRule.value = "";
+    relationPair.value = !result.value?.definition && logicalType === "relation"
+      ? {
+        reciprocalDisplayName: "",
+        reciprocalCardinality: "many",
+        sourceDisplayFieldId: "",
+      }
+      : null;
     invalidatePlan();
+  }
+
+  function patchRelationPair(value: Partial<RelationPairDraft>): void {
+    if (!relationPair.value) return;
+    relationPair.value = { ...relationPair.value, ...value };
+    invalidatePlan();
+  }
+
+  function setRelationTables(values: readonly RelationTableOption[]): void {
+    relationTables.value = values;
+  }
+
+  function beginRelationCatalog(): void {
+    relationCatalogLoading.value = true;
+    relationCatalogError.value = null;
+  }
+
+  function setRelationSchema(kind: "source" | "target", value: SchemaSnapshot): void {
+    if (kind === "source") relationSourceSchema.value = value;
+    else relationTargetSchema.value = value;
+    relationCatalogLoading.value = false;
+    relationCatalogError.value = null;
+  }
+
+  function failRelationCatalog(reason: unknown): void {
+    relationCatalogLoading.value = false;
+    relationCatalogError.value = reason instanceof Error ? reason.message : String(reason);
   }
 
   function patchDraft(patch: Partial<FieldDraftV2>): void {
@@ -179,6 +247,12 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     confirmations.value = [];
     error.value = null;
     errorCode.value = null;
+    relationPair.value = null;
+    relationTables.value = [];
+    relationSourceSchema.value = null;
+    relationTargetSchema.value = null;
+    relationCatalogLoading.value = false;
+    relationCatalogError.value = null;
   }
 
   function setPlan(next: FieldChangePlanV2): void {
@@ -255,9 +329,12 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   return {
     open, phase, result, original, draft, action, conversionRule, confirmation,
     backupReceipt, plan, receipt, migration, recycled, confirmations, error,
-    errorCode, capabilities, capability, sourceCapability, dirty, isExisting, canPlan,
+    errorCode, relationPair, relationTables, relationSourceSchema, relationTargetSchema,
+    relationCatalogLoading, relationCatalogError,
+    capabilities, capability, sourceCapability, dirty, isExisting, canPlan,
     confirmationsComplete, canApply, beginOpen, load, changeType, patchDraft,
-    restoreRecommended,
+    restoreRecommended, patchRelationPair, setRelationTables, beginRelationCatalog,
+    setRelationSchema, failRelationCatalog,
     invalidatePlan, setConversionRule, setConfirmation, setBackupReceipt,
     beginPlan, setPlan, beginApply, setReceipt, setMigration,
     setRecycled, fail, resetFailure, close,

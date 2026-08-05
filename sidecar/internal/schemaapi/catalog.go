@@ -1832,6 +1832,8 @@ func (catalog *Catalog) replaceRelationMetadata(
 			record.Set("junction_table_id", *field.Relation.JunctionTableID)
 		}
 		record.Set("delete_policy", field.Relation.DeletePolicy)
+		record.Set("pair_id", field.Relation.PairID)
+		record.Set("reciprocal_field_id", field.Relation.ReciprocalFieldID)
 		if err := app.Save(record); err != nil {
 			return storageError(err)
 		}

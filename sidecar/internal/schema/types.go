@@ -95,16 +95,17 @@ type Capability struct {
 }
 
 type TableDefinition struct {
-	ContractVersion string            `json:"contractVersion"`
-	TableID         string            `json:"tableId"`
-	PhysicalName    string            `json:"physicalName"`
-	DisplayName     string            `json:"displayName"`
-	Kind            TableKind         `json:"kind"`
-	SchemaRevision  string            `json:"schemaRevision"`
-	ArchivePolicy   ArchivePolicy     `json:"archivePolicy"`
-	View            *ViewSpec         `json:"view,omitempty"`
-	Fields          []FieldDefinition `json:"fields"`
-	Indexes         []IndexDefinition `json:"indexes"`
+	ContractVersion       string            `json:"contractVersion"`
+	TableID               string            `json:"tableId"`
+	PhysicalName          string            `json:"physicalName"`
+	DisplayName           string            `json:"displayName"`
+	PrimaryDisplayFieldID string            `json:"primaryDisplayFieldId,omitempty"`
+	Kind                  TableKind         `json:"kind"`
+	SchemaRevision        string            `json:"schemaRevision"`
+	ArchivePolicy         ArchivePolicy     `json:"archivePolicy"`
+	View                  *ViewSpec         `json:"view,omitempty"`
+	Fields                []FieldDefinition `json:"fields"`
+	Indexes               []IndexDefinition `json:"indexes"`
 }
 
 // ViewSpec intentionally exposes no SQL. Contract v1 views are safe,
@@ -532,6 +533,8 @@ type RelationSpec struct {
 	JunctionTargetFieldID        string   `json:"junctionTargetFieldId,omitempty"`
 	JunctionDiscriminatorFieldID string   `json:"junctionDiscriminatorFieldId,omitempty"`
 	AllowedTargetTableIDs        []string `json:"allowedTargetTableIds,omitempty"`
+	PairID                       string   `json:"pairId,omitempty"`
+	ReciprocalFieldID            string   `json:"reciprocalFieldId,omitempty"`
 }
 
 func (value RelationSpec) EffectiveMode() string {

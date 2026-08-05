@@ -601,6 +601,13 @@ func validateTypeSpecific(definition FieldDefinition) error {
 		if definition.Relation.Cardinality != "one" && definition.Relation.Cardinality != "many" {
 			return invalid("relation.cardinality", "relation cardinality must be one or many")
 		}
+		if (definition.Relation.PairID == "") !=
+			(definition.Relation.ReciprocalFieldID == "") {
+			return invalid(
+				"relation.pairId",
+				"relation pair identity and reciprocal field must be configured together",
+			)
+		}
 		switch definition.Relation.DeletePolicy {
 		case "setNull", "restrict", "cascade":
 		default:

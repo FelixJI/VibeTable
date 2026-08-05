@@ -466,7 +466,7 @@ describe("WorkspaceView", () => {
     ]));
   });
 
-  it("applies relation.updateSingle current as one target object", async () => {
+  it("creates a visual relation target and applies it as one target object", async () => {
     const descriptor: NormalizedRelationDescriptor = {
       relationId: "orders.contract", fieldRef: "contract", sourceCollection: "orders", kind: "m2o",
       relatedCollection: "contracts", allowedCollections: [], unique: false, nullable: true,
@@ -501,6 +501,9 @@ describe("WorkspaceView", () => {
         return { collection: "orders", definitions: [], lookupRevision: "lookup-1" };
       }
       if (method === "relation.searchTargets") return { items: [target], total: 1 };
+      if (method === "relation.createTarget") {
+        return { outcome: "committed", target, requestId: "create-1" };
+      }
       if (method === "relation.updateSingle") {
         return { outcome: "committed", current: target, schemaRevision: "schema-1", requestId: "update-1" };
       }
@@ -535,11 +538,14 @@ describe("WorkspaceView", () => {
     await flushPromises();
     const editor = wrapper.findComponent(RelationEditorPanel);
     expect(editor.exists()).toBe(true);
-    editor.vm.$emit("select", target);
+    editor.vm.$emit("create", "CT-0007");
     await flushPromises();
 
     expect(table.allRows[0]?.contract).toEqual(target);
     expect(Array.isArray(table.allRows[0]?.contract)).toBe(false);
+    expect(request).toHaveBeenCalledWith("relation.createTarget", expect.objectContaining({
+      relationId: "orders.contract", label: "CT-0007", collection: "contracts",
+    }));
     wrapper.unmount();
   });
 

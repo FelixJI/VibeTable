@@ -20,6 +20,8 @@ type Descriptor struct {
 	JunctionTargetFieldID        string   `json:"junctionTargetFieldId,omitempty"`
 	JunctionDiscriminatorFieldID string   `json:"junctionDiscriminatorFieldId,omitempty"`
 	AllowedTargetTableIDs        []string `json:"allowedTargetTableIds"`
+	PairID                       string   `json:"pairId,omitempty"`
+	ReciprocalFieldID            string   `json:"reciprocalFieldId,omitempty"`
 }
 
 type LookupDescriptor struct {
@@ -78,6 +80,20 @@ type SearchResult struct {
 	Items    []TargetRef         `json:"items"`
 	Total    int64               `json:"total"`
 	Snapshot query.QuerySnapshot `json:"snapshot"`
+}
+
+type CreateTargetRequest struct {
+	RelationID     string         `json:"relationId"`
+	TargetTableID  string         `json:"targetTableId,omitempty"`
+	Label          string         `json:"label"`
+	RequestID      string         `json:"requestId"`
+	IdempotencyKey string         `json:"idempotencyKey"`
+	Actor          mutation.Actor `json:"actor"`
+}
+
+type CreateTargetResult struct {
+	Target  TargetRef        `json:"target"`
+	Receipt mutation.Receipt `json:"receipt"`
 }
 
 type DeltaRequest struct {

@@ -523,6 +523,7 @@ const relationEditor = ref<{
   field: string;
   descriptor: NormalizedRelationDescriptor | null;
   candidates: readonly RelationTargetRef[];
+  total: number;
   query: string;
   m2aCollection: string | null;
   loading: boolean;
@@ -534,6 +535,7 @@ const relationEditor = ref<{
   field: "",
   descriptor: null,
   candidates: [],
+  total: 0,
   query: "",
   m2aCollection: null,
   loading: false,
@@ -1527,6 +1529,7 @@ function openRelationEditor(payload: {
     field: payload.field,
     descriptor: payload.descriptor,
     candidates: [],
+    total: 0,
     query: "",
     m2aCollection: payload.descriptor.kind === "m2a"
       ? payload.descriptor.allowedCollections[0] ?? null
@@ -1550,7 +1553,11 @@ function openRelationEditor(payload: {
     });
 }
 
-async function searchRelationTargets(query: string, collection?: string | null): Promise<void> {
+async function searchRelationTargets(
+  query: string,
+  collection?: string | null,
+  offset = 0,
+): Promise<void> {
   const descriptor = relationEditor.value.descriptor;
   if (!descriptor) return;
   const targetCollection = collection ?? relationEditor.value.m2aCollection;
@@ -1564,17 +1571,30 @@ async function searchRelationTargets(query: string, collection?: string | null):
       relationId: descriptor.relationId,
       query,
       collection: descriptor.kind === "m2a" ? targetCollection : null,
-      offset: 0,
+      offset,
       limit: 50,
     });
     if (generation !== relationSearchGeneration || !relationEditor.value.show) return;
-    relationEditor.value.candidates = result.items;
+    relationEditor.value.candidates = offset === 0
+      ? result.items
+      : [...relationEditor.value.candidates, ...result.items];
+    relationEditor.value.total = result.total;
   } catch (error) {
     if (generation !== relationSearchGeneration) return;
     relationEditor.value.error = error instanceof Error ? error.message : String(error);
   } finally {
     if (generation === relationSearchGeneration) relationEditor.value.loading = false;
   }
+}
+
+function loadMoreRelationTargets(): void {
+  if (relationEditor.value.loading
+    || relationEditor.value.candidates.length >= relationEditor.value.total) return;
+  void searchRelationTargets(
+    relationEditor.value.query,
+    relationEditor.value.m2aCollection,
+    relationEditor.value.candidates.length,
+  );
 }
 
 async function selectRelationTarget(target: RelationTargetRef): Promise<void> {
@@ -1594,6 +1614,37 @@ async function selectRelationTarget(target: RelationTargetRef): Promise<void> {
     }
     tableStore.applyRelationValue(rowKey, relationEditor.value.field, result.current);
     closeRelationEditor();
+  } catch (error) {
+    relationEditor.value.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    relationEditor.value.applying = false;
+  }
+}
+
+async function createRelationTarget(label: string): Promise<void> {
+  const descriptor = relationEditor.value.descriptor;
+  if (!descriptor || !label.trim()) return;
+  relationEditor.value.applying = true;
+  relationEditor.value.error = null;
+  try {
+    const result = await relationLookupService.createTarget(
+      descriptor.relationId,
+      label,
+      relationEditor.value.m2aCollection,
+    );
+    relationEditor.value.candidates = [
+      result.target,
+      ...relationEditor.value.candidates.filter(
+        (candidate) => candidate.itemId !== result.target.itemId,
+      ),
+    ];
+    relationEditor.value.total += 1;
+    if (descriptor.kind === "m2o") {
+      await selectRelationTarget(result.target);
+      return;
+    }
+    relationLookup.toggleDraftTarget(result.target);
+    relationEditor.value.query = result.target.label;
   } catch (error) {
     relationEditor.value.error = error instanceof Error ? error.message : String(error);
   } finally {
@@ -2270,6 +2321,7 @@ useKeyboard({
       :descriptor="relationEditor.descriptor"
       :selected="relationLookup.draft?.selected ?? []"
       :candidates="relationEditor.candidates"
+      :total="relationEditor.total"
       :query="relationEditor.query"
       :m2a-collection="relationEditor.m2aCollection"
       :loading="relationEditor.loading"
@@ -2282,6 +2334,8 @@ useKeyboard({
       @patch-junction="patchRelationJunction"
       @apply="applyRelationDraft"
       @collection-change="changeM2ACollection"
+      @load-more="loadMoreRelationTargets"
+      @create="createRelationTarget"
     />
     <NModal
       :show="attachmentPanel.show"
@@ -2392,6 +2446,8 @@ useKeyboard({
       @cancel-migration="fieldSettingsService.cancelMigration"
       @load-recycle-bin="fieldSettingsService.loadRecycleBin"
       @restore="fieldSettingsService.restore"
+      @load-relation-catalog="fieldSettingsService.loadRelationCatalog"
+      @select-relation-target="fieldSettingsService.selectRelationTarget"
     />
     <NDropdown
       trigger="manual"

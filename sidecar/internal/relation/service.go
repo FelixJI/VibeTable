@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -214,6 +215,85 @@ func (service *Service) SearchTargets(
 	}
 	return SearchResult{
 		Items: items, Total: page.FilteredRows, Snapshot: page.Snapshot,
+	}, nil
+}
+
+func (service *Service) CreateTarget(
+	ctx context.Context,
+	request CreateTargetRequest,
+) (CreateTargetResult, error) {
+	resolved, err := service.resolve(ctx, request.RelationID)
+	if err != nil {
+		return CreateTargetResult{}, err
+	}
+	label := strings.TrimSpace(request.Label)
+	if resolved.descriptor.Mode != "direct" || label == "" ||
+		request.RequestID == "" || request.IdempotencyKey == "" ||
+		request.Actor.Type == "" || request.Actor.ID == "" {
+		return CreateTargetResult{}, relationError(
+			"relation.request.invalid",
+			"direct relation target creation request is incomplete",
+		)
+	}
+	targetTableID := resolved.descriptor.TargetTableID
+	if request.TargetTableID != "" && request.TargetTableID != targetTableID {
+		return CreateTargetResult{}, relationError(
+			"relation.target_invalid",
+			"target table does not match the relation",
+		)
+	}
+	target, err := schemaapi.New(service.app).Describe(ctx, targetTableID)
+	if err != nil {
+		return CreateTargetResult{}, err
+	}
+	labelPhysicalName := targetLabelField(target)
+	if labelPhysicalName == "" {
+		return CreateTargetResult{}, relationError(
+			"relation.target_create_unavailable",
+			"target table has no writable display field",
+		)
+	}
+	receipt, err := service.kernel.Apply(ctx, mutation.Request{
+		ContractVersion: mutation.ContractVersion,
+		RequestID:       request.RequestID,
+		IdempotencyKey:  request.IdempotencyKey,
+		TableID:         target.TableID,
+		SchemaRevision:  target.SchemaRevision,
+		Operations: []mutation.Operation{{
+			Kind: mutation.OperationInsert,
+			Values: map[string]any{
+				labelPhysicalName: label,
+			},
+		}},
+		Actor: request.Actor,
+	})
+	if err != nil {
+		return CreateTargetResult{}, err
+	}
+	if receipt.Status != mutation.StatusApplied || len(receipt.AffectedRows) != 1 {
+		return CreateTargetResult{}, relationError(
+			"relation.target_create_pending",
+			"target record creation has not committed",
+		)
+	}
+	recordID := receipt.AffectedRows[0].RecordID
+	rows, err := service.queries.ReadRows(ctx, target.TableID, []string{recordID})
+	if err != nil || len(rows) != 1 {
+		return CreateTargetResult{}, relationError(
+			"relation.storage_failed",
+			"created target record could not be read",
+		)
+	}
+	canonicalLabel := label
+	if value := rows[0][labelPhysicalName]; value != nil && fmt.Sprint(value) != "" {
+		canonicalLabel = fmt.Sprint(value)
+	}
+	return CreateTargetResult{
+		Target: TargetRef{
+			TableID: target.TableID, RecordID: recordID,
+			Label: canonicalLabel, JunctionValues: map[string]any{},
+		},
+		Receipt: receipt,
 	}, nil
 }
 
@@ -580,6 +660,8 @@ func descriptorFrom(
 		AllowedTargetTableIDs: append(
 			[]string{}, relation.AllowedTargetTableIDs...,
 		),
+		PairID:            relation.PairID,
+		ReciprocalFieldID: relation.ReciprocalFieldID,
 	}
 }
 
@@ -968,6 +1050,13 @@ func relationRowRevision(
 }
 
 func targetLabelField(definition schema.TableDefinition) string {
+	if definition.PrimaryDisplayFieldID != "" {
+		for _, field := range definition.Fields {
+			if field.FieldID == definition.PrimaryDisplayFieldID {
+				return field.PhysicalName
+			}
+		}
+	}
 	for _, field := range definition.Fields {
 		if field.ReadOnly || field.Kind != schema.FieldKindScalar {
 			continue

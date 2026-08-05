@@ -64,4 +64,38 @@ describe("RelationEditorPanel accessibility", () => {
       .toBe("true");
     expect(wrapper.find('input[aria-label="搜索目标记录"]').exists()).toBe(true);
   });
+
+  it("offers explicit pagination when a large relation has more records", async () => {
+    const wrapper = mount(RelationEditorPanel, {
+      props: {
+        show: true,
+        descriptor,
+        selected: [],
+        candidates: [target],
+        total: 10_001,
+      },
+      global: { stubs: { teleport: true } },
+    });
+
+    await wrapper.get('[data-testid="relation-load-more"]').trigger("click");
+    expect(wrapper.emitted("loadMore")).toHaveLength(1);
+    expect(wrapper.text()).toContain("1 / 10001");
+  });
+
+  it("offers lightweight target creation from the visible search label", async () => {
+    const wrapper = mount(RelationEditorPanel, {
+      props: {
+        show: true,
+        descriptor,
+        selected: [],
+        candidates: [],
+        query: "Grace",
+      },
+      global: { stubs: { teleport: true } },
+    });
+
+    await wrapper.get('[data-testid="relation-create-target"]').trigger("click");
+    expect(wrapper.emitted("create")).toEqual([["Grace"]]);
+    expect(wrapper.text()).toContain("Grace");
+  });
 });

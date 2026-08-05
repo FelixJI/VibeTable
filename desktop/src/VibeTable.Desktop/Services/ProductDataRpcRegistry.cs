@@ -33,7 +33,7 @@ internal static class ProductDataRpcRegistry
             && HasOnlyProperties(
                 p, "action", "tableId", "fieldId", "expectedSchemaRevision",
                 "expectedDataRevision", "draft", "actor", "conversionRule",
-                "confirmation", "backupReceipt")
+                "confirmation", "backupReceipt", "relationPair")
             && HasStrings(p, "action", "tableId", "expectedSchemaRevision")
             && HasObject(p, "actor"),
             (g, p, t) => g.PlanFieldChangeAsync(p, t),

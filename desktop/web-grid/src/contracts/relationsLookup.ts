@@ -42,6 +42,8 @@ export interface NormalizedRelationDescriptor {
   readonly preset?: RelationPreset;
   readonly selfRelation: boolean;
   readonly managed: boolean;
+  readonly pairId?: string;
+  readonly reciprocalFieldId?: string;
   readonly state: RelationState;
   /** Explicit display template. Never inferred by the renderer. */
   readonly displayTemplate?: string | null;
@@ -68,6 +70,19 @@ export interface RelationSearchParams {
 export interface RelationSearchResult {
   readonly items: readonly RelationTargetRef[];
   readonly total: number;
+}
+
+export interface RelationCreateTargetParams {
+  readonly relationId: string;
+  readonly collection?: string | null;
+  readonly label: string;
+  readonly idempotencyKey: string;
+}
+
+export interface RelationCreateTargetResult {
+  readonly outcome: "committed";
+  readonly target: RelationTargetRef;
+  readonly requestId: string;
 }
 
 export interface RelationDelta {
@@ -227,6 +242,7 @@ export interface LookupQueryResult {
 export interface SchemaSnapshot {
   readonly collection: string;
   readonly primaryKey: string;
+  readonly primaryDisplayFieldId?: string;
   readonly columns: readonly ColumnSchema[];
   readonly normalizedRelations: readonly NormalizedRelationDescriptor[];
   readonly schemaRevision: string;

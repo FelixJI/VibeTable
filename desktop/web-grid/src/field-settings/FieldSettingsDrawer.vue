@@ -35,6 +35,8 @@ const emit = defineEmits<{
   cancelMigration: [];
   loadRecycleBin: [];
   restore: [fieldId: string];
+  loadRelationCatalog: [];
+  selectRelationTarget: [tableId: string];
 }>();
 
 const store = useFieldSettingsStore();
@@ -52,6 +54,15 @@ watch(() => store.open, (open) => {
     settingsTab.value = "general";
   }
 });
+watch(
+  () => [store.open, store.draft?.logicalType] as const,
+  ([open, logicalType], previous) => {
+    if (open && logicalType === "relation"
+      && (previous?.[0] !== open || previous?.[1] !== logicalType)) {
+      emit("loadRelationCatalog");
+    }
+  },
+);
 watch(rootTab, (value) => {
   if (value === "recycle") emit("loadRecycleBin");
 });
@@ -102,6 +113,16 @@ const progress = computed(() => {
   if (!status?.total) return 0;
   return Math.min(100, Math.round((status.processed / status.total) * 100));
 });
+const relationTableOptions = computed(() => store.relationTables.map(table => ({
+  label: table.displayName,
+  value: table.tableId,
+})));
+const relationSourceFieldOptions = computed(() => (store.relationSourceSchema?.columns ?? [])
+  .filter(column => column.fieldId && column.kind !== "system" && column.kind !== "relation")
+  .map(column => ({ label: column.title, value: column.fieldId! })));
+const relationTargetFieldOptions = computed(() => (store.relationTargetSchema?.columns ?? [])
+  .filter(column => column.fieldId && column.kind !== "system" && column.kind !== "relation")
+  .map(column => ({ label: column.title, value: column.fieldId! })));
 
 function patch(patchValue: Partial<FieldDraftV2>): void {
   store.patchDraft(patchValue);
@@ -147,6 +168,14 @@ function patchRelation(
 ): void {
   if (!store.draft?.relation) return;
   patch({ relation: { ...store.draft.relation, ...patchValue } });
+}
+
+function confirmationLabel(value: string): string {
+  if (value === "relationPair") return "同时停用或删除另一张表中的反向关联字段";
+  if (value === "cascade") return "目标记录删除时级联删除当前表记录";
+  if (value === "backupReceipt") return "永久清除已有可验证备份";
+  if (value === "fieldName") return "输入的字段名称与待清除字段一致";
+  return value;
 }
 
 function patchFile(
@@ -578,19 +607,36 @@ function isTextual(type: LogicalTypeV2): boolean {
                 </section>
 
                 <section v-if="store.draft.logicalType === 'relation' && store.draft.relation" class="settings-section">
-                  <div class="section-title"><div><strong>关联目标</strong><small>删除策略会在计划中展示方向与影响</small></div></div>
+                  <div class="section-title">
+                    <div>
+                      <strong>双向关联</strong>
+                      <small>选择表和显示字段；系统自动创建并维护另一端字段</small>
+                    </div>
+                    <NTag v-if="store.draft.relation.pairId" size="small" type="success">已成对</NTag>
+                  </div>
+                  <NAlert v-if="store.relationCatalogError" type="error" :show-icon="false">
+                    {{ store.relationCatalogError }}
+                  </NAlert>
                   <div class="two-column">
-                    <label><span>目标表 ID</span><NInput
+                    <label><span>关联到</span><NSelect
+                      data-testid="relation-target-table"
                       :value="store.draft.relation.targetTableId"
-                      @update:value="patchRelation({ targetTableId: $event })"
+                      :options="relationTableOptions"
+                      :loading="store.relationCatalogLoading"
+                      :disabled="store.isExisting"
+                      placeholder="选择数据表"
+                      @update:value="emit('selectRelationTarget', String($event))"
                     /></label>
-                    <label><span>基数</span><NSelect
+                    <label><span>本表可选择</span><NSelect
                       :value="store.draft.relation.cardinality"
                       :options="[{label:'单条',value:'one'},{label:'多条',value:'many'}]"
                       @update:value="patchRelation({ cardinality: $event as 'one' | 'many' })"
                     /></label>
-                    <label><span>显示字段 ID</span><NInput
+                    <label><span>关联记录显示为</span><NSelect
+                      data-testid="relation-target-display-field"
                       :value="store.draft.relation.displayFieldId"
+                      :options="relationTargetFieldOptions"
+                      placeholder="选择目标表显示字段"
                       @update:value="patchRelation({ displayFieldId: $event })"
                     /></label>
                     <label><span>目标删除时</span><NSelect
@@ -599,6 +645,28 @@ function isTextual(type: LogicalTypeV2): boolean {
                         {label:'置空',value:'setNull'},{label:'阻止删除',value:'restrict'}]"
                       @update:value="patchRelation({ deletePolicy: $event as 'setNull' | 'restrict' | 'cascade' })"
                     /></label>
+                    <template v-if="store.action === 'create' && store.relationPair">
+                      <label><span>另一端字段名称</span><NInput
+                        data-testid="relation-reciprocal-name"
+                        :value="store.relationPair.reciprocalDisplayName"
+                        placeholder="例如：订单"
+                        @update:value="store.patchRelationPair({ reciprocalDisplayName: $event })"
+                      /></label>
+                      <label><span>另一端可选择</span><NSelect
+                        :value="store.relationPair.reciprocalCardinality"
+                        :options="[{label:'单条',value:'one'},{label:'多条',value:'many'}]"
+                        @update:value="store.patchRelationPair({
+                          reciprocalCardinality: $event as 'one' | 'many',
+                        })"
+                      /></label>
+                      <label><span>本表记录显示为</span><NSelect
+                        data-testid="relation-source-display-field"
+                        :value="store.relationPair.sourceDisplayFieldId"
+                        :options="relationSourceFieldOptions"
+                        placeholder="选择本表显示字段"
+                        @update:value="store.patchRelationPair({ sourceDisplayFieldId: $event })"
+                      /></label>
+                    </template>
                   </div>
                 </section>
 
@@ -921,7 +989,7 @@ function isTextual(type: LogicalTypeV2): boolean {
 
                 <section class="danger-zone" v-if="store.isExisting">
                   <div><strong>危险区</strong><small>这些操作都必须先生成冻结计划</small></div>
-                  <div v-if="store.draft.relation" class="switch-row">
+              <div v-if="store.draft.relation" class="switch-row">
                     <div>
                       <strong>目标删除时级联删除本表记录</strong>
                       <small>方向：目标表 → 当前表；计划会扫描影响记录和依赖</small>
@@ -966,6 +1034,13 @@ function isTextual(type: LogicalTypeV2): boolean {
                   {{ store.plan.canApply ? "可应用" : "已阻止" }}
                 </NTag>
               </div>
+              <NAlert
+                v-if="store.draft.relation?.pairId"
+                type="warning"
+                :show-icon="false"
+              >
+                停用或永久清除此字段时，计划会同时处理另一端关联字段；任一端存在依赖都会阻止操作。
+              </NAlert>
               <div class="impact-grid">
                 <span><b>{{ store.plan.impact.records }}</b>记录</span>
                 <span><b>{{ store.plan.impact.missing }}</b>空白</span>
@@ -986,7 +1061,7 @@ function isTextual(type: LogicalTypeV2): boolean {
                   ? [...store.confirmations, item]
                   : store.confirmations.filter(value => value !== item)"
               >
-                我已确认：{{ item }}
+                我已确认：{{ confirmationLabel(item) }}
               </NCheckbox>
             </section>
 

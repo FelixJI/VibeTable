@@ -215,6 +215,14 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
             {"downloadCapability": "opaque", "contractVersion": "1.0"},
             {"status": "applied"},
             {"items": [{"tableId": "customers", "recordId": "c-1", "label": "Ada"}], "total": 1},
+            {
+                "target": {
+                    "tableId": "customers",
+                    "recordId": "c-2",
+                    "label": "Grace",
+                    "junctionValues": {},
+                }
+            },
             {"current": [{"tableId": "customers", "recordId": "c-1", "label": "Ada"}]},
         ]
     )
@@ -276,6 +284,30 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
         )
     )
     assert searched["items"][0]["collection"] == "customers"
+    created = await service.create_relation_target(
+        PRODUCT_PARAM_MODELS["relation.createTarget"].model_validate(
+            {
+                "relationId": "orders.customer",
+                "collection": "customers",
+                "label": "Grace",
+                "idempotencyKey": "create-customer-1",
+            }
+        )
+    )
+    assert created == {
+        "outcome": "committed",
+        "target": {
+            "collection": "customers",
+            "itemId": "c-2",
+            "label": "Grace",
+            "junctionId": None,
+            "junctionRevision": None,
+            "junctionValues": {},
+        },
+        "requestId": "create-customer-1",
+    }
+    assert transport.requests[-1]["path"] == "/api/vibetable/v1/relations/create-target"
+    assert transport.requests[-1]["json_body"]["targetTableId"] == "customers"
     applied = await service.apply_relation_delta(
         ProductParams.model_validate(
             {

@@ -412,6 +412,15 @@ def write_manifest(paths: RepoPaths) -> Path:
     return paths.manifest_path
 
 
+def write_source_manifest(paths: RepoPaths) -> Path:
+    target = paths.repo_root / "desktop" / "publish-layout.json"
+    target.write_text(
+        render_manifest(paths, sidecar_sha256="0" * 64),
+        encoding="utf-8",
+    )
+    return target
+
+
 def render_release_manifest(paths: RepoPaths) -> str:
     return (
         json.dumps(
@@ -1391,12 +1400,24 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-desktop", action="store_true")
     parser.add_argument("--skip-sidecar", action="store_true")
     parser.add_argument("--keep-staging", action="store_true")
+    parser.add_argument("--write-source-layout", action="store_true")
     return parser
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = _build_parser()
     result = parser.parse_args(argv)
+    if result.write_source_layout and any(
+        (
+            result.release,
+            result.skip_web,
+            result.skip_backend,
+            result.skip_desktop,
+            result.skip_sidecar,
+            result.keep_staging,
+        )
+    ):
+        parser.error("--write-source-layout cannot be combined with build flags")
     if result.release:
         flags = [
             name
@@ -1449,6 +1470,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     paths = RepoPaths.default(Path(__file__).resolve().parents[1])
     try:
+        if args.write_source_layout:
+            write_source_manifest(paths)
+            return 0
         return run_build(paths, args)
     except (BuildError, OSError, ValueError) as exc:
         print(f"[build_next] FAILED: {exc}", file=sys.stderr)

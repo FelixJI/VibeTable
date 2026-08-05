@@ -7,6 +7,7 @@ import type { HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { useFieldSettingsStore } from "./store";
 import { useFieldSettingsService } from "./service";
+import { useWorkspaceStore } from "@/stores/workspaceStore";
 
 const fixtures = resolve(import.meta.dirname, "../../../../contracts/schema-v2/fixtures");
 
@@ -251,6 +252,70 @@ describe("field settings service", () => {
     service.dispose();
 
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("loads table and field names for a paired relation without asking for raw ids", async () => {
+    const base = fixture<CapabilityV2>("capability.json");
+    const relationCapability: CapabilityV2 = {
+      ...base,
+      logicalType: "relation",
+      userCreatable: true,
+      recommended: {
+        ...base.recommended,
+        storage: { ...base.recommended.storage, kind: "pocketbase-relation" },
+        display: { ...base.recommended.display, kind: "relation" },
+      },
+    };
+    const described: FieldSettingsDescribeResultV2 = {
+      ...describeResult(false), capabilities: [relationCapability],
+    };
+    const schema = (collection: string, fieldId: string, title: string) => ({
+      contract: "vibetable.schema-describe.v1",
+      collection,
+      requestGeneration: 0,
+      schema: {
+        collection,
+        primaryKey: "id",
+        primaryDisplayFieldId: fieldId,
+        columns: [{
+          name: `f_${fieldId}`, title, fieldId, kind: "scalar" as const,
+          dataType: "text" as const, editable: true, nullable: false,
+        }],
+        normalizedRelations: [], schemaRevision: "schema_2",
+        permissionRevision: "schema_2", capabilityHash: "cap", lookupRevision: "lookup",
+      },
+      capabilities: {
+        contract: "vibetable.relation-capabilities.v1",
+        relationReadV1: true, relationEditV1: true, lookupQueryV1: true, reason: null,
+      },
+    });
+    request
+      .mockResolvedValueOnce(described)
+      .mockResolvedValueOnce(schema("tbl_opaque", "fld_order_number", "订单号"))
+      .mockResolvedValueOnce(schema("tbl_customers", "fld_customer_name", "客户名称"));
+    useWorkspaceStore().setOpened([
+      { collection: "tbl_opaque", displayName: "订单" },
+      { collection: "tbl_customers", displayName: "客户" },
+    ]);
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+
+    await service.openCreate("tbl_opaque", "relation");
+    await service.loadRelationCatalog();
+    await service.selectRelationTarget("tbl_customers");
+
+    expect(store.relationTables.map(item => item.displayName)).toEqual(["订单", "客户"]);
+    expect(store.relationPair).toEqual({
+      reciprocalDisplayName: "订单",
+      reciprocalCardinality: "many",
+      sourceDisplayFieldId: "fld_order_number",
+    });
+    expect(store.draft?.relation).toMatchObject({
+      targetTableId: "tbl_customers", displayFieldId: "fld_customer_name",
+    });
+    expect(request.mock.calls.slice(1).map(([name]) => name)).toEqual([
+      "schema.describe", "schema.describe",
+    ]);
   });
 
   it("surfaces typed same-operation field errors without mis-parsing them as results", async () => {

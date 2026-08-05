@@ -2,6 +2,7 @@ import type {
   LookupListResult,
   LookupQueryParams,
   LookupQueryResult,
+  RelationCreateTargetResult,
   RelationDelta,
   RelationDeltaPreview,
   RelationDeltaResult,
@@ -108,6 +109,20 @@ export function useRelationLookupService() {
       ? { ...rest, query: normalizedQuery }
       : rest;
     return await bridge.request("relation.searchTargets", request) as RelationSearchResult;
+  }
+
+  async function createTarget(
+    relationId: string,
+    label: string,
+    collection?: string | null,
+  ): Promise<RelationCreateTargetResult> {
+    requireRelationEdit();
+    return await bridge.request("relation.createTarget", {
+      relationId,
+      label: label.trim(),
+      collection,
+      idempotencyKey: requestId(),
+    }) as RelationCreateTargetResult;
   }
 
   async function describeCollection(collection: string): Promise<SchemaSnapshot> {
@@ -280,6 +295,7 @@ export function useRelationLookupService() {
     describeCollection,
     listCollectionLookups,
     searchTargets,
+    createTarget,
     updateSingle,
     loadDraft,
     buildDraftDelta,
