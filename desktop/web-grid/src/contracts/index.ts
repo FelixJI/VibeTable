@@ -1,7 +1,9 @@
 import type {
   LookupListResult,
+	LookupCellValue,
   LookupPreviewParams,
   LookupQueryParams,
+	LookupValuePageParams,
   LookupQueryResult,
   LookupValidateParams,
   LookupValidationResult,
@@ -89,6 +91,8 @@ export interface ColumnSchema {
   readonly scale?: number | null;
   /** Numeric precision (total significant digits) from the product schema. */
   readonly precision?: number | null;
+	/** Sidecar-compatible operators exposed by the authoritative host schema. */
+	readonly filterOperators?: readonly FilterOperator[];
 }
 
 export * from "./relationsLookup";
@@ -451,7 +455,8 @@ export interface SortCondition {
 export interface GroupCondition {
   readonly field: string;
   readonly direction?: "asc" | "desc";
-  readonly bucket?: "value" | "year" | "quarter" | "month" | "week" | "day" | "hour";
+  readonly bucket?: "value" | "year" | "quarter" | "month" | "week" | "day" | "hour" | "number";
+  readonly numberInterval?: number | null;
 }
 
 /** One numeric summary displayed for every group. */
@@ -1321,6 +1326,7 @@ export interface PresetView {
   readonly sorts: readonly SortCondition[];
   readonly groups?: readonly GroupCondition[];
   readonly summaries?: readonly SummaryCondition[];
+	readonly collapsedGroupKeys?: readonly string[];
   readonly search: string;
   readonly visibleFields: readonly string[];
   readonly layout: string;
@@ -1467,6 +1473,7 @@ export type WebMessageType =
   | "lookup.validate"
   | "lookup.preview"
   | "lookup.query"
+	| "lookup.valuePage"
   | "preset.list"
   | "preset.save"
   | "preset.delete"
@@ -1590,6 +1597,7 @@ export type HostMessageType =
   | "lookup.validate"
   | "lookup.preview"
   | "lookup.query"
+	| "lookup.valuePage"
   | "preset.list"
   | "preset.save"
   | "preset.delete"
@@ -1825,6 +1833,7 @@ export interface HostPayloadMap {
   "lookup.validate": LookupValidationResult;
   "lookup.preview": LookupQueryResult;
   "lookup.query": LookupQueryResult;
+	"lookup.valuePage": LookupCellValue;
   "preset.list": PresetsResult;
   "preset.save": PresetEntry;
   "preset.delete": DeletePresetVersionResult;
@@ -1932,6 +1941,7 @@ export interface WebPayloadMap {
   "lookup.validate": LookupValidateParams;
   "lookup.preview": LookupPreviewParams;
   "lookup.query": LookupQueryParams;
+	"lookup.valuePage": LookupValuePageParams;
   "preset.list": { readonly collection: string };
   "preset.save": {
     readonly collection: string;

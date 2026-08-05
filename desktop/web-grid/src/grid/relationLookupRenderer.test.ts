@@ -51,8 +51,8 @@ describe("relation / Lookup grid renderers", () => {
         state: "ok",
         value: "99.00",
         provenance: [
-          { collection: "contracts", itemId: "c1", value: "99.00" },
-          { collection: "contracts", itemId: "c2", value: "101.00" },
+          { collection: "contracts", itemId: "c1", fieldId: "fld_amount", value: "99.00" },
+          { collection: "contracts", itemId: "c2", fieldId: "fld_amount", value: "101.00" },
         ],
       }),
     });
@@ -61,6 +61,28 @@ describe("relation / Lookup grid renderers", () => {
     buttons[1]?.click();
     expect(navigated).toEqual([{ collection: "contracts", itemId: "c2" }]);
   });
+
+	it("opens the paged source browser from the remainder action", () => {
+		const requested: unknown[] = [];
+		const provenance = [
+			{ collection: "contracts", itemId: "c1", fieldId: "fld_amount", value: 99 },
+		];
+		const node = lookupFormatter(lookup, true, null, undefined, (intent) => {
+			requested.push(intent);
+		})({
+			getValue: () => ({
+				state: "ok", value: [99], provenance, provenanceTotal: 10_001,
+				provenanceOffset: 0, provenanceLimit: 100, provenanceHasMore: true,
+			}),
+			getRow: () => ({ getData: () => ({ rowKey: "order-1" }) }),
+		});
+		const more = node.querySelector<HTMLButtonElement>(".vt-lookup-source-more");
+		expect(more?.textContent).toBe("+9998");
+		more?.click();
+		expect(requested).toEqual([expect.objectContaining({
+			sourceRecordId: "order-1", fieldRef: "price",
+		})]);
+	});
 
   it("preserves optimistic junction revisions while normalizing relation values", () => {
     const revision = "b".repeat(64);

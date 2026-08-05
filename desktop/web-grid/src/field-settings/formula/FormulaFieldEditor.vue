@@ -27,6 +27,7 @@ const props = defineProps<{
   value: FormulaDefinition;
   localFields: readonly FormulaFieldOption[];
   relations: readonly FormulaRelationOption[];
+  resultType?: string | null;
   validation?: FormulaDraftValidationResult | null;
   validatedSource?: string;
   validating?: boolean;
@@ -90,7 +91,7 @@ const summarySource = computed(() => projectCanonicalSource(
   props.localFields,
   props.relations,
 ));
-const inferredType = computed(() => props.validation?.resultType ?? props.value.resultType);
+const inferredType = computed(() => props.validation?.resultType ?? props.resultType ?? "待推断");
 
 watch(
   () => props.value,
@@ -139,7 +140,6 @@ function commit(): void {
   emit("commit", {
     language: "cel-v1",
     source: workingSource.value.trim(),
-    resultType: props.validation.resultType,
   });
   editing.value = false;
 }
@@ -276,7 +276,7 @@ function isNumericType(value: string): boolean {
           <strong>可视化公式</strong>
           <small>{{ summarySource || "尚未配置公式" }}</small>
         </div>
-        <NTag size="small" :bordered="false">{{ value.resultType }} · 自动</NTag>
+        <NTag size="small" :bordered="false">{{ inferredType }} · 自动</NTag>
       </div>
       <NButton secondary data-testid="formula-editor-entry" @click="beginEditing">
         <PencilLine :size="15" />进入公式工作台

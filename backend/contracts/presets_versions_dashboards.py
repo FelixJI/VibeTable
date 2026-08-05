@@ -56,6 +56,11 @@ class PresetView(CamelModel):
     sorts: list[SortCondition] = Field(default_factory=list, max_length=16)
     groups: list[GroupCondition] = Field(default_factory=list, max_length=2)
     summaries: list[SummaryCondition] = Field(default_factory=list, max_length=3)
+    collapsed_group_keys: list[str] = Field(
+        default_factory=list,
+        max_length=512,
+        exclude_if=lambda value: not value,
+    )
     search: str = Field(default="", max_length=256)
     visible_fields: list[str] = Field(default_factory=list, max_length=128)
     layout: str = Field(default="table", max_length=32)

@@ -1,4 +1,6 @@
 export const messages: Record<string, string> = {
+  "grid.formula.updating": "计算中",
+  "grid.formula.failed": "计算失败",
   "common.copy": "复制",
   "common.copied": "已复制",
   "files.import": "导入文件",
@@ -534,6 +536,7 @@ export const messages: Record<string, string> = {
   "grid.lookup.tooExpensive": "超出预算",
   "grid.lookup.sourceCount": "{count} 个来源记录",
   "grid.lookup.openSource": "打开 {collection} · {itemId}",
+	"grid.lookup.openSources": "查看全部来源记录",
   "relationEditor.title": "编辑关系",
   "relationEditor.kind.m2o": "多对一",
   "relationEditor.kind.o2m": "一对多",
@@ -579,6 +582,8 @@ export const messages: Record<string, string> = {
   "workspace.relation.changed": "关系记录已变化，请刷新后重试",
   "workspace.lookup.sourceLocated": "已定位来源记录 {collection} · {itemId}",
   "workspace.lookup.sourceFiltered": "已筛选来源记录 {collection} · {itemId}",
+	"workspace.lookup.sourcesTitle": "Lookup 来源记录",
+	"workspace.lookup.loadMoreSources": "加载更多来源",
   "workspace.notification.relationLookupFailed": "关系或 Lookup 操作失败，请稍后重试",
   "workspace.notification.relationLookupTimeout": "关系或 Lookup 操作超时，请重试",
   "workspace.notification.operationFailed": "操作失败，请重试",

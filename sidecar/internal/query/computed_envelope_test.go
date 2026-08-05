@@ -20,8 +20,15 @@ func TestComputedEnvelopeDecodesReadyValuesAndHidesPendingValues(t *testing.T) {
 	}
 	pending := readyText
 	pending.ComputedReady = false
-	if got := decodeFieldValue(`"STALE"`, pending); got != nil {
-		t.Fatalf("pending computed value leaked stale data = %#v", got)
+	pending.ComputedStatus = "updating"
+	pending.ComputedError = &ComputedDiagnostic{
+		Code: "calculation.pending", Path: "fields.computed",
+		Message: "formula value is being recalculated", Details: map[string]any{},
+	}
+	got, ok := decodeFieldValue(`"STALE"`, pending).(map[string]any)
+	if !ok || got["state"] != "updating" || got["value"] != nil ||
+		got["diagnostic"] != pending.ComputedError {
+		t.Fatalf("pending computed envelope = %#v", got)
 	}
 }
 

@@ -69,7 +69,8 @@ public sealed record SortCondition(
 public sealed record GroupCondition(
     string Field,
     string Direction = "asc",
-    string Bucket = "value");
+    string Bucket = "value",
+    double? NumberInterval = null);
 
 public sealed record SummaryCondition(
     string Field,

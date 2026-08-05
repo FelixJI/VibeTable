@@ -26,11 +26,15 @@ describe("viewQueryStore", () => {
       ],
       search: "north",
       visibleFields: ["status", "missing"],
+      collapsedGroupKeys: ['["open"]'],
     }, ["status", "priority", "amount"]);
 
     expect(store.visibleFields).toEqual(["status"]);
     expect(store.groups).toHaveLength(2);
     expect(store.summaries).toHaveLength(3);
+    expect(store.collapsedGroupKeys).toEqual(['["open"]']);
+    store.toggleGroup('["open"]');
+    expect(store.collapsedGroupKeys).toEqual([]);
     expect(store.toQuery()).toMatchObject({
       keyword: "north",
       offset: 0,

@@ -238,6 +238,7 @@ def _register_pocketbase_product_methods(
         "lookup.validate": service.validate_lookup,
         "lookup.preview": service.preview_lookup,
         "lookup.query": service.query_lookups,
+        "lookup.valuePage": service.lookup_value_page,
     }
     for method, handler in methods.items():
         dispatcher.register(method, handler, PRODUCT_PARAM_MODELS[method])

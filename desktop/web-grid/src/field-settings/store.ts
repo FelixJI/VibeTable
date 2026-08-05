@@ -113,6 +113,26 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const confirmationsComplete = computed(() =>
     plan.value?.confirmations.every((item) => confirmations.value.includes(item)) ?? false,
   );
+
+  function resetCatalogState(): void {
+    relationPair.value = null;
+    relationTables.value = [];
+    relationSourceSchema.value = null;
+    relationTargetSchema.value = null;
+    relationCatalogLoading.value = false;
+    relationCatalogError.value = null;
+    lookupSchemas.value = [];
+    lookupCatalogLoading.value = false;
+    lookupCatalogError.value = null;
+    formulaSourceSchema.value = null;
+    formulaTargetSchemas.value = {};
+    formulaCatalogLoading.value = false;
+    formulaCatalogError.value = null;
+    formulaValidation.value = null;
+    formulaValidatedSource.value = "";
+    formulaValidating.value = false;
+    formulaValidationError.value = null;
+  }
   const canApply = computed(() =>
     phase.value === "planned"
     && plan.value?.canApply === true
@@ -132,23 +152,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     receipt.value = null;
     migration.value = null;
     confirmations.value = [];
-    relationPair.value = null;
-    relationTables.value = [];
-    relationSourceSchema.value = null;
-    relationTargetSchema.value = null;
-    relationCatalogLoading.value = false;
-    relationCatalogError.value = null;
-    lookupSchemas.value = [];
-    lookupCatalogLoading.value = false;
-    lookupCatalogError.value = null;
-    formulaSourceSchema.value = null;
-    formulaTargetSchemas.value = {};
-    formulaCatalogLoading.value = false;
-    formulaCatalogError.value = null;
-    formulaValidation.value = null;
-    formulaValidatedSource.value = "";
-    formulaValidating.value = false;
-    formulaValidationError.value = null;
+    resetCatalogState();
   }
 
   function load(described: FieldSettingsDescribeResultV2): void {
@@ -333,23 +337,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     confirmations.value = [];
     error.value = null;
     errorCode.value = null;
-    relationPair.value = null;
-    relationTables.value = [];
-    relationSourceSchema.value = null;
-    relationTargetSchema.value = null;
-    relationCatalogLoading.value = false;
-    relationCatalogError.value = null;
-    lookupSchemas.value = [];
-    lookupCatalogLoading.value = false;
-    lookupCatalogError.value = null;
-    formulaSourceSchema.value = null;
-    formulaTargetSchemas.value = {};
-    formulaCatalogLoading.value = false;
-    formulaCatalogError.value = null;
-    formulaValidation.value = null;
-    formulaValidatedSource.value = "";
-    formulaValidating.value = false;
-    formulaValidationError.value = null;
+    resetCatalogState();
   }
 
   function setPlan(next: FieldChangePlanV2): void {

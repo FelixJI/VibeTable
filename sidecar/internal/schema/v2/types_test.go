@@ -127,6 +127,15 @@ func TestFieldDefinitionStrictlyRejectsUnknownProperties(t *testing.T) {
 	}
 }
 
+func TestFormulaDraftStrictlyRejectsClientSuppliedResultType(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`{"formula":{"language":"cel-v1","source":"1","resultType":"number"}}`)
+	var draft v2.FieldDraft
+	if err := v2.StrictDecode(raw, &draft); err == nil {
+		t.Fatal("client-supplied formula resultType was accepted")
+	}
+}
+
 func TestEverySharedNegativeFieldFixtureIsRejected(t *testing.T) {
 	t.Parallel()
 	baseRaw, err := os.ReadFile(

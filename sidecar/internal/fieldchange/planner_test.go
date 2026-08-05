@@ -669,6 +669,14 @@ func TestExpiredPlanAllocatesAFreshFrozenPlan(t *testing.T) {
 
 func definitionFor(logicalType v2.LogicalType) v2.FieldDefinition {
 	draft := draftFor(logicalType)
+	var formula *v2.FormulaSpec
+	if draft.Formula != nil {
+		formula = &v2.FormulaSpec{
+			Language:   draft.Formula.Language,
+			Source:     draft.Formula.Source,
+			ResultType: v2.LogicalText,
+		}
+	}
 	draft.Value.Presence = v2.PresenceSpec{
 		Mode: v2.PresenceCompanion, ProviderFieldID: "pb_01JPRESEN",
 		PhysicalName: "__vt_has_f_01jfieldx",
@@ -687,7 +695,7 @@ func definitionFor(logicalType v2.LogicalType) v2.FieldDefinition {
 		Value:     draft.Value, Constraints: draft.Constraints, Storage: draft.Storage,
 		Display: draft.Display, Select: draft.Select, Relation: draft.Relation,
 		File: draft.File, JSON: draft.JSON, AutoDate: draft.AutoDate,
-		Formula: draft.Formula, Lookup: draft.Lookup,
+		Formula: formula, Lookup: draft.Lookup,
 	}
 }
 
@@ -750,12 +758,19 @@ func (stub impactPreflight) Check(
 }
 
 func draftFrom(definition v2.FieldDefinition) v2.FieldDraft {
+	var formula *v2.FormulaDraftSpec
+	if definition.Formula != nil {
+		formula = &v2.FormulaDraftSpec{
+			Language: definition.Formula.Language,
+			Source:   definition.Formula.Source,
+		}
+	}
 	return v2.FieldDraft{
 		DisplayName: definition.DisplayName, Help: definition.Help,
 		LogicalType: definition.LogicalType, Value: definition.Value,
 		Constraints: definition.Constraints, Storage: definition.Storage,
 		Display: definition.Display, Select: definition.Select,
 		Relation: definition.Relation, File: definition.File, JSON: definition.JSON,
-		AutoDate: definition.AutoDate, Formula: definition.Formula, Lookup: definition.Lookup,
+		AutoDate: definition.AutoDate, Formula: formula, Lookup: definition.Lookup,
 	}
 }

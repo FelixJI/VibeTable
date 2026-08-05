@@ -21,7 +21,16 @@ export function draftFromDefinition(definition: FieldDefinitionV2): FieldDraftV2
     lifecycle: _lifecycle,
     ...draft
   } = definition;
-  return clone(draft);
+  const normalized = clone(draft) as Omit<typeof draft, "formula"> & {
+    formula?: { language: "cel-v1"; source: string };
+  };
+  if (definition.formula) {
+    normalized.formula = {
+      language: definition.formula.language,
+      source: definition.formula.source,
+    };
+  }
+  return normalized;
 }
 
 export function draftFromCapability(
@@ -65,7 +74,6 @@ function specializedDefaults(
         formula: {
           language: "cel-v1",
           source: "",
-          resultType: "text",
         },
       };
     case "lookup":

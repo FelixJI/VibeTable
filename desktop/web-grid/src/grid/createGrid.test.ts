@@ -52,6 +52,25 @@ function samplePage(): TablePage {
 }
 
 describe("buildColumns (read-only Tabulator column defs)", () => {
+  it("renders formula recalculation state and diagnostic instead of a stale value", () => {
+    const page: TablePage = {
+      ...samplePage(),
+      columns: [{
+        name: "total", title: "Total", kind: "formula", dataType: "decimal",
+        editable: false, nullable: true,
+      }],
+    };
+    const column = buildColumns(page)[0];
+    const formatter = column?.formatter as (cell: { getValue(): unknown }) => HTMLElement;
+    const rendered = formatter({ getValue: () => ({
+      state: "error", value: null,
+      diagnostic: { code: "calculation.failed", message: "boom" },
+    }) });
+
+    expect(rendered.textContent).toBe("计算失败");
+    expect(rendered.title).toBe("boom");
+  });
+
   it("emits one Tabulator column per TablePage column", () => {
     const cols = buildColumns(samplePage());
     expect(cols).toHaveLength(5);

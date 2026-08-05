@@ -630,7 +630,8 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 kind == "lookup" ? $"{tableId}.{fieldId}" : null,
                 kind == "attachment"
                     ? ReadAttachmentPolicy(field)
-                    : null));
+                    : null,
+                FilterOperators(dataType, kind)));
         }
         if (!hasRecordId)
         {
@@ -641,7 +642,8 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 false,
                 false,
                 FieldId: "id",
-                Kind: "scalar"));
+                Kind: "scalar",
+                FilterOperators: FilterOperators("text", "scalar")));
         }
         return result;
     }
@@ -825,6 +827,22 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             "file" or "relation" => "text",
             _ => throw new InvalidOperationException(
                 $"PocketBase returned unknown data type '{value}'."),
+        };
+    }
+
+    private static IReadOnlyList<string> FilterOperators(string dataType, string kind)
+    {
+        if (kind == "relation")
+        {
+            return ["eq", "ne", "in", "is_null", "is_not_null"];
+        }
+        return dataType switch
+        {
+            "integer" or "decimal" or "date" or "datetime" or "time" =>
+                ["eq", "ne", "gt", "gte", "lt", "lte", "between", "in", "is_null", "is_not_null"],
+            "boolean" => ["eq", "ne", "in", "is_null", "is_not_null"],
+            "json" => ["contains", "is_null", "is_not_null"],
+            _ => ["eq", "ne", "contains", "starts_with", "ends_with", "in", "is_null", "is_not_null"],
         };
     }
 

@@ -130,7 +130,7 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 		t.Fatal(err)
 	}
 	formulaDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "Upper name")
-	formulaDraft.Formula = &v2.FormulaSpec{
+	formulaDraft.Formula = &v2.FormulaDraftSpec{
 		Language: "cel-v1", Source: "SUM({Customer}.{Balance}) + 1.0",
 	}
 	formula := applyCreatedField(
@@ -209,7 +209,7 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 		Constraints: formula.Definition.Constraints,
 		Storage:     formula.Definition.Storage,
 		Display:     formula.Definition.Display,
-		Formula: &v2.FormulaSpec{
+		Formula: &v2.FormulaDraftSpec{
 			Language: "cel-v1", Source: "SUM({Customer}.{Balance}) + 2.0",
 		},
 	}

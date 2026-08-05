@@ -42,6 +42,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "lookup.validate",
         "lookup.preview",
         "lookup.query",
+        "lookup.valuePage",
         "mutation.apply",
         "mutation.preview",
         "query.page",

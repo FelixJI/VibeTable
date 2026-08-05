@@ -785,6 +785,7 @@ function isTextual(type: LogicalTypeV2): boolean {
                     :value="store.draft.formula"
                     :local-fields="formulaLocalFields"
                     :relations="formulaRelations"
+                    :result-type="store.result?.definition?.formula?.resultType"
                     :validation="store.formulaValidation"
                     :validated-source="store.formulaValidatedSource"
                     :validating="store.formulaValidating || store.formulaCatalogLoading"

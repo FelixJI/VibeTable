@@ -181,6 +181,18 @@ func (source *Source) describeField(
 		ComputedReady: field.Kind != schema.FieldKindFormula ||
 			(field.Formula != nil && field.Formula.Status == "ready"),
 	}
+	if field.Kind == schema.FieldKindFormula && !result.ComputedReady {
+		result.ComputedStatus = "updating"
+		result.ComputedError = &query.ComputedDiagnostic{
+			Code: "calculation.pending", Path: "fields." + field.PhysicalName,
+			Message: "formula value is being recalculated", Details: map[string]any{},
+		}
+		if field.Formula != nil && field.Formula.Status == "failed" {
+			result.ComputedStatus = "error"
+			result.ComputedError.Code = "calculation.failed"
+			result.ComputedError.Message = "formula recalculation failed"
+		}
+	}
 	if field.DataType == schema.DataTypeSelect ||
 		field.DataType == schema.DataTypeMultiSelect {
 		options, optionErr := schema.EnumStorageOptions(field)

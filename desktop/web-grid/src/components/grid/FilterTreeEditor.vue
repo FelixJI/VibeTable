@@ -8,6 +8,7 @@ const props = withDefaults(defineProps<{
   nodes: readonly FilterExpression[];
   columns: readonly ColumnSchema[];
   depth?: number;
+  totalConditions?: number;
 }>(), { depth: 1 });
 const emit = defineEmits<{ update: [nodes: FilterExpression[]] }>();
 
@@ -15,19 +16,45 @@ const fieldOptions = computed(() => props.columns.map((column) => ({
   label: column.title,
   value: column.name,
 })));
-const operatorOptions: { label: string; value: FilterOperator }[] = [
-  { label: "等于", value: "eq" },
-  { label: "不等于", value: "ne" },
-  { label: "包含", value: "contains" },
-  { label: "开头是", value: "starts_with" },
-  { label: "结尾是", value: "ends_with" },
-  { label: "大于", value: "gt" },
-  { label: "大于等于", value: "gte" },
-  { label: "小于", value: "lt" },
-  { label: "小于等于", value: "lte" },
-  { label: "为空", value: "is_null" },
-  { label: "不为空", value: "is_not_null" },
+const operatorLabels: Record<FilterOperator, string> = {
+  eq: "等于", ne: "不等于", contains: "包含", starts_with: "开头是",
+  ends_with: "结尾是", gt: "大于", gte: "大于等于", lt: "小于",
+  lte: "小于等于", between: "介于", in: "属于", is_null: "为空",
+  is_not_null: "不为空", regex: "正则匹配",
+};
+const textOperators: FilterOperator[] = [
+	"eq", "ne", "contains", "starts_with", "ends_with", "in",
+  "is_null", "is_not_null",
 ];
+const orderedOperators: FilterOperator[] = [
+  "eq", "ne", "gt", "gte", "lt", "lte", "between", "in",
+  "is_null", "is_not_null",
+];
+const boolOperators: FilterOperator[] = ["eq", "ne", "is_null", "is_not_null"];
+const jsonOperators: FilterOperator[] = ["contains", "is_null", "is_not_null"];
+const operatorOptionsFor = (field: string) => {
+	const column = props.columns.find(item => item.name === field);
+	const dataType = column?.dataType;
+	const operators = column?.filterOperators?.length
+		? column.filterOperators
+		: dataType === "boolean"
+    ? boolOperators
+    : dataType === "json"
+      ? jsonOperators
+      : ["integer", "decimal", "date", "datetime", "time"].includes(dataType ?? "")
+        ? orderedOperators
+        : textOperators;
+  return operators.map(value => ({ label: operatorLabels[value], value }));
+};
+const localConditionCount = computed(() => countConditions(props.nodes));
+const conditionCount = computed(() => props.totalConditions ?? localConditionCount.value);
+const atConditionLimit = computed(() => conditionCount.value >= 50);
+
+function countConditions(nodes: readonly FilterExpression[]): number {
+  return nodes.reduce((count, node) => count + (isCondition(node)
+    ? 1
+    : countConditions(node.filters)), 0);
+}
 
 function isCondition(node: FilterExpression): node is FilterCondition {
   return "field" in node;
@@ -45,12 +72,12 @@ function remove(index: number): void {
 }
 function addCondition(): void {
   const field = props.columns[0]?.name;
-  if (!field) return;
+  if (!field || atConditionLimit.value) return;
   emit("update", [...props.nodes, { field, operator: "eq", value: "" }]);
 }
 function addGroup(): void {
   const field = props.columns[0]?.name;
-  if (!field || props.depth >= 3) return;
+  if (!field || props.depth >= 3 || atConditionLimit.value) return;
   emit("update", [...props.nodes, {
     groupLogic: "AND",
     filters: [{ field, operator: "eq", value: "" }],
@@ -60,6 +87,15 @@ function updateCondition(index: number, patch: Partial<FilterCondition>): void {
   const current = props.nodes[index];
   if (!current || !isCondition(current)) return;
   replace(index, { ...current, ...patch });
+}
+function updateField(index: number, field: string): void {
+  const current = props.nodes[index];
+  if (!current || !isCondition(current)) return;
+  const allowed = operatorOptionsFor(field).map(option => option.value);
+  updateCondition(index, {
+    field,
+    operator: allowed.includes(current.operator) ? current.operator : allowed[0] ?? "eq",
+  });
 }
 function updateValue(index: number, value: string): void {
   const current = props.nodes[index];
@@ -93,13 +129,13 @@ function updateValue(index: number, value: string): void {
           :value="node.field"
           :options="fieldOptions"
           aria-label="筛选字段"
-          @update:value="field => updateCondition(index, { field })"
+          @update:value="field => updateField(index, field)"
         />
         <NSelect
           size="small"
           class="operator-select"
           :value="node.operator"
-          :options="operatorOptions"
+          :options="operatorOptionsFor(node.field)"
           aria-label="筛选操作符"
           @update:value="operator => updateCondition(index, { operator })"
         />
@@ -128,13 +164,14 @@ function updateValue(index: number, value: string): void {
           :nodes="node.filters"
           :columns="columns"
           :depth="depth + 1"
+          :total-conditions="conditionCount"
           @update="filters => replace(index, { ...node, filters })"
         />
       </div>
     </div>
     <div class="filter-actions">
-      <NButton size="tiny" secondary :disabled="!columns.length" @click="addCondition">＋ 条件</NButton>
-      <NButton size="tiny" quaternary :disabled="depth >= 3 || !columns.length" @click="addGroup">＋ 条件组</NButton>
+      <NButton size="tiny" secondary :disabled="!columns.length || atConditionLimit" @click="addCondition">＋ 条件</NButton>
+      <NButton size="tiny" quaternary :disabled="depth >= 3 || !columns.length || atConditionLimit" @click="addGroup">＋ 条件组</NButton>
     </div>
   </div>
 </template>

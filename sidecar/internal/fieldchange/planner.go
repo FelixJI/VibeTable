@@ -672,6 +672,13 @@ func (planner *Planner) definitionFromDraft(
 	if before != nil {
 		lifecycle = before.Lifecycle
 	}
+	var formulaDefinition *v2.FormulaSpec
+	if normalizedDraft.Formula != nil {
+		formulaDefinition = &v2.FormulaSpec{
+			Language: normalizedDraft.Formula.Language,
+			Source:   normalizedDraft.Formula.Source,
+		}
+	}
 	definition := &v2.FieldDefinition{
 		Contract: v2.Contract, Identity: identity,
 		DisplayName: normalizedDraft.DisplayName, Help: normalizedDraft.Help,
@@ -680,7 +687,7 @@ func (planner *Planner) definitionFromDraft(
 		Storage: normalizedDraft.Storage, Display: normalizedDraft.Display,
 		Select: normalizedDraft.Select, Relation: normalizedDraft.Relation,
 		File: normalizedDraft.File, JSON: normalizedDraft.JSON,
-		AutoDate: normalizedDraft.AutoDate, Formula: normalizedDraft.Formula,
+		AutoDate: normalizedDraft.AutoDate, Formula: formulaDefinition,
 		Lookup: normalizedDraft.Lookup,
 	}
 	if normalizer, ok := planner.source.(DefinitionNormalizer); ok {

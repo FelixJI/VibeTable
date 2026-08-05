@@ -20,7 +20,7 @@ import { Plus } from "lucide-vue-next";
 import type { TabulatorFull } from "tabulator-tables";
 import { useTabulator } from "@/composables/useTabulator";
 import type { CellEditedHandler, CellValidationErrorHandler } from "@/grid/createGrid";
-import type { ColumnSchema, LookupValueProvenance, NormalizedRelationDescriptor } from "@/contracts";
+import type { ColumnSchema, LookupSourcePageIntent, LookupValueProvenance, NormalizedRelationDescriptor } from "@/contracts";
 import type { FilterExpression, GroupCondition, SortCondition } from "@/contracts";
 import { ROW_NUMBER_FIELD } from "@/grid/createGrid";
 import { useTableStore } from "@/stores/tableStore";
@@ -49,6 +49,7 @@ const emit = defineEmits<{
     value: unknown;
   }];
   lookupSource: [source: LookupValueProvenance];
+	lookupSourcePage: [intent: LookupSourcePageIntent];
   attachmentOpen: [payload: {
     rowKey: string | number;
     column: ColumnSchema;
@@ -90,6 +91,7 @@ const { dataApplying } = useTabulator(gridEl, {
     emit("relationEdit", { rowKey, field, descriptor, value });
   },
   onLookupSourceRequested: (source) => emit("lookupSource", source),
+	onLookupSourcePageRequested: (intent) => emit("lookupSourcePage", intent),
   onAttachmentOpenRequested: (rowKey, column) =>
     emit("attachmentOpen", { rowKey, column }),
   onViewQueryChanged: (query) => emit("viewQueryChange", query),

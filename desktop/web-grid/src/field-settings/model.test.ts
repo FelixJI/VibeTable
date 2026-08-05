@@ -231,7 +231,7 @@ describe("field settings model", () => {
     } as CapabilityV2;
 
     expect(draftFromCapability(formula, "总价").formula).toEqual({
-      language: "cel-v1", source: "", resultType: "text",
+      language: "cel-v1", source: "",
     });
     expect(draftFromCapability(lookup, "客户名称").lookup).toEqual({
       path: [{ relationFieldId: "" }], targetFieldId: "",

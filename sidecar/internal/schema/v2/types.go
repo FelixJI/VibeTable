@@ -69,20 +69,20 @@ type FieldDefinition struct {
 }
 
 type FieldDraft struct {
-	DisplayName string         `json:"displayName"`
-	Help        string         `json:"help"`
-	LogicalType LogicalType    `json:"logicalType"`
-	Value       ValueSpec      `json:"value"`
-	Constraints ConstraintSpec `json:"constraints"`
-	Storage     StorageSpec    `json:"storage"`
-	Display     DisplaySpec    `json:"display"`
-	Select      *SelectSpec    `json:"select,omitempty"`
-	Relation    *RelationSpec  `json:"relation,omitempty"`
-	File        *FileSpec      `json:"file,omitempty"`
-	JSON        *JSONSpec      `json:"json,omitempty"`
-	AutoDate    *AutoDateSpec  `json:"autoDate,omitempty"`
-	Formula     *FormulaSpec   `json:"formula,omitempty"`
-	Lookup      *LookupSpec    `json:"lookup,omitempty"`
+	DisplayName string            `json:"displayName"`
+	Help        string            `json:"help"`
+	LogicalType LogicalType       `json:"logicalType"`
+	Value       ValueSpec         `json:"value"`
+	Constraints ConstraintSpec    `json:"constraints"`
+	Storage     StorageSpec       `json:"storage"`
+	Display     DisplaySpec       `json:"display"`
+	Select      *SelectSpec       `json:"select,omitempty"`
+	Relation    *RelationSpec     `json:"relation,omitempty"`
+	File        *FileSpec         `json:"file,omitempty"`
+	JSON        *JSONSpec         `json:"json,omitempty"`
+	AutoDate    *AutoDateSpec     `json:"autoDate,omitempty"`
+	Formula     *FormulaDraftSpec `json:"formula,omitempty"`
+	Lookup      *LookupSpec       `json:"lookup,omitempty"`
 }
 
 func (value *FieldDraft) UnmarshalJSON(raw []byte) error {
@@ -325,6 +325,14 @@ type FormulaSpec struct {
 	Language   string      `json:"language"`
 	Source     string      `json:"source"`
 	ResultType LogicalType `json:"resultType"`
+}
+
+// FormulaDraftSpec deliberately omits resultType. The sidecar infers it from
+// source after display-name references have been normalized; clients cannot
+// choose or spoof a computed result type.
+type FormulaDraftSpec struct {
+	Language string `json:"language"`
+	Source   string `json:"source"`
 }
 
 type LookupSpec struct {

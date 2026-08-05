@@ -10,6 +10,7 @@ from backend.application.product_data_service import (
     PRODUCT_PARAM_MODELS,
     PocketBaseProductDataService,
     ProductParams,
+    _lookup_revision,
     _renderer_columns,
     _renderer_relation,
 )
@@ -753,6 +754,72 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
         "/api/vibetable/v1/lookups/describe",
         "/api/vibetable/v1/relations/preview-delta",
     ]
+
+
+@pytest.mark.asyncio
+async def test_lookup_value_page_maps_physical_field_ref_to_stable_field_id() -> None:
+    lookup = {
+        "lookupId": "orders.line_skus_id",
+        "tableId": "orders",
+        "fieldId": "line_skus_id",
+        "physicalName": "line_skus",
+        "displayName": "Line SKUs",
+        "relationFieldId": "lines_id",
+        "targetFieldId": "sku_id",
+        "aggregate": "none",
+        "outputStorage": "json",
+        "revision": 1,
+    }
+    catalog = {
+        "tableId": "orders",
+        "schemaRevision": "schema_7",
+        "relations": [],
+        "lookups": [lookup],
+    }
+    page = {
+        "state": "ok",
+        "value": ["SKU-001"],
+        "provenance": [
+            {
+                "collection": "lines",
+                "itemId": "line-1",
+                "fieldId": "sku_id",
+                "value": "SKU-001",
+            }
+        ],
+        "provenanceTotal": 10_001,
+        "provenanceOffset": 100,
+        "provenanceLimit": 100,
+        "provenanceHasMore": True,
+    }
+    service, transport = _service([catalog, page])
+    lookup_revision = _lookup_revision("schema_7", [lookup])
+
+    result = await service.lookup_value_page(
+        ProductParams.model_validate(
+            {
+                "collection": "orders",
+                "fieldRef": "line_skus",
+                "sourceRecordId": "order-1",
+                "offset": 100,
+                "limit": 100,
+                "schemaRevision": "schema_7",
+                "permissionRevision": "schema_7",
+                "lookupRevision": lookup_revision,
+            }
+        )
+    )
+
+    assert result["provenanceTotal"] == 10_001
+    assert transport.requests[-1]["path"] == "/api/vibetable/v1/lookups/value-page"
+    assert transport.requests[-1]["json_body"] == {
+        "tableId": "orders",
+        "schemaRevision": "schema_7",
+        "sourceRecordId": "order-1",
+        "fieldId": "line_skus_id",
+        "offset": 100,
+        "limit": 100,
+    }
 
 
 @pytest.mark.asyncio

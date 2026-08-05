@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { NButton, NCheckbox, NIcon, NPopover, NSelect } from "naive-ui";
+import { NButton, NCheckbox, NIcon, NInputNumber, NPopover, NSelect } from "naive-ui";
 import { EyeOff, Filter, Layers3, Sigma } from "lucide-vue-next";
 import type {
   ColumnSchema,
   FilterExpression,
   GroupCondition,
   SummaryCondition,
+  LookupDefinition,
+  NormalizedRelationDescriptor,
 } from "@/contracts";
 import FilterTreeEditor from "./FilterTreeEditor.vue";
 import { cloneFilterExpressions } from "@/stores/viewQueryStore";
@@ -17,6 +19,8 @@ const props = defineProps<{
   groups: readonly GroupCondition[];
   summaries: readonly SummaryCondition[];
   visibleFields: readonly string[];
+  relations?: readonly NormalizedRelationDescriptor[];
+  lookups?: readonly LookupDefinition[];
 }>();
 const emit = defineEmits<{ change: [value: {
   filters: FilterExpression[];
@@ -29,11 +33,22 @@ const draftFilters = ref<FilterExpression[]>([]);
 const draftGroups = ref<GroupCondition[]>([]);
 const draftSummaries = ref<SummaryCondition[]>([]);
 const draftVisible = ref<string[]>([]);
-const groupColumns = computed(() => props.columns.filter((column) => (
-  column.kind !== "attachment"
-  && column.kind !== "relation"
-  && column.dataType !== "json"
-)));
+const relationsById = computed(() => new Map(
+  (props.relations ?? []).map(relation => [relation.relationId, relation]),
+));
+const lookupsById = computed(() => new Map(
+  (props.lookups ?? []).map(lookup => [lookup.lookupId, lookup]),
+));
+const groupColumns = computed(() => props.columns.filter((column) => {
+  if (column.kind === "attachment" || column.dataType === "json") return false;
+  if (column.kind === "relation") {
+    return !!column.relationId && relationsById.value.get(column.relationId)?.kind === "m2o";
+  }
+  if (column.kind === "lookup") {
+    return !!column.lookupId && lookupsById.value.get(column.lookupId)?.aggregation === "single";
+  }
+  return true;
+}));
 const groupOptions = computed(() => groupColumns.value.map((column) => ({ label: column.title, value: column.name })));
 const numericOptions = computed(() => props.columns
   .filter((column) => column.dataType === "integer" || column.dataType === "decimal")
@@ -80,6 +95,10 @@ function isDateField(field: string): boolean {
   const dataType = props.columns.find((column) => column.name === field)?.dataType;
   return dataType === "date" || dataType === "datetime";
 }
+function isNumericField(field: string): boolean {
+  const dataType = props.columns.find((column) => column.name === field)?.dataType;
+  return dataType === "integer" || dataType === "decimal";
+}
 </script>
 
 <template>
@@ -108,9 +127,11 @@ function isDateField(field: string): boolean {
       <div class="control-card">
         <header><strong>只读分组</strong><span>基于完整筛选结果，最多两级</span></header>
         <div v-for="(group, index) in draftGroups" :key="index" class="config-row">
-          <NSelect size="small" :value="group.field" :options="groupOptions" @update:value="field => updateGroup(index, { field, bucket: 'value' })" />
+          <NSelect :data-testid="`view-group-field-${index}`" size="small" :value="group.field" :options="groupOptions" @update:value="field => updateGroup(index, { field, bucket: 'value', numberInterval: null })" />
           <NSelect size="small" :value="group.direction ?? 'asc'" :options="[{ label: '升序', value: 'asc' }, { label: '降序', value: 'desc' }]" @update:value="direction => updateGroup(index, { direction })" />
           <NSelect v-if="isDateField(group.field)" size="small" :value="group.bucket ?? 'value'" :options="[{ label: '精确值', value: 'value' }, { label: '年', value: 'year' }, { label: '季度', value: 'quarter' }, { label: '月', value: 'month' }, { label: '周', value: 'week' }, { label: '日', value: 'day' }, { label: '小时', value: 'hour' }]" @update:value="bucket => updateGroup(index, { bucket })" />
+          <NSelect v-else-if="isNumericField(group.field)" size="small" :value="group.bucket ?? 'value'" :options="[{ label: '精确值', value: 'value' }, { label: '数值区间', value: 'number' }]" @update:value="bucket => updateGroup(index, { bucket, numberInterval: bucket === 'number' ? (group.numberInterval ?? 10) : null })" />
+          <NInputNumber v-if="group.bucket === 'number'" size="small" :value="group.numberInterval ?? 10" :min="0.000001" :show-button="false" aria-label="数值分组间隔" @update:value="numberInterval => updateGroup(index, { numberInterval })" />
           <NButton size="tiny" quaternary aria-label="删除分组" @click="draftGroups = draftGroups.filter((_, i) => i !== index)">×</NButton>
         </div>
         <NButton size="tiny" secondary :disabled="draftGroups.length >= 2 || !groupOptions.length" @click="addGroup">＋ 分组字段</NButton>

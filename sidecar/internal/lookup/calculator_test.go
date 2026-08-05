@@ -76,7 +76,7 @@ func TestFanoutBudgetIsSharedAcrossPathHops(t *testing.T) {
 	err := budget.consume(2)
 	var productErr *mutation.ProductError
 	if !errors.As(err, &productErr) ||
-		productErr.Code != "mutation.lookup.fanout_limit" {
+		productErr.Code != "lookup.value.too_expensive" {
 		t.Fatalf("fanout error = %#v", err)
 	}
 	if budget.remaining != 1 {
@@ -85,11 +85,11 @@ func TestFanoutBudgetIsSharedAcrossPathHops(t *testing.T) {
 }
 
 func TestFanoutBudgetSupportsInventoryScaleRelations(t *testing.T) {
-	budget := &fanoutBudget{remaining: maxRelatedRecords}
+	budget := &fanoutBudget{remaining: maxTraversalCost}
 	if err := budget.consume(10_001); err != nil {
 		t.Fatalf("10,001 related inventory records must fit the resource budget: %v", err)
 	}
-	if budget.remaining != maxRelatedRecords-10_001 {
+	if budget.remaining != maxTraversalCost-10_001 {
 		t.Fatalf("remaining budget = %d", budget.remaining)
 	}
 }

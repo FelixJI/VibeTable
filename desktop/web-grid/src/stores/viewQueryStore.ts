@@ -27,6 +27,7 @@ export const useViewQueryStore = defineStore("view-query", {
     groups: [] as GroupCondition[],
     summaries: [] as SummaryCondition[],
     visibleFields: [] as string[],
+    collapsedGroupKeys: [] as string[],
   }),
   actions: {
     reset(collection = "", allFields: readonly string[] = []) {
@@ -37,6 +38,7 @@ export const useViewQueryStore = defineStore("view-query", {
       this.groups = [];
       this.summaries = [];
       this.visibleFields = [...allFields];
+      this.collapsedGroupKeys = [];
     },
     replace(collection: string, view: PresetView, allFields: readonly string[]) {
       this.collection = collection;
@@ -45,6 +47,7 @@ export const useViewQueryStore = defineStore("view-query", {
       this.sorts = [...view.sorts];
       this.groups = [...(view.groups ?? [])].slice(0, 2);
       this.summaries = [...(view.summaries ?? [])].slice(0, 3);
+      this.collapsedGroupKeys = [...(view.collapsedGroupKeys ?? [])].slice(0, 512);
       const available = new Set(allFields);
       const saved = view.visibleFields.filter((field) => available.has(field));
       this.visibleFields = allFields.length === 0
@@ -70,6 +73,11 @@ export const useViewQueryStore = defineStore("view-query", {
       this.groups = [...input.groups].slice(0, 2);
       this.summaries = [...input.summaries].slice(0, 3);
       this.visibleFields = [...input.visibleFields];
+    },
+    toggleGroup(key: string) {
+      this.collapsedGroupKeys = this.collapsedGroupKeys.includes(key)
+        ? this.collapsedGroupKeys.filter(item => item !== key)
+        : [...this.collapsedGroupKeys, key].slice(-512);
     },
     toQuery(groupOffset = 0): TableQuery {
       return {

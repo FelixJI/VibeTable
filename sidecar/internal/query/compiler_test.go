@@ -35,7 +35,8 @@ func TestNormalizeEnforcesProductFilterTreeBudgets(t *testing.T) {
 			_, err := query.Normalize(query.TableQuery{Filters: filters})
 			var productErr *query.ProductError
 			if !errors.As(err, &productErr) ||
-				(productErr.Code != "query.filter.limit" && productErr.Code != "query.filter.depth") {
+				(productErr.Code != "view.filter.condition_limit" &&
+					productErr.Code != "view.filter.depth_limit") {
 				t.Fatalf("Normalize() error = %#v", err)
 			}
 		})

@@ -75,7 +75,10 @@ public sealed record PresetView(
     string? EndDateField = null,
     string? TitleField = null,
     string? GroupField = null,
-    string? CoverField = null);
+    string? CoverField = null,
+    IReadOnlyList<GroupCondition>? Groups = null,
+    IReadOnlyList<SummaryCondition>? Summaries = null,
+    IReadOnlyList<string>? CollapsedGroupKeys = null);
 
 public sealed record PresetEntry(
     string Id,

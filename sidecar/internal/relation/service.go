@@ -403,6 +403,61 @@ func (service *Service) PreviewLookups(
 	return service.attachLookupCells(ctx, request.Definition, page, selectedIDs)
 }
 
+func (service *Service) LookupValuePage(
+	ctx context.Context,
+	request LookupValuePageRequest,
+) (lookupcalc.CellValue, error) {
+	definition, err := schemaapi.New(service.app).Describe(ctx, request.TableID)
+	if err != nil {
+		return lookupcalc.CellValue{}, err
+	}
+	if definition.SchemaRevision != request.SchemaRevision {
+		return lookupcalc.CellValue{}, relationError(
+			"lookup.schema_revision_conflict", "lookup schema revision does not match",
+		)
+	}
+	var lookupField schema.FieldDefinition
+	found := false
+	for _, field := range definition.Fields {
+		if field.FieldID == request.FieldID &&
+			field.Kind == schema.FieldKindLookup && field.Lookup != nil {
+			lookupField = field
+			found = true
+			break
+		}
+	}
+	if !found || request.SourceRecordID == "" {
+		return lookupcalc.CellValue{}, relationError(
+			"lookup.request.invalid", "lookup value page target is invalid",
+		)
+	}
+	collection, err := service.app.FindFirstRecordByFilter(
+		"vibetable_tables", "table_id={:table}", dbx.Params{"table": definition.TableID},
+	)
+	if err != nil {
+		return lookupcalc.CellValue{}, relationError(
+			"lookup.storage_failed", "lookup source storage is unavailable",
+		)
+	}
+	sourceCollection, err := service.app.FindCollectionByNameOrId(
+		collection.GetString("collection_id"),
+	)
+	if err != nil {
+		return lookupcalc.CellValue{}, relationError(
+			"lookup.storage_failed", "lookup source storage is unavailable",
+		)
+	}
+	record, err := service.app.FindRecordById(sourceCollection, request.SourceRecordID)
+	if err != nil {
+		return lookupcalc.CellValue{}, relationError(
+			"lookup.storage_failed", "lookup source record is unavailable",
+		)
+	}
+	return lookupcalc.NewCalculator().CalculateFieldPage(
+		ctx, service.app, definition, record, lookupField, request.Offset, request.Limit,
+	)
+}
+
 func (service *Service) attachLookupCells(
 	ctx context.Context,
 	definition schema.TableDefinition,

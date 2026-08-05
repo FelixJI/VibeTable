@@ -1,4 +1,6 @@
 export const messages: Record<string, string> = {
+  "grid.formula.updating": "Calculating",
+  "grid.formula.failed": "Calculation failed",
   "common.copy": "Copy",
   "common.copied": "Copied",
   "files.import": "Import files",
@@ -534,6 +536,7 @@ export const messages: Record<string, string> = {
   "grid.lookup.tooExpensive": "Budget exceeded",
   "grid.lookup.sourceCount": "{count} source records",
   "grid.lookup.openSource": "Open {collection} · {itemId}",
+	"grid.lookup.openSources": "View all source records",
   "relationEditor.title": "Edit relation",
   "relationEditor.kind.m2o": "Many to one",
   "relationEditor.kind.o2m": "One to many",
@@ -579,6 +582,8 @@ export const messages: Record<string, string> = {
   "workspace.relation.changed": "The relation changed. Refresh and try again.",
   "workspace.lookup.sourceLocated": "Located source record {collection} · {itemId}",
   "workspace.lookup.sourceFiltered": "Filtered to source record {collection} · {itemId}",
+	"workspace.lookup.sourcesTitle": "Lookup sources",
+	"workspace.lookup.loadMoreSources": "Load more sources",
   "workspace.notification.relationLookupFailed": "The relation or Lookup operation failed. Try again shortly.",
   "workspace.notification.relationLookupTimeout": "The relation or Lookup operation timed out. Try again.",
   "workspace.notification.operationFailed": "The operation failed. Try again.",

@@ -166,6 +166,7 @@ export interface LookupDefinition {
 export interface LookupValueProvenance {
   readonly collection: string;
   readonly itemId: string;
+  readonly fieldId: string;
   readonly value: unknown;
 }
 
@@ -173,7 +174,28 @@ export interface LookupCellValue {
   readonly state: LookupCellState;
   readonly value: unknown;
   readonly provenance: readonly LookupValueProvenance[];
+  readonly provenanceTotal: number;
+  readonly provenanceOffset: number;
+  readonly provenanceLimit: number;
+  readonly provenanceHasMore: boolean;
   readonly diagnostic?: LookupDiagnostic | null;
+}
+
+export interface LookupValuePageParams {
+	readonly collection: string;
+	readonly fieldRef: string;
+	readonly sourceRecordId: string;
+	readonly offset: number;
+	readonly limit: number;
+	readonly schemaRevision: string;
+	readonly permissionRevision: string;
+	readonly lookupRevision: string;
+}
+
+export interface LookupSourcePageIntent {
+	readonly sourceRecordId: string;
+	readonly fieldRef: string;
+	readonly cell: LookupCellValue;
 }
 
 export interface LookupGroup {

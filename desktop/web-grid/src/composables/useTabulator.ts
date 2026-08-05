@@ -91,7 +91,8 @@ export interface UseTabulatorOptions {
     descriptor: NormalizedRelationDescriptor,
     value: unknown,
   ) => void;
-  readonly onLookupSourceRequested?: (source: LookupValueProvenance) => void;
+	readonly onLookupSourceRequested?: (source: LookupValueProvenance) => void;
+	readonly onLookupSourcePageRequested?: (intent: import("@/contracts").LookupSourcePageIntent) => void;
   readonly onAttachmentOpenRequested?: (
     rowKey: string | number,
     column: ColumnSchema,
@@ -165,6 +166,7 @@ export function useTabulator(
     lookupUnavailableReason: relationLookupStore.lookupUnavailableReason,
     onRelationEditRequested: options?.onRelationEditRequested,
     onLookupSourceRequested: options?.onLookupSourceRequested,
+	onLookupSourcePageRequested: options?.onLookupSourcePageRequested,
     onAttachmentOpenRequested: options?.onAttachmentOpenRequested,
   });
 

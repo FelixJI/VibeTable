@@ -100,6 +100,7 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
     public Task<JsonElement> ValidateLookupAsync(JsonElement p, CancellationToken t) => Invoke("lookup.validate", p, t);
     public Task<JsonElement> PreviewLookupAsync(JsonElement p, CancellationToken t) => Invoke("lookup.preview", p, t);
     public Task<JsonElement> QueryLookupsAsync(JsonElement p, CancellationToken t) => Invoke("lookup.query", p, t);
+    public Task<JsonElement> ReadLookupValuePageAsync(JsonElement p, CancellationToken t) => Invoke("lookup.valuePage", p, t);
 
     public void Dispose()
     {

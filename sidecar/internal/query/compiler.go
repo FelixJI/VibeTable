@@ -6,6 +6,7 @@ import (
 	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -365,7 +366,9 @@ func compileViewGroups(
 		if bucket == "" {
 			bucket = GroupBucketValue
 		}
-		expression, err := viewGroupExpression(field, bucket, fmt.Sprintf("groups[%d].bucket", index))
+		expression, err := viewGroupExpression(
+			field, bucket, group.NumberInterval, fmt.Sprintf("groups[%d].bucket", index),
+		)
 		if err != nil {
 			return compiledViewGroups{}, err
 		}
@@ -433,10 +436,22 @@ func compileViewGroups(
 func viewGroupExpression(
 	field resolvedField,
 	bucket GroupBucket,
+	numberInterval float64,
 	path string,
 ) (string, error) {
 	if bucket == GroupBucketValue {
 		return field.sql, nil
+	}
+	if bucket == GroupBucketNumber {
+		if field.descriptor.Type != FieldTypeNumber || numberInterval <= 0 ||
+			math.IsNaN(numberInterval) || math.IsInf(numberInterval, 0) {
+			return "", productError(
+				"view.group.invalid_bucket", path,
+				"number buckets require a numeric field and a positive finite interval", nil,
+			)
+		}
+		interval := strconv.FormatFloat(numberInterval, 'g', -1, 64)
+		return "FLOOR((" + field.sql + ") / " + interval + ") * " + interval, nil
 	}
 	if field.descriptor.Type != FieldTypeDate {
 		return "", productError(
@@ -475,7 +490,7 @@ func Normalize(input TableQuery) (TableQuery, error) {
 		return TableQuery{}, productError("query.page.invalid", "limit", "limit must be between 1 and 500", nil)
 	}
 	if len(input.Filters) > maxFilters {
-		return TableQuery{}, productError("query.filter.limit", "filters", "too many filters", nil)
+		return TableQuery{}, productError("view.filter.condition_limit", "filters", "too many filters", nil)
 	}
 	if len(input.Sorts) > maxSorts {
 		return TableQuery{}, productError("query.sort.limit", "sorts", "too many sorts", nil)
@@ -534,11 +549,11 @@ func normalizeFilter(
 	if len(filter.Filters) == 0 {
 		*count++
 		if *count > maxFilters {
-			return productError("query.filter.limit", "filters", "too many filters", nil)
+			return productError("view.filter.condition_limit", "filters", "too many filters", nil)
 		}
 	}
 	if depth > maxFilterDepth {
-		return productError("query.filter.depth", path, "filter nesting is too deep", nil)
+		return productError("view.filter.depth_limit", path, "filter nesting is too deep", nil)
 	}
 	if filter.Logic == "" {
 		filter.Logic = LogicAnd

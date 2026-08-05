@@ -14,6 +14,7 @@ IMPORT_PREVIEW_PATH = "/api/vibetable/v2/import-preview"
 QUERY_PATH = "/api/vibetable/v1/query"
 LOOKUP_DESCRIBE_PATH = "/api/vibetable/v1/lookups/describe"
 LOOKUP_QUERY_PATH = "/api/vibetable/v1/lookups/query"
+LOOKUP_VALUE_PAGE_PATH = "/api/vibetable/v1/lookups/value-page"
 RELATION_DESCRIBE_PATH = "/api/vibetable/v1/relations/describe"
 SCHEMA_TABLE_PATH = "/api/vibetable/v1/schema/tables"
 REALTIME_RECONCILE_PATH = "/api/vibetable/v1/events/reconcile"
@@ -341,6 +342,31 @@ class PocketBaseClient:
         )
         return _query_page(payload)
 
+    async def lookup_value_page(
+        self,
+        *,
+        table_id: str,
+        schema_revision: str,
+        source_record_id: str,
+        field_id: str,
+        offset: int,
+        limit: int,
+    ) -> dict[str, Any]:
+        return _object(
+            await self._post(
+                LOOKUP_VALUE_PAGE_PATH,
+                {
+                    "tableId": table_id,
+                    "schemaRevision": schema_revision,
+                    "sourceRecordId": source_record_id,
+                    "fieldId": field_id,
+                    "offset": offset,
+                    "limit": limit,
+                },
+            ),
+            "lookup value page",
+        )
+
     async def reconcile_realtime(
         self,
         *,
@@ -517,6 +543,7 @@ def _text(value: Any, fallback: str) -> str:
 __all__ = [
     "LOOKUP_DESCRIBE_PATH",
     "LOOKUP_QUERY_PATH",
+    "LOOKUP_VALUE_PAGE_PATH",
     "METADATA_PATH",
     "MUTATION_APPLY_PATH",
     "MUTATION_PREVIEW_PATH",

@@ -221,6 +221,21 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 		dateGroups.GroupRows[1].Count != 1 {
 		t.Fatalf("date bucket groups = %#v err=%v", dateGroups.GroupRows, err)
 	}
+	numberGroups, err := port.ExecuteViewQuery(ctx, "orders", query.ViewQuery{
+		Query: query.TableQuery{Limit: 1},
+		Groups: []query.GroupSpec{{
+			Field: "amount", Bucket: query.GroupBucketNumber, NumberInterval: 50,
+		}},
+	})
+	if err != nil || len(numberGroups.GroupRows) != 3 ||
+		fmt.Sprint(numberGroups.GroupRows[0].Key[0]) != "0" ||
+		numberGroups.GroupRows[0].Count != 1 ||
+		fmt.Sprint(numberGroups.GroupRows[1].Key[0]) != "50" ||
+		numberGroups.GroupRows[1].Count != 1 ||
+		fmt.Sprint(numberGroups.GroupRows[2].Key[0]) != "100" ||
+		numberGroups.GroupRows[2].Count != 2 {
+		t.Fatalf("number bucket groups = %#v err=%v", numberGroups.GroupRows, err)
+	}
 	if _, ok := pageOne.Rows[0]["payload"].(map[string]any); !ok {
 		t.Fatalf("JSON did not round-trip as structured data: %#v", pageOne.Rows[0]["payload"])
 	}

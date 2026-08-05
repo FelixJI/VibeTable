@@ -151,6 +151,7 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 	if cell.State != "ok" || cell.Value != "Ada" || len(cell.Provenance) != 1 ||
 		cell.Provenance[0].Collection != authors.TableID ||
 		cell.Provenance[0].ItemID != authorID ||
+		cell.Provenance[0].FieldID != "name_id" ||
 		cell.Provenance[0].Value != "Ada" {
 		t.Fatalf("lookup provenance = %#v", cell)
 	}

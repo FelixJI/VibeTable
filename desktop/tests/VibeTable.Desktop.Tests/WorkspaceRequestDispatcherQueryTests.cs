@@ -50,7 +50,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
                   {"field": "payload", "direction": "desc", "nullsLast": false}
                 ],
                 "groups": [
-                  {"field": "status", "direction": "asc"},
+                  {"field": "amount", "direction": "asc", "bucket": "number", "numberInterval": 50},
                   {"field": "created", "direction": "desc", "bucket": "month"}
                 ],
                 "summaries": [
@@ -91,6 +91,8 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         Assert.AreEqual("desc", query.Sorts[0].Direction);
         Assert.IsFalse(query.Sorts[0].NullsLast);
         Assert.AreEqual(2, query.Groups?.Count);
+        Assert.AreEqual("number", query.Groups![0].Bucket);
+        Assert.AreEqual(50d, query.Groups[0].NumberInterval);
         Assert.AreEqual("created", query.Groups![1].Field);
         Assert.AreEqual("month", query.Groups[1].Bucket);
         Assert.AreEqual(1, query.Summaries?.Count);

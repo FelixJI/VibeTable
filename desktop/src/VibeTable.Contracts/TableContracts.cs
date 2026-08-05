@@ -20,7 +20,8 @@ public sealed record ColumnSchema(
     string Kind = "scalar",
     string? RelationId = null,
     string? LookupId = null,
-    IReadOnlyDictionary<string, object?>? AttachmentPolicy = null);
+    IReadOnlyDictionary<string, object?>? AttachmentPolicy = null,
+    IReadOnlyList<string>? FilterOperators = null);
 
 /// <summary>
 /// Result of opening the configured logical source through the table gateway:

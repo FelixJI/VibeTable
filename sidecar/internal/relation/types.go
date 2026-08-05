@@ -135,3 +135,12 @@ type LookupPreviewRequest struct {
 	FieldIDs   []string               `json:"fieldIds"`
 	Query      query.TableQuery       `json:"query"`
 }
+
+type LookupValuePageRequest struct {
+	TableID        string `json:"tableId"`
+	SchemaRevision string `json:"schemaRevision"`
+	SourceRecordID string `json:"sourceRecordId"`
+	FieldID        string `json:"fieldId"`
+	Offset         int    `json:"offset"`
+	Limit          int    `json:"limit"`
+}

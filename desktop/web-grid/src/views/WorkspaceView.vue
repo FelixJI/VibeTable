@@ -137,6 +137,7 @@ import type {
   FilterExpression,
   GroupCondition,
   LookupValueProvenance,
+	LookupSourcePageIntent,
   SortCondition,
   PasteCellPayload,
   PreviewPasteRequestedPayload,
@@ -548,6 +549,23 @@ const lookupSourceNavigation = ref<{
   source: LookupValueProvenance;
   queryRequested: boolean;
 } | null>(null);
+const lookupSources = ref<{
+	show: boolean;
+	loading: boolean;
+	error: string | null;
+	fieldRef: string;
+	sourceRecordId: string;
+	items: LookupValueProvenance[];
+	total: number;
+}>({
+	show: false,
+	loading: false,
+	error: null,
+	fieldRef: "",
+	sourceRecordId: "",
+	items: [],
+	total: 0,
+});
 const interactiveGridQuery = ref<TableQuery | null>(null);
 
 watch(
@@ -663,6 +681,44 @@ function navigateLookupSource(source: LookupValueProvenance): void {
   lookupSourceNavigation.value = { source, queryRequested: false };
   tableService.selectTable(source.collection);
   ui.navigate("tables");
+}
+
+function openLookupSources(intent: LookupSourcePageIntent): void {
+	lookupSources.value = {
+		show: true,
+		loading: false,
+		error: null,
+		fieldRef: intent.fieldRef,
+		sourceRecordId: intent.sourceRecordId,
+		items: [...intent.cell.provenance],
+		total: intent.cell.provenanceTotal,
+	};
+}
+
+function closeLookupSources(): void {
+	lookupSources.value.show = false;
+}
+
+async function loadMoreLookupSources(): Promise<void> {
+	const state = lookupSources.value;
+	if (state.loading || state.items.length >= state.total) return;
+	state.loading = true;
+	state.error = null;
+	try {
+		const page = await relationLookupService.readLookupValuePage({
+			fieldRef: state.fieldRef,
+			sourceRecordId: state.sourceRecordId,
+			offset: state.items.length,
+			limit: 100,
+		});
+		if (!state.show) return;
+		state.items.push(...page.provenance);
+		state.total = page.provenanceTotal;
+	} catch (error) {
+		state.error = relationLookupErrorMessage(error);
+	} finally {
+		state.loading = false;
+	}
 }
 
 function openFieldManager(): void {
@@ -804,6 +860,7 @@ function captureTableView(isDefault = false): PresetView {
     sorts: [...viewQuery.sorts],
     groups: [...viewQuery.groups],
     summaries: [...viewQuery.summaries],
+    collapsedGroupKeys: [...viewQuery.collapsedGroupKeys],
     search: viewQuery.search,
     visibleFields: [...viewQuery.visibleFields],
   };
@@ -819,6 +876,7 @@ function captureCurrentView(isDefault = false): PresetView {
     sorts: [...viewQuery.sorts],
     groups: [...viewQuery.groups],
     summaries: [...viewQuery.summaries],
+    collapsedGroupKeys: [...viewQuery.collapsedGroupKeys],
     search: viewQuery.search,
     visibleFields: [...viewQuery.visibleFields],
     isDefault,
@@ -836,6 +894,11 @@ function requestAuthoritativeView(groupOffset = 0): void {
 
 function loadMoreViewGroups(): void {
   requestAuthoritativeView(tableStore.viewGroups.length);
+}
+
+function toggleViewGroup(key: string): void {
+  viewQuery.toggleGroup(key);
+  presetViews.markDirty();
 }
 
 async function applyView(view: PresetView): Promise<void> {
@@ -2180,6 +2243,8 @@ useKeyboard({
               :groups="viewQuery.groups"
               :summaries="viewQuery.summaries"
               :visible-fields="viewQuery.visibleFields"
+              :relations="relationLookup.schema?.normalizedRelations ?? []"
+              :lookups="relationLookup.lookups"
               @change="onViewDefinitionChanged"
             />
             <ViewGroupPanel
@@ -2189,7 +2254,9 @@ useKeyboard({
               :summaries="viewQuery.summaries"
               :columns="tableStore.schema ?? []"
               :has-more="tableStore.hasMoreViewGroups"
+              :collapsed-keys="viewQuery.collapsedGroupKeys"
               @more="loadMoreViewGroups"
+              @toggle="toggleViewGroup"
             />
             <section
               v-if="editRejection"
@@ -2259,6 +2326,7 @@ useKeyboard({
                 @attachment-open="openAttachmentPanel"
                 @json-edit="openJsonEditor"
                 @lookup-source="navigateLookupSource"
+				@lookup-source-page="openLookupSources"
                 @view-query-change="onGridViewQueryChanged"
                 @insert-first-row="mutationService.insertRow({})"
               />
@@ -2337,6 +2405,44 @@ useKeyboard({
       @load-more="loadMoreRelationTargets"
       @create="createRelationTarget"
     />
+	<NModal
+		:show="lookupSources.show"
+		:auto-focus="true"
+		:trap-focus="true"
+		:close-on-esc="true"
+		:mask-closable="true"
+		@update:show="show => { if (!show) closeLookupSources() }"
+	>
+		<aside
+			class="lookup-sources-panel"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="lookup-sources-title"
+			data-testid="lookup-sources-panel"
+		>
+			<header>
+				<div>
+					<strong id="lookup-sources-title">{{ t("workspace.lookup.sourcesTitle") }}</strong>
+					<small>{{ lookupSources.items.length }} / {{ lookupSources.total }}</small>
+				</div>
+				<NButton size="tiny" quaternary @click="closeLookupSources">{{ t("common.close") }}</NButton>
+			</header>
+			<p v-if="lookupSources.error" class="lookup-sources-error" role="alert">{{ lookupSources.error }}</p>
+			<ol>
+				<li v-for="source in lookupSources.items" :key="`${source.collection}:${source.itemId}:${source.fieldId}`">
+					<button type="button" @click="navigateLookupSource(source); closeLookupSources()">
+						<span>{{ source.collection }} · {{ source.itemId }}</span>
+						<small>{{ source.fieldId }} · {{ String(source.value ?? "—") }}</small>
+					</button>
+				</li>
+			</ol>
+			<footer v-if="lookupSources.items.length < lookupSources.total">
+				<NButton size="small" :loading="lookupSources.loading" @click="loadMoreLookupSources">
+					{{ t("workspace.lookup.loadMoreSources") }}
+				</NButton>
+			</footer>
+		</aside>
+	</NModal>
     <NModal
       :show="attachmentPanel.show"
       :auto-focus="true"
@@ -2515,6 +2621,31 @@ useKeyboard({
 .plugin-action-overlay { position: fixed; z-index: 80; inset: 0; display: grid; place-items: stretch end; background: rgba(10, 15, 22, .38); backdrop-filter: blur(2px); }
 .plugin-action-overlay > :deep(*) { height: 100%; }
 .plugin-action-overlay :deep(.surface-shell) { width: min(920px, calc(100% - 60px)); margin: 30px; }
+.lookup-sources-panel {
+	position: fixed;
+	z-index: 78;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	display: flex;
+	width: min(480px, calc(100vw - 32px));
+	flex-direction: column;
+	padding: 18px;
+	border-left: 1px solid var(--vt-border);
+	background: var(--vt-bg);
+	box-shadow: -12px 0 32px rgb(15 23 42 / 12%);
+}
+.lookup-sources-panel > header,
+.lookup-sources-panel > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lookup-sources-panel > header { padding-bottom: 12px; border-bottom: 1px solid var(--vt-border); }
+.lookup-sources-panel > header div { display: grid; gap: 2px; }
+.lookup-sources-panel > header small,
+.lookup-sources-panel li small { color: var(--vt-fg-muted); }
+.lookup-sources-panel ol { display: grid; flex: 1 1 auto; align-content: start; margin: 0; padding: 8px 0; overflow: auto; list-style: none; }
+.lookup-sources-panel li button { display: grid; width: 100%; gap: 3px; padding: 9px 8px; border: 0; border-bottom: 1px solid var(--vt-border); color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.lookup-sources-panel li button:hover { background: var(--vt-bg-sunken); }
+.lookup-sources-panel > footer { justify-content: center; padding-top: 12px; border-top: 1px solid var(--vt-border); }
+.lookup-sources-error { color: var(--vt-color-danger-600); }
 .attachment-panel {
   position: fixed;
   z-index: 78;

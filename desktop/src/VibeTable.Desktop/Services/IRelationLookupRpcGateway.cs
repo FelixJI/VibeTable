@@ -17,4 +17,5 @@ public interface IRelationLookupRpcGateway
     Task<JsonElement> ValidateLookupAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> PreviewLookupAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> QueryLookupsAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> ReadLookupValuePageAsync(JsonElement parameters, CancellationToken token);
 }

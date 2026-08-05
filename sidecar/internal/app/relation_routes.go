@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 
@@ -130,7 +131,7 @@ func registerRelationRoutes(
 		}
 		result, err := service.QueryLookups(request.Request.Context(), input)
 		if err != nil {
-			return writeQueryError(request, err)
+			return writeRelationQueryError(request, err)
 		}
 		return request.JSON(http.StatusOK, result)
 	})
@@ -141,10 +142,29 @@ func registerRelationRoutes(
 		}
 		result, err := service.PreviewLookups(request.Request.Context(), input)
 		if err != nil {
-			return writeQueryError(request, err)
+			return writeRelationQueryError(request, err)
 		}
 		return request.JSON(http.StatusOK, result)
 	})
+	r.POST("/api/vibetable/v1/lookups/value-page", func(request *core.RequestEvent) error {
+		var input relation.LookupValuePageRequest
+		if err := decodeRelationBody(request, &input); err != nil {
+			return writeMutationError(request, err)
+		}
+		result, err := service.LookupValuePage(request.Request.Context(), input)
+		if err != nil {
+			return writeRelationQueryError(request, err)
+		}
+		return request.JSON(http.StatusOK, result)
+	})
+}
+
+func writeRelationQueryError(request *core.RequestEvent, err error) error {
+	var productErr *mutation.ProductError
+	if errors.As(err, &productErr) {
+		return writeMutationError(request, err)
+	}
+	return writeQueryError(request, err)
 }
 
 func decodeRelationBody(

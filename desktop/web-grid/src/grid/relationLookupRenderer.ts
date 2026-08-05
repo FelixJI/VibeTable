@@ -45,8 +45,12 @@ export function lookupFormatter(
   lookupQueryAvailable: boolean,
   unavailableReason?: string | null,
   onSourceRequested?: (source: LookupValueProvenance) => void,
+	onSourcePageRequested?: (intent: import("@/contracts").LookupSourcePageIntent) => void,
 ) {
-  return (cell: { getValue(): unknown }): HTMLElement => {
+	return (cell: {
+		getValue(): unknown;
+		getRow?(): { getData(): Record<string, unknown> };
+	}): HTMLElement => {
     const root = element("div", "vt-lookup-value");
     root.append(element("span", "vt-lookup-mark", "↳"));
     if (!lookupQueryAvailable) {
@@ -79,7 +83,7 @@ export function lookupFormatter(
     const display = formatLookupValue(value.value);
     root.append(element("span", display === "" ? "vt-cell-empty" : "vt-lookup-text", display || "—"));
     if (value.provenance.length > 0) {
-      root.title = t("grid.lookup.sourceCount", { count: value.provenance.length });
+      root.title = t("grid.lookup.sourceCount", { count: value.provenanceTotal });
       for (const source of value.provenance.slice(0, 3)) {
         const button = document.createElement("button");
         button.className = "vt-lookup-source";
@@ -95,11 +99,24 @@ export function lookupFormatter(
         });
         root.append(button);
       }
-      if (value.provenance.length > 3) {
-        const remainder = document.createElement("span");
-        remainder.className = "vt-lookup-source-more";
-        remainder.textContent = `+${value.provenance.length - 3}`;
-        root.append(remainder);
+      if (value.provenanceTotal > 3) {
+		const remainder = document.createElement("button");
+		remainder.className = "vt-lookup-source-more";
+		remainder.textContent = `+${value.provenanceTotal - 3}`;
+		remainder.type = "button";
+		remainder.title = t("grid.lookup.openSources");
+		remainder.addEventListener("click", (event) => {
+			event.stopPropagation();
+			const sourceRecordId = cell.getRow?.().getData().rowKey;
+			if (definition && (typeof sourceRecordId === "string" || typeof sourceRecordId === "number")) {
+				onSourcePageRequested?.({
+					sourceRecordId: String(sourceRecordId),
+					fieldRef: definition.fieldKey,
+					cell: value,
+				});
+			}
+		});
+		root.append(remainder);
       }
     }
     return root;
@@ -136,11 +153,20 @@ function normalizeLookupCell(value: unknown): LookupCellValue {
       state: value.state as LookupCellValue["state"],
       value: value.value,
       provenance: Array.isArray(value.provenance) ? value.provenance as LookupCellValue["provenance"] : [],
+      provenanceTotal: typeof value.provenanceTotal === "number"
+        ? value.provenanceTotal
+        : Array.isArray(value.provenance) ? value.provenance.length : 0,
+      provenanceOffset: typeof value.provenanceOffset === "number" ? value.provenanceOffset : 0,
+      provenanceLimit: typeof value.provenanceLimit === "number" ? value.provenanceLimit : 100,
+      provenanceHasMore: value.provenanceHasMore === true,
       diagnostic: isRecord(value.diagnostic) ? value.diagnostic as unknown as LookupCellValue["diagnostic"] : null,
     };
   }
   // Query v1 may project a bare scalar. It is still authoritative server data.
-  return { state: "ok", value, provenance: [] };
+  return {
+    state: "ok", value, provenance: [], provenanceTotal: 0,
+    provenanceOffset: 0, provenanceLimit: 100, provenanceHasMore: false,
+  };
 }
 
 function formatLookupValue(value: unknown): string {

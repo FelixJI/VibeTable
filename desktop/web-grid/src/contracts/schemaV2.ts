@@ -187,10 +187,17 @@ export interface RecommendedValuesV2 {
   readonly json?: FieldDefinitionV2["json"];
 }
 
-export type FieldDraftV2 = Omit<
+type FieldDraftBaseV2 = Omit<
   FieldDefinitionV2,
-  "contract" | "identity" | "lifecycle"
+  "contract" | "identity" | "lifecycle" | "formula"
 >;
+
+export type FieldDraftV2 = FieldDraftBaseV2 & {
+  readonly formula?: {
+    readonly language: "cel-v1";
+    readonly source: string;
+  };
+};
 
 export interface CapabilityV2 {
   readonly logicalType: LogicalTypeV2;
@@ -845,8 +852,18 @@ function parseIntent(value: unknown, path: string): void {
       ],
       ["displayName", "help", "logicalType", "value", "constraints", "storage", "display"],
     );
+    let definitionFormula = draft.formula;
+    if (draft.formula !== undefined) {
+      const formula = exactObject(
+        draft.formula,
+        `${path}.draft.formula`,
+        ["language", "source"],
+      );
+      definitionFormula = { ...formula, resultType: "text" };
+    }
     parseFieldDefinitionV2({
       ...draft,
+      formula: definitionFormula,
       contract: SCHEMA_V2_CONTRACT,
       identity: {
         fieldId: "fld_contract_validation",

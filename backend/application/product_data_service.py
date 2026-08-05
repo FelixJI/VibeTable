@@ -557,6 +557,39 @@ PRODUCT_PARAM_MODELS: dict[str, type[ProductParams]] = {
             "lookupRevision": (str,),
         },
     ),
+    "lookup.valuePage": _closed_params(
+        "LookupValuePageParams",
+        allowed=(
+            "collection",
+            "fieldRef",
+            "sourceRecordId",
+            "offset",
+            "limit",
+            "schemaRevision",
+            "permissionRevision",
+            "lookupRevision",
+        ),
+        required=(
+            "collection",
+            "fieldRef",
+            "sourceRecordId",
+            "offset",
+            "limit",
+            "schemaRevision",
+            "permissionRevision",
+            "lookupRevision",
+        ),
+        field_types={
+            "collection": (str,),
+            "fieldRef": (str,),
+            "sourceRecordId": (str,),
+            "offset": (int,),
+            "limit": (int,),
+            "schemaRevision": (str,),
+            "permissionRevision": (str,),
+            "lookupRevision": (str,),
+        },
+    ),
     "history.read": _closed_params(
         "HistoryReadParams",
         allowed=(
@@ -1448,6 +1481,44 @@ class PocketBaseProductDataService:
             "totalRows": page.total_rows,
             "snapshot": page.snapshot,
         }
+
+    async def lookup_value_page(self, params: ProductParams) -> dict[str, Any]:
+        raw = params.root
+        table_id = _text(raw, "collection")
+        catalog = await self._client.describe_relations(table_id)
+        lookups = catalog.get("lookups")
+        if not isinstance(lookups, list):
+            raise ValueError("PocketBase returned an invalid lookup catalog")
+        schema_revision = _text(catalog, "schemaRevision")
+        if (
+            _text(raw, "schemaRevision") != schema_revision
+            or _text(raw, "permissionRevision") != schema_revision
+            or _text(raw, "lookupRevision") != _lookup_revision(schema_revision, lookups)
+        ):
+            raise ValueError("Lookup value page revisions are stale")
+        field_ref = _text(raw, "fieldRef")
+        lookup = next(
+            (
+                item
+                for item in lookups
+                if isinstance(item, dict) and item.get("physicalName") == field_ref
+            ),
+            None,
+        )
+        if not isinstance(lookup, dict):
+            raise ValueError("fieldRef does not identify a Lookup")
+        offset = _integer(raw, "offset")
+        limit = _integer(raw, "limit")
+        if offset < 0 or limit < 1 or limit > 500:
+            raise ValueError("Lookup value page paging is invalid")
+        return await self._client.lookup_value_page(
+            table_id=table_id,
+            schema_revision=schema_revision,
+            source_record_id=_text(raw, "sourceRecordId"),
+            field_id=_text(lookup, "fieldId"),
+            offset=offset,
+            limit=limit,
+        )
 
     async def read_history(self, params: ProductParams) -> dict[str, Any]:
         raw = params.root

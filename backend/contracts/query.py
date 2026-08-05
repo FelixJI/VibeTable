@@ -79,7 +79,7 @@ FilterLogic = Literal["AND", "OR"]
 
 #: View grouping buckets. ``value`` groups exact product values; date buckets
 #: are explicit so adapters never infer grouping semantics.
-GroupBucket = Literal["value", "year", "quarter", "month", "week", "day", "hour"]
+GroupBucket = Literal["value", "year", "quarter", "month", "week", "day", "hour", "number"]
 
 #: Supported per-group numeric summaries.
 SummaryFunction = Literal["sum", "avg", "min", "max"]
@@ -141,6 +141,11 @@ class GroupCondition(CamelModel):
     field: str = Field(min_length=1, max_length=128)
     direction: SortDirection = "asc"
     bucket: GroupBucket = "value"
+    number_interval: float | None = Field(
+        default=None,
+        gt=0,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class SummaryCondition(CamelModel):

@@ -211,8 +211,17 @@ type FieldDescriptor struct {
 	Searchable       bool                `json:"searchable,omitempty"`
 	ComputedEnvelope bool                `json:"computedEnvelope,omitempty"`
 	ComputedReady    bool                `json:"computedReady,omitempty"`
+	ComputedStatus   string              `json:"computedStatus,omitempty"`
+	ComputedError    *ComputedDiagnostic `json:"computedError,omitempty"`
 	Relation         *RelationDescriptor `json:"relation,omitempty"`
 	Enum             *EnumDescriptor     `json:"enum,omitempty"`
+}
+
+type ComputedDiagnostic struct {
+	Code    string         `json:"code"`
+	Path    string         `json:"path"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details"`
 }
 
 type TableDescriptor struct {
@@ -306,12 +315,14 @@ const (
 	GroupBucketWeek    GroupBucket = "week"
 	GroupBucketDay     GroupBucket = "day"
 	GroupBucketHour    GroupBucket = "hour"
+	GroupBucketNumber  GroupBucket = "number"
 )
 
 type GroupSpec struct {
-	Field     string        `json:"field"`
-	Direction SortDirection `json:"direction,omitempty"`
-	Bucket    GroupBucket   `json:"bucket,omitempty"`
+	Field          string        `json:"field"`
+	Direction      SortDirection `json:"direction,omitempty"`
+	Bucket         GroupBucket   `json:"bucket,omitempty"`
+	NumberInterval float64       `json:"numberInterval,omitempty"`
 }
 
 type SummarySpec struct {

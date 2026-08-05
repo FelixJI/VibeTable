@@ -37,6 +37,7 @@ from backend.contracts.history import (  # noqa: E402
     RestoreResult,
 )
 from backend.contracts.lookup import (  # noqa: E402
+    LookupCellValue,
     LookupListResult,
     LookupQueryResult,
     LookupValidationResult,
@@ -452,6 +453,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "lookup.list": _typed(LookupListResult),
         "lookup.preview": _typed(LookupQueryResult),
         "lookup.query": _typed(LookupQueryResult),
+        "lookup.valuePage": _typed(LookupCellValue),
         "lookup.update": retired("lookup.update"),
         "lookup.validate": _typed(LookupValidationResult),
         "mutation.apply": _manual("MutationReceipt", mutation_receipt, receipt_schema),

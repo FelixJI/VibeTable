@@ -1,7 +1,9 @@
 import type {
   LookupListResult,
+	LookupCellValue,
   LookupQueryParams,
   LookupQueryResult,
+	LookupValuePageParams,
   RelationCreateTargetResult,
   RelationDelta,
   RelationDeltaPreview,
@@ -280,6 +282,22 @@ export function useRelationLookupService() {
     return { ...first, rows, offset: 0, limit: rows.length };
   }
 
+	async function readLookupValuePage(
+		params: Pick<LookupValuePageParams, "fieldRef" | "sourceRecordId" | "offset" | "limit">,
+	): Promise<LookupCellValue> {
+		const schema = requireSchema();
+		if (!store.capabilities?.lookupQueryV1) {
+			throw new Error(store.lookupUnavailableReason ?? "Lookup 权威查询不可用");
+		}
+		return await bridge.request("lookup.valuePage", {
+			...params,
+			collection: schema.collection,
+			schemaRevision: schema.schemaRevision,
+			permissionRevision: schema.permissionRevision,
+			lookupRevision: schema.lookupRevision,
+		}) as LookupCellValue;
+	}
+
   function requireSchema() {
     if (!store.schema) throw new Error("关系结构尚未加载");
     return store.schema;
@@ -302,6 +320,7 @@ export function useRelationLookupService() {
     applyDraft,
     queryLookups,
     queryDataset,
+	readLookupValuePage,
   };
 }
 

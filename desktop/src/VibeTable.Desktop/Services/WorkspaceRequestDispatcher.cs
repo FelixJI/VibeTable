@@ -1981,10 +1981,17 @@ public sealed class WorkspaceRequestDispatcher
                     : "asc";
             string bucket = item.TryGetProperty("bucket", out var bucketElement)
                 && bucketElement.ValueKind == JsonValueKind.String
-                && bucketElement.GetString() is "year" or "quarter" or "month" or "week" or "day" or "hour"
+                && bucketElement.GetString() is "year" or "quarter" or "month" or "week" or "day" or "hour" or "number"
                     ? bucketElement.GetString()!
                     : "value";
-            result.Add(new GroupCondition(field.GetString()!, direction, bucket));
+            double? numberInterval = item.TryGetProperty("numberInterval", out var intervalElement)
+                && intervalElement.ValueKind == JsonValueKind.Number
+                && intervalElement.TryGetDouble(out double interval)
+                && double.IsFinite(interval)
+                && interval > 0
+                    ? interval
+                    : null;
+            result.Add(new GroupCondition(field.GetString()!, direction, bucket, numberInterval));
         }
         return result;
     }

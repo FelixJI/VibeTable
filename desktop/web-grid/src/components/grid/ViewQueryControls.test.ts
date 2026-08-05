@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
+import { NInputNumber, NSelect } from "naive-ui";
 import ViewQueryControls from "./ViewQueryControls.vue";
-import type { ColumnSchema } from "@/contracts";
+import type { ColumnSchema, NormalizedRelationDescriptor } from "@/contracts";
 
 const columns = [
   { name: "status", title: "状态", dataType: "text", editable: true, nullable: true },
@@ -48,5 +49,37 @@ describe("ViewQueryControls", () => {
       summaries: [],
       visibleFields: ["status", "amount"],
     });
+  });
+
+  it("offers single Relation grouping and a numeric interval control", async () => {
+    const relation = {
+      relationId: "orders.customer", fieldRef: "customer", sourceCollection: "orders",
+      kind: "m2o", relatedCollection: "customers", allowedCollections: ["customers"],
+      unique: false, nullable: true, onDelete: "nullify", selfRelation: false,
+      managed: true, state: "valid", diagnostics: [],
+    } satisfies NormalizedRelationDescriptor;
+    const relationColumn = {
+      name: "customer", title: "客户", fieldId: "fld_customer", kind: "relation",
+      relationId: relation.relationId, dataType: "text", editable: true, nullable: true,
+    } satisfies ColumnSchema;
+    const wrapper = mount(ViewQueryControls, {
+      attachTo: document.body,
+      props: {
+        columns: [...columns, relationColumn], relations: [relation], lookups: [],
+        filters: [], groups: [
+          { field: "customer" },
+          { field: "amount", bucket: "number", numberInterval: 25 },
+        ],
+        summaries: [], visibleFields: ["status", "amount", "customer"],
+      },
+    });
+
+    await wrapper.get('[data-testid="view-group-trigger"]').trigger("click");
+    await flushPromises();
+    const fieldSelect = wrapper.findAllComponents(NSelect)
+      .find(select => select.attributes("data-testid") === "view-group-field-0");
+    const values = (fieldSelect?.props("options") ?? []).map(option => option.value);
+    expect(values).toContain("customer");
+    expect(wrapper.findComponent(NInputNumber).props("value")).toBe(25);
   });
 });

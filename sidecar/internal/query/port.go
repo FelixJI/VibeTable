@@ -600,7 +600,11 @@ func decodeValue(value any, fieldType FieldType) any {
 func decodeFieldValue(value any, field FieldDescriptor) any {
 	if field.ComputedEnvelope {
 		if !field.ComputedReady {
-			return nil
+			return map[string]any{
+				"state":      field.ComputedStatus,
+				"value":      nil,
+				"diagnostic": field.ComputedError,
+			}
 		}
 		var decoded any
 		switch typed := value.(type) {

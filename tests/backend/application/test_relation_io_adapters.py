@@ -111,7 +111,12 @@ class FakeProductClient:
                         "state": "ok",
                         "value": "12.50",
                         "provenance": [
-                            {"collection": "contracts", "itemId": "contract-1", "value": "12.50"}
+                            {
+                                "collection": "contracts",
+                                "itemId": "contract-1",
+                                "fieldId": "fld_amount",
+                                "value": "12.50",
+                            }
                         ],
                     },
                 }

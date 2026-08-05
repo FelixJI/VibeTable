@@ -11,8 +11,8 @@ function mountEditor(): VueWrapper {
       value: {
         language: "cel-v1",
         source: "f_price * 2",
-        resultType: "number",
       },
+      resultType: "number",
       localFields: [
         { label: "单价", canonicalName: "f_price", dataType: "number" },
         { label: "备注", canonicalName: "f_note", dataType: "text" },
@@ -83,7 +83,6 @@ describe("FormulaFieldEditor", () => {
       {
         language: "cel-v1",
         source: "{单价} * 3",
-        resultType: "number",
       },
     ]]);
     expect(wrapper.find('[data-testid="formula-source"]').exists()).toBe(false);

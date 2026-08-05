@@ -132,6 +132,33 @@ describe("relationLookupService", () => {
     }));
   });
 
+	it("binds source-value pages to the active schema and lookup revisions", async () => {
+		const store = useRelationLookupStore();
+		const generation = store.beginContext("orders");
+		store.acceptContext(generation, {
+			collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [],
+			schemaRevision: "schema_7", permissionRevision: "permission_7",
+			capabilityHash: "c", lookupRevision: "lookup_7",
+		}, [], {
+			contract: "vibetable.relation-capabilities.v1",
+			relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+		});
+		request.mockResolvedValue({
+			state: "ok", value: [2], provenance: [], provenanceTotal: 10_001,
+			provenanceOffset: 100, provenanceLimit: 100, provenanceHasMore: true,
+		});
+
+		await useRelationLookupService().readLookupValuePage({
+			fieldRef: "line_skus", sourceRecordId: "order-1", offset: 100, limit: 100,
+		});
+
+		expect(request).toHaveBeenCalledWith("lookup.valuePage", {
+			collection: "orders", fieldRef: "line_skus", sourceRecordId: "order-1",
+			offset: 100, limit: 100, schemaRevision: "schema_7",
+			permissionRevision: "permission_7", lookupRevision: "lookup_7",
+		});
+	});
+
   it("builds add/update/remove from a staged multi relation", () => {
     const store = useRelationLookupStore();
     const generation = store.beginContext("articles");

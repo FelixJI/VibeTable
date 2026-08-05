@@ -148,6 +148,7 @@ class LookupValidationResult(CamelModel):
 class LookupValueProvenance(CamelModel):
     collection: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=256)
+    field_id: str = Field(min_length=1, max_length=128)
     value: Any = None
 
 
@@ -155,6 +156,10 @@ class LookupCellValue(CamelModel):
     state: Literal["ok", "restricted", "invalid", "too_expensive"] = "ok"
     value: Any = None
     provenance: list[LookupValueProvenance] = Field(default_factory=list)
+    provenance_total: int = Field(default=0, ge=0)
+    provenance_offset: int = Field(default=0, ge=0)
+    provenance_limit: int = Field(default=100, ge=1)
+    provenance_has_more: bool = False
     diagnostic: LookupDiagnostic | None = None
 
 
@@ -210,6 +215,17 @@ class LookupQueryParams(CamelModel):
 
 class LookupPreviewParams(LookupQueryParams):
     definitions: list[LookupDefinition] = Field(min_length=1, max_length=256)
+
+
+class LookupValuePageParams(CamelModel):
+    collection: str = Field(min_length=1, max_length=128)
+    field_ref: str = Field(min_length=1, max_length=128)
+    source_record_id: str = Field(min_length=1, max_length=256)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=1, le=500)
+    schema_revision: str = Field(min_length=1, max_length=128)
+    permission_revision: str = Field(min_length=1, max_length=128)
+    lookup_revision: str = Field(min_length=1, max_length=128)
 
 
 class LookupColumnResult(CamelModel):
