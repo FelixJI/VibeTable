@@ -515,12 +515,28 @@ def _query_page(payload: Mapping[str, Any]) -> QueryPageResult:
 
 
 def _valid_group_row(value: Any) -> bool:
-    return (
+    valid = (
         isinstance(value, dict)
         and isinstance(value.get("key"), list)
         and isinstance(value.get("summaries"), list)
         and isinstance(value.get("count"), int)
         and not isinstance(value.get("count"), bool)
+    )
+    if not valid:
+        return False
+    has_parent_count = "parentCount" in value
+    has_parent_summaries = "parentSummaries" in value
+    if has_parent_count != has_parent_summaries:
+        return False
+    parent_count = value.get("parentCount")
+    parent_summaries = value.get("parentSummaries")
+    return (
+        (
+            parent_count is None
+            or (isinstance(parent_count, int) and not isinstance(parent_count, bool))
+        )
+        and (parent_summaries is None or isinstance(parent_summaries, list))
+        and (not has_parent_count or len(value["key"]) == 2)
     )
 
 

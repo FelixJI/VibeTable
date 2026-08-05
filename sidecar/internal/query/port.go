@@ -252,7 +252,22 @@ func decodeViewGroupRows(
 		for index := range summaries {
 			summaries[index] = row[fmt.Sprintf("summary_%d", index)]
 		}
-		result = append(result, GroupRow{Key: key, Count: count, Summaries: summaries})
+		groupRow := GroupRow{Key: key, Count: count, Summaries: summaries}
+		if len(plan.groupFields) == 2 {
+			parentCount, ok := integerResult(row["parent_row_count"])
+			if !ok {
+				return nil, productError(
+					"query.storage.failed", "groupRows.parentCount",
+					"parent group count is invalid", nil,
+				)
+			}
+			groupRow.ParentCount = &parentCount
+			groupRow.ParentSummaries = make([]any, plan.summaryCount)
+			for index := range groupRow.ParentSummaries {
+				groupRow.ParentSummaries[index] = row[fmt.Sprintf("parent_summary_%d", index)]
+			}
+		}
+		result = append(result, groupRow)
 	}
 	return result, nil
 }

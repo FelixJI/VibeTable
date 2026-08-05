@@ -25,8 +25,8 @@ describe("ViewGroupPanel", () => {
   it("renders a collapsible two-level tree and emits a stable persisted key", async () => {
     const wrapper = mount(ViewGroupPanel, { props: {
       rows: [
-        { key: ["east", "open"], count: 3, summaries: [30] },
-        { key: ["east", "closed"], count: 2, summaries: [20] },
+        { key: ["east", "open"], count: 3, summaries: [30], parentCount: 9, parentSummaries: [90] },
+        { key: ["east", "closed"], count: 2, summaries: [20], parentCount: 9, parentSummaries: [90] },
       ],
       groups: [{ field: "region" }, { field: "status" }],
       summaries: [{ field: "amount", function: "sum" }],
@@ -41,6 +41,8 @@ describe("ViewGroupPanel", () => {
 
     expect(wrapper.text()).toContain("区域: east");
     expect(wrapper.text()).toContain("状态: open");
+    expect(wrapper.get(".group-toggle").text()).toContain("9");
+    expect(wrapper.get(".group-toggle").text()).toContain("金额 合计: 90");
     await wrapper.get(".group-toggle").trigger("click");
     expect(wrapper.emitted("toggle")).toEqual([['["east"]']]);
   });

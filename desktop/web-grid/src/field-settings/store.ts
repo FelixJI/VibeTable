@@ -66,6 +66,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const lookupSchemas = ref<readonly SchemaSnapshot[]>([]);
   const lookupCatalogLoading = ref(false);
   const lookupCatalogError = ref<string | null>(null);
+  const lookupMaxDepth = ref(8);
   const formulaSourceSchema = ref<SchemaSnapshot | null>(null);
   const formulaTargetSchemas = ref<Readonly<Record<string, SchemaSnapshot>>>({});
   const formulaCatalogLoading = ref(false);
@@ -74,6 +75,11 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const formulaValidatedSource = ref("");
   const formulaValidating = ref(false);
   const formulaValidationError = ref<string | null>(null);
+  const formulaPreviewValue = ref<unknown>(undefined);
+  const formulaPreviewReady = ref(false);
+  const formulaPreviewing = ref(false);
+  const formulaPreviewError = ref<string | null>(null);
+  const formulaPreviewNote = ref<string | null>(null);
 
   const capabilities = computed<readonly CapabilityV2[]>(
     () => result.value?.capabilities ?? [],
@@ -100,7 +106,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     && (draft.value?.logicalType !== "lookup" || !!draft.value.lookup?.targetFieldId)
     && (draft.value?.logicalType !== "lookup"
       || !!draft.value.lookup?.path.length
-      && draft.value.lookup.path.length <= 8
+      && draft.value.lookup.path.length <= lookupMaxDepth.value
       && draft.value.lookup.path.every(step => !!step.relationFieldId))
     && (draft.value?.logicalType !== "formula" || !!draft.value.formula?.source.trim())
     && (action.value !== "create" || draft.value?.logicalType !== "relation"
@@ -124,6 +130,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     lookupSchemas.value = [];
     lookupCatalogLoading.value = false;
     lookupCatalogError.value = null;
+    lookupMaxDepth.value = 8;
     formulaSourceSchema.value = null;
     formulaTargetSchemas.value = {};
     formulaCatalogLoading.value = false;
@@ -132,6 +139,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     formulaValidatedSource.value = "";
     formulaValidating.value = false;
     formulaValidationError.value = null;
+    resetFormulaPreview();
   }
   const canApply = computed(() =>
     phase.value === "planned"
@@ -235,6 +243,10 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     lookupCatalogError.value = null;
   }
 
+  function setLookupMaxDepth(value: number): void {
+    lookupMaxDepth.value = Math.max(1, Math.trunc(value));
+  }
+
   function failLookupCatalog(reason: unknown): void {
     lookupCatalogLoading.value = false;
     lookupCatalogError.value = reason instanceof Error ? reason.message : String(reason);
@@ -279,6 +291,36 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     formulaValidation.value = null;
     formulaValidating.value = false;
     formulaValidationError.value = reason instanceof Error ? reason.message : String(reason);
+  }
+
+  function resetFormulaPreview(): void {
+    formulaPreviewValue.value = undefined;
+    formulaPreviewReady.value = false;
+    formulaPreviewing.value = false;
+    formulaPreviewError.value = null;
+    formulaPreviewNote.value = null;
+  }
+
+  function beginFormulaPreview(): void {
+    resetFormulaPreview();
+    formulaPreviewing.value = true;
+  }
+
+  function setFormulaPreview(value: unknown): void {
+    formulaPreviewValue.value = value;
+    formulaPreviewReady.value = true;
+    formulaPreviewing.value = false;
+  }
+
+  function setFormulaPreviewNote(note: string): void {
+    resetFormulaPreview();
+    formulaPreviewNote.value = note;
+  }
+
+  function failFormulaPreview(reason: unknown): void {
+    formulaPreviewReady.value = false;
+    formulaPreviewing.value = false;
+    formulaPreviewError.value = reason instanceof Error ? reason.message : String(reason);
   }
 
   function patchDraft(patch: Partial<FieldDraftV2>): void {
@@ -416,17 +458,21 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     backupReceipt, plan, receipt, migration, recycled, confirmations, error,
     errorCode, relationPair, relationTables, relationSourceSchema, relationTargetSchema,
     relationCatalogLoading, relationCatalogError, lookupSchemas,
-    lookupCatalogLoading, lookupCatalogError,
+    lookupCatalogLoading, lookupCatalogError, lookupMaxDepth,
     formulaSourceSchema, formulaTargetSchemas, formulaCatalogLoading,
     formulaCatalogError, formulaValidation, formulaValidatedSource,
     formulaValidating, formulaValidationError,
+    formulaPreviewValue, formulaPreviewReady, formulaPreviewing,
+    formulaPreviewError, formulaPreviewNote,
     capabilities, capability, sourceCapability, dirty, isExisting, canPlan,
     confirmationsComplete, canApply, beginOpen, load, changeType, patchDraft,
     restoreRecommended, patchRelationPair, setRelationTables, beginRelationCatalog,
     setRelationSchema, failRelationCatalog,
-    beginLookupCatalog, setLookupSchemas, failLookupCatalog,
+    beginLookupCatalog, setLookupSchemas, setLookupMaxDepth, failLookupCatalog,
     beginFormulaCatalog, setFormulaCatalog, failFormulaCatalog,
     beginFormulaValidation, setFormulaValidation, failFormulaValidation,
+    resetFormulaPreview, beginFormulaPreview, setFormulaPreview,
+    setFormulaPreviewNote, failFormulaPreview,
     invalidatePlan, setConversionRule, setConfirmation, setBackupReceipt,
     beginPlan, setPlan, beginApply, setReceipt, setMigration,
     setRecycled, fail, resetFailure, close,

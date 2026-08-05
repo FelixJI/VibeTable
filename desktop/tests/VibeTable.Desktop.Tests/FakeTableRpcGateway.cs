@@ -336,6 +336,7 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public List<TableQuery> QueryTablePageQueries { get; } = new();
     public Dictionary<string, TablePage> QueryTablePageResults { get; } =
         new(StringComparer.Ordinal);
+    public Func<string, int, int, TableQuery, TablePage>? QueryTablePageOverride { get; set; }
 
     public List<string> ValidateSnapshotCalls { get; } = new();
     public SnapshotValidation? NextValidateSnapshotResult { get; set; }
@@ -351,6 +352,10 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     {
         QueryTablePageCalls.Add(table);
         QueryTablePageQueries.Add(query);
+        if (QueryTablePageOverride is not null)
+        {
+            return Task.FromResult(QueryTablePageOverride(table, offset, limit, query));
+        }
         if (QueryTablePageResults.TryGetValue(table, out var page))
         {
             return Task.FromResult(page);

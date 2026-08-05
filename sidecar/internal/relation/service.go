@@ -50,7 +50,8 @@ func (service *Service) Describe(
 	}
 	result := CatalogResult{
 		TableID: tableID, SchemaRevision: definition.SchemaRevision,
-		Relations: []Descriptor{}, Lookups: []LookupDescriptor{},
+		LookupMaxDepth: schema.MaxLookupPathDepth,
+		Relations:      []Descriptor{}, Lookups: []LookupDescriptor{},
 	}
 	lookupRevisions := map[string]int{}
 	lookupRecords, lookupErr := service.app.FindRecordsByFilter(
@@ -67,13 +68,25 @@ func (service *Service) Describe(
 	}
 	for _, field := range definition.Fields {
 		if field.Kind == schema.FieldKindRelation && field.Relation != nil {
+			descriptor := descriptorFrom(tableID+"."+field.FieldID, tableID, field)
+			if descriptor.Mode == "direct" {
+				target := definition
+				if descriptor.TargetTableID != definition.TableID {
+					target, err = schemaapi.New(service.app).Describe(ctx, descriptor.TargetTableID)
+					if err != nil {
+						return CatalogResult{}, err
+					}
+				}
+				descriptor.QuickCreateEligible, descriptor.QuickCreateReason =
+					quickCreateEligibility(target)
+			}
 			result.Relations = append(
 				result.Relations,
-				descriptorFrom(tableID+"."+field.FieldID, tableID, field),
+				descriptor,
 			)
 		}
 		if field.Kind == schema.FieldKindLookup && field.Lookup != nil {
-			path, pathErr := service.describeLookupPath(
+			path, resultMany, pathErr := service.describeLookupPath(
 				ctx, definition, *field.Lookup,
 			)
 			if pathErr != nil {
@@ -88,13 +101,14 @@ func (service *Service) Describe(
 				LookupID: lookupID,
 				TableID:  tableID, FieldID: field.FieldID,
 				PhysicalName: field.PhysicalName, DisplayName: field.DisplayName,
-				RelationFieldID: field.Lookup.RelationFieldID,
-				Path:            path,
-				TargetFieldID:   field.Lookup.TargetFieldID,
-				JunctionFieldID: field.Lookup.JunctionFieldID,
-				TargetFieldIDs:  field.Lookup.TargetFieldIDs,
-				Aggregate:       field.Lookup.Aggregate,
-				OutputStorage:   field.StorageType, Revision: revision,
+				RelationFieldID:   field.Lookup.RelationFieldID,
+				Path:              path,
+				TargetFieldID:     field.Lookup.TargetFieldID,
+				JunctionFieldID:   field.Lookup.JunctionFieldID,
+				TargetFieldIDs:    field.Lookup.TargetFieldIDs,
+				Aggregate:         field.Lookup.Aggregate,
+				ResultCardinality: map[bool]string{true: "many", false: "one"}[resultMany],
+				OutputStorage:     field.StorageType, Revision: revision,
 			})
 		}
 	}
@@ -105,16 +119,21 @@ func (service *Service) describeLookupPath(
 	ctx context.Context,
 	source schema.TableDefinition,
 	spec schema.LookupSpec,
-) ([]LookupPathDescriptor, error) {
+) ([]LookupPathDescriptor, bool, error) {
 	current := source
 	result := make([]LookupPathDescriptor, 0, len(spec.EffectivePath()))
+	resultMany := false
 	for _, step := range spec.EffectivePath() {
 		relationField, found := relationFieldByID(current, step.RelationFieldID)
 		if !found || relationField.Relation == nil {
-			return nil, relationError(
+			return nil, false, relationError(
 				"lookup.schema_invalid",
 				"lookup path relation metadata is unavailable",
 			)
+		}
+		if relationField.Relation.Cardinality == "many" ||
+			relationField.Relation.EffectiveMode() != "direct" {
+			resultMany = true
 		}
 		result = append(result, LookupPathDescriptor{
 			RelationID:    current.TableID + "." + step.RelationFieldID,
@@ -126,11 +145,11 @@ func (service *Service) describeLookupPath(
 		}
 		target, err := schemaapi.New(service.app).Describe(ctx, targetTableID)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		current = target
 	}
-	return result, nil
+	return result, resultMany, nil
 }
 
 func relationFieldByID(
@@ -198,6 +217,7 @@ func (service *Service) SearchTargets(
 		return SearchResult{}, err
 	}
 	labelField := targetLabelField(target)
+	secondaryField := targetSecondaryField(target, labelField)
 	items := make([]TargetRef, 0, len(page.Rows))
 	for _, row := range page.Rows {
 		recordID := fmt.Sprint(row["id"])
@@ -206,10 +226,15 @@ func (service *Service) SearchTargets(
 			fmt.Sprint(row[labelField]) != "" {
 			label = fmt.Sprint(row[labelField])
 		}
+		secondaryLabel := ""
+		if secondaryField != "" && row[secondaryField] != nil {
+			secondaryLabel = strings.TrimSpace(fmt.Sprint(row[secondaryField]))
+		}
 		items = append(items, TargetRef{
 			TableID:        targetTableID,
 			RecordID:       recordID,
 			Label:          label,
+			SecondaryLabel: secondaryLabel,
 			JunctionValues: map[string]any{},
 		})
 	}
@@ -227,7 +252,7 @@ func (service *Service) CreateTarget(
 		return CreateTargetResult{}, err
 	}
 	label := strings.TrimSpace(request.Label)
-	if resolved.descriptor.Mode != "direct" || label == "" ||
+	if resolved.descriptor.Mode != "direct" ||
 		request.RequestID == "" || request.IdempotencyKey == "" ||
 		request.Actor.Type == "" || request.Actor.ID == "" {
 		return CreateTargetResult{}, relationError(
@@ -253,6 +278,45 @@ func (service *Service) CreateTarget(
 			"target table has no writable display field",
 		)
 	}
+	values := map[string]any{}
+	if len(request.Values) == 0 {
+		if label == "" {
+			return CreateTargetResult{}, relationError(
+				"relation.request.invalid", "target label is required",
+			)
+		}
+		if eligible, reason := quickCreateEligibility(target); !eligible {
+			return CreateTargetResult{}, relationError(
+				"relation.target_create_requires_full_editor", reason,
+			)
+		}
+		values[labelPhysicalName] = label
+	} else {
+		allowed := map[string]schema.FieldDefinition{}
+		for _, field := range target.Fields {
+			if field.ReadOnly || field.Kind == schema.FieldKindFormula ||
+				field.Kind == schema.FieldKindLookup || field.Kind == schema.FieldKindSystem {
+				continue
+			}
+			allowed[field.PhysicalName] = field
+		}
+		for physicalName, value := range request.Values {
+			if _, ok := allowed[physicalName]; !ok {
+				return CreateTargetResult{}, relationError(
+					"relation.target_create_field_invalid",
+					"full target creation contains an unknown or read-only field",
+				)
+			}
+			values[physicalName] = value
+		}
+		label = strings.TrimSpace(fmt.Sprint(values[labelPhysicalName]))
+		if label == "" {
+			return CreateTargetResult{}, relationError(
+				"relation.target_create_field_invalid",
+				"full target creation must include the primary display field",
+			)
+		}
+	}
 	receipt, err := service.kernel.Apply(ctx, mutation.Request{
 		ContractVersion: mutation.ContractVersion,
 		RequestID:       request.RequestID,
@@ -260,10 +324,8 @@ func (service *Service) CreateTarget(
 		TableID:         target.TableID,
 		SchemaRevision:  target.SchemaRevision,
 		Operations: []mutation.Operation{{
-			Kind: mutation.OperationInsert,
-			Values: map[string]any{
-				labelPhysicalName: label,
-			},
+			Kind:   mutation.OperationInsert,
+			Values: values,
 		}},
 		Actor: request.Actor,
 	})
@@ -1141,6 +1203,70 @@ func targetLabelField(definition schema.TableDefinition) string {
 		}
 	}
 	return ""
+}
+
+func targetSecondaryField(definition schema.TableDefinition, labelPhysicalName string) string {
+	for _, preferredType := range []schema.DataType{
+		schema.DataTypeShortText, schema.DataTypeLongText, schema.DataTypeEmail,
+		schema.DataTypeURL, schema.DataTypeSelect, schema.DataTypeInteger,
+		schema.DataTypeDecimal, schema.DataTypeDate, schema.DataTypeDateTime,
+	} {
+		for _, field := range definition.Fields {
+			if field.PhysicalName == labelPhysicalName ||
+				field.Kind != schema.FieldKindScalar || field.DataType != preferredType {
+				continue
+			}
+			return field.PhysicalName
+		}
+	}
+	return ""
+}
+
+func quickCreateEligibility(definition schema.TableDefinition) (bool, string) {
+	labelPhysicalName := targetLabelField(definition)
+	if labelPhysicalName == "" {
+		return false, "目标表没有可写的主显示字段"
+	}
+	for _, field := range definition.Fields {
+		if field.PhysicalName == labelPhysicalName || field.ReadOnly ||
+			field.Kind == schema.FieldKindFormula || field.Kind == schema.FieldKindLookup ||
+			field.Kind == schema.FieldKindSystem || !fieldRequiresValue(field) ||
+			hasFieldDefault(field) {
+			continue
+		}
+		return false, fmt.Sprintf("目标表字段“%s”必须在完整记录编辑器中填写", field.DisplayName)
+	}
+	return true, ""
+}
+
+func fieldRequiresValue(field schema.FieldDefinition) bool {
+	if !field.Nullable {
+		return true
+	}
+	for _, constraint := range field.Constraints {
+		if constraint.Kind == schema.ConstraintRequired {
+			value, _ := constraint.Value.(bool)
+			if value {
+				return true
+			}
+		}
+		if constraint.Kind == schema.ConstraintEnum && constraint.MinSelected == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFieldDefault(field schema.FieldDefinition) bool {
+	if field.DefaultValue != nil {
+		return true
+	}
+	for _, constraint := range field.Constraints {
+		if constraint.Kind == schema.ConstraintDefault && constraint.Value != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func relationIDs(value any) []string {

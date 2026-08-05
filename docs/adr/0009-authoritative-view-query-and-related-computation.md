@@ -67,7 +67,8 @@ Lookup 由 Relation path 和目标 fieldId 定义，不再包含用户可选 agg
 
 ### 5. 大基数使用查询计划，不使用业务条数上限
 
-- Relation 与来源详情分页/虚拟化读取。
+- Relation 与来源详情分页/虚拟化读取；多跳 Lookup 在填满当前页并探测到下一项后立即停止，
+  `provenanceTotalKnown=false` 表示当前总数只是下界，最后一页才返回精确总数。
 - 可下推的关联聚合由数据库完成；不能先加载全部关联记录再在 Go 内存聚合。
 - 多跳执行限制为 8，并使用可取消的时间、内存和扫描成本预算。
 - 当前记录和小 fan-out 同步重算；大 fan-out 进入持久、可恢复的后台任务。
@@ -79,7 +80,7 @@ Lookup 由 Relation path 和目标 fieldId 定义，不再包含用户可选 agg
 |---|---|---|---|
 | ViewQuery | validate/execute/save | PocketBase、内存测试、Web view | 类型解析、SQL、分页、组树、汇总、revision |
 | RelationPair | plan/apply/inspect/delete | FieldChange RPC、测试 catalog | 双字段身份、基数、反向维护、依赖与删除语义 |
-| RelatedValues | describe/page/aggregate | PocketBase、内存 relation graph | 多跳遍历、来源、分页、聚合下推、资源预算 |
+| RelatedValues | describe/page/aggregate | PocketBase、内存 relation graph | 多跳遍历、来源、提前停止分页、流式 reduce、字节资源预算；Formula Relation 聚合由 SQL 下推 |
 | FormulaWorkbench | validate/preview/commit | Host RPC、测试 adapter | token 映射、CEL、类型、依赖、诊断、取消 |
 | Recalculation | invalidate/status/cancel/resume | PocketBase jobs、内存 job store | fan-out、checkpoint、错误、重启恢复 |
 

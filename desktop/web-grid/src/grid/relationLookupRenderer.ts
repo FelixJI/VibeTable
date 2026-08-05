@@ -75,7 +75,10 @@ export function lookupFormatter(
         invalid: t("grid.lookup.invalid"),
         too_expensive: t("grid.lookup.tooExpensive"),
       };
-      const badge = stateBadge(labels[value.state], value.state);
+      const label = value.diagnostic?.code === "lookup.value.source_missing"
+        ? "#REF!"
+        : labels[value.state];
+      const badge = stateBadge(label, value.state);
       badge.title = value.diagnostic?.message ?? labels[value.state];
       root.append(badge);
       return root;
@@ -83,15 +86,17 @@ export function lookupFormatter(
     const display = formatLookupValue(value.value);
     root.append(element("span", display === "" ? "vt-cell-empty" : "vt-lookup-text", display || "—"));
     if (value.provenance.length > 0) {
-      root.title = t("grid.lookup.sourceCount", { count: value.provenanceTotal });
+      root.title = t("grid.lookup.sourceCount", {
+        count: value.provenanceTotalKnown ? value.provenanceTotal : `${value.provenanceTotal}+`,
+      });
       for (const source of value.provenance.slice(0, 3)) {
         const button = document.createElement("button");
         button.className = "vt-lookup-source";
-        button.textContent = `${source.collection} · ${source.itemId}`;
+        button.textContent = `${source.collectionLabel} · ${source.recordLabel}`;
         button.type = "button";
         button.title = t("grid.lookup.openSource", {
-          collection: source.collection,
-          itemId: source.itemId,
+          collection: source.collectionLabel,
+          itemId: source.recordLabel,
         });
         button.addEventListener("click", (event) => {
           event.stopPropagation();
@@ -99,24 +104,29 @@ export function lookupFormatter(
         });
         root.append(button);
       }
-      if (value.provenanceTotal > 3) {
-		const remainder = document.createElement("button");
-		remainder.className = "vt-lookup-source-more";
-		remainder.textContent = `+${value.provenanceTotal - 3}`;
-		remainder.type = "button";
-		remainder.title = t("grid.lookup.openSources");
-		remainder.addEventListener("click", (event) => {
-			event.stopPropagation();
-			const sourceRecordId = cell.getRow?.().getData().rowKey;
-			if (definition && (typeof sourceRecordId === "string" || typeof sourceRecordId === "number")) {
-				onSourcePageRequested?.({
-					sourceRecordId: String(sourceRecordId),
-					fieldRef: definition.fieldKey,
-					cell: value,
-				});
-			}
-		});
-		root.append(remainder);
+      if (value.provenanceHasMore || value.provenanceTotal > 3) {
+        const remainder = document.createElement("button");
+        remainder.className = "vt-lookup-source-more";
+        remainder.textContent = value.provenanceTotalKnown
+          ? `+${value.provenanceTotal - 3}`
+          : "…";
+        remainder.type = "button";
+        remainder.title = t("grid.lookup.openSources");
+        remainder.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const sourceRecordId = cell.getRow?.().getData().rowKey;
+          if (
+            definition
+            && (typeof sourceRecordId === "string" || typeof sourceRecordId === "number")
+          ) {
+            onSourcePageRequested?.({
+              sourceRecordId: String(sourceRecordId),
+              fieldRef: definition.fieldKey,
+              cell: value,
+            });
+          }
+        });
+        root.append(remainder);
       }
     }
     return root;
@@ -156,6 +166,7 @@ function normalizeLookupCell(value: unknown): LookupCellValue {
       provenanceTotal: typeof value.provenanceTotal === "number"
         ? value.provenanceTotal
         : Array.isArray(value.provenance) ? value.provenance.length : 0,
+      provenanceTotalKnown: value.provenanceTotalKnown !== false,
       provenanceOffset: typeof value.provenanceOffset === "number" ? value.provenanceOffset : 0,
       provenanceLimit: typeof value.provenanceLimit === "number" ? value.provenanceLimit : 100,
       provenanceHasMore: value.provenanceHasMore === true,
@@ -164,7 +175,7 @@ function normalizeLookupCell(value: unknown): LookupCellValue {
   }
   // Query v1 may project a bare scalar. It is still authoritative server data.
   return {
-    state: "ok", value, provenance: [], provenanceTotal: 0,
+    state: "ok", value, provenance: [], provenanceTotal: 0, provenanceTotalKnown: true,
     provenanceOffset: 0, provenanceLimit: 100, provenanceHasMore: false,
   };
 }

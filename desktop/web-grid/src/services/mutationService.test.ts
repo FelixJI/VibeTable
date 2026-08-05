@@ -469,6 +469,32 @@ describe("mutationService", () => {
     );
   });
 
+  it("notifies the full-create workflow after an inserted row is reconciled", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("customers");
+    table.setEditSchema([], {
+      databaseSessionId: "s",
+      schemaRevision: "sr",
+      dataRevision: 1,
+    });
+    const inserted = vi.fn();
+    useMutationService().init(undefined, inserted);
+
+    emit("table.rowsInserted", {
+      rowKey: "customer-9",
+      row: { name: "Ada" },
+      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
+    });
+
+    expect(inserted).toHaveBeenCalledWith(expect.objectContaining({
+      rowKey: "customer-9",
+      row: { name: "Ada" },
+    }));
+  });
+
   it("on rowsDeleted, applies delete + pushes history with cached snapshot", async () => {
     const { bridge, emit } = makeShimBridge();
     setHostBridgeForTesting(bridge);

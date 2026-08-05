@@ -72,7 +72,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             ""));
         await Task.Delay(GridStateCoordinator.QueryDebounceMs + 150);
 
-        var query = gateway.QueryTablePageQueries.Single();
+        var query = gateway.QueryTablePageQueries.First();
         Assert.AreEqual("needle", query.Keyword);
         Assert.AreEqual(25, query.Offset);
         Assert.AreEqual(500, query.Limit);

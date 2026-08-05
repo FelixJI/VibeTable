@@ -82,4 +82,36 @@ describe("ViewQueryControls", () => {
     expect(values).toContain("customer");
     expect(wrapper.findComponent(NInputNumber).props("value")).toBe(25);
   });
+
+  it("searches fields and supports bulk show plus show all", async () => {
+    const wrapper = mount(ViewQueryControls, {
+      attachTo: document.body,
+      props: {
+        columns, filters: [], groups: [], summaries: [], visibleFields: ["status"],
+      },
+    });
+
+    await wrapper.get('[data-testid="view-hidden-trigger"]').trigger("click");
+    await flushPromises();
+    const search = document.querySelector<HTMLInputElement>(
+      '[data-testid="view-hidden-search"] input',
+    );
+    expect(search).not.toBeNull();
+    search!.value = "金额";
+    search!.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPromises();
+    document.querySelector<HTMLElement>('[data-testid="view-hidden-show-filtered"]')!.click();
+    document.querySelector<HTMLElement>('[data-testid="view-hidden-apply"]')!.click();
+    await flushPromises();
+    expect(wrapper.emitted("change")?.at(-1)?.[0]).toMatchObject({
+      visibleFields: ["status", "amount"],
+    });
+
+    document.querySelector<HTMLElement>('[data-testid="view-hidden-show-all"]')!.click();
+    document.querySelector<HTMLElement>('[data-testid="view-hidden-apply"]')!.click();
+    await flushPromises();
+    expect(wrapper.emitted("change")?.at(-1)?.[0]).toMatchObject({
+      visibleFields: ["status", "amount"],
+    });
+  });
 });

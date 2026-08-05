@@ -92,6 +92,13 @@ func TestRecommendedFileDefaultsMatchProductDecision(t *testing.T) {
 		len(recommended.File.Thumbs) != 0 {
 		t.Fatalf("unexpected file defaults: %#v", recommended.File)
 	}
+	capability, err := v2.CapabilityFor(v2.LogicalFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capability.SupportsRequired {
+		t.Fatal("file capability exposed required before atomic pre-insert upload exists")
+	}
 }
 
 func TestRecommendedSingleSelectDefaultsSatisfyItsCardinalityContract(t *testing.T) {
@@ -263,8 +270,14 @@ func TestLookupUsesOneToEightRelationStepsAndRejectsLegacyAggregateSettings(t *t
 	})
 	var productErr *v2.ProductError
 	if err := v2.Validate(definition); !errors.As(err, &productErr) ||
-		productErr.Path != "lookup" {
+		productErr.Code != "lookup.path.depth_limit" || productErr.Path != "lookup.path" {
 		t.Fatalf("expected stable path limit error, got %#v", err)
+	}
+	definition.Lookup.Path = definition.Lookup.Path[:8]
+	definition.Lookup.Path[0].RelationFieldID = ""
+	if err := v2.Validate(definition); !errors.As(err, &productErr) ||
+		productErr.Code != "lookup.path.invalid" {
+		t.Fatalf("expected stable invalid path error, got %#v", err)
 	}
 
 	raw, err := json.Marshal(definition)

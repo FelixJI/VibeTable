@@ -46,6 +46,9 @@ public sealed class PocketBaseTableGatewayTests
         Assert.AreEqual("title", page.Columns[1].Name);
         Assert.AreEqual("text", page.Columns[1].DataType);
         CollectionAssert.AreEqual(
+            new[] { "eq", "is_null" },
+            page.Columns[1].FilterOperators!.ToArray());
+        CollectionAssert.AreEqual(
             new[] { "identifier.reconcile", "schema.list", "schema.getTable", "query.page" },
             transport.Methods);
         Assert.IsFalse(transport.Serialized.Contains(
@@ -463,6 +466,7 @@ public sealed class PocketBaseTableGatewayTests
                  "defaultValue":null,
                  "constraints":[{"kind":"jsonSchema","schema":{"type":"object"}}],
                  "editor":{"kind":"json","config":{}},"readOnly":false,
+                 "filterOperators":["contains","is_null","is_not_null"],
                  "formula":null,"relation":null,"lookup":null,"attachmentPolicy":null},
                 {"fieldId":"tags","physicalName":"tags","displayName":"Tags",
                  "kind":"scalar","dataType":"multiSelect","storageType":"select","nullable":true,
@@ -471,6 +475,7 @@ public sealed class PocketBaseTableGatewayTests
                    "maxSelected":null,"options":[{"value":"a","displayName":"A"},
                    {"value":"b","displayName":"B"}]}],
                  "editor":{"kind":"multiSelect","config":{}},"readOnly":false,
+                 "filterOperators":["eq","ne","in","is_null","is_not_null"],
                  "formula":null,"relation":null,"lookup":null,"attachmentPolicy":null}
               ],"indexes":[]
             }
@@ -510,6 +515,7 @@ public sealed class PocketBaseTableGatewayTests
                  "kind":"formula","dataType":"formula","storageType":"number",
                  "nullable":true,"defaultValue":null,"constraints":[],
                  "editor":{"kind":"formula","config":{}},"readOnly":true,
+                 "filterOperators":["eq","ne","gt","gte","lt","lte","between","in","is_null","is_not_null"],
                  "formula":{"language":"cel-v1","source":"quantity * 2",
                    "resultType":"integer","dependencies":["quantity"],
                    "state":"valid","diagnostics":[]},
@@ -555,7 +561,8 @@ public sealed class PocketBaseTableGatewayTests
                   "digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "databaseId":"local","table":"orders","schemaRevision":"schema_0001",
                   "dataRevision":1,"normalizedQuery":{"offset":0,"limit":1}}},
-              "groupRows":[{"key":["east"],"count":7000,"summaries":[12345]}],
+              "groupRows":[{"key":["east","open"],"count":3000,"summaries":[5000],
+                "parentCount":7000,"parentSummaries":[12345]}],
               "groupOffset":0,"groupLimit":100,"hasMoreGroups":false
             }
             """);
@@ -576,8 +583,10 @@ public sealed class PocketBaseTableGatewayTests
 
         Assert.AreEqual(12500, page.FilteredRows);
         Assert.AreEqual("east", page.GroupRows![0].Key[0]);
-        Assert.AreEqual(7000L, page.GroupRows[0].Count);
-        Assert.AreEqual(12345L, page.GroupRows[0].Summaries[0]);
+        Assert.AreEqual(3000L, page.GroupRows[0].Count);
+        Assert.AreEqual(5000L, page.GroupRows[0].Summaries[0]);
+        Assert.AreEqual(7000L, page.GroupRows[0].ParentCount);
+        Assert.AreEqual(12345L, page.GroupRows[0].ParentSummaries![0]);
         CollectionAssert.AreEqual(
             new[] { "schema.getTable", "query.view" },
             transport.Methods);
@@ -595,6 +604,7 @@ public sealed class PocketBaseTableGatewayTests
           {"fieldId":"title","physicalName":"title","displayName":"Title","kind":"scalar",
            "dataType":"shortText","storageType":"text","nullable":false,"defaultValue":null,
            "constraints":[],"editor":{"kind":"text","config":{}},"readOnly":false,
+           "filterOperators":["eq","is_null"],
            "formula":null,"relation":null,"lookup":null,"attachmentPolicy":null}
         ],"indexes":[]
         }
@@ -611,6 +621,7 @@ public sealed class PocketBaseTableGatewayTests
            "kind":"relation","dataType":"relation","storageType":"relation",
            "nullable":true,"defaultValue":null,"constraints":[],
            "editor":{"kind":"relation","config":{}},"readOnly":false,
+           "filterOperators":["eq","ne","in","is_null","is_not_null"],
            "formula":null,
            "relation":{"targetTableId":"customers","cardinality":"one",
              "deletePolicy":"setNull","junctionTableId":null},
@@ -619,7 +630,9 @@ public sealed class PocketBaseTableGatewayTests
            "displayName":"Customer name","kind":"lookup","dataType":"lookup",
            "storageType":"text","nullable":true,"defaultValue":null,
            "constraints":[],"editor":{"kind":"lookup","config":{}},
-           "readOnly":true,"formula":null,"relation":null,
+           "readOnly":true,
+           "filterOperators":["eq","ne","contains","starts_with","ends_with","in","is_null","is_not_null"],
+           "formula":null,"relation":null,
            "lookup":{"relationFieldId":"customer","targetFieldId":"name",
              "aggregate":"first"},"attachmentPolicy":null}
         ],"indexes":[]

@@ -32,6 +32,11 @@ const props = defineProps<{
   validatedSource?: string;
   validating?: boolean;
   error?: string | null;
+  previewValue?: unknown;
+  previewReady?: boolean;
+  previewing?: boolean;
+  previewError?: string | null;
+  previewNote?: string | null;
 }>();
 const emit = defineEmits<{
   commit: [value: FormulaDefinition];
@@ -247,7 +252,8 @@ function replaceIdentifiersOutsideStrings(source: string, names: ReadonlyMap<str
       let end = index + 1;
       while (end < source.length && /[a-z0-9_]/u.test(source[end]!)) end += 1;
       const identifier = source.slice(index, end);
-      result += names.get(identifier) ?? identifier;
+      result += names.get(identifier)
+        ?? (/^f_[a-z0-9_]{8,}$/u.test(identifier) ? "#REF!" : identifier);
       index = end;
       continue;
     }
@@ -263,6 +269,17 @@ function escapeRegExp(value: string): string {
 
 function isNumericType(value: string): boolean {
   return value === "number" || value === "integer" || value === "decimal" || value === "float";
+}
+
+function formatPreviewValue(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "—";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 </script>
 
@@ -366,6 +383,31 @@ function isNumericType(value: string): boolean {
         公式有效 · {{ validation.resultType }} · {{ validation.dependencies.length }} 个直接依赖
       </NAlert>
       <div v-else-if="validating" class="validating"><NSpin size="small" />正在由 sidecar 校验…</div>
+
+      <NAlert
+        v-if="previewing"
+        type="info"
+        :show-icon="false"
+        data-testid="formula-preview-loading"
+      ><NSpin size="small" /> 正在计算当前表第一条记录的样例结果…</NAlert>
+      <NAlert
+        v-else-if="previewError"
+        type="warning"
+        :show-icon="false"
+        data-testid="formula-preview-error"
+      >样例计算失败：{{ previewError }}</NAlert>
+      <NAlert
+        v-else-if="previewReady"
+        type="info"
+        :show-icon="false"
+        data-testid="formula-preview-value"
+      >样例结果：<code>{{ formatPreviewValue(previewValue) }}</code></NAlert>
+      <NAlert
+        v-else-if="previewNote"
+        type="default"
+        :show-icon="false"
+        data-testid="formula-preview-note"
+      >{{ previewNote }}</NAlert>
 
       <div class="editor-actions">
         <small>多值跨表计算必须沿 Relation 使用聚合函数；不允许任意扫描其他表。</small>

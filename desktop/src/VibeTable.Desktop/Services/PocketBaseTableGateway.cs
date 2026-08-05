@@ -631,7 +631,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 kind == "attachment"
                     ? ReadAttachmentPolicy(field)
                     : null,
-                FilterOperators(dataType, kind)));
+                RequiredStringArray(field, "filterOperators")));
         }
         if (!hasRecordId)
         {
@@ -643,7 +643,8 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 false,
                 FieldId: "id",
                 Kind: "scalar",
-                FilterOperators: FilterOperators("text", "scalar")));
+                FilterOperators:
+                ["eq", "ne", "contains", "starts_with", "ends_with", "in", "is_null", "is_not_null"]));
         }
         return result;
     }
@@ -778,7 +779,14 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             result.Add(new GroupRow(
                 key.EnumerateArray().Select(ToObject).ToArray(),
                 RequiredLong(row, "count"),
-                summaries.EnumerateArray().Select(ToObject).ToArray()));
+                summaries.EnumerateArray().Select(ToObject).ToArray(),
+                row.TryGetProperty("parentCount", out JsonElement parentCount)
+                    ? RequiredLong(row, "parentCount")
+                    : null,
+                row.TryGetProperty("parentSummaries", out JsonElement parentSummaries)
+                    && parentSummaries.ValueKind == JsonValueKind.Array
+                    ? parentSummaries.EnumerateArray().Select(ToObject).ToArray()
+                    : null));
         }
         return result;
     }
@@ -827,22 +835,6 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             "file" or "relation" => "text",
             _ => throw new InvalidOperationException(
                 $"PocketBase returned unknown data type '{value}'."),
-        };
-    }
-
-    private static IReadOnlyList<string> FilterOperators(string dataType, string kind)
-    {
-        if (kind == "relation")
-        {
-            return ["eq", "ne", "in", "is_null", "is_not_null"];
-        }
-        return dataType switch
-        {
-            "integer" or "decimal" or "date" or "datetime" or "time" =>
-                ["eq", "ne", "gt", "gte", "lt", "lte", "between", "in", "is_null", "is_not_null"],
-            "boolean" => ["eq", "ne", "in", "is_null", "is_not_null"],
-            "json" => ["contains", "is_null", "is_not_null"],
-            _ => ["eq", "ne", "contains", "starts_with", "ends_with", "in", "is_null", "is_not_null"],
         };
     }
 
@@ -1140,6 +1132,30 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         return value.EnumerateArray()
             .Select(item => (IReadOnlyDictionary<string, object?>)ToDictionary(item))
             .ToArray();
+    }
+
+    private static IReadOnlyList<string> RequiredStringArray(
+        JsonElement value,
+        string propertyName)
+    {
+        JsonElement property = RequiredProperty(value, propertyName);
+        if (property.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException(
+                $"PocketBase returned invalid {propertyName}.");
+        }
+        var result = new List<string>();
+        foreach (JsonElement item in property.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(item.GetString()))
+            {
+                throw new InvalidOperationException(
+                    $"PocketBase returned invalid {propertyName}.");
+            }
+            result.Add(item.GetString()!);
+        }
+        return result;
     }
 
     private static object? ToObject(JsonElement value) => value.ValueKind switch

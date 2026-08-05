@@ -407,7 +407,7 @@ func (planner *Planner) normalizeRelated(
 	)
 	if err != nil {
 		return nil, productError(
-			"field.relation.pair_broken", "fieldId",
+			"relation.pair.conflict", "fieldId",
 			"reciprocal relation field is missing", nil,
 		)
 	}
@@ -416,7 +416,7 @@ func (planner *Planner) normalizeRelated(
 		reverse.Relation.ReciprocalFieldID != before.Identity.FieldID ||
 		reverse.Relation.TargetTableID != intent.TableID {
 		return nil, productError(
-			"field.relation.pair_broken", "fieldId",
+			"relation.pair.conflict", "fieldId",
 			"reciprocal relation metadata is inconsistent", nil,
 		)
 	}

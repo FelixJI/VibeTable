@@ -454,7 +454,7 @@
         "version": {"type": "integer", "minimum": 1},
         "status": {
           "type": "string",
-          "enum": ["draft", "backfilling", "ready", "failed"]
+          "enum": ["draft", "backfilling", "ready", "failed", "cancelled"]
         }
       }
     },
@@ -540,6 +540,14 @@
         },
         "editor": {"$ref": "#/$defs/EditorDefinition"},
         "readOnly": {"type": "boolean"},
+        "filterOperators": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["eq", "ne", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "is_not_null"]
+          }
+        },
         "autoDate": {"$ref": "#/$defs/AutoDateSpec"},
         "formula": {
           "oneOf": [

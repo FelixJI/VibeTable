@@ -141,11 +141,14 @@ import type {
   SortCondition,
   PasteCellPayload,
   PreviewPasteRequestedPayload,
+  ProductFieldDefinition,
+  ProductTableDefinition,
   RelationTargetRef,
   AttachmentPolicy,
   ColumnSchema,
   ManagedAttachmentRef,
   AttachmentListResult,
+  InsertRowResult,
   MutationErrorPayload,
   SummaryCondition,
   TableQuery,
@@ -522,6 +525,7 @@ const relationEditor = ref<{
   show: boolean;
   rowKey: string | number | null;
   field: string;
+  fieldLabel: string;
   descriptor: NormalizedRelationDescriptor | null;
   candidates: readonly RelationTargetRef[];
   total: number;
@@ -530,10 +534,17 @@ const relationEditor = ref<{
   loading: boolean;
   applying: boolean;
   error: string | null;
+  targetFields: readonly ProductFieldDefinition[];
+  targetRelations: readonly NormalizedRelationDescriptor[];
+  targetRelationOptions: Readonly<Record<string, readonly RelationTargetRef[]>>;
+  targetRelationLoading: Readonly<Record<string, boolean>>;
+  targetDisplayField: string | null;
+  createSchemaLoading: boolean;
 }>({
   show: false,
   rowKey: null,
   field: "",
+  fieldLabel: "",
   descriptor: null,
   candidates: [],
   total: 0,
@@ -542,8 +553,28 @@ const relationEditor = ref<{
   loading: false,
   applying: false,
   error: null,
+  targetFields: [],
+  targetRelations: [],
+  targetRelationOptions: {},
+  targetRelationLoading: {},
+  targetDisplayField: null,
+  createSchemaLoading: false,
 });
+const pendingRelationCreation = ref<{
+  readonly sourceCollection: string;
+  readonly sourceItemId: string;
+  readonly relationId: string;
+  readonly relationKind: NormalizedRelationDescriptor["kind"];
+  readonly relationLabel: string;
+  readonly targetCollection: string;
+  readonly targetDisplayField: string;
+  readonly expectedSchemaRevision: string;
+} | null>(null);
 let relationSearchGeneration = 0;
+let relationCreateSchemaGeneration = 0;
+let relationEditorEpoch = 0;
+let relationCreateSearchGeneration = 0;
+const relationCreateSearchGenerations = new Map<string, number>();
 let lookupDatasetGeneration = 0;
 const lookupSourceNavigation = ref<{
   source: LookupValueProvenance;
@@ -557,6 +588,8 @@ const lookupSources = ref<{
 	sourceRecordId: string;
 	items: LookupValueProvenance[];
 	total: number;
+	totalKnown: boolean;
+	hasMore: boolean;
 }>({
 	show: false,
 	loading: false,
@@ -565,6 +598,8 @@ const lookupSources = ref<{
 	sourceRecordId: "",
 	items: [],
 	total: 0,
+	totalKnown: true,
+	hasMore: false,
 });
 const interactiveGridQuery = ref<TableQuery | null>(null);
 
@@ -658,7 +693,7 @@ async function refreshAuthoritativeLookupRows(): Promise<void> {
 }
 
 function onGridViewQueryChanged(query: {
-  readonly filters: readonly FilterExpression[];
+  readonly headerFilters: readonly FilterExpression[];
   readonly sorts: readonly SortCondition[];
   readonly groups: readonly GroupCondition[];
 }): void {
@@ -683,6 +718,19 @@ function navigateLookupSource(source: LookupValueProvenance): void {
   ui.navigate("tables");
 }
 
+function openRelationTarget(target: RelationTargetRef): void {
+  closeRelationEditor();
+  navigateLookupSource({
+    collection: target.collection,
+    collectionLabel: target.collection,
+    itemId: target.itemId,
+    recordLabel: target.label,
+    fieldId: "",
+    fieldLabel: "",
+    value: null,
+  });
+}
+
 function openLookupSources(intent: LookupSourcePageIntent): void {
 	lookupSources.value = {
 		show: true,
@@ -692,6 +740,8 @@ function openLookupSources(intent: LookupSourcePageIntent): void {
 		sourceRecordId: intent.sourceRecordId,
 		items: [...intent.cell.provenance],
 		total: intent.cell.provenanceTotal,
+		totalKnown: intent.cell.provenanceTotalKnown,
+		hasMore: intent.cell.provenanceHasMore,
 	};
 }
 
@@ -701,7 +751,7 @@ function closeLookupSources(): void {
 
 async function loadMoreLookupSources(): Promise<void> {
 	const state = lookupSources.value;
-	if (state.loading || state.items.length >= state.total) return;
+	if (state.loading || !state.hasMore) return;
 	state.loading = true;
 	state.error = null;
 	try {
@@ -714,6 +764,8 @@ async function loadMoreLookupSources(): Promise<void> {
 		if (!state.show) return;
 		state.items.push(...page.provenance);
 		state.total = page.provenanceTotal;
+		state.totalKnown = page.provenanceTotalKnown;
+		state.hasMore = page.provenanceHasMore;
 	} catch (error) {
 		state.error = relationLookupErrorMessage(error);
 	} finally {
@@ -1484,9 +1536,12 @@ function initializeBusinessConsumers(): void {
   // waits before an undo is committed, and races the mutation confirmation.
   relationLookupService.init();
   pasteService.init();
-  mutationService.init((error) => {
-    if (error.kind !== "cancelled") editRejection.value = error;
-  });
+  mutationService.init(
+    (error) => {
+      if (error.kind !== "cancelled") editRejection.value = error;
+    },
+    (result) => { void completePendingRelationCreation(result); },
+  );
   tableAdminService.init(async (tableId) => {
     workspace.selectTable(tableId);
     await fieldSettingsService.openCreate(tableId);
@@ -1582,6 +1637,8 @@ function openRelationEditor(payload: {
     message.error(t("workspace.relation.unsupported"));
     return;
   }
+  relationEditorEpoch += 1;
+  relationCreateSearchGenerations.clear();
   const current = normalizeTargets(payload.value).map((target) => ({
     ...target,
     collection: target.collection || payload.descriptor.relatedCollection || "",
@@ -1590,6 +1647,7 @@ function openRelationEditor(payload: {
     show: true,
     rowKey: payload.rowKey,
     field: payload.field,
+    fieldLabel: tableStore.schema?.find(column => column.name === payload.field)?.title ?? "关联字段",
     descriptor: payload.descriptor,
     candidates: [],
     total: 0,
@@ -1600,7 +1658,16 @@ function openRelationEditor(payload: {
     loading: false,
     applying: false,
     error: null,
+    targetFields: [],
+    targetRelations: [],
+    targetRelationOptions: {},
+    targetRelationLoading: {},
+    targetDisplayField: null,
+    createSchemaLoading: false,
   };
+  if (payload.descriptor.kind !== "m2a" && payload.descriptor.relatedCollection) {
+    void loadRelationCreateSchema(payload.descriptor.relatedCollection);
+  }
   if (payload.descriptor.kind === "m2o") {
     relationLookup.openDraft(payload.descriptor.relationId, String(payload.rowKey), current);
     void searchRelationTargets("");
@@ -1614,6 +1681,54 @@ function openRelationEditor(payload: {
       relationEditor.value.loading = false;
       relationEditor.value.error = error instanceof Error ? error.message : String(error);
     });
+}
+
+async function loadRelationCreateSchema(collection: string): Promise<void> {
+  const generation = ++relationCreateSchemaGeneration;
+  relationEditor.value.createSchemaLoading = true;
+  try {
+    const [definition, snapshot] = await Promise.all([
+      hostBridge.request("schema.getTable", { tableId: collection }),
+      relationLookupService.describeCollection(collection),
+    ]);
+    if (generation !== relationCreateSchemaGeneration || !relationEditor.value.show) return;
+    const product = definition as ProductTableDefinition;
+    if (product.tableId !== collection || !Array.isArray(product.fields)) {
+      throw new Error("目标表完整记录结构无效");
+    }
+    const displayFieldId = snapshot.primaryDisplayFieldId;
+    relationEditor.value.targetFields = product.fields;
+    relationEditor.value.targetRelations = snapshot.normalizedRelations;
+    relationEditor.value.targetDisplayField = product.fields.find(
+      field => field.fieldId === displayFieldId,
+    )?.physicalName ?? null;
+    const writableRelations = product.fields.flatMap(field => {
+      if (field.readOnly || field.kind !== "relation") return [];
+      const relation = snapshot.normalizedRelations.find(
+        candidate => candidate.fieldRef === field.physicalName,
+      );
+      return relation ? [{ field, relation }] : [];
+    });
+    const optionEntries = await Promise.all(writableRelations.map(async ({ field, relation }) => {
+      const result = await relationLookupService.searchTargets({
+        relationId: relation.relationId,
+        collection: relation.kind === "m2a" ? relation.allowedCollections[0] ?? null : null,
+        offset: 0,
+        limit: 50,
+      });
+      return [field.physicalName, result.items] as const;
+    }));
+    if (generation !== relationCreateSchemaGeneration || !relationEditor.value.show) return;
+    relationEditor.value.targetRelationOptions = Object.fromEntries(optionEntries);
+  } catch (error) {
+    if (generation === relationCreateSchemaGeneration) {
+      relationEditor.value.error = error instanceof Error ? error.message : String(error);
+    }
+  } finally {
+    if (generation === relationCreateSchemaGeneration) {
+      relationEditor.value.createSchemaLoading = false;
+    }
+  }
 }
 
 async function searchRelationTargets(
@@ -1647,6 +1762,54 @@ async function searchRelationTargets(
     relationEditor.value.error = error instanceof Error ? error.message : String(error);
   } finally {
     if (generation === relationSearchGeneration) relationEditor.value.loading = false;
+  }
+}
+
+async function searchRelationCreateTargets(field: string, query: string): Promise<void> {
+  const relation = relationEditor.value.targetRelations.find(
+    candidate => candidate.fieldRef === field,
+  );
+  const editorRelationId = relationEditor.value.descriptor?.relationId;
+  if (!relation || !editorRelationId) return;
+  const editorEpoch = relationEditorEpoch;
+  const nestedRelationId = relation.relationId;
+  const generation = ++relationCreateSearchGeneration;
+  relationCreateSearchGenerations.set(field, generation);
+  const isCurrent = (): boolean => editorEpoch === relationEditorEpoch
+    && relationEditor.value.show
+    && relationEditor.value.descriptor?.relationId === editorRelationId
+    && relationEditor.value.targetRelations.find(
+      candidate => candidate.fieldRef === field,
+    )?.relationId === nestedRelationId
+    && relationCreateSearchGenerations.get(field) === generation;
+  relationEditor.value.targetRelationLoading = {
+    ...relationEditor.value.targetRelationLoading,
+    [field]: true,
+  };
+  try {
+    const result = await relationLookupService.searchTargets({
+      relationId: relation.relationId,
+      query,
+      collection: relation.kind === "m2a" ? relation.allowedCollections[0] ?? null : null,
+      offset: 0,
+      limit: 50,
+    });
+    if (!isCurrent()) return;
+    relationEditor.value.targetRelationOptions = {
+      ...relationEditor.value.targetRelationOptions,
+      [field]: result.items,
+    };
+  } catch (error) {
+    if (isCurrent()) {
+      relationEditor.value.error = error instanceof Error ? error.message : String(error);
+    }
+  } finally {
+    if (isCurrent()) {
+      relationEditor.value.targetRelationLoading = {
+        ...relationEditor.value.targetRelationLoading,
+        [field]: false,
+      };
+    }
   }
 }
 
@@ -1715,6 +1878,90 @@ async function createRelationTarget(label: string): Promise<void> {
   }
 }
 
+async function createRelationTargetFull(
+  values: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  const descriptor = relationEditor.value.descriptor;
+  const displayField = relationEditor.value.targetDisplayField;
+  if (!descriptor || !displayField) return;
+  relationEditor.value.applying = true;
+  relationEditor.value.error = null;
+  try {
+    const result = await relationLookupService.createTarget(
+      descriptor.relationId,
+      String(values[displayField] ?? ""),
+      relationEditor.value.m2aCollection,
+      values,
+    );
+    relationEditor.value.candidates = [result.target, ...relationEditor.value.candidates];
+    relationEditor.value.total += 1;
+    await selectRelationTarget(result.target);
+  } catch (error) {
+    relationEditor.value.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    relationEditor.value.applying = false;
+  }
+}
+
+function openFullTargetEditor(): void {
+  const descriptor = relationEditor.value.descriptor;
+  const sourceItemId = relationEditor.value.rowKey;
+  const targetCollection = descriptor?.relatedCollection;
+  const targetDisplayField = relationEditor.value.targetDisplayField;
+  const expectedSchemaRevision = relationLookup.schema?.schemaRevision;
+  if (!descriptor || sourceItemId === null || !targetCollection
+    || !targetDisplayField || !expectedSchemaRevision) return;
+  const relationLabel = tableStore.schema?.find(
+    column => column.name === relationEditor.value.field,
+  )?.title ?? "关联字段";
+  pendingRelationCreation.value = {
+    sourceCollection: descriptor.sourceCollection,
+    sourceItemId: String(sourceItemId),
+    relationId: descriptor.relationId,
+    relationKind: descriptor.kind,
+    relationLabel,
+    targetCollection,
+    targetDisplayField,
+    expectedSchemaRevision,
+  };
+  closeRelationEditor();
+  tableService.selectTable(targetCollection);
+  ui.navigate("tables");
+  message.info("已进入目标表完整编辑；下一条成功创建的记录会自动关联并返回原表。");
+}
+
+async function completePendingRelationCreation(result: InsertRowResult): Promise<void> {
+  const pending = pendingRelationCreation.value;
+  if (!pending || workspace.currentTable !== pending.targetCollection) return;
+  const label = String(result.row[pending.targetDisplayField] ?? result.rowKey);
+  try {
+    const attached = await relationLookupService.attachExistingTarget(
+      pending.relationId,
+      pending.sourceItemId,
+      {
+        collection: pending.targetCollection,
+        itemId: String(result.rowKey),
+        label,
+        junctionValues: {},
+      },
+      pending.relationKind,
+      pending.expectedSchemaRevision,
+    );
+    if (attached.outcome !== "committed") throw new Error("原记录已变化，自动关联未提交");
+    pendingRelationCreation.value = null;
+    tableService.selectTable(pending.sourceCollection);
+    message.success(`已创建记录并写入“${pending.relationLabel}”`);
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function cancelPendingRelationCreation(): void {
+  const sourceCollection = pendingRelationCreation.value?.sourceCollection;
+  pendingRelationCreation.value = null;
+  if (sourceCollection) tableService.selectTable(sourceCollection);
+}
+
 async function clearSingleRelation(): Promise<void> {
   const descriptor = relationEditor.value.descriptor;
   const rowKey = relationEditor.value.rowKey;
@@ -1764,6 +2011,9 @@ function changeM2ACollection(collection: string): void {
 
 function closeRelationEditor(): void {
   relationSearchGeneration += 1;
+  relationCreateSchemaGeneration += 1;
+  relationEditorEpoch += 1;
+  relationCreateSearchGenerations.clear();
   relationEditor.value.show = false;
   relationLookup.closeDraft();
 }
@@ -2236,6 +2486,21 @@ useKeyboard({
               @delete="deleteView"
               @set-default="setDefaultView"
             />
+            <section
+              v-if="pendingRelationCreation && workspace.currentTable === pendingRelationCreation.targetCollection"
+              class="relation-create-notice"
+              role="status"
+              aria-live="polite"
+              data-testid="relation-create-return-notice"
+            >
+              <span>
+                正在为“{{ pendingRelationCreation.relationLabel }}”完整创建目标记录；
+                下一条成功创建的记录将自动关联并返回原表。
+              </span>
+              <NButton size="tiny" quaternary @click="cancelPendingRelationCreation">
+                取消并返回
+              </NButton>
+            </section>
             <ViewQueryControls
               v-if="workspace.currentTable"
               :columns="tableStore.schema ?? []"
@@ -2387,6 +2652,7 @@ useKeyboard({
       v-if="relationEditor.show"
       :show="relationEditor.show"
       :descriptor="relationEditor.descriptor"
+      :field-label="relationEditor.fieldLabel"
       :selected="relationLookup.draft?.selected ?? []"
       :candidates="relationEditor.candidates"
       :total="relationEditor.total"
@@ -2395,6 +2661,12 @@ useKeyboard({
       :loading="relationEditor.loading"
       :applying="relationEditor.applying"
       :error="relationEditor.error"
+      :target-fields="relationEditor.targetFields"
+      :target-relations="relationEditor.targetRelations"
+      :target-relation-options="relationEditor.targetRelationOptions"
+      :target-relation-loading="relationEditor.targetRelationLoading"
+      :target-display-field="relationEditor.targetDisplayField"
+      :create-schema-loading="relationEditor.createSchemaLoading"
       @close="closeRelationEditor"
       @search="searchRelationTargets"
       @select="selectRelationTarget"
@@ -2404,6 +2676,10 @@ useKeyboard({
       @collection-change="changeM2ACollection"
       @load-more="loadMoreRelationTargets"
       @create="createRelationTarget"
+      @create-full="createRelationTargetFull"
+      @search-create-relation="searchRelationCreateTargets"
+      @full-create-fallback="openFullTargetEditor"
+      @open="openRelationTarget"
     />
 	<NModal
 		:show="lookupSources.show"
@@ -2423,7 +2699,7 @@ useKeyboard({
 			<header>
 				<div>
 					<strong id="lookup-sources-title">{{ t("workspace.lookup.sourcesTitle") }}</strong>
-					<small>{{ lookupSources.items.length }} / {{ lookupSources.total }}</small>
+					<small>{{ lookupSources.items.length }} / {{ lookupSources.total }}{{ lookupSources.totalKnown ? "" : "+" }}</small>
 				</div>
 				<NButton size="tiny" quaternary @click="closeLookupSources">{{ t("common.close") }}</NButton>
 			</header>
@@ -2431,12 +2707,12 @@ useKeyboard({
 			<ol>
 				<li v-for="source in lookupSources.items" :key="`${source.collection}:${source.itemId}:${source.fieldId}`">
 					<button type="button" @click="navigateLookupSource(source); closeLookupSources()">
-						<span>{{ source.collection }} · {{ source.itemId }}</span>
-						<small>{{ source.fieldId }} · {{ String(source.value ?? "—") }}</small>
+						<span>{{ source.collectionLabel }} · {{ source.recordLabel }}</span>
+						<small>{{ source.fieldLabel }} · {{ String(source.value ?? "—") }}</small>
 					</button>
 				</li>
 			</ol>
-			<footer v-if="lookupSources.items.length < lookupSources.total">
+			<footer v-if="lookupSources.hasMore">
 				<NButton size="small" :loading="lookupSources.loading" @click="loadMoreLookupSources">
 					{{ t("workspace.lookup.loadMoreSources") }}
 				</NButton>
@@ -2764,6 +3040,22 @@ useKeyboard({
   background: var(--vt-color-warning-50);
   color: var(--vt-fg);
   font-size: var(--vt-font-caption);
+}
+.relation-create-notice {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--vt-color-primary-200);
+  background: var(--vt-color-primary-50);
+  color: var(--vt-fg);
+  font-size: var(--vt-font-caption);
+}
+.relation-create-notice > span {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 .edit-rejection-notice > span {
   min-width: 0;

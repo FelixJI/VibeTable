@@ -3,10 +3,12 @@ package lookup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -17,8 +19,9 @@ import (
 )
 
 const (
-	maxTraversalCost       = 100000
-	cellProvenancePageSize = 100
+	cellProvenancePageSize     = 100
+	lookupTraversalBatch       = 256
+	lookupMaterializationBytes = 32 << 20
 )
 
 type Calculator struct{}
@@ -28,20 +31,31 @@ func NewCalculator() *Calculator {
 }
 
 type ValueProvenance struct {
-	Collection string `json:"collection"`
-	ItemID     string `json:"itemId"`
-	FieldID    string `json:"fieldId"`
-	Value      any    `json:"value"`
+	Collection      string `json:"collection"`
+	CollectionLabel string `json:"collectionLabel"`
+	ItemID          string `json:"itemId"`
+	RecordLabel     string `json:"recordLabel"`
+	FieldID         string `json:"fieldId"`
+	FieldLabel      string `json:"fieldLabel"`
+	Value           any    `json:"value"`
 }
 
 type CellValue struct {
-	State             string            `json:"state"`
-	Value             any               `json:"value"`
-	Provenance        []ValueProvenance `json:"provenance"`
-	ProvenanceTotal   int               `json:"provenanceTotal"`
-	ProvenanceOffset  int               `json:"provenanceOffset"`
-	ProvenanceLimit   int               `json:"provenanceLimit"`
-	ProvenanceHasMore bool              `json:"provenanceHasMore"`
+	State                string            `json:"state"`
+	Value                any               `json:"value"`
+	Provenance           []ValueProvenance `json:"provenance"`
+	ProvenanceTotal      int               `json:"provenanceTotal"`
+	ProvenanceTotalKnown bool              `json:"provenanceTotalKnown"`
+	ProvenanceOffset     int               `json:"provenanceOffset"`
+	ProvenanceLimit      int               `json:"provenanceLimit"`
+	ProvenanceHasMore    bool              `json:"provenanceHasMore"`
+	Diagnostic           *Diagnostic       `json:"diagnostic,omitempty"`
+}
+
+type Diagnostic struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	PathIndex *int   `json:"pathIndex,omitempty"`
 }
 
 func (calculator *Calculator) Calculate(
@@ -80,26 +94,43 @@ func (calculator *Calculator) calculateCells(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	budget := &fanoutBudget{remaining: maxTraversalCost}
 	result := map[string]CellValue{}
 	for _, field := range definition.Fields {
 		if field.Kind != schema.FieldKindLookup || field.Lookup == nil {
 			continue
 		}
+		if field.Lookup.Aggregate != "none" {
+			cell, err := calculateStreamingAggregate(
+				ctx, app, definition, record, field, pageValues,
+			)
+			if err != nil {
+				if isMissingLookupSource(err) {
+					result[field.PhysicalName] = missingLookupSourceCell()
+					continue
+				}
+				return nil, err
+			}
+			result[field.PhysicalName] = cell
+			continue
+		}
 		var resolved []lookupPathValue
 		var total int
+		var totalKnown bool
 		var err error
-		if pageValues && field.Lookup.Aggregate == "none" {
-			resolved, total, err = lookupPathValuesPage(
-				ctx, app, definition, record, field, 0, cellProvenancePageSize, budget,
+		if pageValues {
+			resolved, total, totalKnown, err = lookupPathValuesPage(
+				ctx, app, definition, record, field, 0, cellProvenancePageSize,
 			)
 		} else {
-			resolved, err = lookupPathValues(
-				ctx, app, definition, record, field, budget,
-			)
+			resolved, err = lookupPathValues(ctx, app, definition, record, field)
 			total = len(resolved)
+			totalKnown = true
 		}
 		if err != nil {
+			if isMissingLookupSource(err) {
+				result[field.PhysicalName] = missingLookupSourceCell()
+				continue
+			}
 			return nil, err
 		}
 		values := make([]any, 0, len(resolved))
@@ -107,13 +138,12 @@ func (calculator *Calculator) calculateCells(
 		for _, item := range resolved {
 			values = append(values, item.value)
 			provenance = append(provenance, ValueProvenance{
-				Collection: item.collection,
-				ItemID:     item.itemID,
-				FieldID:    item.fieldID,
-				Value:      item.value,
+				Collection: item.collection, CollectionLabel: item.collectionLabel,
+				ItemID: item.itemID, RecordLabel: item.recordLabel,
+				FieldID: item.fieldID, FieldLabel: item.fieldLabel, Value: item.value,
 			})
 		}
-		value, err := aggregate(field.Lookup.Aggregate, field.StorageType, values)
+		value, err := aggregate("none", field.StorageType, values)
 		if err != nil {
 			return nil, err
 		}
@@ -123,9 +153,9 @@ func (calculator *Calculator) calculateCells(
 		}
 		result[field.PhysicalName] = CellValue{
 			State: "ok", Value: value, Provenance: visibleProvenance,
-			ProvenanceTotal: total, ProvenanceOffset: 0,
+			ProvenanceTotal: total, ProvenanceTotalKnown: totalKnown, ProvenanceOffset: 0,
 			ProvenanceLimit:   cellProvenancePageSize,
-			ProvenanceHasMore: total > len(visibleProvenance),
+			ProvenanceHasMore: !totalKnown || total > len(visibleProvenance),
 		}
 	}
 	return result, nil
@@ -146,11 +176,19 @@ func (calculator *Calculator) CalculateFieldPage(
 			"lookup.request.invalid", "lookup value page request is invalid",
 		)
 	}
-	resolved, total, err := lookupPathValuesPage(
+	if field.Lookup.Aggregate != "none" {
+		return CellValue{}, lookupError(
+			"lookup.request.aggregate_unsupported",
+			"lookup value pages are unavailable for legacy aggregate definitions",
+		)
+	}
+	resolved, total, totalKnown, err := lookupPathValuesPage(
 		ctx, app, definition, record, field, offset, limit,
-		&fanoutBudget{remaining: maxTraversalCost},
 	)
 	if err != nil {
+		if isMissingLookupSource(err) {
+			return missingLookupSourceCell(), nil
+		}
 		return CellValue{}, err
 	}
 	values, provenance := resolvedValues(resolved)
@@ -160,9 +198,27 @@ func (calculator *Calculator) CalculateFieldPage(
 	}
 	return CellValue{
 		State: "ok", Value: value, Provenance: provenance,
-		ProvenanceTotal: total, ProvenanceOffset: offset, ProvenanceLimit: limit,
-		ProvenanceHasMore: offset+len(provenance) < total,
+		ProvenanceTotal: total, ProvenanceTotalKnown: totalKnown,
+		ProvenanceOffset: offset, ProvenanceLimit: limit,
+		ProvenanceHasMore: !totalKnown || offset+len(provenance) < total,
 	}, nil
+}
+
+func isMissingLookupSource(err error) bool {
+	var productErr *mutation.ProductError
+	return errors.As(err, &productErr) &&
+		productErr.Code == "mutation.lookup.target_not_found"
+}
+
+func missingLookupSourceCell() CellValue {
+	return CellValue{
+		State: "invalid", Value: nil, Provenance: []ValueProvenance{},
+		ProvenanceTotalKnown: true, ProvenanceLimit: cellProvenancePageSize,
+		Diagnostic: &Diagnostic{
+			Code:    "lookup.value.source_missing",
+			Message: "关联的来源记录已不存在，请重新选择关联记录",
+		},
+	}
 }
 
 func resolvedValues(resolved []lookupPathValue) ([]any, []ValueProvenance) {
@@ -171,28 +227,191 @@ func resolvedValues(resolved []lookupPathValue) ([]any, []ValueProvenance) {
 	for _, item := range resolved {
 		values = append(values, item.value)
 		provenance = append(provenance, ValueProvenance{
-			Collection: item.collection,
-			ItemID:     item.itemID,
-			FieldID:    item.fieldID,
-			Value:      item.value,
+			Collection: item.collection, CollectionLabel: item.collectionLabel,
+			ItemID: item.itemID, RecordLabel: item.recordLabel,
+			FieldID: item.fieldID, FieldLabel: item.fieldLabel, Value: item.value,
 		})
 	}
 	return values, provenance
 }
 
-type fanoutBudget struct {
-	remaining int
+type streamingAggregateState struct {
+	kind       string
+	storage    schema.StorageType
+	count      int
+	nonNull    int
+	total      float64
+	first      any
+	best       any
+	hasFirst   bool
+	hasBest    bool
+	distinct   []any
+	seen       map[string]struct{}
+	budget     materializationBudget
+	provenance []ValueProvenance
+	capture    bool
 }
 
-func (budget *fanoutBudget) consume(count int) error {
-	if count < 0 || count > budget.remaining {
-		return lookupError(
-			"lookup.value.too_expensive",
-			"lookup path exceeds the multi-hop traversal cost budget",
+func calculateStreamingAggregate(
+	ctx context.Context,
+	app core.App,
+	definition schema.TableDefinition,
+	record *core.Record,
+	field schema.FieldDefinition,
+	captureProvenance bool,
+) (CellValue, error) {
+	state := &streamingAggregateState{
+		kind: field.Lookup.Aggregate, storage: field.StorageType,
+		seen: map[string]struct{}{},
+		budget: materializationBudget{
+			remainingBytes: lookupMaterializationBytes,
+		},
+		capture: captureProvenance,
+	}
+	total, err := streamLookupPathValues(
+		ctx, app, definition, record, field, state.consume,
+	)
+	if err != nil {
+		return CellValue{}, err
+	}
+	value, err := state.value()
+	if err != nil {
+		return CellValue{}, err
+	}
+	return CellValue{
+		State: "ok", Value: value, Provenance: state.provenance,
+		ProvenanceTotal: total, ProvenanceTotalKnown: true, ProvenanceOffset: 0,
+		ProvenanceLimit:   cellProvenancePageSize,
+		ProvenanceHasMore: captureProvenance && total > len(state.provenance),
+	}, nil
+}
+
+func streamLookupPathValues(
+	ctx context.Context,
+	app core.App,
+	sourceDefinition schema.TableDefinition,
+	record *core.Record,
+	lookupField schema.FieldDefinition,
+	sink func([]lookupPathValue) error,
+) (int, error) {
+	path := lookupField.Lookup.EffectivePath()
+	if len(path) == 0 {
+		return 0, lookupError(
+			"mutation.lookup.schema_invalid", "lookup path metadata is unavailable",
 		)
 	}
-	budget.remaining -= count
+	collector := lookupPageCollector{
+		offset: 0,
+		limit:  int(^uint(0) >> 1),
+		sink:   sink,
+	}
+	err := walkLookupPage(
+		ctx, app, traversalNode{definition: sourceDefinition, record: record},
+		lookupField, path, 0, map[string]schema.TableDefinition{}, &collector,
+	)
+	return collector.total, err
+}
+
+func (state *streamingAggregateState) consume(values []lookupPathValue) error {
+	for _, item := range values {
+		state.count++
+		if item.value != nil {
+			state.nonNull++
+		}
+		if state.capture && len(state.provenance) < cellProvenancePageSize {
+			state.provenance = append(state.provenance, ValueProvenance{
+				Collection: item.collection, CollectionLabel: item.collectionLabel,
+				ItemID: item.itemID, RecordLabel: item.recordLabel,
+				FieldID: item.fieldID, FieldLabel: item.fieldLabel, Value: item.value,
+			})
+		}
+		switch state.kind {
+		case "count", "countNonNull":
+			continue
+		case "first":
+			if !state.hasFirst {
+				state.first = item.value
+				state.hasFirst = true
+			}
+		case "distinct":
+			encoded, err := json.Marshal(item.value)
+			if err != nil {
+				return lookupError(
+					"mutation.lookup.invalid_value",
+					"lookup distinct encountered an invalid value",
+				)
+			}
+			key := string(encoded)
+			if _, exists := state.seen[key]; exists {
+				continue
+			}
+			if err := state.budget.consume(item.value); err != nil {
+				return err
+			}
+			state.seen[key] = struct{}{}
+			state.distinct = append(state.distinct, item.value)
+		case "sum", "avg":
+			number, ok := finiteNumber(item.value)
+			if !ok {
+				return lookupError(
+					"mutation.lookup.invalid_value",
+					"lookup numeric aggregate encountered a non-numeric value",
+				)
+			}
+			state.total += number
+			if math.IsInf(state.total, 0) || math.IsNaN(state.total) {
+				return lookupError(
+					"mutation.lookup.invalid_value",
+					"lookup numeric aggregate exceeded the numeric range",
+				)
+			}
+		case "min", "max":
+			if !state.hasBest {
+				state.best = item.value
+				state.hasBest = true
+				continue
+			}
+			comparison, err := compare(state.storage, item.value, state.best)
+			if err != nil {
+				return err
+			}
+			if (state.kind == "min" && comparison < 0) ||
+				(state.kind == "max" && comparison > 0) {
+				state.best = item.value
+			}
+		default:
+			return lookupError(
+				"mutation.lookup.schema_invalid", "lookup aggregate is unsupported",
+			)
+		}
+	}
 	return nil
+}
+
+func (state *streamingAggregateState) value() (any, error) {
+	switch state.kind {
+	case "count":
+		return state.count, nil
+	case "countNonNull":
+		return state.nonNull, nil
+	case "first":
+		return state.first, nil
+	case "distinct":
+		return state.distinct, nil
+	case "sum":
+		return state.total, nil
+	case "avg":
+		if state.count == 0 {
+			return nil, nil
+		}
+		return state.total / float64(state.count), nil
+	case "min", "max":
+		return state.best, nil
+	default:
+		return nil, lookupError(
+			"mutation.lookup.schema_invalid", "lookup aggregate is unsupported",
+		)
+	}
 }
 
 type traversalNode struct {
@@ -206,10 +425,70 @@ type junctionNode struct {
 }
 
 type lookupPathValue struct {
-	collection string
-	itemID     string
-	fieldID    string
-	value      any
+	collection      string
+	collectionLabel string
+	itemID          string
+	recordLabel     string
+	fieldID         string
+	fieldLabel      string
+	value           any
+}
+
+func describedLookupValue(
+	definition schema.TableDefinition,
+	record *core.Record,
+	field schema.FieldDefinition,
+	value any,
+) lookupPathValue {
+	collectionLabel := strings.TrimSpace(definition.DisplayName)
+	if collectionLabel == "" {
+		collectionLabel = "关联表"
+	}
+	fieldLabel := strings.TrimSpace(field.DisplayName)
+	if fieldLabel == "" {
+		fieldLabel = "关联字段"
+	}
+	recordLabel := ""
+	if definition.PrimaryDisplayFieldID != "" {
+		if displayField, found := fieldByID(definition, definition.PrimaryDisplayFieldID); found {
+			recordLabel = strings.TrimSpace(fmt.Sprint(decodeLookupFieldValue(
+				displayField, record.GetRaw(displayField.PhysicalName),
+			)))
+		}
+	}
+	if recordLabel == "" {
+		recordLabel = strings.TrimSpace(fmt.Sprint(value))
+	}
+	if recordLabel == "" || recordLabel == "<nil>" {
+		recordLabel = "未命名记录"
+	}
+	return lookupPathValue{
+		collection: definition.TableID, collectionLabel: collectionLabel,
+		itemID: record.Id, recordLabel: recordLabel,
+		fieldID: field.FieldID, fieldLabel: fieldLabel, value: value,
+	}
+}
+
+type materializationBudget struct {
+	remainingBytes int
+}
+
+func (budget *materializationBudget) consume(value any) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return lookupError(
+			"mutation.lookup.invalid_value", "lookup value could not be measured",
+		)
+	}
+	cost := max(len(raw), 1)
+	if cost > budget.remainingBytes {
+		return lookupError(
+			"lookup.value.too_expensive",
+			"lookup materialization exceeds the memory budget; use paged source details",
+		)
+	}
+	budget.remainingBytes -= cost
+	return nil
 }
 
 func lookupPathValuesPage(
@@ -220,22 +499,27 @@ func lookupPathValuesPage(
 	lookupField schema.FieldDefinition,
 	offset int,
 	limit int,
-	budget *fanoutBudget,
-) ([]lookupPathValue, int, error) {
+) ([]lookupPathValue, int, bool, error) {
 	path := lookupField.Lookup.EffectivePath()
-	if len(path) != 1 {
-		resolved, err := lookupPathValues(
-			ctx, app, sourceDefinition, record, lookupField, budget,
+	if len(path) == 0 {
+		return nil, 0, false, lookupError(
+			"mutation.lookup.schema_invalid", "lookup path metadata is unavailable",
 		)
-		if err != nil {
-			return nil, 0, err
+	}
+	if len(path) > 1 {
+		collector := lookupPageCollector{offset: offset, limit: limit}
+		err := walkLookupPage(
+			ctx, app, traversalNode{definition: sourceDefinition, record: record},
+			lookupField, path, 0, map[string]schema.TableDefinition{}, &collector,
+		)
+		if errors.Is(err, errLookupPageComplete) {
+			return collector.values, collector.total, false, nil
 		}
-		total := len(resolved)
-		return sliceLookupValues(resolved, offset, limit), total, nil
+		return collector.values, collector.total, true, err
 	}
 	relation, found := fieldByID(sourceDefinition, path[0].RelationFieldID)
 	if !found || relation.Relation == nil {
-		return nil, 0, lookupError(
+		return nil, 0, false, lookupError(
 			"mutation.lookup.schema_invalid",
 			"lookup path relation metadata is unavailable",
 		)
@@ -248,29 +532,19 @@ func lookupPathValuesPage(
 			ctx, app, relation.Relation.TargetTableID, map[string]schema.TableDefinition{},
 		)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, false, err
 		}
 		nodes, err := loadLookupRecords(ctx, app, target, ids)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, false, err
 		}
 		values, err := projectLookupNodes(nodes, lookupField)
-		return values, total, err
+		return values, total, true, err
 	}
-	return lookupJunctionValuesPage(
+	values, total, err := lookupJunctionValuesPage(
 		ctx, app, sourceDefinition, record, lookupField, relation, path[0], offset, limit,
 	)
-}
-
-func sliceLookupValues(values []lookupPathValue, offset int, limit int) []lookupPathValue {
-	if offset >= len(values) {
-		return []lookupPathValue{}
-	}
-	end := offset + limit
-	if end > len(values) {
-		end = len(values)
-	}
-	return values[offset:end]
+	return values, total, true, err
 }
 
 func sliceStrings(values []string, offset int, limit int) []string {
@@ -282,6 +556,344 @@ func sliceStrings(values []string, offset int, limit int) []string {
 		end = len(values)
 	}
 	return values[offset:end]
+}
+
+type lookupPageCollector struct {
+	offset int
+	limit  int
+	total  int
+	values []lookupPathValue
+	sink   func([]lookupPathValue) error
+}
+
+var errLookupPageComplete = errors.New("lookup page is complete")
+
+func (collector *lookupPageCollector) rangeFor(count int) (int, int, bool) {
+	startAt := collector.total
+	collector.total += count
+	pageStart := collector.offset
+	pageEnd := collector.offset + collector.limit
+	stop := collector.total > pageEnd
+	if startAt >= pageEnd || collector.total <= pageStart {
+		return 0, 0, stop
+	}
+	start := max(pageStart-startAt, 0)
+	end := min(pageEnd-startAt, count)
+	return start, end, stop
+}
+
+func (collector *lookupPageCollector) appendProjected(values []lookupPathValue) error {
+	if collector.sink != nil {
+		return collector.sink(values)
+	}
+	collector.values = append(collector.values, values...)
+	return nil
+}
+
+func walkLookupPage(
+	ctx context.Context,
+	app core.App,
+	source traversalNode,
+	lookupField schema.FieldDefinition,
+	path []schema.LookupPathStep,
+	pathIndex int,
+	definitions map[string]schema.TableDefinition,
+	collector *lookupPageCollector,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	step := path[pathIndex]
+	relation, found := fieldByID(source.definition, step.RelationFieldID)
+	if !found || relation.Relation == nil {
+		return lookupError(
+			"mutation.lookup.schema_invalid", "lookup path relation metadata is unavailable",
+		)
+	}
+	terminal := pathIndex == len(path)-1
+	if relation.Relation.EffectiveMode() == "direct" {
+		ids := relationIDs(source.record.GetRaw(relation.PhysicalName))
+		target, err := describeLookupTable(
+			ctx, app, relation.Relation.TargetTableID, definitions,
+		)
+		if err != nil {
+			return err
+		}
+		if terminal {
+			start, end, stop := collector.rangeFor(len(ids))
+			if start == end {
+				if stop {
+					return errLookupPageComplete
+				}
+				return nil
+			}
+			for batchStart := start; batchStart < end; batchStart += lookupTraversalBatch {
+				batchEnd := min(batchStart+lookupTraversalBatch, end)
+				nodes, err := loadLookupRecords(ctx, app, target, ids[batchStart:batchEnd])
+				if err != nil {
+					return err
+				}
+				values, err := projectLookupNodes(nodes, lookupField)
+				if err != nil {
+					return err
+				}
+				if err := collector.appendProjected(values); err != nil {
+					return err
+				}
+			}
+			if stop {
+				return errLookupPageComplete
+			}
+			return nil
+		}
+		for start := 0; start < len(ids); start += lookupTraversalBatch {
+			end := min(start+lookupTraversalBatch, len(ids))
+			nodes, err := loadLookupRecords(ctx, app, target, ids[start:end])
+			if err != nil {
+				return err
+			}
+			for _, node := range nodes {
+				if err := walkLookupPage(
+					ctx, app, node, lookupField, path, pathIndex+1, definitions, collector,
+				); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walkJunctionLookupPage(
+		ctx, app, source, lookupField, path, pathIndex, relation, definitions, collector,
+	)
+}
+
+func walkJunctionLookupPage(
+	ctx context.Context,
+	app core.App,
+	source traversalNode,
+	lookupField schema.FieldDefinition,
+	path []schema.LookupPathStep,
+	pathIndex int,
+	relation schema.FieldDefinition,
+	definitions map[string]schema.TableDefinition,
+	collector *lookupPageCollector,
+) error {
+	if relation.Relation.JunctionTableID == nil {
+		return lookupError(
+			"mutation.lookup.schema_invalid", "lookup junction schema is unavailable",
+		)
+	}
+	junction, err := describeLookupTable(
+		ctx, app, *relation.Relation.JunctionTableID, definitions,
+	)
+	if err != nil {
+		return err
+	}
+	sourceField, sourceOK := fieldByID(junction, relation.Relation.JunctionSourceFieldID)
+	targetIDField, targetOK := fieldByID(junction, relation.Relation.JunctionTargetFieldID)
+	if !sourceOK || !targetOK {
+		return lookupError(
+			"mutation.lookup.schema_invalid", "lookup junction fields are unavailable",
+		)
+	}
+	step := path[pathIndex]
+	filter := sourceField.PhysicalName + "={:source}"
+	params := dbx.Params{"source": source.record.Id}
+	expressions := []dbx.Expression{dbx.HashExp{sourceField.PhysicalName: source.record.Id}}
+	if relation.Relation.EffectiveMode() == "m2a" && step.M2ACollection != "" {
+		discriminator, found := fieldByID(
+			junction, relation.Relation.JunctionDiscriminatorFieldID,
+		)
+		if !found {
+			return lookupError(
+				"mutation.lookup.schema_invalid", "lookup m2a discriminator is unavailable",
+			)
+		}
+		filter += " && " + discriminator.PhysicalName + "={:targetTable}"
+		params["targetTable"] = step.M2ACollection
+		expressions = append(
+			expressions, dbx.HashExp{discriminator.PhysicalName: step.M2ACollection},
+		)
+	}
+	collection, err := lookupCollection(app, junction.TableID)
+	if err != nil {
+		return err
+	}
+	total64, err := app.CountRecords(collection, expressions...)
+	if err != nil {
+		return lookupError(
+			"mutation.lookup.storage_failed", "lookup junction storage is unavailable",
+		)
+	}
+	terminal := pathIndex == len(path)-1
+	if terminal {
+		start, end, stop := collector.rangeFor(int(total64))
+		if start == end {
+			if stop {
+				return errLookupPageComplete
+			}
+			return nil
+		}
+		var junctionField *schema.FieldDefinition
+		if lookupField.Lookup.JunctionFieldID != "" {
+			field, found := fieldByID(junction, lookupField.Lookup.JunctionFieldID)
+			if !found {
+				return lookupError(
+					"mutation.lookup.schema_invalid", "lookup junction field is unavailable",
+				)
+			}
+			junctionField = &field
+		}
+		for batchOffset := start; batchOffset < end; batchOffset += lookupTraversalBatch {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			batchLimit := min(lookupTraversalBatch, end-batchOffset)
+			rows, err := app.FindRecordsByFilter(
+				collection, filter, "+id", batchLimit, batchOffset, params,
+			)
+			if err != nil {
+				return lookupError(
+					"mutation.lookup.storage_failed", "lookup junction storage is unavailable",
+				)
+			}
+			if junctionField != nil {
+				for _, row := range rows {
+					value := decodeLookupFieldValue(
+						*junctionField, row.GetRaw(junctionField.PhysicalName),
+					)
+					if err := collector.appendProjected([]lookupPathValue{
+						describedLookupValue(junction, row, *junctionField, value),
+					}); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+			if err := appendJunctionTargets(
+				ctx, app, rows, junction, targetIDField, relation, lookupField,
+				definitions, collector,
+			); err != nil {
+				return err
+			}
+		}
+		if stop {
+			return errLookupPageComplete
+		}
+		return nil
+	}
+	for offset := 0; offset < int(total64); offset += lookupTraversalBatch {
+		rows, err := app.FindRecordsByFilter(
+			collection, filter, "+id", min(lookupTraversalBatch, int(total64)-offset), offset, params,
+		)
+		if err != nil {
+			return lookupError(
+				"mutation.lookup.storage_failed", "lookup junction storage is unavailable",
+			)
+		}
+		for _, row := range rows {
+			tableID, err := junctionTargetTable(junction, row, relation, step)
+			if err != nil {
+				return err
+			}
+			if tableID == "" {
+				continue
+			}
+			target, err := describeLookupTable(ctx, app, tableID, definitions)
+			if err != nil {
+				return err
+			}
+			nodes, err := loadLookupRecords(
+				ctx, app, target, []string{row.GetString(targetIDField.PhysicalName)},
+			)
+			if err != nil {
+				return err
+			}
+			for _, node := range nodes {
+				if err := walkLookupPage(
+					ctx, app, node, lookupField, path, pathIndex+1, definitions, collector,
+				); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func appendJunctionTargets(
+	ctx context.Context,
+	app core.App,
+	rows []*core.Record,
+	junction schema.TableDefinition,
+	targetIDField schema.FieldDefinition,
+	relation schema.FieldDefinition,
+	lookupField schema.FieldDefinition,
+	definitions map[string]schema.TableDefinition,
+	collector *lookupPageCollector,
+) error {
+	for _, row := range rows {
+		tableID, err := junctionTargetTable(
+			junction, row, relation, schema.LookupPathStep{},
+		)
+		if err != nil {
+			return err
+		}
+		if tableID == "" {
+			continue
+		}
+		target, err := describeLookupTable(ctx, app, tableID, definitions)
+		if err != nil {
+			return err
+		}
+		nodes, err := loadLookupRecords(
+			ctx, app, target, []string{row.GetString(targetIDField.PhysicalName)},
+		)
+		if err != nil {
+			return err
+		}
+		values, err := projectLookupNodes(nodes, lookupField)
+		if err != nil {
+			return err
+		}
+		if err := collector.appendProjected(values); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func junctionTargetTable(
+	junction schema.TableDefinition,
+	row *core.Record,
+	relation schema.FieldDefinition,
+	step schema.LookupPathStep,
+) (string, error) {
+	tableID := relation.Relation.TargetTableID
+	if relation.Relation.EffectiveMode() != "m2a" {
+		return tableID, nil
+	}
+	discriminator, found := fieldByID(
+		junction, relation.Relation.JunctionDiscriminatorFieldID,
+	)
+	if !found {
+		return "", lookupError(
+			"mutation.lookup.schema_invalid", "lookup m2a discriminator is unavailable",
+		)
+	}
+	tableID = row.GetString(discriminator.PhysicalName)
+	if !lookupContains(relation.Relation.AllowedTargetTableIDs, tableID) ||
+		(step.M2ACollection != "" && step.M2ACollection != tableID) {
+		return "", nil
+	}
+	return tableID, nil
+}
+
+func decodeLookupFieldValue(field schema.FieldDefinition, value any) any {
+	if field.DataType == schema.DataTypeSelect || field.DataType == schema.DataTypeMultiSelect {
+		return schema.DecodeSelectValueFromStorage(field, value)
+	}
+	return value
 }
 
 func projectLookupNodes(
@@ -306,12 +918,9 @@ func projectLookupNodes(
 			targetField.DataType == schema.DataTypeMultiSelect {
 			value = schema.DecodeSelectValueFromStorage(targetField, value)
 		}
-		values = append(values, lookupPathValue{
-			collection: node.definition.TableID,
-			itemID:     node.record.Id,
-			fieldID:    targetField.FieldID,
-			value:      value,
-		})
+		values = append(values, describedLookupValue(
+			node.definition, node.record, targetField, value,
+		))
 	}
 	return values, nil
 }
@@ -396,10 +1005,7 @@ func lookupJunctionValuesPage(
 				field.DataType == schema.DataTypeMultiSelect {
 				value = schema.DecodeSelectValueFromStorage(field, value)
 			}
-			values = append(values, lookupPathValue{
-				collection: junction.TableID, itemID: row.Id,
-				fieldID: field.FieldID, value: value,
-			})
+			values = append(values, describedLookupValue(junction, row, field, value))
 		}
 		return values, int(total64), nil
 	}
@@ -439,7 +1045,6 @@ func lookupPathValues(
 	sourceDefinition schema.TableDefinition,
 	record *core.Record,
 	lookupField schema.FieldDefinition,
-	budget *fanoutBudget,
 ) ([]lookupPathValue, error) {
 	path := lookupField.Lookup.EffectivePath()
 	if len(path) == 0 {
@@ -452,6 +1057,7 @@ func lookupPathValues(
 		definition: sourceDefinition,
 		record:     record,
 	}}
+	budget := &materializationBudget{remainingBytes: lookupMaterializationBytes}
 	var junctions []junctionNode
 	for index, step := range path {
 		var err error
@@ -461,7 +1067,6 @@ func lookupPathValues(
 			nodes,
 			step,
 			index == len(path)-1 && lookupField.Lookup.JunctionFieldID != "",
-			len(path) > 1,
 			budget,
 		)
 		if err != nil {
@@ -486,12 +1091,12 @@ func lookupPathValues(
 				field.DataType == schema.DataTypeMultiSelect {
 				value = schema.DecodeSelectValueFromStorage(field, value)
 			}
-			values = append(values, lookupPathValue{
-				collection: junction.definition.TableID,
-				itemID:     junction.record.Id,
-				fieldID:    field.FieldID,
-				value:      value,
-			})
+			if err := budget.consume(value); err != nil {
+				return nil, err
+			}
+			values = append(values, describedLookupValue(
+				junction.definition, junction.record, field, value,
+			))
 		}
 		return values, nil
 	}
@@ -513,12 +1118,12 @@ func lookupPathValues(
 			targetField.DataType == schema.DataTypeMultiSelect {
 			value = schema.DecodeSelectValueFromStorage(targetField, value)
 		}
-		values = append(values, lookupPathValue{
-			collection: node.definition.TableID,
-			itemID:     node.record.Id,
-			fieldID:    targetField.FieldID,
-			value:      value,
-		})
+		if err := budget.consume(value); err != nil {
+			return nil, err
+		}
+		values = append(values, describedLookupValue(
+			node.definition, node.record, targetField, value,
+		))
 	}
 	return values, nil
 }
@@ -529,8 +1134,7 @@ func traverseRelation(
 	sources []traversalNode,
 	step schema.LookupPathStep,
 	junctionOnly bool,
-	chargeTraversal bool,
-	budget *fanoutBudget,
+	budget *materializationBudget,
 ) ([]traversalNode, []junctionNode, error) {
 	targets := []traversalNode{}
 	junctions := []junctionNode{}
@@ -549,22 +1153,25 @@ func traverseRelation(
 		mode := relation.Relation.EffectiveMode()
 		if mode == "direct" {
 			ids := relationIDs(source.record.GetRaw(relation.PhysicalName))
-			if chargeTraversal {
-				if err := budget.consume(len(ids)); err != nil {
-					return nil, nil, err
-				}
-			}
 			target, err := describeLookupTable(
 				ctx, app, relation.Relation.TargetTableID, definitions,
 			)
 			if err != nil {
 				return nil, nil, err
 			}
-			loaded, err := loadLookupRecords(ctx, app, target, ids)
-			if err != nil {
-				return nil, nil, err
+			for start := 0; start < len(ids); start += lookupTraversalBatch {
+				end := min(start+lookupTraversalBatch, len(ids))
+				loaded, err := loadLookupRecords(ctx, app, target, ids[start:end])
+				if err != nil {
+					return nil, nil, err
+				}
+				for _, node := range loaded {
+					if err := budget.consume(node.record); err != nil {
+						return nil, nil, err
+					}
+					targets = append(targets, node)
+				}
 			}
-			targets = append(targets, loaded...)
 			continue
 		}
 		if relation.Relation.JunctionTableID == nil {
@@ -591,20 +1198,11 @@ func traverseRelation(
 				"lookup junction fields are unavailable",
 			)
 		}
-		remaining := budget.remaining
-		if !chargeTraversal {
-			remaining = math.MaxInt - 1
-		}
 		rows, err := lookupJunctionRows(
-			app, junction, sourceField, source.record.Id, remaining,
+			ctx, app, junction, sourceField, source.record.Id, budget,
 		)
 		if err != nil {
 			return nil, nil, err
-		}
-		if chargeTraversal {
-			if err := budget.consume(len(rows)); err != nil {
-				return nil, nil, err
-			}
 		}
 		for _, row := range rows {
 			if err := ctx.Err(); err != nil {
@@ -655,6 +1253,11 @@ func traverseRelation(
 			if err != nil {
 				return nil, nil, err
 			}
+			for _, node := range loaded {
+				if err := budget.consume(node.record); err != nil {
+					return nil, nil, err
+				}
+			}
 			targets = append(targets, loaded...)
 		}
 	}
@@ -682,37 +1285,46 @@ func describeLookupTable(
 }
 
 func lookupJunctionRows(
+	ctx context.Context,
 	app core.App,
 	junction schema.TableDefinition,
 	sourceField schema.FieldDefinition,
 	sourceID string,
-	remaining int,
+	budget *materializationBudget,
 ) ([]*core.Record, error) {
 	collection, err := lookupCollection(app, junction.TableID)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := app.FindRecordsByFilter(
-		collection,
-		sourceField.PhysicalName+"={:source}",
-		"+id",
-		remaining+1,
-		0,
-		dbx.Params{"source": sourceID},
-	)
-	if err != nil {
-		return nil, lookupError(
-			"mutation.lookup.storage_failed",
-			"lookup junction storage is unavailable",
+	result := []*core.Record{}
+	for offset := 0; ; offset += lookupTraversalBatch {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		rows, err := app.FindRecordsByFilter(
+			collection,
+			sourceField.PhysicalName+"={:source}",
+			"+id",
+			lookupTraversalBatch,
+			offset,
+			dbx.Params{"source": sourceID},
 		)
+		if err != nil {
+			return nil, lookupError(
+				"mutation.lookup.storage_failed",
+				"lookup junction storage is unavailable",
+			)
+		}
+		for _, row := range rows {
+			if err := budget.consume(row); err != nil {
+				return nil, err
+			}
+			result = append(result, row)
+		}
+		if len(rows) < lookupTraversalBatch {
+			return result, nil
+		}
 	}
-	if len(rows) > remaining {
-		return nil, lookupError(
-			"lookup.value.too_expensive",
-			"lookup path exceeds the multi-hop traversal cost budget",
-		)
-	}
-	return rows, nil
 }
 
 func lookupCollection(app core.App, tableID string) (*core.Collection, error) {

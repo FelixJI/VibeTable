@@ -117,11 +117,13 @@ export function useRelationLookupService() {
     relationId: string,
     label: string,
     collection?: string | null,
+    values?: Readonly<Record<string, unknown>>,
   ): Promise<RelationCreateTargetResult> {
     requireRelationEdit();
     return await bridge.request("relation.createTarget", {
       relationId,
       label: label.trim(),
+      ...(values ? { values } : {}),
       collection,
       idempotencyKey: requestId(),
     }) as RelationCreateTargetResult;
@@ -164,6 +166,39 @@ export function useRelationLookupService() {
       expectedDateUpdated,
       idempotencyKey: requestId(),
     }) as RelationSingleUpdateResult;
+  }
+
+  async function attachExistingTarget(
+    relationId: string,
+    sourceItemId: string,
+    target: RelationTargetRef,
+    kind: "m2o" | "o2m" | "m2m" | "m2a",
+    expectedSchemaRevision: string,
+  ): Promise<RelationSingleUpdateResult | RelationDeltaResult> {
+    if (kind === "m2o") {
+      return await bridge.request("relation.updateSingle", {
+        relationId,
+        sourceItemId,
+        target,
+        expectedSchemaRevision,
+        idempotencyKey: requestId(),
+      }) as RelationSingleUpdateResult;
+    }
+    const delta: RelationDelta = {
+      relationId,
+      sourceItemId,
+      expectedSchemaRevision,
+      adds: [{ target }],
+      updates: [],
+      removes: [],
+      idempotencyKey: requestId(),
+    };
+    const preview = await bridge.request("relation.previewDelta", delta) as RelationDeltaPreview;
+    if (!preview.canApply) {
+      const reason = preview.diagnostics.map(item => item.message).join("；");
+      throw new Error(reason || "新记录无法关联到原记录");
+    }
+    return await bridge.request("relation.applyDelta", delta) as RelationDeltaResult;
   }
 
   function buildDraftDelta(expectedDateUpdated?: string | null): RelationDelta {
@@ -314,6 +349,7 @@ export function useRelationLookupService() {
     listCollectionLookups,
     searchTargets,
     createTarget,
+    attachExistingTarget,
     updateSingle,
     loadDraft,
     buildDraftDelta,

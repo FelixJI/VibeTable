@@ -202,7 +202,7 @@ func TestJunctionAndM2ADeltaUseMutationKernelAuditReplayAndRollback(t *testing.T
 	quantityLookup.ReadOnly = true
 	quantityLookup.Lookup = &schema.LookupSpec{
 		RelationFieldID: "items_id", TargetFieldID: "quantity_id",
-		JunctionFieldID: "quantity_id", Aggregate: "sum",
+		JunctionFieldID: "quantity_id", Aggregate: "none",
 	}
 	contentNameLookup := field(
 		"content_name_id", "content_name",

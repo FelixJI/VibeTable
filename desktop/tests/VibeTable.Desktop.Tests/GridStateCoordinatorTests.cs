@@ -47,7 +47,9 @@ public sealed class GridStateCoordinatorTests
         => new(
             Table: table,
             Columns: new[] { new ColumnSchema("id", "id", "integer", false, false) },
-            Rows: new[] { new Dictionary<string, object?> { ["rowKey"] = 1 } },
+            Rows: Enumerable.Range(1, totalRows)
+                .Select(id => new Dictionary<string, object?> { ["rowKey"] = id })
+                .ToArray(),
             Offset: 0,
             Limit: 100,
             TotalRows: totalRows,
@@ -97,6 +99,38 @@ public sealed class GridStateCoordinatorTests
             captured!.Type,
             "a completed remote query must replace, not append to, the renderer dataset");
         Assert.AreEqual(1, captured.Page?.TotalRows);
+    }
+
+    [TestMethod]
+    public async Task RequestQuery_LoadsEveryFilteredPage_BeforeDatasetReady()
+    {
+        var gateway = new FakeTableRpcGateway();
+        var notifications = new List<TableNotification>();
+        var coordinator = NewCoordinator(gateway, notifications.Add);
+        var allRows = Enumerable.Range(1, 1_201)
+            .Select(id => new Dictionary<string, object?> { ["rowKey"] = id })
+            .ToArray();
+        gateway.QueryTablePageOverride = (table, offset, limit, _) => new TablePage(
+            Table: table,
+            Columns: new[] { new ColumnSchema("id", "id", "integer", false, false) },
+            Rows: allRows.Skip(offset).Take(limit).ToArray(),
+            Offset: offset,
+            Limit: limit,
+            TotalRows: 5_000,
+            Mode: "remote",
+            FilteredRows: allRows.Length,
+            QuerySnapshot: new QuerySnapshot(
+                "snapshot", "digest", "db-identity", table, "schema-1", 7,
+                new Dictionary<string, object?>()));
+
+        coordinator.RequestQuery("contracts", new TableQuery(Limit: 500));
+        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 250);
+
+        Assert.AreEqual(3, gateway.QueryTablePageCalls.Count);
+        Assert.AreEqual(1, notifications.Count);
+        Assert.AreEqual("table.datasetReady", notifications[0].Type);
+        Assert.AreEqual(1_201, notifications[0].Page?.Rows.Count);
+        Assert.AreEqual("client", notifications[0].Page?.Mode);
     }
 
     [TestMethod]

@@ -647,15 +647,19 @@ func validateTypeSpecific(definition FieldDefinition) error {
 		}
 	case LogicalLookup:
 		if definition.Lookup == nil || definition.Lookup.TargetFieldID == "" ||
-			len(definition.Lookup.Path) == 0 || len(definition.Lookup.Path) > 8 {
-			return invalid("lookup", "lookup requires one to eight relation path steps and a target field")
+			len(definition.Lookup.Path) == 0 {
+			return &ProductError{Code: "lookup.path.invalid", Path: "lookup", Message: "lookup requires a relation path and a target field"}
+		}
+		if len(definition.Lookup.Path) > 8 {
+			return &ProductError{Code: "lookup.path.depth_limit", Path: "lookup.path", Message: "lookup supports at most eight relation path steps"}
 		}
 		for index, step := range definition.Lookup.Path {
 			if step.RelationFieldID == "" {
-				return invalid(
-					fmt.Sprintf("lookup.path[%d].relationFieldId", index),
-					"lookup relation field is required",
-				)
+				return &ProductError{
+					Code:    "lookup.path.invalid",
+					Path:    fmt.Sprintf("lookup.path[%d].relationFieldId", index),
+					Message: "lookup relation field is required",
+				}
 			}
 		}
 	}

@@ -154,7 +154,8 @@ def lookup_descriptor(revision: int = 1) -> dict[str, Any]:
         "displayName": "Customer name",
         "relationFieldId": "customer",
         "targetFieldId": "name",
-        "aggregate": "first",
+        "aggregate": "none",
+        "resultCardinality": "one",
         "outputStorage": "text",
         "revision": revision,
     }
@@ -300,6 +301,7 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
             "collection": "customers",
             "itemId": "c-2",
             "label": "Grace",
+            "secondaryLabel": None,
             "junctionId": None,
             "junctionRevision": None,
             "junctionValues": {},
@@ -500,22 +502,22 @@ async def test_lookup_normalization_supports_junction_and_terminal_m2a_sources()
     vendors = table_schema("vendors", [scalar_field()])
     service, transport = service_with([customers, junction_schema, customers, vendors])
 
-    junction = await service._normalized_lookup_field(
+    junction, junction_renderer = await service._normalized_lookup_field(
         {
             **lookup_renderer(),
             "lookupId": "orders.relation_note",
             "fieldKey": "relation_note",
             "path": [{"relationId": "orders.customer"}],
             "source": {"kind": "junction_field", "fieldRef": "note"},
-            "aggregation": "values",
-            "outputType": "json",
         },
         junction_source,
     )
     assert junction["lookup"]["junctionFieldId"] == "note"
     assert junction["storageType"] == "json"
+    assert junction_renderer["aggregation"] == "values"
+    assert junction_renderer["outputType"] == "json"
 
-    polymorphic = await service._normalized_lookup_field(
+    polymorphic, polymorphic_renderer = await service._normalized_lookup_field(
         {
             **lookup_renderer(),
             "lookupId": "orders.subject_name",
@@ -525,9 +527,7 @@ async def test_lookup_normalization_supports_junction_and_terminal_m2a_sources()
                 {"collection": "customers", "fieldRef": "name"},
                 {"collection": "vendors", "fieldRef": "name"},
             ],
-            "aggregation": "average",
-            "outputType": "decimal",
-            "outputScale": 4,
+            "outputScale": None,
         },
         m2a_source,
     )
@@ -535,7 +535,9 @@ async def test_lookup_normalization_supports_junction_and_terminal_m2a_sources()
         "customers": "name",
         "vendors": "name",
     }
-    assert polymorphic["constraints"] == [{"kind": "precisionScale", "precision": 38, "scale": 4}]
+    assert polymorphic["storageType"] == "json"
+    assert polymorphic_renderer["aggregation"] == "values"
+    assert polymorphic_renderer["outputType"] == "json"
     assert transport.responses == []
 
 
@@ -687,7 +689,8 @@ def test_lookup_helpers_validate_grouping_rendering_and_precision() -> None:
     descriptor = lookup_descriptor()
     assert _renderer_lookup(descriptor)["aggregation"] == "single"
     cases = (
-        ({**descriptor, "aggregate": "median"}, "invalid Lookup aggregate"),
+        ({**descriptor, "aggregate": "median"}, "unsupported Lookup aggregate"),
+        ({**descriptor, "resultCardinality": "unknown"}, "invalid Lookup result cardinality"),
         ({**descriptor, "outputStorage": "bytes"}, "PocketBase returned an unknown data type"),
         ({**descriptor, "path": []}, "invalid Lookup path"),
         ({**descriptor, "path": ["bad"]}, "invalid Lookup path"),

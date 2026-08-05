@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { NButton, NCheckbox, NIcon, NInputNumber, NPopover, NSelect } from "naive-ui";
+import { NButton, NCheckbox, NIcon, NInput, NInputNumber, NPopover, NSelect } from "naive-ui";
 import { EyeOff, Filter, Layers3, Sigma } from "lucide-vue-next";
 import type {
   ColumnSchema,
@@ -33,6 +33,7 @@ const draftFilters = ref<FilterExpression[]>([]);
 const draftGroups = ref<GroupCondition[]>([]);
 const draftSummaries = ref<SummaryCondition[]>([]);
 const draftVisible = ref<string[]>([]);
+const fieldSearch = ref("");
 const relationsById = computed(() => new Map(
   (props.relations ?? []).map(relation => [relation.relationId, relation]),
 ));
@@ -54,6 +55,11 @@ const numericOptions = computed(() => props.columns
   .filter((column) => column.dataType === "integer" || column.dataType === "decimal")
   .map((column) => ({ label: column.title, value: column.name })));
 const hiddenCount = computed(() => Math.max(props.columns.length - props.visibleFields.length, 0));
+const filteredFields = computed(() => {
+  const keyword = fieldSearch.value.trim().toLocaleLowerCase();
+  if (!keyword) return props.columns;
+  return props.columns.filter(column => column.title.toLocaleLowerCase().includes(keyword));
+});
 
 watch(() => [props.filters, props.groups, props.summaries, props.visibleFields] as const, () => {
   draftFilters.value = cloneFilterExpressions(props.filters);
@@ -90,6 +96,13 @@ function toggleField(field: string, checked: boolean): void {
   draftVisible.value = checked
     ? [...new Set([...draftVisible.value, field])]
     : draftVisible.value.filter((item) => item !== field);
+}
+function showFields(fields: readonly string[]): void {
+  draftVisible.value = [...new Set([...draftVisible.value, ...fields])];
+}
+function hideFields(fields: readonly string[]): void {
+  const hidden = new Set(fields);
+  draftVisible.value = draftVisible.value.filter(field => !hidden.has(field));
 }
 function isDateField(field: string): boolean {
   const dataType = props.columns.find((column) => column.name === field)?.dataType;
@@ -167,7 +180,13 @@ function isNumericField(field: string): boolean {
       </template>
       <div class="control-card field-card">
         <header><strong>显示字段</strong><span>仅影响当前视图</span></header>
-        <label v-for="column in columns" :key="column.name">
+        <NInput v-model:value="fieldSearch" size="small" clearable placeholder="搜索字段" data-testid="view-hidden-search" />
+        <div class="field-actions">
+          <NButton size="tiny" secondary data-testid="view-hidden-show-filtered" @click="showFields(filteredFields.map(column => column.name))">批量显示</NButton>
+          <NButton size="tiny" quaternary data-testid="view-hidden-hide-filtered" @click="hideFields(filteredFields.map(column => column.name))">批量隐藏</NButton>
+          <NButton size="tiny" quaternary data-testid="view-hidden-show-all" @click="showFields(columns.map(column => column.name))">显示全部</NButton>
+        </div>
+        <label v-for="column in filteredFields" :key="column.name">
           <NCheckbox :checked="draftVisible.includes(column.name)" @update:checked="checked => toggleField(column.name, checked)" />
           <span>{{ column.title }}</span>
         </label>
@@ -188,6 +207,7 @@ function isNumericField(field: string): boolean {
 .config-row { display: grid; grid-template-columns: minmax(150px, 1fr) 92px minmax(100px, auto) 26px; gap: 6px; }
 .config-row--summary { grid-template-columns: minmax(170px, 1fr) 110px 26px; }
 .field-card { width: 280px; max-height: 420px; overflow: auto; }
+.field-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 .field-card label { display: flex; min-height: 30px; align-items: center; gap: 9px; padding: 0 6px; border-radius: var(--vt-radius-sm); }
 .field-card label:hover { background: var(--vt-bg-subtle); }
 @media (max-width: 720px) {

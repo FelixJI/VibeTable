@@ -5,8 +5,14 @@ import type { ColumnSchema, FilterExpression } from "@/contracts";
 import FilterTreeEditor from "./FilterTreeEditor.vue";
 
 const columns = [
-  { name: "amount", title: "金额", dataType: "decimal", editable: true, nullable: true },
-  { name: "note", title: "备注", dataType: "text", editable: true, nullable: true },
+  {
+    name: "amount", title: "金额", dataType: "decimal", editable: true, nullable: true,
+    filterOperators: ["eq", "ne", "gt", "gte", "lt", "lte", "between", "in", "is_null", "is_not_null"],
+  },
+  {
+    name: "note", title: "备注", dataType: "text", editable: true, nullable: true,
+    filterOperators: ["eq", "ne", "contains", "starts_with", "ends_with", "in", "is_null", "is_not_null"],
+  },
 ] satisfies ColumnSchema[];
 
 describe("FilterTreeEditor", () => {
@@ -39,7 +45,51 @@ describe("FilterTreeEditor", () => {
     expect(values).not.toContain("contains");
   });
 
-	it("uses the authoritative column capability when it is present", () => {
+  it("emits typed arrays for between and in operators", async () => {
+    const between = mount(FilterTreeEditor, {
+      props: { nodes: [{ field: "amount", operator: "between", value: [1, 2] }], columns },
+    });
+    await between.get('[aria-label="筛选起始值"] input').setValue("10");
+    expect(between.emitted("update")?.at(-1)?.[0]).toEqual([
+      { field: "amount", operator: "between", value: [10, 2] },
+    ]);
+
+    const values = mount(FilterTreeEditor, {
+      props: { nodes: [{ field: "amount", operator: "in", value: [] }], columns },
+    });
+    await values.get('[aria-label="筛选值列表"] input').setValue("1, 2, 3");
+    expect(values.emitted("update")?.at(-1)?.[0]).toEqual([
+      { field: "amount", operator: "in", value: [1, 2, 3] },
+    ]);
+  });
+
+  it("uses a boolean selector and the first operator published by capability", async () => {
+    const booleanColumn = {
+      name: "active", title: "启用", dataType: "boolean", editable: true, nullable: true,
+      filterOperators: ["eq", "ne"],
+    } satisfies ColumnSchema;
+    const wrapper = mount(FilterTreeEditor, {
+      props: { nodes: [{ field: "active", operator: "eq", value: false }], columns: [booleanColumn] },
+    });
+    const selector = wrapper.findAllComponents(NSelect)
+      .find(select => select.attributes("aria-label") === "布尔筛选值");
+    selector?.vm.$emit("update:value", "true");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("update")?.at(-1)?.[0]).toEqual([
+      { field: "active", operator: "eq", value: true },
+    ]);
+
+    const capabilityOnly = mount(FilterTreeEditor, {
+      props: { nodes: [], columns: [{ ...booleanColumn, filterOperators: ["is_not_null"] }] },
+    });
+    await capabilityOnly.findAllComponents(NButton)
+      .find(button => button.text().includes("＋ 条件"))?.trigger("click");
+    expect(capabilityOnly.emitted("update")?.[0]?.[0]).toEqual([
+      { field: "active", operator: "is_not_null", value: undefined },
+    ]);
+  });
+
+	it("uses only the authoritative column capability", () => {
 		const wrapper = mount(FilterTreeEditor, {
 			props: {
 				nodes: [{ field: "amount", operator: "eq", value: 1 }],

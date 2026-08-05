@@ -512,6 +512,27 @@ func TestValidateReportsEmptyFormulaAtTheSourcePath(t *testing.T) {
 	}
 }
 
+func TestAttachmentFieldCannotBeRequiredBeforeAtomicPreInsertUploadExists(t *testing.T) {
+	definition := validDefinition()
+	definition.Fields[0] = schema.FieldDefinition{
+		FieldID: "files", PhysicalName: "files", DisplayName: "Files",
+		Kind: schema.FieldKindAttachment, DataType: schema.DataTypeFile,
+		StorageType: schema.StorageFile, Nullable: false,
+		Constraints: []schema.FieldConstraint{},
+		Editor:      schema.EditorDefinition{Kind: "attachment", Config: map[string]any{}},
+		AttachmentPolicy: &schema.AttachmentPolicy{
+			MaxFiles: 1, MaxBytesPerFile: 1024,
+		},
+	}
+	err := schema.Validate(definition)
+	var productErr *schema.ProductError
+	if !errors.As(err, &productErr) ||
+		productErr.Code != "schema.field.invalid_attachment_policy" ||
+		productErr.Path != "fields[0].nullable" {
+		t.Fatalf("required attachment validation = %#v", err)
+	}
+}
+
 func TestAutoDateRolesValidateAndCompileToPocketBaseTruthTable(t *testing.T) {
 	for _, test := range []struct {
 		name     string

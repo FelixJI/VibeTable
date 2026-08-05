@@ -32,6 +32,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
+from backend.contracts.selection import QuerySnapshot
+
 
 def _camel_config() -> ConfigDict:
     """Return the shared configdict mirroring backend.contracts.table.CamelModel."""
@@ -210,3 +212,42 @@ class ViewQuery(CamelModel):
     summaries: list[SummaryCondition] = Field(default_factory=list, max_length=3)
     group_offset: int = Field(default=0, ge=0)
     group_limit: int = Field(default=100, ge=1, le=5000)
+
+
+class QueryPageResult(CamelModel):
+    """One authoritative record page returned by ``query.page``."""
+
+    rows: list[dict[str, Any]]
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1, le=500)
+    filtered_rows: int = Field(ge=0)
+    total_rows: int = Field(ge=0)
+    snapshot: QuerySnapshot
+
+
+class ViewGroupRow(CamelModel):
+    """One leaf group and, for two-level views, its complete parent aggregate."""
+
+    key: list[Any] = Field(min_length=1, max_length=2)
+    count: int = Field(ge=0)
+    summaries: list[Any] = Field(max_length=3)
+    parent_count: int | None = Field(default=None, ge=0)
+    parent_summaries: list[Any] | None = Field(default=None, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_parent_aggregate(self) -> ViewGroupRow:
+        if (self.parent_count is None) != (self.parent_summaries is None):
+            raise ValueError("parentCount and parentSummaries must be provided together")
+        if self.parent_count is not None and len(self.key) != 2:
+            raise ValueError("parent aggregates require a two-level group key")
+        return self
+
+
+class QueryViewResult(CamelModel):
+    """Record page plus independently paged full-result group rows."""
+
+    page: QueryPageResult
+    group_rows: list[ViewGroupRow]
+    group_offset: int = Field(ge=0)
+    group_limit: int = Field(ge=1, le=5000)
+    has_more_groups: bool

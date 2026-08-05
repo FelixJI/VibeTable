@@ -535,32 +535,36 @@ func validateConstraints(
 	if field.DataType == DataTypeFile && field.AttachmentPolicy == nil {
 		return productError("schema.field.invalid_attachment_policy", prefix+".attachmentPolicy", "attachment policy is required", nil)
 	}
+	if field.DataType == DataTypeFile && !field.Nullable {
+		return productError("schema.field.invalid_attachment_policy", prefix+".nullable", "attachment fields must be nullable because files are uploaded after record creation", nil)
+	}
 	if field.AttachmentPolicy != nil && (field.AttachmentPolicy.MaxFiles < 1 || field.AttachmentPolicy.MaxBytesPerFile < 1) {
 		return productError("schema.field.invalid_attachment_policy", prefix+".attachmentPolicy", "maxFiles and maxBytesPerFile must be positive", nil)
 	}
 	if field.DataType == DataTypeLookup && field.Lookup == nil {
-		return productError("schema.field.invalid_lookup", prefix+".lookup", "lookup configuration is required", nil)
+		return productError("lookup.path.invalid", prefix+".lookup", "lookup configuration is required", nil)
 	}
 	if field.Lookup != nil {
 		path := field.Lookup.EffectivePath()
 		if len(path) == 0 {
-			return productError("schema.field.invalid_lookup", prefix+".lookup.path", "lookup path must contain at least one relation", nil)
+			return productError("lookup.path.invalid", prefix+".lookup.path", "lookup path must contain at least one relation", nil)
 		}
-		if len(path) > 8 {
-			return productError("schema.field.invalid_lookup", prefix+".lookup.path", "lookup path supports at most eight relations", nil)
+		if len(path) > MaxLookupPathDepth {
+			return productError("lookup.path.depth_limit", prefix+".lookup.path", "lookup path supports at most eight relations", nil)
 		}
 		if field.Lookup.RelationFieldID != path[0].RelationFieldID {
-			return productError("schema.field.invalid_lookup", prefix+".lookup.relationFieldId", "lookup relationFieldId must match the first path step", nil)
+			return productError("lookup.path.invalid", prefix+".lookup.relationFieldId", "lookup relationFieldId must match the first path step", nil)
 		}
 		for index, step := range path {
 			if step.RelationFieldID == "" {
-				return productError("schema.field.invalid_lookup", fmt.Sprintf("%s.lookup.path[%d].relationFieldId", prefix, index), "lookup path relationFieldId is required", nil)
+				return productError("lookup.path.invalid", fmt.Sprintf("%s.lookup.path[%d].relationFieldId", prefix, index), "lookup path relationFieldId is required", nil)
 			}
 		}
-		switch field.Lookup.Aggregate {
-		case "none", "first", "distinct", "count", "countNonNull", "sum", "avg", "min", "max":
-		default:
-			return productError("schema.field.invalid_lookup", prefix+".lookup.aggregate", "unknown lookup aggregate", nil)
+		if field.Lookup.Aggregate != "none" {
+			return productError(
+				"schema.field.invalid_lookup", prefix+".lookup.aggregate",
+				"Lookup does not aggregate; use a formula relation aggregate instead", nil,
+			)
 		}
 		if field.Lookup.JunctionFieldID != "" &&
 			len(field.Lookup.TargetFieldIDs) != 0 {
@@ -586,7 +590,7 @@ func validateConstraints(
 			return productError("schema.field.invalid_formula", prefix+".formula.version", "formula version must be positive", nil)
 		}
 		switch field.Formula.Status {
-		case "draft", "backfilling", "ready", "failed":
+		case "draft", "backfilling", "ready", "failed", "cancelled":
 		default:
 			return productError("schema.field.invalid_formula", prefix+".formula.status", "unknown formula status", nil)
 		}

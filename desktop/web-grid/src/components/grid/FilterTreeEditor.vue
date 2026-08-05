@@ -12,7 +12,10 @@ const props = withDefaults(defineProps<{
 }>(), { depth: 1 });
 const emit = defineEmits<{ update: [nodes: FilterExpression[]] }>();
 
-const fieldOptions = computed(() => props.columns.map((column) => ({
+const capabilityColumns = computed(() => props.columns.filter(
+  column => (column.filterOperators?.length ?? 0) > 0,
+));
+const fieldOptions = computed(() => capabilityColumns.value.map((column) => ({
   label: column.title,
   value: column.name,
 })));
@@ -22,28 +25,8 @@ const operatorLabels: Record<FilterOperator, string> = {
   lte: "小于等于", between: "介于", in: "属于", is_null: "为空",
   is_not_null: "不为空", regex: "正则匹配",
 };
-const textOperators: FilterOperator[] = [
-	"eq", "ne", "contains", "starts_with", "ends_with", "in",
-  "is_null", "is_not_null",
-];
-const orderedOperators: FilterOperator[] = [
-  "eq", "ne", "gt", "gte", "lt", "lte", "between", "in",
-  "is_null", "is_not_null",
-];
-const boolOperators: FilterOperator[] = ["eq", "ne", "is_null", "is_not_null"];
-const jsonOperators: FilterOperator[] = ["contains", "is_null", "is_not_null"];
 const operatorOptionsFor = (field: string) => {
-	const column = props.columns.find(item => item.name === field);
-	const dataType = column?.dataType;
-	const operators = column?.filterOperators?.length
-		? column.filterOperators
-		: dataType === "boolean"
-    ? boolOperators
-    : dataType === "json"
-      ? jsonOperators
-      : ["integer", "decimal", "date", "datetime", "time"].includes(dataType ?? "")
-        ? orderedOperators
-        : textOperators;
+  const operators = props.columns.find(item => item.name === field)?.filterOperators ?? [];
   return operators.map(value => ({ label: operatorLabels[value], value }));
 };
 const localConditionCount = computed(() => countConditions(props.nodes));
@@ -71,16 +54,20 @@ function remove(index: number): void {
   emit("update", props.nodes.filter((_, nodeIndex) => nodeIndex !== index));
 }
 function addCondition(): void {
-  const field = props.columns[0]?.name;
+  const field = capabilityColumns.value[0]?.name;
   if (!field || atConditionLimit.value) return;
-  emit("update", [...props.nodes, { field, operator: "eq", value: "" }]);
+  const operator = operatorOptionsFor(field)[0]?.value;
+  if (!operator) return;
+  emit("update", [...props.nodes, { field, operator, value: initialValue(field, operator) }]);
 }
 function addGroup(): void {
-  const field = props.columns[0]?.name;
+  const field = capabilityColumns.value[0]?.name;
   if (!field || props.depth >= 3 || atConditionLimit.value) return;
+  const operator = operatorOptionsFor(field)[0]?.value;
+  if (!operator) return;
   emit("update", [...props.nodes, {
     groupLogic: "AND",
-    filters: [{ field, operator: "eq", value: "" }],
+    filters: [{ field, operator, value: initialValue(field, operator) }],
   }]);
 }
 function updateCondition(index: number, patch: Partial<FilterCondition>): void {
@@ -92,20 +79,55 @@ function updateField(index: number, field: string): void {
   const current = props.nodes[index];
   if (!current || !isCondition(current)) return;
   const allowed = operatorOptionsFor(field).map(option => option.value);
+  if (!allowed.length) return;
   updateCondition(index, {
     field,
-    operator: allowed.includes(current.operator) ? current.operator : allowed[0] ?? "eq",
+    operator: allowed.includes(current.operator) ? current.operator : allowed[0]!,
+    value: initialValue(field, allowed.includes(current.operator) ? current.operator : allowed[0]!),
   });
+}
+function updateOperator(index: number, operator: FilterOperator): void {
+  const current = props.nodes[index];
+  if (!current || !isCondition(current)) return;
+  updateCondition(index, { operator, value: initialValue(current.field, operator) });
+}
+function columnFor(field: string): ColumnSchema | undefined {
+  return props.columns.find(item => item.name === field);
+}
+function initialValue(field: string, operator: FilterOperator): unknown {
+  if (operator === "is_null" || operator === "is_not_null") return undefined;
+  if (operator === "between") return ["", ""];
+  if (operator === "in") return [];
+  if (columnFor(field)?.dataType === "boolean") return false;
+  return "";
+}
+function parseScalar(field: string, value: string): unknown {
+  const column = columnFor(field);
+  if (column?.dataType === "boolean") return value === "true";
+  const numeric = column?.dataType === "integer" || column?.dataType === "decimal";
+  return numeric && value.trim() !== "" && Number.isFinite(Number(value))
+    ? Number(value)
+    : value;
 }
 function updateValue(index: number, value: string): void {
   const current = props.nodes[index];
   if (!current || !isCondition(current)) return;
-  const column = props.columns.find((item) => item.name === current.field);
-  const numeric = column?.dataType === "integer" || column?.dataType === "decimal";
-  const parsed = numeric && value.trim() !== "" && Number.isFinite(Number(value))
-    ? Number(value)
-    : value;
-  updateCondition(index, { value: parsed });
+  updateCondition(index, { value: parseScalar(current.field, value) });
+}
+function updateBetweenValue(index: number, part: number, value: string): void {
+  const current = props.nodes[index];
+  if (!current || !isCondition(current)) return;
+  const previous = Array.isArray(current.value) ? [...current.value] : ["", ""];
+  previous[part] = parseScalar(current.field, value);
+  updateCondition(index, { value: previous.slice(0, 2) });
+}
+function updateInValue(index: number, value: string): void {
+  const current = props.nodes[index];
+  if (!current || !isCondition(current)) return;
+  updateCondition(index, {
+    value: value.split(",").map(item => item.trim()).filter(Boolean)
+      .map(item => parseScalar(current.field, item)),
+  });
 }
 </script>
 
@@ -137,10 +159,43 @@ function updateValue(index: number, value: string): void {
           :value="node.operator"
           :options="operatorOptionsFor(node.field)"
           aria-label="筛选操作符"
-          @update:value="operator => updateCondition(index, { operator })"
+          @update:value="operator => updateOperator(index, operator)"
+        />
+        <div v-if="node.operator === 'between'" class="between-inputs">
+          <NInput
+            size="small"
+            :value="String(Array.isArray(node.value) ? (node.value[0] ?? '') : '')"
+            aria-label="筛选起始值"
+            @update:value="value => updateBetweenValue(index, 0, value)"
+          />
+          <span>至</span>
+          <NInput
+            size="small"
+            :value="String(Array.isArray(node.value) ? (node.value[1] ?? '') : '')"
+            aria-label="筛选结束值"
+            @update:value="value => updateBetweenValue(index, 1, value)"
+          />
+        </div>
+        <NInput
+          v-else-if="node.operator === 'in'"
+          size="small"
+          class="value-input"
+          :value="Array.isArray(node.value) ? node.value.join(', ') : ''"
+          placeholder="多个值用逗号分隔"
+          aria-label="筛选值列表"
+          @update:value="value => updateInValue(index, value)"
+        />
+        <NSelect
+          v-else-if="columnFor(node.field)?.dataType === 'boolean' && node.operator !== 'is_null' && node.operator !== 'is_not_null'"
+          size="small"
+          class="value-input"
+          :value="String(Boolean(node.value))"
+          :options="[{ label: '是', value: 'true' }, { label: '否', value: 'false' }]"
+          aria-label="布尔筛选值"
+          @update:value="value => updateCondition(index, { value: value === 'true' })"
         />
         <NInput
-          v-if="node.operator !== 'is_null' && node.operator !== 'is_not_null'"
+          v-else-if="node.operator !== 'is_null' && node.operator !== 'is_not_null'"
           size="small"
           class="value-input"
           :value="String(node.value ?? '')"
@@ -184,6 +239,7 @@ function updateValue(index: number, value: string): void {
 .field-select { width: 132px; }
 .operator-select { width: 108px; }
 .value-input { width: 132px; }
+.between-inputs { display: grid; grid-template-columns: 92px auto 92px; align-items: center; gap: 5px; }
 .filter-group { width: 100%; padding: 8px; border-left: 2px solid var(--vt-color-primary-300); border-radius: 0 var(--vt-radius-sm) var(--vt-radius-sm) 0; background: var(--vt-bg-subtle); }
 .filter-group__heading { display: grid; grid-template-columns: 1fr 120px 28px; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .filter-actions { display: flex; gap: 6px; padding-left: 34px; }

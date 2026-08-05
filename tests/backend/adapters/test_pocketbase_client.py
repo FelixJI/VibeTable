@@ -180,7 +180,15 @@ async def test_view_query_returns_independently_paged_full_result_groups() -> No
         [
             {
                 "page": page_payload,
-                "groupRows": [{"key": ["east"], "count": 7000, "summaries": [12345]}],
+                "groupRows": [
+                    {
+                        "key": ["east", "open"],
+                        "count": 3000,
+                        "summaries": [5000],
+                        "parentCount": 7000,
+                        "parentSummaries": [12345],
+                    }
+                ],
                 "groupOffset": 0,
                 "groupLimit": 100,
                 "hasMoreGroups": False,
@@ -199,12 +207,63 @@ async def test_view_query_returns_independently_paged_full_result_groups() -> No
     result = await client.execute_view(table_id="orders", view=view)
 
     assert result.page.filtered_rows == 12_500
-    assert result.group_rows[0]["count"] == 7000
+    assert result.group_rows[0]["count"] == 3000
+    assert result.group_rows[0]["parentCount"] == 7000
+    assert result.group_rows[0]["parentSummaries"] == [12345]
     assert transport.requests[0]["json_body"] == {
         "operation": "view",
         "tableId": "orders",
         "view": view,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "group_row",
+    [
+        {"key": ["east", "open"], "count": 3, "summaries": [], "parentCount": 9},
+        {
+            "key": ["east"],
+            "count": 3,
+            "summaries": [],
+            "parentCount": 9,
+            "parentSummaries": [],
+        },
+    ],
+)
+async def test_view_query_rejects_malformed_parent_group_aggregates(
+    group_row: dict[str, object],
+) -> None:
+    transport = FakeTransport(
+        [
+            {
+                "page": {
+                    "rows": [],
+                    "offset": 0,
+                    "limit": 1,
+                    "filteredRows": 0,
+                    "totalRows": 0,
+                    "querySnapshot": {
+                        "snapshotId": "0" * 32,
+                        "databaseId": "db",
+                        "table": "orders",
+                        "schemaRevision": "schema-1",
+                        "dataRevision": 2,
+                        "normalizedQuery": {"offset": 0, "limit": 1},
+                        "digest": "d" * 64,
+                    },
+                },
+                "groupRows": [group_row],
+                "groupOffset": 0,
+                "groupLimit": 100,
+                "hasMoreGroups": False,
+            }
+        ]
+    )
+    client = PocketBaseClient(transport=transport, session_secret="e" * 64)
+
+    with pytest.raises(ValueError, match="invalid view query result"):
+        await client.execute_view(table_id="orders", view={})
 
 
 def test_product_error_keeps_safe_structured_details() -> None:

@@ -17,6 +17,7 @@ const props = defineProps<{
   value: LookupDefinition;
   relationOptions: LookupOption[][];
   targetFieldOptions: LookupOption[];
+  maxDepth: number;
   loading?: boolean;
   error?: string | null;
 }>();
@@ -29,7 +30,7 @@ const editing = ref(false);
 const working = ref<LookupDefinition>(cloneLookup(props.value));
 const canCommit = computed(() =>
   working.value.path.length > 0
-  && working.value.path.length <= 8
+  && working.value.path.length <= props.maxDepth
   && working.value.path.every(step => step.relationFieldId.length > 0)
   && working.value.targetFieldId.trim().length > 0);
 const producesList = computed(() => working.value.path.some((step, index) =>
@@ -73,7 +74,7 @@ function selectStep(index: number, relationFieldId: string): void {
 }
 
 function addStep(): void {
-  if (working.value.path.length >= 8) return;
+  if (working.value.path.length >= props.maxDepth) return;
   const path = [...working.value.path, { relationFieldId: "" }];
   working.value = { path, targetFieldId: "" };
 }
@@ -151,7 +152,7 @@ function cloneLookup(value: LookupDefinition): LookupDefinition {
         </label>
       </div>
       <div class="path-actions">
-        <NButton size="small" secondary :disabled="working.path.length >= 8" @click="addStep">
+        <NButton size="small" secondary :disabled="working.path.length >= maxDepth" @click="addStep">
           <Plus :size="14" />继续关联
         </NButton>
         <NButton size="small" quaternary :disabled="working.path.length <= 1" @click="removeStep">
@@ -162,7 +163,7 @@ function cloneLookup(value: LookupDefinition): LookupDefinition {
         </NTag>
       </div>
       <div class="editor-actions">
-        <small>最多 8 跳；类型和单值/列表形状由路径自动推导，不在 Lookup 内聚合。</small>
+        <small>最多 {{ maxDepth }} 跳；类型和单值/列表形状由路径自动推导，不在 Lookup 内聚合。</small>
         <NButton
           type="primary"
           :disabled="!canCommit"

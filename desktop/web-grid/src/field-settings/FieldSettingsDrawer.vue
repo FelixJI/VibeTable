@@ -790,6 +790,11 @@ function isTextual(type: LogicalTypeV2): boolean {
                     :validated-source="store.formulaValidatedSource"
                     :validating="store.formulaValidating || store.formulaCatalogLoading"
                     :error="store.formulaValidationError || store.formulaCatalogError"
+                    :preview-value="store.formulaPreviewValue"
+                    :preview-ready="store.formulaPreviewReady"
+                    :previewing="store.formulaPreviewing"
+                    :preview-error="store.formulaPreviewError"
+                    :preview-note="store.formulaPreviewNote"
                     @commit="patch({ formula: $event })"
                     @validate="emit('validateFormula', $event)"
                   />
@@ -799,13 +804,14 @@ function isTextual(type: LogicalTypeV2): boolean {
                   <div class="section-title">
                     <div>
                       <strong>查找引用</strong>
-                      <small>可视化选择最多 8 跳关系；结果类型和单值/列表形状自动推导</small>
+                      <small>可视化选择最多 {{ store.lookupMaxDepth }} 跳关系；结果类型和单值/列表形状自动推导</small>
                     </div>
                   </div>
                   <LookupFieldEditor
                     :value="store.draft.lookup"
                     :relation-options="lookupRelationOptions"
                     :target-field-options="lookupTargetFieldOptions"
+                    :max-depth="store.lookupMaxDepth"
                     :loading="store.lookupCatalogLoading"
                     :error="store.lookupCatalogError"
                     @commit="patch({ lookup: $event })"

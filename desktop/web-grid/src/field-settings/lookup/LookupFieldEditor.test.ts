@@ -20,6 +20,7 @@ function mountEditor(): VueWrapper {
         { label: "名称", value: "fld_name" },
         { label: "余额", value: "fld_balance" },
       ],
+      maxDepth: 8,
     },
   });
   mounted.push(wrapper);

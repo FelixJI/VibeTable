@@ -169,6 +169,7 @@ type FieldDefinition struct {
 	Relation         *RelationSpec     `json:"relation"`
 	Lookup           *LookupSpec       `json:"lookup"`
 	AttachmentPolicy *AttachmentPolicy `json:"attachmentPolicy"`
+	FilterOperators  []string          `json:"filterOperators,omitempty"`
 }
 
 type AutoDateRole string

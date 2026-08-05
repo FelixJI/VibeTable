@@ -644,7 +644,8 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
         "displayName": "Customer name",
         "relationFieldId": "customer",
         "targetFieldId": "name",
-        "aggregate": "first",
+        "aggregate": "none",
+        "resultCardinality": "one",
         "outputStorage": "text",
         "revision": 3,
     }
@@ -665,6 +666,7 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
             {
                 "tableId": "orders",
                 "schemaRevision": "schema_4",
+                "lookupMaxDepth": 8,
                 "relations": [relation],
                 "lookups": [lookup],
             },
@@ -704,6 +706,7 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
             }
         )
     )
+    assert described["capabilities"]["lookupMaxDepth"] == 8
     listed = await service.list_lookups(ProductParams.model_validate({"collection": "orders"}))
     preview = await service.preview_relation_delta(
         ProductParams.model_validate(
@@ -740,6 +743,7 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
                 "collection": "customers",
                 "itemId": "customer-1",
                 "label": "Ada",
+                "secondaryLabel": None,
                 "junctionId": None,
                 "junctionRevision": None,
                 "junctionValues": {},
@@ -782,8 +786,11 @@ async def test_lookup_value_page_maps_physical_field_ref_to_stable_field_id() ->
         "provenance": [
             {
                 "collection": "lines",
+                "collectionLabel": "明细",
                 "itemId": "line-1",
+                "recordLabel": "SKU-001",
                 "fieldId": "sku_id",
+                "fieldLabel": "SKU",
                 "value": "SKU-001",
             }
         ],
@@ -905,7 +912,8 @@ async def test_multihop_lookup_validation_persists_and_round_trips_path() -> Non
             {"relationId": "customers.company_id"},
         ],
         "targetFieldId": "name_id",
-        "aggregate": "first",
+        "aggregate": "none",
+        "resultCardinality": "one",
         "outputStorage": "text",
         "revision": 1,
     }
@@ -933,12 +941,6 @@ async def test_multihop_lookup_validation_persists_and_round_trips_path() -> Non
         ],
         "source": {"kind": "target_field", "fieldRef": "name"},
         "m2aFieldMapping": [],
-        "aggregation": "single",
-        "outputType": "text",
-        "revision": 1,
-        "state": "valid",
-        "diagnostics": [],
-        "dependencies": [],
     }
 
     validated = await service.validate_lookup(
@@ -953,4 +955,6 @@ async def test_multihop_lookup_validation_persists_and_round_trips_path() -> Non
         {"relationFieldId": "company_id"},
     ]
     assert validated["valid"] is True
+    assert validated["definition"]["aggregation"] == "single"
+    assert validated["definition"]["outputType"] == "text"
     assert listed["definitions"][0]["path"] == definition["path"]

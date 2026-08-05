@@ -469,6 +469,8 @@ export interface ViewGroupRow {
   readonly key: readonly unknown[];
   readonly count: number;
   readonly summaries: readonly unknown[];
+  readonly parentCount?: number;
+  readonly parentSummaries?: readonly unknown[];
 }
 
 /** The typed query AST. Mirrors `TableQuery`. */
@@ -683,7 +685,7 @@ export interface FormulaDefinition {
   readonly source: string;
   readonly resultType: Exclude<TableFieldType, "formula" | "relation" | "lookup" | "file" | "autoDate">;
   readonly version: number;
-  readonly status: "ready" | "backfilling" | "failed";
+  readonly status: "draft" | "ready" | "backfilling" | "failed" | "cancelled";
 }
 
 export interface AttachmentPolicy {

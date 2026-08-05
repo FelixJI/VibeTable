@@ -16,12 +16,23 @@ const names = computed(() => new Map(props.columns.map((column) => [column.name,
 const collapsed = computed(() => new Set(props.collapsedKeys ?? []));
 const tree = computed(() => {
   if (props.groups.length < 2) return [];
-  const parents = new Map<string, { key: string; value: unknown; count: number; rows: ViewGroupRow[] }>();
+  const parents = new Map<string, {
+    key: string;
+    value: unknown;
+    count: number;
+    summaries: readonly unknown[];
+    rows: ViewGroupRow[];
+  }>();
   for (const row of props.rows) {
     const value = row.key[0];
     const key = JSON.stringify([value]);
-    const parent = parents.get(key) ?? { key, value, count: 0, rows: [] };
-    parent.count += row.count;
+    const parent = parents.get(key) ?? {
+      key,
+      value,
+      count: row.parentCount ?? row.count,
+      summaries: row.parentSummaries ?? row.summaries,
+      rows: [],
+    };
     parent.rows.push(row);
     parents.set(key, parent);
   }
@@ -54,7 +65,7 @@ function summaryLabel(row: ViewGroupRow): string {
   <section v-if="rows.length" class="view-groups" aria-label="权威分组结果" data-testid="view-group-results">
     <div class="view-groups__heading">
       <strong>分组概览</strong>
-      <span>完整筛选结果 · {{ rows.length }} 个组合</span>
+      <span>完整筛选结果 · 已加载 {{ rows.length }} 个组合</span>
     </div>
     <ol v-if="groups.length < 2">
       <li v-for="(row, index) in rows" :key="`${index}:${JSON.stringify(row.key)}`">
@@ -69,6 +80,7 @@ function summaryLabel(row: ViewGroupRow): string {
           <span aria-hidden="true">{{ collapsed.has(parent.key) ? "▸" : "▾" }}</span>
           <span class="group-key">{{ firstGroupLabel(parent.value) }}</span>
           <b>{{ parent.count }}</b>
+          <span v-if="parent.summaries.length" class="group-summary">{{ summaryLabel({ key: [parent.value], count: parent.count, summaries: parent.summaries }) }}</span>
         </button>
         <ol v-if="!collapsed.has(parent.key)" class="group-children">
           <li v-for="(row, index) in parent.rows" :key="`${index}:${JSON.stringify(row.key)}`">
@@ -93,7 +105,7 @@ function summaryLabel(row: ViewGroupRow): string {
 .view-groups ol { display: grid; margin: 0; padding: 0; list-style: none; }
 .view-groups li { display: grid; grid-template-columns: minmax(180px, 1fr) 64px minmax(180px, auto); align-items: center; gap: 10px; min-height: 29px; padding: 3px 10px; border-top: 1px solid color-mix(in srgb, var(--vt-border) 70%, transparent); font-size: var(--vt-font-caption); }
 .view-groups .group-parent { display: block; padding: 0; }
-.group-toggle { display: grid; width: 100%; grid-template-columns: 18px minmax(180px, 1fr) 64px; align-items: center; gap: 8px; min-height: 31px; padding: 3px 10px; border: 0; border-top: 1px solid color-mix(in srgb, var(--vt-border) 70%, transparent); color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.group-toggle { display: grid; width: 100%; grid-template-columns: 18px minmax(180px, 1fr) 64px minmax(180px, auto); align-items: center; gap: 8px; min-height: 31px; padding: 3px 10px; border: 0; border-top: 1px solid color-mix(in srgb, var(--vt-border) 70%, transparent); color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; }
 .group-toggle:hover { background: var(--vt-bg-sunken); }
 .group-toggle b { justify-self: end; }
 .group-children { padding-left: 18px !important; }

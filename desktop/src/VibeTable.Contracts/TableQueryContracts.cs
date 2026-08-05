@@ -79,7 +79,9 @@ public sealed record SummaryCondition(
 public sealed record GroupRow(
     IReadOnlyList<object?> Key,
     long Count,
-    IReadOnlyList<object?> Summaries);
+    IReadOnlyList<object?> Summaries,
+    long? ParentCount = null,
+    IReadOnlyList<object?>? ParentSummaries = null);
 
 /// <summary>
 /// The typed query AST compiled by the product table gateway. Mirrors

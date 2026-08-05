@@ -18,11 +18,39 @@ export function cloneFilterExpressions(filters: readonly FilterExpression[]): Fi
     : { ...filter });
 }
 
+function mirroredHeaderFilters(filters: readonly FilterExpression[]): FilterExpression[] {
+  if (!filters.every(filter => "field" in filter)) return [];
+  return filters
+    .filter(filter => "field" in filter && filter.operator === "eq")
+    .map(filter => ({ ...filter }));
+}
+
+function sameFilter(left: FilterExpression, right: FilterExpression): boolean {
+  if (!("field" in left) || !("field" in right)) return false;
+  return left.field === right.field
+    && left.operator === right.operator
+    && left.logic === right.logic
+    && JSON.stringify(left.value) === JSON.stringify(right.value);
+}
+
+function withoutManagedHeaderFilters(
+  filters: readonly FilterExpression[],
+  managed: readonly FilterExpression[],
+): FilterExpression[] {
+  const result = cloneFilterExpressions(filters);
+  for (const header of managed) {
+    const index = result.findIndex(filter => sameFilter(filter, header));
+    if (index >= 0) result.splice(index, 1);
+  }
+  return result;
+}
+
 export const useViewQueryStore = defineStore("view-query", {
   state: () => ({
     collection: "",
     search: "",
     filters: [] as FilterExpression[],
+    headerFilters: [] as FilterExpression[],
     sorts: [] as SortCondition[],
     groups: [] as GroupCondition[],
     summaries: [] as SummaryCondition[],
@@ -34,6 +62,7 @@ export const useViewQueryStore = defineStore("view-query", {
       this.collection = collection;
       this.search = "";
       this.filters = [];
+      this.headerFilters = [];
       this.sorts = [];
       this.groups = [];
       this.summaries = [];
@@ -44,6 +73,7 @@ export const useViewQueryStore = defineStore("view-query", {
       this.collection = collection;
       this.search = view.search;
       this.filters = cloneFilterExpressions(view.filters);
+      this.headerFilters = mirroredHeaderFilters(view.filters);
       this.sorts = [...view.sorts];
       this.groups = [...(view.groups ?? [])].slice(0, 2);
       this.summaries = [...(view.summaries ?? [])].slice(0, 3);
@@ -55,11 +85,13 @@ export const useViewQueryStore = defineStore("view-query", {
         : saved.length > 0 ? saved : [...allFields];
     },
     updateRuntime(query: {
-      readonly filters: readonly FilterExpression[];
+      readonly headerFilters: readonly FilterExpression[];
       readonly sorts: readonly SortCondition[];
       readonly groups: readonly GroupCondition[];
     }) {
-      this.filters = cloneFilterExpressions(query.filters);
+      this.filters = withoutManagedHeaderFilters(this.filters, this.headerFilters);
+      this.filters.push(...cloneFilterExpressions(query.headerFilters));
+      this.headerFilters = cloneFilterExpressions(query.headerFilters);
       this.sorts = [...query.sorts];
       this.groups = [...query.groups].slice(0, 2);
     },
@@ -70,6 +102,7 @@ export const useViewQueryStore = defineStore("view-query", {
       readonly visibleFields: readonly string[];
     }) {
       this.filters = cloneFilterExpressions(input.filters);
+      this.headerFilters = mirroredHeaderFilters(input.filters);
       this.groups = [...input.groups].slice(0, 2);
       this.summaries = [...input.summaries].slice(0, 3);
       this.visibleFields = [...input.visibleFields];

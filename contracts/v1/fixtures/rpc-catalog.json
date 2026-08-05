@@ -5457,14 +5457,7 @@
                 "default": "single",
                 "enum": [
                   "single",
-                  "values",
-                  "distinct_values",
-                  "related_count",
-                  "non_null_count",
-                  "sum",
-                  "average",
-                  "min",
-                  "max"
+                  "values"
                 ],
                 "type": "string"
               },
@@ -6701,14 +6694,7 @@
                 "default": "single",
                 "enum": [
                   "single",
-                  "values",
-                  "distinct_values",
-                  "related_count",
-                  "non_null_count",
-                  "sum",
-                  "average",
-                  "min",
-                  "max"
+                  "values"
                 ],
                 "type": "string"
               },
@@ -7021,13 +7007,28 @@
                 "minLength": 1,
                 "type": "string"
               },
+              "collectionLabel": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
               "itemId": {
                 "maxLength": 256,
                 "minLength": 1,
                 "type": "string"
               },
+              "recordLabel": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
               "fieldId": {
                 "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "fieldLabel": {
+                "maxLength": 256,
                 "minLength": 1,
                 "type": "string"
               },
@@ -7037,8 +7038,11 @@
             },
             "required": [
               "collection",
+              "collectionLabel",
               "itemId",
-              "fieldId"
+              "recordLabel",
+              "fieldId",
+              "fieldLabel"
             ],
             "type": "object"
           }
@@ -7068,6 +7072,10 @@
             "default": 0,
             "minimum": 0,
             "type": "integer"
+          },
+          "provenanceTotalKnown": {
+            "default": true,
+            "type": "boolean"
           },
           "provenanceOffset": {
             "default": 0,
@@ -7120,6 +7128,7 @@
           "value": null,
           "provenance": [],
           "provenanceTotal": 0,
+          "provenanceTotalKnown": true,
           "provenanceOffset": 0,
           "provenanceLimit": 100,
           "provenanceHasMore": false,
@@ -12718,112 +12727,103 @@
       "paramsModel": "QueryPageParams",
       "resultModel": "QueryPageResult",
       "resultSchema": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "filteredRows",
-          "limit",
-          "offset",
-          "rows",
-          "snapshot",
-          "totalRows"
-        ],
-        "properties": {
-          "filteredRows": {
-            "type": "integer"
-          },
-          "limit": {
-            "type": "integer"
-          },
-          "offset": {
-            "type": "integer"
-          },
-          "rows": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "id",
-                "name"
-              ],
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "name": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "snapshot": {
-            "type": "object",
+        "$defs": {
+          "QuerySnapshot": {
             "additionalProperties": false,
-            "required": [
-              "dataRevision",
-              "databaseId",
-              "digest",
-              "normalizedQuery",
-              "schemaRevision",
-              "snapshotId",
-              "table"
-            ],
+            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.",
             "properties": {
-              "dataRevision": {
-                "type": "integer"
-              },
-              "databaseId": {
+              "snapshotId": {
+                "title": "Snapshotid",
                 "type": "string"
               },
               "digest": {
+                "title": "Digest",
                 "type": "string"
               },
-              "normalizedQuery": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "filters",
-                  "keyword",
-                  "limit",
-                  "offset",
-                  "sorts"
-                ],
-                "properties": {
-                  "filters": {
-                    "type": "array",
-                    "items": {}
-                  },
-                  "keyword": {
-                    "type": "string"
-                  },
-                  "limit": {
-                    "type": "integer"
-                  },
-                  "offset": {
-                    "type": "integer"
-                  },
-                  "sorts": {
-                    "type": "array",
-                    "items": {}
-                  }
-                }
-              },
-              "schemaRevision": {
-                "type": "string"
-              },
-              "snapshotId": {
+              "databaseId": {
+                "title": "Databaseid",
                 "type": "string"
               },
               "table": {
+                "maxLength": 128,
+                "minLength": 1,
+                "title": "Table",
                 "type": "string"
+              },
+              "schemaRevision": {
+                "minLength": 1,
+                "title": "Schemarevision",
+                "type": "string"
+              },
+              "dataRevision": {
+                "title": "Datarevision",
+                "type": "integer"
+              },
+              "normalizedQuery": {
+                "additionalProperties": true,
+                "title": "Normalizedquery",
+                "type": "object"
               }
-            }
+            },
+            "required": [
+              "snapshotId",
+              "digest",
+              "databaseId",
+              "table",
+              "schemaRevision",
+              "dataRevision",
+              "normalizedQuery"
+            ],
+            "title": "QuerySnapshot",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "description": "One authoritative record page returned by ``query.page``.",
+        "properties": {
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "offset": {
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "filteredRows": {
+            "minimum": 0,
+            "title": "Filteredrows",
+            "type": "integer"
           },
           "totalRows": {
+            "minimum": 0,
+            "title": "Totalrows",
             "type": "integer"
+          },
+          "snapshot": {
+            "$ref": "#/$defs/QuerySnapshot"
           }
-        }
+        },
+        "required": [
+          "rows",
+          "offset",
+          "limit",
+          "filteredRows",
+          "totalRows",
+          "snapshot"
+        ],
+        "title": "QueryPageResult",
+        "type": "object"
       },
       "request": {
         "jsonrpc": "2.0",
@@ -13011,112 +13011,201 @@
       "paramsModel": "QueryViewParams",
       "resultModel": "QueryViewResult",
       "resultSchema": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "filteredRows",
-          "limit",
-          "offset",
-          "rows",
-          "snapshot",
-          "totalRows"
-        ],
-        "properties": {
-          "filteredRows": {
-            "type": "integer"
-          },
-          "limit": {
-            "type": "integer"
-          },
-          "offset": {
-            "type": "integer"
-          },
-          "rows": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "id",
-                "name"
-              ],
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "name": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "snapshot": {
-            "type": "object",
+        "$defs": {
+          "QueryPageResult": {
             "additionalProperties": false,
-            "required": [
-              "dataRevision",
-              "databaseId",
-              "digest",
-              "normalizedQuery",
-              "schemaRevision",
-              "snapshotId",
-              "table"
-            ],
+            "description": "One authoritative record page returned by ``query.page``.",
             "properties": {
-              "dataRevision": {
+              "rows": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "title": "Rows",
+                "type": "array"
+              },
+              "offset": {
+                "minimum": 0,
+                "title": "Offset",
                 "type": "integer"
               },
-              "databaseId": {
+              "limit": {
+                "maximum": 500,
+                "minimum": 1,
+                "title": "Limit",
+                "type": "integer"
+              },
+              "filteredRows": {
+                "minimum": 0,
+                "title": "Filteredrows",
+                "type": "integer"
+              },
+              "totalRows": {
+                "minimum": 0,
+                "title": "Totalrows",
+                "type": "integer"
+              },
+              "snapshot": {
+                "$ref": "#/$defs/QuerySnapshot"
+              }
+            },
+            "required": [
+              "rows",
+              "offset",
+              "limit",
+              "filteredRows",
+              "totalRows",
+              "snapshot"
+            ],
+            "title": "QueryPageResult",
+            "type": "object"
+          },
+          "QuerySnapshot": {
+            "additionalProperties": false,
+            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.",
+            "properties": {
+              "snapshotId": {
+                "title": "Snapshotid",
                 "type": "string"
               },
               "digest": {
+                "title": "Digest",
                 "type": "string"
               },
-              "normalizedQuery": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "filters",
-                  "keyword",
-                  "limit",
-                  "offset",
-                  "sorts"
-                ],
-                "properties": {
-                  "filters": {
-                    "type": "array",
-                    "items": {}
-                  },
-                  "keyword": {
-                    "type": "string"
-                  },
-                  "limit": {
-                    "type": "integer"
-                  },
-                  "offset": {
-                    "type": "integer"
-                  },
-                  "sorts": {
-                    "type": "array",
-                    "items": {}
-                  }
-                }
-              },
-              "schemaRevision": {
-                "type": "string"
-              },
-              "snapshotId": {
+              "databaseId": {
+                "title": "Databaseid",
                 "type": "string"
               },
               "table": {
+                "maxLength": 128,
+                "minLength": 1,
+                "title": "Table",
                 "type": "string"
+              },
+              "schemaRevision": {
+                "minLength": 1,
+                "title": "Schemarevision",
+                "type": "string"
+              },
+              "dataRevision": {
+                "title": "Datarevision",
+                "type": "integer"
+              },
+              "normalizedQuery": {
+                "additionalProperties": true,
+                "title": "Normalizedquery",
+                "type": "object"
               }
-            }
+            },
+            "required": [
+              "snapshotId",
+              "digest",
+              "databaseId",
+              "table",
+              "schemaRevision",
+              "dataRevision",
+              "normalizedQuery"
+            ],
+            "title": "QuerySnapshot",
+            "type": "object"
           },
-          "totalRows": {
-            "type": "integer"
+          "ViewGroupRow": {
+            "additionalProperties": false,
+            "description": "One leaf group and, for two-level views, its complete parent aggregate.",
+            "properties": {
+              "key": {
+                "items": {},
+                "maxItems": 2,
+                "minItems": 1,
+                "title": "Key",
+                "type": "array"
+              },
+              "count": {
+                "minimum": 0,
+                "title": "Count",
+                "type": "integer"
+              },
+              "summaries": {
+                "items": {},
+                "maxItems": 3,
+                "title": "Summaries",
+                "type": "array"
+              },
+              "parentCount": {
+                "anyOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Parentcount"
+              },
+              "parentSummaries": {
+                "anyOf": [
+                  {
+                    "items": {},
+                    "maxItems": 3,
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Parentsummaries"
+              }
+            },
+            "required": [
+              "key",
+              "count",
+              "summaries"
+            ],
+            "title": "ViewGroupRow",
+            "type": "object"
           }
-        }
+        },
+        "additionalProperties": false,
+        "description": "Record page plus independently paged full-result group rows.",
+        "properties": {
+          "page": {
+            "$ref": "#/$defs/QueryPageResult"
+          },
+          "groupRows": {
+            "items": {
+              "$ref": "#/$defs/ViewGroupRow"
+            },
+            "title": "Grouprows",
+            "type": "array"
+          },
+          "groupOffset": {
+            "minimum": 0,
+            "title": "Groupoffset",
+            "type": "integer"
+          },
+          "groupLimit": {
+            "maximum": 5000,
+            "minimum": 1,
+            "title": "Grouplimit",
+            "type": "integer"
+          },
+          "hasMoreGroups": {
+            "title": "Hasmoregroups",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "page",
+          "groupRows",
+          "groupOffset",
+          "groupLimit",
+          "hasMoreGroups"
+        ],
+        "title": "QueryViewResult",
+        "type": "object"
       },
       "request": {
         "jsonrpc": "2.0",
@@ -13131,31 +13220,52 @@
         "jsonrpc": "2.0",
         "id": "rpc-070",
         "result": {
-          "rows": [
+          "page": {
+            "rows": [
+              {
+                "id": "row-1",
+                "name": "Ada"
+              }
+            ],
+            "offset": 0,
+            "limit": 50,
+            "filteredRows": 1,
+            "totalRows": 1,
+            "snapshot": {
+              "snapshotId": "snapshot-1",
+              "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "databaseId": "local",
+              "table": "orders",
+              "schemaRevision": "schema_0001",
+              "dataRevision": 1,
+              "normalizedQuery": {
+                "keyword": "",
+                "filters": [],
+                "sorts": [],
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "groupRows": [
             {
-              "id": "row-1",
-              "name": "Ada"
+              "key": [
+                "east",
+                "open"
+              ],
+              "count": 3,
+              "summaries": [
+                30
+              ],
+              "parentCount": 9,
+              "parentSummaries": [
+                90
+              ]
             }
           ],
-          "offset": 0,
-          "limit": 50,
-          "filteredRows": 1,
-          "totalRows": 1,
-          "snapshot": {
-            "snapshotId": "snapshot-1",
-            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "databaseId": "local",
-            "table": "orders",
-            "schemaRevision": "schema_0001",
-            "dataRevision": 1,
-            "normalizedQuery": {
-              "keyword": "",
-              "filters": [],
-              "sorts": [],
-              "offset": 0,
-              "limit": 50
-            }
-          }
+          "groupOffset": 0,
+          "groupLimit": 100,
+          "hasMoreGroups": false
         }
       },
       "error": {
@@ -13189,6 +13299,17 @@
               },
               "label": {
                 "type": "string"
+              },
+              "secondaryLabel": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "junctionId": {
                 "anyOf": [
@@ -13280,6 +13401,7 @@
               "collection": "orders",
               "itemId": "00000000-0000-4000-8000-000000000001",
               "label": "sample-value",
+              "secondaryLabel": null,
               "junctionId": null,
               "junctionRevision": null,
               "junctionValues": {}
@@ -13320,6 +13442,17 @@
               },
               "label": {
                 "type": "string"
+              },
+              "secondaryLabel": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "junctionId": {
                 "anyOf": [
@@ -13383,7 +13516,6 @@
         "method": "relation.createTarget",
         "params": {
           "idempotencyKey": "00000000-0000-4000-8000-000000000001",
-          "label": "sample-value",
           "relationId": "00000000-0000-4000-8000-000000000001"
         }
       },
@@ -13396,6 +13528,7 @@
             "collection": "orders",
             "itemId": "00000000-0000-4000-8000-000000000001",
             "label": "sample-value",
+            "secondaryLabel": null,
             "junctionId": null,
             "junctionRevision": null,
             "junctionValues": {}
@@ -13581,6 +13714,17 @@
               "label": {
                 "type": "string"
               },
+              "secondaryLabel": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "junctionId": {
                 "anyOf": [
                   {
@@ -13742,6 +13886,17 @@
               "label": {
                 "type": "string"
               },
+              "secondaryLabel": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "junctionId": {
                 "anyOf": [
                   {
@@ -13814,6 +13969,7 @@
               "collection": "orders",
               "itemId": "00000000-0000-4000-8000-000000000001",
               "label": "sample-value",
+              "secondaryLabel": null,
               "junctionId": null,
               "junctionRevision": null,
               "junctionValues": {}
@@ -13853,6 +14009,17 @@
               },
               "label": {
                 "type": "string"
+              },
+              "secondaryLabel": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "junctionId": {
                 "anyOf": [
@@ -14743,6 +14910,14 @@
                 "default": "",
                 "type": "string"
               },
+              "quickCreateEligible": {
+                "default": false,
+                "type": "boolean"
+              },
+              "quickCreateReason": {
+                "default": "",
+                "type": "string"
+              },
               "state": {
                 "default": "valid",
                 "enum": [
@@ -14829,6 +15004,12 @@
               "lookupQueryV1": {
                 "default": false,
                 "type": "boolean"
+              },
+              "lookupMaxDepth": {
+                "default": 8,
+                "maximum": 32,
+                "minimum": 1,
+                "type": "integer"
               },
               "reason": {
                 "anyOf": [
@@ -14976,6 +15157,7 @@
             "relationEditV1": false,
             "relationImportV1": false,
             "lookupQueryV1": false,
+            "lookupMaxDepth": 8,
             "reason": null
           }
         }

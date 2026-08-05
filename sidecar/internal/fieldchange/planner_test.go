@@ -373,6 +373,32 @@ func TestRetireRelationRequiresAtomicReciprocalConfirmation(t *testing.T) {
 	}
 }
 
+func TestRetireRelationReturnsStablePairConflictWhenReciprocalIsMissing(t *testing.T) {
+	t.Parallel()
+	forward := definitionFor(v2.LogicalRelation)
+	forward.Identity.FieldID = "fld_orders_customer"
+	forward.Relation = &v2.RelationSpec{
+		TargetTableID: "tbl_customers", Cardinality: "one",
+		DeletePolicy: "setNull", DisplayField: "fld_customer_name",
+		PairID: "relp_orders_customers", ReciprocalFieldID: "fld_customer_orders",
+	}
+	planner := fieldchange.NewPlanner(sourceStub{
+		revisionsByTable: map[string]fieldchange.Revisions{
+			"tbl_orders": {Schema: "schema_3"}, "tbl_customers": {Schema: "schema_8"},
+		},
+		fields: map[string]v2.FieldDefinition{forward.Identity.FieldID: forward},
+	}, nil, nil, nil)
+	_, err := planner.Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionRetire, TableID: "tbl_orders",
+		FieldID: forward.Identity.FieldID, ExpectedSchemaRev: "schema_3",
+		Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	})
+	var productErr *fieldchange.ProductError
+	if !errors.As(err, &productErr) || productErr.Code != "relation.pair.conflict" {
+		t.Fatalf("relation pair conflict = %#v", err)
+	}
+}
+
 func TestConstraintPlanFreezesCurrentDataRevision(t *testing.T) {
 	t.Parallel()
 	existing := definitionFor(v2.LogicalNumber)

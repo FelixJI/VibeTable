@@ -191,6 +191,10 @@ func (source *Source) describeField(
 			result.ComputedStatus = "error"
 			result.ComputedError.Code = "calculation.failed"
 			result.ComputedError.Message = "formula recalculation failed"
+		} else if field.Formula != nil && field.Formula.Status == "cancelled" {
+			result.ComputedStatus = "error"
+			result.ComputedError.Code = "calculation.cancelled"
+			result.ComputedError.Message = "formula recalculation was cancelled"
 		}
 	}
 	if field.DataType == schema.DataTypeSelect ||

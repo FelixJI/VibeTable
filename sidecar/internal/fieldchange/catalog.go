@@ -605,16 +605,27 @@ func (catalog *Catalog) checkLifecycleDependencies(
 
 	lookups, err := catalog.app.FindRecordsByFilter(
 		"vibetable_lookups",
-		"relation_field_id={:field} || target_field_id={:field}",
+		"",
 		"id",
 		0,
 		0,
-		dbx.Params{"field": before.Identity.FieldID},
 	)
 	if err != nil {
 		return impact, nil, nil, fmt.Errorf("load lookup dependencies: %w", err)
 	}
 	for _, lookup := range lookups {
+		depends, decodeErr := lookupMetadataDependsOnField(
+			lookup.GetString("path_json"), before.Identity.FieldID,
+		)
+		if decodeErr != nil {
+			return impact, nil, nil, fmt.Errorf(
+				"decode lookup dependency %s: %w",
+				lookup.GetString("lookup_id"), decodeErr,
+			)
+		}
+		if !depends {
+			continue
+		}
 		if lookup.GetString("table_id") == intent.TableID &&
 			lookup.GetString("field_id") == before.Identity.FieldID {
 			continue
@@ -671,7 +682,7 @@ func (catalog *Catalog) checkLifecycleDependencies(
 	diagnostics := []v2.Diagnostic{}
 	if len(impact.Dependencies) != 0 {
 		diagnostics = append(diagnostics, v2.Diagnostic{
-			Code:    "field.lifecycle.dependencies",
+			Code:    lifecycleDependencyCode(before),
 			Path:    "fieldId",
 			Message: "field dependencies must be resolved before this lifecycle change",
 			Details: map[string]any{"count": len(impact.Dependencies)},
@@ -686,6 +697,35 @@ func (catalog *Catalog) checkLifecycleDependencies(
 		})
 	}
 	return impact, []v2.Diagnostic{}, diagnostics, nil
+}
+
+func lookupMetadataDependsOnField(pathJSON string, fieldID string) (bool, error) {
+	var metadata struct {
+		RelationFieldID string `json:"relationFieldId"`
+		TargetFieldID   string `json:"targetFieldId"`
+		Path            []struct {
+			RelationFieldID string `json:"relationFieldId"`
+		} `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(pathJSON), &metadata); err != nil {
+		return false, err
+	}
+	if metadata.RelationFieldID == fieldID || metadata.TargetFieldID == fieldID {
+		return true, nil
+	}
+	for _, step := range metadata.Path {
+		if step.RelationFieldID == fieldID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func lifecycleDependencyCode(before v2.FieldDefinition) string {
+	if before.Relation != nil {
+		return "relation.delete.dependency_blocked"
+	}
+	return "field.lifecycle.dependencies"
 }
 
 func (catalog *Catalog) checkRelationTarget(

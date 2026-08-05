@@ -124,4 +124,29 @@ describe("FormulaFieldEditor", () => {
     expect((source.element as HTMLTextAreaElement).value).toContain("{客户}.{信用额度}");
     expect((source.element as HTMLTextAreaElement).value).not.toContain("f_customer");
   });
+
+  it("未知 physicalName 只显示 #REF! 而不泄露内部名称", async () => {
+    const wrapper = mountEditor();
+    await wrapper.setProps({
+      value: { language: "cel-v1", source: "f_01jmissing + f_price" },
+    });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain("#REF! + {单价}");
+    expect(wrapper.text()).not.toContain("f_01jmissing");
+  });
+
+  it("展示 sidecar 对样例记录计算出的真实值和诊断", async () => {
+    const wrapper = mountEditor();
+    await wrapper.get('[data-testid="formula-editor-entry"]').trigger("click");
+    await wrapper.setProps({ previewReady: true, previewValue: 42.5 });
+    expect(wrapper.get('[data-testid="formula-preview-value"]').text()).toContain("42.5");
+
+    await wrapper.setProps({
+      previewReady: false,
+      previewError: "关联记录缺失",
+    });
+    expect(wrapper.get('[data-testid="formula-preview-error"]').text())
+      .toContain("关联记录缺失");
+  });
 });

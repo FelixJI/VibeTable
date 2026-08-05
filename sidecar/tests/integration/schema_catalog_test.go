@@ -105,6 +105,14 @@ func TestSchemaCatalogFreshMigrationApplyAlterConflictAndRestart(t *testing.T) {
 	if described.SchemaRevision != "schema_0002" || len(described.Fields) != 2 {
 		t.Fatalf("restart definition mismatch: %#v", described)
 	}
+	if got := described.Fields[0].FilterOperators; len(got) != 8 ||
+		got[0] != "eq" || got[2] != "contains" || got[7] != "is_not_null" {
+		t.Fatalf("sidecar filter capabilities = %#v", got)
+	}
+	listed, err := schemaapi.New(app).List(ctx)
+	if err != nil || len(listed) != 1 || len(listed[0].Fields[0].FilterOperators) != 8 {
+		t.Fatalf("listed sidecar filter capabilities = %#v, err=%v", listed, err)
+	}
 }
 
 func TestEmptyBaseTableBootstrapsFirstFieldOnlyThroughV2Planner(t *testing.T) {
@@ -847,7 +855,7 @@ func TestSchemaCatalogCreatesSelfRelation(t *testing.T) {
 	lookup.StorageType = schema.StorageText
 	lookup.ReadOnly = true
 	lookup.Lookup = &schema.LookupSpec{
-		RelationFieldID: "parent_id", TargetFieldID: "label", Aggregate: "first",
+		RelationFieldID: "parent_id", TargetFieldID: "label", Aggregate: "none",
 	}
 	created, err := schemaapi.New(app).ApplyChange(context.Background(), schemaapi.Change{
 		Definition: baseTable("nodes", "nodes", []schema.FieldDefinition{
@@ -969,7 +977,7 @@ func TestSchemaCatalogValidatesLookupReferencesAndOutputType(t *testing.T) {
 			lookup.Lookup = &schema.LookupSpec{
 				RelationFieldID: "parent_id",
 				TargetFieldID:   "label",
-				Aggregate:       "first",
+				Aggregate:       "none",
 			}
 			testCase.mutate(&lookup)
 			_, err := schemaapi.New(app).ValidateChange(
@@ -1030,7 +1038,7 @@ func TestSchemaCatalogRejectsHashLookupTarget(t *testing.T) {
 	lookup.Lookup = &schema.LookupSpec{
 		RelationFieldID: "parent_id",
 		TargetFieldID:   "hash_id",
-		Aggregate:       "first",
+			Aggregate:       "none",
 	}
 	_, err := schemaapi.New(app).ValidateChange(
 		context.Background(),

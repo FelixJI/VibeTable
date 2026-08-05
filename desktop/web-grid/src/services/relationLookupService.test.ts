@@ -51,6 +51,33 @@ describe("relationLookupService", () => {
     });
   });
 
+  it("sends a visual-label query so complete creation can find records beyond its initial page", async () => {
+    request.mockResolvedValue({
+      items: [{
+        collection: "regions", itemId: "region-51", label: "华北仓",
+        junctionValues: {},
+      }],
+      total: 1,
+    });
+
+    const result = await useRelationLookupService().searchTargets({
+      relationId: "customers.region",
+      query: "华北仓",
+      collection: null,
+      offset: 0,
+      limit: 50,
+    });
+
+    expect(request).toHaveBeenCalledWith("relation.searchTargets", {
+      relationId: "customers.region",
+      query: "华北仓",
+      collection: null,
+      offset: 0,
+      limit: 50,
+    });
+    expect(result.items[0]?.itemId).toBe("region-51");
+  });
+
   it("creates a relation target from its visual label without exposing row or field ids", async () => {
     const store = useRelationLookupStore();
     const generation = store.beginContext("orders");
@@ -145,6 +172,7 @@ describe("relationLookupService", () => {
 		});
 		request.mockResolvedValue({
 			state: "ok", value: [2], provenance: [], provenanceTotal: 10_001,
+			provenanceTotalKnown: true,
 			provenanceOffset: 100, provenanceLimit: 100, provenanceHasMore: true,
 		});
 
@@ -245,6 +273,36 @@ describe("relationLookupService", () => {
     expect(Array.isArray(result.current)).toBe(false);
     expect(request).toHaveBeenCalledWith("relation.updateSingle", expect.objectContaining({
       relationId: "orders.contract", sourceItemId: "order-1", target,
+    }));
+  });
+
+  it("attaches a record created in the target table using the captured source revision", async () => {
+    const target = {
+      collection: "customers", itemId: "customer-9", label: "Ada", junctionValues: {},
+    };
+    request.mockResolvedValueOnce({
+      delta: {}, relationId: "orders.customers", sourceItemId: "order-1",
+      adds: 1, updates: 0, removes: 0, current: [], canApply: true,
+      schemaRevision: "schema-source", diagnostics: [],
+    }).mockResolvedValueOnce({
+      outcome: "committed", current: [target], schemaRevision: "schema-source",
+      requestId: "attach-1",
+    });
+
+    const result = await useRelationLookupService().attachExistingTarget(
+      "orders.customers", "order-1", target, "m2m", "schema-source",
+    );
+
+    expect(result.outcome).toBe("committed");
+    expect(request).toHaveBeenNthCalledWith(1, "relation.previewDelta", expect.objectContaining({
+      relationId: "orders.customers",
+      sourceItemId: "order-1",
+      expectedSchemaRevision: "schema-source",
+      adds: [{ target }],
+    }));
+    expect(request).toHaveBeenNthCalledWith(2, "relation.applyDelta", expect.objectContaining({
+      expectedSchemaRevision: "schema-source",
+      adds: [{ target }],
     }));
   });
 

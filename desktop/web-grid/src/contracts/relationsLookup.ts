@@ -44,6 +44,8 @@ export interface NormalizedRelationDescriptor {
   readonly managed: boolean;
   readonly pairId?: string;
   readonly reciprocalFieldId?: string;
+  readonly quickCreateEligible?: boolean;
+  readonly quickCreateReason?: string;
   readonly state: RelationState;
   /** Explicit display template. Never inferred by the renderer. */
   readonly displayTemplate?: string | null;
@@ -54,6 +56,7 @@ export interface RelationTargetRef {
   readonly collection: string;
   readonly itemId: string;
   readonly label: string;
+  readonly secondaryLabel?: string | null;
   readonly junctionId?: string | null;
   readonly junctionRevision?: string | null;
   readonly junctionValues: Readonly<Record<string, unknown>>;
@@ -75,7 +78,8 @@ export interface RelationSearchResult {
 export interface RelationCreateTargetParams {
   readonly relationId: string;
   readonly collection?: string | null;
-  readonly label: string;
+  readonly label?: string;
+  readonly values?: Readonly<Record<string, unknown>>;
   readonly idempotencyKey: string;
 }
 
@@ -118,9 +122,7 @@ export interface RelationSingleUpdateResult {
   readonly requestId: string;
 }
 
-export type LookupAggregation =
-  | "single" | "values" | "distinct_values" | "related_count"
-  | "non_null_count" | "sum" | "average" | "min" | "max";
+export type LookupAggregation = "single" | "values";
 export type LookupOutputType =
   | "text" | "integer" | "decimal" | "boolean" | "date"
   | "datetime" | "time" | "json";
@@ -163,10 +165,27 @@ export interface LookupDefinition {
   readonly dependencies: readonly string[];
 }
 
+export interface LookupDraftDefinition {
+  readonly lookupId: string;
+  readonly collection: string;
+  readonly fieldKey: string;
+  readonly displayName: string;
+  readonly path: readonly LookupPathStep[];
+  readonly source: LookupSource;
+  readonly m2aFieldMapping: ReadonlyArray<{
+    readonly collection: string;
+    readonly fieldRef: string;
+  }>;
+  readonly outputScale?: number | null;
+}
+
 export interface LookupValueProvenance {
   readonly collection: string;
+  readonly collectionLabel: string;
   readonly itemId: string;
+  readonly recordLabel: string;
   readonly fieldId: string;
+  readonly fieldLabel: string;
   readonly value: unknown;
 }
 
@@ -175,6 +194,7 @@ export interface LookupCellValue {
   readonly value: unknown;
   readonly provenance: readonly LookupValueProvenance[];
   readonly provenanceTotal: number;
+  readonly provenanceTotalKnown: boolean;
   readonly provenanceOffset: number;
   readonly provenanceLimit: number;
   readonly provenanceHasMore: boolean;
@@ -278,6 +298,7 @@ export interface RelationLookupCapabilities {
   readonly relationReadV1: boolean;
   readonly relationEditV1: boolean;
   readonly lookupQueryV1: boolean;
+  readonly lookupMaxDepth?: number;
   readonly reason?: "extension_missing" | "incompatible" | "permission_denied" | null;
 }
 
@@ -302,7 +323,7 @@ export interface LookupListResult {
 }
 
 export interface LookupValidateParams {
-  readonly definition: LookupDefinition;
+  readonly definition: LookupDraftDefinition;
   readonly existing: readonly LookupDefinition[];
 }
 export interface LookupValidationResult {
@@ -312,7 +333,7 @@ export interface LookupValidationResult {
   readonly lookupRevision: string;
 }
 export interface LookupPreviewParams extends LookupQueryParams {
-  readonly definitions: readonly LookupDefinition[];
+  readonly definitions: readonly LookupDraftDefinition[];
 }
 
 export interface RelationUpdateSingleParams {

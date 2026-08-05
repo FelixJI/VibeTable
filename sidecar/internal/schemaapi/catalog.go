@@ -99,7 +99,7 @@ func (catalog *Catalog) List(ctx context.Context) ([]schema.TableDefinition, err
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
-		definitions = append(definitions, definition)
+		definitions = append(definitions, enrichQueryCapabilities(definition))
 	}
 	sort.Slice(definitions, func(i, j int) bool {
 		if definitions[i].PhysicalName == definitions[j].PhysicalName {
@@ -127,7 +127,16 @@ func (catalog *Catalog) Describe(
 		return schema.TableDefinition{}, storageError(err)
 	}
 	definition, _, err := decodeStoredTable(record)
-	return definition, err
+	return enrichQueryCapabilities(definition), err
+}
+
+func enrichQueryCapabilities(definition schema.TableDefinition) schema.TableDefinition {
+	for index := range definition.Fields {
+		definition.Fields[index].FilterOperators = schema.QueryFilterOperators(
+			definition.Fields[index],
+		)
+	}
+	return definition
 }
 
 // InspectAutoDates reports the actual PocketBase switch combination for every

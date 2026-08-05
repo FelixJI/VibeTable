@@ -34,6 +34,8 @@ class NormalizedRelationDescriptor(CamelModel):
     managed: bool = False
     pair_id: str = Field(default="", exclude_if=lambda value: not value)
     reciprocal_field_id: str = Field(default="", exclude_if=lambda value: not value)
+    quick_create_eligible: bool = False
+    quick_create_reason: str = ""
     state: Literal["valid", "readonly", "invalid"] = "valid"
     display_template: str | None = None
     diagnostics: list[RelationDiagnostic] = Field(default_factory=list)
@@ -57,6 +59,7 @@ class RelationLookupCapabilities(CamelModel):
     relation_edit_v1: bool = False
     relation_import_v1: bool = False
     lookup_query_v1: bool = False
+    lookup_max_depth: int = Field(default=8, ge=1, le=32)
     reason: Literal["extension_missing", "incompatible", "permission_denied"] | None = None
 
 
@@ -84,6 +87,7 @@ class RelationTargetRef(CamelModel):
     collection: str
     item_id: str
     label: str
+    secondary_label: str | None = None
     junction_id: str | None = None
     junction_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     junction_values: dict[str, Any] = Field(default_factory=dict)

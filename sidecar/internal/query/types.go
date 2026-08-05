@@ -342,9 +342,11 @@ type ViewQuery struct {
 }
 
 type GroupRow struct {
-	Key       []any `json:"key"`
-	Count     int64 `json:"count"`
-	Summaries []any `json:"summaries"`
+	Key             []any  `json:"key"`
+	Count           int64  `json:"count"`
+	Summaries       []any  `json:"summaries"`
+	ParentCount     *int64 `json:"parentCount,omitempty"`
+	ParentSummaries []any  `json:"parentSummaries,omitempty"`
 }
 
 type ViewResult struct {

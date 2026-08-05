@@ -22,22 +22,25 @@ type Descriptor struct {
 	AllowedTargetTableIDs        []string `json:"allowedTargetTableIds"`
 	PairID                       string   `json:"pairId,omitempty"`
 	ReciprocalFieldID            string   `json:"reciprocalFieldId,omitempty"`
+	QuickCreateEligible          bool     `json:"quickCreateEligible"`
+	QuickCreateReason            string   `json:"quickCreateReason,omitempty"`
 }
 
 type LookupDescriptor struct {
-	LookupID        string                 `json:"lookupId"`
-	TableID         string                 `json:"tableId"`
-	FieldID         string                 `json:"fieldId"`
-	PhysicalName    string                 `json:"physicalName"`
-	DisplayName     string                 `json:"displayName"`
-	RelationFieldID string                 `json:"relationFieldId"`
-	Path            []LookupPathDescriptor `json:"path"`
-	TargetFieldID   string                 `json:"targetFieldId"`
-	JunctionFieldID string                 `json:"junctionFieldId,omitempty"`
-	TargetFieldIDs  map[string]string      `json:"targetFieldIds,omitempty"`
-	Aggregate       string                 `json:"aggregate"`
-	OutputStorage   schema.StorageType     `json:"outputStorage"`
-	Revision        int                    `json:"revision"`
+	LookupID          string                 `json:"lookupId"`
+	TableID           string                 `json:"tableId"`
+	FieldID           string                 `json:"fieldId"`
+	PhysicalName      string                 `json:"physicalName"`
+	DisplayName       string                 `json:"displayName"`
+	RelationFieldID   string                 `json:"relationFieldId"`
+	Path              []LookupPathDescriptor `json:"path"`
+	TargetFieldID     string                 `json:"targetFieldId"`
+	JunctionFieldID   string                 `json:"junctionFieldId,omitempty"`
+	TargetFieldIDs    map[string]string      `json:"targetFieldIds,omitempty"`
+	Aggregate         string                 `json:"aggregate"`
+	ResultCardinality string                 `json:"resultCardinality"`
+	OutputStorage     schema.StorageType     `json:"outputStorage"`
+	Revision          int                    `json:"revision"`
 }
 
 type LookupPathDescriptor struct {
@@ -48,6 +51,7 @@ type LookupPathDescriptor struct {
 type CatalogResult struct {
 	TableID        string             `json:"tableId"`
 	SchemaRevision string             `json:"schemaRevision"`
+	LookupMaxDepth int                `json:"lookupMaxDepth"`
 	Relations      []Descriptor       `json:"relations"`
 	Lookups        []LookupDescriptor `json:"lookups"`
 }
@@ -64,6 +68,7 @@ type TargetRef struct {
 	TableID          string         `json:"tableId"`
 	RecordID         string         `json:"recordId"`
 	Label            string         `json:"label"`
+	SecondaryLabel   string         `json:"secondaryLabel,omitempty"`
 	JunctionID       string         `json:"junctionId,omitempty"`
 	JunctionRevision string         `json:"junctionRevision,omitempty"`
 	JunctionValues   map[string]any `json:"junctionValues"`
@@ -86,6 +91,7 @@ type CreateTargetRequest struct {
 	RelationID     string         `json:"relationId"`
 	TargetTableID  string         `json:"targetTableId,omitempty"`
 	Label          string         `json:"label"`
+	Values         map[string]any `json:"values,omitempty"`
 	RequestID      string         `json:"requestId"`
 	IdempotencyKey string         `json:"idempotencyKey"`
 	Actor          mutation.Actor `json:"actor"`

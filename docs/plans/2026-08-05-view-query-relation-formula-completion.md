@@ -58,6 +58,8 @@
 - 创建时配置目标表、当前字段名、反向字段名、单/多和展示字段。
 - 目标记录选择器传输 record ID、展示主显示字段和可选次要字段；支持分页。
 - 轻量新建只在其余 required 可由默认值满足时直接提交，否则打开完整编辑。
+- 完整编辑支持 scalar、v1 类型化 select/multiSelect 与可视化 Relation；Relation 按展示标签远程搜索，不受首屏 50 条候选限制。
+- required Attachment 在现有上传协议不能与记录插入原子提交，能力层明确不支持该配置；不得以先建空记录再补附件伪装原子成功。
 - 删除关系字段成对进行；字段依赖存在时阻止。删除记录只解除链接或 `restrict`。
 
 ### 3.5 Lookup
@@ -125,7 +127,8 @@
 
 - Schema V2 移除 Lookup aggregate/resultType 输入，结果类型由路径推导。
 - sidecar capability 声明最大深度 8；校验与 UI 共用。
-- 多值 Lookup 使用结构化元素与 provenance；摘要和详情分页。
+- 多值 Lookup 使用结构化元素与 provenance；摘要和详情分页。多跳页在取得下一项证据后提前停止，
+  以 `provenanceTotalKnown` 区分精确总数和下界；标量 reduce 流式执行，只有列表/去重集合受字节预算保护，不设置业务记录数上限。
 - 筛选支持 containsAny/containsAll/isEmpty/isNotEmpty；多值排序/分组拒绝。
 
 **测试：** 1/8/9 跳、路径缺失、单/多结果类型、来源导航、分页、取消、敏感字段拒绝。
@@ -204,14 +207,15 @@ PR 保持 Draft，直到本地定向门禁、GUI 截图和 GitHub required 全�
 
 ## 8. 完成审计
 
-- [ ] 所有视图使用同一 ViewQuery，没有当前页本地筛选/排序分叉。
-- [ ] 筛选三级/50 条、分组两级、汇总三字段在 UI 和 sidecar 同时约束。
-- [ ] 隐藏逐视图保存，隐藏字段仍可参与查询与计算。
-- [ ] Relation 成对创建/删除，记录选择和轻量新建无 raw ID。
-- [ ] 删除关系依赖时阻止；删除业务记录不级联。
-- [ ] Lookup 最多 8 跳、单/多值类型化、有来源与分页，无 Rollup aggregate。
-- [ ] Formula token/推断/预览/关联聚合可用，用户默认不见 CEL/physicalName。
-- [ ] 公式只输出标量，不支持无 Relation 跨表扫描。
-- [ ] >10k 关联不因固定数量上限失败，聚合不全量物化。
-- [ ] pending/error 不使用旧值，后台重算可取消并在重启后恢复。
+- [x] 所有视图使用同一 ViewQuery，没有当前页本地筛选/排序分叉。
+- [x] 筛选三级/50 条、分组两级、汇总三字段在 UI 和 sidecar 同时约束。
+- [x] 隐藏逐视图保存，隐藏字段仍可参与查询与计算。
+- [x] Relation 成对创建/删除，记录选择和轻量新建无 raw ID。
+- [x] 删除关系依赖时阻止；删除业务记录不级联。
+- [x] Lookup 最多 8 跳、单/多值类型化、有来源与分页，无 Rollup aggregate。
+- [x] Formula token/推断/预览/关联聚合可用，用户默认不见 CEL/physicalName。
+- [x] 公式只输出标量，不支持无 Relation 跨表扫描。
+- [x] >10k 关联不因固定数量上限失败，聚合不全量物化。
+- [x] pending/error 不使用旧值，后台重算可取消并在重启后恢复。
+- [x] 完整创建保留 v1 number/boolean 枚举值，嵌套 Relation 迟到搜索响应不会跨编辑器污染。
 - [ ] 契约、Go/Python/Web/.NET/E2E、截图和 GitHub 全量门禁均有证据。

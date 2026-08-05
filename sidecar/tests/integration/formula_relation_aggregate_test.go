@@ -169,7 +169,8 @@ func TestLookupDirectRelationPagesMoreThanTenThousandSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("calculate first Lookup page: %v", err)
 	}
-	if first.ProvenanceTotal != 10_001 || len(first.Provenance) != 100 ||
+	if first.ProvenanceTotal != 10_001 || !first.ProvenanceTotalKnown ||
+		len(first.Provenance) != 100 ||
 		!first.ProvenanceHasMore || first.Provenance[0].FieldID != "sku_id" {
 		t.Fatalf("first Lookup page = %#v", first)
 	}
@@ -179,8 +180,131 @@ func TestLookupDirectRelationPagesMoreThanTenThousandSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("calculate last Lookup page: %v", err)
 	}
-	if last.ProvenanceTotal != 10_001 || len(last.Provenance) != 1 ||
+	if last.ProvenanceTotal != 10_001 || !last.ProvenanceTotalKnown ||
+		len(last.Provenance) != 1 ||
 		last.ProvenanceHasMore || last.Provenance[0].Value != "SKU-10001" {
 		t.Fatalf("last Lookup page = %#v", last)
+	}
+}
+
+func TestLookupMultiHopPagesTerminalValuesWithoutMaterializingAllLeaves(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	catalog := schemaapi.New(app)
+	target, err := catalog.ApplyChange(ctx, schemaapi.Change{
+		Definition: baseTable(
+			"lookup_stream_targets", "lookup_stream_targets",
+			[]schema.FieldDefinition{
+				field("sku_id", "sku", schema.FieldKindScalar, schema.DataTypeShortText),
+			},
+		),
+		ExpectedRevision: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := field("items_id", "items", schema.FieldKindRelation, schema.DataTypeRelation)
+	items.Relation = &schema.RelationSpec{
+		TargetTableID: target.TableID, Cardinality: "many", DeletePolicy: "setNull",
+	}
+	items.Constraints = []schema.FieldConstraint{{
+		Kind: schema.ConstraintRelation, TargetTableID: target.TableID,
+		Cardinality: "many", DeletePolicy: "setNull",
+	}}
+	middle, err := catalog.ApplyChange(ctx, schemaapi.Change{
+		Definition: baseTable(
+			"lookup_stream_batches", "lookup_stream_batches", []schema.FieldDefinition{items},
+		),
+		ExpectedRevision: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batches := field(
+		"batches_id", "batches", schema.FieldKindRelation, schema.DataTypeRelation,
+	)
+	batches.Relation = &schema.RelationSpec{
+		TargetTableID: middle.TableID, Cardinality: "many", DeletePolicy: "setNull",
+	}
+	batches.Constraints = []schema.FieldConstraint{{
+		Kind: schema.ConstraintRelation, TargetTableID: middle.TableID,
+		Cardinality: "many", DeletePolicy: "setNull",
+	}}
+	lookupField := field(
+		"sku_lookup_id", "skus", schema.FieldKindLookup, schema.DataTypeLookup,
+	)
+	lookupField.StorageType = schema.StorageJSON
+	lookupField.ReadOnly = true
+	lookupField.Lookup = &schema.LookupSpec{
+		RelationFieldID: "batches_id",
+		Path: []schema.LookupPathStep{
+			{RelationFieldID: "batches_id"},
+			{RelationFieldID: "items_id"},
+		},
+		TargetFieldID: "sku_id",
+		Aggregate:     "none",
+	}
+	source, err := catalog.ApplyChange(ctx, schemaapi.Change{
+		Definition: baseTable(
+			"lookup_stream_orders", "lookup_stream_orders",
+			[]schema.FieldDefinition{batches, lookupField},
+		),
+		ExpectedRevision: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetCollection, err := app.FindCollectionByNameOrId(target.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetIDs := make([]string, 7)
+	for index := range targetIDs {
+		targetIDs[index] = fmt.Sprintf("tgt%012d", index+1)
+		record := core.NewRecord(targetCollection)
+		record.Id = targetIDs[index]
+		record.Set("sku", fmt.Sprintf("SKU-%02d", index+1))
+		if err := app.Save(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	middleCollection, err := app.FindCollectionByNameOrId(middle.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleIDs := []string{"mid000000000001", "mid000000000002", "mid000000000003"}
+	for index, ids := range [][]string{targetIDs[:2], targetIDs[2:6], targetIDs[6:]} {
+		record := core.NewRecord(middleCollection)
+		record.Id = middleIDs[index]
+		record.Set("items", ids)
+		if err := app.Save(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sourceCollection, err := app.FindCollectionByNameOrId(source.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := core.NewRecord(sourceCollection)
+	record.Set("batches", middleIDs)
+	page, err := lookup.NewCalculator().CalculateFieldPage(
+		ctx, app, source, record, source.Fields[1], 3, 2,
+	)
+	if err != nil {
+		t.Fatalf("calculate multi-hop Lookup page: %v", err)
+	}
+	if page.ProvenanceTotal < 6 || page.ProvenanceTotalKnown || len(page.Provenance) != 2 ||
+		page.Provenance[0].Value != "SKU-04" || page.Provenance[1].Value != "SKU-05" ||
+		!page.ProvenanceHasMore {
+		t.Fatalf("multi-hop Lookup page = %#v", page)
+	}
+	last, err := lookup.NewCalculator().CalculateFieldPage(
+		ctx, app, source, record, source.Fields[1], 6, 2,
+	)
+	if err != nil || last.ProvenanceTotal != 7 || !last.ProvenanceTotalKnown ||
+		len(last.Provenance) != 1 || last.Provenance[0].Value != "SKU-07" ||
+		last.ProvenanceHasMore {
+		t.Fatalf("multi-hop final Lookup page = %#v, err=%v", last, err)
 	}
 }

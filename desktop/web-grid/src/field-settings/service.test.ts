@@ -8,6 +8,7 @@ import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { useFieldSettingsStore } from "./store";
 import { useFieldSettingsService } from "./service";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useTableStore } from "@/stores/tableStore";
 
 const fixtures = resolve(import.meta.dirname, "../../../../contracts/schema-v2/fixtures");
 
@@ -476,13 +477,46 @@ describe("field settings service", () => {
       if (method === "schema.describe") {
         return Promise.resolve(params.collection === "tbl_opaque" ? sourceSchema : targetSchema);
       }
+      if (method === "schema.getTable") {
+        return Promise.resolve({
+          contractVersion: "1.0",
+          tableId: "tbl_opaque",
+          physicalName: "orders",
+          displayName: "订单",
+          kind: "base",
+          schemaRevision: "schema_2",
+          archivePolicy: { mode: "none", fieldId: null, archivedValue: null },
+          indexes: [],
+          fields: [{
+            fieldId: "fld_price", physicalName: "f_price", displayName: "单价",
+            kind: "scalar", dataType: "float", storageType: "number",
+            nullable: false, defaultValue: null, constraints: [],
+            editor: { kind: "number", config: {} }, readOnly: false,
+            formula: null, relation: null, lookup: null, attachmentPolicy: null,
+          }],
+        });
+      }
       if (method === "formula.draft.validate") {
         return params.displaySource === "{单价} * 2" ? first : second;
+      }
+      if (method === "formula.preview") {
+        return Promise.resolve({ values: { f_formula_preview: 42.5 } });
       }
       throw new Error(`unexpected method ${method}`);
     });
     const service = useFieldSettingsService();
     const store = useFieldSettingsStore();
+    const table = useTableStore();
+    table.beginLoad();
+    table.appendPage({
+      table: "tbl_opaque",
+      columns: [{
+        name: "f_price", title: "单价", fieldId: "fld_price", kind: "scalar",
+        dataType: "decimal", editable: true, nullable: false,
+      }],
+      rows: [{ rowKey: "order-1", id: "order-1", f_price: 21.25 }],
+      offset: 0, limit: 1, totalRows: 1, mode: "client",
+    });
 
     await service.openCreate("tbl_opaque", "formula");
     await service.loadFormulaCatalog();
@@ -500,6 +534,14 @@ describe("field settings service", () => {
       relationAggregatePaths: ["f_lines.f_amount"],
     });
     await newer;
+    await vi.waitFor(() => {
+      expect(store.formulaPreviewReady).toBe(true);
+    });
+    expect(store.formulaPreviewValue).toBe(42.5);
+    expect(request).toHaveBeenCalledWith("formula.preview", expect.objectContaining({
+      row: { id: "order-1", f_price: 21.25 },
+      changedFieldIds: [],
+    }));
     resolveFirst({
       canonicalSource: "f_price * 2", resultType: "number",
       dependencies: ["f_price"], relationAggregatePaths: [],

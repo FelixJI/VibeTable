@@ -391,6 +391,10 @@ func compileViewGroups(
 		seenGroups[group.Field] = struct{}{}
 	}
 	selects = append(selects, "COUNT(*) AS "+quote("row_count"))
+	if len(groups) == 2 {
+		selects = append(selects, "SUM(COUNT(*)) OVER (PARTITION BY "+
+			groupExpressions[0]+") AS "+quote("parent_row_count"))
+	}
 	for index, summary := range summaries {
 		field, err := c.resolve(summary.Field, fmt.Sprintf("summaries[%d].field", index))
 		if err != nil {
@@ -410,10 +414,29 @@ func compileViewGroups(
 				"function must be sum, avg, min, or max", nil,
 			)
 		}
-		selects = append(selects, fmt.Sprintf(
+		leafAggregate := fmt.Sprintf(
 			"%s(%s) AS %s",
 			strings.ToUpper(string(summary.Function)), field.sql, quote(fmt.Sprintf("summary_%d", index)),
-		))
+		)
+		selects = append(selects, leafAggregate)
+		if len(groups) == 2 {
+			partition := " OVER (PARTITION BY " + groupExpressions[0] + ")"
+			var parentAggregate string
+			switch summary.Function {
+			case AggregateSum:
+				parentAggregate = "SUM(SUM(" + field.sql + "))" + partition
+			case AggregateAvg:
+				parentAggregate = "CAST(SUM(SUM(" + field.sql + "))" + partition +
+					" AS REAL)" +
+					" / NULLIF(SUM(COUNT(" + field.sql + "))" + partition + ", 0)"
+			case AggregateMin:
+				parentAggregate = "MIN(MIN(" + field.sql + "))" + partition
+			case AggregateMax:
+				parentAggregate = "MAX(MAX(" + field.sql + "))" + partition
+			}
+			selects = append(selects, parentAggregate+" AS "+
+				quote(fmt.Sprintf("parent_summary_%d", index)))
+		}
 	}
 
 	sql := "SELECT " + strings.Join(selects, ", ") + " FROM " + quote(descriptor.PhysicalName)

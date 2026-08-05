@@ -99,7 +99,7 @@ export interface UseTabulatorOptions {
   ) => void;
   /** User sort/filter/group intent; always executed against the full dataset. */
   readonly onViewQueryChanged?: (query: {
-    readonly filters: readonly FilterExpression[];
+    readonly headerFilters: readonly FilterExpression[];
     readonly sorts: readonly SortCondition[];
     readonly groups: readonly GroupCondition[];
   }) => void;
@@ -552,7 +552,7 @@ export function useTabulator(
       limit: 10_000,
     });
     const view = {
-      filters: [...(query.filters ?? [])],
+      headerFilters: [...(query.filters ?? [])],
       sorts: [...(query.sorts ?? [])],
       groups: activeGroups,
     };

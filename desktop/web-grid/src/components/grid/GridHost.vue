@@ -62,7 +62,7 @@ const emit = defineEmits<{
     trigger: HTMLElement | null;
   }];
   viewQueryChange: [query: {
-    readonly filters: readonly FilterExpression[];
+    readonly headerFilters: readonly FilterExpression[];
     readonly sorts: readonly SortCondition[];
     readonly groups: readonly GroupCondition[];
   }];

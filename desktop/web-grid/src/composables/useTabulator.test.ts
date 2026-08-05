@@ -712,7 +712,7 @@ describe("useTabulator", () => {
     tableBuilt();
     sorted();
     expect(onViewQueryChanged).toHaveBeenLastCalledWith({
-      filters: [{ field: "status", operator: "eq", value: "signed", logic: "AND" }],
+      headerFilters: [{ field: "status", operator: "eq", value: "signed", logic: "AND" }],
       sorts: [{ field: "price", direction: "desc", nullsLast: true }],
       groups: [],
     });

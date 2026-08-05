@@ -70,7 +70,7 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 		"customer":   alice.Id, "watchers": []string{bob.Id},
 	})
 	saveRecord(t, app, orders, map[string]any{
-		"name": "Gamma", "amount": 80, "status": "closed",
+		"name": "Gamma", "amount": 81, "status": "closed",
 		"order_date": "2026-02-01 10:00:00.000Z",
 		"payload":    types.JSONRaw(`{"nested":{"rank":1}}`),
 		"customer":   bob.Id, "watchers": []string{alice.Id},
@@ -184,7 +184,7 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 	}
 	if fmt.Sprint(view.GroupRows[0].Key[0]) != "closed" ||
 		view.GroupRows[0].Count != 2 ||
-		fmt.Sprint(view.GroupRows[0].Summaries[0]) != "180" {
+		fmt.Sprint(view.GroupRows[0].Summaries[0]) != "181" {
 		t.Fatalf("first full-result group = %#v", view.GroupRows[0])
 	}
 	secondGroups, err := port.ExecuteViewQuery(ctx, "orders", query.ViewQuery{
@@ -204,6 +204,32 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 		secondGroups.GroupRows[0].Count != 1 ||
 		fmt.Sprint(secondGroups.GroupRows[0].Summaries[0]) != "100" {
 		t.Fatalf("second full-result group page = %#v err=%v", secondGroups, err)
+	}
+	twoLevel, err := port.ExecuteViewQuery(ctx, "orders", query.ViewQuery{
+		Query: query.TableQuery{
+			Filters: []query.FilterExpression{{
+				Field: "amount", Operator: query.OperatorGreaterEq, Value: 80,
+			}},
+			Limit: 1,
+		},
+		Groups: []query.GroupSpec{
+			{Field: "status", Direction: query.SortAscending},
+			{Field: "order_date", Bucket: query.GroupBucketMonth},
+		},
+		Summaries: []query.SummarySpec{
+			{Field: "amount", Function: query.AggregateSum},
+			{Field: "amount", Function: query.AggregateAvg},
+		},
+		GroupLimit: 1,
+	})
+	if err != nil || len(twoLevel.GroupRows) != 1 || !twoLevel.HasMoreGroups {
+		t.Fatalf("two-level first page = %#v err=%v", twoLevel, err)
+	}
+	twoLevelRow := twoLevel.GroupRows[0]
+	if twoLevelRow.ParentCount == nil || *twoLevelRow.ParentCount != 2 ||
+		fmt.Sprint(twoLevelRow.ParentSummaries[0]) != "181" ||
+		fmt.Sprint(twoLevelRow.ParentSummaries[1]) != "90.5" {
+		t.Fatalf("two-level complete parent aggregate = %#v", twoLevelRow)
 	}
 	dateGroups, err := port.ExecuteViewQuery(ctx, "orders", query.ViewQuery{
 		Query: query.TableQuery{

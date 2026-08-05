@@ -42,6 +42,7 @@ from backend.contracts.lookup import (  # noqa: E402
     LookupQueryResult,
     LookupValidationResult,
 )
+from backend.contracts.query import QueryPageResult, QueryViewResult  # noqa: E402
 from backend.contracts.paste import ApplyPasteResult, PastePlan  # noqa: E402
 from backend.contracts.plugin import (  # noqa: E402
     ActionAvailability,
@@ -344,6 +345,21 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
             },
         },
     }
+    query_view = {
+        "page": query_page,
+        "groupRows": [
+            {
+                "key": ["east", "open"],
+                "count": 3,
+                "summaries": [30],
+                "parentCount": 9,
+                "parentSummaries": [90],
+            }
+        ],
+        "groupOffset": 0,
+        "groupLimit": 100,
+        "hasMoreGroups": False,
+    }
     specs: dict[str, ResultSpec] = {
         "backup.create": retired("backup.create"),
         "backup.delete": retired("backup.delete"),
@@ -496,8 +512,16 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "preset.delete": _manual("DeletePresetResult", delete_trace),
         "preset.list": _typed(PresetsResult),
         "preset.save": _typed(PresetEntry),
-        "query.page": _manual("QueryPageResult", query_page),
-        "query.view": _manual("QueryViewResult", query_page),
+        "query.page": _manual(
+            "QueryPageResult",
+            query_page,
+            TypeAdapter(QueryPageResult).json_schema(by_alias=True),
+        ),
+        "query.view": _manual(
+            "QueryViewResult",
+            query_view,
+            TypeAdapter(QueryViewResult).json_schema(by_alias=True),
+        ),
         "query.readRows": _manual(
             "QueryRowsResult",
             {"rows": [{"id": "row-1", "name": "Ada"}]},

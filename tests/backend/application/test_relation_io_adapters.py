@@ -113,8 +113,11 @@ class FakeProductClient:
                         "provenance": [
                             {
                                 "collection": "contracts",
+                                "collectionLabel": "合同",
                                 "itemId": "contract-1",
+                                "recordLabel": "CT-001",
                                 "fieldId": "fld_amount",
+                                "fieldLabel": "金额",
                                 "value": "12.50",
                             }
                         ],

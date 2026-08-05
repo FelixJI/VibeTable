@@ -42,6 +42,12 @@ interface Outbound {
   requestId?: string;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 function makeRecordingBridge(): {
   bridge: HostBridge;
   posted: Outbound[];
@@ -549,6 +555,139 @@ describe("WorkspaceView", () => {
     wrapper.unmount();
   });
 
+  it("ignores a nested relation search response from a previously closed editor", async () => {
+    const mainRelation = (field: string, targetCollection: string): NormalizedRelationDescriptor => ({
+      relationId: `orders.${field}`, fieldRef: field, sourceCollection: "orders", kind: "m2o",
+      relatedCollection: targetCollection, allowedCollections: [], unique: false, nullable: true,
+      onDelete: "nullify", preset: "standard", selfRelation: false, managed: true,
+      quickCreateEligible: false, state: "valid", diagnostics: [],
+    });
+    const nestedRelation = (collection: string): NormalizedRelationDescriptor => ({
+      relationId: `${collection}.region`, fieldRef: "region", sourceCollection: collection,
+      kind: "m2o", relatedCollection: "regions", allowedCollections: [], unique: false,
+      nullable: false, onDelete: "restrict", preset: "standard", selfRelation: false,
+      managed: true, quickCreateEligible: true, state: "valid", diagnostics: [],
+    });
+    const relationA = mainRelation("customer", "customers");
+    const relationB = mainRelation("vendor", "vendors");
+    const stale = deferred<{ items: RelationTargetRef[]; total: number }>();
+    const current = deferred<{ items: RelationTargetRef[]; total: number }>();
+    const productTable = (collection: string) => ({
+      contract: "vibetable.product-table.v1",
+      tableId: collection,
+      displayName: collection,
+      primaryDisplayFieldId: "name_id",
+      fields: [
+        {
+          fieldId: "name_id", physicalName: "name", displayName: "名称",
+          kind: "scalar", dataType: "shortText", storageType: "text",
+          nullable: false, defaultValue: null, constraints: [],
+          editor: { kind: "text", config: {} }, readOnly: false,
+          formula: null, relation: null, lookup: null, attachmentPolicy: null,
+        },
+        {
+          fieldId: "region_id", physicalName: "region", displayName: "区域",
+          kind: "relation", dataType: "relation", storageType: "relation",
+          nullable: false, defaultValue: null, constraints: [],
+          editor: { kind: "relation", config: {} }, readOnly: false,
+          formula: null, relation: {}, lookup: null, attachmentPolicy: null,
+        },
+      ],
+    });
+    const request = vi.fn(async (method: string, payload: unknown) => {
+      const params = payload as Record<string, unknown>;
+      if (method === "schema.getTable") return productTable(String(params.tableId));
+      if (method === "schema.describe") {
+        const collection = String(params.collection);
+        const relations = collection === "orders"
+          ? [relationA, relationB]
+          : [nestedRelation(collection)];
+        return {
+          contract: "vibetable.schema-describe.v1", collection,
+          requestGeneration: params.requestGeneration,
+          schema: {
+            collection, primaryKey: "id", primaryDisplayFieldId: "name_id", columns: [],
+            normalizedRelations: relations, schemaRevision: `schema-${collection}`,
+            permissionRevision: "permission-1", capabilityHash: "capability-1",
+            lookupRevision: "lookup-1",
+          },
+          capabilities: {
+            contract: "vibetable.relation-capabilities.v1",
+            relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+          },
+        };
+      }
+      if (method === "lookup.list") {
+        return { collection: String(params.collection), definitions: [], lookupRevision: "lookup-1" };
+      }
+      if (method === "relation.searchTargets") {
+        if (params.query === "旧区域") return stale.promise;
+        if (params.query === "新区域") return current.promise;
+        return { items: [], total: 0 };
+      }
+      throw new Error(`unexpected request: ${method}`);
+    });
+    setHostBridgeForTesting({
+      request,
+      on: vi.fn(() => vi.fn()),
+      notify: vi.fn(),
+      notifyWithAdditionalObjects: vi.fn(() => false),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as HostBridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }]);
+    workspace.selectTable("orders");
+    const table = useTableStore();
+    table.appendPage({
+      table: "orders",
+      columns: [
+        { name: "customer", title: "客户", fieldId: "customer_id", kind: "relation",
+          relationId: relationA.relationId, dataType: "text", editable: true, nullable: true },
+        { name: "vendor", title: "供应商", fieldId: "vendor_id", kind: "relation",
+          relationId: relationB.relationId, dataType: "text", editable: true, nullable: true },
+      ],
+      rows: [{ rowKey: "order-1", customer: null, vendor: null }],
+      offset: 0, limit: 1, totalRows: 1, mode: "remote",
+    });
+    const wrapper = mountView();
+    await flushPromises();
+
+    wrapper.findComponent(GridHost).vm.$emit("relationEdit", {
+      rowKey: "order-1", field: "customer", descriptor: relationA, value: null,
+    });
+    await flushPromises();
+    let editor = wrapper.findComponent(RelationEditorPanel);
+    editor.vm.$emit("searchCreateRelation", "region", "旧区域");
+    await flushPromises();
+    editor.vm.$emit("close");
+    await flushPromises();
+
+    wrapper.findComponent(GridHost).vm.$emit("relationEdit", {
+      rowKey: "order-1", field: "vendor", descriptor: relationB, value: null,
+    });
+    await flushPromises();
+    editor = wrapper.findComponent(RelationEditorPanel);
+    editor.vm.$emit("searchCreateRelation", "region", "新区域");
+    current.resolve({
+      items: [{ collection: "regions", itemId: "same-id", label: "新区域", junctionValues: {} }],
+      total: 1,
+    });
+    await flushPromises();
+    expect(editor.props("targetRelationOptions")).toEqual({
+      region: [{ collection: "regions", itemId: "same-id", label: "新区域", junctionValues: {} }],
+    });
+
+    stale.resolve({
+      items: [{ collection: "regions", itemId: "same-id", label: "旧区域", junctionValues: {} }],
+      total: 1,
+    });
+    await flushPromises();
+    expect(editor.props("targetRelationOptions")).toEqual({
+      region: [{ collection: "regions", itemId: "same-id", label: "新区域", junctionValues: {} }],
+    });
+  });
+
   it("routes grid sort/filter/group intent to the standard full-dataset table query", async () => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
@@ -560,7 +699,7 @@ describe("WorkspaceView", () => {
     posted.length = 0;
 
     wrapper.findComponent(GridHost).vm.$emit("viewQueryChange", {
-      filters: [{ field: "status", operator: "eq", value: "signed", logic: "AND" }],
+      headerFilters: [{ field: "status", operator: "eq", value: "signed", logic: "AND" }],
       sorts: [{ field: "contract_price", direction: "desc", nullsLast: true }],
       groups: [{ field: "customer", direction: "asc", bucket: "value" }],
     });
