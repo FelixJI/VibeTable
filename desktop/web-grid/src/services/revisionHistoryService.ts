@@ -6,9 +6,13 @@ import type {
   RestorePreview,
   RestoreResult,
 } from "@/contracts";
+import { watch } from "vue";
 import { BridgeOperationError } from "@/bridge/hostBridge";
 import { useRevisionHistoryStore, type OpenRevisionHistorySelection } from "@/stores/revisionHistoryStore";
-import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
+import {
+  registerWorkspaceEpochReset,
+  useWorkspaceSessionStore,
+} from "@/stores/workspaceSessionStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useHostBridge } from "./bridgeContext";
 import { requestWorkspaceV2UiAction } from "./workspaceV2UiPort";
@@ -22,6 +26,7 @@ export interface RestoreTarget {
 /** Typed adapter for persistent server revision history (never the undo store). */
 export function useRevisionHistoryService(): {
   invalidate: () => void;
+  dispose: () => void;
   open: (selection: OpenRevisionHistorySelection | { scope: "archived" }) => void;
   close: () => void;
   refresh: () => void;
@@ -36,8 +41,10 @@ export function useRevisionHistoryService(): {
   let queryGeneration = 0;
   let previewGeneration = 0;
   let applyGeneration = 0;
+  let pendingEpochQuery = false;
 
   function invalidate(): void {
+    pendingEpochQuery = false;
     queryGeneration += 1;
     previewGeneration += 1;
     applyGeneration += 1;
@@ -57,12 +64,75 @@ export function useRevisionHistoryService(): {
     previewGeneration += 1;
     applyGeneration += 1;
     store.open(selection);
+    if (session.enabled && (!session.hasOpenWorkspace || session.isTransitioning)) {
+      pendingEpochQuery = true;
+      store.beginLoad(false);
+      return;
+    }
+    pendingEpochQuery = false;
     void query(false);
   }
 
   function close(): void {
+    pendingEpochQuery = false;
     invalidate();
     store.close();
+  }
+
+  function currentSelection(): OpenRevisionHistorySelection | { scope: "archived" } {
+    if (store.scope === "archived") return { scope: "archived" };
+    if (store.scope === "cell") {
+      return {
+        scope: "cell",
+        itemId: store.itemId ?? undefined,
+        field: store.field ?? undefined,
+      };
+    }
+    if (store.scope === "row") {
+      return { scope: "row", itemId: store.itemId ?? undefined };
+    }
+    return { scope: "table" };
+  }
+
+  const unregisterEpochReset = registerWorkspaceEpochReset(
+    "revision-history-service",
+    ({ previousWorkspaceId, nextWorkspaceId }) => {
+      const retainedSelection = store.panelOpen
+        && previousWorkspaceId !== null
+        && previousWorkspaceId === nextWorkspaceId
+        ? currentSelection()
+        : null;
+      invalidate();
+      pendingEpochQuery = retainedSelection !== null;
+      store.reset();
+      if (retainedSelection) {
+        store.open(retainedSelection);
+        store.beginLoad(false);
+      }
+    },
+  );
+
+  const stopSessionWatch = watch(
+    () => [
+      session.enabled,
+      session.hasOpenWorkspace,
+      session.isTransitioning,
+      session.sessionEpoch,
+      workspace.currentTable,
+    ] as const,
+    () => {
+      if (!pendingEpochQuery || !workspace.currentTable) return;
+      if (session.enabled && (!session.hasOpenWorkspace || session.isTransitioning)) return;
+      pendingEpochQuery = false;
+      void query(false);
+    },
+  );
+
+  function dispose(): void {
+    pendingEpochQuery = false;
+    unregisterEpochReset();
+    stopSessionWatch();
+    invalidate();
   }
 
   async function query(append: boolean): Promise<void> {
@@ -121,6 +191,7 @@ export function useRevisionHistoryService(): {
   }
 
   function refresh(): void {
+    if (pendingEpochQuery) return;
     void query(false);
   }
 
@@ -203,5 +274,5 @@ export function useRevisionHistoryService(): {
       });
   }
 
-  return { invalidate, open, close, refresh, loadMore, previewRestore, applyRestore };
+  return { invalidate, dispose, open, close, refresh, loadMore, previewRestore, applyRestore };
 }
