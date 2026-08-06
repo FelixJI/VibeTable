@@ -240,3 +240,9 @@ def test_v1_contract_bytes_remain_frozen() -> None:
         if path.is_file()
     }
     assert actual == expected
+
+
+def test_v1_frozen_contract_files_use_repository_lf_bytes() -> None:
+    for path in (ROOT / "contracts" / "v1").rglob("*"):
+        if path.is_file():
+            assert b"\r\n" not in path.read_bytes(), f"{path.relative_to(ROOT)} contains CRLF"

@@ -366,7 +366,7 @@ func compileViewGroups(
 		if bucket == "" {
 			bucket = GroupBucketValue
 		}
-		expression, err := viewGroupExpression(
+		expression, err := c.viewGroupExpression(
 			field, bucket, group.NumberInterval, fmt.Sprintf("groups[%d].bucket", index),
 		)
 		if err != nil {
@@ -456,7 +456,7 @@ func compileViewGroups(
 	}, nil
 }
 
-func viewGroupExpression(
+func (c *compiler) viewGroupExpression(
 	field resolvedField,
 	bucket GroupBucket,
 	numberInterval float64,
@@ -483,18 +483,20 @@ func viewGroupExpression(
 	}
 	switch bucket {
 	case GroupBucketYear:
-		return "strftime('%Y', " + field.sql + ")", nil
+		return "strftime(" + c.bind("%Y") + ", " + field.sql + ")", nil
 	case GroupBucketQuarter:
-		return "strftime('%Y', " + field.sql + ") || '-Q' || " +
-			"(((CAST(strftime('%m', " + field.sql + ") AS INTEGER) - 1) / 3) + 1)", nil
+		return "strftime(" + c.bind("%Y") + ", " + field.sql + ") || " +
+			c.bind("-Q") + " || " +
+			"(((CAST(strftime(" + c.bind("%m") + ", " + field.sql +
+			") AS INTEGER) - 1) / 3) + 1)", nil
 	case GroupBucketMonth:
-		return "strftime('%Y-%m', " + field.sql + ")", nil
+		return "strftime(" + c.bind("%Y-%m") + ", " + field.sql + ")", nil
 	case GroupBucketWeek:
-		return "strftime('%Y-W%W', " + field.sql + ")", nil
+		return "strftime(" + c.bind("%Y-W%W") + ", " + field.sql + ")", nil
 	case GroupBucketDay:
-		return "strftime('%Y-%m-%d', " + field.sql + ")", nil
+		return "strftime(" + c.bind("%Y-%m-%d") + ", " + field.sql + ")", nil
 	case GroupBucketHour:
-		return "strftime('%Y-%m-%dT%H', " + field.sql + ")", nil
+		return "strftime(" + c.bind("%Y-%m-%dT%H") + ", " + field.sql + ")", nil
 	default:
 		return "", productError(
 			"view.group.invalid_bucket", path, "unsupported group bucket", nil,

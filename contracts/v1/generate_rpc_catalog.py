@@ -778,6 +778,7 @@ def main() -> None:
     path.write_text(
         json.dumps(catalog, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
 
 
