@@ -410,12 +410,14 @@ def _run_race_package(
     *,
     environment: dict[str, str],
     stop_event: Event,
+    package_name: str = "unknown",
     compile_command: list[str] | None = None,
     compile_cwd: str | None = None,
     binary: Path | None = None,
 ) -> tuple[int, list[str], list[str]]:
     output: list[str] = []
     errors: list[str] = []
+    started = time.monotonic()
     try:
         if stop_event.is_set():
             output.append("race package stopped after another package failed")
@@ -476,6 +478,19 @@ def _run_race_package(
                 return code, output, errors
         return 0, output, errors
     finally:
+        output.append(
+            "RACE_PACKAGE_TIMING "
+            + json.dumps(
+                {
+                    "elapsedSeconds": round(time.monotonic() - started, 3),
+                    "package": package_name,
+                    "testCount": len(commands),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
         if binary is not None:
             try:
                 binary.unlink(missing_ok=True)
@@ -526,6 +541,7 @@ def _run_go_race(
     RACE_BINARY_DIR.mkdir(parents=True, exist_ok=True)
     package_plans: list[
         tuple[
+            str,
             list[tuple[list[str], int, str]],
             list[str] | None,
             Path | None,
@@ -558,6 +574,7 @@ def _run_go_race(
         if not names:
             package_plans.append(
                 (
+                    package,
                     [
                         (
                             [
@@ -614,11 +631,11 @@ def _run_go_race(
                     package_dir,
                 )
             )
-        package_plans.append((package_commands, compile_command, binary))
+        package_plans.append((package, package_commands, compile_command, binary))
     if not discovered_count:
         return 1, "\n".join(output), "race discovery found zero named Go tests"
 
-    package_plans.sort(key=lambda plan: len(plan[0]), reverse=True)
+    package_plans.sort(key=lambda plan: len(plan[1]), reverse=True)
     stop_event = Event()
     worker_count = min(RACE_PACKAGE_WORKERS, len(package_plans))
     with ThreadPoolExecutor(
@@ -631,11 +648,12 @@ def _run_go_race(
                 package_commands,
                 environment=environment,
                 stop_event=stop_event,
+                package_name=package,
                 compile_command=compile_command,
                 compile_cwd=cwd,
                 binary=binary,
             )
-            for package_commands, compile_command, binary in package_plans
+            for package, package_commands, compile_command, binary in package_plans
         ]
         package_results = [future.result() for future in futures]
     returncode = 0

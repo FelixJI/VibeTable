@@ -39,6 +39,16 @@ NPM_PROJECTS = (
     Path("examples/plugins/normalize-text"),
 )
 PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
+CI_PREPARE_MODE_ENV = "VIBETABLE_CI_PREPARE_MODE"
+
+
+def _candidate_prepare_mode() -> bool:
+    mode = os.environ.get(CI_PREPARE_MODE_ENV)
+    if mode in {None, ""}:
+        return False
+    if mode == "candidate":
+        return True
+    raise RuntimeError(f"unsupported {CI_PREPARE_MODE_ENV}: {mode}")
 
 
 def _resolve_executable(name: str, *, path: str | None = None) -> str:
@@ -96,14 +106,23 @@ def _install_w64devkit() -> None:
 
 
 def bootstrap() -> None:
+    candidate_prepare = _candidate_prepare_mode()
     _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
-    for project in NPM_PROJECTS:
+    projects = (Path("desktop/web-grid"),) if candidate_prepare else NPM_PROJECTS
+    for project in projects:
         _run("npm", "ci", cwd=REPO_ROOT / project)
     _run("dotnet", "restore", "desktop/VibeTable.Desktop.sln")
-    _install_w64devkit()
+    if not candidate_prepare:
+        _install_w64devkit()
 
 
 def quality() -> None:
+    if _candidate_prepare_mode():
+        print(
+            "+ defer quality to immutable-candidate CI shards",
+            flush=True,
+        )
+        return
     commands = (
         ("uv", "run", "python", "scripts/release.py", "--check"),
         ("uv", "run", "python", "qa/version_check.py"),

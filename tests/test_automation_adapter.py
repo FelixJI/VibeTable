@@ -79,6 +79,67 @@ def test_only_canonical_workflows_remain_and_delegate_to_stable_cli() -> None:
     assert "release-please" not in (ci + cd).lower()
 
 
+def test_ci_prepare_scopes_candidate_mode_to_the_prepare_step() -> None:
+    ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    prepare_step = ci.split("- name: Build immutable candidate after pre-release gates", 1)[1]
+    prepare_step = prepare_step.split("- name: Upload immutable candidate handoff", 1)[0]
+
+    assert prepare_step.count("VIBETABLE_CI_PREPARE_MODE: candidate") == 1
+    assert ci.count("VIBETABLE_CI_PREPARE_MODE: candidate") == 1
+
+
+def test_candidate_prepare_bootstraps_only_release_build_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[tuple[str, ...], Path]] = []
+    monkeypatch.setenv("VIBETABLE_CI_PREPARE_MODE", "candidate")
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, cwd=automation_project.REPO_ROOT, **_kwargs: observed.append(
+            (command, cwd)
+        ),
+    )
+    monkeypatch.setattr(
+        automation_project,
+        "_install_w64devkit",
+        lambda: observed.append((("install-w64devkit",), automation_project.REPO_ROOT)),
+    )
+
+    automation_project.bootstrap()
+
+    assert observed == [
+        (
+            ("uv", "sync", "--frozen", "--group", "dev", "--group", "build"),
+            automation_project.REPO_ROOT,
+        ),
+        (
+            ("npm", "ci"),
+            automation_project.REPO_ROOT / "desktop" / "web-grid",
+        ),
+        (
+            ("dotnet", "restore", "desktop/VibeTable.Desktop.sln"),
+            automation_project.REPO_ROOT,
+        ),
+    ]
+
+
+def test_candidate_prepare_defers_quality_to_candidate_bound_shards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[str, ...]] = []
+    monkeypatch.setenv("VIBETABLE_CI_PREPARE_MODE", "candidate")
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, **_kwargs: observed.append(command),
+    )
+
+    automation_project.quality()
+
+    assert observed == []
+
+
 def test_publish_checkout_keeps_job_token_for_git_tag_push() -> None:
     workflow = (REPO_ROOT / ".github/workflows/cd.yml").read_text(encoding="utf-8")
     publish_job = workflow.split("\n  publish:\n", maxsplit=1)[1]

@@ -580,6 +580,35 @@ def test_race_stage_runs_packages_in_parallel_but_tests_within_each_package_seri
     assert not list(next_gate.RACE_BINARY_DIR.glob("package-*"))
 
 
+def test_race_package_emits_structured_timing_for_lane_balancing(monkeypatch) -> None:
+    timestamps = iter((10.0, 12.5))
+    monkeypatch.setattr(next_gate.time, "monotonic", lambda: next(timestamps))
+    monkeypatch.setattr(
+        next_gate,
+        "_run_command",
+        lambda *_args, **_kwargs: (0, "ok\n", ""),
+    )
+
+    code, stdout, _stderr = next_gate._run_race_package(
+        [(["race.test.exe", "-test.run=^TestExample$"], 60, "package")],
+        environment={},
+        stop_event=threading.Event(),
+        package_name="example/package",
+    )
+
+    assert code == 0
+    timing = next(
+        json.loads(line.removeprefix("RACE_PACKAGE_TIMING "))
+        for line in stdout
+        if line.startswith("RACE_PACKAGE_TIMING ")
+    )
+    assert timing == {
+        "elapsedSeconds": 2.5,
+        "package": "example/package",
+        "testCount": 1,
+    }
+
+
 def test_compiled_race_test_retries_only_the_known_windows_cleanup_flake(
     monkeypatch,
 ) -> None:

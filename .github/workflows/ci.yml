@@ -74,6 +74,7 @@ jobs:
       - name: Build immutable candidate after pre-release gates
         env:
           GH_TOKEN: ${{ github.token }}
+          VIBETABLE_CI_PREPARE_MODE: candidate
         run: >-
           python scripts/automation.py ci
           --phase prepare
