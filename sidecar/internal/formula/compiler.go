@@ -75,19 +75,21 @@ func NewCompiler(limits Limits) *Compiler {
 }
 
 type CompiledFormula struct {
-	FieldID         string
-	PhysicalName    string
-	ResultType      schema.DataType
-	Nullable        bool
-	Source          string
-	CanonicalSource string
-	ASTHash         string
-	Dependencies    []string
-	ReferencePaths  []string
-	dependencyNames []string
-	program         cel.Program
-	limits          Limits
-	hasDivision     bool
+	FieldID                string
+	PhysicalName           string
+	ResultType             schema.DataType
+	Nullable               bool
+	Source                 string
+	CanonicalSource        string
+	ASTHash                string
+	Dependencies           []string
+	ReferencePaths         []string
+	RelationAggregatePaths []string
+	RelationCountNames     []string
+	dependencyNames        []string
+	program                cel.Program
+	limits                 Limits
+	hasDivision            bool
 }
 
 func (compiler *Compiler) Compile(
@@ -112,34 +114,9 @@ func (compiler *Compiler) Compile(
 		})
 	}
 
-	fieldsByName := make(map[string]schema.FieldDefinition, len(definition.Fields))
-	fieldsByID := make(map[string]schema.FieldDefinition, len(definition.Fields))
-	options := []cel.EnvOption{
-		cel.ParserExpressionSizeLimit(compiler.limits.SourceBytes),
-		cel.ParserRecursionLimit(compiler.limits.RecursionDepth),
-		cel.DefaultUTCTimeZone(true),
-		cel.HomogeneousAggregateLiterals(),
-	}
-	for _, candidate := range definition.Fields {
-		if candidate.DataType == schema.DataTypeSecret ||
-			candidate.DataType == schema.DataTypeHash ||
-			candidate.Kind == schema.FieldKindAttachment ||
-			candidate.Kind == schema.FieldKindSystem {
-			continue
-		}
-		fieldType, err := celTypeForField(candidate)
-		if err != nil {
-			continue
-		}
-		fieldsByName[candidate.PhysicalName] = candidate
-		fieldsByID[candidate.FieldID] = candidate
-		options = append(options, cel.Variable(candidate.PhysicalName, fieldType))
-	}
-	options = append(options, functionOptions()...)
-
-	env, err := cel.NewEnv(options...)
-	if err != nil {
-		return nil, formulaError("formula.runtime", "formula environment initialization failed", nil)
+	env, fieldsByName, environmentErr := compiler.environment(definition)
+	if environmentErr != nil {
+		return nil, environmentErr
 	}
 	parsed, issues := env.Parse(source)
 	if issues != nil && issues.Err() != nil {
@@ -163,7 +140,7 @@ func (compiler *Compiler) Compile(
 	if err != nil {
 		return nil, formulaError("formula.runtime", "checked formula AST is unavailable", nil)
 	}
-	nodeCount, dependencyNames, referencePaths, hasDivision, validationErr := inspectExpression(
+	nodeCount, dependencyNames, referencePaths, aggregatePaths, countNames, hasDivision, validationErr := inspectExpression(
 		checked.GetExpr(), fieldsByName, compiler.limits,
 	)
 	if validationErr != nil {
@@ -208,31 +185,137 @@ func (compiler *Compiler) Compile(
 	if err != nil {
 		return nil, formulaError("formula.runtime", "formula program could not be created", nil)
 	}
-	_ = fieldsByID
 	return &CompiledFormula{
-		FieldID:         field.FieldID,
-		PhysicalName:    field.PhysicalName,
-		ResultType:      field.Formula.ResultType,
-		Nullable:        field.Nullable,
-		Source:          source,
-		CanonicalSource: canonical,
-		ASTHash:         hex.EncodeToString(sum[:]),
-		Dependencies:    dependencies,
-		ReferencePaths:  referencePaths,
-		dependencyNames: dependencyNames,
-		program:         program,
-		limits:          compiler.limits,
-		hasDivision:     hasDivision,
+		FieldID:                field.FieldID,
+		PhysicalName:           field.PhysicalName,
+		ResultType:             field.Formula.ResultType,
+		Nullable:               field.Nullable,
+		Source:                 source,
+		CanonicalSource:        canonical,
+		ASTHash:                hex.EncodeToString(sum[:]),
+		Dependencies:           dependencies,
+		ReferencePaths:         referencePaths,
+		RelationAggregatePaths: aggregatePaths,
+		RelationCountNames:     countNames,
+		dependencyNames:        dependencyNames,
+		program:                program,
+		limits:                 compiler.limits,
+		hasDivision:            hasDivision,
 	}, nil
+}
+
+func (compiler *Compiler) InferSource(
+	definition schema.TableDefinition,
+	source string,
+) (schema.DataType, *Error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "", formulaError("formula.syntax", "formula source is empty", nil)
+	}
+	if len(source) > compiler.limits.SourceBytes {
+		return "", formulaError(
+			"formula.resource_limit", "formula source exceeds the size limit",
+			map[string]any{"limit": compiler.limits.SourceBytes},
+		)
+	}
+	env, fieldsByName, environmentErr := compiler.environment(definition)
+	if environmentErr != nil {
+		return "", environmentErr
+	}
+	parsed, issues := env.Parse(source)
+	if issues != nil && issues.Err() != nil {
+		return "", formulaError(
+			"formula.syntax", "formula could not be parsed",
+			map[string]any{"reason": issues.Err().Error()},
+		)
+	}
+	ast, issues := env.Check(parsed)
+	if issues != nil && issues.Err() != nil {
+		code := "formula.type"
+		message := "formula could not be type checked"
+		if strings.Contains(issues.Err().Error(), "undeclared reference") {
+			code = "formula.dependency"
+			message = "formula references an unknown field or function"
+		}
+		return "", formulaError(code, message, map[string]any{
+			"reason": issues.Err().Error(),
+		})
+	}
+	checked, err := cel.AstToCheckedExpr(ast)
+	if err != nil {
+		return "", formulaError("formula.runtime", "checked formula AST is unavailable", nil)
+	}
+	if _, _, _, _, _, _, validationErr := inspectExpression(
+		checked.GetExpr(), fieldsByName, compiler.limits,
+	); validationErr != nil {
+		return "", validationErr
+	}
+	return dataTypeForCELType(ast.OutputType())
+}
+
+func (compiler *Compiler) environment(
+	definition schema.TableDefinition,
+) (*cel.Env, map[string]schema.FieldDefinition, *Error) {
+	fieldsByName := make(map[string]schema.FieldDefinition, len(definition.Fields))
+	options := []cel.EnvOption{
+		cel.ParserExpressionSizeLimit(compiler.limits.SourceBytes),
+		cel.ParserRecursionLimit(compiler.limits.RecursionDepth),
+		cel.DefaultUTCTimeZone(true),
+		cel.HomogeneousAggregateLiterals(),
+	}
+	for _, candidate := range definition.Fields {
+		if candidate.DataType == schema.DataTypeSecret ||
+			candidate.DataType == schema.DataTypeHash ||
+			candidate.Kind == schema.FieldKindAttachment ||
+			candidate.Kind == schema.FieldKindSystem {
+			continue
+		}
+		fieldType, err := celTypeForField(candidate)
+		if err != nil {
+			continue
+		}
+		fieldsByName[candidate.PhysicalName] = candidate
+		options = append(options, cel.Variable(candidate.PhysicalName, fieldType))
+	}
+	options = append(options, functionOptions()...)
+	env, err := cel.NewEnv(options...)
+	if err != nil {
+		return nil, nil, formulaError(
+			"formula.runtime", "formula environment initialization failed", nil,
+		)
+	}
+	return env, fieldsByName, nil
+}
+
+func dataTypeForCELType(output *cel.Type) (schema.DataType, *Error) {
+	switch output.String() {
+	case "bool":
+		return schema.DataTypeBoolean, nil
+	case "int":
+		return schema.DataTypeInteger, nil
+	case "double":
+		return schema.DataTypeFloat, nil
+	case "string":
+		return schema.DataTypeShortText, nil
+	case "timestamp":
+		return schema.DataTypeDateTime, nil
+	default:
+		return "", formulaError(
+			"formula.type", "formula result type cannot be inferred",
+			map[string]any{"actual": output.String()},
+		)
+	}
 }
 
 func inspectExpression(
 	expression *exprpb.Expr,
 	fields map[string]schema.FieldDefinition,
 	limits Limits,
-) (int, []string, []string, bool, *Error) {
+) (int, []string, []string, []string, []string, bool, *Error) {
 	dependencies := map[string]struct{}{}
 	references := map[string]struct{}{}
+	aggregateReferences := map[string]struct{}{}
+	countRelations := map[string]struct{}{}
 	nodes := 0
 	hasDivision := false
 	var walk func(*exprpb.Expr) *Error
@@ -261,6 +344,20 @@ func inspectExpression(
 				return formulaError("formula.dependency", "formula function is not allowed", map[string]any{
 					"function": kind.CallExpr.Function,
 				})
+			}
+			if isRelationFieldAggregate(kind.CallExpr.Function) {
+				path, aggregateErr := relationAggregatePath(kind.CallExpr, fields)
+				if aggregateErr != nil {
+					return aggregateErr
+				}
+				aggregateReferences[path] = struct{}{}
+			}
+			if kind.CallExpr.Function == "relationCount" {
+				name, countErr := relationCountName(kind.CallExpr, fields)
+				if countErr != nil {
+					return countErr
+				}
+				countRelations[name] = struct{}{}
 			}
 			if kind.CallExpr.Function == "_/_" {
 				hasDivision = true
@@ -305,7 +402,7 @@ func inspectExpression(
 		return nil
 	}
 	if err := walk(expression); err != nil {
-		return nodes, nil, nil, hasDivision, err
+		return nodes, nil, nil, nil, nil, hasDivision, err
 	}
 	names := make([]string, 0, len(dependencies))
 	for name := range dependencies {
@@ -317,7 +414,78 @@ func inspectExpression(
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
-	return nodes, names, paths, hasDivision, nil
+	aggregatePaths := make([]string, 0, len(aggregateReferences))
+	for path := range aggregateReferences {
+		aggregatePaths = append(aggregatePaths, path)
+	}
+	sort.Strings(aggregatePaths)
+	countNames := make([]string, 0, len(countRelations))
+	for name := range countRelations {
+		countNames = append(countNames, name)
+	}
+	sort.Strings(countNames)
+	return nodes, names, paths, aggregatePaths, countNames, hasDivision, nil
+}
+
+func relationCountName(
+	call *exprpb.Expr_Call,
+	fields map[string]schema.FieldDefinition,
+) (string, *Error) {
+	if len(call.Args) != 1 {
+		return "", formulaError("formula.syntax", "relation count requires one relation", nil)
+	}
+	root, ok := call.Args[0].ExprKind.(*exprpb.Expr_IdentExpr)
+	if !ok {
+		return "", formulaError(
+			"formula.dependency", "relation count must use a direct relation field", nil,
+		)
+	}
+	relation, exists := fields[root.IdentExpr.Name]
+	if !exists || relation.Kind != schema.FieldKindRelation || relation.Relation == nil {
+		return "", formulaError(
+			"formula.dependency", "relation count root is not a relation field", nil,
+		)
+	}
+	return root.IdentExpr.Name, nil
+}
+
+func isRelationFieldAggregate(function string) bool {
+	switch function {
+	case "relationSum", "relationAverage", "relationMin", "relationMax", "relationCountValues":
+		return true
+	default:
+		return false
+	}
+}
+
+func relationAggregatePath(
+	call *exprpb.Expr_Call,
+	fields map[string]schema.FieldDefinition,
+) (string, *Error) {
+	if len(call.Args) != 2 {
+		return "", formulaError(
+			"formula.syntax", "relation aggregate requires a relation and target field", nil,
+		)
+	}
+	root, ok := call.Args[0].ExprKind.(*exprpb.Expr_IdentExpr)
+	if !ok {
+		return "", formulaError(
+			"formula.dependency", "relation aggregate must use a direct relation field", nil,
+		)
+	}
+	relation, exists := fields[root.IdentExpr.Name]
+	if !exists || relation.Kind != schema.FieldKindRelation || relation.Relation == nil {
+		return "", formulaError(
+			"formula.dependency", "relation aggregate root is not a relation field", nil,
+		)
+	}
+	target, ok := call.Args[1].ExprKind.(*exprpb.Expr_ConstExpr)
+	if !ok || target.ConstExpr.GetStringValue() == "" {
+		return "", formulaError(
+			"formula.dependency", "relation aggregate target must be a static field", nil,
+		)
+	}
+	return root.IdentExpr.Name + "." + target.ConstExpr.GetStringValue(), nil
 }
 
 func staticSelectPath(expression *exprpb.Expr) (string, bool) {
@@ -356,6 +524,8 @@ var allowedFunctions = map[string]struct{}{
 	"abs": {}, "round": {}, "min": {}, "max": {},
 	"concat": {}, "coalesce": {},
 	"dateAdd": {}, "dateSubtract": {}, "formatDate": {},
+	"relationSum": {}, "relationAverage": {}, "relationMin": {}, "relationMax": {},
+	"relationCount": {}, "relationCountValues": {},
 }
 
 func celTypeForField(field schema.FieldDefinition) (*cel.Type, error) {
@@ -534,6 +704,73 @@ func functionOptions() []cel.EnvOption {
 					return types.String(left.(types.Timestamp).Time.UTC().Format(layout))
 				}),
 			)),
+		cel.Function("relationSum",
+			cel.Overload(
+				"vibetable_relation_sum",
+				[]*cel.Type{cel.DynType, cel.StringType}, cel.DoubleType,
+				cel.BinaryBinding(func(relation, field ref.Val) ref.Val {
+					return evaluateRelationNumeric(relation, field, "sum")
+				}),
+			)),
+		cel.Function("relationAverage",
+			cel.Overload(
+				"vibetable_relation_average",
+				[]*cel.Type{cel.DynType, cel.StringType}, cel.DoubleType,
+				cel.BinaryBinding(func(relation, field ref.Val) ref.Val {
+					return evaluateRelationNumeric(relation, field, "average")
+				}),
+			)),
+		cel.Function("relationMin",
+			cel.Overload(
+				"vibetable_relation_min",
+				[]*cel.Type{cel.DynType, cel.StringType}, cel.DoubleType,
+				cel.BinaryBinding(func(relation, field ref.Val) ref.Val {
+					return evaluateRelationNumeric(relation, field, "min")
+				}),
+			)),
+		cel.Function("relationMax",
+			cel.Overload(
+				"vibetable_relation_max",
+				[]*cel.Type{cel.DynType, cel.StringType}, cel.DoubleType,
+				cel.BinaryBinding(func(relation, field ref.Val) ref.Val {
+					return evaluateRelationNumeric(relation, field, "max")
+				}),
+			)),
+		cel.Function("relationCount",
+			cel.Overload(
+				"vibetable_relation_count", []*cel.Type{cel.DynType}, cel.IntType,
+				cel.UnaryBinding(func(relation ref.Val) ref.Val {
+					if count, ok, err := precomputedRelationCount(relation); ok {
+						if err != nil {
+							return err
+						}
+						return count
+					}
+					members, err := relationMembers(relation)
+					if err != nil {
+						return err
+					}
+					return types.Int(len(members))
+				}),
+			)),
+		cel.Function("relationCountValues",
+			cel.Overload(
+				"vibetable_relation_count_values",
+				[]*cel.Type{cel.DynType, cel.StringType}, cel.IntType,
+				cel.BinaryBinding(func(relation, field ref.Val) ref.Val {
+					if stats, ok, err := precomputedRelationField(relation, field); ok {
+						if err != nil {
+							return err
+						}
+						return stats.count
+					}
+					values, err := relationFieldValues(relation, field)
+					if err != nil {
+						return err
+					}
+					return types.Int(len(values))
+				}),
+			)),
 	}
 	for arity := 2; arity <= 8; arity++ {
 		arguments := make([]*cel.Type, arity)
@@ -566,6 +803,205 @@ func functionOptions() []cel.EnvOption {
 		)
 	}
 	return options
+}
+
+func evaluateRelationNumeric(relation, field ref.Val, operation string) ref.Val {
+	if stats, ok, err := precomputedRelationField(relation, field); ok {
+		if err != nil {
+			return err
+		}
+		if !stats.numeric {
+			return types.NewErr("relation aggregate target is not numeric")
+		}
+		switch operation {
+		case "sum":
+			return stats.sum
+		case "average":
+			if stats.count == 0 {
+				return types.NullValue
+			}
+			return types.Double(float64(stats.sum) / float64(stats.count))
+		case "min":
+			return stats.min
+		case "max":
+			return stats.max
+		default:
+			return types.NewErr("unknown relation aggregate")
+		}
+	}
+	values, err := relationFieldValues(relation, field)
+	if err != nil {
+		return err
+	}
+	numbers := make([]float64, 0, len(values))
+	for _, value := range values {
+		switch number := value.(type) {
+		case types.Int:
+			numbers = append(numbers, float64(number))
+		case types.Double:
+			numbers = append(numbers, float64(number))
+		default:
+			return types.NewErr("relation aggregate target is not numeric")
+		}
+	}
+	if len(numbers) == 0 {
+		if operation == "sum" {
+			return types.Double(0)
+		}
+		return types.NullValue
+	}
+	result := numbers[0]
+	switch operation {
+	case "sum", "average":
+		result = 0
+		for _, number := range numbers {
+			result += number
+		}
+		if operation == "average" {
+			result /= float64(len(numbers))
+		}
+	case "min":
+		for _, number := range numbers[1:] {
+			result = math.Min(result, number)
+		}
+	case "max":
+		for _, number := range numbers[1:] {
+			result = math.Max(result, number)
+		}
+	default:
+		return types.NewErr("unknown relation aggregate")
+	}
+	return types.Double(result)
+}
+
+const (
+	precomputedRelationMarker   = "__vibetable_relation_precomputed"
+	precomputedRelationCountKey = "__vibetable_relation_count"
+	precomputedRelationFields   = "__vibetable_relation_fields"
+)
+
+type precomputedFieldStats struct {
+	numeric bool
+	count   types.Int
+	sum     types.Double
+	min     ref.Val
+	max     ref.Val
+}
+
+func precomputedRelationCount(relation ref.Val) (types.Int, bool, ref.Val) {
+	mapper, ok := relation.(traits.Mapper)
+	if !ok {
+		return 0, false, nil
+	}
+	marker, found := mapper.Find(types.String(precomputedRelationMarker))
+	if !found || marker != types.True {
+		return 0, false, nil
+	}
+	value, found := mapper.Find(types.String(precomputedRelationCountKey))
+	if !found {
+		return 0, true, types.NewErr("precomputed relation count is unavailable")
+	}
+	count, ok := value.(types.Int)
+	if !ok || count < 0 {
+		return 0, true, types.NewErr("precomputed relation count is invalid")
+	}
+	return count, true, nil
+}
+
+func precomputedRelationField(
+	relation ref.Val,
+	field ref.Val,
+) (precomputedFieldStats, bool, ref.Val) {
+	if _, ok, err := precomputedRelationCount(relation); !ok || err != nil {
+		return precomputedFieldStats{}, ok, err
+	}
+	fieldName, ok := field.(types.String)
+	if !ok || fieldName == "" {
+		return precomputedFieldStats{}, true,
+			types.NewErr("relation aggregate target field is invalid")
+	}
+	root := relation.(traits.Mapper)
+	fieldsValue, found := root.Find(types.String(precomputedRelationFields))
+	if !found {
+		return precomputedFieldStats{}, true,
+			types.NewErr("precomputed relation fields are unavailable")
+	}
+	fields, ok := fieldsValue.(traits.Mapper)
+	if !ok {
+		return precomputedFieldStats{}, true,
+			types.NewErr("precomputed relation fields are invalid")
+	}
+	value, found := fields.Find(fieldName)
+	if !found {
+		return precomputedFieldStats{}, true,
+			types.NewErr("precomputed relation target field is unavailable")
+	}
+	stats, ok := value.(traits.Mapper)
+	if !ok {
+		return precomputedFieldStats{}, true,
+			types.NewErr("precomputed relation target field is invalid")
+	}
+	numericValue, numericFound := stats.Find(types.String("numeric"))
+	countValue, countFound := stats.Find(types.String("count"))
+	sumValue, sumFound := stats.Find(types.String("sum"))
+	minValue, minFound := stats.Find(types.String("min"))
+	maxValue, maxFound := stats.Find(types.String("max"))
+	numeric, numericOK := numericValue.(types.Bool)
+	count, countOK := countValue.(types.Int)
+	sum, sumOK := sumValue.(types.Double)
+	if !numericFound || !countFound || !sumFound || !minFound || !maxFound ||
+		!numericOK || !countOK || !sumOK || count < 0 {
+		return precomputedFieldStats{}, true,
+			types.NewErr("precomputed relation aggregate is invalid")
+	}
+	return precomputedFieldStats{
+		numeric: bool(numeric), count: count, sum: sum, min: minValue, max: maxValue,
+	}, true, nil
+}
+
+func relationFieldValues(relation, field ref.Val) ([]ref.Val, ref.Val) {
+	fieldName, ok := field.(types.String)
+	if !ok || fieldName == "" {
+		return nil, types.NewErr("relation aggregate target field is invalid")
+	}
+	members, err := relationMembers(relation)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]ref.Val, 0, len(members))
+	for _, member := range members {
+		mapper, ok := member.(traits.Mapper)
+		if !ok {
+			return nil, types.NewErr("relation aggregate member is not an object")
+		}
+		value, found := mapper.Find(fieldName)
+		if !found || value == types.NullValue {
+			continue
+		}
+		values = append(values, value)
+	}
+	return values, nil
+}
+
+func relationMembers(relation ref.Val) ([]ref.Val, ref.Val) {
+	if relation == nil || relation == types.NullValue {
+		return []ref.Val{}, nil
+	}
+	if list, ok := relation.(traits.Lister); ok {
+		size, ok := list.Size().(types.Int)
+		if !ok || size < 0 {
+			return nil, types.NewErr("relation aggregate list size is invalid")
+		}
+		members := make([]ref.Val, 0, int(size))
+		for index := int64(0); index < int64(size); index++ {
+			members = append(members, list.Get(types.Int(index)))
+		}
+		return members, nil
+	}
+	if _, ok := relation.(traits.Mapper); ok {
+		return []ref.Val{relation}, nil
+	}
+	return nil, types.NewErr("relation aggregate root is not a relation value")
 }
 
 var dateFormatLayouts = map[string]string{

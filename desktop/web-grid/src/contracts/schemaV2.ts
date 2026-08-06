@@ -150,6 +150,8 @@ export interface FieldDefinitionV2 {
     readonly cardinality: "one" | "many";
     readonly deletePolicy: "setNull" | "restrict" | "cascade";
     readonly displayFieldId: string;
+    readonly pairId?: string;
+    readonly reciprocalFieldId?: string;
   };
   readonly file?: {
     readonly maxFiles: number;
@@ -170,10 +172,8 @@ export interface FieldDefinitionV2 {
     readonly resultType: LogicalTypeV2;
   };
   readonly lookup?: {
-    readonly relationFieldId: string;
+    readonly path: readonly { readonly relationFieldId: string }[];
     readonly targetFieldId: string;
-    readonly aggregate: "none" | "first" | "distinct" | "count" | "sum" | "avg" | "min" | "max";
-    readonly resultType: LogicalTypeV2;
   };
 }
 
@@ -187,10 +187,17 @@ export interface RecommendedValuesV2 {
   readonly json?: FieldDefinitionV2["json"];
 }
 
-export type FieldDraftV2 = Omit<
+type FieldDraftBaseV2 = Omit<
   FieldDefinitionV2,
-  "contract" | "identity" | "lifecycle"
+  "contract" | "identity" | "lifecycle" | "formula"
 >;
+
+export type FieldDraftV2 = FieldDraftBaseV2 & {
+  readonly formula?: {
+    readonly language: "cel-v1";
+    readonly source: string;
+  };
+};
 
 export interface CapabilityV2 {
   readonly logicalType: LogicalTypeV2;
@@ -234,6 +241,19 @@ export interface FieldChangeIntentV2 {
   readonly conversionRule: string;
   readonly confirmation: string;
   readonly backupReceipt: string;
+  readonly relationPair?: {
+    readonly reciprocalDisplayName: string;
+    readonly reciprocalCardinality: "one" | "many";
+    readonly sourceDisplayFieldId: string;
+  };
+}
+
+export interface RelatedFieldChangeV2 {
+  readonly tableId: string;
+  readonly fieldId: string;
+  readonly before: FieldDefinitionV2 | null;
+  readonly after: FieldDefinitionV2 | null;
+  readonly expectedSchemaRevision: string;
 }
 
 export interface FieldDiagnosticV2 {
@@ -281,6 +301,7 @@ export interface FieldChangePlanV2 {
   readonly confirmations: readonly string[];
   readonly createsMigration: boolean;
   readonly canApply: boolean;
+  readonly relatedChanges?: readonly RelatedFieldChangeV2[];
 }
 
 export interface FieldApplyReceiptV2 {
@@ -293,6 +314,12 @@ export interface FieldApplyReceiptV2 {
   readonly schemaRevision: string;
   readonly definition: FieldDefinitionV2 | null;
   readonly migrationJobId: string;
+  readonly related?: readonly {
+    readonly tableId: string;
+    readonly fieldId: string;
+    readonly schemaRevision: string;
+    readonly definition: FieldDefinitionV2 | null;
+  }[];
 }
 
 export interface FieldMigrationStatusV2 {
@@ -522,6 +549,11 @@ export function parseFieldChangePlanV2(value: unknown): FieldChangePlanV2 {
     "contract", "planId", "planHash", "expiresAt", "intent", "before", "after",
     "classes", "expectedSchemaRevision", "expectedDataRevision", "impact", "steps",
     "warnings", "errors", "confirmations", "createsMigration", "canApply",
+    "relatedChanges",
+  ], [
+    "contract", "planId", "planHash", "expiresAt", "intent", "before", "after",
+    "classes", "expectedSchemaRevision", "expectedDataRevision", "impact", "steps",
+    "warnings", "errors", "confirmations", "createsMigration", "canApply",
   ]) };
   expectContract(plan.contract, "$.contract");
   ["planId", "planHash", "expiresAt", "expectedSchemaRevision"].forEach((key) =>
@@ -566,11 +598,26 @@ export function parseFieldChangePlanV2(value: unknown): FieldChangePlanV2 {
   expectStringArray(plan.confirmations, "$.confirmations");
   expectBoolean(plan.createsMigration, "$.createsMigration");
   expectBoolean(plan.canApply, "$.canApply");
+  if (plan.relatedChanges !== undefined) {
+    expectArray(plan.relatedChanges, "$.relatedChanges").forEach((item, index) => {
+      const path = `$.relatedChanges[${index}]`;
+      const related = exactObject(item, path, [
+        "tableId", "fieldId", "before", "after", "expectedSchemaRevision",
+      ]);
+      ["tableId", "fieldId", "expectedSchemaRevision"].forEach(key =>
+        expectString(related[key], `${path}.${key}`));
+      if (related.before !== null) parseFieldDefinitionV2(related.before);
+      if (related.after !== null) parseFieldDefinitionV2(related.after);
+    });
+  }
   return plan as unknown as FieldChangePlanV2;
 }
 
 export function parseFieldApplyReceiptV2(value: unknown): FieldApplyReceiptV2 {
   const receipt = { ...exactObject(value, "$", [
+    "contract", "operationId", "planId", "action", "tableId", "fieldId",
+    "schemaRevision", "definition", "migrationJobId", "related",
+  ], [
     "contract", "operationId", "planId", "action", "tableId", "fieldId",
     "schemaRevision", "definition", "migrationJobId",
   ]) };
@@ -579,6 +626,17 @@ export function parseFieldApplyReceiptV2(value: unknown): FieldApplyReceiptV2 {
     "migrationJobId"].forEach((key) => expectString(receipt[key], `$.${key}`, key === "migrationJobId"));
   if (receipt.definition !== null) {
     receipt.definition = parseFieldDefinitionV2(receipt.definition);
+  }
+  if (receipt.related !== undefined) {
+    expectArray(receipt.related, "$.related").forEach((item, index) => {
+      const path = `$.related[${index}]`;
+      const related = exactObject(item, path, [
+        "tableId", "fieldId", "schemaRevision", "definition",
+      ]);
+      ["tableId", "fieldId", "schemaRevision"].forEach(key =>
+        expectString(related[key], `${path}.${key}`));
+      if (related.definition !== null) parseFieldDefinitionV2(related.definition);
+    });
   }
   return receipt as unknown as FieldApplyReceiptV2;
 }
@@ -632,7 +690,8 @@ function validateOptionalFieldSpecs(field: Readonly<Record<string, unknown>>): v
   if (field.relation !== undefined) {
     const relation = exactObject(field.relation, "$.relation", [
       "targetTableId", "cardinality", "deletePolicy", "displayFieldId",
-    ]);
+      "pairId", "reciprocalFieldId",
+    ], ["targetTableId", "cardinality", "deletePolicy", "displayFieldId"]);
     ["targetTableId", "cardinality", "deletePolicy", "displayFieldId"].forEach(
       key => expectString(relation[key], `$.relation.${key}`, key === "displayFieldId"),
     );
@@ -640,6 +699,10 @@ function validateOptionalFieldSpecs(field: Readonly<Record<string, unknown>>): v
     expectEnum(relation.deletePolicy, "$.relation.deletePolicy", [
       "setNull", "restrict", "cascade",
     ]);
+    if (relation.pairId !== undefined) expectString(relation.pairId, "$.relation.pairId");
+    if (relation.reciprocalFieldId !== undefined) {
+      expectString(relation.reciprocalFieldId, "$.relation.reciprocalFieldId");
+    }
   }
   if (field.file !== undefined) {
     const file = exactObject(field.file, "$.file", [
@@ -685,19 +748,14 @@ function validateOptionalFieldSpecs(field: Readonly<Record<string, unknown>>): v
     );
   }
   if (field.lookup !== undefined) {
-    const lookup = exactObject(field.lookup, "$.lookup", [
-      "relationFieldId", "targetFieldId", "aggregate", "resultType",
-    ]);
-    expectString(lookup.relationFieldId, "$.lookup.relationFieldId");
+    const lookup = exactObject(field.lookup, "$.lookup", ["path", "targetFieldId"]);
+    const path = expectArray(lookup.path, "$.lookup.path");
+    if (path.length < 1 || path.length > 8) fail("$.lookup.path", "expected one to eight steps");
+    path.forEach((item, index) => {
+      const step = exactObject(item, `$.lookup.path[${index}]`, ["relationFieldId"]);
+      expectString(step.relationFieldId, `$.lookup.path[${index}].relationFieldId`);
+    });
     expectString(lookup.targetFieldId, "$.lookup.targetFieldId");
-    expectEnum(lookup.aggregate, "$.lookup.aggregate", [
-      "none", "first", "distinct", "count", "sum", "avg", "min", "max",
-    ]);
-    expectEnum(
-      lookup.resultType,
-      "$.lookup.resultType",
-      SCHEMA_V2_LOGICAL_TYPES,
-    );
   }
 }
 
@@ -758,6 +816,9 @@ function parseCapabilityV2(value: unknown, index: number): void {
 function parseIntent(value: unknown, path: string): void {
   const intent = exactObject(value, path, [
     "action", "tableId", "fieldId", "expectedSchemaRevision", "expectedDataRevision",
+    "draft", "actor", "conversionRule", "confirmation", "backupReceipt", "relationPair",
+  ], [
+    "action", "tableId", "fieldId", "expectedSchemaRevision", "expectedDataRevision",
     "draft", "actor", "conversionRule", "confirmation", "backupReceipt",
   ]);
   ["action", "tableId", "fieldId", "expectedSchemaRevision", "conversionRule",
@@ -770,6 +831,16 @@ function parseIntent(value: unknown, path: string): void {
   const actor = exactObject(intent.actor, `${path}.actor`, ["id", "kind"]);
   expectString(actor.id, `${path}.actor.id`);
   expectString(actor.kind, `${path}.actor.kind`);
+  if (intent.relationPair !== undefined) {
+    const pair = exactObject(intent.relationPair, `${path}.relationPair`, [
+      "reciprocalDisplayName", "reciprocalCardinality", "sourceDisplayFieldId",
+    ]);
+    expectString(pair.reciprocalDisplayName, `${path}.relationPair.reciprocalDisplayName`);
+    expectEnum(pair.reciprocalCardinality, `${path}.relationPair.reciprocalCardinality`, [
+      "one", "many",
+    ]);
+    expectString(pair.sourceDisplayFieldId, `${path}.relationPair.sourceDisplayFieldId`);
+  }
   if (intent.draft !== null) {
     const draft = exactObject(
       intent.draft,
@@ -781,8 +852,18 @@ function parseIntent(value: unknown, path: string): void {
       ],
       ["displayName", "help", "logicalType", "value", "constraints", "storage", "display"],
     );
+    let definitionFormula = draft.formula;
+    if (draft.formula !== undefined) {
+      const formula = exactObject(
+        draft.formula,
+        `${path}.draft.formula`,
+        ["language", "source"],
+      );
+      definitionFormula = { ...formula, resultType: "text" };
+    }
     parseFieldDefinitionV2({
       ...draft,
+      formula: definitionFormula,
       contract: SCHEMA_V2_CONTRACT,
       identity: {
         fieldId: "fld_contract_validation",

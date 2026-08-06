@@ -16,11 +16,11 @@ public sealed class ProductDataRpcRegistryTests
         [
             "field.settings.describe", "field.change.plan", "field.change.apply",
             "field.change.status", "field.change.cancel", "field.recycleBin.list",
-            "schema.getTable", "query.page",
+            "schema.getTable", "query.page", "query.view",
             "mutation.preview", "mutation.apply",
             "data.previewImport", "data.applyImport", "data.export",
             "task.create", "task.cancel", "task.status",
-            "formula.validate", "formula.preview",
+            "formula.validate", "formula.draft.validate", "formula.preview",
             "file.list", "file.token", "events.reconcile",
             "preset.list", "preset.save", "preset.delete",
             "version.list", "version.create", "version.save", "version.compare",
@@ -37,6 +37,18 @@ public sealed class ProductDataRpcRegistryTests
             Assert.IsTrue(ProductDataRpcRegistry.TryGet(type, out var endpoint), type);
             Assert.AreEqual(type, endpoint.Type);
         }
+    }
+
+    [TestMethod]
+    public void FormulaDraftValidatorRequiresOnlyVisualAuthoringInputs()
+    {
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet("formula.draft.validate", out var endpoint));
+        Assert.IsTrue(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"tableId":"tbl_orders","displaySource":"SUM({明细}.{金额})"}""").RootElement));
+        Assert.IsFalse(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"tableId":"tbl_orders","displaySource":"SUM({明细}.{金额})","fieldId":"raw"}""").RootElement));
+        Assert.IsFalse(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"tableId":"tbl_orders","displaySource":7}""").RootElement));
     }
 
     [TestMethod]
@@ -58,6 +70,14 @@ public sealed class ProductDataRpcRegistryTests
             """
             {"action":"update","tableId":"tbl_orders","fieldId":"fld_status",
              "expectedSchemaRevision":"schema_7","draft":{},"actor":{"id":"user_1","kind":"user"}}
+            """).RootElement));
+        Assert.IsTrue(plan.IsValidPayload(JsonDocument.Parse(
+            """
+            {"action":"create","tableId":"tbl_orders","fieldId":"",
+             "expectedSchemaRevision":"schema_7","draft":{},
+             "actor":{"id":"user_1","kind":"user"},
+             "relationPair":{"reciprocalDisplayName":"订单","reciprocalCardinality":"many",
+              "sourceDisplayFieldId":"fld_order_number"}}
             """).RootElement));
         Assert.IsFalse(plan.IsValidPayload(JsonDocument.Parse(
             """
@@ -114,7 +134,7 @@ public sealed class ProductDataRpcRegistryTests
                  {
                      "field.settings.describe", "field.change.status",
                      "field.recycleBin.list",
-                     "mutation.preview", "query.page",
+                     "mutation.preview", "query.page", "query.view",
                      "data.previewImport", "data.export", "task.status",
                  })
         {

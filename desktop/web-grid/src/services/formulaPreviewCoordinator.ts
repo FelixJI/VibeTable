@@ -52,14 +52,19 @@ export class FormulaPreviewCoordinator {
     }, this.delayMs);
   }
 
-  dispose(): void {
+  cancel(): void {
     if (this.disposed) return;
-    this.disposed = true;
     this.generation += 1;
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
     this.active?.abort();
     this.active = null;
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.cancel();
+    this.disposed = true;
   }
 
   private async execute(

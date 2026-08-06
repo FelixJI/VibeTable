@@ -6,6 +6,7 @@ import (
 	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,7 +14,8 @@ import (
 )
 
 const (
-	maxFilters           = 64
+	maxFilters           = 50
+	maxFilterDepth       = 3
 	maxSorts             = 16
 	maxInValues          = 200
 	defaultAggregateRows = 1000
@@ -266,6 +268,242 @@ func CompileAggregate(
 	return sql, c.params, nil
 }
 
+type compiledViewGroups struct {
+	sql          string
+	params       map[string]any
+	groupFields  []FieldDescriptor
+	groupBuckets []GroupBucket
+	summaryCount int
+}
+
+func compileViewGroups(
+	descriptor TableDescriptor,
+	input TableQuery,
+	groups []GroupSpec,
+	summaries []SummarySpec,
+	offset int,
+	limit int,
+) (compiledViewGroups, error) {
+	if err := validateDescriptor(descriptor); err != nil {
+		return compiledViewGroups{}, err
+	}
+	if len(groups) > 2 {
+		return compiledViewGroups{}, productError(
+			"view.group.limit", "groups", "at most 2 group fields are allowed", nil,
+		)
+	}
+	if len(summaries) > 3 {
+		return compiledViewGroups{}, productError(
+			"view.summary.limit", "summaries", "at most 3 summaries are allowed", nil,
+		)
+	}
+	c := &compiler{descriptor: descriptor, params: make(map[string]any)}
+	where, err := c.compileFilterList(input.Filters, "query.filters")
+	if err != nil {
+		return compiledViewGroups{}, err
+	}
+	archiveWhere, err := c.compileArchive()
+	if err != nil {
+		return compiledViewGroups{}, err
+	}
+	if archiveWhere != "" {
+		if where == "" {
+			where = archiveWhere
+		} else {
+			where = "(" + where + ") AND (" + archiveWhere + ")"
+		}
+	}
+	if keyword := strings.TrimSpace(input.Keyword); keyword != "" {
+		pattern := "%" + escapeLike(keyword) + "%"
+		parts := make([]string, 0)
+		for _, name := range sortedFieldNames(descriptor.Fields) {
+			field := descriptor.Fields[name]
+			if field.Searchable && field.Type == FieldTypeText {
+				parts = append(parts, fmt.Sprintf(
+					`LOWER(CAST(%s AS TEXT)) LIKE LOWER(%s) ESCAPE '\'`,
+					c.productValueSQL(name, field.PhysicalName), c.bind(pattern),
+				))
+			}
+		}
+		if len(parts) == 0 {
+			return compiledViewGroups{}, productError(
+				"query.keyword.unsupported", "query.keyword",
+				"table has no searchable fields", nil,
+			)
+		}
+		keywordWhere := "(" + strings.Join(parts, " OR ") + ")"
+		if where == "" {
+			where = keywordWhere
+		} else {
+			where = "(" + where + ") AND " + keywordWhere
+		}
+	}
+
+	selects := make([]string, 0, len(groups)+len(summaries)+1)
+	groupExpressions := make([]string, 0, len(groups))
+	orderExpressions := make([]string, 0, len(groups))
+	groupFields := make([]FieldDescriptor, 0, len(groups))
+	groupBuckets := make([]GroupBucket, 0, len(groups))
+	seenGroups := make(map[string]struct{}, len(groups))
+	for index, group := range groups {
+		if _, exists := seenGroups[group.Field]; exists {
+			return compiledViewGroups{}, productError(
+				"view.group.duplicate", fmt.Sprintf("groups[%d].field", index),
+				"group fields must be unique", nil,
+			)
+		}
+		field, err := c.resolve(group.Field, fmt.Sprintf("groups[%d].field", index))
+		if err != nil {
+			return compiledViewGroups{}, err
+		}
+		if !aggregateGroupTypeAllowed(field.descriptor.Type) {
+			return compiledViewGroups{}, productError(
+				"view.group.unsupported_field", fmt.Sprintf("groups[%d].field", index),
+				"field type cannot be used for grouping", nil,
+			)
+		}
+		bucket := group.Bucket
+		if bucket == "" {
+			bucket = GroupBucketValue
+		}
+		expression, err := c.viewGroupExpression(
+			field, bucket, group.NumberInterval, fmt.Sprintf("groups[%d].bucket", index),
+		)
+		if err != nil {
+			return compiledViewGroups{}, err
+		}
+		direction := group.Direction
+		if direction == "" {
+			direction = SortAscending
+		}
+		if direction != SortAscending && direction != SortDescending {
+			return compiledViewGroups{}, productError(
+				"view.group.invalid_direction", fmt.Sprintf("groups[%d].direction", index),
+				"direction must be asc or desc", nil,
+			)
+		}
+		alias := fmt.Sprintf("group_%d", index)
+		selects = append(selects, expression+" AS "+quote(alias))
+		groupExpressions = append(groupExpressions, expression)
+		orderExpressions = append(orderExpressions, expression+" "+strings.ToUpper(string(direction)))
+		groupFields = append(groupFields, field.descriptor)
+		groupBuckets = append(groupBuckets, bucket)
+		seenGroups[group.Field] = struct{}{}
+	}
+	selects = append(selects, "COUNT(*) AS "+quote("row_count"))
+	if len(groups) == 2 {
+		selects = append(selects, "SUM(COUNT(*)) OVER (PARTITION BY "+
+			groupExpressions[0]+") AS "+quote("parent_row_count"))
+	}
+	for index, summary := range summaries {
+		field, err := c.resolve(summary.Field, fmt.Sprintf("summaries[%d].field", index))
+		if err != nil {
+			return compiledViewGroups{}, err
+		}
+		if field.descriptor.Type != FieldTypeNumber {
+			return compiledViewGroups{}, productError(
+				"view.summary.unsupported_field", fmt.Sprintf("summaries[%d].field", index),
+				"summary field must be numeric", nil,
+			)
+		}
+		switch summary.Function {
+		case AggregateSum, AggregateAvg, AggregateMin, AggregateMax:
+		default:
+			return compiledViewGroups{}, productError(
+				"view.summary.invalid_function", fmt.Sprintf("summaries[%d].function", index),
+				"function must be sum, avg, min, or max", nil,
+			)
+		}
+		leafAggregate := fmt.Sprintf(
+			"%s(%s) AS %s",
+			strings.ToUpper(string(summary.Function)), field.sql, quote(fmt.Sprintf("summary_%d", index)),
+		)
+		selects = append(selects, leafAggregate)
+		if len(groups) == 2 {
+			partition := " OVER (PARTITION BY " + groupExpressions[0] + ")"
+			var parentAggregate string
+			switch summary.Function {
+			case AggregateSum:
+				parentAggregate = "SUM(SUM(" + field.sql + "))" + partition
+			case AggregateAvg:
+				parentAggregate = "CAST(SUM(SUM(" + field.sql + "))" + partition +
+					" AS REAL)" +
+					" / NULLIF(SUM(COUNT(" + field.sql + "))" + partition + ", 0)"
+			case AggregateMin:
+				parentAggregate = "MIN(MIN(" + field.sql + "))" + partition
+			case AggregateMax:
+				parentAggregate = "MAX(MAX(" + field.sql + "))" + partition
+			}
+			selects = append(selects, parentAggregate+" AS "+
+				quote(fmt.Sprintf("parent_summary_%d", index)))
+		}
+	}
+
+	sql := "SELECT " + strings.Join(selects, ", ") + " FROM " + quote(descriptor.PhysicalName)
+	if where != "" {
+		sql += " WHERE " + where
+	}
+	if len(groupExpressions) > 0 {
+		sql += " GROUP BY " + strings.Join(groupExpressions, ", ")
+		sql += " ORDER BY " + strings.Join(orderExpressions, ", ")
+	}
+	c.params["group_limit"] = limit
+	c.params["group_offset"] = offset
+	sql += " LIMIT {:group_limit} OFFSET {:group_offset}"
+	return compiledViewGroups{
+		sql: sql, params: c.params, groupFields: groupFields,
+		groupBuckets: groupBuckets, summaryCount: len(summaries),
+	}, nil
+}
+
+func (c *compiler) viewGroupExpression(
+	field resolvedField,
+	bucket GroupBucket,
+	numberInterval float64,
+	path string,
+) (string, error) {
+	if bucket == GroupBucketValue {
+		return field.sql, nil
+	}
+	if bucket == GroupBucketNumber {
+		if field.descriptor.Type != FieldTypeNumber || numberInterval <= 0 ||
+			math.IsNaN(numberInterval) || math.IsInf(numberInterval, 0) {
+			return "", productError(
+				"view.group.invalid_bucket", path,
+				"number buckets require a numeric field and a positive finite interval", nil,
+			)
+		}
+		interval := strconv.FormatFloat(numberInterval, 'g', -1, 64)
+		return "FLOOR((" + field.sql + ") / " + interval + ") * " + interval, nil
+	}
+	if field.descriptor.Type != FieldTypeDate {
+		return "", productError(
+			"view.group.invalid_bucket", path, "date buckets require a date field", nil,
+		)
+	}
+	switch bucket {
+	case GroupBucketYear:
+		return "strftime(" + c.bind("%Y") + ", " + field.sql + ")", nil
+	case GroupBucketQuarter:
+		return "strftime(" + c.bind("%Y") + ", " + field.sql + ") || " +
+			c.bind("-Q") + " || " +
+			"(((CAST(strftime(" + c.bind("%m") + ", " + field.sql +
+			") AS INTEGER) - 1) / 3) + 1)", nil
+	case GroupBucketMonth:
+		return "strftime(" + c.bind("%Y-%m") + ", " + field.sql + ")", nil
+	case GroupBucketWeek:
+		return "strftime(" + c.bind("%Y-W%W") + ", " + field.sql + ")", nil
+	case GroupBucketDay:
+		return "strftime(" + c.bind("%Y-%m-%d") + ", " + field.sql + ")", nil
+	case GroupBucketHour:
+		return "strftime(" + c.bind("%Y-%m-%dT%H") + ", " + field.sql + ")", nil
+	default:
+		return "", productError(
+			"view.group.invalid_bucket", path, "unsupported group bucket", nil,
+		)
+	}
+}
+
 func Normalize(input TableQuery) (TableQuery, error) {
 	if input.Offset < 0 {
 		return TableQuery{}, productError("query.page.invalid", "offset", "offset cannot be negative", nil)
@@ -277,7 +515,7 @@ func Normalize(input TableQuery) (TableQuery, error) {
 		return TableQuery{}, productError("query.page.invalid", "limit", "limit must be between 1 and 500", nil)
 	}
 	if len(input.Filters) > maxFilters {
-		return TableQuery{}, productError("query.filter.limit", "filters", "too many filters", nil)
+		return TableQuery{}, productError("view.filter.condition_limit", "filters", "too many filters", nil)
 	}
 	if len(input.Sorts) > maxSorts {
 		return TableQuery{}, productError("query.sort.limit", "sorts", "too many sorts", nil)
@@ -333,12 +571,14 @@ func normalizeFilter(
 	depth int,
 	count *int,
 ) error {
-	*count++
-	if *count > maxFilters {
-		return productError("query.filter.limit", "filters", "too many filters", nil)
+	if len(filter.Filters) == 0 {
+		*count++
+		if *count > maxFilters {
+			return productError("view.filter.condition_limit", "filters", "too many filters", nil)
+		}
 	}
-	if depth > 8 {
-		return productError("query.filter.depth", path, "filter nesting is too deep", nil)
+	if depth > maxFilterDepth {
+		return productError("view.filter.depth_limit", path, "filter nesting is too deep", nil)
 	}
 	if filter.Logic == "" {
 		filter.Logic = LogicAnd
@@ -1056,10 +1296,18 @@ func (c *compiler) resolve(fieldPath string, path string) (resolvedField, error)
 		if !ok {
 			return resolvedField{}, unknownField(path, fieldPath)
 		}
+		targetSQL := "r0." + quote(target.PhysicalName)
+		if target.ComputedEnvelope {
+			if !target.ComputedReady {
+				targetSQL = "NULL"
+			} else {
+				targetSQL = "json_extract(" + targetSQL + ", '$')"
+			}
+		}
 		return resolvedField{
 			sql: fmt.Sprintf(
-				"(SELECT r0.%s FROM %s r0 WHERE r0.%s = %s LIMIT 1)",
-				quote(target.PhysicalName),
+				"(SELECT %s FROM %s r0 WHERE r0.%s = %s LIMIT 1)",
+				targetSQL,
 				quote(field.Relation.TableName),
 				quote(field.Relation.PrimaryKey),
 				sql,
@@ -1077,6 +1325,12 @@ func (c *compiler) resolve(fieldPath string, path string) (resolvedField, error)
 // explicit zero, false, empty string and empty container values.
 func (c *compiler) productValueSQL(productName, physicalName string) string {
 	value := quote(physicalName)
+	if field, ok := c.descriptor.Fields[productName]; ok && field.ComputedEnvelope {
+		if !field.ComputedReady {
+			return "NULL"
+		}
+		value = "json_extract(" + value + ", '$')"
+	}
 	presence, ok := c.descriptor.PresenceFields[productName]
 	if !ok || presence == "" {
 		return value

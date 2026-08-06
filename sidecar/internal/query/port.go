@@ -29,6 +29,7 @@ type SchemaSource interface {
 
 type QueryPort interface {
 	QueryPage(ctx context.Context, tableID string, input TableQuery) (Page, error)
+	ExecuteViewQuery(ctx context.Context, tableID string, input ViewQuery) (ViewResult, error)
 	ReadRows(ctx context.Context, tableID string, rowIDs []string) ([]map[string]any, error)
 	Aggregate(ctx context.Context, tableID string, input AggregateQuery) (AggregateResult, error)
 	ValidateSnapshot(
@@ -37,6 +38,11 @@ type QueryPort interface {
 		currentQuery *TableQuery,
 	) (SnapshotValidation, error)
 }
+
+const (
+	defaultViewGroupRows = 100
+	maxViewGroupRows     = 5000
+)
 
 type Port struct {
 	app    core.App
@@ -103,6 +109,183 @@ func (port *Port) QueryPage(
 		return Page{}, operationError(err)
 	}
 	return result, nil
+}
+
+func (port *Port) ExecuteViewQuery(
+	ctx context.Context,
+	tableID string,
+	input ViewQuery,
+) (ViewResult, error) {
+	if err := port.validateConfigured(); err != nil {
+		return ViewResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return ViewResult{}, err
+	}
+	normalized, err := Normalize(input.Query)
+	if err != nil {
+		return ViewResult{}, err
+	}
+	if input.GroupOffset < 0 {
+		return ViewResult{}, productError(
+			"view.group.invalid_page", "groupOffset", "groupOffset cannot be negative", nil,
+		)
+	}
+	if input.GroupLimit == 0 {
+		input.GroupLimit = defaultViewGroupRows
+	}
+	if input.GroupLimit < 1 || input.GroupLimit > maxViewGroupRows {
+		return ViewResult{}, productError(
+			"view.group.invalid_page", "groupLimit", "groupLimit must be between 1 and 5000", nil,
+		)
+	}
+	var result ViewResult
+	err = port.app.RunInTransaction(func(txApp core.App) error {
+		descriptor, err := port.describe(ctx, txApp, tableID)
+		if err != nil {
+			return err
+		}
+		page, err := port.executePage(ctx, txApp, descriptor, normalized)
+		if err != nil {
+			return err
+		}
+		if len(input.Groups) == 0 && len(input.Summaries) == 0 {
+			result = ViewResult{
+				Page: page, GroupRows: []GroupRow{},
+				GroupOffset: input.GroupOffset, GroupLimit: input.GroupLimit,
+			}
+			return nil
+		}
+		plan, err := compileViewGroups(
+			descriptor,
+			normalized,
+			input.Groups,
+			input.Summaries,
+			input.GroupOffset,
+			input.GroupLimit+1,
+		)
+		if err != nil {
+			return err
+		}
+		rows, err := queryDynamicRows(
+			txApp.DB().NewQuery(plan.sql).WithContext(ctx).Bind(dbx.Params(plan.params)),
+		)
+		if err != nil {
+			return operationError(err)
+		}
+		hasMore := len(rows) > input.GroupLimit
+		if hasMore {
+			rows = rows[:input.GroupLimit]
+		}
+		groupRows, err := decodeViewGroupRows(rows, plan)
+		if err != nil {
+			return err
+		}
+		result = ViewResult{
+			Page: page, GroupRows: groupRows,
+			GroupOffset: input.GroupOffset, GroupLimit: input.GroupLimit,
+			HasMoreGroups: hasMore,
+		}
+		return nil
+	})
+	if err != nil {
+		return ViewResult{}, operationError(err)
+	}
+	return result, nil
+}
+
+func (port *Port) executePage(
+	ctx context.Context,
+	app core.App,
+	descriptor TableDescriptor,
+	normalized TableQuery,
+) (Page, error) {
+	plan, err := Compile(descriptor, normalized)
+	if err != nil {
+		return Page{}, err
+	}
+	rows, err := port.queryRows(ctx, app, plan.SQL, plan.Params, descriptor)
+	if err != nil {
+		return Page{}, operationError(err)
+	}
+	var filteredRows, totalRows int64
+	if err := app.DB().NewQuery(plan.CountSQL).
+		WithContext(ctx).Bind(dbx.Params(plan.Params)).Row(&filteredRows); err != nil {
+		return Page{}, operationError(err)
+	}
+	if err := app.DB().NewQuery(plan.TotalSQL).
+		WithContext(ctx).Bind(dbx.Params(plan.Params)).Row(&totalRows); err != nil {
+		return Page{}, operationError(err)
+	}
+	snapshot, err := port.buildSnapshot(descriptor, normalized)
+	if err != nil {
+		return Page{}, err
+	}
+	return Page{
+		Rows: rows, Offset: normalized.Offset, Limit: normalized.Limit,
+		FilteredRows: filteredRows, TotalRows: totalRows,
+		Snapshot: snapshot,
+	}, nil
+}
+
+func decodeViewGroupRows(
+	rows []map[string]any,
+	plan compiledViewGroups,
+) ([]GroupRow, error) {
+	result := make([]GroupRow, 0, len(rows))
+	for _, row := range rows {
+		key := make([]any, len(plan.groupFields))
+		for index, descriptor := range plan.groupFields {
+			value := row[fmt.Sprintf("group_%d", index)]
+			if plan.groupBuckets[index] == GroupBucketValue {
+				value = decodeFieldValue(value, descriptor)
+			}
+			key[index] = value
+		}
+		count, ok := integerResult(row["row_count"])
+		if !ok {
+			return nil, productError(
+				"query.storage.failed", "groupRows.count", "group count is invalid", nil,
+			)
+		}
+		summaries := make([]any, plan.summaryCount)
+		for index := range summaries {
+			summaries[index] = row[fmt.Sprintf("summary_%d", index)]
+		}
+		groupRow := GroupRow{Key: key, Count: count, Summaries: summaries}
+		if len(plan.groupFields) == 2 {
+			parentCount, ok := integerResult(row["parent_row_count"])
+			if !ok {
+				return nil, productError(
+					"query.storage.failed", "groupRows.parentCount",
+					"parent group count is invalid", nil,
+				)
+			}
+			groupRow.ParentCount = &parentCount
+			groupRow.ParentSummaries = make([]any, plan.summaryCount)
+			for index := range groupRow.ParentSummaries {
+				groupRow.ParentSummaries[index] = row[fmt.Sprintf("parent_summary_%d", index)]
+			}
+		}
+		result = append(result, groupRow)
+	}
+	return result, nil
+}
+
+func integerResult(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int64:
+		return typed, true
+	case int:
+		return int64(typed), true
+	case float64:
+		return int64(typed), typed == float64(int64(typed))
+	case json.Number:
+		parsed, err := typed.Int64()
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func (port *Port) ReadRows(
@@ -430,6 +613,26 @@ func decodeValue(value any, fieldType FieldType) any {
 }
 
 func decodeFieldValue(value any, field FieldDescriptor) any {
+	if field.ComputedEnvelope {
+		if !field.ComputedReady {
+			return map[string]any{
+				"state":      field.ComputedStatus,
+				"value":      nil,
+				"diagnostic": field.ComputedError,
+			}
+		}
+		var decoded any
+		switch typed := value.(type) {
+		case string:
+			if json.Unmarshal([]byte(typed), &decoded) == nil {
+				value = decoded
+			}
+		case []byte:
+			if json.Unmarshal(typed, &decoded) == nil {
+				value = decoded
+			}
+		}
+	}
 	if field.AutoDate && value != nil {
 		var raw string
 		switch typed := value.(type) {

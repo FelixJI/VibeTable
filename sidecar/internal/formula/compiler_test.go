@@ -376,6 +376,97 @@ func TestFormulaDeterministicMathAndDateFunctions(t *testing.T) {
 	}
 }
 
+func TestFormulaAggregatesManyRelationWithoutLookupAndInfersType(t *testing.T) {
+	items := scalarField("items_id", "items", schema.DataTypeRelation)
+	items.Kind = schema.FieldKindRelation
+	items.StorageType = schema.StorageRelation
+	items.Relation = &schema.RelationSpec{
+		TargetTableID: "line_items", Cardinality: "many", DeletePolicy: "setNull",
+	}
+	definition := formulaTable(
+		items,
+		formulaField(
+			"total_id", "total", schema.DataTypeFloat,
+			`relationSum(items, "amount") + 2.0`,
+		),
+	)
+	compiler := NewCompiler(DefaultLimits())
+	inferred, formulaErr := compiler.InferSource(
+		definition, `relationSum(items, "amount") + 2.0`,
+	)
+	if formulaErr != nil || inferred != schema.DataTypeFloat {
+		t.Fatalf("inferred type = %s, error = %#v", inferred, formulaErr)
+	}
+	plan, formulaErr := compiler.CompileTable(definition)
+	if formulaErr != nil {
+		t.Fatal(formulaErr)
+	}
+	if got := strings.Join(plan.Formulas[0].RelationAggregatePaths, ","); got != "items.amount" {
+		t.Fatalf("aggregate references = %q", got)
+	}
+	result, formulaErr := plan.Evaluate(context.Background(), map[string]any{
+		"items": []any{
+			map[string]any{"amount": 3.5},
+			map[string]any{"amount": 4.0},
+			map[string]any{"amount": nil},
+		},
+	}, nil)
+	if formulaErr != nil || result["total"] != 9.5 {
+		t.Fatalf("aggregate result = %#v, error = %#v", result, formulaErr)
+	}
+}
+
+func TestFormulaEvaluatesEveryRelationAggregateFromPrecomputedCarrier(t *testing.T) {
+	items := scalarField("items_id", "items", schema.DataTypeRelation)
+	items.Kind = schema.FieldKindRelation
+	items.StorageType = schema.StorageRelation
+	items.Relation = &schema.RelationSpec{
+		TargetTableID: "line_items", Cardinality: "many", DeletePolicy: "setNull",
+	}
+	plan, formulaErr := NewCompiler(DefaultLimits()).CompileTable(formulaTable(
+		items,
+		formulaField("sum_id", "sum", schema.DataTypeFloat, `relationSum(items, "amount")`),
+		formulaField("avg_id", "avg", schema.DataTypeFloat, `relationAverage(items, "amount")`),
+		formulaField("min_id", "min", schema.DataTypeFloat, `relationMin(items, "amount")`),
+		formulaField("max_id", "max", schema.DataTypeFloat, `relationMax(items, "amount")`),
+		formulaField("count_id", "count", schema.DataTypeInteger, "relationCount(items)"),
+		formulaField(
+			"count_values_id", "count_values", schema.DataTypeInteger,
+			`relationCountValues(items, "amount")`,
+		),
+	))
+	if formulaErr != nil {
+		t.Fatal(formulaErr)
+	}
+	countFormula, exists := plan.Formula("count_id")
+	if !exists {
+		t.Fatal("count formula was not compiled")
+	}
+	if got := strings.Join(countFormula.RelationCountNames, ","); got != "items" {
+		t.Fatalf("count relation references = %q", got)
+	}
+	result, formulaErr := plan.Evaluate(context.Background(), map[string]any{
+		"items": map[string]any{
+			precomputedRelationMarker:   true,
+			precomputedRelationCountKey: int64(3),
+			precomputedRelationFields: map[string]any{
+				"amount": map[string]any{
+					"numeric": true, "count": int64(2), "sum": 7.5,
+					"min": 3.5, "max": 4.0,
+				},
+			},
+		},
+	}, nil)
+	if formulaErr != nil {
+		t.Fatal(formulaErr)
+	}
+	if result["sum"] != 7.5 || result["avg"] != 3.75 || result["min"] != 3.5 ||
+		result["max"] != 4.0 || result["count"] != int64(3) ||
+		result["count_values"] != int64(2) {
+		t.Fatalf("precomputed aggregate result = %#v", result)
+	}
+}
+
 func TestFormulaEvaluateRejectsUnknownPreviewInputs(t *testing.T) {
 	plan, formulaErr := NewCompiler(DefaultLimits()).CompileTable(formulaTable(
 		formulaField("value_id", "value", schema.DataTypeInteger, "1"),

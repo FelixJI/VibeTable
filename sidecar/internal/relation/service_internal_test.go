@@ -36,3 +36,33 @@ func TestDescriptorFromSerializesEmptyAllowlistAsArray(t *testing.T) {
 		t.Fatalf("allowedTargetTableIds = %#v, want empty array", allowed)
 	}
 }
+
+func TestQuickCreateEligibilityRequiresOnlyTheWritableDisplayField(t *testing.T) {
+	display := schema.FieldDefinition{
+		FieldID: "name_id", PhysicalName: "name", DisplayName: "名称",
+		Kind: schema.FieldKindScalar, DataType: schema.DataTypeShortText,
+		StorageType: schema.StorageText, Nullable: false,
+	}
+	definition := schema.TableDefinition{
+		PrimaryDisplayFieldID: display.FieldID,
+		Fields:                []schema.FieldDefinition{display},
+	}
+	if eligible, reason := quickCreateEligibility(definition); !eligible || reason != "" {
+		t.Fatalf("single-label eligibility = %v, %q", eligible, reason)
+	}
+
+	required := display
+	required.FieldID = "region_id"
+	required.PhysicalName = "region"
+	required.DisplayName = "区域"
+	definition.Fields = append(definition.Fields, required)
+	if eligible, reason := quickCreateEligibility(definition); eligible || reason == "" {
+		t.Fatalf("required-field eligibility = %v, %q", eligible, reason)
+	}
+
+	required.DefaultValue = "华东"
+	definition.Fields[1] = required
+	if eligible, reason := quickCreateEligibility(definition); !eligible || reason != "" {
+		t.Fatalf("defaulted-field eligibility = %v, %q", eligible, reason)
+	}
+}

@@ -21,7 +21,16 @@ export function draftFromDefinition(definition: FieldDefinitionV2): FieldDraftV2
     lifecycle: _lifecycle,
     ...draft
   } = definition;
-  return clone(draft);
+  const normalized = clone(draft) as Omit<typeof draft, "formula"> & {
+    formula?: { language: "cel-v1"; source: string };
+  };
+  if (definition.formula) {
+    normalized.formula = {
+      language: definition.formula.language,
+      source: definition.formula.source,
+    };
+  }
+  return normalized;
 }
 
 export function draftFromCapability(
@@ -65,16 +74,13 @@ function specializedDefaults(
         formula: {
           language: "cel-v1",
           source: "",
-          resultType: "text",
         },
       };
     case "lookup":
       return {
         lookup: {
-          relationFieldId: "",
+          path: [{ relationFieldId: "" }],
           targetFieldId: "",
-          aggregate: "first",
-          resultType: "text",
         },
       };
     default:
@@ -125,6 +131,7 @@ export function buildFieldChangeIntent(input: {
   readonly conversionRule?: string;
   readonly confirmation?: string;
   readonly backupReceipt?: string;
+  readonly relationPair?: FieldChangeIntentV2["relationPair"] | null;
 }): FieldChangeIntentV2 {
   return {
     action: input.action,
@@ -137,5 +144,6 @@ export function buildFieldChangeIntent(input: {
     conversionRule: input.conversionRule ?? "",
     confirmation: input.confirmation ?? "",
     backupReceipt: input.backupReceipt ?? "",
+    ...(input.relationPair ? { relationPair: clone(input.relationPair) } : {}),
   };
 }

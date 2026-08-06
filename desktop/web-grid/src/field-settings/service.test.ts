@@ -7,6 +7,8 @@ import type { HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { useFieldSettingsStore } from "./store";
 import { useFieldSettingsService } from "./service";
+import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useTableStore } from "@/stores/tableStore";
 
 const fixtures = resolve(import.meta.dirname, "../../../../contracts/schema-v2/fixtures");
 
@@ -251,6 +253,304 @@ describe("field settings service", () => {
     service.dispose();
 
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("loads table and field names for a paired relation without asking for raw ids", async () => {
+    const base = fixture<CapabilityV2>("capability.json");
+    const relationCapability: CapabilityV2 = {
+      ...base,
+      logicalType: "relation",
+      userCreatable: true,
+      recommended: {
+        ...base.recommended,
+        storage: { ...base.recommended.storage, kind: "pocketbase-relation" },
+        display: { ...base.recommended.display, kind: "relation" },
+      },
+    };
+    const described: FieldSettingsDescribeResultV2 = {
+      ...describeResult(false), capabilities: [relationCapability],
+    };
+    const schema = (collection: string, fieldId: string, title: string) => ({
+      contract: "vibetable.schema-describe.v1",
+      collection,
+      requestGeneration: 0,
+      schema: {
+        collection,
+        primaryKey: "id",
+        primaryDisplayFieldId: fieldId,
+        columns: [{
+          name: `f_${fieldId}`, title, fieldId, kind: "scalar" as const,
+          dataType: "text" as const, editable: true, nullable: false,
+        }],
+        normalizedRelations: [], schemaRevision: "schema_2",
+        permissionRevision: "schema_2", capabilityHash: "cap", lookupRevision: "lookup",
+      },
+      capabilities: {
+        contract: "vibetable.relation-capabilities.v1",
+        relationReadV1: true, relationEditV1: true, lookupQueryV1: true, reason: null,
+      },
+    });
+    request
+      .mockResolvedValueOnce(described)
+      .mockResolvedValueOnce(schema("tbl_opaque", "fld_order_number", "订单号"))
+      .mockResolvedValueOnce(schema("tbl_customers", "fld_customer_name", "客户名称"));
+    useWorkspaceStore().setOpened([
+      { collection: "tbl_opaque", displayName: "订单" },
+      { collection: "tbl_customers", displayName: "客户" },
+    ]);
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+
+    await service.openCreate("tbl_opaque", "relation");
+    await service.loadRelationCatalog();
+    await service.selectRelationTarget("tbl_customers");
+
+    expect(store.relationTables.map(item => item.displayName)).toEqual(["订单", "客户"]);
+    expect(store.relationPair).toEqual({
+      reciprocalDisplayName: "订单",
+      reciprocalCardinality: "many",
+      sourceDisplayFieldId: "fld_order_number",
+    });
+    expect(store.draft?.relation).toMatchObject({
+      targetTableId: "tbl_customers", displayFieldId: "fld_customer_name",
+    });
+    expect(request.mock.calls.slice(1).map(([name]) => name)).toEqual([
+      "schema.describe", "schema.describe",
+    ]);
+  });
+
+  it("resolves an eight-hop-capable Lookup catalog by display metadata without mutating the draft", async () => {
+    const base = fixture<CapabilityV2>("capability.json");
+    const lookupCapability: CapabilityV2 = {
+      ...base,
+      logicalType: "lookup",
+      userCreatable: true,
+      advancedSettings: ["path", "targetField"],
+    };
+    const described: FieldSettingsDescribeResultV2 = {
+      ...describeResult(false), capabilities: [lookupCapability],
+    };
+    const schema = (
+      collection: string,
+      relation?: { fieldId: string; title: string; target: string },
+      scalar?: { fieldId: string; title: string },
+    ) => ({
+      contract: "vibetable.schema-describe.v1",
+      collection,
+      requestGeneration: 0,
+      schema: {
+        collection,
+        primaryKey: "id",
+        primaryDisplayFieldId: scalar?.fieldId ?? "",
+        columns: [
+          ...(relation ? [{
+            name: `f_${relation.fieldId}`, title: relation.title,
+            fieldId: relation.fieldId, kind: "relation" as const,
+            dataType: "relation" as const, editable: true, nullable: true,
+            relationId: `${collection}.${relation.fieldId}`,
+          }] : []),
+          ...(scalar ? [{
+            name: `f_${scalar.fieldId}`, title: scalar.title,
+            fieldId: scalar.fieldId, kind: "scalar" as const,
+            dataType: "text" as const, editable: true, nullable: true,
+          }] : []),
+        ],
+        normalizedRelations: relation ? [{
+          relationId: `${collection}.${relation.fieldId}`,
+          kind: "m2o" as const,
+          relatedCollection: relation.target,
+          relatedCollectionDisplayName: relation.target,
+          junction: null,
+        }] : [],
+        schemaRevision: "schema_2", permissionRevision: "schema_2",
+        capabilityHash: "cap", lookupRevision: "lookup",
+      },
+      capabilities: {
+        contract: "vibetable.relation-capabilities.v1",
+        relationReadV1: true, relationEditV1: true, lookupQueryV1: true, reason: null,
+      },
+    });
+    const orders = schema("tbl_opaque", {
+      fieldId: "fld_customer", title: "客户", target: "tbl_customers",
+    });
+    const customers = schema("tbl_customers", {
+      fieldId: "fld_region", title: "区域", target: "tbl_regions",
+    });
+    const regions = schema("tbl_regions", undefined, {
+      fieldId: "fld_region_name", title: "区域名称",
+    });
+    request
+      .mockResolvedValueOnce(described)
+      .mockResolvedValueOnce(orders)
+      .mockResolvedValueOnce(customers)
+      .mockResolvedValueOnce(regions)
+      .mockResolvedValueOnce(orders)
+      .mockResolvedValueOnce(customers);
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+
+    await service.openCreate("tbl_opaque", "lookup");
+    store.patchDraft({
+      lookup: {
+        path: [
+          { relationFieldId: "fld_customer" },
+          { relationFieldId: "fld_region" },
+        ],
+        targetFieldId: "fld_region_name",
+      },
+    });
+    await service.loadLookupCatalog();
+
+    expect(store.lookupSchemas.map(item => item.collection)).toEqual([
+      "tbl_opaque", "tbl_customers", "tbl_regions",
+    ]);
+    const originalLookup = JSON.parse(JSON.stringify(store.draft?.lookup)) as unknown;
+    await service.resolveLookupPath([{ relationFieldId: "fld_customer" }]);
+    expect(store.draft?.lookup).toEqual(originalLookup);
+    expect(store.lookupSchemas.map(item => item.collection)).toEqual([
+      "tbl_opaque", "tbl_customers",
+    ]);
+    expect(JSON.stringify(store.lookupSchemas)).not.toContain("tbl_regions.fld_region_name");
+  });
+
+  it("loads the visual formula catalog and ignores stale sidecar validation results", async () => {
+    const base = fixture<CapabilityV2>("capability.json");
+    const formulaCapability: CapabilityV2 = {
+      ...base,
+      logicalType: "formula",
+      userCreatable: true,
+      advancedSettings: ["source", "autoType"],
+    };
+    const described: FieldSettingsDescribeResultV2 = {
+      ...describeResult(false), capabilities: [formulaCapability],
+    };
+    const sourceSchema = {
+      contract: "vibetable.schema-describe.v1",
+      collection: "tbl_opaque",
+      requestGeneration: 0,
+      schema: {
+        collection: "tbl_opaque", primaryKey: "id", primaryDisplayFieldId: "fld_price",
+        columns: [
+          {
+            name: "f_price", title: "单价", fieldId: "fld_price", kind: "scalar" as const,
+            dataType: "number" as const, editable: true, nullable: false,
+          },
+          {
+            name: "f_lines", title: "明细", fieldId: "fld_lines", kind: "relation" as const,
+            dataType: "relation" as const, editable: true, nullable: true,
+            relationId: "tbl_opaque.fld_lines",
+          },
+        ],
+        normalizedRelations: [{
+          relationId: "tbl_opaque.fld_lines", kind: "o2m" as const,
+          relatedCollection: "tbl_lines", relatedCollectionDisplayName: "明细",
+          junction: null,
+        }],
+        schemaRevision: "schema_2", permissionRevision: "schema_2",
+        capabilityHash: "cap", lookupRevision: "lookup",
+      },
+      capabilities: {
+        contract: "vibetable.relation-capabilities.v1",
+        relationReadV1: true, relationEditV1: true, lookupQueryV1: true, reason: null,
+      },
+    };
+    const targetSchema = {
+      ...sourceSchema,
+      collection: "tbl_lines",
+      schema: {
+        ...sourceSchema.schema,
+        collection: "tbl_lines",
+        primaryDisplayFieldId: "fld_amount",
+        columns: [{
+          name: "f_amount", title: "金额", fieldId: "fld_amount", kind: "scalar" as const,
+          dataType: "number" as const, editable: true, nullable: false,
+        }],
+        normalizedRelations: [],
+      },
+    };
+    let resolveFirst!: (value: unknown) => void;
+    let resolveSecond!: (value: unknown) => void;
+    const first = new Promise(resolve => { resolveFirst = resolve; });
+    const second = new Promise(resolve => { resolveSecond = resolve; });
+    request.mockImplementation((method: string, params: Record<string, unknown>) => {
+      if (method === "field.settings.describe") return Promise.resolve(described);
+      if (method === "schema.describe") {
+        return Promise.resolve(params.collection === "tbl_opaque" ? sourceSchema : targetSchema);
+      }
+      if (method === "schema.getTable") {
+        return Promise.resolve({
+          contractVersion: "1.0",
+          tableId: "tbl_opaque",
+          physicalName: "orders",
+          displayName: "订单",
+          kind: "base",
+          schemaRevision: "schema_2",
+          archivePolicy: { mode: "none", fieldId: null, archivedValue: null },
+          indexes: [],
+          fields: [{
+            fieldId: "fld_price", physicalName: "f_price", displayName: "单价",
+            kind: "scalar", dataType: "float", storageType: "number",
+            nullable: false, defaultValue: null, constraints: [],
+            editor: { kind: "number", config: {} }, readOnly: false,
+            formula: null, relation: null, lookup: null, attachmentPolicy: null,
+          }],
+        });
+      }
+      if (method === "formula.draft.validate") {
+        return params.displaySource === "{单价} * 2" ? first : second;
+      }
+      if (method === "formula.preview") {
+        return Promise.resolve({ values: { f_formula_preview: 42.5 } });
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    const table = useTableStore();
+    table.beginLoad();
+    table.appendPage({
+      table: "tbl_opaque",
+      columns: [{
+        name: "f_price", title: "单价", fieldId: "fld_price", kind: "scalar",
+        dataType: "decimal", editable: true, nullable: false,
+      }],
+      rows: [{ rowKey: "order-1", id: "order-1", f_price: 21.25 }],
+      offset: 0, limit: 1, totalRows: 1, mode: "client",
+    });
+
+    await service.openCreate("tbl_opaque", "formula");
+    await service.loadFormulaCatalog();
+
+    expect(store.formulaSourceSchema?.columns.map(column => column.title))
+      .toEqual(["单价", "明细"]);
+    expect(store.formulaTargetSchemas.fld_lines?.columns[0]?.title).toBe("金额");
+
+    const older = service.validateFormulaDraft("{单价} * 2");
+    const newer = service.validateFormulaDraft("SUM({明细}.{金额})");
+    resolveSecond({
+      canonicalSource: 'relationSum(f_lines, "f_amount")',
+      resultType: "number",
+      dependencies: [],
+      relationAggregatePaths: ["f_lines.f_amount"],
+    });
+    await newer;
+    await vi.waitFor(() => {
+      expect(store.formulaPreviewReady).toBe(true);
+    });
+    expect(store.formulaPreviewValue).toBe(42.5);
+    expect(request).toHaveBeenCalledWith("formula.preview", expect.objectContaining({
+      row: { id: "order-1", f_price: 21.25 },
+      changedFieldIds: [],
+    }));
+    resolveFirst({
+      canonicalSource: "f_price * 2", resultType: "number",
+      dependencies: ["f_price"], relationAggregatePaths: [],
+    });
+    await older;
+
+    expect(store.formulaValidatedSource).toBe("SUM({明细}.{金额})");
+    expect(store.formulaValidation?.canonicalSource)
+      .toBe('relationSum(f_lines, "f_amount")');
   });
 
   it("surfaces typed same-operation field errors without mis-parsing them as results", async () => {

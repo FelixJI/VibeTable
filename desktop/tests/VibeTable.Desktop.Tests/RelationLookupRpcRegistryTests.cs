@@ -13,7 +13,7 @@ public sealed class RelationLookupRpcRegistryTests
     {
         var types = RelationLookupRpcRegistry.RequestTypes;
 
-        Assert.HasCount(9, types);
+        Assert.HasCount(11, types);
         Assert.AreEqual(
             types.Count,
             types.Distinct(StringComparer.Ordinal).Count(),
@@ -33,6 +33,18 @@ public sealed class RelationLookupRpcRegistryTests
     }
 
     [TestMethod]
+    public void CreateTargetRequiresVisualRelationLabelAndIdempotencyKey()
+    {
+        Assert.IsTrue(RelationLookupRpcRegistry.TryGet("relation.createTarget", out var endpoint));
+        Assert.IsTrue(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"relationId":"orders.customer","label":"Acme","idempotencyKey":"create-1"}""")
+            .RootElement));
+        Assert.IsFalse(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"relationId":"orders.customer","rowId":"raw","idempotencyKey":"create-1"}""")
+            .RootElement));
+    }
+
+    [TestMethod]
     public void EveryRegisteredPayloadValidatorRejectsANonObjectPayload()
     {
         JsonElement nonObject = JsonDocument.Parse("[]").RootElement.Clone();
@@ -42,5 +54,17 @@ public sealed class RelationLookupRpcRegistryTests
             Assert.IsTrue(RelationLookupRpcRegistry.TryGet(type, out var endpoint), type);
             Assert.IsFalse(endpoint.IsValidPayload(nonObject), type);
         }
+    }
+
+    [TestMethod]
+    public void LookupValuePageRequiresStableIdentityRevisionsAndPaging()
+    {
+        Assert.IsTrue(RelationLookupRpcRegistry.TryGet("lookup.valuePage", out var endpoint));
+        Assert.IsTrue(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"collection":"orders","fieldRef":"line_skus","sourceRecordId":"order-1","offset":100,"limit":100,"schemaRevision":"schema_7","permissionRevision":"permission_7","lookupRevision":"lookup_7"}""")
+            .RootElement));
+        Assert.IsFalse(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"collection":"orders","fieldRef":"line_skus","sourceRecordId":"order-1","offset":100,"schemaRevision":"schema_7","permissionRevision":"permission_7","lookupRevision":"lookup_7"}""")
+            .RootElement));
     }
 }

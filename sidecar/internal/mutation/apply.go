@@ -37,6 +37,21 @@ type operationResult struct {
 	kind     OperationKind
 }
 
+type reciprocalRecordChange struct {
+	definition schema.TableDefinition
+	record     *core.Record
+	recordID   string
+	before     map[string]any
+	after      map[string]any
+}
+
+type relatedTableBatch struct {
+	definition   schema.TableDefinition
+	metadata     *core.Record
+	dataRevision int64
+	recordIDs    []string
+}
+
 func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, error) {
 	if err := validateRequestShape(request); err != nil {
 		return Receipt{}, err
@@ -123,6 +138,7 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 		operationResults := make([]operationResult, 0, len(preview.Operations))
 		recordIDs := make([]string, 0, len(preview.Operations))
 		seenRecordIDs := map[string]struct{}{}
+		reciprocalChanges := make([]reciprocalRecordChange, 0)
 
 		for index, operation := range preview.Operations {
 			if err := ctx.Err(); err != nil {
@@ -161,6 +177,22 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 			if applyErr != nil {
 				return applyErr
 			}
+			related, relationErr := kernel.syncReciprocalRelations(
+				ctx, txApp, definition, recordID, before, after,
+			)
+			if relationErr != nil {
+				return relationErr
+			}
+			for _, change := range related {
+				if change.definition.TableID == request.TableID {
+					recordStates[change.recordID] = change.record
+					if change.recordID == recordID {
+						record = change.record
+						after = change.after
+					}
+				}
+			}
+			reciprocalChanges = append(reciprocalChanges, related...)
 			if operation.Kind == OperationDelete {
 				deleted[recordID] = true
 				delete(recordStates, recordID)
@@ -189,6 +221,52 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 			})
 		}
 
+		relatedBatches := map[string]*relatedTableBatch{}
+		auditSequence := len(preview.Operations) + 1
+		for _, change := range reciprocalChanges {
+			relatedRequest := request
+			relatedRequest.TableID = change.definition.TableID
+			relatedRevision := dataRevision
+			if change.definition.TableID != request.TableID {
+				batch := relatedBatches[change.definition.TableID]
+				if batch == nil {
+					meta, _, loadErr := loadTableMetadata(txApp, change.definition.TableID)
+					if loadErr != nil {
+						return loadErr
+					}
+					storedRevision, storedErr := storedNonNegativeInteger(
+						meta.GetRaw("data_revision"), "mutation.metadata.invalid_data_revision",
+					)
+					if storedErr != nil {
+						return storedErr
+					}
+					if storedRevision >= maxSafeCounter {
+						return mutationError(
+							"mutation.metadata.data_revision_exhausted", nil,
+							"related table data revision cannot be incremented", nil, false,
+						)
+					}
+					batch = &relatedTableBatch{
+						definition: change.definition, metadata: meta,
+						dataRevision: storedRevision,
+					}
+					relatedBatches[change.definition.TableID] = batch
+				}
+				relatedRevision = batch.dataRevision
+				batch.recordIDs = appendUniqueString(batch.recordIDs, change.recordID)
+			} else {
+				recordIDs = appendUniqueString(recordIDs, change.recordID)
+			}
+			if err := saveAudit(
+				ctx, txApp, changeSetID, auditSequence, relatedRequest,
+				change.definition, change.recordID, OperationUpdate,
+				change.before, change.after, relatedRevision+1, kernel.now(),
+			); err != nil {
+				return err
+			}
+			auditSequence++
+		}
+
 		nextDataRevision := dataRevision + 1
 		tableMeta.Set("data_revision", nextDataRevision)
 		if err := txApp.Save(tableMeta); err != nil {
@@ -206,6 +284,34 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 		}
 		if err := saveOutbox(txApp, event); err != nil {
 			return err
+		}
+		emitted := []string{eventID}
+		relatedTableIDs := make([]string, 0, len(relatedBatches))
+		for tableID := range relatedBatches {
+			relatedTableIDs = append(relatedTableIDs, tableID)
+		}
+		sort.Strings(relatedTableIDs)
+		for _, tableID := range relatedTableIDs {
+			batch := relatedBatches[tableID]
+			nextRevision := batch.dataRevision + 1
+			batch.metadata.Set("data_revision", nextRevision)
+			if err := txApp.Save(batch.metadata); err != nil {
+				return storageFailure()
+			}
+			relatedEventID := kernel.newID("event")
+			relatedEvent := DataChangedEvent{
+				ContractVersion: ContractVersion, Topic: "data.changed",
+				EventID: relatedEventID, Sequence: nextRevision,
+				OccurredAt:     kernel.now().UTC().Format(time.RFC3339),
+				SchemaRevision: batch.definition.SchemaRevision,
+				DataRevision:   formatRevision("data", nextRevision),
+				ChangeSetID:    &changeSetID, TableID: tableID,
+				RecordIDs: batch.recordIDs, Operation: DataChangeUpdate,
+			}
+			if err := saveOutbox(txApp, relatedEvent); err != nil {
+				return err
+			}
+			emitted = append(emitted, relatedEventID)
 		}
 		if err := kernel.injectFault("after_outbox"); err != nil {
 			return err
@@ -228,7 +334,7 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 			ContractVersion: ContractVersion, Status: StatusApplied,
 			ChangeSetID: &changeSetID, AffectedRows: affectedRows,
 			ComputedFields: computedFields, NewRevision: &newRevision,
-			EmittedEvents: []string{eventID}, Warnings: []ProductError{},
+			EmittedEvents: emitted, Warnings: []ProductError{},
 		}
 		if err := saveIdempotency(txApp, request, requestHash, receipt, kernel.now()); err != nil {
 			return err
@@ -239,7 +345,7 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 		if err := kernel.injectFault("before_commit"); err != nil {
 			return err
 		}
-		emittedEventIDs = []string{eventID}
+		emittedEventIDs = emitted
 		return nil
 	})
 	kernel.coordinator.release()
@@ -555,6 +661,244 @@ func (kernel *Kernel) applyOperation(
 		)
 	}
 	return saved, nil
+}
+
+func (kernel *Kernel) syncReciprocalRelations(
+	ctx context.Context,
+	app core.App,
+	definition schema.TableDefinition,
+	sourceRecordID string,
+	before map[string]any,
+	after map[string]any,
+) ([]reciprocalRecordChange, error) {
+	changes := make([]reciprocalRecordChange, 0)
+	for _, field := range definition.Fields {
+		relation := field.Relation
+		if field.Kind != schema.FieldKindRelation || relation == nil ||
+			relation.PairID == "" || relation.ReciprocalFieldID == "" {
+			continue
+		}
+		beforeIDs, err := relationIDsFromRow(before, field.PhysicalName)
+		if err != nil {
+			return nil, err
+		}
+		afterIDs, err := relationIDsFromRow(after, field.PhysicalName)
+		if err != nil {
+			return nil, err
+		}
+		removed, added := relationIDDiff(beforeIDs, afterIDs)
+		if len(removed) == 0 && len(added) == 0 {
+			continue
+		}
+
+		targetDefinition, err := kernel.schemas.Describe(
+			ctx, app, relation.TargetTableID,
+		)
+		if err != nil {
+			return nil, mutationError(
+				"mutation.relation.target_table_not_found", nil,
+				"reciprocal relation target table was not found",
+				map[string]any{"tableId": relation.TargetTableID}, false,
+			)
+		}
+		reciprocal, found := relationSchemaField(
+			targetDefinition, relation.ReciprocalFieldID,
+		)
+		if !found || reciprocal.Relation == nil ||
+			reciprocal.Relation.PairID != relation.PairID ||
+			reciprocal.Relation.ReciprocalFieldID != field.FieldID ||
+			reciprocal.Relation.TargetTableID != definition.TableID {
+			return nil, mutationError(
+				"mutation.relation.pair_invalid", nil,
+				"reciprocal relation metadata is not symmetric",
+				map[string]any{
+					"fieldId":           field.FieldID,
+					"reciprocalFieldId": relation.ReciprocalFieldID,
+				}, false,
+			)
+		}
+		_, targetCollection, err := loadTableMetadata(app, targetDefinition.TableID)
+		if err != nil {
+			return nil, err
+		}
+		removedSet := stringSet(removed)
+		for _, targetID := range append(removed, added...) {
+			targetRecord, findErr := app.FindRecordById(targetCollection, targetID)
+			if findErr != nil {
+				if errors.Is(findErr, sql.ErrNoRows) {
+					if targetDefinition.TableID == definition.TableID &&
+						targetID == sourceRecordID && after == nil {
+						continue
+					}
+					return nil, mutationError(
+						"mutation.relation.target_not_found", nil,
+						"reciprocal relation target record was not found",
+						map[string]any{"recordId": targetID}, false,
+					)
+				}
+				return nil, storageFailure()
+			}
+			beforeTarget := productRow(app, targetDefinition, targetRecord)
+			current := targetRecord.GetStringSlice(reciprocal.PhysicalName)
+			next := append([]string(nil), current...)
+			if _, remove := removedSet[targetID]; remove {
+				next = removeString(next, sourceRecordID)
+			} else if reciprocal.Relation.Cardinality == "one" {
+				if len(next) != 0 && next[0] != sourceRecordID {
+					return nil, mutationError(
+						"mutation.relation.reciprocal_cardinality", nil,
+						"reciprocal single relation already has a different source",
+						map[string]any{
+							"fieldId":  reciprocal.FieldID,
+							"recordId": targetID,
+						}, false,
+					)
+				}
+				next = []string{sourceRecordID}
+			} else if !stringIn(next, sourceRecordID) {
+				next = append(next, sourceRecordID)
+			}
+			if equalStrings(current, next) {
+				continue
+			}
+			var productValue any = next
+			if reciprocal.Relation.Cardinality == "one" {
+				productValue = nil
+				if len(next) != 0 {
+					productValue = next[0]
+				}
+			}
+			storageValue, encodeErr := encodeFieldStorageValue(
+				targetRecord, reciprocal, productValue,
+			)
+			if encodeErr != nil {
+				return nil, mutationError(
+					"mutation.schema.storage_mismatch", nil,
+					"reciprocal relation cannot be represented by the target schema",
+					map[string]any{"fieldId": reciprocal.FieldID}, false,
+				)
+			}
+			targetRecord.Set(reciprocal.PhysicalName, storageValue)
+			if err := kernel.calculateRelatedFormulas(
+				ctx, app, targetDefinition, targetRecord,
+			); err != nil {
+				return nil, err
+			}
+			if err := app.Save(targetRecord); err != nil {
+				return nil, storageValidationFailure(err)
+			}
+			changes = append(changes, reciprocalRecordChange{
+				definition: targetDefinition,
+				record:     targetRecord,
+				recordID:   targetID,
+				before:     beforeTarget,
+				after:      productRow(app, targetDefinition, targetRecord),
+			})
+		}
+	}
+	return changes, nil
+}
+
+func (kernel *Kernel) calculateRelatedFormulas(
+	ctx context.Context,
+	app core.App,
+	definition schema.TableDefinition,
+	record *core.Record,
+) error {
+	if kernel.formulas == nil {
+		return nil
+	}
+	calculated, err := kernel.formulas.Calculate(ctx, app, definition, record)
+	if err != nil {
+		var formulaErr *formula.Error
+		if errors.As(err, &formulaErr) {
+			return formulaErr
+		}
+		var productErr *ProductError
+		if errors.As(err, &productErr) {
+			return productErr
+		}
+		return mutationError(
+			"mutation.formula.failed", nil, "formula calculation failed", nil, false,
+		)
+	}
+	normalized, err := normalizeComputedFields(definition, calculated)
+	if err != nil {
+		return err
+	}
+	for name, value := range normalized {
+		record.Set(name, value)
+	}
+	return nil
+}
+
+func relationIDsFromRow(row map[string]any, physicalName string) ([]string, error) {
+	if row == nil {
+		return []string{}, nil
+	}
+	ids, err := normalizeRelationIDs(row[physicalName])
+	if err != nil {
+		return nil, mutationError(
+			"mutation.relation.stored_value_invalid", nil,
+			"stored relation value cannot be synchronized", nil, false,
+		)
+	}
+	return ids, nil
+}
+
+func relationIDDiff(before, after []string) ([]string, []string) {
+	beforeSet := stringSet(before)
+	afterSet := stringSet(after)
+	removed := make([]string, 0)
+	added := make([]string, 0)
+	for _, value := range before {
+		if _, found := afterSet[value]; !found {
+			removed = append(removed, value)
+		}
+	}
+	for _, value := range after {
+		if _, found := beforeSet[value]; !found {
+			added = append(added, value)
+		}
+	}
+	return removed, added
+}
+
+func stringSet(values []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		result[value] = struct{}{}
+	}
+	return result
+}
+
+func removeString(values []string, unwanted string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != unwanted {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func appendUniqueString(values []string, candidate string) []string {
+	if stringIn(values, candidate) {
+		return values
+	}
+	return append(values, candidate)
 }
 
 func setAttachmentPresence(

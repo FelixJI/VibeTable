@@ -127,6 +127,9 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
     public Task<TablePage> QueryTablePageAsync(
         string table, int offset, int limit, TableQuery query, CancellationToken token)
         => Gateway.QueryTablePageAsync(table, offset, limit, query, token);
+    public Task<TablePage> QueryTableViewAsync(
+        string table, int offset, int limit, TableQuery query, CancellationToken token)
+        => Gateway.QueryTableViewAsync(table, offset, limit, query, token);
     public Task<SnapshotValidation> ValidateSnapshotAsync(
         QuerySnapshot snapshot, int? currentRevision, CancellationToken token)
         => Gateway.ValidateSnapshotAsync(snapshot, currentRevision, token);

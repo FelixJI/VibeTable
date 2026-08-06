@@ -1,21 +1,33 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { NButton, NEmpty, NInput, NModal, NSelect, NSpin } from "naive-ui";
-import { Check, Link2, Search, X } from "lucide-vue-next";
-import type { NormalizedRelationDescriptor, RelationTargetRef } from "@/contracts";
+import { computed, ref, watch } from "vue";
+import { NButton, NEmpty, NInput, NInputNumber, NModal, NSelect, NSpin, NSwitch } from "naive-ui";
+import { Check, ExternalLink, Link2, Plus, Search, X } from "lucide-vue-next";
+import type {
+  NormalizedRelationDescriptor,
+  ProductFieldDefinition,
+  RelationTargetRef,
+} from "@/contracts";
 import { targetKey } from "@/stores/relationLookupStore";
 import { t } from "@/i18n";
 
 const props = defineProps<{
   show: boolean;
   descriptor: NormalizedRelationDescriptor | null;
+  fieldLabel?: string | null;
   selected: readonly RelationTargetRef[];
   candidates: readonly RelationTargetRef[];
+  total?: number;
   loading?: boolean;
   applying?: boolean;
   error?: string | null;
   query?: string;
   m2aCollection?: string | null;
+  targetFields?: readonly ProductFieldDefinition[];
+  targetRelations?: readonly NormalizedRelationDescriptor[];
+  targetRelationOptions?: Readonly<Record<string, readonly RelationTargetRef[]>>;
+  targetRelationLoading?: Readonly<Record<string, boolean>>;
+  targetDisplayField?: string | null;
+  createSchemaLoading?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -26,9 +38,28 @@ const emit = defineEmits<{
   patchJunction: [target: RelationTargetRef, field: string, value: string];
   apply: [];
   collectionChange: [collection: string];
+  loadMore: [];
+  create: [label: string];
+  createFull: [values: Readonly<Record<string, unknown>>];
+  searchCreateRelation: [field: string, query: string];
+  fullCreateFallback: [];
+  open: [target: RelationTargetRef];
 }>();
 
 const multi = computed(() => props.descriptor?.kind !== "m2o");
+const fullCreateOpen = ref(false);
+const fullValues = ref<Record<string, unknown>>({});
+const writableCreateFields = computed(() => (props.targetFields ?? []).filter(field =>
+  !field.readOnly && (field.kind === "scalar" || field.kind === "relation")));
+const unsupportedRequiredFields = computed(() => (props.targetFields ?? []).filter(field =>
+  isRequired(field) && !hasDefault(field)
+  && !field.readOnly
+  && (field.kind === "attachment" || (field.kind === "relation" && !relationFor(field)))));
+const canSubmitFull = computed(() => writableCreateFields.value
+  .filter(field => isRequired(field) && !hasDefault(field))
+  .every(field => hasInputValue(fullValues.value[field.physicalName]))
+  && !!props.targetDisplayField
+  && hasInputValue(fullValues.value[props.targetDisplayField]));
 const selectedKeys = computed(() => new Set(props.selected.map(targetKey)));
 const title = computed(() => {
   const descriptor = props.descriptor;
@@ -39,12 +70,127 @@ const title = computed(() => {
     m2m: t("relationEditor.kind.m2m"),
     m2a: t("relationEditor.kind.m2a"),
   };
-  return `${labels[descriptor.kind]} · ${descriptor.fieldRef}`;
+  return `${labels[descriptor.kind]} · ${props.fieldLabel || "关联字段"}`;
 });
 const collectionOptions = computed(() => (props.descriptor?.allowedCollections ?? []).map((value) => ({
   label: value,
   value,
 })));
+
+watch(() => props.show, show => {
+  if (!show) {
+    fullCreateOpen.value = false;
+    fullValues.value = {};
+  }
+});
+
+function beginFullCreate(): void {
+  fullValues.value = props.targetDisplayField && props.query?.trim()
+    ? { [props.targetDisplayField]: props.query.trim() }
+    : {};
+  fullCreateOpen.value = true;
+}
+
+function updateFullValue(field: string, value: unknown): void {
+  fullValues.value = { ...fullValues.value, [field]: value };
+}
+
+function isRequired(field: ProductFieldDefinition): boolean {
+  return !field.nullable || field.constraints.some(constraint =>
+    constraint.kind === "required" && constraint.value === true);
+}
+
+function hasDefault(field: ProductFieldDefinition): boolean {
+  return field.defaultValue !== null && field.defaultValue !== undefined;
+}
+
+function hasInputValue(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  return value !== null && value !== undefined && value !== "";
+}
+
+interface SelectOptionEntry {
+  readonly label: string;
+  readonly value: string;
+  readonly rawValue: unknown;
+}
+
+function selectOptionEntries(field: ProductFieldDefinition): SelectOptionEntry[] {
+  const constraint = field.constraints.find(item => item.kind === "enum");
+  const options = constraint?.options;
+  if (!Array.isArray(options)) return [];
+  return options.flatMap((option, index) => {
+    if (!option || typeof option !== "object") return [];
+    const item = option as {
+      label?: unknown; displayName?: unknown; value?: unknown; optionId?: unknown;
+    };
+    const rawValue = Object.hasOwn(item, "value") ? item.value : item.optionId;
+    const label = item.displayName ?? item.label;
+    return typeof label === "string" && rawValue !== undefined
+      ? [{ label, value: `select:${field.fieldId}:${index}`, rawValue }]
+      : [];
+  });
+}
+
+function selectOptions(field: ProductFieldDefinition): Array<{ label: string; value: string }> {
+  return selectOptionEntries(field).map(({ label, value }) => ({ label, value }));
+}
+
+function relationFor(field: ProductFieldDefinition): NormalizedRelationDescriptor | undefined {
+  return props.targetRelations?.find(relation => relation.fieldRef === field.physicalName);
+}
+
+function relationOptions(field: ProductFieldDefinition): Array<{ label: string; value: string }> {
+  return (props.targetRelationOptions?.[field.physicalName] ?? []).map(target => ({
+    label: target.secondaryLabel ? `${target.label} · ${target.secondaryLabel}` : target.label,
+    value: target.itemId,
+  }));
+}
+
+function relationInputValue(field: ProductFieldDefinition): string | string[] | null {
+  const value = fullValues.value[field.physicalName];
+  if (relationFor(field)?.kind === "m2o") return typeof value === "string" ? value : null;
+  return Array.isArray(value) ? value.filter(item => typeof item === "string") : [];
+}
+
+function selectInputValue(field: ProductFieldDefinition): string | string[] | null {
+  const value = fullValues.value[field.physicalName];
+  const entries = selectOptionEntries(field);
+  if (field.dataType === "multiSelect") {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap(raw => {
+      const entry = entries.find(candidate => sameOptionValue(candidate.rawValue, raw));
+      return entry ? [entry.value] : [];
+    });
+  }
+  return entries.find(candidate => sameOptionValue(candidate.rawValue, value))?.value ?? null;
+}
+
+function updateSelectValue(field: ProductFieldDefinition, value: unknown): void {
+  const byKey = new Map(selectOptionEntries(field).map(entry => [entry.value, entry.rawValue]));
+  if (field.dataType === "multiSelect") {
+    const selected = Array.isArray(value)
+      ? value.flatMap(key => typeof key === "string" && byKey.has(key) ? [byKey.get(key)] : [])
+      : [];
+    updateFullValue(field.physicalName, selected);
+    return;
+  }
+  updateFullValue(field.physicalName, typeof value === "string" && byKey.has(value)
+    ? byKey.get(value)
+    : null);
+}
+
+function sameOptionValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") {
+    return false;
+  }
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
 
 function onQuery(value: string): void {
   emit("search", value, props.m2aCollection);
@@ -89,6 +235,90 @@ function onQuery(value: string): void {
         <template #prefix><Search :size="14" /></template>
       </NInput>
 
+      <NButton
+        v-if="query?.trim() && descriptor.kind !== 'm2a' && !descriptor.junction && descriptor.quickCreateEligible"
+        secondary
+        type="primary"
+        :loading="applying"
+        data-testid="relation-create-target"
+        @click="emit('create', query.trim())"
+      >
+        <template #icon><Plus :size="14" /></template>
+        {{ t("relationEditor.create", { label: query.trim() }) }}
+      </NButton>
+
+      <div
+        v-if="query?.trim() && descriptor.kind !== 'm2a' && !descriptor.junction && !descriptor.quickCreateEligible"
+        class="relation-editor__full-create"
+      >
+        <p>{{ descriptor.quickCreateReason || "目标表有其他必填字段，需要填写完整记录。" }}</p>
+        <NButton
+          v-if="unsupportedRequiredFields.length"
+          secondary
+          data-testid="relation-full-create-fallback"
+          @click="emit('fullCreateFallback')"
+        >前往目标表完整编辑</NButton>
+        <NButton
+          v-else
+          secondary
+          type="primary"
+          :loading="createSchemaLoading"
+          data-testid="relation-full-create-target"
+          @click="beginFullCreate"
+        >填写完整记录</NButton>
+        <div v-if="fullCreateOpen" class="relation-editor__full-fields">
+          <label v-for="field in writableCreateFields" :key="field.fieldId">
+            <span>{{ field.displayName }}<b v-if="isRequired(field)"> *</b></span>
+            <NSelect
+              v-if="field.kind === 'relation'"
+              :data-testid="`relation-full-create-${field.physicalName}`"
+              :value="relationInputValue(field)"
+              :multiple="relationFor(field)?.kind !== 'm2o'"
+              filterable
+              remote
+              :loading="targetRelationLoading?.[field.physicalName] ?? false"
+              :options="relationOptions(field)"
+              placeholder="选择关联记录"
+              @search="query => emit('searchCreateRelation', field.physicalName, query)"
+              @update:value="updateFullValue(field.physicalName, $event)"
+            />
+            <NSwitch
+              v-else-if="field.dataType === 'boolean'"
+              :data-testid="`relation-full-create-${field.physicalName}`"
+              :value="Boolean(fullValues[field.physicalName])"
+              @update:value="updateFullValue(field.physicalName, $event)"
+            />
+            <NInputNumber
+              v-else-if="['integer', 'float', 'decimal'].includes(field.dataType)"
+              :data-testid="`relation-full-create-${field.physicalName}`"
+              :value="typeof fullValues[field.physicalName] === 'number' ? Number(fullValues[field.physicalName]) : null"
+              @update:value="updateFullValue(field.physicalName, $event)"
+            />
+            <NSelect
+              v-else-if="field.dataType === 'select' || field.dataType === 'multiSelect'"
+              :data-testid="`relation-full-create-${field.physicalName}`"
+              :value="selectInputValue(field)"
+              :multiple="field.dataType === 'multiSelect'"
+              :options="selectOptions(field)"
+              @update:value="updateSelectValue(field, $event)"
+            />
+            <NInput
+              v-else
+              :data-testid="`relation-full-create-${field.physicalName}`"
+              :value="String(fullValues[field.physicalName] ?? '')"
+              @update:value="updateFullValue(field.physicalName, $event)"
+            />
+          </label>
+          <NButton
+            type="primary"
+            :disabled="!canSubmitFull"
+            :loading="applying"
+            data-testid="relation-full-create-submit"
+            @click="emit('createFull', fullValues)"
+          >创建并关联</NButton>
+        </div>
+      </div>
+
       <div v-if="selected.length" class="relation-editor__selected">
         <div v-for="target in selected" :key="targetKey(target)" class="relation-editor__selected-row">
           <span class="relation-editor__token">
@@ -118,27 +348,53 @@ function onQuery(value: string): void {
 
       <NSpin :show="loading">
         <div class="relation-editor__results">
-          <button
+          <div
             v-for="target in candidates"
             :key="targetKey(target)"
-            type="button"
-            class="relation-editor__candidate"
-            :class="{ 'relation-editor__candidate--selected': selectedKeys.has(targetKey(target)) }"
-            :aria-pressed="selectedKeys.has(targetKey(target))"
-            @click="emit('select', target)"
+            class="relation-editor__candidate-row"
           >
-            <Link2 :size="14" />
-            <span>
-              <b v-if="descriptor.kind === 'm2a'">{{ target.collection }}</b>
-              {{ target.label }}
-            </span>
-            <Check v-if="selectedKeys.has(targetKey(target))" :size="14" />
-          </button>
+            <button
+              type="button"
+              class="relation-editor__candidate"
+              :class="{ 'relation-editor__candidate--selected': selectedKeys.has(targetKey(target)) }"
+              :aria-pressed="selectedKeys.has(targetKey(target))"
+              @click="emit('select', target)"
+            >
+              <Link2 :size="14" />
+              <span class="relation-editor__candidate-label">
+                <span>
+                  <b v-if="descriptor.kind === 'm2a'">{{ target.collection }}</b>
+                  {{ target.label }}
+                </span>
+                <small v-if="target.secondaryLabel">{{ target.secondaryLabel }}</small>
+              </span>
+              <Check v-if="selectedKeys.has(targetKey(target))" :size="14" />
+            </button>
+            <NButton
+              quaternary
+              circle
+              size="tiny"
+              :aria-label="`打开 ${target.label}`"
+              data-testid="relation-open-target"
+              @click.stop="emit('open', target)"
+            >
+              <ExternalLink :size="13" />
+            </NButton>
+          </div>
           <NEmpty
             v-if="!loading && candidates.length === 0"
             :description="t('relationEditor.empty')"
             size="small"
           />
+          <NButton
+            v-if="!loading && candidates.length < (total ?? 0)"
+            quaternary
+            size="small"
+            data-testid="relation-load-more"
+            @click="emit('loadMore')"
+          >
+            加载更多（{{ candidates.length }} / {{ total }}）
+          </NButton>
         </div>
       </NSpin>
 
@@ -172,6 +428,11 @@ function onQuery(value: string): void {
   font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
 }
 .relation-editor__selected { display: grid; gap: 6px; }
+.relation-editor__full-create { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-md); }
+.relation-editor__full-create p { margin: 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
+.relation-editor__full-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+.relation-editor__full-fields label { display: grid; gap: 5px; font-size: var(--vt-font-caption); }
+.relation-editor__full-fields > button { grid-column: 1 / -1; justify-self: end; }
 .relation-editor__selected-row {
   display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 1.6fr) auto;
   gap: var(--vt-space-2); align-items: center;
@@ -186,6 +447,9 @@ function onQuery(value: string): void {
 .relation-editor__results {
   display: grid; gap: 3px; min-height: 100px; max-height: 280px; padding: 2px; overflow: auto;
 }
+.relation-editor__candidate-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px;
+}
 .relation-editor__candidate {
   display: grid; grid-template-columns: 18px 1fr 18px; align-items: center; gap: 7px;
   width: 100%; min-height: 34px; padding: 5px 9px;
@@ -194,6 +458,10 @@ function onQuery(value: string): void {
   transition: background var(--vt-duration-fast) var(--vt-ease), border-color var(--vt-duration-fast) var(--vt-ease);
 }
 .relation-editor__candidate:hover { background: var(--vt-bg-subtle); }
+.relation-editor__candidate-label { display: grid; min-width: 0; }
+.relation-editor__candidate-label > span,
+.relation-editor__candidate-label > small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.relation-editor__candidate-label > small { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .relation-editor__candidate--selected {
   border-color: color-mix(in srgb, var(--vt-color-primary-500) 35%, var(--vt-border));
   background: color-mix(in srgb, var(--vt-color-primary-500) 7%, var(--vt-bg));

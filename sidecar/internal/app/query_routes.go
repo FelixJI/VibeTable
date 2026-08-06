@@ -21,6 +21,7 @@ type queryOperationRequest struct {
 	Operation string                `json:"operation"`
 	TableID   string                `json:"tableId"`
 	Query     *query.TableQuery     `json:"query,omitempty"`
+	View      *query.ViewQuery      `json:"view,omitempty"`
 	RowIDs    []string              `json:"rowIds,omitempty"`
 	Aggregate *query.AggregateQuery `json:"aggregate,omitempty"`
 }
@@ -49,6 +50,14 @@ func registerQueryRoutes(
 		}
 
 		switch input.Operation {
+		case "view":
+			result, err := port.ExecuteViewQuery(
+				request.Request.Context(), input.TableID, *input.View,
+			)
+			if err != nil {
+				return writeQueryError(request, err)
+			}
+			return request.JSON(http.StatusOK, result)
 		case "page":
 			result, err := port.QueryPage(
 				request.Request.Context(), input.TableID, *input.Query,
@@ -75,7 +84,7 @@ func registerQueryRoutes(
 			return request.JSON(http.StatusOK, result)
 		}
 		return writeQueryError(request, invalidQueryRequest(
-			"operation", "operation must be page, readRows, or aggregate",
+			"operation", "operation must be view, page, readRows, or aggregate",
 		))
 	})
 
@@ -99,21 +108,25 @@ func registerQueryRoutes(
 
 func validateQueryOperation(input queryOperationRequest) error {
 	switch input.Operation {
+	case "view":
+		if input.View == nil || input.Query != nil || input.Aggregate != nil || input.RowIDs != nil {
+			return invalidQueryRequest("operation", "view requires only view")
+		}
 	case "page":
-		if input.Query == nil || input.Aggregate != nil || input.RowIDs != nil {
+		if input.Query == nil || input.View != nil || input.Aggregate != nil || input.RowIDs != nil {
 			return invalidQueryRequest("operation", "page requires only query")
 		}
 	case "readRows":
-		if input.Query != nil || input.Aggregate != nil || input.RowIDs == nil {
+		if input.Query != nil || input.View != nil || input.Aggregate != nil || input.RowIDs == nil {
 			return invalidQueryRequest("operation", "readRows requires only rowIds")
 		}
 	case "aggregate":
-		if input.Query != nil || input.Aggregate == nil || input.RowIDs != nil {
+		if input.Query != nil || input.View != nil || input.Aggregate == nil || input.RowIDs != nil {
 			return invalidQueryRequest("operation", "aggregate requires only aggregate")
 		}
 	default:
 		return invalidQueryRequest(
-			"operation", "operation must be page, readRows, or aggregate",
+			"operation", "operation must be view, page, readRows, or aggregate",
 		)
 	}
 	return nil

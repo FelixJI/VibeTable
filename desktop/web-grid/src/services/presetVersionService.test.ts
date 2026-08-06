@@ -47,7 +47,19 @@ describe("presetVersionService", () => {
   it("attaches a fresh operationId to every write command", async () => {
     const service = usePresetVersionService();
     const view = {
-      filters: [], sorts: [], search: "", visibleFields: [], layout: "table",
+      filters: [{
+        groupLogic: "OR",
+        filters: [
+          { field: "status", operator: "eq", value: "open" },
+          { field: "priority", operator: "eq", value: "urgent" },
+        ],
+      }],
+      sorts: [{ field: "created_at", direction: "desc" }],
+      groups: [{ field: "warehouse" }, { field: "created_at", bucket: "month" }],
+      summaries: [{ field: "amount", function: "sum" }],
+      search: "",
+      visibleFields: [],
+      layout: "table",
     } as const;
 
     await service.savePreset("orders", "My view", view);
@@ -71,6 +83,7 @@ describe("presetVersionService", () => {
     expect(new Set(writes.map(({ payload }) => payload.operationId)).size).toBe(writes.length);
     expect(requests.find(({ type }) => type === "preset.delete")?.payload.expectedRevision)
       .toBe("rev-p1");
+    expect(requests.find(({ type }) => type === "preset.save")?.payload.view).toEqual(view);
     expect(requests.find(({ type }) => type === "version.delete")?.payload.expectedRevision)
       .toBe("rev-v1");
   });

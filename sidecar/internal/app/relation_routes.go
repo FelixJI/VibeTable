@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 
@@ -68,6 +69,28 @@ func registerRelationRoutes(
 		}
 		return request.JSON(http.StatusOK, result)
 	})
+	r.POST("/api/vibetable/v1/relations/create-target", func(request *core.RequestEvent) error {
+		var input relation.CreateTargetRequest
+		if err := decodeRelationBody(request, &input); err != nil {
+			return writeMutationError(request, err)
+		}
+		var result relation.CreateTargetResult
+		err := runBusinessWrite(
+			request.Request.Context(),
+			gates,
+			"relation.create-target",
+			input.IdempotencyKey,
+			func(ctx context.Context) error {
+				var createErr error
+				result, createErr = service.CreateTarget(ctx, input)
+				return createErr
+			},
+		)
+		if err != nil {
+			return writeMutationError(request, err)
+		}
+		return request.JSON(http.StatusOK, result)
+	})
 	r.POST("/api/vibetable/v1/relations/preview-delta", func(request *core.RequestEvent) error {
 		var input relation.DeltaRequest
 		if err := decodeRelationBody(request, &input); err != nil {
@@ -108,7 +131,7 @@ func registerRelationRoutes(
 		}
 		result, err := service.QueryLookups(request.Request.Context(), input)
 		if err != nil {
-			return writeQueryError(request, err)
+			return writeRelationQueryError(request, err)
 		}
 		return request.JSON(http.StatusOK, result)
 	})
@@ -119,10 +142,29 @@ func registerRelationRoutes(
 		}
 		result, err := service.PreviewLookups(request.Request.Context(), input)
 		if err != nil {
-			return writeQueryError(request, err)
+			return writeRelationQueryError(request, err)
 		}
 		return request.JSON(http.StatusOK, result)
 	})
+	r.POST("/api/vibetable/v1/lookups/value-page", func(request *core.RequestEvent) error {
+		var input relation.LookupValuePageRequest
+		if err := decodeRelationBody(request, &input); err != nil {
+			return writeMutationError(request, err)
+		}
+		result, err := service.LookupValuePage(request.Request.Context(), input)
+		if err != nil {
+			return writeRelationQueryError(request, err)
+		}
+		return request.JSON(http.StatusOK, result)
+	})
+}
+
+func writeRelationQueryError(request *core.RequestEvent, err error) error {
+	var productErr *mutation.ProductError
+	if errors.As(err, &productErr) {
+		return writeMutationError(request, err)
+	}
+	return writeQueryError(request, err)
 }
 
 func decodeRelationBody(

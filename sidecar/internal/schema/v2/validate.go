@@ -601,6 +601,13 @@ func validateTypeSpecific(definition FieldDefinition) error {
 		if definition.Relation.Cardinality != "one" && definition.Relation.Cardinality != "many" {
 			return invalid("relation.cardinality", "relation cardinality must be one or many")
 		}
+		if (definition.Relation.PairID == "") !=
+			(definition.Relation.ReciprocalFieldID == "") {
+			return invalid(
+				"relation.pairId",
+				"relation pair identity and reciprocal field must be configured together",
+			)
+		}
 		switch definition.Relation.DeletePolicy {
 		case "setNull", "restrict", "cascade":
 		default:
@@ -639,17 +646,21 @@ func validateTypeSpecific(definition FieldDefinition) error {
 			return invalid("formula.resultType", "formula result type is invalid")
 		}
 	case LogicalLookup:
-		if definition.Lookup == nil || definition.Lookup.RelationFieldID == "" ||
-			definition.Lookup.TargetFieldID == "" {
-			return invalid("lookup", "lookup relation and target fields are required")
+		if definition.Lookup == nil || definition.Lookup.TargetFieldID == "" ||
+			len(definition.Lookup.Path) == 0 {
+			return &ProductError{Code: "lookup.path.invalid", Path: "lookup", Message: "lookup requires a relation path and a target field"}
 		}
-		switch definition.Lookup.Aggregate {
-		case "none", "first", "distinct", "count", "sum", "avg", "min", "max":
-		default:
-			return invalid("lookup.aggregate", "lookup aggregate is invalid")
+		if len(definition.Lookup.Path) > 8 {
+			return &ProductError{Code: "lookup.path.depth_limit", Path: "lookup.path", Message: "lookup supports at most eight relation path steps"}
 		}
-		if !validComputedResultType(definition.Lookup.ResultType, false) {
-			return invalid("lookup.resultType", "lookup result type is invalid")
+		for index, step := range definition.Lookup.Path {
+			if step.RelationFieldID == "" {
+				return &ProductError{
+					Code:    "lookup.path.invalid",
+					Path:    fmt.Sprintf("lookup.path[%d].relationFieldId", index),
+					Message: "lookup relation field is required",
+				}
+			}
 		}
 	}
 	return nil

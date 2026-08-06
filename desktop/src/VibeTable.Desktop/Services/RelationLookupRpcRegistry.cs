@@ -38,6 +38,10 @@ internal static class RelationLookupRpcRegistry
             payload => HasString(payload, "relationId"),
             (gateway, payload, token) => gateway.SearchRelationTargetsAsync(payload, token)),
         new(
+            "relation.createTarget",
+            payload => HasStrings(payload, "relationId", "label", "idempotencyKey"),
+            (gateway, payload, token) => gateway.CreateRelationTargetAsync(payload, token)),
+        new(
             "relation.updateSingle",
             payload => HasStrings(
                     payload,
@@ -71,6 +75,10 @@ internal static class RelationLookupRpcRegistry
             "lookup.query",
             IsValidLookupQuery,
             (gateway, payload, token) => gateway.QueryLookupsAsync(payload, token)),
+        new(
+            "lookup.valuePage",
+            IsValidLookupValuePage,
+            (gateway, payload, token) => gateway.ReadLookupValuePageAsync(payload, token)),
     ];
 
     private static readonly IReadOnlyDictionary<string, RelationLookupRpcEndpoint> ByType =
@@ -113,6 +121,18 @@ internal static class RelationLookupRpcRegistry
             && HasArray(payload, "fieldRefs")
             && HasObject(payload, "query")
             && HasNumber(payload, "requestGeneration");
+
+    private static bool IsValidLookupValuePage(JsonElement payload)
+        => HasStrings(
+                payload,
+                "collection",
+                "fieldRef",
+                "sourceRecordId",
+                "schemaRevision",
+                "permissionRevision",
+                "lookupRevision")
+            && HasNumber(payload, "offset")
+            && HasNumber(payload, "limit");
 
     private static bool HasStrings(JsonElement payload, params string[] names)
         => names.All(name => HasString(payload, name));

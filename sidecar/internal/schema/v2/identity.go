@@ -54,6 +54,10 @@ func (allocator *IdentityAllocator) AllocateOption(ctx context.Context) (string,
 	return allocator.allocate(ctx, "option", "opt_", 20)
 }
 
+func (allocator *IdentityAllocator) AllocateRelationPair(ctx context.Context) (string, error) {
+	return allocator.allocate(ctx, "relation-pair", "relp_", 20)
+}
+
 func (allocator *IdentityAllocator) AllocatePresence(
 	ctx context.Context,
 	publicPhysicalName string,

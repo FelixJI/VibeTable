@@ -99,7 +99,7 @@ func (catalog *Catalog) List(ctx context.Context) ([]schema.TableDefinition, err
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
-		definitions = append(definitions, definition)
+		definitions = append(definitions, enrichQueryCapabilities(definition))
 	}
 	sort.Slice(definitions, func(i, j int) bool {
 		if definitions[i].PhysicalName == definitions[j].PhysicalName {
@@ -127,7 +127,16 @@ func (catalog *Catalog) Describe(
 		return schema.TableDefinition{}, storageError(err)
 	}
 	definition, _, err := decodeStoredTable(record)
-	return definition, err
+	return enrichQueryCapabilities(definition), err
+}
+
+func enrichQueryCapabilities(definition schema.TableDefinition) schema.TableDefinition {
+	for index := range definition.Fields {
+		definition.Fields[index].FilterOperators = schema.QueryFilterOperators(
+			definition.Fields[index],
+		)
+	}
+	return definition
 }
 
 // InspectAutoDates reports the actual PocketBase switch combination for every
@@ -524,64 +533,79 @@ func (catalog *Catalog) validateFormulaReferences(
 	}
 	for _, compiled := range plan.Formulas {
 		for _, reference := range compiled.ReferencePaths {
-			parts := strings.Split(reference, ".")
-			root, exists := fieldsByName[parts[0]]
-			if !exists || root.Kind != schema.FieldKindRelation ||
-				root.Relation == nil {
-				continue
+			if err := catalog.validateFormulaReference(
+				ctx, definition, fieldsByName, compiled.FieldID, reference, false,
+			); err != nil {
+				return err
 			}
-			if root.Relation.Cardinality != "one" {
-				return &schema.ProductError{
-					Code: "schema.formula.relation_cardinality",
-					Path: formulaPath(definition, compiled.FieldID),
-					Message: "relation dereference requires cardinality one; " +
-						"use a Lookup aggregate for many relations",
-					Details: map[string]any{"reference": reference},
-				}
-			}
-			if len(parts) != 2 {
-				return &schema.ProductError{
-					Code:    "schema.formula.relation_path_invalid",
-					Path:    formulaPath(definition, compiled.FieldID),
-					Message: "relation formula paths must select one target field",
-					Details: map[string]any{"reference": reference},
-				}
-			}
-			target := definition
-			if root.Relation.TargetTableID != definition.TableID {
-				var err error
-				target, err = catalog.Describe(
-					ctx, root.Relation.TargetTableID,
-				)
-				if err != nil {
-					return &schema.ProductError{
-						Code:    "schema.formula.target_table_not_found",
-						Path:    formulaPath(definition, compiled.FieldID),
-						Message: "formula relation target table was not found",
-						Details: map[string]any{"reference": reference},
-					}
-				}
-			}
-			found := false
-			for _, targetField := range target.Fields {
-				if targetField.PhysicalName == parts[1] &&
-					targetField.DataType != schema.DataTypeSecret &&
-					targetField.DataType != schema.DataTypeHash {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return &schema.ProductError{
-					Code:    "schema.formula.target_field_not_found",
-					Path:    formulaPath(definition, compiled.FieldID),
-					Message: "formula relation target field was not found",
-					Details: map[string]any{"reference": reference},
-				}
+		}
+		for _, reference := range compiled.RelationAggregatePaths {
+			if err := catalog.validateFormulaReference(
+				ctx, definition, fieldsByName, compiled.FieldID, reference, true,
+			); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
+}
+
+func (catalog *Catalog) validateFormulaReference(
+	ctx context.Context,
+	definition schema.TableDefinition,
+	fieldsByName map[string]schema.FieldDefinition,
+	formulaFieldID string,
+	reference string,
+	aggregate bool,
+) error {
+	parts := strings.Split(reference, ".")
+	if len(parts) != 2 {
+		return &schema.ProductError{
+			Code:    "schema.formula.relation_path_invalid",
+			Path:    formulaPath(definition, formulaFieldID),
+			Message: "relation formula paths must select one target field",
+			Details: map[string]any{"reference": reference},
+		}
+	}
+	root, exists := fieldsByName[parts[0]]
+	if !exists || root.Kind != schema.FieldKindRelation || root.Relation == nil {
+		return nil
+	}
+	if !aggregate && root.Relation.Cardinality != "one" {
+		return &schema.ProductError{
+			Code:    "schema.formula.relation_cardinality",
+			Path:    formulaPath(definition, formulaFieldID),
+			Message: "many relations require a relation aggregate formula function",
+			Details: map[string]any{"reference": reference},
+		}
+	}
+	target := definition
+	if root.Relation.TargetTableID != definition.TableID {
+		var err error
+		target, err = catalog.Describe(ctx, root.Relation.TargetTableID)
+		if err != nil {
+			return &schema.ProductError{
+				Code:    "schema.formula.target_table_not_found",
+				Path:    formulaPath(definition, formulaFieldID),
+				Message: "formula relation target table was not found",
+				Details: map[string]any{"reference": reference},
+			}
+		}
+	}
+	for _, targetField := range target.Fields {
+		if targetField.PhysicalName == parts[1] &&
+			targetField.DataType != schema.DataTypeSecret &&
+			targetField.DataType != schema.DataTypeHash &&
+			targetField.Kind != schema.FieldKindRelation {
+			return nil
+		}
+	}
+	return &schema.ProductError{
+		Code:    "schema.formula.target_field_not_found",
+		Path:    formulaPath(definition, formulaFieldID),
+		Message: "formula relation target field was not found",
+		Details: map[string]any{"reference": reference},
+	}
 }
 
 func physicalNameByFieldID(
@@ -1474,7 +1498,16 @@ func (catalog *Catalog) replaceFormulaDependencyMetadata(
 		}
 	}
 	for _, compiled := range plan.Formulas {
-		for _, reference := range compiled.ReferencePaths {
+		references := append(
+			append([]string(nil), compiled.ReferencePaths...),
+			compiled.RelationAggregatePaths...,
+		)
+		seenReferences := map[string]struct{}{}
+		for _, reference := range references {
+			if _, duplicate := seenReferences[reference]; duplicate {
+				continue
+			}
+			seenReferences[reference] = struct{}{}
 			parts := strings.Split(reference, ".")
 			relationField, exists := fieldsByName[parts[0]]
 			if !exists || relationField.Kind != schema.FieldKindRelation ||
@@ -1515,6 +1548,36 @@ func (catalog *Catalog) replaceFormulaDependencyMetadata(
 		}
 	}
 	return nil
+}
+
+// SyncComputedMetadata is the shared transactional seam for schemaapi and the
+// v2 FieldChange executor. It compiles the whole table before replacing any
+// Formula/Lookup metadata, so dependency fan-out never observes a partial plan.
+func (catalog *Catalog) SyncComputedMetadata(
+	ctx context.Context,
+	definition schema.TableDefinition,
+) error {
+	if err := catalog.validateFormulaReferences(ctx, definition); err != nil {
+		return err
+	}
+	if err := catalog.validateLookupReferences(ctx, definition); err != nil {
+		return err
+	}
+	plan, formulaErr := formula.NewCompiler(
+		formula.DefaultLimits(),
+	).CompileTable(definition)
+	if formulaErr != nil {
+		return formulaErr
+	}
+	if err := catalog.replaceFormulaMetadata(catalog.app, definition, plan); err != nil {
+		return err
+	}
+	if err := catalog.replaceFormulaDependencyMetadata(
+		catalog.app, definition, plan,
+	); err != nil {
+		return err
+	}
+	return catalog.replaceLookupMetadata(catalog.app, definition)
 }
 
 func (catalog *Catalog) GetRevision(
@@ -1832,6 +1895,8 @@ func (catalog *Catalog) replaceRelationMetadata(
 			record.Set("junction_table_id", *field.Relation.JunctionTableID)
 		}
 		record.Set("delete_policy", field.Relation.DeletePolicy)
+		record.Set("pair_id", field.Relation.PairID)
+		record.Set("reciprocal_field_id", field.Relation.ReciprocalFieldID)
 		if err := app.Save(record); err != nil {
 			return storageError(err)
 		}

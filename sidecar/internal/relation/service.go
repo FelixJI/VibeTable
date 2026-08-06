@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -49,7 +50,8 @@ func (service *Service) Describe(
 	}
 	result := CatalogResult{
 		TableID: tableID, SchemaRevision: definition.SchemaRevision,
-		Relations: []Descriptor{}, Lookups: []LookupDescriptor{},
+		LookupMaxDepth: schema.MaxLookupPathDepth,
+		Relations:      []Descriptor{}, Lookups: []LookupDescriptor{},
 	}
 	lookupRevisions := map[string]int{}
 	lookupRecords, lookupErr := service.app.FindRecordsByFilter(
@@ -66,13 +68,25 @@ func (service *Service) Describe(
 	}
 	for _, field := range definition.Fields {
 		if field.Kind == schema.FieldKindRelation && field.Relation != nil {
+			descriptor := descriptorFrom(tableID+"."+field.FieldID, tableID, field)
+			if descriptor.Mode == "direct" {
+				target := definition
+				if descriptor.TargetTableID != definition.TableID {
+					target, err = schemaapi.New(service.app).Describe(ctx, descriptor.TargetTableID)
+					if err != nil {
+						return CatalogResult{}, err
+					}
+				}
+				descriptor.QuickCreateEligible, descriptor.QuickCreateReason =
+					quickCreateEligibility(target)
+			}
 			result.Relations = append(
 				result.Relations,
-				descriptorFrom(tableID+"."+field.FieldID, tableID, field),
+				descriptor,
 			)
 		}
 		if field.Kind == schema.FieldKindLookup && field.Lookup != nil {
-			path, pathErr := service.describeLookupPath(
+			path, resultMany, pathErr := service.describeLookupPath(
 				ctx, definition, *field.Lookup,
 			)
 			if pathErr != nil {
@@ -87,13 +101,14 @@ func (service *Service) Describe(
 				LookupID: lookupID,
 				TableID:  tableID, FieldID: field.FieldID,
 				PhysicalName: field.PhysicalName, DisplayName: field.DisplayName,
-				RelationFieldID: field.Lookup.RelationFieldID,
-				Path:            path,
-				TargetFieldID:   field.Lookup.TargetFieldID,
-				JunctionFieldID: field.Lookup.JunctionFieldID,
-				TargetFieldIDs:  field.Lookup.TargetFieldIDs,
-				Aggregate:       field.Lookup.Aggregate,
-				OutputStorage:   field.StorageType, Revision: revision,
+				RelationFieldID:   field.Lookup.RelationFieldID,
+				Path:              path,
+				TargetFieldID:     field.Lookup.TargetFieldID,
+				JunctionFieldID:   field.Lookup.JunctionFieldID,
+				TargetFieldIDs:    field.Lookup.TargetFieldIDs,
+				Aggregate:         field.Lookup.Aggregate,
+				ResultCardinality: map[bool]string{true: "many", false: "one"}[resultMany],
+				OutputStorage:     field.StorageType, Revision: revision,
 			})
 		}
 	}
@@ -104,16 +119,21 @@ func (service *Service) describeLookupPath(
 	ctx context.Context,
 	source schema.TableDefinition,
 	spec schema.LookupSpec,
-) ([]LookupPathDescriptor, error) {
+) ([]LookupPathDescriptor, bool, error) {
 	current := source
 	result := make([]LookupPathDescriptor, 0, len(spec.EffectivePath()))
+	resultMany := false
 	for _, step := range spec.EffectivePath() {
 		relationField, found := relationFieldByID(current, step.RelationFieldID)
 		if !found || relationField.Relation == nil {
-			return nil, relationError(
+			return nil, false, relationError(
 				"lookup.schema_invalid",
 				"lookup path relation metadata is unavailable",
 			)
+		}
+		if relationField.Relation.Cardinality == "many" ||
+			relationField.Relation.EffectiveMode() != "direct" {
+			resultMany = true
 		}
 		result = append(result, LookupPathDescriptor{
 			RelationID:    current.TableID + "." + step.RelationFieldID,
@@ -125,11 +145,11 @@ func (service *Service) describeLookupPath(
 		}
 		target, err := schemaapi.New(service.app).Describe(ctx, targetTableID)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		current = target
 	}
-	return result, nil
+	return result, resultMany, nil
 }
 
 func relationFieldByID(
@@ -197,6 +217,7 @@ func (service *Service) SearchTargets(
 		return SearchResult{}, err
 	}
 	labelField := targetLabelField(target)
+	secondaryField := targetSecondaryField(target, labelField)
 	items := make([]TargetRef, 0, len(page.Rows))
 	for _, row := range page.Rows {
 		recordID := fmt.Sprint(row["id"])
@@ -205,15 +226,136 @@ func (service *Service) SearchTargets(
 			fmt.Sprint(row[labelField]) != "" {
 			label = fmt.Sprint(row[labelField])
 		}
+		secondaryLabel := ""
+		if secondaryField != "" && row[secondaryField] != nil {
+			secondaryLabel = strings.TrimSpace(fmt.Sprint(row[secondaryField]))
+		}
 		items = append(items, TargetRef{
 			TableID:        targetTableID,
 			RecordID:       recordID,
 			Label:          label,
+			SecondaryLabel: secondaryLabel,
 			JunctionValues: map[string]any{},
 		})
 	}
 	return SearchResult{
 		Items: items, Total: page.FilteredRows, Snapshot: page.Snapshot,
+	}, nil
+}
+
+func (service *Service) CreateTarget(
+	ctx context.Context,
+	request CreateTargetRequest,
+) (CreateTargetResult, error) {
+	resolved, err := service.resolve(ctx, request.RelationID)
+	if err != nil {
+		return CreateTargetResult{}, err
+	}
+	label := strings.TrimSpace(request.Label)
+	if resolved.descriptor.Mode != "direct" ||
+		request.RequestID == "" || request.IdempotencyKey == "" ||
+		request.Actor.Type == "" || request.Actor.ID == "" {
+		return CreateTargetResult{}, relationError(
+			"relation.request.invalid",
+			"direct relation target creation request is incomplete",
+		)
+	}
+	targetTableID := resolved.descriptor.TargetTableID
+	if request.TargetTableID != "" && request.TargetTableID != targetTableID {
+		return CreateTargetResult{}, relationError(
+			"relation.target_invalid",
+			"target table does not match the relation",
+		)
+	}
+	target, err := schemaapi.New(service.app).Describe(ctx, targetTableID)
+	if err != nil {
+		return CreateTargetResult{}, err
+	}
+	labelPhysicalName := targetLabelField(target)
+	if labelPhysicalName == "" {
+		return CreateTargetResult{}, relationError(
+			"relation.target_create_unavailable",
+			"target table has no writable display field",
+		)
+	}
+	values := map[string]any{}
+	if len(request.Values) == 0 {
+		if label == "" {
+			return CreateTargetResult{}, relationError(
+				"relation.request.invalid", "target label is required",
+			)
+		}
+		if eligible, reason := quickCreateEligibility(target); !eligible {
+			return CreateTargetResult{}, relationError(
+				"relation.target_create_requires_full_editor", reason,
+			)
+		}
+		values[labelPhysicalName] = label
+	} else {
+		allowed := map[string]schema.FieldDefinition{}
+		for _, field := range target.Fields {
+			if field.ReadOnly || field.Kind == schema.FieldKindFormula ||
+				field.Kind == schema.FieldKindLookup || field.Kind == schema.FieldKindSystem {
+				continue
+			}
+			allowed[field.PhysicalName] = field
+		}
+		for physicalName, value := range request.Values {
+			if _, ok := allowed[physicalName]; !ok {
+				return CreateTargetResult{}, relationError(
+					"relation.target_create_field_invalid",
+					"full target creation contains an unknown or read-only field",
+				)
+			}
+			values[physicalName] = value
+		}
+		label = strings.TrimSpace(fmt.Sprint(values[labelPhysicalName]))
+		if label == "" {
+			return CreateTargetResult{}, relationError(
+				"relation.target_create_field_invalid",
+				"full target creation must include the primary display field",
+			)
+		}
+	}
+	receipt, err := service.kernel.Apply(ctx, mutation.Request{
+		ContractVersion: mutation.ContractVersion,
+		RequestID:       request.RequestID,
+		IdempotencyKey:  request.IdempotencyKey,
+		TableID:         target.TableID,
+		SchemaRevision:  target.SchemaRevision,
+		Operations: []mutation.Operation{{
+			Kind:   mutation.OperationInsert,
+			Values: values,
+		}},
+		Actor: request.Actor,
+	})
+	if err != nil {
+		return CreateTargetResult{}, err
+	}
+	if receipt.Status != mutation.StatusApplied || len(receipt.AffectedRows) != 1 {
+		return CreateTargetResult{}, relationError(
+			"relation.target_create_pending",
+			"target record creation has not committed",
+		)
+	}
+	recordID := receipt.AffectedRows[0].RecordID
+	rows, err := service.queries.ReadRows(ctx, target.TableID, []string{recordID})
+	if err != nil || len(rows) != 1 {
+		return CreateTargetResult{}, relationError(
+			"relation.storage_failed",
+			"created target record could not be read",
+		)
+	}
+	canonicalLabel := label
+	if value := rows[0][labelPhysicalName]; value != nil && fmt.Sprint(value) != "" {
+		canonicalLabel = fmt.Sprint(value)
+	}
+	return CreateTargetResult{
+		Target: TargetRef{
+			TableID: target.TableID, RecordID: recordID,
+			Label: canonicalLabel, JunctionValues: map[string]any{},
+		},
+		Receipt: receipt,
 	}, nil
 }
 
@@ -269,7 +411,11 @@ func (service *Service) QueryLookups(
 			"lookup schema revision does not match",
 		)
 	}
-	return service.queries.QueryPage(ctx, request.TableID, request.Query)
+	page, err := service.queries.QueryPage(ctx, request.TableID, request.Query)
+	if err != nil {
+		return query.Page{}, err
+	}
+	return service.attachLookupCells(ctx, definition, page, nil)
 }
 
 func (service *Service) PreviewLookups(
@@ -312,18 +458,84 @@ func (service *Service) PreviewLookups(
 	if err != nil {
 		return query.Page{}, err
 	}
+	selectedIDs := make(map[string]bool, len(selected))
+	for fieldID := range selected {
+		selectedIDs[fieldID] = true
+	}
+	return service.attachLookupCells(ctx, request.Definition, page, selectedIDs)
+}
+
+func (service *Service) LookupValuePage(
+	ctx context.Context,
+	request LookupValuePageRequest,
+) (lookupcalc.CellValue, error) {
+	definition, err := schemaapi.New(service.app).Describe(ctx, request.TableID)
+	if err != nil {
+		return lookupcalc.CellValue{}, err
+	}
+	if definition.SchemaRevision != request.SchemaRevision {
+		return lookupcalc.CellValue{}, relationError(
+			"lookup.schema_revision_conflict", "lookup schema revision does not match",
+		)
+	}
+	var lookupField schema.FieldDefinition
+	found := false
+	for _, field := range definition.Fields {
+		if field.FieldID == request.FieldID &&
+			field.Kind == schema.FieldKindLookup && field.Lookup != nil {
+			lookupField = field
+			found = true
+			break
+		}
+	}
+	if !found || request.SourceRecordID == "" {
+		return lookupcalc.CellValue{}, relationError(
+			"lookup.request.invalid", "lookup value page target is invalid",
+		)
+	}
+	collection, err := service.app.FindFirstRecordByFilter(
+		"vibetable_tables", "table_id={:table}", dbx.Params{"table": definition.TableID},
+	)
+	if err != nil {
+		return lookupcalc.CellValue{}, relationError(
+			"lookup.storage_failed", "lookup source storage is unavailable",
+		)
+	}
+	sourceCollection, err := service.app.FindCollectionByNameOrId(
+		collection.GetString("collection_id"),
+	)
+	if err != nil {
+		return lookupcalc.CellValue{}, relationError(
+			"lookup.storage_failed", "lookup source storage is unavailable",
+		)
+	}
+	record, err := service.app.FindRecordById(sourceCollection, request.SourceRecordID)
+	if err != nil {
+		return lookupcalc.CellValue{}, relationError(
+			"lookup.storage_failed", "lookup source record is unavailable",
+		)
+	}
+	return lookupcalc.NewCalculator().CalculateFieldPage(
+		ctx, service.app, definition, record, lookupField, request.Offset, request.Limit,
+	)
+}
+
+func (service *Service) attachLookupCells(
+	ctx context.Context,
+	definition schema.TableDefinition,
+	page query.Page,
+	selected map[string]bool,
+) (query.Page, error) {
 	meta, err := service.app.FindFirstRecordByFilter(
 		"vibetable_tables", "table_id={:table}",
-		dbx.Params{"table": request.Definition.TableID},
+		dbx.Params{"table": definition.TableID},
 	)
 	if err != nil {
 		return query.Page{}, relationError(
 			"lookup.storage_failed", "lookup source storage is unavailable",
 		)
 	}
-	collection, err := service.app.FindCollectionByNameOrId(
-		meta.GetString("collection_id"),
-	)
+	collection, err := service.app.FindCollectionByNameOrId(meta.GetString("collection_id"))
 	if err != nil {
 		return query.Page{}, relationError(
 			"lookup.storage_failed", "lookup source storage is unavailable",
@@ -343,15 +555,18 @@ func (service *Service) PreviewLookups(
 				"lookup.storage_failed", "lookup source row could not be read",
 			)
 		}
-		values, calculateErr := calculator.Calculate(
-			ctx, service.app, request.Definition, record,
+		values, calculateErr := calculator.CalculateCells(
+			ctx, service.app, definition, record,
 		)
 		if calculateErr != nil {
 			return query.Page{}, calculateErr
 		}
-		for fieldID, field := range selected {
+		for _, field := range definition.Fields {
+			if field.Kind != schema.FieldKindLookup || field.Lookup == nil ||
+				(selected != nil && !selected[field.FieldID]) {
+				continue
+			}
 			row[field.PhysicalName] = values[field.PhysicalName]
-			_ = fieldID
 		}
 	}
 	return page, nil
@@ -580,6 +795,8 @@ func descriptorFrom(
 		AllowedTargetTableIDs: append(
 			[]string{}, relation.AllowedTargetTableIDs...,
 		),
+		PairID:            relation.PairID,
+		ReciprocalFieldID: relation.ReciprocalFieldID,
 	}
 }
 
@@ -968,6 +1185,13 @@ func relationRowRevision(
 }
 
 func targetLabelField(definition schema.TableDefinition) string {
+	if definition.PrimaryDisplayFieldID != "" {
+		for _, field := range definition.Fields {
+			if field.FieldID == definition.PrimaryDisplayFieldID {
+				return field.PhysicalName
+			}
+		}
+	}
 	for _, field := range definition.Fields {
 		if field.ReadOnly || field.Kind != schema.FieldKindScalar {
 			continue
@@ -979,6 +1203,70 @@ func targetLabelField(definition schema.TableDefinition) string {
 		}
 	}
 	return ""
+}
+
+func targetSecondaryField(definition schema.TableDefinition, labelPhysicalName string) string {
+	for _, preferredType := range []schema.DataType{
+		schema.DataTypeShortText, schema.DataTypeLongText, schema.DataTypeEmail,
+		schema.DataTypeURL, schema.DataTypeSelect, schema.DataTypeInteger,
+		schema.DataTypeDecimal, schema.DataTypeDate, schema.DataTypeDateTime,
+	} {
+		for _, field := range definition.Fields {
+			if field.PhysicalName == labelPhysicalName ||
+				field.Kind != schema.FieldKindScalar || field.DataType != preferredType {
+				continue
+			}
+			return field.PhysicalName
+		}
+	}
+	return ""
+}
+
+func quickCreateEligibility(definition schema.TableDefinition) (bool, string) {
+	labelPhysicalName := targetLabelField(definition)
+	if labelPhysicalName == "" {
+		return false, "目标表没有可写的主显示字段"
+	}
+	for _, field := range definition.Fields {
+		if field.PhysicalName == labelPhysicalName || field.ReadOnly ||
+			field.Kind == schema.FieldKindFormula || field.Kind == schema.FieldKindLookup ||
+			field.Kind == schema.FieldKindSystem || !fieldRequiresValue(field) ||
+			hasFieldDefault(field) {
+			continue
+		}
+		return false, fmt.Sprintf("目标表字段“%s”必须在完整记录编辑器中填写", field.DisplayName)
+	}
+	return true, ""
+}
+
+func fieldRequiresValue(field schema.FieldDefinition) bool {
+	if !field.Nullable {
+		return true
+	}
+	for _, constraint := range field.Constraints {
+		if constraint.Kind == schema.ConstraintRequired {
+			value, _ := constraint.Value.(bool)
+			if value {
+				return true
+			}
+		}
+		if constraint.Kind == schema.ConstraintEnum && constraint.MinSelected == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFieldDefault(field schema.FieldDefinition) bool {
+	if field.DefaultValue != nil {
+		return true
+	}
+	for _, constraint := range field.Constraints {
+		if constraint.Kind == schema.ConstraintDefault && constraint.Value != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func relationIDs(value any) []string {

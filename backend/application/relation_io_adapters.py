@@ -300,8 +300,24 @@ class PocketBaseLookupExportProvider:
             schema_revision=str(schema_revision),
             query={**query, "offset": offset, "limit": limit},
         )
+        rows: list[dict[str, Any]] = []
+        for source_row in page.rows:
+            row = dict(source_row)
+            for column in columns:
+                cell = row.get(column.field_key)
+                if (
+                    not isinstance(cell, dict)
+                    or cell.get("state") != "ok"
+                    or not isinstance(cell.get("provenance"), list)
+                ):
+                    raise RelationIoError(
+                        "Lookup query returned an invalid or unavailable cell",
+                        code="lookup_export_cell_invalid",
+                    )
+                row[column.field_key] = cell.get("value")
+            rows.append(row)
         return AuthoritativeLookupExportPage(
-            rows=page.rows,
+            rows=rows,
             columns=columns,
             filtered_rows=page.filtered_rows,
             lookup_revision=str(schema_revision),

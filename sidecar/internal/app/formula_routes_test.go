@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 )
 
@@ -34,6 +35,18 @@ func TestDecodeFormulaRequestIsStrictAndPreservesNumbers(t *testing.T) {
 				t.Fatalf("error = %#v, want formula.syntax", err)
 			}
 		})
+	}
+}
+
+func TestFormulaDraftErrorsPreserveFieldChangeDiagnostics(t *testing.T) {
+	err := asFormulaError(&fieldchange.ProductError{
+		Code: "schema.formula.relation_cardinality", Path: "draft.formula.source",
+		Message: "many relations require an aggregate formula function",
+		Details: map[string]any{"reference": "lines.amount"},
+	})
+	if err.Code != "schema.formula.relation_cardinality" || err.Path == nil ||
+		*err.Path != "draft.formula.source" || err.Details["reference"] != "lines.amount" {
+		t.Fatalf("mapped formula error = %#v", err)
 	}
 }
 

@@ -475,6 +475,29 @@ async function createV2Field(
     };
   }
   draft = customize(cloneJson(draft));
+  let relationPair;
+  if (logicalType === "relation") {
+    const sourceSchema = await rawBridgeRequest(page, "schema.describe", {
+      collection: tableId,
+      requestGeneration: 0,
+      accepts: [
+        "vibetable.relation-capabilities.v1",
+        "vibetable.lookup-query.v1",
+      ],
+    });
+    const sourceDisplayFieldId = sourceSchema.payload?.schema?.primaryDisplayFieldId
+      || sourceSchema.payload?.schema?.columns?.find(
+        (column) => column.fieldId && column.kind !== "system",
+      )?.fieldId;
+    if (!sourceDisplayFieldId) {
+      throw new Error(`relation source display field is unavailable for ${tableId}`);
+    }
+    relationPair = {
+      reciprocalDisplayName: `${displayName} 来源`,
+      reciprocalCardinality: "many",
+      sourceDisplayFieldId,
+    };
+  }
   const intent = {
     action: "create",
     tableId,
@@ -486,6 +509,7 @@ async function createV2Field(
     conversionRule: "",
     confirmation: "",
     backupReceipt: "",
+    ...(relationPair ? { relationPair } : {}),
   };
   const planned = await rawBridgeRequest(page, "field.change.plan", intent);
   if (planned.type === "operation.failed" || !planned.payload?.canApply) {
@@ -736,16 +760,13 @@ async function scenario02(page, recorder, _network, runtime) {
         draft.formula = {
           language: "cel-v1",
           source: `upper(${title.physicalName})`,
-          resultType: "text",
         };
       }
       if (logicalType === "lookup") {
         const relation = created.find((field) => field.definition?.logicalType === "relation");
         draft.lookup = {
-          relationFieldId: relation.fieldId,
+          path: [{ relationFieldId: relation.fieldId }],
           targetFieldId: target.field.fieldId,
-          aggregate: "first",
-          resultType: "text",
         };
       }
       return draft;
@@ -775,7 +796,7 @@ async function scenario02(page, recorder, _network, runtime) {
       && computed.find((field) => field.definition?.logicalType === "formula")
         ?.definition?.formula?.language === "cel-v1"
       && computed.find((field) => field.definition?.logicalType === "lookup")
-        ?.definition?.lookup?.relationFieldId
+        ?.definition?.lookup?.path?.[0]?.relationFieldId
         === created.find((field) => field.definition?.logicalType === "relation")?.fieldId,
     { computed },
   );
@@ -1390,6 +1411,15 @@ async function acknowledgeExpectedBridgeFailure(page, response) {
   if (!acknowledged) {
     throw new Error(`expected bridge failure was not recorded: ${requestId}`);
   }
+}
+
+async function acknowledgeExpectedBridgeFailureByCodeIfPresent(page, code) {
+  const failure = await page.evaluate((expectedCode) => {
+    const diagnostics = window.__vibetableE2EBridgeDiagnostics;
+    return diagnostics?.failures.find((item) => item.code === expectedCode) ?? null;
+  }, code);
+  if (failure) await acknowledgeExpectedBridgeFailure(page, failure);
+  return failure;
 }
 
 async function beginBridgeMessageCapture(page, responseTypes) {
@@ -2043,6 +2073,9 @@ async function scenario04(page, recorder, _network, runtime) {
   const ack = page.getByTestId("paste-ack");
   if (await ack.isVisible().catch(() => false)) await ack.click();
   await page.getByTestId("paste-confirm").click();
+  await page.locator('[data-testid="paste-panel"][data-phase="applied"]').waitFor({
+    timeout: 30_000,
+  });
   const pasteSummary = page.getByTestId("paste-summary").filter({ hasText: /1/ });
   await pasteSummary.waitFor({ timeout: 30_000 });
   const pasteSummaryText = await pasteSummary.innerText();
@@ -2351,6 +2384,7 @@ async function scenario06(page, recorder) {
   const authors = await createSimpleTable(page, "E2E Authors V2", "Name");
   const articleTableId = await createEmptyTable(page, "E2E Articles V2");
   await closeFieldSettingsDrawer(page);
+  await createV2Field(page, articleTableId, "Title", "text");
   const relation = await createV2Field(
     page,
     articleTableId,
@@ -3246,7 +3280,6 @@ async function scenario12(page, recorder, _network, runtime) {
       draft.formula = {
         language: "cel-v1",
         source: `${valueField.physicalName} * 2.0`,
-        resultType: "number",
       };
       return draft;
     },
@@ -3573,42 +3606,22 @@ async function scenario12(page, recorder, _network, runtime) {
     preservedPostSnapshotMutations,
     restoreLedgerEvents,
   });
-  const restoredAttachmentCell = page.locator(
-    `.tabulator-cell[tabulator-field="${attachmentField.physicalName}"]`,
-  ).first();
-  await restoredAttachmentCell.dblclick();
-  panel = page.getByTestId("attachment-panel");
-  await panel.waitFor({ state: "visible", timeout: 30_000 });
-  const restoredAttachmentResponse = await waitForAttachmentList(
-    page,
-    attachmentParams,
-    (attachments) => attachments.length === 1
-      && attachments[0]?.sha256 === expectedOriginalHash,
-  );
-  const afterRestoreAttachment = restoredAttachmentResponse.payload.attachments[0];
-  await page.getByTestId("attachment-preview-0").waitFor({
-    state: "visible",
-    timeout: 30_000,
-  });
-  const restoredAttachmentText = await panel.innerText();
-  recorder.check("attachment name, hash, and content length returned exactly to the backup snapshot",
-    restoredAttachmentText.includes("backup-original")
-      && await page.getByTestId("attachment-preview-0").isVisible()
-      && afterRestoreAttachment?.originalName === beforeBackupAttachment?.originalName
-      && afterRestoreAttachment?.storedName === beforeBackupAttachment?.storedName
-      && afterRestoreAttachment?.sha256 === expectedOriginalHash
-      && afterRestoreAttachment?.size === originalBytes.length,
-  {
-      restoredAttachmentText,
-      beforeBackupAttachment,
-      afterRestoreAttachment,
-      expectedOriginalHash,
-      expectedOriginalSize: originalBytes.length,
-  });
-  await panel.locator("header button").click();
+  // This assertion targets table history. Run it before the explicit
+  // attachment-cell interaction, which correctly changes the toolbar action
+  // to a different cell-history query.
   const historyDrawerStartedAt = performance.now();
   await page.getByTestId("toolbar-history").click();
   await page.getByTestId("history-timeline").waitFor({ timeout: 30_000 });
+  await waitForBridgeDiagnosticsToSettle(page, { timeoutMs: 2_000, quietMs: 50 });
+  const retiredHistoryField = await acknowledgeExpectedBridgeFailureByCodeIfPresent(
+    page,
+    "history.field_not_found",
+  );
+  recorder.check(
+    "restored history retired any stale cell field and converged on table scope",
+    retiredHistoryField === null || retiredHistoryField.requestType === "history.query",
+    { retiredHistoryField },
+  );
   runtime.recordUiTiming(
     "history.drawer.initialLoad",
     performance.now() - historyDrawerStartedAt,
@@ -3672,12 +3685,46 @@ async function scenario12(page, recorder, _network, runtime) {
     postSnapshotValuePreserved,
     postSnapshotAttachmentPreserved,
   });
+  const historyClose = page.locator(".n-drawer-header__close").last();
+  if (await historyClose.isVisible()) await historyClose.click();
+
+  const restoredAttachmentCell = page.locator(
+    `.tabulator-cell[tabulator-field="${attachmentField.physicalName}"]`,
+  ).first();
+  await restoredAttachmentCell.dblclick();
+  panel = page.getByTestId("attachment-panel");
+  await panel.waitFor({ state: "visible", timeout: 30_000 });
+  const restoredAttachmentResponse = await waitForAttachmentList(
+    page,
+    attachmentParams,
+    (attachments) => attachments.length === 1
+      && attachments[0]?.sha256 === expectedOriginalHash,
+  );
+  const afterRestoreAttachment = restoredAttachmentResponse.payload.attachments[0];
+  await page.getByTestId("attachment-preview-0").waitFor({
+    state: "visible",
+    timeout: 30_000,
+  });
+  const restoredAttachmentText = await panel.innerText();
+  recorder.check("attachment name, hash, and content length returned exactly to the backup snapshot",
+    restoredAttachmentText.includes("backup-original")
+      && await page.getByTestId("attachment-preview-0").isVisible()
+      && afterRestoreAttachment?.originalName === beforeBackupAttachment?.originalName
+      && afterRestoreAttachment?.storedName === beforeBackupAttachment?.storedName
+      && afterRestoreAttachment?.sha256 === expectedOriginalHash
+      && afterRestoreAttachment?.size === originalBytes.length,
+  {
+      restoredAttachmentText,
+      beforeBackupAttachment,
+      afterRestoreAttachment,
+      expectedOriginalHash,
+      expectedOriginalSize: originalBytes.length,
+  });
+  await panel.locator("header button").click();
 
   // Visual acceptance is part of the product gate, not a source-only token
   // check. Exercise the user-facing theme control and capture the real
   // packaged WebView2 table, modal, and popover in dark mode.
-  const historyClose = page.locator(".n-drawer-header__close").last();
-  if (await historyClose.isVisible()) await historyClose.click();
   await page.getByTestId("nav-settings").click();
   await page.getByTestId("settings-nav-general").click();
   await page.getByTestId("theme-select").click();

@@ -119,12 +119,14 @@ class FieldChangePlanParams(ProductParams):
             "conversionRule",
             "confirmation",
             "backupReceipt",
+            "relationPair",
         }
     )
-    _required_fields = _allowed_fields
+    _required_fields = _allowed_fields - {"relationPair"}
     _field_types = {
         "draft": (dict, type(None)),
         "actor": (dict,),
+        "relationPair": (dict, type(None)),
     }
 
     _catalog_example = {
@@ -255,6 +257,12 @@ PRODUCT_PARAM_MODELS: dict[str, type[ProductParams]] = {
         required=("tableId", "query"),
         field_types={"tableId": (str,), "query": (dict,)},
     ),
+    "query.view": _closed_params(
+        "QueryViewParams",
+        allowed=("tableId", "view"),
+        required=("tableId", "view"),
+        field_types={"tableId": (str,), "view": (dict,)},
+    ),
     "query.readRows": _closed_params(
         "QueryReadRowsParams",
         allowed=("tableId", "rowIds"),
@@ -304,6 +312,12 @@ PRODUCT_PARAM_MODELS: dict[str, type[ProductParams]] = {
         allowed=("definition",),
         required=("definition",),
         field_types={"definition": (dict,)},
+    ),
+    "formula.draft.validate": _closed_params(
+        "FormulaDraftValidateParams",
+        allowed=("tableId", "displaySource"),
+        required=("tableId", "displaySource"),
+        field_types={"tableId": (str,), "displaySource": (str,)},
     ),
     "formula.preview": _closed_params(
         "FormulaPreviewParams",
@@ -415,6 +429,18 @@ PRODUCT_PARAM_MODELS: dict[str, type[ProductParams]] = {
             "collection": (str, type(None)),
             "offset": (int,),
             "limit": (int,),
+        },
+    ),
+    "relation.createTarget": _closed_params(
+        "RelationCreateTargetParams",
+        allowed=("relationId", "collection", "label", "values", "idempotencyKey"),
+        required=("relationId", "idempotencyKey"),
+        field_types={
+            "relationId": (str,),
+            "collection": (str, type(None)),
+            "label": (str,),
+            "values": (dict,),
+            "idempotencyKey": (str,),
         },
     ),
     "relation.updateSingle": _closed_params(
@@ -529,6 +555,39 @@ PRODUCT_PARAM_MODELS: dict[str, type[ProductParams]] = {
             "fieldRefs": (list,),
             "query": (dict,),
             "requestGeneration": (int,),
+            "schemaRevision": (str,),
+            "permissionRevision": (str,),
+            "lookupRevision": (str,),
+        },
+    ),
+    "lookup.valuePage": _closed_params(
+        "LookupValuePageParams",
+        allowed=(
+            "collection",
+            "fieldRef",
+            "sourceRecordId",
+            "offset",
+            "limit",
+            "schemaRevision",
+            "permissionRevision",
+            "lookupRevision",
+        ),
+        required=(
+            "collection",
+            "fieldRef",
+            "sourceRecordId",
+            "offset",
+            "limit",
+            "schemaRevision",
+            "permissionRevision",
+            "lookupRevision",
+        ),
+        field_types={
+            "collection": (str,),
+            "fieldRef": (str,),
+            "sourceRecordId": (str,),
+            "offset": (int,),
+            "limit": (int,),
             "schemaRevision": (str,),
             "permissionRevision": (str,),
             "lookupRevision": (str,),
@@ -665,6 +724,26 @@ class PocketBaseProductDataService:
             "snapshot": page.snapshot,
         }
 
+    async def query_view(self, params: ProductParams) -> dict[str, Any]:
+        table_id = _text(params.root, "tableId")
+        view = _object(params.root, "view")
+        result = await self._client.execute_view(table_id=table_id, view=view)
+        page = result.page
+        return {
+            "page": {
+                "rows": page.rows,
+                "offset": page.offset,
+                "limit": page.limit,
+                "filteredRows": page.filtered_rows,
+                "totalRows": page.total_rows,
+                "snapshot": page.snapshot,
+            },
+            "groupRows": result.group_rows,
+            "groupOffset": result.group_offset,
+            "groupLimit": result.group_limit,
+            "hasMoreGroups": result.has_more_groups,
+        }
+
     async def read_rows(self, params: ProductParams) -> dict[str, Any]:
         raw = params.root
         row_ids = _array(raw, "rowIds")
@@ -695,6 +774,9 @@ class PocketBaseProductDataService:
 
     async def validate_formula(self, params: ProductParams) -> dict[str, Any]:
         return await self._post("/api/vibetable/v1/formulas/validate", params.root)
+
+    async def validate_formula_draft(self, params: ProductParams) -> dict[str, Any]:
+        return await self._post("/api/vibetable/v1/formulas/draft/validate", params.root)
 
     async def preview_formula(self, params: ProductParams) -> dict[str, Any]:
         return await self._post("/api/vibetable/v1/formulas/preview", params.root)
@@ -862,6 +944,9 @@ class PocketBaseProductDataService:
         lookups = catalog.get("lookups")
         if not isinstance(relations, list) or not isinstance(lookups, list):
             raise ValueError("PocketBase returned an invalid relation catalog")
+        lookup_max_depth = catalog.get("lookupMaxDepth")
+        if not isinstance(lookup_max_depth, int) or not 1 <= lookup_max_depth <= 32:
+            raise ValueError("PocketBase returned an invalid lookup path capability")
         schema_revision = _text(definition, "schemaRevision")
         lookup_revision = _lookup_revision(schema_revision, lookups)
         return {
@@ -871,6 +956,7 @@ class PocketBaseProductDataService:
             "schema": {
                 "collection": table_id,
                 "primaryKey": "id",
+                "primaryDisplayFieldId": _primary_display_field_id(definition),
                 "columns": _renderer_columns(definition),
                 "normalizedRelations": [
                     _renderer_relation(item, definition)
@@ -887,6 +973,7 @@ class PocketBaseProductDataService:
                 "relationReadV1": True,
                 "relationEditV1": True,
                 "lookupQueryV1": True,
+                "lookupMaxDepth": lookup_max_depth,
                 "reason": None,
             },
         }
@@ -954,6 +1041,35 @@ class PocketBaseProductDataService:
                 if isinstance(item, dict)
             ],
             "total": _integer(result, "total"),
+        }
+
+    async def create_relation_target(self, params: ProductParams) -> dict[str, Any]:
+        raw = params.root
+        target_table = raw.get("collection")
+        if target_table is not None and (not isinstance(target_table, str) or not target_table):
+            raise ValueError("collection must be a non-empty string")
+        request_id = _text(raw, "idempotencyKey")
+        body: dict[str, Any] = {
+            "relationId": _text(raw, "relationId"),
+            "label": raw.get("label") or "",
+            "values": raw.get("values") or {},
+            "requestId": request_id,
+            "idempotencyKey": request_id,
+            "actor": {"type": "user", "id": "local-user", "displayName": None},
+        }
+        if target_table is not None:
+            body["targetTableId"] = target_table
+        result = await self._post(
+            "/api/vibetable/v1/relations/create-target",
+            body,
+        )
+        target = result.get("target")
+        if not isinstance(target, dict):
+            raise ValueError("PocketBase returned an invalid created relation target")
+        return {
+            "outcome": "committed",
+            "target": _renderer_target(target),
+            "requestId": request_id,
         }
 
     async def preview_relation_delta(self, params: ProductParams) -> dict[str, Any]:
@@ -1091,7 +1207,7 @@ class PocketBaseProductDataService:
         renderer = _object(params.root, "definition")
         table_id = _text(renderer, "collection")
         schema = await self._client.describe_table(table_id)
-        field = await self._normalized_lookup_field(renderer, schema)
+        field, normalized_renderer = await self._normalized_lookup_field(renderer, schema)
         proposed = _replace_lookup_field(schema, field, allow_create=True)
         await self._post(
             "/api/vibetable/v1/schema/validate",
@@ -1100,9 +1216,7 @@ class PocketBaseProductDataService:
                 "expectedRevision": _schema_revision_number(_text(schema, "schemaRevision")),
             },
         )
-        result = _clone_json(renderer)
-        result["state"] = "valid"
-        result["diagnostics"] = []
+        result = normalized_renderer
         return {
             "definition": result,
             "valid": True,
@@ -1134,10 +1248,10 @@ class PocketBaseProductDataService:
         for item in definitions:
             if not isinstance(item, dict):
                 raise ValueError("definitions must contain objects")
-            field = await self._normalized_lookup_field(item, schema)
+            field, normalized_renderer = await self._normalized_lookup_field(item, schema)
             fields.append(field)
             field_ids.append(_text(field, "fieldId"))
-            rendered_by_field[_text(field, "physicalName")] = item
+            rendered_by_field[_text(field, "physicalName")] = normalized_renderer
         proposed["fields"] = fields
         query = dict(_object(raw, "query"))
         groups = query.pop("groups", [])
@@ -1162,7 +1276,7 @@ class PocketBaseProductDataService:
         self,
         renderer: dict[str, Any],
         source_schema: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         table_id = _text(renderer, "collection")
         if table_id != _text(source_schema, "tableId"):
             raise ValueError("Lookup collection does not match its schema")
@@ -1177,6 +1291,7 @@ class PocketBaseProductDataService:
         relation: dict[str, Any] = {}
         mode = ""
         terminal_polymorphic = False
+        result_many = False
         for index, step in enumerate(path):
             if not isinstance(step, dict):
                 raise ValueError("Lookup path must contain objects")
@@ -1191,6 +1306,9 @@ class PocketBaseProductDataService:
             mode = relation.get("mode") or (
                 "junction" if relation.get("junctionTableId") else "direct"
             )
+            cardinality = relation.get("cardinality")
+            if cardinality == "many" or mode != "direct":
+                result_many = True
             m2a_collection = step.get("m2aCollection")
             if m2a_collection is not None and (
                 not isinstance(m2a_collection, str) or not m2a_collection
@@ -1224,6 +1342,7 @@ class PocketBaseProductDataService:
         target_field_id = ""
         junction_field_id = ""
         target_field_ids: dict[str, str] = {}
+        target_output_field: dict[str, Any] | None = None
         if source_kind == "junction_field":
             junction_table_id = relation.get("junctionTableId")
             if not isinstance(junction_table_id, str) or not junction_table_id:
@@ -1231,6 +1350,7 @@ class PocketBaseProductDataService:
             junction_schema = await self._client.describe_table(junction_table_id)
             junction_field_id = _schema_field_id(junction_schema, _text(source, "fieldRef"))
             target_field_id = junction_field_id
+            target_output_field = _schema_field(junction_schema, junction_field_id)
         elif mode == "m2a" and terminal_polymorphic:
             mappings = _array(renderer, "m2aFieldMapping")
             for mapping in mappings:
@@ -1251,32 +1371,37 @@ class PocketBaseProductDataService:
                 _text(source, "lookupId") if source_kind == "lookup" else _text(source, "fieldRef")
             )
             target_field_id = _schema_field_id(current_schema, reference)
+            target_output_field = _schema_field(current_schema, target_field_id)
         else:
             raise ValueError("Lookup source kind is unsupported")
-        aggregation = {
-            "single": "first",
-            "values": "none",
-            "distinct_values": "distinct",
-            "related_count": "count",
-            "non_null_count": "countNonNull",
-            "sum": "sum",
-            "average": "avg",
-            "min": "min",
-            "max": "max",
-        }.get(_text(renderer, "aggregation"))
-        if aggregation is None:
-            raise ValueError("Lookup aggregation is unsupported")
-        output_type = _text(renderer, "outputType")
+        aggregation = "none"
+        renderer_aggregation = "values" if result_many else "single"
+        if result_many:
+            output_type = "json"
+        elif target_output_field is not None:
+            output_type = _renderer_data_type(
+                _text_any(target_output_field, "dataType", "storageType")
+            )
+        else:
+            raise ValueError("Lookup target output field is unavailable")
         _data_type, storage_type = _lookup_output_storage(output_type)
-        if aggregation in {"none", "distinct"}:
+        if result_many:
             storage_type = "json"
         constraints: list[dict[str, Any]] = []
+        output_scale = renderer.get("outputScale")
         if output_type == "decimal":
-            scale = renderer.get("outputScale")
+            scale = output_scale
+            if scale is None and target_output_field is not None:
+                _precision, scale = _precision_scale(target_output_field.get("constraints"))
+            if scale is None:
+                scale = 2
             if isinstance(scale, bool) or not isinstance(scale, int) or not 0 <= scale <= 18:
                 raise ValueError("decimal Lookup requires outputScale between 0 and 18")
             constraints.append({"kind": "precisionScale", "precision": 38, "scale": scale})
-        return {
+            output_scale = scale
+        elif output_scale is not None:
+            raise ValueError("outputScale is only valid for decimal Lookups")
+        field = {
             "fieldId": field_id,
             "physicalName": _text(renderer, "fieldKey"),
             "displayName": _text(renderer, "displayName"),
@@ -1300,6 +1425,19 @@ class PocketBaseProductDataService:
             },
             "attachmentPolicy": None,
         }
+        normalized_renderer = _clone_json(renderer)
+        normalized_renderer.update(
+            {
+                "aggregation": renderer_aggregation,
+                "outputType": output_type,
+                "outputScale": output_scale,
+                "revision": 1,
+                "state": "valid",
+                "diagnostics": [],
+                "dependencies": [step["relationId"] for step in renderer["path"]],
+            }
+        )
+        return field, normalized_renderer
 
     async def query_lookups(self, params: ProductParams) -> dict[str, Any]:
         raw = params.root
@@ -1373,6 +1511,44 @@ class PocketBaseProductDataService:
             "totalRows": page.total_rows,
             "snapshot": page.snapshot,
         }
+
+    async def lookup_value_page(self, params: ProductParams) -> dict[str, Any]:
+        raw = params.root
+        table_id = _text(raw, "collection")
+        catalog = await self._client.describe_relations(table_id)
+        lookups = catalog.get("lookups")
+        if not isinstance(lookups, list):
+            raise ValueError("PocketBase returned an invalid lookup catalog")
+        schema_revision = _text(catalog, "schemaRevision")
+        if (
+            _text(raw, "schemaRevision") != schema_revision
+            or _text(raw, "permissionRevision") != schema_revision
+            or _text(raw, "lookupRevision") != _lookup_revision(schema_revision, lookups)
+        ):
+            raise ValueError("Lookup value page revisions are stale")
+        field_ref = _text(raw, "fieldRef")
+        lookup = next(
+            (
+                item
+                for item in lookups
+                if isinstance(item, dict) and item.get("physicalName") == field_ref
+            ),
+            None,
+        )
+        if not isinstance(lookup, dict):
+            raise ValueError("fieldRef does not identify a Lookup")
+        offset = _integer(raw, "offset")
+        limit = _integer(raw, "limit")
+        if offset < 0 or limit < 1 or limit > 500:
+            raise ValueError("Lookup value page paging is invalid")
+        return await self._client.lookup_value_page(
+            table_id=table_id,
+            schema_revision=schema_revision,
+            source_record_id=_text(raw, "sourceRecordId"),
+            field_id=_text(lookup, "fieldId"),
+            offset=offset,
+            limit=limit,
+        )
 
     async def read_history(self, params: ProductParams) -> dict[str, Any]:
         raw = params.root
@@ -1482,6 +1658,7 @@ def _renderer_target(value: dict[str, Any]) -> dict[str, Any]:
         "collection": _text(value, "tableId"),
         "itemId": _text(value, "recordId"),
         "label": _text(value, "label"),
+        "secondaryLabel": value.get("secondaryLabel") or None,
         "junctionId": value.get("junctionId") or None,
         "junctionRevision": value.get("junctionRevision") or None,
         "junctionValues": junction_values,
@@ -1559,10 +1736,44 @@ def _renderer_relation(
         "preset": "standard",
         "selfRelation": target_table == value.get("sourceTableId"),
         "managed": True,
+        "pairId": value.get("pairId") if isinstance(value.get("pairId"), str) else "",
+        "reciprocalFieldId": (
+            value.get("reciprocalFieldId")
+            if isinstance(value.get("reciprocalFieldId"), str)
+            else ""
+        ),
+        "quickCreateEligible": value.get("quickCreateEligible") is True,
+        "quickCreateReason": (
+            value.get("quickCreateReason")
+            if isinstance(value.get("quickCreateReason"), str)
+            else ""
+        ),
         "state": "valid",
         "displayTemplate": None,
         "diagnostics": [],
     }
+
+
+def _primary_display_field_id(definition: dict[str, Any]) -> str:
+    fields = definition.get("fields")
+    if not isinstance(fields, list):
+        raise ValueError("PocketBase returned an invalid field catalog")
+    configured = definition.get("primaryDisplayFieldId")
+    if isinstance(configured, str) and configured:
+        for field in fields:
+            if isinstance(field, dict) and field.get("fieldId") == configured:
+                return configured
+    for field in fields:
+        if (
+            isinstance(field, dict)
+            and field.get("readOnly") is not True
+            and field.get("kind") != "relation"
+        ):
+            return _text(field, "fieldId")
+    for field in fields:
+        if isinstance(field, dict):
+            return _text(field, "fieldId")
+    return ""
 
 
 def _renderer_columns(definition: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1819,19 +2030,12 @@ def _lookup_query_envelope(
 
 def _renderer_lookup(value: dict[str, Any]) -> dict[str, Any]:
     aggregate = _text(value, "aggregate")
-    aggregation = {
-        "none": "values",
-        "first": "single",
-        "count": "related_count",
-        "countNonNull": "non_null_count",
-        "distinct": "distinct_values",
-        "sum": "sum",
-        "avg": "average",
-        "min": "min",
-        "max": "max",
-    }.get(aggregate)
-    if aggregation is None:
-        raise ValueError("PocketBase returned an invalid Lookup aggregate")
+    if aggregate != "none":
+        raise ValueError("PocketBase returned an unsupported Lookup aggregate")
+    result_cardinality = _text(value, "resultCardinality")
+    if result_cardinality not in {"one", "many"}:
+        raise ValueError("PocketBase returned an invalid Lookup result cardinality")
+    aggregation = "values" if result_cardinality == "many" else "single"
     output_type = _renderer_data_type(_text(value, "outputStorage"))
     if output_type not in {
         "text",

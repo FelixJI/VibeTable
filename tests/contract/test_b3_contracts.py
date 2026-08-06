@@ -40,6 +40,67 @@ def test_table_query_fixture_serializes_camel_case() -> None:
     assert "filters" in dumped
 
 
+def test_table_query_round_trips_nested_filter_groups() -> None:
+    payload = {
+        "filters": [
+            {
+                "groupLogic": "OR",
+                "filters": [
+                    {"field": "status", "operator": "eq", "value": "open"},
+                    {"field": "priority", "operator": "eq", "value": "urgent"},
+                ],
+            }
+        ],
+        "offset": 0,
+        "limit": 100,
+    }
+
+    query = TableQuery.model_validate(payload)
+
+    assert query.model_dump(by_alias=True, mode="json", exclude_none=True)["filters"] == [
+        {
+            "groupLogic": "OR",
+            "filters": [
+                {
+                    "field": "status",
+                    "operator": "eq",
+                    "value": "open",
+                    "logic": "AND",
+                },
+                {
+                    "field": "priority",
+                    "operator": "eq",
+                    "value": "urgent",
+                    "logic": "AND",
+                },
+            ],
+        }
+    ]
+
+
+def test_table_query_preserves_connector_between_sibling_filter_groups() -> None:
+    query = TableQuery.model_validate(
+        {
+            "filters": [
+                {
+                    "groupLogic": "AND",
+                    "filters": [{"field": "status", "operator": "eq", "value": "open"}],
+                },
+                {
+                    "logic": "OR",
+                    "groupLogic": "AND",
+                    "filters": [{"field": "priority", "operator": "eq", "value": "urgent"}],
+                },
+            ]
+        }
+    )
+
+    assert (
+        query.model_dump(by_alias=True, mode="json", exclude_none=True)["filters"][1]["logic"]
+        == "OR"
+    )
+
+
 def test_query_snapshot_fixture_is_valid_python_model() -> None:
     payload = _load("query-snapshot.json")
     snap = QuerySnapshot.model_validate(payload)

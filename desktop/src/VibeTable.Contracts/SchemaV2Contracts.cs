@@ -30,16 +30,40 @@ public static class SchemaV2Contract
                     reason = "unsupported contract";
                     return false;
                 }
-                return (plan.Before is null || ValidateField(plan.Before, out reason))
-                    && (plan.After is null || ValidateField(plan.After, out reason));
+                if (!((plan.Before is null || ValidateField(plan.Before, out reason))
+                    && (plan.After is null || ValidateField(plan.After, out reason))))
+                {
+                    return false;
+                }
+                foreach (RelatedFieldChangeV2 related in plan.RelatedChanges ?? [])
+                {
+                    if ((related.Before is not null && !ValidateField(related.Before, out reason))
+                        || (related.After is not null && !ValidateField(related.After, out reason)))
+                    {
+                        return false;
+                    }
+                }
+                return true;
             case FieldApplyReceiptV2 receipt:
                 if (receipt.Contract != Name)
                 {
                     reason = "unsupported contract";
                     return false;
                 }
-                return receipt.Definition is null
-                    || ValidateField(receipt.Definition, out reason);
+                if (receipt.Definition is not null
+                    && !ValidateField(receipt.Definition, out reason))
+                {
+                    return false;
+                }
+                foreach (RelatedFieldApplyReceiptV2 related in receipt.Related ?? [])
+                {
+                    if (related.Definition is not null
+                        && !ValidateField(related.Definition, out reason))
+                    {
+                        return false;
+                    }
+                }
+                return true;
             case FieldMigrationStatusV2 status:
                 if (status.Contract != Name)
                 {
@@ -132,6 +156,14 @@ public static class SchemaV2Contract
                 return false;
             }
         }
+        if (field.Lookup is not null
+            && (field.Lookup.Path.Count is < 1 or > 8
+                || field.Lookup.Path.Any(step => string.IsNullOrWhiteSpace(step.RelationFieldId))
+                || string.IsNullOrWhiteSpace(field.Lookup.TargetFieldId)))
+        {
+            reason = "Lookup requires one to eight relation path steps and a target field";
+            return false;
+        }
         return true;
     }
 }
@@ -218,7 +250,9 @@ public sealed record FieldRelationV2(
     string TargetTableId,
     string Cardinality,
     string DeletePolicy,
-    string DisplayFieldId);
+    string DisplayFieldId,
+    string PairId = "",
+    string ReciprocalFieldId = "");
 
 public sealed record FieldFileV2(
     int MaxFiles,
@@ -239,11 +273,15 @@ public sealed record FieldFormulaV2(
     string Source,
     string ResultType);
 
+public sealed record FieldFormulaDraftV2(
+    string Language,
+    string Source);
+
 public sealed record FieldLookupV2(
-    string RelationFieldId,
-    string TargetFieldId,
-    string Aggregate,
-    string ResultType);
+    IReadOnlyList<FieldLookupPathStepV2> Path,
+    string TargetFieldId);
+
+public sealed record FieldLookupPathStepV2(string RelationFieldId);
 
 public sealed record FieldDefinitionV2(
     string Contract,
@@ -277,7 +315,7 @@ public sealed record FieldDraftV2(
     FieldFileV2? File = null,
     FieldJsonV2? Json = null,
     FieldAutoDateV2? AutoDate = null,
-    FieldFormulaV2? Formula = null,
+    FieldFormulaDraftV2? Formula = null,
     FieldLookupV2? Lookup = null);
 
 public sealed record FieldRecommendedValuesV2(
@@ -309,6 +347,11 @@ public sealed record FieldActorV2(
     string Id,
     string Kind);
 
+public sealed record FieldRelationPairDraftV2(
+    string ReciprocalDisplayName,
+    string ReciprocalCardinality,
+    string SourceDisplayFieldId);
+
 public sealed record FieldChangeIntentV2(
     string Action,
     string TableId,
@@ -319,7 +362,8 @@ public sealed record FieldChangeIntentV2(
     FieldActorV2 Actor,
     string ConversionRule,
     string Confirmation,
-    string BackupReceipt);
+    string BackupReceipt,
+    FieldRelationPairDraftV2? RelationPair = null);
 
 public sealed record FieldDiagnosticV2(
     string Code,
@@ -336,6 +380,12 @@ public sealed record FieldImpactV2(
     IReadOnlyList<FieldFailureSampleV2> Failures,
     IReadOnlyList<FieldDependencyRefV2> Dependencies);
 public sealed record FieldPlanStepV2(string Kind, JsonElement Details);
+public sealed record RelatedFieldChangeV2(
+    string TableId,
+    string FieldId,
+    FieldDefinitionV2? Before,
+    FieldDefinitionV2? After,
+    string ExpectedSchemaRevision);
 
 public sealed record FieldChangePlanV2(
     string Contract,
@@ -354,7 +404,14 @@ public sealed record FieldChangePlanV2(
     IReadOnlyList<FieldDiagnosticV2> Errors,
     IReadOnlyList<string> Confirmations,
     bool CreatesMigration,
-    bool CanApply);
+    bool CanApply,
+    IReadOnlyList<RelatedFieldChangeV2>? RelatedChanges = null);
+
+public sealed record RelatedFieldApplyReceiptV2(
+    string TableId,
+    string FieldId,
+    string SchemaRevision,
+    FieldDefinitionV2? Definition);
 
 public sealed record FieldApplyReceiptV2(
     string Contract,
@@ -365,7 +422,8 @@ public sealed record FieldApplyReceiptV2(
     string FieldId,
     string SchemaRevision,
     FieldDefinitionV2? Definition,
-    string MigrationJobId);
+    string MigrationJobId,
+    IReadOnlyList<RelatedFieldApplyReceiptV2>? Related = null);
 
 public sealed record FieldApplyRequestV2(
     string PlanId,

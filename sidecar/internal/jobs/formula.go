@@ -55,6 +55,7 @@ type Service struct {
 	cancelPublish  context.CancelFunc
 	runWait        sync.WaitGroup
 	dispatchMu     sync.Mutex
+	transitionMu   sync.Mutex
 
 	mu        sync.Mutex
 	running   map[string]struct{}
@@ -356,32 +357,12 @@ func (service *Service) Run(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	record, snapshot, err := service.load(jobID)
+	record, snapshot, err := service.beginRun(jobID)
 	if err != nil {
 		return err
 	}
 	if snapshot.State == "complete" {
 		return nil
-	}
-	if snapshot.State == "cancelled" {
-		return jobError(
-			"job.cancelled",
-			"cancelled job must be resumed before it can run",
-			false,
-		)
-	}
-	if snapshot.Type != formulaBackfillType &&
-		snapshot.Type != formulaFanoutType {
-		return jobError(
-			"job.type.invalid", "job type is unsupported", false,
-		)
-	}
-	record.Set("state", "running")
-	record.Set("error_json", nil)
-	if err := service.app.Save(record); err != nil {
-		return jobError(
-			"job.storage_failed", "job state could not be updated", true,
-		)
 	}
 	if running, getErr := service.Get(ctx, jobID); getErr == nil {
 		service.publish(ctx, running)
@@ -454,25 +435,7 @@ func (service *Service) Run(
 			)
 		}
 		if len(records) == 0 {
-			if err := service.markFormulaStatus(
-				snapshot.TableID, "ready",
-			); err != nil {
-				return service.failUnlessContextInterrupted(
-					ctx, record, snapshot.TableID, err,
-				)
-			}
-			record.Set("state", "complete")
-			record.Set("error_json", nil)
-			completed, err := service.persistTerminal(ctx, record)
-			if err != nil {
-				return jobError(
-					"job.storage_failed",
-					"completed job state could not be saved",
-					true,
-				)
-			}
-			service.publish(ctx, completed)
-			return nil
+			return service.finishCompletion(ctx, record.Id, "ready")
 		}
 		operations := make([]mutation.Operation, 0, len(records))
 		for _, item := range records {
@@ -520,18 +483,108 @@ func (service *Service) Run(
 		if snapshot.Progress.Completed > snapshot.Progress.Total {
 			snapshot.Progress.Total = snapshot.Progress.Completed
 		}
-		if err := saveProgress(record, snapshot); err != nil {
-			return service.fail(record, snapshot.TableID, err)
-		}
-		if err := service.app.Save(record); err != nil {
+		current, cancelled, err := service.saveRunningProgress(record.Id, snapshot)
+		if err != nil {
 			return service.failUnlessContextInterrupted(
 				ctx, record, snapshot.TableID, err,
 			)
 		}
+		if cancelled {
+			return nil
+		}
+		record = current
 		if progress, getErr := service.Get(ctx, jobID); getErr == nil {
 			service.publish(ctx, progress)
 		}
 	}
+}
+
+func (service *Service) beginRun(jobID string) (*core.Record, Snapshot, error) {
+	service.transitionMu.Lock()
+	defer service.transitionMu.Unlock()
+	record, snapshot, err := service.load(jobID)
+	if err != nil {
+		return nil, Snapshot{}, err
+	}
+	if snapshot.State == "complete" {
+		return record, snapshot, nil
+	}
+	if snapshot.State == "cancelled" {
+		return nil, Snapshot{}, jobError(
+			"job.cancelled", "cancelled job must be resumed before it can run", false,
+		)
+	}
+	if snapshot.Type != formulaBackfillType && snapshot.Type != formulaFanoutType {
+		return nil, Snapshot{}, jobError(
+			"job.type.invalid", "job type is unsupported", false,
+		)
+	}
+	record.Set("state", "running")
+	record.Set("error_json", nil)
+	if err := service.app.Save(record); err != nil {
+		return nil, Snapshot{}, jobError(
+			"job.storage_failed", "job state could not be updated", true,
+		)
+	}
+	snapshot.State = "running"
+	return record, snapshot, nil
+}
+
+func (service *Service) finishCompletion(
+	ctx context.Context,
+	jobID string,
+	formulaStatus string,
+) error {
+	service.transitionMu.Lock()
+	defer service.transitionMu.Unlock()
+	record, snapshot, err := service.load(jobID)
+	if err != nil {
+		return err
+	}
+	if snapshot.State != "running" {
+		return nil
+	}
+	record.Set("state", "complete")
+	record.Set("error_json", nil)
+	completed, err := service.persistTerminalWithFormulaStatus(ctx, record, formulaStatus)
+	if err != nil {
+		return jobError(
+			"job.storage_failed", "completed job state could not be saved", true,
+		)
+	}
+	service.publish(ctx, completed)
+	return nil
+}
+
+func (service *Service) saveRunningProgress(
+	jobID string,
+	snapshot Snapshot,
+) (*core.Record, bool, error) {
+	return service.saveRunningState(jobID, func(record *core.Record) error {
+		return saveProgress(record, snapshot)
+	})
+}
+
+func (service *Service) saveRunningState(
+	jobID string,
+	update func(*core.Record) error,
+) (*core.Record, bool, error) {
+	service.transitionMu.Lock()
+	defer service.transitionMu.Unlock()
+	record, current, err := service.load(jobID)
+	if err != nil {
+		return nil, false, err
+	}
+	if current.State != "running" {
+		return record, true, nil
+	}
+	if err := update(record); err != nil {
+		return nil, false, err
+	}
+	if err := service.app.Save(record); err != nil {
+		return nil, false, err
+	}
+	return record, false, nil
 }
 
 func (service *Service) ResumePending(ctx context.Context) error {
@@ -654,11 +707,16 @@ func (service *Service) Cancel(
 	if err := ctx.Err(); err != nil {
 		return Snapshot{}, err
 	}
+	service.transitionMu.Lock()
+	defer service.transitionMu.Unlock()
 	record, snapshot, err := service.load(jobID)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if snapshot.State == "complete" || snapshot.State == "cancelled" {
+	if snapshot.State == "complete" {
+		return snapshot, nil
+	}
+	if snapshot.State == "cancelled" {
 		return snapshot, nil
 	}
 	service.mu.Lock()
@@ -666,7 +724,11 @@ func (service *Service) Cancel(
 	service.mu.Unlock()
 	record.Set("state", "cancelled")
 	record.Set("error_json", nil)
-	cancelled, err := service.persistTerminal(ctx, record)
+	formulaStatus := ""
+	if snapshot.Type == formulaBackfillType {
+		formulaStatus = "cancelled"
+	}
+	cancelled, err := service.persistTerminalWithFormulaStatus(ctx, record, formulaStatus)
 	if err != nil {
 		return Snapshot{}, jobError(
 			"job.storage_failed",
@@ -685,6 +747,8 @@ func (service *Service) Resume(
 	if err := ctx.Err(); err != nil {
 		return Snapshot{}, err
 	}
+	service.transitionMu.Lock()
+	defer service.transitionMu.Unlock()
 	record, snapshot, err := service.load(jobID)
 	if err != nil {
 		return Snapshot{}, err
@@ -701,18 +765,20 @@ func (service *Service) Resume(
 	service.mu.Unlock()
 	record.Set("state", "queued")
 	record.Set("error_json", nil)
-	if err := service.app.Save(record); err != nil {
+	formulaStatus := ""
+	if snapshot.Type == formulaBackfillType {
+		formulaStatus = "backfilling"
+	}
+	queued, err := service.persistTerminalWithFormulaStatus(ctx, record, formulaStatus)
+	if err != nil {
 		return Snapshot{}, jobError(
 			"job.storage_failed",
 			"resumed job state could not be saved",
 			true,
 		)
 	}
-	queued, err := service.Get(ctx, jobID)
-	if err == nil {
-		service.publish(ctx, queued)
-	}
-	return queued, err
+	service.publish(ctx, queued)
+	return queued, nil
 }
 
 func (service *Service) cancelRequested(jobID string) bool {
@@ -726,9 +792,22 @@ func (service *Service) finishCancellation(
 	ctx context.Context,
 	record *core.Record,
 ) error {
-	record.Set("state", "cancelled")
-	record.Set("error_json", nil)
-	cancelled, err := service.persistTerminal(ctx, record)
+	service.transitionMu.Lock()
+	defer service.transitionMu.Unlock()
+	current, snapshot, err := service.load(record.Id)
+	if err != nil {
+		return err
+	}
+	if snapshot.State != "cancelled" {
+		return nil
+	}
+	current.Set("state", "cancelled")
+	current.Set("error_json", nil)
+	formulaStatus := ""
+	if snapshot.Type == formulaBackfillType {
+		formulaStatus = "cancelled"
+	}
+	cancelled, err := service.persistTerminalWithFormulaStatus(ctx, current, formulaStatus)
 	if err != nil {
 		return jobError(
 			"job.storage_failed",
@@ -916,18 +995,29 @@ func (service *Service) startRecoveredFormulaBackfill(
 
 func (service *Service) fail(
 	record *core.Record,
-	tableID string,
+	_ string,
 	cause error,
 ) error {
 	structured := sanitizeError(cause)
-	record.Set("state", "failed")
+	service.transitionMu.Lock()
+	defer service.transitionMu.Unlock()
+	current, snapshot, loadErr := service.load(record.Id)
+	if loadErr != nil {
+		return structured
+	}
+	if snapshot.State != "running" {
+		return structured
+	}
+	current.Set("state", "failed")
 	raw, _ := json.Marshal(structured)
-	record.Set("error_json", types.JSONRaw(raw))
-	failed, persistErr := service.persistTerminal(
-		context.Background(),
-		record,
+	current.Set("error_json", types.JSONRaw(raw))
+	formulaStatus := ""
+	if snapshot.Type == formulaBackfillType {
+		formulaStatus = "failed"
+	}
+	failed, persistErr := service.persistTerminalWithFormulaStatus(
+		context.Background(), current, formulaStatus,
 	)
-	_ = service.markFormulaStatus(tableID, "failed")
 	if persistErr == nil {
 		service.publish(context.Background(), failed)
 	}
@@ -938,6 +1028,14 @@ func (service *Service) persistTerminal(
 	ctx context.Context,
 	record *core.Record,
 ) (Snapshot, error) {
+	return service.persistTerminalWithFormulaStatus(ctx, record, "")
+}
+
+func (service *Service) persistTerminalWithFormulaStatus(
+	ctx context.Context,
+	record *core.Record,
+	formulaStatus string,
+) (Snapshot, error) {
 	snapshot, err := snapshotFromRecord(record)
 	if err != nil {
 		return Snapshot{}, err
@@ -945,6 +1043,11 @@ func (service *Service) persistTerminal(
 	err = service.app.RunInTransaction(func(txApp core.App) error {
 		if err := txApp.Save(record); err != nil {
 			return err
+		}
+		if formulaStatus != "" {
+			if err := markFormulaStatusInApp(txApp, snapshot.TableID, formulaStatus); err != nil {
+				return err
+			}
 		}
 		if service.publisher != nil {
 			return service.publisher.PersistTaskChanged(
@@ -989,51 +1092,55 @@ func (service *Service) markFormulaStatus(
 	status string,
 ) error {
 	return service.app.RunInTransaction(func(txApp core.App) error {
-		formulas, err := txApp.FindRecordsByFilter(
-			"vibetable_formulas",
-			"table_id={:table}",
-			"",
-			0,
-			0,
-			dbx.Params{"table": tableID},
-		)
-		if err != nil {
-			return err
-		}
-		for _, formula := range formulas {
-			formula.Set("status", status)
-			if err := txApp.Save(formula); err != nil {
-				return err
-			}
-		}
-		table, err := txApp.FindFirstRecordByFilter(
-			"vibetable_tables",
-			"table_id={:table}",
-			dbx.Params{"table": tableID},
-		)
-		if err != nil {
-			return err
-		}
-		raw, _ := json.Marshal(table.GetRaw("definition_json"))
-		var definition schema.TableDefinition
-		if json.Unmarshal(raw, &definition) != nil {
-			return errors.New("stored table definition is invalid")
-		}
-		for index := range definition.Fields {
-			if definition.Fields[index].Kind == schema.FieldKindFormula &&
-				definition.Fields[index].Formula != nil {
-				spec := *definition.Fields[index].Formula
-				spec.Status = status
-				definition.Fields[index].Formula = &spec
-			}
-		}
-		raw, err = json.Marshal(definition)
-		if err != nil {
-			return err
-		}
-		table.Set("definition_json", types.JSONRaw(raw))
-		return txApp.Save(table)
+		return markFormulaStatusInApp(txApp, tableID, status)
 	})
+}
+
+func markFormulaStatusInApp(app core.App, tableID string, status string) error {
+	formulas, err := app.FindRecordsByFilter(
+		"vibetable_formulas",
+		"table_id={:table}",
+		"",
+		0,
+		0,
+		dbx.Params{"table": tableID},
+	)
+	if err != nil {
+		return err
+	}
+	for _, formula := range formulas {
+		formula.Set("status", status)
+		if err := app.Save(formula); err != nil {
+			return err
+		}
+	}
+	table, err := app.FindFirstRecordByFilter(
+		"vibetable_tables",
+		"table_id={:table}",
+		dbx.Params{"table": tableID},
+	)
+	if err != nil {
+		return err
+	}
+	raw, _ := json.Marshal(table.GetRaw("definition_json"))
+	var definition schema.TableDefinition
+	if json.Unmarshal(raw, &definition) != nil {
+		return errors.New("stored table definition is invalid")
+	}
+	for index := range definition.Fields {
+		if definition.Fields[index].Kind == schema.FieldKindFormula &&
+			definition.Fields[index].Formula != nil {
+			spec := *definition.Fields[index].Formula
+			spec.Status = status
+			definition.Fields[index].Formula = &spec
+		}
+	}
+	raw, err = json.Marshal(definition)
+	if err != nil {
+		return err
+	}
+	table.Set("definition_json", types.JSONRaw(raw))
+	return app.Save(table)
 }
 
 func (service *Service) recordCount(

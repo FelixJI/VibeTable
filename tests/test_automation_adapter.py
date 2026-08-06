@@ -32,6 +32,36 @@ def test_project_runner_resolves_platform_command_shims(
     assert calls == [("C:/node/npm.cmd", "ci")]
 
 
+def test_project_runner_prefers_dotnet_install_with_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    preferred = tmp_path / "dotnet.exe"
+    preferred.touch()
+    monkeypatch.setattr(automation_project, "PREFERRED_DOTNET", preferred)
+    monkeypatch.setattr(
+        automation_project.shutil,
+        "which",
+        lambda command, **kwargs: "C:/Program Files (x86)/dotnet/dotnet.exe",
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **kwargs: calls.append(command),
+    )
+
+    automation_project._run("dotnet", "restore", "desktop/VibeTable.Desktop.sln")
+
+    assert calls == [
+        (
+            str(preferred),
+            "restore",
+            "desktop/VibeTable.Desktop.sln",
+        )
+    ]
+
+
 def test_only_canonical_workflows_remain_and_delegate_to_stable_cli() -> None:
     workflows = REPO_ROOT / ".github/workflows"
     assert {path.name for path in workflows.glob("*.yml")} == {"ci.yml", "cd.yml"}

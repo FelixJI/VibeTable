@@ -189,6 +189,28 @@ describe("tableStore", () => {
     expect(s.allRows).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
   });
 
+  it("appends independently paged authoritative group rows", () => {
+    const s = useTableStore();
+    s.beginLoad();
+    s.setDatasetReady({
+      ...makeDatasetReady([{ id: 1 }]),
+      groupRows: [{ key: ["east"], count: 7000, summaries: [10] }],
+      groupOffset: 0,
+      groupLimit: 1,
+      hasMoreGroups: true,
+    });
+    s.setDatasetReady({
+      ...makeDatasetReady([{ id: 1 }]),
+      groupRows: [{ key: ["west"], count: 5500, summaries: [20] }],
+      groupOffset: 1,
+      groupLimit: 1,
+      hasMoreGroups: false,
+    });
+
+    expect(s.viewGroups.map((row) => row.key[0])).toEqual(["east", "west"]);
+    expect(s.hasMoreViewGroups).toBe(false);
+  });
+
   it("rejects a stale datasetReady that would overwrite a newer committed row", () => {
     const s = useTableStore();
     const revision = {

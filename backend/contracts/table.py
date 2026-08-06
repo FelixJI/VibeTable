@@ -15,8 +15,24 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
+
+FilterOperator = Literal[
+    "eq",
+    "ne",
+    "contains",
+    "starts_with",
+    "ends_with",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "between",
+    "in",
+    "is_null",
+    "is_not_null",
+]
 
 
 class CamelModel(BaseModel):
@@ -46,7 +62,7 @@ class ColumnSchema(CamelModel):
     name: str
     title: str
     field_id: str | None = None
-    kind: Literal["scalar", "relation", "lookup"] = "scalar"
+    kind: Literal["scalar", "relation", "lookup", "formula", "attachment", "system"] = "scalar"
     relation_id: str | None = None
     lookup_id: str | None = None
     data_type: Literal[
@@ -67,3 +83,4 @@ class ColumnSchema(CamelModel):
     # validation both key off ``scale``.
     scale: int | None = None
     precision: int | None = None
+    filter_operators: list[FilterOperator] = Field(default_factory=list)

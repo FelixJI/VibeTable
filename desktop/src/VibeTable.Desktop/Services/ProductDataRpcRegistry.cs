@@ -33,7 +33,7 @@ internal static class ProductDataRpcRegistry
             && HasOnlyProperties(
                 p, "action", "tableId", "fieldId", "expectedSchemaRevision",
                 "expectedDataRevision", "draft", "actor", "conversionRule",
-                "confirmation", "backupReceipt")
+                "confirmation", "backupReceipt", "relationPair")
             && HasStrings(p, "action", "tableId", "expectedSchemaRevision")
             && HasObject(p, "actor"),
             (g, p, t) => g.PlanFieldChangeAsync(p, t),
@@ -65,6 +65,9 @@ internal static class ProductDataRpcRegistry
             (g, p, t) => g.GetTableSchemaAsync(p, t)),
         new("query.page", p => Safe(p) && HasString(p, "tableId") && HasObject(p, "query"),
             (g, p, t) => g.QueryPageAsync(p, t)),
+        new("query.view", p => Safe(p) && HasExactProperties(p, "tableId", "view")
+            && HasString(p, "tableId") && HasObject(p, "view"),
+            (g, p, t) => g.QueryViewAsync(p, t)),
         new("mutation.preview", p => Safe(p) && HasString(p, "tableId") && HasArray(p, "operations"),
             (g, p, t) => g.PreviewMutationAsync(p, t)),
         new("mutation.apply", p => Safe(p) && HasString(p, "tableId") && HasArray(p, "operations"),
@@ -89,6 +92,10 @@ internal static class ProductDataRpcRegistry
             (g, p, t) => g.GetTaskStatusAsync(p, t)),
         new("formula.validate", p => Safe(p) && HasObject(p, "definition"),
             (g, p, t) => g.ValidateFormulaAsync(p, t)),
+        new("formula.draft.validate", p => Safe(p)
+            && HasStrings(p, "tableId", "displaySource")
+            && HasExactProperties(p, "tableId", "displaySource"),
+            (g, p, t) => g.ValidateFormulaDraftAsync(p, t)),
         new("formula.preview", p => Safe(p) && HasObject(p, "definition") && HasObject(p, "row") && HasArray(p, "changedFieldIds"),
             (g, p, t) => g.PreviewFormulaAsync(p, t)),
         new("file.list", p => Safe(p) && HasStrings(p, "tableId", "recordId", "fieldId"),

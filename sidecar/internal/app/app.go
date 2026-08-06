@@ -357,7 +357,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			}
 		}
 		registerFieldRoutes(
-			event.Router, pb, fieldMigration, options.Logger,
+			event.Router, pb, fieldMigration, jobService, options.Logger,
 			fieldProtectionVerifier,
 			businessGate,
 		)

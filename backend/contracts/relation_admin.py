@@ -32,6 +32,10 @@ class NormalizedRelationDescriptor(CamelModel):
     preset: Literal["standard", "file", "files", "translations"] = "standard"
     self_relation: bool = False
     managed: bool = False
+    pair_id: str = Field(default="", exclude_if=lambda value: not value)
+    reciprocal_field_id: str = Field(default="", exclude_if=lambda value: not value)
+    quick_create_eligible: bool = False
+    quick_create_reason: str = ""
     state: Literal["valid", "readonly", "invalid"] = "valid"
     display_template: str | None = None
     diagnostics: list[RelationDiagnostic] = Field(default_factory=list)
@@ -40,6 +44,7 @@ class NormalizedRelationDescriptor(CamelModel):
 class SchemaSnapshot(CamelModel):
     collection: str
     primary_key: str
+    primary_display_field_id: str = Field(default="", exclude_if=lambda value: not value)
     columns: list[ColumnSchema]
     normalized_relations: list[NormalizedRelationDescriptor] = Field(default_factory=list)
     schema_revision: str
@@ -54,6 +59,7 @@ class RelationLookupCapabilities(CamelModel):
     relation_edit_v1: bool = False
     relation_import_v1: bool = False
     lookup_query_v1: bool = False
+    lookup_max_depth: int = Field(default=8, ge=1, le=32)
     reason: Literal["extension_missing", "incompatible", "permission_denied"] | None = None
 
 
@@ -81,6 +87,7 @@ class RelationTargetRef(CamelModel):
     collection: str
     item_id: str
     label: str
+    secondary_label: str | None = None
     junction_id: str | None = None
     junction_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     junction_values: dict[str, Any] = Field(default_factory=dict)
@@ -97,6 +104,12 @@ class RelationSearchParams(CamelModel):
 class RelationSearchResult(CamelModel):
     items: list[RelationTargetRef]
     total: int = Field(ge=0)
+
+
+class RelationCreateTargetResult(CamelModel):
+    outcome: Literal["committed"]
+    target: RelationTargetRef
+    request_id: str
 
 
 class RelationSingleUpdateParams(CamelModel):
@@ -164,6 +177,7 @@ class RelationDeltaPreview(CamelModel):
 __all__ = [
     "NormalizedRelationDescriptor",
     "RelationAdd",
+    "RelationCreateTargetResult",
     "RelationDelta",
     "RelationDeltaPreview",
     "RelationDeltaResult",
