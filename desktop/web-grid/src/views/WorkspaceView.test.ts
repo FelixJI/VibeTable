@@ -760,6 +760,38 @@ describe("WorkspaceView", () => {
     });
   });
 
+  it("falls back to table history when a restored dataset retires the selected field", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    useWorkspaceStore().selectTable("orders");
+    useTableStore().appendPage({
+      table: "orders",
+      columns: [{
+        name: "current_status",
+        title: "Status",
+        dataType: "text",
+        editable: true,
+        nullable: true,
+      }],
+      rows: [{ rowKey: "42", current_status: "open" }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "remote",
+    });
+    const revisions = useRevisionHistoryStore();
+    revisions.setSelection({ scope: "cell", itemId: "42", field: "retired_status" });
+    mountView();
+    await flushPromises();
+
+    (document.body.querySelector('[data-testid="toolbar-history"]') as HTMLElement).click();
+    await flushPromises();
+
+    const request = posted.find((item) => item.type === "history.queryRequested");
+    expect(request?.payload).toMatchObject({ collection: "orders", scope: "table" });
+    expect(revisions.selection).toEqual({ scope: "table" });
+  });
+
   it("refreshes the table and audit timeline after restore without creating a Ctrl+Z entry", async () => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);

@@ -1413,6 +1413,15 @@ async function acknowledgeExpectedBridgeFailure(page, response) {
   }
 }
 
+async function acknowledgeExpectedBridgeFailureByCodeIfPresent(page, code) {
+  const failure = await page.evaluate((expectedCode) => {
+    const diagnostics = window.__vibetableE2EBridgeDiagnostics;
+    return diagnostics?.failures.find((item) => item.code === expectedCode) ?? null;
+  }, code);
+  if (failure) await acknowledgeExpectedBridgeFailure(page, failure);
+  return failure;
+}
+
 async function beginBridgeMessageCapture(page, responseTypes) {
   await page.evaluate((types) => {
     window.__vibetableE2EBridgeCapture = { types, message: null };
@@ -3594,42 +3603,22 @@ async function scenario12(page, recorder, _network, runtime) {
     preservedPostSnapshotMutations,
     restoreLedgerEvents,
   });
-  const restoredAttachmentCell = page.locator(
-    `.tabulator-cell[tabulator-field="${attachmentField.physicalName}"]`,
-  ).first();
-  await restoredAttachmentCell.dblclick();
-  panel = page.getByTestId("attachment-panel");
-  await panel.waitFor({ state: "visible", timeout: 30_000 });
-  const restoredAttachmentResponse = await waitForAttachmentList(
-    page,
-    attachmentParams,
-    (attachments) => attachments.length === 1
-      && attachments[0]?.sha256 === expectedOriginalHash,
-  );
-  const afterRestoreAttachment = restoredAttachmentResponse.payload.attachments[0];
-  await page.getByTestId("attachment-preview-0").waitFor({
-    state: "visible",
-    timeout: 30_000,
-  });
-  const restoredAttachmentText = await panel.innerText();
-  recorder.check("attachment name, hash, and content length returned exactly to the backup snapshot",
-    restoredAttachmentText.includes("backup-original")
-      && await page.getByTestId("attachment-preview-0").isVisible()
-      && afterRestoreAttachment?.originalName === beforeBackupAttachment?.originalName
-      && afterRestoreAttachment?.storedName === beforeBackupAttachment?.storedName
-      && afterRestoreAttachment?.sha256 === expectedOriginalHash
-      && afterRestoreAttachment?.size === originalBytes.length,
-  {
-      restoredAttachmentText,
-      beforeBackupAttachment,
-      afterRestoreAttachment,
-      expectedOriginalHash,
-      expectedOriginalSize: originalBytes.length,
-  });
-  await panel.locator("header button").click();
+  // This assertion targets table history. Run it before the explicit
+  // attachment-cell interaction, which correctly changes the toolbar action
+  // to a different cell-history query.
   const historyDrawerStartedAt = performance.now();
   await page.getByTestId("toolbar-history").click();
   await page.getByTestId("history-timeline").waitFor({ timeout: 30_000 });
+  await waitForBridgeDiagnosticsToSettle(page, { timeoutMs: 2_000, quietMs: 50 });
+  const retiredHistoryField = await acknowledgeExpectedBridgeFailureByCodeIfPresent(
+    page,
+    "history.field_not_found",
+  );
+  recorder.check(
+    "restored history retired any stale cell field and converged on table scope",
+    retiredHistoryField === null || retiredHistoryField.requestType === "history.query",
+    { retiredHistoryField },
+  );
   runtime.recordUiTiming(
     "history.drawer.initialLoad",
     performance.now() - historyDrawerStartedAt,
@@ -3693,12 +3682,46 @@ async function scenario12(page, recorder, _network, runtime) {
     postSnapshotValuePreserved,
     postSnapshotAttachmentPreserved,
   });
+  const historyClose = page.locator(".n-drawer-header__close").last();
+  if (await historyClose.isVisible()) await historyClose.click();
+
+  const restoredAttachmentCell = page.locator(
+    `.tabulator-cell[tabulator-field="${attachmentField.physicalName}"]`,
+  ).first();
+  await restoredAttachmentCell.dblclick();
+  panel = page.getByTestId("attachment-panel");
+  await panel.waitFor({ state: "visible", timeout: 30_000 });
+  const restoredAttachmentResponse = await waitForAttachmentList(
+    page,
+    attachmentParams,
+    (attachments) => attachments.length === 1
+      && attachments[0]?.sha256 === expectedOriginalHash,
+  );
+  const afterRestoreAttachment = restoredAttachmentResponse.payload.attachments[0];
+  await page.getByTestId("attachment-preview-0").waitFor({
+    state: "visible",
+    timeout: 30_000,
+  });
+  const restoredAttachmentText = await panel.innerText();
+  recorder.check("attachment name, hash, and content length returned exactly to the backup snapshot",
+    restoredAttachmentText.includes("backup-original")
+      && await page.getByTestId("attachment-preview-0").isVisible()
+      && afterRestoreAttachment?.originalName === beforeBackupAttachment?.originalName
+      && afterRestoreAttachment?.storedName === beforeBackupAttachment?.storedName
+      && afterRestoreAttachment?.sha256 === expectedOriginalHash
+      && afterRestoreAttachment?.size === originalBytes.length,
+  {
+      restoredAttachmentText,
+      beforeBackupAttachment,
+      afterRestoreAttachment,
+      expectedOriginalHash,
+      expectedOriginalSize: originalBytes.length,
+  });
+  await panel.locator("header button").click();
 
   // Visual acceptance is part of the product gate, not a source-only token
   // check. Exercise the user-facing theme control and capture the real
   // packaged WebView2 table, modal, and popover in dark mode.
-  const historyClose = page.locator(".n-drawer-header__close").last();
-  if (await historyClose.isVisible()) await historyClose.click();
   await page.getByTestId("nav-settings").click();
   await page.getByTestId("settings-nav-general").click();
   await page.getByTestId("theme-select").click();

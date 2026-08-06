@@ -54,6 +54,13 @@ export function useRevisionHistoryService(): {
     if (error instanceof BridgeOperationError) {
       return { message: error.message, code: error.code ?? null };
     }
+    if (
+      error instanceof Error
+      && "code" in error
+      && typeof error.code === "string"
+    ) {
+      return { message: error.message, code: error.code };
+    }
     return {
       message: error instanceof Error ? error.message : String(error),
       code: null,
@@ -135,7 +142,7 @@ export function useRevisionHistoryService(): {
     invalidate();
   }
 
-  async function query(append: boolean): Promise<void> {
+  async function query(append: boolean, allowFieldFallback = true): Promise<void> {
     const collection = workspace.currentTable;
     if (!collection) {
       store.failLoad("请先选择一张数据表");
@@ -186,6 +193,17 @@ export function useRevisionHistoryService(): {
     } catch (error) {
       if (generation !== queryGeneration || workspace.currentTable !== collection) return;
       const mapped = failure(error);
+      if (
+        allowFieldFallback
+        && mapped.code === "history.field_not_found"
+        && (store.scope === "cell" || store.field !== null || store.query.field !== "")
+      ) {
+        store.setSelection({ scope: "table" });
+        store.open({ scope: "table" });
+        store.updateQuery({ field: "" });
+        await query(false, false);
+        return;
+      }
       store.failLoad(mapped.message, mapped.code);
     }
   }

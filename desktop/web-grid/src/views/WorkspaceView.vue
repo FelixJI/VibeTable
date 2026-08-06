@@ -1450,7 +1450,18 @@ function onHistorySelection(payload: {
 }
 
 function openCurrentHistory(): void {
-  const selected = revisionHistory.selection;
+  let selected = revisionHistory.selection;
+  if (
+    selected.scope === "cell"
+    && tableStore.schema
+    && !tableStore.schema.some((column) => column.name === selected.field)
+  ) {
+    // A workspace restore can replace the schema while Tabulator is retiring
+    // its previous range. Do not send that stale physical field name to the
+    // new history authority; the only honest surviving scope is the table.
+    revisionHistory.setSelection({ scope: "table" });
+    selected = revisionHistory.selection;
+  }
   if (selected.scope === "multiple") return;
   revisionHistoryService.open({ ...selected, scope: selected.scope });
 }
