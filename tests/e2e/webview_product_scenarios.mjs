@@ -2073,6 +2073,9 @@ async function scenario04(page, recorder, _network, runtime) {
   const ack = page.getByTestId("paste-ack");
   if (await ack.isVisible().catch(() => false)) await ack.click();
   await page.getByTestId("paste-confirm").click();
+  await page.locator('[data-testid="paste-panel"][data-phase="applied"]').waitFor({
+    timeout: 30_000,
+  });
   const pasteSummary = page.getByTestId("paste-summary").filter({ hasText: /1/ });
   await pasteSummary.waitFor({ timeout: 30_000 });
   const pasteSummaryText = await pasteSummary.innerText();

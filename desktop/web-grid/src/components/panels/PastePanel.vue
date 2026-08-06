@@ -49,7 +49,14 @@ const canConfirm = computed(() =>
   && (!hasWarning.value || paste.acked),
 );
 
+// An apply request is already committed to the host and cannot be cancelled.
+// Keeping dismissal disabled until the authoritative result arrives prevents
+// a late `table.pasteApplied` receipt from reopening a panel the user just
+// closed and makes the terminal state explicit to automation/accessibility.
+const canDismiss = computed(() => paste.phase !== "applying");
+
 function requestCancel(): void {
+  if (!canDismiss.value) return;
   // Close the surface in the same event turn. The parent still owns/reset the
   // paste workflow through the cancel event, but visibility must not depend
   // on a parent render round-trip (notably from NCard's header-extra slot).
@@ -67,6 +74,7 @@ function requestCancel(): void {
     role="dialog"
     aria-modal="true"
     data-testid="paste-panel"
+    :data-phase="paste.phase"
   >
     <template #header>{{ t(titleKey) }}</template>
     <template #header-extra>
@@ -75,6 +83,7 @@ function requestCancel(): void {
         quaternary
         :aria-label="t('paste.cancel')"
         :title="t('paste.cancel')"
+        :disabled="!canDismiss"
         data-testid="paste-close"
         @click.stop="requestCancel"
       >
@@ -116,7 +125,12 @@ function requestCancel(): void {
 
     <template #action>
       <NSpace justify="end">
-        <NButton size="small" data-testid="paste-cancel" @click.stop="requestCancel">
+        <NButton
+          size="small"
+          :disabled="!canDismiss"
+          data-testid="paste-cancel"
+          @click.stop="requestCancel"
+        >
           {{ t("paste.cancel") }}
         </NButton>
         <NButton
