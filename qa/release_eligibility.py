@@ -38,6 +38,7 @@ REQUIRED_STAGES = (
     "product-e2e",
     "smoke",
 )
+RACE_LANES = ("race-a", "race-b")
 LANE_STAGES = {
     "core": (
         "version",
@@ -56,11 +57,12 @@ LANE_STAGES = {
         "web-build",
         "smoke",
     ),
-    "race": ("go-race",),
+    "race-a": ("go-race",),
+    "race-b": ("go-race",),
     "resilience": ("fault-injection", "product-e2e"),
     "release": ("package",),
 }
-PARALLEL_LANES = ("core", "race", "resilience")
+PARALLEL_LANES = ("core", *RACE_LANES, "resilience")
 REQUIRED_LANES = (*PARALLEL_LANES, "release")
 
 
@@ -114,7 +116,7 @@ def aggregate_reports(
         "releaseCandidate": candidate,
     }
     reports: dict[str, dict[str, object]] = {}
-    stage_results: dict[str, dict[str, object]] = {}
+    stage_results: dict[str, list[tuple[str, dict[str, object]]]] = {}
     lane_summaries: list[dict[str, object]] = []
 
     for path in paths:
@@ -145,9 +147,10 @@ def aggregate_reports(
             stage = item["stage"]
             if item.get("returncode") != 0:
                 raise EligibilityError(f"failed stage in lane {lane}: {stage}")
-            if stage in stage_results:
+            matches = stage_results.setdefault(stage, [])
+            if matches and stage != "go-race":
                 raise EligibilityError(f"duplicate stage result: {stage}")
-            stage_results[stage] = item
+            matches.append((lane, item))
         reports[lane] = report
         lane_summaries.append(
             {
@@ -169,6 +172,34 @@ def aggregate_reports(
         unknown = sorted(set(stage_results) - set(REQUIRED_STAGES))
         raise EligibilityError(f"stage set mismatch: missing={missing}, unknown={unknown}")
 
+    race_results = stage_results["go-race"]
+    if tuple(lane for lane, _item in race_results) != RACE_LANES:
+        raise EligibilityError("go-race stage requires every declared race lane")
+    for stage, matches in stage_results.items():
+        if stage != "go-race" and len(matches) != 1:
+            raise EligibilityError(f"stage result count mismatch: {stage}")
+
+    aggregate_results: dict[str, dict[str, object]] = {
+        stage: matches[0][1] for stage, matches in stage_results.items() if stage != "go-race"
+    }
+    combined_race = dict(race_results[0][1])
+    combined_race.update(
+        {
+            "command": ["parallel race shards", *RACE_LANES],
+            "elapsed": round(
+                max(float(item.get("elapsed", 0.0)) for _lane, item in race_results),
+                3,
+            ),
+            "stdout": "\n".join(
+                f"[{lane}]\n{item.get('stdout', '')}" for lane, item in race_results
+            ),
+            "stderr": "\n".join(
+                f"[{lane}]\n{item.get('stderr', '')}" for lane, item in race_results
+            ),
+        }
+    )
+    aggregate_results["go-race"] = combined_race
+
     return {
         "schemaVersion": SCHEMA_VERSION,
         "reportKind": "aggregate",
@@ -180,7 +211,7 @@ def aggregate_reports(
         "sourceHash": source_hash,
         "releaseCandidate": candidate,
         "lanes": lane_summaries,
-        "results": [stage_results[stage] for stage in REQUIRED_STAGES],
+        "results": [aggregate_results[stage] for stage in REQUIRED_STAGES],
     }
 
 

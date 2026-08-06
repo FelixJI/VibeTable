@@ -32,15 +32,19 @@
 
 ### 阶段一：消除同一次 CI 内的重复质量检查
 
-为公共自动化增加可选的 sharded prepare 阶段声明，默认仍为现有阶段，只有 VibeTable 配置为 `bootstrap + release_build`。完整 quality/E2E 证据继续由 `core`、`race`、`resilience` 和 `release` lanes 提供，19 个 `REQUIRED_STAGES` 保持不变。
+保持公共 `scripts/automation.py`/`scripts/automation_core.py` 不变，只在 VibeTable prepare step 注入候选模式。项目 adapter 在该模式仅恢复 release build 需要的 uv、web-grid npm 与 .NET 依赖，并把 quality 延后到候选绑定的 `core`、`race`、`resilience` 和 `release` lanes；19 个 `REQUIRED_STAGES` 保持不变。未设置候选模式的本地与串行入口继续执行完整 bootstrap/quality。
 
-实施时先确认 release build 只依赖 bootstrap 产物；若存在由 quality 生成的输入，把该输入生成动作移入 bootstrap 或 build adapter，而不是恢复整套 quality。预期收益是移除 prepare 与 core 的重复时间，首轮目标为将成功 PR CI 中位墙钟降到 35 分钟以内。
+release build 已确认只依赖候选模式恢复的依赖，不消费 quality 生成物。PR #42 首轮 run `31102199882` 的 prepare 从历史约 14 分钟降至 4 分 55 秒，缩短约 9 分钟（约 65%）。
 
 ### 阶段二：按 Go package 拆分 race 关键路径
 
-先在 race 报告中记录各 package 的编译和测试耗时，再按实际重量分成两个近似均衡的 matrix lane。每个 package 仍执行 `-race`，聚合器要求所有 race 分片成功后才产生 `go-race` 通过证据。
+race worker 先输出结构化 `RACE_PACKAGE_TIMING`，记录 package、测试数和执行秒数。PR #42 首轮 run `31102199882` 测得整个 `go-race` 为 1669.547 秒，其中 `tests/integration` 单包为 1566.266 秒（99 项），占 stage 墙钟的 93.8%；因此纯 package 分片不能缩短关键路径。
 
-同时缓存声明版本的 w64devkit 工具目录，避免每个新 runner 重复下载和解压。这里不添加无依据重试；真实 race 失败仍直接失败。阶段目标是在三次连续成功运行中把 race 墙钟降到 16 分钟以内，并将整体 CI 中位墙钟降到 25 分钟左右。
+最终采用实测秒数驱动的确定性贪心分配：普通 packages 精确属于 `race-a`/`race-b` 之一；只有实测主导的 integration package 按已经隔离的命名测试拆成两个子集，每条 lane 各编译一次该包并串行执行自己的子集。三个已知长测使用较高回退权重分散，新 package 在取得实测值前按测试数回退。两条 lane 的测试集合互斥且并集完整，聚合器要求两份同候选身份的 race 报告都成功后才合成唯一 `go-race` 通过证据。
+
+按首轮 49 个 package 的实测值模拟，两个分片的调度权重分别约为 1792.3 与 1794.5 秒；integration 的 99 项测试分为 48/51 项。该权重只用于相对调度，不替代最终 Actions 墙钟验收。
+
+同时使用固定 SHA 的 `actions/cache` 缓存声明版本的 `.tools/w64devkit`，只在两条 race lane 恢复/保存；通用 bootstrap 不再安装该 race 专属工具链，完整串行 smoke 仍在消费点显式安装。这里不添加无依据重试；任一真实 race 失败仍直接失败。阶段目标是在三次连续成功运行中把 race 墙钟降到 16 分钟以内，并将整体 CI 中位墙钟降到 25 分钟左右。
 
 ### 阶段三：再评估 setup 与缓存命中
 

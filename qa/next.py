@@ -23,11 +23,15 @@ from threading import Event
 try:
     from qa import handoff as handoff_gate
     from qa import release_candidate
-    from qa.release_eligibility import LANE_STAGES, REQUIRED_STAGES
+    from qa.release_eligibility import LANE_STAGES, RACE_LANES, REQUIRED_STAGES
 except ModuleNotFoundError:  # pragma: no cover - direct ``python qa/next.py``
     import handoff as handoff_gate  # type: ignore[no-redef]
     import release_candidate  # type: ignore[no-redef]
-    from release_eligibility import LANE_STAGES, REQUIRED_STAGES  # type: ignore[no-redef]
+    from release_eligibility import (  # type: ignore[no-redef]
+        LANE_STAGES,
+        RACE_LANES,
+        REQUIRED_STAGES,
+    )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SIDECAR_DIR = REPO_ROOT / "sidecar"
@@ -51,6 +55,61 @@ RACE_LONG_COMMAND_TIMEOUT_SECONDS = 16 * 60
 RACE_LONG_TEST_TIMEOUT = "15m"
 RACE_BINARY_DIR = REPO_ROOT / "build" / "qa" / "race-tests"
 RACE_PACKAGE_WORKERS = 3
+# Candidate-bound timings from successful PR run 31102199882. They only guide
+# scheduling; new packages safely fall back to discovered test counts.
+RACE_PACKAGE_SECONDS = {
+    "github.com/vibetable/vibetable/sidecar/cmd/vibetable-pb": 50.641,
+    "github.com/vibetable/vibetable/sidecar/internal/app": 41.922,
+    "github.com/vibetable/vibetable/sidecar/internal/attachments": 9.610,
+    "github.com/vibetable/vibetable/sidecar/internal/audit": 9.687,
+    "github.com/vibetable/vibetable/sidecar/internal/auditledger": 11.735,
+    "github.com/vibetable/vibetable/sidecar/internal/auth": 4.828,
+    "github.com/vibetable/vibetable/sidecar/internal/autodateobs": 0.641,
+    "github.com/vibetable/vibetable/sidecar/internal/backupreceipt": 7.219,
+    "github.com/vibetable/vibetable/sidecar/internal/buildinfo": 6.407,
+    "github.com/vibetable/vibetable/sidecar/internal/computed": 0.812,
+    "github.com/vibetable/vibetable/sidecar/internal/config": 11.234,
+    "github.com/vibetable/vibetable/sidecar/internal/conflict": 21.250,
+    "github.com/vibetable/vibetable/sidecar/internal/contracts": 11.141,
+    "github.com/vibetable/vibetable/sidecar/internal/contracts/v2": 9.640,
+    "github.com/vibetable/vibetable/sidecar/internal/fieldchange": 185.797,
+    "github.com/vibetable/vibetable/sidecar/internal/fieldprojection": 7.000,
+    "github.com/vibetable/vibetable/sidecar/internal/fieldresource": 0.875,
+    "github.com/vibetable/vibetable/sidecar/internal/fieldvalue": 12.797,
+    "github.com/vibetable/vibetable/sidecar/internal/filehistory": 236.110,
+    "github.com/vibetable/vibetable/sidecar/internal/formula": 28.422,
+    "github.com/vibetable/vibetable/sidecar/internal/health": 5.172,
+    "github.com/vibetable/vibetable/sidecar/internal/importvalue": 7.797,
+    "github.com/vibetable/vibetable/sidecar/internal/jobs": 13.812,
+    "github.com/vibetable/vibetable/sidecar/internal/launch": 8.094,
+    "github.com/vibetable/vibetable/sidecar/internal/lookup": 15.891,
+    "github.com/vibetable/vibetable/sidecar/internal/metadata": 10.906,
+    "github.com/vibetable/vibetable/sidecar/internal/mutation": 28.031,
+    "github.com/vibetable/vibetable/sidecar/internal/objectrepo": 122.390,
+    "github.com/vibetable/vibetable/sidecar/internal/productrow": 5.469,
+    "github.com/vibetable/vibetable/sidecar/internal/protocolv2": 8.203,
+    "github.com/vibetable/vibetable/sidecar/internal/query": 25.313,
+    "github.com/vibetable/vibetable/sidecar/internal/queryschema": 10.406,
+    "github.com/vibetable/vibetable/sidecar/internal/realtime": 9.844,
+    "github.com/vibetable/vibetable/sidecar/internal/relation": 9.235,
+    "github.com/vibetable/vibetable/sidecar/internal/replica": 35.516,
+    "github.com/vibetable/vibetable/sidecar/internal/restore": 8.547,
+    "github.com/vibetable/vibetable/sidecar/internal/retention": 20.906,
+    "github.com/vibetable/vibetable/sidecar/internal/schema": 29.812,
+    "github.com/vibetable/vibetable/sidecar/internal/schema/v2": 25.312,
+    "github.com/vibetable/vibetable/sidecar/internal/schemaapi": 9.422,
+    "github.com/vibetable/vibetable/sidecar/internal/snapshot": 22.078,
+    "github.com/vibetable/vibetable/sidecar/internal/snapshotpkg": 33.968,
+    "github.com/vibetable/vibetable/sidecar/internal/startup": 9.032,
+    "github.com/vibetable/vibetable/sidecar/internal/workspacedb": 11.765,
+    "github.com/vibetable/vibetable/sidecar/internal/workspacemigrator": 7.110,
+    "github.com/vibetable/vibetable/sidecar/internal/workspacev2": 741.750,
+    "github.com/vibetable/vibetable/sidecar/internal/writecoordinator": 17.344,
+    "github.com/vibetable/vibetable/sidecar/migrations": 99.656,
+    "github.com/vibetable/vibetable/sidecar/tests/integration": 1566.266,
+}
+RACE_SPLIT_PACKAGES = frozenset({"github.com/vibetable/vibetable/sidecar/tests/integration"})
+RACE_LONG_TEST_WEIGHT = 10.0
 RACE_LONG_TESTS = frozenset(
     {
         "TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit",
@@ -101,6 +160,92 @@ class StageResult:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class RacePackagePlan:
+    package: str
+    commands: list[tuple[list[str], int, str]]
+    compile_command: list[str] | None
+    binary: Path | None
+
+
+def _select_race_package_plans(
+    plans: list[RacePackagePlan],
+    shard_index: int,
+    shard_count: int,
+    weights: dict[str, float],
+) -> list[RacePackagePlan]:
+    if shard_count < 1 or shard_index not in range(shard_count):
+        raise ValueError("invalid race shard coordinates")
+    work_items: list[tuple[float, str, int | None, RacePackagePlan]] = []
+    for plan in plans:
+        package_weight = weights.get(plan.package, float(max(1, len(plan.commands))))
+        if plan.package not in RACE_SPLIT_PACKAGES or len(plan.commands) < 2:
+            work_items.append((package_weight, plan.package, None, plan))
+            continue
+        command_weights = []
+        for command, _timeout, _cwd in plan.commands:
+            test_name = next(
+                (
+                    argument.removeprefix("-test.run=^").removesuffix("$")
+                    for argument in command
+                    if argument.startswith("-test.run=^")
+                ),
+                "",
+            )
+            command_weights.append(RACE_LONG_TEST_WEIGHT if test_name in RACE_LONG_TESTS else 1.0)
+        weight_total = sum(command_weights)
+        for command_index, command_weight in enumerate(command_weights):
+            work_items.append(
+                (
+                    package_weight * command_weight / weight_total,
+                    plan.package,
+                    command_index,
+                    plan,
+                )
+            )
+
+    assignments: list[list[tuple[float, str, int | None, RacePackagePlan]]] = [
+        [] for _index in range(shard_count)
+    ]
+    totals = [0.0] * shard_count
+    ordered = sorted(
+        work_items,
+        key=lambda item: (-item[0], item[1], -1 if item[2] is None else item[2]),
+    )
+    for item in ordered:
+        target = min(range(shard_count), key=lambda index: (totals[index], index))
+        assignments[target].append(item)
+        totals[target] += item[0]
+
+    grouped: dict[str, tuple[RacePackagePlan, list[int] | None]] = {}
+    for _weight, package, command_index, plan in assignments[shard_index]:
+        if command_index is None:
+            grouped[package] = (plan, None)
+            continue
+        current = grouped.get(package)
+        indexes = [] if current is None or current[1] is None else current[1]
+        indexes.append(command_index)
+        grouped[package] = (plan, indexes)
+
+    selected: list[RacePackagePlan] = []
+    for package in sorted(grouped):
+        plan, indexes = grouped[package]
+        commands = (
+            plan.commands
+            if indexes is None
+            else [plan.commands[index] for index in sorted(indexes)]
+        )
+        selected.append(
+            RacePackagePlan(
+                package=plan.package,
+                commands=commands,
+                compile_command=plan.compile_command,
+                binary=plan.binary,
+            )
+        )
+    return selected
 
 
 def _resolve(name: str) -> str:
@@ -410,12 +555,14 @@ def _run_race_package(
     *,
     environment: dict[str, str],
     stop_event: Event,
+    package_name: str = "unknown",
     compile_command: list[str] | None = None,
     compile_cwd: str | None = None,
     binary: Path | None = None,
 ) -> tuple[int, list[str], list[str]]:
     output: list[str] = []
     errors: list[str] = []
+    started = time.monotonic()
     try:
         if stop_event.is_set():
             output.append("race package stopped after another package failed")
@@ -476,6 +623,19 @@ def _run_race_package(
                 return code, output, errors
         return 0, output, errors
     finally:
+        output.append(
+            "RACE_PACKAGE_TIMING "
+            + json.dumps(
+                {
+                    "elapsedSeconds": round(time.monotonic() - started, 3),
+                    "package": package_name,
+                    "testCount": len(commands),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
         if binary is not None:
             try:
                 binary.unlink(missing_ok=True)
@@ -487,6 +647,7 @@ def _run_go_race(
     *,
     cwd: str,
     environment: dict[str, str],
+    shard: tuple[int, int] | None = None,
 ) -> tuple[int, str, str]:
     """Compile race tests once per package, then isolate every named test process."""
 
@@ -524,13 +685,7 @@ def _run_go_race(
         return 1, "\n".join(output), "race package discovery found zero packages"
 
     RACE_BINARY_DIR.mkdir(parents=True, exist_ok=True)
-    package_plans: list[
-        tuple[
-            list[tuple[list[str], int, str]],
-            list[str] | None,
-            Path | None,
-        ]
-    ] = []
+    package_plans: list[RacePackagePlan] = []
     discovered_count = 0
     for package_index, (package, package_dir) in enumerate(packages):
         list_command = [
@@ -557,8 +712,9 @@ def _run_go_race(
         ]
         if not names:
             package_plans.append(
-                (
-                    [
+                RacePackagePlan(
+                    package=package,
+                    commands=[
                         (
                             [
                                 go,
@@ -572,8 +728,8 @@ def _run_go_race(
                             cwd,
                         )
                     ],
-                    None,
-                    None,
+                    compile_command=None,
+                    binary=None,
                 )
             )
             continue
@@ -614,11 +770,41 @@ def _run_go_race(
                     package_dir,
                 )
             )
-        package_plans.append((package_commands, compile_command, binary))
+        package_plans.append(
+            RacePackagePlan(
+                package=package,
+                commands=package_commands,
+                compile_command=compile_command,
+                binary=binary,
+            )
+        )
     if not discovered_count:
         return 1, "\n".join(output), "race discovery found zero named Go tests"
 
-    package_plans.sort(key=lambda plan: len(plan[0]), reverse=True)
+    if shard is not None:
+        shard_index, shard_count = shard
+        package_plans = _select_race_package_plans(
+            package_plans,
+            shard_index,
+            shard_count,
+            RACE_PACKAGE_SECONDS,
+        )
+        if not package_plans:
+            return 1, "\n".join(output), "race shard selected zero packages"
+        output.append(
+            "RACE_SHARD_ASSIGNMENT "
+            + json.dumps(
+                {
+                    "index": shard_index,
+                    "packages": [plan.package for plan in package_plans],
+                    "total": shard_count,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+    package_plans.sort(key=lambda plan: len(plan.commands), reverse=True)
     stop_event = Event()
     worker_count = min(RACE_PACKAGE_WORKERS, len(package_plans))
     with ThreadPoolExecutor(
@@ -628,14 +814,15 @@ def _run_go_race(
         futures = [
             executor.submit(
                 _run_race_package,
-                package_commands,
+                plan.commands,
                 environment=environment,
                 stop_event=stop_event,
-                compile_command=compile_command,
+                package_name=plan.package,
+                compile_command=plan.compile_command,
                 compile_cwd=cwd,
-                binary=binary,
+                binary=plan.binary,
             )
-            for package_commands, compile_command, binary in package_plans
+            for plan in package_plans
         ]
         package_results = [future.result() for future in futures]
     returncode = 0
@@ -666,6 +853,8 @@ def run_stage(
     stage: str,
     package_root: Path | None = None,
     package_archive: Path | None = None,
+    *,
+    race_shard: tuple[int, int] | None = None,
 ) -> StageResult:
     command, cwd = (
         stage_command(stage, package_root)
@@ -675,10 +864,17 @@ def run_stage(
     environment = _stage_environment(stage, command, package_root)
     started = time.monotonic()
     if stage == "go-race":
-        returncode, stdout, stderr = _run_go_race(
-            cwd=cwd,
-            environment=environment,
-        )
+        if race_shard is None:
+            returncode, stdout, stderr = _run_go_race(
+                cwd=cwd,
+                environment=environment,
+            )
+        else:
+            returncode, stdout, stderr = _run_go_race(
+                cwd=cwd,
+                environment=environment,
+                shard=race_shard,
+            )
     else:
         returncode, stdout, stderr = _run_command(
             command,
@@ -765,7 +961,15 @@ def run_lane(
 ) -> tuple[int, list[StageResult]]:
     results: list[StageResult] = []
     for stage in LANE_STAGES[lane]:
-        result = run_stage(stage, package_root, package_archive)
+        if stage == "go-race":
+            result = run_stage(
+                stage,
+                package_root,
+                package_archive,
+                race_shard=(RACE_LANES.index(lane), len(RACE_LANES)),
+            )
+        else:
+            result = run_stage(stage, package_root, package_archive)
         results.append(result)
         _write_console_text(sys.stdout, result.stdout)
         _write_console_text(sys.stderr, result.stderr)
