@@ -20,7 +20,8 @@ public sealed record ColumnSchema(
     string Kind = "scalar",
     string? RelationId = null,
     string? LookupId = null,
-    IReadOnlyDictionary<string, object?>? AttachmentPolicy = null);
+    IReadOnlyDictionary<string, object?>? AttachmentPolicy = null,
+    IReadOnlyList<string>? FilterOperators = null);
 
 /// <summary>
 /// Result of opening the configured logical source through the table gateway:
@@ -76,4 +77,8 @@ public sealed record TablePage(
     string Mode,
     int? FilteredRows = null,
     QuerySnapshot? QuerySnapshot = null,
-    MutationRevision? Revision = null);
+    MutationRevision? Revision = null,
+    IReadOnlyList<GroupRow>? GroupRows = null,
+    int GroupOffset = 0,
+    int GroupLimit = 100,
+    bool HasMoreGroups = false);

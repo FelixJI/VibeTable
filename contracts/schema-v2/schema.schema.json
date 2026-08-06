@@ -261,7 +261,9 @@
         "targetTableId": {"type": "string", "minLength": 1},
         "cardinality": {"type": "string", "enum": ["one", "many"]},
         "deletePolicy": {"type": "string", "enum": ["setNull", "restrict", "cascade"]},
-        "displayFieldId": {"type": "string"}
+        "displayFieldId": {"type": "string"},
+        "pairId": {"type": "string", "minLength": 1},
+        "reciprocalFieldId": {"type": "string", "minLength": 1}
       }
     },
     "FileSpec": {
@@ -305,18 +307,35 @@
         "resultType": {"$ref": "#/$defs/LogicalType"}
       }
     },
+    "FormulaDraftSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "source"],
+      "properties": {
+        "language": {"const": "cel-v1"},
+        "source": {"type": "string", "minLength": 1}
+      }
+    },
     "LookupSpec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["relationFieldId", "targetFieldId", "aggregate", "resultType"],
+      "required": ["path", "targetFieldId"],
       "properties": {
-        "relationFieldId": {"type": "string", "minLength": 1},
-        "targetFieldId": {"type": "string", "minLength": 1},
-        "aggregate": {
-          "type": "string",
-          "enum": ["none", "first", "distinct", "count", "sum", "avg", "min", "max"]
+        "path": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {"$ref": "#/$defs/LookupPathStep"}
         },
-        "resultType": {"$ref": "#/$defs/LogicalType"}
+        "targetFieldId": {"type": "string", "minLength": 1}
+      }
+    },
+    "LookupPathStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relationFieldId"],
+      "properties": {
+        "relationFieldId": {"type": "string", "minLength": 1}
       }
     },
     "FieldDefinition": {
@@ -367,7 +386,7 @@
         "file": {"$ref": "#/$defs/FileSpec"},
         "json": {"$ref": "#/$defs/JSONSpec"},
         "autoDate": {"$ref": "#/$defs/AutoDateSpec"},
-        "formula": {"$ref": "#/$defs/FormulaSpec"},
+        "formula": {"$ref": "#/$defs/FormulaDraftSpec"},
         "lookup": {"$ref": "#/$defs/LookupSpec"}
       },
       "allOf": [{"$ref": "#/$defs/FieldTypeDiscriminator"}]
@@ -462,6 +481,18 @@
         "kind": {"type": "string", "minLength": 1}
       }
     },
+    "RelationPairDraft": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reciprocalDisplayName", "reciprocalCardinality", "sourceDisplayFieldId"
+      ],
+      "properties": {
+        "reciprocalDisplayName": {"type": "string", "minLength": 1},
+        "reciprocalCardinality": {"type": "string", "enum": ["one", "many"]},
+        "sourceDisplayFieldId": {"type": "string", "minLength": 1}
+      }
+    },
     "FieldChangeIntent": {
       "type": "object",
       "additionalProperties": false,
@@ -485,7 +516,8 @@
         "actor": {"$ref": "#/$defs/Actor"},
         "conversionRule": {"type": "string"},
         "confirmation": {"type": "string"},
-        "backupReceipt": {"type": "string"}
+        "backupReceipt": {"type": "string"},
+        "relationPair": {"$ref": "#/$defs/RelationPairDraft"}
       }
     },
     "Diagnostic": {
@@ -539,6 +571,18 @@
         "details": {"type": "object"}
       }
     },
+    "RelatedFieldChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tableId", "fieldId", "before", "after", "expectedSchemaRevision"],
+      "properties": {
+        "tableId": {"type": "string", "minLength": 1},
+        "fieldId": {"type": "string", "minLength": 1},
+        "before": {"anyOf": [{"$ref": "#/$defs/FieldDefinition"}, {"type": "null"}]},
+        "after": {"anyOf": [{"$ref": "#/$defs/FieldDefinition"}, {"type": "null"}]},
+        "expectedSchemaRevision": {"type": "string", "minLength": 1}
+      }
+    },
     "FieldChangePlan": {
       "type": "object",
       "additionalProperties": false,
@@ -572,7 +616,21 @@
         "errors": {"type": "array", "items": {"$ref": "#/$defs/Diagnostic"}},
         "confirmations": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
         "createsMigration": {"type": "boolean"},
-        "canApply": {"type": "boolean"}
+        "canApply": {"type": "boolean"},
+        "relatedChanges": {
+          "type": "array", "items": {"$ref": "#/$defs/RelatedFieldChange"}
+        }
+      }
+    },
+    "RelatedApplyReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tableId", "fieldId", "schemaRevision", "definition"],
+      "properties": {
+        "tableId": {"type": "string", "minLength": 1},
+        "fieldId": {"type": "string", "minLength": 1},
+        "schemaRevision": {"type": "string", "minLength": 1},
+        "definition": {"anyOf": [{"$ref": "#/$defs/FieldDefinition"}, {"type": "null"}]}
       }
     },
     "ApplyReceipt": {
@@ -594,7 +652,8 @@
         "fieldId": {"type": "string"},
         "schemaRevision": {"type": "string"},
         "definition": {"anyOf": [{"$ref": "#/$defs/FieldDefinition"}, {"type": "null"}]},
-        "migrationJobId": {"type": "string"}
+        "migrationJobId": {"type": "string"},
+        "related": {"type": "array", "items": {"$ref": "#/$defs/RelatedApplyReceipt"}}
       }
     },
     "ApplyRequest": {

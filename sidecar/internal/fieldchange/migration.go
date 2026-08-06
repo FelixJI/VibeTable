@@ -855,7 +855,7 @@ func (service *MigrationService) switchAuthority(
 		if err := saveDefinitionMetadata(app, plan.Intent.TableID, *plan.After); err != nil {
 			return err
 		}
-		if err := saveTableRevisionAndLegacy(app, plan, expected+1); err != nil {
+		if err := saveTableRevisionAndLegacy(ctx, app, plan, expected+1); err != nil {
 			return err
 		}
 		audit, auditErr := app.FindFirstRecordByFilter(

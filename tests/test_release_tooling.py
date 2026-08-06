@@ -96,7 +96,7 @@ def test_repository_versions_are_consistent() -> None:
     assert versions.pocketbase == "0.39.9"
     assert versions.cel == "0.29.0"
     assert versions.contract == "v1"
-    assert versions.schema == "6"
+    assert versions.schema == "7"
     assert len(versions.migration_hash) == 64
 
 
@@ -187,7 +187,7 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
         "pocketBaseVersion": "0.39.9",
         "celVersion": "0.29.0",
         "contractVersion": "2.0",
-        "schemaVersion": "6",
+        "schemaVersion": "7",
         "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
         "sha256": digest,
     }
@@ -382,6 +382,27 @@ def test_package_verifier_rejects_tampered_sidecar(tmp_path: Path) -> None:
 
     with pytest.raises(build_next.BuildError, match="SHA-256"):
         build_next.verify_sidecar_package(stage)
+
+
+def test_write_source_manifest_uses_zero_binary_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = build_next.RepoPaths.default(tmp_path)
+    (tmp_path / "desktop").mkdir()
+    observed: list[str | None] = []
+
+    def render(_paths: build_next.RepoPaths, *, sidecar_sha256: str | None = None) -> str:
+        observed.append(sidecar_sha256)
+        return '{"generated":true}\n'
+
+    monkeypatch.setattr(build_next, "render_manifest", render)
+
+    target = build_next.write_source_manifest(paths)
+
+    assert target == tmp_path / "desktop" / "publish-layout.json"
+    assert target.read_text(encoding="utf-8") == '{"generated":true}\n'
+    assert observed == ["0" * 64]
 
 
 def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(

@@ -6,21 +6,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
-from backend.contracts.query import FilterCondition, SortCondition
+from backend.contracts.query import FilterCondition, FilterExpression, SortCondition
 from backend.contracts.selection import QuerySnapshot
 from backend.contracts.table import CamelModel
 
-LookupAggregation = Literal[
-    "single",
-    "values",
-    "distinct_values",
-    "related_count",
-    "non_null_count",
-    "sum",
-    "average",
-    "min",
-    "max",
-]
+LookupAggregation = Literal["single", "values"]
 LookupOutputType = Literal[
     "text",
     "integer",
@@ -103,20 +93,27 @@ class LookupDefinition(CamelModel):
     def validate_definition(self) -> LookupDefinition:
         if self.output_type != "decimal" and self.output_scale is not None:
             raise ValueError("outputScale is only valid for decimal Lookups")
-        if (
-            self.aggregation in {"related_count", "non_null_count"}
-            and self.output_type != "integer"
-        ):
-            raise ValueError("count Lookups must output integer")
-        if self.aggregation in {"sum", "average"} and self.output_type != "decimal":
-            raise ValueError("numeric aggregate Lookups must output decimal")
-        if self.aggregation in {"values", "distinct_values"} and self.output_type != "json":
+        if self.aggregation == "values" and self.output_type != "json":
             raise ValueError("list Lookups must output json")
         if isinstance(self.source, LookupReferenceSource):
             deps = set(self.dependencies)
             if self.source.lookup_id not in deps:
                 raise ValueError("lookup sources must be declared as dependencies")
         return self
+
+
+class LookupDraftDefinition(CamelModel):
+    lookup_id: str = Field(min_length=1, max_length=128)
+    collection: str = Field(min_length=1, max_length=128)
+    field_key: str = Field(min_length=1, max_length=128)
+    display_name: str = Field(min_length=1, max_length=128)
+    path: list[LookupPathStep] = Field(min_length=1)
+    source: LookupSource
+    m2a_field_mapping: list[LookupM2AFieldMapping] = Field(
+        default_factory=list,
+        alias="m2aFieldMapping",
+    )
+    output_scale: int | None = Field(default=None, ge=0, le=30)
 
 
 class LookupCollectionParams(CamelModel):
@@ -134,7 +131,7 @@ class LookupListResult(CamelModel):
 
 
 class LookupValidateParams(CamelModel):
-    definition: LookupDefinition
+    definition: LookupDraftDefinition
     existing: list[LookupDefinition] = Field(default_factory=list, max_length=256)
 
 
@@ -147,7 +144,11 @@ class LookupValidationResult(CamelModel):
 
 class LookupValueProvenance(CamelModel):
     collection: str = Field(min_length=1, max_length=128)
+    collection_label: str = Field(min_length=1, max_length=256)
     item_id: str = Field(min_length=1, max_length=256)
+    record_label: str = Field(min_length=1, max_length=512)
+    field_id: str = Field(min_length=1, max_length=128)
+    field_label: str = Field(min_length=1, max_length=256)
     value: Any = None
 
 
@@ -155,6 +156,11 @@ class LookupCellValue(CamelModel):
     state: Literal["ok", "restricted", "invalid", "too_expensive"] = "ok"
     value: Any = None
     provenance: list[LookupValueProvenance] = Field(default_factory=list)
+    provenance_total: int = Field(default=0, ge=0)
+    provenance_total_known: bool = True
+    provenance_offset: int = Field(default=0, ge=0)
+    provenance_limit: int = Field(default=100, ge=1)
+    provenance_has_more: bool = False
     diagnostic: LookupDiagnostic | None = None
 
 
@@ -164,11 +170,37 @@ class LookupGroup(CamelModel):
 
 
 class LookupQuery(CamelModel):
-    filters: list[FilterCondition] = Field(default_factory=list, max_length=64)
+    filters: list[FilterExpression] = Field(default_factory=list, max_length=50)
     sorts: list[SortCondition] = Field(default_factory=list, max_length=16)
     groups: list[LookupGroup] = Field(default_factory=list, max_length=8)
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=100, ge=1, le=10_000)
+
+    @model_validator(mode="after")
+    def validate_filter_tree(self) -> LookupQuery:
+        def walk(expression: FilterExpression, parent_depth: int) -> tuple[int, int]:
+            if isinstance(expression, FilterCondition):
+                return parent_depth, 1
+            depth = parent_depth + 1
+            child_depth = depth
+            count = 0
+            for child in expression.filters:
+                nested_depth, nested_count = walk(child, depth)
+                child_depth = max(child_depth, nested_depth)
+                count += nested_count
+            return child_depth, count
+
+        max_depth = 0
+        condition_count = 0
+        for expression in self.filters:
+            depth, count = walk(expression, 0)
+            max_depth = max(max_depth, depth)
+            condition_count += count
+        if max_depth > 3:
+            raise ValueError("filter group nesting cannot exceed 3 levels")
+        if condition_count > 50:
+            raise ValueError("filter tree cannot contain more than 50 conditions")
+        return self
 
 
 class LookupQueryParams(CamelModel):
@@ -183,7 +215,18 @@ class LookupQueryParams(CamelModel):
 
 
 class LookupPreviewParams(LookupQueryParams):
-    definitions: list[LookupDefinition] = Field(min_length=1, max_length=256)
+    definitions: list[LookupDraftDefinition] = Field(min_length=1, max_length=256)
+
+
+class LookupValuePageParams(CamelModel):
+    collection: str = Field(min_length=1, max_length=128)
+    field_ref: str = Field(min_length=1, max_length=128)
+    source_record_id: str = Field(min_length=1, max_length=256)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=1, le=500)
+    schema_revision: str = Field(min_length=1, max_length=128)
+    permission_revision: str = Field(min_length=1, max_length=128)
+    lookup_revision: str = Field(min_length=1, max_length=128)
 
 
 class LookupColumnResult(CamelModel):
@@ -261,6 +304,7 @@ __all__ = [
     "LookupColumnResult",
     "LookupDefinition",
     "LookupDiagnostic",
+    "LookupDraftDefinition",
     "LookupGroup",
     "LookupGroupNode",
     "LookupIdentityParams",

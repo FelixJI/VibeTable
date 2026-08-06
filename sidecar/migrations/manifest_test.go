@@ -18,7 +18,7 @@ func TestManifestIsValidAndHashIsStableShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadManifest(): %v", err)
 	}
-	if manifest.SchemaVersion != 6 || len(manifest.Migrations) != 6 {
+	if manifest.SchemaVersion != 7 || len(manifest.Migrations) != 7 {
 		t.Fatalf("unexpected manifest: %#v", manifest)
 	}
 	if hash := Hash(); len(hash) != 64 || strings.Trim(hash, "0123456789abcdef") != "" {

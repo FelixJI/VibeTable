@@ -68,6 +68,7 @@ describe("PastePanel", () => {
     ui.openPastePanel();
     const wrapper = mountPanel();
     expect(wrapper.text()).toContain("粘贴结果");
+    expect(wrapper.get('[data-testid="paste-panel"]').attributes("data-phase")).toBe("applied");
   });
 
   it("renders the overflow hint when phase is overflow", () => {
@@ -142,5 +143,24 @@ describe("PastePanel", () => {
     await wrapper.find('[data-testid="paste-cancel"]').trigger("click");
     expect(wrapper.emitted("cancel")).toBeTruthy();
     expect(wrapper.find('[data-testid="paste-panel"]').exists()).toBe(false);
+  });
+
+  it("does not dismiss an apply that is awaiting the authoritative host receipt", async () => {
+    const ui = useUiStore();
+    const paste = usePasteStore();
+    paste.setPlan(makePlan());
+    paste.beginApply();
+    ui.openPastePanel();
+    const wrapper = mountPanel();
+
+    expect(wrapper.get('[data-testid="paste-panel"]').attributes("data-phase")).toBe("applying");
+    expect(wrapper.get('[data-testid="paste-close"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-testid="paste-cancel"]').attributes("disabled")).toBeDefined();
+
+    await wrapper.get('[data-testid="paste-close"]').trigger("click");
+    await wrapper.get('[data-testid="paste-cancel"]').trigger("click");
+
+    expect(wrapper.emitted("cancel")).toBeUndefined();
+    expect(ui.pastePanelOpen).toBe(true);
   });
 });

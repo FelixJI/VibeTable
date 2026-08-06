@@ -27,6 +27,7 @@ import type {
   ColumnEditSchema,
   ColumnSchema,
   LookupDefinition,
+	LookupSourcePageIntent,
   LookupValueProvenance,
   NormalizedRelationDescriptor,
   TablePage,
@@ -131,6 +132,7 @@ export interface RelationLookupGridContext {
     value: unknown,
   ) => void;
   readonly onLookupSourceRequested?: (source: LookupValueProvenance) => void;
+	readonly onLookupSourcePageRequested?: (intent: LookupSourcePageIntent) => void;
   readonly onAttachmentOpenRequested?: (
     rowKey: string | number,
     column: ColumnSchema,
@@ -397,8 +399,17 @@ function toColumnDef(
         !!relationLookup?.lookupQueryAvailable,
         relationLookup?.lookupUnavailableReason,
         relationLookup?.onLookupSourceRequested,
+		relationLookup?.onLookupSourcePageRequested,
       ),
       cssClass: "vt-lookup-cell",
+    };
+  }
+  if (col.kind === "formula") {
+    return {
+      ...def,
+      editable: false,
+      formatter: formulaValueFormatter,
+      cssClass: "vt-formula-cell",
     };
   }
 
@@ -439,6 +450,28 @@ function toColumnDef(
     default:
       return { ...def, formatter: "plaintext" };
   }
+}
+
+function formulaValueFormatter(cell: { getValue(): unknown }): HTMLElement {
+  const raw = cell.getValue();
+  const root = document.createElement("span");
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const envelope = raw as Record<string, unknown>;
+    if (envelope.state === "updating" || envelope.state === "error") {
+      root.className = `vt-lookup-state vt-lookup-state--${envelope.state}`;
+      root.textContent = envelope.state === "updating"
+        ? t("grid.formula.updating")
+        : t("grid.formula.failed");
+      const diagnostic = envelope.diagnostic;
+      if (diagnostic && typeof diagnostic === "object" && !Array.isArray(diagnostic)) {
+        const message = (diagnostic as Record<string, unknown>).message;
+        if (typeof message === "string") root.title = message;
+      }
+      return root;
+    }
+  }
+  root.textContent = raw == null ? "—" : String(raw);
+  return root;
 }
 
 /**

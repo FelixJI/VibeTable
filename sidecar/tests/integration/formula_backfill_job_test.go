@@ -41,6 +41,35 @@ type cancelDuringApplyKernel struct {
 
 type businessDeadlineKernel struct{}
 
+type countingFanoutKernel struct {
+	mu             sync.Mutex
+	operationCount int
+	batchCount     int
+}
+
+func (kernel *countingFanoutKernel) Apply(
+	_ context.Context,
+	request mutation.Request,
+) (mutation.Receipt, error) {
+	kernel.mu.Lock()
+	kernel.operationCount += len(request.Operations)
+	kernel.batchCount++
+	kernel.mu.Unlock()
+	return mutation.Receipt{
+		ContractVersion: mutation.ContractVersion,
+		Status:          mutation.StatusApplied,
+		ComputedFields:  map[string]map[string]any{},
+		EmittedEvents:   []string{},
+		Warnings:        []mutation.ProductError{},
+	}, nil
+}
+
+func (kernel *countingFanoutKernel) counts() (int, int) {
+	kernel.mu.Lock()
+	defer kernel.mu.Unlock()
+	return kernel.operationCount, kernel.batchCount
+}
+
 func (businessDeadlineKernel) Apply(
 	context.Context,
 	mutation.Request,
@@ -309,6 +338,10 @@ func TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit(
 	if err != nil || cancelled.State != "cancelled" {
 		t.Fatalf("cancelled snapshot = %#v, err=%v", cancelled, err)
 	}
+	cancelledDefinition, err := schemaapi.New(app).Describe(ctx, "scale_notes")
+	if err != nil || cancelledDefinition.Fields[1].Formula.Status != "cancelled" {
+		t.Fatalf("cancelled formula definition = %#v, err=%v", cancelledDefinition, err)
+	}
 	deduplicated, err := service.StartFormulaBackfill(
 		ctx, "scale_notes", definition.SchemaRevision,
 	)
@@ -316,14 +349,29 @@ func TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit(
 		deduplicated.State != "cancelled" {
 		t.Fatalf("cancelled job dedupe = %#v, err=%v", deduplicated, err)
 	}
+	resumed, err := service.Resume(ctx, started.JobID)
+	if err != nil || resumed.State != "queued" {
+		t.Fatalf("resumed snapshot = %#v, err=%v", resumed, err)
+	}
+	resumedDefinition, err := schemaapi.New(app).Describe(ctx, "scale_notes")
+	if err != nil || resumedDefinition.Fields[1].Formula.Status != "backfilling" {
+		t.Fatalf("resumed formula definition = %#v, err=%v", resumedDefinition, err)
+	}
 	close(pausedKernel.release)
 	if err := <-runResult; err != nil {
 		t.Fatalf("cancelled run returned %v", err)
 	}
-
-	resumed, err := service.Resume(ctx, started.JobID)
-	if err != nil || resumed.State != "queued" {
-		t.Fatalf("resumed snapshot = %#v, err=%v", resumed, err)
+	stillQueued, err := service.Get(ctx, started.JobID)
+	if err != nil || stillQueued.State != "queued" {
+		t.Fatalf("old worker overwrote resumed job = %#v, err=%v", stillQueued, err)
+	}
+	stillBackfilling, err := schemaapi.New(app).Describe(ctx, "scale_notes")
+	if err != nil || stillBackfilling.Fields[1].Formula.Status != "backfilling" {
+		t.Fatalf(
+			"old worker overwrote resumed formula definition = %#v, err=%v",
+			stillBackfilling,
+			err,
+		)
 	}
 	if err := service.Run(ctx, started.JobID); err != nil {
 		t.Fatalf("resumed run: %v", err)
@@ -332,6 +380,10 @@ func TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit(
 	if err != nil || completed.State != "complete" ||
 		completed.Progress.Completed != rowCount {
 		t.Fatalf("completed %d-row backfill = %#v, err=%v", rowCount, completed, err)
+	}
+	readyDefinition, err := schemaapi.New(app).Describe(ctx, "scale_notes")
+	if err != nil || readyDefinition.Fields[1].Formula.Status != "ready" {
+		t.Fatalf("completed formula definition = %#v, err=%v", readyDefinition, err)
 	}
 	assertRecordCount(t, app, "vibetable_audit_events", rowCount)
 	assertRecordCount(t, app, "vibetable_idempotency_keys", rowCount/100)
@@ -617,6 +669,16 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
+	selfRelation := field(
+		"source", "source", schema.FieldKindRelation, schema.DataTypeRelation,
+	)
+	selfRelation.Relation = &schema.RelationSpec{
+		TargetTableID: "cancel_fanout_notes", Cardinality: "one", DeletePolicy: "setNull",
+	}
+	selfRelation.Constraints = []schema.FieldConstraint{{
+		Kind: schema.ConstraintRelation, TargetTableID: "cancel_fanout_notes",
+		Cardinality: "one", DeletePolicy: "setNull",
+	}}
 	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
 		Definition: baseTable(
 			"cancel_fanout_notes",
@@ -628,6 +690,7 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 					schema.FieldKindScalar,
 					schema.DataTypeShortText,
 				),
+				selfRelation,
 			},
 		),
 		ExpectedRevision: 0,
@@ -645,6 +708,10 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 	if err := app.Save(row); err != nil {
 		t.Fatal(err)
 	}
+	row.Set("source", row.Id)
+	if err := app.Save(row); err != nil {
+		t.Fatal(err)
+	}
 	revision, err := schema.ParseSchemaRevision(definition.SchemaRevision)
 	if err != nil {
 		t.Fatal(err)
@@ -659,7 +726,8 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 	job.Set("schema_revision", revision)
 	job.Set("cursor_json", types.JSONRaw([]byte(fmt.Sprintf(
 		`{"tableId":%q,"lastRecordId":"","relationFieldId":"source",`+
-			`"targetRecordIds":[],"recordIds":[%q]}`,
+			`"changedTableId":%q,"targetRecordIds":[%q],"formulaFieldIds":[]}`,
+		definition.TableID,
 		definition.TableID,
 		row.Id,
 	))))
@@ -672,27 +740,35 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	blockingKernel := &cancelDuringApplyKernel{entered: make(chan struct{})}
+	realKernel := mutation.New(
+		app,
+		mutation.MetadataSchemaSource{},
+	)
+	blockingKernel := &firstBatchPauseKernel{
+		inner: realKernel, paused: make(chan struct{}), release: make(chan struct{}),
+	}
 	interrupted := jobs.New(app, blockingKernel)
 	if !interrupted.Start(job.Id) {
 		t.Fatal("formula fan-out did not start")
 	}
 	select {
-	case <-blockingKernel.entered:
+	case <-blockingKernel.paused:
 	case <-time.After(2 * time.Second):
 		t.Fatal("formula fan-out did not enter mutation apply")
 	}
+	cancelled, err := interrupted.Cancel(ctx, job.Id)
+	if err != nil || cancelled.State != "cancelled" {
+		t.Fatalf("cancelled fan-out = %#v, err=%v", cancelled, err)
+	}
+	close(blockingKernel.release)
 	interrupted.Shutdown()
 
 	preserved, err := interrupted.Get(ctx, job.Id)
-	if err != nil || preserved.State != "running" || preserved.Error != nil {
-		t.Fatalf("interrupted fan-out = %#v, err=%v", preserved, err)
+	if err != nil || preserved.State != "cancelled" || preserved.Error != nil ||
+		preserved.Cursor.LastRecordID != "" || preserved.Progress.Completed != 0 {
+		t.Fatalf("cancelled fan-out = %#v, err=%v", preserved, err)
 	}
-
-	realKernel := mutation.New(
-		app,
-		mutation.MetadataSchemaSource{},
-	)
+	assertRecordCount(t, app, "vibetable_idempotency_keys", 1)
 	restarted := jobs.New(app, realKernel)
 	fanoutGate := make(chan [2]string, 1)
 	restarted.SetBusinessWriteGate(func(
@@ -705,6 +781,10 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 		return apply(ctx)
 	})
 	defer restarted.Shutdown()
+	resumed, err := restarted.Resume(ctx, job.Id)
+	if err != nil || resumed.State != "queued" {
+		t.Fatalf("resumed fan-out = %#v, err=%v", resumed, err)
+	}
 	restarted.ResumePending(ctx)
 	waitForJobState(t, restarted, job.Id, "complete")
 	select {
@@ -720,6 +800,7 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 	if err != nil || updated.GetString("title") != "unchanged" {
 		t.Fatalf("resumed fan-out record = %#v, err=%v", updated, err)
 	}
+	assertRecordCount(t, app, "vibetable_idempotency_keys", 1)
 
 	deadlineJob := core.NewRecord(jobCollection)
 	deadlineJob.Set("job_type", "formula_fanout")
@@ -728,8 +809,9 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 	deadlineJob.Set(
 		"cursor_json",
 		types.JSONRaw([]byte(fmt.Sprintf(
-			`{"tableId":%q,"lastRecordId":"","relationFieldId":"deadline",`+
-				`"targetRecordIds":[],"recordIds":[%q]}`,
+			`{"tableId":%q,"lastRecordId":"","relationFieldId":"source",`+
+				`"changedTableId":%q,"targetRecordIds":[%q],"formulaFieldIds":[]}`,
+			definition.TableID,
 			definition.TableID,
 			row.Id,
 		))),
@@ -753,6 +835,156 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 	if err != nil || failedDeadline.State != "failed" {
 		t.Fatalf("business deadline job = %#v, err=%v", failedDeadline, err)
 	}
+}
+
+func TestFormulaFanoutPagesMoreThanTenThousandSourceRecords(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	catalog := schemaapi.New(app)
+	authors, err := catalog.ApplyChange(ctx, schemaapi.Change{
+		Definition: baseTable(
+			"fanout_scale_authors", "fanout_scale_authors",
+			[]schema.FieldDefinition{
+				field("name_id", "name", schema.FieldKindScalar, schema.DataTypeShortText),
+			},
+		),
+		ExpectedRevision: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relationField := field(
+		"author_id", "author", schema.FieldKindRelation, schema.DataTypeRelation,
+	)
+	relationField.Relation = &schema.RelationSpec{
+		TargetTableID: authors.TableID, Cardinality: "one", DeletePolicy: "setNull",
+	}
+	relationField.Constraints = []schema.FieldConstraint{{
+		Kind: schema.ConstraintRelation, TargetTableID: authors.TableID,
+		Cardinality: "one", DeletePolicy: "setNull",
+	}}
+	articles, err := catalog.ApplyChange(ctx, schemaapi.Change{
+		Definition: baseTable(
+			"fanout_scale_articles", "fanout_scale_articles",
+			[]schema.FieldDefinition{
+				relationField,
+				formulaField(
+					"author_name_id", "author_name", schema.DataTypeShortText,
+					"author.name",
+				),
+			},
+		),
+		ExpectedRevision: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorID := "scaleauthor0001"
+	authorCollection, err := app.FindCollectionByNameOrId(authors.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	author := core.NewRecord(authorCollection)
+	author.Id = authorID
+	author.Set("name", "Before")
+	if err := app.Save(author); err != nil {
+		t.Fatal(err)
+	}
+	otherAuthorID := "scaleauthor0002"
+	otherAuthor := core.NewRecord(authorCollection)
+	otherAuthor.Id = otherAuthorID
+	otherAuthor.Set("name", "Other")
+	if err := app.Save(otherAuthor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.DB().NewQuery(`
+		WITH RECURSIVE sequence(value) AS (
+			SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 10001
+		)
+		INSERT INTO fanout_scale_articles (id, author, author_name)
+		SELECT
+			printf('src%012d', value),
+			CASE WHEN value <= 10000 THEN {:author} ELSE {:otherAuthor} END,
+			CASE WHEN value <= 10000 THEN 'Before' ELSE 'Other' END
+		FROM sequence
+	`).WithContext(ctx).Bind(dbx.Params{
+		"author": authorID, "otherAuthor": otherAuthorID,
+	}).Execute(); err != nil {
+		t.Fatalf("seed 10001 fan-out sources: %v", err)
+	}
+
+	realKernel := mutation.New(app, mutation.MetadataSchemaSource{})
+	receipt, err := realKernel.Apply(ctx, mutationRequest(
+		authors.TableID, authors.SchemaRevision, "fanout-scale-target-update",
+		mutation.Operation{
+			Kind: mutation.OperationUpdate, RecordID: &authorID,
+			Values: map[string]any{"name": "After"},
+		},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipt.EmittedEvents) != 1 {
+		t.Fatalf("target mutation emitted events = %#v", receipt.EmittedEvents)
+	}
+	outbox, err := app.FindFirstRecordByFilter(
+		"vibetable_outbox", "event_id={:event}",
+		dbx.Params{"event": receipt.EmittedEvents[0]},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(outbox.GetRaw("payload_json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var committedEvent mutation.DataChangedEvent
+	if err := mutation.DecodeStrict(raw, &committedEvent); err != nil {
+		t.Fatal(err)
+	}
+
+	countingKernel := &countingFanoutKernel{}
+	service := jobs.New(app, countingKernel)
+	defer service.Shutdown()
+	if err := service.Publish(ctx, committedEvent); err != nil {
+		t.Fatal(err)
+	}
+	job, err := app.FindFirstRecordByFilter(
+		"vibetable_jobs",
+		"job_type='formula_fanout' && source_event_id={:event}",
+		dbx.Params{"event": committedEvent.EventID},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := waitForJobState(t, service, job.Id, "complete")
+	if completed.Progress.Completed != 10_001 || completed.Progress.Total != 10_001 {
+		t.Fatalf("10,001-row fan-out progress = %#v", completed.Progress)
+	}
+	operationCount, batchCount := countingKernel.counts()
+	if operationCount != 10_000 || batchCount != 100 {
+		t.Fatalf(
+			"fan-out kernel counts = operations %d batches %d, want 10000 and 100",
+			operationCount, batchCount,
+		)
+	}
+	storedJob, err := app.FindRecordById("vibetable_jobs", job.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursorRaw, err := json.Marshal(storedJob.GetRaw("cursor_json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(cursorRaw), "recordIds") || len(cursorRaw) > 1_024 {
+		t.Fatalf("fan-out cursor retained source record ids: %s", cursorRaw)
+	}
+	if !strings.Contains(string(cursorRaw), `"discoveryComplete":true`) ||
+		!strings.Contains(string(cursorRaw), `"lastRecordId":"src000000010001"`) {
+		t.Fatalf("fan-out cursor did not persist terminal page = %s", cursorRaw)
+	}
+	_ = articles
 }
 
 func TestTerminalTaskEventsCommitAtomicallyBeforeLivePublish(t *testing.T) {

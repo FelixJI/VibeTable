@@ -213,11 +213,13 @@ def _register_pocketbase_product_methods(
         "schema.getTable": service.get_table_schema,
         "schema.describe": service.describe_schema,
         "query.page": service.query_page,
+        "query.view": service.query_view,
         "query.readRows": service.read_rows,
         "query.validateSnapshot": service.validate_snapshot,
         "mutation.preview": service.preview_mutation,
         "mutation.apply": service.apply_mutation,
         "formula.validate": service.validate_formula,
+        "formula.draft.validate": service.validate_formula_draft,
         "formula.preview": service.preview_formula,
         "file.list": service.list_attachment_refs,
         "file.token": service.create_file_token,
@@ -228,6 +230,7 @@ def _register_pocketbase_product_methods(
         "history.applyRestore": service.apply_history_restore,
         "events.reconcile": service.reconcile,
         "relation.searchTargets": service.search_relation_targets,
+        "relation.createTarget": service.create_relation_target,
         "relation.updateSingle": service.update_single_relation,
         "relation.previewDelta": service.preview_relation_delta,
         "relation.applyDelta": service.apply_relation_delta,
@@ -235,6 +238,7 @@ def _register_pocketbase_product_methods(
         "lookup.validate": service.validate_lookup,
         "lookup.preview": service.preview_lookup,
         "lookup.query": service.query_lookups,
+        "lookup.valuePage": service.lookup_value_page,
     }
     for method, handler in methods.items():
         dispatcher.register(method, handler, PRODUCT_PARAM_MODELS[method])

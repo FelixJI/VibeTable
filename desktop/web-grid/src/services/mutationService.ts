@@ -40,7 +40,10 @@ import type {
  * the user can restore the deleted rows.
  */
 export function useMutationService(): {
-  init: (onEditRejected?: (error: MutationErrorPayload) => void) => void;
+  init: (
+    onEditRejected?: (error: MutationErrorPayload) => void,
+    onRowInserted?: (result: InsertRowResult) => void,
+  ) => void;
   updateCell: (
     rowKey: number | string,
     column: string,
@@ -126,6 +129,9 @@ export function useMutationService(): {
   const REVISION_READY_POLL_MS = 25;
   let editRejectedHandler:
     | ((error: MutationErrorPayload) => void)
+    | undefined;
+  let rowInsertedHandler:
+    | ((result: InsertRowResult) => void)
     | undefined;
 
   function currentSchemaRev(): string {
@@ -253,8 +259,10 @@ export function useMutationService(): {
 
   function init(
     onEditRejected?: (error: MutationErrorPayload) => void,
+    onRowInserted?: (result: InsertRowResult) => void,
   ): void {
     editRejectedHandler = onEditRejected ?? editRejectedHandler;
+    rowInsertedHandler = onRowInserted ?? rowInsertedHandler;
     bridge.on("table.editRejected", (error: MutationErrorPayload) => {
       const pending = takeRejectedCellEdit(error);
       if (pending) {
@@ -368,6 +376,7 @@ export function useMutationService(): {
           });
         },
       );
+      rowInsertedHandler?.(r);
     });
 
     bridge.on("table.rowsDeleted", (r: DeleteRowsResult) => {

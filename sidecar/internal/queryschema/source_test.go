@@ -1,6 +1,7 @@
 package queryschema
 
 import (
+	"context"
 	"testing"
 
 	"github.com/vibetable/vibetable/sidecar/internal/query"
@@ -68,5 +69,29 @@ func TestQueryFieldTypeMapsProductStorageWithoutProviderNames(t *testing.T) {
 		if err != nil || got != test.want {
 			t.Fatalf("queryFieldType(%#v) = %q, %v; want %q", test.field, got, err, test.want)
 		}
+	}
+}
+
+func TestDescribeFieldExposesCancelledFormulaDiagnostic(t *testing.T) {
+	descriptor, err := (&Source{}).describeField(
+		context.Background(),
+		nil,
+		schema.FieldDefinition{
+			PhysicalName: "f_total",
+			Kind:         schema.FieldKindFormula,
+			DataType:     schema.DataTypeFormula,
+			Formula: &schema.FormulaSpec{
+				ResultType: schema.DataTypeFloat,
+				Status:     "cancelled",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if descriptor.ComputedReady || descriptor.ComputedStatus != "error" ||
+		descriptor.ComputedError == nil ||
+		descriptor.ComputedError.Code != "calculation.cancelled" {
+		t.Fatalf("cancelled formula descriptor = %#v", descriptor)
 	}
 }

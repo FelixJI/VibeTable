@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from backend.contracts.lookup import (
     LookupDefinition,
+    LookupValidateParams,
     validate_lookup_dependency_graph,
 )
 from backend.contracts.relation_admin import NormalizedRelationDescriptor, SchemaSnapshot
@@ -41,8 +42,8 @@ def test_lookup_definition_uses_camel_case_wire_shape() -> None:
     assert dumped["outputScale"] == 2
 
 
-def test_count_lookup_requires_integer_output() -> None:
-    with pytest.raises(ValidationError, match="count Lookups"):
+def test_lookup_aggregation_rejects_the_removed_rollup_surface() -> None:
+    with pytest.raises(ValidationError, match="Input should be 'single' or 'values'"):
         LookupDefinition.model_validate(
             {
                 "lookupId": "contract_count",
@@ -53,6 +54,25 @@ def test_count_lookup_requires_integer_output() -> None:
                 "source": {"kind": "target_field", "fieldRef": "id"},
                 "aggregation": "related_count",
                 "outputType": "decimal",
+            }
+        )
+
+
+def test_lookup_validate_draft_rejects_server_derived_shape_and_type() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        LookupValidateParams.model_validate(
+            {
+                "definition": {
+                    "lookupId": "contract_price",
+                    "collection": "orders",
+                    "fieldKey": "contract_price",
+                    "displayName": "Contract price",
+                    "path": [{"relationId": "contract"}],
+                    "source": {"kind": "target_field", "fieldRef": "price"},
+                    "aggregation": "single",
+                    "outputType": "decimal",
+                },
+                "existing": [],
             }
         )
 

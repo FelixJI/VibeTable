@@ -107,6 +107,10 @@ export function useTableService(): {
         filteredRows: payload.filteredRows,
         querySnapshot: payload.querySnapshot,
         revision: payload.revision,
+        groupRows: payload.groupRows,
+        groupOffset: payload.groupOffset,
+        groupLimit: payload.groupLimit,
+        hasMoreGroups: payload.hasMoreGroups,
       };
       const accepted = tableStore.appendPage(page);
       if (!accepted && page.mode === "remote") {

@@ -30,6 +30,8 @@ import AppToolbar from "@/components/layout/AppToolbar.vue";
 import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import GridHost from "@/components/grid/GridHost.vue";
 import DataSourceViewBar from "@/components/grid/DataSourceViewBar.vue";
+import ViewQueryControls from "@/components/grid/ViewQueryControls.vue";
+import ViewGroupPanel from "@/components/grid/ViewGroupPanel.vue";
 import RecordCalendarView from "@/components/grid/RecordCalendarView.vue";
 import RecordGalleryView from "@/components/grid/RecordGalleryView.vue";
 import RecordKanbanView from "@/components/grid/RecordKanbanView.vue";
@@ -104,6 +106,7 @@ import { useDashboardDraftStore, useDashboardStore } from "@/stores/dashboardSto
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
+import { cloneFilterExpressions, useViewQueryStore } from "@/stores/viewQueryStore";
 import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
 import {
   registerWorkspaceEpochReset,
@@ -121,7 +124,6 @@ import {
   captureDataSourceView,
   type DataSourceViewGrid,
 } from "@/grid/dataSourceViewState";
-import { projectPresetRows } from "@/grid/projectPresetRows";
 import type { PresetEntry, PresetView } from "@/contracts";
 import {
   classifyClipboard,
@@ -132,18 +134,24 @@ import { resolvePasteContext } from "@/grid/pasteContext";
 import { canLeaveDashboardDraft } from "@/dashboard/navigationGuard";
 import type {
   NormalizedRelationDescriptor,
-  FilterCondition,
-  LookupGroup,
+  FilterExpression,
+  GroupCondition,
   LookupValueProvenance,
+	LookupSourcePageIntent,
   SortCondition,
   PasteCellPayload,
   PreviewPasteRequestedPayload,
+  ProductFieldDefinition,
+  ProductTableDefinition,
   RelationTargetRef,
   AttachmentPolicy,
   ColumnSchema,
   ManagedAttachmentRef,
   AttachmentListResult,
+  InsertRowResult,
   MutationErrorPayload,
+  SummaryCondition,
+  TableQuery,
 } from "@/contracts";
 import { normalizeTargets } from "@/grid/relationLookupRenderer";
 import { t } from "@/i18n";
@@ -177,6 +185,7 @@ const dashboards = useDashboardStore();
 const dashboardDraft = useDashboardDraftStore();
 const realtime = useRealtimeStore();
 const presetViews = usePresetVersionStore();
+const viewQuery = useViewQueryStore();
 const documentWorkspace = useDocumentWorkspaceStore();
 const workspaceSession = useWorkspaceSessionStore();
 const workspaceProtection = useWorkspaceProtectionStore();
@@ -516,36 +525,83 @@ const relationEditor = ref<{
   show: boolean;
   rowKey: string | number | null;
   field: string;
+  fieldLabel: string;
   descriptor: NormalizedRelationDescriptor | null;
   candidates: readonly RelationTargetRef[];
+  total: number;
   query: string;
   m2aCollection: string | null;
   loading: boolean;
   applying: boolean;
   error: string | null;
+  targetFields: readonly ProductFieldDefinition[];
+  targetRelations: readonly NormalizedRelationDescriptor[];
+  targetRelationOptions: Readonly<Record<string, readonly RelationTargetRef[]>>;
+  targetRelationLoading: Readonly<Record<string, boolean>>;
+  targetDisplayField: string | null;
+  createSchemaLoading: boolean;
 }>({
   show: false,
   rowKey: null,
   field: "",
+  fieldLabel: "",
   descriptor: null,
   candidates: [],
+  total: 0,
   query: "",
   m2aCollection: null,
   loading: false,
   applying: false,
   error: null,
+  targetFields: [],
+  targetRelations: [],
+  targetRelationOptions: {},
+  targetRelationLoading: {},
+  targetDisplayField: null,
+  createSchemaLoading: false,
 });
+const pendingRelationCreation = ref<{
+  readonly sourceCollection: string;
+  readonly sourceItemId: string;
+  readonly relationId: string;
+  readonly relationKind: NormalizedRelationDescriptor["kind"];
+  readonly relationLabel: string;
+  readonly targetCollection: string;
+  readonly targetDisplayField: string;
+  readonly expectedSchemaRevision: string;
+} | null>(null);
 let relationSearchGeneration = 0;
+let relationCreateSchemaGeneration = 0;
+let relationEditorEpoch = 0;
+let relationCreateSearchGeneration = 0;
+const relationCreateSearchGenerations = new Map<string, number>();
 let lookupDatasetGeneration = 0;
 const lookupSourceNavigation = ref<{
   source: LookupValueProvenance;
   queryRequested: boolean;
 } | null>(null);
-const interactiveGridQuery = ref<{
-  filters: readonly FilterCondition[];
-  sorts: readonly SortCondition[];
-  groups: readonly LookupGroup[];
-} | null>(null);
+const lookupSources = ref<{
+	show: boolean;
+	loading: boolean;
+	error: string | null;
+	fieldRef: string;
+	sourceRecordId: string;
+	items: LookupValueProvenance[];
+	total: number;
+	totalKnown: boolean;
+	hasMore: boolean;
+}>({
+	show: false,
+	loading: false,
+	error: null,
+	fieldRef: "",
+	sourceRecordId: "",
+	items: [],
+	total: 0,
+	totalKnown: true,
+	hasMore: false,
+});
+const interactiveGridQuery = ref<TableQuery | null>(null);
 
 watch(
   () => workspace.currentTable,
@@ -637,19 +693,21 @@ async function refreshAuthoritativeLookupRows(): Promise<void> {
 }
 
 function onGridViewQueryChanged(query: {
-  readonly filters: readonly FilterCondition[];
+  readonly headerFilters: readonly FilterExpression[];
   readonly sorts: readonly SortCondition[];
-  readonly groups: readonly LookupGroup[];
+  readonly groups: readonly GroupCondition[];
 }): void {
   const table = workspace.currentTable;
-  if (!table) return;
-  interactiveGridQuery.value = query;
+  if (!table || applyingPresetView) return;
+  viewQuery.updateRuntime(query);
+  const normalized = viewQuery.toQuery();
+  interactiveGridQuery.value = normalized;
   if (!applyingPresetView) presetViews.markDirty();
   hostBridge.notify("table.queryRequested", {
     table,
     // Standard table.query is page-bounded (backend max 500) but compiles the
     // sort/filter on the data service, so the page is selected from the full dataset.
-    query: { filters: query.filters, sorts: query.sorts, offset: 0, limit: 500 },
+    query: normalized,
   });
   void refreshAuthoritativeLookupRows();
 }
@@ -658,6 +716,61 @@ function navigateLookupSource(source: LookupValueProvenance): void {
   lookupSourceNavigation.value = { source, queryRequested: false };
   tableService.selectTable(source.collection);
   ui.navigate("tables");
+}
+
+function openRelationTarget(target: RelationTargetRef): void {
+  closeRelationEditor();
+  navigateLookupSource({
+    collection: target.collection,
+    collectionLabel: target.collection,
+    itemId: target.itemId,
+    recordLabel: target.label,
+    fieldId: "",
+    fieldLabel: "",
+    value: null,
+  });
+}
+
+function openLookupSources(intent: LookupSourcePageIntent): void {
+	lookupSources.value = {
+		show: true,
+		loading: false,
+		error: null,
+		fieldRef: intent.fieldRef,
+		sourceRecordId: intent.sourceRecordId,
+		items: [...intent.cell.provenance],
+		total: intent.cell.provenanceTotal,
+		totalKnown: intent.cell.provenanceTotalKnown,
+		hasMore: intent.cell.provenanceHasMore,
+	};
+}
+
+function closeLookupSources(): void {
+	lookupSources.value.show = false;
+}
+
+async function loadMoreLookupSources(): Promise<void> {
+	const state = lookupSources.value;
+	if (state.loading || !state.hasMore) return;
+	state.loading = true;
+	state.error = null;
+	try {
+		const page = await relationLookupService.readLookupValuePage({
+			fieldRef: state.fieldRef,
+			sourceRecordId: state.sourceRecordId,
+			offset: state.items.length,
+			limit: 100,
+		});
+		if (!state.show) return;
+		state.items.push(...page.provenance);
+		state.total = page.provenanceTotal;
+		state.totalKnown = page.provenanceTotalKnown;
+		state.hasMore = page.provenanceHasMore;
+	} catch (error) {
+		state.error = relationLookupErrorMessage(error);
+	} finally {
+		state.loading = false;
+	}
 }
 
 function openFieldManager(): void {
@@ -754,9 +867,7 @@ let applyingPresetView = false;
 const activePresetView = computed(() => presetViews.presets
   .find((item) => item.id === presetViews.activePresetId)?.view ?? null);
 const activeViewKind = computed(() => activePresetView.value?.kind ?? "table");
-const projectedPresetRows = computed(() => activePresetView.value
-  ? projectPresetRows(tableStore.allRows, activePresetView.value)
-  : tableStore.allRows);
+const projectedPresetRows = computed(() => tableStore.allRows);
 const dateFieldOptions = computed(() => (tableStore.schema ?? [])
   .filter((column) => column.dataType === "date" || column.dataType === "datetime")
   .map((column) => ({ label: column.title, value: column.name })));
@@ -775,22 +886,84 @@ const coverFieldOptions = computed(() => (tableStore.schema ?? [])
   .filter((column) => column.kind === "attachment" || column.dataType === "text")
   .map((column) => ({ label: column.title, value: column.name })));
 
+watch(
+  () => tableStore.schema,
+  (columns) => {
+    const collection = workspace.currentTable;
+    if (!collection || !columns || viewQuery.visibleFields.length > 0) return;
+    const fields = columns.map((column) => column.name);
+    if (activePresetView.value) viewQuery.replace(collection, activePresetView.value, fields);
+    else viewQuery.reset(collection, fields);
+  },
+);
+
 function captureTableView(isDefault = false): PresetView {
-  return captureDataSourceView(
+  const captured = captureDataSourceView(
     tabulator.value as unknown as DataSourceViewGrid | null,
     { isDefault, density: ui.density },
   );
+  return {
+    ...captured,
+    columns: captured.columns?.map((column) => ({
+      ...column,
+      visible: viewQuery.visibleFields.includes(column.name),
+    })),
+    filters: cloneFilterExpressions(viewQuery.filters),
+    sorts: [...viewQuery.sorts],
+    groups: [...viewQuery.groups],
+    summaries: [...viewQuery.summaries],
+    collapsedGroupKeys: [...viewQuery.collapsedGroupKeys],
+    search: viewQuery.search,
+    visibleFields: [...viewQuery.visibleFields],
+  };
 }
 
 function captureCurrentView(isDefault = false): PresetView {
-  return activePresetView.value && activeViewKind.value !== "table"
-    ? { ...activePresetView.value, isDefault }
+  const base = activePresetView.value && activeViewKind.value !== "table"
+    ? activePresetView.value
     : captureTableView(isDefault);
+  return {
+    ...base,
+    filters: cloneFilterExpressions(viewQuery.filters),
+    sorts: [...viewQuery.sorts],
+    groups: [...viewQuery.groups],
+    summaries: [...viewQuery.summaries],
+    collapsedGroupKeys: [...viewQuery.collapsedGroupKeys],
+    search: viewQuery.search,
+    visibleFields: [...viewQuery.visibleFields],
+    isDefault,
+  };
+}
+
+function requestAuthoritativeView(groupOffset = 0): void {
+  const table = workspace.currentTable;
+  if (!table) return;
+  const query = viewQuery.toQuery(groupOffset);
+  interactiveGridQuery.value = query;
+  hostBridge.notify("table.queryRequested", { table, query });
+  void refreshAuthoritativeLookupRows();
+}
+
+function loadMoreViewGroups(): void {
+  requestAuthoritativeView(tableStore.viewGroups.length);
+}
+
+function toggleViewGroup(key: string): void {
+  viewQuery.toggleGroup(key);
+  presetViews.markDirty();
 }
 
 async function applyView(view: PresetView): Promise<void> {
+  const collection = workspace.currentTable;
+  if (!collection) return;
+  viewQuery.replace(
+    collection,
+    view,
+    (tableStore.schema ?? []).map((column) => column.name),
+  );
   if (view.kind && view.kind !== "table") {
     pendingPresetView.value = null;
+    requestAuthoritativeView();
     return;
   }
   const grid = tabulator.value as unknown as DataSourceViewGrid | null;
@@ -806,6 +979,28 @@ async function applyView(view: PresetView): Promise<void> {
   } finally {
     applyingPresetView = false;
   }
+  requestAuthoritativeView();
+}
+
+async function onViewDefinitionChanged(value: {
+  filters: FilterExpression[];
+  groups: GroupCondition[];
+  summaries: SummaryCondition[];
+  visibleFields: string[];
+}): Promise<void> {
+  viewQuery.updateDefinition(value);
+  presetViews.markDirty();
+  const grid = tabulator.value as unknown as DataSourceViewGrid | null;
+  if (grid && activeViewKind.value === "table") {
+    applyingPresetView = true;
+    try {
+      await applyDataSourceView(grid, captureTableView());
+      await nextTick();
+    } finally {
+      applyingPresetView = false;
+    }
+  }
+  requestAuthoritativeView();
 }
 
 watch(tabulator, (grid) => {
@@ -844,6 +1039,7 @@ watch(
   (collection) => {
     pendingPresetView.value = null;
     presetViews.clearPresets(collection ?? "");
+    viewQuery.reset(collection ?? "");
     if (collection) void loadCollectionViews(collection);
   },
   { immediate: true },
@@ -1254,7 +1450,18 @@ function onHistorySelection(payload: {
 }
 
 function openCurrentHistory(): void {
-  const selected = revisionHistory.selection;
+  let selected = revisionHistory.selection;
+  if (
+    selected.scope === "cell"
+    && tableStore.schema
+    && !tableStore.schema.some((column) => column.name === selected.field)
+  ) {
+    // A workspace restore can replace the schema while Tabulator is retiring
+    // its previous range. Do not send that stale physical field name to the
+    // new history authority; the only honest surviving scope is the table.
+    revisionHistory.setSelection({ scope: "table" });
+    selected = revisionHistory.selection;
+  }
   if (selected.scope === "multiple") return;
   revisionHistoryService.open({ ...selected, scope: selected.scope });
 }
@@ -1340,9 +1547,12 @@ function initializeBusinessConsumers(): void {
   // waits before an undo is committed, and races the mutation confirmation.
   relationLookupService.init();
   pasteService.init();
-  mutationService.init((error) => {
-    if (error.kind !== "cancelled") editRejection.value = error;
-  });
+  mutationService.init(
+    (error) => {
+      if (error.kind !== "cancelled") editRejection.value = error;
+    },
+    (result) => { void completePendingRelationCreation(result); },
+  );
   tableAdminService.init(async (tableId) => {
     workspace.selectTable(tableId);
     await fieldSettingsService.openCreate(tableId);
@@ -1438,6 +1648,8 @@ function openRelationEditor(payload: {
     message.error(t("workspace.relation.unsupported"));
     return;
   }
+  relationEditorEpoch += 1;
+  relationCreateSearchGenerations.clear();
   const current = normalizeTargets(payload.value).map((target) => ({
     ...target,
     collection: target.collection || payload.descriptor.relatedCollection || "",
@@ -1446,8 +1658,10 @@ function openRelationEditor(payload: {
     show: true,
     rowKey: payload.rowKey,
     field: payload.field,
+    fieldLabel: tableStore.schema?.find(column => column.name === payload.field)?.title ?? "关联字段",
     descriptor: payload.descriptor,
     candidates: [],
+    total: 0,
     query: "",
     m2aCollection: payload.descriptor.kind === "m2a"
       ? payload.descriptor.allowedCollections[0] ?? null
@@ -1455,7 +1669,16 @@ function openRelationEditor(payload: {
     loading: false,
     applying: false,
     error: null,
+    targetFields: [],
+    targetRelations: [],
+    targetRelationOptions: {},
+    targetRelationLoading: {},
+    targetDisplayField: null,
+    createSchemaLoading: false,
   };
+  if (payload.descriptor.kind !== "m2a" && payload.descriptor.relatedCollection) {
+    void loadRelationCreateSchema(payload.descriptor.relatedCollection);
+  }
   if (payload.descriptor.kind === "m2o") {
     relationLookup.openDraft(payload.descriptor.relationId, String(payload.rowKey), current);
     void searchRelationTargets("");
@@ -1471,7 +1694,59 @@ function openRelationEditor(payload: {
     });
 }
 
-async function searchRelationTargets(query: string, collection?: string | null): Promise<void> {
+async function loadRelationCreateSchema(collection: string): Promise<void> {
+  const generation = ++relationCreateSchemaGeneration;
+  relationEditor.value.createSchemaLoading = true;
+  try {
+    const [definition, snapshot] = await Promise.all([
+      hostBridge.request("schema.getTable", { tableId: collection }),
+      relationLookupService.describeCollection(collection),
+    ]);
+    if (generation !== relationCreateSchemaGeneration || !relationEditor.value.show) return;
+    const product = definition as ProductTableDefinition;
+    if (product.tableId !== collection || !Array.isArray(product.fields)) {
+      throw new Error("目标表完整记录结构无效");
+    }
+    const displayFieldId = snapshot.primaryDisplayFieldId;
+    relationEditor.value.targetFields = product.fields;
+    relationEditor.value.targetRelations = snapshot.normalizedRelations;
+    relationEditor.value.targetDisplayField = product.fields.find(
+      field => field.fieldId === displayFieldId,
+    )?.physicalName ?? null;
+    const writableRelations = product.fields.flatMap(field => {
+      if (field.readOnly || field.kind !== "relation") return [];
+      const relation = snapshot.normalizedRelations.find(
+        candidate => candidate.fieldRef === field.physicalName,
+      );
+      return relation ? [{ field, relation }] : [];
+    });
+    const optionEntries = await Promise.all(writableRelations.map(async ({ field, relation }) => {
+      const result = await relationLookupService.searchTargets({
+        relationId: relation.relationId,
+        collection: relation.kind === "m2a" ? relation.allowedCollections[0] ?? null : null,
+        offset: 0,
+        limit: 50,
+      });
+      return [field.physicalName, result.items] as const;
+    }));
+    if (generation !== relationCreateSchemaGeneration || !relationEditor.value.show) return;
+    relationEditor.value.targetRelationOptions = Object.fromEntries(optionEntries);
+  } catch (error) {
+    if (generation === relationCreateSchemaGeneration) {
+      relationEditor.value.error = error instanceof Error ? error.message : String(error);
+    }
+  } finally {
+    if (generation === relationCreateSchemaGeneration) {
+      relationEditor.value.createSchemaLoading = false;
+    }
+  }
+}
+
+async function searchRelationTargets(
+  query: string,
+  collection?: string | null,
+  offset = 0,
+): Promise<void> {
   const descriptor = relationEditor.value.descriptor;
   if (!descriptor) return;
   const targetCollection = collection ?? relationEditor.value.m2aCollection;
@@ -1485,17 +1760,78 @@ async function searchRelationTargets(query: string, collection?: string | null):
       relationId: descriptor.relationId,
       query,
       collection: descriptor.kind === "m2a" ? targetCollection : null,
-      offset: 0,
+      offset,
       limit: 50,
     });
     if (generation !== relationSearchGeneration || !relationEditor.value.show) return;
-    relationEditor.value.candidates = result.items;
+    relationEditor.value.candidates = offset === 0
+      ? result.items
+      : [...relationEditor.value.candidates, ...result.items];
+    relationEditor.value.total = result.total;
   } catch (error) {
     if (generation !== relationSearchGeneration) return;
     relationEditor.value.error = error instanceof Error ? error.message : String(error);
   } finally {
     if (generation === relationSearchGeneration) relationEditor.value.loading = false;
   }
+}
+
+async function searchRelationCreateTargets(field: string, query: string): Promise<void> {
+  const relation = relationEditor.value.targetRelations.find(
+    candidate => candidate.fieldRef === field,
+  );
+  const editorRelationId = relationEditor.value.descriptor?.relationId;
+  if (!relation || !editorRelationId) return;
+  const editorEpoch = relationEditorEpoch;
+  const nestedRelationId = relation.relationId;
+  const generation = ++relationCreateSearchGeneration;
+  relationCreateSearchGenerations.set(field, generation);
+  const isCurrent = (): boolean => editorEpoch === relationEditorEpoch
+    && relationEditor.value.show
+    && relationEditor.value.descriptor?.relationId === editorRelationId
+    && relationEditor.value.targetRelations.find(
+      candidate => candidate.fieldRef === field,
+    )?.relationId === nestedRelationId
+    && relationCreateSearchGenerations.get(field) === generation;
+  relationEditor.value.targetRelationLoading = {
+    ...relationEditor.value.targetRelationLoading,
+    [field]: true,
+  };
+  try {
+    const result = await relationLookupService.searchTargets({
+      relationId: relation.relationId,
+      query,
+      collection: relation.kind === "m2a" ? relation.allowedCollections[0] ?? null : null,
+      offset: 0,
+      limit: 50,
+    });
+    if (!isCurrent()) return;
+    relationEditor.value.targetRelationOptions = {
+      ...relationEditor.value.targetRelationOptions,
+      [field]: result.items,
+    };
+  } catch (error) {
+    if (isCurrent()) {
+      relationEditor.value.error = error instanceof Error ? error.message : String(error);
+    }
+  } finally {
+    if (isCurrent()) {
+      relationEditor.value.targetRelationLoading = {
+        ...relationEditor.value.targetRelationLoading,
+        [field]: false,
+      };
+    }
+  }
+}
+
+function loadMoreRelationTargets(): void {
+  if (relationEditor.value.loading
+    || relationEditor.value.candidates.length >= relationEditor.value.total) return;
+  void searchRelationTargets(
+    relationEditor.value.query,
+    relationEditor.value.m2aCollection,
+    relationEditor.value.candidates.length,
+  );
 }
 
 async function selectRelationTarget(target: RelationTargetRef): Promise<void> {
@@ -1520,6 +1856,121 @@ async function selectRelationTarget(target: RelationTargetRef): Promise<void> {
   } finally {
     relationEditor.value.applying = false;
   }
+}
+
+async function createRelationTarget(label: string): Promise<void> {
+  const descriptor = relationEditor.value.descriptor;
+  if (!descriptor || !label.trim()) return;
+  relationEditor.value.applying = true;
+  relationEditor.value.error = null;
+  try {
+    const result = await relationLookupService.createTarget(
+      descriptor.relationId,
+      label,
+      relationEditor.value.m2aCollection,
+    );
+    relationEditor.value.candidates = [
+      result.target,
+      ...relationEditor.value.candidates.filter(
+        (candidate) => candidate.itemId !== result.target.itemId,
+      ),
+    ];
+    relationEditor.value.total += 1;
+    if (descriptor.kind === "m2o") {
+      await selectRelationTarget(result.target);
+      return;
+    }
+    relationLookup.toggleDraftTarget(result.target);
+    relationEditor.value.query = result.target.label;
+  } catch (error) {
+    relationEditor.value.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    relationEditor.value.applying = false;
+  }
+}
+
+async function createRelationTargetFull(
+  values: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  const descriptor = relationEditor.value.descriptor;
+  const displayField = relationEditor.value.targetDisplayField;
+  if (!descriptor || !displayField) return;
+  relationEditor.value.applying = true;
+  relationEditor.value.error = null;
+  try {
+    const result = await relationLookupService.createTarget(
+      descriptor.relationId,
+      String(values[displayField] ?? ""),
+      relationEditor.value.m2aCollection,
+      values,
+    );
+    relationEditor.value.candidates = [result.target, ...relationEditor.value.candidates];
+    relationEditor.value.total += 1;
+    await selectRelationTarget(result.target);
+  } catch (error) {
+    relationEditor.value.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    relationEditor.value.applying = false;
+  }
+}
+
+function openFullTargetEditor(): void {
+  const descriptor = relationEditor.value.descriptor;
+  const sourceItemId = relationEditor.value.rowKey;
+  const targetCollection = descriptor?.relatedCollection;
+  const targetDisplayField = relationEditor.value.targetDisplayField;
+  const expectedSchemaRevision = relationLookup.schema?.schemaRevision;
+  if (!descriptor || sourceItemId === null || !targetCollection
+    || !targetDisplayField || !expectedSchemaRevision) return;
+  const relationLabel = tableStore.schema?.find(
+    column => column.name === relationEditor.value.field,
+  )?.title ?? "关联字段";
+  pendingRelationCreation.value = {
+    sourceCollection: descriptor.sourceCollection,
+    sourceItemId: String(sourceItemId),
+    relationId: descriptor.relationId,
+    relationKind: descriptor.kind,
+    relationLabel,
+    targetCollection,
+    targetDisplayField,
+    expectedSchemaRevision,
+  };
+  closeRelationEditor();
+  tableService.selectTable(targetCollection);
+  ui.navigate("tables");
+  message.info("已进入目标表完整编辑；下一条成功创建的记录会自动关联并返回原表。");
+}
+
+async function completePendingRelationCreation(result: InsertRowResult): Promise<void> {
+  const pending = pendingRelationCreation.value;
+  if (!pending || workspace.currentTable !== pending.targetCollection) return;
+  const label = String(result.row[pending.targetDisplayField] ?? result.rowKey);
+  try {
+    const attached = await relationLookupService.attachExistingTarget(
+      pending.relationId,
+      pending.sourceItemId,
+      {
+        collection: pending.targetCollection,
+        itemId: String(result.rowKey),
+        label,
+        junctionValues: {},
+      },
+      pending.relationKind,
+      pending.expectedSchemaRevision,
+    );
+    if (attached.outcome !== "committed") throw new Error("原记录已变化，自动关联未提交");
+    pendingRelationCreation.value = null;
+    tableService.selectTable(pending.sourceCollection);
+    message.success(`已创建记录并写入“${pending.relationLabel}”`);
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function cancelPendingRelationCreation(): void {
+  const sourceCollection = pendingRelationCreation.value?.sourceCollection;
+  pendingRelationCreation.value = null;
+  if (sourceCollection) tableService.selectTable(sourceCollection);
 }
 
 async function clearSingleRelation(): Promise<void> {
@@ -1571,6 +2022,9 @@ function changeM2ACollection(collection: string): void {
 
 function closeRelationEditor(): void {
   relationSearchGeneration += 1;
+  relationCreateSchemaGeneration += 1;
+  relationEditorEpoch += 1;
+  relationCreateSearchGenerations.clear();
   relationEditor.value.show = false;
   relationLookup.closeDraft();
 }
@@ -2044,6 +2498,43 @@ useKeyboard({
               @set-default="setDefaultView"
             />
             <section
+              v-if="pendingRelationCreation && workspace.currentTable === pendingRelationCreation.targetCollection"
+              class="relation-create-notice"
+              role="status"
+              aria-live="polite"
+              data-testid="relation-create-return-notice"
+            >
+              <span>
+                正在为“{{ pendingRelationCreation.relationLabel }}”完整创建目标记录；
+                下一条成功创建的记录将自动关联并返回原表。
+              </span>
+              <NButton size="tiny" quaternary @click="cancelPendingRelationCreation">
+                取消并返回
+              </NButton>
+            </section>
+            <ViewQueryControls
+              v-if="workspace.currentTable"
+              :columns="tableStore.schema ?? []"
+              :filters="viewQuery.filters"
+              :groups="viewQuery.groups"
+              :summaries="viewQuery.summaries"
+              :visible-fields="viewQuery.visibleFields"
+              :relations="relationLookup.schema?.normalizedRelations ?? []"
+              :lookups="relationLookup.lookups"
+              @change="onViewDefinitionChanged"
+            />
+            <ViewGroupPanel
+              v-if="workspace.currentTable"
+              :rows="tableStore.viewGroups"
+              :groups="viewQuery.groups"
+              :summaries="viewQuery.summaries"
+              :columns="tableStore.schema ?? []"
+              :has-more="tableStore.hasMoreViewGroups"
+              :collapsed-keys="viewQuery.collapsedGroupKeys"
+              @more="loadMoreViewGroups"
+              @toggle="toggleViewGroup"
+            />
+            <section
               v-if="editRejection"
               class="edit-rejection-notice"
               role="status"
@@ -2111,6 +2602,7 @@ useKeyboard({
                 @attachment-open="openAttachmentPanel"
                 @json-edit="openJsonEditor"
                 @lookup-source="navigateLookupSource"
+				@lookup-source-page="openLookupSources"
                 @view-query-change="onGridViewQueryChanged"
                 @insert-first-row="mutationService.insertRow({})"
               />
@@ -2171,13 +2663,21 @@ useKeyboard({
       v-if="relationEditor.show"
       :show="relationEditor.show"
       :descriptor="relationEditor.descriptor"
+      :field-label="relationEditor.fieldLabel"
       :selected="relationLookup.draft?.selected ?? []"
       :candidates="relationEditor.candidates"
+      :total="relationEditor.total"
       :query="relationEditor.query"
       :m2a-collection="relationEditor.m2aCollection"
       :loading="relationEditor.loading"
       :applying="relationEditor.applying"
       :error="relationEditor.error"
+      :target-fields="relationEditor.targetFields"
+      :target-relations="relationEditor.targetRelations"
+      :target-relation-options="relationEditor.targetRelationOptions"
+      :target-relation-loading="relationEditor.targetRelationLoading"
+      :target-display-field="relationEditor.targetDisplayField"
+      :create-schema-loading="relationEditor.createSchemaLoading"
       @close="closeRelationEditor"
       @search="searchRelationTargets"
       @select="selectRelationTarget"
@@ -2185,7 +2685,51 @@ useKeyboard({
       @patch-junction="patchRelationJunction"
       @apply="applyRelationDraft"
       @collection-change="changeM2ACollection"
+      @load-more="loadMoreRelationTargets"
+      @create="createRelationTarget"
+      @create-full="createRelationTargetFull"
+      @search-create-relation="searchRelationCreateTargets"
+      @full-create-fallback="openFullTargetEditor"
+      @open="openRelationTarget"
     />
+	<NModal
+		:show="lookupSources.show"
+		:auto-focus="true"
+		:trap-focus="true"
+		:close-on-esc="true"
+		:mask-closable="true"
+		@update:show="show => { if (!show) closeLookupSources() }"
+	>
+		<aside
+			class="lookup-sources-panel"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="lookup-sources-title"
+			data-testid="lookup-sources-panel"
+		>
+			<header>
+				<div>
+					<strong id="lookup-sources-title">{{ t("workspace.lookup.sourcesTitle") }}</strong>
+					<small>{{ lookupSources.items.length }} / {{ lookupSources.total }}{{ lookupSources.totalKnown ? "" : "+" }}</small>
+				</div>
+				<NButton size="tiny" quaternary @click="closeLookupSources">{{ t("common.close") }}</NButton>
+			</header>
+			<p v-if="lookupSources.error" class="lookup-sources-error" role="alert">{{ lookupSources.error }}</p>
+			<ol>
+				<li v-for="source in lookupSources.items" :key="`${source.collection}:${source.itemId}:${source.fieldId}`">
+					<button type="button" @click="navigateLookupSource(source); closeLookupSources()">
+						<span>{{ source.collectionLabel }} · {{ source.recordLabel }}</span>
+						<small>{{ source.fieldLabel }} · {{ String(source.value ?? "—") }}</small>
+					</button>
+				</li>
+			</ol>
+			<footer v-if="lookupSources.hasMore">
+				<NButton size="small" :loading="lookupSources.loading" @click="loadMoreLookupSources">
+					{{ t("workspace.lookup.loadMoreSources") }}
+				</NButton>
+			</footer>
+		</aside>
+	</NModal>
     <NModal
       :show="attachmentPanel.show"
       :auto-focus="true"
@@ -2295,6 +2839,12 @@ useKeyboard({
       @cancel-migration="fieldSettingsService.cancelMigration"
       @load-recycle-bin="fieldSettingsService.loadRecycleBin"
       @restore="fieldSettingsService.restore"
+      @load-relation-catalog="fieldSettingsService.loadRelationCatalog"
+      @select-relation-target="fieldSettingsService.selectRelationTarget"
+      @load-lookup-catalog="fieldSettingsService.loadLookupCatalog"
+      @resolve-lookup-path="fieldSettingsService.resolveLookupPath"
+      @load-formula-catalog="fieldSettingsService.loadFormulaCatalog"
+      @validate-formula="fieldSettingsService.validateFormulaDraft"
     />
     <NDropdown
       trigger="manual"
@@ -2358,6 +2908,31 @@ useKeyboard({
 .plugin-action-overlay { position: fixed; z-index: 80; inset: 0; display: grid; place-items: stretch end; background: rgba(10, 15, 22, .38); backdrop-filter: blur(2px); }
 .plugin-action-overlay > :deep(*) { height: 100%; }
 .plugin-action-overlay :deep(.surface-shell) { width: min(920px, calc(100% - 60px)); margin: 30px; }
+.lookup-sources-panel {
+	position: fixed;
+	z-index: 78;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	display: flex;
+	width: min(480px, calc(100vw - 32px));
+	flex-direction: column;
+	padding: 18px;
+	border-left: 1px solid var(--vt-border);
+	background: var(--vt-bg);
+	box-shadow: -12px 0 32px rgb(15 23 42 / 12%);
+}
+.lookup-sources-panel > header,
+.lookup-sources-panel > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lookup-sources-panel > header { padding-bottom: 12px; border-bottom: 1px solid var(--vt-border); }
+.lookup-sources-panel > header div { display: grid; gap: 2px; }
+.lookup-sources-panel > header small,
+.lookup-sources-panel li small { color: var(--vt-fg-muted); }
+.lookup-sources-panel ol { display: grid; flex: 1 1 auto; align-content: start; margin: 0; padding: 8px 0; overflow: auto; list-style: none; }
+.lookup-sources-panel li button { display: grid; width: 100%; gap: 3px; padding: 9px 8px; border: 0; border-bottom: 1px solid var(--vt-border); color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.lookup-sources-panel li button:hover { background: var(--vt-bg-sunken); }
+.lookup-sources-panel > footer { justify-content: center; padding-top: 12px; border-top: 1px solid var(--vt-border); }
+.lookup-sources-error { color: var(--vt-color-danger-600); }
 .attachment-panel {
   position: fixed;
   z-index: 78;
@@ -2476,6 +3051,22 @@ useKeyboard({
   background: var(--vt-color-warning-50);
   color: var(--vt-fg);
   font-size: var(--vt-font-caption);
+}
+.relation-create-notice {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--vt-color-primary-200);
+  background: var(--vt-color-primary-50);
+  color: var(--vt-fg);
+  font-size: var(--vt-font-caption);
+}
+.relation-create-notice > span {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 .edit-rejection-notice > span {
   min-width: 0;

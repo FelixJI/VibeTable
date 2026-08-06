@@ -109,8 +109,12 @@ func TestDecodeQueryRequestAppliesOnlyOmittedTableQueryDefaults(t *testing.T) {
 
 func TestValidateQueryOperationRequiresExactlyOnePayload(t *testing.T) {
 	page := query.TableQuery{}
+	view := query.ViewQuery{}
 	aggregate := query.AggregateQuery{}
 	for name, input := range map[string]queryOperationRequest{
+		"view": {
+			Operation: "view", TableID: "orders", View: &view,
+		},
 		"page": {
 			Operation: "page", TableID: "orders", Query: &page,
 		},
@@ -135,6 +139,12 @@ func TestValidateQueryOperationRequiresExactlyOnePayload(t *testing.T) {
 		},
 		"mixed page payload": {
 			Operation: "page", Query: &page, Aggregate: &aggregate,
+		},
+		"mixed view payload": {
+			Operation: "view", View: &view, Query: &page,
+		},
+		"missing view": {
+			Operation: "view",
 		},
 		"missing row ids": {
 			Operation: "readRows",

@@ -38,6 +38,23 @@ NPM_PROJECTS = (
     Path("examples/plugins/data-overview"),
     Path("examples/plugins/normalize-text"),
 )
+PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
+CI_PREPARE_MODE_ENV = "VIBETABLE_CI_PREPARE_MODE"
+
+
+def _candidate_prepare_mode() -> bool:
+    mode = os.environ.get(CI_PREPARE_MODE_ENV)
+    if mode in {None, ""}:
+        return False
+    if mode == "candidate":
+        return True
+    raise RuntimeError(f"unsupported {CI_PREPARE_MODE_ENV}: {mode}")
+
+
+def _resolve_executable(name: str, *, path: str | None = None) -> str:
+    if name.casefold() == "dotnet" and PREFERRED_DOTNET.is_file():
+        return str(PREFERRED_DOTNET)
+    return shutil.which(name, path=path) or name
 
 
 def _run(
@@ -47,8 +64,8 @@ def _run(
 ) -> None:
     print(f"+ {' '.join(command)}", flush=True)
     merged_env = {**os.environ, **(env or {})}
-    executable = shutil.which(command[0], path=merged_env.get("PATH"))
-    resolved = (executable, *command[1:]) if executable is not None else command
+    executable = _resolve_executable(command[0], path=merged_env.get("PATH"))
+    resolved = (executable, *command[1:])
     subprocess.run(resolved, cwd=cwd, env=merged_env, check=True)
 
 
@@ -89,14 +106,21 @@ def _install_w64devkit() -> None:
 
 
 def bootstrap() -> None:
+    candidate_prepare = _candidate_prepare_mode()
     _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
-    for project in NPM_PROJECTS:
+    projects = (Path("desktop/web-grid"),) if candidate_prepare else NPM_PROJECTS
+    for project in projects:
         _run("npm", "ci", cwd=REPO_ROOT / project)
     _run("dotnet", "restore", "desktop/VibeTable.Desktop.sln")
-    _install_w64devkit()
 
 
 def quality() -> None:
+    if _candidate_prepare_mode():
+        print(
+            "+ defer quality to immutable-candidate CI shards",
+            flush=True,
+        )
+        return
     commands = (
         ("uv", "run", "python", "scripts/release.py", "--check"),
         ("uv", "run", "python", "qa/version_check.py"),
@@ -344,6 +368,7 @@ def release_smoke() -> None:
     artifacts = _artifacts_dir()
     archive = artifacts / f"VibeTable-v{version}-win-x64.zip"
     _verify_release_metadata(artifacts, version, archive)
+    _install_w64devkit()
     _run(
         "uv",
         "run",
@@ -363,7 +388,7 @@ def release_smoke() -> None:
 def _prepare_smoke_lane(lane: str) -> None:
     if lane == "core":
         bootstrap()
-    elif lane == "race":
+    elif lane in {"race-a", "race-b"}:
         _install_w64devkit()
     elif lane == "resilience":
         _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
@@ -423,7 +448,10 @@ def _parser() -> argparse.ArgumentParser:
         "command",
         choices=("bootstrap", "quality", "build", "smoke", "smoke-lane", "smoke-aggregate"),
     )
-    parser.add_argument("--lane", choices=("core", "race", "resilience", "release"))
+    parser.add_argument(
+        "--lane",
+        choices=("core", "race-a", "race-b", "resilience", "release"),
+    )
     parser.add_argument("--json-report", type=Path)
     parser.add_argument("--reports-dir", type=Path)
     return parser

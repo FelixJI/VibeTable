@@ -20,20 +20,38 @@ import (
 
 const (
 	formulaFanoutType     = "formula_fanout"
-	maxFanoutRecords      = 10_000
+	fanoutDiscoveryBatch  = 500
+	fanoutJunctionBatch   = 500
+	fanoutTraversalBudget = 100_000
 	maxRetainedDataEvents = 10_000
 )
+
+var errFanoutCancellationRequested = errors.New("formula fan-out cancellation requested")
+
+type fanoutCancelCheck func() bool
+
+func checkFanoutInterrupted(ctx context.Context, cancelRequested fanoutCancelCheck) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if cancelRequested != nil && cancelRequested() {
+		return errFanoutCancellationRequested
+	}
+	return nil
+}
 
 type DataPublisher interface {
 	Publish(context.Context, mutation.DataChangedEvent) error
 }
 
 type fanoutCursor struct {
-	TableID         string   `json:"tableId"`
-	LastRecordID    string   `json:"lastRecordId"`
-	RelationFieldID string   `json:"relationFieldId"`
-	TargetRecordIDs []string `json:"targetRecordIds"`
-	RecordIDs       []string `json:"recordIds"`
+	TableID           string   `json:"tableId"`
+	LastRecordID      string   `json:"lastRecordId"`
+	RelationFieldID   string   `json:"relationFieldId"`
+	ChangedTableID    string   `json:"changedTableId"`
+	TargetRecordIDs   []string `json:"targetRecordIds"`
+	FormulaFieldIDs   []string `json:"formulaFieldIds"`
+	DiscoveryComplete bool     `json:"discoveryComplete"`
 }
 
 // Publish durably derives cross-record recalculation jobs before attempting
@@ -309,38 +327,27 @@ func (service *Service) createFanoutJob(
 			false,
 		)
 	}
-	foundRecordIDs := map[string]struct{}{}
-	for _, dependency := range dependencies {
-		recordIDs, matchErr := service.matchingDependencySourceRecords(
-			ctx,
-			definition,
-			*relationField,
-			dependency,
-			event.TableID,
-			event.RecordIDs,
-		)
-		if matchErr != nil {
-			return "", matchErr
-		}
-		for _, recordID := range recordIDs {
-			foundRecordIDs[recordID] = struct{}{}
-		}
-		if len(foundRecordIDs) > maxFanoutRecords {
-			return "", jobError(
-				"job.fanout_limit",
-				"formula fan-out exceeds the 10000 record limit",
-				false,
-			)
-		}
+	total, err := service.recordCount(definition)
+	if err != nil {
+		return "", err
 	}
-	recordIDs := make([]string, 0, len(foundRecordIDs))
-	for recordID := range foundRecordIDs {
-		recordIDs = append(recordIDs, recordID)
-	}
-	sort.Strings(recordIDs)
-	if len(recordIDs) == 0 {
+	if total == 0 {
 		return "", nil
 	}
+	formulaFields := make([]string, 0, len(dependencies))
+	seenFormulaFields := map[string]struct{}{}
+	for _, dependency := range dependencies {
+		fieldID := dependency.GetString("formula_field_id")
+		if fieldID == "" {
+			continue
+		}
+		if _, exists := seenFormulaFields[fieldID]; exists {
+			continue
+		}
+		seenFormulaFields[fieldID] = struct{}{}
+		formulaFields = append(formulaFields, fieldID)
+	}
+	sort.Strings(formulaFields)
 	revision, _ := schema.ParseSchemaRevision(definition.SchemaRevision)
 	collection, err := service.app.FindCollectionByNameOrId(
 		"vibetable_jobs",
@@ -352,12 +359,13 @@ func (service *Service) createFanoutJob(
 	}
 	cursor := fanoutCursor{
 		TableID: sourceTableID, RelationFieldID: relationFieldID,
+		ChangedTableID:  event.TableID,
 		TargetRecordIDs: append([]string(nil), event.RecordIDs...),
-		RecordIDs:       recordIDs,
+		FormulaFieldIDs: formulaFields,
 	}
 	cursorRaw, _ := json.Marshal(cursor)
 	progressRaw, _ := json.Marshal(Progress{
-		Completed: 0, Total: len(recordIDs),
+		Completed: 0, Total: total,
 	})
 	record := core.NewRecord(collection)
 	record.Set("job_type", formulaFanoutType)
@@ -395,216 +403,91 @@ func (service *Service) createFanoutJob(
 	return record.Id, nil
 }
 
-func (service *Service) matchingDependencySourceRecords(
-	ctx context.Context,
+type fanoutTraversalNode struct {
+	definition schema.TableDefinition
+	record     *core.Record
+}
+
+type fanoutJunctionEdge struct {
+	junctionID  string
+	targetID    string
+	targetTable string
+}
+
+func (service *Service) fanoutSourcePage(
 	definition schema.TableDefinition,
-	relationField schema.FieldDefinition,
-	dependency *core.Record,
-	changedTableID string,
-	targetRecordIDs []string,
-) ([]string, error) {
-	computedFieldID := dependency.GetString("formula_field_id")
-	for _, field := range definition.Fields {
-		if field.FieldID != computedFieldID ||
-			field.Kind != schema.FieldKindLookup ||
-			field.Lookup == nil {
-			continue
-		}
-		return service.matchingLookupSourceRecords(
-			ctx,
-			definition,
-			field.Lookup.EffectivePath(),
-			changedTableID,
-			targetRecordIDs,
-		)
-	}
-	return service.matchingSourceRecords(
-		definition,
-		relationField,
-		changedTableID,
-		targetRecordIDs,
-	)
-}
-
-type reverseLookupHop struct {
-	source   schema.TableDefinition
-	relation schema.FieldDefinition
-	step     schema.LookupPathStep
-}
-
-func (service *Service) matchingLookupSourceRecords(
-	ctx context.Context,
-	definition schema.TableDefinition,
-	path []schema.LookupPathStep,
-	changedTableID string,
-	targetRecordIDs []string,
-) ([]string, error) {
-	if len(path) == 0 {
-		return nil, jobError(
-			"job.formula_dependency_invalid",
-			"lookup dependency path is unavailable",
-			false,
-		)
-	}
-	current := definition
-	hops := make([]reverseLookupHop, 0, len(path))
-	for index, step := range path {
-		var relationField *schema.FieldDefinition
-		for fieldIndex := range current.Fields {
-			field := &current.Fields[fieldIndex]
-			if field.FieldID == step.RelationFieldID &&
-				field.Relation != nil {
-				relationField = field
-				break
-			}
-		}
-		if relationField == nil {
-			return nil, jobError(
-				"job.formula_dependency_invalid",
-				"lookup dependency relation is unavailable",
-				false,
-			)
-		}
-		hops = append(hops, reverseLookupHop{
-			source: current, relation: *relationField, step: step,
-		})
-		if index == len(path)-1 {
-			continue
-		}
-		targetTableID := relationField.Relation.TargetTableID
-		if step.M2ACollection != "" {
-			targetTableID = step.M2ACollection
-		}
-		if relationField.Relation.EffectiveMode() == "m2a" &&
-			step.M2ACollection == "" {
-			return nil, jobError(
-				"job.formula_dependency_invalid",
-				"intermediate m2a lookup dependency is ambiguous",
-				false,
-			)
-		}
-		target, err := schemaapi.New(service.app).Describe(ctx, targetTableID)
-		if err != nil {
-			return nil, err
-		}
-		current = target
-	}
-
-	start := len(hops) - 1
-	last := hops[start]
-	expectedTableID := last.relation.Relation.TargetTableID
-	if last.step.M2ACollection != "" {
-		expectedTableID = last.step.M2ACollection
-	}
-	if changedTableID != expectedTableID {
-		if last.relation.Relation.EffectiveMode() != "m2a" ||
-			last.step.M2ACollection != "" ||
-			!containsString(
-				last.relation.Relation.AllowedTargetTableIDs,
-				changedTableID,
-			) {
-			foundJunction := false
-			for index := len(hops) - 1; index >= 0; index-- {
-				relation := hops[index].relation.Relation
-				if relation.JunctionTableID != nil &&
-					*relation.JunctionTableID == changedTableID {
-					start = index
-					foundJunction = true
-					break
-				}
-			}
-			if !foundJunction {
-				return []string{}, nil
-			}
-		}
-	}
-
-	recordIDs := append([]string(nil), targetRecordIDs...)
-	currentTargetTableID := changedTableID
-	for index := start; index >= 0; index-- {
-		hop := hops[index]
-		var err error
-		recordIDs, err = service.matchingSourceRecords(
-			hop.source,
-			hop.relation,
-			currentTargetTableID,
-			recordIDs,
-		)
-		if err != nil {
-			return nil, err
-		}
-		if len(recordIDs) == 0 {
-			return []string{}, nil
-		}
-		currentTargetTableID = hop.source.TableID
-	}
-	return recordIDs, nil
-}
-
-func containsString(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
-}
-
-func (service *Service) matchingSourceRecords(
-	definition schema.TableDefinition,
-	relationField schema.FieldDefinition,
-	changedTableID string,
-	targetRecordIDs []string,
-) ([]string, error) {
-	if relationField.Relation != nil &&
-		relationField.Relation.EffectiveMode() != "direct" {
-		return service.matchingJunctionSourceRecords(
-			relationField, changedTableID, targetRecordIDs,
-		)
-	}
+	lastRecordID string,
+) ([]*core.Record, error) {
 	meta, err := service.app.FindFirstRecordByFilter(
-		"vibetable_tables",
-		"table_id={:table}",
-		dbx.Params{"table": definition.TableID},
+		"vibetable_tables", "table_id={:table}", dbx.Params{"table": definition.TableID},
 	)
 	if err != nil {
-		return nil, jobError(
-			"job.storage_failed", "source table storage is unavailable", true,
-		)
+		return nil, jobError("job.storage_failed", "source table storage is unavailable", true)
 	}
-	collection, err := service.app.FindCollectionByNameOrId(
-		meta.GetString("collection_id"),
-	)
+	collection, err := service.app.FindCollectionByNameOrId(meta.GetString("collection_id"))
 	if err != nil {
-		return nil, jobError(
-			"job.storage_failed", "source table storage is unavailable", true,
-		)
+		return nil, jobError("job.storage_failed", "source table storage is unavailable", true)
+	}
+	filter := ""
+	params := dbx.Params{}
+	if lastRecordID != "" {
+		filter = "id>{:cursor}"
+		params["cursor"] = lastRecordID
 	}
 	rows, err := service.app.FindRecordsByFilter(
-		collection, "", "+id", maxFanoutRecords+1, 0,
+		collection, filter, "+id", fanoutDiscoveryBatch, 0, params,
 	)
 	if err != nil {
-		return nil, jobError(
-			"job.storage_failed", "source records could not be read", true,
-		)
+		return nil, jobError("job.storage_failed", "source records could not be scanned", true)
 	}
-	if len(rows) > maxFanoutRecords {
-		return nil, jobError(
-			"job.fanout_limit",
-			"formula fan-out exceeds the 10000 record limit",
-			false,
-		)
-	}
-	targets := make(map[string]struct{}, len(targetRecordIDs))
-	for _, recordID := range targetRecordIDs {
+	return rows, nil
+}
+
+func (service *Service) matchingFanoutBatch(
+	ctx context.Context,
+	cancelRequested fanoutCancelCheck,
+	definition schema.TableDefinition,
+	cursor fanoutCursor,
+	rows []*core.Record,
+) ([]string, error) {
+	targets := make(map[string]struct{}, len(cursor.TargetRecordIDs))
+	for _, recordID := range cursor.TargetRecordIDs {
 		targets[recordID] = struct{}{}
 	}
+	formulaFields := make(map[string]struct{}, len(cursor.FormulaFieldIDs))
+	for _, fieldID := range cursor.FormulaFieldIDs {
+		formulaFields[fieldID] = struct{}{}
+	}
+	paths := make([][]schema.LookupPathStep, 0, len(formulaFields)+1)
+	for _, field := range definition.Fields {
+		if _, selected := formulaFields[field.FieldID]; !selected {
+			continue
+		}
+		if field.Kind == schema.FieldKindLookup && field.Lookup != nil {
+			paths = append(paths, field.Lookup.EffectivePath())
+		}
+	}
+	if len(paths) == 0 {
+		paths = append(paths, []schema.LookupPathStep{{
+			RelationFieldID: cursor.RelationFieldID,
+		}})
+	}
+	definitions := map[string]schema.TableDefinition{definition.TableID: definition}
 	result := make([]string, 0)
 	for _, row := range rows {
-		for _, relationID := range relationIDs(
-			row.GetRaw(relationField.PhysicalName),
-		) {
-			if _, matches := targets[relationID]; matches {
+		if err := checkFanoutInterrupted(ctx, cancelRequested); err != nil {
+			return nil, err
+		}
+		for _, path := range paths {
+			matches, err := service.fanoutPathMatches(
+				ctx, cancelRequested,
+				fanoutTraversalNode{definition: definition, record: row},
+				path, cursor.ChangedTableID, targets, definitions,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if matches {
 				result = append(result, row.Id)
 				break
 			}
@@ -613,123 +496,292 @@ func (service *Service) matchingSourceRecords(
 	return result, nil
 }
 
-func (service *Service) matchingJunctionSourceRecords(
-	relationField schema.FieldDefinition,
+func (service *Service) fanoutPathMatches(
+	ctx context.Context,
+	cancelRequested fanoutCancelCheck,
+	root fanoutTraversalNode,
+	path []schema.LookupPathStep,
 	changedTableID string,
-	recordIDs []string,
-) ([]string, error) {
-	relation := relationField.Relation
-	if relation == nil || relation.JunctionTableID == nil {
-		return nil, jobError(
-			"job.formula_dependency_invalid",
-			"junction relation metadata is unavailable",
-			false,
+	targets map[string]struct{},
+	definitions map[string]schema.TableDefinition,
+) (bool, error) {
+	if err := checkFanoutInterrupted(ctx, cancelRequested); err != nil {
+		return false, err
+	}
+	if len(path) == 0 {
+		return false, jobError(
+			"job.formula_dependency_invalid", "formula dependency path is unavailable", false,
 		)
 	}
-	junction, err := schemaapi.New(service.app).Describe(
-		context.Background(), *relation.JunctionTableID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	fieldByID := func(fieldID string) (schema.FieldDefinition, bool) {
-		for _, field := range junction.Fields {
-			if field.FieldID == fieldID {
-				return field, true
-			}
+	nodes := []fanoutTraversalNode{root}
+	visited := 1
+	consumeBudget := func(count int) error {
+		if count < 0 || count > fanoutTraversalBudget-visited {
+			return jobError(
+				"job.fanout_too_expensive",
+				"one source record exceeds the formula fan-out traversal budget", false,
+			)
 		}
-		return schema.FieldDefinition{}, false
+		visited += count
+		return nil
 	}
-	sourceField, sourceOK := fieldByID(relation.JunctionSourceFieldID)
-	targetField, targetOK := fieldByID(relation.JunctionTargetFieldID)
-	if !sourceOK || !targetOK {
-		return nil, jobError(
-			"job.formula_dependency_invalid",
-			"junction dependency fields are unavailable",
-			false,
-		)
+	for index, step := range path {
+		if err := checkFanoutInterrupted(ctx, cancelRequested); err != nil {
+			return false, err
+		}
+		last := index == len(path)-1
+		next := make([]fanoutTraversalNode, 0)
+		for _, node := range nodes {
+			if err := checkFanoutInterrupted(ctx, cancelRequested); err != nil {
+				return false, err
+			}
+			relationField, ok := relationFieldForFanout(node.definition, step.RelationFieldID)
+			if !ok || relationField.Relation == nil {
+				return false, jobError(
+					"job.formula_dependency_invalid",
+					"formula dependency relation is unavailable", false,
+				)
+			}
+			relation := relationField.Relation
+			targetTableID := relation.TargetTableID
+			if step.M2ACollection != "" {
+				targetTableID = step.M2ACollection
+			} else if relation.EffectiveMode() == "m2a" && last {
+				targetTableID = changedTableID
+			}
+			if relation.EffectiveMode() == "direct" {
+				ids := relationIDs(node.record.GetRaw(relationField.PhysicalName))
+				if err := consumeBudget(len(ids)); err != nil {
+					return false, err
+				}
+				if last && targetTableID == changedTableID && intersectsFanoutTargets(ids, targets) {
+					return true, nil
+				}
+				if !last {
+					loaded, err := service.loadFanoutNodes(
+						ctx, cancelRequested, targetTableID, ids, definitions,
+					)
+					if err != nil {
+						return false, err
+					}
+					next = append(next, loaded...)
+				}
+				continue
+			}
+			edges, err := service.fanoutJunctionEdges(
+				ctx, cancelRequested, node, relationField, targetTableID, definitions,
+				fanoutTraversalBudget-visited,
+			)
+			if err != nil {
+				return false, err
+			}
+			if err := consumeBudget(len(edges)); err != nil {
+				return false, err
+			}
+			if relation.JunctionTableID != nil && changedTableID == *relation.JunctionTableID {
+				for _, edge := range edges {
+					if _, matches := targets[edge.junctionID]; matches {
+						return true, nil
+					}
+				}
+			}
+			if last {
+				for _, edge := range edges {
+					if edge.targetTable == changedTableID {
+						if _, matches := targets[edge.targetID]; matches {
+							return true, nil
+						}
+					}
+				}
+				continue
+			}
+			ids := make([]string, 0, len(edges))
+			for _, edge := range edges {
+				ids = append(ids, edge.targetID)
+			}
+			loaded, err := service.loadFanoutNodes(
+				ctx, cancelRequested, targetTableID, ids, definitions,
+			)
+			if err != nil {
+				return false, err
+			}
+			next = append(next, loaded...)
+		}
+		nodes = next
+		if len(nodes) == 0 && !last {
+			return false, nil
+		}
+	}
+	return false, nil
+}
+
+func relationFieldForFanout(
+	definition schema.TableDefinition,
+	fieldID string,
+) (schema.FieldDefinition, bool) {
+	for _, field := range definition.Fields {
+		if field.FieldID == fieldID && field.Relation != nil {
+			return field, true
+		}
+	}
+	return schema.FieldDefinition{}, false
+}
+
+func intersectsFanoutTargets(ids []string, targets map[string]struct{}) bool {
+	for _, id := range ids {
+		if _, exists := targets[id]; exists {
+			return true
+		}
+	}
+	return false
+}
+
+func (service *Service) loadFanoutNodes(
+	ctx context.Context,
+	cancelRequested fanoutCancelCheck,
+	tableID string,
+	ids []string,
+	definitions map[string]schema.TableDefinition,
+) ([]fanoutTraversalNode, error) {
+	definition, ok := definitions[tableID]
+	if !ok {
+		var err error
+		definition, err = schemaapi.New(service.app).Describe(ctx, tableID)
+		if err != nil {
+			return nil, err
+		}
+		definitions[tableID] = definition
 	}
 	meta, err := service.app.FindFirstRecordByFilter(
-		"vibetable_tables", "table_id={:table}",
-		dbx.Params{"table": junction.TableID},
+		"vibetable_tables", "table_id={:table}", dbx.Params{"table": tableID},
 	)
 	if err != nil {
-		return nil, jobError(
-			"job.storage_failed", "junction storage is unavailable", true,
-		)
+		return nil, jobError("job.storage_failed", "fan-out target storage is unavailable", true)
 	}
-	collection, err := service.app.FindCollectionByNameOrId(
-		meta.GetString("collection_id"),
-	)
+	collection, err := service.app.FindCollectionByNameOrId(meta.GetString("collection_id"))
 	if err != nil {
-		return nil, jobError(
-			"job.storage_failed", "junction storage is unavailable", true,
-		)
+		return nil, jobError("job.storage_failed", "fan-out target storage is unavailable", true)
 	}
-	wanted := make(map[string]struct{}, len(recordIDs))
-	for _, recordID := range recordIDs {
-		wanted[recordID] = struct{}{}
+	result := make([]fanoutTraversalNode, 0, len(ids))
+	for _, id := range ids {
+		if err := checkFanoutInterrupted(ctx, cancelRequested); err != nil {
+			return nil, err
+		}
+		record, err := service.app.FindRecordById(collection, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, jobError("job.storage_failed", "fan-out target record could not be read", true)
+		}
+		result = append(result, fanoutTraversalNode{definition: definition, record: record})
 	}
-	rows, err := service.app.FindRecordsByFilter(
-		collection, "", "+id", maxFanoutRecords+1, 0,
-	)
-	if err != nil {
-		return nil, jobError(
-			"job.storage_failed", "junction records could not be read", true,
-		)
+	return result, nil
+}
+
+func (service *Service) fanoutJunctionEdges(
+	ctx context.Context,
+	cancelRequested fanoutCancelCheck,
+	node fanoutTraversalNode,
+	relationField schema.FieldDefinition,
+	targetTableID string,
+	definitions map[string]schema.TableDefinition,
+	remainingBudget int,
+) ([]fanoutJunctionEdge, error) {
+	relation := relationField.Relation
+	if relation == nil || relation.JunctionTableID == nil {
+		return nil, jobError("job.formula_dependency_invalid", "junction metadata is unavailable", false)
 	}
-	if len(rows) > maxFanoutRecords {
-		return nil, jobError(
-			"job.fanout_limit",
-			"formula fan-out exceeds the 10000 junction record limit",
-			false,
-		)
+	junction, ok := definitions[*relation.JunctionTableID]
+	if !ok {
+		var err error
+		junction, err = schemaapi.New(service.app).Describe(ctx, *relation.JunctionTableID)
+		if err != nil {
+			return nil, err
+		}
+		definitions[junction.TableID] = junction
+	}
+	sourceField, sourceOK := relationFieldForFanout(junction, relation.JunctionSourceFieldID)
+	targetField, targetOK := relationFieldForFanout(junction, relation.JunctionTargetFieldID)
+	if !sourceOK || !targetOK {
+		return nil, jobError("job.formula_dependency_invalid", "junction fields are unavailable", false)
 	}
 	var discriminator schema.FieldDefinition
 	if relation.EffectiveMode() == "m2a" {
-		var discriminatorOK bool
-		discriminator, discriminatorOK = fieldByID(
-			relation.JunctionDiscriminatorFieldID,
+		for _, field := range junction.Fields {
+			if field.FieldID == relation.JunctionDiscriminatorFieldID {
+				discriminator = field
+				break
+			}
+		}
+		if discriminator.FieldID == "" {
+			return nil, jobError("job.formula_dependency_invalid", "m2a discriminator is unavailable", false)
+		}
+	}
+	meta, err := service.app.FindFirstRecordByFilter(
+		"vibetable_tables", "table_id={:table}", dbx.Params{"table": junction.TableID},
+	)
+	if err != nil {
+		return nil, jobError("job.storage_failed", "junction storage is unavailable", true)
+	}
+	collection, err := service.app.FindCollectionByNameOrId(meta.GetString("collection_id"))
+	if err != nil {
+		return nil, jobError("job.storage_failed", "junction storage is unavailable", true)
+	}
+	filter := sourceField.PhysicalName + "={:source}"
+	params := dbx.Params{"source": node.record.Id}
+	expressions := []dbx.Expression{dbx.HashExp{sourceField.PhysicalName: node.record.Id}}
+	if relation.EffectiveMode() == "m2a" && targetTableID != "" {
+		filter += " && " + discriminator.PhysicalName + "={:targetTable}"
+		params["targetTable"] = targetTableID
+		expressions = append(
+			expressions, dbx.HashExp{discriminator.PhysicalName: targetTableID},
 		)
-		if !discriminatorOK {
-			return nil, jobError(
-				"job.formula_dependency_invalid",
-				"m2a discriminator field is unavailable",
-				false,
-			)
+	}
+	total, err := service.app.CountRecords(collection, expressions...)
+	if err != nil {
+		return nil, jobError("job.storage_failed", "junction edges could not be read", true)
+	}
+	if total > int64(remainingBudget) {
+		return nil, jobError(
+			"job.fanout_too_expensive",
+			"one source record exceeds the formula fan-out traversal budget", false,
+		)
+	}
+	result := make([]fanoutJunctionEdge, 0, int(total))
+	for offset := 0; offset < int(total); offset += fanoutJunctionBatch {
+		if err := checkFanoutInterrupted(ctx, cancelRequested); err != nil {
+			return nil, err
+		}
+		rows, err := service.app.FindRecordsByFilter(
+			collection, filter, "+id",
+			min(fanoutJunctionBatch, int(total)-offset), offset, params,
+		)
+		if err != nil {
+			return nil, jobError("job.storage_failed", "junction edges could not be read", true)
+		}
+		for _, row := range rows {
+			if err := checkFanoutInterrupted(ctx, cancelRequested); err != nil {
+				return nil, err
+			}
+			edgeTable := targetTableID
+			if relation.EffectiveMode() == "m2a" {
+				edgeTable = row.GetString(discriminator.PhysicalName)
+			}
+			ids := relationIDs(row.GetRaw(targetField.PhysicalName))
+			if len(ids) > remainingBudget-len(result) {
+				return nil, jobError(
+					"job.fanout_too_expensive",
+					"one source record exceeds the formula fan-out traversal budget", false,
+				)
+			}
+			for _, targetID := range ids {
+				result = append(result, fanoutJunctionEdge{
+					junctionID: row.Id, targetID: targetID, targetTable: edgeTable,
+				})
+			}
 		}
 	}
-	found := map[string]struct{}{}
-	for _, row := range rows {
-		matches := false
-		if changedTableID == junction.TableID {
-			_, matches = wanted[row.Id]
-		} else {
-			for _, targetID := range relationIDs(row.GetRaw(targetField.PhysicalName)) {
-				if _, ok := wanted[targetID]; ok {
-					matches = true
-					break
-				}
-			}
-			if matches && relation.EffectiveMode() == "m2a" &&
-				row.GetString(discriminator.PhysicalName) != changedTableID {
-				matches = false
-			}
-		}
-		if !matches {
-			continue
-		}
-		for _, sourceID := range relationIDs(row.GetRaw(sourceField.PhysicalName)) {
-			if sourceID != "" {
-				found[sourceID] = struct{}{}
-			}
-		}
-	}
-	result := make([]string, 0, len(found))
-	for recordID := range found {
-		result = append(result, recordID)
-	}
-	sort.Strings(result)
 	return result, nil
 }
 
@@ -751,8 +803,7 @@ func (service *Service) runFanout(
 	raw, _ := json.Marshal(record.GetRaw("cursor_json"))
 	var cursor fanoutCursor
 	if json.Unmarshal(raw, &cursor) != nil ||
-		cursor.TableID != snapshot.TableID ||
-		len(cursor.RecordIDs) != snapshot.Progress.Total {
+		cursor.TableID != snapshot.TableID {
 		return service.fail(
 			record, snapshot.TableID,
 			jobError(
@@ -762,8 +813,12 @@ func (service *Service) runFanout(
 			),
 		)
 	}
-	for snapshot.Progress.Completed < len(cursor.RecordIDs) {
-		if err := ctx.Err(); err != nil {
+	cancelRequested := func() bool { return service.cancelRequested(record.Id) }
+	for !cursor.DiscoveryComplete {
+		if err := checkFanoutInterrupted(ctx, cancelRequested); err != nil {
+			if errors.Is(err, errFanoutCancellationRequested) {
+				return service.finishCancellation(ctx, record)
+			}
 			return err
 		}
 		definition, err := schemaapi.New(service.app).Describe(
@@ -784,71 +839,122 @@ func (service *Service) runFanout(
 				),
 			)
 		}
-		end := snapshot.Progress.Completed + backfillBatchSize
-		if end > len(cursor.RecordIDs) {
-			end = len(cursor.RecordIDs)
-		}
-		batch := cursor.RecordIDs[snapshot.Progress.Completed:end]
-		operations := make([]mutation.Operation, 0, len(batch))
-		for _, itemID := range batch {
-			itemID := itemID
-			operations = append(operations, mutation.Operation{
-				Kind: mutation.OperationUpdate, RecordID: &itemID,
-				Values: map[string]any{},
-			})
-		}
-		key := fmt.Sprintf(
-			"fanout_%s_%d_%d", record.Id,
-			snapshot.Progress.Completed, end,
-		)
-		if _, err := service.applyKernelBatch(
-			ctx,
-			"formula.fanout.batch",
-			key,
-			mutation.Request{
-				ContractVersion: mutation.ContractVersion,
-				RequestID:       key,
-				IdempotencyKey:  key,
-				TableID:         snapshot.TableID,
-				SchemaRevision:  snapshot.SchemaRevision,
-				Operations:      operations,
-				Actor: mutation.Actor{
-					Type: "system", ID: "formula-fanout",
-				},
-			},
-		); err != nil {
+		rows, err := service.fanoutSourcePage(definition, cursor.LastRecordID)
+		if err != nil {
 			return service.failUnlessContextInterrupted(
 				ctx, record, snapshot.TableID, err,
 			)
 		}
-		snapshot.Progress.Completed = end
-		snapshot.Cursor.LastRecordID = batch[len(batch)-1]
-		cursor.LastRecordID = snapshot.Cursor.LastRecordID
+		if len(rows) == 0 {
+			cursor.DiscoveryComplete = true
+			snapshot.Progress.Total = snapshot.Progress.Completed
+			cursorRaw, _ := json.Marshal(cursor)
+			progressRaw, _ := json.Marshal(snapshot.Progress)
+			current, cancelled, saveErr := service.saveRunningState(
+				record.Id,
+				func(current *core.Record) error {
+					current.Set("cursor_json", types.JSONRaw(cursorRaw))
+					current.Set("progress_json", types.JSONRaw(progressRaw))
+					return nil
+				},
+			)
+			if saveErr != nil {
+				return service.failUnlessContextInterrupted(
+					ctx, record, snapshot.TableID, saveErr,
+				)
+			}
+			if cancelled {
+				return nil
+			}
+			record = current
+			break
+		}
+		matches, err := service.matchingFanoutBatch(
+			ctx, cancelRequested, definition, cursor, rows,
+		)
+		if err != nil {
+			if errors.Is(err, errFanoutCancellationRequested) {
+				return service.finishCancellation(ctx, record)
+			}
+			return service.failUnlessContextInterrupted(
+				ctx, record, snapshot.TableID, err,
+			)
+		}
+		for start := 0; start < len(matches); start += backfillBatchSize {
+			if err := checkFanoutInterrupted(ctx, cancelRequested); err != nil {
+				if errors.Is(err, errFanoutCancellationRequested) {
+					return service.finishCancellation(ctx, record)
+				}
+				return err
+			}
+			end := min(start+backfillBatchSize, len(matches))
+			batch := matches[start:end]
+			operations := make([]mutation.Operation, 0, len(batch))
+			for _, itemID := range batch {
+				itemID := itemID
+				operations = append(operations, mutation.Operation{
+					Kind: mutation.OperationUpdate, RecordID: &itemID,
+					Values: map[string]any{},
+				})
+			}
+			key := fmt.Sprintf(
+				"fanout_%s_%s_%s_%d", record.Id,
+				rows[0].Id, rows[len(rows)-1].Id, start,
+			)
+			if _, err := service.applyKernelBatch(
+				ctx,
+				"formula.fanout.batch",
+				key,
+				mutation.Request{
+					ContractVersion: mutation.ContractVersion,
+					RequestID:       key,
+					IdempotencyKey:  key,
+					TableID:         snapshot.TableID,
+					SchemaRevision:  snapshot.SchemaRevision,
+					Operations:      operations,
+					Actor: mutation.Actor{
+						Type: "system", ID: "formula-fanout",
+					},
+				},
+			); err != nil {
+				return service.failUnlessContextInterrupted(
+					ctx, record, snapshot.TableID, err,
+				)
+			}
+			if cancelRequested() {
+				return service.finishCancellation(ctx, record)
+			}
+		}
+		cursor.LastRecordID = rows[len(rows)-1].Id
+		snapshot.Cursor.LastRecordID = cursor.LastRecordID
+		snapshot.Progress.Completed += len(rows)
+		if snapshot.Progress.Completed > snapshot.Progress.Total {
+			snapshot.Progress.Total = snapshot.Progress.Completed
+		}
 		cursorRaw, _ := json.Marshal(cursor)
 		progressRaw, _ := json.Marshal(snapshot.Progress)
-		record.Set("cursor_json", types.JSONRaw(cursorRaw))
-		record.Set("progress_json", types.JSONRaw(progressRaw))
-		if err := service.app.Save(record); err != nil {
+		current, cancelled, err := service.saveRunningState(
+			record.Id,
+			func(current *core.Record) error {
+				current.Set("cursor_json", types.JSONRaw(cursorRaw))
+				current.Set("progress_json", types.JSONRaw(progressRaw))
+				return nil
+			},
+		)
+		if err != nil {
 			return service.failUnlessContextInterrupted(
 				ctx, record, snapshot.TableID, err,
 			)
 		}
+		if cancelled {
+			return nil
+		}
+		record = current
 		if progress, getErr := service.Get(ctx, record.Id); getErr == nil {
 			service.publish(ctx, progress)
 		}
 	}
-	record.Set("state", "complete")
-	record.Set("error_json", nil)
-	completed, err := service.persistTerminal(ctx, record)
-	if err != nil {
-		return jobError(
-			"job.storage_failed",
-			"completed fan-out job state could not be saved",
-			true,
-		)
-	}
-	service.publish(ctx, completed)
-	return nil
+	return service.finishCompletion(ctx, record.Id, "")
 }
 
 func decodedObject(value any) map[string]any {

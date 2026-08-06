@@ -323,32 +323,53 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         CancellationToken token)
         => _product.ApplyHistoryRestoreAsync(parameters, token);
 
-    public async Task<TablePage> QueryTablePageAsync(
+    public Task<TablePage> QueryTablePageAsync(
         string table,
         int offset,
         int limit,
         TableQuery query,
+        CancellationToken token)
+        => QueryTableAsync(table, offset, limit, query, includeGroups: false, token);
+
+    public Task<TablePage> QueryTableViewAsync(
+        string table,
+        int offset,
+        int limit,
+        TableQuery query,
+        CancellationToken token)
+        => QueryTableAsync(table, offset, limit, query, includeGroups: true, token);
+
+    private async Task<TablePage> QueryTableAsync(
+        string table,
+        int offset,
+        int limit,
+        TableQuery query,
+        bool includeGroups,
         CancellationToken token)
     {
         JsonElement schema = await GetSchemaAsync(
             table,
             token,
             refresh: offset == 0).ConfigureAwait(false);
-        var normalizedQuery = QueryBody(query, offset, limit);
         JsonElement request = JsonSerializer.SerializeToElement(
             new Dictionary<string, object?>
             {
                 ["tableId"] = table,
-                ["query"] = normalizedQuery,
+                [includeGroups ? "view" : "query"] = includeGroups
+                    ? ViewBody(query, offset, limit)
+                    : QueryBody(query, offset, limit),
             },
             JsonOptions);
         for (int attempt = 0; attempt < 2; attempt++)
         {
-            JsonElement response = await _product.QueryPageAsync(
-                request,
-                token).ConfigureAwait(false);
+            JsonElement response = includeGroups
+                ? await _product.QueryViewAsync(request, token).ConfigureAwait(false)
+                : await _product.QueryPageAsync(request, token).ConfigureAwait(false);
+            JsonElement page = includeGroups
+                ? RequiredProperty(response, "page")
+                : response;
             QuerySnapshot snapshot = ReadQuerySnapshot(
-                RequiredProperty(response, "snapshot"));
+                RequiredProperty(page, "snapshot"));
             string schemaRevision = RequiredString(schema, "schemaRevision");
             if (!string.Equals(
                 snapshot.SchemaRevision,
@@ -367,15 +388,15 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                     "The table schema changed while the page was loading.");
             }
 
-            int total = RequiredInt(response, "totalRows");
-            int filtered = RequiredInt(response, "filteredRows");
-            var rows = ReadRows(response.GetProperty("rows"), FindPrimaryKey(schema));
+            int total = RequiredInt(page, "totalRows");
+            int filtered = RequiredInt(page, "filteredRows");
+            var rows = ReadRows(page.GetProperty("rows"), FindPrimaryKey(schema));
             return new TablePage(
                 table,
                 ReadColumns(schema),
                 rows,
-                RequiredInt(response, "offset"),
-                RequiredInt(response, "limit"),
+                RequiredInt(page, "offset"),
+                RequiredInt(page, "limit"),
                 total,
                 total <= TableWorkspaceLimits.ClientRowBudget ? "client" : "remote",
                 filtered,
@@ -383,7 +404,11 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 new MutationRevision(
                     "pocketbase",
                     schemaRevision,
-                    snapshot.DataRevision));
+                    snapshot.DataRevision),
+                includeGroups ? ReadGroupRows(RequiredProperty(response, "groupRows")) : null,
+                includeGroups ? RequiredInt(response, "groupOffset") : 0,
+                includeGroups ? RequiredInt(response, "groupLimit") : 100,
+                includeGroups && RequiredBoolean(response, "hasMoreGroups"));
         }
 
         throw new InvalidOperationException(
@@ -605,7 +630,8 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 kind == "lookup" ? $"{tableId}.{fieldId}" : null,
                 kind == "attachment"
                     ? ReadAttachmentPolicy(field)
-                    : null));
+                    : null,
+                RequiredStringArray(field, "filterOperators")));
         }
         if (!hasRecordId)
         {
@@ -616,7 +642,9 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 false,
                 false,
                 FieldId: "id",
-                Kind: "scalar"));
+                Kind: "scalar",
+                FilterOperators:
+                ["eq", "ne", "contains", "starts_with", "ends_with", "in", "is_null", "is_not_null"]));
         }
         return result;
     }
@@ -712,11 +740,54 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         var result = new Dictionary<string, object?>
         {
             ["keyword"] = query.Keyword ?? string.Empty,
-            ["filters"] = query.Filters ?? Array.Empty<FilterCondition>(),
+            ["filters"] = query.Filters ?? Array.Empty<FilterExpression>(),
             ["sorts"] = query.Sorts ?? Array.Empty<SortCondition>(),
             ["offset"] = offset,
             ["limit"] = limit,
         };
+        return result;
+    }
+
+    private static Dictionary<string, object?> ViewBody(
+        TableQuery query,
+        int offset,
+        int limit)
+        => new()
+        {
+            ["query"] = QueryBody(query, offset, limit),
+            ["groups"] = query.Groups ?? Array.Empty<GroupCondition>(),
+            ["summaries"] = query.Summaries ?? Array.Empty<SummaryCondition>(),
+            ["groupOffset"] = query.GroupOffset,
+            ["groupLimit"] = query.GroupLimit,
+        };
+
+    private static IReadOnlyList<GroupRow> ReadGroupRows(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("PocketBase returned invalid group rows.");
+        }
+        var result = new List<GroupRow>();
+        foreach (JsonElement row in value.EnumerateArray())
+        {
+            JsonElement key = RequiredProperty(row, "key");
+            JsonElement summaries = RequiredProperty(row, "summaries");
+            if (key.ValueKind != JsonValueKind.Array || summaries.ValueKind != JsonValueKind.Array)
+            {
+                throw new InvalidOperationException("PocketBase returned invalid group rows.");
+            }
+            result.Add(new GroupRow(
+                key.EnumerateArray().Select(ToObject).ToArray(),
+                RequiredLong(row, "count"),
+                summaries.EnumerateArray().Select(ToObject).ToArray(),
+                row.TryGetProperty("parentCount", out JsonElement parentCount)
+                    ? RequiredLong(row, "parentCount")
+                    : null,
+                row.TryGetProperty("parentSummaries", out JsonElement parentSummaries)
+                    && parentSummaries.ValueKind == JsonValueKind.Array
+                    ? parentSummaries.EnumerateArray().Select(ToObject).ToArray()
+                    : null));
+        }
         return result;
     }
 
@@ -940,6 +1011,17 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         return property;
     }
 
+    private static long RequiredLong(JsonElement value, string name)
+    {
+        if (value.ValueKind != JsonValueKind.Object
+            || !value.TryGetProperty(name, out JsonElement property)
+            || !property.TryGetInt64(out long result))
+        {
+            throw new InvalidOperationException($"PocketBase response omitted '{name}'.");
+        }
+        return result;
+    }
+
     private static bool RequiredBoolean(JsonElement value, string name)
     {
         if (!value.TryGetProperty(name, out JsonElement property)
@@ -1050,6 +1132,30 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         return value.EnumerateArray()
             .Select(item => (IReadOnlyDictionary<string, object?>)ToDictionary(item))
             .ToArray();
+    }
+
+    private static IReadOnlyList<string> RequiredStringArray(
+        JsonElement value,
+        string propertyName)
+    {
+        JsonElement property = RequiredProperty(value, propertyName);
+        if (property.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException(
+                $"PocketBase returned invalid {propertyName}.");
+        }
+        var result = new List<string>();
+        foreach (JsonElement item in property.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(item.GetString()))
+            {
+                throw new InvalidOperationException(
+                    $"PocketBase returned invalid {propertyName}.");
+            }
+            result.Add(item.GetString()!);
+        }
+        return result;
     }
 
     private static object? ToObject(JsonElement value) => value.ValueKind switch

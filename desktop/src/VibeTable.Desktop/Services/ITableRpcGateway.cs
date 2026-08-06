@@ -108,6 +108,13 @@ public interface ITableRpcGateway
         TableQuery query,
         CancellationToken token);
 
+    Task<TablePage> QueryTableViewAsync(
+        string table,
+        int offset,
+        int limit,
+        TableQuery query,
+        CancellationToken token);
+
     /// <summary>
     /// Validates a carried query snapshot against the current product view
     /// and returns the invalidation reason when it is stale.

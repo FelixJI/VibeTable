@@ -61,8 +61,9 @@ func TestConcurrentSameIntentReturnsOneFrozenPlan(t *testing.T) {
 }
 
 type sourceStub struct {
-	revisions fieldchange.Revisions
-	fields    map[string]v2.FieldDefinition
+	revisions        fieldchange.Revisions
+	revisionsByTable map[string]fieldchange.Revisions
+	fields           map[string]v2.FieldDefinition
 }
 
 type impactPreflightStub struct {
@@ -80,9 +81,12 @@ func (stub impactPreflightStub) Check(
 }
 
 func (source sourceStub) Revisions(
-	context.Context,
-	string,
+	_ context.Context,
+	tableID string,
 ) (fieldchange.Revisions, error) {
+	if revision, ok := source.revisionsByTable[tableID]; ok {
+		return revision, nil
+	}
 	return source.revisions, nil
 }
 
@@ -282,6 +286,116 @@ func TestCascadeUpdateIsDangerousAndDescribesDeleteDirection(t *testing.T) {
 	}
 	if !foundDirection {
 		t.Fatalf("cascade steps omit direction: %#v", plan.Steps)
+	}
+}
+
+func TestCreateRelationFreezesReciprocalFieldAndBothTableRevisions(t *testing.T) {
+	t.Parallel()
+	draft := draftFor(v2.LogicalRelation)
+	draft.DisplayName = "客户"
+	draft.Relation = &v2.RelationSpec{
+		TargetTableID: "tbl_customers", Cardinality: "many",
+		DeletePolicy: "setNull", DisplayField: "fld_customer_name",
+	}
+	planner := fieldchange.NewPlanner(sourceStub{
+		revisionsByTable: map[string]fieldchange.Revisions{
+			"tbl_orders":    {Schema: "schema_2"},
+			"tbl_customers": {Schema: "schema_5"},
+		},
+	}, nil, nil, nil)
+	plan, err := planner.Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: "tbl_orders",
+		ExpectedSchemaRev: "schema_2", Draft: &draft,
+		Actor: v2.Actor{ID: "user_local", Kind: "user"},
+		RelationPair: &v2.RelationPairDraft{
+			ReciprocalDisplayName: "订单",
+			ReciprocalCardinality: "many",
+			SourceDisplayFieldID:  "fld_order_number",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.After == nil || plan.After.Relation == nil ||
+		plan.After.Relation.PairID == "" ||
+		len(plan.RelatedChanges) != 1 {
+		t.Fatalf("paired relation plan is incomplete: %#v", plan)
+	}
+	related := plan.RelatedChanges[0]
+	if related.TableID != "tbl_customers" ||
+		related.ExpectedSchemaRevision != "schema_5" || related.After == nil ||
+		related.After.DisplayName != "订单" ||
+		related.After.Relation.TargetTableID != "tbl_orders" ||
+		related.After.Relation.DisplayField != "fld_order_number" ||
+		related.After.Relation.PairID != plan.After.Relation.PairID ||
+		related.After.Relation.ReciprocalFieldID != plan.After.Identity.FieldID ||
+		plan.After.Relation.ReciprocalFieldID != related.After.Identity.FieldID {
+		t.Fatalf("reciprocal relation was not frozen symmetrically: %#v", plan)
+	}
+}
+
+func TestRetireRelationRequiresAtomicReciprocalConfirmation(t *testing.T) {
+	t.Parallel()
+	forward := definitionFor(v2.LogicalRelation)
+	forward.Identity.FieldID = "fld_orders_customer"
+	forward.Relation = &v2.RelationSpec{
+		TargetTableID: "tbl_customers", Cardinality: "one",
+		DeletePolicy: "setNull", DisplayField: "fld_customer_name",
+		PairID: "relp_orders_customers", ReciprocalFieldID: "fld_customer_orders",
+	}
+	reverse := definitionFor(v2.LogicalRelation)
+	reverse.Identity.FieldID = "fld_customer_orders"
+	reverse.Relation = &v2.RelationSpec{
+		TargetTableID: "tbl_orders", Cardinality: "many",
+		DeletePolicy: "setNull", DisplayField: "fld_order_number",
+		PairID: "relp_orders_customers", ReciprocalFieldID: "fld_orders_customer",
+	}
+	planner := fieldchange.NewPlanner(sourceStub{
+		revisionsByTable: map[string]fieldchange.Revisions{
+			"tbl_orders": {Schema: "schema_3"}, "tbl_customers": {Schema: "schema_8"},
+		},
+		fields: map[string]v2.FieldDefinition{
+			forward.Identity.FieldID: forward, reverse.Identity.FieldID: reverse,
+		},
+	}, nil, nil, nil)
+	plan, err := planner.Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionRetire, TableID: "tbl_orders",
+		FieldID: forward.Identity.FieldID, ExpectedSchemaRev: "schema_3",
+		Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.RelatedChanges) != 1 || plan.RelatedChanges[0].After == nil ||
+		plan.RelatedChanges[0].After.Lifecycle.State != v2.LifecycleRetired ||
+		!containsStringForTest(plan.Confirmations, "relationPair") {
+		t.Fatalf("retire did not protect reciprocal relation: %#v", plan)
+	}
+}
+
+func TestRetireRelationReturnsStablePairConflictWhenReciprocalIsMissing(t *testing.T) {
+	t.Parallel()
+	forward := definitionFor(v2.LogicalRelation)
+	forward.Identity.FieldID = "fld_orders_customer"
+	forward.Relation = &v2.RelationSpec{
+		TargetTableID: "tbl_customers", Cardinality: "one",
+		DeletePolicy: "setNull", DisplayField: "fld_customer_name",
+		PairID: "relp_orders_customers", ReciprocalFieldID: "fld_customer_orders",
+	}
+	planner := fieldchange.NewPlanner(sourceStub{
+		revisionsByTable: map[string]fieldchange.Revisions{
+			"tbl_orders": {Schema: "schema_3"}, "tbl_customers": {Schema: "schema_8"},
+		},
+		fields: map[string]v2.FieldDefinition{forward.Identity.FieldID: forward},
+	}, nil, nil, nil)
+	_, err := planner.Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionRetire, TableID: "tbl_orders",
+		FieldID: forward.Identity.FieldID, ExpectedSchemaRev: "schema_3",
+		Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	})
+	var productErr *fieldchange.ProductError
+	if !errors.As(err, &productErr) || productErr.Code != "relation.pair.conflict" {
+		t.Fatalf("relation pair conflict = %#v", err)
 	}
 }
 
@@ -581,6 +695,14 @@ func TestExpiredPlanAllocatesAFreshFrozenPlan(t *testing.T) {
 
 func definitionFor(logicalType v2.LogicalType) v2.FieldDefinition {
 	draft := draftFor(logicalType)
+	var formula *v2.FormulaSpec
+	if draft.Formula != nil {
+		formula = &v2.FormulaSpec{
+			Language:   draft.Formula.Language,
+			Source:     draft.Formula.Source,
+			ResultType: v2.LogicalText,
+		}
+	}
 	draft.Value.Presence = v2.PresenceSpec{
 		Mode: v2.PresenceCompanion, ProviderFieldID: "pb_01JPRESEN",
 		PhysicalName: "__vt_has_f_01jfieldx",
@@ -599,7 +721,7 @@ func definitionFor(logicalType v2.LogicalType) v2.FieldDefinition {
 		Value:     draft.Value, Constraints: draft.Constraints, Storage: draft.Storage,
 		Display: draft.Display, Select: draft.Select, Relation: draft.Relation,
 		File: draft.File, JSON: draft.JSON, AutoDate: draft.AutoDate,
-		Formula: draft.Formula, Lookup: draft.Lookup,
+		Formula: formula, Lookup: draft.Lookup,
 	}
 }
 
@@ -639,6 +761,15 @@ func containsClassForTest(classes []v2.ChangeClass, wanted v2.ChangeClass) bool 
 	return false
 }
 
+func containsStringForTest(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func (stub impactPreflight) Check(
 	context.Context,
 	v2.FieldChangeIntent,
@@ -653,12 +784,19 @@ func (stub impactPreflight) Check(
 }
 
 func draftFrom(definition v2.FieldDefinition) v2.FieldDraft {
+	var formula *v2.FormulaDraftSpec
+	if definition.Formula != nil {
+		formula = &v2.FormulaDraftSpec{
+			Language: definition.Formula.Language,
+			Source:   definition.Formula.Source,
+		}
+	}
 	return v2.FieldDraft{
 		DisplayName: definition.DisplayName, Help: definition.Help,
 		LogicalType: definition.LogicalType, Value: definition.Value,
 		Constraints: definition.Constraints, Storage: definition.Storage,
 		Display: definition.Display, Select: definition.Select,
 		Relation: definition.Relation, File: definition.File, JSON: definition.JSON,
-		AutoDate: definition.AutoDate, Formula: definition.Formula, Lookup: definition.Lookup,
+		AutoDate: definition.AutoDate, Formula: formula, Lookup: definition.Lookup,
 	}
 }

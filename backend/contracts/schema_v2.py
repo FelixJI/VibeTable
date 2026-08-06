@@ -198,6 +198,20 @@ class RelationSpecV2(SchemaV2Model):
     cardinality: Literal["one", "many"]
     delete_policy: Literal["setNull", "restrict", "cascade"]
     display_field_id: str
+    pair_id: str = Field(default="", exclude_if=lambda value: not value)
+    reciprocal_field_id: str = Field(default="", exclude_if=lambda value: not value)
+
+    @model_validator(mode="after")
+    def validate_pair_identity(self) -> Self:
+        if bool(self.pair_id) != bool(self.reciprocal_field_id):
+            raise ValueError("pairId and reciprocalFieldId must be configured together")
+        return self
+
+
+class RelationPairDraftV2(SchemaV2Model):
+    reciprocal_display_name: str
+    reciprocal_cardinality: Literal["one", "many"]
+    source_display_field_id: str
 
 
 class FileSpecV2(SchemaV2Model):
@@ -224,11 +238,13 @@ class FormulaSpecV2(SchemaV2Model):
     result_type: LogicalType
 
 
-class LookupSpecV2(SchemaV2Model):
+class LookupPathStepV2(SchemaV2Model):
     relation_field_id: str
+
+
+class LookupSpecV2(SchemaV2Model):
+    path: list[LookupPathStepV2] = Field(min_length=1, max_length=8)
     target_field_id: str
-    aggregate: Literal["none", "first", "distinct", "count", "sum", "avg", "min", "max"]
-    result_type: LogicalType
 
 
 class FieldDefinitionV2(SchemaV2Model):
@@ -353,6 +369,17 @@ class FieldChangeIntentV2(SchemaV2Model):
     conversion_rule: str
     confirmation: str
     backup_receipt: str
+    relation_pair: RelationPairDraftV2 | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+
+class RelatedFieldChangeV2(SchemaV2Model):
+    table_id: str
+    field_id: str
+    before: FieldDefinitionV2 | None
+    after: FieldDefinitionV2 | None
+    expected_schema_revision: str
 
 
 class DiagnosticV2(SchemaV2Model):
@@ -404,6 +431,16 @@ class FieldChangePlanV2(SchemaV2Model):
     confirmations: list[str]
     creates_migration: bool
     can_apply: bool
+    related_changes: list[RelatedFieldChangeV2] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
+
+
+class RelatedApplyReceiptV2(SchemaV2Model):
+    table_id: str
+    field_id: str
+    schema_revision: str
+    definition: FieldDefinitionV2 | None
 
 
 class ApplyReceiptV2(SchemaV2Model):
@@ -416,6 +453,9 @@ class ApplyReceiptV2(SchemaV2Model):
     schema_revision: str
     definition: FieldDefinitionV2 | None
     migration_job_id: str
+    related: list[RelatedApplyReceiptV2] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
 
 
 class ApplyRequestV2(SchemaV2Model):

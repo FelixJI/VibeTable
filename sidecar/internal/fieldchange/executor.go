@@ -20,6 +20,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldresource"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 )
 
 const fieldOperationTTL = 24 * time.Hour
@@ -215,6 +216,25 @@ func (executor *Executor) apply(
 				},
 			)
 		}
+		for _, related := range plan.RelatedChanges {
+			relatedRevisions, relatedRevisionErr := NewCatalog(txApp).Revisions(
+				ctx, related.TableID,
+			)
+			if relatedRevisionErr != nil {
+				return relatedRevisionErr
+			}
+			if relatedRevisions.Schema != related.ExpectedSchemaRevision {
+				return productError(
+					"field.change.schema_conflict", "relatedChanges",
+					"reciprocal table schema revision changed after planning",
+					map[string]any{
+						"tableId":  related.TableID,
+						"expected": related.ExpectedSchemaRevision,
+						"actual":   relatedRevisions.Schema,
+					},
+				)
+			}
+		}
 		if plan.Intent.Action == v2.ActionPurge {
 			var verifyErr error
 			if executor.protectionProof != nil {
@@ -283,8 +303,34 @@ func (executor *Executor) apply(
 			SchemaRevision: schema.FormatSchemaRevision(nextRevision),
 			Definition:     applied,
 		}
+		for _, related := range plan.RelatedChanges {
+			relatedPlan := pairedPlan(*plan, related)
+			relatedDefinition, relatedApplyErr := executor.applyFrozenPlan(
+				ctx, txApp, relatedPlan,
+			)
+			if relatedApplyErr != nil {
+				return relatedApplyErr
+			}
+			relatedRevision, relatedParseErr := schema.ParseSchemaRevision(
+				related.ExpectedSchemaRevision,
+			)
+			if relatedParseErr != nil {
+				return relatedParseErr
+			}
+			relatedRevision++
+			if saveErr := saveTableRevisionAndLegacy(
+				ctx, txApp, relatedPlan, relatedRevision,
+			); saveErr != nil {
+				return saveErr
+			}
+			receipt.Related = append(receipt.Related, v2.RelatedApplyReceipt{
+				TableID: related.TableID, FieldID: related.FieldID,
+				SchemaRevision: schema.FormatSchemaRevision(relatedRevision),
+				Definition:     relatedDefinition,
+			})
+		}
 		if saveErr := saveTableRevisionAndLegacy(
-			txApp, *plan, nextRevision,
+			ctx, txApp, *plan, nextRevision,
 		); saveErr != nil {
 			return saveErr
 		}
@@ -323,6 +369,21 @@ func (executor *Executor) apply(
 		_ = fieldresource.RunPendingAttachmentCleanup(ctx, executor.app)
 	}
 	return receipt, nil
+}
+
+func pairedPlan(
+	plan v2.FieldChangePlan,
+	related v2.RelatedFieldChange,
+) v2.FieldChangePlan {
+	plan.Intent.TableID = related.TableID
+	plan.Intent.FieldID = related.FieldID
+	plan.Intent.RelationPair = nil
+	plan.Before = related.Before
+	plan.After = related.After
+	plan.ExpectedSchemaRev = related.ExpectedSchemaRevision
+	plan.ExpectedDataRevision = nil
+	plan.RelatedChanges = nil
+	return plan
 }
 
 func (executor *Executor) applyFrozenPlan(
@@ -370,6 +431,13 @@ func (executor *Executor) applyFrozenPlan(
 		}
 		if err := replaceCompiledField(app, collection, *plan.Before, *plan.After); err != nil {
 			return nil, err
+		}
+		if formulaDefinitionChanged(plan.Before, plan.After) {
+			if err := clearComputedPhysicalValue(
+				ctx, app, collection.Name, plan.After.Identity.PhysicalName,
+			); err != nil {
+				return nil, err
+			}
 		}
 		if err := saveDefinitionMetadata(app, plan.Intent.TableID, *plan.After); err != nil {
 			return nil, err
@@ -674,6 +742,8 @@ func syncRelationMetadata(
 	record.Set("cardinality", definition.Relation.Cardinality)
 	record.Set("junction_table_id", "")
 	record.Set("delete_policy", definition.Relation.DeletePolicy)
+	record.Set("pair_id", definition.Relation.PairID)
+	record.Set("reciprocal_field_id", definition.Relation.ReciprocalFieldID)
 	if err := app.Save(record); err != nil {
 		return fmt.Errorf("save relation metadata: %w", err)
 	}
@@ -696,6 +766,7 @@ func legacyKind(definition v2.FieldDefinition) string {
 }
 
 func saveTableRevisionAndLegacy(
+	ctx context.Context,
 	app core.App,
 	plan v2.FieldChangePlan,
 	nextRevision int64,
@@ -714,14 +785,37 @@ func saveTableRevisionAndLegacy(
 		return fmt.Errorf("decode legacy table definition: %w", err)
 	}
 	definition.SchemaRevision = schema.FormatSchemaRevision(nextRevision)
+	var projected *schema.FieldDefinition
+	if plan.After != nil {
+		value := toLegacyField(*plan.After)
+		if value.Formula != nil {
+			for _, existingField := range definition.Fields {
+				if existingField.FieldID != value.FieldID || existingField.Formula == nil {
+					continue
+				}
+				if !formulaDefinitionChanged(plan.Before, plan.After) {
+					value.Formula.Version = existingField.Formula.Version
+					value.Formula.Status = existingField.Formula.Status
+				} else {
+					value.Formula.Version = max(existingField.Formula.Version, 1) + 1
+				}
+				break
+			}
+		}
+		projected = &value
+	}
 	switch plan.Intent.Action {
 	case v2.ActionCreate:
-		definition.Fields = append(definition.Fields, toLegacyField(*plan.After))
+		definition.Fields = append(definition.Fields, *projected)
 	case v2.ActionUpdate, v2.ActionConvert, v2.ActionRestore:
-		upsertLegacyField(&definition, toLegacyField(*plan.After))
+		upsertLegacyField(&definition, *projected)
 	case v2.ActionRetire, v2.ActionPurge:
 		removeLegacyField(&definition, plan.Intent.FieldID)
 	}
+	definition.PrimaryDisplayFieldID = selectPrimaryDisplayField(
+		definition.Fields, definition.PrimaryDisplayFieldID,
+	)
+	record.Set("primary_display_field_id", definition.PrimaryDisplayFieldID)
 	definitionRaw, err := json.Marshal(definition)
 	if err != nil {
 		return fmt.Errorf("encode updated legacy table definition: %w", err)
@@ -730,7 +824,28 @@ func saveTableRevisionAndLegacy(
 	if err := app.Save(record); err != nil {
 		return fmt.Errorf("save table schema revision: %w", err)
 	}
-	return nil
+	return schemaapi.New(app).SyncComputedMetadata(ctx, definition)
+}
+
+func selectPrimaryDisplayField(
+	fields []schema.FieldDefinition,
+	current string,
+) string {
+	for _, field := range fields {
+		if field.FieldID == current && !field.ReadOnly &&
+			field.Kind != schema.FieldKindRelation {
+			return current
+		}
+	}
+	for _, field := range fields {
+		if !field.ReadOnly && field.Kind != schema.FieldKindRelation {
+			return field.FieldID
+		}
+	}
+	if len(fields) != 0 {
+		return fields[0].FieldID
+	}
+	return ""
 }
 
 func toLegacyField(definition v2.FieldDefinition) schema.FieldDefinition {
@@ -765,26 +880,34 @@ func toLegacyField(definition v2.FieldDefinition) schema.FieldDefinition {
 	}
 	if definition.Relation != nil {
 		field.Relation = &schema.RelationSpec{
-			TargetTableID: definition.Relation.TargetTableID,
-			Cardinality:   definition.Relation.Cardinality,
-			DeletePolicy:  definition.Relation.DeletePolicy,
+			TargetTableID:     definition.Relation.TargetTableID,
+			Cardinality:       definition.Relation.Cardinality,
+			DeletePolicy:      definition.Relation.DeletePolicy,
+			PairID:            definition.Relation.PairID,
+			ReciprocalFieldID: definition.Relation.ReciprocalFieldID,
 		}
 	}
 	if definition.Formula != nil {
-		resultType, _ := legacyTypes(definition.Formula.ResultType)
+		resultType, resultStorage := legacyTypes(definition.Formula.ResultType)
+		field.StorageType = resultStorage
 		field.Formula = &schema.FormulaSpec{
 			Language:   definition.Formula.Language,
 			Source:     definition.Formula.Source,
 			ResultType: resultType,
 			Version:    1,
-			Status:     "valid",
+			Status:     "backfilling",
 		}
 	}
 	if definition.Lookup != nil {
+		path := make([]schema.LookupPathStep, 0, len(definition.Lookup.Path))
+		for _, step := range definition.Lookup.Path {
+			path = append(path, schema.LookupPathStep{RelationFieldID: step.RelationFieldID})
+		}
 		field.Lookup = &schema.LookupSpec{
-			RelationFieldID: definition.Lookup.RelationFieldID,
+			RelationFieldID: path[0].RelationFieldID,
+			Path:            path,
 			TargetFieldID:   definition.Lookup.TargetFieldID,
-			Aggregate:       definition.Lookup.Aggregate,
+			Aggregate:       "none",
 		}
 	}
 	if definition.File != nil {
@@ -814,6 +937,32 @@ func toLegacyField(definition v2.FieldDefinition) schema.FieldDefinition {
 		})
 	}
 	return field
+}
+
+func formulaDefinitionChanged(before, after *v2.FieldDefinition) bool {
+	if before == nil || after == nil || before.Formula == nil || after.Formula == nil {
+		return false
+	}
+	return before.Formula.Language != after.Formula.Language ||
+		before.Formula.Source != after.Formula.Source ||
+		before.Formula.ResultType != after.Formula.ResultType
+}
+
+func clearComputedPhysicalValue(
+	ctx context.Context,
+	app core.App,
+	collectionName string,
+	physicalName string,
+) error {
+	query := fmt.Sprintf(
+		"UPDATE `%s` SET `%s` = NULL",
+		strings.ReplaceAll(collectionName, "`", "``"),
+		strings.ReplaceAll(physicalName, "`", "``"),
+	)
+	if _, err := app.DB().NewQuery(query).WithContext(ctx).Execute(); err != nil {
+		return fmt.Errorf("clear stale computed values: %w", err)
+	}
+	return nil
 }
 
 func legacyTypes(logical v2.LogicalType) (schema.DataType, schema.StorageType) {

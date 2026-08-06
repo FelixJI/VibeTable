@@ -35,11 +35,13 @@ public sealed class JsonRpcProductDataGatewayTests
         await gateway.ListTablesAsync(payload, CancellationToken.None);
         await gateway.GetTableSchemaAsync(payload, CancellationToken.None);
         await gateway.QueryPageAsync(payload, CancellationToken.None);
+        await gateway.QueryViewAsync(payload, CancellationToken.None);
         await gateway.ReadRowsAsync(payload, CancellationToken.None);
         await gateway.ValidateSnapshotAsync(payload, CancellationToken.None);
         await gateway.PreviewMutationAsync(payload, CancellationToken.None);
         await gateway.ApplyMutationAsync(payload, CancellationToken.None);
         await gateway.ValidateFormulaAsync(payload, CancellationToken.None);
+        await gateway.ValidateFormulaDraftAsync(payload, CancellationToken.None);
         await gateway.PreviewFormulaAsync(payload, CancellationToken.None);
         await gateway.ListAttachmentRefsAsync(payload, CancellationToken.None);
         await gateway.CreateFileTokenAsync(payload, CancellationToken.None);
@@ -66,9 +68,9 @@ public sealed class JsonRpcProductDataGatewayTests
                 "field.change.status", "field.change.cancel", "field.recycleBin.list",
                 "schema.validate", "schema.apply", "schema.delete", "schema.list",
                 "schema.getTable",
-                "query.page", "query.readRows", "query.validateSnapshot",
+                "query.page", "query.view", "query.readRows", "query.validateSnapshot",
                 "mutation.preview", "mutation.apply",
-                "formula.validate", "formula.preview",
+                "formula.validate", "formula.draft.validate", "formula.preview",
                 "file.list", "file.token",
                 "file.applyHostChange", "file.saveHostFile",
                 "events.reconcile",
@@ -191,6 +193,97 @@ public sealed class JsonRpcProductDataGatewayTests
         Assert.IsFalse(
             result.GetProperty("after").TryGetProperty("select", out _),
             "nullable specialized fields must be omitted at the renderer boundary");
+    }
+
+    [TestMethod]
+    public async Task FieldChangePlanAcceptsFormulaDraftWithoutCompiledResultType()
+    {
+        var transport = new AutoRespondTransport();
+        transport.Results["field.change.plan"] =
+            """
+            {
+              "contract":"vibetable.schema.v2",
+              "planId":"plan_formula","planHash":"sha256:formula","expiresAt":"2026-08-05T16:00:00Z",
+              "intent":{
+                "action":"create","tableId":"tbl_orders","fieldId":"",
+                "expectedSchemaRevision":"schema_7","expectedDataRevision":0,
+                "draft":{
+                  "displayName":"Upper title","help":"","logicalType":"formula",
+                  "value":{
+                    "required":false,
+                    "default":{"enabled":false,"value":null,"source":"recommended","defaultsVersion":1},
+                    "presence":{"mode":"none"}
+                  },
+                  "constraints":{
+                    "unique":{"enabled":false,"blankPolicy":"ignoreMissing"},
+                    "range":{"min":null,"max":null},
+                    "length":{"min":null,"max":null},
+                    "pattern":{"enabled":false,"value":""},
+                    "domains":{"only":[],"except":[]},
+                    "selection":{"min":0,"max":null}
+                  },
+                  "storage":{"kind":"computed","options":{"onlyInt":false,"maxSize":0,"convertURLs":false,"presentable":false}},
+                  "display":{
+                    "kind":"text","preset":"plain","displayScale":0,"scaleMode":"fixed",
+                    "trimTrailingZeros":false,"useGrouping":false,"currency":"",
+                    "percentStorage":"ratio","unit":null,"precision":"exact","timezone":"",
+                    "mode":"","trueLabel":"","falseLabel":""
+                  },
+                  "formula":{"language":"cel-v1","source":"upper(f_title)"}
+                },
+                "actor":{"id":"local-user","kind":"user"},
+                "conversionRule":"","confirmation":"","backupReceipt":""
+              },
+              "before":null,
+              "after":{
+                "contract":"vibetable.schema.v2",
+                "identity":{"fieldId":"fld_formula","physicalName":"f_formula","providerFieldId":""},
+                "displayName":"Upper title","help":"","logicalType":"formula",
+                "lifecycle":{"state":"active","retiredAt":null},
+                "value":{
+                  "required":false,
+                  "default":{"enabled":false,"value":null,"source":"recommended","defaultsVersion":1},
+                  "presence":{"mode":"none"}
+                },
+                "constraints":{
+                  "unique":{"enabled":false,"blankPolicy":"ignoreMissing"},
+                  "range":{"min":null,"max":null},
+                  "length":{"min":null,"max":null},
+                  "pattern":{"enabled":false,"value":""},
+                  "domains":{"only":[],"except":[]},
+                  "selection":{"min":0,"max":null}
+                },
+                "storage":{"kind":"computed","options":{"onlyInt":false,"maxSize":0,"convertURLs":false,"presentable":false}},
+                "display":{
+                  "kind":"text","preset":"plain","displayScale":0,"scaleMode":"fixed",
+                  "trimTrailingZeros":false,"useGrouping":false,"currency":"",
+                  "percentStorage":"ratio","unit":null,"precision":"exact","timezone":"",
+                  "mode":"","trueLabel":"","falseLabel":""
+                },
+                "formula":{"language":"cel-v1","source":"upper(f_title)","resultType":"text"}
+              },
+              "classes":["schema"],"expectedSchemaRevision":"schema_7","expectedDataRevision":0,
+              "impact":{"records":0,"missing":0,"ambiguous":0,"failures":[],"dependencies":[]},
+              "steps":[],"warnings":[],"errors":[],"confirmations":[],
+              "createsMigration":false,"canApply":true
+            }
+            """;
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+
+        JsonElement result = await gateway.PlanFieldChangeAsync(
+            JsonDocument.Parse("""{"tableId":"tbl_orders"}""").RootElement.Clone(),
+            CancellationToken.None);
+
+        JsonElement draftFormula = result
+            .GetProperty("intent")
+            .GetProperty("draft")
+            .GetProperty("formula");
+        Assert.AreEqual("upper(f_title)", draftFormula.GetProperty("source").GetString());
+        Assert.IsFalse(draftFormula.TryGetProperty("resultType", out _));
+        Assert.AreEqual(
+            "text",
+            result.GetProperty("after").GetProperty("formula").GetProperty("resultType").GetString());
     }
 
     [TestMethod]

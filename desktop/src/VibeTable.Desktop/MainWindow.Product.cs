@@ -3133,6 +3133,10 @@ public partial class MainWindow : Window
                 filteredRows = notification.Page?.FilteredRows,
                 querySnapshot = notification.Page?.QuerySnapshot,
                 revision = notification.Page?.Revision,
+                groupRows = notification.Page?.GroupRows,
+                groupOffset = notification.Page?.GroupOffset,
+                groupLimit = notification.Page?.GroupLimit,
+                hasMoreGroups = notification.Page?.HasMoreGroups,
                 loadedRows = notification.LoadedRows,
             });
     }

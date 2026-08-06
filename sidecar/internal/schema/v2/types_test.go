@@ -92,6 +92,13 @@ func TestRecommendedFileDefaultsMatchProductDecision(t *testing.T) {
 		len(recommended.File.Thumbs) != 0 {
 		t.Fatalf("unexpected file defaults: %#v", recommended.File)
 	}
+	capability, err := v2.CapabilityFor(v2.LogicalFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capability.SupportsRequired {
+		t.Fatal("file capability exposed required before atomic pre-insert upload exists")
+	}
 }
 
 func TestRecommendedSingleSelectDefaultsSatisfyItsCardinalityContract(t *testing.T) {
@@ -124,6 +131,15 @@ func TestFieldDefinitionStrictlyRejectsUnknownProperties(t *testing.T) {
 	var decoded v2.FieldDefinition
 	if err := v2.StrictDecode(raw, &decoded); err == nil {
 		t.Fatal("unknown field property was accepted")
+	}
+}
+
+func TestFormulaDraftStrictlyRejectsClientSuppliedResultType(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`{"formula":{"language":"cel-v1","source":"1","resultType":"number"}}`)
+	var draft v2.FieldDraft
+	if err := v2.StrictDecode(raw, &draft); err == nil {
+		t.Fatal("client-supplied formula resultType was accepted")
 	}
 }
 
@@ -225,6 +241,58 @@ func TestValidateRejectsUnsupportedUniqueAndUnstableSelectOptions(t *testing.T) 
 	if err := v2.Validate(selectField); !errors.As(err, &productErr) ||
 		productErr.Path != "select.options[0].optionId" {
 		t.Fatalf("expected opaque option error, got %#v", err)
+	}
+}
+
+func TestLookupUsesOneToEightRelationStepsAndRejectsLegacyAggregateSettings(t *testing.T) {
+	t.Parallel()
+	definition := validNumberDefinition()
+	recommended, err := v2.RecommendedDefaults(v2.LogicalLookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition.LogicalType = v2.LogicalLookup
+	definition.Value = recommended.Value
+	definition.Constraints = recommended.Constraints
+	definition.Storage = recommended.Storage
+	definition.Display = recommended.Display
+	definition.Lookup = &v2.LookupSpec{TargetFieldID: "fld_target"}
+	for index := 0; index < 8; index++ {
+		definition.Lookup.Path = append(definition.Lookup.Path, v2.LookupPathStep{
+			RelationFieldID: "fld_relation_" + string(rune('a'+index)),
+		})
+	}
+	if err := v2.Validate(definition); err != nil {
+		t.Fatalf("eight-hop Lookup was rejected: %v", err)
+	}
+	definition.Lookup.Path = append(definition.Lookup.Path, v2.LookupPathStep{
+		RelationFieldID: "fld_relation_ninth",
+	})
+	var productErr *v2.ProductError
+	if err := v2.Validate(definition); !errors.As(err, &productErr) ||
+		productErr.Code != "lookup.path.depth_limit" || productErr.Path != "lookup.path" {
+		t.Fatalf("expected stable path limit error, got %#v", err)
+	}
+	definition.Lookup.Path = definition.Lookup.Path[:8]
+	definition.Lookup.Path[0].RelationFieldID = ""
+	if err := v2.Validate(definition); !errors.As(err, &productErr) ||
+		productErr.Code != "lookup.path.invalid" {
+		t.Fatalf("expected stable invalid path error, got %#v", err)
+	}
+
+	raw, err := json.Marshal(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil {
+		t.Fatal(err)
+	}
+	object["lookup"].(map[string]any)["aggregate"] = "sum"
+	raw, _ = json.Marshal(object)
+	var decoded v2.FieldDefinition
+	if err := v2.StrictDecode(raw, &decoded); err == nil {
+		t.Fatal("legacy Lookup aggregate setting was accepted")
 	}
 }
 

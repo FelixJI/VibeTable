@@ -712,7 +712,7 @@ describe("useTabulator", () => {
     tableBuilt();
     sorted();
     expect(onViewQueryChanged).toHaveBeenLastCalledWith({
-      filters: [{ field: "status", operator: "eq", value: "signed", logic: "AND" }],
+      headerFilters: [{ field: "status", operator: "eq", value: "signed", logic: "AND" }],
       sorts: [{ field: "price", direction: "desc", nullsLast: true }],
       groups: [],
     });
@@ -720,7 +720,7 @@ describe("useTabulator", () => {
     const grouped = lastMock!.on.mock.calls.find((call) => call[0] === "dataGrouped")?.[1] as (groups: unknown[]) => void;
     grouped([{ getField: () => "customer", getSubGroups: () => [] }]);
     expect(onViewQueryChanged).toHaveBeenLastCalledWith(expect.objectContaining({
-      groups: [{ fieldRef: "customer", direction: "asc" }],
+      groups: [{ field: "customer", direction: "asc", bucket: "value" }],
     }));
     wrapper.unmount();
   });

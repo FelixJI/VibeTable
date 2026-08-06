@@ -10,6 +10,8 @@ import type {
   FieldMigrationStatusV2,
   FieldSettingsDescribeResultV2,
   LogicalTypeV2,
+  FormulaDraftValidationResult,
+  SchemaSnapshot,
 } from "@/contracts";
 import {
   draftFromCapability,
@@ -29,6 +31,15 @@ export type FieldSettingsPhase =
   | "migrating"
   | "failed";
 
+export type RelationPairDraft = NonNullable<
+  import("@/contracts").FieldChangeIntentV2["relationPair"]
+>;
+
+export interface RelationTableOption {
+  readonly tableId: string;
+  readonly displayName: string;
+}
+
 export const useFieldSettingsStore = defineStore("field-settings", () => {
   const open = ref(false);
   const phase = ref<FieldSettingsPhase>("idle");
@@ -46,6 +57,29 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const confirmations = ref<string[]>([]);
   const error = ref<string | null>(null);
   const errorCode = ref<string | null>(null);
+  const relationPair = ref<RelationPairDraft | null>(null);
+  const relationTables = ref<readonly RelationTableOption[]>([]);
+  const relationSourceSchema = ref<SchemaSnapshot | null>(null);
+  const relationTargetSchema = ref<SchemaSnapshot | null>(null);
+  const relationCatalogLoading = ref(false);
+  const relationCatalogError = ref<string | null>(null);
+  const lookupSchemas = ref<readonly SchemaSnapshot[]>([]);
+  const lookupCatalogLoading = ref(false);
+  const lookupCatalogError = ref<string | null>(null);
+  const lookupMaxDepth = ref(8);
+  const formulaSourceSchema = ref<SchemaSnapshot | null>(null);
+  const formulaTargetSchemas = ref<Readonly<Record<string, SchemaSnapshot>>>({});
+  const formulaCatalogLoading = ref(false);
+  const formulaCatalogError = ref<string | null>(null);
+  const formulaValidation = ref<FormulaDraftValidationResult | null>(null);
+  const formulaValidatedSource = ref("");
+  const formulaValidating = ref(false);
+  const formulaValidationError = ref<string | null>(null);
+  const formulaPreviewValue = ref<unknown>(undefined);
+  const formulaPreviewReady = ref(false);
+  const formulaPreviewing = ref(false);
+  const formulaPreviewError = ref<string | null>(null);
+  const formulaPreviewNote = ref<string | null>(null);
 
   const capabilities = computed<readonly CapabilityV2[]>(
     () => result.value?.capabilities ?? [],
@@ -67,6 +101,17 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     && phase.value !== "planning"
     && phase.value !== "applying"
     && !!draft.value?.displayName.trim()
+    && (draft.value?.logicalType !== "relation" || !!draft.value.relation?.targetTableId)
+    && (draft.value?.logicalType !== "relation" || !!draft.value.relation?.displayFieldId)
+    && (draft.value?.logicalType !== "lookup" || !!draft.value.lookup?.targetFieldId)
+    && (draft.value?.logicalType !== "lookup"
+      || !!draft.value.lookup?.path.length
+      && draft.value.lookup.path.length <= lookupMaxDepth.value
+      && draft.value.lookup.path.every(step => !!step.relationFieldId))
+    && (draft.value?.logicalType !== "formula" || !!draft.value.formula?.source.trim())
+    && (action.value !== "create" || draft.value?.logicalType !== "relation"
+      || !!relationPair.value?.reciprocalDisplayName.trim()
+      && !!relationPair.value?.sourceDisplayFieldId)
     && (action.value !== "convert"
       || sourceCapability.value?.conversionRules.length === 0
       || conversionRule.value.length > 0),
@@ -74,6 +119,28 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const confirmationsComplete = computed(() =>
     plan.value?.confirmations.every((item) => confirmations.value.includes(item)) ?? false,
   );
+
+  function resetCatalogState(): void {
+    relationPair.value = null;
+    relationTables.value = [];
+    relationSourceSchema.value = null;
+    relationTargetSchema.value = null;
+    relationCatalogLoading.value = false;
+    relationCatalogError.value = null;
+    lookupSchemas.value = [];
+    lookupCatalogLoading.value = false;
+    lookupCatalogError.value = null;
+    lookupMaxDepth.value = 8;
+    formulaSourceSchema.value = null;
+    formulaTargetSchemas.value = {};
+    formulaCatalogLoading.value = false;
+    formulaCatalogError.value = null;
+    formulaValidation.value = null;
+    formulaValidatedSource.value = "";
+    formulaValidating.value = false;
+    formulaValidationError.value = null;
+    resetFormulaPreview();
+  }
   const canApply = computed(() =>
     phase.value === "planned"
     && plan.value?.canApply === true
@@ -93,6 +160,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     receipt.value = null;
     migration.value = null;
     confirmations.value = [];
+    resetCatalogState();
   }
 
   function load(described: FieldSettingsDescribeResultV2): void {
@@ -101,6 +169,13 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     original.value = described.definition ? draftFromDefinition(described.definition) : null;
     draft.value = next;
     action.value = described.definition ? "update" : "create";
+    relationPair.value = !described.definition && next.logicalType === "relation"
+      ? {
+        reciprocalDisplayName: "",
+        reciprocalCardinality: "many",
+        sourceDisplayFieldId: "",
+      }
+      : null;
     phase.value = "editing";
     error.value = null;
     errorCode.value = null;
@@ -120,7 +195,132 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
       result.value?.definition ? "update" : "create"
     );
     conversionRule.value = "";
+    relationPair.value = !result.value?.definition && logicalType === "relation"
+      ? {
+        reciprocalDisplayName: "",
+        reciprocalCardinality: "many",
+        sourceDisplayFieldId: "",
+      }
+      : null;
     invalidatePlan();
+  }
+
+  function patchRelationPair(value: Partial<RelationPairDraft>): void {
+    if (!relationPair.value) return;
+    relationPair.value = { ...relationPair.value, ...value };
+    invalidatePlan();
+  }
+
+  function setRelationTables(values: readonly RelationTableOption[]): void {
+    relationTables.value = values;
+  }
+
+  function beginRelationCatalog(): void {
+    relationCatalogLoading.value = true;
+    relationCatalogError.value = null;
+  }
+
+  function setRelationSchema(kind: "source" | "target", value: SchemaSnapshot): void {
+    if (kind === "source") relationSourceSchema.value = value;
+    else relationTargetSchema.value = value;
+    relationCatalogLoading.value = false;
+    relationCatalogError.value = null;
+  }
+
+  function failRelationCatalog(reason: unknown): void {
+    relationCatalogLoading.value = false;
+    relationCatalogError.value = reason instanceof Error ? reason.message : String(reason);
+  }
+
+  function beginLookupCatalog(): void {
+    lookupCatalogLoading.value = true;
+    lookupCatalogError.value = null;
+  }
+
+  function setLookupSchemas(values: readonly SchemaSnapshot[]): void {
+    lookupSchemas.value = values;
+    lookupCatalogLoading.value = false;
+    lookupCatalogError.value = null;
+  }
+
+  function setLookupMaxDepth(value: number): void {
+    lookupMaxDepth.value = Math.max(1, Math.trunc(value));
+  }
+
+  function failLookupCatalog(reason: unknown): void {
+    lookupCatalogLoading.value = false;
+    lookupCatalogError.value = reason instanceof Error ? reason.message : String(reason);
+  }
+
+  function beginFormulaCatalog(): void {
+    formulaCatalogLoading.value = true;
+    formulaCatalogError.value = null;
+  }
+
+  function setFormulaCatalog(
+    source: SchemaSnapshot,
+    targets: Readonly<Record<string, SchemaSnapshot>>,
+  ): void {
+    formulaSourceSchema.value = source;
+    formulaTargetSchemas.value = targets;
+    formulaCatalogLoading.value = false;
+    formulaCatalogError.value = null;
+  }
+
+  function failFormulaCatalog(reason: unknown): void {
+    formulaCatalogLoading.value = false;
+    formulaCatalogError.value = reason instanceof Error ? reason.message : String(reason);
+  }
+
+  function beginFormulaValidation(source: string): void {
+    formulaValidatedSource.value = source;
+    formulaValidation.value = null;
+    formulaValidating.value = true;
+    formulaValidationError.value = null;
+  }
+
+  function setFormulaValidation(source: string, value: FormulaDraftValidationResult): void {
+    formulaValidatedSource.value = source;
+    formulaValidation.value = value;
+    formulaValidating.value = false;
+    formulaValidationError.value = null;
+  }
+
+  function failFormulaValidation(source: string, reason: unknown): void {
+    formulaValidatedSource.value = source;
+    formulaValidation.value = null;
+    formulaValidating.value = false;
+    formulaValidationError.value = reason instanceof Error ? reason.message : String(reason);
+  }
+
+  function resetFormulaPreview(): void {
+    formulaPreviewValue.value = undefined;
+    formulaPreviewReady.value = false;
+    formulaPreviewing.value = false;
+    formulaPreviewError.value = null;
+    formulaPreviewNote.value = null;
+  }
+
+  function beginFormulaPreview(): void {
+    resetFormulaPreview();
+    formulaPreviewing.value = true;
+  }
+
+  function setFormulaPreview(value: unknown): void {
+    formulaPreviewValue.value = value;
+    formulaPreviewReady.value = true;
+    formulaPreviewing.value = false;
+  }
+
+  function setFormulaPreviewNote(note: string): void {
+    resetFormulaPreview();
+    formulaPreviewNote.value = note;
+  }
+
+  function failFormulaPreview(reason: unknown): void {
+    formulaPreviewReady.value = false;
+    formulaPreviewing.value = false;
+    formulaPreviewError.value = reason instanceof Error ? reason.message : String(reason);
   }
 
   function patchDraft(patch: Partial<FieldDraftV2>): void {
@@ -179,6 +379,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     confirmations.value = [];
     error.value = null;
     errorCode.value = null;
+    resetCatalogState();
   }
 
   function setPlan(next: FieldChangePlanV2): void {
@@ -255,9 +456,23 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   return {
     open, phase, result, original, draft, action, conversionRule, confirmation,
     backupReceipt, plan, receipt, migration, recycled, confirmations, error,
-    errorCode, capabilities, capability, sourceCapability, dirty, isExisting, canPlan,
+    errorCode, relationPair, relationTables, relationSourceSchema, relationTargetSchema,
+    relationCatalogLoading, relationCatalogError, lookupSchemas,
+    lookupCatalogLoading, lookupCatalogError, lookupMaxDepth,
+    formulaSourceSchema, formulaTargetSchemas, formulaCatalogLoading,
+    formulaCatalogError, formulaValidation, formulaValidatedSource,
+    formulaValidating, formulaValidationError,
+    formulaPreviewValue, formulaPreviewReady, formulaPreviewing,
+    formulaPreviewError, formulaPreviewNote,
+    capabilities, capability, sourceCapability, dirty, isExisting, canPlan,
     confirmationsComplete, canApply, beginOpen, load, changeType, patchDraft,
-    restoreRecommended,
+    restoreRecommended, patchRelationPair, setRelationTables, beginRelationCatalog,
+    setRelationSchema, failRelationCatalog,
+    beginLookupCatalog, setLookupSchemas, setLookupMaxDepth, failLookupCatalog,
+    beginFormulaCatalog, setFormulaCatalog, failFormulaCatalog,
+    beginFormulaValidation, setFormulaValidation, failFormulaValidation,
+    resetFormulaPreview, beginFormulaPreview, setFormulaPreview,
+    setFormulaPreviewNote, failFormulaPreview,
     invalidatePlan, setConversionRule, setConfirmation, setBackupReceipt,
     beginPlan, setPlan, beginApply, setReceipt, setMigration,
     setRecycled, fail, resetFailure, close,

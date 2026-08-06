@@ -51,6 +51,64 @@ describe("relationLookupService", () => {
     });
   });
 
+  it("sends a visual-label query so complete creation can find records beyond its initial page", async () => {
+    request.mockResolvedValue({
+      items: [{
+        collection: "regions", itemId: "region-51", label: "华北仓",
+        junctionValues: {},
+      }],
+      total: 1,
+    });
+
+    const result = await useRelationLookupService().searchTargets({
+      relationId: "customers.region",
+      query: "华北仓",
+      collection: null,
+      offset: 0,
+      limit: 50,
+    });
+
+    expect(request).toHaveBeenCalledWith("relation.searchTargets", {
+      relationId: "customers.region",
+      query: "华北仓",
+      collection: null,
+      offset: 0,
+      limit: 50,
+    });
+    expect(result.items[0]?.itemId).toBe("region-51");
+  });
+
+  it("creates a relation target from its visual label without exposing row or field ids", async () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("orders");
+    store.acceptContext(generation, {
+      collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [],
+      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+    }, [], {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+    });
+    request.mockResolvedValue({
+      outcome: "committed",
+      target: { collection: "customers", itemId: "c-2", label: "Grace", junctionValues: {} },
+      requestId: "create-1",
+    });
+
+    const result = await useRelationLookupService().createTarget(
+      "orders.customer",
+      "  Grace  ",
+      "customers",
+    );
+
+    expect(result.target.label).toBe("Grace");
+    expect(request).toHaveBeenCalledWith("relation.createTarget", {
+      relationId: "orders.customer",
+      label: "Grace",
+      collection: "customers",
+      idempotencyKey: expect.any(String),
+    });
+  });
+
   it("loads an authoritative Lookup dataset through backend-bounded pages", async () => {
     const store = useRelationLookupStore();
     const generation = store.beginContext("orders");
@@ -100,6 +158,34 @@ describe("relationLookupService", () => {
       query: expect.objectContaining({ offset: 500, limit: 500 }),
     }));
   });
+
+	it("binds source-value pages to the active schema and lookup revisions", async () => {
+		const store = useRelationLookupStore();
+		const generation = store.beginContext("orders");
+		store.acceptContext(generation, {
+			collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [],
+			schemaRevision: "schema_7", permissionRevision: "permission_7",
+			capabilityHash: "c", lookupRevision: "lookup_7",
+		}, [], {
+			contract: "vibetable.relation-capabilities.v1",
+			relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+		});
+		request.mockResolvedValue({
+			state: "ok", value: [2], provenance: [], provenanceTotal: 10_001,
+			provenanceTotalKnown: true,
+			provenanceOffset: 100, provenanceLimit: 100, provenanceHasMore: true,
+		});
+
+		await useRelationLookupService().readLookupValuePage({
+			fieldRef: "line_skus", sourceRecordId: "order-1", offset: 100, limit: 100,
+		});
+
+		expect(request).toHaveBeenCalledWith("lookup.valuePage", {
+			collection: "orders", fieldRef: "line_skus", sourceRecordId: "order-1",
+			offset: 100, limit: 100, schemaRevision: "schema_7",
+			permissionRevision: "permission_7", lookupRevision: "lookup_7",
+		});
+	});
 
   it("builds add/update/remove from a staged multi relation", () => {
     const store = useRelationLookupStore();
@@ -187,6 +273,36 @@ describe("relationLookupService", () => {
     expect(Array.isArray(result.current)).toBe(false);
     expect(request).toHaveBeenCalledWith("relation.updateSingle", expect.objectContaining({
       relationId: "orders.contract", sourceItemId: "order-1", target,
+    }));
+  });
+
+  it("attaches a record created in the target table using the captured source revision", async () => {
+    const target = {
+      collection: "customers", itemId: "customer-9", label: "Ada", junctionValues: {},
+    };
+    request.mockResolvedValueOnce({
+      delta: {}, relationId: "orders.customers", sourceItemId: "order-1",
+      adds: 1, updates: 0, removes: 0, current: [], canApply: true,
+      schemaRevision: "schema-source", diagnostics: [],
+    }).mockResolvedValueOnce({
+      outcome: "committed", current: [target], schemaRevision: "schema-source",
+      requestId: "attach-1",
+    });
+
+    const result = await useRelationLookupService().attachExistingTarget(
+      "orders.customers", "order-1", target, "m2m", "schema-source",
+    );
+
+    expect(result.outcome).toBe("committed");
+    expect(request).toHaveBeenNthCalledWith(1, "relation.previewDelta", expect.objectContaining({
+      relationId: "orders.customers",
+      sourceItemId: "order-1",
+      expectedSchemaRevision: "schema-source",
+      adds: [{ target }],
+    }));
+    expect(request).toHaveBeenNthCalledWith(2, "relation.applyDelta", expect.objectContaining({
+      expectedSchemaRevision: "schema-source",
+      adds: [{ target }],
     }));
   });
 

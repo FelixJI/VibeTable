@@ -306,6 +306,68 @@ describe("revisionHistoryService", () => {
     expect(store.lastApplied?.item.status).toBe("new");
   });
 
+  it("recovers a retired cell field as one authoritative table-history query", async () => {
+    const harness = setupBridge();
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const sessionStore = useWorkspaceSessionStore();
+    sessionStore.configureCapabilities([
+      "workspace.session.v2",
+      "history.restore.v2",
+    ]);
+    sessionStore.setWorkspaces([workspaceEntry]);
+    sessionStore.applySession({
+      contractVersion: "2.0",
+      workspaceId: workspaceEntry.workspaceId,
+      sessionEpoch: 7,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+    const fieldNotFound = Object.assign(new Error("workspace v2 request failed"), {
+      code: "history.field_not_found",
+    });
+    const tablePage: HistoryPage = {
+      collection: "orders",
+      scope: "table",
+      changeSets: [],
+      total: 0,
+      hasMore: false,
+      capabilityHash: "sha256:capability",
+      schemaRevision: "schema:restored",
+      archivedDefaultRevisionIds: {},
+    };
+    const request = vi.fn()
+      .mockRejectedValueOnce(fieldNotFound)
+      .mockResolvedValueOnce(tablePage);
+    setWorkspaceV2UiPort({ request } as unknown as WorkspaceV2UiPort);
+    const store = useRevisionHistoryStore();
+    store.updateQuery({ field: "retired_status" });
+
+    useRevisionHistoryService().open({
+      scope: "cell",
+      itemId: "42",
+      field: "retired_status",
+    });
+
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    expect(request).toHaveBeenLastCalledWith({
+      method: "history.query",
+      params: expect.objectContaining({
+        collection: "orders",
+        scope: "table",
+        itemId: null,
+        field: null,
+      }),
+    });
+    expect(store.selection).toEqual({ scope: "table" });
+    expect(store.query.field).toBe("");
+    await vi.waitFor(() => expect(store.phase).toBe("empty"));
+  });
+
   it("keeps an open history intent and requeries after the same workspace rotates epoch", async () => {
     const harness = setupBridge();
     setHostBridgeForTesting(harness.bridge);

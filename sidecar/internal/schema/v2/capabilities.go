@@ -41,6 +41,12 @@ func CapabilityFor(logicalType LogicalType) (Capability, error) {
 		// unified drawer and still cross the same FieldChangePlanner boundary.
 		capability.UserCreatable = logicalType != LogicalAutoDate
 	}
+	// File bytes are uploaded against an existing record identity. Until the
+	// product supports one atomic pre-insert multipart mutation, a file field
+	// cannot truthfully be required at record creation time.
+	if logicalType == LogicalFile {
+		capability.SupportsRequired = false
+	}
 	if logicalType == LogicalRelation || logicalType == LogicalFile {
 		capability.SupportsDefault = false
 	}
@@ -92,8 +98,10 @@ func CapabilityFor(logicalType LogicalType) (Capability, error) {
 		capability.AdvancedSettings = []string{"rootType", "maxSize", "jsonSchema", "editorMode", "indent"}
 	case LogicalAutoDate:
 		capability.AdvancedSettings = []string{"role"}
-	case LogicalFormula, LogicalLookup:
-		capability.AdvancedSettings = []string{"resultType", "source"}
+	case LogicalFormula:
+		capability.AdvancedSettings = []string{"source", "autoType"}
+	case LogicalLookup:
+		capability.AdvancedSettings = []string{"path", "targetField"}
 	}
 	return capability, nil
 }

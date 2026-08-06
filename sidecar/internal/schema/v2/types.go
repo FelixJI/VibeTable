@@ -69,20 +69,20 @@ type FieldDefinition struct {
 }
 
 type FieldDraft struct {
-	DisplayName string         `json:"displayName"`
-	Help        string         `json:"help"`
-	LogicalType LogicalType    `json:"logicalType"`
-	Value       ValueSpec      `json:"value"`
-	Constraints ConstraintSpec `json:"constraints"`
-	Storage     StorageSpec    `json:"storage"`
-	Display     DisplaySpec    `json:"display"`
-	Select      *SelectSpec    `json:"select,omitempty"`
-	Relation    *RelationSpec  `json:"relation,omitempty"`
-	File        *FileSpec      `json:"file,omitempty"`
-	JSON        *JSONSpec      `json:"json,omitempty"`
-	AutoDate    *AutoDateSpec  `json:"autoDate,omitempty"`
-	Formula     *FormulaSpec   `json:"formula,omitempty"`
-	Lookup      *LookupSpec    `json:"lookup,omitempty"`
+	DisplayName string            `json:"displayName"`
+	Help        string            `json:"help"`
+	LogicalType LogicalType       `json:"logicalType"`
+	Value       ValueSpec         `json:"value"`
+	Constraints ConstraintSpec    `json:"constraints"`
+	Storage     StorageSpec       `json:"storage"`
+	Display     DisplaySpec       `json:"display"`
+	Select      *SelectSpec       `json:"select,omitempty"`
+	Relation    *RelationSpec     `json:"relation,omitempty"`
+	File        *FileSpec         `json:"file,omitempty"`
+	JSON        *JSONSpec         `json:"json,omitempty"`
+	AutoDate    *AutoDateSpec     `json:"autoDate,omitempty"`
+	Formula     *FormulaDraftSpec `json:"formula,omitempty"`
+	Lookup      *LookupSpec       `json:"lookup,omitempty"`
 }
 
 func (value *FieldDraft) UnmarshalJSON(raw []byte) error {
@@ -289,10 +289,18 @@ type SelectSpec struct {
 }
 
 type RelationSpec struct {
-	TargetTableID string `json:"targetTableId"`
-	Cardinality   string `json:"cardinality"`
-	DeletePolicy  string `json:"deletePolicy"`
-	DisplayField  string `json:"displayFieldId"`
+	TargetTableID     string `json:"targetTableId"`
+	Cardinality       string `json:"cardinality"`
+	DeletePolicy      string `json:"deletePolicy"`
+	DisplayField      string `json:"displayFieldId"`
+	PairID            string `json:"pairId,omitempty"`
+	ReciprocalFieldID string `json:"reciprocalFieldId,omitempty"`
+}
+
+type RelationPairDraft struct {
+	ReciprocalDisplayName string `json:"reciprocalDisplayName"`
+	ReciprocalCardinality string `json:"reciprocalCardinality"`
+	SourceDisplayFieldID  string `json:"sourceDisplayFieldId"`
 }
 
 type FileSpec struct {
@@ -319,11 +327,21 @@ type FormulaSpec struct {
 	ResultType LogicalType `json:"resultType"`
 }
 
+// FormulaDraftSpec deliberately omits resultType. The sidecar infers it from
+// source after display-name references have been normalized; clients cannot
+// choose or spoof a computed result type.
+type FormulaDraftSpec struct {
+	Language string `json:"language"`
+	Source   string `json:"source"`
+}
+
 type LookupSpec struct {
-	RelationFieldID string      `json:"relationFieldId"`
-	TargetFieldID   string      `json:"targetFieldId"`
-	Aggregate       string      `json:"aggregate"`
-	ResultType      LogicalType `json:"resultType"`
+	Path          []LookupPathStep `json:"path"`
+	TargetFieldID string           `json:"targetFieldId"`
+}
+
+type LookupPathStep struct {
+	RelationFieldID string `json:"relationFieldId"`
 }
 
 type Capability struct {
@@ -371,16 +389,25 @@ type Actor struct {
 }
 
 type FieldChangeIntent struct {
-	Action               ChangeAction `json:"action"`
-	TableID              string       `json:"tableId"`
-	FieldID              string       `json:"fieldId"`
-	ExpectedSchemaRev    string       `json:"expectedSchemaRevision"`
-	ExpectedDataRevision *int64       `json:"expectedDataRevision"`
-	Draft                *FieldDraft  `json:"draft"`
-	Actor                Actor        `json:"actor"`
-	ConversionRule       string       `json:"conversionRule"`
-	Confirmation         string       `json:"confirmation"`
-	BackupReceipt        string       `json:"backupReceipt"`
+	Action               ChangeAction       `json:"action"`
+	TableID              string             `json:"tableId"`
+	FieldID              string             `json:"fieldId"`
+	ExpectedSchemaRev    string             `json:"expectedSchemaRevision"`
+	ExpectedDataRevision *int64             `json:"expectedDataRevision"`
+	Draft                *FieldDraft        `json:"draft"`
+	Actor                Actor              `json:"actor"`
+	ConversionRule       string             `json:"conversionRule"`
+	Confirmation         string             `json:"confirmation"`
+	BackupReceipt        string             `json:"backupReceipt"`
+	RelationPair         *RelationPairDraft `json:"relationPair,omitempty"`
+}
+
+type RelatedFieldChange struct {
+	TableID                string           `json:"tableId"`
+	FieldID                string           `json:"fieldId"`
+	Before                 *FieldDefinition `json:"before"`
+	After                  *FieldDefinition `json:"after"`
+	ExpectedSchemaRevision string           `json:"expectedSchemaRevision"`
 }
 
 type ChangeClass string
@@ -426,23 +453,24 @@ type PlanStep struct {
 }
 
 type FieldChangePlan struct {
-	Contract             string            `json:"contract"`
-	PlanID               string            `json:"planId"`
-	PlanHash             string            `json:"planHash"`
-	ExpiresAt            string            `json:"expiresAt"`
-	Intent               FieldChangeIntent `json:"intent"`
-	Before               *FieldDefinition  `json:"before"`
-	After                *FieldDefinition  `json:"after"`
-	Classes              []ChangeClass     `json:"classes"`
-	ExpectedSchemaRev    string            `json:"expectedSchemaRevision"`
-	ExpectedDataRevision *int64            `json:"expectedDataRevision"`
-	Impact               Impact            `json:"impact"`
-	Steps                []PlanStep        `json:"steps"`
-	Warnings             []Diagnostic      `json:"warnings"`
-	Errors               []Diagnostic      `json:"errors"`
-	Confirmations        []string          `json:"confirmations"`
-	CreatesMigration     bool              `json:"createsMigration"`
-	CanApply             bool              `json:"canApply"`
+	Contract             string               `json:"contract"`
+	PlanID               string               `json:"planId"`
+	PlanHash             string               `json:"planHash"`
+	ExpiresAt            string               `json:"expiresAt"`
+	Intent               FieldChangeIntent    `json:"intent"`
+	Before               *FieldDefinition     `json:"before"`
+	After                *FieldDefinition     `json:"after"`
+	Classes              []ChangeClass        `json:"classes"`
+	ExpectedSchemaRev    string               `json:"expectedSchemaRevision"`
+	ExpectedDataRevision *int64               `json:"expectedDataRevision"`
+	Impact               Impact               `json:"impact"`
+	Steps                []PlanStep           `json:"steps"`
+	Warnings             []Diagnostic         `json:"warnings"`
+	Errors               []Diagnostic         `json:"errors"`
+	Confirmations        []string             `json:"confirmations"`
+	CreatesMigration     bool                 `json:"createsMigration"`
+	CanApply             bool                 `json:"canApply"`
+	RelatedChanges       []RelatedFieldChange `json:"relatedChanges,omitempty"`
 }
 
 type ApplyRequest struct {
@@ -455,15 +483,23 @@ type ApplyRequest struct {
 }
 
 type ApplyReceipt struct {
-	Contract       string           `json:"contract"`
-	OperationID    string           `json:"operationId"`
-	PlanID         string           `json:"planId"`
-	Action         ChangeAction     `json:"action"`
+	Contract       string                `json:"contract"`
+	OperationID    string                `json:"operationId"`
+	PlanID         string                `json:"planId"`
+	Action         ChangeAction          `json:"action"`
+	TableID        string                `json:"tableId"`
+	FieldID        string                `json:"fieldId"`
+	SchemaRevision string                `json:"schemaRevision"`
+	Definition     *FieldDefinition      `json:"definition"`
+	MigrationJobID string                `json:"migrationJobId"`
+	Related        []RelatedApplyReceipt `json:"related,omitempty"`
+}
+
+type RelatedApplyReceipt struct {
 	TableID        string           `json:"tableId"`
 	FieldID        string           `json:"fieldId"`
 	SchemaRevision string           `json:"schemaRevision"`
 	Definition     *FieldDefinition `json:"definition"`
-	MigrationJobID string           `json:"migrationJobId"`
 }
 
 type MigrationPhase string

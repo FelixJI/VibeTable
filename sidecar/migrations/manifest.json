@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "schemaVersion": 6,
+  "schemaVersion": 7,
   "migrations": [
     {
       "id": 2026072401,
@@ -37,6 +37,12 @@
       "name": "audit_outbox",
       "source": "2026072805_audit_outbox.go",
       "sha256": "1d53794ee64f9b746caf0aee638ee872ac92b5918257ca77d631c2b14f291de8"
+    },
+    {
+      "id": 2026080501,
+      "name": "relation_pairs",
+      "source": "2026080501_relation_pairs.go",
+      "sha256": "35641505e5b66ea0ec098a80f552e17dd078265b5a4b0aac708fa59364f4390c"
     }
   ]
 }

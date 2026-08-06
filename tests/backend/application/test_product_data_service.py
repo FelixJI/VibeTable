@@ -10,6 +10,7 @@ from backend.application.product_data_service import (
     PRODUCT_PARAM_MODELS,
     PocketBaseProductDataService,
     ProductParams,
+    _lookup_revision,
     _renderer_columns,
     _renderer_relation,
 )
@@ -64,9 +65,15 @@ def test_schema_v2_plan_params_defer_domain_validation_but_keep_transport_closed
             "conversionRule": "",
             "confirmation": "",
             "backupReceipt": "",
+            "relationPair": {
+                "reciprocalDisplayName": "订单",
+                "reciprocalCardinality": "many",
+                "sourceDisplayFieldId": "fld_order_number",
+            },
         }
     )
     assert accepted.root["draft"] == {}
+    assert accepted.root["relationPair"]["sourceDisplayFieldId"] == "fld_order_number"
 
     with pytest.raises(ValidationError):
         PRODUCT_PARAM_MODELS["field.change.plan"].model_validate(
@@ -124,6 +131,11 @@ async def test_field_settings_methods_use_only_frozen_v2_routes() -> None:
             "conversionRule": "",
             "confirmation": "",
             "backupReceipt": "",
+            "relationPair": {
+                "reciprocalDisplayName": "订单",
+                "reciprocalCardinality": "many",
+                "sourceDisplayFieldId": "fld_order_number",
+            },
         }
     )
     apply = PRODUCT_PARAM_MODELS["field.change.apply"].model_validate(
@@ -148,6 +160,11 @@ async def test_field_settings_methods_use_only_frozen_v2_routes() -> None:
         "/api/vibetable/v2/field-change/apply",
         "/api/vibetable/v2/field-recycle-bin/orders",
     ]
+    assert transport.requests[1]["json_body"]["relationPair"] == {
+        "reciprocalDisplayName": "订单",
+        "reciprocalCardinality": "many",
+        "sourceDisplayFieldId": "fld_order_number",
+    }
 
 
 def test_renderer_columns_use_composite_relation_and_lookup_catalog_ids() -> None:
@@ -273,6 +290,12 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
     service, transport = _service(
         [
             {"definition": {}, "capabilities": {}},
+            {
+                "canonicalSource": 'relationSum(f_lines, "f_amount")',
+                "resultType": "number",
+                "dependencies": [],
+                "relationAggregatePaths": ["f_lines.f_amount"],
+            },
             {"values": {"subtotal": 12}},
             {"contractVersion": "1.0", "downloadCapability": "cap"},
         ]
@@ -280,6 +303,11 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
 
     await service.validate_schema(
         ProductParams.model_validate({"definition": {}, "expectedRevision": 0})
+    )
+    inspected = await service.validate_formula_draft(
+        PRODUCT_PARAM_MODELS["formula.draft.validate"].model_validate(
+            {"tableId": "orders", "displaySource": "SUM({明细}.{金额})"}
+        )
     )
     await service.preview_formula(
         ProductParams.model_validate({"definition": {}, "row": {}, "changedFieldIds": []})
@@ -296,8 +324,10 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
     )
 
     assert token["downloadCapability"] == "cap"
+    assert inspected["resultType"] == "number"
     assert [request["path"] for request in transport.requests] == [
         "/api/vibetable/v1/schema/validate",
+        "/api/vibetable/v1/formulas/draft/validate",
         "/api/vibetable/v1/formulas/preview",
         "/api/vibetable/v1/files/token",
     ]
@@ -630,7 +660,8 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
         "displayName": "Customer name",
         "relationFieldId": "customer",
         "targetFieldId": "name",
-        "aggregate": "first",
+        "aggregate": "none",
+        "resultCardinality": "one",
         "outputStorage": "text",
         "revision": 3,
     }
@@ -651,6 +682,7 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
             {
                 "tableId": "orders",
                 "schemaRevision": "schema_4",
+                "lookupMaxDepth": 8,
                 "relations": [relation],
                 "lookups": [lookup],
             },
@@ -690,6 +722,7 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
             }
         )
     )
+    assert described["capabilities"]["lookupMaxDepth"] == 8
     listed = await service.list_lookups(ProductParams.model_validate({"collection": "orders"}))
     preview = await service.preview_relation_delta(
         ProductParams.model_validate(
@@ -726,6 +759,7 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
                 "collection": "customers",
                 "itemId": "customer-1",
                 "label": "Ada",
+                "secondaryLabel": None,
                 "junctionId": None,
                 "junctionRevision": None,
                 "junctionValues": {},
@@ -740,6 +774,75 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
         "/api/vibetable/v1/lookups/describe",
         "/api/vibetable/v1/relations/preview-delta",
     ]
+
+
+@pytest.mark.asyncio
+async def test_lookup_value_page_maps_physical_field_ref_to_stable_field_id() -> None:
+    lookup = {
+        "lookupId": "orders.line_skus_id",
+        "tableId": "orders",
+        "fieldId": "line_skus_id",
+        "physicalName": "line_skus",
+        "displayName": "Line SKUs",
+        "relationFieldId": "lines_id",
+        "targetFieldId": "sku_id",
+        "aggregate": "none",
+        "outputStorage": "json",
+        "revision": 1,
+    }
+    catalog = {
+        "tableId": "orders",
+        "schemaRevision": "schema_7",
+        "relations": [],
+        "lookups": [lookup],
+    }
+    page = {
+        "state": "ok",
+        "value": ["SKU-001"],
+        "provenance": [
+            {
+                "collection": "lines",
+                "collectionLabel": "明细",
+                "itemId": "line-1",
+                "recordLabel": "SKU-001",
+                "fieldId": "sku_id",
+                "fieldLabel": "SKU",
+                "value": "SKU-001",
+            }
+        ],
+        "provenanceTotal": 10_001,
+        "provenanceOffset": 100,
+        "provenanceLimit": 100,
+        "provenanceHasMore": True,
+    }
+    service, transport = _service([catalog, page])
+    lookup_revision = _lookup_revision("schema_7", [lookup])
+
+    result = await service.lookup_value_page(
+        ProductParams.model_validate(
+            {
+                "collection": "orders",
+                "fieldRef": "line_skus",
+                "sourceRecordId": "order-1",
+                "offset": 100,
+                "limit": 100,
+                "schemaRevision": "schema_7",
+                "permissionRevision": "schema_7",
+                "lookupRevision": lookup_revision,
+            }
+        )
+    )
+
+    assert result["provenanceTotal"] == 10_001
+    assert transport.requests[-1]["path"] == "/api/vibetable/v1/lookups/value-page"
+    assert transport.requests[-1]["json_body"] == {
+        "tableId": "orders",
+        "schemaRevision": "schema_7",
+        "sourceRecordId": "order-1",
+        "fieldId": "line_skus_id",
+        "offset": 100,
+        "limit": 100,
+    }
 
 
 @pytest.mark.asyncio
@@ -825,7 +928,8 @@ async def test_multihop_lookup_validation_persists_and_round_trips_path() -> Non
             {"relationId": "customers.company_id"},
         ],
         "targetFieldId": "name_id",
-        "aggregate": "first",
+        "aggregate": "none",
+        "resultCardinality": "one",
         "outputStorage": "text",
         "revision": 1,
     }
@@ -853,12 +957,6 @@ async def test_multihop_lookup_validation_persists_and_round_trips_path() -> Non
         ],
         "source": {"kind": "target_field", "fieldRef": "name"},
         "m2aFieldMapping": [],
-        "aggregation": "single",
-        "outputType": "text",
-        "revision": 1,
-        "state": "valid",
-        "diagnostics": [],
-        "dependencies": [],
     }
 
     validated = await service.validate_lookup(
@@ -873,4 +971,6 @@ async def test_multihop_lookup_validation_persists_and_round_trips_path() -> Non
         {"relationFieldId": "company_id"},
     ]
     assert validated["valid"] is True
+    assert validated["definition"]["aggregation"] == "single"
+    assert validated["definition"]["outputType"] == "text"
     assert listed["definitions"][0]["path"] == definition["path"]

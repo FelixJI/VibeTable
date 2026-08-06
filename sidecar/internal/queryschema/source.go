@@ -176,6 +176,26 @@ func (source *Source) describeField(
 		Type:         fieldType,
 		AutoDate:     field.DataType == schema.DataTypeAutoDate,
 		Searchable:   isSearchable(field),
+		ComputedEnvelope: field.Kind == schema.FieldKindFormula ||
+			field.Kind == schema.FieldKindLookup,
+		ComputedReady: field.Kind != schema.FieldKindFormula ||
+			(field.Formula != nil && field.Formula.Status == "ready"),
+	}
+	if field.Kind == schema.FieldKindFormula && !result.ComputedReady {
+		result.ComputedStatus = "updating"
+		result.ComputedError = &query.ComputedDiagnostic{
+			Code: "calculation.pending", Path: "fields." + field.PhysicalName,
+			Message: "formula value is being recalculated", Details: map[string]any{},
+		}
+		if field.Formula != nil && field.Formula.Status == "failed" {
+			result.ComputedStatus = "error"
+			result.ComputedError.Code = "calculation.failed"
+			result.ComputedError.Message = "formula recalculation failed"
+		} else if field.Formula != nil && field.Formula.Status == "cancelled" {
+			result.ComputedStatus = "error"
+			result.ComputedError.Code = "calculation.cancelled"
+			result.ComputedError.Message = "formula recalculation was cancelled"
+		}
 	}
 	if field.DataType == schema.DataTypeSelect ||
 		field.DataType == schema.DataTypeMultiSelect {
@@ -222,6 +242,10 @@ func (source *Source) describeField(
 			Type:         targetType,
 			AutoDate:     targetField.DataType == schema.DataTypeAutoDate,
 			Searchable:   isSearchable(targetField),
+			ComputedEnvelope: targetField.Kind == schema.FieldKindFormula ||
+				targetField.Kind == schema.FieldKindLookup,
+			ComputedReady: targetField.Kind != schema.FieldKindFormula ||
+				(targetField.Formula != nil && targetField.Formula.Status == "ready"),
 		}
 		if targetField.DataType == schema.DataTypeSelect ||
 			targetField.DataType == schema.DataTypeMultiSelect {

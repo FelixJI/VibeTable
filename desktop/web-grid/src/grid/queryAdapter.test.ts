@@ -46,7 +46,9 @@ describe("buildQuery", () => {
       ],
     });
     expect(q.filters).toHaveLength(1);
-    expect(q.filters![0].field).toBe("name");
+    expect(q.filters).toEqual([
+      { field: "name", operator: "eq", value: "abc", logic: "AND" },
+    ]);
   });
 
   it("normalizes a keyword (trims, keeps non-empty)", () => {
@@ -70,7 +72,9 @@ describe("buildQuery", () => {
     const q = buildQuery({
       headerFilters: [{ field: "amount", value: 100 }],
     });
-    expect(q.filters![0].value).toBe(100);
+    expect(q.filters).toEqual([
+      { field: "amount", operator: "eq", value: 100, logic: "AND" },
+    ]);
   });
 });
 
@@ -98,6 +102,22 @@ describe("queryToTabulator", () => {
       { field: "status", value: "open" },
       { field: "payload", value: "8" },
     ]);
+  });
+
+  it("does not flatten a grouped filter tree into misleading header filters", () => {
+    const q: TableQuery = {
+      filters: [
+        {
+          groupLogic: "OR",
+          filters: [
+            { field: "status", operator: "eq", value: "open" },
+            { field: "priority", operator: "eq", value: "urgent" },
+          ],
+        },
+      ],
+    };
+
+    expect(queryToTabulator(q).headerFilters).toEqual([]);
   });
 });
 

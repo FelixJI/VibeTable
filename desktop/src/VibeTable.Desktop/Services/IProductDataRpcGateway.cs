@@ -33,11 +33,13 @@ public interface IProductDataRpcGateway : IDisposable, IRelationLookupRpcGateway
     /// </summary>
     Task<JsonElement> GetTableSchemaAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> QueryPageAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> QueryViewAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ReadRowsAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ValidateSnapshotAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> PreviewMutationAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ApplyMutationAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ValidateFormulaAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> ValidateFormulaDraftAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> PreviewFormulaAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ListAttachmentRefsAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> CreateFileTokenAsync(JsonElement parameters, CancellationToken token);

@@ -301,6 +301,7 @@ func mutationErrorStatus(productErr *mutation.ProductError) int {
 	case productErr.Code == "mutation.request.invalid" ||
 		productErr.Code == "attachment.request.invalid" ||
 		productErr.Code == "relation.request.invalid" ||
+		productErr.Code == "lookup.request.invalid" ||
 		strings.HasPrefix(productErr.Code, "mutation.contract."):
 		status = http.StatusBadRequest
 	case strings.HasSuffix(productErr.Code, ".not_found") ||
@@ -317,6 +318,9 @@ func mutationErrorStatus(productErr *mutation.ProductError) int {
 		productErr.Code == "attachment.integrity_failed" ||
 		productErr.Code == "attachment.thumbnail_failed" ||
 		productErr.Code == "attachment.capability_failed":
+		status = http.StatusInternalServerError
+	case productErr.Code == "lookup.storage_failed" ||
+		productErr.Code == "mutation.lookup.storage_failed":
 		status = http.StatusInternalServerError
 	}
 	return status

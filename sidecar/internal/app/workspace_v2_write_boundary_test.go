@@ -17,6 +17,7 @@ func TestWorkspaceV2WriteBoundaryFailsClosed(t *testing.T) {
 		{"shutdown", http.MethodPost, shutdownPath, true},
 		{"query", http.MethodPost, "/api/vibetable/v1/query", true},
 		{"formula preview", http.MethodPost, "/api/vibetable/v1/formulas/preview", true},
+		{"formula draft validate", http.MethodPost, "/api/vibetable/v1/formulas/draft/validate", true},
 		{"mutation preview", http.MethodPost, "/api/vibetable/v1/mutations/preview", true},
 		{"import preview", http.MethodPost, "/api/vibetable/v2/import-preview", true},
 		{"read record", http.MethodGet, "/api/collections/items/records/id", true},

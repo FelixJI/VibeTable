@@ -1,13 +1,17 @@
 import type {
   LookupListResult,
+	LookupCellValue,
   LookupPreviewParams,
   LookupQueryParams,
+	LookupValuePageParams,
   LookupQueryResult,
   LookupValidateParams,
   LookupValidationResult,
   RelationDelta,
   RelationDeltaPreview,
   RelationDeltaResult,
+  RelationCreateTargetParams,
+  RelationCreateTargetResult,
   RelationSearchParams,
   RelationSearchResult,
   RelationSingleUpdateResult,
@@ -23,6 +27,7 @@ import type {
   FieldMigrationStatusV2,
   FieldRecycleBinResultV2,
   FieldSettingsDescribeResultV2,
+  LogicalTypeV2,
 } from "./schemaV2";
 
 /**
@@ -86,6 +91,8 @@ export interface ColumnSchema {
   readonly scale?: number | null;
   /** Numeric precision (total significant digits) from the product schema. */
   readonly precision?: number | null;
+	/** Sidecar-compatible operators exposed by the authoritative host schema. */
+	readonly filterOperators?: readonly FilterOperator[];
 }
 
 export * from "./relationsLookup";
@@ -109,6 +116,10 @@ export interface TablePage {
   readonly filteredRows?: number | null;
   readonly querySnapshot?: QuerySnapshot | null;
   readonly revision?: MutationRevision | null;
+  readonly groupRows?: readonly ViewGroupRow[] | null;
+  readonly groupOffset?: number;
+  readonly groupLimit?: number;
+  readonly hasMoreGroups?: boolean;
 }
 
 /**
@@ -131,6 +142,10 @@ export interface TablePageLoadedPayload {
   readonly filteredRows?: number | null;
   readonly querySnapshot?: QuerySnapshot | null;
   readonly revision?: MutationRevision | null;
+  readonly groupRows?: readonly ViewGroupRow[] | null;
+  readonly groupOffset?: number;
+  readonly groupLimit?: number;
+  readonly hasMoreGroups?: boolean;
 }
 
 /**
@@ -419,6 +434,16 @@ export interface FilterCondition {
   readonly logic?: "AND" | "OR";
 }
 
+/** One recursively nested filter group. Mirrors `FilterGroup`. */
+export interface FilterGroup {
+  readonly groupLogic?: "AND" | "OR";
+  readonly logic?: "AND" | "OR";
+  readonly filters: readonly FilterExpression[];
+}
+
+/** One predicate or nested group in a persisted view filter tree. */
+export type FilterExpression = FilterCondition | FilterGroup;
+
 /** One sort condition. Mirrors `SortCondition`. */
 export interface SortCondition {
   readonly field: string;
@@ -426,13 +451,39 @@ export interface SortCondition {
   readonly nullsLast?: boolean;
 }
 
+/** One ordered, read-only grouping level in a persisted view. */
+export interface GroupCondition {
+  readonly field: string;
+  readonly direction?: "asc" | "desc";
+  readonly bucket?: "value" | "year" | "quarter" | "month" | "week" | "day" | "hour" | "number";
+  readonly numberInterval?: number | null;
+}
+
+/** One numeric summary displayed for every group. */
+export interface SummaryCondition {
+  readonly field: string;
+  readonly function: "sum" | "avg" | "min" | "max";
+}
+
+export interface ViewGroupRow {
+  readonly key: readonly unknown[];
+  readonly count: number;
+  readonly summaries: readonly unknown[];
+  readonly parentCount?: number;
+  readonly parentSummaries?: readonly unknown[];
+}
+
 /** The typed query AST. Mirrors `TableQuery`. */
 export interface TableQuery {
   readonly keyword?: string | null;
-  readonly filters?: readonly FilterCondition[];
+  readonly filters?: readonly FilterExpression[];
   readonly sorts?: readonly SortCondition[];
   readonly offset?: number;
   readonly limit?: number;
+  readonly groups?: readonly GroupCondition[];
+  readonly summaries?: readonly SummaryCondition[];
+  readonly groupOffset?: number;
+  readonly groupLimit?: number;
 }
 
 /** A stable query-view snapshot. Mirrors `QuerySnapshot`. */
@@ -634,7 +685,7 @@ export interface FormulaDefinition {
   readonly source: string;
   readonly resultType: Exclude<TableFieldType, "formula" | "relation" | "lookup" | "file" | "autoDate">;
   readonly version: number;
-  readonly status: "ready" | "backfilling" | "failed";
+  readonly status: "draft" | "ready" | "backfilling" | "failed" | "cancelled";
 }
 
 export interface AttachmentPolicy {
@@ -758,6 +809,18 @@ export interface FormulaPreviewRpcPayload {
   readonly definition: ProductTableDefinition;
   readonly row: Readonly<Record<string, unknown>>;
   readonly changedFieldIds: readonly string[];
+}
+
+export interface FormulaDraftValidateParams {
+  readonly tableId: string;
+  readonly displaySource: string;
+}
+
+export interface FormulaDraftValidationResult {
+  readonly canonicalSource: string;
+  readonly resultType: LogicalTypeV2;
+  readonly dependencies: readonly string[];
+  readonly relationAggregatePaths: readonly string[];
 }
 
 /** Unicode display-name rule. Physical identifiers are host-owned. */
@@ -1261,8 +1324,11 @@ export interface PluginEventEnvelope {
 // ---------------------------------------------------------------------------
 
 export interface PresetView {
-  readonly filters: readonly Readonly<Record<string, unknown>>[];
-  readonly sorts: readonly Readonly<Record<string, unknown>>[];
+  readonly filters: readonly FilterExpression[];
+  readonly sorts: readonly SortCondition[];
+  readonly groups?: readonly GroupCondition[];
+  readonly summaries?: readonly SummaryCondition[];
+	readonly collapsedGroupKeys?: readonly string[];
   readonly search: string;
   readonly visibleFields: readonly string[];
   readonly layout: string;
@@ -1389,6 +1455,7 @@ export type WebMessageType =
   | "mutation.preview"
   | "mutation.apply"
   | "formula.validate"
+  | "formula.draft.validate"
   | "formula.preview"
   | "file.list"
   | "file.token"
@@ -1400,6 +1467,7 @@ export type WebMessageType =
   | "events.reconcile"
   | "schema.describe"
   | "relation.searchTargets"
+  | "relation.createTarget"
   | "relation.updateSingle"
   | "relation.previewDelta"
   | "relation.applyDelta"
@@ -1407,6 +1475,7 @@ export type WebMessageType =
   | "lookup.validate"
   | "lookup.preview"
   | "lookup.query"
+	| "lookup.valuePage"
   | "preset.list"
   | "preset.save"
   | "preset.delete"
@@ -1512,6 +1581,7 @@ export type HostMessageType =
   | "mutation.preview"
   | "mutation.apply"
   | "formula.validate"
+  | "formula.draft.validate"
   | "formula.preview"
   | "file.list"
   | "file.token"
@@ -1521,6 +1591,7 @@ export type HostMessageType =
   | "events.reconcile"
   | "schema.describe"
   | "relation.searchTargets"
+  | "relation.createTarget"
   | "relation.updateSingle"
   | "relation.previewDelta"
   | "relation.applyDelta"
@@ -1528,6 +1599,7 @@ export type HostMessageType =
   | "lookup.validate"
   | "lookup.preview"
   | "lookup.query"
+	| "lookup.valuePage"
   | "preset.list"
   | "preset.save"
   | "preset.delete"
@@ -1745,6 +1817,7 @@ export interface HostPayloadMap {
   "mutation.preview": Readonly<Record<string, unknown>>;
   "mutation.apply": MutationReceipt;
   "formula.validate": Readonly<Record<string, unknown>>;
+  "formula.draft.validate": FormulaDraftValidationResult;
   "formula.preview": { readonly values: Readonly<Record<string, unknown>> };
   "file.list": AttachmentListResult;
   "file.token": Readonly<Record<string, unknown>>;
@@ -1754,6 +1827,7 @@ export interface HostPayloadMap {
   "events.reconcile": Readonly<Record<string, unknown>>;
   "schema.describe": SchemaDescribeResult;
   "relation.searchTargets": RelationSearchResult;
+  "relation.createTarget": RelationCreateTargetResult;
   "relation.updateSingle": RelationSingleUpdateResult;
   "relation.previewDelta": RelationDeltaPreview;
   "relation.applyDelta": RelationDeltaResult;
@@ -1761,6 +1835,7 @@ export interface HostPayloadMap {
   "lookup.validate": LookupValidationResult;
   "lookup.preview": LookupQueryResult;
   "lookup.query": LookupQueryResult;
+	"lookup.valuePage": LookupCellValue;
   "preset.list": PresetsResult;
   "preset.save": PresetEntry;
   "preset.delete": DeletePresetVersionResult;
@@ -1834,6 +1909,7 @@ export interface WebPayloadMap {
   "mutation.preview": Readonly<Record<string, unknown>>;
   "mutation.apply": Readonly<Record<string, unknown>>;
   "formula.validate": { readonly definition: Readonly<Record<string, unknown>> };
+  "formula.draft.validate": FormulaDraftValidateParams;
   "formula.preview": FormulaPreviewRpcPayload;
   "file.list": {
     readonly tableId: string;
@@ -1859,6 +1935,7 @@ export interface WebPayloadMap {
   };
   "schema.describe": SchemaDescribeParams;
   "relation.searchTargets": RelationSearchParams;
+  "relation.createTarget": RelationCreateTargetParams;
   "relation.updateSingle": RelationUpdateSingleParams;
   "relation.previewDelta": RelationDelta;
   "relation.applyDelta": RelationDelta;
@@ -1866,6 +1943,7 @@ export interface WebPayloadMap {
   "lookup.validate": LookupValidateParams;
   "lookup.preview": LookupPreviewParams;
   "lookup.query": LookupQueryParams;
+	"lookup.valuePage": LookupValuePageParams;
   "preset.list": { readonly collection: string };
   "preset.save": {
     readonly collection: string;

@@ -220,28 +220,64 @@ public sealed class GridStateCoordinator
     {
         try
         {
-            var page = await _gateway.QueryTablePageAsync(
-                table, query.Offset, Math.Min(
-                    Math.Max(query.Limit, 1), TableWorkspaceLimits.MaxPageLimit),
-                query, token).ConfigureAwait(true);
+            int pageLimit = Math.Min(
+                Math.Max(query.Limit, 1), TableWorkspaceLimits.MaxPageLimit);
+            var firstPage = await _gateway.QueryTableViewAsync(
+                table, query.Offset, pageLimit, query, token).ConfigureAwait(true);
             if (IsStale(generation) || token.IsCancellationRequested)
             {
                 return;
             }
-            // If the page carries a query snapshot, reconcile the selection.
-            if (page is not null)
+
+            int expectedRows = firstPage.FilteredRows ?? firstPage.TotalRows;
+            int loadedRows = firstPage.Rows.Count;
+            int offset = query.Offset + loadedRows;
+            var rows = new List<Dictionary<string, object?>>(firstPage.Rows);
+            while (loadedRows < expectedRows)
             {
-                _notify(new TableNotification
+                if (IsStale(generation) || token.IsCancellationRequested)
                 {
-                    // A debounced query is a complete, authoritative result
-                    // page.  Emitting pageLoaded would append it to the
-                    // previously loaded dataset in the renderer, leaving rows
-                    // that no longer match the active filter visible.
-                    Type = "table.datasetReady",
-                    Page = page,
-                    LoadedRows = page.Rows.Count,
-                });
+                    return;
+                }
+
+                int limit = Math.Min(pageLimit, expectedRows - loadedRows);
+                var nextPage = await _gateway.QueryTableViewAsync(
+                    table, offset, limit, query, token).ConfigureAwait(true);
+                if (!HaveSameQueryRevision(firstPage, nextPage))
+                {
+                    throw new InvalidOperationException(
+                        "The table changed while loading the complete query result. Refresh and try again.");
+                }
+                if (nextPage.Rows.Count == 0)
+                {
+                    throw new InvalidOperationException(
+                        "The query ended before its advertised filtered row count was loaded.");
+                }
+                rows.AddRange(nextPage.Rows);
+                loadedRows += nextPage.Rows.Count;
+                offset += nextPage.Rows.Count;
             }
+
+            if (IsStale(generation) || token.IsCancellationRequested)
+            {
+                return;
+            }
+            var completePage = firstPage with
+            {
+                Rows = rows,
+                Offset = query.Offset,
+                Limit = loadedRows,
+                Mode = "client",
+            };
+            _notify(new TableNotification
+            {
+                // A debounced query is one complete authoritative dataset.
+                // Partial pages stay inside the host and never leak stale rows
+                // into projections such as calendar, kanban, and timeline.
+                Type = "table.datasetReady",
+                Page = completePage,
+                LoadedRows = loadedRows,
+            });
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -263,6 +299,25 @@ public sealed class GridStateCoordinator
                     null),
             });
         }
+    }
+
+    private static bool HaveSameQueryRevision(TablePage first, TablePage next)
+    {
+        if (first.Revision is not null || next.Revision is not null)
+        {
+            return first.Revision is not null && first.Revision == next.Revision;
+        }
+        if (first.QuerySnapshot is not null || next.QuerySnapshot is not null)
+        {
+            return first.QuerySnapshot is not null
+                && next.QuerySnapshot is not null
+                && first.QuerySnapshot.DatabaseId == next.QuerySnapshot.DatabaseId
+                && first.QuerySnapshot.Table == next.QuerySnapshot.Table
+                && first.QuerySnapshot.SchemaRevision == next.QuerySnapshot.SchemaRevision
+                && first.QuerySnapshot.DataRevision == next.QuerySnapshot.DataRevision
+                && first.QuerySnapshot.Digest == next.QuerySnapshot.Digest;
+        }
+        return true;
     }
 
     private async Task ExecuteSaveAsync(

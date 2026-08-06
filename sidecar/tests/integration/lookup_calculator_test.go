@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -67,7 +68,7 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 	authorName.Lookup = &schema.LookupSpec{
 		RelationFieldID: "author_id",
 		TargetFieldID:   "name_id",
-		Aggregate:       "first",
+		Aggregate:       "none",
 	}
 	articles, err := catalog.ApplyChange(ctx, schemaapi.Change{
 		Definition: baseTable("articles", "articles", []schema.FieldDefinition{
@@ -143,6 +144,21 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 	if err != nil || record.GetString("author_name") != "Ada" {
 		t.Fatalf("stored lookup = %#v, err=%v", record, err)
 	}
+	cells, err := lookup.NewCalculator().CalculateCells(ctx, app, articles, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cell := cells["author_name"]
+	if cell.State != "ok" || cell.Value != "Ada" || len(cell.Provenance) != 1 ||
+		cell.Provenance[0].Collection != authors.TableID ||
+		cell.Provenance[0].CollectionLabel != authors.DisplayName ||
+		cell.Provenance[0].ItemID != authorID ||
+		cell.Provenance[0].RecordLabel != "Ada" ||
+		cell.Provenance[0].FieldID != "name_id" ||
+		cell.Provenance[0].FieldLabel != "name" ||
+		cell.Provenance[0].Value != "Ada" {
+		t.Fatalf("lookup provenance = %#v", cell)
+	}
 
 	querySource, err := queryschema.New(app.DataDir())
 	if err != nil {
@@ -155,7 +171,8 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 	)
 	catalogResult, err := relationService.Describe(ctx, "articles")
 	if err != nil || len(catalogResult.Relations) != 1 ||
-		len(catalogResult.Lookups) != 1 {
+		len(catalogResult.Lookups) != 1 ||
+		catalogResult.LookupMaxDepth != schema.MaxLookupPathDepth {
 		t.Fatalf("relation catalog = %#v, err=%v", catalogResult, err)
 	}
 	search, err := relationService.SearchTargets(ctx, relation.SearchRequest{
@@ -165,6 +182,62 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 		search.Items[0].RecordID != authorID ||
 		search.Items[0].Label != "Ada" {
 		t.Fatalf("relation search = %#v, err=%v", search, err)
+	}
+	createdTarget, err := relationService.CreateTarget(ctx, relation.CreateTargetRequest{
+		RelationID: "articles.author_id", Label: "Grace",
+		RequestID: "create-related-author", IdempotencyKey: "create-related-author",
+		Actor: mutation.Actor{Type: "user", ID: "local"},
+	})
+	if err != nil || createdTarget.Target.TableID != "authors" ||
+		createdTarget.Target.RecordID == "" || createdTarget.Target.Label != "Grace" ||
+		createdTarget.Receipt.Status != mutation.StatusApplied {
+		t.Fatalf("created relation target = %#v, err=%v", createdTarget, err)
+	}
+	createdSearch, err := relationService.SearchTargets(ctx, relation.SearchRequest{
+		RelationID: "articles.author_id", Query: "Grace", Limit: 20,
+	})
+	if err != nil || len(createdSearch.Items) != 1 ||
+		createdSearch.Items[0].RecordID != createdTarget.Target.RecordID {
+		t.Fatalf("created target search = %#v, err=%v", createdSearch, err)
+	}
+	lookupPage, err := relationService.QueryLookups(ctx, relation.LookupQueryRequest{
+		TableID: "articles", SchemaRevision: articles.SchemaRevision,
+		Query: query.TableQuery{Limit: 100},
+	})
+	if err != nil || len(lookupPage.Rows) != 1 {
+		t.Fatalf("lookup query = %#v, err=%v", lookupPage, err)
+	}
+	queryCell, ok := lookupPage.Rows[0]["author_name"].(lookup.CellValue)
+	if !ok || queryCell.Value != "Ada" || len(queryCell.Provenance) != 1 ||
+		queryCell.Provenance[0].ItemID != authorID {
+		t.Fatalf("lookup query cell = %#v", lookupPage.Rows[0]["author_name"])
+	}
+	broken := core.NewRecord(collection)
+	broken.Set("title", "Broken reference")
+	if err := app.Save(broken); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.DB().NewQuery(fmt.Sprintf(
+		"UPDATE `%s` SET `author`={:target} WHERE `id`={:id}", collection.Name,
+	)).Bind(dbx.Params{"target": "missingauthor01", "id": broken.Id}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	lookupPage, err = relationService.QueryLookups(ctx, relation.LookupQueryRequest{
+		TableID: "articles", SchemaRevision: articles.SchemaRevision,
+		Query: query.TableQuery{Limit: 100},
+	})
+	if err != nil || len(lookupPage.Rows) != 2 {
+		t.Fatalf("lookup query with missing source = %#v, err=%v", lookupPage, err)
+	}
+	var missingCell lookup.CellValue
+	for _, row := range lookupPage.Rows {
+		if row["id"] == broken.Id {
+			missingCell, _ = row["author_name"].(lookup.CellValue)
+		}
+	}
+	if missingCell.State != "invalid" || missingCell.Diagnostic == nil ||
+		missingCell.Diagnostic.Code != "lookup.value.source_missing" {
+		t.Fatalf("missing-source cell = %#v", missingCell)
 	}
 	delta := relation.DeltaRequest{
 		RelationID:     "articles.author_id",
@@ -267,7 +340,7 @@ func TestLookupCalculatorTraversesSavedMultiHopPath(t *testing.T) {
 			{RelationFieldID: "company_id"},
 		},
 		TargetFieldID: "name_id",
-		Aggregate:     "first",
+		Aggregate:     "none",
 	}
 	orders, err := catalog.ApplyChange(ctx, schemaapi.Change{
 		Definition: baseTable(
@@ -448,7 +521,7 @@ func TestFormulaRelationFanoutJobResumesAfterCancellation(t *testing.T) {
 	lookupField.Lookup = &schema.LookupSpec{
 		RelationFieldID: "author_id",
 		TargetFieldID:   "name_id",
-		Aggregate:       "first",
+		Aggregate:       "none",
 	}
 	articles, err := catalog.ApplyChange(ctx, schemaapi.Change{
 		Definition: baseTable(

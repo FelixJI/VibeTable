@@ -13,8 +13,6 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 )
 
-const maxRelationTargets = 1000
-
 func validateM2AJunctionValues(
 	ctx context.Context,
 	app core.App,
@@ -197,12 +195,6 @@ func validateRelationValue(
 		return nil, mutationError(
 			"mutation.relation.cardinality", nil,
 			"single relation accepts at most one target", nil, false,
-		)
-	}
-	if len(ids) > maxRelationTargets {
-		return nil, mutationError(
-			"mutation.relation.fanout_limit", nil,
-			"relation exceeds the per-record target limit", nil, false,
 		)
 	}
 	if len(ids) == 0 {

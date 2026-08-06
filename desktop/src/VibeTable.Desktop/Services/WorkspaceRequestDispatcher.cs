@@ -1835,28 +1835,74 @@ public sealed class WorkspaceRequestDispatcher
             }
             int offset = q.TryGetProperty("offset", out var off) && off.TryGetInt32(out var o) ? o : 0;
             int limit = q.TryGetProperty("limit", out var lim) && lim.TryGetInt32(out var l) ? l : 100;
+            int groupOffset = q.TryGetProperty("groupOffset", out var groupOff)
+                && groupOff.TryGetInt32(out var parsedGroupOffset) ? parsedGroupOffset : 0;
+            int groupLimit = q.TryGetProperty("groupLimit", out var groupLim)
+                && groupLim.TryGetInt32(out var parsedGroupLimit) ? parsedGroupLimit : 100;
             return new TableQuery(
                 keyword,
-                ParseFilterConditions(q),
+                ParseFilterExpressions(q),
                 ParseSortConditions(q),
                 offset,
-                limit);
+                limit,
+                ParseGroupConditions(q),
+                ParseSummaryConditions(q),
+                groupOffset,
+                groupLimit);
         }
         return new TableQuery();
     }
 
-    private static IReadOnlyList<FilterCondition>? ParseFilterConditions(JsonElement query)
+    private static IReadOnlyList<FilterExpression>? ParseFilterExpressions(JsonElement query)
     {
         if (!query.TryGetProperty("filters", out var filters)
             || filters.ValueKind != JsonValueKind.Array)
         {
             return null;
         }
-        var result = new List<FilterCondition>();
+        return ParseFilterExpressionArray(filters);
+    }
+
+    private static IReadOnlyList<FilterExpression> ParseFilterExpressionArray(JsonElement filters)
+    {
+        var result = new List<FilterExpression>();
         foreach (var item in filters.EnumerateArray())
         {
-            if (item.ValueKind != JsonValueKind.Object
-                || !item.TryGetProperty("field", out var fieldElement)
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+            if (item.TryGetProperty("filters", out var childrenElement)
+                && childrenElement.ValueKind == JsonValueKind.Array)
+            {
+                var children = ParseFilterExpressionArray(childrenElement);
+                if (children.Count == 0)
+                {
+                    continue;
+                }
+                string groupLogic = item.TryGetProperty("groupLogic", out var groupLogicElement)
+                    && groupLogicElement.ValueKind == JsonValueKind.String
+                    && string.Equals(
+                        groupLogicElement.GetString(),
+                        "OR",
+                        StringComparison.OrdinalIgnoreCase)
+                        ? "OR"
+                        : "AND";
+                string groupConnector = item.TryGetProperty("logic", out var groupConnectorElement)
+                    && groupConnectorElement.ValueKind == JsonValueKind.String
+                    && string.Equals(
+                        groupConnectorElement.GetString(),
+                        "OR",
+                        StringComparison.OrdinalIgnoreCase)
+                        ? "OR"
+                        : "AND";
+                result.Add(new FilterExpression(
+                    Logic: groupConnector,
+                    Filters: children,
+                    GroupLogic: groupLogic));
+                continue;
+            }
+            if (!item.TryGetProperty("field", out var fieldElement)
                 || fieldElement.ValueKind != JsonValueKind.String
                 || string.IsNullOrWhiteSpace(fieldElement.GetString())
                 || !item.TryGetProperty("operator", out var operatorElement)
@@ -1907,6 +1953,70 @@ public sealed class WorkspaceRequestDispatcher
             bool nullsLast = !item.TryGetProperty("nullsLast", out var nullsLastElement)
                 || nullsLastElement.ValueKind != JsonValueKind.False;
             result.Add(new SortCondition(fieldElement.GetString()!, direction, nullsLast));
+        }
+        return result;
+    }
+
+    private static IReadOnlyList<GroupCondition>? ParseGroupConditions(JsonElement query)
+    {
+        if (!query.TryGetProperty("groups", out var groups)
+            || groups.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+        var result = new List<GroupCondition>();
+        foreach (var item in groups.EnumerateArray().Take(2))
+        {
+            if (item.ValueKind != JsonValueKind.Object
+                || !item.TryGetProperty("field", out var field)
+                || field.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(field.GetString()))
+            {
+                continue;
+            }
+            string direction = item.TryGetProperty("direction", out var directionElement)
+                && directionElement.ValueKind == JsonValueKind.String
+                && string.Equals(directionElement.GetString(), "desc", StringComparison.OrdinalIgnoreCase)
+                    ? "desc"
+                    : "asc";
+            string bucket = item.TryGetProperty("bucket", out var bucketElement)
+                && bucketElement.ValueKind == JsonValueKind.String
+                && bucketElement.GetString() is "year" or "quarter" or "month" or "week" or "day" or "hour" or "number"
+                    ? bucketElement.GetString()!
+                    : "value";
+            double? numberInterval = item.TryGetProperty("numberInterval", out var intervalElement)
+                && intervalElement.ValueKind == JsonValueKind.Number
+                && intervalElement.TryGetDouble(out double interval)
+                && double.IsFinite(interval)
+                && interval > 0
+                    ? interval
+                    : null;
+            result.Add(new GroupCondition(field.GetString()!, direction, bucket, numberInterval));
+        }
+        return result;
+    }
+
+    private static IReadOnlyList<SummaryCondition>? ParseSummaryConditions(JsonElement query)
+    {
+        if (!query.TryGetProperty("summaries", out var summaries)
+            || summaries.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+        var result = new List<SummaryCondition>();
+        foreach (var item in summaries.EnumerateArray().Take(3))
+        {
+            if (item.ValueKind != JsonValueKind.Object
+                || !item.TryGetProperty("field", out var field)
+                || field.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(field.GetString())
+                || !item.TryGetProperty("function", out var function)
+                || function.ValueKind != JsonValueKind.String
+                || function.GetString() is not ("sum" or "avg" or "min" or "max"))
+            {
+                continue;
+            }
+            result.Add(new SummaryCondition(field.GetString()!, function.GetString()!));
         }
         return result;
     }
