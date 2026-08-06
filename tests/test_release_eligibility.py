@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -82,11 +83,13 @@ def aggregate_identity(monkeypatch):
     return identity
 
 
-def test_lane_allocation_covers_every_required_stage_once() -> None:
+def test_lane_allocation_covers_every_required_stage_with_two_race_shards() -> None:
     allocated = [stage for stages in release_eligibility.LANE_STAGES.values() for stage in stages]
+    counts = Counter(allocated)
 
-    assert len(allocated) == len(set(allocated))
     assert set(allocated) == set(release_eligibility.REQUIRED_STAGES)
+    assert counts["go-race"] == 2
+    assert all(count == 1 for stage, count in counts.items() if stage != "go-race")
 
 
 def test_aggregate_reports_preserves_required_stage_order(
@@ -107,6 +110,48 @@ def test_aggregate_reports_preserves_required_stage_order(
         release_eligibility.REQUIRED_STAGES
     )
     assert {lane["lane"] for lane in report["lanes"]} == set(release_eligibility.REQUIRED_LANES)
+
+
+def test_aggregate_combines_both_successful_race_shards(
+    tmp_path: Path,
+    aggregate_identity,
+) -> None:
+    _write_lane_reports(tmp_path)
+    for lane, elapsed in (("race-a", 7.0), ("race-b", 11.0)):
+        path = tmp_path / lane / "report.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["results"][0].update(elapsed=elapsed, stdout=f"{lane} passed")
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    report = release_eligibility.aggregate_reports(
+        tmp_path,
+        tmp_path / "VibeTable.Next",
+        tmp_path / "candidate.zip",
+    )
+
+    race = next(item for item in report["results"] if item["stage"] == "go-race")
+    assert race["command"] == ["parallel race shards", "race-a", "race-b"]
+    assert race["elapsed"] == 11.0
+    assert "[race-a]\nrace-a passed" in race["stdout"]
+    assert "[race-b]\nrace-b passed" in race["stdout"]
+
+
+def test_aggregate_rejects_a_failed_second_race_shard(
+    tmp_path: Path,
+    aggregate_identity,
+) -> None:
+    _write_lane_reports(tmp_path)
+    path = tmp_path / "race-b" / "report.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["results"][0]["returncode"] = 1
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(release_eligibility.EligibilityError, match=r"failed stage.*go-race"):
+        release_eligibility.aggregate_reports(
+            tmp_path,
+            tmp_path / "VibeTable.Next",
+            tmp_path / "candidate.zip",
+        )
 
 
 @pytest.mark.parametrize(
@@ -146,9 +191,9 @@ def test_aggregate_reports_rejects_missing_or_duplicate_lanes(
     aggregate_identity,
 ) -> None:
     _write_lane_reports(tmp_path)
-    (tmp_path / "race" / "report.json").unlink()
+    (tmp_path / "race-b" / "report.json").unlink()
 
-    with pytest.raises(release_eligibility.EligibilityError, match="expected 4 lane reports"):
+    with pytest.raises(release_eligibility.EligibilityError, match="expected 5 lane reports"):
         release_eligibility.aggregate_reports(
             tmp_path,
             tmp_path / "VibeTable.Next",

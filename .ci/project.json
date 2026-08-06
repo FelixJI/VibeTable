@@ -33,7 +33,11 @@
         "go": true
       },
       {
-        "name": "race",
+        "name": "race-a",
+        "go": true
+      },
+      {
+        "name": "race-b",
         "go": true
       },
       {

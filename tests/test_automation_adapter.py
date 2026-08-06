@@ -140,6 +140,35 @@ def test_candidate_prepare_defers_quality_to_candidate_bound_shards(
     assert observed == []
 
 
+def test_full_release_smoke_installs_the_race_toolchain_at_its_consumption_point(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[str | tuple[str, ...]] = []
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setenv("AUTOMATION_ARTIFACTS_DIR", str(artifacts))
+    monkeypatch.setattr(automation_project, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(automation_project, "read_project_version", lambda _root: "1.2.3")
+    monkeypatch.setattr(automation_project, "_verify_release_metadata", lambda *_args: None)
+    monkeypatch.setattr(
+        automation_project,
+        "_install_w64devkit",
+        lambda: observed.append("w64devkit"),
+    )
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, **_kwargs: observed.append(command),
+    )
+
+    automation_project.release_smoke()
+
+    assert observed[0] == "w64devkit"
+    assert isinstance(observed[1], tuple)
+    assert observed[1][0:4] == ("uv", "run", "python", "qa/next.py")
+
+
 def test_publish_checkout_keeps_job_token_for_git_tag_push() -> None:
     workflow = (REPO_ROOT / ".github/workflows/cd.yml").read_text(encoding="utf-8")
     publish_job = workflow.split("\n  publish:\n", maxsplit=1)[1]
@@ -226,7 +255,8 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
     shards = config["ci_shards"]
     assert [lane["name"] for lane in shards["lanes"]] == [
         "core",
-        "race",
+        "race-a",
+        "race-b",
         "resilience",
         "release",
     ]
@@ -243,6 +273,11 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
     ]
     assert shards["run"][0][-4:] == ["--lane", "{lane}", "--json-report", "{lane_report}"]
     assert "{reports_dir}" in shards["aggregate"][0]
+    ci_workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "startsWith(matrix.name, 'race-')" in ci_workflow
+    assert "actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809" in ci_workflow
+    assert "path: .tools/w64devkit" in ci_workflow
+    assert "hashFiles('scripts/automation_project.py')" in ci_workflow
     assert config["release"]["required_assets"] == [
         "VibeTable-v{version}-win-x64.zip",
         "VibeTable-v{version}-win-x64.zip.sha256",
@@ -265,7 +300,8 @@ def test_artifacts_directory_is_explicit_and_repository_relative(
     ("lane", "expected"),
     [
         ("core", ["bootstrap"]),
-        ("race", ["w64devkit"]),
+        ("race-a", ["w64devkit"]),
+        ("race-b", ["w64devkit"]),
         ("resilience", ["uv-sync", "npm-ci"]),
         ("release", []),
     ],
@@ -318,12 +354,12 @@ def test_smoke_lane_binds_report_to_the_declared_candidate(
         lambda *command, **_kwargs: observed.append(command),
     )
 
-    automation_project.release_smoke_lane("race", report)
+    automation_project.release_smoke_lane("race-a", report)
 
     assert len(observed) == 1
     command = observed[0]
     assert command[0] == automation_project.sys.executable
-    assert command[1:5] == ("qa/next.py", "--lane", "race", "--package-root")
+    assert command[1:5] == ("qa/next.py", "--lane", "race-a", "--package-root")
     assert "--package-archive" in command
     assert command[-2:] == ("--json-report", str(report))
 

@@ -112,8 +112,6 @@ def bootstrap() -> None:
     for project in projects:
         _run("npm", "ci", cwd=REPO_ROOT / project)
     _run("dotnet", "restore", "desktop/VibeTable.Desktop.sln")
-    if not candidate_prepare:
-        _install_w64devkit()
 
 
 def quality() -> None:
@@ -370,6 +368,7 @@ def release_smoke() -> None:
     artifacts = _artifacts_dir()
     archive = artifacts / f"VibeTable-v{version}-win-x64.zip"
     _verify_release_metadata(artifacts, version, archive)
+    _install_w64devkit()
     _run(
         "uv",
         "run",
@@ -389,7 +388,7 @@ def release_smoke() -> None:
 def _prepare_smoke_lane(lane: str) -> None:
     if lane == "core":
         bootstrap()
-    elif lane == "race":
+    elif lane in {"race-a", "race-b"}:
         _install_w64devkit()
     elif lane == "resilience":
         _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
@@ -449,7 +448,10 @@ def _parser() -> argparse.ArgumentParser:
         "command",
         choices=("bootstrap", "quality", "build", "smoke", "smoke-lane", "smoke-aggregate"),
     )
-    parser.add_argument("--lane", choices=("core", "race", "resilience", "release"))
+    parser.add_argument(
+        "--lane",
+        choices=("core", "race-a", "race-b", "resilience", "release"),
+    )
     parser.add_argument("--json-report", type=Path)
     parser.add_argument("--reports-dir", type=Path)
     return parser

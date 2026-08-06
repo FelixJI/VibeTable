@@ -82,7 +82,7 @@ def test_github_workflows_keep_release_build_on_windows() -> None:
     ci_workflow = workflows["ci.yml"]
     cd_workflow = workflows["cd.yml"]
     assert "python scripts/automation.py ci" in ci_workflow
-    assert "scripts/automation_project.py" not in ci_workflow
+    assert "python scripts/automation_project.py" not in ci_workflow
     assert "environment: release" in cd_workflow
     assert "python scripts/automation.py release publish" in cd_workflow
     assert "release-please" not in (ci_workflow + cd_workflow).lower()
@@ -580,6 +580,77 @@ def test_race_stage_runs_packages_in_parallel_but_tests_within_each_package_seri
     assert not list(next_gate.RACE_BINARY_DIR.glob("package-*"))
 
 
+def test_race_package_plans_are_partitioned_once_by_recorded_duration(tmp_path: Path) -> None:
+    def plan(package: str, tests: int) -> next_gate.RacePackagePlan:
+        return next_gate.RacePackagePlan(
+            package=package,
+            commands=[([f"{package}.test"], 60, package) for _index in range(tests)],
+            compile_command=None,
+            binary=None,
+        )
+
+    plans = [plan("heavy", 1), plan("medium", 20), plan("small-a", 5), plan("small-b", 5)]
+    weights = {"heavy": 30.0, "medium": 12.0, "small-a": 3.0, "small-b": 3.0}
+
+    first = next_gate._select_race_package_plans(plans, 0, 2, weights)
+    second = next_gate._select_race_package_plans(plans, 1, 2, weights)
+
+    first_names = {item.package for item in first}
+    second_names = {item.package for item in second}
+    assert first_names.isdisjoint(second_names)
+    assert first_names | second_names == {item.package for item in plans}
+    assert first_names == {"heavy"}
+    assert second_names == {"medium", "small-a", "small-b"}
+
+
+def test_measured_dominant_package_is_split_by_isolated_tests() -> None:
+    package = "github.com/vibetable/vibetable/sidecar/tests/integration"
+    names = ["TestAlpha", "TestBeta", "TestGamma", *sorted(next_gate.RACE_LONG_TESTS)]
+    plan = next_gate.RacePackagePlan(
+        package=package,
+        commands=[
+            (["integration.test.exe", f"-test.run=^{name}$"], 60, "integration") for name in names
+        ],
+        compile_command=["go", "test", "-c", "-race", package],
+        binary=Path("integration.test.exe"),
+    )
+
+    first = next_gate._select_race_package_plans([plan], 0, 2, {package: 120.0})
+    second = next_gate._select_race_package_plans([plan], 1, 2, {package: 120.0})
+
+    assert len(first) == len(second) == 1
+    assert first[0].package == second[0].package == package
+    assert first[0].compile_command == second[0].compile_command == plan.compile_command
+    first_commands = {tuple(command) for command, _timeout, _cwd in first[0].commands}
+    second_commands = {tuple(command) for command, _timeout, _cwd in second[0].commands}
+    assert first_commands.isdisjoint(second_commands)
+    assert first_commands | second_commands == {
+        tuple(command) for command, _timeout, _cwd in plan.commands
+    }
+
+
+def test_race_lanes_pass_distinct_shard_coordinates(monkeypatch, tmp_path: Path) -> None:
+    observed: list[tuple[int, int] | None] = []
+
+    def fake_stage(
+        stage,
+        package_root=None,
+        package_archive=None,
+        *,
+        race_shard=None,
+    ):
+        del package_root, package_archive
+        observed.append(race_shard)
+        return next_gate.StageResult(stage, ["test"], 0, 0.1, "", "", str(tmp_path))
+
+    monkeypatch.setattr(next_gate, "run_stage", fake_stage)
+
+    next_gate.run_lane("race-a", tmp_path, tmp_path / "candidate.zip")
+    next_gate.run_lane("race-b", tmp_path, tmp_path / "candidate.zip")
+
+    assert observed == [(0, 2), (1, 2)]
+
+
 def test_race_package_emits_structured_timing_for_lane_balancing(monkeypatch) -> None:
     timestamps = iter((10.0, 12.5))
     monkeypatch.setattr(next_gate.time, "monotonic", lambda: next(timestamps))
@@ -1005,12 +1076,14 @@ def test_lane_report_is_candidate_bound_but_never_release_eligible(
     report = tmp_path / "lane.json"
 
     assert (
-        next_gate.main(["--lane", "race", *_candidate_args(tmp_path), "--json-report", str(report)])
+        next_gate.main(
+            ["--lane", "race-a", *_candidate_args(tmp_path), "--json-report", str(report)]
+        )
         == 0
     )
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["reportKind"] == "lane"
-    assert payload["lane"] == "race"
+    assert payload["lane"] == "race-a"
     assert payload["ok"] is True
     assert payload["releaseEligible"] is False
     assert payload["releaseCandidate"]["archive"]["sha256"]
