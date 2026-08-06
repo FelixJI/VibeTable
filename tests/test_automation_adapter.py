@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from scripts import automation_project, changelog
-from scripts.automation_core import Automation, SemVer
+from scripts.automation_core import Automation, CommandRunner, SemVer
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -98,6 +98,51 @@ def test_publish_checkout_keeps_job_token_for_git_tag_push() -> None:
     assert "persist-credentials: true" in checkout
     assert "persist-credentials: false" not in checkout
     assert "token:" not in checkout
+
+
+def test_mirror_pushes_main_and_only_tags_missing_from_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    class Runner(CommandRunner):
+        def run(self, argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append(argv)
+            if argv[:3] == ["git", "for-each-ref", "--format=%(refname:strip=2)"]:
+                return subprocess.CompletedProcess(argv, 0, "v0.3.0\nv0.4.0\n", "")
+            if argv[:4] == ["git", "ls-remote", "--refs", "--tags"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    "old-tag-object\trefs/tags/v0.3.0\n",
+                    "",
+                )
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+    config = {
+        "schema_version": 1,
+        "project": {"component": "test", "repository": "owner/repository"},
+        "release": {
+            "mirrors": [
+                {
+                    "name": "mirror",
+                    "url_env": "TEST_MIRROR_URL",
+                    "user": "cnb",
+                    "token_env": "TEST_MIRROR_TOKEN",
+                }
+            ]
+        },
+    }
+    monkeypatch.setenv("TEST_MIRROR_URL", "https://example.invalid/owner/repository")
+    monkeypatch.setenv("TEST_MIRROR_TOKEN", "token")
+
+    Automation(tmp_path, config, runner=Runner(tmp_path))._mirror()
+
+    push = next(call for call in calls if call[:2] == ["git", "push"])
+    assert "refs/remotes/origin/main:refs/heads/main" in push
+    assert "refs/tags/v0.4.0:refs/tags/v0.4.0" in push
+    assert "refs/tags/v0.3.0:refs/tags/v0.3.0" not in push
+    assert "refs/tags/*:refs/tags/*" not in push
 
 
 def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
