@@ -113,24 +113,35 @@ def collect_versions(repo_root: Path) -> VersionSnapshot:
     return VersionSnapshot(expected=expected, actual=actual)
 
 
+def check_release_dependency_versions(repo_root: Path) -> list[str]:
+    versions = collect_release_versions(repo_root)
+    go_mod = (repo_root / "sidecar" / "go.mod").read_text(encoding="utf-8")
+    errors: list[str] = []
+    for module, expected in (
+        ("github.com/pocketbase/pocketbase", f"v{versions.pocketbase}"),
+        ("github.com/google/cel-go", f"v{versions.cel}"),
+    ):
+        match = re.search(
+            rf"^\s*{re.escape(module)}\s+(v[^\s]+)(?:\s+//.*)?$",
+            go_mod,
+            flags=re.MULTILINE,
+        )
+        actual = match.group(1) if match is not None else "missing"
+        if actual != expected:
+            errors.append(
+                f"sidecar go.mod dependency version mismatch: {module} "
+                f"(expected {expected}, got {actual})"
+            )
+    return errors
+
+
 def check_versions(repo_root: Path) -> list[str]:
     snapshot = collect_versions(repo_root)
-    release_versions = collect_release_versions(repo_root)
     errors = [
         f"{name}: {actual!r}, expected {snapshot.expected!r}"
         for name, actual in snapshot.mismatches.items()
     ]
-    go_mod = (repo_root / "sidecar" / "go.mod").read_text(encoding="utf-8")
-    cel_dependency = _extract(
-        r"^\s*github\.com/google/cel-go\s+v([^\s]+)",
-        go_mod,
-        "cel-go module version",
-    )
-    if cel_dependency != release_versions.cel:
-        errors.append(
-            "sidecar CEL version metadata: "
-            f"{release_versions.cel!r}, expected direct dependency {cel_dependency!r}"
-        )
+    errors.extend(check_release_dependency_versions(repo_root))
     pyproject = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
     if 'dynamic = ["version"]' not in pyproject or (
         'version = {attr = "backend._version.__version__"}' not in pyproject

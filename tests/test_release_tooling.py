@@ -22,6 +22,7 @@ from scripts.release import (
 )
 from scripts.versioning import (
     bump_version,
+    check_release_dependency_versions,
     check_versions,
     collect_release_versions,
     read_project_version,
@@ -97,6 +98,33 @@ def test_repository_versions_are_consistent() -> None:
     assert versions.contract == "v1"
     assert versions.schema == "7"
     assert len(versions.migration_hash) == 64
+
+
+def test_release_dependency_versions_fail_fast_before_packaging(tmp_path: Path) -> None:
+    for relative in (
+        Path("backend/_version.py"),
+        Path("sidecar/go.mod"),
+        Path("sidecar/internal/buildinfo/info.go"),
+        Path("sidecar/migrations/manifest.json"),
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, target)
+
+    assert check_release_dependency_versions(tmp_path) == []
+    go_mod = tmp_path / "sidecar/go.mod"
+    go_mod.write_text(
+        go_mod.read_text(encoding="utf-8").replace(
+            "github.com/google/cel-go v0.29.0",
+            "github.com/google/cel-go v0.26.1",
+        ),
+        encoding="utf-8",
+    )
+
+    assert check_release_dependency_versions(tmp_path) == [
+        "sidecar go.mod dependency version mismatch: github.com/google/cel-go "
+        "(expected v0.29.0, got v0.26.1)"
+    ]
 
 
 @pytest.mark.parametrize(
