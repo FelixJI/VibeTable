@@ -1,6 +1,36 @@
 {
   "entries": [
     {
+      "subject": "perf(ci): 加速候选构建与 Go race 关键路径 (#42)",
+      "commit": "05767230",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(ci): 修复镜像标签同步并完善六仓治理 (#41)",
+      "commit": "e3d85d91",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(table): 完善查询、关系与公式能力 (#40)",
+      "commit": "504c90b9",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(release): 补齐 sidecar 依赖版本快速契约 (#36)",
+      "commit": "f28ed82c",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(release): 修复候选身份与恢复同步竞态 (#39)",
+      "commit": "cbd9cee9",
+      "category": "changes"
+    },
+    {
+      "subject": "perf(ci): 分片质量门禁并修复依赖漏洞 (#38)",
+      "commit": "20d906f9",
+      "category": "changes"
+    },
+    {
       "subject": "fix(security): 修复 CodeQL 告警并加速 Go 门禁 (#27)",
       "commit": "79d70168",
       "category": "changes"
