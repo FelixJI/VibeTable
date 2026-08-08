@@ -138,6 +138,48 @@ public sealed class AppPreferencesServiceTests
     }
 
     [TestMethod]
+    public void IsStaleRunValueDetectsMismatchedAndMissingValues()
+    {
+        const string current = "\"C:\\Apps\\VibeTable\\VibeTable.Next.exe\" --autostart";
+
+        Assert.IsFalse(WindowsStartupRegistration.IsStaleRunValue(current, current));
+        Assert.IsFalse(WindowsStartupRegistration.IsStaleRunValue(current, null));
+        Assert.IsFalse(WindowsStartupRegistration.IsStaleRunValue(current, ""));
+        Assert.IsFalse(WindowsStartupRegistration.IsStaleRunValue(current, "   "));
+        Assert.IsTrue(WindowsStartupRegistration.IsStaleRunValue(
+            current,
+            "\"C:\\Old\\VibeTable.Next.exe\" --autostart"));
+    }
+
+    [TestMethod]
+    public void IsStaleRunValueIsCaseInsensitiveAndTrims()
+    {
+        const string current = "\"C:\\Apps\\VibeTable.Next.exe\" --autostart";
+
+        // Same value with different case and surrounding whitespace is a match.
+        Assert.IsFalse(WindowsStartupRegistration.IsStaleRunValue(
+            current,
+            "  \"c:\\apps\\VibeTable.Next.exe\" --autostart  "));
+    }
+
+    [TestMethod]
+    public void StartupVisibilityPolicyHidesOnlyForAutoStartAndTray()
+    {
+        Assert.IsTrue(StartupVisibilityPolicy.ShouldStartHidden(
+            autoStart: true,
+            minimizeToTrayOnClose: true));
+        Assert.IsFalse(StartupVisibilityPolicy.ShouldStartHidden(
+            autoStart: false,
+            minimizeToTrayOnClose: true));
+        Assert.IsFalse(StartupVisibilityPolicy.ShouldStartHidden(
+            autoStart: true,
+            minimizeToTrayOnClose: false));
+        Assert.IsFalse(StartupVisibilityPolicy.ShouldStartHidden(
+            autoStart: false,
+            minimizeToTrayOnClose: false));
+    }
+
+    [TestMethod]
     public void AppPreferencesPatchRejectsUnknownEmptyAndNonBooleanPayloads()
     {
         Assert.IsFalse(ParsePatch("{}", out _));

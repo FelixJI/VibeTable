@@ -107,6 +107,14 @@ public partial class App : Application
         }
         var window = new MainWindow();
         MainWindow = window;
+        // Show before Hide: with the default ShutdownMode=OnLastWindowClose,
+        // hiding a window that was never shown can let WPF tear down the app
+        // before it starts. Showing once registers the HWND, then Hide parks
+        // it in the tray for a silent auto-start launch.
         window.Show();
+        if (window.StartHidden)
+        {
+            window.Hide();
+        }
     }
 }
