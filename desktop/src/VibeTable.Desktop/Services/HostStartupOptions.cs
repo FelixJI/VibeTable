@@ -26,6 +26,14 @@ public sealed class HostStartupOptions
     /// </summary>
     public string? DevelopmentDataRoot { get; set; }
 
+    /// <summary>
+    /// Set when the host was launched by the Windows startup registry value
+    /// (<see cref="WindowsStartupRegistration"/> appends <c>--autostart</c>).
+    /// Drives startup-only behaviors: stale startup-value reconciliation and,
+    /// when the user also minimizes to tray, a silent tray launch.
+    /// </summary>
+    public bool AutoStart { get; set; }
+
     public static HostStartupOptions Parse(IReadOnlyList<string>? args)
     {
         var options = new HostStartupOptions();
@@ -49,6 +57,9 @@ public sealed class HostStartupOptions
                     break;
                 case "--dev-data-root" when index + 1 < args.Count:
                     options.DevelopmentDataRoot = args[++index];
+                    break;
+                case "--autostart":
+                    options.AutoStart = true;
                     break;
             }
         }

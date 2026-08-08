@@ -272,3 +272,18 @@ internal static class WindowClosePolicy
         bool explicitExitRequested) =>
         preferences.MinimizeToTrayOnClose && !explicitExitRequested;
 }
+
+/// <summary>
+/// Decides whether the main window should be hidden into the tray on launch.
+/// Only an auto-started launch (<c>--autostart</c>) of a user who has opted
+/// into tray behavior hides the window; the tray icon then becomes the sole
+/// entry point until the user restores the window. Manual launches and users
+/// without the tray preference always see the window as before.
+/// </summary>
+internal static class StartupVisibilityPolicy
+{
+    public static bool ShouldStartHidden(
+        bool autoStart,
+        bool minimizeToTrayOnClose) =>
+        autoStart && minimizeToTrayOnClose;
+}

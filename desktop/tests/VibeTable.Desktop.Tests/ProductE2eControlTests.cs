@@ -38,6 +38,20 @@ public sealed class ProductE2eControlTests
     }
 
     [TestMethod]
+    public void HostStartupOptions_RecognizesAutoStartFlag()
+    {
+        Assert.IsTrue(HostStartupOptions.Parse(["--autostart"]).AutoStart);
+
+        HostStartupOptions combined = HostStartupOptions.Parse(
+            ["--autostart", "--dev-data-root", @"C:\vibetable-dev"]);
+        Assert.IsTrue(combined.AutoStart);
+        Assert.AreEqual(@"C:\vibetable-dev", combined.DevelopmentDataRoot);
+
+        Assert.IsFalse(HostStartupOptions.Parse(Array.Empty<string>()).AutoStart);
+        Assert.IsFalse(HostStartupOptions.Parse(["--test-mode"]).AutoStart);
+    }
+
+    [TestMethod]
     public async Task PluginPackagePicker_ReadsOnlyFixedControlFile()
     {
         string root = Path.Combine(

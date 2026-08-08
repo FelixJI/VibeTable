@@ -75,6 +75,16 @@ public partial class MainWindow : Window
     private TrayIconController? _trayIcon;
     private bool _explicitExitRequested;
     private int _closing;
+    private bool _startHidden;
+
+    /// <summary>
+    /// True when this instance was launched via <c>--autostart</c> by a user
+    /// who has enabled tray behavior, so <see cref="App"/> should hide the
+    /// window into the tray right after showing it. The composition root
+    /// derives this once from <see cref="HostStartupOptions"/> and the
+    /// startup preferences; it never changes for a given instance.
+    /// </summary>
+    internal bool StartHidden => _startHidden;
 
     public MainWindow()
     {
@@ -111,13 +121,22 @@ public partial class MainWindow : Window
             Environment.SpecialFolder.LocalApplicationData);
         _productDataRoot = runtimeDataRoot
             ?? Path.Combine(localAppData, "VibeTable", "shell");
+        WindowsStartupRegistration? windowsStartupRegistration = null;
         _appPreferencesService = new AppPreferencesService(
             new JsonAppPreferencesStore(
                 Path.Combine(_productDataRoot, "app-preferences.json")),
             startup.TestMode
-                ? new InMemoryStartupRegistration()
-                : WindowsStartupRegistration.ForCurrentProcess());
+                ? (IStartupRegistration)new InMemoryStartupRegistration()
+                : (windowsStartupRegistration = WindowsStartupRegistration.ForCurrentProcess()));
         _appPreferences = _appPreferencesService.ReadForStartup();
+        // Only an auto-started launch reconciles the startup value: a stale
+        // pointer left after moving/reinstalling is cleaned so the next boot
+        // re-points at the current process (or drops the value entirely).
+        // ReconcileForCurrentProcess swallows registry failures itself.
+        if (startup.AutoStart && windowsStartupRegistration is not null)
+        {
+            windowsStartupRegistration.ReconcileForCurrentProcess();
+        }
         _releaseUpdateCoordinator = new ReleaseUpdateCoordinator(
             AppContext.BaseDirectory,
             ApplicationVersion.FromAssembly(typeof(MainWindow).Assembly),
@@ -256,6 +275,12 @@ public partial class MainWindow : Window
         Closed += OnClosed;
         Application.Current.SessionEnding += OnSessionEnding;
         ApplyAppPreferences(_appPreferences);
+        // E2E test mode must never hide the window; the harness drives the UI
+        // via WebView and cannot recover from a hidden main window.
+        _startHidden = !startup.TestMode
+            && StartupVisibilityPolicy.ShouldStartHidden(
+                startup.AutoStart,
+                _appPreferences.MinimizeToTrayOnClose);
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs args)
