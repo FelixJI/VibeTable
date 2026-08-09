@@ -18,6 +18,7 @@ export type WorkspaceV2Capability =
   | "snapshot.open-as-new.v2"
   | "history.restore.v2"
   | "fileHistory.tree.v2"
+  | "document.diff.v1"
   | "retention.policy.v2"
   | "repository.settings.v2"
   | "repository.key-rotation.v2"
@@ -101,6 +102,7 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
         "snapshot.open-as-new.v2",
         "history.restore.v2",
         "fileHistory.tree.v2",
+        "document.diff.v1",
         "retention.policy.v2",
         "repository.settings.v2",
         "repository.key-rotation.v2",

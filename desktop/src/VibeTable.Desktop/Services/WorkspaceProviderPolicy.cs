@@ -221,42 +221,29 @@ public sealed class WorkspaceProviderPolicy
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         string fullPath = Path.GetFullPath(root);
-        bool created = !Directory.Exists(fullPath);
-        Directory.CreateDirectory(fullPath);
-        try
-        {
-            return storageMode is null
-                ? ProbeAndEnsureSupported(fullPath, userMarkedSync)
-                : ProbeAndEnsureSupported(
-                    fullPath,
-                    storageMode.Value,
-                    userMarkedSync);
-        }
-        catch
-        {
-            if (created)
-                TryDeleteEmptyCreateTarget(fullPath);
-            throw;
-        }
+        string probeRoot = ResolveCreateProbeRoot(fullPath);
+        return storageMode is null
+            ? ProbeAndEnsureSupported(probeRoot, userMarkedSync)
+            : ProbeAndEnsureSupported(
+                probeRoot,
+                storageMode.Value,
+                userMarkedSync);
     }
 
-    private static void TryDeleteEmptyCreateTarget(string fullPath)
+    private static string ResolveCreateProbeRoot(string fullPath)
     {
-        try
+        if (Directory.Exists(fullPath))
+            return fullPath;
+        for (DirectoryInfo? parent = Directory.GetParent(fullPath);
+             parent is not null;
+             parent = parent.Parent)
         {
-            if (Directory.Exists(fullPath)
-                && !Directory.EnumerateFileSystemEntries(fullPath).Any())
-            {
-                Directory.Delete(fullPath);
-            }
+            if (parent.Exists)
+                return parent.FullName;
         }
-        catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException)
-        {
-            // Preserve the authoritative probe/policy failure. A concurrent
-            // filesystem actor may touch the directory between enumeration
-            // and deletion; rollback cleanup must never replace that error.
-        }
+        throw new WorkspaceRegistryException(
+            "workspace.storage_probe_failed",
+            "Storage does not expose an existing parent for the workspace target.");
     }
 
     private static WorkspaceRegistryException InvalidPolicy()

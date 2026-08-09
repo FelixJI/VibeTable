@@ -89,21 +89,16 @@ _APP_ERROR_MAP: dict[type[Exception], tuple[int, str, str]] = {
 }
 
 
-def register_pocketbase_product_errors() -> None:
-    """Register sanitized local product API and transport failures."""
-    from backend.adapters.pocketbase.client import PocketBaseProductError
-    from backend.adapters.pocketbase.transport import PocketBaseTransportError
+def register_rpc_error(
+    error_type: type[Exception],
+    *,
+    code: int,
+    message: str,
+    kind: str,
+) -> None:
+    """Register one typed error without importing its concrete layer here."""
 
-    _APP_ERROR_MAP[PocketBaseProductError] = (
-        CODE_PRODUCT_DATA,
-        "Product data error",
-        "product_data_error",
-    )
-    _APP_ERROR_MAP[PocketBaseTransportError] = (
-        CODE_PRODUCT_DATA,
-        "Product data unavailable",
-        "product_data_unavailable",
-    )
+    _APP_ERROR_MAP[error_type] = (code, message, kind)
 
 
 def register_paste_errors() -> None:

@@ -95,6 +95,11 @@ def test_candidate_prepare_bootstraps_only_release_build_dependencies(
     monkeypatch.setenv("VIBETABLE_CI_PREPARE_MODE", "candidate")
     monkeypatch.setattr(
         automation_project,
+        "ensure_node",
+        lambda _root: Path("C:/node/node-v24.18.0-win-x64/node.exe"),
+    )
+    monkeypatch.setattr(
+        automation_project,
         "_run",
         lambda *command, cwd=automation_project.REPO_ROOT, **_kwargs: observed.append(
             (command, cwd)
@@ -124,6 +129,40 @@ def test_candidate_prepare_bootstraps_only_release_build_dependencies(
     ]
 
 
+def test_bootstrap_runs_npm_with_the_locked_node_toolchain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[tuple[str, ...], dict[str, str] | None]] = []
+    node = tmp_path / ".tools" / "node" / "node-v24.18.0-win-x64" / "node.exe"
+    node.parent.mkdir(parents=True)
+    node.touch()
+    monkeypatch.setattr(automation_project, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(automation_project, "ensure_node", lambda _root: node)
+    monkeypatch.setattr(
+        automation_project,
+        "_install_w64devkit",
+        lambda: observed.append((("install-w64devkit",), None)),
+    )
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, env=None, **_kwargs: observed.append((command, env)),
+    )
+
+    automation_project.bootstrap()
+
+    npm_calls = [(command, env) for command, env in observed if command[:2] == ("npm", "ci")]
+    assert len(npm_calls) == 4
+    assert all(env is not None for _command, env in npm_calls)
+    assert all(
+        env is not None
+        and env["PATH"].split(automation_project.os.pathsep, maxsplit=1)[0] == str(node.parent)
+        for _command, env in npm_calls
+    )
+    assert (("install-w64devkit",), None) in observed
+
+
 def test_candidate_prepare_defers_quality_to_candidate_bound_shards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -140,10 +179,143 @@ def test_candidate_prepare_defers_quality_to_candidate_bound_shards(
     assert observed == []
 
 
+def test_contract_gate_runs_generation_and_all_four_consumers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[tuple[str, ...], Path]] = []
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, cwd=automation_project.REPO_ROOT, **_kwargs: observed.append(
+            (command, cwd)
+        ),
+    )
+
+    assert automation_project.main(["contracts"]) == 0
+
+    assert observed == [
+        (
+            (
+                "uv",
+                "run",
+                "python",
+                "contracts/v2/generate_rpc_catalog.py",
+                "--check",
+            ),
+            automation_project.REPO_ROOT,
+        ),
+        (
+            (
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "pytest",
+                "tests/contract/test_v2_contracts.py",
+                "tests/backend/contracts/test_workspace_v2_models.py",
+                "-q",
+                "--no-cov",
+            ),
+            automation_project.REPO_ROOT,
+        ),
+        (
+            (
+                "npm",
+                "run",
+                "test",
+                "--",
+                "src/contracts/workspaceV2.test.ts",
+                "src/contracts/workspaceV2Bridge.test.ts",
+            ),
+            automation_project.REPO_ROOT / "desktop" / "web-grid",
+        ),
+        (
+            (
+                "dotnet",
+                "test",
+                "desktop/tests/VibeTable.Contracts.Tests/VibeTable.Contracts.Tests.csproj",
+                "--configuration",
+                "Release",
+                "--no-restore",
+            ),
+            automation_project.REPO_ROOT,
+        ),
+        (
+            ("go", "test", "./internal/contracts/v2", "./internal/protocolv2"),
+            automation_project.REPO_ROOT / "sidecar",
+        ),
+    ]
+
+
+def test_full_quality_starts_with_the_stable_contract_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[tuple[str, ...], Path]] = []
+    monkeypatch.delenv("VIBETABLE_CI_PREPARE_MODE", raising=False)
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, cwd=automation_project.REPO_ROOT, **_kwargs: observed.append(
+            (command, cwd)
+        ),
+    )
+
+    automation_project.quality()
+
+    assert [command for command, _cwd in observed[:5]] == [
+        (
+            "uv",
+            "run",
+            "python",
+            "contracts/v2/generate_rpc_catalog.py",
+            "--check",
+        ),
+        (
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "pytest",
+            "tests/contract/test_v2_contracts.py",
+            "tests/backend/contracts/test_workspace_v2_models.py",
+            "-q",
+            "--no-cov",
+        ),
+        (
+            "npm",
+            "run",
+            "test",
+            "--",
+            "src/contracts/workspaceV2.test.ts",
+            "src/contracts/workspaceV2Bridge.test.ts",
+        ),
+        (
+            "dotnet",
+            "test",
+            "desktop/tests/VibeTable.Contracts.Tests/VibeTable.Contracts.Tests.csproj",
+            "--configuration",
+            "Release",
+            "--no-restore",
+        ),
+        ("go", "test", "./internal/contracts/v2", "./internal/protocolv2"),
+    ]
+    assert (
+        ("uv", "run", "python", "-m", "pyright", "backend"),
+        automation_project.REPO_ROOT,
+    ) in observed
+    assert (
+        ("uv", "run", "python", "-m", "mypy", "backend"),
+        automation_project.REPO_ROOT,
+    ) in observed
+    assert any(command[:5] == ("uv", "run", "python", "-m", "pytest") for command, _ in observed)
+
+
 def test_full_release_smoke_installs_the_race_toolchain_at_its_consumption_point(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from tests.e2e import legacy_candidate_upgrade
+
     observed: list[str | tuple[str, ...]] = []
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
@@ -151,6 +323,16 @@ def test_full_release_smoke_installs_the_race_toolchain_at_its_consumption_point
     monkeypatch.setattr(automation_project, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(automation_project, "read_project_version", lambda _root: "1.2.3")
     monkeypatch.setattr(automation_project, "_verify_release_metadata", lambda *_args: None)
+    monkeypatch.setattr(
+        legacy_candidate_upgrade,
+        "ensure_legacy_candidate",
+        lambda _root: tmp_path / "legacy-package",
+    )
+    monkeypatch.setattr(
+        legacy_candidate_upgrade,
+        "current_candidate_root",
+        lambda _root: tmp_path / "current-package",
+    )
     monkeypatch.setattr(
         automation_project,
         "_install_w64devkit",
@@ -167,6 +349,14 @@ def test_full_release_smoke_installs_the_race_toolchain_at_its_consumption_point
     assert observed[0] == "w64devkit"
     assert isinstance(observed[1], tuple)
     assert observed[1][0:4] == ("uv", "run", "python", "qa/next.py")
+    assert isinstance(observed[2], tuple)
+    assert observed[2][0:5] == (
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "tests.e2e.legacy_candidate_upgrade",
+    )
 
 
 def test_publish_checkout_keeps_job_token_for_git_tag_push() -> None:
@@ -362,6 +552,86 @@ def test_smoke_lane_binds_report_to_the_declared_candidate(
     assert command[1:5] == ("qa/next.py", "--lane", "race-a", "--package-root")
     assert "--package-archive" in command
     assert command[-2:] == ("--json-report", str(report))
+
+
+def test_sharded_core_lane_runs_candidate_bound_legacy_upgrade_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    report = tmp_path / "lane-reports" / "core.json"
+    observed: list[Path] = []
+    legacy_report = {
+        "ok": True,
+        "evidenceKind": "packaged-sidecar-run",
+    }
+    monkeypatch.setenv("AUTOMATION_ARTIFACTS_DIR", str(artifacts))
+    monkeypatch.setattr(automation_project, "read_project_version", lambda _root: "1.2.3")
+    monkeypatch.setattr(automation_project, "_verify_release_metadata", lambda *_args: None)
+    monkeypatch.setattr(automation_project, "_prepare_smoke_lane", lambda _lane: None)
+
+    def run_lane(*_args: str, **_kwargs: object) -> None:
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(
+            json.dumps({"schemaVersion": 1, "reportKind": "lane", "lane": "core"}),
+            encoding="utf-8",
+        )
+
+    def run_legacy(evidence_root: Path) -> Path:
+        observed.append(evidence_root)
+        evidence_root.mkdir()
+        legacy_path = evidence_root / "report.json"
+        legacy_path.write_text(json.dumps(legacy_report), encoding="utf-8")
+        return legacy_path
+
+    monkeypatch.setattr(automation_project, "_run", run_lane)
+    monkeypatch.setattr(
+        automation_project,
+        "_run_legacy_candidate_upgrade",
+        run_legacy,
+    )
+
+    automation_project.release_smoke_lane("core", report)
+
+    assert observed == [report.parent / "legacy-candidate-upgrade"]
+    lane_report = json.loads(report.read_text(encoding="utf-8"))
+    assert lane_report["legacyCandidateUpgrade"] == {
+        "reportPath": "legacy-candidate-upgrade/report.json",
+        "evidence": legacy_report,
+    }
+
+
+def test_smoke_aggregate_rejects_failed_embedded_legacy_upgrade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    reports = tmp_path / "lane-reports"
+    reports.mkdir()
+    (reports / "core.json").write_text(
+        json.dumps(
+            {
+                "lane": "core",
+                "legacyCandidateUpgrade": {
+                    "reportPath": "legacy-candidate-upgrade/report.json",
+                    "evidence": {
+                        "ok": False,
+                        "evidenceKind": "packaged-sidecar-run",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AUTOMATION_ARTIFACTS_DIR", str(artifacts))
+    monkeypatch.setattr(automation_project, "read_project_version", lambda _root: "1.2.3")
+    monkeypatch.setattr(automation_project, "_verify_release_metadata", lambda *_args: None)
+    monkeypatch.setattr(automation_project, "_run", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match=r"legacy candidate upgrade.*ok=true"):
+        automation_project.aggregate_release_smoke(reports)
 
 
 def test_spdx_is_derived_from_the_built_package_sbom(

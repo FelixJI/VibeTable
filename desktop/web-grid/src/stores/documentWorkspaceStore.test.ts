@@ -53,4 +53,26 @@ describe("documentWorkspaceStore", () => {
     expect(wire).not.toContain("pb_data");
     expect(wire).not.toMatch(/[a-z]:\\\\/);
   });
+
+  it("drops a cancelled or superseded diff result by generation", () => {
+    const store = useDocumentWorkspaceStore();
+    store.setEntries(entries);
+    const generation = store.beginDiff(
+      "a",
+      "44444444-4444-4444-8444-444444444444",
+      "55555555-5555-4555-8555-555555555555",
+    );
+    expect(store.diffPhase).toBe("busy");
+    store.cancelDiff();
+    expect(store.completeDiff(generation, {
+      entryHandle: "a",
+      historicalRevisionId: "44444444-4444-4444-8444-444444444444",
+      effectiveRevisionId: "55555555-5555-4555-8555-555555555555",
+      outcome: "changed",
+      addedLines: null,
+      removedLines: null,
+      failure: null,
+    })).toBe(false);
+    expect(store.diffResult).toBeNull();
+  });
 });

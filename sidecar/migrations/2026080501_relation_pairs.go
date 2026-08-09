@@ -17,10 +17,16 @@ var relationPairFieldUpgrades = map[string][]internalField{
 	},
 }
 
+var relationPairCollectionOrder = []string{
+	"vibetable_relations",
+	"vibetable_tables",
+}
+
 func init() {
 	m.Register(
 		func(app core.App) error {
-			for collectionName, fields := range relationPairFieldUpgrades {
+			for _, collectionName := range relationPairCollectionOrder {
+				fields := relationPairFieldUpgrades[collectionName]
 				collection, err := app.FindCollectionByNameOrId(collectionName)
 				if err != nil {
 					return fmt.Errorf("find %s for relation pairs: %w", collectionName, err)
@@ -33,11 +39,20 @@ func init() {
 				if err := app.Save(collection); err != nil {
 					return fmt.Errorf("extend %s for relation pairs: %w", collectionName, err)
 				}
+				if collectionName == "vibetable_relations" {
+					if err := triggerStartupMigrationFault(
+						"2026080501_relation_pairs",
+						"after-relations",
+					); err != nil {
+						return err
+					}
+				}
 			}
 			return nil
 		},
 		func(app core.App) error {
-			for collectionName, fields := range relationPairFieldUpgrades {
+			for _, collectionName := range relationPairCollectionOrder {
+				fields := relationPairFieldUpgrades[collectionName]
 				collection, err := app.FindCollectionByNameOrId(collectionName)
 				if err != nil {
 					continue

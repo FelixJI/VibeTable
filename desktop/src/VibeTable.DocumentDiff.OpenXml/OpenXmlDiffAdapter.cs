@@ -18,7 +18,7 @@ namespace VibeTable.DocumentDiff.OpenXml;
 /// a future enhancement; the hash comparison always catches structural
 /// changes even when line-level detail is not available.
 /// </summary>
-public sealed class OpenXmlDiffAdapter : IDocumentDiffAdapter
+internal sealed class OpenXmlDiffAdapter : IDocumentDiffAdapter
 {
     public IReadOnlyCollection<string> SupportedMimeTypes { get; } = new[]
     {
@@ -34,32 +34,51 @@ public sealed class OpenXmlDiffAdapter : IDocumentDiffAdapter
 
     public DiffResult Diff(string pathA, string pathB)
     {
-        // Extract text lines from both Open XML packages.
-        var linesA = ExtractTextLines(pathA);
-        var linesB = ExtractTextLines(pathB);
+        var outcome = new OpenXmlDocumentDiffEngine().CompareAsync(
+            new DocumentDiffRequest(FileSource(pathA), FileSource(pathB)),
+            CancellationToken.None).GetAwaiter().GetResult();
+        return outcome.Kind switch
+        {
+            DocumentDiffOutcomeKind.Identical => DiffResult.Unchanged,
+            DocumentDiffOutcomeKind.Changed => new DiffResult(
+                DiffSummaryKind.Changed,
+                AddedLines: 0,
+                RemovedLines: 0,
+                Summary: "changed"),
+            DocumentDiffOutcomeKind.ChangedWithDetails => new DiffResult(
+                DiffSummaryKind.ChangedWithDetails,
+                AddedLines: outcome.AddedLines ?? 0,
+                RemovedLines: outcome.RemovedLines ?? 0,
+                Summary: $"{outcome.AddedLines ?? 0} line(s) added, "
+                    + $"{outcome.RemovedLines ?? 0} line(s) removed"),
+            _ => throw new InvalidOperationException($"legacy OpenXml diff failed: {outcome.Failure}"),
+        };
+    }
 
-        if (linesA.Count == 0 && linesB.Count == 0)
-        {
-            // Fall back to binary comparison if no text was extracted.
-            var binAdapter = new BinaryDiffAdapter();
-            return binAdapter.Diff(pathA, pathB);
-        }
+    private static DocumentContentSource FileSource(string path)
+    {
+        return new DocumentContentSource(
+            Path.GetFileName(path),
+            MimeType(path),
+            new FileInfo(path).Length,
+            _ => ValueTask.FromResult<Stream>(new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 64 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan)));
+    }
 
-        // Use the TextDiffAdapter's LCS algorithm for line diff.
-        var textAdapter = new TextDiffAdapter();
-        var tempA = Path.GetTempFileName();
-        var tempB = Path.GetTempFileName();
-        try
+    private static string? MimeType(string path)
+    {
+        return Path.GetExtension(path).ToLowerInvariant() switch
         {
-            File.WriteAllLines(tempA, linesA);
-            File.WriteAllLines(tempB, linesB);
-            return textAdapter.Diff(tempA, tempB);
-        }
-        finally
-        {
-            try { File.Delete(tempA); } catch { }
-            try { File.Delete(tempB); } catch { }
-        }
+            ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            _ => null,
+        };
     }
 
     /// <summary>

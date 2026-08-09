@@ -101,6 +101,8 @@ public sealed class WebMessageRouter
         "document.dragOutRequested",
         "document.openRequested",
         "document.previewRequested",
+        "document.diffRequested",
+        "document.diffCancelRequested",
         "document.revealRequested",
         "document.relinkRequested",
         // Native-file attachment actions. File paths arrive only as WebView2
@@ -181,6 +183,8 @@ public sealed class WebMessageRouter
         "dashboard.deleted",
         "document.listLoaded",
         "document.actionCompleted",
+        "document.diffCompleted",
+        "document.diffCancelCompleted",
         "document.operationFailed",
         "document.workspaceChanged",
         // Correlated native attachment action acknowledgements.
@@ -257,6 +261,7 @@ public sealed class WebMessageRouter
             ["fileHistory.activateLeaf"] = "workspace",
             ["fileHistory.applyPendingChange"] = "workspace",
             ["retention.get"] = "workspace",
+            ["retention.status"] = "workspace",
             ["retention.update"] = "workspace",
             ["retention.plan"] = "workspace",
             ["retention.apply"] = "workspace",

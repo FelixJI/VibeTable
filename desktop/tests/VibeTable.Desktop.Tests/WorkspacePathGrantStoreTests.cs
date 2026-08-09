@@ -124,6 +124,109 @@ public sealed class WorkspacePathGrantStoreTests
             "History restore preview is read-only.");
     }
 
+    [TestMethod]
+    public void TestModePickerReadsEveryFixedControlWithoutOpeningNativeDialogs()
+    {
+        string controls = CreateControlsDirectory();
+        try
+        {
+            string root = Path.Combine(controls, "workspace-root");
+            string exports = Path.Combine(controls, "exports");
+            string extracts = Path.Combine(controls, "extracts");
+            string imported = Path.Combine(controls, "source.vtsnapshot");
+            string upgrade = Path.Combine(controls, "upgrade.bin");
+            Directory.CreateDirectory(root);
+            Directory.CreateDirectory(exports);
+            Directory.CreateDirectory(extracts);
+            File.WriteAllText(imported, "package");
+            File.WriteAllText(upgrade, "upgrade");
+            WriteControl(controls, "workspace-root.txt", root);
+            WriteControl(controls, "snapshot-export-target.txt", Path.Combine(exports, "out.vtsnapshot"));
+            WriteControl(controls, "snapshot-import-source.txt", imported);
+            WriteControl(controls, "snapshot-extract-target.txt", Path.Combine(extracts, "document.docx"));
+            WriteControl(controls, "file-upgrade-source.txt", upgrade);
+
+            var picker = new TestModeWorkspacePathPicker(controls);
+
+            Assert.AreEqual(Path.GetFullPath(root), picker.PickWorkspaceRoot());
+            Assert.AreEqual(
+                Path.GetFullPath(Path.Combine(exports, "out.vtsnapshot")),
+                picker.PickSnapshotExportTarget());
+            Assert.AreEqual(Path.GetFullPath(imported), picker.PickSnapshotImportSource());
+            Assert.AreEqual(
+                Path.GetFullPath(Path.Combine(extracts, "document.docx")),
+                picker.PickSnapshotExtractTarget());
+            Assert.AreEqual(Path.GetFullPath(upgrade), picker.PickFileUpgradeSource());
+        }
+        finally
+        {
+            Directory.Delete(controls, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void TestModePickerFailsClosedForMissingOrEmptyControl()
+    {
+        string controls = CreateControlsDirectory();
+        try
+        {
+            var picker = new TestModeWorkspacePathPicker(controls);
+
+            WorkspacePathGrantException missing = Assert.ThrowsExactly<WorkspacePathGrantException>(
+                picker.PickWorkspaceRoot);
+            Assert.AreEqual("workspace.test_control_missing", missing.Code);
+
+            WriteControl(controls, "workspace-root.txt", "   ");
+            WorkspacePathGrantException empty = Assert.ThrowsExactly<WorkspacePathGrantException>(
+                picker.PickWorkspaceRoot);
+            Assert.AreEqual("workspace.test_control_invalid", empty.Code);
+        }
+        finally
+        {
+            Directory.Delete(controls, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void TestModePickerRejectsMissingSourceFilesAndOutputParents()
+    {
+        string controls = CreateControlsDirectory();
+        try
+        {
+            WriteControl(controls, "snapshot-import-source.txt", Path.Combine(controls, "missing.vtsnapshot"));
+            WriteControl(controls, "file-upgrade-source.txt", Path.Combine(controls, "missing.bin"));
+            WriteControl(controls, "snapshot-export-target.txt", Path.Combine(controls, "missing", "out.vtsnapshot"));
+            var picker = new TestModeWorkspacePathPicker(controls);
+
+            Assert.AreEqual(
+                "workspace.test_control_source_missing",
+                Assert.ThrowsExactly<WorkspacePathGrantException>(
+                    picker.PickSnapshotImportSource).Code);
+            Assert.AreEqual(
+                "workspace.test_control_source_missing",
+                Assert.ThrowsExactly<WorkspacePathGrantException>(
+                    picker.PickFileUpgradeSource).Code);
+            Assert.AreEqual(
+                "workspace.test_control_parent_missing",
+                Assert.ThrowsExactly<WorkspacePathGrantException>(
+                    picker.PickSnapshotExportTarget).Code);
+        }
+        finally
+        {
+            Directory.Delete(controls, recursive: true);
+        }
+    }
+
+    private static string CreateControlsDirectory()
+    {
+        string controls = Path.Combine(Path.GetTempPath(), "vibetable-picker-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(controls);
+        return controls;
+    }
+
+    private static void WriteControl(string controls, string name, string value) =>
+        File.WriteAllText(Path.Combine(controls, name), value + Environment.NewLine);
+
     private sealed class FakePicker : IWorkspacePathPicker
     {
         public string? WorkspaceRoot { get; init; }

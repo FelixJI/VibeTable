@@ -1,0 +1,35 @@
+{
+  "formatVersion": 1,
+  "candidate": {
+    "commit": "ff95d26d827939335e4c903c889f00fc0b97abf1",
+    "version": "0.1.0",
+    "schemaVersion": 5,
+    "packageRootEnvironment": "VIBETABLE_LEGACY_CANDIDATE_ROOT",
+    "buildCommands": [
+      ["uv", "sync", "--frozen", "--group", "dev", "--group", "build"],
+      ["npm", "--prefix", "desktop/web-grid", "ci"],
+      ["uv", "run", "python", "scripts/build_next.py", "--release"]
+    ],
+    "migrationFiles": [
+      "2026072401_bootstrap.go",
+      "2026072402_internal_collections.go",
+      "2026072403_internal_metadata_channel.go",
+      "2026072404_realtime_outbox_retention.go",
+      "2026072805_audit_outbox.go"
+    ]
+  },
+  "target": {
+    "minimumSchemaVersion": 7,
+    "packageRootEnvironment": "VIBETABLE_CURRENT_CANDIDATE_ROOT",
+    "defaultPackageRoot": "dist/VibeTable.Next",
+    "startupFaultEnvironment": "VIBETABLE_E2E_STARTUP_MIGRATION_FAULT_FILE",
+    "pendingMigrations": [
+      "2026072801_field_settings_v2_metadata.go",
+      "2026080501_relation_pairs.go"
+    ]
+  },
+  "rollbackBoundary": {
+    "beforeNewSchemaWrites": "old-binary-with-pre-upgrade-copy",
+    "afterNewSchemaWrites": "forward-fix-or-export-only"
+  }
+}

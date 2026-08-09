@@ -13,6 +13,7 @@ Replica、Retention 与 Conflict 跨进程契约的语言中立来源。
 - 更新 registry 后运行：
 
   ```powershell
-  python contracts/v2/generate_rpc_catalog.py
-  python contracts/v2/generate_rpc_catalog.py --check
+  uv run python contracts/v2/generate_rpc_catalog.py
+  uv run python contracts/v2/generate_rpc_catalog.py --check
+  uv run python scripts/automation_project.py contracts
   ```

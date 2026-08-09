@@ -133,6 +133,36 @@ def test_v2_catalog_is_generated_and_workspace_scopes_are_complete() -> None:
     assert {case["topic"] for case in catalog["eventCases"]} == set(catalog["eventTopics"])
 
 
+def test_diff_materialization_rpcs_are_closed_host_contracts() -> None:
+    catalog = _load(FIXTURES / "rpc-catalog.json")
+    assert isinstance(catalog, dict)
+    cases = {case["method"]: case for case in catalog["rpcCases"]}
+    materialize = cases["fileHistory.materializeDiffPair"]
+    assert set(materialize["paramsSchema"]["properties"]) == {
+        "documentId",
+        "historicalRevisionId",
+        "expectedEffectiveRevisionId",
+        "pathGrant",
+    }
+    assert set(materialize["resultSchema"]["properties"]) == {
+        "documentId",
+        "historicalRevisionId",
+        "effectiveRevisionId",
+        "historicalMimeType",
+        "effectiveMimeType",
+    }
+    assertion = cases["fileHistory.assertEffectiveRevision"]
+    assert set(assertion["paramsSchema"]["properties"]) == {
+        "documentId",
+        "expectedEffectiveRevisionId",
+    }
+    assert set(assertion["resultSchema"]["properties"]) == {
+        "documentId",
+        "effectiveRevisionId",
+        "stable",
+    }
+
+
 def test_workspace_create_location_policy_is_strict_and_grant_is_explicit() -> None:
     catalog = _load(FIXTURES / "rpc-catalog.json")
     create = next(case for case in catalog["rpcCases"] if case["method"] == "workspace.create")

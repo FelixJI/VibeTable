@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json;
 using VibeTable.Contracts;
+using VibeTable.Workspace.Diff;
 
 namespace VibeTable.Desktop.Services;
 
@@ -14,12 +15,18 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
     public const string ListDocumentsMethod = "fileHistory.listDocuments";
     public const string ImportDocumentMethod = "fileHistory.import";
     public const string RelinkDocumentMethod = "fileHistory.relink";
+    public const string MaterializeDiffPairMethod =
+        "fileHistory.materializeDiffPair";
+    public const string AssertEffectiveRevisionMethod =
+        "fileHistory.assertEffectiveRevision";
 
     private readonly Func<WorkspaceDocumentBinding?> _bindingProvider;
     private readonly DocumentCapabilityStore _capabilities;
     private readonly ILocalDocumentActions _actions;
     private readonly ILocalDocumentPreview _preview;
     private readonly ILocalDocumentFilePicker _filePicker;
+    private readonly IWorkspaceHostEpochLeaseSource? _epochLeaseSource;
+    private readonly WorkspaceDocumentDiffCoordinator? _diffCoordinator;
     private long _sequence;
     private bool _disposed;
 
@@ -29,6 +36,27 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
         ILocalDocumentActions actions,
         ILocalDocumentPreview preview,
         ILocalDocumentFilePicker filePicker)
+        : this(
+            bindingProvider,
+            capabilities,
+            actions,
+            preview,
+            filePicker,
+            epochLeaseSource: null,
+            diffEngine: null,
+            diffTempRoot: null)
+    {
+    }
+
+    internal WorkspaceDocumentOsAdapter(
+        Func<WorkspaceDocumentBinding?> bindingProvider,
+        DocumentCapabilityStore capabilities,
+        ILocalDocumentActions actions,
+        ILocalDocumentPreview preview,
+        ILocalDocumentFilePicker filePicker,
+        IWorkspaceHostEpochLeaseSource? epochLeaseSource,
+        IDocumentDiffEngine? diffEngine,
+        string? diffTempRoot)
     {
         _bindingProvider = bindingProvider
             ?? throw new ArgumentNullException(nameof(bindingProvider));
@@ -38,6 +66,22 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
         _preview = preview ?? throw new ArgumentNullException(nameof(preview));
         _filePicker = filePicker
             ?? throw new ArgumentNullException(nameof(filePicker));
+        _epochLeaseSource = epochLeaseSource;
+        if (diffEngine is not null && !string.IsNullOrWhiteSpace(diffTempRoot))
+        {
+            if (epochLeaseSource is null)
+                throw new ArgumentException(
+                    "Document diff requires a workspace epoch lease source.");
+            _diffCoordinator = new WorkspaceDocumentDiffCoordinator(
+                epochLeaseSource,
+                diffEngine,
+                diffTempRoot);
+        }
+        else if (diffEngine is not null || diffTempRoot is not null)
+        {
+            throw new ArgumentException(
+                "Document diff dependencies must be configured together.");
+        }
     }
 
     public async Task<DocumentListPayload> ListGlobalAsync(
@@ -79,6 +123,30 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
 
     public string ResolveDragOutPath(string handle)
         => ResolveExisting(handle, "dragOut");
+
+    public Task<DocumentDiffPayload> CompareAsync(
+        string handle,
+        string historicalRevisionId,
+        string expectedEffectiveRevisionId,
+        CancellationToken cancellationToken)
+    {
+        WorkspaceDocumentBinding binding = RequireBinding();
+        DocumentCapabilityDescriptor descriptor = Resolve(
+            handle,
+            "diff",
+            binding);
+        if (_diffCoordinator is null)
+            throw new DocumentFileOperationException(
+                "当前桌面宿主未提供文档比较能力。",
+                "DOCUMENT_DIFF_UNAVAILABLE");
+        return _diffCoordinator.CompareAsync(
+            binding,
+            descriptor,
+            handle,
+            historicalRevisionId,
+            expectedEffectiveRevisionId,
+            cancellationToken);
+    }
 
     public async Task<WorkspaceDocumentImportResult?> ImportFromPickerAsync(
         CancellationToken cancellationToken)
@@ -168,16 +236,13 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
 
         string requestId = $"desktop-documents-{Guid.NewGuid():N}";
         Guid operationId = Guid.NewGuid();
-        ulong sequence = checked((ulong)Interlocked.Increment(ref _sequence));
-        JsonElement wire = JsonSerializer.SerializeToElement(
-            new
-            {
-                scope = "workspace",
-                operationId = operationId.ToString("D"),
-                sequence,
-                workspaceId = binding.WorkspaceId.ToString("D"),
-                sessionEpoch = binding.SessionEpoch,
-            });
+        using WorkspaceRequestEpochLease? lease = CaptureEpochLease(
+            binding,
+            operationId);
+        using CancellationTokenSource? linkedCancellation = LinkCancellation(
+            lease,
+            cancellationToken);
+        JsonElement wire = CreateWire(binding, operationId, lease);
         JsonElement parameters = JsonSerializer.SerializeToElement(
             new { includeDeleted = false });
         WorkspaceV2ForwardResult response = await binding.Gateway.ForwardAsync(
@@ -186,7 +251,8 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
             wire,
             parameters,
             pathGrant: null,
-            cancellationToken).ConfigureAwait(false);
+            linkedCancellation?.Token ?? cancellationToken).ConfigureAwait(false);
+        RequireCurrentLease(lease);
         if (response.Error is not null)
             throw new DocumentFileOperationException(
                 "Sidecar 未能读取文档列表。",
@@ -231,6 +297,17 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
         bool available = File.Exists(fullPath) &&
             IsSafeMaterializedPath(binding.Root, fullPath);
         var granted = new List<string> { "history" };
+        if (_diffCoordinator is not null &&
+            document.EffectiveRevisionId is not null &&
+            binding.RpcMethods.Contains(
+                MaterializeDiffPairMethod,
+                StringComparer.Ordinal) &&
+            binding.RpcMethods.Contains(
+                AssertEffectiveRevisionMethod,
+                StringComparer.Ordinal))
+        {
+            granted.Add("diff");
+        }
         string previewKind = "none";
         if (available)
         {
@@ -327,7 +404,13 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
             "pathGrant",
             JsonSerializer.SerializeToElement(grantId));
         JsonElement parameters = JsonSerializer.SerializeToElement(parameterMap);
-        JsonElement wire = CreateWire(binding, operationId);
+        using WorkspaceRequestEpochLease? lease = CaptureEpochLease(
+            binding,
+            operationId);
+        using CancellationTokenSource? linkedCancellation = LinkCancellation(
+            lease,
+            cancellationToken);
+        JsonElement wire = CreateWire(binding, operationId, lease);
         WorkspaceV2ForwardResult response = await binding.Gateway.ForwardAsync(
             $"desktop-file-{operationId:N}",
             method,
@@ -339,7 +422,8 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
                 operationId,
                 purpose,
                 source),
-            cancellationToken).ConfigureAwait(false);
+            linkedCancellation?.Token ?? cancellationToken).ConfigureAwait(false);
+        RequireCurrentLease(lease);
         if (response.Error is not null)
             throw new DocumentFileOperationException(
                 "Sidecar 未能完成文件写入。",
@@ -364,17 +448,56 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
 
     private JsonElement CreateWire(
         WorkspaceDocumentBinding binding,
-        Guid operationId)
-        => JsonSerializer.SerializeToElement(
+        Guid operationId,
+        WorkspaceRequestEpochLease? lease)
+    {
+        WorkspaceWireScope? scope = lease?.Scope;
+        return JsonSerializer.SerializeToElement(
             new
             {
                 scope = "workspace",
-                operationId = operationId.ToString("D"),
-                sequence = checked(
+                operationId = (scope?.OperationId ?? operationId).ToString("D"),
+                sequence = scope?.Sequence ?? checked(
                     (ulong)Interlocked.Increment(ref _sequence)),
-                workspaceId = binding.WorkspaceId.ToString("D"),
-                sessionEpoch = binding.SessionEpoch,
+                workspaceId = (scope?.WorkspaceId ?? binding.WorkspaceId).ToString("D"),
+                sessionEpoch = scope?.SessionEpoch ?? binding.SessionEpoch,
             });
+    }
+
+    private WorkspaceRequestEpochLease? CaptureEpochLease(
+        WorkspaceDocumentBinding binding,
+        Guid operationId)
+    {
+        if (_epochLeaseSource is null)
+            return null;
+        if (!_epochLeaseSource.TryCaptureHost(
+                binding.WorkspaceId,
+                binding.SessionEpoch,
+                operationId,
+                out WorkspaceRequestEpochLease? lease) ||
+            lease is null)
+            throw new DocumentFileOperationException(
+                "工作区会话已切换，请刷新后重试。",
+                "DOCUMENT_SESSION_STALE");
+        return lease;
+    }
+
+    private static CancellationTokenSource? LinkCancellation(
+        WorkspaceRequestEpochLease? lease,
+        CancellationToken cancellationToken)
+        => lease is null
+            ? null
+            : CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                lease.CancellationToken);
+
+    private void RequireCurrentLease(WorkspaceRequestEpochLease? lease)
+    {
+        if (lease is not null && !_epochLeaseSource!.IsCurrent(lease))
+            throw new DocumentFileOperationException(
+                "工作区会话已切换，请刷新后重试。",
+                "DOCUMENT_SESSION_STALE");
+    }
 
     private string ResolveExisting(string handle, string capability)
     {
@@ -574,3 +697,12 @@ public sealed record DocumentListPayload(
     string? Collection,
     string? ItemId,
     IReadOnlyList<DocumentBridgeEntry> Entries);
+
+public sealed record DocumentDiffPayload(
+    string EntryHandle,
+    string HistoricalRevisionId,
+    string EffectiveRevisionId,
+    string Outcome,
+    int? AddedLines,
+    int? RemovedLines,
+    string? Failure);

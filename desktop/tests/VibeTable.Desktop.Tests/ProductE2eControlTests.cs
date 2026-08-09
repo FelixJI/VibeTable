@@ -80,4 +80,49 @@ public sealed class ProductE2eControlTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [TestMethod]
+    public async Task DocumentPicker_ReadsOnlyFixedControlFile()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            $"vibetable-document-e2e-control-{Guid.NewGuid():N}");
+        string controls = Path.Combine(root, "controls");
+        string document = Path.Combine(root, "diff-source.txt");
+        Directory.CreateDirectory(controls);
+        await File.WriteAllTextAsync(document, "historical content\n");
+        await File.WriteAllTextAsync(
+            Path.Combine(controls, "document-source.txt"),
+            document);
+
+        try
+        {
+            var picker = new TestModeLocalDocumentFilePicker(controls);
+
+            string? selected = await picker.PickFileAsync(
+                DocumentFilePickPurpose.Import,
+                suggestedFileName: null,
+                CancellationToken.None);
+
+            Assert.AreEqual(Path.GetFullPath(document), selected);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void WorkspacePathPicker_CompositionUsesControlsOnlyInTestMode()
+    {
+        HostStartupOptions testMode = HostStartupOptions.Parse(
+            ["--test-mode", "--e2e-controls-dir", @"C:\controls"]);
+        HostStartupOptions production = HostStartupOptions.Parse(
+            ["--e2e-controls-dir", @"C:\controls"]);
+
+        Assert.IsInstanceOfType<TestModeWorkspacePathPicker>(
+            VibeTable.Desktop.MainWindow.CreateWorkspacePathPicker(testMode));
+        Assert.IsInstanceOfType<WindowsWorkspacePathPicker>(
+            VibeTable.Desktop.MainWindow.CreateWorkspacePathPicker(production));
+    }
 }

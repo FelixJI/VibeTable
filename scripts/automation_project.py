@@ -20,8 +20,10 @@ import urllib.request
 from pathlib import Path
 
 try:
+    from scripts.node_toolchain import ensure_node
     from scripts.versioning import read_project_version
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    from node_toolchain import ensure_node
     from versioning import read_project_version
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -108,10 +110,54 @@ def _install_w64devkit() -> None:
 def bootstrap() -> None:
     candidate_prepare = _candidate_prepare_mode()
     _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
+    node = ensure_node(REPO_ROOT)
+    node_env = {"PATH": os.pathsep.join((str(node.parent), os.environ.get("PATH", "")))}
     projects = (Path("desktop/web-grid"),) if candidate_prepare else NPM_PROJECTS
     for project in projects:
-        _run("npm", "ci", cwd=REPO_ROOT / project)
+        _run("npm", "ci", cwd=REPO_ROOT / project, env=node_env)
     _run("dotnet", "restore", "desktop/VibeTable.Desktop.sln")
+    if not candidate_prepare:
+        _install_w64devkit()
+
+
+def contracts() -> None:
+    """Verify the shared v2 wire contract through every runtime consumer."""
+    _run("uv", "run", "python", "contracts/v2/generate_rpc_catalog.py", "--check")
+    _run(
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "pytest",
+        "tests/contract/test_v2_contracts.py",
+        "tests/backend/contracts/test_workspace_v2_models.py",
+        "-q",
+        "--no-cov",
+    )
+    _run(
+        "npm",
+        "run",
+        "test",
+        "--",
+        "src/contracts/workspaceV2.test.ts",
+        "src/contracts/workspaceV2Bridge.test.ts",
+        cwd=REPO_ROOT / "desktop" / "web-grid",
+    )
+    _run(
+        "dotnet",
+        "test",
+        "desktop/tests/VibeTable.Contracts.Tests/VibeTable.Contracts.Tests.csproj",
+        "--configuration",
+        "Release",
+        "--no-restore",
+    )
+    _run(
+        "go",
+        "test",
+        "./internal/contracts/v2",
+        "./internal/protocolv2",
+        cwd=REPO_ROOT / "sidecar",
+    )
 
 
 def quality() -> None:
@@ -121,17 +167,20 @@ def quality() -> None:
             flush=True,
         )
         return
+    contracts()
     commands = (
         ("uv", "run", "python", "scripts/release.py", "--check"),
         ("uv", "run", "python", "qa/version_check.py"),
         ("uv", "run", "python", "qa/package_check.py"),
         ("uv", "run", "ruff", "format", "--check", "."),
         ("uv", "run", "ruff", "check", "."),
-        ("uv", "run", "pyright", "backend"),
-        ("uv", "run", "mypy", "backend"),
+        ("uv", "run", "python", "-m", "pyright", "backend"),
+        ("uv", "run", "python", "-m", "mypy", "backend"),
         (
             "uv",
             "run",
+            "python",
+            "-m",
             "pytest",
             "--ignore=tests/e2e/test_next_readonly_smoke.py",
             "--junitxml=build/automation/python-junit.xml",
@@ -383,6 +432,62 @@ def release_smoke() -> None:
         "build/automation/vibetable-release-eligibility.json",
         env={"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"},
     )
+    _run_legacy_candidate_upgrade(REPO_ROOT / "build" / "automation" / "legacy-candidate-upgrade")
+
+
+def _run_legacy_candidate_upgrade(evidence_root: Path) -> Path:
+    from tests.e2e import legacy_candidate_upgrade
+
+    legacy_package_root = legacy_candidate_upgrade.ensure_legacy_candidate(REPO_ROOT)
+    current_package_root = legacy_candidate_upgrade.current_candidate_root(REPO_ROOT)
+    _run(
+        *legacy_candidate_upgrade.release_smoke_command(
+            legacy_package_root=legacy_package_root,
+            current_package_root=current_package_root,
+            evidence_root=evidence_root,
+        )
+    )
+    return evidence_root / "report.json"
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    decoded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(decoded, dict):
+        raise RuntimeError(f"JSON report must be an object: {path}")
+    return decoded
+
+
+def _attach_legacy_candidate_evidence(lane_report_path: Path, legacy_report_path: Path) -> None:
+    lane_report = _read_json_object(lane_report_path)
+    legacy_report = _read_json_object(legacy_report_path)
+    if legacy_report.get("ok") is not True:
+        raise RuntimeError("legacy candidate upgrade report must have ok=true")
+    if legacy_report.get("evidenceKind") != "packaged-sidecar-run":
+        raise RuntimeError("legacy candidate upgrade report has an unexpected evidence kind")
+    relative_path = legacy_report_path.relative_to(lane_report_path.parent).as_posix()
+    lane_report["legacyCandidateUpgrade"] = {
+        "reportPath": relative_path,
+        "evidence": legacy_report,
+    }
+    lane_report_path.write_text(
+        json.dumps(lane_report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _verify_legacy_candidate_evidence(reports_dir: Path) -> None:
+    core_report = _read_json_object(reports_dir / "core.json")
+    reference = core_report.get("legacyCandidateUpgrade")
+    if not isinstance(reference, dict):
+        raise RuntimeError("core lane report is missing legacy candidate upgrade evidence")
+    report_path = reference.get("reportPath")
+    evidence = reference.get("evidence")
+    if not isinstance(report_path, str) or not report_path:
+        raise RuntimeError("legacy candidate upgrade evidence is missing its report path")
+    if not isinstance(evidence, dict) or evidence.get("ok") is not True:
+        raise RuntimeError("legacy candidate upgrade evidence must have ok=true")
+    if evidence.get("evidenceKind") != "packaged-sidecar-run":
+        raise RuntimeError("legacy candidate upgrade evidence has an unexpected evidence kind")
 
 
 def _prepare_smoke_lane(lane: str) -> None:
@@ -417,6 +522,11 @@ def release_smoke_lane(lane: str, json_report: Path) -> None:
         str(json_report),
         env={"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"},
     )
+    if lane == "core":
+        legacy_report = _run_legacy_candidate_upgrade(
+            json_report.parent / "legacy-candidate-upgrade"
+        )
+        _attach_legacy_candidate_evidence(json_report, legacy_report)
 
 
 def aggregate_release_smoke(reports_dir: Path) -> None:
@@ -424,6 +534,7 @@ def aggregate_release_smoke(reports_dir: Path) -> None:
     artifacts = _artifacts_dir()
     archive = artifacts / f"VibeTable-v{version}-win-x64.zip"
     _verify_release_metadata(artifacts, version, archive)
+    _verify_legacy_candidate_evidence(reports_dir)
     command = [
         sys.executable,
         "qa/release_eligibility.py",
@@ -446,7 +557,15 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",
-        choices=("bootstrap", "quality", "build", "smoke", "smoke-lane", "smoke-aggregate"),
+        choices=(
+            "bootstrap",
+            "contracts",
+            "quality",
+            "build",
+            "smoke",
+            "smoke-lane",
+            "smoke-aggregate",
+        ),
     )
     parser.add_argument(
         "--lane",
@@ -463,6 +582,7 @@ def main(argv: list[str] | None = None) -> int:
     command = args.command
     actions = {
         "bootstrap": bootstrap,
+        "contracts": contracts,
         "quality": quality,
         "build": build_candidate,
         "smoke": release_smoke,

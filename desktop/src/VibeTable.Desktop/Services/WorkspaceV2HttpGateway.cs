@@ -291,12 +291,13 @@ public sealed class WorkspaceV2HttpGateway : IDisposable
             "sourceEpoch",
             "sourceSequence",
             "chainHash");
-        ulong sourceEpoch = RequiredUInt64(root, "sourceEpoch");
+        string sourceEpoch = RequiredString(root, "sourceEpoch");
         ulong sourceSequence = RequiredNonNegativeUInt64(
             root,
             "sourceSequence");
         string chainHash = RequiredString(root, "chainHash");
-        if (sourceEpoch == 0 || string.IsNullOrWhiteSpace(chainHash))
+        if (string.IsNullOrWhiteSpace(sourceEpoch)
+            || string.IsNullOrWhiteSpace(chainHash))
             throw new InvalidOperationException(
                 "Sidecar drain high-watermark is invalid.");
         return new WorkspaceDrainHighWatermark(
@@ -429,7 +430,7 @@ public sealed record WorkspaceV2ForwardError(
     bool Retryable);
 
 public sealed record WorkspaceDrainHighWatermark(
-    ulong SourceEpoch,
+    string SourceEpoch,
     ulong SourceSequence,
     string ChainHash);
 

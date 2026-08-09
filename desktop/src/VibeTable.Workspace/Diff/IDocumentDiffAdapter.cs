@@ -3,7 +3,7 @@ namespace VibeTable.Workspace.Diff;
 /// <summary>
 /// The kind of diff result produced by an adapter.
 /// </summary>
-public enum DiffSummaryKind
+internal enum DiffSummaryKind
 {
     /// <summary>Files are byte-identical.</summary>
     Unchanged,
@@ -20,7 +20,7 @@ public enum DiffSummaryKind
 /// <param name="AddedLines">Lines added (when available).</param>
 /// <param name="RemovedLines">Lines removed (when available).</param>
 /// <param name="Summary">Human-readable summary (e.g. "3 lines added, 1 removed").</param>
-public sealed record DiffResult(
+internal sealed record DiffResult(
     DiffSummaryKind Kind,
     int AddedLines,
     int RemovedLines,
@@ -38,7 +38,7 @@ public sealed record DiffResult(
 /// depends only on this interface; the OpenXml adapter lives in a separate
 /// project so the core never depends on the OpenXml SDK.
 /// </summary>
-public interface IDocumentDiffAdapter
+internal interface IDocumentDiffAdapter
 {
     /// <summary>
     /// The MIME types this adapter handles (e.g. "text/plain", "text/csv").

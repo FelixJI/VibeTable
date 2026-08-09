@@ -7,7 +7,7 @@ namespace VibeTable.Workspace.Diff;
 /// its MIME type and extension. Falls back to <see cref="BinaryDiffAdapter"/>
 /// for unknown formats.
 /// </summary>
-public sealed class DiffAdapterRegistry
+internal sealed class DiffAdapterRegistry
 {
     private readonly List<IDocumentDiffAdapter> _adapters;
     private readonly BinaryDiffAdapter _fallback = new();

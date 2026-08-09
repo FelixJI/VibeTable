@@ -202,6 +202,44 @@ function fakeBridge() {
 describe("workspace v2 production host adapter", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
+  it("does not request replica status for a direct repository", async () => {
+    const fake = fakeBridge();
+    createWorkspaceV2HostAdapter(fake.bridge);
+    fake.handlers.get("workspace.v2.bootstrap")!({
+      ...bootstrap(),
+      storage: {
+        location: "D:\\Workspaces\\Quarter",
+        activityRoot: "D:\\Workspaces\\Quarter",
+        mode: "direct",
+        provider: "fixed",
+        health: "healthy",
+        logicalSize: 0,
+        physicalSize: 0,
+        reclaimableSize: 0,
+        encryption: "none",
+        keyVersion: 1,
+        pendingSync: false,
+        replicaVerified: false,
+      },
+    });
+
+    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(6));
+    expect(fake.request.mock.calls.map((call) => call[1].method)).toEqual([
+      "snapshot.list",
+      "fileHistory.listDocuments",
+      "fileHistory.listPendingChanges",
+      "retention.get",
+      "retention.status",
+      "conflict.list",
+    ]);
+    fake.handlers.get("workspace.v2.bootstrap")!({
+      ...bootstrap(),
+      storage: useWorkspaceProtectionStore().storage,
+    });
+    await Promise.resolve();
+    expect(fake.request).toHaveBeenCalledTimes(6);
+  });
+
   it("binds the closed host topics and strictly projects bootstrap state", () => {
     const fake = fakeBridge();
     const adapter = createWorkspaceV2HostAdapter(fake.bridge);
@@ -234,6 +272,8 @@ describe("workspace v2 production host adapter", () => {
     const fake = fakeBridge();
     const { port } = createWorkspaceV2HostAdapter(fake.bridge);
     fake.handlers.get("workspace.v2.bootstrap")!(bootstrap());
+    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(6));
+    fake.request.mockClear();
 
     await port.request({
       method: "snapshot.update",
@@ -258,7 +298,9 @@ describe("workspace v2 production host adapter", () => {
         sequence: expect.any(Number),
       },
     });
-    expect(useWorkspaceProtectionStore().snapshots[0]).toMatchObject({
+    expect(useWorkspaceProtectionStore().snapshots.find(
+      (snapshot) => snapshot.snapshotId === SNAPSHOT_ID,
+    )).toMatchObject({
       pinned: false,
       catalogRevision: 4,
     });
@@ -277,6 +319,8 @@ describe("workspace v2 production host adapter", () => {
     const fake = fakeBridge();
     const { port } = createWorkspaceV2HostAdapter(fake.bridge);
     fake.handlers.get("workspace.v2.bootstrap")!(bootstrap());
+    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(6));
+    fake.request.mockClear();
 
     await port.request({
       method: "snapshot.request",
@@ -296,6 +340,8 @@ describe("workspace v2 production host adapter", () => {
     const fake = fakeBridge();
     const { port } = createWorkspaceV2HostAdapter(fake.bridge);
     fake.handlers.get("workspace.v2.bootstrap")!(bootstrap());
+    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(6));
+    fake.request.mockClear();
 
     await port.request({
       method: "snapshot.previewRestore",
@@ -339,6 +385,8 @@ describe("workspace v2 production host adapter", () => {
     const fake = fakeBridge();
     const { port } = createWorkspaceV2HostAdapter(fake.bridge);
     fake.handlers.get("workspace.v2.bootstrap")!(bootstrap());
+    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(6));
+    fake.request.mockClear();
 
     const preview = await port.request({
       method: "history.previewRestore",
@@ -408,6 +456,8 @@ describe("workspace v2 production host adapter", () => {
     const fake = fakeBridge();
     const { port } = createWorkspaceV2HostAdapter(fake.bridge);
     fake.handlers.get("workspace.v2.bootstrap")!(bootstrap());
+    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(6));
+    fake.request.mockClear();
 
     await port.request({
       method: "snapshot.openAsNewWorkspace",
@@ -417,12 +467,16 @@ describe("workspace v2 production host adapter", () => {
       activeWorkspaceId: "99999999-9999-4999-8999-999999999999",
       sessionEpoch: 8,
     });
-    const openPayload = fake.request.mock.calls[0]![1] as WorkspaceV2RequestPayload;
+    const openPayload = fake.request.mock.calls.find(
+      (call) => call[1].method === "snapshot.openAsNewWorkspace",
+    )![1] as WorkspaceV2RequestPayload;
     expect(openPayload.wire).toMatchObject({
       scope: "workspace",
       workspaceId: WORKSPACE_ID,
       sessionEpoch: 7,
     });
+    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(7));
+    fake.request.mockClear();
 
     await port.request({
       method: "workspace.storage.apply",

@@ -11,6 +11,34 @@ namespace VibeTable.Desktop.Tests;
 public sealed class WorkspaceSessionEnvelopeFilterTests
 {
     [TestMethod]
+    public async Task HostAdmissionAtomicallyReservesSequenceAndEpochLease()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+
+        Assert.IsTrue(filter.TryCaptureHost(
+            opened.WorkspaceId!.Value,
+            opened.SessionEpoch,
+            Guid.NewGuid(),
+            out WorkspaceRequestEpochLease? firstLease));
+        Assert.IsNotNull(firstLease);
+        Assert.AreEqual((ulong)1, firstLease.Scope.Sequence);
+        Assert.IsTrue(filter.TryCaptureHost(
+            opened.WorkspaceId.Value,
+            opened.SessionEpoch,
+            Guid.NewGuid(),
+            out WorkspaceRequestEpochLease? secondLease));
+        Assert.IsNotNull(secondLease);
+        Assert.AreEqual((ulong)2, secondLease.Scope.Sequence);
+        firstLease.Dispose();
+        secondLease.Dispose();
+    }
+
+    [TestMethod]
     public async Task SwitchDrainsInflightRequestBeforeProtectionSnapshot()
     {
         using var fixture = new SessionFixture(blockProtection: true);

@@ -285,6 +285,9 @@ func (source *frozenSource) snapshotFiles(
 		fileRevision uint64
 	)
 	for _, document := range documents {
+		if document.TopologyRevision > fileRevision {
+			fileRevision = document.TopologyRevision
+		}
 		if document.Status != filehistory.DocumentActive ||
 			document.EffectiveRevisionID == "" {
 			continue
@@ -318,9 +321,6 @@ func (source *frozenSource) snapshotFiles(
 		}
 		result[document.RelativePath] = content
 		total += effective.Size
-		if document.TopologyRevision > fileRevision {
-			fileRevision = document.TopologyRevision
-		}
 	}
 	return result, fileRevision, nil
 }

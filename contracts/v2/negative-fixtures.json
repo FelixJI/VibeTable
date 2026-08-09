@@ -56,6 +56,14 @@
       "path": ["revisionOrdinal"],
       "value": 0,
       "expected": "reject"
+    },
+    {
+      "name": "rpc-catalog-top-level-unknown",
+      "fixture": "rpc-catalog.json",
+      "operation": "add",
+      "path": ["rawMaterializePath"],
+      "value": "C:/renderer-controlled",
+      "expected": "reject"
     }
   ]
 }

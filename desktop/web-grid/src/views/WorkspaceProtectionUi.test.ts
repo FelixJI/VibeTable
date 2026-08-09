@@ -535,6 +535,25 @@ describe("workspace protection UI capability gates", () => {
     wrapper.unmount();
   });
 
+  it("renders snapshot package failures through a stable product selector", async () => {
+    useWorkspaceSessionStore().configureCapabilities([
+      "workspace.session.v2",
+      "snapshot.package.v2",
+    ]);
+    const protection = useWorkspaceProtectionStore();
+    const wrapper = mount(WorkspaceProtectionSettings, {
+      props: { mode: "versions" },
+    });
+
+    expect(protection.beginOperation("snapshot.inspectPackage")).toBe(true);
+    protection.finishOperation("The Sidecar rejected the snapshot package operation.");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get('[data-testid="snapshot-operation-error"]').text()).toContain(
+      "The Sidecar rejected the snapshot package operation.",
+    );
+  });
+
   it("requires credentials for encrypted imports and sends the staged plan only", async () => {
     useWorkspaceSessionStore().configureCapabilities([
       "workspace.session.v2",

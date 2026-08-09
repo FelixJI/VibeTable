@@ -6,12 +6,16 @@ import type { FileRevisionV2 } from "@/contracts/workspaceV2";
 import type { FileRevisionTreeProjection } from "@/stores/workspaceProtectionStore";
 import FileRevisionTree from "@/components/files/FileRevisionTree.vue";
 import { t } from "@/i18n";
+import type { DocumentDiffCompletedPayload } from "@/contracts";
+import type { DocumentDiffPhase } from "@/stores/documentWorkspaceStore";
 
 defineProps<{
   entry: DocumentEntry | null;
   activeTab: InspectorTab;
   busy: boolean;
   revisionTree?: FileRevisionTreeProjection | null;
+  diffPhase?: DocumentDiffPhase;
+  diffResult?: DocumentDiffCompletedPayload | null;
 }>();
 
 const emit = defineEmits<{
@@ -22,6 +26,8 @@ const emit = defineEmits<{
   restoreFileRevision: [entry: DocumentEntry, revision: FileRevisionV2];
   upgradeFileRevision: [entry: DocumentEntry, revision: FileRevisionV2];
   activateFileRevision: [entry: DocumentEntry, revision: FileRevisionV2];
+  compareFileRevision: [entry: DocumentEntry, revision: FileRevisionV2];
+  cancelFileDiff: [];
 }>();
 
 function unavailableTitle(entry: DocumentEntry): string {
@@ -103,9 +109,14 @@ function unavailableHint(entry: DocumentEntry): string {
         <FileRevisionTree
           :tree="revisionTree ?? null"
           :busy="busy"
+          :can-compare="entry.capabilities.includes('diff')"
+          :diff-phase="diffPhase"
+          :diff-result="diffResult"
           @restore="emit('restoreFileRevision', entry, $event)"
           @upgrade="emit('upgradeFileRevision', entry, $event)"
           @activate="emit('activateFileRevision', entry, $event)"
+          @compare="emit('compareFileRevision', entry, $event)"
+          @cancel-compare="emit('cancelFileDiff')"
         />
       </section>
     </template>

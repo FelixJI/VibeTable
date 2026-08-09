@@ -527,7 +527,12 @@ function applyStoragePlan(): void {
       </div>
     </header>
 
-    <NAlert v-if="protection.operationError" type="error" :title="t('workspaceV2.operation.failed')">
+    <NAlert
+      v-if="protection.operationError"
+      type="error"
+      :title="t('workspaceV2.operation.failed')"
+      data-testid="snapshot-operation-error"
+    >
       {{ protection.operationError }}
     </NAlert>
 

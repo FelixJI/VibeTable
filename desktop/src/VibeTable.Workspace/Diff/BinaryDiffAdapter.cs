@@ -1,15 +1,9 @@
-using System.IO;
-using System.Security.Cryptography;
-
 namespace VibeTable.Workspace.Diff;
 
 /// <summary>
-/// Hash/size/MIME diff adapter for unknown binary formats.
-///
-/// All formats get hash-level comparison. Unknown binary types only report
-/// changed/unchanged without content-level detail.
+/// Internal characterization adapter retained outside the public module surface.
 /// </summary>
-public sealed class BinaryDiffAdapter : IDocumentDiffAdapter
+internal sealed class BinaryDiffAdapter : IDocumentDiffAdapter
 {
     public IReadOnlyCollection<string> SupportedMimeTypes { get; } = Array.Empty<string>();
 
@@ -17,25 +11,33 @@ public sealed class BinaryDiffAdapter : IDocumentDiffAdapter
 
     public DiffResult Diff(string pathA, string pathB)
     {
-        var hashA = ComputeHash(pathA);
-        var hashB = ComputeHash(pathB);
-        var sizeA = new FileInfo(pathA).Length;
-        var sizeB = new FileInfo(pathB).Length;
-
-        if (hashA == hashB)
-            return DiffResult.Unchanged;
-
-        return new DiffResult(
-            DiffSummaryKind.Changed,
-            AddedLines: 0,
-            RemovedLines: 0,
-            Summary: $"changed (size {sizeA} → {sizeB}, hash {hashA[..8]}.. → {hashB[..8]}..)"
-        );
+        var outcome = new DocumentDiffEngine().CompareAsync(
+            new DocumentDiffRequest(FileSource(pathA), FileSource(pathB)),
+            CancellationToken.None).GetAwaiter().GetResult();
+        return outcome.Kind switch
+        {
+            DocumentDiffOutcomeKind.Identical => DiffResult.Unchanged,
+            DocumentDiffOutcomeKind.Changed => new DiffResult(
+                DiffSummaryKind.Changed,
+                AddedLines: 0,
+                RemovedLines: 0,
+                Summary: "changed"),
+            _ => throw new InvalidOperationException($"legacy binary diff failed: {outcome.Failure}"),
+        };
     }
 
-    private static string ComputeHash(string path)
+    private static DocumentContentSource FileSource(string path)
     {
-        using var stream = File.OpenRead(path);
-        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        return new DocumentContentSource(
+            Path.GetFileName(path),
+            "application/octet-stream",
+            new FileInfo(path).Length,
+            _ => ValueTask.FromResult<Stream>(new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 64 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan)));
     }
 }

@@ -43,6 +43,7 @@ def _write_lane_reports(root: Path) -> None:
                     "stdout": "",
                     "stderr": "",
                     "cwd": "repo",
+                    "webview2_evidence": "required-passed" if stage == "smoke" else None,
                 }
                 for stage in stages
             ],
@@ -110,6 +111,30 @@ def test_aggregate_reports_preserves_required_stage_order(
         release_eligibility.REQUIRED_STAGES
     )
     assert {lane["lane"] for lane in report["lanes"]} == set(release_eligibility.REQUIRED_LANES)
+
+
+@pytest.mark.parametrize("evidence", [None, "required-skipped", "not-required"])
+def test_aggregate_rejects_missing_or_skipped_required_webview2_evidence(
+    tmp_path: Path,
+    aggregate_identity,
+    evidence: str | None,
+) -> None:
+    _write_lane_reports(tmp_path)
+    report_path = tmp_path / "core" / "report.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    smoke = next(item for item in payload["results"] if item["stage"] == "smoke")
+    if evidence is None:
+        smoke.pop("webview2_evidence", None)
+    else:
+        smoke["webview2_evidence"] = evidence
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(release_eligibility.EligibilityError, match="WebView2 evidence"):
+        release_eligibility.aggregate_reports(
+            tmp_path,
+            tmp_path / "VibeTable.Next",
+            tmp_path / "candidate.zip",
+        )
 
 
 def test_aggregate_combines_both_successful_race_shards(

@@ -13,6 +13,7 @@ using Microsoft.Win32;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 using VibeTable.Desktop.ViewModels;
+using VibeTable.DocumentDiff.OpenXml;
 using VibeTable.Infrastructure.Backend;
 using VibeTable.Infrastructure.PocketBase;
 using VibeTable.Infrastructure.Rpc;
@@ -73,6 +74,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<Guid, WorkspaceDeletePlan> _workspaceDeletePlans = [];
     private AppPreferences _appPreferences = AppPreferences.Default;
     private TrayIconController? _trayIcon;
+    private Timer? _testModeCloseControlTimer;
     private bool _explicitExitRequested;
     private int _closing;
     private bool _startHidden;
@@ -85,6 +87,12 @@ public partial class MainWindow : Window
     /// startup preferences; it never changes for a given instance.
     /// </summary>
     internal bool StartHidden => _startHidden;
+
+    internal static IWorkspacePathPicker CreateWorkspacePathPicker(
+        HostStartupOptions startup) =>
+        startup.TestMode && !string.IsNullOrWhiteSpace(startup.E2eControlsDir)
+            ? new TestModeWorkspacePathPicker(startup.E2eControlsDir)
+            : new WindowsWorkspacePathPicker();
 
     public MainWindow()
     {
@@ -196,7 +204,7 @@ public partial class MainWindow : Window
         _repositoryRecoveryUi = new WorkspaceRepositoryRecoveryUi();
         _providerPolicy = WorkspaceProviderPolicy.Load(AppContext.BaseDirectory);
         _workspacePathGrants = new WorkspacePathGrantStore(
-            new WindowsWorkspacePathPicker());
+            CreateWorkspacePathPicker(startup));
         _shellBootstrap = new ShellBootstrap(_workspaceRegistry, _webBridge);
         WorkspaceSessionEnvelopeFilter? productionEnvelopeFilter = null;
         _workspaceSessions = new WorkspaceSessionManager(
@@ -281,6 +289,14 @@ public partial class MainWindow : Window
             && StartupVisibilityPolicy.ShouldStartHidden(
                 startup.AutoStart,
                 _appPreferences.MinimizeToTrayOnClose);
+        if (_e2eControlsDir is not null)
+        {
+            _testModeCloseControlTimer = new Timer(
+                _ => CheckTestModeCloseControl(),
+                null,
+                TimeSpan.FromMilliseconds(100),
+                TimeSpan.FromMilliseconds(100));
+        }
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs args)
@@ -360,7 +376,12 @@ public partial class MainWindow : Window
             new DocumentCapabilityStore(),
             new WindowsLocalDocumentActions(),
             new ShellDocumentPreview(),
-            new WindowsLocalDocumentFilePicker());
+            _e2eControlsDir is null
+                ? new WindowsLocalDocumentFilePicker()
+                : new TestModeLocalDocumentFilePicker(_e2eControlsDir),
+            _workspaceSessionFilter,
+            new OpenXmlDocumentDiffEngine(),
+            Path.Combine(_productDataRoot, "document-diff"));
         _dispatcher.SetDocumentWorkspace(_documentWorkspace);
 
         _workspaceSnapshot = null;
@@ -2070,22 +2091,22 @@ public partial class MainWindow : Window
                 "fileHistory.activateLeaf",
                 "fileHistory.applyPendingChange"))
             capabilities.Add("fileHistory.tree.v2");
+        if (_documentWorkspace is not null &&
+            ContainsEvery(
+                methods,
+                WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod,
+                WorkspaceDocumentOsAdapter.AssertEffectiveRevisionMethod))
+            capabilities.Add("document.diff.v1");
         if (ContainsEvery(
                 methods,
                 "retention.get",
                 "retention.status",
                 "retention.update",
                 "retention.plan",
-                "retention.apply")
-            && ContainsEvery(
-                methods,
-                "replica.status",
-                "replica.synchronize",
-                "replica.forceTakeover"))
-        {
+                "retention.apply"))
             capabilities.Add("retention.policy.v2");
+        if (methods.Contains("repository.verify"))
             capabilities.Add("repository.settings.v2");
-        }
         if (ContainsEvery(
                 methods,
                 "repository.previewKeyRotation",
@@ -2709,6 +2730,40 @@ public partial class MainWindow : Window
             _explicitExitRequested = true;
             Close();
         });
+    }
+
+    private void CheckTestModeCloseControl()
+    {
+        if (_e2eControlsDir is null
+            || Volatile.Read(ref _closing) != 0
+            || Dispatcher.HasShutdownStarted
+            || Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+        string controlPath = Path.Combine(_e2eControlsDir, "host-normal-close.request");
+        if (!File.Exists(controlPath)) return;
+        try
+        {
+            File.Delete(controlPath);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            _readiness?.Trace(
+                $"MainWindow: test-mode normal close control rejected: {exception.GetType().Name}");
+            return;
+        }
+        _readiness?.Trace("MainWindow: test-mode normal close requested");
+        try
+        {
+            Dispatcher.BeginInvoke(RequestExit);
+        }
+        catch (InvalidOperationException exception)
+        {
+            _readiness?.Trace(
+                $"MainWindow: test-mode normal close dispatch rejected: {exception.GetType().Name}");
+        }
     }
 
     private void OnSessionEnding(object? sender, SessionEndingCancelEventArgs args)
@@ -3401,6 +3456,8 @@ public partial class MainWindow : Window
     private void OnClosed(object? sender, EventArgs args)
     {
         if (Interlocked.Exchange(ref _closing, 1) != 0) return;
+        _testModeCloseControlTimer?.Dispose();
+        _testModeCloseControlTimer = null;
         Application.Current.SessionEnding -= OnSessionEnding;
         _trayIcon?.Dispose();
         _session.Cancel();

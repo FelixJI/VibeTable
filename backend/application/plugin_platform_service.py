@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import base64
-import contextlib
-import os
-import shutil
 import uuid
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any, cast
 
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
+from backend.application.plugin_package_lifecycle import PluginPackageLifecycle
 from backend.application.plugin_registry import PluginRegistry
 from backend.contracts.plugin import (
     ActionAvailability,
@@ -21,27 +17,13 @@ from backend.contracts.plugin import (
     InteractionResolveResult,
     PluginAuditEvent,
     PluginEventEnvelope,
-    PluginManifest,
     PluginPackageRevision,
     PluginSnapshot,
     PluginTaskSnapshot,
     UninstallResult,
 )
-from backend.infrastructure.plugin_package import inspect_plugin_package, pack_plugin
 
 NotificationSink = Callable[[PluginEventEnvelope], Awaitable[None]]
-
-
-def _filesystem_package_path(path: Path) -> Path:
-    """Return a filesystem-safe absolute path without weakening package identity."""
-
-    resolved = path.resolve()
-    raw = str(resolved)
-    if os.name != "nt" or raw.startswith("\\\\?\\") or len(raw) < 260:
-        return resolved
-    if raw.startswith("\\\\"):
-        return Path(f"\\\\?\\UNC\\{raw[2:]}")
-    return Path(f"\\\\?\\{raw}")
 
 
 class PluginPlatformService:
@@ -53,7 +35,7 @@ class PluginPlatformService:
         registry: PluginRegistry,
         runtime: PluginExecutionRuntime,
         store: Any,
-        package_cache: Path | None = None,
+        package_lifecycle: PluginPackageLifecycle,
         confirmation_adapter: Any | None = None,
         file_adapter: Any | None = None,
         **_unused: Any,
@@ -61,14 +43,7 @@ class PluginPlatformService:
         self._registry = registry
         self._runtime = runtime
         self._store = store
-        default_cache = getattr(store, "package_cache", None)
-        self._package_cache = Path(
-            package_cache
-            if package_cache is not None
-            else default_cache
-            if default_cache is not None
-            else Path.cwd() / ".vibetable-plugin-cache"
-        ).resolve()
+        self._package_lifecycle = package_lifecycle
         self._plans: dict[str, InstallPlan] = {}
         self._notification_sink: NotificationSink | None = None
         self._confirmation_adapter = confirmation_adapter
@@ -94,17 +69,15 @@ class PluginPlatformService:
         project_revision: str,
         source_location: str,
     ) -> InstallPlan:
-        source = Path(source_location).resolve()
-        inspected = inspect_plugin_package(source)
-        manifest = PluginManifest.model_validate(inspected.manifest)
+        inspected = self._package_lifecycle.inspect(source_location)
         plan = InstallPlan(
             plan_id=f"plugin-plan-{uuid.uuid4().hex[:12]}",
             project_key=project_key,
             project_revision=project_revision,
-            source_type="local-folder" if source.is_dir() else "package",
-            source_location=str(source),
+            source_type=inspected.source_type,
+            source_location=inspected.source_location,
             package_hash=inspected.package_hash,
-            manifest=manifest,
+            manifest=inspected.manifest,
         )
         self._plans[plan.plan_id] = plan
         return plan
@@ -117,7 +90,10 @@ class PluginPlatformService:
     ) -> PluginSnapshot:
         plan = self._checked_plan(plan_id, project_revision)
         self._recheck_plan_source(plan)
-        retained_path = self._retain_package(plan)
+        retained_path = self._package_lifecycle.retain(
+            source_location=plan.source_location,
+            expected_hash=plan.package_hash,
+        )
         installed: PluginSnapshot | None = None
         try:
             installed = await self._registry.install(plan)
@@ -127,7 +103,7 @@ class PluginPlatformService:
                     plugin_id=plan.manifest.plugin_id,
                     version=plan.manifest.version,
                     package_hash=plan.package_hash,
-                    local_path=str(retained_path),
+                    local_path=retained_path,
                     manifest=plan.manifest,
                     state="current",
                 )
@@ -182,7 +158,10 @@ class PluginPlatformService:
         if plan.project_key != project_key or plan.manifest.plugin_id != plugin_id:
             raise ValueError("upgrade plan identity does not match the installation")
         self._recheck_plan_source(plan)
-        retained_path = self._retain_package(plan)
+        retained_path = self._package_lifecycle.retain(
+            source_location=plan.source_location,
+            expected_hash=plan.package_hash,
+        )
         previous = list(self._store.list_package_revisions(project_key, plugin_id))
         previous_installation = self._registry.get(project_key, plugin_id)
         snapshot: PluginSnapshot | None = None
@@ -199,7 +178,7 @@ class PluginPlatformService:
                     plugin_id=plugin_id,
                     version=plan.manifest.version,
                     package_hash=plan.package_hash,
-                    local_path=str(retained_path),
+                    local_path=retained_path,
                     manifest=plan.manifest,
                     state="current",
                 )
@@ -236,13 +215,13 @@ class PluginPlatformService:
         )
         if current_revision is None or rollback_revision is None:
             raise ValueError("plugin rollback package is unavailable")
-        rollback_path = Path(rollback_revision.local_path).resolve()
-        if not rollback_path.is_file():
+        rollback_path = rollback_revision.local_path
+        if not self._package_lifecycle.is_available(rollback_path):
             raise ValueError("plugin rollback package is missing")
-        inspected = inspect_plugin_package(rollback_path)
+        inspected = self._package_lifecycle.inspect(rollback_path)
         if (
             inspected.package_hash != rollback_revision.package_hash
-            or PluginManifest.model_validate(inspected.manifest) != rollback_revision.manifest
+            or inspected.manifest != rollback_revision.manifest
         ):
             raise ValueError("plugin rollback package failed integrity verification")
         previous_installation = self._registry.get(project_key, plugin_id)
@@ -253,7 +232,7 @@ class PluginPlatformService:
             project_key=project_key,
             project_revision=str(previous_installation.revision),
             source_type="package",
-            source_location=str(rollback_path),
+            source_location=rollback_path,
             package_hash=rollback_revision.package_hash,
             manifest=rollback_revision.manifest,
             schemas=previous_installation.schemas,
@@ -288,7 +267,7 @@ class PluginPlatformService:
     ) -> UninstallResult:
         await self._runtime.cancel_plugin_tasks(project_key, plugin_id)
         retained_paths = [
-            Path(revision.local_path)
+            revision.local_path
             for revision in self._store.list_package_revisions(project_key, plugin_id)
         ]
         result = await self._registry.uninstall(
@@ -371,47 +350,10 @@ class PluginPlatformService:
             raise ValueError("plugin project revision changed")
         return plan
 
-    @staticmethod
-    def _recheck_plan_source(plan: InstallPlan) -> None:
-        checked = inspect_plugin_package(Path(plan.source_location).resolve())
+    def _recheck_plan_source(self, plan: InstallPlan) -> None:
+        checked = self._package_lifecycle.inspect(plan.source_location)
         if checked.package_hash != plan.package_hash:
             raise ValueError("plugin source changed after inspection")
-
-    def _retain_package(self, plan: InstallPlan) -> Path:
-        digest = plan.package_hash.removeprefix("sha256:")
-        # The package hash already binds the manifest (including pluginId), so
-        # a flat content-addressed cache is collision-safe. Lowercase Base32
-        # retains all 256 digest bits and remains unique on case-insensitive
-        # Windows filesystems while saving 12 characters versus hex.
-        compact_digest = (
-            base64.b32encode(bytes.fromhex(digest)).rstrip(b"=").decode("ascii").lower()
-        )
-        destination = self._package_cache / f"{compact_digest}.vtplugin"
-        filesystem_destination = _filesystem_package_path(destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if filesystem_destination.is_file():
-            if inspect_plugin_package(filesystem_destination).package_hash != plan.package_hash:
-                raise ValueError("retained plugin package failed integrity verification")
-            return filesystem_destination
-        # Keep the transient component deliberately short. On Windows a
-        # pytest/user cache root can already be close to MAX_PATH; repeating
-        # the 64-character digest plus a UUID made an otherwise valid retained
-        # package fail to open.
-        # Keep the temporary archive recognizable as a plugin package.
-        temporary = destination.with_name(f".tmp-{uuid.uuid4().hex[:16]}.vtplugin")
-        try:
-            source = Path(plan.source_location).resolve()
-            if source.is_dir():
-                retained_hash = pack_plugin(source, temporary)
-            else:
-                shutil.copyfile(source, temporary)
-                retained_hash = inspect_plugin_package(temporary).package_hash
-            if retained_hash != plan.package_hash:
-                raise ValueError("retained plugin package hash does not match the plan")
-            temporary.replace(filesystem_destination)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return filesystem_destination
 
     def _prune_package_revisions(self, project_key: str, plugin_id: str) -> None:
         revisions = self._store.list_package_revisions(project_key, plugin_id)
@@ -422,13 +364,12 @@ class PluginPlatformService:
                 plugin_id,
                 retired.package_hash,
             )
-            self._delete_package_if_unreferenced(Path(retired.local_path))
+            self._delete_package_if_unreferenced(retired.local_path)
 
-    def _delete_package_if_unreferenced(self, path: Path) -> None:
-        if self._store.is_package_path_referenced(str(path)):
+    def _delete_package_if_unreferenced(self, path: str) -> None:
+        if self._store.is_package_path_referenced(path):
             return
-        with contextlib.suppress(OSError):
-            path.unlink()
+        self._package_lifecycle.discard(path)
 
     async def _emit_catalog(self, snapshot: PluginSnapshot) -> None:
         await self._emit(
