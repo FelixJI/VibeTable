@@ -47,7 +47,7 @@
   {
     "id": "10-sse-reconnect",
     "title": "SSE 断线重连且不重复应用",
-    "requirement": "真实 sidecar 断开再恢复后 UI 自动追赶，事件只应用一次。"
+    "requirement": "真实 sidecar 断开后 UI 自动追赶且事件只应用一次；精确终止打包 BFF 后通过 workspace 关闭/重开恢复，轮换 session epoch，并拒绝旧 epoch 写入。"
   },
   {
     "id": "11-plugin-mutation",
@@ -62,7 +62,7 @@
   {
     "id": "13-protection-policy",
     "title": "工作区保护策略与仓库验证",
-    "requirement": "通过真实 Settings UI 执行 repository.verify、读取并更新 retention policy、预览 cleanup；过期 policy revision 必须稳定拒绝，direct workspace 不伪造 replica，且场景不得执行破坏性 cleanup。"
+    "requirement": "通过真实 Settings UI 执行 repository.verify、读取并更新 retention policy、预览 cleanup，并仅在计划确认为零删除时一次性执行 retention.apply；过期 policy revision 必须稳定拒绝，direct workspace 不伪造 replica，Apply 必须返回零删除数与零回收字节数。"
   },
   {
     "id": "14-document-diff",

@@ -52,6 +52,18 @@ public sealed class ProductE2eControlTests
     }
 
     [TestMethod]
+    public void HostStartupOptions_AcceptsTrayLifecycleOnlyInTestMode()
+    {
+        HostStartupOptions testMode = HostStartupOptions.Parse(
+            ["--test-mode", "--test-mode-tray-lifecycle"]);
+        HostStartupOptions production = HostStartupOptions.Parse(
+            ["--test-mode-tray-lifecycle"]);
+
+        Assert.IsTrue(testMode.TestModeTrayLifecycle);
+        Assert.IsFalse(production.TestModeTrayLifecycle);
+    }
+
+    [TestMethod]
     public async Task PluginPackagePicker_ReadsOnlyFixedControlFile()
     {
         string root = Path.Combine(

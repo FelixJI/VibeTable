@@ -36,16 +36,9 @@ describe("workspace protection UI capability gates", () => {
     expect(wrapper.text()).toContain("季度规划");
     expect(wrapper.text()).toContain("待写入目录副本");
     expect(wrapper.text()).toContain("建议性协调");
-    await wrapper.get(
+    expect(wrapper.find(
       '[data-testid="workspace-relink-11111111-1111-4111-8111-111111111111"]',
-    ).trigger("click");
-    expect(wrapper.emitted("action")?.[0]?.[0]).toEqual({
-      method: "workspace.relink",
-      params: {
-        workspaceId: "11111111-1111-4111-8111-111111111111",
-        selectedRootGrant: "host-picker://workspace-root",
-      },
-    });
+    ).exists()).toBe(false);
     await wrapper.get('button[aria-label="打开工作区 季度规划"]').trigger("click");
     expect(wrapper.emitted("open")?.[0]?.[0]).toMatchObject({ displayName: "季度规划" });
   });
@@ -965,7 +958,7 @@ describe("workspace protection UI capability gates", () => {
       attachTo: document.body,
     });
 
-    expect(wrapper.get('[data-testid="workspace-storage-sync"]').text()).toContain("更新目录副本");
+    expect(wrapper.find('[data-testid="workspace-storage-sync"]').exists()).toBe(false);
 
     await wrapper.get('[data-testid="workspace-storage-convert-preview"]').trigger("click");
     await wrapper.get('[data-testid="workspace-storage-release-cache-preview"]').trigger("click");
@@ -989,11 +982,6 @@ describe("workspace protection UI capability gates", () => {
         },
       },
     ]);
-    await wrapper.get('[data-testid="workspace-storage-sync"]').trigger("click");
-    expect(wrapper.emitted("action")?.[2]?.[0]).toEqual({
-      method: "replica.synchronize",
-      params: {},
-    });
     wrapper.unmount();
   });
 

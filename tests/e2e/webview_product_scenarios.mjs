@@ -2850,11 +2850,13 @@ async function scenario08(page, recorder) {
     /changed|conflict|stale|digest|变更|冲突/i.test(conflictText), { conflictText });
 }
 
-async function requestSidecarKill(runtime, reason) {
+async function requestPackagedProcessKill(runtime, action, reason) {
   const requestPath = path.join(runtime.evidenceDir, "fault-request.json");
   const resultPath = path.join(runtime.evidenceDir, "fault-result.json");
+  const requestId = crypto.randomUUID();
   await fs.writeFile(requestPath, `${JSON.stringify({
-    action: "kill-sidecar",
+    requestId,
+    action,
     reason,
     requestedAt: new Date().toISOString(),
   }, null, 2)}\n`, "utf8");
@@ -2862,8 +2864,12 @@ async function requestSidecarKill(runtime, reason) {
   while (Date.now() < deadline) {
     try {
       const result = JSON.parse(await fs.readFile(resultPath, "utf8"));
+      if (result.requestId !== requestId) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        continue;
+      }
       if (result.status !== "completed") {
-        throw new Error(`sidecar fault request failed: ${JSON.stringify(result)}`);
+        throw new Error(`${action} fault request failed: ${JSON.stringify(result)}`);
       }
       return result;
     } catch (error) {
@@ -2871,7 +2877,11 @@ async function requestSidecarKill(runtime, reason) {
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error("Python orchestrator did not acknowledge the sidecar fault request");
+  throw new Error(`Python orchestrator did not acknowledge the ${action} fault request`);
+}
+
+async function requestSidecarKill(runtime, reason) {
+  return requestPackagedProcessKill(runtime, "kill-sidecar", reason);
 }
 
 async function waitForMutationBarrier(runtime, timeoutMs = 60_000) {
@@ -3175,7 +3185,11 @@ async function scenario10(page, recorder, _network, runtime) {
     { baselineRowCount },
   );
 
-  const fault = await requestSidecarKill(runtime, "exercise realtime disconnect and catch-up");
+  const fault = await requestPackagedProcessKill(
+    runtime,
+    "kill-sidecar",
+    "exercise realtime disconnect and catch-up",
+  );
   recorder.check("only the exact child PocketBase process was terminated", fault.processName === "vibetable-pb.exe", {
     fault,
   });
@@ -3227,6 +3241,128 @@ async function scenario10(page, recorder, _network, runtime) {
     "reconnected SSE refreshed the still-active grid exactly once without table re-selection",
     stableGrid.rowCount === 2 && stableGrid.matchingCellCount === 1,
     { stableGrid },
+  );
+
+  const backendSourceSession = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics?.workspaceSession ?? null,
+  );
+  const backendFault = await requestPackagedProcessKill(
+    runtime,
+    "kill-backend",
+    "exercise supported workspace reopen after packaged backend exit",
+  );
+  recorder.check(
+    "only the exact packaged Python backend process was terminated",
+    backendFault.processName === "vibetable-backend.exe",
+    { backendFault },
+  );
+
+  await beginWritableWorkspaceBootstrapCapture(
+    page,
+    backendSourceSession.sessionEpoch,
+    "workspace.open",
+  );
+  const closed = await rawWorkspaceV2Request(
+    page,
+    "workspace.close",
+    { reason: "user" },
+    60_000,
+  );
+  recorder.check(
+    "the faulted backend session closed through the supported workspace lifecycle",
+    closed.result?.state === "closed" && closed.result?.workspaceId === null,
+    { closed },
+  );
+  await openWorkspaceCenterFromSwitcher(page);
+  const workspaceCenter = page.getByTestId("workspace-center");
+  const workspace = workspaceCenter.getByRole("button", { name: /E2E Product Workspace/ });
+  await workspace.waitFor({ state: "visible", timeout: 30_000 });
+  await workspace.click();
+  const recoveredBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
+  const recoveredSession = recoveredBootstrap.payload.session;
+  recorder.check(
+    "reopening after packaged backend exit published a fresh writable session epoch",
+    recoveredSession.workspaceId === backendSourceSession.workspaceId
+      && recoveredSession.state === "openedWritable"
+      && recoveredSession.writable === true
+      && recoveredSession.sessionEpoch > backendSourceSession.sessionEpoch,
+    { backendSourceSession, recoveredSession },
+  );
+
+  const retentionBeforeStaleWrite = (
+    await rawWorkspaceV2Request(page, "retention.get", {})
+  ).result;
+  const staleRepositoryLimit = retentionBeforeStaleWrite.repositoryLimitBytes === 1024 ** 3
+    ? 2 * 1024 ** 3
+    : 1024 ** 3;
+  const staleBackendWrite = await requestWithStaleWorkspaceScope(
+    page,
+    "retention.update",
+    {
+      expectedRevision: retentionBeforeStaleWrite.policyRevision,
+      snapshotDays: retentionBeforeStaleWrite.snapshotDays,
+      snapshotCount: retentionBeforeStaleWrite.snapshotCount,
+      snapshotBuckets: retentionBeforeStaleWrite.snapshotBuckets,
+      fileRevisionDays: retentionBeforeStaleWrite.fileRevisionDays,
+      fileRevisionCount: retentionBeforeStaleWrite.fileRevisionCount,
+      fileRevisionBuckets: retentionBeforeStaleWrite.fileRevisionBuckets,
+      repositoryLimitBytes: staleRepositoryLimit,
+    },
+    backendSourceSession,
+  );
+  recorder.check(
+    "the retired backend epoch cannot write into the recovered session",
+    (staleBackendWrite.type === "operation.failed"
+        || staleBackendWrite.type === "workspace.v2.response")
+      && staleBackendWrite.payload?.error?.code === "workspace.session_stale",
+    { staleBackendWrite },
+  );
+  await acknowledgeExpectedBridgeFailure(page, staleBackendWrite);
+  const retentionAfterStaleWrite = (
+    await rawWorkspaceV2Request(page, "retention.get", {})
+  ).result;
+  recorder.check(
+    "the rejected old-epoch write left the recovered workspace policy unchanged",
+    retentionAfterStaleWrite.policyRevision === retentionBeforeStaleWrite.policyRevision
+      && retentionAfterStaleWrite.repositoryLimitBytes
+        === retentionBeforeStaleWrite.repositoryLimitBytes,
+    { retentionBeforeStaleWrite, retentionAfterStaleWrite },
+  );
+
+  const afterBackendRecovery = await rawBridgeRequest(
+    page,
+    "mutation.apply",
+    {
+      contractVersion: "1.0",
+      requestId: "e2e-after-backend-recovery",
+      idempotencyKey: "e2e-after-backend-recovery",
+      tableId,
+      schemaRevision: recovered.snapshot.schemaRevision,
+      operations: [{
+        kind: "insert",
+        recordId: null,
+        values: { [valueField]: "after-backend-recovery" },
+      }],
+      actor: { type: "user", id: "e2e-backend-recovered", displayName: "E2E backend recovered" },
+      expectedRevision: null,
+      expectedDigest: null,
+    },
+  );
+  recorder.check(
+    "the fresh backend session accepts a new product mutation",
+    afterBackendRecovery.type === "mutation.apply"
+      && afterBackendRecovery.payload?.status === "applied",
+    { afterBackendRecovery },
+  );
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "E2E Realtime Recovery");
+  const recoveredCell = page.locator(`.tabulator-cell[tabulator-field="${valueField}"]`)
+    .filter({ hasText: "after-backend-recovery" });
+  await recoveredCell.waitFor({ timeout: 30_000 });
+  recorder.check(
+    "the recovered-session write is visible exactly once after backend recovery",
+    await recoveredCell.count() === 1,
+    { recoveredCellCount: await recoveredCell.count() },
   );
 }
 
@@ -3973,15 +4109,41 @@ async function scenario13(page, recorder, _network, runtime) {
 
   const retentionPlan = page.getByTestId("retention-plan-preview");
   await retentionPlan.waitFor({ state: "visible", timeout: 30_000 });
+  await beginWorkspaceV2MethodCapture(page, "retention.plan");
   await retentionPlan.click();
+  const retentionPreview = await waitForCapturedBridgeMessage(page, 30_000);
+  const cleanupIsEmpty = retentionPreview.type === "workspace.v2.response"
+    && retentionPreview.payload?.method === "retention.plan"
+    && retentionPreview.payload?.ok === true
+    && retentionPreview.payload?.result?.reclaimableBytes === 0
+    && Array.isArray(retentionPreview.payload?.result?.blockedReasons)
+    && retentionPreview.payload.result.blockedReasons.length === 0;
   const apply = page.getByTestId("retention-plan-apply");
   await apply.waitFor({ state: "visible", timeout: 30_000 });
-  recorder.check("retention cleanup preview produces an explicit plan without applying it",
-    await apply.isEnabled(), { applyDisabled: await apply.isDisabled() });
+  recorder.check("retention cleanup preview produces an explicit empty plan before applying it",
+    cleanupIsEmpty && await apply.isEnabled(),
+  { applyDisabled: await apply.isDisabled(), retentionPreview });
+  if (!cleanupIsEmpty) {
+    throw new Error("refusing to apply a non-empty retention cleanup plan");
+  }
 
   const sync = page.getByTestId("workspace-storage-sync");
   recorder.check("direct workspace does not fabricate a replica synchronize path",
     !(await sync.isVisible()), { syncVisible: await sync.isVisible() });
+
+  await beginWorkspaceV2MethodCapture(page, "retention.apply");
+  await apply.click();
+  const retentionApply = await waitForCapturedBridgeMessage(page, 30_000);
+  const deletedObjects = retentionApply.payload?.result?.deletedObjects;
+  const reclaimedBytes = retentionApply.payload?.result?.reclaimedBytes;
+  await apply.waitFor({ state: "hidden", timeout: 30_000 });
+  recorder.check("retention cleanup applies the verified empty plan through the packaged UI",
+    retentionApply.type === "workspace.v2.response"
+      && retentionApply.payload?.method === "retention.apply"
+      && retentionApply.payload?.ok === true
+      && deletedObjects === 0
+      && reclaimedBytes === 0,
+  { retentionApply, planCleared: !(await apply.isVisible()) });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "13-protection-policy.png"), fullPage: true });
 }
 

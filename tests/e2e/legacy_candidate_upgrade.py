@@ -14,11 +14,14 @@ import uuid
 from contextlib import closing, suppress
 from pathlib import Path
 
+from scripts.node_toolchain import ensure_node
+from tests.e2e.packaged_host_lifecycle import (
+    open_workspace_with_packaged_host,
+    prepare_workspace_with_legacy_packaged_host,
+    run_lifecycle,
+)
 from tests.integration.packaged_sidecar_matrix import (
-    CLAIM_ID,
-    FENCE_EPOCH,
     PNG_1X1,
-    SESSION_EPOCH,
     WORKSPACE_ID,
     Sidecar,
     _apply,
@@ -28,13 +31,11 @@ from tests.integration.packaged_sidecar_matrix import (
     _mutation,
     _page,
     _table,
-    _workspace_v2_request,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
 METADATA_PATH = Path(__file__).with_name("legacy_candidate_upgrade.json")
 SIDECAR_NAME = "vibetable-pb.exe" if os.name == "nt" else "vibetable-pb"
-STARTUP_FAULT_ENVIRONMENT = "VIBETABLE_E2E_STARTUP_MIGRATION_FAULT_FILE"
 CUSTOMERS_TABLE = "legacy_upgrade_customers"
 ORDERS_TABLE = "legacy_upgrade_orders"
 CUSTOMER_ID = "legacycustomer1"
@@ -98,11 +99,20 @@ def ensure_legacy_candidate(repo_root: Path = ROOT) -> Path:
     assert head == commit, f"legacy build worktree is {head}, expected {commit}"
     if package_root.is_dir():
         return package_root
+    node = ensure_node(repo_root)
+    npm = node.with_name("npm.cmd")
+    assert npm.is_file(), f"locked npm.cmd is missing next to {node}"
+    build_environment = {
+        **os.environ,
+        "PATH": os.pathsep.join((str(node.parent), os.environ.get("PATH", ""))),
+    }
     for raw_command in commands:
         assert isinstance(raw_command, list)
         command = [part for part in raw_command if isinstance(part, str)]
         assert len(command) == len(raw_command)
-        subprocess.run(command, cwd=source_root, check=True)
+        if os.name == "nt" and command[0] == "npm":
+            command[0] = str(npm)
+        subprocess.run(command, cwd=source_root, env=build_environment, check=True)
     assert package_root.is_dir(), f"legacy build did not produce {package_root}"
     return package_root
 
@@ -130,12 +140,55 @@ def release_smoke_command(
     ]
 
 
-def _workspace_environment() -> dict[str, str]:
+def _reserve_workspace_environment(workspace_root: Path) -> dict[str, str]:
+    authority_path = (
+        workspace_root / ".vibetable" / "coordination" / "desktop-runtime-authority.json"
+    )
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    assert authority.get("workspaceId") == WORKSPACE_ID, authority
+    session_epoch = authority.get("lastSessionEpoch")
+    fence_epoch = authority.get("fenceEpoch")
+    claim_id = authority.get("claimId")
+    assert isinstance(session_epoch, int), authority
+    assert isinstance(fence_epoch, int), authority
+    assert isinstance(claim_id, str), authority
+    session_epoch += 1
+    authority["lastSessionEpoch"] = session_epoch
+    temporary = authority_path.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(authority, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.replace(temporary, authority_path)
     return {
         "VIBETABLE_WORKSPACE_ID": WORKSPACE_ID,
-        "VIBETABLE_WORKSPACE_SESSION_EPOCH": str(SESSION_EPOCH),
-        "VIBETABLE_WORKSPACE_FENCE_EPOCH": str(FENCE_EPOCH),
-        "VIBETABLE_WORKSPACE_CLAIM_ID": CLAIM_ID,
+        "VIBETABLE_WORKSPACE_SESSION_EPOCH": str(session_epoch),
+        "VIBETABLE_WORKSPACE_FENCE_EPOCH": str(fence_epoch),
+        "VIBETABLE_WORKSPACE_CLAIM_ID": claim_id,
+    }
+
+
+def _workspace_request(
+    sidecar: Sidecar,
+    sequence: int,
+    method: str,
+    params: dict[str, object],
+) -> dict[str, object]:
+    identity = sidecar.workspace_identity
+    assert isinstance(identity, dict), "workspace sidecar identity is missing"
+    operation_id = str(uuid.uuid4())
+    return {
+        "jsonrpc": "2.0",
+        "id": f"legacy-upgrade-v2-{sequence}",
+        "method": method,
+        "wire": {
+            "scope": "workspace",
+            "workspaceId": identity["VIBETABLE_WORKSPACE_ID"],
+            "sessionEpoch": int(identity["VIBETABLE_WORKSPACE_SESSION_EPOCH"]),
+            "operationId": operation_id,
+            "sequence": sequence,
+        },
+        "params": params,
     }
 
 
@@ -218,7 +271,63 @@ def _report_counts(
 
 def validate_upgrade_report(report: dict[str, object]) -> None:
     assert report.get("ok") is True
-    assert report.get("evidenceKind") == "packaged-sidecar-run"
+    assert report.get("evidenceKind") == "packaged-host-upgrade"
+    legacy_host = report.get("legacyPackagedHostSeed")
+    assert isinstance(legacy_host, dict), "legacy packaged host seed evidence is missing"
+    assert legacy_host.get("status") == "passed"
+    assert legacy_host.get("evidenceKind") == "legacy-packaged-host-workspace-open"
+    assert legacy_host.get("hostExecutable") == "VibeTable.Next.exe"
+    assert legacy_host.get("workspaceId") == WORKSPACE_ID
+    assert legacy_host.get("sessionState") == "openedWritable"
+    assert legacy_host.get("lifecycle", {}).get("status") == "passed"
+    packaged_host = report.get("packagedHostOpen")
+    assert isinstance(packaged_host, dict), "packaged host evidence is missing"
+    assert packaged_host.get("status") == "passed", "packaged host open did not pass"
+    assert str(packaged_host.get("hostExecutable", "")).casefold() == "vibetable.next.exe", (
+        "packaged host evidence did not run VibeTable.Next.exe"
+    )
+    assert packaged_host.get("workspaceId") == WORKSPACE_ID
+    assert packaged_host.get("sessionState") == "openedWritable"
+    clean_epoch = packaged_host.get("sessionEpoch")
+    assert isinstance(clean_epoch, int)
+    assert clean_epoch > 0
+    lifecycle = packaged_host.get("lifecycle")
+    assert isinstance(lifecycle, dict), "packaged host lifecycle evidence is missing"
+    assert lifecycle.get("status") == "passed", "packaged host lifecycle evidence did not pass"
+    interrupted_host = report.get("packagedHostInterrupted")
+    assert isinstance(interrupted_host, dict), "packaged host interruption evidence is missing"
+    assert interrupted_host.get("status") == "passed"
+    assert interrupted_host.get("openOutcome") == "rejected-before-open"
+    assert interrupted_host.get("writableSessionPublished") is False
+    assert interrupted_host.get("sessionEpoch") is None
+    assert interrupted_host.get("startupFaultConsumed") is True
+    assert interrupted_host.get("lifecycle", {}).get("status") == "passed"
+    recovered_host = report.get("packagedHostRecovered")
+    assert isinstance(recovered_host, dict), "packaged host recovery evidence is missing"
+    assert recovered_host.get("status") == "passed"
+    assert recovered_host.get("openOutcome") == "opened-writable"
+    assert recovered_host.get("workspaceId") == WORKSPACE_ID
+    assert recovered_host.get("sessionState") == "openedWritable"
+    recovered_epoch = recovered_host.get("sessionEpoch")
+    assert isinstance(recovered_epoch, int)
+    assert recovered_epoch > clean_epoch
+    assert recovered_host.get("lifecycle", {}).get("status") == "passed"
+    host_lifecycle = report.get("packagedHostLifecycle")
+    assert isinstance(host_lifecycle, dict), "packaged host lifecycle evidence is missing"
+    assert host_lifecycle.get("ok") is True
+    assert host_lifecycle.get("evidenceKind") == "packaged-host-lifecycle"
+    tray = host_lifecycle.get("closeToTrayAndTrayExit")
+    assert isinstance(tray, dict)
+    assert tray.get("status") == "passed"
+    assert tray.get("closeToTray", {}).get("windowVisible") is False
+    assert tray.get("closeToTray", {}).get("trayVisible") is True
+    assert tray.get("lifecycle", {}).get("status") == "passed"
+    silent = host_lifecycle.get("silentStartup")
+    assert isinstance(silent, dict)
+    assert silent.get("status") == "passed"
+    assert silent.get("startup", {}).get("windowVisible") is False
+    assert silent.get("startup", {}).get("trayVisible") is True
+    assert silent.get("lifecycle", {}).get("status") == "passed"
     baseline = _report_counts(report, "seeded", database_wrapper=True)
     for table, count in baseline.items():
         assert count > 0, f"seeded.{table} must be non-empty"
@@ -253,7 +362,8 @@ def _snapshot(sidecar: Sidecar) -> str:
     captured = sidecar.request(
         "POST",
         "/api/vibetable/v2/rpc",
-        json_body=_workspace_v2_request(
+        json_body=_workspace_request(
+            sidecar,
             1,
             "snapshot.request",
             {"trigger": "manual", "urgency": "foreground"},
@@ -265,8 +375,13 @@ def _snapshot(sidecar: Sidecar) -> str:
 
 
 def _seed_legacy_corpus(binary: Path, workspace_root: Path) -> dict[str, object]:
-    data_dir = _create_v2_workspace(workspace_root)
-    sidecar = Sidecar(binary, data_dir, workspace_identity=_workspace_environment())
+    data_dir = workspace_root / ".vibetable" / "data"
+    assert data_dir.is_dir(), "legacy workspace must be created before corpus seeding"
+    sidecar = Sidecar(
+        binary,
+        data_dir,
+        workspace_identity=_reserve_workspace_environment(workspace_root),
+    )
     sidecar.start()
     try:
         customers = _apply_schema(
@@ -478,7 +593,8 @@ def _assert_corpus(
     snapshots = sidecar.request(
         "POST",
         "/api/vibetable/v2/rpc",
-        json_body=_workspace_v2_request(
+        json_body=_workspace_request(
+            sidecar,
             sequence,
             "snapshot.list",
             {"cursor": None, "limit": 50},
@@ -496,42 +612,13 @@ def _assert_corpus(
     }
 
 
-def _run_interrupted_start(
-    binary: Path,
-    data_dir: Path,
-    fault_file: Path,
-) -> dict[str, object]:
-    secret = uuid.uuid4().hex + uuid.uuid4().hex
-    environment = os.environ.copy()
-    environment.update(_workspace_environment())
-    environment["VIBETABLE_SIDECAR_SESSION_SECRET"] = secret
-    environment["VIBETABLE_SIDECAR_DATA_DIR"] = str(data_dir)
-    environment[STARTUP_FAULT_ENVIRONMENT] = str(fault_file)
-    completed = subprocess.run(
-        [str(binary)],
-        cwd=binary.parent,
-        env=environment,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=45,
-        check=False,
-    )
-    combined = completed.stdout + completed.stderr
-    assert completed.returncode != 0, combined[-4000:]
-    assert "sidecar.ready" not in completed.stdout
-    assert not fault_file.exists(), "startup fault was not consumed exactly once"
-    return {
-        "exitCode": completed.returncode,
-        "readinessPublished": False,
-        "faultConsumed": True,
-    }
-
-
 def _upgrade_and_verify(binary: Path, workspace_root: Path, snapshot_id: str) -> dict[str, object]:
     data_dir = workspace_root / ".vibetable" / "data"
-    sidecar = Sidecar(binary, data_dir, workspace_identity=_workspace_environment())
+    sidecar = Sidecar(
+        binary,
+        data_dir,
+        workspace_identity=_reserve_workspace_environment(workspace_root),
+    )
     sidecar.start()
     try:
         business = _assert_corpus(sidecar, snapshot_id, sequence=3)
@@ -559,7 +646,11 @@ def _verify_with_old_binary(
     snapshot_id: str,
 ) -> dict[str, object]:
     data_dir = workspace_root / ".vibetable" / "data"
-    sidecar = Sidecar(binary, data_dir, workspace_identity=_workspace_environment())
+    sidecar = Sidecar(
+        binary,
+        data_dir,
+        workspace_identity=_reserve_workspace_environment(workspace_root),
+    )
     sidecar.start()
     try:
         business = _assert_corpus(sidecar, snapshot_id, sequence=3)
@@ -579,7 +670,11 @@ def _restore_snapshot_and_verify(
     snapshot_id: str,
 ) -> dict[str, object]:
     data_dir = workspace_root / ".vibetable" / "data"
-    sidecar = Sidecar(binary, data_dir, workspace_identity=_workspace_environment())
+    sidecar = Sidecar(
+        binary,
+        data_dir,
+        workspace_identity=_reserve_workspace_environment(workspace_root),
+    )
     sidecar.start()
     try:
         definition = sidecar.request(
@@ -603,7 +698,8 @@ def _restore_snapshot_and_verify(
         preview = sidecar.request(
             "POST",
             "/api/vibetable/v2/rpc",
-            json_body=_workspace_v2_request(
+            json_body=_workspace_request(
+                sidecar,
                 10,
                 "snapshot.previewRestore",
                 {"snapshotId": snapshot_id, "targetMode": "currentWorkspace"},
@@ -614,7 +710,8 @@ def _restore_snapshot_and_verify(
         applied = sidecar.request(
             "POST",
             "/api/vibetable/v2/rpc",
-            json_body=_workspace_v2_request(
+            json_body=_workspace_request(
+                sidecar,
                 11,
                 "snapshot.applyRestore",
                 {"planId": preview["result"]["planId"], "confirmed": True},
@@ -625,7 +722,11 @@ def _restore_snapshot_and_verify(
     finally:
         sidecar.stop()
 
-    reopened = Sidecar(binary, data_dir, workspace_identity=_workspace_environment())
+    reopened = Sidecar(
+        binary,
+        data_dir,
+        workspace_identity=_reserve_workspace_environment(workspace_root),
+    )
     try:
         reopened.start()
     except AssertionError as exc:
@@ -667,6 +768,12 @@ def run_upgrade(
     assert not evidence_root.exists(), f"evidence root must be fresh: {evidence_root}"
     evidence_root.mkdir(parents=True)
     legacy_workspace = evidence_root / "legacy-workspace"
+    _create_v2_workspace(legacy_workspace)
+    legacy_host_seed = prepare_workspace_with_legacy_packaged_host(
+        legacy_package_root,
+        legacy_workspace,
+        evidence_root / "legacy-packaged-host-seed",
+    )
     seeded = _seed_legacy_corpus(legacy_binary, legacy_workspace)
     snapshot_id = seeded["snapshotId"]
     assert isinstance(snapshot_id, str)
@@ -685,6 +792,11 @@ def run_upgrade(
         pre_upgrade_copy,
         snapshot_id,
     )
+    packaged_host_open = open_workspace_with_packaged_host(
+        current_package_root,
+        clean_upgrade,
+        evidence_root / "packaged-host-open",
+    )
     clean = _upgrade_and_verify(current_binary, clean_upgrade, snapshot_id)
     fault_file = evidence_root / "startup-migration-fault.json"
     fault_file.write_text(
@@ -697,10 +809,12 @@ def run_upgrade(
         ),
         encoding="utf-8",
     )
-    interrupted = _run_interrupted_start(
-        current_binary,
-        interrupted_upgrade / ".vibetable" / "data",
-        fault_file,
+    interrupted = open_workspace_with_packaged_host(
+        current_package_root,
+        interrupted_upgrade,
+        evidence_root / "packaged-host-interrupted",
+        startup_fault_file=fault_file,
+        expect_open_failure=True,
     )
     rolled_back = _database_state(interrupted_upgrade / ".vibetable" / "data")
     migrations = rolled_back["migrations"]
@@ -709,22 +823,35 @@ def run_upgrade(
     assert "2026080501_relation_pairs.go" not in migrations
     assert rolled_back["hasFieldSettingsV2"] is False
     assert rolled_back["hasRelationPairs"] is False
+    packaged_host_recovered = open_workspace_with_packaged_host(
+        current_package_root,
+        interrupted_upgrade,
+        evidence_root / "packaged-host-recovered",
+    )
     recovered = _upgrade_and_verify(current_binary, interrupted_upgrade, snapshot_id)
     _upgrade_and_verify(current_binary, snapshot_restore, snapshot_id)
     restored = _restore_snapshot_and_verify(current_binary, snapshot_restore, snapshot_id)
+    packaged_host_lifecycle = run_lifecycle(
+        current_package_root,
+        evidence_root / "packaged-host-lifecycle",
+    )
 
     metadata = _metadata()
     report: dict[str, object] = {
         "ok": True,
-        "evidenceKind": "packaged-sidecar-run",
+        "evidenceKind": "packaged-host-upgrade",
         "candidate": metadata["candidate"],
         "target": metadata["target"],
         "legacyPackageRoot": str(legacy_package_root),
         "currentPackageRoot": str(current_package_root),
         "seeded": seeded,
+        "legacyPackagedHostSeed": legacy_host_seed,
         "oldBinaryReopen": old_binary_reopen,
         "cleanUpgrade": clean,
-        "interruption": interrupted,
+        "packagedHostOpen": packaged_host_open,
+        "packagedHostInterrupted": interrupted,
+        "packagedHostRecovered": packaged_host_recovered,
+        "packagedHostLifecycle": packaged_host_lifecycle,
         "rolledBack": rolled_back,
         "recovered": recovered,
         "snapshotRestore": restored,

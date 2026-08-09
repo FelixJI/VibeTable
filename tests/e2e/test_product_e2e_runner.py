@@ -21,8 +21,11 @@ def test_manifest_has_exactly_sixteen_unique_product_scenarios() -> None:
     assert "规范化深比较" in by_id["04-json-round-trip"]
     assert "SHA-256" in by_id["07-attachment-history"]
     assert "幂等键" in by_id["09-atomic-import-scale"]
+    assert "BFF" in by_id["10-sse-reconnect"]
+    assert "session epoch" in by_id["10-sse-reconnect"]
     assert "审计快照精确一致" in by_id["12-backup-consistency"]
     assert "repository.verify" in by_id["13-protection-policy"]
+    assert "retention.apply" in by_id["13-protection-policy"]
     assert "真实 TXT 历史版本" in by_id["14-document-diff"]
     assert "工作区切换" in by_id["15-workspace-snapshot-package"]
     assert "损坏快照包" in by_id["15-workspace-snapshot-package"]
@@ -75,6 +78,103 @@ def test_lifecycle_harness_fails_closed_when_a_descendant_or_port_remains() -> N
     assert report["status"] == "failed"
     assert report["descendantsAfterExit"] == [{"pid": 7, "name": "vibetable-pb.exe"}]
     assert report["portsReleased"] is False
+
+
+def test_fault_controller_processes_distinct_sidecar_and_packaged_backend_requests(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class FakeHostProcess:
+        pid = 42
+
+    class FakeNodeProcess:
+        returncode = 0
+
+        def __init__(self) -> None:
+            self.poll_count = 0
+
+        def poll(self) -> int | None:
+            self.poll_count += 1
+            action = {
+                1: ("sidecar-1", "kill-sidecar"),
+                2: ("backend-1", "kill-backend"),
+            }.get(self.poll_count)
+            if action is not None:
+                request_id, fault_action = action
+                (tmp_path / "fault-request.json").write_text(
+                    json.dumps({"requestId": request_id, "action": fault_action}),
+                    encoding="utf-8",
+                )
+                return None
+            return 0
+
+        @staticmethod
+        def communicate(timeout: int) -> tuple[str, str]:
+            assert timeout == 10
+            return "", ""
+
+    killed: list[list[str]] = []
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: FakeNodeProcess())
+    monkeypatch.setattr(
+        runner,
+        "_descendants",
+        lambda _pid: [(7, "vibetable-pb.exe"), (8, "vibetable-backend.exe")],
+    )
+
+    def fake_run(command: list[str], **_kwargs: Any):
+        killed.append(command)
+        return runner.subprocess.CompletedProcess(command, 0, "terminated", "")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
+
+    exit_code, stdout, stderr = runner._run_node_runner(
+        ["node", "scenario.mjs"],
+        scenario_dir=tmp_path,
+        local_data=tmp_path / "local-data",
+        host_process=FakeHostProcess(),
+    )
+
+    result = json.loads((tmp_path / "fault-result.json").read_text(encoding="utf-8"))
+    assert (exit_code, stdout, stderr) == (0, "", "")
+    assert result["requestId"] == "backend-1"
+    assert result["action"] == "kill-backend"
+    assert result["processName"] == "vibetable-backend.exe"
+    assert killed == [
+        ["taskkill", "/PID", "7", "/F"],
+        ["taskkill", "/PID", "8", "/F"],
+    ]
+
+
+def test_backend_fault_controller_fails_closed_when_target_is_not_unique(
+    monkeypatch,
+) -> None:
+    class FakeHostProcess:
+        pid = 42
+
+    monkeypatch.setattr(
+        runner,
+        "_descendants",
+        lambda _pid: [
+            (8, "vibetable-backend.exe"),
+            (9, "VibeTable-Backend.exe"),
+            (10, "python.exe"),
+        ],
+    )
+
+    response = runner._handle_fault_request(
+        {"requestId": "backend-non-unique", "action": "kill-backend"},
+        FakeHostProcess(),
+    )
+
+    assert response == {
+        "status": "failed",
+        "code": "BACKEND_PROCESS_NOT_UNIQUE",
+        "matches": [
+            (8, "vibetable-backend.exe"),
+            (9, "VibeTable-Backend.exe"),
+        ],
+    }
 
 
 def test_normal_exit_tracks_children_started_while_the_host_is_closing(
@@ -285,12 +385,25 @@ def test_normal_close_control_is_limited_to_the_test_mode_host_boundary() -> Non
 
     assert "_e2eControlsDir = startup.TestMode" in source
     assert '"host-normal-close.request"' in source
-    assert "CheckTestModeCloseControl" in source
+    assert "CheckTestModeHostControls" in source
     assert "Dispatcher.HasShutdownStarted" in source
     assert "Dispatcher.HasShutdownFinished" in source
-    assert "test-mode normal close control rejected" in source
-    assert "test-mode normal close dispatch rejected" in source
+    assert 'TryConsumeTestModeControl("host-normal-close.request")' in source
+    assert 'DispatchTestModeControl("normal close", RequestExit)' in source
     assert 'request.Type == "host.normalClose"' not in source
+
+
+def test_packaged_host_lifecycle_uses_fixed_test_mode_tray_controls() -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    assert packaged_host_lifecycle.WINDOW_CLOSE_CONTROL_FILE == "host-window-close.request"
+    assert packaged_host_lifecycle.TRAY_EXIT_CONTROL_FILE == "host-tray-exit.request"
+    source = packaged_host_lifecycle.__file__
+    assert source is not None
+    text = Path(source).read_text(encoding="utf-8")
+    assert '"--test-mode-tray-lifecycle"' in text
+    assert '"--autostart"' in text
+    assert "VibeTable.Next.exe" in text
 
 
 def test_missing_package_is_a_strict_preflight_failure(tmp_path: Path) -> None:
@@ -403,6 +516,36 @@ def test_protection_policy_scenario_opens_a_real_workspace_before_settings() -> 
     assert scenario.index(shell) < scenario.index(settings) < scenario.index(verify)
     assert "repository-verify" in scenario
     assert "!button.disabled" in scenario
+
+
+def test_protection_policy_scenario_applies_the_previewed_cleanup_plan_through_ui() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    scenario = source[
+        source.index("async function scenario13") : source.index("async function scenario14")
+    ]
+
+    preview = 'getByTestId("retention-plan-preview")'
+    apply = 'getByTestId("retention-plan-apply")'
+    preview_capture = 'beginWorkspaceV2MethodCapture(page, "retention.plan")'
+    apply_capture = 'beginWorkspaceV2MethodCapture(page, "retention.apply")'
+    response = "const retentionApply = await waitForCapturedBridgeMessage(page, 30_000);"
+
+    assert preview in scenario
+    assert apply in scenario
+    assert preview_capture in scenario
+    assert apply_capture in scenario
+    assert response in scenario
+    assert scenario.index(preview) < scenario.index(preview_capture) < scenario.index(apply)
+    assert (
+        scenario.index(apply)
+        < scenario.index(apply_capture)
+        < scenario.index("await apply.click();")
+    )
+    assert "cleanupIsEmpty" in scenario
+    assert "refusing to apply a non-empty retention cleanup plan" in scenario
+    assert "retentionApply.payload?.ok === true" in scenario
+    assert "deletedObjects === 0" in scenario
+    assert "reclaimedBytes === 0" in scenario
 
 
 def test_plugin_invalid_upgrade_is_recorded_as_an_expected_bridge_failure() -> None:
@@ -1071,6 +1214,30 @@ def test_realtime_scenario_refreshes_the_active_table_without_reselection() -> N
     assert "stableForMs: 1_500" in scenario
     assert "waitForTimeout(750)" not in scenario
     assert "grid did not reach a stable expected state" in source
+
+
+def test_realtime_scenario_recovers_a_packaged_backend_with_a_fresh_safe_session() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    scenario = source[
+        source.index("async function scenario10") : source.index("async function scenario11")
+    ]
+
+    assert "requestPackagedProcessKill(" in scenario
+    assert 'return requestPackagedProcessKill(runtime, "kill-sidecar", reason)' in source
+    assert '"kill-backend"' in scenario
+    assert 'backendFault.processName === "vibetable-backend.exe"' in scenario
+    assert "rawWorkspaceV2Request(" in scenario
+    assert '"workspace.close"' in scenario
+    assert "beginWritableWorkspaceBootstrapCapture" in scenario
+    assert "recoveredSession.sessionEpoch > backendSourceSession.sessionEpoch" in scenario
+    assert "requestWithStaleWorkspaceScope" in scenario
+    assert '"retention.update"' in scenario
+    assert 'staleBackendWrite.payload?.error?.code === "workspace.session_stale"' in scenario
+    assert (
+        "retentionAfterStaleWrite.policyRevision === retentionBeforeStaleWrite.policyRevision"
+        in scenario
+    )
+    assert '"after-backend-recovery"' in scenario
 
 
 def test_plugin_confirmation_assertion_is_not_constant_true() -> None:

@@ -538,9 +538,6 @@ public sealed class WebMessageRouterTests
             "plugin.install.inspect",
             "plugin.install.commit",
             "plugin.lifecycle.setEnabled",
-            "plugin.lifecycle.upgrade",
-            "plugin.lifecycle.rollback",
-            "plugin.lifecycle.uninstall",
             "plugin.action.describe",
             "plugin.action.start",
             "plugin.interaction.resolve",
@@ -573,6 +570,34 @@ public sealed class WebMessageRouterTests
             """{"type":"rpc.invoke","requestId":"generic","payload":{"method":"plugin.uninstall"}}""");
         Assert.IsNotNull(genericReply);
         Assert.AreEqual("UNKNOWN_TYPE", genericReply!.Payload!.Code);
+    }
+
+    [TestMethod]
+    public void Route_InternalOnlyPluginLifecycleMutations_AreRejectedWithoutDispatch()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+
+        foreach (string type in new[]
+        {
+            "plugin.lifecycle.upgrade",
+            "plugin.lifecycle.rollback",
+            "plugin.lifecycle.uninstall",
+        })
+        {
+            HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new
+            {
+                type,
+                requestId = $"internal-{type}",
+                payload = new { },
+            }));
+
+            Assert.IsNotNull(reply, type);
+            Assert.AreEqual("operation.failed", reply.Type, type);
+            Assert.AreEqual("CAPABILITY_NOT_PUBLIC", reply.Payload!.Code, type);
+        }
+
+        Assert.HasCount(0, dispatched);
     }
 
     [TestMethod]
@@ -778,5 +803,28 @@ public sealed class WebMessageRouterTests
             payload = new { method = "repository.rotateKey", @params = new { } },
         }));
         Assert.AreEqual("UNKNOWN_V2_METHOD", unknown!.Payload!.Code);
+    }
+
+    [TestMethod]
+    public void Route_InternalOnlyWorkspaceV2Mutations_AreRejectedWithoutDispatch()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+
+        foreach (string method in new[] { "workspace.relink", "replica.synchronize" })
+        {
+            HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new
+            {
+                type = "workspace.v2.request",
+                requestId = $"internal-{method}",
+                payload = new { method, @params = new { } },
+            }));
+
+            Assert.IsNotNull(reply, method);
+            Assert.AreEqual("operation.failed", reply.Type, method);
+            Assert.AreEqual("CAPABILITY_NOT_PUBLIC", reply.Payload!.Code, method);
+        }
+
+        Assert.HasCount(0, dispatched);
     }
 }

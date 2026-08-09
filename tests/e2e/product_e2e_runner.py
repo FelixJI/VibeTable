@@ -808,21 +808,27 @@ def _handle_fault_request(
     request: dict[str, Any], host_process: subprocess.Popen[bytes]
 ) -> dict[str, Any]:
     action = request.get("action")
-    if action != "kill-sidecar":
+    targets = {
+        "kill-sidecar": ("vibetable-pb.exe", "SIDECAR_PROCESS_NOT_UNIQUE"),
+        "kill-backend": ("vibetable-backend.exe", "BACKEND_PROCESS_NOT_UNIQUE"),
+    }
+    target = targets.get(action) if isinstance(action, str) else None
+    if target is None:
         return {
             "status": "failed",
             "code": "UNKNOWN_FAULT_ACTION",
             "action": action,
         }
+    process_name, non_unique_code = target
     matches = [
         (pid, name)
         for pid, name in _descendants(host_process.pid)
-        if name.casefold() == "vibetable-pb.exe"
+        if name.casefold() == process_name
     ]
     if len(matches) != 1:
         return {
             "status": "failed",
-            "code": "SIDECAR_PROCESS_NOT_UNIQUE",
+            "code": non_unique_code,
             "matches": matches,
         }
     pid, name = matches[0]
@@ -868,7 +874,8 @@ def _run_node_runner(
         encoding="utf-8",
         errors="replace",
     )
-    handled_fault = False
+    handled_fault_ids: set[str] = set()
+    invalid_fault_reported = False
     handled_storage_proof_ids: set[str] = set()
     next_network_sample = 0.0
     deadline = time.monotonic() + 180
@@ -877,14 +884,28 @@ def _run_node_runner(
             node_process.kill()
             stdout, stderr = node_process.communicate(timeout=10)
             raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
-        if not handled_fault:
-            request = _read_json(fault_request)
-            if request is not None:
-                handled_fault = True
-                response = _handle_fault_request(request, host_process)
-                fault_result.write_text(
-                    json.dumps(response, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8",
+        request = _read_json(fault_request)
+        if request is not None:
+            fault_request_id = request.get("requestId")
+            if isinstance(fault_request_id, str) and fault_request_id:
+                if fault_request_id not in handled_fault_ids:
+                    handled_fault_ids.add(fault_request_id)
+                    _write_json_atomic(
+                        fault_result,
+                        {
+                            "requestId": fault_request_id,
+                            **_handle_fault_request(request, host_process),
+                        },
+                    )
+            elif not invalid_fault_reported:
+                invalid_fault_reported = True
+                _write_json_atomic(
+                    fault_result,
+                    {
+                        "requestId": None,
+                        "status": "failed",
+                        "code": "FAULT_REQUEST_ID_INVALID",
+                    },
                 )
         request = _read_json(storage_request)
         if request is not None:

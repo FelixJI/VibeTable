@@ -135,6 +135,25 @@ public sealed class WebMessageRouter
         "workspace.v2.request",
     };
 
+    // These use cases remain in the internal plugin/workspace catalogs so
+    // producers and correlated host responses stay typed. They are not yet a
+    // public renderer capability because no packaged-host scenario proves
+    // their complete lifecycle.
+    private static readonly HashSet<string> RendererInternalOnlyRequestTypes =
+        new(StringComparer.Ordinal)
+        {
+            "plugin.lifecycle.upgrade",
+            "plugin.lifecycle.rollback",
+            "plugin.lifecycle.uninstall",
+        };
+
+    private static readonly HashSet<string> RendererInternalOnlyWorkspaceV2Methods =
+        new(StringComparer.Ordinal)
+        {
+            "workspace.relink",
+            "replica.synchronize",
+        };
+
     /// <summary>
     /// The host -&gt; web notification types. Phase A defines the framework;
     /// B1 adds mutation outcomes; B3 reuses <c>table.pageLoaded</c> for query
@@ -371,6 +390,14 @@ public sealed class WebMessageRouter
                     "UNKNOWN_TYPE");
             }
 
+            if (RendererInternalOnlyRequestTypes.Contains(type))
+            {
+                return BuildOperationFailed(
+                    requestId,
+                    $"Web request type '{type}' is not a public renderer capability.",
+                    "CAPABILITY_NOT_PUBLIC");
+            }
+
             // Clone the payload element so the dispatched handler can read it
             // after the JsonDocument is disposed.
             JsonElement payload = root.TryGetProperty("payload", out var payloadEl)
@@ -417,6 +444,13 @@ public sealed class WebMessageRouter
                         "UNKNOWN_V2_METHOD");
                 }
                 v2Method = methodElement.GetString();
+                if (RendererInternalOnlyWorkspaceV2Methods.Contains(v2Method ?? string.Empty))
+                {
+                    return BuildOperationFailed(
+                        requestId,
+                        $"Workspace v2 method '{v2Method}' is not a public renderer capability.",
+                        "CAPABILITY_NOT_PUBLIC");
+                }
                 if (!root.TryGetProperty("wire", out JsonElement wireElement)
                     || wireElement.ValueKind != JsonValueKind.Object)
                     return BuildOperationFailed(

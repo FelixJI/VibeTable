@@ -603,6 +603,7 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
                     entry.WorkspaceId,
                     epoch,
                     CancellationToken.None);
+                Publish(ClosedSession(epoch));
             }
             catch (Exception cleanupError)
             {

@@ -137,6 +137,14 @@ public partial class MainWindow : Window
                 ? (IStartupRegistration)new InMemoryStartupRegistration()
                 : (windowsStartupRegistration = WindowsStartupRegistration.ForCurrentProcess()));
         _appPreferences = _appPreferencesService.ReadForStartup();
+        if (startup.TestModeTrayLifecycle)
+        {
+            // Persist inside the isolated test-mode data root so the renderer's
+            // normal appPreferences.get refresh cannot undo the tray policy
+            // before the black-box close request arrives.
+            _appPreferences = _appPreferencesService.Update(
+                new AppPreferencesPatch(true, null));
+        }
         // Only an auto-started launch reconciles the startup value: a stale
         // pointer left after moving/reinstalling is cleaned so the next boot
         // re-points at the current process (or drops the value entirely).
@@ -283,16 +291,17 @@ public partial class MainWindow : Window
         Closed += OnClosed;
         Application.Current.SessionEnding += OnSessionEnding;
         ApplyAppPreferences(_appPreferences);
-        // E2E test mode must never hide the window; the harness drives the UI
-        // via WebView and cannot recover from a hidden main window.
-        _startHidden = !startup.TestMode
+        // UI-driven E2E stays visible. The explicit tray-lifecycle submode is
+        // allowed to exercise the production auto-start visibility policy;
+        // its harness observes fixed host state files instead of clicking UI.
+        _startHidden = (!startup.TestMode || startup.TestModeTrayLifecycle)
             && StartupVisibilityPolicy.ShouldStartHidden(
                 startup.AutoStart,
                 _appPreferences.MinimizeToTrayOnClose);
         if (_e2eControlsDir is not null)
         {
             _testModeCloseControlTimer = new Timer(
-                _ => CheckTestModeCloseControl(),
+                _ => CheckTestModeHostControls(),
                 null,
                 TimeSpan.FromMilliseconds(100),
                 TimeSpan.FromMilliseconds(100));
@@ -2732,7 +2741,7 @@ public partial class MainWindow : Window
         });
     }
 
-    private void CheckTestModeCloseControl()
+    private void CheckTestModeHostControls()
     {
         if (_e2eControlsDir is null
             || Volatile.Read(ref _closing) != 0
@@ -2741,28 +2750,153 @@ public partial class MainWindow : Window
         {
             return;
         }
-        string controlPath = Path.Combine(_e2eControlsDir, "host-normal-close.request");
-        if (!File.Exists(controlPath)) return;
+        if (TryConsumeTestModeControl("host-normal-close.request"))
+        {
+            DispatchTestModeControl("normal close", RequestExit);
+            return;
+        }
+        if (TryConsumeTestModeControl("host-window-close.request"))
+        {
+            DispatchTestModeControl(
+                "window close",
+                () =>
+                {
+                    Close();
+                    WriteTestModeHostState("close-to-tray");
+                });
+            return;
+        }
+        if (TryConsumeTestModeControl("host-tray-exit.request"))
+        {
+            DispatchTestModeControl(
+                "tray exit",
+                () =>
+                {
+                    WriteTestModeHostState("tray-exit-requested");
+                    RequestExit();
+                });
+            return;
+        }
+        string openControl = Path.Combine(_e2eControlsDir, "host-open-workspace.request");
+        if (!File.Exists(openControl)) return;
+        string workspaceText;
         try
         {
-            File.Delete(controlPath);
+            workspaceText = File.ReadAllText(openControl).Trim();
+            File.Delete(openControl);
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
             _readiness?.Trace(
-                $"MainWindow: test-mode normal close control rejected: {exception.GetType().Name}");
+                $"MainWindow: test-mode workspace open control rejected: {exception.GetType().Name}");
             return;
         }
-        _readiness?.Trace("MainWindow: test-mode normal close requested");
+        if (!Guid.TryParse(workspaceText, out Guid workspaceId))
+        {
+            WriteTestModeHostState(
+                "workspace-open-failed",
+                error: "workspace ID control is invalid");
+            return;
+        }
+        DispatchTestModeControl(
+            "workspace open",
+            async () =>
+            {
+                try
+                {
+                    _ = await OpenWorkspaceWithRecoveryAsync(
+                        workspaceId,
+                        WorkspaceOpenMode.Writable,
+                        switching: false,
+                        _session.Token);
+                    WriteTestModeHostState("workspace-opened");
+                }
+                catch (Exception exception)
+                {
+                    WriteTestModeHostState(
+                        "workspace-open-failed",
+                        error: $"{exception.GetType().Name}: {exception.Message}");
+                }
+            });
+    }
+
+    private bool TryConsumeTestModeControl(string controlName)
+    {
+        if (_e2eControlsDir is null) return false;
+        string controlPath = Path.Combine(_e2eControlsDir, controlName);
+        if (!File.Exists(controlPath)) return false;
         try
         {
-            Dispatcher.BeginInvoke(RequestExit);
+            File.Delete(controlPath);
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            _readiness?.Trace(
+                $"MainWindow: test-mode {controlName} rejected: {exception.GetType().Name}");
+            return false;
+        }
+    }
+
+    private void DispatchTestModeControl(string action, Action callback)
+    {
+        _readiness?.Trace($"MainWindow: test-mode {action} requested");
+        try
+        {
+            Dispatcher.BeginInvoke(callback);
         }
         catch (InvalidOperationException exception)
         {
             _readiness?.Trace(
-                $"MainWindow: test-mode normal close dispatch rejected: {exception.GetType().Name}");
+                $"MainWindow: test-mode {action} dispatch rejected: {exception.GetType().Name}");
+        }
+    }
+
+    internal void ReportTestModeStartupVisibility()
+    {
+        if (_e2eControlsDir is null) return;
+        WriteTestModeHostState(StartHidden ? "silent-startup" : "visible-startup");
+    }
+
+    private void WriteTestModeHostState(
+        string action,
+        string? error = null)
+    {
+        if (_e2eControlsDir is null) return;
+        WorkspaceSessionV2 session = _workspaceSessions.Current;
+        bool hasWorkspaceSession = session.WorkspaceId is not null;
+        var state = new
+        {
+            evidenceKind = "packaged-host-control",
+            action,
+            hostExecutable = Path.GetFileName(Environment.ProcessPath),
+            hostProcessId = Environment.ProcessId,
+            windowVisible = IsVisible,
+            trayVisible = _trayIcon?.Visible == true,
+            workspaceId = session.WorkspaceId,
+            sessionEpoch = hasWorkspaceSession ? session.SessionEpoch : (ulong?)null,
+            sessionState = !hasWorkspaceSession
+                ? null
+                : JsonNamingPolicy.CamelCase.ConvertName(session.State.ToString()),
+            error,
+        };
+        string destination = Path.Combine(_e2eControlsDir, "host-lifecycle-state.json");
+        string temporary = destination + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(
+                temporary,
+                JsonSerializer.Serialize(state, WorkspaceV2Json.StrictOptions));
+            File.Move(temporary, destination, overwrite: true);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            try { File.Delete(temporary); } catch { }
+            _readiness?.Trace(
+                $"MainWindow: test-mode host state write rejected: {exception.GetType().Name}");
         }
     }
 

@@ -333,7 +333,7 @@ def test_race_stage_uses_three_isolated_package_workers_by_default() -> None:
 def test_release_gate_enables_required_windows_credential_manager_tests() -> None:
     adapter = (next_gate.REPO_ROOT / "scripts/automation_project.py").read_text(encoding="utf-8")
     workflow = (next_gate.REPO_ROOT / ".github/workflows/cd.yml").read_text(encoding="utf-8")
-    assert 'env={"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"}' in adapter
+    assert '_node_environment({"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"})' in adapter
     assert "environment: release" in workflow
     assert "contents: write" in workflow
 

@@ -20,9 +20,10 @@ Node、npm 或 `node_modules`。
 uv run python scripts/automation_project.py bootstrap
 ```
 
-bootstrap 会恢复锁定 Node，并用该目录的 npm 执行所有 `npm ci`。`scripts/vibetable_plugin.py`
-优先复用这个已恢复的 Node；若尚未 bootstrap，才回退到系统 PATH 中显式安装的 Node。CLI 不会在
-执行插件命令时静默联网下载工具链。
+bootstrap 会恢复锁定 Node。项目自动化随后把该目录显式注入 contracts、quality、candidate build、
+release smoke 与分片 smoke 的全部 Node consumer，因此 clean Windows 不依赖系统 Node，也不会意外
+绕过仓库锁定版本。`scripts/vibetable_plugin.py` 优先复用这个已恢复的 Node；若尚未 bootstrap，才回退到
+系统 PATH 中显式安装的 Node。CLI 不会在执行插件命令时静默联网下载工具链。
 
 原 `runtime/node` portable tree 已删除：它只有插件开发 CLI fallback consumer，不是产品运行时；
 恢复旧树只需 revert 对应 Git 变更，不影响 workspace 数据或发布包语义。

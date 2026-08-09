@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 from pathlib import Path
 
 import pytest
 
-from tests.e2e import legacy_candidate_upgrade
+from tests.e2e import legacy_candidate_upgrade, packaged_host_lifecycle
 
 ROOT = Path(__file__).resolve().parents[2]
 METADATA = Path(__file__).with_name("legacy_candidate_upgrade.json")
@@ -22,7 +23,53 @@ def _upgrade_report(
 ) -> dict[str, object]:
     return {
         "ok": True,
-        "evidenceKind": "packaged-sidecar-run",
+        "evidenceKind": "packaged-host-upgrade",
+        "legacyPackagedHostSeed": {
+            "status": "passed",
+            "evidenceKind": "legacy-packaged-host-workspace-open",
+            "hostExecutable": "VibeTable.Next.exe",
+            "workspaceId": legacy_candidate_upgrade.WORKSPACE_ID,
+            "sessionState": "openedWritable",
+            "lifecycle": {"status": "passed"},
+        },
+        "packagedHostOpen": {
+            "status": "passed",
+            "hostExecutable": "VibeTable.Next.exe",
+            "workspaceId": legacy_candidate_upgrade.WORKSPACE_ID,
+            "sessionEpoch": 3,
+            "sessionState": "openedWritable",
+            "lifecycle": {"status": "passed"},
+        },
+        "packagedHostInterrupted": {
+            "status": "passed",
+            "openOutcome": "rejected-before-open",
+            "writableSessionPublished": False,
+            "sessionEpoch": None,
+            "startupFaultConsumed": True,
+            "lifecycle": {"status": "passed"},
+        },
+        "packagedHostRecovered": {
+            "status": "passed",
+            "openOutcome": "opened-writable",
+            "workspaceId": legacy_candidate_upgrade.WORKSPACE_ID,
+            "sessionEpoch": 4,
+            "sessionState": "openedWritable",
+            "lifecycle": {"status": "passed"},
+        },
+        "packagedHostLifecycle": {
+            "ok": True,
+            "evidenceKind": "packaged-host-lifecycle",
+            "closeToTrayAndTrayExit": {
+                "status": "passed",
+                "closeToTray": {"windowVisible": False, "trayVisible": True},
+                "lifecycle": {"status": "passed"},
+            },
+            "silentStartup": {
+                "status": "passed",
+                "startup": {"windowVisible": False, "trayVisible": True},
+                "lifecycle": {"status": "passed"},
+            },
+        },
         "seeded": {"database": {"counts": seeded}},
         "cleanUpgrade": {"database": {"counts": clean}},
         "rolledBack": {"counts": rolled_back},
@@ -46,6 +93,23 @@ def test_upgrade_report_preserves_seeded_audit_counts_across_all_paths() -> None
     )
 
     legacy_candidate_upgrade.validate_upgrade_report(report)
+
+
+def test_faulted_host_open_rejects_any_published_workspace_session() -> None:
+    observed = {
+        "action": "workspace-open-failed",
+        "hostExecutable": "VibeTable.Next.exe",
+        "workspaceId": legacy_candidate_upgrade.WORKSPACE_ID,
+        "sessionEpoch": 7,
+        "sessionState": "openedWritable",
+        "error": "startup migration fault",
+    }
+
+    with pytest.raises(AssertionError, match="published a workspace session"):
+        packaged_host_lifecycle.workspace_open_evidence(
+            observed,
+            expect_open_failure=True,
+        )
 
 
 def test_upgrade_report_rejects_audit_loss_and_non_exact_fault_rollback() -> None:
@@ -87,6 +151,32 @@ def test_workspace_copy_excludes_transient_sqlite_files(tmp_path: Path) -> None:
 
     assert (destination / ".vibetable" / "data" / "data.db").read_bytes() == b"durable"
     assert not (destination / ".vibetable" / "data" / "AUXILIARY.DB-SHM.tmp").exists()
+
+
+def test_sidecar_seed_reserves_epochs_from_real_desktop_authority(tmp_path: Path) -> None:
+    authority = tmp_path / ".vibetable" / "coordination" / "desktop-runtime-authority.json"
+    authority.parent.mkdir(parents=True)
+    authority.write_text(
+        json.dumps(
+            {
+                "formatVersion": 1,
+                "workspaceId": legacy_candidate_upgrade.WORKSPACE_ID,
+                "fenceEpoch": 1,
+                "claimId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "lastSessionEpoch": 4,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    first = legacy_candidate_upgrade._reserve_workspace_environment(tmp_path)
+    second = legacy_candidate_upgrade._reserve_workspace_environment(tmp_path)
+
+    assert first["VIBETABLE_WORKSPACE_SESSION_EPOCH"] == "5"
+    assert second["VIBETABLE_WORKSPACE_SESSION_EPOCH"] == "6"
+    assert first["VIBETABLE_WORKSPACE_FENCE_EPOCH"] == "1"
+    assert first["VIBETABLE_WORKSPACE_CLAIM_ID"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assert json.loads(authority.read_text(encoding="utf-8"))["lastSessionEpoch"] == 6
 
 
 def test_candidate_metadata_pins_real_schema_five_ancestor_and_rollback_boundary() -> None:
@@ -135,6 +225,42 @@ def test_harness_never_imports_release_activation_helpers() -> None:
     assert "activate_upgrade" not in source
 
 
+def test_upgrade_report_requires_packaged_host_workspace_open_evidence() -> None:
+    baseline = {
+        "vibetable_audit_events": 4,
+        "vibetable_outbox": 4,
+        "vibetable_audit_outbox": 11,
+    }
+    report = _upgrade_report(
+        seeded=baseline,
+        clean=baseline.copy(),
+        rolled_back=baseline.copy(),
+        recovered=baseline.copy(),
+        snapshot_restored=baseline.copy(),
+    )
+    report.pop("packagedHostOpen")
+
+    with pytest.raises(AssertionError, match="packaged host"):
+        legacy_candidate_upgrade.validate_upgrade_report(report)
+
+    report["evidenceKind"] = "packaged-host-upgrade"
+    report["packagedHostOpen"] = {
+        "status": "passed",
+        "hostExecutable": "VibeTable.Next.exe",
+        "workspaceId": legacy_candidate_upgrade.WORKSPACE_ID,
+        "sessionEpoch": 3,
+        "sessionState": "openedWritable",
+        "lifecycle": {"status": "passed"},
+    }
+    legacy_candidate_upgrade.validate_upgrade_report(report)
+
+    recovered = report["packagedHostRecovered"]
+    assert isinstance(recovered, dict)
+    recovered["sessionEpoch"] = 3
+    with pytest.raises(AssertionError):
+        legacy_candidate_upgrade.validate_upgrade_report(report)
+
+
 def test_release_smoke_command_is_bound_to_both_candidate_roots() -> None:
     command = legacy_candidate_upgrade.release_smoke_command(
         legacy_package_root=Path("legacy-package"),
@@ -175,6 +301,26 @@ def test_default_legacy_candidate_source_is_built_from_the_fixed_commit() -> Non
     assert 'candidate["defaultPackageRoot"]' not in source
 
 
+def test_legacy_host_seed_uses_the_packaged_host_public_bridge_and_normal_close() -> None:
+    runner = (
+        Path(legacy_candidate_upgrade.__file__)
+        .with_name("legacy_host_workspace_open.mjs")
+        .read_text(encoding="utf-8")
+    )
+    lifecycle = (
+        Path(legacy_candidate_upgrade.__file__)
+        .with_name("packaged_host_lifecycle.py")
+        .read_text(encoding="utf-8")
+    )
+
+    assert 'type: "workspace.v2.request"' in runner
+    assert 'method: "workspace.open"' in runner
+    assert 'openMode: "writable"' in runner
+    assert "desktop-runtime-authority.json" in lifecycle
+    assert "write-coordinator.db" in lifecycle
+    assert "PostMessageW(windows[0], 0x0010" in lifecycle
+
+
 def test_clean_root_build_uses_declared_worktree_and_bootstrap_order(
     tmp_path: Path,
     monkeypatch,
@@ -183,6 +329,10 @@ def test_clean_root_build_uses_declared_worktree_and_bootstrap_order(
     (tmp_path / ".worktrees").mkdir()
     source_root = tmp_path / ".worktrees" / "legacy-candidate-ff95d26d"
     calls: list[tuple[list[str], Path]] = []
+    build_environments: list[dict[str, str]] = []
+    locked_node = tmp_path / ".tools" / "node" / "node.exe"
+    locked_node.parent.mkdir(parents=True)
+    locked_node.with_name("npm.cmd").write_text("@echo off\n", encoding="utf-8")
 
     def fake_run(
         command: list[str],
@@ -192,6 +342,7 @@ def test_clean_root_build_uses_declared_worktree_and_bootstrap_order(
         capture_output: bool = False,
         text: bool = False,
         encoding: str | None = None,
+        env: dict[str, str] | None = None,
     ):
         del check, capture_output, text, encoding
         calls.append((command, cwd))
@@ -199,10 +350,14 @@ def test_clean_root_build_uses_declared_worktree_and_bootstrap_order(
             source_root.mkdir(parents=True)
         if command[-2:] == ["scripts/build_next.py", "--release"]:
             (source_root / "dist" / "VibeTable.Next").mkdir(parents=True)
+        if command[0] != "git":
+            assert env is not None
+            build_environments.append(env)
         stdout = commit + "\n" if command == ["git", "rev-parse", "HEAD"] else ""
         return legacy_candidate_upgrade.subprocess.CompletedProcess(command, 0, stdout)
 
     monkeypatch.delenv("VIBETABLE_LEGACY_CANDIDATE_ROOT", raising=False)
+    monkeypatch.setattr(legacy_candidate_upgrade, "ensure_node", lambda _root: locked_node)
     monkeypatch.setattr(legacy_candidate_upgrade.subprocess, "run", fake_run)
 
     result = legacy_candidate_upgrade.ensure_legacy_candidate(tmp_path)
@@ -212,6 +367,11 @@ def test_clean_root_build_uses_declared_worktree_and_bootstrap_order(
         ["git", "worktree", "add", "--detach", str(source_root), commit],
         ["git", "rev-parse", "HEAD"],
         ["uv", "sync", "--frozen", "--group", "dev", "--group", "build"],
-        ["npm", "--prefix", "desktop/web-grid", "ci"],
+        [str(locked_node.with_name("npm.cmd")), "--prefix", "desktop/web-grid", "ci"],
         ["uv", "run", "python", "scripts/build_next.py", "--release"],
     ]
+    assert len(build_environments) == 3
+    assert all(
+        environment["PATH"].split(os.pathsep)[0] == str(locked_node.parent)
+        for environment in build_environments
+    )

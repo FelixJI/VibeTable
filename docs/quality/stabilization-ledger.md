@@ -27,19 +27,21 @@
 
 | ID | 证据来源与待确认事项 | 影响判断 | 模块与建议测试 seam | 状态/阶段 |
 |---|---|---|---|---|
-| V-01 | workspace relink 需要可控 unhealthy root；本轮真实产品矩阵覆盖 create/open/switch，但未覆盖 relink。 | 待证实；不声明 S1。 | Workspace Center + test-mode root picker。 | 保留为恢复开发后的条件能力证据。 |
-| V-02 | mirrored workspace 的 `replica.synchronize` 未在打包产品中运行；direct 模式只证明该入口不会误显示。 | 待证实；不声明 S1。 | provider policy、protection UI、mirrored workspace 产品场景。 | `Implemented, unverified`，不得宣称 Closed。 |
+| V-01 | workspace relink 需要可控 unhealthy root；本轮真实产品矩阵覆盖 create/open/switch，但未覆盖 relink。 | 待证实；不声明 S1。 | Workspace Center + test-mode root picker。 | **已收口为 Hidden**；UI 隐藏且 renderer raw request 拒绝，恢复开发后以新纵切重新公开。 |
+| V-02 | mirrored workspace 的 `replica.synchronize` 未在打包产品中运行；direct 模式只证明该入口不会误显示。 | 待证实；不声明 S1。 | provider policy、protection UI、mirrored workspace 产品场景。 | **已收口为 Internal only**；仅保留 Host coordination consumer，UI/raw renderer 不公开。 |
 | V-03 | Dashboard 生命周期已闭环，但双真实编辑器的 revision conflict 无确定性产品 seam。 | 待证实；不声明 S1。 | dashboard coordinated write + 第二 renderer/editor。 | 生命周期 Closed；conflict 仅相邻集成/组件证据。 |
+| V-07 | 旧候选报告只驱动 packaged sidecar；尚未由当前 `VibeTable.Next.exe` 打开旧 workspace 并完成中断恢复。 | 阶段 5 冻结退出阻断；不把已通过的 migration seam 贬为产品缺陷。 | legacy candidate harness + 打包 Host test-mode 启动控制。 | **已关闭**；旧/当前 Host clean、fault 拒绝与新 Host 恢复均进入 packaged-host-upgrade 报告。 |
+| V-08 | 打包产品已证明正常退出及 sidecar 异常恢复，但未覆盖 BFF 异常、关闭到托盘、托盘退出和静默开机启动。 | 阶段 5 生命周期证据不完整。 | WPF test-mode lifecycle controls + packaged runner。 | **已关闭**；真实 Host 精确终止 sidecar/BFF 后分别完成自动恢复与 workspace 关闭/重开恢复；托盘/静默报告均 code 0、无后代或监听端口残留。 |
 | V-06 | 本机 Go 1.25.8 全包门禁随机在已清空的 `t.TempDir` 返回 Windows `directory is not empty`；三轮 fresh-process 的失败测试/目录均变化，业务断言通过。 | 本地 release_smoke 被提前阻断；没有产品数据错误证据。 | Go runtime Windows delete-pending / 外部文件句柄；锁定复现输出见本次质量报告。 | **外部/基线阻断**；不增加 sleep/retry、不改生产关闭语义，交由 GitHub `required` 的干净 runner 判定。 |
 | V-04 | 旧架构扫描遍历仓库根并依赖静态 ignored 列表；本地笔记可能触发 retired-provider 误报。 | S3 维护噪音；无产品影响。 | `tests/test_architecture.py`；受控根/非受控本地笔记回归。 | 已修复；阶段 0。 |
 | V-05 | `docs/quality-gates.md` 曾称普通 PR 不运行 Go race，与 CI 的 `race-a`/`race-b` lanes 冲突。 | S3 文档漂移。 | `.ci/project.json`、`.github/workflows/ci.yml`、质量文档。 | 已修复；阶段 0。 |
 
 ## 阶段 0 决策记录
 
-- Workspace、Snapshot、FileHistory/Conflict、Retention/Repository、plugin、Dashboard 生命周期与
-  Document Diff 已由最终打包产品报告闭环；精确剩余边界见能力矩阵。
-- Preset/version 继续 Hidden；Replica synchronize、workspace relink 与 Dashboard 双编辑器 conflict
-  不借相邻证据扩大结论。
+- Workspace create/open/switch、Snapshot、FileHistory/Conflict、Dashboard 生命周期与 Document Diff
+  已由最终打包产品报告闭环；Retention、plugin 与其他条件能力的精确子路径状态见能力矩阵。
+- Preset/version、workspace relink 与 plugin 成功 lifecycle mutation 保持 Hidden；Replica synchronize
+  保持 Internal only；Dashboard 双编辑器 conflict 不借相邻证据扩大结论。
 - 阶段 0 不新增或移除 provider/data authority，不以未验证项触发功能重构。
 
 ## 升级验收基线
@@ -51,9 +53,14 @@
   `2026072801 field-settings-v2` 与后续 relation-pairs migrations，能生成方案要求的最小业务语料。
   `v0.1.0@9470817a` 早于 workspace Snapshot/FileHistory 实现，只保留为版本/tag 下界证据，不作为升级
   语料来源。
-- 旧候选已在隔离 worktree 中按当时锁文件自建，并由真实 packaged sidecar 创建/复核普通字段、公式、
-  关系与 lookup、附件、audit/history 和 Snapshot。报告
-  `build/qa/legacy-candidate-upgrade-20260809-13/report.json` 为 `ok=true`、
-  `evidenceKind=packaged-sidecar-run`；迁移 fault 未发布 readiness 且事务回滚，第二次启动恢复，
-  Snapshot preview/apply 后下次启动复核通过。
+- 旧候选已在隔离 worktree 中按当时锁文件自建；固定旧 `VibeTable.Next.exe` 通过公开 bridge 打开
+  workspace，生成真实 authority/coordinator 并正常退出，随后填充普通字段、公式、关系与 lookup、
+  附件、audit/history 和 Snapshot 语料。
+- `build/q/u2/report.json` 为 `ok=true`、
+  `evidenceKind=packaged-host-upgrade`；当前 Host clean migration 成功，fault Host 未发布 writable session
+  且事务回滚，新 Host 以轮换后的 epoch 恢复，Snapshot preview/apply 后下次启动复核通过。
+- `build/q/f2/20260809T152446Z/product-e2e-report.json` 为 16/16 passed；场景 10 由真实 Host
+  精确终止 `vibetable-pb.exe` 后自动恢复，再精确终止 `vibetable-backend.exe`，通过 workspace
+  关闭/重开取得新 epoch。旧 epoch 的 `retention.update` 返回 `workspace.session_stale` 且策略未改变，
+  新 epoch 的 mutation 成功；全部场景 Host exit code 为 0、无后代进程且端口释放。
 - 本条不新增候选内容 hash 或身份层；发布资产继续沿用既有 checksum 契约。

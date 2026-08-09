@@ -45,6 +45,25 @@ public sealed class WorkspaceSessionManagerTests
     }
 
     [TestMethod]
+    public async Task OpenFailureLeavesNoPublishedWorkspaceSession()
+    {
+        using var fixture = new SessionFixture();
+        var workspace = fixture.AddWorkspace("故障", "Failure");
+        fixture.RuntimeFactory.FailNextStartFor = workspace.WorkspaceId;
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => fixture.Manager.OpenAsync(
+                workspace.WorkspaceId,
+                WorkspaceOpenMode.Writable));
+
+        Assert.IsNull(fixture.Manager.Current.WorkspaceId);
+        Assert.AreEqual(WorkspaceSessionState.Closed, fixture.Manager.Current.State);
+        Assert.IsFalse(fixture.Manager.Current.Writable);
+        Assert.AreEqual(0, fixture.RuntimeFactory.Active);
+        Assert.AreEqual(0, fixture.Lease.Active);
+    }
+
+    [TestMethod]
     public async Task FailureBeforePreviousRuntimeStopsKeepsBoundEpoch()
     {
         using var fixture = new SessionFixture();

@@ -1,7 +1,7 @@
 # VibeTable 技术债治理与架构稳定化实施方案
 
-> 状态：Implemented；本地产品/升级/构建证据已完成，冻结退出仍待 GitHub `required` 与第二个
-> Windows 版本的正式候选 smoke
+> 状态：Implemented；本地产品、升级/恢复、打包 Host 生命周期与候选构建证据已完成，冻结退出仍待
+> GitHub `required` 与第二个 Windows 版本的正式候选 smoke
 >
 > 基线：2026-08-08 最新 `GitHub/main`，已包含开机自启自愈与静默启动改动
 >
@@ -746,14 +746,18 @@ uv run python qa/next.py --ci --json-report build/qa/report.json
 - 实施基线为 `GitHub/main@bd06158e`，在独立分支/worktree 完成；历史 checkbox 保留原样，
   不反向伪造串行 PR 过程。
 - 四语言 contract、Python application seam、Desktop/Web locality、Document Diff 完整纵切、旧候选
-  升级/恢复、打包进程生命周期、WebView2 no-skip、Node runtime 治理与文档治理均已落地。
-- 最终打包产品报告 `build/qa/p21/20260809T125151Z/product-e2e-report.json` 为 16/16 passed、
+  Host 升级/恢复、打包 Host 生命周期、WebView2 no-skip、Node runtime 治理与文档治理均已落地。
+- 最终打包产品报告 `build/q/f2/20260809T152446Z/product-e2e-report.json` 为 16/16 passed、
   0 failed、0 skipped；每个场景均正常关闭 Host，残留后代进程为零且端口释放。
-- 旧候选报告 `build/qa/legacy-candidate-upgrade-20260809-13/report.json` 为 `ok=true`、
-  `evidenceKind=packaged-sidecar-run`；真实旧语料、fault 事务回滚、第二次启动恢复及 Snapshot
-  preview/apply→startup restore 均通过。
+- 旧候选报告 `build/q/u2/report.json` 为 `ok=true`、
+  `evidenceKind=packaged-host-upgrade`：固定旧 `VibeTable.Next.exe` 通过公开 bridge 打开 workspace、
+  生成真实 authority/coordinator 并正常退出；当前 Host 完成 clean migration，fault 首启未发布 writable
+  session，全新 Host 以新 epoch 恢复，随后业务语料与 Snapshot restore 复核通过。
+- 打包 Host 生命周期报告 `build/qa/packaged-host-lifecycle-20260809-03/report.json` 为 `ok=true`；
+  关闭到托盘、托盘退出和静默启动均由真实 `VibeTable.Next.exe` 驱动，exit code 为 0，且无残留后代
+  进程或监听端口。
 - 公开 `release_build` 已生成 159 文件候选及 ZIP/checksum/build identity/SPDX SBOM；包契约、
-  1050 个 Python tests（90.55% coverage）、四个 Node 工程、Go format/vet 与聚焦 Go tests、
+  1065 个 Python tests（90.55% coverage）、四个 Node 工程、Go format/vet 与聚焦 Go tests、
   Desktop solution/Web 全量门禁分别通过。
 - 本机完整 `automation.py ci --phase full` 与 `release_smoke` 均在同一 Go 全包阶段被 Windows
   `t.TempDir` delete-pending 基线提前阻断：三轮 fresh-process 仅出现随机空目录清理错误，业务断言
@@ -763,8 +767,14 @@ uv run python qa/next.py --ci --json-report build/qa/report.json
 ### 17.4 实施后的范围边界
 
 - Workspace create/open/switch、Snapshot timeline/package/open-as-new、FileHistory/Conflict、
-  Retention/Repository、plugin 本轮生命周期、Dashboard 生命周期与 Document Diff 已有最终产品证据。
-- workspace relink、mirrored `replica.synchronize`、Dashboard 双编辑器 revision conflict 仍按能力矩阵
-  标为未验证；Preset/version 保持 Hidden，不借相邻场景扩大结论。
+  Dashboard 生命周期与 Document Diff 已有最终产品证据；Retention 与 plugin 只按能力矩阵中已实际
+  运行的子路径计为 Closed。
+- workspace relink 与 plugin 成功升级/回滚/卸载已同步隐藏，mirrored `replica.synchronize` 已收口为
+  Host internal-only；Retention cleanup apply 已进入零删除产品场景。Dashboard 双编辑器 revision
+  conflict 仍明确标为未验证，Preset/version 保持 Hidden，不借相邻场景扩大结论。
+- 普通退出、关闭到托盘、托盘退出和静默启动已有真实打包 Host 证据；场景 10 分别精确终止
+  `vibetable-pb.exe` 与 `vibetable-backend.exe`，证明 sidecar 自动恢复，以及 BFF 异常后通过
+  workspace 关闭/重开的受支持恢复路径、session epoch 轮换、旧 epoch 写入拒绝与新 epoch 可写。
+  组件 supervisor 测试只作相邻支撑。
 - “Windows 10 与 Windows 11 各一次”和 GitHub `required` 属远端/设备矩阵证据，本地实现不能代替；
-  因此本文件状态为 Implemented，而不是宣称所有冻结退出条件已经满足。
+  因此本文件状态为 Implemented，但不能宣称冻结退出条件已经全部满足。

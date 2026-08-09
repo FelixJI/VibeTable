@@ -71,6 +71,14 @@ def _run(
     subprocess.run(resolved, cwd=cwd, env=merged_env, check=True)
 
 
+def _node_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
+    node = ensure_node(REPO_ROOT)
+    return {
+        **(extra or {}),
+        "PATH": os.pathsep.join((str(node.parent), os.environ.get("PATH", ""))),
+    }
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -110,8 +118,7 @@ def _install_w64devkit() -> None:
 def bootstrap() -> None:
     candidate_prepare = _candidate_prepare_mode()
     _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
-    node = ensure_node(REPO_ROOT)
-    node_env = {"PATH": os.pathsep.join((str(node.parent), os.environ.get("PATH", "")))}
+    node_env = _node_environment()
     projects = (Path("desktop/web-grid"),) if candidate_prepare else NPM_PROJECTS
     for project in projects:
         _run("npm", "ci", cwd=REPO_ROOT / project, env=node_env)
@@ -142,6 +149,7 @@ def contracts() -> None:
         "src/contracts/workspaceV2.test.ts",
         "src/contracts/workspaceV2Bridge.test.ts",
         cwd=REPO_ROOT / "desktop" / "web-grid",
+        env=_node_environment(),
     )
     _run(
         "dotnet",
@@ -189,14 +197,15 @@ def quality() -> None:
     )
     for command in commands:
         _run(*command)
+    node_env = _node_environment()
     for project in NPM_PROJECTS:
-        _run("npm", "run", "typecheck", cwd=REPO_ROOT / project)
+        _run("npm", "run", "typecheck", cwd=REPO_ROOT / project, env=node_env)
         package = project / "package.json"
         package_text = (REPO_ROOT / package).read_text(encoding="utf-8")
         if '"test"' in package_text:
-            _run("npm", "run", "test", cwd=REPO_ROOT / project)
+            _run("npm", "run", "test", cwd=REPO_ROOT / project, env=node_env)
         if '"build"' in package_text:
-            _run("npm", "run", "build", cwd=REPO_ROOT / project)
+            _run("npm", "run", "build", cwd=REPO_ROOT / project, env=node_env)
     _run("uv", "run", "python", "qa/go_format_check.py")
     _run("go", "vet", "./...", cwd=REPO_ROOT / "sidecar")
     _run("uv", "run", "python", "qa/next.py", "--stage", "go-test")
@@ -239,7 +248,14 @@ def build_candidate() -> None:
     version = read_project_version(REPO_ROOT)
     artifacts = _artifacts_dir()
     archive = artifacts / f"VibeTable-v{version}-win-x64.zip"
-    _run("uv", "run", "python", "scripts/build_next.py", "--release")
+    _run(
+        "uv",
+        "run",
+        "python",
+        "scripts/build_next.py",
+        "--release",
+        env=_node_environment(),
+    )
     _run(
         "uv",
         "run",
@@ -430,7 +446,7 @@ def release_smoke() -> None:
         str(archive),
         "--json-report",
         "build/automation/vibetable-release-eligibility.json",
-        env={"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"},
+        env=_node_environment({"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"}),
     )
     _run_legacy_candidate_upgrade(REPO_ROOT / "build" / "automation" / "legacy-candidate-upgrade")
 
@@ -445,7 +461,8 @@ def _run_legacy_candidate_upgrade(evidence_root: Path) -> Path:
             legacy_package_root=legacy_package_root,
             current_package_root=current_package_root,
             evidence_root=evidence_root,
-        )
+        ),
+        env=_node_environment(),
     )
     return evidence_root / "report.json"
 
@@ -462,7 +479,7 @@ def _attach_legacy_candidate_evidence(lane_report_path: Path, legacy_report_path
     legacy_report = _read_json_object(legacy_report_path)
     if legacy_report.get("ok") is not True:
         raise RuntimeError("legacy candidate upgrade report must have ok=true")
-    if legacy_report.get("evidenceKind") != "packaged-sidecar-run":
+    if legacy_report.get("evidenceKind") != "packaged-host-upgrade":
         raise RuntimeError("legacy candidate upgrade report has an unexpected evidence kind")
     relative_path = legacy_report_path.relative_to(lane_report_path.parent).as_posix()
     lane_report["legacyCandidateUpgrade"] = {
@@ -486,7 +503,7 @@ def _verify_legacy_candidate_evidence(reports_dir: Path) -> None:
         raise RuntimeError("legacy candidate upgrade evidence is missing its report path")
     if not isinstance(evidence, dict) or evidence.get("ok") is not True:
         raise RuntimeError("legacy candidate upgrade evidence must have ok=true")
-    if evidence.get("evidenceKind") != "packaged-sidecar-run":
+    if evidence.get("evidenceKind") != "packaged-host-upgrade":
         raise RuntimeError("legacy candidate upgrade evidence has an unexpected evidence kind")
 
 
@@ -497,7 +514,12 @@ def _prepare_smoke_lane(lane: str) -> None:
         _install_w64devkit()
     elif lane == "resilience":
         _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
-        _run("npm", "ci", cwd=REPO_ROOT / "desktop" / "web-grid")
+        _run(
+            "npm",
+            "ci",
+            cwd=REPO_ROOT / "desktop" / "web-grid",
+            env=_node_environment(),
+        )
     elif lane != "release":
         raise RuntimeError(f"unknown release smoke lane: {lane}")
 
@@ -509,6 +531,9 @@ def release_smoke_lane(lane: str, json_report: Path) -> None:
     _verify_release_metadata(artifacts, version, archive)
     _prepare_smoke_lane(lane)
     python = ("uv", "run", "python") if lane in {"core", "resilience"} else (sys.executable,)
+    smoke_env = {"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"}
+    if lane in {"core", "resilience"}:
+        smoke_env = _node_environment(smoke_env)
     _run(
         *python,
         "qa/next.py",
@@ -520,7 +545,7 @@ def release_smoke_lane(lane: str, json_report: Path) -> None:
         str(archive),
         "--json-report",
         str(json_report),
-        env={"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"},
+        env=smoke_env,
     )
     if lane == "core":
         legacy_report = _run_legacy_candidate_upgrade(

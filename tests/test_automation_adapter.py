@@ -163,6 +163,48 @@ def test_bootstrap_runs_npm_with_the_locked_node_toolchain(
     assert (("install-w64devkit",), None) in observed
 
 
+def test_quality_and_release_build_keep_the_locked_node_toolchain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[tuple[str, ...], dict[str, str] | None]] = []
+    locked_path = "C:/locked-node"
+    monkeypatch.delenv("VIBETABLE_CI_PREPARE_MODE", raising=False)
+    monkeypatch.setattr(
+        automation_project,
+        "_node_environment",
+        lambda extra=None: {**(extra or {}), "PATH": locked_path},
+    )
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, env=None, **_kwargs: observed.append((command, env)),
+    )
+
+    automation_project.quality()
+
+    npm_calls = [(command, env) for command, env in observed if command[0] == "npm"]
+    assert npm_calls
+    assert all(env is not None and env["PATH"] == locked_path for _command, env in npm_calls)
+
+    observed.clear()
+    automation_project.contracts()
+
+    contracts_npm = next(call for call in observed if call[0][0] == "npm")
+    assert contracts_npm[1] == {"PATH": locked_path}
+
+    observed.clear()
+    monkeypatch.setattr(automation_project, "_artifacts_dir", lambda: tmp_path)
+    monkeypatch.setattr(automation_project, "read_project_version", lambda _root: "1.2.3")
+    monkeypatch.setattr(automation_project, "_write_build_identity", lambda *_args: None)
+    monkeypatch.setattr(automation_project, "_write_spdx", lambda *_args: None)
+
+    automation_project.build_candidate()
+
+    build_next = next(call for call in observed if "scripts/build_next.py" in call[0])
+    assert build_next[1] == {"PATH": locked_path}
+
+
 def test_candidate_prepare_defers_quality_to_candidate_bound_shards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -317,12 +359,18 @@ def test_full_release_smoke_installs_the_race_toolchain_at_its_consumption_point
     from tests.e2e import legacy_candidate_upgrade
 
     observed: list[str | tuple[str, ...]] = []
+    observed_envs: list[dict[str, str] | None] = []
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     monkeypatch.setenv("AUTOMATION_ARTIFACTS_DIR", str(artifacts))
     monkeypatch.setattr(automation_project, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(automation_project, "read_project_version", lambda _root: "1.2.3")
     monkeypatch.setattr(automation_project, "_verify_release_metadata", lambda *_args: None)
+    monkeypatch.setattr(
+        automation_project,
+        "_node_environment",
+        lambda extra=None: {**(extra or {}), "PATH": "C:/locked-node"},
+    )
     monkeypatch.setattr(
         legacy_candidate_upgrade,
         "ensure_legacy_candidate",
@@ -338,11 +386,12 @@ def test_full_release_smoke_installs_the_race_toolchain_at_its_consumption_point
         "_install_w64devkit",
         lambda: observed.append("w64devkit"),
     )
-    monkeypatch.setattr(
-        automation_project,
-        "_run",
-        lambda *command, **_kwargs: observed.append(command),
-    )
+
+    def run(*command: str, env: dict[str, str] | None = None, **_kwargs: object) -> None:
+        observed.append(command)
+        observed_envs.append(env)
+
+    monkeypatch.setattr(automation_project, "_run", run)
 
     automation_project.release_smoke()
 
@@ -357,6 +406,13 @@ def test_full_release_smoke_installs_the_race_toolchain_at_its_consumption_point
         "-m",
         "tests.e2e.legacy_candidate_upgrade",
     )
+    assert observed_envs == [
+        {
+            "VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1",
+            "PATH": "C:/locked-node",
+        },
+        {"PATH": "C:/locked-node"},
+    ]
 
 
 def test_publish_checkout_keeps_job_token_for_git_tag_push() -> None:
@@ -540,6 +596,11 @@ def test_smoke_lane_binds_report_to_the_declared_candidate(
     monkeypatch.setattr(automation_project, "_prepare_smoke_lane", lambda _lane: None)
     monkeypatch.setattr(
         automation_project,
+        "_node_environment",
+        lambda extra=None: {**(extra or {}), "PATH": "C:/locked-node"},
+    )
+    monkeypatch.setattr(
+        automation_project,
         "_run",
         lambda *command, **_kwargs: observed.append(command),
     )
@@ -562,16 +623,23 @@ def test_sharded_core_lane_runs_candidate_bound_legacy_upgrade_once(
     artifacts.mkdir()
     report = tmp_path / "lane-reports" / "core.json"
     observed: list[Path] = []
+    observed_envs: list[dict[str, str] | None] = []
     legacy_report = {
         "ok": True,
-        "evidenceKind": "packaged-sidecar-run",
+        "evidenceKind": "packaged-host-upgrade",
     }
     monkeypatch.setenv("AUTOMATION_ARTIFACTS_DIR", str(artifacts))
     monkeypatch.setattr(automation_project, "read_project_version", lambda _root: "1.2.3")
     monkeypatch.setattr(automation_project, "_verify_release_metadata", lambda *_args: None)
     monkeypatch.setattr(automation_project, "_prepare_smoke_lane", lambda _lane: None)
+    monkeypatch.setattr(
+        automation_project,
+        "_node_environment",
+        lambda extra=None: {**(extra or {}), "PATH": "C:/locked-node"},
+    )
 
-    def run_lane(*_args: str, **_kwargs: object) -> None:
+    def run_lane(*_args: str, env: dict[str, str] | None = None, **_kwargs: object) -> None:
+        observed_envs.append(env)
         report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text(
             json.dumps({"schemaVersion": 1, "reportKind": "lane", "lane": "core"}),
@@ -595,6 +663,12 @@ def test_sharded_core_lane_runs_candidate_bound_legacy_upgrade_once(
     automation_project.release_smoke_lane("core", report)
 
     assert observed == [report.parent / "legacy-candidate-upgrade"]
+    assert observed_envs == [
+        {
+            "VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1",
+            "PATH": "C:/locked-node",
+        }
+    ]
     lane_report = json.loads(report.read_text(encoding="utf-8"))
     assert lane_report["legacyCandidateUpgrade"] == {
         "reportPath": "legacy-candidate-upgrade/report.json",
@@ -618,7 +692,7 @@ def test_smoke_aggregate_rejects_failed_embedded_legacy_upgrade(
                     "reportPath": "legacy-candidate-upgrade/report.json",
                     "evidence": {
                         "ok": False,
-                        "evidenceKind": "packaged-sidecar-run",
+                        "evidenceKind": "packaged-host-upgrade",
                     },
                 },
             }

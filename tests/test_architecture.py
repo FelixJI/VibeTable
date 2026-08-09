@@ -6,25 +6,45 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 
-_RETIRED_PROVIDER_SCAN_ROOTS = (
+_RETIRED_PROVIDER_SCAN_PATHS = (
     Path("backend"),
     Path("contracts"),
     Path("desktop/src"),
+    Path("desktop/Directory.Build.props"),
+    Path("desktop/publish-layout.json"),
+    Path("desktop/VibeTable.Desktop.sln"),
+    Path("desktop/web-grid/index.html"),
+    Path("desktop/web-grid/package.json"),
+    Path("desktop/web-grid/package-lock.json"),
+    Path("desktop/web-grid/public"),
     Path("desktop/web-grid/src"),
     Path("sidecar"),
     Path("scripts"),
+    Path("sdk"),
+    Path("examples"),
+    Path("tools/recovery-tools/go.mod"),
+    Path("tools/recovery-tools/go.sum"),
     Path(".ci"),
     Path(".github"),
+    Path("pyproject.toml"),
+    Path("uv.lock"),
+    Path("global.json"),
+    Path(".node-version"),
+    Path(".nvmrc"),
 )
 _RETIRED_PROVIDER_TEXT_SUFFIXES = {
     ".cs",
+    ".csproj",
     ".go",
     ".html",
     ".js",
     ".json",
     ".mjs",
+    ".mod",
+    ".props",
     ".py",
     ".toml",
+    ".sum",
     ".ts",
     ".tsx",
     ".vue",
@@ -32,6 +52,14 @@ _RETIRED_PROVIDER_TEXT_SUFFIXES = {
     ".xml",
     ".yaml",
     ".yml",
+}
+_RETIRED_PROVIDER_IGNORED_PARTS = {
+    "__pycache__",
+    "bin",
+    "build",
+    "dist",
+    "node_modules",
+    "obj",
 }
 
 
@@ -55,26 +83,35 @@ def _scan_imports(dir_name: str, forbidden_patterns: list[str]) -> list[str]:
 
 
 def _scan_retired_provider_references(root: Path, retired: str) -> list[str]:
-    """只扫描受控的生产源码与配置根，避免本地笔记影响架构门禁。"""
+    """扫描明确受控的生产源码与配置，避免本地笔记和构建产物影响门禁。"""
     violations: list[str] = []
-    for relative_root in _RETIRED_PROVIDER_SCAN_ROOTS:
-        scan_root = root / relative_root
-        if not scan_root.is_dir():
+    for relative_path in _RETIRED_PROVIDER_SCAN_PATHS:
+        scan_path = root / relative_path
+        if scan_path.is_file():
+            candidates = (scan_path,)
+            explicit_file = True
+        elif scan_path.is_dir():
+            candidates = scan_path.rglob("*")
+            explicit_file = False
+        else:
             continue
-        for path in scan_root.rglob("*"):
+        for path in candidates:
             if not path.is_file():
                 continue
-            if retired in path.name.casefold():
-                violations.append(path.relative_to(root).as_posix())
+            relative = path.relative_to(root)
+            if any(part in _RETIRED_PROVIDER_IGNORED_PARTS for part in relative.parts):
                 continue
-            if path.suffix.casefold() not in _RETIRED_PROVIDER_TEXT_SUFFIXES:
+            if retired in path.name.casefold():
+                violations.append(relative.as_posix())
+                continue
+            if not explicit_file and path.suffix.casefold() not in _RETIRED_PROVIDER_TEXT_SUFFIXES:
                 continue
             try:
                 content = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
             if retired in content.casefold():
-                violations.append(path.relative_to(root).as_posix())
+                violations.append(relative.as_posix())
     return sorted(set(violations))
 
 
@@ -270,3 +307,67 @@ class TestFLegacyRemoval:
         (backend / "adapter.py").write_text(retired, encoding="utf-8")
 
         assert _scan_retired_provider_references(tmp_path, retired) == ["backend/adapter.py"]
+
+    def test_retired_provider_scan_checks_root_manifests_and_web_entry(self, tmp_path: Path):
+        retired = "".join(["di", "rectus"])
+        (tmp_path / "pyproject.toml").write_text(retired, encoding="utf-8")
+        desktop = tmp_path / "desktop"
+        desktop.mkdir()
+        (desktop / "Directory.Build.props").write_text(retired, encoding="utf-8")
+        product = desktop / "src" / "Product"
+        product.mkdir(parents=True)
+        (product / "Product.csproj").write_text(retired, encoding="utf-8")
+        web = desktop / "web-grid"
+        web.mkdir(parents=True)
+        (web / "index.html").write_text(retired, encoding="utf-8")
+
+        assert _scan_retired_provider_references(tmp_path, retired) == [
+            "desktop/Directory.Build.props",
+            "desktop/src/Product/Product.csproj",
+            "desktop/web-grid/index.html",
+            "pyproject.toml",
+        ]
+
+    def test_retired_provider_scan_checks_dependency_locks_and_plugin_manifests(
+        self, tmp_path: Path
+    ):
+        retired = "".join(["di", "rectus"])
+        (tmp_path / "uv.lock").write_text(retired, encoding="utf-8")
+        sidecar = tmp_path / "sidecar"
+        sidecar.mkdir()
+        (sidecar / "go.mod").write_text(retired, encoding="utf-8")
+        (sidecar / "go.sum").write_text(retired, encoding="utf-8")
+        desktop = tmp_path / "desktop"
+        desktop.mkdir()
+        (desktop / "publish-layout.json").write_text(retired, encoding="utf-8")
+        plugin = tmp_path / "sdk" / "plugin"
+        plugin.mkdir(parents=True)
+        (plugin / "package.json").write_text(retired, encoding="utf-8")
+        recovery_tools = tmp_path / "tools" / "recovery-tools"
+        recovery_tools.mkdir(parents=True)
+        (recovery_tools / "go.mod").write_text(retired, encoding="utf-8")
+        (recovery_tools / "go.sum").write_text(retired, encoding="utf-8")
+
+        assert _scan_retired_provider_references(tmp_path, retired) == [
+            "desktop/publish-layout.json",
+            "sdk/plugin/package.json",
+            "sidecar/go.mod",
+            "sidecar/go.sum",
+            "tools/recovery-tools/go.mod",
+            "tools/recovery-tools/go.sum",
+            "uv.lock",
+        ]
+
+    def test_retired_provider_scan_ignores_generated_outputs(self, tmp_path: Path):
+        retired = "".join(["di", "rectus"])
+        for relative in (
+            Path("backend/build/generated.json"),
+            Path("desktop/src/Product/bin/generated.json"),
+            Path("desktop/src/Product/obj/generated.props"),
+            Path("sdk/plugin/node_modules/generated.js"),
+        ):
+            path = tmp_path / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(retired, encoding="utf-8")
+
+        assert _scan_retired_provider_references(tmp_path, retired) == []

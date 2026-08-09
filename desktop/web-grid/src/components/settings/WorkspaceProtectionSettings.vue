@@ -30,6 +30,7 @@ import { t } from "@/i18n";
 import { useUiStore } from "@/stores/uiStore";
 import { useWorkspaceProtectionStore, type SnapshotTimelineItem } from "@/stores/workspaceProtectionStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
+import { publicCapabilityPolicy } from "@/services/publicCapabilityPolicy";
 import type { WorkspaceV2UiAction } from "@/contracts/workspaceV2Bridge";
 import type { RetentionPolicyV2 } from "@/contracts/workspaceV2";
 import {
@@ -958,7 +959,8 @@ function applyStoragePlan(): void {
           {{ t("workspaceV2.storage.verify") }}
         </NButton>
         <NButton
-          v-if="protection.storage?.mode === 'mirrored'"
+          v-if="publicCapabilityPolicy.mirroredReplicaSynchronization
+            && protection.storage?.mode === 'mirrored'"
           size="small"
           :disabled="protection.storage?.pendingSync || session.isTransitioning"
           data-testid="workspace-storage-sync"
