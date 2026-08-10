@@ -905,7 +905,7 @@ describe("workspace protection UI capability gates", () => {
     wrapper.unmount();
   });
 
-  it("only exposes verified topology/cache actions and emits their closed params", async () => {
+  it("exposes verified topology/cache actions while keeping replica synchronization internal", async () => {
     const session = useWorkspaceSessionStore();
     session.configureCapabilities([
       "workspace.session.v2",

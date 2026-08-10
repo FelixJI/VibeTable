@@ -71,6 +71,8 @@ public sealed class SidecarWorkspaceProtectionHook :
                 "The active Sidecar cannot synchronize the mirrored replica.");
 
         Guid synchronizeOperation = Guid.NewGuid();
+        // Internal-only Host-to-Sidecar primitive. The renderer can observe
+        // replica.status but cannot queue raw synchronization work.
         JsonElement synchronize = await ForwardAsync(
             workspaceId,
             sessionEpoch,
