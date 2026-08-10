@@ -56,6 +56,11 @@ ImportMode = Literal["create_only", "upsert"]
 #: requires explicit acknowledgement.
 ImportDiagnosticSeverity = Literal["error", "warning"]
 
+#: MutationKernel accepts at most 1,000 operations in one atomic request.  The
+#: preview contract uses the same ceiling so every successful plan is
+#: guaranteed to fit the authoritative apply boundary.
+MAX_ATOMIC_IMPORT_ROWS: int = 1_000
+
 
 class ImportColumnMapping(CamelModel):
     """An explicit user mapping from a source column to a collection field.
@@ -186,7 +191,10 @@ class ImportPlan(CamelModel):
     capability_hash: str = Field(min_length=1)
     source_hash: str = Field(min_length=1)
     summary: ImportSummary
-    rows: list[ImportPlanRow] = Field(default_factory=list, max_length=100000)
+    rows: list[ImportPlanRow] = Field(
+        default_factory=list,
+        max_length=MAX_ATOMIC_IMPORT_ROWS,
+    )
     unmatched_columns: list[str] = Field(default_factory=list, max_length=256)
     diagnostics: list[ImportCellDiagnostic] = Field(default_factory=list)
     token: ImportPreviewToken
@@ -327,6 +335,7 @@ class TemplateResult(CamelModel):
 
 
 __all__ = [
+    "MAX_ATOMIC_IMPORT_ROWS",
     "ApplyImportParams",
     "ApplyImportResult",
     "CamelModel",

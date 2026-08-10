@@ -2,7 +2,7 @@ package attachments
 
 import "io"
 
-const ContractVersion = "1.0"
+const ContractVersion = "2.0"
 
 type Thumbnail struct {
 	Variant            string `json:"variant"`

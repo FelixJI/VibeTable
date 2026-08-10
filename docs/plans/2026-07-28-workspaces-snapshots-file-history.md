@@ -617,7 +617,7 @@ Snapshot、文件自动修订和磁盘限额的具体出厂数字不在本计划
 
 工作：
 
-- 新建真正的 protocol/catalog v2，在 `contracts/v2/` 增加 Workspace/Snapshot/FileRevision/Lease/Retention 的语言中立 JSON Schema 和 fixtures；冻结 `contracts/v1` 文件内容。
+- 在唯一的 `contracts/v2/` seam 中维护 Workspace/Snapshot/FileRevision/Lease/Retention 与产品数据两套独立模块；开发阶段不保留历史契约目录和适配器。
 - 写 ADR：工作区身份、审计不回滚、Kopia 隔离、advisory lease 限制、文件版本树。
 - 建立错误码：`workspace.*`、`snapshot.*`、`repository.*`、`lease.*`、`replica.*`、`conflict.*`。
 - 定义统一 wire envelope：global scope 或 `workspaceId + sessionEpoch + operationId + sequence`。Workspace switch 旋转 epoch，并丢弃旧响应/事件。

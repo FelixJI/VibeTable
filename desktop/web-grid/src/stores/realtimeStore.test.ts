@@ -124,7 +124,7 @@ function task(
   progress: number,
 ): TaskChangedEvent {
   return {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     topic: "task.changed",
     eventId: `evt-${state}`,
     sequence: state === "running" ? 1 : 2,

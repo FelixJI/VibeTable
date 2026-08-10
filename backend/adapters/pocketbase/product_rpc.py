@@ -282,7 +282,7 @@ class PocketBaseProductRpc(ProductRpc):
         request_id = str(uuid.uuid4())
         upload_handles = [f"upload_{index}" for index in range(len(host_paths))]
         request = {
-            "contractVersion": "1.0",
+            "contractVersion": "2.0",
             "requestId": request_id,
             "idempotencyKey": f"attachment:{request_id}",
             "tableId": _text(raw, "tableId"),
@@ -347,7 +347,7 @@ class PocketBaseProductRpc(ProductRpc):
             expected_status=(200,),
         )
         return {
-            "contractVersion": "1.0",
+            "contractVersion": "2.0",
             "saved": True,
             "bytes": saved_bytes,
         }

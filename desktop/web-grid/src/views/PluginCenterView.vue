@@ -271,7 +271,7 @@ onBeforeUnmount(() => service.dispose());
       <main v-if="plugin" class="plugin-detail">
         <div class="identity-line">
           <div><span class="section-code">{{ plugin.pluginId }}</span><h2>{{ displayName(plugin) }}</h2></div>
-          <button data-testid="plugin-toggle" class="toggle-button" :class="{ enabled: plugin.status === 'enabled' }" type="button" @click="safely(() => service.setEnabled(plugin!, plugin!.status !== 'enabled'))">
+          <button data-testid="plugin-toggle" class="toggle-button" :class="{ enabled: plugin.status === 'enabled' }" type="button" :disabled="store.busy" @click="safely(() => service.setEnabled(plugin!, plugin!.status !== 'enabled'))">
             <Power :size="14" />{{ plugin.status === 'enabled' ? '整体启用' : '整体禁用' }}
           </button>
         </div>
@@ -312,7 +312,7 @@ onBeforeUnmount(() => service.dispose());
             <div><strong>{{ localize(action.displayName, action.actionId) }}</strong><code>{{ action.actionId }}</code></div>
             <span class="risk-chip" :data-risk="action.risk">{{ riskLabel(action.risk) }}</span>
             <p>{{ localize(action.description, action.mode) }}</p>
-            <button class="run-button" type="button" :disabled="plugin.status !== 'enabled' || action.invocation !== 'manual'" @click="openAction(plugin.pluginId, action.actionId)"><Play :size="13" />运行</button>
+            <button class="run-button" type="button" :disabled="store.busy || plugin.status !== 'enabled' || action.invocation !== 'manual'" @click="openAction(plugin.pluginId, action.actionId)"><Play :size="13" />运行</button>
           </article>
           <p v-if="!plugin.manifest.actions.length" class="empty-line">此插件不注册桌面动作。</p>
         </section>

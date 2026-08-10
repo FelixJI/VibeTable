@@ -383,7 +383,7 @@ func validateConstraints(
 				return productError("schema.field.invalid_constraint", path+".pattern", "pattern is not a valid regular expression", nil)
 			}
 			if len(constraint.Flags) > 0 {
-				return productError("schema.field.invalid_constraint", path+".flags", "pattern flags are not supported in contract v1", nil)
+				return productError("schema.field.invalid_constraint", path+".flags", "pattern flags are not supported by the product contract", nil)
 			}
 		case ConstraintPrecisionScale:
 			if effectiveDataType(field) != DataTypeDecimal {

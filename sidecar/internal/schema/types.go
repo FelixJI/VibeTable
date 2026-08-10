@@ -9,7 +9,7 @@ import (
 	"strconv"
 )
 
-const ContractVersion = "1.0"
+const ContractVersion = "2.0"
 
 var schemaRevisionPattern = regexp.MustCompile(`^schema_([0-9]+)$`)
 

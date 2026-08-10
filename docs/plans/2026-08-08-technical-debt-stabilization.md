@@ -89,7 +89,7 @@ flowchart LR
 | 2 Python seam | 2–3 | 4–7 | application 依赖方向通过，wire 行为无漂移 |
 | 3 目标 locality | 1–2 | 3–5 | Diff 所经 interface 稳定，行为 characterization 通过 |
 | 4 Diff 纵切 | 2 | 6–10 | kernel 与完整产品纵切分别可回滚，代表性 E2E 通过 |
-| 5 数据/生命周期 | 2–4 | 7–12 | 旧候选升级恢复、打包进程和 WebView2 证据成立 |
+| 5 数据/生命周期 | 2–4 | 7–12 | 当前候选的数据恢复、打包进程和 WebView2 证据成立 |
 | 6 runtime/docs | 2 | 3–5 | Node consumer 决策和 active 文档与实现一致 |
 | 7 冻结退出 | 0–1 | 2–4 | 最终 HEAD 的本地资格报告与 GitHub `required` 通过 |
 
@@ -164,11 +164,10 @@ Replica、plugin lifecycle/preset/version/dashboard 以及 Document Diff。静�
 只有批准为首版必需的能力进入后续闭环；不允许到阶段 5 再开放式加入任意跨语言 PR。每条纵向
 修复 PR 同时处理 capability、Host、Web 和 E2E，不得按技术层拆出长期半接线状态。
 
-#### WP0.4：固定升级验收基线
+#### WP0.4：固定当前候选验收基线
 
-选择冻结前、确实位于现存 migration 之前的旧候选，记录 commit、application version、schema
-version、生成命令和选择理由。不得临时选择与当前 schema 相同的候选来制造“升级通过”。候选内容
-进入受控测试 fixture/构建流程；这里只记录来源，不新增内容 hash 或身份层。
+记录当前候选的 source SHA、application version、schema version 和生成命令；数据恢复只验证当前
+契约与当前打包产物。开发阶段不构建历史候选，也不维护跨版本 workspace 升级兼容门禁。
 
 #### WP0.5：执行非首版隐藏决策，并修复守护测试和文档漂移
 
@@ -523,35 +522,7 @@ dotnet test desktop/VibeTable.Desktop.sln --configuration Release
 
 ## 10. 阶段 5：数据、恢复、进程生命周期与产品验收
 
-### 10.1 真实数据升级与恢复
-
-产品尚未正式发布，因此不虚构“上一正式版本”。选择一个冻结前、真实可启动且包含旧 schema 的
-内部候选，保存最小业务语料与构建来源；首次正式发布后再把此 seam 切换为“上一正式 Release”。
-
-验收必须驱动真实生产启动/更新路径，不能只调用测试或 release CLI 的
-`prepare_upgrade/activate_upgrade` 就宣布产品升级受保护。阶段 5 开始先确认生产策略并二选一：
-
-- 若生产 updater/首次启动会消费预迁移副本、backup 与失败恢复 seam，则把它接入真实打包路径并
-  由产品黑盒测试驱动；
-- 若产品实际采用 sidecar 原地 startup migration，则直接让真实打包宿主打开旧 workspace，验证
-  中断与恢复；删除“upgrade backup 单测等同于生产升级证据”的假设。
-
-这项选择是阶段阻断决定，必须记录调用链证据；不为了统一两个策略再建一套 migration framework。
-
-最小语料包含表、普通/公式/关系字段、附件、audit/outbox、Snapshot，以及一个迁移前状态。候选验收：
-
-1. 旧候选创建并正常关闭数据；当前候选只在副本上预迁移并健康打开；
-2. 读写、附件、公式、审计和 Snapshot 保持；
-3. migration 中断时不开放业务写；恢复 journal 中断后重启能确定性完成或补偿；
-4. 未产生新写时可用旧 binary + pre-upgrade 副本恢复；一旦新 schema 已产生业务写，优先 forward
-   fix 或导出为新 workspace，禁止静默降级覆盖；
-5. 复用生产路径实际消费的 migration manifest、backup/恢复 seam；未被生产消费的辅助 seam 只能
-   算定向测试，不能算冻结退出证据。不新增 tree hash 或人工确认层。
-
-与正式安装器、签名、SmartScreen 和全新用户卸载有关的外部分发验收，在分发形态确定后另立发布
-里程碑；它们不是本次架构清债完成度的伪指标。
-
-### 10.2 打包宿主进程生命周期
+### 10.1 打包宿主进程生命周期
 
 用真实打包宿主验证：普通退出、关闭到托盘、托盘退出、静默开机启动、BFF/sidecar 任一异常退出、
 workspace 再次打开和 session epoch 轮换。验收后不得遗留子进程、端口占用或旧 epoch 响应写入
@@ -560,7 +531,7 @@ workspace 再次打开和 session epoch 轮换。验收后不得遗留子进程�
 若修改 updater，必须验证“替换完成但新程序未达健康状态”的恢复路径；只回滚 updater code，
 不触碰 workspace 数据。幂等读取可沿用已有窄恢复等待，写入与 restore apply 禁止自动重试。
 
-### 10.3 WebView2 与能力产品证据
+### 10.2 WebView2 与能力产品证据
 
 - required/release evidence 中 WebView2 unavailable 必须 fail，不能以 skip 生成
   `releaseEligible=true`；具体实现为 CI/release 设置 `VIBETABLE_REQUIRE_WEBVIEW2=1`，smoke 在该模式
@@ -571,12 +542,11 @@ workspace 再次打开和 session epoch 轮换。验收后不得遗留子进程�
 - UI 可见但 capability 未广告、capability 已广告但 method 集不完整，均阻断该入口发布；回滚时
   同时撤销入口和 capability 广告。
 
-### 10.4 建议 PR
+### 10.3 建议 PR
 
-1. `test(upgrade): 增加旧候选真实数据升级与恢复语料`
-2. `test(desktop): 验证打包宿主进程生命周期`
-3. `test(e2e): 禁止发布门禁跳过 WebView2 smoke`
-4. `fix(update): 补齐候选启动健康失败恢复`（仅在可复现验收缺口确认后创建）
+1. `test(desktop): 验证打包宿主进程生命周期`
+2. `test(e2e): 禁止发布门禁跳过 WebView2 smoke`
+3. `fix(update): 补齐候选启动健康失败恢复`（仅在可复现验收缺口确认后创建）
 
 阶段 0 已固定首版能力及 PR 数；本阶段只能执行其中已批准的验收/修复，不得按矩阵临时新增任意
 用户能力，也不得创建“补完所有 RPC”的大扫除 PR。
@@ -653,8 +623,8 @@ uv run python qa/next.py --ci --json-report build/qa/report.json
 | Python/BFF | Ruff、类型检查、目标 pytest、相关 contract | GitHub `required` |
 | Web/UI | 目标 Vitest、typecheck、build | `required`、相关真实 WebView2 场景、可见改动截图 |
 | .NET bridge/lifecycle | 目标 .NET tests | `required`、打包宿主生命周期/产品 E2E |
-| Go/data/migration | gofmt、目标 Go tests、vet；并发改动跑相关 race | `required`、packaged sidecar、旧候选升级/恢复 |
-| 发布/恢复/package | 定向 package/upgrade/restore contract | 完整 `qa/next.py --ci` 与候选 smoke |
+| Go/data/migration | gofmt、目标 Go tests、vet；并发改动跑相关 race | `required`、packaged sidecar、当前 schema 恢复 |
+| 发布/恢复/package | 定向 package/restore contract | 完整 `qa/next.py --ci` 与候选 smoke |
 
 最小反馈不是放宽 PR 门禁。性能 p95 只有在同规格样本量达到现行质量规则要求后才升级为阻断，
 不因样本不足制造冻结死锁。
@@ -698,7 +668,7 @@ uv run python qa/next.py --ci --json-report build/qa/report.json
 - 阶段 3 的 WPF/Web 目标 locality 未扩大 public interface，旧行为测试继续通过；其余可选整理
   不作为 LOC 指标阻断退出；
 - contract/schema/catalog/consumer tests 全部通过，无本地 ignored 文件误报；
-- 旧内部候选真实数据升级、中断恢复和 Snapshot 恢复通过，回滚/forward-fix 边界已记录；
+- 当前候选的 Snapshot 恢复和异常启动恢复通过；
 - 打包宿主退出后无 BFF/sidecar 孤儿，required WebView2 证据零 skip；
 - Windows 10 与 Windows 11 x64 各至少一次真实客户端候选 smoke；`windows-latest` 不自动等同于两者；
 - vendored Node 已按 consumer 证据移除或形成明确保留契约，发布包仍为完整离线产品包；
@@ -718,7 +688,7 @@ uv run python qa/next.py --ci --json-report build/qa/report.json
 - [x] Go/WPF/Web 热点按 locality 整理，而不是按 LOC 创建浅模块。
 - [x] contract 治理没有扩展为未经验证的全语言生成工程。
 - [x] runtime 完整性只落在外部导入/发布边界，没有逐层重复 SHA-256。
-- [x] 最终验收覆盖真实数据、恢复、升级和进程生命周期，但不机械枚举低概率组合。
+- [x] 最终验收覆盖真实数据、恢复和进程生命周期，但不机械枚举低概率组合。
 - [x] 恢复开发的退出标准可由仓库证据验证，不依赖口头判断。
 
 ## 17. 独立审查与处置记录
@@ -735,7 +705,6 @@ uv run python qa/next.py --ci --json-report build/qa/report.json
 
 - 接受：区分已知 bug 与验收空白；能力必须“接通、隐藏、internal-only”三选一。
 - 接受：Python architecture rule 采用逐 PR ratchet，保证每个 PR 合并时完整门禁可绿。
-- 接受：升级证据必须驱动真实生产路径并固定旧 schema 候选，不能用辅助 CLI seam 冒充。
 - 接受：Diff 以 revision ID/CAS 固定 target/effective 两端；materialize 为 Host-only，raw Web 请求被拒绝。
 - 接受：为 WebView2 no-skip 增加明确 CI mode、QA aggregate contract 和独立 PR。
 - 接受：阶段 0 固定首版能力和 PR 数，阶段 5 不再开放式扩张范围。
@@ -745,14 +714,10 @@ uv run python qa/next.py --ci --json-report build/qa/report.json
 
 - 实施基线为 `GitHub/main@bd06158e`，在独立分支/worktree 完成；历史 checkbox 保留原样，
   不反向伪造串行 PR 过程。
-- 四语言 contract、Python application seam、Desktop/Web locality、Document Diff 完整纵切、旧候选
-  Host 升级/恢复、打包 Host 生命周期、WebView2 no-skip、Node runtime 治理与文档治理均已落地。
+- 四语言 contract、Python application seam、Desktop/Web locality、Document Diff 完整纵切、打包
+  Host 生命周期、WebView2 no-skip、Node runtime 治理与文档治理均已落地。
 - 最终打包产品报告 `build/q/f2/20260809T152446Z/product-e2e-report.json` 为 16/16 passed、
   0 failed、0 skipped；每个场景均正常关闭 Host，残留后代进程为零且端口释放。
-- 旧候选报告 `build/q/u2/report.json` 为 `ok=true`、
-  `evidenceKind=packaged-host-upgrade`：固定旧 `VibeTable.Next.exe` 通过公开 bridge 打开 workspace、
-  生成真实 authority/coordinator 并正常退出；当前 Host 完成 clean migration，fault 首启未发布 writable
-  session，全新 Host 以新 epoch 恢复，随后业务语料与 Snapshot restore 复核通过。
 - 打包 Host 生命周期报告 `build/qa/packaged-host-lifecycle-20260809-03/report.json` 为 `ok=true`；
   关闭到托盘、托盘退出和静默启动均由真实 `VibeTable.Next.exe` 驱动，exit code 为 0，且无残留后代
   进程或监听端口。

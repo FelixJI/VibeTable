@@ -1388,7 +1388,7 @@ def write_aggregate(
 ) -> dict[str, Any]:
     passed = sum(item.get("status") == "passed" for item in results)
     report = {
-        "contractVersion": "1.0",
+        "contractVersion": "2.0",
         "generatedAt": datetime.now(UTC).isoformat(),
         "reportPath": str(path.resolve()),
         "status": "passed" if audit["passed"] and passed == len(results) else "failed",

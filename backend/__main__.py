@@ -334,7 +334,7 @@ def _start_realtime(
             await server.notify(
                 "data.changed",
                 {
-                    "contractVersion": "1.0",
+                    "contractVersion": "2.0",
                     "topic": "data.changed",
                     "eventId": event_id,
                     "sequence": int(previous["sequence"]) + 1,
@@ -405,7 +405,7 @@ async def _build_server() -> tuple[
             await server_ref.notify(
                 "task.changed",
                 {
-                    "contractVersion": "1.0",
+                    "contractVersion": "2.0",
                     "topic": "task.changed",
                     "eventId": f"evt_task_{hashlib.sha256(identity).hexdigest()[:24]}",
                     "sequence": task_sequence,
@@ -417,7 +417,7 @@ async def _build_server() -> tuple[
                     "cursor": None,
                     "error": (
                         {
-                            "contractVersion": "1.0",
+                            "contractVersion": "2.0",
                             "code": "task.failed",
                             "path": None,
                             "message": str(error_message),

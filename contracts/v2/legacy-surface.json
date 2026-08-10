@@ -210,17 +210,13 @@
     }
   ],
   "currentCatalogs": [
+    "contracts/v2/fixtures/rpc-catalog.json",
+    "contracts/v2/fixtures/product-rpc-catalog.json"
+  ],
+  "catalogsWithLegacyDtoFieldGuard": [
     "contracts/v2/fixtures/rpc-catalog.json"
   ],
   "allowedDetectionPrimitives": [
-    {
-      "path": "contracts/v1",
-      "purpose": "Frozen byte-for-byte v1 compatibility evidence; never registered or advertised by the v2 runtime."
-    },
-    {
-      "path": "contracts/v2/v1-frozen.sha256",
-      "purpose": "Detect accidental mutation of the frozen v1 corpus."
-    },
     {
       "path": "scripts/release.py",
       "purpose": "Installer upgrade safety copy and rollback primitive outside the product Snapshot model."

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://vibetable.local/contracts/v1/contracts.schema.json",
-  "title": "VibeTable Product Contracts v1",
+  "$id": "https://vibetable.local/contracts/v2/product-contracts.schema.json",
+  "title": "VibeTable Product Contracts v2",
   "oneOf": [
     {"$ref": "#/$defs/TableDefinition"},
     {"$ref": "#/$defs/ProductError"},
@@ -16,7 +16,7 @@
   "$defs": {
     "ContractVersion": {
       "type": "string",
-      "const": "1.0"
+      "const": "2.0"
     },
     "JsonObject": {
       "type": "object",

@@ -11,7 +11,7 @@ describe("dataIoService", () => {
 
   it("uses opaque native grants for preview/apply and export", async () => {
     const methods: string[] = [];
-    const request = vi.fn(async (type: string) => {
+    const request = vi.fn(async (type: string, _params?: unknown) => {
       methods.push(type);
       if (type === "data.importSourceRequested") {
         return {
@@ -59,10 +59,10 @@ describe("dataIoService", () => {
       };
     });
     setHostBridgeForTesting({ request } as unknown as HostBridge);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const service = useDataIoService();
 
-    await service.importData("orders", "schema-7");
+    const preview = await service.previewImport("orders", "schema-7");
+    await service.applyImport(preview);
     await service.exportData("orders", {});
 
     expect(methods).toEqual([
@@ -72,6 +72,9 @@ describe("dataIoService", () => {
       "data.exportTargetRequested",
       "task.create",
     ]);
+    expect(request.mock.calls[0]?.[1]).toEqual({
+      accept: [".xlsx", ".xlsm", ".csv"],
+    });
     expect(JSON.stringify(request.mock.calls)).not.toContain("\\\\");
   });
 
@@ -108,9 +111,22 @@ describe("dataIoService", () => {
       };
     });
     setHostBridgeForTesting({ request } as unknown as HostBridge);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-
-    await expect(useDataIoService().importData("orders", "schema-7"))
+    const service = useDataIoService();
+    const preview = await service.previewImport("orders", "schema-7");
+    await expect(service.applyImport(preview))
       .rejects.toThrow("atomic import failed [mutation.schema_revision_conflict]");
+  });
+
+  it("cancels only the currently tracked data task", async () => {
+    const request = vi.fn(async () => ({ state: "cancelled" }));
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+
+    await service.cancelActive();
+    expect(request).not.toHaveBeenCalled();
+
+    service.activeTaskId.value = "import-1";
+    await service.cancelActive();
+    expect(request).toHaveBeenCalledWith("task.cancel", { taskId: "import-1" });
   });
 });

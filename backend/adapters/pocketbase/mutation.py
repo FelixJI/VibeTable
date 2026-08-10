@@ -65,7 +65,7 @@ class PocketBaseBulkMutationClient:
         user = await self._auth.current_user()
         request_id = "paste-preview-" + pysecrets.token_hex(12)
         request = {
-            "contractVersion": "1.0",
+            "contractVersion": "2.0",
             "requestId": request_id,
             "idempotencyKey": request_id,
             "tableId": collection,
@@ -109,7 +109,7 @@ class PocketBaseBulkMutationClient:
             )
         user = await self._auth.current_user()
         request = {
-            "contractVersion": "1.0",
+            "contractVersion": "2.0",
             "requestId": idempotency_key,
             "idempotencyKey": idempotency_key,
             "tableId": collection,

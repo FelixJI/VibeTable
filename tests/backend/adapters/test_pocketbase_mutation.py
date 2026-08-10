@@ -60,7 +60,7 @@ def _profile() -> CollectionProfile:
 async def test_bulk_mutation_compiles_one_frozen_kernel_request() -> None:
     client = _Client(
         {
-            "contractVersion": "1.0",
+            "contractVersion": "2.0",
             "status": "applied",
             "changeSetId": "change-1",
             "affectedRows": [
@@ -115,7 +115,7 @@ async def test_bulk_mutation_compiles_one_frozen_kernel_request() -> None:
     assert result.created_row_keys == ["row-2"]
     assert client.requests == [
         {
-            "contractVersion": "1.0",
+            "contractVersion": "2.0",
             "requestId": "paste-1",
             "idempotencyKey": "paste-1",
             "tableId": "orders",
@@ -165,7 +165,7 @@ async def test_preview_import_forwards_row_modes_to_go() -> None:
 async def test_empty_insert_reaches_kernel_for_unsupplied_defaults() -> None:
     client = _Client(
         {
-            "contractVersion": "1.0",
+            "contractVersion": "2.0",
             "status": "applied",
             "changeSetId": "change-default",
             "affectedRows": [
@@ -209,7 +209,7 @@ async def test_empty_insert_reaches_kernel_for_unsupplied_defaults() -> None:
 async def test_paste_compiles_raw_values_for_authoritative_kernel_normalization() -> None:
     client = _Client(
         {
-            "contractVersion": "1.0",
+            "contractVersion": "2.0",
             "status": "applied",
             "changeSetId": "change-raw",
             "affectedRows": [

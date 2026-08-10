@@ -46,11 +46,14 @@ def _json_pointer(value: Any, pointer: str) -> Any:
 
 def _catalog_methods(payload: dict[str, Any]) -> set[str]:
     methods: set[str] = set()
-    advertised = payload.get("methods")
-    if isinstance(advertised, list):
-        methods.update(item for item in advertised if isinstance(item, str))
-    fixtures = payload.get("fixtures")
-    if isinstance(fixtures, list):
+    for advertised_name in ("methods", "rpcMethods"):
+        advertised = payload.get(advertised_name)
+        if isinstance(advertised, list):
+            methods.update(item for item in advertised if isinstance(item, str))
+    for fixtures_name in ("fixtures", "rpcCases"):
+        fixtures = payload.get(fixtures_name)
+        if not isinstance(fixtures, list):
+            continue
         for fixture in fixtures:
             if not isinstance(fixture, dict):
                 continue
@@ -171,6 +174,17 @@ def check(root: Path = PROJECT_ROOT, manifest_path: Path | None = None) -> list[
     ):
         errors.append("legacy-surface currentCatalogs must contain paths")
         current_catalogs = []
+    field_guard_catalogs = manifest.get("catalogsWithLegacyDtoFieldGuard")
+    if not isinstance(field_guard_catalogs, list) or not all(
+        isinstance(item, str) and item for item in field_guard_catalogs
+    ):
+        errors.append("legacy-surface catalogsWithLegacyDtoFieldGuard must contain paths")
+        field_guard_catalogs = []
+    unknown_field_guard_catalogs = set(field_guard_catalogs) - set(current_catalogs)
+    errors.extend(
+        f"legacy DTO field guard catalog is not current: {item}"
+        for item in sorted(unknown_field_guard_catalogs)
+    )
     forbidden_methods = set(raw_methods)
     forbidden_fields = set(raw_fields)
     for relative in current_catalogs:
@@ -183,11 +197,12 @@ def check(root: Path = PROJECT_ROOT, manifest_path: Path | None = None) -> list[
         errors.extend(
             f"legacy RPC remains in current catalog {relative}: {item}" for item in overlap
         )
-        field_overlap = sorted(forbidden_fields.intersection(_json_member_names(payload)))
-        errors.extend(
-            f"legacy DTO field remains in current catalog {relative}: {item}"
-            for item in field_overlap
-        )
+        if relative in field_guard_catalogs:
+            field_overlap = sorted(forbidden_fields.intersection(_json_member_names(payload)))
+            errors.extend(
+                f"legacy DTO field remains in current catalog {relative}: {item}"
+                for item in field_overlap
+            )
 
     allowlist = manifest.get("allowedDetectionPrimitives")
     if not isinstance(allowlist, list) or not allowlist:

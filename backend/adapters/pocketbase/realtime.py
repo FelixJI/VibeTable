@@ -252,7 +252,7 @@ def _decode_event(event_id: str, topic: str, raw: bytes) -> ProductEvent:
 
 def _validate_envelope(payload: Mapping[str, Any], event_id: str, topic: str) -> None:
     if (
-        payload.get("contractVersion") != "1.0"
+        payload.get("contractVersion") != "2.0"
         or payload.get("eventId") != event_id
         or payload.get("topic") != topic
         or isinstance(payload.get("sequence"), bool)

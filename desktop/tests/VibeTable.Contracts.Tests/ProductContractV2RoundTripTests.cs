@@ -6,11 +6,11 @@ using VibeTable.Contracts;
 namespace VibeTable.Contracts.Tests;
 
 /// <summary>
-/// Pins the language-neutral product fixtures under contracts/v1 using only
+/// Pins the language-neutral product fixtures under contracts/v2 using only
 /// System.Text.Json. These checks deliberately do not depend on provider DTOs.
 /// </summary>
 [TestClass]
-public sealed class ProductContractV1RoundTripTests
+public sealed class ProductContractV2RoundTripTests
 {
     private static readonly string[] FixtureNames =
     [
@@ -20,7 +20,7 @@ public sealed class ProductContractV1RoundTripTests
         "mutation-receipt.json",
         "mutation-request.json",
         "product-error.json",
-        "rpc-catalog.json",
+        "product-rpc-catalog.json",
         "table-definition.json",
         "task-changed-event.json",
     ];
@@ -28,14 +28,14 @@ public sealed class ProductContractV1RoundTripTests
     private static readonly string FixturesDirectory = FindFixturesDirectory();
 
     [TestMethod]
-    public void AllV1Fixtures_SystemTextJsonRoundTripWithoutShapeChanges()
+    public void AllProductFixtures_SystemTextJsonRoundTripWithoutShapeChanges()
     {
         var actualNames = Directory.GetFiles(FixturesDirectory, "*.json")
             .Select(Path.GetFileName)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToArray();
 
-        CollectionAssert.AreEqual(FixtureNames, actualNames);
+        CollectionAssert.IsSubsetOf(FixtureNames, actualNames);
 
         foreach (var name in FixtureNames)
         {
@@ -49,9 +49,9 @@ public sealed class ProductContractV1RoundTripTests
                 $"{name} changed shape after System.Text.Json round-trip");
 
             Assert.AreEqual(
-                "1.0",
+                "2.0",
                 parsed["contractVersion"]?.GetValue<string>(),
-                $"{name} must declare contractVersion 1.0");
+                $"{name} must declare contractVersion 2.0");
 
             var wire = parsed.ToJsonString().ToLowerInvariant();
             Assert.IsFalse(wire.Contains(
@@ -61,7 +61,7 @@ public sealed class ProductContractV1RoundTripTests
     }
 
     [TestMethod]
-    public void EventsAndMutationReceipt_PinRequiredV1Fields()
+    public void EventsAndMutationReceipt_PinRequiredProductFields()
     {
         var dataChanged = ReadObject("data-changed-event.json");
         var taskChanged = ReadObject("task-changed-event.json");
@@ -89,7 +89,7 @@ public sealed class ProductContractV1RoundTripTests
     [TestMethod]
     public void RpcCatalogPinsEveryMethodAndEventEnvelope()
     {
-        var catalog = ReadObject("rpc-catalog.json");
+        var catalog = ReadObject("product-rpc-catalog.json");
         var methods = catalog["rpcMethods"]!.AsArray();
         var cases = catalog["rpcCases"]!.AsArray();
         Assert.AreEqual(methods.Count, cases.Count);
@@ -140,7 +140,7 @@ public sealed class ProductContractV1RoundTripTests
     [TestMethod]
     public void RpcCatalogPinsHighRiskMethodSpecificResponseDtos()
     {
-        var catalog = ReadObject("rpc-catalog.json");
+        var catalog = ReadObject("product-rpc-catalog.json");
         var cases = catalog["rpcCases"]!.AsArray()
             .Select(node => node!.AsObject())
             .ToDictionary(
@@ -215,7 +215,7 @@ public sealed class ProductContractV1RoundTripTests
                 var candidate = Path.Combine(
                     current.FullName,
                     "contracts",
-                    "v1",
+                    "v2",
                     "fixtures");
                 if (Directory.Exists(candidate))
                 {
@@ -225,6 +225,6 @@ public sealed class ProductContractV1RoundTripTests
         }
 
         throw new DirectoryNotFoundException(
-            "Could not locate contracts/v1/fixtures from the test cwd or output directory.");
+            "Could not locate contracts/v2/fixtures from the test cwd or output directory.");
     }
 }

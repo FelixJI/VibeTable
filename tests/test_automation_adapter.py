@@ -241,6 +241,16 @@ def test_contract_gate_runs_generation_and_all_four_consumers(
                 "uv",
                 "run",
                 "python",
+                "contracts/v2/generate_product_rpc_catalog.py",
+                "--check",
+            ),
+            automation_project.REPO_ROOT,
+        ),
+        (
+            (
+                "uv",
+                "run",
+                "python",
                 "contracts/v2/generate_rpc_catalog.py",
                 "--check",
             ),
@@ -254,6 +264,7 @@ def test_contract_gate_runs_generation_and_all_four_consumers(
                 "-m",
                 "pytest",
                 "tests/contract/test_v2_contracts.py",
+                "tests/contract/test_product_contracts.py",
                 "tests/backend/contracts/test_workspace_v2_models.py",
                 "-q",
                 "--no-cov",
@@ -268,6 +279,7 @@ def test_contract_gate_runs_generation_and_all_four_consumers(
                 "--",
                 "src/contracts/workspaceV2.test.ts",
                 "src/contracts/workspaceV2Bridge.test.ts",
+                "src/contracts/productContractV2.test.ts",
             ),
             automation_project.REPO_ROOT / "desktop" / "web-grid",
         ),
@@ -283,7 +295,13 @@ def test_contract_gate_runs_generation_and_all_four_consumers(
             automation_project.REPO_ROOT,
         ),
         (
-            ("go", "test", "./internal/contracts/v2", "./internal/protocolv2"),
+            (
+                "go",
+                "test",
+                "./internal/contracts/v2",
+                "./internal/contracts",
+                "./internal/protocolv2",
+            ),
             automation_project.REPO_ROOT / "sidecar",
         ),
     ]
@@ -304,7 +322,14 @@ def test_full_quality_starts_with_the_stable_contract_gate(
 
     automation_project.quality()
 
-    assert [command for command, _cwd in observed[:5]] == [
+    assert [command for command, _cwd in observed[:6]] == [
+        (
+            "uv",
+            "run",
+            "python",
+            "contracts/v2/generate_product_rpc_catalog.py",
+            "--check",
+        ),
         (
             "uv",
             "run",
@@ -319,6 +344,7 @@ def test_full_quality_starts_with_the_stable_contract_gate(
             "-m",
             "pytest",
             "tests/contract/test_v2_contracts.py",
+            "tests/contract/test_product_contracts.py",
             "tests/backend/contracts/test_workspace_v2_models.py",
             "-q",
             "--no-cov",
@@ -330,6 +356,7 @@ def test_full_quality_starts_with_the_stable_contract_gate(
             "--",
             "src/contracts/workspaceV2.test.ts",
             "src/contracts/workspaceV2Bridge.test.ts",
+            "src/contracts/productContractV2.test.ts",
         ),
         (
             "dotnet",
@@ -339,7 +366,13 @@ def test_full_quality_starts_with_the_stable_contract_gate(
             "Release",
             "--no-restore",
         ),
-        ("go", "test", "./internal/contracts/v2", "./internal/protocolv2"),
+        (
+            "go",
+            "test",
+            "./internal/contracts/v2",
+            "./internal/contracts",
+            "./internal/protocolv2",
+        ),
     ]
     assert (
         ("uv", "run", "python", "-m", "pyright", "backend"),
@@ -386,28 +419,12 @@ def test_full_release_smoke_installs_the_race_toolchain_at_its_consumption_point
     assert observed[0] == "w64devkit"
     assert isinstance(observed[1], tuple)
     assert observed[1][0:4] == ("uv", "run", "python", "qa/next.py")
-    assert isinstance(observed[2], tuple)
-    assert observed[2][0:5] == (
-        "uv",
-        "run",
-        "python",
-        "-m",
-        "tests.e2e.legacy_candidate_upgrade",
-    )
-    assert "--legacy-package-root" not in observed[2]
-    assert "--current-package-root" not in observed[2]
-    assert observed[2][-4:] == (
-        "--evidence-root",
-        str(tmp_path / "build/automation/legacy-candidate-upgrade"),
-        "--json-report",
-        str(tmp_path / "build/automation/legacy-candidate-upgrade/report.json"),
-    )
+    assert len(observed) == 2
     assert observed_envs == [
         {
             "VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1",
             "PATH": "C:/locked-node",
         },
-        {"PATH": "C:/locked-node"},
     ]
 
 
@@ -611,19 +628,15 @@ def test_smoke_lane_binds_report_to_the_declared_candidate(
     assert command[-2:] == ("--json-report", str(report))
 
 
-def test_sharded_core_lane_runs_candidate_bound_legacy_upgrade_once(
+def test_sharded_core_lane_runs_only_the_current_candidate_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     report = tmp_path / "lane-reports" / "core.json"
-    observed: list[Path] = []
+    observed: list[tuple[str, ...]] = []
     observed_envs: list[dict[str, str] | None] = []
-    legacy_report = {
-        "ok": True,
-        "evidenceKind": "packaged-host-upgrade",
-    }
     monkeypatch.setenv("AUTOMATION_ARTIFACTS_DIR", str(artifacts))
     monkeypatch.setattr(automation_project, "read_project_version", lambda _root: "1.2.3")
     monkeypatch.setattr(automation_project, "_verify_release_metadata", lambda *_args: None)
@@ -634,45 +647,25 @@ def test_sharded_core_lane_runs_candidate_bound_legacy_upgrade_once(
         lambda extra=None: {**(extra or {}), "PATH": "C:/locked-node"},
     )
 
-    def run_lane(*_args: str, env: dict[str, str] | None = None, **_kwargs: object) -> None:
+    def run_lane(*args: str, env: dict[str, str] | None = None, **_kwargs: object) -> None:
+        observed.append(args)
         observed_envs.append(env)
-        report.parent.mkdir(parents=True, exist_ok=True)
-        report.write_text(
-            json.dumps({"schemaVersion": 1, "reportKind": "lane", "lane": "core"}),
-            encoding="utf-8",
-        )
-
-    def run_legacy(evidence_root: Path) -> Path:
-        observed.append(evidence_root)
-        evidence_root.mkdir()
-        legacy_path = evidence_root / "report.json"
-        legacy_path.write_text(json.dumps(legacy_report), encoding="utf-8")
-        return legacy_path
 
     monkeypatch.setattr(automation_project, "_run", run_lane)
-    monkeypatch.setattr(
-        automation_project,
-        "_run_legacy_candidate_upgrade",
-        run_legacy,
-    )
 
     automation_project.release_smoke_lane("core", report)
 
-    assert observed == [report.parent / "legacy-candidate-upgrade"]
+    assert len(observed) == 1
+    assert observed[0][-2:] == ("--json-report", str(report))
     assert observed_envs == [
         {
             "VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1",
             "PATH": "C:/locked-node",
         }
     ]
-    lane_report = json.loads(report.read_text(encoding="utf-8"))
-    assert lane_report["legacyCandidateUpgrade"] == {
-        "reportPath": "legacy-candidate-upgrade/report.json",
-        "evidence": legacy_report,
-    }
 
 
-def test_smoke_aggregate_rejects_failed_embedded_legacy_upgrade(
+def test_smoke_aggregate_delegates_current_lane_reports(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -680,28 +673,24 @@ def test_smoke_aggregate_rejects_failed_embedded_legacy_upgrade(
     artifacts.mkdir()
     reports = tmp_path / "lane-reports"
     reports.mkdir()
-    (reports / "core.json").write_text(
-        json.dumps(
-            {
-                "lane": "core",
-                "legacyCandidateUpgrade": {
-                    "reportPath": "legacy-candidate-upgrade/report.json",
-                    "evidence": {
-                        "ok": False,
-                        "evidenceKind": "packaged-host-upgrade",
-                    },
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    observed: list[tuple[str, ...]] = []
     monkeypatch.setenv("AUTOMATION_ARTIFACTS_DIR", str(artifacts))
     monkeypatch.setattr(automation_project, "read_project_version", lambda _root: "1.2.3")
     monkeypatch.setattr(automation_project, "_verify_release_metadata", lambda *_args: None)
-    monkeypatch.setattr(automation_project, "_run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *args, **_kwargs: observed.append(args),
+    )
 
-    with pytest.raises(RuntimeError, match=r"legacy candidate upgrade.*ok=true"):
-        automation_project.aggregate_release_smoke(reports)
+    automation_project.aggregate_release_smoke(reports)
+
+    assert len(observed) == 1
+    assert observed[0][1:4] == (
+        "qa/release_eligibility.py",
+        "--reports-dir",
+        str(reports),
+    )
 
 
 def test_spdx_is_derived_from_the_built_package_sbom(

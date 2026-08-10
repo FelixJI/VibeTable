@@ -92,7 +92,7 @@ describe("RealtimeTaskTracker", () => {
 
 function event(sequence: number): DataChangedEvent {
   return {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     topic: "data.changed",
     eventId: `evt_${sequence}`,
     sequence,
@@ -112,7 +112,7 @@ function taskEvent(
   occurredAt = "2026-07-24T08:30:00Z",
 ): TaskChangedEvent {
   return {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     topic: "task.changed",
     eventId: `task_evt_${sequence}`,
     sequence,

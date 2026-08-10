@@ -11,7 +11,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 )
 
-func TestFrozenMutationFixturesDecodeAndRoundTripExactly(t *testing.T) {
+func TestProductMutationFixturesDecodeAndRoundTripExactly(t *testing.T) {
 	cases := []struct {
 		name string
 		file string
@@ -23,7 +23,7 @@ func TestFrozenMutationFixturesDecodeAndRoundTripExactly(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", test.file))
+			raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "v2", "fixtures", test.file))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -47,7 +47,7 @@ func TestFrozenMutationFixturesDecodeAndRoundTripExactly(t *testing.T) {
 
 func TestMutationRequestRejectsUnknownFieldsAndOperationShapes(t *testing.T) {
 	base := `{
-		"contractVersion":"1.0","requestId":"req","idempotencyKey":"idem",
+		"contractVersion":"2.0","requestId":"req","idempotencyKey":"idem",
 		"tableId":"table","schemaRevision":"schema_0001",
 		"operations":[{"kind":"update","recordId":"rec","values":{}}],
 		"actor":{"type":"user","id":"local","displayName":null},

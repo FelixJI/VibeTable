@@ -129,6 +129,7 @@ def bootstrap() -> None:
 
 def contracts() -> None:
     """Verify the shared v2 wire contract through every runtime consumer."""
+    _run("uv", "run", "python", "contracts/v2/generate_product_rpc_catalog.py", "--check")
     _run("uv", "run", "python", "contracts/v2/generate_rpc_catalog.py", "--check")
     _run(
         "uv",
@@ -137,6 +138,7 @@ def contracts() -> None:
         "-m",
         "pytest",
         "tests/contract/test_v2_contracts.py",
+        "tests/contract/test_product_contracts.py",
         "tests/backend/contracts/test_workspace_v2_models.py",
         "-q",
         "--no-cov",
@@ -148,6 +150,7 @@ def contracts() -> None:
         "--",
         "src/contracts/workspaceV2.test.ts",
         "src/contracts/workspaceV2Bridge.test.ts",
+        "src/contracts/productContractV2.test.ts",
         cwd=REPO_ROOT / "desktop" / "web-grid",
         env=_node_environment(),
     )
@@ -163,6 +166,7 @@ def contracts() -> None:
         "go",
         "test",
         "./internal/contracts/v2",
+        "./internal/contracts",
         "./internal/protocolv2",
         cwd=REPO_ROOT / "sidecar",
     )
@@ -448,63 +452,6 @@ def release_smoke() -> None:
         "build/automation/vibetable-release-eligibility.json",
         env=_node_environment({"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"}),
     )
-    _run_legacy_candidate_upgrade(REPO_ROOT / "build" / "automation" / "legacy-candidate-upgrade")
-
-
-def _run_legacy_candidate_upgrade(evidence_root: Path) -> Path:
-    _run(
-        "uv",
-        "run",
-        "python",
-        "-m",
-        "tests.e2e.legacy_candidate_upgrade",
-        "--evidence-root",
-        str(evidence_root),
-        "--json-report",
-        str(evidence_root / "report.json"),
-        env=_node_environment(),
-    )
-    return evidence_root / "report.json"
-
-
-def _read_json_object(path: Path) -> dict[str, object]:
-    decoded = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(decoded, dict):
-        raise RuntimeError(f"JSON report must be an object: {path}")
-    return decoded
-
-
-def _attach_legacy_candidate_evidence(lane_report_path: Path, legacy_report_path: Path) -> None:
-    lane_report = _read_json_object(lane_report_path)
-    legacy_report = _read_json_object(legacy_report_path)
-    if legacy_report.get("ok") is not True:
-        raise RuntimeError("legacy candidate upgrade report must have ok=true")
-    if legacy_report.get("evidenceKind") != "packaged-host-upgrade":
-        raise RuntimeError("legacy candidate upgrade report has an unexpected evidence kind")
-    relative_path = legacy_report_path.relative_to(lane_report_path.parent).as_posix()
-    lane_report["legacyCandidateUpgrade"] = {
-        "reportPath": relative_path,
-        "evidence": legacy_report,
-    }
-    lane_report_path.write_text(
-        json.dumps(lane_report, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-
-def _verify_legacy_candidate_evidence(reports_dir: Path) -> None:
-    core_report = _read_json_object(reports_dir / "core.json")
-    reference = core_report.get("legacyCandidateUpgrade")
-    if not isinstance(reference, dict):
-        raise RuntimeError("core lane report is missing legacy candidate upgrade evidence")
-    report_path = reference.get("reportPath")
-    evidence = reference.get("evidence")
-    if not isinstance(report_path, str) or not report_path:
-        raise RuntimeError("legacy candidate upgrade evidence is missing its report path")
-    if not isinstance(evidence, dict) or evidence.get("ok") is not True:
-        raise RuntimeError("legacy candidate upgrade evidence must have ok=true")
-    if evidence.get("evidenceKind") != "packaged-host-upgrade":
-        raise RuntimeError("legacy candidate upgrade evidence has an unexpected evidence kind")
 
 
 def _prepare_smoke_lane(lane: str) -> None:
@@ -547,11 +494,6 @@ def release_smoke_lane(lane: str, json_report: Path) -> None:
         str(json_report),
         env=smoke_env,
     )
-    if lane == "core":
-        legacy_report = _run_legacy_candidate_upgrade(
-            json_report.parent / "legacy-candidate-upgrade"
-        )
-        _attach_legacy_candidate_evidence(json_report, legacy_report)
 
 
 def aggregate_release_smoke(reports_dir: Path) -> None:
@@ -559,7 +501,6 @@ def aggregate_release_smoke(reports_dir: Path) -> None:
     artifacts = _artifacts_dir()
     archive = artifacts / f"VibeTable-v{version}-win-x64.zip"
     _verify_release_metadata(artifacts, version, archive)
-    _verify_legacy_candidate_evidence(reports_dir)
     command = [
         sys.executable,
         "qa/release_eligibility.py",

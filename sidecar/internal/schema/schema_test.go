@@ -39,16 +39,16 @@ func TestStorageMappingsCoverEveryProductDataType(t *testing.T) {
 	}
 }
 
-func TestFrozenTableDefinitionFixtureDecodesAndRoundTripsExactly(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", "table-definition.json"))
+func TestProductTableDefinitionFixtureDecodesAndRoundTripsExactly(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "v2", "fixtures", "table-definition.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var definition schema.TableDefinition
 	if err := json.Unmarshal(raw, &definition); err != nil {
-		t.Fatalf("decode frozen fixture: %v", err)
+		t.Fatalf("decode product fixture: %v", err)
 	}
-	if definition.ContractVersion != "1.0" || definition.SchemaRevision != "schema_0007" {
+	if definition.ContractVersion != "2.0" || definition.SchemaRevision != "schema_0007" {
 		t.Fatalf("wire header mismatch: %#v", definition)
 	}
 	if definition.ArchivePolicy.Mode != schema.ArchiveModeStatus ||
@@ -58,11 +58,11 @@ func TestFrozenTableDefinitionFixtureDecodesAndRoundTripsExactly(t *testing.T) {
 		definition.Fields[7].Formula.Status != "ready" ||
 		definition.Fields[8].AttachmentPolicy.MaxBytesPerFile != 10485760 ||
 		definition.Indexes[0].Name != "ux_order_lines_sku" {
-		t.Fatalf("frozen v1 shapes were not preserved: %#v", definition)
+		t.Fatalf("product contract shapes were not preserved: %#v", definition)
 	}
 	encoded, err := json.Marshal(definition)
 	if err != nil {
-		t.Fatalf("encode frozen fixture: %v", err)
+		t.Fatalf("encode product fixture: %v", err)
 	}
 	var before, after any
 	if err := json.Unmarshal(raw, &before); err != nil {
@@ -81,9 +81,9 @@ func TestFrozenTableDefinitionFixtureDecodesAndRoundTripsExactly(t *testing.T) {
 	}
 }
 
-func TestFrozenTableDefinitionRejectsUnknownPropertiesAtEveryNestedShape(t *testing.T) {
+func TestProductTableDefinitionRejectsUnknownPropertiesAtEveryNestedShape(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(
-		"..", "..", "..", "contracts", "v1", "fixtures", "table-definition.json",
+		"..", "..", "..", "contracts", "v2", "fixtures", "table-definition.json",
 	))
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestViewDefinitionRoundTripsAndRejectsRawQueryProperties(t *testing.T) {
 
 	var invalid schema.TableDefinition
 	if err := json.Unmarshal([]byte(`{
-		"contractVersion":"1.0","tableId":"view","physicalName":"view",
+		"contractVersion":"2.0","tableId":"view","physicalName":"view",
 		"displayName":"View","kind":"view","schemaRevision":"schema_0000",
 		"archivePolicy":{"mode":"none","fieldId":null,"archivedValue":null},
 		"view":{"sourceTableId":"orders","query":"select * from orders"},

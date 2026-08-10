@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import ast
 import datetime as dt
 import enum
@@ -20,8 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 import backend.__main__ as composition  # noqa: E402
-from backend.application.product_data_service import (  # noqa: E402
-    PRODUCT_PARAM_MODELS,
+from backend.contracts.product_rpc import (  # noqa: E402
+    PRODUCT_RPC_REGISTRY as PRODUCT_PARAM_MODELS,
     ProductParams,
 )
 from backend.contracts.data_io import (  # noqa: E402
@@ -301,17 +302,6 @@ def _typed(annotation: object, name: str | None = None) -> ResultSpec:
 
 
 def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
-    existing_catalog = json.loads((fixtures / "rpc-catalog.json").read_text(encoding="utf-8"))
-    existing_cases = {case["method"]: case for case in existing_catalog["rpcCases"]}
-
-    def retired(method: str) -> ResultSpec:
-        case = existing_cases[method]
-        return ResultSpec(
-            model_name=case["resultModel"],
-            example=case["success"]["result"],
-            schema=case["resultSchema"],
-        )
-
     table = json.loads((fixtures / "table-definition.json").read_text(encoding="utf-8"))
     mutation_receipt = json.loads((fixtures / "mutation-receipt.json").read_text(encoding="utf-8"))
     restore_result = _model_payload(RestoreResult)
@@ -361,10 +351,6 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "hasMoreGroups": False,
     }
     specs: dict[str, ResultSpec] = {
-        "backup.create": retired("backup.create"),
-        "backup.delete": retired("backup.delete"),
-        "backup.list": retired("backup.list"),
-        "backup.restore": retired("backup.restore"),
         "command.list": _typed(CommandsResult),
         "command.run": _typed(CommandResult),
         "data.applyImport": _typed(ApplyImportResult),
@@ -392,7 +378,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
             {
                 "attachments": [
                     {
-                        "contractVersion": "1.0",
+                        "contractVersion": "2.0",
                         "tableId": "orders",
                         "recordId": "order-1",
                         "fieldId": "invoice",
@@ -414,11 +400,11 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         ),
         "file.saveHostFile": _manual(
             "SaveHostFileResult",
-            {"contractVersion": "1.0", "saved": True, "bytes": 128},
+            {"contractVersion": "2.0", "saved": True, "bytes": 128},
         ),
         "file.token": _manual(
             "FileTokenResult",
-            {"contractVersion": "1.0", "downloadCapability": "capability-1"},
+            {"contractVersion": "2.0", "downloadCapability": "capability-1"},
         ),
         "formula.preview": _manual(
             "FormulaPreviewResult",
@@ -464,13 +450,10 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "insights.panelManifest": _typed(PanelManifestResult),
         "insights.readDashboardWorkspace": _typed(DashboardWorkspaceResult),
         "insights.saveDashboardDraft": _typed(SaveDashboardDraftResult),
-        "lookup.create": retired("lookup.create"),
-        "lookup.delete": retired("lookup.delete"),
         "lookup.list": _typed(LookupListResult),
         "lookup.preview": _typed(LookupQueryResult),
         "lookup.query": _typed(LookupQueryResult),
         "lookup.valuePage": _typed(LookupCellValue),
-        "lookup.update": retired("lookup.update"),
         "lookup.validate": _typed(LookupValidationResult),
         "mutation.apply": _manual("MutationReceipt", mutation_receipt, receipt_schema),
         "mutation.preview": _manual(
@@ -606,8 +589,6 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "system.handshake": _typed(HandshakeResult),
         "table.applyPaste": _typed(ApplyPasteResult),
         "table.previewPaste": _typed(PastePlan),
-        "table_admin.applyRelationChange": retired("table_admin.applyRelationChange"),
-        "table_admin.previewRelationChange": retired("table_admin.previewRelationChange"),
         "task.cancel": _typed(TaskStatus),
         "task.create": _typed(TaskStatus),
         "task.status": _typed(TaskStatus),
@@ -633,16 +614,6 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
                 "revision": "revision-1",
                 "emittedEvents": ["data.changed"],
             },
-        ),
-        "workspace.linkDocument": retired("workspace.linkDocument"),
-        "workspace.publishIndexBatch": retired("workspace.publishIndexBatch"),
-        "workspace.readDocumentHistory": retired("workspace.readDocumentHistory"),
-        "workspace.readDocuments": retired("workspace.readDocuments"),
-        "workspace.readFolder": retired("workspace.readFolder"),
-        "workspace.registerDocument": retired("workspace.registerDocument"),
-        "workspace.unlinkDocument": _manual(
-            "UnlinkDocumentResult",
-            {"deleted": "link-1"},
         ),
     }
     return specs
@@ -688,11 +659,13 @@ def _event_cases(fixtures: Path, topics: list[str]) -> list[dict[str, object]]:
 
 
 def main() -> None:
-    path = Path(__file__).with_name("fixtures") / "rpc-catalog.json"
-    catalog = json.loads(path.read_text(encoding="utf-8"))
-    existing_cases = {case["method"]: case for case in catalog["rpcCases"]}
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="fail if the catalog is stale")
+    args = parser.parse_args()
+
+    path = Path(__file__).with_name("fixtures") / "product-rpc-catalog.json"
     models = _registered_models()
-    schema_v2_methods = {
+    workspace_catalog_methods = {
         "field.change.apply",
         "field.change.cancel",
         "field.change.plan",
@@ -700,25 +673,7 @@ def main() -> None:
         "field.recycleBin.list",
         "field.settings.describe",
     }
-    retired_v1_methods = {
-        "backup.create",
-        "backup.delete",
-        "backup.list",
-        "backup.restore",
-        "lookup.create",
-        "lookup.delete",
-        "lookup.update",
-        "table_admin.applyRelationChange",
-        "table_admin.previewRelationChange",
-        "workspace.linkDocument",
-        "workspace.publishIndexBatch",
-        "workspace.readDocumentHistory",
-        "workspace.readDocuments",
-        "workspace.readFolder",
-        "workspace.registerDocument",
-        "workspace.unlinkDocument",
-    }
-    methods = sorted((set(models) - schema_v2_methods) | retired_v1_methods)
+    methods = sorted(set(models) - workspace_catalog_methods)
     result_specs = _result_specs(path.parent)
     missing_results = sorted(set(methods) - result_specs.keys())
     stale_results = sorted(result_specs.keys() - set(methods))
@@ -727,13 +682,42 @@ def main() -> None:
             "RPC response model registry is not exhaustive: "
             f"missing={missing_results}, stale={stale_results}"
         )
-    topics = catalog["eventTopics"]
-    catalog["rpcMethods"] = methods
-    catalog["rpcCases"] = []
+    topics = [
+        "data.changed",
+        "plugin.catalog.changed",
+        "plugin.file.requested",
+        "plugin.interaction.requested",
+        "plugin.task.changed",
+        "task.changed",
+    ]
+    catalog: dict[str, object] = {
+        "contractVersion": "2.0",
+        "rpcMethods": methods,
+        "eventTopics": topics,
+        "requestEnvelope": {
+            "jsonrpc": "2.0",
+            "id": "request-1",
+            "method": "schema.list",
+            "params": {},
+        },
+        "successEnvelope": {
+            "jsonrpc": "2.0",
+            "id": "request-1",
+            "result": {},
+        },
+        "errorEnvelope": {
+            "jsonrpc": "2.0",
+            "id": "request-1",
+            "error": {
+                "code": "request.invalid",
+                "message": "Request validation failed.",
+                "data": {"path": "params"},
+            },
+        },
+        "rpcCases": [],
+    }
+    rpc_cases = typing.cast(list[dict[str, object]], catalog["rpcCases"])
     for index, method in enumerate(methods, start=1):
-        if method in retired_v1_methods:
-            catalog["rpcCases"].append(existing_cases[method])
-            continue
         request_id = f"rpc-{index:03d}"
         model = models[method]
         params = _model_payload(model)
@@ -742,7 +726,7 @@ def main() -> None:
         # Validate the serialized golden through the actual method DTO before
         # writing it. CI repeats this validation to prevent stale fixtures.
         model.model_validate(params)
-        catalog["rpcCases"].append(
+        rpc_cases.append(
             {
                 "method": method,
                 "paramsModel": model.__name__,
@@ -775,11 +759,13 @@ def main() -> None:
             }
         )
     catalog["eventCases"] = _event_cases(path.parent, topics)
-    path.write_text(
-        json.dumps(catalog, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    rendered = json.dumps(catalog, ensure_ascii=False, indent=2) + "\n"
+    if args.check:
+        current = path.read_text(encoding="utf-8") if path.exists() else ""
+        if current != rendered:
+            raise SystemExit(f"{path.relative_to(REPO_ROOT)} is stale")
+        return
+    path.write_text(rendered, encoding="utf-8", newline="\n")
 
 
 if __name__ == "__main__":

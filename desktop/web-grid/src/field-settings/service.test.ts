@@ -479,7 +479,7 @@ describe("field settings service", () => {
       }
       if (method === "schema.getTable") {
         return Promise.resolve({
-          contractVersion: "1.0",
+          contractVersion: "2.0",
           tableId: "tbl_opaque",
           physicalName: "orders",
           displayName: "订单",

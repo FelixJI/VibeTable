@@ -46,7 +46,7 @@ func TestDecodeMutationApplyRequestAcceptsMultipartUploads(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = requestPart.Write([]byte(
-		`{"contractVersion":"1.0","requestId":"request-1","idempotencyKey":"key-1",` +
+		`{"contractVersion":"2.0","requestId":"request-1","idempotencyKey":"key-1",` +
 			`"tableId":"notes","schemaRevision":"revision-1","operations":[` +
 			`{"kind":"setAttachments","recordId":"record-1","fieldId":"files",` +
 			`"uploadHandles":["upload-1"],"removeStoredNames":[]}],` +
@@ -134,7 +134,7 @@ func TestDecodeMutationApplyRequestRequiresAttachmentServiceForMultipart(
 }
 
 func TestDecodeMultipartMutationRejectsMissingAndUnreferencedUploads(t *testing.T) {
-	validRequest := `{"contractVersion":"1.0","requestId":"request-1",` +
+	validRequest := `{"contractVersion":"2.0","requestId":"request-1",` +
 		`"idempotencyKey":"key-1","tableId":"notes","schemaRevision":"revision-1",` +
 		`"operations":[{"kind":"setAttachments","recordId":"record-1",` +
 		`"fieldId":"files","uploadHandles":["upload-1"],"removeStoredNames":[]}],` +

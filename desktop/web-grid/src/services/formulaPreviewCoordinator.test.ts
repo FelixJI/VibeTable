@@ -118,7 +118,7 @@ describe("FormulaPreviewCoordinator", () => {
 function request(source: string): FormulaPreviewRequest {
   return {
     definition: {
-      contractVersion: "1.0",
+      contractVersion: "2.0",
       tableId: "tbl_preview",
       physicalName: "preview",
       displayName: "Preview",

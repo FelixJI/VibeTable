@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from tests.contract.test_v1_contracts import SchemaMismatchError, _validate
+from tests.contract.test_product_contracts import SchemaMismatchError, _validate
 
 ROOT = Path(__file__).parents[2]
 CONTRACT_ROOT = ROOT / "contracts" / "schema-v2"

@@ -143,7 +143,7 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 
 	applyBody := `{
 		"definition": {
-			"contractVersion": "1.0",
+			"contractVersion": "2.0",
 			"tableId": "process-test-table",
 			"physicalName": "process_test_table",
 			"displayName": "Process test table",
@@ -260,7 +260,7 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 	}
 
 	mutationBody := `{
-		"contractVersion":"1.0",
+		"contractVersion":"2.0",
 		"requestId":"process-request-1",
 		"idempotencyKey":"process-idempotency-1",
 		"tableId":"process-test-table",
@@ -352,7 +352,7 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 	drainAndClose(t, response.Body)
 
 	emptyUpdate := `{
-		"contractVersion":"1.0",
+		"contractVersion":"2.0",
 		"requestId":"process-empty-update",
 		"idempotencyKey":"process-empty-update",
 		"tableId":"process-test-table",
@@ -977,7 +977,7 @@ func workspaceV2FormulaSchemaBody(t *testing.T) string {
 	t.Helper()
 	change := schemaapi.Change{
 		Definition: schema.TableDefinition{
-			ContractVersion: "1.0",
+			ContractVersion: "2.0",
 			TableID:         "formula-read-purity",
 			PhysicalName:    "formula_read_purity",
 			DisplayName:     "Formula read purity",
