@@ -261,7 +261,10 @@ public partial class MainWindow : Window
             _pluginSurfaces,
             pluginPackagePicker,
             _pluginResources,
-            new WindowsPluginFilePicker());
+            new WindowsPluginFilePicker(),
+            new GitHubPluginPackageSource(
+                Path.Combine(_productDataRoot, "plugin-downloads"),
+                () => _appPreferencesService.Read()));
         _dailyQuotes = new DailyQuoteHostClient();
         _tableGateway = new LazyProductTableGateway();
         _workspace = new TableWorkspaceService(_tableGateway);

@@ -1,5 +1,10 @@
 # 微信读书可视化插件：weread-notes-dashboard
 
+> **迁移说明：** 本目录是迁移前快照，不再是发布权威。当前源码、lock、CI 与正式
+> `.vtplugin` Release 位于
+> [FelixJI/VibeTable-WeRead-Notes-Dashboard](https://github.com/FelixJI/VibeTable-WeRead-Notes-Dashboard)。
+> 新版本和问题修复请在独立仓库维护；VibeTable 插件中心使用该仓库的正式 Release 远程安装。
+
 用于把微信读书导出的阅读/笔记数据做聚合分析，生成书籍、笔记/标注和导出字段分布的可视化看板。
 
 ## 目录结构

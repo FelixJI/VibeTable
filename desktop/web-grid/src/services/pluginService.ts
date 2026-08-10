@@ -25,7 +25,9 @@ export interface PluginService {
   listPendingCleanup(): Promise<readonly PluginAuditEvent[]>;
   retryCleanup(pluginId: string): Promise<PluginUninstallResult>;
   inspectInstall(sourceLocation: string): Promise<PluginInstallPlan>;
+  inspectGitHubInstall(repository: string): Promise<PluginInstallPlan>;
   commitInstall(plan: PluginInstallPlan): Promise<PluginSnapshot>;
+  cancelInstall(planId: string): Promise<boolean>;
   setEnabled(plugin: PluginSnapshot, enabled: boolean): Promise<PluginSnapshot>;
   upgrade(plugin: PluginSnapshot, plan: PluginInstallPlan): Promise<PluginSnapshot>;
   rollback(plugin: PluginSnapshot): Promise<PluginSnapshot>;
@@ -132,6 +134,27 @@ export function usePluginService(): PluginService {
     return plan;
   }
 
+  async function inspectGitHubInstall(repository: string): Promise<PluginInstallPlan> {
+    const plan = await call<"plugin.install.github.inspect", PluginInstallPlan>(
+      "plugin.install.github.inspect",
+      {
+        projectKey: store.projectKey,
+        projectRevision: store.projectRevision,
+        repository,
+      },
+    );
+    store.setInstallPlan(plan);
+    return plan;
+  }
+
+  async function cancelInstall(planId: string): Promise<boolean> {
+    const result = await call<"plugin.install.cancel", { readonly cancelled: boolean }>(
+      "plugin.install.cancel",
+      { planId },
+    );
+    return result.cancelled;
+  }
+
   async function commitInstall(plan: PluginInstallPlan): Promise<PluginSnapshot> {
     const snapshot = await call<"plugin.install.commit", PluginSnapshot>("plugin.install.commit", {
       planId: plan.planId,
@@ -219,7 +242,9 @@ export function usePluginService(): PluginService {
       cleanupPrivateSettings: false,
     }),
     inspectInstall,
+    inspectGitHubInstall,
     commitInstall,
+    cancelInstall,
     setEnabled: (plugin, enabled) => applyPluginRequest("plugin.lifecycle.setEnabled", {
       projectKey: plugin.projectKey,
       pluginId: plugin.pluginId,

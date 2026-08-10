@@ -1532,7 +1532,9 @@ export type WebMessageType =
   | "plugin.audit.list"
   | "plugin.cleanup.listPending"
   | "plugin.install.inspect"
+  | "plugin.install.github.inspect"
   | "plugin.install.commit"
+  | "plugin.install.cancel"
   | "plugin.lifecycle.setEnabled"
   | "plugin.lifecycle.upgrade"
   | "plugin.lifecycle.rollback"
@@ -1643,7 +1645,9 @@ export type HostMessageType =
   | "plugin.audit.list"
   | "plugin.cleanup.listPending"
   | "plugin.install.inspect"
+  | "plugin.install.github.inspect"
   | "plugin.install.commit"
+  | "plugin.install.cancel"
   | "plugin.lifecycle.setEnabled"
   | "plugin.lifecycle.upgrade"
   | "plugin.lifecycle.rollback"
@@ -1877,7 +1881,9 @@ export interface HostPayloadMap {
   "plugin.audit.list": readonly PluginAuditEvent[];
   "plugin.cleanup.listPending": readonly PluginAuditEvent[];
   "plugin.install.inspect": PluginInstallPlan;
+  "plugin.install.github.inspect": PluginInstallPlan;
   "plugin.install.commit": PluginSnapshot;
+  "plugin.install.cancel": { readonly cancelled: boolean };
   "plugin.lifecycle.setEnabled": PluginSnapshot;
   "plugin.lifecycle.upgrade": PluginSnapshot;
   "plugin.lifecycle.rollback": PluginSnapshot;
@@ -2076,7 +2082,13 @@ export interface WebPayloadMap {
     readonly projectRevision: string;
     readonly sourceLocation: string;
   };
+  "plugin.install.github.inspect": {
+    readonly projectKey: string;
+    readonly projectRevision: string;
+    readonly repository: string;
+  };
   "plugin.install.commit": { readonly planId: string; readonly projectRevision: string };
+  "plugin.install.cancel": { readonly planId: string };
   "plugin.lifecycle.setEnabled": {
     readonly projectKey: string;
     readonly pluginId: string;

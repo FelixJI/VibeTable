@@ -150,6 +150,59 @@ describe("PluginCenterView", () => {
     expect(JSON.stringify(posted[0])).not.toContain("expectedRevision");
   });
 
+  it("inspects a GitHub Release and explicitly cancels its host-managed plan", async () => {
+    const posted: unknown[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `github-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          posted.push(message);
+          const request = message as { type: string; requestId: string };
+          queueMicrotask(() => listener?.({ data: {
+            type: request.type,
+            requestId: request.requestId,
+            payload: request.type === "plugin.install.github.inspect"
+              ? {
+                  planId: "plan-github",
+                  projectKey: "local:default",
+                  projectRevision: "r2",
+                  sourceType: "package",
+                  sourceLocation: "host-managed",
+                  packageHash: "sha256:github",
+                  manifest: { ...blockedPlugin.manifest, version: "1.3.0" },
+                  schemas: {},
+                }
+              : { cancelled: true },
+          } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+
+    await wrapper.get('input[aria-label="GitHub 插件仓库"]').setValue("FelixJI/weread-plugin");
+    await wrapper.get('[data-testid="plugin-install-github"]').trigger("click");
+    await flushPromises();
+    expect(posted[0]).toMatchObject({
+      type: "plugin.install.github.inspect",
+      payload: { repository: "FelixJI/weread-plugin" },
+    });
+    expect(wrapper.get('[data-testid="plugin-install-plan"]').text()).toContain("1.3.0");
+
+    await wrapper.get('[data-testid="plugin-install-cancel"]').trigger("click");
+    await flushPromises();
+    expect(posted[1]).toMatchObject({
+      type: "plugin.install.cancel",
+      payload: { planId: "plan-github" },
+    });
+    expect(wrapper.find('[data-testid="plugin-install-plan"]').exists()).toBe(false);
+  });
+
   it("keeps upgrade mutation internal while retaining the native inspection path", async () => {
     const posted: unknown[] = [];
     let listener: ((event: { data: unknown }) => void) | undefined;

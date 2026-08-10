@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -24,6 +25,9 @@ public sealed class PluginRequestDispatcher : IDisposable
     private readonly IPluginPackageSourcePicker _packagePicker;
     private readonly PluginWebViewResourceHost _resourceHost;
     private readonly IPluginFilePicker? _filePicker;
+    private readonly IGitHubPluginPackageSource? _githubSource;
+    private readonly Dictionary<string, DownloadedPluginPackage> _remotePlans =
+        new(StringComparer.Ordinal);
     private IPluginRpcGateway? _gateway;
     private bool _disposed;
 
@@ -33,12 +37,24 @@ public sealed class PluginRequestDispatcher : IDisposable
         IPluginPackageSourcePicker packagePicker,
         PluginWebViewResourceHost resourceHost,
         IPluginFilePicker? filePicker = null)
+        : this(reply, surfaces, packagePicker, resourceHost, filePicker, null)
+    {
+    }
+
+    internal PluginRequestDispatcher(
+        IWebReplySink reply,
+        PluginSurfaceSessionManager surfaces,
+        IPluginPackageSourcePicker packagePicker,
+        PluginWebViewResourceHost resourceHost,
+        IPluginFilePicker? filePicker,
+        IGitHubPluginPackageSource? githubSource)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _surfaces = surfaces ?? throw new ArgumentNullException(nameof(surfaces));
         _packagePicker = packagePicker ?? throw new ArgumentNullException(nameof(packagePicker));
         _resourceHost = resourceHost ?? throw new ArgumentNullException(nameof(resourceHost));
         _filePicker = filePicker;
+        _githubSource = githubSource;
     }
 
     public event Action<PluginSurfaceEvent>? SurfaceEventReceived;
@@ -92,12 +108,16 @@ public sealed class PluginRequestDispatcher : IDisposable
                     Read<PluginCatalogListParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.inspect" => await InspectInstallAsync(
                     Read<PluginInspectInstallParams>(request.Payload), token).ConfigureAwait(false),
+                "plugin.install.github.inspect" => await InspectGitHubInstallAsync(
+                    Read<PluginGitHubInspectParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.commit" => await CommitInstallAsync(
                     Read<PluginCommitInstallParams>(request.Payload), token).ConfigureAwait(false),
+                "plugin.install.cancel" => CancelInstall(
+                    Read<PluginInstallCancelParams>(request.Payload)),
                 "plugin.lifecycle.setEnabled" => ProjectSnapshot(await _gateway.SetEnabledAsync(
                     Read<PluginSetEnabledParams>(request.Payload), token).ConfigureAwait(false)),
-                "plugin.lifecycle.upgrade" => ProjectSnapshot(await _gateway.UpgradeAsync(
-                    Read<PluginUpgradeParams>(request.Payload), token).ConfigureAwait(false)),
+                "plugin.lifecycle.upgrade" => await UpgradeAsync(
+                    Read<PluginUpgradeParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.lifecycle.rollback" => ProjectSnapshot(await _gateway.RollbackAsync(
                     Read<PluginRollbackParams>(request.Payload), token).ConfigureAwait(false)),
                 "plugin.lifecycle.uninstall" => await UninstallAsync(
@@ -130,6 +150,10 @@ public sealed class PluginRequestDispatcher : IDisposable
         {
             _reply.PostOperationFailed(request.RequestId, ex.Message, ex.Code);
         }
+        catch (GitHubPluginSourceException ex)
+        {
+            _reply.PostOperationFailed(request.RequestId, ex.Message, ex.Code);
+        }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
             _reply.PostOperationFailed(
@@ -155,6 +179,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         }
         _disposed = true;
         DetachGateway();
+        _githubSource?.Dispose();
         _surfaces.CloseAll();
     }
 
@@ -216,13 +241,64 @@ public sealed class PluginRequestDispatcher : IDisposable
         var plan = await _gateway!.InspectInstallAsync(
             request with { SourceLocation = sourceLocation },
             token).ConfigureAwait(false);
+        ClearRemotePlans();
         return plan with { SourceLocation = HostManagedSource };
+    }
+
+    private async Task<PluginRuntimeInstallPlan> InspectGitHubInstallAsync(
+        PluginGitHubInspectParams request,
+        CancellationToken token)
+    {
+        if (_githubSource is null)
+        {
+            throw new PluginDispatchException(
+                "PLUGIN_GITHUB_SOURCE_UNAVAILABLE",
+                "GitHub 插件来源在当前运行模式下不可用。");
+        }
+        DownloadedPluginPackage download = await _githubSource.DownloadLatestAsync(
+            request.Repository,
+            token).ConfigureAwait(false);
+        try
+        {
+            var plan = await _gateway!.InspectInstallAsync(
+                new PluginInspectInstallParams(
+                    request.ProjectKey,
+                    request.ProjectRevision,
+                    download.Path),
+                token).ConfigureAwait(false);
+            ClearRemotePlans();
+            _remotePlans.Add(plan.PlanId, download);
+            return plan with { SourceLocation = HostManagedSource };
+        }
+        catch
+        {
+            download.Dispose();
+            throw;
+        }
     }
 
     private async Task<PluginRuntimeSnapshot> CommitInstallAsync(
         PluginCommitInstallParams request,
         CancellationToken token)
-        => ProjectSnapshot(await _gateway!.CommitInstallAsync(request, token).ConfigureAwait(false));
+    {
+        PluginRuntimeSnapshot snapshot = await _gateway!.CommitInstallAsync(request, token)
+            .ConfigureAwait(false);
+        ReleaseRemotePlan(request.PlanId);
+        return ProjectSnapshot(snapshot);
+    }
+
+    private async Task<PluginRuntimeSnapshot> UpgradeAsync(
+        PluginUpgradeParams request,
+        CancellationToken token)
+    {
+        PluginRuntimeSnapshot snapshot = await _gateway!.UpgradeAsync(request, token)
+            .ConfigureAwait(false);
+        ReleaseRemotePlan(request.PlanId);
+        return ProjectSnapshot(snapshot);
+    }
+
+    private PluginInstallCancelResult CancelInstall(PluginInstallCancelParams request) =>
+        new(ReleaseRemotePlan(request.PlanId));
 
     private async Task<PluginRuntimeUninstallResult> UninstallAsync(
         PluginUninstallParams request,
@@ -374,6 +450,7 @@ public sealed class PluginRequestDispatcher : IDisposable
 
     private void DetachGateway()
     {
+        ClearRemotePlans();
         if (_gateway is null)
         {
             return;
@@ -383,6 +460,25 @@ public sealed class PluginRequestDispatcher : IDisposable
         _gateway.InteractionRequested -= OnInteractionRequested;
         _gateway.FileRequested -= OnFileRequested;
         _gateway = null;
+    }
+
+    private bool ReleaseRemotePlan(string planId)
+    {
+        if (!_remotePlans.Remove(planId, out DownloadedPluginPackage? package))
+        {
+            return false;
+        }
+        package.Dispose();
+        return true;
+    }
+
+    private void ClearRemotePlans()
+    {
+        foreach (DownloadedPluginPackage package in _remotePlans.Values)
+        {
+            package.Dispose();
+        }
+        _remotePlans.Clear();
     }
 
     private sealed class PluginDispatchException : Exception

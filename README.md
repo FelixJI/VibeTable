@@ -25,7 +25,8 @@ VibeTable 是一款离线优先的通用建表与文件管理桌面工具。它�
 - **文档工作区**：文档版本、发布、修订历史，以及与业务记录的本地关联
 - **实时同步**：本地 sidecar SSE 更新、断线续传和事件去重
 - **版本与恢复**：工作区级 Snapshot、文件修订树、完整性验证和可审计恢复
-- **插件边界**：插件通过受控契约提交 mutation plan，不直接获得数据库写权限
+- **插件边界**：插件通过受控契约提交 mutation plan，不直接获得数据库写权限；可从本地包、
+  开发文件夹或公共 GitHub Release 检查安装
 
 ## 数据目录
 
@@ -95,6 +96,9 @@ uv run python qa/next.py --ci --json-report build/qa/report.json
 ```
 
 它额外覆盖 Go race、真实 sidecar 集成、升级与故障注入、WPF/WebView2 产品 E2E、打包矩阵和最终只读 smoke。门禁分层、覆盖率阈值及适用场景见 [质量门禁说明](docs/quality-gates.md)。
+
+插件 manifest、SDK、最小权限、确定性打包、独立仓库 CI 和 GitHub Release 安装契约见
+[插件开发说明](docs/plugin-development.md)。
 
 ## 构建与发布
 

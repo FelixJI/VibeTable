@@ -114,6 +114,47 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
+    public async Task GitHubInspectUsesNativeDownloadAndCancelReleasesItsLease()
+    {
+        string downloadedPath = Path.Combine(
+            Path.GetTempPath(),
+            $"vibetable-plugin-download-{Guid.NewGuid():N}.vtplugin");
+        File.WriteAllText(downloadedPath, "downloaded");
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        var github = new FakeGitHubPluginPackageSource(downloadedPath);
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            filePicker: null,
+            githubSource: github);
+        dispatcher.SetGateway(gateway);
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.github.inspect",
+            "inspect-github",
+            """{"projectKey":"project-1","projectRevision":"r1","repository":"owner/repo"}"""));
+
+        Assert.AreEqual("owner/repo", github.Repository);
+        Assert.AreEqual(downloadedPath, gateway.InspectRequest?.SourceLocation);
+        var plan = (PluginRuntimeInstallPlan)reply.Payload!;
+        Assert.AreEqual(PluginRequestDispatcher.HostManagedSource, plan.SourceLocation);
+        Assert.IsTrue(File.Exists(downloadedPath));
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.cancel",
+            "cancel-github",
+            """{"planId":"plan-1"}"""));
+
+        Assert.AreEqual(new PluginInstallCancelResult(true), reply.Payload);
+        Assert.IsFalse(File.Exists(downloadedPath));
+    }
+
+    [TestMethod]
     public void CatalogEventRemovesNativeSourceLocationBeforeWebNotification()
     {
         var reply = new RecordingReplySink();
@@ -273,6 +314,28 @@ public sealed class PluginRequestDispatcherTests
     {
         public Task<string?> PickAsync(PluginPackagePickKind kind, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(selectedPath);
+    }
+
+    private sealed class FakeGitHubPluginPackageSource(string path)
+        : IGitHubPluginPackageSource
+    {
+        public string? Repository { get; private set; }
+
+        public Task<DownloadedPluginPackage> DownloadLatestAsync(
+            string repository,
+            CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            Repository = repository;
+            return System.Threading.Tasks.Task.FromResult(new DownloadedPluginPackage(
+                path,
+                repository,
+                "v1.0.0",
+                "plugin.vtplugin",
+                new string('a', 64)));
+        }
+
+        public void Dispose() { }
     }
 
     private sealed class FakePluginFilePicker(string? selectedPath) : IPluginFilePicker

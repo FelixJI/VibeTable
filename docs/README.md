@@ -13,6 +13,8 @@ VibeTable 是一个通用的建表与文件管理桌面工具。本目录存放�
 - [稳定化台账](quality/stabilization-ledger.md)与[能力闭环矩阵](quality/capability-matrix.md)：
   当前缺陷、验收空白、用户能力可见性与冻结退出证据。
 - [Node 开发工具链](node-toolchain.md)：锁定版本、来源、恢复方式和发布包边界。
+- [插件开发、打包与 GitHub Release 安装](plugin-development.md)：插件 SDK、权限边界、发布和远程安装约定。
+- [自我更新能力与安全边界](self-update-assessment.md)：应用更新的信任、下载与代理边界。
 
 ## 计划与历史材料
 
