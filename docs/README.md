@@ -6,6 +6,7 @@ VibeTable 是一个通用的建表与文件管理桌面工具。本目录存放�
 
 ## 现行架构与质量入口
 
+- [面向初学者的源码阅读指南](source-reading-guide.md)：从进程模型、启动链和两条真实请求链开始阅读多栈源码。
 - [`adr/`](adr/)：架构决策记录；历史决策会在正文顶部标明已替代关系。
 - [跨进程 seam 索引](architecture/interprocess-seams.md)：Web、WPF、Python BFF 与 Go sidecar 的
   authority、session/epoch、错误和取消语义。
