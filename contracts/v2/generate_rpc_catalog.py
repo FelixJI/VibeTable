@@ -1111,6 +1111,40 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         },
     ),
     Rpc(
+        "fileHistory.materializeDiffPair",
+        "workspace",
+        "MaterializeFileDiffPairParams",
+        "FileDiffPairMaterializationResult",
+        {
+            "documentId": "22222222-2222-4222-8222-222222222222",
+            "historicalRevisionId": "66666666-6666-4666-8666-666666666666",
+            "expectedEffectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+            "pathGrant": "host-path-grant://aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        },
+        {
+            "documentId": "22222222-2222-4222-8222-222222222222",
+            "historicalRevisionId": "66666666-6666-4666-8666-666666666666",
+            "effectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+            "historicalMimeType": "text/plain",
+            "effectiveMimeType": "text/plain",
+        },
+    ),
+    Rpc(
+        "fileHistory.assertEffectiveRevision",
+        "workspace",
+        "AssertEffectiveRevisionParams",
+        "EffectiveRevisionAssertionResult",
+        {
+            "documentId": "22222222-2222-4222-8222-222222222222",
+            "expectedEffectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+        },
+        {
+            "documentId": "22222222-2222-4222-8222-222222222222",
+            "effectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+            "stable": True,
+        },
+    ),
+    Rpc(
         "fileHistory.restore",
         "workspace",
         "RestoreFileRevisionParams",

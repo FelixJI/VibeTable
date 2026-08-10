@@ -1511,6 +1511,8 @@ export type WebMessageType =
   | "document.dragOutRequested"
   | "document.openRequested"
   | "document.previewRequested"
+  | "document.diffRequested"
+  | "document.diffCancelRequested"
   | "document.revealRequested"
   | "document.relinkRequested"
   // Table-admin requests.
@@ -1619,6 +1621,8 @@ export type HostMessageType =
   // Web-first document workspace outcomes.
   | "document.listLoaded"
   | "document.actionCompleted"
+  | "document.diffCompleted"
+  | "document.diffCancelCompleted"
   | "document.operationFailed"
   | "document.workspaceChanged"
   // Collections-changed notifications.
@@ -1852,6 +1856,8 @@ export interface HostPayloadMap {
   "history.restoreApplied": RestoreResult;
   "document.listLoaded": DocumentListLoadedPayload;
   "document.actionCompleted": DocumentActionCompletedPayload;
+  "document.diffCompleted": DocumentDiffCompletedPayload;
+  "document.diffCancelCompleted": DocumentDiffCancelCompletedPayload;
   "document.operationFailed": DocumentOperationFailedPayload;
   "document.workspaceChanged": DocumentWorkspaceChangedPayload;
   // Collections-changed notifications.
@@ -2042,6 +2048,8 @@ export interface WebPayloadMap {
   "document.dragOutRequested": DocumentOpaqueHandlePayload;
   "document.openRequested": DocumentHandlePayload;
   "document.previewRequested": DocumentHandlePayload;
+  "document.diffRequested": DocumentDiffRequestedPayload;
+  "document.diffCancelRequested": DocumentDiffCancelRequestedPayload;
   "document.revealRequested": DocumentHandlePayload;
   "document.relinkRequested": DocumentOpaqueHandlePayload;
   // Table-admin requests.
@@ -2333,6 +2341,39 @@ export interface DocumentOpaqueHandlePayload {
 
 export interface DocumentHandlePayload {
   readonly entryHandle: string;
+}
+
+export interface DocumentDiffRequestedPayload {
+  readonly entryHandle: string;
+  readonly operationId: string;
+  readonly historicalRevisionId: string;
+  readonly expectedEffectiveRevisionId: string;
+}
+
+export interface DocumentDiffCancelRequestedPayload {
+  readonly entryHandle: string;
+  readonly operationId: string;
+}
+
+export interface DocumentDiffCancelCompletedPayload {
+  readonly entryHandle: string;
+  readonly cancelled: boolean;
+}
+
+export interface DocumentDiffCompletedPayload {
+  readonly entryHandle: string;
+  readonly historicalRevisionId: string;
+  readonly effectiveRevisionId: string;
+  readonly outcome: "identical" | "changed" | "changedWithDetails" | "failure";
+  readonly addedLines: number | null;
+  readonly removedLines: number | null;
+  readonly failure:
+    | "unsupported"
+    | "invalidContent"
+    | "io"
+    | "cancelled"
+    | "stale"
+    | null;
 }
 
 export interface DocumentBridgeEntry {

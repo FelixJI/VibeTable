@@ -93,6 +93,30 @@ func stringRef(value string) *string {
 	return &value
 }
 
+func TestStageSnapshotRestoreKeepsEmptyHistoryCanonical(t *testing.T) {
+	fixture := newHistoryFixture(t)
+	ctx := context.Background()
+	_, counters := fixture.coordinator.Current()
+	staged, err := fixture.service.StageSnapshotRestore(
+		ctx,
+		writecoordinator.WriteIntent{
+			Token:            fixture.token,
+			MutationRevision: counters.MutationRevision + 1,
+		},
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged.Documents) != 0 ||
+		staged.PreviousHead.Root != "" ||
+		staged.NextHead.Root != "" ||
+		staged.NextHead.Revision != staged.PreviousHead.Revision+1 ||
+		staged.NextHead.MutationRevision != counters.MutationRevision+1 {
+		t.Fatalf("empty restore staging = %#v", staged)
+	}
+}
+
 func TestSaveNoOpFormalVersionsAndBranchingKeepOneEffectiveLeaf(t *testing.T) {
 	fixture := newHistoryFixture(t)
 	ctx := context.Background()

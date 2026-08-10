@@ -34,6 +34,13 @@ public sealed class HostStartupOptions
     /// </summary>
     public bool AutoStart { get; set; }
 
+    /// <summary>
+    /// Enables the real tray close/exit and auto-start visibility policies for
+    /// packaged-host black-box tests. Ignored unless <see cref="TestMode"/> is
+    /// also present so production launches cannot acquire a file control seam.
+    /// </summary>
+    public bool TestModeTrayLifecycle { get; set; }
+
     public static HostStartupOptions Parse(IReadOnlyList<string>? args)
     {
         var options = new HostStartupOptions();
@@ -61,12 +68,16 @@ public sealed class HostStartupOptions
                 case "--autostart":
                     options.AutoStart = true;
                     break;
+                case "--test-mode-tray-lifecycle":
+                    options.TestModeTrayLifecycle = true;
+                    break;
             }
         }
 
         if (!options.TestMode)
         {
             options.E2eControlsDir = null;
+            options.TestModeTrayLifecycle = false;
         }
         return options;
     }

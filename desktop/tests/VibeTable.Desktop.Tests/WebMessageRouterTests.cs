@@ -433,6 +433,8 @@ public sealed class WebMessageRouterTests
             "document.dragOutRequested",
             "document.openRequested",
             "document.previewRequested",
+            "document.diffRequested",
+            "document.diffCancelRequested",
             "document.revealRequested",
             "document.relinkRequested",
         })
@@ -446,9 +448,11 @@ public sealed class WebMessageRouterTests
             Assert.IsNull(reply, type);
         }
 
-        Assert.AreEqual(8, dispatched.Count);
+        Assert.AreEqual(10, dispatched.Count);
         Assert.IsTrue(router.IsHostNotificationAllowed("document.listLoaded"));
         Assert.IsTrue(router.IsHostNotificationAllowed("document.actionCompleted"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("document.diffCompleted"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("document.diffCancelCompleted"));
         Assert.IsTrue(router.IsHostNotificationAllowed("document.workspaceChanged"));
         Assert.IsTrue(router.IsHostNotificationAllowed("document.operationFailed"));
         foreach (string retired in new[]
@@ -470,6 +474,20 @@ public sealed class WebMessageRouterTests
             Assert.IsNotNull(reply, retired);
             Assert.AreEqual("operation.failed", reply.Type, retired);
         }
+
+        HostReplyMessage? rawMaterialize = router.Route(JsonSerializer.Serialize(new
+        {
+            type = "workspace.v2.request",
+            requestId = "raw-materialize",
+            payload = new
+            {
+                method = "fileHistory.materializeDiffPair",
+                wire = new { },
+                @params = new { },
+            },
+        }));
+        Assert.IsNotNull(rawMaterialize);
+        Assert.AreEqual("operation.failed", rawMaterialize.Type);
     }
 
     [TestMethod]
@@ -520,9 +538,6 @@ public sealed class WebMessageRouterTests
             "plugin.install.inspect",
             "plugin.install.commit",
             "plugin.lifecycle.setEnabled",
-            "plugin.lifecycle.upgrade",
-            "plugin.lifecycle.rollback",
-            "plugin.lifecycle.uninstall",
             "plugin.action.describe",
             "plugin.action.start",
             "plugin.interaction.resolve",
@@ -555,6 +570,34 @@ public sealed class WebMessageRouterTests
             """{"type":"rpc.invoke","requestId":"generic","payload":{"method":"plugin.uninstall"}}""");
         Assert.IsNotNull(genericReply);
         Assert.AreEqual("UNKNOWN_TYPE", genericReply!.Payload!.Code);
+    }
+
+    [TestMethod]
+    public void Route_InternalOnlyPluginLifecycleMutations_AreRejectedWithoutDispatch()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+
+        foreach (string type in new[]
+        {
+            "plugin.lifecycle.upgrade",
+            "plugin.lifecycle.rollback",
+            "plugin.lifecycle.uninstall",
+        })
+        {
+            HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new
+            {
+                type,
+                requestId = $"internal-{type}",
+                payload = new { },
+            }));
+
+            Assert.IsNotNull(reply, type);
+            Assert.AreEqual("operation.failed", reply.Type, type);
+            Assert.AreEqual("CAPABILITY_NOT_PUBLIC", reply.Payload!.Code, type);
+        }
+
+        Assert.HasCount(0, dispatched);
     }
 
     [TestMethod]
@@ -726,11 +769,28 @@ public sealed class WebMessageRouterTests
             "history.query",
             dispatched.Last().V2Method);
 
+        var retentionStatus = router.Route(JsonSerializer.Serialize(new
+        {
+            type = "workspace.v2.request",
+            requestId = "v2-retention-status",
+            wire = new
+            {
+                scope = "workspace",
+                workspaceId,
+                sessionEpoch = 3,
+                operationId = Guid.NewGuid(),
+                sequence = 13,
+            },
+            payload = new { method = "retention.status", @params = new { } },
+        }));
+        Assert.IsNull(retentionStatus);
+        Assert.AreEqual("retention.status", dispatched.Last().V2Method);
+
         var wrongScope = router.Route(JsonSerializer.Serialize(new
         {
             type = "workspace.v2.request",
             requestId = "v2-2",
-            wire = new { scope = "global", operationId, sequence = 13 },
+            wire = new { scope = "global", operationId, sequence = 14 },
             payload = new { method = "workspace.close", @params = new { reason = "user" } },
         }));
         Assert.AreEqual("BAD_WORKSPACE_WIRE", wrongScope!.Payload!.Code);
@@ -739,9 +799,32 @@ public sealed class WebMessageRouterTests
         {
             type = "workspace.v2.request",
             requestId = "v2-3",
-            wire = new { scope = "global", operationId, sequence = 14 },
+            wire = new { scope = "global", operationId, sequence = 15 },
             payload = new { method = "repository.rotateKey", @params = new { } },
         }));
         Assert.AreEqual("UNKNOWN_V2_METHOD", unknown!.Payload!.Code);
+    }
+
+    [TestMethod]
+    public void Route_InternalOnlyWorkspaceV2Mutations_AreRejectedWithoutDispatch()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+
+        foreach (string method in new[] { "workspace.relink", "replica.synchronize" })
+        {
+            HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new
+            {
+                type = "workspace.v2.request",
+                requestId = $"internal-{method}",
+                payload = new { method, @params = new { } },
+            }));
+
+            Assert.IsNotNull(reply, method);
+            Assert.AreEqual("operation.failed", reply.Type, method);
+            Assert.AreEqual("CAPABILITY_NOT_PUBLIC", reply.Payload!.Code, method);
+        }
+
+        Assert.HasCount(0, dispatched);
     }
 }

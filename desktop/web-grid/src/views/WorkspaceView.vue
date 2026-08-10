@@ -296,11 +296,12 @@ function closeJsonEditor(): void {
 }
 
 function finishJsonEditorClose(): void {
-  restoreStructuredDialogFocus(
-    tabulator.value as unknown as StructuredGridLike | null,
-    jsonDialogTrigger.value,
-  );
+  const grid = tabulator.value as unknown as StructuredGridLike | null;
+  const target = jsonDialogTrigger.value;
   jsonDialogTrigger.value = null;
+  // Run after NModal's focus-trap teardown so its sentinel cleanup cannot
+  // overwrite the structured cell restoration.
+  void nextTick(() => restoreStructuredDialogFocus(grid, target));
 }
 
 function openJsonEditor(payload: {
@@ -310,11 +311,16 @@ function openJsonEditor(payload: {
   expectedDigest: string | null;
   trigger?: HTMLElement | null;
 }): void {
+  const focusedElement = activeElement();
   jsonDialogTrigger.value = {
-    element: payload.trigger ?? activeElement(),
+    element: payload.trigger ?? focusedElement,
     rowKey: payload.rowKey,
     field: payload.column.name,
   };
+  // Naive UI marks the background tree aria-hidden before its focus trap
+  // moves focus into the entering modal. Release the structured grid cell
+  // first so assistive technologies never observe hidden retained focus.
+  focusedElement?.blur();
   jsonEditor.value = {
     show: true,
     rowKey: payload.rowKey,

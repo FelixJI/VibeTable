@@ -33,6 +33,7 @@ SCENARIO_MANIFEST = Path(__file__).with_name("pocketbase_product_scenarios.json"
 NODE_RUNNER = Path(__file__).with_name("webview_product_scenarios.mjs")
 DEFAULT_EVIDENCE = ROOT / "build" / "qa" / "product-e2e"
 CDP_TIMEOUT_SECONDS = 60.0
+NORMAL_CLOSE_CONTROL_FILE = "host-normal-close.request"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -60,8 +61,8 @@ def load_scenarios(path: Path = SCENARIO_MANIFEST) -> list[Scenario]:
         )
         for item in raw
     ]
-    if len(scenarios) != 12:
-        raise ValueError(f"expected exactly 12 scenarios, found {len(scenarios)}")
+    if len(scenarios) != 16:
+        raise ValueError(f"expected exactly 16 scenarios, found {len(scenarios)}")
     if len({item.id for item in scenarios}) != len(scenarios):
         raise ValueError("scenario ids must be unique")
     return scenarios
@@ -323,6 +324,94 @@ def _stop_process_tree(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=10)
 
 
+def _stop_process_ids(process_ids: Sequence[int]) -> None:
+    if os.name != "nt":
+        return
+    for process_id in sorted({item for item in process_ids if item > 0}):
+        subprocess.run(
+            ["taskkill", "/PID", str(process_id), "/T", "/F"],
+            check=False,
+            capture_output=True,
+            timeout=15,
+        )
+
+
+def _lifecycle_exit_report(
+    *,
+    normal_exit_requested: bool,
+    host_exit_code: int | None,
+    descendants_after_exit: list[dict[str, Any]],
+    ports_released: bool,
+) -> dict[str, Any]:
+    passed = (
+        normal_exit_requested
+        and host_exit_code == 0
+        and not descendants_after_exit
+        and ports_released
+    )
+    return {
+        "normalExitRequested": normal_exit_requested,
+        "hostExitCode": host_exit_code,
+        "descendantsAfterExit": descendants_after_exit,
+        "portsReleased": ports_released,
+        "status": "passed" if passed else "failed",
+    }
+
+
+def _request_normal_exit(
+    process: subprocess.Popen[bytes],
+    *,
+    controls_dir: Path,
+    cdp_port: int,
+) -> dict[str, Any]:
+    tracked = {process.pid: "VibeTable.Next.exe"}
+    for pid, name in _descendants(process.pid):
+        tracked[pid] = name
+    control = controls_dir / NORMAL_CLOSE_CONTROL_FILE
+    control.write_text("normal-close\n", encoding="utf-8")
+
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        for pid, name in _descendants(process.pid):
+            tracked[pid] = name
+        if process.poll() is not None:
+            break
+        time.sleep(0.1)
+
+    tracked_pids = set(tracked)
+
+    # WebView2 may outlive the WPF window by a few scheduler turns while its
+    # browser-process tree flushes profile state. Observe that bounded normal
+    # shutdown before classifying an already tracked process as a leak.
+    for _ in range(50):
+        alive = {pid for pid, _parent, _name in _windows_processes()}
+        if not ((tracked_pids - {process.pid}) & alive):
+            break
+        time.sleep(0.1)
+
+    surviving = {pid: name for pid, _parent, name in _windows_processes() if pid in tracked_pids}
+    descendants_after_exit = [
+        {"pid": pid, "name": name}
+        for pid, name in tracked.items()
+        if pid != process.pid and pid in surviving
+    ]
+    try:
+        occupied_by_tracked = [
+            row
+            for row in _netstat_tcp_rows()
+            if int(row["pid"]) in tracked_pids or str(row["local"]).endswith(f":{cdp_port}")
+        ]
+        ports_released = not occupied_by_tracked
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        ports_released = False
+    return _lifecycle_exit_report(
+        normal_exit_requested=True,
+        host_exit_code=process.poll(),
+        descendants_after_exit=descendants_after_exit,
+        ports_released=ports_released,
+    )
+
+
 def _windows_processes() -> list[tuple[int, int, str]]:
     if os.name != "nt":
         return []
@@ -506,7 +595,7 @@ def _process_network_report(evidence: dict[str, Any], *, status: str) -> dict[st
 
 def _handle_storage_proof(
     request: dict[str, Any],
-    scenario_dir: Path,
+    local_data: Path,
 ) -> dict[str, Any]:
     request_id = request.get("requestId")
     if not isinstance(request_id, str) or not request_id:
@@ -521,7 +610,6 @@ def _handle_storage_proof(
             "code": "STORAGE_PROOF_TABLE_REQUIRED",
             "requestId": request_id,
         }
-    local_data = scenario_dir / "runtime" / "local-data"
     data_db = local_data / "pocketbase" / "data.db"
     if not data_db.is_file():
         registry_path = local_data / "VibeTable" / "shell" / "workspace-registry-v2.json"
@@ -720,21 +808,27 @@ def _handle_fault_request(
     request: dict[str, Any], host_process: subprocess.Popen[bytes]
 ) -> dict[str, Any]:
     action = request.get("action")
-    if action != "kill-sidecar":
+    targets = {
+        "kill-sidecar": ("vibetable-pb.exe", "SIDECAR_PROCESS_NOT_UNIQUE"),
+        "kill-backend": ("vibetable-backend.exe", "BACKEND_PROCESS_NOT_UNIQUE"),
+    }
+    target = targets.get(action) if isinstance(action, str) else None
+    if target is None:
         return {
             "status": "failed",
             "code": "UNKNOWN_FAULT_ACTION",
             "action": action,
         }
+    process_name, non_unique_code = target
     matches = [
         (pid, name)
         for pid, name in _descendants(host_process.pid)
-        if name.casefold() == "vibetable-pb.exe"
+        if name.casefold() == process_name
     ]
     if len(matches) != 1:
         return {
             "status": "failed",
-            "code": "SIDECAR_PROCESS_NOT_UNIQUE",
+            "code": non_unique_code,
             "matches": matches,
         }
     pid, name = matches[0]
@@ -762,6 +856,7 @@ def _run_node_runner(
     command: list[str],
     *,
     scenario_dir: Path,
+    local_data: Path,
     host_process: subprocess.Popen[bytes],
     process_network: dict[str, Any] | None = None,
 ) -> tuple[int, str, str]:
@@ -779,7 +874,8 @@ def _run_node_runner(
         encoding="utf-8",
         errors="replace",
     )
-    handled_fault = False
+    handled_fault_ids: set[str] = set()
+    invalid_fault_reported = False
     handled_storage_proof_ids: set[str] = set()
     next_network_sample = 0.0
     deadline = time.monotonic() + 180
@@ -788,14 +884,28 @@ def _run_node_runner(
             node_process.kill()
             stdout, stderr = node_process.communicate(timeout=10)
             raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
-        if not handled_fault:
-            request = _read_json(fault_request)
-            if request is not None:
-                handled_fault = True
-                response = _handle_fault_request(request, host_process)
-                fault_result.write_text(
-                    json.dumps(response, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8",
+        request = _read_json(fault_request)
+        if request is not None:
+            fault_request_id = request.get("requestId")
+            if isinstance(fault_request_id, str) and fault_request_id:
+                if fault_request_id not in handled_fault_ids:
+                    handled_fault_ids.add(fault_request_id)
+                    _write_json_atomic(
+                        fault_result,
+                        {
+                            "requestId": fault_request_id,
+                            **_handle_fault_request(request, host_process),
+                        },
+                    )
+            elif not invalid_fault_reported:
+                invalid_fault_reported = True
+                _write_json_atomic(
+                    fault_result,
+                    {
+                        "requestId": None,
+                        "status": "failed",
+                        "code": "FAULT_REQUEST_ID_INVALID",
+                    },
                 )
         request = _read_json(storage_request)
         if request is not None:
@@ -807,7 +917,7 @@ def _run_node_runner(
                 handled_storage_proof_ids.add(storage_request_id)
                 _write_json_atomic(
                     storage_result,
-                    _handle_storage_proof(request, scenario_dir),
+                    _handle_storage_proof(request, local_data),
                 )
         if process_network is not None and time.monotonic() >= next_network_sample:
             _record_process_network(host_process.pid, process_network)
@@ -984,6 +1094,13 @@ def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _scenario_runtime_directory(evidence_root: Path, scenario: Scenario) -> Path:
+    scenario_number = scenario.id.partition("-")[0]
+    if len(scenario_number) != 2 or not scenario_number.isdecimal():
+        raise ValueError(f"Scenario id must start with a two-digit number: {scenario.id}")
+    return (evidence_root / "_runtime" / scenario_number).resolve()
+
+
 def run_scenario(
     scenario: Scenario,
     *,
@@ -996,9 +1113,10 @@ def run_scenario(
     # to the same isolated evidence/data tree.
     scenario_dir = (evidence_root / scenario.id).resolve()
     scenario_dir.mkdir(parents=True, exist_ok=True)
-    readiness_dir = scenario_dir / "runtime"
-    readiness_dir.mkdir()
-    controls_dir = scenario_dir / "controls"
+    runtime_dir = _scenario_runtime_directory(evidence_root, scenario)
+    readiness_dir = runtime_dir / "host"
+    readiness_dir.mkdir(parents=True)
+    controls_dir = runtime_dir / "controls"
     controls_dir.mkdir()
     import_source = controls_dir / "import-source.csv"
     import_source.write_text(
@@ -1040,6 +1158,30 @@ def run_scenario(
         str(attachment_replacement.resolve()) + "\n",
         encoding="utf-8",
     )
+    document_source = controls_dir / "document-diff-source.txt"
+    document_source.write_text(
+        "VibeTable document diff product E2E\n",
+        encoding="utf-8",
+    )
+    (controls_dir / "document-source.txt").write_text(
+        str(document_source.resolve()) + "\n",
+        encoding="utf-8",
+    )
+    workspace_root = controls_dir / "workspace-root"
+    workspace_root.mkdir()
+    snapshot_package = controls_dir / "workspace-snapshot.vtsnapshot"
+    snapshot_extract = controls_dir / "snapshot-extract.bin"
+    for control_name, target in (
+        ("workspace-root.txt", workspace_root),
+        ("snapshot-export-target.txt", snapshot_package),
+        ("snapshot-import-source.txt", snapshot_package),
+        ("snapshot-extract-target.txt", snapshot_extract),
+        ("file-upgrade-source.txt", document_source),
+    ):
+        (controls_dir / control_name).write_text(
+            str(target.resolve()) + "\n",
+            encoding="utf-8",
+        )
     layout = json.loads(_package_layout_path(package_root).read_text(encoding="utf-8"))
     host = (package_root / layout["launch"]["host"]).resolve()
     port = _reserve_port()
@@ -1101,6 +1243,7 @@ def run_scenario(
             stdout=stdout,
             stderr=stderr,
         )
+        result: dict[str, Any]
         try:
             process_network = (
                 {"observations": {}, "errors": [], "samples": 0}
@@ -1119,10 +1262,13 @@ def run_scenario(
                 str(scenario_dir),
                 "--controls-dir",
                 str(controls_dir),
+                "--data-root",
+                str(readiness_dir / "local-data"),
             ]
             node_returncode, node_stdout, node_stderr = _run_node_runner(
                 node_command,
                 scenario_dir=scenario_dir,
+                local_data=readiness_dir / "local-data",
                 host_process=process,
                 process_network=process_network,
             )
@@ -1188,15 +1334,50 @@ def run_scenario(
                     "code": "RESULT_EXIT_MISMATCH",
                     "message": "runner exited zero without a passing result",
                 }
-            return result
         except (OSError, RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
-            return _failure_result(
+            result = _failure_result(
                 scenario,
                 code="E2E_INFRASTRUCTURE_FAILED",
                 message=str(exc),
             ) | {"evidenceDirectory": str(scenario_dir)}
-        finally:
+
+        lifecycle_error: str | None = None
+        try:
+            lifecycle = _request_normal_exit(
+                process,
+                controls_dir=controls_dir,
+                cdp_port=port,
+            )
+        except (OSError, RuntimeError, TimeoutError, subprocess.SubprocessError) as exc:
+            lifecycle_error = str(exc)
+            lifecycle = _lifecycle_exit_report(
+                normal_exit_requested=False,
+                host_exit_code=process.poll(),
+                descendants_after_exit=[],
+                ports_released=False,
+            )
+        result["lifecycle"] = lifecycle
+        if lifecycle_error is not None:
+            result["lifecycleError"] = lifecycle_error
+        if lifecycle["status"] != "passed":
+            if result.get("status") == "passed":
+                result["status"] = "failed"
+                result["error"] = {
+                    "code": "HOST_LIFECYCLE_FAILED",
+                    "message": "正常关闭后仍有宿主进程、子进程或端口残留。",
+                    "details": lifecycle,
+                }
+            else:
+                result["lifecycleFailure"] = lifecycle
             _stop_process_tree(process)
+            _stop_process_ids(
+                [
+                    int(item["pid"])
+                    for item in lifecycle["descendantsAfterExit"]
+                    if isinstance(item, dict) and isinstance(item.get("pid"), int)
+                ]
+            )
+        return result
 
 
 def write_aggregate(

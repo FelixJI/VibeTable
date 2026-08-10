@@ -58,7 +58,7 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 		t.Fatal(err)
 	}
 	token, _ := runtime.coordinator.Current()
-	if _, err := runtime.history.Save(
+	saved, err := runtime.history.Save(
 		ctx,
 		filehistory.SaveRequest{
 			Token:      token,
@@ -70,8 +70,29 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 			CreatedBy:  "test",
 			DeviceID:   testClaimID,
 		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.history.Delete(
+		ctx,
+		token,
+		saved.Document.DocumentID,
+		&saved.Revision.RevisionID,
 	); err != nil {
 		t.Fatal(err)
+	}
+	files, fileRevision, err := (&frozenSource{
+		history:    runtime.history,
+		repository: runtime.repository,
+	}).snapshotFiles(ctx)
+	if err != nil || len(files) != 0 || fileRevision == 0 {
+		t.Fatalf(
+			"deleted-only snapshot files=%#v revision=%d err=%v",
+			files,
+			fileRevision,
+			err,
+		)
 	}
 	record, _, err := runtime.snapshots.Capture(
 		ctx,
@@ -166,7 +187,6 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 	if err := app.ResetBootstrapState(); err != nil {
 		t.Fatal(err)
 	}
-
 	targetWorkspaceID := "99999999-9999-4999-8999-999999999999"
 	targetRoot := createWorkspace(t, targetWorkspaceID)
 	targetDataDir := filepath.Join(targetRoot, ".vibetable", "data")
@@ -185,10 +205,12 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 		t.Fatal(err)
 	}
 	defer targetLedger.Close()
+	targetShutdownRequested := false
 	targetRuntime, err := Open(ctx, Options{
 		App: targetApp, DataDir: targetDataDir,
 		WorkspaceID: targetWorkspaceID, SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: testClaimID, Ledger: targetLedger,
+		RequestShutdown: func() { targetShutdownRequested = true },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -225,8 +247,13 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 	}
 	planID := inspection.(map[string]any)["planId"].(string)
 	inspectionResult := inspection.(map[string]any)
-	if inspectionResult["workspaceId"] != testWorkspaceID ||
-		inspectionResult["sourceSnapshotId"] != record.SnapshotID {
+	if len(inspectionResult) != 8 ||
+		inspectionResult["workspaceId"] != testWorkspaceID ||
+		inspectionResult["sourceSnapshotId"] != record.SnapshotID ||
+		inspectionResult["trusted"] != false ||
+		inspectionResult["verified"] != true ||
+		inspectionResult["encrypted"] != false ||
+		inspectionResult["snapshotCount"] != 1 {
 		t.Fatalf("inspect provenance = %#v", inspectionResult)
 	}
 	if !validUUID(planID) {
@@ -302,5 +329,92 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 	}
 	if _, err := targetRuntime.state.snapshotImportPlan(ctx, planID); err == nil {
 		t.Fatal("consumed import plan remained available")
+	}
+	verification, err := targetRuntime.verifyRepository(
+		ctx,
+		nil,
+		json.RawMessage(`{}`),
+	)
+	if err != nil || verification.(map[string]any)["state"] != "verified" {
+		t.Fatalf("repository before imported restore = %#v err=%v", verification, err)
+	}
+	previewRaw, _ := json.Marshal(previewSnapshotRestoreParams{
+		SnapshotID: result["snapshotId"].(string),
+		TargetMode: "currentWorkspace",
+	})
+	preview, err := targetRuntime.previewSnapshotRestore(ctx, nil, previewRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreWire := json.RawMessage(`{
+		"scope":"workspace",
+		"workspaceId":"99999999-9999-4999-8999-999999999999",
+		"sessionEpoch":7,
+		"sequence":4,
+		"operationId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	}`)
+	applyRaw, _ := json.Marshal(applySnapshotRestoreParams{
+		PlanID:    preview.(map[string]any)["planId"].(string),
+		Confirmed: true,
+	})
+	if _, err := targetRuntime.applySnapshotRestore(
+		ctx,
+		restoreWire,
+		applyRaw,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !targetShutdownRequested {
+		t.Fatal("imported restore did not request shutdown")
+	}
+	if err := targetRuntime.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := targetLedger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := targetApp.ResetBootstrapState(); err != nil {
+		t.Fatal(err)
+	}
+	if installed, err := ApplyPendingSnapshotRestore(
+		ctx,
+		targetDataDir,
+		targetWorkspaceID,
+	); err != nil || !installed {
+		t.Fatalf("imported restore offline install = %v, %v", installed, err)
+	}
+	reopenedApp := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir: targetDataDir, HideStartBanner: true,
+	})
+	if err := reopenedApp.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	defer reopenedApp.ResetBootstrapState()
+	reopenedLedger, err := auditledger.Open(
+		filepath.Join(targetRoot, ".vibetable", "audit"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopenedLedger.Close()
+	reopenedRuntime, err := Open(ctx, Options{
+		App: reopenedApp, DataDir: targetDataDir,
+		WorkspaceID: targetWorkspaceID, SessionEpoch: 7,
+		FenceEpoch: 3, ClaimID: testClaimID, Ledger: reopenedLedger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopenedRuntime.Close(ctx)
+	if err := reopenedRuntime.CompletePendingSnapshotRestore(ctx); err != nil {
+		t.Fatal(err)
+	}
+	verification, err = reopenedRuntime.verifyRepository(
+		ctx,
+		nil,
+		json.RawMessage(`{}`),
+	)
+	if err != nil || verification.(map[string]any)["state"] != "verified" {
+		t.Fatalf("repository after imported restore = %#v err=%v", verification, err)
 	}
 }

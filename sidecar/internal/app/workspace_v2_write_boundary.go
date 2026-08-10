@@ -27,12 +27,13 @@ var workspaceV2ReadOnlyPosts = map[string]struct{}{
 }
 
 var workspaceV2CoordinatedPosts = map[string]struct{}{
-	"/api/vibetable/v1/mutations/apply":       {},
-	"/api/vibetable/v1/schema/apply":          {},
-	"/api/vibetable/v1/schema/delete":         {},
-	"/api/vibetable/v1/relations/apply-delta": {},
-	"/api/vibetable/v2/field-change/plan":     {},
-	"/api/vibetable/v2/field-change/apply":    {},
+	"/api/vibetable/v1/mutations/apply":            {},
+	"/api/vibetable/v1/schema/apply":               {},
+	"/api/vibetable/v1/schema/delete":              {},
+	"/api/vibetable/v1/relations/apply-delta":      {},
+	"/api/vibetable/v1/metadata/dashboards/commit": {},
+	"/api/vibetable/v2/field-change/plan":          {},
+	"/api/vibetable/v2/field-change/apply":         {},
 }
 
 func bindWorkspaceV2WriteBoundary(event *core.ServeEvent) {

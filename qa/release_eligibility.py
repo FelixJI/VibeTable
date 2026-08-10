@@ -178,6 +178,8 @@ def aggregate_reports(
     for stage, matches in stage_results.items():
         if stage != "go-race" and len(matches) != 1:
             raise EligibilityError(f"stage result count mismatch: {stage}")
+    if stage_results["smoke"][0][1].get("webview2_evidence") != "required-passed":
+        raise EligibilityError("required WebView2 evidence is missing, skipped, or failed")
 
     aggregate_results: dict[str, dict[str, object]] = {
         stage: matches[0][1] for stage, matches in stage_results.items() if stage != "go-race"

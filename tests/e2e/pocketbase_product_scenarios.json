@@ -47,7 +47,7 @@
   {
     "id": "10-sse-reconnect",
     "title": "SSE 断线重连且不重复应用",
-    "requirement": "真实 sidecar 断开再恢复后 UI 自动追赶，事件只应用一次。"
+    "requirement": "真实 sidecar 断开后 UI 自动追赶且事件只应用一次；精确终止打包 BFF 后通过 workspace 关闭/重开恢复，轮换 session epoch，并拒绝旧 epoch 写入。"
   },
   {
     "id": "11-plugin-mutation",
@@ -58,5 +58,25 @@
     "id": "12-backup-consistency",
     "title": "工作区快照恢复一致性",
     "requirement": "从当前版本界面创建并恢复工作区快照；恢复后业务数据、附件和审计快照精确一致，同时保留快照之后产生的不可回滚审计记录。"
+  },
+  {
+    "id": "13-protection-policy",
+    "title": "工作区保护策略与仓库验证",
+    "requirement": "通过真实 Settings UI 执行 repository.verify、读取并更新 retention policy、预览 cleanup，并仅在计划确认为零删除时一次性执行 retention.apply；过期 policy revision 必须稳定拒绝，direct workspace 不伪造 replica，Apply 必须返回零删除数与零回收字节数。"
+  },
+  {
+    "id": "14-document-diff",
+    "title": "真实文件历史版本比较",
+    "requirement": "通过 host-only picker 导入真实 TXT 历史版本，以真实 restore revision 建立当前版本后，从 FileRevisionTree 的“与当前版本比较”执行 closed document.diffRequested；验证本地化 identical 结果、两阶段 effective CAS 的 stale 失败，以及 renderer 原始 fileHistory.materializeDiffPair 请求被拒绝。"
+  },
+  {
+    "id": "15-workspace-snapshot-package",
+    "title": "工作区切换与快照包",
+    "requirement": "通过真实 Workspace Center 创建并打开第二个工作区，再由 switcher 完成工作区切换并拒绝旧 session epoch；通过真实 Snapshot UI 创建、open-as-new、导出与导入快照包，损坏快照包必须稳定失败。"
+  },
+  {
+    "id": "16-dashboard-lifecycle",
+    "title": "Dashboard 创建、保存与刷新",
+    "requirement": "通过真实 Dashboard UI 创建空白 Dashboard、保存、刷新列表并重新选择，验证持久化后的 Dashboard 仍可打开。"
   }
 ]

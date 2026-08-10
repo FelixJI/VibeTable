@@ -116,5 +116,6 @@ public partial class App : Application
         {
             window.Hide();
         }
+        window.ReportTestModeStartupVisibility();
     }
 }

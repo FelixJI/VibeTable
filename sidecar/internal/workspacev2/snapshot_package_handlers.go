@@ -384,6 +384,7 @@ func (runtime *Runtime) inspectSnapshotPackage(
 	}
 	result := map[string]any{
 		"planId":           planID,
+		"trusted":          false,
 		"workspaceId":      inspection.Manifest.Metadata.WorkspaceID,
 		"sourceSnapshotId": inspection.Manifest.Metadata.SnapshotID,
 		"snapshotCount":    1,

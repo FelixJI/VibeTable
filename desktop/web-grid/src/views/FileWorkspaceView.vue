@@ -179,6 +179,26 @@ function activateFileRevision(revision: FileRevisionV2): void {
   });
 }
 
+function compareFileRevision(entry: DocumentEntry, revision: FileRevisionV2): void {
+  const effectiveRevisionId = currentRevisionTree.value?.effectiveRevisionId;
+  if (!entry.capabilities.includes("diff") ||
+    !effectiveRevisionId ||
+    entry.effectiveRevisionId !== effectiveRevisionId ||
+    revision.revisionId === effectiveRevisionId) return;
+  service.compare(
+    entry.entryHandle,
+    revision.revisionId,
+    effectiveRevisionId,
+  );
+}
+
+function cancelFileDiff(): void {
+  const target = store.diffTarget;
+  if (!target) return;
+  service.cancelDiff(target.entryHandle, target.operationId);
+  store.cancelDiff();
+}
+
 function isExternalFileDrag(event: DragEvent): boolean {
   // Reading the type list is enough to distinguish a native file drag. Do not
   // enumerate DataTransfer.files/items or read non-standard File.path values.
@@ -309,6 +329,8 @@ watch(
         :active-tab="store.inspectorTab"
         :busy="protection.busyOperation !== null"
         :revision-tree="currentRevisionTree"
+        :diff-phase="store.diffPhase"
+        :diff-result="store.diffResult"
         @tab="store.showInspector"
         @preview="service.preview($event.entryHandle)"
         @history="history"
@@ -316,6 +338,8 @@ watch(
         @restore-file-revision="(_entry, revision) => restoreFileRevision(revision)"
         @upgrade-file-revision="(_entry, revision) => upgradeFileRevision(revision)"
         @activate-file-revision="(_entry, revision) => activateFileRevision(revision)"
+        @compare-file-revision="compareFileRevision"
+        @cancel-file-diff="cancelFileDiff"
       />
     </div>
 

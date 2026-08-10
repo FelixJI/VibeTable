@@ -228,6 +228,10 @@ func TestSharedNegativeFixtureCorpusFailsClosed(t *testing.T) {
 			_, err := DecodeStrict[FileRevision](raw)
 			return err
 		},
+		"rpc-catalog.json": func(raw []byte) error {
+			_, err := DecodeStrict[RPCContractCatalog](raw)
+			return err
+		},
 	}
 	for _, testCase := range corpus.Cases {
 		t.Run(testCase.Name, func(t *testing.T) {

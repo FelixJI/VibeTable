@@ -101,6 +101,8 @@ public sealed class WebMessageRouter
         "document.dragOutRequested",
         "document.openRequested",
         "document.previewRequested",
+        "document.diffRequested",
+        "document.diffCancelRequested",
         "document.revealRequested",
         "document.relinkRequested",
         // Native-file attachment actions. File paths arrive only as WebView2
@@ -132,6 +134,25 @@ public sealed class WebMessageRouter
         // Single closed bridge for the generated workspace-v2 RPC catalog.
         "workspace.v2.request",
     };
+
+    // These use cases remain in the internal plugin/workspace catalogs so
+    // producers and correlated host responses stay typed. They are not yet a
+    // public renderer capability because no packaged-host scenario proves
+    // their complete lifecycle.
+    private static readonly HashSet<string> RendererInternalOnlyRequestTypes =
+        new(StringComparer.Ordinal)
+        {
+            "plugin.lifecycle.upgrade",
+            "plugin.lifecycle.rollback",
+            "plugin.lifecycle.uninstall",
+        };
+
+    private static readonly HashSet<string> RendererInternalOnlyWorkspaceV2Methods =
+        new(StringComparer.Ordinal)
+        {
+            "workspace.relink",
+            "replica.synchronize",
+        };
 
     /// <summary>
     /// The host -&gt; web notification types. Phase A defines the framework;
@@ -181,6 +202,8 @@ public sealed class WebMessageRouter
         "dashboard.deleted",
         "document.listLoaded",
         "document.actionCompleted",
+        "document.diffCompleted",
+        "document.diffCancelCompleted",
         "document.operationFailed",
         "document.workspaceChanged",
         // Correlated native attachment action acknowledgements.
@@ -257,6 +280,7 @@ public sealed class WebMessageRouter
             ["fileHistory.activateLeaf"] = "workspace",
             ["fileHistory.applyPendingChange"] = "workspace",
             ["retention.get"] = "workspace",
+            ["retention.status"] = "workspace",
             ["retention.update"] = "workspace",
             ["retention.plan"] = "workspace",
             ["retention.apply"] = "workspace",
@@ -366,6 +390,14 @@ public sealed class WebMessageRouter
                     "UNKNOWN_TYPE");
             }
 
+            if (RendererInternalOnlyRequestTypes.Contains(type))
+            {
+                return BuildOperationFailed(
+                    requestId,
+                    $"Web request type '{type}' is not a public renderer capability.",
+                    "CAPABILITY_NOT_PUBLIC");
+            }
+
             // Clone the payload element so the dispatched handler can read it
             // after the JsonDocument is disposed.
             JsonElement payload = root.TryGetProperty("payload", out var payloadEl)
@@ -412,6 +444,13 @@ public sealed class WebMessageRouter
                         "UNKNOWN_V2_METHOD");
                 }
                 v2Method = methodElement.GetString();
+                if (RendererInternalOnlyWorkspaceV2Methods.Contains(v2Method ?? string.Empty))
+                {
+                    return BuildOperationFailed(
+                        requestId,
+                        $"Workspace v2 method '{v2Method}' is not a public renderer capability.",
+                        "CAPABILITY_NOT_PUBLIC");
+                }
                 if (!root.TryGetProperty("wire", out JsonElement wireElement)
                     || wireElement.ValueKind != JsonValueKind.Object)
                     return BuildOperationFailed(

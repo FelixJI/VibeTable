@@ -375,7 +375,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		registerRealtimeRoutes(
 			event.Router, realtimeHub, schemaapi.New(pb),
 		)
-		registerMetadataRoutes(event.Router, metadata.New(pb))
+		registerMetadataRoutes(event.Router, metadata.New(pb), businessGate)
 		if options.WorkspaceV2 == nil {
 			if err := jobService.ResumePending(jobService.Context()); err != nil {
 				_ = rawListener.Close()
@@ -500,6 +500,13 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		"--http=127.0.0.1:0",
 		"--origins=http://127.0.0.1",
 	})
+	if err := pb.Bootstrap(); err != nil {
+		return nil, fmt.Errorf("bootstrap PocketBase before startup migrations: %w", err)
+	}
+	if err := pb.RunAllMigrations(); err != nil {
+		resetErr := pb.ResetBootstrapState()
+		return nil, errors.Join(fmt.Errorf("run startup migrations: %w", err), resetErr)
+	}
 
 	return pb, nil
 }

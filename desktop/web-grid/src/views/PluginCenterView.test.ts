@@ -150,7 +150,7 @@ describe("PluginCenterView", () => {
     expect(JSON.stringify(posted[0])).not.toContain("expectedRevision");
   });
 
-  it("uses the native picker token and requires a separate approval before upgrade", async () => {
+  it("keeps upgrade mutation internal while retaining the native inspection path", async () => {
     const posted: unknown[] = [];
     let listener: ((event: { data: unknown }) => void) | undefined;
     let sequence = 0;
@@ -197,12 +197,13 @@ describe("PluginCenterView", () => {
     });
     expect(wrapper.get('[data-testid="plugin-install-plan"]').text()).toContain("1.3.0");
 
-    await wrapper.get('[data-testid="plugin-install-commit"]').trigger("click");
-    await Promise.resolve();
-    expect(posted[1]).toMatchObject({
-      type: "plugin.lifecycle.upgrade",
-      payload: { pluginId: "com.acme.clean", planId: "plan-upgrade" },
-    });
+    expect(wrapper.get('[data-testid="plugin-upgrade-internal-only"]').text()).toContain(
+      "升级提交暂未公开",
+    );
+    expect(wrapper.find('[data-testid="plugin-install-commit"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="plugin-rollback"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="plugin-uninstall"]').exists()).toBe(false);
+    expect(posted).toHaveLength(1);
   });
 
   it("enables a new plugin after the user approves its permissions and install", async () => {

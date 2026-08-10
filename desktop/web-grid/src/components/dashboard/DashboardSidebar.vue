@@ -16,7 +16,7 @@ const filtered = computed(() => {
 
 <template>
   <aside class="dashboard-sidebar">
-    <div class="sidebar-heading"><strong>{{ t("dashboard.title") }}</strong><NButton quaternary size="tiny" :aria-label="t('dashboard.action.create')" @click="emit('create')"><NIcon><Plus /></NIcon></NButton></div>
+    <div class="sidebar-heading"><strong>{{ t("dashboard.title") }}</strong><NButton quaternary size="tiny" data-testid="dashboard-create" :aria-label="t('dashboard.action.create')" @click="emit('create')"><NIcon><Plus /></NIcon></NButton></div>
     <NInput v-model:value="search" size="small" clearable :placeholder="t('dashboard.search')" class="sidebar-search"><template #prefix><NIcon><Search /></NIcon></template></NInput>
     <div class="sidebar-list" role="listbox" :aria-label="t('dashboard.list')">
       <button
@@ -24,6 +24,7 @@ const filtered = computed(() => {
         :key="item.id"
         class="dashboard-row"
         :class="{ 'dashboard-row--active': item.id === selectedId }"
+        :data-testid="`dashboard-select-${item.id}`"
         role="option"
         :aria-selected="item.id === selectedId"
         @click="emit('select', item.id)"

@@ -30,15 +30,15 @@ function submit(): void {
 </script>
 
 <template>
-  <NModal :show="show" preset="card" :title="t('dashboard.create.title')" class="create-dashboard-modal" @close="emit('close')" @mask-click="emit('close')">
-    <label class="field-label">{{ t("dashboard.field.name") }}<NInput v-model:value="name" maxlength="128" show-count autofocus /></label>
+  <NModal :show="show" preset="card" :title="t('dashboard.create.title')" class="create-dashboard-modal" data-testid="dashboard-create-modal" @close="emit('close')" @mask-click="emit('close')">
+    <label class="field-label">{{ t("dashboard.field.name") }}<NInput v-model:value="name" maxlength="128" show-count autofocus data-testid="dashboard-create-name" /></label>
     <div class="template-grid" role="radiogroup" :aria-label="t('dashboard.create.template')">
-      <button v-for="template in templates" :key="template.id" type="button" class="template-card" :class="{ selected: selected === template.id }" role="radio" :aria-checked="selected === template.id" @click="selected = template.id">
+      <button v-for="template in templates" :key="template.id" type="button" class="template-card" :class="{ selected: selected === template.id }" :data-testid="`dashboard-create-template-${template.id}`" role="radio" :aria-checked="selected === template.id" @click="selected = template.id">
         <span class="template-preview"><i v-for="panel in template.panels.slice(0, 6)" :key="panel.key" :style="{ gridColumn: `span ${Math.max(1, Math.round(panel.position.width / 3))}` }"></i></span>
         <strong>{{ template.label }}</strong><small>{{ t("dashboard.panelCount", { count: template.panels.length }) }}</small>
       </button>
     </div>
-    <template #footer><div class="modal-actions"><NButton @click="emit('close')">{{ t("common.cancel") }}</NButton><NButton type="primary" :disabled="!name.trim()" @click="submit">{{ t("dashboard.action.create") }}</NButton></div></template>
+    <template #footer><div class="modal-actions"><NButton @click="emit('close')">{{ t("common.cancel") }}</NButton><NButton type="primary" data-testid="dashboard-create-submit" :disabled="!name.trim()" @click="submit">{{ t("dashboard.action.create") }}</NButton></div></template>
   </NModal>
 </template>
 

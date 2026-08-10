@@ -286,7 +286,94 @@ public sealed class WorkspaceProviderPolicyTests
     }
 
     [TestMethod]
-    public void SuccessfulCreateProbeLeavesAnEmptyRootForWorkspaceLayout()
+    public void MissingCreateTargetIsProbedThroughItsExistingParent()
+    {
+        string parent = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-provider-policy-tests",
+            Guid.NewGuid().ToString("N"));
+        string target = Path.Combine(parent, "workspace");
+        string? observedRoot = null;
+        WorkspaceProviderPolicy policy = WorkspaceProviderPolicy.CreateForTests(
+            new Dictionary<WorkspaceStorageKind, bool>
+            {
+                [WorkspaceStorageKind.Fixed] = true,
+            },
+            (root, _, _) =>
+            {
+                observedRoot = root;
+                return new WorkspaceStorageObservation(
+                    WorkspaceStorageKind.Fixed,
+                    WorkspaceCoordinationStrength.Strong,
+                    1024,
+                    false,
+                    DateTimeOffset.UtcNow);
+            });
+
+        try
+        {
+            Directory.CreateDirectory(parent);
+            _ = policy.ProbeCreateTargetAndEnsureSupported(target);
+
+            Assert.IsFalse(Directory.Exists(target));
+            Assert.AreEqual(Path.GetFullPath(parent), observedRoot);
+            WorkspaceLayoutResult layout = WorkspaceLayout.Create(
+                target,
+                "Managed",
+                WorkspaceStorageMode.Direct,
+                WorkspaceEncryptionMode.Convenient);
+            Assert.AreEqual(Path.GetFullPath(target), layout.SelectedRoot);
+        }
+        finally
+        {
+            if (Directory.Exists(parent))
+                Directory.Delete(parent, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void ExistingEmptyCreateTargetIsProbedInPlaceAndRemainsEmpty()
+    {
+        string target = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-provider-policy-tests",
+            Guid.NewGuid().ToString("N"));
+        string? observedRoot = null;
+        WorkspaceProviderPolicy policy = WorkspaceProviderPolicy.CreateForTests(
+            new Dictionary<WorkspaceStorageKind, bool>
+            {
+                [WorkspaceStorageKind.Fixed] = true,
+            },
+            (root, _, _) =>
+            {
+                observedRoot = root;
+                return new WorkspaceStorageObservation(
+                    WorkspaceStorageKind.Fixed,
+                    WorkspaceCoordinationStrength.Strong,
+                    1024,
+                    false,
+                    DateTimeOffset.UtcNow);
+            });
+
+        try
+        {
+            Directory.CreateDirectory(target);
+
+            _ = policy.ProbeCreateTargetAndEnsureSupported(target);
+
+            Assert.AreEqual(Path.GetFullPath(target), observedRoot);
+            Assert.IsTrue(Directory.Exists(target));
+            Assert.IsFalse(Directory.EnumerateFileSystemEntries(target).Any());
+        }
+        finally
+        {
+            if (Directory.Exists(target))
+                Directory.Delete(target, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void ExistingNonEmptyCreateTargetRemainsFailClosed()
     {
         string target = Path.Combine(
             Path.GetTempPath(),
@@ -306,16 +393,21 @@ public sealed class WorkspaceProviderPolicyTests
 
         try
         {
-            _ = policy.ProbeCreateTargetAndEnsureSupported(target);
+            Directory.CreateDirectory(target);
+            string existing = Path.Combine(target, "existing.txt");
+            File.WriteAllText(existing, "preserve");
 
-            Assert.IsTrue(Directory.Exists(target));
-            Assert.IsFalse(Directory.EnumerateFileSystemEntries(target).Any());
-            WorkspaceLayoutResult layout = WorkspaceLayout.Create(
-                target,
-                "Managed",
-                WorkspaceStorageMode.Direct,
-                WorkspaceEncryptionMode.Convenient);
-            Assert.AreEqual(Path.GetFullPath(target), layout.SelectedRoot);
+            _ = policy.ProbeCreateTargetAndEnsureSupported(target);
+            WorkspaceRegistryException error =
+                Assert.ThrowsExactly<WorkspaceRegistryException>(() =>
+                    WorkspaceLayout.Create(
+                        target,
+                        "Managed",
+                        WorkspaceStorageMode.Direct,
+                        WorkspaceEncryptionMode.Convenient));
+
+            Assert.AreEqual("workspace.create_target_not_empty", error.Code);
+            Assert.AreEqual("preserve", File.ReadAllText(existing));
         }
         finally
         {

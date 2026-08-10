@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import { NButton, NIcon, NTag } from "naive-ui";
+import { NAlert, NButton, NIcon, NTag } from "naive-ui";
 import {
   ChevronDown,
   ChevronRight,
@@ -12,6 +12,8 @@ import { useUiStore } from "@/stores/uiStore";
 import type { FileRevisionTreeProjection } from "@/stores/workspaceProtectionStore";
 import type { FileRevisionV2 } from "@/contracts/workspaceV2";
 import { t } from "@/i18n";
+import type { DocumentDiffCompletedPayload } from "@/contracts";
+import type { DocumentDiffPhase } from "@/stores/documentWorkspaceStore";
 
 interface TreeRow {
   readonly revision: FileRevisionV2;
@@ -22,14 +24,23 @@ interface TreeRow {
   readonly onEffectivePath: boolean;
 }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   tree: FileRevisionTreeProjection | null;
   busy: boolean;
-}>();
+  canCompare?: boolean;
+  diffPhase?: DocumentDiffPhase;
+  diffResult?: DocumentDiffCompletedPayload | null;
+}>(), {
+  canCompare: false,
+  diffPhase: "idle",
+  diffResult: null,
+});
 const emit = defineEmits<{
   restore: [revision: FileRevisionV2];
   upgrade: [revision: FileRevisionV2];
   activate: [revision: FileRevisionV2];
+  compare: [revision: FileRevisionV2];
+  cancelCompare: [];
 }>();
 
 const ui = useUiStore();
@@ -181,6 +192,22 @@ function revisionLabel(revision: FileRevisionV2): string {
   if (isProvisional(revision)) return `p${revision.localSequence}`;
   return `r${revision.revisionOrdinal}`;
 }
+
+const diffMessage = computed(() => {
+  const result = props.diffResult;
+  if (!result) return props.diffPhase === "failed"
+    ? t("workspaceV2.fileTree.diff.failure.generic")
+    : null;
+  if (result.outcome === "identical") return t("workspaceV2.fileTree.diff.identical");
+  if (result.outcome === "changed") return t("workspaceV2.fileTree.diff.changed");
+  if (result.outcome === "changedWithDetails") {
+    return t("workspaceV2.fileTree.diff.details", {
+      added: result.addedLines ?? 0,
+      removed: result.removedLines ?? 0,
+    });
+  }
+  return t(`workspaceV2.fileTree.diff.failure.${result.failure ?? "generic"}`);
+});
 </script>
 
 <template>
@@ -200,6 +227,28 @@ function revisionLabel(revision: FileRevisionV2): string {
         {{ showAutosaves ? t("workspaceV2.fileTree.hideAutosaves") : t("workspaceV2.fileTree.showAutosaves") }}
       </NButton>
     </header>
+
+    <NAlert
+      v-if="diffPhase === 'busy'"
+      type="info"
+      :show-icon="true"
+      data-testid="diff-busy"
+    >
+      <div class="diff-busy-content">
+        <span>{{ t("workspaceV2.fileTree.diff.busy") }}</span>
+        <NButton size="tiny" data-testid="diff-cancel" @click="emit('cancelCompare')">
+          {{ t("common.cancel") }}
+        </NButton>
+      </div>
+    </NAlert>
+    <NAlert
+      v-else-if="diffMessage"
+      :type="diffPhase === 'failed' ? 'warning' : 'success'"
+      :show-icon="true"
+      data-testid="diff-result"
+    >
+      {{ diffMessage }}
+    </NAlert>
 
     <div v-if="!tree?.revisions.length" class="tree-empty">
       <GitBranch :size="23" />
@@ -260,6 +309,18 @@ function revisionLabel(revision: FileRevisionV2): string {
         </div>
         <div class="tree-actions">
           <NButton
+            v-if="canCompare && !isProvisional(row.revision) && !row.effective"
+            size="tiny"
+            quaternary
+            :loading="diffPhase === 'busy'"
+            :disabled="busy || diffPhase === 'busy'"
+            data-testid="compare-revision"
+            @click="emit('compare', row.revision)"
+            @keydown.stop
+          >
+            {{ t("workspaceV2.fileTree.diff.compare") }}
+          </NButton>
+          <NButton
             v-if="!isProvisional(row.revision) && row.hasChildren"
             size="tiny"
             quaternary
@@ -309,6 +370,8 @@ function revisionLabel(revision: FileRevisionV2): string {
   border-bottom: 1px solid var(--vt-border);
   background: var(--vt-bg-subtle);
 }
+.file-revision-tree > .n-alert { margin: 10px 12px 0; }
+.diff-busy-content { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .file-revision-tree > header > div { display: flex; min-width: 0; flex-direction: column; }
 .file-revision-tree header strong { font-weight: 580; }
 .file-revision-tree header small { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }

@@ -2,13 +2,20 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <!-- G5.1: OpenXml diff adapter. Depends on DocumentFormat.OpenXml for
-         structured DOCX/XLSX/PPTX diff. The core VibeTable.Workspace library
-         never depends on this package. -->
+    <!-- G5.1: BCL-only DOCX/XLSX/PPTX visible-text diff. The core
+         VibeTable.Workspace library does not depend on Open XML package details. -->
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\VibeTable.Workspace\VibeTable.Workspace.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="OpenXmlDiffAdapter.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="VibeTable.DocumentDiff.OpenXml.Tests" />
   </ItemGroup>
 
 </Project>

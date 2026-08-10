@@ -1,6 +1,6 @@
 # VibeTable 筛选、分组、公式与 Relation/Lookup 完整实施计划
 
-> 状态：Implementation in progress
+> 状态：Partially implemented；实现提交为 `504c90b9`（`feat(table): 完善查询、关系与公式能力`）。完成审计中“四语言/E2E/截图/GitHub 全量门禁证据”仍未收口，详见现行稳定化 ledger。
 >
 > 日期：2026-08-05
 >

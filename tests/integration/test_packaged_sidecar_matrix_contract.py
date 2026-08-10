@@ -2,11 +2,65 @@ from __future__ import annotations
 
 import ast
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from tests.integration import packaged_sidecar_matrix as matrix
+
+
+def test_sidecar_start_failure_stops_process_and_closes_pipes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = Path(os.environ["SYSTEMROOT"]) / "System32" / "where.exe"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    real_popen = subprocess.Popen
+    started: list[subprocess.Popen[str]] = []
+
+    def capture_popen(
+        args: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        stdout: int,
+        stderr: int,
+        text: bool,
+        encoding: str,
+        errors: str,
+    ) -> subprocess.Popen[str]:
+        process = real_popen(
+            args,
+            cwd=cwd,
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+            text=text,
+            encoding=encoding,
+            errors=errors,
+        )
+        started.append(process)
+        return process
+
+    monkeypatch.setattr(matrix.subprocess, "Popen", capture_popen)
+    sidecar = matrix.Sidecar(binary, data_dir)
+
+    with pytest.raises(AssertionError, match="invalid readiness line"):
+        sidecar.start()
+
+    assert len(started) == 1
+    process = started[0]
+    assert process.poll() is not None
+    assert process.stdout is not None
+    assert process.stdout.closed
+    assert process.stderr is not None
+    assert process.stderr.closed
+    assert sidecar.process is None
+    assert sidecar.address == ""
+    data_dir.rmdir()
 
 
 def test_strict_entry_builds_release_and_uses_only_published_binary() -> None:

@@ -1,11 +1,66 @@
 """架构守护测试：锁定 PocketBase-only 生产路径的依赖边界。"""
 
 import ast
-import os
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
+
+_RETIRED_PROVIDER_SCAN_PATHS = (
+    Path("backend"),
+    Path("contracts"),
+    Path("desktop/src"),
+    Path("desktop/Directory.Build.props"),
+    Path("desktop/publish-layout.json"),
+    Path("desktop/VibeTable.Desktop.sln"),
+    Path("desktop/web-grid/index.html"),
+    Path("desktop/web-grid/package.json"),
+    Path("desktop/web-grid/package-lock.json"),
+    Path("desktop/web-grid/public"),
+    Path("desktop/web-grid/src"),
+    Path("sidecar"),
+    Path("scripts"),
+    Path("sdk"),
+    Path("examples"),
+    Path("tools/recovery-tools/go.mod"),
+    Path("tools/recovery-tools/go.sum"),
+    Path(".ci"),
+    Path(".github"),
+    Path("pyproject.toml"),
+    Path("uv.lock"),
+    Path("global.json"),
+    Path(".node-version"),
+    Path(".nvmrc"),
+)
+_RETIRED_PROVIDER_TEXT_SUFFIXES = {
+    ".cs",
+    ".csproj",
+    ".go",
+    ".html",
+    ".js",
+    ".json",
+    ".mjs",
+    ".mod",
+    ".props",
+    ".py",
+    ".toml",
+    ".sum",
+    ".ts",
+    ".tsx",
+    ".vue",
+    ".xaml",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+_RETIRED_PROVIDER_IGNORED_PARTS = {
+    "__pycache__",
+    "bin",
+    "build",
+    "dist",
+    "node_modules",
+    "obj",
+}
 
 
 def _scan_imports(dir_name: str, forbidden_patterns: list[str]) -> list[str]:
@@ -27,6 +82,39 @@ def _scan_imports(dir_name: str, forbidden_patterns: list[str]) -> list[str]:
     return violations
 
 
+def _scan_retired_provider_references(root: Path, retired: str) -> list[str]:
+    """扫描明确受控的生产源码与配置，避免本地笔记和构建产物影响门禁。"""
+    violations: list[str] = []
+    for relative_path in _RETIRED_PROVIDER_SCAN_PATHS:
+        scan_path = root / relative_path
+        if scan_path.is_file():
+            candidates = (scan_path,)
+            explicit_file = True
+        elif scan_path.is_dir():
+            candidates = scan_path.rglob("*")
+            explicit_file = False
+        else:
+            continue
+        for path in candidates:
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root)
+            if any(part in _RETIRED_PROVIDER_IGNORED_PARTS for part in relative.parts):
+                continue
+            if retired in path.name.casefold():
+                violations.append(relative.as_posix())
+                continue
+            if not explicit_file and path.suffix.casefold() not in _RETIRED_PROVIDER_TEXT_SUFFIXES:
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if retired in content.casefold():
+                violations.append(relative.as_posix())
+    return sorted(set(violations))
+
+
 class TestLayerDependencies:
     """现行 Python 分层与工具链约束。"""
 
@@ -37,6 +125,28 @@ class TestLayerDependencies:
             [r"ui(\.|$)", r"PySide6(\.|$)", r"qasync(\.|$)"],
         )
         assert not violations, "backend 违规依赖 UI/Qt:\n" + "\n".join(violations)
+
+    def test_application_does_not_import_outer_layers(self):
+        application = ROOT / "backend" / "application"
+        forbidden_prefixes = ("backend.adapters", "backend.infrastructure")
+        violations: list[str] = []
+
+        for py_file in application.rglob("*.py"):
+            tree = ast.parse(py_file.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                modules: list[str] = []
+                if isinstance(node, ast.Import):
+                    modules.extend(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                    modules.append(node.module)
+                for module in modules:
+                    if module.startswith(forbidden_prefixes):
+                        relative = py_file.relative_to(ROOT).as_posix()
+                        violations.append(f"{relative}:{node.lineno}: {module}")
+
+        assert not violations, (
+            "application imports outer adapter or infrastructure layers:\n" + "\n".join(violations)
+        )
 
     def test_nvmrc_pins_node_24(self):
         nvmrc = ROOT / ".nvmrc"
@@ -175,88 +285,89 @@ class TestFLegacyRemoval:
 
     def test_removed_provider_name_is_confined_to_research_archive(self):
         retired = "".join(["di", "rectus"])
-        allowed_roots = (
-            ROOT / "docs" / "research",
-            ROOT / "docs" / "adr",
-        )
-        ignored_parts = {
-            ".git",
-            ".codex-go-cache",
-            ".idea",
-            ".pytest_cache",
-            ".superpowers",
-            ".tmp-shot",
-            ".tmp",
-            ".tools",
-            ".venv",
-            ".worktrees",
-            ".zcode",
-            "bin",
-            "build",
-            "coverage",
-            "dist",
-            "htmlcov",
-            "node_modules",
-            "obj",
-            "__pycache__",
-        }
-        text_suffixes = {
-            ".cs",
-            ".go",
-            ".html",
-            ".js",
-            ".json",
-            ".md",
-            ".mjs",
-            ".py",
-            ".toml",
-            ".ts",
-            ".tsx",
-            ".vue",
-            ".xaml",
-            ".xml",
-            ".yaml",
-            ".yml",
-        }
-
-        def is_ignored(part: str) -> bool:
-            return part in ignored_parts or part.startswith(".e2e-") or part.startswith(".codex-")
-
-        allowed_resolved = tuple(root.resolve() for root in allowed_roots)
-        violations: list[str] = []
-        for directory, child_dirs, file_names in os.walk(
-            ROOT,
-            topdown=True,
-            onerror=lambda _error: None,
-        ):
-            directory_path = Path(directory)
-            resolved_directory = directory_path.resolve()
-            if any(
-                resolved_directory == allowed or allowed in resolved_directory.parents
-                for allowed in allowed_resolved
-            ):
-                child_dirs.clear()
-                continue
-            child_dirs[:] = [child for child in child_dirs if not is_ignored(child)]
-            for file_name in file_names:
-                if is_ignored(file_name):
-                    continue
-                path = directory_path / file_name
-                if retired in path.name.casefold():
-                    violations.append(str(path.relative_to(ROOT)))
-                    continue
-                if path.suffix.casefold() not in text_suffixes and path.name not in {
-                    ".gitignore",
-                    ".nvmrc",
-                }:
-                    continue
-                try:
-                    content = path.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
-                    continue
-                if retired in content.casefold():
-                    violations.append(str(path.relative_to(ROOT)))
+        violations = _scan_retired_provider_references(ROOT, retired)
         assert not violations, (
-            "removed provider references must live only in docs/research or docs/adr:\n"
-            + "\n".join(sorted(set(violations)))
+            "removed provider references must not appear in controlled runtime source/config roots:\n"
+            + "\n".join(violations)
         )
+
+    def test_retired_provider_scan_ignores_uncontrolled_local_notes(self, tmp_path: Path):
+        retired = "".join(["di", "rectus"])
+        (tmp_path / "backend").mkdir()
+        notes = tmp_path / "local-notes"
+        notes.mkdir()
+        (notes / "investigation.md").write_text(retired, encoding="utf-8")
+
+        assert _scan_retired_provider_references(tmp_path, retired) == []
+
+    def test_retired_provider_scan_checks_controlled_source_roots(self, tmp_path: Path):
+        retired = "".join(["di", "rectus"])
+        backend = tmp_path / "backend"
+        backend.mkdir()
+        (backend / "adapter.py").write_text(retired, encoding="utf-8")
+
+        assert _scan_retired_provider_references(tmp_path, retired) == ["backend/adapter.py"]
+
+    def test_retired_provider_scan_checks_root_manifests_and_web_entry(self, tmp_path: Path):
+        retired = "".join(["di", "rectus"])
+        (tmp_path / "pyproject.toml").write_text(retired, encoding="utf-8")
+        desktop = tmp_path / "desktop"
+        desktop.mkdir()
+        (desktop / "Directory.Build.props").write_text(retired, encoding="utf-8")
+        product = desktop / "src" / "Product"
+        product.mkdir(parents=True)
+        (product / "Product.csproj").write_text(retired, encoding="utf-8")
+        web = desktop / "web-grid"
+        web.mkdir(parents=True)
+        (web / "index.html").write_text(retired, encoding="utf-8")
+
+        assert _scan_retired_provider_references(tmp_path, retired) == [
+            "desktop/Directory.Build.props",
+            "desktop/src/Product/Product.csproj",
+            "desktop/web-grid/index.html",
+            "pyproject.toml",
+        ]
+
+    def test_retired_provider_scan_checks_dependency_locks_and_plugin_manifests(
+        self, tmp_path: Path
+    ):
+        retired = "".join(["di", "rectus"])
+        (tmp_path / "uv.lock").write_text(retired, encoding="utf-8")
+        sidecar = tmp_path / "sidecar"
+        sidecar.mkdir()
+        (sidecar / "go.mod").write_text(retired, encoding="utf-8")
+        (sidecar / "go.sum").write_text(retired, encoding="utf-8")
+        desktop = tmp_path / "desktop"
+        desktop.mkdir()
+        (desktop / "publish-layout.json").write_text(retired, encoding="utf-8")
+        plugin = tmp_path / "sdk" / "plugin"
+        plugin.mkdir(parents=True)
+        (plugin / "package.json").write_text(retired, encoding="utf-8")
+        recovery_tools = tmp_path / "tools" / "recovery-tools"
+        recovery_tools.mkdir(parents=True)
+        (recovery_tools / "go.mod").write_text(retired, encoding="utf-8")
+        (recovery_tools / "go.sum").write_text(retired, encoding="utf-8")
+
+        assert _scan_retired_provider_references(tmp_path, retired) == [
+            "desktop/publish-layout.json",
+            "sdk/plugin/package.json",
+            "sidecar/go.mod",
+            "sidecar/go.sum",
+            "tools/recovery-tools/go.mod",
+            "tools/recovery-tools/go.sum",
+            "uv.lock",
+        ]
+
+    def test_retired_provider_scan_ignores_generated_outputs(self, tmp_path: Path):
+        retired = "".join(["di", "rectus"])
+        for relative in (
+            Path("backend/build/generated.json"),
+            Path("desktop/src/Product/bin/generated.json"),
+            Path("desktop/src/Product/obj/generated.props"),
+            Path("sdk/plugin/node_modules/generated.js"),
+        ):
+            path = tmp_path / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(retired, encoding="utf-8")
+
+        assert _scan_retired_provider_references(tmp_path, retired) == []

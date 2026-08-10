@@ -17,8 +17,8 @@ from backend.__main__ import (
 )
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
+from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.adapters.pocketbase.transport import PocketBaseConfig
-from backend.application.product_data_service import PocketBaseProductDataService
 from backend.application.task_service import build_task_service
 from backend.contracts.data_io import PreviewImportParams
 from backend.contracts.task import CreateTaskParams, TaskIdParams
@@ -29,6 +29,12 @@ RETIRED_PROVIDER = "".join(["di", "rectus"])
 
 class _Transport:
     async def request(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("composition must not perform network I/O")
+
+    async def request_multipart(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("composition must not perform network I/O")
+
+    async def download_to_file(self, *_args: Any, **_kwargs: Any) -> int:
         raise AssertionError("composition must not perform network I/O")
 
 
@@ -206,11 +212,12 @@ async def test_product_import_task_round_trips_typed_json_through_real_task_runt
             },
         )
     )
+    status = await tasks.status_task(TaskIdParams(task_id=queued.task_id))
     for _ in range(100):
-        status = await tasks.status_task(TaskIdParams(task_id=queued.task_id))
         if status.state not in {"queued", "running"}:
             break
         await asyncio.sleep(0)
+        status = await tasks.status_task(TaskIdParams(task_id=queued.task_id))
     assert status.state == "succeeded", status.error
     assert status.model_dump(by_alias=True, mode="json")["result"] == {
         "collection": "orders",
@@ -246,7 +253,7 @@ async def test_build_server_dispatches_import_task_without_internal_error(
         transport=transport,  # type: ignore[arg-type]
         session_secret=secret,
     )
-    product_service = PocketBaseProductDataService(
+    product_service = PocketBaseProductRpc(
         client=client,
         transport=transport,  # type: ignore[arg-type]
         session_secret=secret,
@@ -330,6 +337,7 @@ async def test_build_server_dispatches_import_task_without_internal_error(
         assert created is not None
         assert "error" not in created
         task_id = created["result"]["taskId"]
+        status: dict[str, Any] | None = None
         for request_id in range(4, 104):
             status = await dispatcher.dispatch(
                 {
@@ -344,6 +352,7 @@ async def test_build_server_dispatches_import_task_without_internal_error(
             if status["result"]["state"] not in {"queued", "running"}:
                 break
             await asyncio.sleep(0)
+        assert status is not None
         assert status["result"]["state"] == "succeeded"
         assert status["result"]["result"]["createdCount"] == 1
         assert realtime is None

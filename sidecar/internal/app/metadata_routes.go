@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -30,6 +31,7 @@ type metadataDeleteBody struct {
 func registerMetadataRoutes(
 	r *router.Router[*core.RequestEvent],
 	service *metadata.Service,
+	gates ...businessWriteGate,
 ) {
 	r.GET("/api/vibetable/v1/metadata/{namespace}", func(
 		request *core.RequestEvent,
@@ -108,14 +110,40 @@ func registerMetadataRoutes(
 		); err != nil {
 			return writeMetadataError(request, err)
 		}
-		receipt, err := service.CommitDashboard(
-			request.Request.Context(), body,
+		receipt, err := commitDashboardWithGate(
+			request.Request.Context(),
+			body,
+			gates,
+			service.CommitDashboard,
 		)
 		if err != nil {
 			return writeMetadataError(request, err)
 		}
 		return request.JSON(http.StatusOK, receipt)
 	})
+}
+
+func commitDashboardWithGate(
+	ctx context.Context,
+	request metadata.DashboardCommitRequest,
+	gates []businessWriteGate,
+	apply func(context.Context, metadata.DashboardCommitRequest) (
+		metadata.DashboardCommitReceipt, error,
+	),
+) (metadata.DashboardCommitReceipt, error) {
+	var receipt metadata.DashboardCommitReceipt
+	err := runBusinessWrite(
+		ctx,
+		gates,
+		"metadata.dashboard.commit",
+		request.IdempotencyKey,
+		func(writeContext context.Context) error {
+			var applyErr error
+			receipt, applyErr = apply(writeContext, request)
+			return applyErr
+		},
+	)
+	return receipt, err
 }
 
 func decodeMetadataBody(body io.Reader, target any) error {

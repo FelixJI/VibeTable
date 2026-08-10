@@ -26,6 +26,7 @@ from backend.contracts.workspace_v2 import (
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "contracts" / "v2" / "fixtures"
+NEGATIVE_FIXTURES = ROOT / "contracts" / "v2" / "negative-fixtures.json"
 
 MODEL_BY_FIXTURE = {
     "workspace-manifest.json": WorkspaceManifest,
@@ -41,6 +42,8 @@ MODEL_BY_FIXTURE = {
     "workspace-event.json": WorkspaceEvent,
     "rpc-catalog.json": RpcContractCatalog,
 }
+
+NEGATIVE_CASES = json.loads(NEGATIVE_FIXTURES.read_text(encoding="utf-8"))["cases"]
 
 
 @pytest.mark.parametrize(("fixture_name", "model"), MODEL_BY_FIXTURE.items())
@@ -62,6 +65,44 @@ def test_v2_models_reject_unknown_and_missing_fields(
 
     payload = json.loads((FIXTURES / fixture_name).read_text(encoding="utf-8"))
     payload.pop(next(iter(payload)))
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
+
+
+@pytest.mark.parametrize("case", NEGATIVE_CASES, ids=lambda case: case["name"])
+def test_v2_models_reject_shared_negative_fixtures(case: dict[str, object]) -> None:
+    fixture_name = case["fixture"]
+    assert isinstance(fixture_name, str)
+    model = MODEL_BY_FIXTURE[fixture_name]
+    raw = (FIXTURES / fixture_name).read_text(encoding="utf-8")
+    operation = case["operation"]
+
+    if operation == "appendRaw":
+        suffix = case["value"]
+        assert isinstance(suffix, str)
+        with pytest.raises(ValidationError):
+            model.model_validate_json(raw + suffix)
+        return
+
+    payload = json.loads(raw)
+    path = case["path"]
+    assert isinstance(payload, dict)
+    assert isinstance(path, list)
+    assert path
+    cursor: object = payload
+    for segment in path[:-1]:
+        assert isinstance(segment, str)
+        assert isinstance(cursor, dict)
+        cursor = cursor[segment]
+    leaf = path[-1]
+    assert isinstance(leaf, str)
+    assert isinstance(cursor, dict)
+    if operation == "remove":
+        cursor.pop(leaf)
+    else:
+        assert operation in {"add", "replace"}
+        cursor[leaf] = case["value"]
+
     with pytest.raises(ValidationError):
         model.model_validate(payload)
 

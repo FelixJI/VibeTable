@@ -178,27 +178,33 @@ class Sidecar:
             encoding="utf-8",
             errors="replace",
         )
-        process = self.process
-        assert process.stdout is not None
-        stdout = process.stdout
-        lines: queue.Queue[str] = queue.Queue(maxsize=1)
-        threading.Thread(
-            target=lambda: lines.put(stdout.readline()),
-            daemon=True,
-        ).start()
         try:
-            line = lines.get(timeout=30)
-        except queue.Empty as exc:
-            raise AssertionError(self._diagnostics("readiness timed out")) from exc
-        try:
-            ready = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise AssertionError(self._diagnostics(f"invalid readiness line: {line!r}")) from exc
-        assert ready["contract"] == "vibetable.sidecar.ready.v1"
-        assert ready["event"] == "sidecar.ready"
-        self.address = ready["address"]
-        health = self.request("GET", "/api/vibetable/v1/health").json()
-        assert health["status"] == "ok"
+            process = self.process
+            assert process.stdout is not None
+            stdout = process.stdout
+            lines: queue.Queue[str] = queue.Queue(maxsize=1)
+            threading.Thread(
+                target=lambda: lines.put(stdout.readline()),
+                daemon=True,
+            ).start()
+            try:
+                line = lines.get(timeout=30)
+            except queue.Empty as exc:
+                raise AssertionError(self._diagnostics("readiness timed out")) from exc
+            try:
+                ready = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise AssertionError(
+                    self._diagnostics(f"invalid readiness line: {line!r}")
+                ) from exc
+            assert ready["contract"] == "vibetable.sidecar.ready.v1"
+            assert ready["event"] == "sidecar.ready"
+            self.address = ready["address"]
+            health = self.request("GET", "/api/vibetable/v1/health").json()
+            assert health["status"] == "ok"
+        except BaseException:
+            self.stop()
+            raise
 
     def _diagnostics(self, message: str) -> str:
         process = self.process
@@ -280,14 +286,17 @@ class Sidecar:
         process = self.process
         if process is None:
             return
-        if process.poll() is None and self.address:
-            with contextlib.suppress(Exception):
-                self.request(
-                    "POST",
-                    "/api/vibetable/v1/shutdown",
-                    expected=202,
-                    timeout=5,
-                )
+        if process.poll() is None:
+            if self.address:
+                with contextlib.suppress(Exception):
+                    self.request(
+                        "POST",
+                        "/api/vibetable/v1/shutdown",
+                        expected=202,
+                        timeout=5,
+                    )
+            else:
+                process.kill()
         try:
             process.wait(timeout=15)
         except subprocess.TimeoutExpired:

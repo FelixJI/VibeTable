@@ -1,6 +1,6 @@
 # VibeTable 字段设置完整实施计划
 
-> 状态：Ready for implementation
+> 状态：Partially implemented；实现起点为 `292ce09a`（`feat(fields): implement schema v2 settings overhaul`）。最终验收清单仍保留未完成项，需以现行稳定化 ledger 和产品证据收口。
 > 日期：2026-07-28
 > 技术基线：PocketBase `v0.39.9`、Go `1.25`、Node `24`、Vue `3`、Python Broker、Windows Desktop Host
 > 语义基线：[PocketBase v0.39.9 字段设置、默认值与桌面多维表格暴露方案](../pocketbase-v0.39.9-vibetable-field-settings.md)

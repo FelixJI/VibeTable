@@ -1,5 +1,7 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
+import type { DocumentDiffCompletedPayload } from "@/contracts";
+import { registerWorkspaceEpochReset } from "@/stores/workspaceSessionStore";
 
 export type DocumentAuthority = "workspace";
 export type DocumentAvailability =
@@ -16,7 +18,8 @@ export type DocumentCapability =
   | "history"
   | "relink"
   | "dragOut"
-  | "unlink";
+  | "unlink"
+  | "diff";
 
 export interface DocumentEntry {
   /** Stable canonical UUID used only by the workspace FileHistory authority. */
@@ -35,6 +38,7 @@ export interface DocumentEntry {
 }
 
 export type DocumentWorkspacePhase = "idle" | "loading" | "ready" | "failed";
+export type DocumentDiffPhase = "idle" | "busy" | "ready" | "failed";
 export type InspectorTab = "preview" | "history";
 
 export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => {
@@ -48,6 +52,36 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   const lastErrorCode = ref<string | null>(null);
   const query = ref("");
   const authorityFilter = ref<DocumentAuthority>("workspace");
+  const diffPhase = ref<DocumentDiffPhase>("idle");
+  const diffResult = ref<DocumentDiffCompletedPayload | null>(null);
+  const diffTarget = ref<{
+    readonly entryHandle: string;
+    readonly operationId: string;
+    readonly historicalRevisionId: string;
+    readonly effectiveRevisionId: string;
+  } | null>(null);
+  const diffError = ref<string | null>(null);
+  let diffGeneration = 0;
+
+  function resetDiff(): void {
+    diffGeneration += 1;
+    diffPhase.value = "idle";
+    diffResult.value = null;
+    diffTarget.value = null;
+    diffError.value = null;
+  }
+
+  registerWorkspaceEpochReset("document-workspace", () => {
+    phase.value = "idle";
+    entries.value = [];
+    query.value = "";
+    lastError.value = null;
+    lastErrorCode.value = null;
+    selectedHandles.value = [];
+    primaryHandle.value = null;
+    selectionAnchor.value = null;
+    resetDiff();
+  });
 
   const visibleEntries = computed(() => {
     const needle = query.value.trim().toLocaleLowerCase();
@@ -63,12 +97,20 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   );
 
   function beginLoad(): void {
+    resetDiff();
     phase.value = "loading";
     lastError.value = null;
     lastErrorCode.value = null;
   }
 
   function setEntries(next: readonly DocumentEntry[]): void {
+    const target = diffTarget.value;
+    if (target) {
+      const current = next.find((entry) => entry.entryHandle === target.entryHandle);
+      if (!current || current.effectiveRevisionId !== target.effectiveRevisionId) {
+        resetDiff();
+      }
+    }
     entries.value = next;
     phase.value = "ready";
     lastError.value = null;
@@ -136,6 +178,53 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     inspectorTab.value = tab;
   }
 
+  function beginDiff(
+    entryHandle: string,
+    historicalRevisionId: string,
+    effectiveRevisionId: string,
+    operationId: string = crypto.randomUUID(),
+  ): number {
+    diffGeneration += 1;
+    diffPhase.value = "busy";
+    diffResult.value = null;
+    diffError.value = null;
+    diffTarget.value = {
+      entryHandle,
+      operationId,
+      historicalRevisionId,
+      effectiveRevisionId,
+    };
+    return diffGeneration;
+  }
+
+  function completeDiff(
+    generation: number,
+    result: DocumentDiffCompletedPayload,
+  ): boolean {
+    const target = diffTarget.value;
+    if (generation !== diffGeneration || !target ||
+      target.entryHandle !== result.entryHandle ||
+      target.historicalRevisionId !== result.historicalRevisionId ||
+      target.effectiveRevisionId !== result.effectiveRevisionId) {
+      return false;
+    }
+    diffResult.value = result;
+    diffPhase.value = result.outcome === "failure" ? "failed" : "ready";
+    diffError.value = result.failure;
+    return true;
+  }
+
+  function failDiff(generation: number, message: string): boolean {
+    if (generation !== diffGeneration || diffPhase.value !== "busy") return false;
+    diffPhase.value = "failed";
+    diffError.value = message;
+    return true;
+  }
+
+  function cancelDiff(): void {
+    resetDiff();
+  }
+
   function clear(): void {
     phase.value = "idle";
     entries.value = [];
@@ -143,6 +232,7 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     lastError.value = null;
     lastErrorCode.value = null;
     clearSelection();
+    resetDiff();
   }
 
   return {
@@ -156,6 +246,10 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     lastErrorCode,
     query,
     authorityFilter,
+    diffPhase,
+    diffResult,
+    diffTarget,
+    diffError,
     visibleEntries,
     beginLoad,
     setEntries,
@@ -166,6 +260,10 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     selectAllVisible,
     clearSelection,
     showInspector,
+    beginDiff,
+    completeDiff,
+    failDiff,
+    cancelDiff,
     clear,
   };
 });

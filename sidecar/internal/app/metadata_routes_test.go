@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -8,6 +9,44 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/metadata"
 )
+
+func TestDashboardCommitUsesBusinessWriteGateAndReturnsTheAppliedReceipt(t *testing.T) {
+	body := metadata.DashboardCommitRequest{IdempotencyKey: "dashboard-save-1"}
+	want := metadata.DashboardCommitReceipt{
+		ReceiptTrace: metadata.ReceiptTrace{Status: metadata.StatusApplied},
+	}
+	applyCalled := false
+	gate := func(
+		ctx context.Context,
+		kind string,
+		identity string,
+		apply func(context.Context) error,
+	) error {
+		if kind != "metadata.dashboard.commit" || identity != body.IdempotencyKey {
+			t.Fatalf("gate identity = %q %q", kind, identity)
+		}
+		return apply(ctx)
+	}
+
+	receipt, err := commitDashboardWithGate(
+		context.Background(),
+		body,
+		[]businessWriteGate{gate},
+		func(context.Context, metadata.DashboardCommitRequest) (
+			metadata.DashboardCommitReceipt, error,
+		) {
+			applyCalled = true
+			return want, nil
+		},
+	)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applyCalled || receipt.Status != metadata.StatusApplied {
+		t.Fatalf("receipt = %#v, applyCalled = %v", receipt, applyCalled)
+	}
+}
 
 func TestDecodeMetadataBodyIsStrictAndBounded(t *testing.T) {
 	var body metadataUpsertBody

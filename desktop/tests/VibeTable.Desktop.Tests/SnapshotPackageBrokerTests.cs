@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.AccessControl;
 using System.Text.Json;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
@@ -9,6 +10,90 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class SnapshotPackageBrokerTests
 {
+    [TestMethod]
+    public void TransferDirectoryInheritsTheApplicationOwnedRootAcl()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-transfer-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string transfer = SnapshotPackageBroker.CreateTransferDirectory(root);
+
+            Assert.IsTrue(Directory.Exists(transfer));
+            Assert.IsFalse(
+                new DirectoryInfo(transfer).GetAccessControl().AreAccessRulesProtected);
+            Assert.IsTrue(Directory.EnumerateFiles(transfer).Any());
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void ImportedWorkspaceProbesTheExistingParentBeforeAtomicPublish()
+    {
+        string managedRoot = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-import-target-" + Guid.NewGuid().ToString("N"));
+        Guid workspaceId = Guid.NewGuid();
+        string? observedRoot = null;
+        WorkspaceProviderPolicy policy = WorkspaceProviderPolicy.CreateForTests(
+            new Dictionary<WorkspaceStorageKind, bool>
+            {
+                [WorkspaceStorageKind.Fixed] = true,
+            },
+            (root, _, _) =>
+            {
+                observedRoot = root;
+                return new WorkspaceStorageObservation(
+                    WorkspaceStorageKind.Fixed,
+                    WorkspaceCoordinationStrength.Strong,
+                    1024,
+                    false,
+                    DateTimeOffset.UtcNow);
+            });
+        try
+        {
+            _ = SnapshotPackageBroker.ProbeStagingTarget(
+                policy,
+                managedRoot,
+                workspaceId);
+
+            string expectedStaging = Path.Combine(
+                Path.GetFullPath(managedRoot),
+                ".creating-" + workspaceId.ToString("D"));
+            Assert.AreEqual(
+                Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar),
+                observedRoot?.TrimEnd(Path.DirectorySeparatorChar));
+            Assert.IsFalse(Directory.Exists(expectedStaging));
+            string finalRoot = Path.Combine(
+                managedRoot,
+                workspaceId.ToString("D"));
+            Assert.IsFalse(Directory.Exists(finalRoot));
+
+            _ = WorkspaceLayout.Create(
+                expectedStaging,
+                "Imported",
+                WorkspaceStorageMode.Direct,
+                WorkspaceEncryptionMode.Convenient,
+                workspaceId: workspaceId);
+            Directory.Move(expectedStaging, finalRoot);
+
+            Assert.IsFalse(Directory.Exists(expectedStaging));
+            Assert.AreEqual(
+                workspaceId,
+                WorkspaceLayout.ReadManifest(finalRoot).WorkspaceId);
+        }
+        finally
+        {
+            if (Directory.Exists(managedRoot))
+                Directory.Delete(managedRoot, recursive: true);
+        }
+    }
+
     [TestMethod]
     public void ExactObjectValidationRejectsMissingAndAdditionalFields()
     {

@@ -69,4 +69,38 @@ public sealed class WorkspaceStorageProbeTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [TestMethod]
+    public void ProbeReturnsOnlyAfterItsArtifactsAreInvisibleToWorkspaceCreation()
+    {
+        string parent = Path.Combine(
+            Path.GetTempPath(),
+            "VibeTable-StorageProbeTests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(parent);
+        try
+        {
+            for (int index = 0; index < 32; index++)
+            {
+                string root = Path.Combine(parent, $"workspace-{index:D2}");
+                Directory.CreateDirectory(root);
+
+                _ = new WorkspaceStorageProbe().Probe(root);
+
+                Assert.IsFalse(Directory.EnumerateFileSystemEntries(root).Any());
+                WorkspaceLayoutResult layout = WorkspaceLayout.Create(
+                    root,
+                    $"Probe {index:D2}",
+                    WorkspaceStorageMode.Direct,
+                    WorkspaceEncryptionMode.Convenient);
+                Assert.AreEqual(Path.GetFullPath(root), layout.SelectedRoot);
+                Directory.Delete(root, recursive: true);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(parent))
+                Directory.Delete(parent, recursive: true);
+        }
+    }
 }

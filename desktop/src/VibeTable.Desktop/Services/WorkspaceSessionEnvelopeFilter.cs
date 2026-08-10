@@ -16,8 +16,20 @@ public interface IWorkspaceRequestDrainHook
 /// admitted for one epoch. Drain stops admission, cancels all leases, and
 /// waits until each lease is disposed before Sidecar high-watermark drain.
 /// </summary>
+public interface IWorkspaceHostEpochLeaseSource
+{
+    bool TryCaptureHost(
+        Guid workspaceId,
+        ulong sessionEpoch,
+        Guid operationId,
+        out WorkspaceRequestEpochLease? lease);
+
+    bool IsCurrent(WorkspaceRequestEpochLease? lease);
+}
+
 public sealed class WorkspaceSessionEnvelopeFilter :
     IWorkspaceRequestDrainHook,
+    IWorkspaceHostEpochLeaseSource,
     IDisposable
 {
     private const ulong SequenceReplayWindow = 1_048_576;
@@ -136,6 +148,56 @@ public sealed class WorkspaceSessionEnvelopeFilter :
             _acceptedSequences.Add(sequence);
             return sequence;
         }
+    }
+
+    public bool TryCaptureHost(
+        Guid workspaceId,
+        ulong sessionEpoch,
+        Guid operationId,
+        out WorkspaceRequestEpochLease? lease)
+    {
+        lease = null;
+        if (workspaceId == Guid.Empty || sessionEpoch == 0 ||
+            operationId == Guid.Empty)
+            return false;
+        EpochState? retired;
+        bool accepted = false;
+        lock (_gate)
+        {
+            if (_disposed)
+                return false;
+            WorkspaceSessionV2 current = _sessions.Current;
+            retired = SynchronizeLocked(current);
+            if (_epoch.Accepting &&
+                _epoch.WorkspaceId == workspaceId &&
+                _epoch.SessionEpoch == sessionEpoch &&
+                current.State is (
+                    WorkspaceSessionState.OpenedReadOnly or
+                    WorkspaceSessionState.OpenedWritable or
+                    WorkspaceSessionState.OpenedProvisional) &&
+                current.Phase == WorkspaceSessionPhase.Idle)
+            {
+                ulong sequence = checked(_lastAcceptedSequence + 1);
+                _lastAcceptedSequence = sequence;
+                _acceptedSequences.Add(sequence);
+                var scope = new WorkspaceWireScope
+                {
+                    Scope = "workspace",
+                    WorkspaceId = workspaceId,
+                    SessionEpoch = sessionEpoch,
+                    OperationId = operationId,
+                    Sequence = sequence,
+                };
+                _epoch.AddLease();
+                lease = new WorkspaceRequestEpochLease(
+                    scope,
+                    _epoch.CancellationToken,
+                    _epoch.CompleteLease);
+                accepted = true;
+            }
+        }
+        Retire(retired);
+        return accepted;
     }
 
     public bool IsCurrent(WorkspaceRequestEpochLease? lease)

@@ -195,6 +195,35 @@ def test_stage_environment_uses_an_invocation_scoped_temp_root() -> None:
     assert environment[next_gate.QA_TEMP_PARENT_ENV] == str(expected_parent)
 
 
+def test_release_smoke_requires_webview2_and_records_required_evidence(tmp_path: Path) -> None:
+    environment = next_gate._release_stage_environment("smoke", {}, tmp_path / "candidate.zip")
+
+    assert environment["VIBETABLE_REQUIRE_WEBVIEW2"] == "1"
+    assert (
+        next_gate.webview2_evidence(
+            "smoke",
+            environment,
+            0,
+            "VIBETABLE_WEBVIEW2_EVIDENCE=passed\n1 passed",
+            "",
+        )
+        == "required-passed"
+    )
+    assert (
+        next_gate.webview2_evidence("smoke", environment, 0, "1 passed", "") == "required-missing"
+    )
+    assert (
+        next_gate.webview2_evidence("smoke", environment, 0, "1 skipped: unavailable", "")
+        == "required-skipped"
+    )
+
+
+def test_smoke_stage_disables_pytest_capture_so_the_evidence_marker_is_observable() -> None:
+    command, _cwd = next_gate.stage_command("smoke")
+
+    assert "-s" in command
+
+
 def test_nested_gate_temp_root_is_a_sibling_not_a_recursive_child(
     monkeypatch,
     tmp_path: Path,
@@ -304,7 +333,7 @@ def test_race_stage_uses_three_isolated_package_workers_by_default() -> None:
 def test_release_gate_enables_required_windows_credential_manager_tests() -> None:
     adapter = (next_gate.REPO_ROOT / "scripts/automation_project.py").read_text(encoding="utf-8")
     workflow = (next_gate.REPO_ROOT / ".github/workflows/cd.yml").read_text(encoding="utf-8")
-    assert 'env={"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"}' in adapter
+    assert '_node_environment({"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"})' in adapter
     assert "environment: release" in workflow
     assert "contents: write" in workflow
 
@@ -935,7 +964,21 @@ def test_full_ci_report_is_release_eligible_only_when_identity_stays_stable(
     monkeypatch.setattr(
         next_gate,
         "run_ci",
-        lambda package_root=None, package_archive=None: (0, []),
+        lambda package_root=None, package_archive=None: (
+            0,
+            [
+                next_gate.StageResult(
+                    "smoke",
+                    ["pytest"],
+                    0,
+                    0.01,
+                    "1 passed",
+                    "",
+                    str(tmp_path),
+                    "required-passed",
+                )
+            ],
+        ),
     )
     report = tmp_path / "ci.json"
 
@@ -1026,7 +1069,21 @@ def test_full_ci_report_is_bound_to_stable_release_candidate(
     monkeypatch.setattr(
         next_gate,
         "run_ci",
-        lambda package_root=None, package_archive=None: (0, []),
+        lambda package_root=None, package_archive=None: (
+            0,
+            [
+                next_gate.StageResult(
+                    "smoke",
+                    ["pytest"],
+                    0,
+                    0.01,
+                    "1 passed",
+                    "",
+                    str(tmp_path),
+                    "required-passed",
+                )
+            ],
+        ),
     )
     report = tmp_path / "ci.json"
 
@@ -1036,6 +1093,36 @@ def test_full_ci_report_is_bound_to_stable_release_candidate(
     assert payload["releaseEligible"] is True
     assert payload["releaseCandidate"]["archive"]["sha256"]
     assert payload["releaseCandidate"]["packageTreeSha256"]
+
+
+def test_full_ci_report_rejects_missing_required_webview2_evidence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "artifact_hashes",
+        lambda _deps: {"sidecar": "d" * 64},
+    )
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "release_source_hash",
+        lambda _deps: "s" * 64,
+    )
+    monkeypatch.setattr(
+        next_gate,
+        "run_ci",
+        lambda package_root=None, package_archive=None: (
+            0,
+            [next_gate.StageResult("smoke", ["pytest"], 0, 0.01, "1 skipped", "", "repo")],
+        ),
+    )
+    report = tmp_path / "ci.json"
+
+    assert next_gate.main(["--ci", *_candidate_args(tmp_path), "--json-report", str(report)]) == 1
+    assert json.loads(report.read_text(encoding="utf-8"))["releaseEligible"] is False
 
 
 def test_lane_report_is_candidate_bound_but_never_release_eligible(
