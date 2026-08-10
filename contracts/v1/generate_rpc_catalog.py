@@ -20,8 +20,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 import backend.__main__ as composition  # noqa: E402
-from backend.application.product_data_service import (  # noqa: E402
-    PRODUCT_PARAM_MODELS,
+from backend.contracts.product_rpc import (  # noqa: E402
+    PRODUCT_RPC_REGISTRY as PRODUCT_PARAM_MODELS,
     ProductParams,
 )
 from backend.contracts.data_io import (  # noqa: E402

@@ -2942,7 +2942,7 @@ public partial class MainWindow : Window
                 CheckFileExists = true,
                 Multiselect = false,
                 Title = "Import table data",
-                Filter = "Supported data|*.xlsx;*.xls;*.csv|Excel workbook|*.xlsx;*.xls|CSV file|*.csv",
+                Filter = "Supported data|*.xlsx;*.xlsm;*.csv|Excel workbook|*.xlsx;*.xlsm|CSV file|*.csv",
             };
             if (dialog.ShowDialog(this) != true)
             {

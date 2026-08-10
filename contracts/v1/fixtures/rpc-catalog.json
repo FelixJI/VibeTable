@@ -1040,7 +1040,7 @@
             "items": {
               "$ref": "#/$defs/ImportPlanRow"
             },
-            "maxItems": 100000,
+            "maxItems": 1000,
             "type": "array"
           },
           "unmatchedColumns": {

@@ -1701,6 +1701,8 @@ export interface SessionPathGrant {
 export interface ImportPlan {
   readonly collection: string;
   readonly schemaRevision: string;
+  readonly capabilityHash: string;
+  readonly sourceHash: string;
   readonly summary: {
     readonly totalRows: number;
     readonly validRows: number;
@@ -1709,7 +1711,36 @@ export interface ImportPlan {
     readonly errorCount: number;
     readonly warningCount: number;
   };
+  readonly rows: readonly ImportPlanRow[];
+  readonly unmatchedColumns: readonly string[];
+  readonly diagnostics: readonly ImportCellDiagnostic[];
   readonly token: { readonly token: string; readonly expiresAt: number; readonly consumed: boolean };
+}
+
+export interface ImportCellDiagnostic {
+  readonly sheet: string;
+  readonly row: number;
+  readonly column: number;
+  readonly severity: "error" | "warning";
+  readonly code: string;
+  readonly message: string;
+  readonly originalValue: string;
+}
+
+export interface ImportRelationResolution {
+  readonly targetField: string;
+  readonly relationId: string;
+  readonly matchField: string;
+  readonly sourceValue: unknown;
+  readonly state: "matched";
+  readonly matchedPrimaryKey: unknown;
+}
+
+export interface ImportPlanRow {
+  readonly sourceRow: number;
+  readonly values: Readonly<Record<string, unknown>>;
+  readonly diagnostics: readonly ImportCellDiagnostic[];
+  readonly relationResolutions: readonly ImportRelationResolution[];
 }
 
 export interface ApplyImportResult {

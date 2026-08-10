@@ -386,7 +386,6 @@ describe("WorkspaceView", () => {
   it("runs a validated import and refreshes the active table", async () => {
     const { bridge, posted, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const workspace = useWorkspaceStore();
     const table = useTableStore();
     workspace.setOpened([{ collection: "orders" }]);
@@ -416,12 +415,30 @@ describe("WorkspaceView", () => {
       type: request.type,
       requestId: request.requestId,
       payload: {
+        collection: "orders",
+        schemaRevision: "schema-1",
+        capabilityHash: "cap-1",
+        sourceHash: "source-1",
         token: { token: "import-token", expiresAt: 9999999999, consumed: false },
-        summary: { validRows: 2, errorRows: 0, warningRows: 0, totalRows: 2 },
-        rows: [],
+        summary: {
+          validRows: 2, errorRows: 0, warningRows: 0, totalRows: 2,
+          errorCount: 0, warningCount: 0,
+        },
+        rows: [{
+          sourceRow: 2,
+          values: { number: "A-1" },
+          diagnostics: [],
+          relationResolutions: [],
+        }],
+        unmatchedColumns: [],
         diagnostics: [],
       },
     });
+    await flushPromises();
+
+    expect(document.body.querySelector('[data-testid="import-preview-panel"]')).toBeTruthy();
+    expect(posted.at(-1)?.type).toBe("data.previewImport");
+    (document.body.querySelector('[data-testid="import-confirm"]') as HTMLElement).click();
     await flushPromises();
 
     request = posted.at(-1)!;
@@ -435,7 +452,14 @@ describe("WorkspaceView", () => {
         state: "succeeded",
         progress: 1,
         message: "done",
-        result: { createdCount: 2, updatedCount: 0, skippedCount: 0 },
+        result: {
+          collection: "orders",
+          createdCount: 2,
+          updatedCount: 0,
+          failedRows: [],
+          chunks: [],
+          requestIds: [],
+        },
         error: null,
       },
     });
@@ -446,6 +470,8 @@ describe("WorkspaceView", () => {
       "data.previewImport",
       "task.create",
     ]));
+    expect(document.body.querySelector('[data-testid="import-preview-panel"]')).toBeFalsy();
+    expect(document.body.textContent).toContain("已导入 2 行。");
   });
 
   it("opens the unified relation field settings drawer from the table toolbar", async () => {

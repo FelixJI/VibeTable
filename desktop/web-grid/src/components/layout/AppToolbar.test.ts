@@ -94,6 +94,22 @@ describe("AppToolbar", () => {
     ]);
   });
 
+  it("prevents starting another import or export while a data task is active", () => {
+    const workspace = useWorkspaceStore();
+    workspace.selectTable("orders");
+    const wrapper = mount(AppToolbar, { props: { dataIoBusy: true } });
+    const dropdown = wrapper.findAllComponents(NDropdown).find((candidate) =>
+      (candidate.props("options") as Array<{ key: string }>).some(
+        (option) => option.key === "cancel-data-task",
+      ),
+    );
+    const options = dropdown!.props("options") as Array<{ key: string; disabled: boolean }>;
+
+    expect(options.find((option) => option.key === "cancel-data-task")?.disabled).toBe(false);
+    expect(options.find((option) => option.key === "import")?.disabled).toBe(true);
+    expect(options.find((option) => option.key === "export")?.disabled).toBe(true);
+  });
+
   it("provides an accessible tooltip trigger for More", () => {
     const wrapper = mount(AppToolbar);
     expect(wrapper.get('[data-testid="toolbar-more"]').attributes("aria-label")).toBe("更多操作");

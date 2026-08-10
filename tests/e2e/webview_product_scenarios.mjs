@@ -427,6 +427,14 @@ async function waitForImportSuccess(page, expectedRows, timeoutMs = 60_000) {
   );
 }
 
+async function confirmImportPreview(page, timeoutMs = 60_000) {
+  const panel = page.getByTestId("import-preview-panel");
+  await panel.waitFor({ state: "visible", timeout: timeoutMs });
+  const confirmation = await panel.innerText();
+  await page.getByTestId("import-confirm").click();
+  return confirmation;
+}
+
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -2149,24 +2157,12 @@ async function scenario04(page, recorder, _network, runtime) {
     `${jsonField}\n"${importedJson}"\n`,
     "utf8",
   );
-  let importConfirmed;
-  const importDialog = new Promise((resolve) => { importConfirmed = resolve; });
-  page.once("dialog", async (dialog) => {
-    await dialog.accept();
-    importConfirmed(dialog.message());
-  });
   await chooseToolbarMore(page, "import");
-  await Promise.race([
-    importDialog,
-    new Promise((_, reject) => setTimeout(
-      () => reject(new Error("JSON import confirmation did not appear")),
-      60_000,
-    )),
-  ]);
+  const importConfirmation = await confirmImportPreview(page);
   const importOutcome = await waitForImportSuccess(page, 1);
   recorder.check("JSON import completed with one explicitly reported committed row",
     importOutcome === "Imported 1 row(s)." || importOutcome === "已导入 1 行。",
-    { importOutcome });
+    { importConfirmation, importOutcome });
   await waitForVisibleRowCount(page, 2, 60_000);
 
   const headerFilter = page.locator(
@@ -3088,20 +3084,8 @@ async function scenario09(page, recorder, _network, runtime) {
     `${rows.join("\n")}\n`,
     "utf8",
   );
-  let dialogAccepted;
-  const accepted = new Promise((resolve) => { dialogAccepted = resolve; });
-  page.once("dialog", async (dialog) => {
-    await dialog.accept();
-    dialogAccepted(dialog.message());
-  });
   await chooseToolbarMore(page, "import");
-  const confirmation = await Promise.race([
-    accepted,
-    new Promise((_, reject) => setTimeout(
-      () => reject(new Error("import preview confirmation did not appear")),
-      60_000,
-    )),
-  ]);
+  const confirmation = await confirmImportPreview(page);
   const barrier = await waitForMutationBarrier(runtime);
   const fault = await requestSidecarKill(runtime, "interrupt active 1k-row import");
   recorder.check("the exact sidecar was killed after its first uncommitted transactional record write",

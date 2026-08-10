@@ -34,6 +34,7 @@ from typing import Any, Protocol
 
 from backend.application.paste_service import PasteMutationPort
 from backend.contracts.data_io import (
+    MAX_ATOMIC_IMPORT_ROWS,
     ApplyImportParams,
     ApplyImportResult,
     ImportCellDiagnostic,
@@ -155,13 +156,15 @@ class SourceFile:
     def read_header_and_rows(
         self,
         *,
-        max_rows: int = 100000,
+        max_rows: int = MAX_ATOMIC_IMPORT_ROWS,
         sheet: str | None = None,
     ) -> tuple[list[str], list[list[Any]], str]:
         """Read the header row + data rows.
 
         Returns ``(header, rows, source_hash)``. For XLSX the first sheet (or the
-        named ``sheet``) is used; for CSV the single stream is used.
+        named ``sheet``) is used; for CSV the single stream is used. Files with
+        more than ``max_rows`` data rows are rejected instead of truncated,
+        because apply is one atomic mutation with the same fixed row limit.
         ``source_hash`` is the SHA-256 of the file bytes (binds the preview).
         """
         source_hash = hashlib.sha256(self._path.read_bytes()).hexdigest()
@@ -193,12 +196,15 @@ class SourceFile:
                 header = [str(c) if c is not None else "" for c in next(rows_iter)]
             except StopIteration:
                 return [], []
-            data: list[list[Any]] = []
-            for row in rows_iter:
-                if len(data) >= max_rows:
-                    break
-                data.append(list(row))
-            return header, data
+            try:
+                data: list[list[Any]] = []
+                for row in rows_iter:
+                    if len(data) >= max_rows:
+                        raise _import_row_limit(max_rows)
+                    data.append(list(row))
+                return header, data
+            finally:
+                rows_iter.close()
         finally:
             wb.close()
 
@@ -212,9 +218,17 @@ class SourceFile:
             data: list[list[Any]] = []
             for row in reader:
                 if len(data) >= max_rows:
-                    break
+                    raise _import_row_limit(max_rows)
                 data.append(list(row))
         return header, data
+
+
+def _import_row_limit(max_rows: int) -> ImportFlowError:
+    return ImportFlowError(
+        f"import contains more than {max_rows} data rows",
+        code="import_row_limit",
+        data={"maxRows": max_rows},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +766,7 @@ class ImportService:
 __all__ = [
     "DEFAULT_CHUNK_SIZE",
     "IMPORT_TOKEN_TTL_SECONDS",
+    "MAX_ATOMIC_IMPORT_ROWS",
     "ImportFlowError",
     "ImportService",
     "RelationImportBatchResult",

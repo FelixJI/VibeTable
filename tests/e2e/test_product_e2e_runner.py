@@ -762,6 +762,15 @@ def test_atomic_import_fault_waits_for_transactional_barrier() -> None:
     assert "fault.pid === barrier.pid" in source
     assert "VIBETABLE_E2E_MUTATION_BARRIER_DIR" in orchestrator
     assert '"09-atomic-import-scale"' in orchestrator
+    assert "confirmImportPreview(page)" in source
+    assert 'getByTestId("import-preview-panel")' in source
+    assert 'getByTestId("import-confirm")' in source
+    assert (
+        'page.once("dialog"'
+        not in source[
+            source.index("async function scenario09") : source.index("async function scenario10")
+        ]
+    )
     assert '"storage-proof-request.json"' in source
     assert "storageProof.counts?.idempotency === 0" in source
     assert "key NOT LIKE 'field-v2:%'" in orchestrator

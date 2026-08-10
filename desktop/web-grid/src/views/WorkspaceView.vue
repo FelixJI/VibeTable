@@ -41,6 +41,7 @@ import FieldSettingsDrawer from "@/field-settings/FieldSettingsDrawer.vue";
 import { useFieldSettingsService } from "@/field-settings/service";
 import { TABULATOR_INJECTION_KEY } from "@/components/grid/tabulatorInjection";
 import PastePanel from "@/components/panels/PastePanel.vue";
+import ImportPreviewPanel from "@/components/panels/ImportPreviewPanel.vue";
 import CreateTableModal from "@/components/panels/CreateTableModal.vue";
 import DeleteConfirmModal from "@/components/panels/DeleteConfirmModal.vue";
 import ShortcutsView from "@/views/ShortcutsView.vue";
@@ -67,7 +68,7 @@ import {
 import { useWorkspaceService } from "@/services/workspaceService";
 import { useTableService } from "@/services/tableService";
 import { usePasteService } from "@/services/pasteService";
-import { useDataIoService } from "@/services/dataIoService";
+import { useDataIoService, type ImportPreviewSession } from "@/services/dataIoService";
 import type { ApplyPasteInput } from "@/services/pasteService";
 import { useMutationService } from "@/services/mutationService";
 import { useTableAdminService } from "@/services/tableAdminService";
@@ -190,6 +191,17 @@ const documentWorkspace = useDocumentWorkspaceStore();
 const workspaceSession = useWorkspaceSessionStore();
 const workspaceProtection = useWorkspaceProtectionStore();
 const showWorkspaceCenter = ref(false);
+const importPreviewSession = ref<ImportPreviewSession | null>(null);
+const importPreviewing = ref(false);
+const importApplying = ref(false);
+const importCancelling = ref(false);
+const importApplyError = ref<string | null>(null);
+const dataIoLocked = computed(() =>
+  importPreviewing.value
+  || importApplying.value
+  || importPreviewSession.value !== null
+  || dataIoService.busy.value,
+);
 const editRejection = ref<MutationErrorPayload | null>(null);
 const shouldShowNotification = createNotificationDeduper();
 const editRejectionText = computed(() =>
@@ -2055,23 +2067,61 @@ function refreshTable(): void {
 async function importTableData(): Promise<void> {
   const collection = workspace.currentTable;
   const schemaRevision = tableStore.revision?.schemaRevision;
-  if (!collection || !schemaRevision) return;
+  if (!collection || !schemaRevision || dataIoLocked.value) return;
+  importPreviewing.value = true;
+  importApplyError.value = null;
   try {
-    const result = await dataIoService.importData(collection, schemaRevision);
-    if (result) {
-      message.success(t("dataIo.import.success", {
-        count: result.createdCount + result.updatedCount,
-      }));
-      refreshTable();
-    }
+    importPreviewSession.value = await dataIoService.previewImport(
+      collection,
+      schemaRevision,
+    );
   } catch (error) {
     message.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    importPreviewing.value = false;
   }
+}
+
+async function confirmTableImport(): Promise<void> {
+  const session = importPreviewSession.value;
+  if (!session || importApplying.value || dataIoService.busy.value) return;
+  importApplying.value = true;
+  importApplyError.value = null;
+  try {
+    const result = await dataIoService.applyImport(session);
+    message.success(t("dataIo.import.success", {
+      count: result.createdCount + result.updatedCount,
+    }));
+    importPreviewSession.value = null;
+    refreshTable();
+  } catch (error) {
+    importApplyError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    importApplying.value = false;
+    importCancelling.value = false;
+  }
+}
+
+async function cancelActiveImport(): Promise<void> {
+  if (!importApplying.value || importCancelling.value) return;
+  importCancelling.value = true;
+  try {
+    await dataIoService.cancelActive();
+  } catch (error) {
+    importCancelling.value = false;
+    importApplyError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+function cancelImportPreview(): void {
+  if (importApplying.value) return;
+  importPreviewSession.value = null;
+  importApplyError.value = null;
 }
 
 async function exportTableData(): Promise<void> {
   const collection = workspace.currentTable;
-  if (!collection) return;
+  if (!collection || dataIoLocked.value) return;
   try {
     const result = await dataIoService.exportData(collection, {});
     message.success(t("dataIo.export.success", {
@@ -2472,6 +2522,7 @@ useKeyboard({
               :history-disabled="revisionHistory.selection.scope === 'multiple'"
               :insert-row-disabled="insertRowDisabled"
               :data-io-busy="dataIoService.busy.value"
+              :data-io-locked="dataIoLocked"
               @select-table="onSelect"
               @refresh="refreshTable"
               @insert-row="mutationService.insertRow({})"
@@ -2827,6 +2878,17 @@ useKeyboard({
       </aside>
     </NModal>
     <PastePanel @confirm="onConfirmPaste" @cancel="onCancelPaste" />
+    <ImportPreviewPanel
+      v-if="importPreviewSession"
+      :session="importPreviewSession"
+      :applying="importApplying"
+      :cancellable="dataIoService.busy.value"
+      :cancelling="importCancelling"
+      :error="importApplyError"
+      @confirm="confirmTableImport"
+      @cancel="cancelImportPreview"
+      @cancel-task="cancelActiveImport"
+    />
     <CreateTableModal @submit="onSubmitCreate" @cancel="onCancelCreate" />
     <DeleteConfirmModal @confirm="onConfirmDelete" @cancel="onCancelDelete" />
     <ShortcutsView />
