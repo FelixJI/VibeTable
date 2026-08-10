@@ -559,6 +559,19 @@ def test_plugin_invalid_upgrade_is_recorded_as_an_expected_bridge_failure() -> N
     assert "await acknowledgeExpectedBridgeFailure(page, invalidUpgradeFailure);" in scenario
 
 
+def test_plugin_lifecycle_waits_for_the_install_enable_request_to_settle() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    scenario = source[
+        source.index("async function scenario11") : source.index("async function scenario12")
+    ]
+
+    first_toggle = scenario.index("await toggle.click();")
+    stable_enabled = scenario.index('lifecycleToggle.classList.contains("enabled")')
+    assert stable_enabled < first_toggle
+    assert scenario.count("!lifecycleToggle.disabled") == 3
+    assert scenario.count("runButton.disabled") >= 3
+
+
 def test_snapshot_corruption_uses_a_stable_selector_and_exact_bridge_failure() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     scenario = source[

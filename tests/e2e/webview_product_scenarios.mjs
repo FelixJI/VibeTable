@@ -3370,15 +3370,38 @@ async function scenario11(page, recorder, _network, runtime) {
   await pluginRow.click();
 
   const toggle = page.getByTestId("plugin-toggle");
+  await page.waitForFunction(() => {
+    const lifecycleToggle = document.querySelector('[data-testid="plugin-toggle"]');
+    const runButton = document.querySelector(".action-row button.run-button");
+    return lifecycleToggle instanceof HTMLButtonElement
+      && runButton instanceof HTMLButtonElement
+      && lifecycleToggle.classList.contains("enabled")
+      && !lifecycleToggle.disabled
+      && !runButton.disabled;
+  });
   await toggle.click();
-  await page.waitForFunction(() =>
-    !document.querySelector('[data-testid="plugin-toggle"]')?.classList.contains("enabled"));
+  await page.waitForFunction(() => {
+    const lifecycleToggle = document.querySelector('[data-testid="plugin-toggle"]');
+    const runButton = document.querySelector(".action-row button.run-button");
+    return lifecycleToggle instanceof HTMLButtonElement
+      && runButton instanceof HTMLButtonElement
+      && !lifecycleToggle.classList.contains("enabled")
+      && !lifecycleToggle.disabled
+      && runButton.disabled;
+  });
   recorder.check("installed plugin can be disabled through its lifecycle UI",
     !(await toggle.getAttribute("class")).includes("enabled")
       && await page.locator(".action-row button.run-button").first().isDisabled());
   await toggle.click();
-  await page.waitForFunction(() =>
-    document.querySelector('[data-testid="plugin-toggle"]')?.classList.contains("enabled"));
+  await page.waitForFunction(() => {
+    const lifecycleToggle = document.querySelector('[data-testid="plugin-toggle"]');
+    const runButton = document.querySelector(".action-row button.run-button");
+    return lifecycleToggle instanceof HTMLButtonElement
+      && runButton instanceof HTMLButtonElement
+      && lifecycleToggle.classList.contains("enabled")
+      && !lifecycleToggle.disabled
+      && !runButton.disabled;
+  });
   recorder.check("disabled plugin can be explicitly enabled again",
     (await toggle.getAttribute("class")).includes("enabled")
       && await page.locator(".action-row button.run-button").first().isEnabled());
