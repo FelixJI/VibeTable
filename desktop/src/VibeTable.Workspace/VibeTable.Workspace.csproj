@@ -5,4 +5,11 @@
     <!-- G2: BCL-only version kernel. No third-party packages. -->
   </PropertyGroup>
 
+  <ItemGroup>
+    <Compile Remove="Diff\IDocumentDiffAdapter.cs" />
+    <Compile Remove="Diff\BinaryDiffAdapter.cs" />
+    <Compile Remove="Diff\TextDiffAdapter.cs" />
+    <Compile Remove="Diff\DiffAdapterRegistry.cs" />
+  </ItemGroup>
+
 </Project>

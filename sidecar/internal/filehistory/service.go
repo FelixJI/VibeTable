@@ -40,9 +40,12 @@ const (
 )
 
 var (
-	ErrDocumentNotFound     = errors.New("filehistory.document_not_found")
-	ErrRevisionNotFound     = errors.New("filehistory.revision_not_found")
-	ErrRevisionConflict     = errors.New("filehistory.revision_conflict")
+	ErrDocumentNotFound       = errors.New("filehistory.document_not_found")
+	ErrRevisionNotFound       = errors.New("filehistory.revision_not_found")
+	ErrRevisionConflict       = errors.New("filehistory.revision_conflict")
+	ErrEffectiveRevisionStale = errors.New(
+		"filehistory.effective_revision_stale",
+	)
 	ErrNotLeaf              = errors.New("filehistory.revision_not_leaf")
 	ErrHeadRecoveryUnproven = errors.New(
 		"filehistory.head_recovery_unproven",
@@ -136,6 +139,28 @@ type SaveResult struct {
 	Root             objectrepo.ManifestID
 	MutationRevision uint64
 	NoOp             bool
+}
+
+// DiffPair holds read handles for two immutable revisions selected under the
+// same file-history read lock. Object identities remain private to the
+// repository boundary; callers materialize only the returned byte streams.
+type DiffPair struct {
+	DocumentID         string
+	HistoricalRevision Revision
+	EffectiveRevision  Revision
+	HistoricalContent  io.ReadCloser
+	EffectiveContent   io.ReadCloser
+}
+
+func (pair DiffPair) Close() error {
+	var err error
+	if pair.HistoricalContent != nil {
+		err = errors.Join(err, pair.HistoricalContent.Close())
+	}
+	if pair.EffectiveContent != nil {
+		err = errors.Join(err, pair.EffectiveContent.Close())
+	}
+	return err
 }
 
 // AcceptProvisionalRequest selects one provisional leaf for canonical
@@ -487,6 +512,14 @@ func openCurrent(
 	options = append(options, WithHeadStore(headStore))
 	if !found {
 		return New(repository, coordinator, options...)
+	}
+	if head.Root == "" {
+		service, err := New(repository, coordinator, options...)
+		if err != nil {
+			return nil, err
+		}
+		service.installHeadLocked(head)
+		return service, nil
 	}
 	return Open(
 		ctx,
@@ -1155,6 +1188,103 @@ func (service *Service) Inspect(documentID string) (Document, error) {
 	return cloneDocument(document), nil
 }
 
+// OpenDiffPair validates the historical target and expected effective
+// revision against one authoritative document snapshot, then opens both
+// immutable objects before releasing the read lock.
+func (service *Service) OpenDiffPair(
+	ctx context.Context,
+	documentID string,
+	historicalRevisionID string,
+	expectedEffectiveRevisionID string,
+) (DiffPair, error) {
+	if !validUUID(documentID) ||
+		!validUUID(historicalRevisionID) ||
+		!validUUID(expectedEffectiveRevisionID) {
+		return DiffPair{}, errors.New("file_history.request_invalid")
+	}
+	if err := ctx.Err(); err != nil {
+		return DiffPair{}, err
+	}
+
+	service.mu.RLock()
+	defer service.mu.RUnlock()
+	document, exists := service.documents[documentID]
+	if !exists {
+		return DiffPair{}, ErrDocumentNotFound
+	}
+	if document.Status != DocumentActive {
+		return DiffPair{}, ErrDocumentDeleted
+	}
+	if document.WorkspaceID != service.coordinatorWorkspaceID() {
+		return DiffPair{}, ErrStateCorrupt
+	}
+	if document.EffectiveRevisionID != expectedEffectiveRevisionID {
+		return DiffPair{}, ErrEffectiveRevisionStale
+	}
+
+	var historical, effective *Revision
+	for index := range document.Revisions {
+		revision := &document.Revisions[index]
+		if revision.DocumentID != documentID {
+			return DiffPair{}, ErrStateCorrupt
+		}
+		if revision.RevisionID == historicalRevisionID {
+			historical = revision
+		}
+		if revision.RevisionID == expectedEffectiveRevisionID {
+			effective = revision
+		}
+	}
+	if historical == nil || effective == nil {
+		return DiffPair{}, ErrRevisionNotFound
+	}
+
+	historicalContent, err := service.repository.Open(ctx, historical.ObjectID)
+	if err != nil {
+		return DiffPair{}, err
+	}
+	effectiveContent, err := service.repository.Open(ctx, effective.ObjectID)
+	if err != nil {
+		_ = historicalContent.Close()
+		return DiffPair{}, err
+	}
+	return DiffPair{
+		DocumentID:         documentID,
+		HistoricalRevision: *cloneRevision(historical),
+		EffectiveRevision:  *cloneRevision(effective),
+		HistoricalContent:  historicalContent,
+		EffectiveContent:   effectiveContent,
+	}, nil
+}
+
+// AssertEffectiveRevision is the post-comparison CAS. It deliberately uses
+// the same stable stale outcome as OpenDiffPair so callers never publish a
+// result computed for an effective revision that has since moved.
+func (service *Service) AssertEffectiveRevision(
+	documentID string,
+	expectedEffectiveRevisionID string,
+) error {
+	if !validUUID(documentID) || !validUUID(expectedEffectiveRevisionID) {
+		return errors.New("file_history.request_invalid")
+	}
+	service.mu.RLock()
+	defer service.mu.RUnlock()
+	document, exists := service.documents[documentID]
+	if !exists {
+		return ErrDocumentNotFound
+	}
+	if document.Status != DocumentActive {
+		return ErrDocumentDeleted
+	}
+	if document.WorkspaceID != service.coordinatorWorkspaceID() {
+		return ErrStateCorrupt
+	}
+	if document.EffectiveRevisionID != expectedEffectiveRevisionID {
+		return ErrEffectiveRevisionStale
+	}
+	return nil
+}
+
 func (service *Service) List() []Document {
 	service.mu.RLock()
 	defer service.mu.RUnlock()
@@ -1307,39 +1437,43 @@ func (service *Service) StageSnapshotRestore(
 	if err := validatePaths(next); err != nil {
 		return StagedSnapshotRestore{}, err
 	}
+	documents := sortedDocuments(next)
 	payload := rootPayload{
 		FormatVersion: rootFormatVersion,
 		WorkspaceID:   intent.Token.WorkspaceID,
-		Documents:     sortedDocuments(next),
+		Documents:     documents,
 	}
 	if err := validateRootResourceLimits(payload); err != nil {
 		return StagedSnapshotRestore{}, err
 	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return StagedSnapshotRestore{}, err
-	}
-	receipt, err := service.repository.Commit(
-		ctx,
-		objectrepo.CommitRequest{
-			Authority: intent.Token.Authority(),
-			Manifests: []objectrepo.ManifestInput{{
-				Name: "filehistory-root",
-				Labels: map[string]string{
-					"type":        "filehistory-root",
-					"workspaceId": intent.Token.WorkspaceID,
-				},
-				Payload: raw,
-			}},
-		},
-	)
-	if err != nil {
-		return StagedSnapshotRestore{}, err
-	}
-	root := receipt.Manifests["filehistory-root"]
-	if !receipt.Durable || root == "" {
-		return StagedSnapshotRestore{},
-			errors.New("filehistory.root_missing")
+	var root objectrepo.ManifestID
+	if len(documents) != 0 {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return StagedSnapshotRestore{}, err
+		}
+		receipt, err := service.repository.Commit(
+			ctx,
+			objectrepo.CommitRequest{
+				Authority: intent.Token.Authority(),
+				Manifests: []objectrepo.ManifestInput{{
+					Name: "filehistory-root",
+					Labels: map[string]string{
+						"type":        "filehistory-root",
+						"workspaceId": intent.Token.WorkspaceID,
+					},
+					Payload: raw,
+				}},
+			},
+		)
+		if err != nil {
+			return StagedSnapshotRestore{}, err
+		}
+		root = receipt.Manifests["filehistory-root"]
+		if !receipt.Durable || root == "" {
+			return StagedSnapshotRestore{},
+				errors.New("filehistory.root_missing")
+		}
 	}
 	previous := CurrentHead{
 		WorkspaceID:      intent.Token.WorkspaceID,
@@ -1396,7 +1530,7 @@ func (service *Service) StageSnapshotRestore(
 	return StagedSnapshotRestore{
 		PreviousHead: previous,
 		NextHead:     nextHead,
-		Documents:    sortedDocuments(next),
+		Documents:    documents,
 		Audit:        envelope,
 	}, nil
 }

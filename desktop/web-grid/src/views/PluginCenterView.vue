@@ -10,6 +10,7 @@ import { useUiStore } from "@/stores/uiStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useTableStore } from "@/stores/tableStore";
 import { projectPluginTheme } from "@/components/plugins/pluginTheme";
+import { publicCapabilityPolicy } from "@/services/publicCapabilityPolicy";
 import { t } from "@/i18n";
 
 const props = withDefaults(defineProps<{ autoLoad?: boolean }>(), { autoLoad: true });
@@ -99,7 +100,10 @@ async function commitPlan(): Promise<void> {
     const existing = plannedUpgradePluginId.value
       ? store.plugins.find((item) => item.pluginId === plannedUpgradePluginId.value)
       : null;
-    if (existing) await service.upgrade(existing, plan);
+    if (existing) {
+      if (!publicCapabilityPolicy.pluginLifecycleMutations) return;
+      await service.upgrade(existing, plan);
+    }
     else {
       const installed = await service.commitInstall(plan);
       // The commit consumes the plan even if the follow-up convenience
@@ -200,7 +204,17 @@ onBeforeUnmount(() => service.dispose());
       <div><small>PROJECT REVISION</small><code>{{ store.installPlan.projectRevision }}</code></div>
       <div class="plan-actions">
         <button type="button" class="quiet-button" @click="cancelPlan">取消</button>
-        <button data-testid="plugin-install-commit" type="button" class="primary-button" @click="commitPlan">{{ plannedUpgradePluginId ? '批准变更并升级' : '批准权限并安装' }}</button>
+        <span
+          v-if="plannedUpgradePluginId && !publicCapabilityPolicy.pluginLifecycleMutations"
+          data-testid="plugin-upgrade-internal-only"
+        >升级提交暂未公开</span>
+        <button
+          v-else
+          data-testid="plugin-install-commit"
+          type="button"
+          class="primary-button"
+          @click="commitPlan"
+        >{{ plannedUpgradePluginId ? '批准变更并升级' : '批准权限并安装' }}</button>
       </div>
     </section>
 
@@ -274,9 +288,9 @@ onBeforeUnmount(() => service.dispose());
 
         <footer class="lifecycle-actions">
           <button data-testid="plugin-upgrade" type="button" class="quiet-button" title="选择新版本并先检查变更计划" @click="inspectUpgrade(plugin)"><Upload :size="13" />{{ plugin.sourceType === 'local-folder' ? (plugin.sourceChanged ? '检查文件夹变更' : '检查并重新加载文件夹') : '检查离线升级' }}</button>
-          <button data-testid="plugin-rollback" type="button" class="quiet-button" @click="safely(() => service.rollback(plugin!))"><RotateCcw :size="13" />回滚上一版本</button>
-          <button v-if="!uninstalling" data-testid="plugin-uninstall" type="button" class="danger-text-button" @click="uninstalling = true"><Trash2 :size="13" />卸载</button>
-          <div v-else class="uninstall-confirm"><span>将清理插件本地资源。</span><label><input v-model="cleanupPrivateSettings" data-testid="plugin-uninstall-private-settings" type="checkbox" />清理私有设置</label><button type="button" @click="uninstalling = false">取消</button><button data-testid="plugin-uninstall-confirm" type="button" @click="safely(() => service.uninstall(plugin!, cleanupPrivateSettings))">确认卸载</button></div>
+          <button v-if="publicCapabilityPolicy.pluginLifecycleMutations" data-testid="plugin-rollback" type="button" class="quiet-button" @click="safely(() => service.rollback(plugin!))"><RotateCcw :size="13" />回滚上一版本</button>
+          <button v-if="publicCapabilityPolicy.pluginLifecycleMutations && !uninstalling" data-testid="plugin-uninstall" type="button" class="danger-text-button" @click="uninstalling = true"><Trash2 :size="13" />卸载</button>
+          <div v-else-if="publicCapabilityPolicy.pluginLifecycleMutations" class="uninstall-confirm"><span>将清理插件本地资源。</span><label><input v-model="cleanupPrivateSettings" data-testid="plugin-uninstall-private-settings" type="checkbox" />清理私有设置</label><button type="button" @click="uninstalling = false">取消</button><button data-testid="plugin-uninstall-confirm" type="button" @click="safely(() => service.uninstall(plugin!, cleanupPrivateSettings))">确认卸载</button></div>
         </footer>
       </main>
 

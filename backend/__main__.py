@@ -10,6 +10,7 @@ import os
 import sys
 import threading
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
 from backend.adapters.pocketbase.internal_metadata import PocketBaseInternalMetadataPort
 from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
+from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.adapters.pocketbase.realtime import (
     PocketBaseRealtimeSupervisor,
     ProductEvent,
@@ -32,11 +34,7 @@ from backend.application.insights_service import InsightsService
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_platform_service import PluginPlatformService
 from backend.application.plugin_registry import PluginRegistry
-from backend.application.product_data_service import (
-    PRODUCT_PARAM_MODELS,
-    PocketBaseProductDataService,
-    ProductParams,
-)
+from backend.application.product_rpc import ProductRpc
 from backend.application.settings_command_service import SettingsCommandService
 from backend.application.system_service import SystemService
 from backend.application.task_service import build_task_service
@@ -79,6 +77,7 @@ from backend.contracts.presets_versions_dashboards import (
     SaveVersionParams,
     VersionIdParams,
 )
+from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
 from backend.contracts.settings_commands import (
     DeleteShortcutParams,
     LaunchActionParams,
@@ -106,6 +105,7 @@ from backend.contracts.task import (
 )
 from backend.infrastructure.plugin_file_capability import HostFileCapabilityAdapter
 from backend.infrastructure.plugin_interaction import HostConfirmationAdapter
+from backend.infrastructure.plugin_package_lifecycle import LocalPluginPackageLifecycle
 from backend.infrastructure.plugin_store import PluginProjectStore
 from backend.infrastructure.plugin_worker import NodePluginWorkerAdapter
 from backend.rpc.dispatcher import (
@@ -120,6 +120,7 @@ from backend.rpc.dispatcher import (
     register_settings_command_errors,
 )
 from backend.rpc.framing import MAX_FRAME_BYTES
+from backend.rpc.product_errors import register_product_rpc_errors
 from backend.rpc.server import RpcServer
 
 _READ_LIMIT = MAX_FRAME_BYTES + 1
@@ -166,7 +167,7 @@ def _feed_stdin_to_reader(
 
 
 def _product_runtime() -> tuple[
-    PocketBaseProductDataService | None,
+    PocketBaseProductRpc | None,
     PocketBaseClient | None,
     PocketBaseConfig | None,
 ]:
@@ -178,7 +179,7 @@ def _product_runtime() -> tuple[
     transport = StdlibPocketBaseTransport(config)
     client = PocketBaseClient(transport=transport, session_secret=session_secret)
     return (
-        PocketBaseProductDataService(
+        PocketBaseProductRpc(
             client=client,
             transport=transport,
             session_secret=session_secret,
@@ -188,60 +189,17 @@ def _product_runtime() -> tuple[
     )
 
 
-def _build_pocketbase_product_service() -> PocketBaseProductDataService | None:
+def _build_pocketbase_product_service() -> PocketBaseProductRpc | None:
     return _product_runtime()[0]
 
 
 def _register_pocketbase_product_methods(
     dispatcher: RpcDispatcher,
-    service: PocketBaseProductDataService,
+    service: ProductRpc,
 ) -> None:
-    from backend.rpc.dispatcher import register_pocketbase_product_errors
-
-    register_pocketbase_product_errors()
-    methods = {
-        "field.settings.describe": service.describe_field_settings,
-        "field.change.plan": service.plan_field_change,
-        "field.change.apply": service.apply_field_change,
-        "field.change.status": service.field_change_status,
-        "field.change.cancel": service.cancel_field_change,
-        "field.recycleBin.list": service.list_recycled_fields,
-        "schema.validate": service.validate_schema,
-        "schema.apply": service.apply_schema,
-        "schema.delete": service.delete_schema,
-        "schema.list": service.list_tables,
-        "schema.getTable": service.get_table_schema,
-        "schema.describe": service.describe_schema,
-        "query.page": service.query_page,
-        "query.view": service.query_view,
-        "query.readRows": service.read_rows,
-        "query.validateSnapshot": service.validate_snapshot,
-        "mutation.preview": service.preview_mutation,
-        "mutation.apply": service.apply_mutation,
-        "formula.validate": service.validate_formula,
-        "formula.draft.validate": service.validate_formula_draft,
-        "formula.preview": service.preview_formula,
-        "file.list": service.list_attachment_refs,
-        "file.token": service.create_file_token,
-        "file.applyHostChange": service.apply_host_attachment_change,
-        "file.saveHostFile": service.save_attachment_to_host,
-        "history.read": service.read_history,
-        "history.previewRestore": service.preview_history_restore,
-        "history.applyRestore": service.apply_history_restore,
-        "events.reconcile": service.reconcile,
-        "relation.searchTargets": service.search_relation_targets,
-        "relation.createTarget": service.create_relation_target,
-        "relation.updateSingle": service.update_single_relation,
-        "relation.previewDelta": service.preview_relation_delta,
-        "relation.applyDelta": service.apply_relation_delta,
-        "lookup.list": service.list_lookups,
-        "lookup.validate": service.validate_lookup,
-        "lookup.preview": service.preview_lookup,
-        "lookup.query": service.query_lookups,
-        "lookup.valuePage": service.lookup_value_page,
-    }
-    for method, handler in methods.items():
-        dispatcher.register(method, handler, PRODUCT_PARAM_MODELS[method])
+    register_product_rpc_errors()
+    for method, params_model in PRODUCT_RPC_REGISTRY.items():
+        dispatcher.register(method, partial(service.invoke, method), params_model)
 
 
 def _configure_pocketbase_data_io(
@@ -649,6 +607,7 @@ async def _build_server() -> tuple[
             registry=registry,
             runtime=runtime,
             store=store,
+            package_lifecycle=LocalPluginPackageLifecycle(store.package_cache),
             confirmation_adapter=confirmation,
             file_adapter=file_capability,
         )

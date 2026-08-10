@@ -1,8 +1,6 @@
 using System.IO;
 using System.Diagnostics;
 using System.Text.Json;
-using System.Security.AccessControl;
-using System.Security.Principal;
 using VibeTable.Contracts;
 using VibeTable.Infrastructure.Backend;
 using VibeTable.Infrastructure.PocketBase;
@@ -458,9 +456,10 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
             _managedWorkspaceRoot,
             ".creating-" + workspaceId.ToString("D"));
         WorkspaceStorageObservation storage =
-            _providerPolicy.ProbeCreateTargetAndEnsureSupported(
-                root,
-                WorkspaceStorageMode.Direct);
+            ProbeStagingTarget(
+                _providerPolicy,
+                _managedWorkspaceRoot,
+                workspaceId);
         Directory.CreateDirectory(_managedWorkspaceRoot);
         WorkspaceLayoutResult layout;
         string creationJournal = CreationJournalPath(
@@ -531,6 +530,23 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
             DeleteUnregisteredTarget(entry);
             throw;
         }
+    }
+
+    internal static WorkspaceStorageObservation ProbeStagingTarget(
+        WorkspaceProviderPolicy providerPolicy,
+        string managedWorkspaceRoot,
+        Guid workspaceId)
+    {
+        ArgumentNullException.ThrowIfNull(providerPolicy);
+        ArgumentException.ThrowIfNullOrWhiteSpace(managedWorkspaceRoot);
+        if (workspaceId == Guid.Empty)
+            throw new ArgumentException("Workspace id must be non-empty.", nameof(workspaceId));
+        string stagingRoot = Path.Combine(
+            Path.GetFullPath(managedWorkspaceRoot),
+            ".creating-" + workspaceId.ToString("D"));
+        return providerPolicy.ProbeCreateTargetAndEnsureSupported(
+            stagingRoot,
+            WorkspaceStorageMode.Direct);
     }
 
     private async Task<WorkspaceV2ForwardResult> RunTransientAsync(
@@ -939,33 +955,19 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
     }
 
     private string CreateSecureTransferDirectory()
+        => CreateTransferDirectory(_transferRoot);
+
+    internal static string CreateTransferDirectory(string transferRoot)
     {
-        Directory.CreateDirectory(_transferRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(transferRoot);
+        Directory.CreateDirectory(transferRoot);
         Guid transferId = Guid.NewGuid();
         string directory = Path.Combine(
-            _transferRoot,
+            Path.GetFullPath(transferRoot),
             transferId.ToString("D"));
         Directory.CreateDirectory(directory);
         try
         {
-            WindowsIdentity identity = WindowsIdentity.GetCurrent();
-            SecurityIdentifier owner = identity.User
-                ?? throw new WorkspaceRegistryException(
-                    "snapshot.transfer_acl_failed",
-                    "The current Windows user has no security identifier.");
-            var security = new DirectorySecurity();
-            security.SetOwner(owner);
-            security.SetAccessRuleProtection(
-                isProtected: true,
-                preserveInheritance: false);
-            security.AddAccessRule(new FileSystemAccessRule(
-                owner,
-                FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit
-                    | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Allow));
-            new DirectoryInfo(directory).SetAccessControl(security);
             WriteOwnershipRecord(
                 TransferMarkerPath(directory),
                 transferId,

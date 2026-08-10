@@ -304,6 +304,113 @@ public sealed class WindowsWorkspacePathPicker : IWorkspacePathPicker
     }
 }
 
+/// <summary>
+/// Test-only path picker backed by the isolated E2E controls directory.
+/// It never opens a native dialog: missing, empty, or unusable controls fail
+/// closed so packaged tests cannot silently fall back to a user selection.
+/// </summary>
+internal sealed class TestModeWorkspacePathPicker : IWorkspacePathPicker
+{
+    private readonly string _controlsDirectory;
+
+    public TestModeWorkspacePathPicker(string controlsDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(controlsDirectory))
+        {
+            throw new ArgumentException(
+                "The test-mode controls directory is required.",
+                nameof(controlsDirectory));
+        }
+        _controlsDirectory = Path.GetFullPath(controlsDirectory);
+    }
+
+    public string PickWorkspaceRoot() => ReadDirectory("workspace-root.txt");
+
+    public string PickSnapshotExportTarget() =>
+        ReadOutputPath("snapshot-export-target.txt");
+
+    public string PickSnapshotImportSource() =>
+        ReadExistingFile("snapshot-import-source.txt");
+
+    public string PickSnapshotExtractTarget() =>
+        ReadOutputPath("snapshot-extract-target.txt");
+
+    public string PickFileUpgradeSource() =>
+        ReadExistingFile("file-upgrade-source.txt");
+
+    private string ReadDirectory(string controlName)
+    {
+        string path = ReadPath(controlName);
+        if (!Directory.Exists(path))
+        {
+            throw new WorkspacePathGrantException(
+                "workspace.test_control_source_missing",
+                $"Test-mode directory control does not exist: {controlName}");
+        }
+        return path;
+    }
+
+    private string ReadExistingFile(string controlName)
+    {
+        string path = ReadPath(controlName);
+        if (!File.Exists(path))
+        {
+            throw new WorkspacePathGrantException(
+                "workspace.test_control_source_missing",
+                $"Test-mode file control does not exist: {controlName}");
+        }
+        return path;
+    }
+
+    private string ReadOutputPath(string controlName)
+    {
+        string path = ReadPath(controlName);
+        string? parent = Path.GetDirectoryName(path);
+        if (string.IsNullOrWhiteSpace(parent) || !Directory.Exists(parent))
+        {
+            throw new WorkspacePathGrantException(
+                "workspace.test_control_parent_missing",
+                $"Test-mode output parent does not exist: {controlName}");
+        }
+        return path;
+    }
+
+    private string ReadPath(string controlName)
+    {
+        string controlPath = Path.Combine(_controlsDirectory, controlName);
+        if (!File.Exists(controlPath))
+        {
+            throw new WorkspacePathGrantException(
+                "workspace.test_control_missing",
+                $"Missing test-mode path control: {controlName}");
+        }
+        try
+        {
+            string value = File.ReadAllText(controlPath).Trim();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                throw new WorkspacePathGrantException(
+                    "workspace.test_control_invalid",
+                    $"Empty test-mode path control: {controlName}");
+            }
+            return Path.GetFullPath(value);
+        }
+        catch (WorkspacePathGrantException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or ArgumentException
+            or NotSupportedException)
+        {
+            throw new WorkspacePathGrantException(
+                "workspace.test_control_invalid",
+                $"Invalid test-mode path control: {controlName}");
+        }
+    }
+}
+
 public sealed class WorkspacePathGrantException(
     string code,
     string message) : Exception(message)

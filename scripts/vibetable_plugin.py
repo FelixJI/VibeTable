@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -23,6 +22,7 @@ from backend.infrastructure.plugin_package import (  # noqa: E402
     inspect_plugin_package,
     pack_plugin,
 )
+from scripts.node_toolchain import resolve_node  # noqa: E402
 
 
 def _print_json(value: Any) -> None:
@@ -310,11 +310,7 @@ def _command_build(args: argparse.Namespace) -> int:
 
 
 def _find_node() -> str | None:
-    installed = shutil.which("node")
-    if installed:
-        return installed
-    bundled = REPO_ROOT / "runtime" / "node" / "node.exe"
-    return str(bundled) if bundled.exists() else None
+    return resolve_node(REPO_ROOT)
 
 
 def _command_test(args: argparse.Namespace) -> int:

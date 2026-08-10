@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { defineComponent, h } from "vue";
-import { NDropdown, NMessageProvider } from "naive-ui";
+import { NDropdown, NMessageProvider, NModal } from "naive-ui";
 
 import WorkspaceView from "./WorkspaceView.vue";
 import GridHost from "@/components/grid/GridHost.vue";
@@ -1323,6 +1323,7 @@ describe("WorkspaceView", () => {
       },
       value: { approved: true },
     });
+    expect(document.activeElement).not.toBe(trigger);
     await flushPromises();
 
     const dialog = document.body.querySelector<HTMLElement>(
@@ -1331,10 +1332,16 @@ describe("WorkspaceView", () => {
     expect(dialog?.getAttribute("role")).toBe("dialog");
     expect(dialog?.getAttribute("aria-modal")).toBe("true");
     expect(dialog?.getAttribute("aria-labelledby")).toBe("json-editor-title");
+    const modal = wrapper
+      .findAllComponents(NModal)
+      .find((item) => item.props("show") === true);
+    expect(modal).toBeDefined();
 
     document.body.querySelector<HTMLElement>(
       '[data-testid="json-editor-close"]',
     )?.click();
+    await flushPromises();
+    modal?.vm.$emit("afterLeave");
     await flushPromises();
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(

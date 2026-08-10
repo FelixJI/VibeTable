@@ -10,8 +10,3 @@ tests/contract/fixtures/** eol=lf
 
 # Stage handoff manifests are also byte-stable evidence.
 docs/handoffs/*.json eol=lf
-
-# Bundled portable Node.js runtime (runtime/node/**) ships Windows binaries.
-# Mark them binary so git never applies CRLF normalisation or diff/merge heuristics
-# that would corrupt the executables and the native .node modules.
-runtime/node/** binary

@@ -160,7 +160,7 @@ public sealed class WorkspaceV2HttpGatewayTests
             Assert.AreEqual(1, body.RootElement.EnumerateObject().Count());
             return Json(
                 """
-                {"sourceEpoch":7,"sourceSequence":42,"chainHash":"sha256:abc"}
+                {"sourceEpoch":"business-v2","sourceSequence":42,"chainHash":"sha256:abc"}
                 """);
         });
         using var gateway = Gateway(handler);
@@ -169,7 +169,7 @@ public sealed class WorkspaceV2HttpGatewayTests
             TimeSpan.FromSeconds(30),
             CancellationToken.None);
 
-        Assert.AreEqual<ulong>(7, watermark.SourceEpoch);
+        Assert.AreEqual<string>("business-v2", watermark.SourceEpoch);
         Assert.AreEqual<ulong>(42, watermark.SourceSequence);
         Assert.AreEqual("sha256:abc", watermark.ChainHash);
     }

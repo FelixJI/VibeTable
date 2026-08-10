@@ -15,7 +15,7 @@ function parseArgs(argv) {
     }
     values[key.slice(2)] = value;
   }
-  for (const required of ["cdp-url", "scenario", "evidence-dir", "controls-dir"]) {
+  for (const required of ["cdp-url", "scenario", "evidence-dir", "controls-dir", "data-root"]) {
     if (!values[required]) throw new Error(`missing --${required}`);
   }
   return values;
@@ -206,7 +206,23 @@ async function waitForShell(page, recorder) {
   const openCreatedWorkspace = workspaceCenter.getByRole("button", {
     name: /E2E Product Workspace/,
   });
-  await openCreatedWorkspace.waitFor({ state: "visible", timeout: 60_000 });
+  const creationOutcome = await Promise.race([
+    openCreatedWorkspace.waitFor({ state: "visible", timeout: 60_000 })
+      .then(() => ({ kind: "created" })),
+    page.getByTestId("workspace-operation-error")
+      .waitFor({ state: "visible", timeout: 60_000 })
+      .then(async () => ({
+        kind: "failed",
+        message: await page.getByTestId("workspace-operation-error").innerText(),
+        bridgeFailure: await page.evaluate(() => {
+          const failures = window.__vibetableE2EBridgeDiagnostics?.failures ?? [];
+          return failures.findLast((item) => item.requestType === "workspace.create") ?? null;
+        }),
+      })),
+  ]);
+  if (creationOutcome.kind === "failed") {
+    throw new Error(`workspace creation failed: ${JSON.stringify(creationOutcome)}`);
+  }
   recorder.check(
     "fresh-device workspace creation is projected into Workspace Center",
     await openCreatedWorkspace.isVisible(),
@@ -1437,16 +1453,52 @@ async function beginBridgeMessageCapture(page, responseTypes) {
   }, responseTypes);
 }
 
-async function beginWritableWorkspaceBootstrapCapture(page, minimumExclusiveEpoch) {
-  await page.evaluate((minimumEpoch) => {
+async function beginWorkspaceV2MethodCapture(page, method) {
+  await page.evaluate((expectedMethod) => {
     window.__vibetableE2EBridgeCapture = {
-      types: ["workspace.v2.bootstrap"],
+      types: ["workspace.v2.response"],
       message: null,
     };
     window.chrome.webview.addEventListener("message", function handler(event) {
       let message = event.data;
       if (typeof message === "string") {
         try { message = JSON.parse(message); } catch { return; }
+      }
+      if (message?.type !== "workspace.v2.response"
+        || message.payload?.method !== expectedMethod) return;
+      window.__vibetableE2EBridgeCapture.message = message;
+      window.chrome.webview.removeEventListener("message", handler);
+    });
+  }, method);
+}
+
+async function beginWritableWorkspaceBootstrapCapture(
+  page,
+  minimumExclusiveEpoch,
+  failureMethod = null,
+) {
+  await page.evaluate(({ minimumEpoch, expectedFailureMethod }) => {
+    window.__vibetableE2EBridgeCapture = {
+      types: ["workspace.v2.bootstrap"],
+      message: null,
+      error: null,
+    };
+    window.chrome.webview.addEventListener("message", function handler(event) {
+      let message = event.data;
+      if (typeof message === "string") {
+        try { message = JSON.parse(message); } catch { return; }
+      }
+      if (expectedFailureMethod
+        && message?.type === "workspace.v2.response"
+        && message.payload?.method === expectedFailureMethod
+        && message.payload?.ok === false) {
+        window.__vibetableE2EBridgeCapture.error = {
+          method: expectedFailureMethod,
+          code: message.payload?.error?.code ?? "unknown",
+          message: message.payload?.error?.message ?? "workspace operation failed",
+        };
+        window.chrome.webview.removeEventListener("message", handler);
+        return;
       }
       const session = message?.payload?.session;
       if (
@@ -1461,16 +1513,23 @@ async function beginWritableWorkspaceBootstrapCapture(page, minimumExclusiveEpoc
       window.__vibetableE2EBridgeCapture.message = message;
       window.chrome.webview.removeEventListener("message", handler);
     });
-  }, minimumExclusiveEpoch);
+  }, { minimumEpoch: minimumExclusiveEpoch, expectedFailureMethod: failureMethod });
 }
 
 async function waitForCapturedBridgeMessage(page, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const message = await page.evaluate(
-      () => window.__vibetableE2EBridgeCapture?.message ?? null,
-    );
-    if (message) return message;
+    const captured = await page.evaluate(() => ({
+      message: window.__vibetableE2EBridgeCapture?.message ?? null,
+      error: window.__vibetableE2EBridgeCapture?.error ?? null,
+    }));
+    if (captured.error) {
+      throw new Error(
+        `captured ${captured.error.method} failure: `
+        + `${captured.error.code}: ${captured.error.message}`,
+      );
+    }
+    if (captured.message) return captured.message;
     await page.waitForTimeout(50);
   }
   throw new Error("captured bridge response timed out");
@@ -1650,12 +1709,7 @@ async function listFilesRecursively(root) {
 }
 
 async function waitForPreviewArtifact(runtime, expectedHash, expectedSize, timeoutMs = 30_000) {
-  const previewRoot = path.join(
-    runtime.evidenceDir,
-    "runtime",
-    "local-data",
-    "attachment-preview",
-  );
+  const previewRoot = path.join(runtime.dataRoot, "attachment-preview");
   const deadline = Date.now() + timeoutMs;
   let observed = [];
   while (Date.now() < deadline) {
@@ -2796,11 +2850,13 @@ async function scenario08(page, recorder) {
     /changed|conflict|stale|digest|变更|冲突/i.test(conflictText), { conflictText });
 }
 
-async function requestSidecarKill(runtime, reason) {
+async function requestPackagedProcessKill(runtime, action, reason) {
   const requestPath = path.join(runtime.evidenceDir, "fault-request.json");
   const resultPath = path.join(runtime.evidenceDir, "fault-result.json");
+  const requestId = crypto.randomUUID();
   await fs.writeFile(requestPath, `${JSON.stringify({
-    action: "kill-sidecar",
+    requestId,
+    action,
     reason,
     requestedAt: new Date().toISOString(),
   }, null, 2)}\n`, "utf8");
@@ -2808,8 +2864,12 @@ async function requestSidecarKill(runtime, reason) {
   while (Date.now() < deadline) {
     try {
       const result = JSON.parse(await fs.readFile(resultPath, "utf8"));
+      if (result.requestId !== requestId) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        continue;
+      }
       if (result.status !== "completed") {
-        throw new Error(`sidecar fault request failed: ${JSON.stringify(result)}`);
+        throw new Error(`${action} fault request failed: ${JSON.stringify(result)}`);
       }
       return result;
     } catch (error) {
@@ -2817,7 +2877,11 @@ async function requestSidecarKill(runtime, reason) {
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error("Python orchestrator did not acknowledge the sidecar fault request");
+  throw new Error(`Python orchestrator did not acknowledge the ${action} fault request`);
+}
+
+async function requestSidecarKill(runtime, reason) {
+  return requestPackagedProcessKill(runtime, "kill-sidecar", reason);
 }
 
 async function waitForMutationBarrier(runtime, timeoutMs = 60_000) {
@@ -3121,7 +3185,11 @@ async function scenario10(page, recorder, _network, runtime) {
     { baselineRowCount },
   );
 
-  const fault = await requestSidecarKill(runtime, "exercise realtime disconnect and catch-up");
+  const fault = await requestPackagedProcessKill(
+    runtime,
+    "kill-sidecar",
+    "exercise realtime disconnect and catch-up",
+  );
   recorder.check("only the exact child PocketBase process was terminated", fault.processName === "vibetable-pb.exe", {
     fault,
   });
@@ -3174,9 +3242,131 @@ async function scenario10(page, recorder, _network, runtime) {
     stableGrid.rowCount === 2 && stableGrid.matchingCellCount === 1,
     { stableGrid },
   );
+
+  const backendSourceSession = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics?.workspaceSession ?? null,
+  );
+  const backendFault = await requestPackagedProcessKill(
+    runtime,
+    "kill-backend",
+    "exercise supported workspace reopen after packaged backend exit",
+  );
+  recorder.check(
+    "only the exact packaged Python backend process was terminated",
+    backendFault.processName === "vibetable-backend.exe",
+    { backendFault },
+  );
+
+  await beginWritableWorkspaceBootstrapCapture(
+    page,
+    backendSourceSession.sessionEpoch,
+    "workspace.open",
+  );
+  const closed = await rawWorkspaceV2Request(
+    page,
+    "workspace.close",
+    { reason: "user" },
+    60_000,
+  );
+  recorder.check(
+    "the faulted backend session closed through the supported workspace lifecycle",
+    closed.result?.state === "closed" && closed.result?.workspaceId === null,
+    { closed },
+  );
+  await openWorkspaceCenterFromSwitcher(page);
+  const workspaceCenter = page.getByTestId("workspace-center");
+  const workspace = workspaceCenter.getByRole("button", { name: /E2E Product Workspace/ });
+  await workspace.waitFor({ state: "visible", timeout: 30_000 });
+  await workspace.click();
+  const recoveredBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
+  const recoveredSession = recoveredBootstrap.payload.session;
+  recorder.check(
+    "reopening after packaged backend exit published a fresh writable session epoch",
+    recoveredSession.workspaceId === backendSourceSession.workspaceId
+      && recoveredSession.state === "openedWritable"
+      && recoveredSession.writable === true
+      && recoveredSession.sessionEpoch > backendSourceSession.sessionEpoch,
+    { backendSourceSession, recoveredSession },
+  );
+
+  const retentionBeforeStaleWrite = (
+    await rawWorkspaceV2Request(page, "retention.get", {})
+  ).result;
+  const staleRepositoryLimit = retentionBeforeStaleWrite.repositoryLimitBytes === 1024 ** 3
+    ? 2 * 1024 ** 3
+    : 1024 ** 3;
+  const staleBackendWrite = await requestWithStaleWorkspaceScope(
+    page,
+    "retention.update",
+    {
+      expectedRevision: retentionBeforeStaleWrite.policyRevision,
+      snapshotDays: retentionBeforeStaleWrite.snapshotDays,
+      snapshotCount: retentionBeforeStaleWrite.snapshotCount,
+      snapshotBuckets: retentionBeforeStaleWrite.snapshotBuckets,
+      fileRevisionDays: retentionBeforeStaleWrite.fileRevisionDays,
+      fileRevisionCount: retentionBeforeStaleWrite.fileRevisionCount,
+      fileRevisionBuckets: retentionBeforeStaleWrite.fileRevisionBuckets,
+      repositoryLimitBytes: staleRepositoryLimit,
+    },
+    backendSourceSession,
+  );
+  recorder.check(
+    "the retired backend epoch cannot write into the recovered session",
+    (staleBackendWrite.type === "operation.failed"
+        || staleBackendWrite.type === "workspace.v2.response")
+      && staleBackendWrite.payload?.error?.code === "workspace.session_stale",
+    { staleBackendWrite },
+  );
+  await acknowledgeExpectedBridgeFailure(page, staleBackendWrite);
+  const retentionAfterStaleWrite = (
+    await rawWorkspaceV2Request(page, "retention.get", {})
+  ).result;
+  recorder.check(
+    "the rejected old-epoch write left the recovered workspace policy unchanged",
+    retentionAfterStaleWrite.policyRevision === retentionBeforeStaleWrite.policyRevision
+      && retentionAfterStaleWrite.repositoryLimitBytes
+        === retentionBeforeStaleWrite.repositoryLimitBytes,
+    { retentionBeforeStaleWrite, retentionAfterStaleWrite },
+  );
+
+  const afterBackendRecovery = await rawBridgeRequest(
+    page,
+    "mutation.apply",
+    {
+      contractVersion: "1.0",
+      requestId: "e2e-after-backend-recovery",
+      idempotencyKey: "e2e-after-backend-recovery",
+      tableId,
+      schemaRevision: recovered.snapshot.schemaRevision,
+      operations: [{
+        kind: "insert",
+        recordId: null,
+        values: { [valueField]: "after-backend-recovery" },
+      }],
+      actor: { type: "user", id: "e2e-backend-recovered", displayName: "E2E backend recovered" },
+      expectedRevision: null,
+      expectedDigest: null,
+    },
+  );
+  recorder.check(
+    "the fresh backend session accepts a new product mutation",
+    afterBackendRecovery.type === "mutation.apply"
+      && afterBackendRecovery.payload?.status === "applied",
+    { afterBackendRecovery },
+  );
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "E2E Realtime Recovery");
+  const recoveredCell = page.locator(`.tabulator-cell[tabulator-field="${valueField}"]`)
+    .filter({ hasText: "after-backend-recovery" });
+  await recoveredCell.waitFor({ timeout: 30_000 });
+  recorder.check(
+    "the recovered-session write is visible exactly once after backend recovery",
+    await recoveredCell.count() === 1,
+    { recoveredCellCount: await recoveredCell.count() },
+  );
 }
 
-async function scenario11(page, recorder) {
+async function scenario11(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
   const pluginTable = await createSimpleTable(page, "E2E Plugin Target", "value");
@@ -3194,6 +3384,20 @@ async function scenario11(page, recorder) {
     .filter({ hasText: "com.vibetable.e2e.mutation-boundary" });
   await pluginRow.waitFor({ timeout: 60_000 });
   await pluginRow.click();
+
+  const toggle = page.getByTestId("plugin-toggle");
+  await toggle.click();
+  await page.waitForFunction(() =>
+    !document.querySelector('[data-testid="plugin-toggle"]')?.classList.contains("enabled"));
+  recorder.check("installed plugin can be disabled through its lifecycle UI",
+    !(await toggle.getAttribute("class")).includes("enabled")
+      && await page.locator(".action-row button.run-button").first().isDisabled());
+  await toggle.click();
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="plugin-toggle"]')?.classList.contains("enabled"));
+  recorder.check("disabled plugin can be explicitly enabled again",
+    (await toggle.getAttribute("class")).includes("enabled")
+      && await page.locator(".action-row button.run-button").first().isEnabled());
 
   const actions = page.locator(".action-row");
   await actions.filter({ hasText: "allowed-plan" }).locator("button.run-button").click();
@@ -3253,6 +3457,25 @@ async function scenario11(page, recorder) {
     1,
   );
   recorder.check("rejected plugin mutation did not create a second record", afterDenied === 1);
+  await page.getByTestId("nav-plugins").click();
+  await pluginRow.click();
+  const sourceControl = path.join(runtime.controlsDir, "plugin-source.txt");
+  const installedSource = (await fs.readFile(sourceControl, "utf8")).trim();
+  const invalidUpgrade = path.join(runtime.controlsDir, "invalid-plugin-upgrade");
+  await fs.cp(installedSource, invalidUpgrade, { recursive: true });
+  await fs.writeFile(path.join(invalidUpgrade, "manifest.json"), "{ invalid manifest\n", "utf8");
+  await fs.writeFile(sourceControl, `${invalidUpgrade}\n`, "utf8");
+  await beginBridgeMessageCapture(page, ["operation.failed"]);
+  await page.getByTestId("plugin-upgrade").click();
+  const upgradeFailure = page.locator(".global-error[role='alert']");
+  await upgradeFailure.waitFor({ state: "visible", timeout: 30_000 });
+  const invalidUpgradeFailure = await waitForCapturedBridgeMessage(page, 30_000);
+  await acknowledgeExpectedBridgeFailure(page, invalidUpgradeFailure);
+  recorder.check("invalid upgrade source is rejected without replacing the installation",
+    (await upgradeFailure.innerText()).trim().length > 0
+      && await page.getByTestId("plugin-install-plan").isHidden()
+      && (await page.locator(".status-strip").innerText()).includes("1.0.0"),
+  { message: await upgradeFailure.innerText() });
 }
 
 async function scenario12(page, recorder, _network, runtime) {
@@ -3818,6 +4041,470 @@ async function scenario12(page, recorder, _network, runtime) {
   });
 }
 
+async function scenario13(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-storage").click();
+  const settings = page.getByTestId("storage-settings");
+  await settings.waitFor({ state: "visible", timeout: 30_000 });
+
+  const verify = page.getByTestId("repository-verify");
+  await verify.waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-testid="repository-verify"]');
+    return button instanceof HTMLButtonElement && !button.disabled;
+  }, null, { timeout: 30_000 });
+  recorder.check("repository verification is available through the packaged settings UI",
+    await verify.isEnabled(), { disabled: await verify.isDisabled() });
+  await verify.click();
+  const verification = settings.locator(".n-alert").last();
+  await verification.waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("repository verification returns a visible user-facing result",
+    (await verification.innerText()).trim().length > 0,
+    { text: await verification.innerText() });
+
+  const initialRetentionReply = await rawWorkspaceV2Request(page, "retention.get", {});
+  const initialRetention = initialRetentionReply.result;
+  const limit = page.getByTestId("retention-repository-limit").locator("input");
+  await limit.fill("1");
+  await limit.press("Tab");
+  const save = page.getByTestId("retention-save");
+  recorder.check("retention policy becomes dirty through the real Settings control",
+    await save.isEnabled(), { saveDisabled: await save.isDisabled() });
+  await beginWorkspaceV2MethodCapture(page, "retention.update");
+  await save.click();
+  const retentionUpdate = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("retention policy update round-trips through the packaged UI",
+    retentionUpdate.type === "workspace.v2.response"
+      && retentionUpdate.payload?.method === "retention.update"
+      && retentionUpdate.payload?.ok === true
+      && ["1", "1.0"].includes(await limit.inputValue()),
+  { limit: await limit.inputValue(), retentionUpdate });
+
+  let stalePolicyFailure = "";
+  try {
+    await rawWorkspaceV2Request(page, "retention.update", {
+      expectedRevision: initialRetention.policyRevision,
+      snapshotDays: initialRetention.snapshotDays,
+      snapshotCount: initialRetention.snapshotCount,
+      snapshotBuckets: initialRetention.snapshotBuckets,
+      fileRevisionDays: initialRetention.fileRevisionDays,
+      fileRevisionCount: initialRetention.fileRevisionCount,
+      fileRevisionBuckets: initialRetention.fileRevisionBuckets,
+      repositoryLimitBytes: initialRetention.repositoryLimitBytes,
+    });
+  } catch (error) {
+    stalePolicyFailure = String(error);
+  }
+  await acknowledgeExpectedBridgeFailureByCodeIfPresent(
+    page,
+    "retention.policy_revision_stale",
+  );
+  const retainedPolicy = (await rawWorkspaceV2Request(page, "retention.get", {})).result;
+  recorder.check("a stale retention policy revision fails closed without overwriting the UI update",
+    stalePolicyFailure.includes("retention.policy_revision_stale")
+      && retainedPolicy.policyRevision === initialRetention.policyRevision + 1
+      && retainedPolicy.repositoryLimitBytes === 1024 ** 3,
+  { stalePolicyFailure, initialRetention, retainedPolicy });
+
+  const retentionPlan = page.getByTestId("retention-plan-preview");
+  await retentionPlan.waitFor({ state: "visible", timeout: 30_000 });
+  await beginWorkspaceV2MethodCapture(page, "retention.plan");
+  await retentionPlan.click();
+  const retentionPreview = await waitForCapturedBridgeMessage(page, 30_000);
+  const cleanupIsEmpty = retentionPreview.type === "workspace.v2.response"
+    && retentionPreview.payload?.method === "retention.plan"
+    && retentionPreview.payload?.ok === true
+    && retentionPreview.payload?.result?.reclaimableBytes === 0
+    && Array.isArray(retentionPreview.payload?.result?.blockedReasons)
+    && retentionPreview.payload.result.blockedReasons.length === 0;
+  const apply = page.getByTestId("retention-plan-apply");
+  await apply.waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("retention cleanup preview produces an explicit empty plan before applying it",
+    cleanupIsEmpty && await apply.isEnabled(),
+  { applyDisabled: await apply.isDisabled(), retentionPreview });
+  if (!cleanupIsEmpty) {
+    throw new Error("refusing to apply a non-empty retention cleanup plan");
+  }
+
+  const sync = page.getByTestId("workspace-storage-sync");
+  recorder.check("direct workspace does not fabricate a replica synchronize path",
+    !(await sync.isVisible()), { syncVisible: await sync.isVisible() });
+
+  await beginWorkspaceV2MethodCapture(page, "retention.apply");
+  await apply.click();
+  const retentionApply = await waitForCapturedBridgeMessage(page, 30_000);
+  const deletedObjects = retentionApply.payload?.result?.deletedObjects;
+  const reclaimedBytes = retentionApply.payload?.result?.reclaimedBytes;
+  await apply.waitFor({ state: "hidden", timeout: 30_000 });
+  recorder.check("retention cleanup applies the verified empty plan through the packaged UI",
+    retentionApply.type === "workspace.v2.response"
+      && retentionApply.payload?.method === "retention.apply"
+      && retentionApply.payload?.ok === true
+      && deletedObjects === 0
+      && reclaimedBytes === 0,
+  { retentionApply, planCleared: !(await apply.isVisible()) });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "13-protection-policy.png"), fullPage: true });
+}
+
+async function scenario14(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-files").click();
+  const workspace = page.getByTestId("file-workspace");
+  await workspace.waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("document-import").click();
+  const row = page.locator('[data-testid^="document-row-"]').filter({
+    hasText: "document-diff-source.txt",
+  });
+  await row.waitFor({ state: "visible", timeout: 30_000 });
+
+  const listed = await rawWorkspaceV2Request(page, "fileHistory.listDocuments", {
+    includeDeleted: false,
+  });
+  const document = listed.result?.documents?.find(
+    (item) => item.relativePath === "document-diff-source.txt",
+  );
+  recorder.check("host-only picker imports a real TXT into file history",
+    typeof document?.documentId === "string"
+      && typeof document?.effectiveRevisionId === "string",
+  { document });
+  const firstTree = await rawWorkspaceV2Request(page, "fileHistory.readTree", {
+    documentId: document.documentId,
+  });
+  const historicalRevisionId = firstTree.result?.effectiveRevisionId;
+  const restored = await rawWorkspaceV2Request(page, "fileHistory.restore", {
+    documentId: document.documentId,
+    expectedEffectiveRevisionId: historicalRevisionId,
+    historicalRevisionId,
+  });
+  const effectiveRevisionId = restored.result?.revisionId;
+  recorder.check("real restore creates a second immutable revision for comparison",
+    typeof effectiveRevisionId === "string"
+      && effectiveRevisionId !== historicalRevisionId,
+  { historicalRevisionId, effectiveRevisionId, restored: restored.result });
+
+  const oldHandleAttribute = await row.getAttribute("data-testid");
+  await workspace.locator(".file-toolbar > button").first().click();
+  await page.waitForFunction(
+    ({ oldHandle, name }) => {
+      const current = [...document.querySelectorAll('[data-testid^="document-row-"]')]
+        .find((candidate) => candidate.textContent?.includes(name));
+      return current?.getAttribute("data-testid") !== oldHandle;
+    },
+    { oldHandle: oldHandleAttribute, name: "document-diff-source.txt" },
+  );
+  const refreshedRow = page.locator('[data-testid^="document-row-"]').filter({
+    hasText: "document-diff-source.txt",
+  });
+  const refreshedHandleAttribute = await refreshedRow.getAttribute("data-testid");
+  const entryHandle = refreshedHandleAttribute?.replace(/^document-row-/u, "");
+  await refreshedRow.click();
+  await workspace.locator(".inspector-tabs button").nth(1).click();
+  await page.getByTestId("file-revision-tree").waitFor({ state: "visible" });
+  const compare = page.getByTestId("compare-revision").first();
+  await compare.waitFor({ state: "visible", timeout: 30_000 });
+  await beginBridgeMessageCapture(page, ["document.diffCompleted"]);
+  await compare.click();
+  const completed = await waitForCapturedBridgeMessage(page, 30_000);
+  const resultAlert = page.getByTestId("diff-result");
+  await resultAlert.waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("FileRevisionTree uses the closed operation and renders a localized result",
+    completed.payload?.outcome === "identical"
+      && completed.payload?.historicalRevisionId === historicalRevisionId
+      && completed.payload?.effectiveRevisionId === effectiveRevisionId
+      && (await resultAlert.innerText()).trim().length > 0,
+  { completed, text: await resultAlert.innerText() });
+
+  const staleAdvance = await rawWorkspaceV2Request(page, "fileHistory.restore", {
+    documentId: document.documentId,
+    expectedEffectiveRevisionId: effectiveRevisionId,
+    historicalRevisionId,
+  });
+  const stale = await rawBridgeRequest(
+    page,
+    "document.diffRequested",
+    {
+      entryHandle,
+      operationId: crypto.randomUUID(),
+      historicalRevisionId,
+      expectedEffectiveRevisionId: effectiveRevisionId,
+    },
+    30_000,
+    ["document.diffCompleted"],
+  );
+  recorder.check("materialization CAS fails closed when the revision has advanced",
+    stale.type === "document.diffCompleted"
+      && stale.payload?.outcome === "failure"
+      && stale.payload?.failure === "stale",
+  { stale, staleAdvance: staleAdvance.result });
+
+  let rawMaterializeFailure = "";
+  try {
+    await rawWorkspaceV2Request(page, "fileHistory.materializeDiffPair", {
+      documentId: document.documentId,
+      historicalRevisionId,
+      expectedEffectiveRevisionId: effectiveRevisionId,
+      pathGrant: `host-path-grant://${crypto.randomUUID()}`,
+    });
+  } catch (error) {
+    rawMaterializeFailure = String(error);
+  }
+  recorder.check("renderer cannot invoke raw diff materialization",
+    rawMaterializeFailure.includes("UNKNOWN_V2_METHOD"),
+  { rawMaterializeFailure });
+  await acknowledgeExpectedBridgeFailureByCodeIfPresent(page, "UNKNOWN_V2_METHOD");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "14-document-diff.png"), fullPage: true });
+}
+
+async function requestWithStaleWorkspaceScope(page, method, params, staleSession) {
+  return page.evaluate(
+    ({ rpcMethod, rpcParams, session }) => new Promise((resolve, reject) => {
+      const operationId = crypto.randomUUID();
+      const requestId = `e2e-${operationId}`;
+      const wire = {
+        scope: "workspace",
+        workspaceId: session.workspaceId,
+        sessionEpoch: session.sessionEpoch,
+        operationId,
+        sequence: Date.now() * 1_000,
+      };
+      const timer = setTimeout(() => {
+        window.chrome.webview.removeEventListener("message", handler);
+        reject(new Error(`stale workspace request timed out for ${rpcMethod}`));
+      }, 20_000);
+      const handler = (event) => {
+        let message = event.data;
+        if (typeof message === "string") {
+          try { message = JSON.parse(message); } catch { return; }
+        }
+        if (!message || message.requestId !== requestId) return;
+        clearTimeout(timer);
+        window.chrome.webview.removeEventListener("message", handler);
+        resolve(message);
+      };
+      window.chrome.webview.addEventListener("message", handler);
+      window.chrome.webview.postMessage({
+        type: "workspace.v2.request",
+        requestId,
+        scope: wire,
+        wire,
+        payload: { method: rpcMethod, params: rpcParams, wire },
+      });
+    }),
+    { rpcMethod: method, rpcParams: params, session: staleSession },
+  );
+}
+
+async function openWorkspaceCenterFromSwitcher(page) {
+  const switcher = page.getByTestId("workspace-switcher");
+  await switcher.locator(".switcher-trigger").click();
+  await page.locator(".n-dropdown-option").last().click();
+  await page.getByTestId("workspace-center").waitFor({ state: "visible", timeout: 30_000 });
+}
+
+async function switchWorkspaceByName(page, name, minimumEpoch) {
+  await beginWritableWorkspaceBootstrapCapture(page, minimumEpoch, "workspace.switch");
+  const switcher = page.getByTestId("workspace-switcher");
+  await switcher.locator(".switcher-trigger").click();
+  await page.locator(".n-dropdown-option").filter({ hasText: name }).click();
+  return waitForCapturedBridgeMessage(page, 60_000);
+}
+
+async function scenario15(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder);
+  const originalSession = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics?.workspaceSession ?? null,
+  );
+  await openWorkspaceCenterFromSwitcher(page);
+  await page.getByTestId("workspace-create").click();
+  const modal = page.getByTestId("workspace-flow-modal");
+  await modal.locator("input").first().fill("E2E Switch Target");
+  await page.getByTestId("workspace-flow-confirm").click();
+  const target = page.getByTestId("workspace-center").getByRole("button", {
+    name: /E2E Switch Target/,
+  });
+  await target.waitFor({ state: "visible", timeout: 60_000 });
+  await beginWritableWorkspaceBootstrapCapture(
+    page,
+    originalSession.sessionEpoch,
+    "workspace.open",
+  );
+  await target.click();
+  const targetBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
+  const targetSession = targetBootstrap.payload.session;
+  recorder.check("Workspace Center creates and opens a second real workspace",
+    targetSession.workspaceId !== originalSession.workspaceId
+      && targetSession.sessionEpoch > originalSession.sessionEpoch,
+  { originalSession, targetSession });
+
+  const switchedBootstrap = await switchWorkspaceByName(
+    page,
+    "E2E Product Workspace",
+    targetSession.sessionEpoch,
+  );
+  const switchedSession = switchedBootstrap.payload.session;
+  recorder.check("workspace switcher rotates the writable session epoch",
+    switchedSession.workspaceId === originalSession.workspaceId
+      && switchedSession.sessionEpoch > targetSession.sessionEpoch,
+  { targetSession, switchedSession });
+
+  const stale = await requestWithStaleWorkspaceScope(
+    page,
+    "snapshot.list",
+    { cursor: null, limit: 1 },
+    targetSession,
+  );
+  const staleText = JSON.stringify(stale);
+  recorder.check("the retired workspace epoch cannot write or read into the new session",
+    (stale.type === "operation.failed" || stale.type === "workspace.v2.response")
+      && (stale.payload?.error?.code === "workspace.session_stale"
+        || /session[_ .-]?epoch[_ .-]?stale|stale/i.test(staleText)),
+  { stale });
+  await acknowledgeExpectedBridgeFailure(page, stale);
+
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-versions").click();
+  const settings = page.getByTestId("snapshot-settings");
+  await settings.waitFor({ state: "visible", timeout: 30_000 });
+  const existingSnapshotIds = await page.locator(".snapshot-row").evaluateAll(
+    (rows) => rows.map((row) => row.id),
+  );
+  await page.getByTestId("snapshot-create").click();
+  await page.waitForFunction(
+    (count) => document.querySelectorAll(".snapshot-row").length > count,
+    existingSnapshotIds.length,
+    { timeout: 60_000 },
+  );
+  const createdSnapshotId = await page.locator(".snapshot-row").evaluateAll(
+    (rows, existingIds) => rows.map((row) => row.id).find((id) => !existingIds.includes(id)),
+    existingSnapshotIds,
+  );
+  recorder.check("snapshot creation exposes a new immutable timeline identity",
+    typeof createdSnapshotId === "string" && createdSnapshotId.startsWith("snapshot-"),
+  { existingSnapshotIds, createdSnapshotId });
+  const snapshot = page.locator(`[id="${createdSnapshotId}"]`);
+  await snapshot.click();
+  await page.getByTestId("snapshot-export-open").click();
+  await page.getByTestId("snapshot-export-apply").click();
+  const packagePath = path.join(runtime.controlsDir, "workspace-snapshot.vtsnapshot");
+  const packageDeadline = Date.now() + 60_000;
+  while (Date.now() < packageDeadline) {
+    try {
+      if ((await fs.stat(packagePath)).size > 0) break;
+    } catch { /* export has not committed the package yet */ }
+    await page.waitForTimeout(100);
+  }
+  const packageBytes = await fs.readFile(packagePath);
+  recorder.check("snapshot export writes a non-empty package through the host picker",
+    packageBytes.length > 0, { packageSize: packageBytes.length });
+
+  const sourceEpoch = switchedSession.sessionEpoch;
+  await beginWritableWorkspaceBootstrapCapture(
+    page,
+    sourceEpoch,
+    "snapshot.openAsNewWorkspace",
+  );
+  await page.getByTestId("snapshot-open-as-new").click();
+  const openedBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
+  recorder.check("snapshot open-as-new creates a distinct writable workspace",
+    openedBootstrap.payload.session.workspaceId !== switchedSession.workspaceId
+      && openedBootstrap.payload.session.sessionEpoch > sourceEpoch,
+  { sourceSession: switchedSession, openedSession: openedBootstrap.payload.session });
+
+  await switchWorkspaceByName(
+    page,
+    "E2E Product Workspace",
+    openedBootstrap.payload.session.sessionEpoch,
+  );
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-versions").click();
+  await fs.writeFile(packagePath, "corrupt snapshot package\n", "utf8");
+  const corruptRoundTripStart = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics?.roundTrips.length ?? 0,
+  );
+  await page.getByTestId("snapshot-import").click();
+  await page.waitForFunction(
+    ({ start }) => window.__vibetableE2EBridgeDiagnostics?.roundTrips
+      .slice(start)
+      .some((item) => item.requestType === "snapshot.inspectPackage"),
+    { start: corruptRoundTripStart },
+    { timeout: 30_000 },
+  );
+  const corruptRoundTrip = await page.evaluate(
+    ({ start }) => window.__vibetableE2EBridgeDiagnostics?.roundTrips
+      .slice(start)
+      .find((item) => item.requestType === "snapshot.inspectPackage") ?? null,
+    { start: corruptRoundTripStart },
+  );
+  const corruptFailure = page.getByTestId("snapshot-operation-error");
+  await corruptFailure.waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("a damaged snapshot package fails visibly before import",
+    corruptRoundTrip?.code === "snapshot.package_invalid"
+      && (await corruptFailure.innerText()).trim().length > 0,
+  { corruptRoundTrip, message: await corruptFailure.innerText() });
+  await acknowledgeExpectedBridgeFailure(page, corruptRoundTrip);
+
+  await fs.writeFile(packagePath, packageBytes);
+  await page.getByTestId("snapshot-import").click();
+  await page.getByTestId("snapshot-import-apply").waitFor({ state: "visible", timeout: 30_000 });
+  const beforeImport = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics?.workspaceSession?.sessionEpoch ?? 0,
+  );
+  await beginWritableWorkspaceBootstrapCapture(page, beforeImport, "snapshot.import");
+  await page.getByTestId("snapshot-import-apply").click();
+  const importedBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
+  recorder.check("the restored package imports as another writable workspace through the UI",
+    importedBootstrap.payload.session.workspaceId !== switchedSession.workspaceId
+      && importedBootstrap.payload.session.sessionEpoch > beforeImport,
+  { importedSession: importedBootstrap.payload.session });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "15-workspace-snapshot-package.png"),
+    fullPage: true,
+  });
+}
+
+async function scenario16(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-dashboard").click();
+  const workspace = page.getByTestId("dashboard-workspace");
+  await workspace.waitFor({ state: "visible", timeout: 30_000 });
+
+  await page.getByTestId("dashboard-create").click();
+  const modal = page.getByTestId("dashboard-create-modal");
+  await modal.waitFor({ state: "visible", timeout: 10_000 });
+  const createSubmit = page.getByTestId("dashboard-create-submit");
+  await page.getByTestId("dashboard-create-name").locator("input").fill("");
+  recorder.check("Dashboard rejects an empty name before persistence",
+    await createSubmit.isDisabled());
+  await page.getByTestId("dashboard-create-name").locator("input").fill("E2E Dashboard");
+  await page.getByTestId("dashboard-create-template-blank").click();
+  await createSubmit.click();
+
+  const save = page.getByTestId("dashboard-save");
+  await save.waitFor({ state: "visible", timeout: 10_000 });
+  recorder.check("a blank Dashboard draft is created through the product UI",
+    await save.isEnabled());
+  await save.click();
+
+  const persisted = workspace.locator('[data-testid^="dashboard-select-"]').filter({
+    hasText: "E2E Dashboard",
+  });
+  await persisted.waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("nav-dashboard").click();
+  await workspace.waitFor({ state: "visible", timeout: 30_000 });
+  await persisted.waitFor({ state: "visible", timeout: 30_000 });
+  await persisted.click();
+  await page.getByTestId("dashboard-refresh").click();
+  recorder.check("the saved Dashboard reloads from the product UI and remains selectable",
+    await persisted.getAttribute("aria-selected") === "true",
+  { dashboardName: "E2E Dashboard" });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "16-dashboard-lifecycle.png"),
+    fullPage: true,
+  });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -3831,6 +4518,10 @@ const scenarios = {
   "10-sse-reconnect": scenario10,
   "11-plugin-mutation": scenario11,
   "12-backup-consistency": scenario12,
+  "13-protection-policy": scenario13,
+  "14-document-diff": scenario14,
+  "15-workspace-snapshot-package": scenario15,
+  "16-dashboard-lifecycle": scenario16,
 };
 
 async function main() {
@@ -3897,6 +4588,7 @@ async function main() {
       await implementation(page, recorder, network, {
         evidenceDir,
         controlsDir: path.resolve(args["controls-dir"]),
+        dataRoot: path.resolve(args["data-root"]),
         recordUiTiming(name, durationMs, details = {}) {
           result.uiTimings.push({
             name,

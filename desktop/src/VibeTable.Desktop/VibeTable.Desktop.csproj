@@ -22,6 +22,8 @@
     <ProjectReference Include="..\VibeTable.Contracts\VibeTable.Contracts.csproj" />
     <ProjectReference Include="..\VibeTable.Infrastructure\VibeTable.Infrastructure.csproj" />
     <ProjectReference Include="..\VibeTable.PreviewHost\VibeTable.PreviewHost.csproj" />
+    <ProjectReference Include="..\VibeTable.Workspace\VibeTable.Workspace.csproj" />
+    <ProjectReference Include="..\VibeTable.DocumentDiff.OpenXml\VibeTable.DocumentDiff.OpenXml.csproj" />
   </ItemGroup>
 
   <ItemGroup>

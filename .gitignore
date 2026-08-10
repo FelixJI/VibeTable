@@ -166,12 +166,8 @@ nul
 
 # .NET and new WebView frontend
 node_modules/
-# Bundled Node ships its own node_modules/. Only the npm package is part of the
-# runtime (needed at first launch); the corepack package is materialized lazily
-# by the bundled corepack launcher, so exclude it rather than re-including the
-# whole directory (the broad `!runtime/node/node_modules/` let corepack slip in).
-!runtime/node/node_modules/npm/
-!runtime/node/node_modules/npm/**
+# The locked developer Node toolchain is restored under ignored `.tools/node/`
+# by `scripts/node_toolchain.py`; it is never part of the offline product package.
 desktop/**/bin/
 desktop/**/obj/
 desktop/web-grid/node_modules/

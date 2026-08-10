@@ -19,6 +19,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/security"
 	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 	mutationpkg "github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 const idempotencyTTL = 24 * time.Hour
@@ -539,7 +540,16 @@ func executeIdempotent[T any](
 	markReplayed func(*T),
 ) (T, error) {
 	var result T
-	err := service.app.RunInTransaction(func(txApp core.App) error {
+	err := service.app.RunInTransaction(func(txApp core.App) (transactionErr error) {
+		defer func() {
+			if transactionErr == nil {
+				transactionErr = writecoordinator.PersistPocketBaseReceipt(
+					ctx,
+					txApp,
+					service.now(),
+				)
+			}
+		}()
 		if err := ctx.Err(); err != nil {
 			return err
 		}

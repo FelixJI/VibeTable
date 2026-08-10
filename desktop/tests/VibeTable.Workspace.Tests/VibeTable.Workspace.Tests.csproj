@@ -34,4 +34,10 @@
     <ProjectReference Include="..\..\src\VibeTable.Workspace\VibeTable.Workspace.csproj" />
   </ItemGroup>
 
+  <!-- The old path-based adapter tests are retained in history only. The
+       public module surface is the stream-based CompareAsync seam. -->
+  <ItemGroup>
+    <Compile Remove="DiffAdapterTests.cs" />
+  </ItemGroup>
+
 </Project>

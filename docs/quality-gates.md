@@ -32,9 +32,9 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
 - Python 85%：对核心 backend 合理，保持。
 - .NET 45%/65%/80% 分项目阈值：按模块可测试性分层，比单一总阈值合理；新增数据目录事务逻辑必须有独立单测。
 - Web：现阶段以全量 Vitest + typecheck + production build 为主；建议后续在覆盖率稳定后按核心 service/store 设置增量阈值，不宜立即用全局高阈值阻断 UI 重构。
-- Go race：价值高但成本显著，放在源码冻结/高风险变更门禁，不放普通 PR。门禁按包
-  复用 race 编译、以三个 package worker 执行，但每个包内仍逐测试独立进程串行；
-  不减少测试、不关闭 race detector。
+- Go race：价值高且成本显著。当前 GitHub PR 的完整 release smoke 会执行 `race-a` 与
+  `race-b` lanes；本地最小反馈可按改动风险只运行相关 Go 测试。门禁按包复用 race 编译、以三个
+  package worker 执行，但每个包内仍逐测试独立进程串行；不减少测试、不关闭 race detector。
 - 产品 E2E：必须作为发布证据，但依赖真实 Windows/WebView2 桌面会话，不伪装成 Ubuntu 单元门禁。
 
 2026-07-31 的同机全量基线中，优化后的 Go race 覆盖 46 个有测试包、582 个命名

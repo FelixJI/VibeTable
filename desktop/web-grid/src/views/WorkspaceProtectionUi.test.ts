@@ -36,16 +36,9 @@ describe("workspace protection UI capability gates", () => {
     expect(wrapper.text()).toContain("季度规划");
     expect(wrapper.text()).toContain("待写入目录副本");
     expect(wrapper.text()).toContain("建议性协调");
-    await wrapper.get(
+    expect(wrapper.find(
       '[data-testid="workspace-relink-11111111-1111-4111-8111-111111111111"]',
-    ).trigger("click");
-    expect(wrapper.emitted("action")?.[0]?.[0]).toEqual({
-      method: "workspace.relink",
-      params: {
-        workspaceId: "11111111-1111-4111-8111-111111111111",
-        selectedRootGrant: "host-picker://workspace-root",
-      },
-    });
+    ).exists()).toBe(false);
     await wrapper.get('button[aria-label="打开工作区 季度规划"]').trigger("click");
     expect(wrapper.emitted("open")?.[0]?.[0]).toMatchObject({ displayName: "季度规划" });
   });
@@ -533,6 +526,25 @@ describe("workspace protection UI capability gates", () => {
       },
     });
     wrapper.unmount();
+  });
+
+  it("renders snapshot package failures through a stable product selector", async () => {
+    useWorkspaceSessionStore().configureCapabilities([
+      "workspace.session.v2",
+      "snapshot.package.v2",
+    ]);
+    const protection = useWorkspaceProtectionStore();
+    const wrapper = mount(WorkspaceProtectionSettings, {
+      props: { mode: "versions" },
+    });
+
+    expect(protection.beginOperation("snapshot.inspectPackage")).toBe(true);
+    protection.finishOperation("The Sidecar rejected the snapshot package operation.");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get('[data-testid="snapshot-operation-error"]').text()).toContain(
+      "The Sidecar rejected the snapshot package operation.",
+    );
   });
 
   it("requires credentials for encrypted imports and sends the staged plan only", async () => {

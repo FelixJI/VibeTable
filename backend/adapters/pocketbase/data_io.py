@@ -15,13 +15,13 @@ from typing import Any, cast
 
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.mutation import PocketBaseBulkMutationClient
-from backend.application.export_service import ExportService, QueryPagePort
-from backend.application.import_service import ImportService
-from backend.application.paste_service import PasteError, PasteService
-from backend.application.relation_io_adapters import (
+from backend.adapters.pocketbase.relation_io import (
     PocketBaseLookupExportProvider,
     PocketBaseRelationImportProvider,
 )
+from backend.application.export_service import ExportService, QueryPagePort
+from backend.application.import_service import ImportService
+from backend.application.paste_service import PasteError, PasteService
 from backend.contracts.data_io import (
     ApplyImportParams,
     ExportParams,

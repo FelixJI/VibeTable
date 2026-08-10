@@ -5,17 +5,19 @@ import pytest
 from backend.__main__ import _register_pocketbase_product_methods
 from backend.adapters.pocketbase.client import PocketBaseProductError
 from backend.adapters.pocketbase.transport import PocketBaseTransportError
+from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
 from backend.rpc.dispatcher import CODE_INVALID_PARAMS, CODE_PRODUCT_DATA, RpcDispatcher
 
 RETIRED_PROVIDER = "".join(["di", "rectus"])
 
 
 class FakeProductService:
-    def __getattr__(self, _name: str):
-        async def handler(_params):
-            return {}
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ProductParams]] = []
 
-        return handler
+    async def invoke(self, method: str, params: ProductParams) -> dict[str, object]:
+        self.calls.append((method, params))
+        return {}
 
 
 def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
@@ -23,7 +25,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
 
     _register_pocketbase_product_methods(dispatcher, FakeProductService())
 
-    assert set(dispatcher.registered_methods) == {
+    expected_methods = {
         "field.settings.describe",
         "field.change.plan",
         "field.change.apply",
@@ -64,9 +66,28 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "history.previewRestore",
         "history.read",
     }
+    assert set(PRODUCT_RPC_REGISTRY) == expected_methods
+    assert set(dispatcher.registered_methods) == expected_methods
     assert not any(
         method.startswith(f"{RETIRED_PROVIDER}.") for method in dispatcher.registered_methods
     )
+
+
+@pytest.mark.asyncio
+async def test_product_rpc_registration_delegates_through_single_invoke_seam() -> None:
+    dispatcher = RpcDispatcher()
+    service = FakeProductService()
+    _register_pocketbase_product_methods(dispatcher, service)
+
+    response = await dispatcher.dispatch(
+        {"jsonrpc": "2.0", "id": 1, "method": "schema.list", "params": {}}
+    )
+
+    assert response == {"jsonrpc": "2.0", "id": 1, "result": {}}
+    assert len(service.calls) == 1
+    method, params = service.calls[0]
+    assert method == "schema.list"
+    assert isinstance(params, PRODUCT_RPC_REGISTRY[method])
 
 
 @pytest.mark.asyncio
@@ -136,7 +157,8 @@ async def test_product_rpc_preserves_sanitized_structured_errors(
     expected_code: str,
 ) -> None:
     class ErrorService(FakeProductService):
-        async def list_tables(self, _params):
+        async def invoke(self, method: str, params: ProductParams) -> dict[str, object]:
+            del method, params
             raise failure
 
     dispatcher = RpcDispatcher()

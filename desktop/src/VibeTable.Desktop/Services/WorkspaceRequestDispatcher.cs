@@ -59,6 +59,8 @@ public sealed class WorkspaceRequestDispatcher
     private readonly TimeSpan _readRecoveryTimeout;
     private readonly WorkspaceSessionEnvelopeFilter? _sessionEnvelopeFilter;
     private readonly ConcurrentDictionary<string, DashboardRequestState> _dashboardRequests = new();
+    private readonly ConcurrentDictionary<string, DocumentDiffRequestState>
+        _documentDiffRequests = new();
     private readonly SemaphoreSlim _dashboardQueryGate = new(6, 6);
     private IProductDataRpcGateway? _productDataGateway;
     private IDashboardRpcGateway? _dashboardGateway;
@@ -122,14 +124,20 @@ public sealed class WorkspaceRequestDispatcher
     }
 
     public void SetDocumentWorkspace(WorkspaceDocumentOsAdapter documents)
-        => _documents = documents ?? throw new ArgumentNullException(nameof(documents));
+    {
+        CancelDocumentDiffRequests();
+        _documents = documents ?? throw new ArgumentNullException(nameof(documents));
+    }
 
     /// <summary>
     /// Invalidates renderer-visible document handles at a host lifecycle
     /// boundary. Safe before document workspace initialization.
     /// </summary>
     public void RotateDocumentCapabilityEpoch()
-        => _documents?.RotateCapabilityEpoch();
+    {
+        CancelDocumentDiffRequests();
+        _documents?.RotateCapabilityEpoch();
+    }
 
     /// <summary>
     /// Dispatches a routed web request to its handler. Each handler is
@@ -138,6 +146,34 @@ public sealed class WorkspaceRequestDispatcher
     /// </summary>
     public void Dispatch(RoutedWebRequest request)
     {
+        if (string.Equals(
+                request.Type,
+                "document.diffRequested",
+                StringComparison.Ordinal))
+        {
+            if (!TryRegisterDocumentDiffRequest(
+                    request,
+                    out string operationId,
+                    out DocumentDiffRequestState state))
+            {
+                return;
+            }
+            RunInBackground(
+                request,
+                () => OnDocumentDiffRequestedAsync(
+                    request,
+                    operationId,
+                    state));
+            return;
+        }
+
+        RunInBackground(request, () => DispatchAsync(request));
+    }
+
+    private void RunInBackground(
+        RoutedWebRequest request,
+        Func<Task> operation)
+    {
         // Fire-and-forget on the thread pool so the router callback returns
         // immediately. Each branch catches its own exceptions and posts
         // operation.failed on failure.
@@ -145,7 +181,7 @@ public sealed class WorkspaceRequestDispatcher
         {
             try
             {
-                await DispatchAsync(request).ConfigureAwait(false);
+                await operation().ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -261,6 +297,9 @@ public sealed class WorkspaceRequestDispatcher
                 break;
             case "document.previewRequested":
                 OnDocumentPreviewRequested(request);
+                break;
+            case "document.diffCancelRequested":
+                OnDocumentDiffCancelRequested(request);
                 break;
             case "document.pickRequested":
                 _reply.PostOperationFailed(
@@ -1245,6 +1284,26 @@ public sealed class WorkspaceRequestDispatcher
             => Interlocked.Exchange(ref _cancellationReplyPosted, 1) == 0;
     }
 
+    private sealed class DocumentDiffRequestState(
+        string entryHandle,
+        string historicalRevisionId,
+        string expectedEffectiveRevisionId,
+        CancellationTokenSource cancellation) : IDisposable
+    {
+        public string EntryHandle { get; } = entryHandle;
+        public string HistoricalRevisionId { get; } = historicalRevisionId;
+        public string ExpectedEffectiveRevisionId { get; } = expectedEffectiveRevisionId;
+        public CancellationToken Token => cancellation.Token;
+
+        public void TryCancel()
+        {
+            try { cancellation.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
+
+        public void Dispose() => cancellation.Dispose();
+    }
+
     // Product relation + realtime Lookup. This is a closed dispatch table:
     // no renderer-provided method name can reach JsonRpcClient.
     // -------------------------------------------------------------------
@@ -1639,6 +1698,140 @@ public sealed class WorkspaceRequestDispatcher
     private void OnDocumentPreviewRequested(RoutedWebRequest request)
         => RunDocumentAction(request, "preview", handle => _documents!.Preview(handle));
 
+    private bool TryRegisterDocumentDiffRequest(
+        RoutedWebRequest request,
+        out string operationId,
+        out DocumentDiffRequestState state)
+    {
+        operationId = string.Empty;
+        state = null!;
+        if (!TryRequireDocuments(request)) return false;
+        if (!HasExactProperties(
+                request.Payload,
+                "entryHandle",
+                "historicalRevisionId",
+                "expectedEffectiveRevisionId",
+                "operationId"))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "文档比较参数无效。",
+                "BAD_PAYLOAD");
+            return false;
+        }
+        string? handle = TryGetString(request.Payload, "entryHandle");
+        string? historicalRevisionId = TryGetString(
+            request.Payload,
+            "historicalRevisionId");
+        string? expectedEffectiveRevisionId = TryGetString(
+            request.Payload,
+            "expectedEffectiveRevisionId");
+        string? rawOperationId = TryGetString(request.Payload, "operationId");
+        if (string.IsNullOrWhiteSpace(handle) ||
+            string.IsNullOrWhiteSpace(historicalRevisionId) ||
+            string.IsNullOrWhiteSpace(expectedEffectiveRevisionId) ||
+            !Guid.TryParseExact(rawOperationId, "D", out Guid parsedOperationId))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "文档比较参数无效。",
+                "BAD_PAYLOAD");
+            return false;
+        }
+        operationId = parsedOperationId.ToString("D");
+        var candidate = new DocumentDiffRequestState(
+            handle,
+            historicalRevisionId,
+            expectedEffectiveRevisionId,
+            new CancellationTokenSource());
+        if (!_documentDiffRequests.TryAdd(operationId, candidate))
+        {
+            candidate.Dispose();
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "文档比较请求身份重复。",
+                "DOCUMENT_DIFF_REQUEST_DUPLICATE");
+            return false;
+        }
+        state = candidate;
+        return true;
+    }
+
+    private async Task OnDocumentDiffRequestedAsync(
+        RoutedWebRequest request,
+        string operationId,
+        DocumentDiffRequestState state)
+    {
+        try
+        {
+            DocumentDiffPayload result = await _documents!.CompareAsync(
+                state.EntryHandle,
+                state.HistoricalRevisionId,
+                state.ExpectedEffectiveRevisionId,
+                state.Token).ConfigureAwait(false);
+            _reply.PostResponse(
+                "document.diffCompleted",
+                request.RequestId,
+                result);
+        }
+        catch (Exception ex)
+        {
+            PostDocumentFailure(request, ex, "DOCUMENT_DIFF_FAILED");
+        }
+        finally
+        {
+            _documentDiffRequests.TryRemove(operationId, out _);
+            state.Dispose();
+        }
+    }
+
+    private void OnDocumentDiffCancelRequested(RoutedWebRequest request)
+    {
+        if (!HasExactProperties(
+                request.Payload,
+                "entryHandle",
+                "operationId"))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "文档比较取消参数无效。",
+                "BAD_PAYLOAD");
+            return;
+        }
+        string? entryHandle = TryGetString(request.Payload, "entryHandle");
+        string? rawOperationId = TryGetString(request.Payload, "operationId");
+        if (string.IsNullOrWhiteSpace(entryHandle) ||
+            !Guid.TryParseExact(rawOperationId, "D", out Guid parsedOperationId))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "文档比较取消参数无效。",
+                "BAD_PAYLOAD");
+            return;
+        }
+        bool cancelled = _documentDiffRequests.TryGetValue(
+            parsedOperationId.ToString("D"),
+            out DocumentDiffRequestState? state) &&
+            string.Equals(
+                state.EntryHandle,
+                entryHandle,
+                StringComparison.Ordinal);
+        if (cancelled)
+        {
+            state!.TryCancel();
+        }
+        _reply.PostResponse(
+            "document.diffCancelCompleted",
+            request.RequestId,
+            new { entryHandle, cancelled });
+    }
+
+    private void CancelDocumentDiffRequests()
+    {
+        foreach (DocumentDiffRequestState state in _documentDiffRequests.Values)
+            state.TryCancel();
+    }
+
     private void RunDocumentAction(
         RoutedWebRequest request,
         string action,
@@ -1673,6 +1866,21 @@ public sealed class WorkspaceRequestDispatcher
             "文档工作区尚未连接。",
             "DOCUMENT_WORKSPACE_UNAVAILABLE");
         return false;
+    }
+
+    private static bool HasExactProperties(
+        JsonElement value,
+        params string[] expected)
+    {
+        if (value.ValueKind != JsonValueKind.Object)
+            return false;
+        string[] actual = value.EnumerateObject()
+            .Select(property => property.Name)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        return actual.SequenceEqual(
+            expected.Order(StringComparer.Ordinal),
+            StringComparer.Ordinal);
     }
 
     private void PostDocumentFailure(

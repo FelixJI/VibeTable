@@ -35,6 +35,7 @@ import {
   HOST_SNAPSHOT_IMPORT_GRANT,
   HOST_WORKSPACE_ROOT_GRANT,
 } from "@/services/workspaceV2HostAdapter";
+import { publicCapabilityPolicy } from "@/services/publicCapabilityPolicy";
 import { t } from "@/i18n";
 
 const emit = defineEmits<{
@@ -358,7 +359,8 @@ watch(
           </div>
           <div class="card-actions">
             <NButton
-              v-if="workspace.lastKnownHealth !== 'healthy'"
+              v-if="publicCapabilityPolicy.workspaceRelink
+                && workspace.lastKnownHealth !== 'healthy'"
               size="small"
               quaternary
               :title="t('workspaceV2.center.relinkHint')"

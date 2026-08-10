@@ -92,6 +92,7 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
   const session = useWorkspaceSessionStore();
   const protection = useWorkspaceProtectionStore();
   let globalSequence = 0;
+  let hydratedSessionKey: string | null = null;
   const actionContexts = new Map<string, WorkspaceV2UiAction>();
 
   function supportsMethod(method: WorkspaceV2RpcMethod): boolean {
@@ -150,7 +151,20 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     await port.request({ method: "workspace.list", params: {} });
   }
 
-  async function hydrateWorkspace(): Promise<void> {
+  function currentSessionKey(): string | null {
+    return session.activeWorkspaceId && session.sessionEpoch > 0
+      ? `${session.activeWorkspaceId}:${session.sessionEpoch}`
+      : null;
+  }
+
+  function scheduleWorkspaceHydration(): void {
+    const sessionKey = currentSessionKey();
+    if (!sessionKey || sessionKey === hydratedSessionKey) return;
+    hydratedSessionKey = sessionKey;
+    void hydrateWorkspace(sessionKey);
+  }
+
+  async function hydrateWorkspace(expectedSessionKey: string): Promise<void> {
     const actions: WorkspaceV2UiAction[] = [];
     if (session.snapshotEnabled) {
       actions.push({ method: "snapshot.list", params: { cursor: null, limit: 50 } });
@@ -163,13 +177,15 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
       actions.push({ method: "retention.get", params: {} });
       actions.push({ method: "retention.status", params: {} });
     }
-    if (session.capabilities.includes("repository.settings.v2")) {
+    if (session.capabilities.includes("repository.settings.v2")
+      && protection.storage?.mode === "mirrored") {
       actions.push({ method: "replica.status", params: {} });
     }
     if (session.conflictEnabled) {
       actions.push({ method: "conflict.list", params: { cursor: null, limit: 50 } });
     }
     for (const action of actions) {
+      if (currentSessionKey() !== expectedSessionKey) return;
       try {
         await port.request(action);
       } catch {
@@ -195,10 +211,11 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
       if (method === "workspace.close" || result.state === "closed") {
         session.closeSession();
         configureWorkspaceWire(null, 0);
+        hydratedSessionKey = null;
       } else {
         session.applySession(sessionFromResult(result));
         configureWorkspaceWire(session.activeWorkspaceId, session.sessionEpoch);
-        void hydrateWorkspace();
+        scheduleWorkspaceHydration();
       }
     } else if (method === "workspace.planDelete" && action?.method === method) {
       session.setDeletePlan({
@@ -341,6 +358,7 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     if (session.fileHistoryEnabled) {
       for (const tree of bootstrap.fileTrees) protection.setFileTree(tree);
     }
+    scheduleWorkspaceHydration();
   }
 
   function eventText(payload: Readonly<Record<string, unknown>>, key: string): string {

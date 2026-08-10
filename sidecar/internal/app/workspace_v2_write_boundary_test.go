@@ -34,6 +34,7 @@ func TestWorkspaceV2WriteBoundaryFailsClosed(t *testing.T) {
 		{"coordinated schema apply", http.MethodPost, "/api/vibetable/v1/schema/apply", true},
 		{"coordinated schema delete", http.MethodPost, "/api/vibetable/v1/schema/delete", true},
 		{"coordinated relation apply", http.MethodPost, "/api/vibetable/v1/relations/apply-delta", true},
+		{"coordinated dashboard commit", http.MethodPost, "/api/vibetable/v1/metadata/dashboards/commit", true},
 		{"metadata upsert", http.MethodPost, "/api/vibetable/v1/metadata/grid/upsert", false},
 		{"job resume", http.MethodPost, "/api/vibetable/v1/jobs/id/resume", false},
 		{"direct record create", http.MethodPost, "/api/collections/items/records", false},

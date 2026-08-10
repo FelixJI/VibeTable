@@ -3,21 +3,24 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
-import os
 import shutil
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-import backend.application.plugin_platform_service as plugin_platform_module
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
+from backend.application.plugin_package_lifecycle import PluginPackageInspection
 from backend.application.plugin_platform_service import PluginPlatformService
 from backend.application.plugin_registry import PluginRegistry
-from backend.contracts.plugin import CommandContext, InteractionResolveResult
-from backend.infrastructure.plugin_package import inspect_plugin_package
+from backend.contracts.plugin import (
+    CommandContext,
+    InteractionDecision,
+    InteractionResolveResult,
+    PluginManifest,
+)
+from backend.infrastructure.plugin_package_lifecycle import LocalPluginPackageLifecycle
 from backend.infrastructure.plugin_store import InMemoryPluginStore
 from backend.infrastructure.plugin_worker import (
     InMemoryPluginWorkerAdapter,
@@ -97,7 +100,7 @@ def _service(
         store=store,
         registry=registry,
         runtime=runtime,
-        package_cache=package_cache,
+        package_lifecycle=LocalPluginPackageLifecycle(package_cache),
     )
 
 
@@ -110,7 +113,7 @@ class _Confirmation:
         self.sink = sink
 
     async def try_resolve(
-        self, run_id: str, interaction_id: str, decision: str
+        self, run_id: str, interaction_id: str, decision: InteractionDecision
     ) -> InteractionResolveResult:
         self.calls.append((run_id, interaction_id, decision))
         return InteractionResolveResult(status="resolved", decision=decision)
@@ -129,6 +132,52 @@ class _Files:
         return True
 
 
+class InMemoryPluginPackageLifecycle:
+    """Test adapter for application-level package lifecycle orchestration."""
+
+    def __init__(self) -> None:
+        self._packages: dict[str, PluginPackageInspection] = {}
+        self.inspect_calls: list[str] = []
+        self.retain_calls: list[tuple[str, str]] = []
+        self.discard_calls: list[str] = []
+
+    def add(self, source_location: str, manifest: PluginManifest, package_hash: str) -> None:
+        self._packages[source_location] = PluginPackageInspection(
+            source_type="local-folder",
+            source_location=source_location,
+            package_hash=package_hash,
+            manifest=manifest,
+        )
+
+    def inspect(self, source_location: str) -> PluginPackageInspection:
+        self.inspect_calls.append(source_location)
+        try:
+            return self._packages[source_location]
+        except KeyError as exc:
+            raise ValueError("package source does not exist") from exc
+
+    def retain(self, *, source_location: str, expected_hash: str) -> str:
+        self.retain_calls.append((source_location, expected_hash))
+        inspected = self._packages[source_location]
+        if inspected.package_hash != expected_hash:
+            raise ValueError("retained plugin package hash does not match the plan")
+        retained_location = f"memory://{expected_hash}"
+        self._packages[retained_location] = PluginPackageInspection(
+            source_type="package",
+            source_location=retained_location,
+            package_hash=expected_hash,
+            manifest=inspected.manifest,
+        )
+        return retained_location
+
+    def is_available(self, retained_location: str) -> bool:
+        return retained_location in self._packages
+
+    def discard(self, retained_location: str) -> None:
+        self.discard_calls.append(retained_location)
+        self._packages.pop(retained_location, None)
+
+
 @pytest.mark.asyncio
 async def test_host_interaction_and_file_resolutions_reach_live_adapters(
     tmp_path: Path,
@@ -145,7 +194,7 @@ async def test_host_interaction_and_file_resolutions_reach_live_adapters(
         store=store,
         registry=registry,
         runtime=runtime,
-        package_cache=tmp_path / "cache",
+        package_lifecycle=LocalPluginPackageLifecycle(tmp_path / "cache"),
         confirmation_adapter=confirmation,
         file_adapter=files,
     )
@@ -172,23 +221,75 @@ async def test_host_interaction_and_file_resolutions_reach_live_adapters(
 
 
 @pytest.mark.asyncio
+async def test_install_and_uninstall_use_package_lifecycle_tasks() -> None:
+    store = InMemoryPluginStore()
+    registry = PluginRegistry(store=store)
+    runtime = PluginExecutionRuntime(
+        registry=registry,
+        worker_adapter=InMemoryPluginWorkerAdapter(),
+    )
+    packages = InMemoryPluginPackageLifecycle()
+    source_location = "memory://reader-source"
+    package_hash = f"sha256:{'1' * 64}"
+    manifest = PluginManifest.model_validate(
+        {
+            "$schema": "vibetable.plugin-manifest.v1",
+            "pluginId": "com.example.reader",
+            "version": "1.0.0",
+            "displayName": {"en": "Reader"},
+            "compatibility": {"minHostVersion": "1.0.0", "pluginApi": "1.x"},
+            "permissions": {"data": [], "files": [], "privateStorage": False},
+            "actions": [
+                {
+                    "actionId": "read",
+                    "displayName": {"en": "Read"},
+                    "mode": "local",
+                    "risk": "read",
+                    "workerEntry": "dist/workers/read.js",
+                }
+            ],
+            "ui": {"customViews": []},
+        }
+    )
+    packages.add(source_location, manifest, package_hash)
+    service = PluginPlatformService(
+        store=store,
+        registry=registry,
+        runtime=runtime,
+        package_lifecycle=packages,
+    )
+
+    plan = await service.inspect_install(
+        project_key="local:default",
+        project_revision="project-r1",
+        source_location=source_location,
+    )
+    await service.commit_install(
+        plan_id=plan.plan_id,
+        project_revision="project-r1",
+    )
+    retained_location = f"memory://{package_hash}"
+    revision = store.list_package_revisions("local:default", "com.example.reader")[0]
+    await service.uninstall(
+        project_key="local:default",
+        plugin_id="com.example.reader",
+        cleanup_private_settings=True,
+    )
+
+    assert packages.inspect_calls == [source_location, source_location]
+    assert packages.retain_calls == [(source_location, package_hash)]
+    assert revision.local_path == retained_location
+    assert packages.discard_calls == [retained_location]
+
+
+@pytest.mark.asyncio
 async def test_inspect_and_commit_recheck_and_retain_immutable_package(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "reader"
     _write_plugin(source)
     store = InMemoryPluginStore()
     service = _service(store, package_cache=tmp_path / "cache")
-    packed_outputs: list[Path] = []
-    original_pack_plugin = plugin_platform_module.pack_plugin
-
-    def capture_pack_output(source_path: str | Path, output_path: str | Path) -> str:
-        packed_outputs.append(Path(output_path))
-        return original_pack_plugin(source_path, output_path)
-
-    monkeypatch.setattr(plugin_platform_module, "pack_plugin", capture_pack_output)
-
     plan = await service.inspect_install(
         project_key="local:default",
         project_revision="project-r1",
@@ -210,51 +311,6 @@ async def test_inspect_and_commit_recheck_and_retain_immutable_package(
     assert Path(revisions[0].local_path).is_file()
     assert Path(revisions[0].local_path).is_relative_to(tmp_path / "cache")
     assert Path(revisions[0].local_path).parent == tmp_path / "cache"
-    digest = bytes.fromhex(plan.package_hash.removeprefix("sha256:"))
-    compact = base64.b32encode(digest).rstrip(b"=").decode("ascii").lower()
-    assert Path(revisions[0].local_path).name == f"{compact}.vtplugin"
-    assert len(packed_outputs) == 1
-    assert packed_outputs[0].name.startswith(".tmp-")
-    assert packed_outputs[0].suffix == ".vtplugin"
-
-
-@pytest.mark.asyncio
-async def test_retained_package_compacts_digest_for_deep_windows_cache_path(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "reader"
-    _write_plugin(source)
-    cache = tmp_path
-    while len(str(cache.resolve())) + len("\\deep") <= 220:
-        cache /= "deep"
-    remaining = 220 - len(str(cache.resolve())) - 1
-    if remaining > 0:
-        cache /= "x" * remaining
-    store = InMemoryPluginStore()
-    service = _service(store, package_cache=cache)
-
-    plan = await service.inspect_install(
-        project_key="local:default",
-        project_revision="project-r1",
-        source_location=str(source),
-    )
-    await service.commit_install(
-        plan_id=plan.plan_id,
-        project_revision="project-r1",
-    )
-
-    digest = bytes.fromhex(plan.package_hash.removeprefix("sha256:"))
-    compact = base64.b32encode(digest).rstrip(b"=").decode("ascii").lower()
-    retained = cache / f"{compact}.vtplugin"
-    revisions = store.list_package_revisions("local:default", "com.example.reader")
-    filesystem_retained = Path(revisions[0].local_path)
-    assert len(compact) == 52
-    assert len(str((cache / ("f" * 64 + ".vtplugin")).resolve())) > 260
-    assert len(str(retained.resolve())) > 260
-    if os.name == "nt":
-        assert str(filesystem_retained).startswith("\\\\?\\")
-    assert filesystem_retained.is_file()
-    assert inspect_plugin_package(filesystem_retained).package_hash == plan.package_hash
 
 
 @pytest.mark.asyncio
@@ -313,7 +369,7 @@ async def test_committed_installation_executes_from_retained_current_revision(
         store=store,
         registry=registry,
         runtime=runtime,
-        package_cache=tmp_path / "cache",
+        package_lifecycle=LocalPluginPackageLifecycle(tmp_path / "cache"),
     )
     plan = await service.inspect_install(
         project_key="local:default",

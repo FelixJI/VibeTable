@@ -33,6 +33,15 @@ DOTNET = (
 READINESS_TIMEOUT_SECONDS = 60.0
 
 
+def test_required_webview2_unavailable_fails_instead_of_skipping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VIBETABLE_REQUIRE_WEBVIEW2", "1")
+
+    with pytest.raises(pytest.fail.Exception, match="WebView2 unavailable"):
+        require_webview2_or_skip({"error": "WebView2 process failed: unavailable"})
+
+
 def _host_is_stale(executable: Path) -> bool:
     if PACKAGED_HOST:
         return not executable.is_file()
@@ -95,6 +104,16 @@ def _trace(readiness_dir: Path) -> str:
     return "\n".join(sections)
 
 
+def require_webview2_or_skip(report: dict[str, object]) -> None:
+    error = report.get("error")
+    if not isinstance(error, str) or "WebView2 process failed" not in error:
+        return
+    message = f"WebView2 unavailable in this environment: {error}"
+    if os.environ.get("VIBETABLE_REQUIRE_WEBVIEW2") == "1":
+        pytest.fail(message)
+    pytest.skip(message)
+
+
 @pytest.mark.e2e
 def test_next_shell_reaches_backend_webview_and_renderer_ready(tmp_path: Path) -> None:
     if sys.platform != "win32":
@@ -146,11 +165,7 @@ def test_next_shell_reaches_backend_webview_and_renderer_ready(tmp_path: Path) -
                     f"readiness not reported within {READINESS_TIMEOUT_SECONDS:g}s.\n"
                     f"Trace:\n{_trace(readiness_dir)}"
                 )
-            if (
-                isinstance((report_error := report.get("error")), str)
-                and "WebView2 process failed" in report_error
-            ):
-                pytest.skip(f"WebView2 unavailable in this environment: {report_error}")
+            require_webview2_or_skip(report)
         finally:
             if proc.poll() is None:
                 proc.terminate()
@@ -166,3 +181,4 @@ def test_next_shell_reaches_backend_webview_and_renderer_ready(tmp_path: Path) -
     assert report.get("webViewReady") is True, report
     assert report.get("rendererReady") is True, report
     assert report.get("error") is None, report
+    print("VIBETABLE_WEBVIEW2_EVIDENCE=passed")

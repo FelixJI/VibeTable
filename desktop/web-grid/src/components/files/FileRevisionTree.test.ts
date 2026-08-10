@@ -154,4 +154,24 @@ describe("FileRevisionTree", () => {
       `[data-revision-id="${provisional.revisionId}"]`,
     ).findAll(".tree-actions button")).toHaveLength(0);
   });
+
+  it("offers a closed compare action only for non-effective revisions", async () => {
+    const wrapper = mount(FileRevisionTree, {
+      props: {
+        tree: {
+          documentId: "opaque-document",
+          effectiveRevisionId: revisions[2]!.revisionId,
+          revisions,
+        },
+        busy: false,
+        canCompare: true,
+      },
+    });
+    const compare = wrapper.get('[data-testid="compare-revision"]');
+    await compare.trigger("click");
+    expect(wrapper.emitted("compare")?.[0]?.[0]).toMatchObject({
+      revisionId: revisions[0]!.revisionId,
+    });
+    expect(wrapper.findAll('[data-testid="compare-revision"]')).toHaveLength(1);
+  });
 });

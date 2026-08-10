@@ -88,6 +88,39 @@ describe("FileWorkspaceView", () => {
     }]);
   });
 
+  it("forwards the busy diff cancel button to the closed host cancel intent", async () => {
+    const store = useDocumentWorkspaceStore();
+    store.setEntries([{
+      documentId: "33333333-3333-4333-8333-333333333333",
+      entryHandle: "diff-1",
+      displayName: "compare.txt",
+      authority: "workspace",
+      availability: "available",
+      effectiveRevisionId: "55555555-5555-4555-8555-555555555555",
+      capabilities: ["history", "diff"],
+    }]);
+    const wrapper = mount(FileWorkspaceView);
+    store.selectAt(0);
+    store.showInspector("history");
+    store.beginDiff(
+      "diff-1",
+      "44444444-4444-4444-8444-444444444444",
+      "55555555-5555-4555-8555-555555555555",
+    );
+    await wrapper.vm.$nextTick();
+
+    await wrapper.get('[data-testid="diff-busy"] button').trigger("click");
+
+    expect(wrapper.emitted("intent")?.at(-1)).toEqual([{
+      type: "document.diffCancelRequested",
+      entryHandle: "diff-1",
+      operationId: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      ),
+    }]);
+    expect(store.diffPhase).toBe("idle");
+  });
+
   it("confirms a recoverable unlink with the current effective revision CAS", async () => {
     const store = useDocumentWorkspaceStore();
     store.setEntries([{

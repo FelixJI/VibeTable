@@ -95,6 +95,54 @@ func TestPersistentHeadReopensCurrentRoot(t *testing.T) {
 	}
 }
 
+func TestPersistentHeadReopensCanonicalEmptyHistory(t *testing.T) {
+	fixture := newHistoryFixture(t)
+	path := historySQLitePath(t, "empty-head.db")
+	store, err := OpenPersistentHeadStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	next := CurrentHead{
+		WorkspaceID: fixture.token.WorkspaceID,
+		Revision:    1, MutationRevision: 1,
+		SessionEpoch: fixture.token.SessionEpoch,
+		FenceEpoch:   fixture.token.FenceEpoch,
+		ClaimID:      fixture.token.ClaimID,
+	}
+	if _, err := store.CompareAndSwap(
+		context.Background(),
+		CurrentHead{WorkspaceID: fixture.token.WorkspaceID},
+		next,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopenedStore, err := OpenPersistentHeadStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopenedStore.Close()
+	reopened, err := OpenCurrent(
+		context.Background(),
+		fixture.repository,
+		fixture.coordinator,
+		reopenedStore,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Root() != "" || len(reopened.List()) != 0 {
+		t.Fatalf(
+			"canonical empty history root=%q documents=%#v",
+			reopened.Root(),
+			reopened.List(),
+		)
+	}
+}
+
 func TestReadPersistentMutationRevisionIsStrictlyReadOnly(t *testing.T) {
 	fixture := newHistoryFixture(t)
 	path := historySQLitePath(t, "head.db")

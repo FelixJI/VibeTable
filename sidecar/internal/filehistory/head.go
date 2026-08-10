@@ -301,7 +301,6 @@ func (store *SQLiteHeadStore) Load(
 		return CurrentHead{}, false, err
 	}
 	if head.WorkspaceID != workspaceID ||
-		head.Root == "" ||
 		head.Revision == 0 ||
 		head.MutationRevision == 0 ||
 		head.SessionEpoch == 0 ||
@@ -650,7 +649,6 @@ func validateHeadTransition(expected, next CurrentHead) error {
 	if !validUUID(expected.WorkspaceID) ||
 		expected.Revision == math.MaxUint64 ||
 		next.WorkspaceID != expected.WorkspaceID ||
-		next.Root == "" ||
 		next.Revision != expected.Revision+1 ||
 		next.MutationRevision == 0 ||
 		next.SessionEpoch == 0 ||
@@ -668,8 +666,7 @@ func validateHeadTransition(expected, next CurrentHead) error {
 		}
 		return nil
 	}
-	if expected.Root == "" ||
-		expected.MutationRevision == 0 ||
+	if expected.MutationRevision == 0 ||
 		expected.SessionEpoch == 0 ||
 		expected.FenceEpoch == 0 ||
 		strings.TrimSpace(expected.ClaimID) == "" {

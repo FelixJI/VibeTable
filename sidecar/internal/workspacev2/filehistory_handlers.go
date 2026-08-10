@@ -60,6 +60,16 @@ func (runtime *Runtime) registerFileHistoryHandlers() {
 		protocolv2.WorkspaceScope,
 		runtime.activateFileLeaf,
 	)
+	runtime.dispatcher.Register(
+		"fileHistory.materializeDiffPair",
+		protocolv2.WorkspaceScope,
+		runtime.materializeDiffPair,
+	)
+	runtime.dispatcher.Register(
+		"fileHistory.assertEffectiveRevision",
+		protocolv2.WorkspaceScope,
+		runtime.assertEffectiveRevision,
+	)
 }
 
 func (runtime *Runtime) listPendingFileChanges(

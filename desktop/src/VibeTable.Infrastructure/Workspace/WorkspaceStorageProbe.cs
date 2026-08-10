@@ -7,6 +7,9 @@ namespace VibeTable.Infrastructure.Workspace;
 
 public sealed class WorkspaceStorageProbe
 {
+    private static readonly TimeSpan ProbeCleanupTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ProbeCleanupPollInterval = TimeSpan.FromMilliseconds(10);
+
     private readonly Func<string, bool> _isRegisteredCloudPath;
     private readonly Func<SafeFileHandle, WorkspaceRemoteProtocol>
         _remoteProtocolProbe;
@@ -127,9 +130,44 @@ public sealed class WorkspaceStorageProbe
                 File.Delete(source);
             if (File.Exists(destination))
                 File.Delete(destination);
+            WaitForProbeCleanup(root, source, destination);
         }
         return remoteProtocol;
     }
+
+    private static void WaitForProbeCleanup(
+        string root,
+        string source,
+        string destination)
+    {
+        string sourceName = Path.GetFileName(source);
+        string destinationName = Path.GetFileName(destination);
+        long deadline = Environment.TickCount64 + (long)ProbeCleanupTimeout.TotalMilliseconds;
+        while (ProbeEntryIsVisible(root, sourceName, destinationName))
+        {
+            if (Environment.TickCount64 >= deadline)
+            {
+                throw new WorkspaceRegistryException(
+                    "workspace.storage_probe_cleanup_failed",
+                    "Storage probe cleanup did not become visible before workspace creation.");
+            }
+            Thread.Sleep(ProbeCleanupPollInterval);
+        }
+    }
+
+    private static bool ProbeEntryIsVisible(
+        string root,
+        string sourceName,
+        string destinationName)
+        => Directory.EnumerateFileSystemEntries(root).Any(path =>
+            string.Equals(
+                Path.GetFileName(path),
+                sourceName,
+                StringComparison.OrdinalIgnoreCase)
+            || string.Equals(
+                Path.GetFileName(path),
+                destinationName,
+                StringComparison.OrdinalIgnoreCase));
 }
 
 public enum WorkspaceRemoteProtocol

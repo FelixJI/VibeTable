@@ -157,6 +157,7 @@ class StageResult:
     stdout: str
     stderr: str
     cwd: str
+    webview2_evidence: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -418,6 +419,7 @@ def stage_command(
             "pytest",
             str(E2E_SMOKE),
             "-q",
+            "-s",
             "-o",
             "addopts=",
             "-p",
@@ -483,6 +485,38 @@ def _stage_environment(
     if stage == "smoke" and package_root is not None:
         environment["VIBETABLE_E2E_HOST"] = str(package_root / "VibeTable.Next.exe")
     return environment
+
+
+def _release_stage_environment(
+    stage: str,
+    environment: dict[str, str],
+    package_archive: Path | None,
+) -> dict[str, str]:
+    """Apply requirements that only hold for immutable-candidate smoke runs."""
+    release_environment = environment.copy()
+    if stage == "smoke" and package_archive is not None:
+        release_environment["VIBETABLE_REQUIRE_WEBVIEW2"] = "1"
+    return release_environment
+
+
+def webview2_evidence(
+    stage: str,
+    environment: dict[str, str],
+    returncode: int,
+    stdout: str,
+    stderr: str,
+) -> str | None:
+    if stage != "smoke":
+        return None
+    if environment.get("VIBETABLE_REQUIRE_WEBVIEW2") != "1":
+        return "not-required"
+    if returncode != 0:
+        return "required-failed"
+    if re.search(r"\bskipped\b", stdout + stderr, flags=re.IGNORECASE):
+        return "required-skipped"
+    if "VIBETABLE_WEBVIEW2_EVIDENCE=passed" in stdout:
+        return "required-passed"
+    return "required-missing"
 
 
 def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
@@ -861,7 +895,11 @@ def run_stage(
         if package_archive is None
         else stage_command(stage, package_root, package_archive)
     )
-    environment = _stage_environment(stage, command, package_root)
+    environment = _release_stage_environment(
+        stage,
+        _stage_environment(stage, command, package_root),
+        package_archive,
+    )
     started = time.monotonic()
     if stage == "go-race":
         if race_shard is None:
@@ -922,6 +960,7 @@ def run_stage(
         stdout=stdout,
         stderr=stderr,
         cwd=cwd,
+        webview2_evidence=webview2_evidence(stage, environment, returncode, stdout, stderr),
     )
 
 
@@ -976,6 +1015,11 @@ def run_lane(
         if result.returncode:
             return result.returncode, results
     return 0, results
+
+
+def has_required_webview2_evidence(results: list[StageResult]) -> bool:
+    smoke_results = [result for result in results if result.stage == "smoke"]
+    return len(smoke_results) == 1 and smoke_results[0].webview2_evidence == "required-passed"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1052,6 +1096,9 @@ def _main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         code = code or 1
+    if args.ci and not has_required_webview2_evidence(results):
+        print("required WebView2 evidence is missing, skipped, or failed", file=sys.stderr)
+        code = code or 1
     ending_candidate: dict[str, object] | None = None
     candidate_stable = not (args.ci or args.lane)
     if (
@@ -1077,6 +1124,7 @@ def _main(argv: list[str] | None = None) -> int:
         and identity_stable
         and candidate_stable
         and ending_candidate is not None
+        and has_required_webview2_evidence(results)
     )
     if args.json_report:
         args.json_report.parent.mkdir(parents=True, exist_ok=True)

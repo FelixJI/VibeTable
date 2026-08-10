@@ -332,8 +332,8 @@ def test_wire_schema_does_not_leak_storage_provider_names() -> None:
 
 
 def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
-    from backend.application.product_data_service import PRODUCT_PARAM_MODELS
     from backend.contracts.plugin import PluginEventEnvelope
+    from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY
 
     schema = _load(SCHEMA_PATH)
     tree = ast.parse((ROOT / "backend" / "__main__.py").read_text(encoding="utf-8"))
@@ -347,7 +347,7 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
         and isinstance(call.args[0], ast.Constant)
         and isinstance(call.args[0].value, str)
     }
-    registered.update(PRODUCT_PARAM_MODELS)
+    registered.update(PRODUCT_RPC_REGISTRY)
 
     catalog = _load(FIXTURES / "rpc-catalog.json")
     retired_v1_methods = {
