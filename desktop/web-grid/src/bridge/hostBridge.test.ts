@@ -305,7 +305,57 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
-  it("adds a strictly scoped workspace envelope to legacy product requests", async () => {
+  it("gives cold workspace creation a full bootstrap budget", async () => {
+    vi.useFakeTimers();
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 30_000,
+      generateRequestId: () => "workspace-create-1",
+    });
+    bridge.start();
+    const wire = {
+      scope: "global" as const,
+      operationId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      sequence: 1,
+    };
+
+    const pending = bridge.request("workspace.v2.request", {
+      method: "workspace.create",
+      params: {
+        displayName: "冷启动工作区",
+        locationPolicy: "managedDefault",
+        selectedRootGrant: null,
+        storageMode: "direct",
+        encryptionMode: "convenient",
+        userMarkedSync: false,
+      },
+      wire,
+    });
+    let settled = false;
+    void pending.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(settled).toBe(false);
+
+    webview.emit({
+      type: "workspace.v2.response",
+      requestId: "workspace-create-1",
+      payload: {
+        method: "workspace.create",
+        wire,
+        ok: true,
+        result: { workspaceId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", status: "created" },
+        error: null,
+      },
+    });
+    await expect(pending).resolves.toMatchObject({ method: "workspace.create", ok: true });
+    bridge.stop();
+  });
+
+  it("adds a strictly scoped workspace envelope to product requests", async () => {
     const session = useWorkspaceSessionStore();
     session.configureCapabilities(["workspace.session.v2"]);
     session.setWorkspaces([{

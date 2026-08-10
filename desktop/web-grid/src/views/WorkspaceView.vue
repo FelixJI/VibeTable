@@ -1268,18 +1268,17 @@ watch(
     await nextTick();
     try {
       const navigationGrid = grid as unknown as {
-        scrollToRow: (key: string | number, position: "center", ifVisible: boolean) => Promise<void>;
         getRow: (key: string | number) => {
+          scrollTo: (position: "center", ifVisible: boolean) => Promise<void>;
           select: () => void;
           getElement: () => HTMLElement;
         } | false;
       };
-      await navigationGrid.scrollToRow(rowKey, "center", true);
       const row = navigationGrid.getRow(rowKey);
-      if (row) {
-        row.select();
-        row.getElement().classList.add("vt-row-selected");
-      }
+      if (!row) throw new Error("lookup source row is no longer rendered");
+      await row.scrollTo("center", true);
+      row.select();
+      row.getElement().classList.add("vt-row-selected");
       message.success(t("workspace.lookup.sourceLocated", {
         collection: navigation.source.collection,
         itemId: navigation.source.itemId,
