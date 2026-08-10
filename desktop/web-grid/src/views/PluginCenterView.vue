@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { NIcon } from "naive-ui";
-import { Box, PackageOpen, Play, Power, RotateCcw, ShieldAlert, Trash2, Upload } from "lucide-vue-next";
+import { Box, Github, PackageOpen, Play, Power, RotateCcw, ShieldAlert, Trash2, Upload } from "lucide-vue-next";
 import type { PluginAuditEvent, PluginRisk, PluginSnapshot } from "@/contracts";
 import { useSystemTimeZone } from "@/composables/useSystemTimeZone";
 import { usePluginStore } from "@/stores/pluginStore";
@@ -25,6 +25,7 @@ const cleanupPrivateSettings = ref(false);
 const uninstalling = ref(false);
 const auditEvents = ref<readonly PluginAuditEvent[]>([]);
 const pendingCleanup = ref<readonly PluginAuditEvent[]>([]);
+const githubRepository = ref("");
 
 const plugin = computed(() => store.selectedPlugin);
 const theme = computed(() => projectPluginTheme({
@@ -93,6 +94,16 @@ async function inspectInstall(sourceToken: "host-picker:package" | "host-picker:
     )?.pluginId ?? null;
   });
 }
+async function inspectGitHubInstall(): Promise<void> {
+  const repository = githubRepository.value.trim();
+  if (!repository) return;
+  await safely(async () => {
+    const plan = await service.inspectGitHubInstall(repository);
+    plannedUpgradePluginId.value = store.plugins.find(
+      (item) => item.pluginId === plan.manifest.pluginId,
+    )?.pluginId ?? null;
+  });
+}
 async function commitPlan(): Promise<void> {
   const plan = store.installPlan;
   if (!plan) return;
@@ -124,9 +135,11 @@ async function commitPlan(): Promise<void> {
     store.setInstallPlan(null);
   });
 }
-function cancelPlan(): void {
+async function cancelPlan(): Promise<void> {
+  const plan = store.installPlan;
   plannedUpgradePluginId.value = null;
   store.setInstallPlan(null);
+  if (plan) await safely(() => service.cancelInstall(plan.planId));
 }
 async function inspectUpgrade(current: PluginSnapshot): Promise<void> {
   await safely(async () => {
@@ -175,6 +188,24 @@ onBeforeUnmount(() => service.dispose());
         <p>安装、权限和运行状态均限定在当前项目。</p>
       </div>
       <div class="install-source">
+        <input
+          v-model="githubRepository"
+          aria-label="GitHub 插件仓库"
+          autocomplete="off"
+          placeholder="owner/repo"
+          spellcheck="false"
+          @keyup.enter="inspectGitHubInstall"
+        />
+        <button
+          class="install-button"
+          type="button"
+          data-testid="plugin-install-github"
+          :disabled="!githubRepository.trim()"
+          title="Release metadata 直连 GitHub，.vtplugin 使用设置中的下载通道"
+          @click="inspectGitHubInstall"
+        >
+          <NIcon :size="15"><Github /></NIcon> 从 GitHub 检查
+        </button>
         <button class="install-button" type="button" data-testid="plugin-install-package" @click="inspectInstall('host-picker:package')">
           <NIcon :size="15"><Upload /></NIcon> 选择 .vtplugin
         </button>
@@ -203,7 +234,7 @@ onBeforeUnmount(() => service.dispose());
       <div><small>LOCAL WORKERS</small><p>{{ store.installPlan.manifest.actions.map((action) => action.workerEntry).join(' · ') || '无本地动作' }}</p></div>
       <div><small>PROJECT REVISION</small><code>{{ store.installPlan.projectRevision }}</code></div>
       <div class="plan-actions">
-        <button type="button" class="quiet-button" @click="cancelPlan">取消</button>
+        <button data-testid="plugin-install-cancel" type="button" class="quiet-button" @click="cancelPlan">取消</button>
         <span
           v-if="plannedUpgradePluginId && !publicCapabilityPolicy.pluginLifecycleMutations"
           data-testid="plugin-upgrade-internal-only"
@@ -302,11 +333,11 @@ onBeforeUnmount(() => service.dispose());
 
 <style scoped>
 .plugin-center { position: relative; display: flex; height: 100%; flex-direction: column; overflow: hidden; color: var(--vt-fg); background: var(--vt-bg-subtle); }
-.center-header { display: flex; height: 86px; align-items: center; justify-content: space-between; padding: 14px 22px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg); }
+.center-header { display: flex; min-height: 86px; align-items: center; justify-content: space-between; padding: 14px 22px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg); }
 .section-code, .catalog-caption span, .detail-section header > span, .install-plan small { color: var(--vt-fg-muted); font: 650 10px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .12em; }
 .center-header h1 { margin: 4px 0 1px; font-size: 20px; letter-spacing: -.02em; }
 .center-header p { margin: 0; color: var(--vt-fg-muted); font-size: 12px; }
-.install-source { display: flex; align-items: center; gap: 7px; }
+.install-source { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px; }
 .install-source input { width: 260px; height: 32px; padding: 0 9px; color: var(--vt-fg); border: 1px solid var(--vt-border); border-radius: 4px; background: var(--vt-bg); }
 .install-button, .primary-button { display: inline-flex; min-height: 32px; align-items: center; gap: 6px; padding: 0 12px; color: #fff; border: 0; border-radius: 4px; background: var(--vt-color-primary-600); cursor: pointer; }
 .install-button:disabled, .primary-button:disabled { opacity: .5; cursor: default; }
@@ -330,5 +361,5 @@ onBeforeUnmount(() => service.dispose());
 .action-row { display: grid; grid-template-columns: minmax(140px, .7fr) 60px 1fr auto; gap: 10px; align-items: center; min-height: 50px; padding: 7px 10px; border-bottom: 1px solid var(--vt-border); }.action-row > div { display: grid; }.action-row p { margin: 0; color: var(--vt-fg-muted); }.risk-chip[data-risk="write"] { color: var(--vt-color-warning); }.risk-chip[data-risk="destructive"] { color: var(--vt-color-danger); }.run-button, .quiet-button, .danger-text-button { display: inline-flex; min-height: 29px; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; color: var(--vt-fg); border: 1px solid var(--vt-border); border-radius: 4px; background: var(--vt-bg); cursor: pointer; }.run-button:disabled, .quiet-button:disabled { opacity: .45; cursor: default; }.empty-line { margin: 0; padding: 13px; color: var(--vt-fg-muted); }
 .lifecycle-actions { display: flex; gap: 7px; margin-top: 14px; }.danger-text-button { margin-left: auto; color: var(--vt-color-danger); border-color: color-mix(in srgb, var(--vt-color-danger) 30%, var(--vt-border)); }.uninstall-confirm { display: flex; gap: 6px; align-items: center; margin-left: auto; color: var(--vt-color-danger); }.uninstall-confirm button { min-height: 27px; border: 1px solid var(--vt-border); background: var(--vt-bg); }
 .action-overlay { position: absolute; z-index: 50; inset: 0; display: grid; place-items: stretch end; background: rgba(10, 15, 22, .38); backdrop-filter: blur(2px); }.action-overlay > :deep(*) { height: 100%; }.action-overlay :deep(.surface-shell) { width: min(920px, calc(100% - 60px)); margin: 30px; }
-@media (max-width: 900px) { .center-grid { grid-template-columns: 210px minmax(0, 1fr); }.status-strip { grid-template-columns: repeat(2, 1fr); }.action-row { grid-template-columns: 1fr auto auto; }.action-row p { grid-column: 1 / -1; } }
+@media (max-width: 900px) { .center-header { height: auto; align-items: flex-start; gap: 12px; }.install-source { max-width: 440px; }.install-source input { width: 100%; }.center-grid { grid-template-columns: 210px minmax(0, 1fr); }.status-strip { grid-template-columns: repeat(2, 1fr); }.action-row { grid-template-columns: 1fr auto auto; }.action-row p { grid-column: 1 / -1; } }
 </style>

@@ -78,7 +78,13 @@ public sealed record PluginInspectInstallParams(
     string ProjectKey,
     string ProjectRevision,
     string SourceLocation);
+public sealed record PluginGitHubInspectParams(
+    string ProjectKey,
+    string ProjectRevision,
+    string Repository);
 public sealed record PluginCommitInstallParams(string PlanId, string ProjectRevision);
+public sealed record PluginInstallCancelParams(string PlanId);
+public sealed record PluginInstallCancelResult(bool Cancelled);
 public sealed record PluginSetEnabledParams(
     string ProjectKey,
     string PluginId,
