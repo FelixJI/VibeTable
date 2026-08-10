@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
-import { createPinia, setActivePinia } from "pinia";
+import { createPinia, setActivePinia, type Pinia } from "pinia";
 import { defineComponent, h } from "vue";
 import { NDropdown, NMessageProvider, NModal } from "naive-ui";
 
@@ -115,6 +115,8 @@ vi.mock("@/grid/createGrid", () => ({
   ROW_NUMBER_FIELD: "__vt_row_number",
 }));
 
+let testPinia: Pinia;
+
 function mountView() {
   // WorkspaceView.setup() calls useMessage() (to surface history.lastError),
   // which requires an ancestor NMessageProvider. Mirror App.vue's wrapper here.
@@ -126,7 +128,10 @@ function mountView() {
       return h(NMessageProvider, () => h(WorkspaceView));
     },
   });
-  const wrapper = mount(Host, { attachTo: document.body });
+  const wrapper = mount(Host, {
+    attachTo: document.body,
+    global: { plugins: [testPinia] },
+  });
   mountedViews.push(wrapper);
   return wrapper;
 }
@@ -158,7 +163,8 @@ describe("WorkspaceView", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
     setLocale("zh-CN");
-    setActivePinia(createPinia());
+    testPinia = createPinia();
+    setActivePinia(testPinia);
     // Reset the mocked Tabulator instance between tests (in particular,
     // restore getRanges to "no selection" so shortcut tests start clean).
     mockTabulatorRef.current = {
@@ -752,29 +758,28 @@ describe("WorkspaceView", () => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     useWorkspaceStore().selectTable("orders");
-    mountView();
+    const revisions = useRevisionHistoryStore(testPinia);
+    const wrapper = mountView();
     await flushPromises();
 
-    const button = document.body.querySelector('[data-testid="toolbar-history"]') as HTMLElement;
-    expect(button).toBeTruthy();
-    button.click();
+    wrapper.findComponent(AppToolbar).vm.$emit("openHistory");
     await flushPromises();
 
     const request = posted.find((item) => item.type === "history.queryRequested");
     expect(request?.payload).toMatchObject({ collection: "orders", scope: "table", limit: 50, offset: 0 });
-    expect(useRevisionHistoryStore().panelOpen).toBe(true);
+    expect(revisions.panelOpen).toBe(true);
   });
 
   it("uses the exact single-cell selection for the toolbar history scope", async () => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     useWorkspaceStore().selectTable("orders");
-    const revisions = useRevisionHistoryStore();
+    const revisions = useRevisionHistoryStore(testPinia);
     revisions.setSelection({ scope: "cell", itemId: "42", field: "status" });
-    mountView();
+    const wrapper = mountView();
     await flushPromises();
 
-    (document.body.querySelector('[data-testid="toolbar-history"]') as HTMLElement).click();
+    wrapper.findComponent(AppToolbar).vm.$emit("openHistory");
     await flushPromises();
 
     const request = posted.find((item) => item.type === "history.queryRequested");
@@ -805,12 +810,12 @@ describe("WorkspaceView", () => {
       totalRows: 1,
       mode: "remote",
     });
-    const revisions = useRevisionHistoryStore();
+    const revisions = useRevisionHistoryStore(testPinia);
     revisions.setSelection({ scope: "cell", itemId: "42", field: "retired_status" });
-    mountView();
+    const wrapper = mountView();
     await flushPromises();
 
-    (document.body.querySelector('[data-testid="toolbar-history"]') as HTMLElement).click();
+    wrapper.findComponent(AppToolbar).vm.$emit("openHistory");
     await flushPromises();
 
     const request = posted.find((item) => item.type === "history.queryRequested");
