@@ -285,12 +285,14 @@ def test_release_smoke_command_is_bound_to_both_candidate_roots() -> None:
     ]
 
 
-def test_automation_release_smoke_owns_candidate_bound_stage() -> None:
+def test_automation_release_smoke_delegates_candidate_preparation_to_uv_harness() -> None:
     source = (ROOT / "scripts" / "automation_project.py").read_text(encoding="utf-8")
 
-    assert "legacy_candidate_upgrade.release_smoke_command" in source
-    assert "legacy_candidate_upgrade.ensure_legacy_candidate" in source
-    assert "legacy_candidate_upgrade.current_candidate_root" in source
+    assert '"tests.e2e.legacy_candidate_upgrade"' in source
+    assert "--legacy-package-root" not in source
+    assert "--current-package-root" not in source
+    assert "import_module" not in source
+    assert "from tests" not in source
 
 
 def test_default_legacy_candidate_source_is_built_from_the_fixed_commit() -> None:

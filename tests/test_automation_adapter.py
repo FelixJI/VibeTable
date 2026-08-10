@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -13,31 +11,6 @@ from scripts import automation_project, changelog
 from scripts.automation_core import Automation, CommandRunner, SemVer
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
-def test_direct_adapter_loads_legacy_upgrade_module_outside_repository(tmp_path: Path) -> None:
-    adapter = REPO_ROOT / "scripts" / "automation_project.py"
-    environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import runpy, sys; "
-                f"sys.path.insert(0, {str(adapter.parent)!r}); "
-                f"adapter = runpy.run_path({str(adapter)!r}); "
-                "module = adapter['_load_legacy_candidate_upgrade'](); "
-                "print(module.__name__)"
-            ),
-        ],
-        cwd=tmp_path,
-        env=environment,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.stdout.strip() == "tests.e2e.legacy_candidate_upgrade"
 
 
 def test_project_runner_resolves_platform_command_shims(
@@ -383,8 +356,6 @@ def test_full_release_smoke_installs_the_race_toolchain_at_its_consumption_point
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tests.e2e import legacy_candidate_upgrade
-
     observed: list[str | tuple[str, ...]] = []
     observed_envs: list[dict[str, str] | None] = []
     artifacts = tmp_path / "artifacts"
@@ -397,16 +368,6 @@ def test_full_release_smoke_installs_the_race_toolchain_at_its_consumption_point
         automation_project,
         "_node_environment",
         lambda extra=None: {**(extra or {}), "PATH": "C:/locked-node"},
-    )
-    monkeypatch.setattr(
-        legacy_candidate_upgrade,
-        "ensure_legacy_candidate",
-        lambda _root: tmp_path / "legacy-package",
-    )
-    monkeypatch.setattr(
-        legacy_candidate_upgrade,
-        "current_candidate_root",
-        lambda _root: tmp_path / "current-package",
     )
     monkeypatch.setattr(
         automation_project,
@@ -432,6 +393,14 @@ def test_full_release_smoke_installs_the_race_toolchain_at_its_consumption_point
         "python",
         "-m",
         "tests.e2e.legacy_candidate_upgrade",
+    )
+    assert "--legacy-package-root" not in observed[2]
+    assert "--current-package-root" not in observed[2]
+    assert observed[2][-4:] == (
+        "--evidence-root",
+        str(tmp_path / "build/automation/legacy-candidate-upgrade"),
+        "--json-report",
+        str(tmp_path / "build/automation/legacy-candidate-upgrade/report.json"),
     )
     assert observed_envs == [
         {
