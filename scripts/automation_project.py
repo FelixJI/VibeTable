@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import urllib.request
 from pathlib import Path
+from typing import Protocol, cast
 
 try:
     from scripts.node_toolchain import ensure_node
@@ -42,6 +44,20 @@ NPM_PROJECTS = (
 )
 PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
 CI_PREPARE_MODE_ENV = "VIBETABLE_CI_PREPARE_MODE"
+
+
+class _LegacyCandidateUpgradeModule(Protocol):
+    def ensure_legacy_candidate(self, repo_root: Path) -> Path: ...
+
+    def current_candidate_root(self, repo_root: Path) -> Path: ...
+
+    def release_smoke_command(
+        self,
+        *,
+        legacy_package_root: Path,
+        current_package_root: Path,
+        evidence_root: Path,
+    ) -> list[str]: ...
 
 
 def _candidate_prepare_mode() -> bool:
@@ -451,8 +467,18 @@ def release_smoke() -> None:
     _run_legacy_candidate_upgrade(REPO_ROOT / "build" / "automation" / "legacy-candidate-upgrade")
 
 
+def _load_legacy_candidate_upgrade() -> _LegacyCandidateUpgradeModule:
+    repository_root = str(REPO_ROOT)
+    if repository_root not in sys.path:
+        sys.path.insert(0, repository_root)
+    return cast(
+        _LegacyCandidateUpgradeModule,
+        importlib.import_module("tests.e2e.legacy_candidate_upgrade"),
+    )
+
+
 def _run_legacy_candidate_upgrade(evidence_root: Path) -> Path:
-    from tests.e2e import legacy_candidate_upgrade
+    legacy_candidate_upgrade = _load_legacy_candidate_upgrade()
 
     legacy_package_root = legacy_candidate_upgrade.ensure_legacy_candidate(REPO_ROOT)
     current_package_root = legacy_candidate_upgrade.current_candidate_root(REPO_ROOT)

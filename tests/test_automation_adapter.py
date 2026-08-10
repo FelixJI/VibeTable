@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,31 @@ from scripts import automation_project, changelog
 from scripts.automation_core import Automation, CommandRunner, SemVer
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_direct_adapter_loads_legacy_upgrade_module_outside_repository(tmp_path: Path) -> None:
+    adapter = REPO_ROOT / "scripts" / "automation_project.py"
+    environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import runpy, sys; "
+                f"sys.path.insert(0, {str(adapter.parent)!r}); "
+                f"adapter = runpy.run_path({str(adapter)!r}); "
+                "module = adapter['_load_legacy_candidate_upgrade'](); "
+                "print(module.__name__)"
+            ),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "tests.e2e.legacy_candidate_upgrade"
 
 
 def test_project_runner_resolves_platform_command_shims(
