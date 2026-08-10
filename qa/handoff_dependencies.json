@@ -163,7 +163,6 @@
     ],
     "DELETE": [
       "provider.legacy-runtime.absent.v1",
-      "automation.compatibility.absent.v1",
       "collaboration.ui.absent.v1",
       "legacy.backup.absent.v2",
       "legacy.scheme-main-adoption.absent.v2",

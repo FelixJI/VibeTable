@@ -11,7 +11,6 @@ import argparse
 import ctypes
 import json
 import os
-import shutil
 import subprocess
 import time
 from contextlib import ExitStack
@@ -25,7 +24,6 @@ WINDOW_CLOSE_CONTROL_FILE = "host-window-close.request"
 TRAY_EXIT_CONTROL_FILE = "host-tray-exit.request"
 OPEN_WORKSPACE_CONTROL_FILE = "host-open-workspace.request"
 HOST_STATE_FILE = "host-lifecycle-state.json"
-LEGACY_OPEN_RUNNER = Path(__file__).with_name("legacy_host_workspace_open.mjs")
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 STARTUP_MIGRATION_FAULT_ENVIRONMENT = "VIBETABLE_E2E_STARTUP_MIGRATION_FAULT_FILE"
 
@@ -356,89 +354,6 @@ def workspace_open_evidence(
         "openOutcome": open_outcome,
         "writableSessionPublished": writable_session_published,
     }
-
-
-def prepare_workspace_with_legacy_packaged_host(
-    legacy_package_root: Path,
-    workspace_root: Path,
-    evidence_root: Path,
-) -> dict[str, Any]:
-    """Open a fresh workspace through the pinned old Host before seeding data."""
-
-    assert os.name == "nt", "legacy packaged Host evidence requires Windows"
-    assert not evidence_root.exists(), f"legacy host evidence root must be fresh: {evidence_root}"
-    evidence_root.mkdir(parents=True)
-    readiness_dir = evidence_root / "host"
-    _seed_workspace_registry(readiness_dir, workspace_root)
-    process, port, _controls, streams = _launch_host(
-        legacy_package_root,
-        evidence_root,
-        autostart=False,
-        tray_lifecycle=False,
-        extra_environment=None,
-    )
-    try:
-        product_runner._wait_for_cdp(port, process)
-        readiness = product_runner._wait_for_readiness(readiness_dir, process)
-        assert readiness.get("ready") is True, readiness
-        manifest = json.loads(
-            (workspace_root / ".vibetable" / "workspace.json").read_text(encoding="utf-8")
-        )
-        node = shutil.which("node.exe") or shutil.which("node")
-        assert node is not None, "locked node.exe is missing from PATH"
-        completed = subprocess.run(
-            [
-                node,
-                str(LEGACY_OPEN_RUNNER),
-                "--cdp-url",
-                f"http://127.0.0.1:{port}",
-                "--workspace-id",
-                WORKSPACE_ID,
-                "--display-name",
-                str(manifest["displayName"]),
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=90,
-            check=False,
-        )
-        (evidence_root / "runner-stdout.log").write_text(completed.stdout, encoding="utf-8")
-        (evidence_root / "runner-stderr.log").write_text(completed.stderr, encoding="utf-8")
-        assert completed.returncode == 0, completed.stderr
-        opened = json.loads(completed.stdout)
-        assert opened.get("status") == "passed", opened
-        session = opened.get("session")
-        assert isinstance(session, dict)
-        assert session.get("workspaceId") == WORKSPACE_ID
-        assert session.get("state") == "openedWritable"
-        coordination = workspace_root / ".vibetable" / "coordination"
-        authority = coordination / "desktop-runtime-authority.json"
-        coordinator = coordination / "write-coordinator.db"
-        assert authority.is_file(), "legacy Host did not publish authority metadata"
-        assert coordinator.is_file(), "legacy Host did not create its write coordinator"
-        authority_payload = json.loads(authority.read_text(encoding="utf-8"))
-        session_epoch = authority_payload.get("lastSessionEpoch")
-        assert isinstance(session_epoch, int), authority_payload
-        assert session_epoch > 0, authority_payload
-        lifecycle = _request_window_close(process, port)
-        assert lifecycle["status"] == "passed", lifecycle
-        return {
-            "status": "passed",
-            "evidenceKind": "legacy-packaged-host-workspace-open",
-            "hostExecutable": "VibeTable.Next.exe",
-            "workspaceId": session["workspaceId"],
-            "sessionEpoch": session_epoch,
-            "sessionState": session["state"],
-            "authorityMetadata": str(authority),
-            "coordinator": str(coordinator),
-            "lifecycle": lifecycle,
-        }
-    finally:
-        product_runner._stop_process_tree(process)
-        streams.close()
 
 
 def open_workspace_with_packaged_host(
