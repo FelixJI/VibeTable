@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
 
-from tests.contract.test_v1_contracts import SchemaMismatchError, _validate
+from tests.contract.test_product_contracts import SchemaMismatchError, _validate
 
 ROOT = Path(__file__).parents[2]
 CONTRACT_ROOT = ROOT / "contracts" / "v2"
 SCHEMA_PATH = CONTRACT_ROOT / "contracts.schema.json"
 FIXTURES = CONTRACT_ROOT / "fixtures"
+
+
+def test_v2_is_the_only_language_neutral_contract_seam() -> None:
+    assert not (ROOT / "contracts" / "v1").exists()
+    assert (CONTRACT_ROOT / "product-contracts.schema.json").is_file()
+    assert (FIXTURES / "product-rpc-catalog.json").is_file()
+
 
 FIXTURE_DEFINITIONS = {
     "workspace-manifest.json": "WorkspaceManifest",
@@ -37,7 +43,7 @@ def _load(path: Path) -> object:
 def test_v2_fixtures_validate_against_closed_schema() -> None:
     schema = _load(SCHEMA_PATH)
     assert isinstance(schema, dict)
-    assert {path.name for path in FIXTURES.glob("*.json")} == set(FIXTURE_DEFINITIONS)
+    assert set(FIXTURE_DEFINITIONS) <= {path.name for path in FIXTURES.glob("*.json")}
     for filename, definition in FIXTURE_DEFINITIONS.items():
         payload = _load(FIXTURES / filename)
         _validate(payload, schema["$defs"][definition], schema)
@@ -254,25 +260,3 @@ def test_v2_catalog_nonempty_array_items_fail_closed() -> None:
     for rpc_case in catalog["rpcCases"]:
         assert_typed_items(rpc_case["paramsSchema"])
         assert_typed_items(rpc_case["resultSchema"])
-
-
-def test_v1_contract_bytes_remain_frozen() -> None:
-    expected_lines = (CONTRACT_ROOT / "v1-frozen.sha256").read_text(encoding="utf-8").splitlines()
-    expected = {
-        path: digest
-        for line in expected_lines
-        if line.strip()
-        for digest, path in [line.split("  ", 1)]
-    }
-    actual = {
-        path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in (ROOT / "contracts" / "v1").rglob("*")
-        if path.is_file()
-    }
-    assert actual == expected
-
-
-def test_v1_frozen_contract_files_use_repository_lf_bytes() -> None:
-    for path in (ROOT / "contracts" / "v1").rglob("*"):
-        if path.is_file():
-            assert b"\r\n" not in path.read_bytes(), f"{path.relative_to(ROOT)} contains CRLF"

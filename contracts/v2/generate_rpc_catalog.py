@@ -1,7 +1,7 @@
-"""Generate the frozen protocol/catalog v2 golden fixture.
+"""Generate the workspace protocol/catalog v2 golden fixture.
 
-The registry in this module is the only source of truth for new workspace-scoped
-RPC and event names. It never imports or rewrites contracts/v1.
+The registry in this module is the source of truth for workspace-scoped RPC and
+event names, independently from the product contract module.
 """
 
 from __future__ import annotations

@@ -168,6 +168,7 @@ describe("FileRevisionTree", () => {
       },
     });
     const compare = wrapper.get('[data-testid="compare-revision"]');
+    expect(compare.text()).toBe("查看变化摘要");
     await compare.trigger("click");
     expect(wrapper.emitted("compare")?.[0]?.[0]).toMatchObject({
       revisionId: revisions[0]!.revisionId,

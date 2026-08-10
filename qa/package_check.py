@@ -292,8 +292,9 @@ def check_package(
         else:
             for required_contract in (
                 "contracts.schema.json",
+                "product-contracts.schema.json",
                 "fixtures/rpc-catalog.json",
-                "v1-frozen.sha256",
+                "fixtures/product-rpc-catalog.json",
                 "negative-fixtures.json",
                 "provider-support.json",
                 "compatibility-corpus.json",

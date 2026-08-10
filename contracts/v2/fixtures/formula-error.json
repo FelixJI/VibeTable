@@ -1,5 +1,5 @@
 {
-  "contractVersion": "1.0",
+  "contractVersion": "2.0",
   "code": "formula.cycle",
   "path": "fields[6].formula.source",
   "message": "Formula dependency cycle detected",
@@ -11,4 +11,3 @@
     "end": 8
   }
 }
-

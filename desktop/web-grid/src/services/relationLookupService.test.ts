@@ -367,7 +367,7 @@ describe("relationLookupService", () => {
     service.init(invalidated);
 
     changed?.({
-      contractVersion: "1.0", topic: "data.changed", eventId: "country-change",
+      contractVersion: "2.0", topic: "data.changed", eventId: "country-change",
       sequence: 7, occurredAt: "2026-07-24T08:30:00Z",
       schemaRevision: "schema_0007", dataRevision: "data_0007",
       changeSetId: "chg-country", tableId: "countries",
@@ -376,7 +376,7 @@ describe("relationLookupService", () => {
     // loadContext clears the visible definitions while it renegotiates. A
     // second deeper event in that window must still invalidate the table.
     changed?.({
-      contractVersion: "1.0", topic: "data.changed", eventId: "currency-change",
+      contractVersion: "2.0", topic: "data.changed", eventId: "currency-change",
       sequence: 8, occurredAt: "2026-07-24T08:31:00Z",
       schemaRevision: "schema_0007", dataRevision: "data_0008",
       changeSetId: "chg-currency", tableId: "currencies",

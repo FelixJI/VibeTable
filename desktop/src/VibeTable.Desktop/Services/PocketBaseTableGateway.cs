@@ -556,7 +556,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         string requestId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
         var request = new Dictionary<string, object?>
         {
-            ["contractVersion"] = "1.0",
+            ["contractVersion"] = "2.0",
             ["requestId"] = requestId,
             ["idempotencyKey"] = requestId,
             ["tableId"] = table,

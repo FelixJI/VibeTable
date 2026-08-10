@@ -15,7 +15,7 @@ from backend.adapters.pocketbase.transport import PocketBaseTransportError
 
 def _event(event_id: str, sequence: int = 1) -> bytes:
     payload = {
-        "contractVersion": "1.0",
+        "contractVersion": "2.0",
         "topic": "data.changed",
         "eventId": event_id,
         "sequence": sequence,

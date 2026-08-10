@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-const ContractVersion = "1.0"
+const ContractVersion = "2.0"
 
 type SourceSpan struct {
 	Start int `json:"start"`

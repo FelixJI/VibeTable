@@ -8,6 +8,12 @@ import type {
 } from "@/contracts";
 import { computed, ref } from "vue";
 
+export interface ImportPreviewSession {
+  readonly grant: SessionPathGrant;
+  readonly plan: ImportPlan;
+  readonly mode: "create_only";
+}
+
 export function useDataIoService() {
   const bridge = useHostBridge();
   const activeTaskId = ref<string | null>(null);
@@ -17,6 +23,9 @@ export function useDataIoService() {
     kind: "data.import" | "data.export",
     params: Readonly<Record<string, unknown>>,
   ): Promise<unknown> {
+    if (activeTaskId.value) {
+      throw new Error("A data task is already running.");
+    }
     let status = await bridge.request("task.create", { kind, params }) as DataTaskStatus;
     activeTaskId.value = status.taskId;
     try {
@@ -52,12 +61,12 @@ export function useDataIoService() {
     }
   }
 
-  async function importData(
+  async function previewImport(
     collection: string,
     schemaRevision: string,
-  ): Promise<ApplyImportResult | null> {
+  ): Promise<ImportPreviewSession> {
     const grant = await bridge.request("data.importSourceRequested", {
-      accept: [".xlsx", ".xls", ".csv"],
+      accept: [".xlsx", ".xlsm", ".csv"],
     }) as SessionPathGrant;
     const plan = await bridge.request("data.previewImport", {
       grantId: grant.grantId,
@@ -66,21 +75,17 @@ export function useDataIoService() {
       mode: "create_only",
       columnMapping: [],
     }) as ImportPlan;
-    if (plan.summary.errorRows > 0) {
-      throw new Error(
-        `Import preview found ${plan.summary.errorRows} invalid row(s).`,
-      );
-    }
-    if (!window.confirm(
-      `Import ${plan.summary.validRows} validated row(s) from ${grant.displayName}?`,
-    )) {
-      return null;
-    }
+    return { grant, plan, mode: "create_only" };
+  }
+
+  async function applyImport(
+    session: ImportPreviewSession,
+  ): Promise<ApplyImportResult> {
     return await runTask("data.import", {
-      grantId: grant.grantId,
-      collection,
-      token: plan.token.token,
-      mode: "create_only",
+      grantId: session.grant.grantId,
+      collection: session.plan.collection,
+      token: session.plan.token.token,
+      mode: session.mode,
       chunkSize: 500,
       idempotencyPrefix: crypto.randomUUID(),
     }) as ApplyImportResult;
@@ -105,5 +110,12 @@ export function useDataIoService() {
     }) as ExportResult;
   }
 
-  return { activeTaskId, busy, importData, exportData, cancelActive };
+  return {
+    activeTaskId,
+    busy,
+    previewImport,
+    applyImport,
+    exportData,
+    cancelActive,
+  };
 }

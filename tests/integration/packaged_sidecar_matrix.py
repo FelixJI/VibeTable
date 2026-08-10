@@ -99,7 +99,7 @@ def _field(
 
 def _table(table_id: str, fields: list[dict[str, Any]]) -> dict[str, Any]:
     return {
-        "contractVersion": "1.0",
+        "contractVersion": "2.0",
         "tableId": table_id,
         "physicalName": table_id,
         "displayName": table_id,
@@ -122,7 +122,7 @@ def _mutation(
     operations: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
-        "contractVersion": "1.0",
+        "contractVersion": "2.0",
         "requestId": f"request-{key}",
         "idempotencyKey": f"idem-{key}",
         "tableId": table_id,

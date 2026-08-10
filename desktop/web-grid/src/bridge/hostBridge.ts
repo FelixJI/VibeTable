@@ -485,6 +485,12 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
 };
 
 const HOST_PICKER_PREFIX = "host-picker://";
+const WORKSPACE_BOOTSTRAP_METHODS = new Set([
+  "workspace.create",
+  "workspace.open",
+  "workspace.register",
+  "workspace.relink",
+]);
 
 function containsHostPickerSentinel(value: unknown): boolean {
   if (typeof value === "string") return value.startsWith(HOST_PICKER_PREFIX);
@@ -494,6 +500,13 @@ function containsHostPickerSentinel(value: unknown): boolean {
       .some(containsHostPickerSentinel);
   }
   return false;
+}
+
+function isWorkspaceBootstrapRequest(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return WORKSPACE_BOOTSTRAP_METHODS.has(
+    String((value as Readonly<Record<string, unknown>>).method ?? ""),
+  );
 }
 
 function responseTypesFor(type: WebMessageType): ReadonlySet<HostMessageType> {
@@ -614,6 +627,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     options.additionalObjectsTimeoutMs ?? Math.min(timeoutMs, 1_500);
   const updateCheckTimeoutMs = Math.max(timeoutMs, 30_000);
   const updateInstallTimeoutMs = Math.max(timeoutMs, 30 * 60_000);
+  const workspaceBootstrapTimeoutMs = Math.max(timeoutMs, 60_000);
   const onDiagnostic = options.onDiagnostic ?? (() => undefined);
   const generateRequestId =
     options.generateRequestId ?? defaultGenerateRequestId;
@@ -889,6 +903,8 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
         ? updateCheckTimeoutMs
         : type === "workspace.v2.request" && containsHostPickerSentinel(payload)
           ? nativePickerTimeoutMs
+          : type === "workspace.v2.request" && isWorkspaceBootstrapRequest(payload)
+            ? workspaceBootstrapTimeoutMs
           : timeoutMs;
     const promise = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {

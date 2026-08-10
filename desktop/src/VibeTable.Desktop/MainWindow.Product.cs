@@ -28,6 +28,11 @@ namespace VibeTable.Desktop;
 /// </summary>
 public partial class MainWindow : Window
 {
+    internal static readonly TimeSpan WorkspaceSessionShutdownTimeout =
+        BackendLaunchOptions.DefaultStopTimeout
+        + PocketBaseLaunchOptions.DefaultStopTimeout
+        + TimeSpan.FromSeconds(2);
+
     private readonly ProductionWorkspaceRuntimeFactory _runtime;
     private readonly WebMessageRouter _router;
     private readonly ProductWebViewBridge _webBridge;
@@ -2942,7 +2947,7 @@ public partial class MainWindow : Window
                 CheckFileExists = true,
                 Multiselect = false,
                 Title = "Import table data",
-                Filter = "Supported data|*.xlsx;*.xls;*.csv|Excel workbook|*.xlsx;*.xls|CSV file|*.csv",
+                Filter = "Supported data|*.xlsx;*.xlsm;*.csv|Excel workbook|*.xlsx;*.xlsm|CSV file|*.csv",
             };
             if (dialog.ShowDialog(this) != true)
             {
@@ -3637,7 +3642,8 @@ public partial class MainWindow : Window
         }
         try
         {
-            _workspaceSessions.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
+            _workspaceSessions.DisposeAsync().AsTask()
+                .Wait(WorkspaceSessionShutdownTimeout);
         }
         catch
         {

@@ -1,5 +1,5 @@
 {
-  "contractVersion": "1.0",
+  "contractVersion": "2.0",
   "requestId": "req_01HZX",
   "idempotencyKey": "idem_01HZX",
   "tableId": "tbl_order_lines",

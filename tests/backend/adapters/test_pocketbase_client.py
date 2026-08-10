@@ -46,7 +46,7 @@ async def test_mutation_apply_sends_frozen_product_request_with_session_header()
     transport = FakeTransport(
         [
             {
-                "contractVersion": "1.0",
+                "contractVersion": "2.0",
                 "status": "applied",
                 "changeSetId": "change-1",
                 "affectedRows": [],
@@ -59,7 +59,7 @@ async def test_mutation_apply_sends_frozen_product_request_with_session_header()
     )
     client = PocketBaseClient(transport=transport, session_secret="a" * 64)
     request = {
-        "contractVersion": "1.0",
+        "contractVersion": "2.0",
         "requestId": "paste-1",
         "idempotencyKey": "paste-1",
         "tableId": "orders",
@@ -270,7 +270,7 @@ def test_product_error_keeps_safe_structured_details() -> None:
     error = PocketBaseProductError(
         status=409,
         payload={
-            "contractVersion": "1.0",
+            "contractVersion": "2.0",
             "code": "mutation.digest_conflict",
             "path": "expectedDigest",
             "message": "record changed",

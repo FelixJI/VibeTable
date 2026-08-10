@@ -163,7 +163,6 @@
     ],
     "DELETE": [
       "provider.legacy-runtime.absent.v1",
-      "automation.compatibility.absent.v1",
       "collaboration.ui.absent.v1",
       "legacy.backup.absent.v2",
       "legacy.scheme-main-adoption.absent.v2",
@@ -181,7 +180,7 @@
       "tools/workspace-storage-dependencies.json"
     ],
     "schema": [
-      "contracts/v1/contracts.schema.json",
+      "contracts/v2/product-contracts.schema.json",
       "contracts/schema-v2/schema.schema.json",
       "contracts/v2/contracts.schema.json"
     ],
@@ -198,7 +197,8 @@
     "capabilities": [
       "sidecar/internal/schema/capabilities.go",
       "sidecar/internal/schema/v2/capabilities.go",
-      "contracts/v1/README.md",
+      "contracts/v2/README.md",
+      "contracts/v2/fixtures/product-rpc-catalog.json",
       "contracts/v2/fixtures/rpc-catalog.json",
       "contracts/v2/provider-support.json",
       "qa/handoff_dependencies.json"
@@ -211,10 +211,10 @@
   },
   "fixtures": {
     "CONTRACT": [
-      "contracts/v1/fixtures/table-definition.json",
-      "contracts/v1/fixtures/mutation-request.json",
-      "contracts/v1/fixtures/mutation-receipt.json",
-      "contracts/v1/fixtures/product-error.json",
+      "contracts/v2/fixtures/table-definition.json",
+      "contracts/v2/fixtures/mutation-request.json",
+      "contracts/v2/fixtures/mutation-receipt.json",
+      "contracts/v2/fixtures/product-error.json",
       "contracts/schema-v2/fixtures/field-definition.json",
       "contracts/schema-v2/fixtures/field-change-intent.json",
       "contracts/schema-v2/fixtures/migration-status.json",
@@ -234,8 +234,8 @@
       "contracts/v2/fixtures/workspace-event.json"
     ],
     "PRODUCT": [
-      "contracts/v1/fixtures/data-changed-event.json",
-      "contracts/v1/fixtures/managed-attachment-ref.json",
+      "contracts/v2/fixtures/data-changed-event.json",
+      "contracts/v2/fixtures/managed-attachment-ref.json",
       "contracts/v2/fixtures/file-document.json",
       "contracts/v2/fixtures/retention-policy.json",
       "contracts/v2/fixtures/snapshot-catalog-entry.json"

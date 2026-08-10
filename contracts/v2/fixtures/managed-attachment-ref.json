@@ -1,5 +1,5 @@
 {
-  "contractVersion": "1.0",
+  "contractVersion": "2.0",
   "tableId": "tbl_order_lines",
   "recordId": "rec_001",
   "fieldId": "fld_receipts",
@@ -16,4 +16,3 @@
     }
   ]
 }
-

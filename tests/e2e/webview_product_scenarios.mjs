@@ -427,6 +427,14 @@ async function waitForImportSuccess(page, expectedRows, timeoutMs = 60_000) {
   );
 }
 
+async function confirmImportPreview(page, timeoutMs = 60_000) {
+  const panel = page.getByTestId("import-preview-panel");
+  await panel.waitFor({ state: "visible", timeout: timeoutMs });
+  const confirmation = await panel.innerText();
+  await page.getByTestId("import-confirm").click();
+  return confirmation;
+}
+
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -633,7 +641,7 @@ async function applyProductMutation(page, tableId, operations, label, expectFail
   });
   const token = `${label}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return rawBridgeRequest(page, "mutation.apply", {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     requestId: token,
     idempotencyKey: token,
     tableId,
@@ -941,7 +949,7 @@ async function scenario02(page, recorder, _network, runtime) {
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
   const selectMutation = await rawBridgeRequest(page, "mutation.apply", {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     requestId: `e2e-select-seed-${Date.now()}`,
     idempotencyKey: `e2e-select-seed-${Date.now()}`,
     tableId,
@@ -1784,7 +1792,7 @@ async function waitForAttachmentList(page, params, predicate, timeoutMs = 30_000
 
 function invalidFormulaDefinition() {
   return {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     tableId: "tbl_e2e_invalid_formula",
     physicalName: "e2e_invalid_formula",
     displayName: "E2E Invalid Formula",
@@ -2149,24 +2157,12 @@ async function scenario04(page, recorder, _network, runtime) {
     `${jsonField}\n"${importedJson}"\n`,
     "utf8",
   );
-  let importConfirmed;
-  const importDialog = new Promise((resolve) => { importConfirmed = resolve; });
-  page.once("dialog", async (dialog) => {
-    await dialog.accept();
-    importConfirmed(dialog.message());
-  });
   await chooseToolbarMore(page, "import");
-  await Promise.race([
-    importDialog,
-    new Promise((_, reject) => setTimeout(
-      () => reject(new Error("JSON import confirmation did not appear")),
-      60_000,
-    )),
-  ]);
+  const importConfirmation = await confirmImportPreview(page);
   const importOutcome = await waitForImportSuccess(page, 1);
   recorder.check("JSON import completed with one explicitly reported committed row",
     importOutcome === "Imported 1 row(s)." || importOutcome === "已导入 1 行。",
-    { importOutcome });
+    { importConfirmation, importOutcome });
   await waitForVisibleRowCount(page, 2, 60_000);
 
   const headerFilter = page.locator(
@@ -2792,7 +2788,7 @@ async function scenario08(page, recorder) {
   // unrelated Tabulator editor open while injecting a raw bridge envelope
   // would test editor teardown rather than stale-write handling.
   const competitorRequestId = await beginRawBridgeRequest(page, "mutation.apply", {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     requestId: "e2e-stale-competitor",
     idempotencyKey: "e2e-stale-competitor",
     tableId,
@@ -3088,20 +3084,8 @@ async function scenario09(page, recorder, _network, runtime) {
     `${rows.join("\n")}\n`,
     "utf8",
   );
-  let dialogAccepted;
-  const accepted = new Promise((resolve) => { dialogAccepted = resolve; });
-  page.once("dialog", async (dialog) => {
-    await dialog.accept();
-    dialogAccepted(dialog.message());
-  });
   await chooseToolbarMore(page, "import");
-  const confirmation = await Promise.race([
-    accepted,
-    new Promise((_, reject) => setTimeout(
-      () => reject(new Error("import preview confirmation did not appear")),
-      60_000,
-    )),
-  ]);
+  const confirmation = await confirmImportPreview(page);
   const barrier = await waitForMutationBarrier(runtime);
   const fault = await requestSidecarKill(runtime, "interrupt active 1k-row import");
   recorder.check("the exact sidecar was killed after its first uncommitted transactional record write",
@@ -3209,7 +3193,7 @@ async function scenario10(page, recorder, _network, runtime) {
         .includes("E2E Realtime Recovery"),
   );
   const mutation = await rawBridgeRequest(page, "mutation.apply", {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     requestId: "e2e-realtime-after-restart",
     idempotencyKey: "e2e-realtime-after-restart",
     tableId,
@@ -3333,7 +3317,7 @@ async function scenario10(page, recorder, _network, runtime) {
     page,
     "mutation.apply",
     {
-      contractVersion: "1.0",
+      contractVersion: "2.0",
       requestId: "e2e-after-backend-recovery",
       idempotencyKey: "e2e-after-backend-recovery",
       tableId,
@@ -3386,15 +3370,38 @@ async function scenario11(page, recorder, _network, runtime) {
   await pluginRow.click();
 
   const toggle = page.getByTestId("plugin-toggle");
+  await page.waitForFunction(() => {
+    const lifecycleToggle = document.querySelector('[data-testid="plugin-toggle"]');
+    const runButton = document.querySelector(".action-row button.run-button");
+    return lifecycleToggle instanceof HTMLButtonElement
+      && runButton instanceof HTMLButtonElement
+      && lifecycleToggle.classList.contains("enabled")
+      && !lifecycleToggle.disabled
+      && !runButton.disabled;
+  });
   await toggle.click();
-  await page.waitForFunction(() =>
-    !document.querySelector('[data-testid="plugin-toggle"]')?.classList.contains("enabled"));
+  await page.waitForFunction(() => {
+    const lifecycleToggle = document.querySelector('[data-testid="plugin-toggle"]');
+    const runButton = document.querySelector(".action-row button.run-button");
+    return lifecycleToggle instanceof HTMLButtonElement
+      && runButton instanceof HTMLButtonElement
+      && !lifecycleToggle.classList.contains("enabled")
+      && !lifecycleToggle.disabled
+      && runButton.disabled;
+  });
   recorder.check("installed plugin can be disabled through its lifecycle UI",
     !(await toggle.getAttribute("class")).includes("enabled")
       && await page.locator(".action-row button.run-button").first().isDisabled());
   await toggle.click();
-  await page.waitForFunction(() =>
-    document.querySelector('[data-testid="plugin-toggle"]')?.classList.contains("enabled"));
+  await page.waitForFunction(() => {
+    const lifecycleToggle = document.querySelector('[data-testid="plugin-toggle"]');
+    const runButton = document.querySelector(".action-row button.run-button");
+    return lifecycleToggle instanceof HTMLButtonElement
+      && runButton instanceof HTMLButtonElement
+      && lifecycleToggle.classList.contains("enabled")
+      && !lifecycleToggle.disabled
+      && !runButton.disabled;
+  });
   recorder.check("disabled plugin can be explicitly enabled again",
     (await toggle.getAttribute("class")).includes("enabled")
       && await page.locator(".action-row button.run-button").first().isEnabled());

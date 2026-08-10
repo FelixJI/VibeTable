@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from backend.application.import_service import (
+    MAX_ATOMIC_IMPORT_ROWS,
     ImportFlowError,
     ImportService,
     RelationImportBatchResult,
@@ -252,14 +253,17 @@ def test_import_error_exposes_only_structured_product_data() -> None:
     }
 
 
-def test_source_file_reads_bounded_csv_and_rejects_other_formats(tmp_path: Path) -> None:
+def test_source_file_rejects_csv_beyond_atomic_limit_and_other_formats(tmp_path: Path) -> None:
     csv_path = tmp_path / "source.csv"
     _write_csv(csv_path, ["number", "title"], [["1", "one"], ["2", "two"]])
 
-    header, rows, source_hash = SourceFile(str(csv_path)).read_header_and_rows(max_rows=1)
-    assert header == ["number", "title"]
-    assert rows == [["1", "one"]]
-    assert len(source_hash) == 64
+    with pytest.raises(ImportFlowError) as overflow:
+        SourceFile(str(csv_path)).read_header_and_rows(max_rows=1)
+    assert overflow.value.code == "import_row_limit"
+    assert overflow.value.rpc_error_data == {
+        "code": "import_row_limit",
+        "maxRows": 1,
+    }
 
     unsupported = tmp_path / "source.txt"
     unsupported.write_text("x", encoding="utf-8")
@@ -278,7 +282,6 @@ def test_source_file_reads_named_xlsx_sheet_and_empty_workbook(tmp_path: Path) -
     chosen = workbook.create_sheet("Chosen")
     chosen.append(["number", "title"])
     chosen.append(["1", "one"])
-    chosen.append(["2", "two"])
     path = tmp_path / "source.xlsx"
     workbook.save(path)
     workbook.close()
@@ -300,6 +303,28 @@ def test_source_file_reads_named_xlsx_sheet_and_empty_workbook(tmp_path: Path) -
     header, rows, _ = SourceFile(str(empty_path)).read_header_and_rows()
     assert header == []
     assert rows == []
+
+
+def test_source_file_rejects_xlsx_beyond_atomic_limit(tmp_path: Path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.append(["number"])
+    sheet.append(["A-1"])
+    sheet.append(["A-2"])
+    path = tmp_path / "source.xlsx"
+    workbook.save(path)
+    workbook.close()
+
+    with pytest.raises(ImportFlowError) as overflow:
+        SourceFile(str(path)).read_header_and_rows(max_rows=1)
+    assert overflow.value.code == "import_row_limit"
+    assert overflow.value.rpc_error_data["maxRows"] == 1
+
+
+def test_atomic_import_row_limit_matches_product_mutation_kernel() -> None:
+    assert MAX_ATOMIC_IMPORT_ROWS == 1_000
 
 
 def test_auto_mapping_is_case_insensitive_and_explicit_mapping_wins() -> None:

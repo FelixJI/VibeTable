@@ -150,6 +150,35 @@ describe("PluginCenterView", () => {
     expect(JSON.stringify(posted[0])).not.toContain("expectedRevision");
   });
 
+  it("blocks lifecycle and action commands while a plugin request is in flight", async () => {
+    setHostBridgeForTesting(createHostBridge({
+      webview: {
+        postMessage: () => undefined,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      },
+    }));
+    const store = usePluginStore();
+    store.applyPlugin({
+      ...blockedPlugin,
+      status: "enabled",
+      disabledReason: null,
+      blockingReasons: [],
+      revision: 8,
+    });
+    store.startBusy();
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+
+    expect(wrapper.get('[data-testid="plugin-toggle"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get(".action-row button.run-button").attributes("disabled")).toBeDefined();
+
+    store.finishBusy();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get('[data-testid="plugin-toggle"]').attributes("disabled")).toBeUndefined();
+    expect(wrapper.get(".action-row button.run-button").attributes("disabled")).toBeUndefined();
+  });
+
   it("inspects a GitHub Release and explicitly cancels its host-managed plan", async () => {
     const posted: unknown[] = [];
     let listener: ((event: { data: unknown }) => void) | undefined;

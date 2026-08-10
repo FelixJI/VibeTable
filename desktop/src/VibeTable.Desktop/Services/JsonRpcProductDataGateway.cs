@@ -201,7 +201,7 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
         {
             var value = parameters.Deserialize<DataChangedEvent>(JsonOptions);
             if (value is not null
-                && value.ContractVersion == "1.0"
+                && value.ContractVersion == "2.0"
                 && value.Topic == "data.changed")
             {
                 DataChanged?.Invoke(value);
@@ -211,7 +211,7 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
         if (string.Equals(method, "task.changed", StringComparison.Ordinal)
             && parameters.ValueKind == JsonValueKind.Object
             && parameters.TryGetProperty("contractVersion", out var contractVersion)
-            && contractVersion.GetString() == "1.0"
+            && contractVersion.GetString() == "2.0"
             && parameters.TryGetProperty("topic", out var topic)
             && topic.GetString() == "task.changed")
         {

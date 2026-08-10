@@ -307,7 +307,7 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
                 "relationAggregatePaths": ["f_lines.f_amount"],
             },
             {"values": {"subtotal": 12}},
-            {"contractVersion": "1.0", "downloadCapability": "cap"},
+            {"contractVersion": "2.0", "downloadCapability": "cap"},
         ]
     )
 
@@ -510,7 +510,7 @@ async def test_trusted_host_attachment_upload_uses_one_guarded_multipart_mutatio
     service, transport = _service(
         [
             {
-                "contractVersion": "1.0",
+                "contractVersion": "2.0",
                 "status": "applied",
                 "changeSetId": "change-1",
             }
@@ -553,7 +553,7 @@ async def test_trusted_host_attachment_download_keeps_capability_and_path_native
     service, transport = _service(
         [
             {
-                "contractVersion": "1.0",
+                "contractVersion": "2.0",
                 "downloadCapability": "opaque-capability",
             }
         ]
@@ -572,7 +572,7 @@ async def test_trusted_host_attachment_download_keeps_capability_and_path_native
     )
 
     assert result == {
-        "contractVersion": "1.0",
+        "contractVersion": "2.0",
         "saved": True,
         "bytes": 12,
     }
@@ -637,7 +637,7 @@ async def test_table_catalog_rows_and_snapshot_use_fixed_routes() -> None:
 @pytest.mark.asyncio
 async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> None:
     definition = {
-        "contractVersion": "1.0",
+        "contractVersion": "2.0",
         "tableId": "orders",
         "physicalName": "orders",
         "displayName": "Orders",
@@ -862,7 +862,7 @@ async def test_multihop_lookup_validation_persists_and_round_trips_path() -> Non
         fields: list[dict[str, Any]],
     ) -> dict[str, Any]:
         return {
-            "contractVersion": "1.0",
+            "contractVersion": "2.0",
             "tableId": table_id,
             "physicalName": table_id,
             "displayName": table_id.title(),

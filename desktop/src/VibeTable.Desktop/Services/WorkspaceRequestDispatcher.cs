@@ -815,7 +815,7 @@ public sealed class WorkspaceRequestDispatcher
             string opaque = Guid.NewGuid().ToString("N")[..20];
             JsonElement definition = JsonSerializer.SerializeToElement(new
             {
-                contractVersion = "1.0",
+                contractVersion = "2.0",
                 tableId = "tbl_" + opaque,
                 physicalName = "t_" + opaque,
                 displayName,

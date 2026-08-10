@@ -109,7 +109,7 @@ def table_schema(
     revision: str = "schema_3",
 ) -> dict[str, Any]:
     return {
-        "contractVersion": "1.0",
+        "contractVersion": "2.0",
         "tableId": table_id,
         "physicalName": table_id,
         "displayName": table_id.title(),
@@ -212,7 +212,7 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
             {"canApply": True, "operations": []},
             {"status": "applied", "receipt": {"id": "change-1"}},
             {"valid": True, "diagnostics": []},
-            {"downloadCapability": "opaque", "contractVersion": "1.0"},
+            {"downloadCapability": "opaque", "contractVersion": "2.0"},
             {"status": "applied"},
             {"items": [{"tableId": "customers", "recordId": "c-1", "label": "Ada"}], "total": 1},
             {
