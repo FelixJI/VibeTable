@@ -1,5 +1,5 @@
 {
-  "contractVersion": "1.0",
+  "contractVersion": "2.0",
   "topic": "data.changed",
   "eventId": "evt_data_0012",
   "sequence": 12,
@@ -11,4 +11,3 @@
   "recordIds": ["rec_001"],
   "operation": "update"
 }
-

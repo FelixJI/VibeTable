@@ -66,7 +66,7 @@ class PocketBasePluginMutationAdapter:
         request_id = plan.idempotency_key or f"plugin-{uuid.uuid4()}"
         receipt = await self._client.apply_mutation(
             {
-                "contractVersion": "1.0",
+                "contractVersion": "2.0",
                 "requestId": request_id,
                 "idempotencyKey": request_id,
                 "tableId": plan.collection,

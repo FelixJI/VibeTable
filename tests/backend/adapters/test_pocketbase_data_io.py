@@ -13,7 +13,7 @@ from backend.application.paste_service import PasteError
 
 def _definition(*, revision: str = "schema_7", readonly: bool = False) -> dict[str, Any]:
     return {
-        "contractVersion": "1.0",
+        "contractVersion": "2.0",
         "tableId": "orders",
         "physicalName": "orders",
         "displayName": "Orders",

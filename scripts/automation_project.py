@@ -129,6 +129,7 @@ def bootstrap() -> None:
 
 def contracts() -> None:
     """Verify the shared v2 wire contract through every runtime consumer."""
+    _run("uv", "run", "python", "contracts/v2/generate_product_rpc_catalog.py", "--check")
     _run("uv", "run", "python", "contracts/v2/generate_rpc_catalog.py", "--check")
     _run(
         "uv",
@@ -137,6 +138,7 @@ def contracts() -> None:
         "-m",
         "pytest",
         "tests/contract/test_v2_contracts.py",
+        "tests/contract/test_product_contracts.py",
         "tests/backend/contracts/test_workspace_v2_models.py",
         "-q",
         "--no-cov",
@@ -148,6 +150,7 @@ def contracts() -> None:
         "--",
         "src/contracts/workspaceV2.test.ts",
         "src/contracts/workspaceV2Bridge.test.ts",
+        "src/contracts/productContractV2.test.ts",
         cwd=REPO_ROOT / "desktop" / "web-grid",
         env=_node_environment(),
     )
@@ -163,6 +166,7 @@ def contracts() -> None:
         "go",
         "test",
         "./internal/contracts/v2",
+        "./internal/contracts",
         "./internal/protocolv2",
         cwd=REPO_ROOT / "sidecar",
     )

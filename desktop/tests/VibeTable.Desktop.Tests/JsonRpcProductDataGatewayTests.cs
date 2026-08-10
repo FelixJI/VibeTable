@@ -315,7 +315,7 @@ public sealed class JsonRpcProductDataGatewayTests
         transport.EnqueueNotification(
             "data.changed",
             """
-            {"contractVersion":"1.0","topic":"data.changed","eventId":"evt_1","sequence":12,
+            {"contractVersion":"2.0","topic":"data.changed","eventId":"evt_1","sequence":12,
              "occurredAt":"2026-07-24T08:30:00Z","schemaRevision":"schema_0007",
              "dataRevision":"data_0012","changeSetId":"chg_1","tableId":"tbl_orders",
              "recordIds":["rec_1"],"operation":"update"}
@@ -339,7 +339,7 @@ public sealed class JsonRpcProductDataGatewayTests
         transport.EnqueueNotification(
             "task.changed",
             """
-            {"contractVersion":"1.0","topic":"task.changed","eventId":"evt_2","sequence":13,
+            {"contractVersion":"2.0","topic":"task.changed","eventId":"evt_2","sequence":13,
              "occurredAt":"2026-07-24T08:31:00Z","taskId":"job_1",
              "taskType":"formulaBackfill","state":"running","progress":0.5,
              "cursor":"row:5000","error":null}

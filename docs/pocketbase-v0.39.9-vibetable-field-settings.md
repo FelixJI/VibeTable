@@ -625,7 +625,7 @@ type AutoDateSpec struct {
 }
 ```
 
-`FieldDefinition.AutoDate *AutoDateSpec` 作为类型专用接口；`autoDate` 字段必须且只能出现在 `dataType="autoDate"` 的字段上。它在 v1 中以可选属性加入，先让所有严格解码器接受，再让生产端输出，符合 `contracts/v1/README.md` 的兼容规则。
+`FieldDefinition.AutoDate *AutoDateSpec` 作为类型专用接口；`autoDate` 字段必须且只能出现在 `dataType="autoDate"` 的字段上。先让所有严格解码器接受，再让生产端输出，符合 `contracts/v2/README.md` 的契约更新规则。
 
 ### “系统字段”有两层含义
 
@@ -685,7 +685,7 @@ VibeTable 管理的创建/更新时间字段必须采用第一层，但底层 Po
 | `desktop/web-grid/src/services/schemaFieldDraft.ts` | 已有 `autoDate` 类型、system kind、readonly editor | 增加角色草稿；当前不能再输出无角色的空配置 |
 | `desktop/web-grid/src/components/panels/SchemaFieldEditor.vue` | 创建表单已能选择“自动日期” | 改成“创建时间/最后更新时间”预设，隐藏 required/nullable/unique/default 开关 |
 | `desktop/web-grid/src/grid/createGrid.ts` | 日期/日期时间已有只读格式化路径 | 明确 autoDate 列只读并复用日期格式；补时区与空白显示测试 |
-| `contracts/v1/fixtures/table-definition.json` | 已有一个 autoDate 样例 | 为样例增加角色，并补一对 created/updated golden fixture |
+| `contracts/v2/fixtures/table-definition.json` | 已有一个 autoDate 样例 | 为样例增加角色，并补一对 created/updated golden fixture |
 | `backend/application/identifier_mapping_service.py` | 已把 `id/created/updated` 视为系统名，并跳过 `kind=system` 的映射 | 验证新的稳定物理名不会进入普通字段重命名流程 |
 
 ### 推荐默认
@@ -1677,7 +1677,7 @@ CSV/XLSX 面向外部查看和处理，不承担 VibeTable 无损恢复：
 | `backend/application/export_service.py` | `_render_cell` 已将 `None` 输出为空单元格 | 与互操作导出契约一致；需补存在性解码后的集成测试 |
 | `sidecar/internal/schema/validate.go`、`compiler.go` | 已拒绝 exact decimal 存储 | 与首版决策一致；前端类型、注释和公共契约也应同步移除或隐藏 decimal |
 | `sidecar/internal/schema/compiler.go` | 所有 `autoDate` 都固定编译为 `onCreate=true/onUpdate=true` | 引入明确角色并分别编译为创建时间或最后更新时间；禁止继续从名称推断 |
-| `contracts/v1/contracts.schema.json`、`sidecar/internal/schema/types.go` | `FieldDefinition` 没有自动日期角色，严格解码器会拒绝未知属性 | 先让所有消费者接受可选 `autoDate.role`，再更新 fixture 和生产端 |
+| `contracts/v2/product-contracts.schema.json`、`sidecar/internal/schema/types.go` | `FieldDefinition` 没有自动日期角色，严格解码器会拒绝未知属性 | 先让所有消费者接受可选 `autoDate.role`，再更新 fixture 和生产端 |
 | `desktop/web-grid/src/components/panels/SchemaFieldEditor.vue` | 自动日期仍显示 required、nullable、unique 等无效开关 | 改为两个预设并锁定 system/readOnly/non-null；隐藏无关选项 |
 | `tests/e2e/webview_product_scenarios.mjs` | 只验证自动日期字段形状，没有验证时间行为 | 覆盖创建、更新、不变性、只读、回滚、重启与查询行为 |
 
@@ -1812,11 +1812,11 @@ CSV/XLSX 面向外部查看和处理，不承担 VibeTable 无损恢复：
 
 | 顺序 | 文件 | 修改 | 验收 |
 |---:|---|---|---|
-| A1 | `contracts/v1/contracts.schema.json` | 新增 `AutoDateSpec`；在 `FieldDefinition` 增加可选 `autoDate`，`role` 枚举为 `createdAt/updatedAt`，对象禁止额外属性 | 合法双角色通过；缺角色、未知角色、额外属性失败 |
+| A1 | `contracts/v2/product-contracts.schema.json` | 新增 `AutoDateSpec`；在 `FieldDefinition` 增加可选 `autoDate`，`role` 枚举为 `createdAt/updatedAt`，对象禁止额外属性 | 合法双角色通过；缺角色、未知角色、额外属性失败 |
 | A2 | `sidecar/internal/schema/types.go` | 增加 `AutoDateRole`、常量、`AutoDateSpec` 和 `FieldDefinition.AutoDate` | JSON marshal/unmarshal 无损；旧定义仍可读取以便迁移诊断 |
 | A3 | `desktop/web-grid/src/contracts/index.ts` | 增加对应 TypeScript 类型和可选属性 | `tsc` 通过；前端不再用字符串散落表达角色 |
-| A4 | `contracts/v1/fixtures/table-definition.json` | 将旧样例按实际兼容策略标注，并增加 created/updated 成对 golden fixture | Go、TS、Python 契约测试读取相同 fixture |
-| A5 | `contracts/v1/fixtures/rpc-catalog.json` 及生成产物 | 通过仓库生成流程刷新，不手改重复片段 | 生成结果可复现，工作树二次生成无差异 |
+| A4 | `contracts/v2/fixtures/table-definition.json` | 将样例按当前契约标注，并增加 created/updated 成对 golden fixture | Go、TS、Python 契约测试读取相同 fixture |
+| A5 | `contracts/v2/fixtures/product-rpc-catalog.json` 及生成产物 | 通过仓库生成流程刷新，不手改重复片段 | 生成结果可复现，工作树二次生成无差异 |
 
 兼容落地顺序必须是：
 
@@ -1975,7 +1975,7 @@ CSV/XLSX 面向外部查看和处理，不承担 VibeTable 无损恢复：
 
 | 步骤 | 位置 | 实施内容 | 验收 |
 |---:|---|---|---|
-| G1 | `contracts/v1/contracts.schema.json`、各语言契约类型 | 固化 label、physicalName、display、default、presence、unique 和类型专用配置的归属层级 | 未知属性失败；所有支持属性可跨语言无损往返 |
+| G1 | `contracts/v2/product-contracts.schema.json`、各语言契约类型 | 固化 label、physicalName、display、default、presence、unique 和类型专用配置的归属层级 | 未知属性失败；所有支持属性可跨语言无损往返 |
 | G2 | `backend/application/identifier_mapping_service.py`、Schema API | 只在创建时生成稳定物理名；重命名只改显示名 | Unicode、重名、保留字和 `_via_` 用例通过；已有物理名不漂移 |
 | G3 | `SchemaFieldEditor.vue`、字段详情 | 常规/高级/危险区按第 9 节分组；不显示底层不适用开关 | 每种字段的控件矩阵有组件测试 |
 | G4 | catalog 读取与诊断 | 检测显示名/物理名混用和历史不合法名称，生成只读修复报告 | 诊断幂等；未确认前不改 Schema |

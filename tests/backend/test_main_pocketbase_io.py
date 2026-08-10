@@ -98,7 +98,7 @@ class _ImportTransport:
             }
         if method == "GET" and path == "/api/vibetable/v1/schema/tables/orders":
             return {
-                "contractVersion": "1.0",
+                "contractVersion": "2.0",
                 "tableId": "orders",
                 "physicalName": "orders",
                 "displayName": "Orders",
@@ -150,7 +150,7 @@ class _ImportTransport:
                 "items": [1, 2, 3],
             }
             return {
-                "contractVersion": "1.0",
+                "contractVersion": "2.0",
                 "status": "applied",
                 "changeSetId": "change_1",
                 "affectedRows": [

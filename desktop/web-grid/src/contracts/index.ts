@@ -697,7 +697,7 @@ export interface AttachmentPolicy {
 }
 
 export interface ManagedAttachmentRef {
-  readonly contractVersion: "1.0";
+  readonly contractVersion: "2.0";
   readonly tableId: string;
   readonly recordId: string;
   readonly fieldId: string;
@@ -779,7 +779,7 @@ export interface ProductFieldDefinition {
 }
 
 export interface ProductTableDefinition {
-  readonly contractVersion: "1.0";
+  readonly contractVersion: "2.0";
   readonly tableId: string;
   readonly physicalName: string;
   readonly displayName: string;
@@ -1661,7 +1661,7 @@ export type HostMessageType =
 
 /** Frozen v1 provider-neutral realtime envelope from the local data service. */
 export interface DataChangedEvent {
-  readonly contractVersion: "1.0";
+  readonly contractVersion: "2.0";
   readonly topic: "data.changed";
   readonly eventId: string;
   readonly sequence: number;
@@ -1675,7 +1675,7 @@ export interface DataChangedEvent {
 }
 
 export interface TaskChangedEvent {
-  readonly contractVersion: "1.0";
+  readonly contractVersion: "2.0";
   readonly topic: "task.changed";
   readonly eventId: string;
   readonly sequence: number;
@@ -1784,7 +1784,7 @@ export interface MutationAffectedRow {
 
 /** Authoritative result returned by every committed MutationKernel write. */
 export interface MutationReceipt {
-  readonly contractVersion: "1.0";
+  readonly contractVersion: "2.0";
   readonly status: "applied" | "replayed" | "pending" | "rejected";
   readonly changeSetId: string | null;
   readonly affectedRows: readonly MutationAffectedRow[];

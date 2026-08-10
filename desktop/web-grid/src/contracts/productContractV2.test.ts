@@ -65,7 +65,7 @@ const fixtureNames = [
   "mutation-receipt.json",
   "mutation-request.json",
   "product-error.json",
-  "rpc-catalog.json",
+  "product-rpc-catalog.json",
   "table-definition.json",
   "task-changed-event.json",
 ] as const;
@@ -79,7 +79,7 @@ function findFixturesDirectory(): string {
   for (const start of starts) {
     let current = resolve(start);
     while (true) {
-      const candidate = join(current, "contracts", "v1", "fixtures");
+      const candidate = join(current, "contracts", "v2", "fixtures");
       try {
         const names = readdirSync(candidate).filter((name) => name.endsWith(".json"));
         if (names.length > 0) return candidate;
@@ -93,7 +93,7 @@ function findFixturesDirectory(): string {
     }
   }
 
-  throw new Error("Could not locate contracts/v1/fixtures from cwd or test module");
+  throw new Error("Could not locate contracts/v2/fixtures from cwd or test module");
 }
 
 const fixturesDirectory = findFixturesDirectory();
@@ -105,19 +105,19 @@ function readFixture(name: typeof fixtureNames[number]): Record<string, unknown>
   >;
 }
 
-describe("product contract v1 golden fixtures", () => {
-  it("round-trips every v1 fixture without changing its JSON shape", () => {
+describe("product contract v2 golden fixtures", () => {
+  it("round-trips every product fixture without changing its JSON shape", () => {
     const actualNames = readdirSync(fixturesDirectory)
       .filter((name) => name.endsWith(".json"))
       .sort();
-    expect(actualNames).toEqual([...fixtureNames]);
+    expect(actualNames).toEqual(expect.arrayContaining([...fixtureNames]));
 
     for (const name of fixtureNames) {
       const fixture = readFixture(name);
       const roundTripped = JSON.parse(JSON.stringify(fixture)) as Record<string, unknown>;
 
       expect(roundTripped, name).toEqual(fixture);
-      expect(fixture.contractVersion, name).toBe("1.0");
+      expect(fixture.contractVersion, name).toBe("2.0");
 
       const wire = JSON.stringify(fixture).toLowerCase();
       expect(wire, name).not.toContain("dire" + "ctus");
@@ -151,7 +151,7 @@ describe("product contract v1 golden fixtures", () => {
   });
 
   it("pins one request, success, error, and event golden per catalog entry", () => {
-    const catalog = readFixture("rpc-catalog.json") as {
+    const catalog = readFixture("product-rpc-catalog.json") as {
       rpcMethods: string[];
       eventTopics: string[];
       rpcCases: Array<{
@@ -192,7 +192,7 @@ describe("product contract v1 golden fixtures", () => {
   });
 
   it("pins high-risk method-specific response DTO shapes", () => {
-    const catalog = readFixture("rpc-catalog.json") as {
+    const catalog = readFixture("product-rpc-catalog.json") as {
       rpcCases: Array<{
         method: string;
         resultModel: string;

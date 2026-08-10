@@ -280,7 +280,7 @@ function dataset(revision: number, table = "orders"): DatasetReadyPayload {
 
 function dataEvent(sequence: number): DataChangedEvent {
   return {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     topic: "data.changed",
     eventId: `evt-${sequence}`,
     sequence,
@@ -300,7 +300,7 @@ function taskEvent(
   progress: number,
 ): TaskChangedEvent {
   return {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     topic: "task.changed",
     eventId: `task-${sequence}`,
     sequence,

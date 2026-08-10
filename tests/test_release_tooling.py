@@ -936,7 +936,7 @@ def test_handoff_dependencies_preserve_core_and_add_workspace_v2_evidence() -> N
         "legacy.global-data-root.absent.v2",
     } <= set(capabilities)
     assert dependencies["artifactFiles"]["schema"] == [
-        "contracts/v1/contracts.schema.json",
+        "contracts/v2/product-contracts.schema.json",
         "contracts/schema-v2/schema.schema.json",
         "contracts/v2/contracts.schema.json",
     ]

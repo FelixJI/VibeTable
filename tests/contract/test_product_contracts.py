@@ -1,4 +1,4 @@
-"""Dependency-free checks for the language-neutral v1 product contracts."""
+"""Dependency-free checks for the language-neutral product contracts."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).parents[2]
-CONTRACT_ROOT = ROOT / "contracts" / "v1"
-SCHEMA_PATH = CONTRACT_ROOT / "contracts.schema.json"
+CONTRACT_ROOT = ROOT / "contracts" / "v2"
+SCHEMA_PATH = CONTRACT_ROOT / "product-contracts.schema.json"
 FIXTURES = CONTRACT_ROOT / "fixtures"
 
 FIXTURE_DEFINITIONS = {
@@ -23,7 +23,7 @@ FIXTURE_DEFINITIONS = {
     "managed-attachment-ref.json": "ManagedAttachmentRef",
     "data-changed-event.json": "DataChangedEvent",
     "task-changed-event.json": "TaskChangedEvent",
-    "rpc-catalog.json": "RpcContractCatalog",
+    "product-rpc-catalog.json": "RpcContractCatalog",
 }
 
 FIELD_KINDS = {"scalar", "relation", "lookup", "formula", "attachment", "system"}
@@ -44,7 +44,7 @@ CONSTRAINT_KINDS = {
 
 
 class SchemaMismatchError(AssertionError):
-    """Raised when a fixture violates the supported v1 schema subset."""
+    """Raised when a fixture violates the supported product schema subset."""
 
 
 def _load(path: Path) -> Any:
@@ -217,13 +217,13 @@ def test_schema_bundle_has_required_public_definitions_and_local_refs() -> None:
 
 def test_fixtures_validate_and_round_trip_without_shape_changes() -> None:
     schema = _load(SCHEMA_PATH)
-    assert {path.name for path in FIXTURES.glob("*.json")} == set(FIXTURE_DEFINITIONS)
+    assert set(FIXTURE_DEFINITIONS) <= {path.name for path in FIXTURES.glob("*.json")}
 
     for filename, definition in FIXTURE_DEFINITIONS.items():
         payload = _load(FIXTURES / filename)
         _validate(payload, schema["$defs"][definition], schema)
         _validate(payload, schema, schema)
-        assert payload["contractVersion"] == "1.0"
+        assert payload["contractVersion"] == "2.0"
         wire = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
         assert json.loads(wire) == payload
 
@@ -349,26 +349,8 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
     }
     registered.update(PRODUCT_RPC_REGISTRY)
 
-    catalog = _load(FIXTURES / "rpc-catalog.json")
-    retired_v1_methods = {
-        "backup.create",
-        "backup.delete",
-        "backup.list",
-        "backup.restore",
-        "lookup.create",
-        "lookup.delete",
-        "lookup.update",
-        "table_admin.applyRelationChange",
-        "table_admin.previewRelationChange",
-        "workspace.linkDocument",
-        "workspace.publishIndexBatch",
-        "workspace.readDocumentHistory",
-        "workspace.readDocuments",
-        "workspace.readFolder",
-        "workspace.registerDocument",
-        "workspace.unlinkDocument",
-    }
-    schema_v2_methods = {
+    catalog = _load(FIXTURES / "product-rpc-catalog.json")
+    workspace_catalog_methods = {
         "field.change.apply",
         "field.change.cancel",
         "field.change.plan",
@@ -376,10 +358,7 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
         "field.recycleBin.list",
         "field.settings.describe",
     }
-    # The v1 corpus remains byte-for-byte readable even though its production
-    # implementations and DTO modules are intentionally absent after the v2
-    # authority switch.
-    assert catalog["rpcMethods"] == sorted((registered - schema_v2_methods) | retired_v1_methods)
+    assert catalog["rpcMethods"] == sorted(registered - workspace_catalog_methods)
     assert catalog["eventTopics"] == [
         "data.changed",
         "plugin.catalog.changed",
@@ -401,7 +380,7 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
             f"$.rpcCases[{case['method']}].success.result",
         )
         assert case["success"]["result"] != {
-            "contractVersion": "1.0",
+            "contractVersion": "2.0",
             "method": case["method"],
             "status": "ok",
         }
@@ -425,7 +404,7 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
 def test_rpc_response_goldens_pin_high_risk_method_specific_shapes() -> None:
     """Guard the response DTOs most likely to cause cross-language breakage."""
 
-    catalog = _load(FIXTURES / "rpc-catalog.json")
+    catalog = _load(FIXTURES / "product-rpc-catalog.json")
     cases = {case["method"]: case for case in catalog["rpcCases"]}
 
     apply_import = cases["data.applyImport"]

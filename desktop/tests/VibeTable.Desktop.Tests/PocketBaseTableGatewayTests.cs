@@ -199,7 +199,7 @@ public sealed class PocketBaseTableGatewayTests
         transport.Respond(
             "mutation.apply",
             """
-            {"contractVersion":"1.0","status":"applied","changeSetId":"change-1",
+            {"contractVersion":"2.0","status":"applied","changeSetId":"change-1",
              "affectedRows":[{"recordId":"row-1","operation":"update","revision":"row_0002",
              "digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
              "computedFields":{},"newRevision":"data_0002","emittedEvents":[],"warnings":[]}
@@ -251,7 +251,7 @@ public sealed class PocketBaseTableGatewayTests
         transport.Respond(
             "mutation.apply",
             """
-            {"contractVersion":"1.0","status":"applied","changeSetId":"change-1",
+            {"contractVersion":"2.0","status":"applied","changeSetId":"change-1",
              "affectedRows":[{"recordId":"row-1","operation":"update","revision":"row_0002",
              "digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}],
              "computedFields":{},"newRevision":"data_0002","emittedEvents":[],"warnings":[]}
@@ -319,7 +319,7 @@ public sealed class PocketBaseTableGatewayTests
         transport.Respond(
             "mutation.apply",
             """
-            {"contractVersion":"1.0","status":"applied","changeSetId":"change-1",
+            {"contractVersion":"2.0","status":"applied","changeSetId":"change-1",
              "affectedRows":[{"recordId":"row-1","operation":"update","revision":"row_0002",
              "digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],
              "computedFields":{},"newRevision":"data_0002","emittedEvents":[],"warnings":[]}
@@ -402,7 +402,7 @@ public sealed class PocketBaseTableGatewayTests
         transport.Respond(
             "mutation.apply",
             """
-            {"contractVersion":"1.0","status":"applied","changeSetId":"change-1",
+            {"contractVersion":"2.0","status":"applied","changeSetId":"change-1",
              "affectedRows":[],"computedFields":{},"newRevision":"data_0002",
              "emittedEvents":[],"warnings":[]}
             """);
@@ -457,7 +457,7 @@ public sealed class PocketBaseTableGatewayTests
         transport.Respond("schema.getTable",
             """
             {
-              "contractVersion":"1.0","tableId":"items","physicalName":"items",
+              "contractVersion":"2.0","tableId":"items","physicalName":"items",
               "displayName":"Items","kind":"base","schemaRevision":"schema_0001",
               "archivePolicy":{"mode":"none","fieldId":null,"archivedValue":null},
               "fields":[
@@ -507,7 +507,7 @@ public sealed class PocketBaseTableGatewayTests
             "schema.getTable",
             """
             {
-              "contractVersion":"1.0","tableId":"items","physicalName":"items",
+              "contractVersion":"2.0","tableId":"items","physicalName":"items",
               "displayName":"Items","kind":"base","schemaRevision":"schema_0001",
               "archivePolicy":{"mode":"none","fieldId":null,"archivedValue":null},
               "fields":[
@@ -597,7 +597,7 @@ public sealed class PocketBaseTableGatewayTests
     private static string Schema(string table) =>
         """
         {
-        "contractVersion":"1.0","tableId":"__TABLE__","physicalName":"__TABLE__",
+        "contractVersion":"2.0","tableId":"__TABLE__","physicalName":"__TABLE__",
         "displayName":"Orders","kind":"base","schemaRevision":"schema_0001",
         "archivePolicy":{"mode":"none","fieldId":null,"archivedValue":null},
         "fields":[
@@ -613,7 +613,7 @@ public sealed class PocketBaseTableGatewayTests
     private static string RelationalSchema(string table) =>
         """
         {
-        "contractVersion":"1.0","tableId":"__TABLE__","physicalName":"__TABLE__",
+        "contractVersion":"2.0","tableId":"__TABLE__","physicalName":"__TABLE__",
         "displayName":"Orders","kind":"base","schemaRevision":"schema_0001",
         "archivePolicy":{"mode":"none","fieldId":null,"archivedValue":null},
         "fields":[

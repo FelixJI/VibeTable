@@ -382,7 +382,7 @@ func (e ProductError) MarshalJSON() ([]byte, error) {
 		Details         map[string]any `json:"details"`
 		Retryable       bool           `json:"retryable"`
 	}{
-		ContractVersion: "1.0",
+		ContractVersion: "2.0",
 		Code:            e.Code, Path: e.Path, Message: e.Message,
 		Details: details, Retryable: e.Retryable,
 	})

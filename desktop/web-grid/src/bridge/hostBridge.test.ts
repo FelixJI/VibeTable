@@ -698,7 +698,7 @@ describe("HostBridge", () => {
     expect(openedHandler).toHaveBeenCalledTimes(1);
     expect(openedHandler).toHaveBeenCalledWith(opened);
     const task = {
-      contractVersion: "1.0",
+      contractVersion: "2.0",
       topic: "task.changed",
       eventId: "evt-1",
       sequence: 1,
@@ -818,7 +818,7 @@ describe("HostBridge", () => {
       type: "file.uploadRequested",
       requestId: "attachment-req-1",
       payload: {
-        contractVersion: "1.0",
+        contractVersion: "2.0",
         status: "applied",
         changeSetId: "change-1",
       },

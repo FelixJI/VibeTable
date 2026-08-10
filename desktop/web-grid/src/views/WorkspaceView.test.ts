@@ -254,7 +254,7 @@ describe("WorkspaceView", () => {
     emit({
       type: "task.changed",
       payload: {
-        contractVersion: "1.0",
+        contractVersion: "2.0",
         topic: "task.changed",
         eventId: "backfill-42",
         sequence: 42,
@@ -286,7 +286,7 @@ describe("WorkspaceView", () => {
     emit({
       type: "task.changed",
       payload: {
-        contractVersion: "1.0",
+        contractVersion: "2.0",
         topic: "task.changed",
         eventId: "export-7",
         sequence: 7,

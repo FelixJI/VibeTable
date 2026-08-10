@@ -641,7 +641,7 @@ async function applyProductMutation(page, tableId, operations, label, expectFail
   });
   const token = `${label}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return rawBridgeRequest(page, "mutation.apply", {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     requestId: token,
     idempotencyKey: token,
     tableId,
@@ -949,7 +949,7 @@ async function scenario02(page, recorder, _network, runtime) {
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
   const selectMutation = await rawBridgeRequest(page, "mutation.apply", {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     requestId: `e2e-select-seed-${Date.now()}`,
     idempotencyKey: `e2e-select-seed-${Date.now()}`,
     tableId,
@@ -1792,7 +1792,7 @@ async function waitForAttachmentList(page, params, predicate, timeoutMs = 30_000
 
 function invalidFormulaDefinition() {
   return {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     tableId: "tbl_e2e_invalid_formula",
     physicalName: "e2e_invalid_formula",
     displayName: "E2E Invalid Formula",
@@ -2788,7 +2788,7 @@ async function scenario08(page, recorder) {
   // unrelated Tabulator editor open while injecting a raw bridge envelope
   // would test editor teardown rather than stale-write handling.
   const competitorRequestId = await beginRawBridgeRequest(page, "mutation.apply", {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     requestId: "e2e-stale-competitor",
     idempotencyKey: "e2e-stale-competitor",
     tableId,
@@ -3193,7 +3193,7 @@ async function scenario10(page, recorder, _network, runtime) {
         .includes("E2E Realtime Recovery"),
   );
   const mutation = await rawBridgeRequest(page, "mutation.apply", {
-    contractVersion: "1.0",
+    contractVersion: "2.0",
     requestId: "e2e-realtime-after-restart",
     idempotencyKey: "e2e-realtime-after-restart",
     tableId,
@@ -3317,7 +3317,7 @@ async function scenario10(page, recorder, _network, runtime) {
     page,
     "mutation.apply",
     {
-      contractVersion: "1.0",
+      contractVersion: "2.0",
       requestId: "e2e-after-backend-recovery",
       idempotencyKey: "e2e-after-backend-recovery",
       tableId,

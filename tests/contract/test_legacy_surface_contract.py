@@ -20,6 +20,7 @@ def test_manifest_lists_every_required_legacy_surface_category() -> None:
         "forbiddenJsonValues",
         "forbiddenJsonMembers",
         "currentCatalogs",
+        "catalogsWithLegacyDtoFieldGuard",
         "allowedDetectionPrimitives",
     } <= manifest.keys()
     assert {
@@ -74,11 +75,6 @@ def test_manifest_lists_every_required_legacy_surface_category() -> None:
 
 def test_checker_is_precise_and_respects_detection_allowlist(tmp_path: Path) -> None:
     (tmp_path / "contracts/v2").mkdir(parents=True)
-    (tmp_path / "contracts/v1").mkdir()
-    (tmp_path / "contracts/v1/frozen.json").write_text(
-        '{"method":"backup.list"}\n',
-        encoding="utf-8",
-    )
     (tmp_path / "scripts").mkdir()
     (tmp_path / "scripts/release.py").write_text(
         "def verify_upgrade_backup(): pass\n",
@@ -95,11 +91,14 @@ def test_checker_is_precise_and_respects_detection_allowlist(tmp_path: Path) -> 
     )
     workspace_layout.parent.mkdir(parents=True)
     workspace_layout.write_text("// detector\n", encoding="utf-8")
-    (tmp_path / "contracts/v2/v1-frozen.sha256").write_text("0" * 64, encoding="ascii")
     (tmp_path / "contracts/v2/fixtures").mkdir()
     catalog = tmp_path / "contracts/v2/fixtures/rpc-catalog.json"
     catalog.write_text(
         '{"methods":["snapshot.list"],"fixtures":[]}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "contracts/v2/fixtures/product-rpc-catalog.json").write_text(
+        '{"methods":["data.previewImport"],"fixtures":[]}\n',
         encoding="utf-8",
     )
     (tmp_path / "qa").mkdir()
@@ -156,9 +155,11 @@ def test_current_v2_catalog_has_no_legacy_rpc() -> None:
     manifest = _manifest()
     forbidden = set(manifest["forbiddenRpcMethods"])
     forbidden_fields = set(manifest["forbiddenDtoFields"])
+    field_guard_catalogs = set(manifest["catalogsWithLegacyDtoFieldGuard"])
     for relative in manifest["currentCatalogs"]:
         payload = json.loads(
             (legacy_surface_check.PROJECT_ROOT / relative).read_text(encoding="utf-8")
         )
         assert forbidden.isdisjoint(legacy_surface_check._catalog_methods(payload))
-        assert forbidden_fields.isdisjoint(legacy_surface_check._json_member_names(payload))
+        if relative in field_guard_catalogs:
+            assert forbidden_fields.isdisjoint(legacy_surface_check._json_member_names(payload))

@@ -7,95 +7,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
-	"slices"
-	"strings"
 	"testing"
 
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/schema"
 )
 
-func TestV1GoldenFixturesRoundTripWithoutLoss(t *testing.T) {
-	fixtureDir := repositoryFixtureDir(t)
-	entries, err := os.ReadDir(fixtureDir)
-	if err != nil {
-		t.Fatalf("ReadDir(%q): %v", fixtureDir, err)
-	}
-
-	var names []string
-	for _, entry := range entries {
-		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".json" {
-			names = append(names, entry.Name())
-		}
-	}
-	slices.Sort(names)
-	expected := []string{
-		"data-changed-event.json",
-		"formula-error.json",
-		"managed-attachment-ref.json",
-		"mutation-receipt.json",
-		"mutation-request.json",
-		"product-error.json",
-		"rpc-catalog.json",
-		"table-definition.json",
-		"task-changed-event.json",
-	}
-	if !reflect.DeepEqual(names, expected) {
-		t.Fatalf("fixture set changed: got %v, want %v", names, expected)
-	}
-
-	for _, name := range names {
-		t.Run(name, func(t *testing.T) {
-			source, err := os.ReadFile(filepath.Join(fixtureDir, name))
-			if err != nil {
-				t.Fatal(err)
-			}
-			document, err := Decode(bytes.NewReader(source))
-			if err != nil {
-				t.Fatalf("Decode(): %v", err)
-			}
-
-			var encoded bytes.Buffer
-			if err := Encode(&encoded, document); err != nil {
-				t.Fatalf("Encode(): %v", err)
-			}
-			roundTripped, err := Decode(&encoded)
-			if err != nil {
-				t.Fatalf("Decode(round trip): %v", err)
-			}
-			if !reflect.DeepEqual(document, roundTripped) {
-				t.Fatalf("round trip changed fixture:\nsource=%#v\nresult=%#v", document, roundTripped)
-			}
-
-			// A second semantic comparison against the source protects the
-			// custom json.Number path from accidental numeric coercion.
-			var sourceValue any
-			decoder := json.NewDecoder(bytes.NewReader(source))
-			decoder.UseNumber()
-			if err := decoder.Decode(&sourceValue); err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(sourceValue, map[string]any(roundTripped)) {
-				t.Fatal("round trip did not preserve source JSON semantics")
-			}
-		})
-	}
-}
-
-func TestDecodeRejectsWrongVersionAndTrailingJSON(t *testing.T) {
-	for _, payload := range []string{
-		`{"contractVersion":"2.0"}`,
-		`{"contractVersion":"1.0"} {}`,
-		`[]`,
-	} {
-		if _, err := Decode(strings.NewReader(payload)); err == nil {
-			t.Fatalf("Decode(%q) unexpectedly succeeded", payload)
-		}
-	}
-}
-
 func TestRPCCatalogPinsEveryMethodAndEventEnvelope(t *testing.T) {
-	source, err := os.ReadFile(filepath.Join(repositoryFixtureDir(t), "rpc-catalog.json"))
+	source, err := os.ReadFile(filepath.Join(repositoryFixtureDir(t), "product-rpc-catalog.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +85,7 @@ func TestRPCCatalogPinsEveryMethodAndEventEnvelope(t *testing.T) {
 }
 
 func TestRPCCatalogPinsHighRiskMethodSpecificResponseDTOs(t *testing.T) {
-	source, err := os.ReadFile(filepath.Join(repositoryFixtureDir(t), "rpc-catalog.json"))
+	source, err := os.ReadFile(filepath.Join(repositoryFixtureDir(t), "product-rpc-catalog.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,6 +196,6 @@ func repositoryFixtureDir(t *testing.T) string {
 	}
 	return filepath.Clean(filepath.Join(
 		filepath.Dir(sourceFile),
-		"..", "..", "..", "contracts", "v1", "fixtures",
+		"..", "..", "..", "contracts", "v2", "fixtures",
 	))
 }

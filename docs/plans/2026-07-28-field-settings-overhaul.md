@@ -172,13 +172,13 @@ flowchart LR
 
 ### 5.1 版本策略
 
-全局 `contracts/v1` 还承载 Mutation、事件、插件等大量稳定协议，本项目不整体升级它。
+产品契约统一收敛到 `contracts/v2/product-contracts.schema.json`，Mutation、事件和插件相关产品 DTO 同步使用 `contractVersion: "2.0"`，不保留旧版本适配。
 
 新增独立的 `vibetable.schema.v2` 域契约：
 
 - 新增 `contracts/schema-v2/schema.schema.json`、fixtures 和生成脚本输入；
 - Schema 描述、字段设置和字段变更 RPC 使用 v2 DTO；
-- Mutation/Event 等通用信封继续使用 `contractVersion: "1.0"`；
+- Mutation/Event 等通用信封统一使用 `contractVersion: "2.0"`；
 - 当前没有业务数据，生产 Schema 路径一次性切到 v2，不实现 v1/v2 双读；
 - 旧 `schema.validate/apply/delete` 从 renderer allowlist 移除，只保留为短期开发诊断入口，完成切换后删除。
 
@@ -669,7 +669,7 @@ Store 同时保存 `original`、`draft`、`capability`、`dirty`、`plan` 和 re
 
 - `contracts/schema-v2/schema.schema.json`
 - `contracts/schema-v2/fixtures/*`
-- `contracts/v1/generate_rpc_catalog.py`
+- `contracts/v2/generate_product_rpc_catalog.py`
 - `sidecar/internal/schema/types.go`
 - 新 `sidecar/internal/schema/v2/*`
 - `desktop/web-grid/src/contracts/*`
