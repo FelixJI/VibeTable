@@ -321,7 +321,7 @@ onBeforeUnmount(() => service.dispose());
           <button data-testid="plugin-upgrade" type="button" class="quiet-button" title="选择新版本并先检查变更计划" @click="inspectUpgrade(plugin)"><Upload :size="13" />{{ plugin.sourceType === 'local-folder' ? (plugin.sourceChanged ? '检查文件夹变更' : '检查并重新加载文件夹') : '检查离线升级' }}</button>
           <button v-if="publicCapabilityPolicy.pluginLifecycleMutations" data-testid="plugin-rollback" type="button" class="quiet-button" @click="safely(() => service.rollback(plugin!))"><RotateCcw :size="13" />回滚上一版本</button>
           <button v-if="publicCapabilityPolicy.pluginLifecycleMutations && !uninstalling" data-testid="plugin-uninstall" type="button" class="danger-text-button" @click="uninstalling = true"><Trash2 :size="13" />卸载</button>
-          <div v-else-if="publicCapabilityPolicy.pluginLifecycleMutations" class="uninstall-confirm"><span>将清理插件本地资源。</span><label><input v-model="cleanupPrivateSettings" type="checkbox" />清理私有设置</label><button type="button" @click="uninstalling = false">取消</button><button type="button" @click="safely(() => service.uninstall(plugin!, cleanupPrivateSettings))">确认卸载</button></div>
+          <div v-else-if="publicCapabilityPolicy.pluginLifecycleMutations" class="uninstall-confirm"><span>将清理插件本地资源。</span><label><input v-model="cleanupPrivateSettings" data-testid="plugin-uninstall-private-settings" type="checkbox" />清理私有设置</label><button type="button" @click="uninstalling = false">取消</button><button data-testid="plugin-uninstall-confirm" type="button" @click="safely(() => service.uninstall(plugin!, cleanupPrivateSettings))">确认卸载</button></div>
         </footer>
       </main>
 

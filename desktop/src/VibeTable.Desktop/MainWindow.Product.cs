@@ -1104,9 +1104,7 @@ public partial class MainWindow : Window
                             error = (object?)null,
                         },
                         forwarded.Wire);
-                    if (request.V2Method is
-                            "replica.synchronize" or
-                            "replica.forceTakeover" &&
+                    if (request.V2Method == "replica.forceTakeover" &&
                         request.Scope is not null)
                     {
                         await _replicaStatusMonitor.RefreshNowAsync(
@@ -2068,6 +2066,8 @@ public partial class MainWindow : Window
         };
         if (_providerPolicy.MirroredCreationEnabled)
             capabilities.Add("workspace.storage.mirrored-create.v2");
+        // Synchronization is internal-only, but the renderer capability still
+        // requires the complete Host-to-Sidecar protection protocol.
         if (ContainsEvery(
                 methods,
                 "snapshot.request",
@@ -2389,7 +2389,6 @@ public partial class MainWindow : Window
             or "fileHistory.applyPendingChange"
             or "retention.update"
             or "retention.apply"
-            or "replica.synchronize"
             or "replica.forceTakeover"
             or "conflict.apply";
 
