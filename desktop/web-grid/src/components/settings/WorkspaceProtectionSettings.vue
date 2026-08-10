@@ -62,7 +62,6 @@ export type WorkspaceProtectionAction = WorkspaceV2UiAction<
   | "retention.update"
   | "retention.plan"
   | "retention.apply"
-  | "replica.synchronize"
 >;
 
 const { mode } = defineProps<{ mode: "versions" | "storage" }>();
@@ -951,15 +950,6 @@ function applyStoragePlan(): void {
         >
           <template #icon><NIcon><ShieldCheck /></NIcon></template>
           {{ t("workspaceV2.storage.verify") }}
-        </NButton>
-        <NButton
-          v-if="protection.storage?.mode === 'mirrored'"
-          size="small"
-          :disabled="protection.storage?.pendingSync || session.isTransitioning"
-          data-testid="workspace-storage-sync"
-          @click="emit('action', { method: 'replica.synchronize', params: {} })"
-        >
-          {{ t("workspaceV2.storage.sync") }}
         </NButton>
       </footer>
       <NAlert

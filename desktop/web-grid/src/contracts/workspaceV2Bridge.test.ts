@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseWorkspaceV2Reply } from "./workspaceV2Bridge";
+import { WORKSPACE_V2_RENDERER_METHODS, parseWorkspaceV2Reply } from "./workspaceV2Bridge";
 
 const reply = {
   method: "fileHistory.listDocuments",
@@ -654,5 +654,22 @@ describe("workspace v2 storage relocation replies", () => {
     expect(() => parseWorkspaceV2Reply(makeReply("overwriteInPlace"))).toThrow(
       "storage action is invalid",
     );
+  });
+});
+
+describe("workspace v2 renderer exposure", () => {
+  it("keeps relink callable only through the closed product flow and synchronization internal", () => {
+    expect(WORKSPACE_V2_RENDERER_METHODS).toContain("workspace.relink");
+    expect(WORKSPACE_V2_RENDERER_METHODS).not.toContain("replica.synchronize");
+    expect(() => parseWorkspaceV2Reply({
+      method: "replica.synchronize",
+      wire: reply.wire,
+      ok: true,
+      result: {
+        operationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        state: "queued",
+      },
+      error: null,
+    })).toThrow("workspace v2 method is invalid");
   });
 });

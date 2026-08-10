@@ -26,7 +26,9 @@ import type {
   RestoreResult,
 } from "@/contracts";
 
-export const WORKSPACE_V2_RPC_METHODS = [
+// Closed renderer-to-Host product surface. Host-to-Sidecar protocol methods
+// such as replica.synchronize intentionally do not belong here.
+export const WORKSPACE_V2_RENDERER_METHODS = [
   "workspace.list",
   "workspace.create",
   "workspace.register",
@@ -73,7 +75,6 @@ export const WORKSPACE_V2_RPC_METHODS = [
   "retention.plan",
   "retention.apply",
   "replica.status",
-  "replica.synchronize",
   "replica.forceTakeover",
   "conflict.list",
   "conflict.inspect",
@@ -81,7 +82,7 @@ export const WORKSPACE_V2_RPC_METHODS = [
   "conflict.apply",
 ] as const;
 
-export type WorkspaceV2RpcMethod = (typeof WORKSPACE_V2_RPC_METHODS)[number];
+export type WorkspaceV2RpcMethod = (typeof WORKSPACE_V2_RENDERER_METHODS)[number];
 
 export interface WorkspaceV2RpcParams {
   readonly "workspace.list": Readonly<Record<string, never>>;
@@ -259,7 +260,6 @@ export interface WorkspaceV2RpcParams {
   readonly "retention.plan": Readonly<Record<string, never>>;
   readonly "retention.apply": { readonly planId: string };
   readonly "replica.status": Readonly<Record<string, never>>;
-  readonly "replica.synchronize": Readonly<Record<string, never>>;
   readonly "replica.forceTakeover": { readonly mode: "provisional" };
   readonly "conflict.list": { readonly cursor: string | null; readonly limit: number };
   readonly "conflict.inspect": { readonly conflictId: string };
@@ -535,7 +535,6 @@ export interface WorkspaceV2RpcResultMap {
     readonly syncState: SnapshotTimelineItem["syncState"];
     readonly pendingSync: boolean;
   };
-  readonly "replica.synchronize": OperationResult;
   readonly "replica.forceTakeover": {
     readonly fenceEpoch: number;
     readonly claimId: string;
@@ -1535,7 +1534,7 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
 export function parseWorkspaceV2Reply(value: unknown): WorkspaceV2Reply {
   const source = object(value, "workspace v2 reply");
   exact(source, ["method", "wire", "ok", "result", "error"], "workspace v2 reply");
-  const method = oneOf(source.method, WORKSPACE_V2_RPC_METHODS, "workspace v2 method");
+  const method = oneOf(source.method, WORKSPACE_V2_RENDERER_METHODS, "workspace v2 method");
   const wire = parseWire(source.wire);
   const ok = bool(source.ok, "workspace v2 reply ok");
   if (ok) {

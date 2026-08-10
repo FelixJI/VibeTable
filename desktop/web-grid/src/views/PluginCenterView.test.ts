@@ -205,6 +205,55 @@ describe("PluginCenterView", () => {
     });
   });
 
+  it("keeps rollback and uninstall behind dedicated plugin-center use cases", async () => {
+    const posted: unknown[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `lifecycle-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          posted.push(message);
+          const request = message as { type: string; requestId: string };
+          const payload = request.type === "plugin.lifecycle.rollback"
+            ? { ...blockedPlugin, version: "1.1.0", revision: 8 }
+            : { uninstalled: true, privateSettingsRetained: false, cleanupPending: false };
+          queueMicrotask(() => listener?.({ data: {
+            type: request.type,
+            requestId: request.requestId,
+            payload,
+          } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+
+    await wrapper.get('[data-testid="plugin-rollback"]').trigger("click");
+    await flushPromises();
+    expect(posted[0]).toMatchObject({
+      type: "plugin.lifecycle.rollback",
+      payload: { projectKey: "local:default", pluginId: "com.acme.clean" },
+    });
+
+    await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
+    await wrapper.get('[data-testid="plugin-uninstall-private-settings"]').setValue(true);
+    await wrapper.get('[data-testid="plugin-uninstall-confirm"]').trigger("click");
+    await flushPromises();
+    expect(posted[1]).toMatchObject({
+      type: "plugin.lifecycle.uninstall",
+      payload: {
+        projectKey: "local:default",
+        pluginId: "com.acme.clean",
+        cleanupPrivateSettings: true,
+      },
+    });
+    expect(usePluginStore().plugins).toEqual([]);
+  });
+
   it("enables a new plugin after the user approves its permissions and install", async () => {
     const posted: unknown[] = [];
     let listener: ((event: { data: unknown }) => void) | undefined;

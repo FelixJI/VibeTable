@@ -1031,7 +1031,6 @@ export const messages: Record<string, string> = {
   "workspaceV2.storage.previewOnly": "先预览，再应用",
   "workspaceV2.storage.previewOnlyHint": "当前界面不会直接移动目录或覆盖密钥；确认后才会提交宿主计划。",
   "workspaceV2.storage.apply": "执行存储变更",
-  "workspaceV2.storage.sync": "更新目录副本",
   "workspaceV2.storage.verify": "校验仓库",
   "workspaceV2.storage.verify.verified": "仓库完整",
   "workspaceV2.storage.verify.corrupt": "发现损坏",

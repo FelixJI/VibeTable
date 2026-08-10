@@ -1031,7 +1031,6 @@ export const messages: Record<string, string> = {
   "workspaceV2.storage.previewOnly": "Preview before apply",
   "workspaceV2.storage.previewOnlyHint": "This view does not move folders or overwrite keys directly. Confirm to submit the host plan.",
   "workspaceV2.storage.apply": "Apply storage change",
-  "workspaceV2.storage.sync": "Update directory copy",
   "workspaceV2.storage.verify": "Verify repository",
   "workspaceV2.storage.verify.verified": "Repository is intact",
   "workspaceV2.storage.verify.corrupt": "Corruption detected",

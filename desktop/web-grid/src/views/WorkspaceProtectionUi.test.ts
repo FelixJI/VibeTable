@@ -893,7 +893,7 @@ describe("workspace protection UI capability gates", () => {
     wrapper.unmount();
   });
 
-  it("only exposes verified topology/cache actions and emits their closed params", async () => {
+  it("exposes verified topology/cache actions while keeping replica synchronization internal", async () => {
     const session = useWorkspaceSessionStore();
     session.configureCapabilities([
       "workspace.session.v2",
@@ -946,7 +946,7 @@ describe("workspace protection UI capability gates", () => {
       attachTo: document.body,
     });
 
-    expect(wrapper.get('[data-testid="workspace-storage-sync"]').text()).toContain("更新目录副本");
+    expect(wrapper.find('[data-testid="workspace-storage-sync"]').exists()).toBe(false);
 
     await wrapper.get('[data-testid="workspace-storage-convert-preview"]').trigger("click");
     await wrapper.get('[data-testid="workspace-storage-release-cache-preview"]').trigger("click");
@@ -970,11 +970,6 @@ describe("workspace protection UI capability gates", () => {
         },
       },
     ]);
-    await wrapper.get('[data-testid="workspace-storage-sync"]').trigger("click");
-    expect(wrapper.emitted("action")?.[2]?.[0]).toEqual({
-      method: "replica.synchronize",
-      params: {},
-    });
     wrapper.unmount();
   });
 

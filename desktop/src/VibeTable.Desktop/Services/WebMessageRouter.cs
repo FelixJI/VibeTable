@@ -129,7 +129,8 @@ public sealed class WebMessageRouter
         "plugin.surface.event",
         // Open the embedded data administration surface in this webview.
         "admin.openRequested",
-        // Single closed bridge for the generated workspace-v2 RPC catalog.
+        // Closed renderer product bridge. Internal Host-to-Sidecar protocol
+        // methods are intentionally absent from its method catalog.
         "workspace.v2.request",
     };
 
@@ -213,7 +214,7 @@ public sealed class WebMessageRouter
         "workspace.v2.event",
     };
 
-    private static readonly IReadOnlyDictionary<string, string> WorkspaceV2Methods =
+    private static readonly IReadOnlyDictionary<string, string> RendererWorkspaceV2Methods =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["workspace.list"] = "global",
@@ -261,7 +262,6 @@ public sealed class WebMessageRouter
             ["retention.plan"] = "workspace",
             ["retention.apply"] = "workspace",
             ["replica.status"] = "workspace",
-            ["replica.synchronize"] = "workspace",
             ["replica.forceTakeover"] = "workspace",
             ["conflict.list"] = "workspace",
             ["conflict.inspect"] = "workspace",
@@ -402,7 +402,7 @@ public sealed class WebMessageRouter
                 if (payload.ValueKind != JsonValueKind.Object
                     || !payload.TryGetProperty("method", out JsonElement methodElement)
                     || methodElement.ValueKind != JsonValueKind.String
-                    || !WorkspaceV2Methods.TryGetValue(
+                    || !RendererWorkspaceV2Methods.TryGetValue(
                         methodElement.GetString() ?? string.Empty,
                         out string? expectedScope))
                 {

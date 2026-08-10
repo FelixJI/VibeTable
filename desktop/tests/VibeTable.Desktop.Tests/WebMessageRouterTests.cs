@@ -735,11 +735,29 @@ public sealed class WebMessageRouterTests
         }));
         Assert.AreEqual("BAD_WORKSPACE_WIRE", wrongScope!.Payload!.Code);
 
+        int dispatchedBeforeInternalMethod = dispatched.Count;
+        var internalMethod = router.Route(JsonSerializer.Serialize(new
+        {
+            type = "workspace.v2.request",
+            requestId = "v2-internal",
+            wire = new
+            {
+                scope = "workspace",
+                workspaceId,
+                sessionEpoch = 3,
+                operationId = Guid.NewGuid(),
+                sequence = 14,
+            },
+            payload = new { method = "replica.synchronize", @params = new { } },
+        }));
+        Assert.AreEqual("UNKNOWN_V2_METHOD", internalMethod!.Payload!.Code);
+        Assert.AreEqual(dispatchedBeforeInternalMethod, dispatched.Count);
+
         var unknown = router.Route(JsonSerializer.Serialize(new
         {
             type = "workspace.v2.request",
             requestId = "v2-3",
-            wire = new { scope = "global", operationId, sequence = 14 },
+            wire = new { scope = "global", operationId, sequence = 15 },
             payload = new { method = "repository.rotateKey", @params = new { } },
         }));
         Assert.AreEqual("UNKNOWN_V2_METHOD", unknown!.Payload!.Code);

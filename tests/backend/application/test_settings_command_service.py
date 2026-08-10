@@ -147,6 +147,15 @@ def test_list_commands_returns_catalog() -> None:
     result = service.list_commands()
     ids = {c.command_id for c in result.commands}
     assert "export.query" in ids
+    assert ids.isdisjoint(
+        {
+            "workspace.relink",
+            "plugin.upgrade",
+            "plugin.rollback",
+            "plugin.uninstall",
+            "replica.synchronize",
+        }
+    )
 
 
 @pytest.mark.asyncio
