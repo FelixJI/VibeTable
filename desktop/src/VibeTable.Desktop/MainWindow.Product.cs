@@ -28,6 +28,11 @@ namespace VibeTable.Desktop;
 /// </summary>
 public partial class MainWindow : Window
 {
+    internal static readonly TimeSpan WorkspaceSessionShutdownTimeout =
+        BackendLaunchOptions.DefaultStopTimeout
+        + PocketBaseLaunchOptions.DefaultStopTimeout
+        + TimeSpan.FromSeconds(2);
+
     private readonly ProductionWorkspaceRuntimeFactory _runtime;
     private readonly WebMessageRouter _router;
     private readonly ProductWebViewBridge _webBridge;
@@ -3637,7 +3642,8 @@ public partial class MainWindow : Window
         }
         try
         {
-            _workspaceSessions.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
+            _workspaceSessions.DisposeAsync().AsTask()
+                .Wait(WorkspaceSessionShutdownTimeout);
         }
         catch
         {

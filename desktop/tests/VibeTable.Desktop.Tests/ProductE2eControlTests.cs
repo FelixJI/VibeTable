@@ -1,10 +1,23 @@
 using VibeTable.Desktop.Services;
+using VibeTable.Infrastructure.Backend;
+using VibeTable.Infrastructure.PocketBase;
 
 namespace VibeTable.Desktop.Tests;
 
 [TestClass]
 public sealed class ProductE2eControlTests
 {
+    [TestMethod]
+    public void HostShutdownBudget_CoversSequentialWorkspaceProcessStops()
+    {
+        TimeSpan supervisorStops =
+            BackendLaunchOptions.DefaultStopTimeout
+            + PocketBaseLaunchOptions.DefaultStopTimeout;
+
+        Assert.IsTrue(MainWindow.WorkspaceSessionShutdownTimeout > supervisorStops);
+        Assert.IsTrue(MainWindow.WorkspaceSessionShutdownTimeout < TimeSpan.FromSeconds(30));
+    }
+
     [TestMethod]
     public void HostStartupOptions_IgnoresControlDirectoryOutsideTestMode()
     {
