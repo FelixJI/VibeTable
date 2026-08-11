@@ -389,16 +389,14 @@ func TestFieldMigrationResumePendingRecoversInterruptedRunningJob(t *testing.T) 
 	if err := restarted.ResumePending(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		status, statusErr := restarted.Status(context.Background(), jobID)
-		if statusErr == nil && status.Phase == v2.MigrationCompleted {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	restarted.wg.Wait()
+	status, statusErr := restarted.Status(context.Background(), jobID)
+	if statusErr != nil {
+		t.Fatal(statusErr)
 	}
-	status, _ := restarted.Status(context.Background(), jobID)
-	t.Fatalf("resumed migration did not complete: %#v", status)
+	if status.Phase != v2.MigrationCompleted {
+		t.Fatalf("resumed migration did not complete: %#v", status)
+	}
 }
 
 func migrationFixture(
