@@ -1,5 +1,17 @@
 # VibeTable 0.4.0
 
+## 0.5.1
+
+### Features
+
+- **plugin:** 支持 GitHub 远程安装 (#47) (e8db173)
+- **desktop:** 自愈失效开机自启项并支持静默启动到托盘 (#44) (bd06158)
+
+### Bug Fixes
+
+- **data-io:** 完善批量导入预检与变化摘要 (#48) (bf0e3c3)
+- **desktop:** 收紧隐藏与内部能力边界 (#46) (92a7d3b)
+
 ## 0.5.0
 
 ### Features
