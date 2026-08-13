@@ -1,22 +1,21 @@
-"""Bounded stdlib HTTP transport for the private loopback sidecar."""
+"""Bounded async HTTP transport for the private loopback sidecar."""
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import os
 import re
-import secrets
 import stat
 import tempfile
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+
+import httpx
 
 from backend.adapters.pocketbase.client import PocketBaseProductError
 
@@ -24,6 +23,7 @@ _SECRET_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 _MAX_MULTIPART_BYTES = 101 * 1024 * 1024
 _UPLOAD_HANDLE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_USER_AGENT = "VibeTable-Next/pocketbase.adapter.v1"
 
 
 class PocketBaseTransportError(Exception):
@@ -60,9 +60,17 @@ class PocketBaseConfig:
 
 
 class StdlibPocketBaseTransport:
-    def __init__(self, config: PocketBaseConfig) -> None:
+    """HTTPX-backed implementation kept under the stable adapter class name."""
+
+    def __init__(
+        self,
+        config: PocketBaseConfig,
+        *,
+        http_transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self._base_url = config.base_url.rstrip("/")
         self._timeout = config.timeout_seconds
+        self._http_transport = http_transport
 
     async def request(
         self,
@@ -74,15 +82,32 @@ class StdlibPocketBaseTransport:
         headers: Mapping[str, str] | None = None,
         expected_status: Sequence[int] = (200,),
     ) -> Any:
-        return await asyncio.to_thread(
-            self._request_sync,
-            method,
-            path,
-            dict(query or {}),
-            json_body,
-            dict(headers or {}),
-            tuple(expected_status),
-        )
+        request_headers = {
+            "Accept": "application/json",
+            "User-Agent": _USER_AGENT,
+            **dict(headers or {}),
+        }
+        body: bytes | None = None
+        if json_body is not None:
+            request_headers["Content-Type"] = "application/json"
+            body = _encode_json(json_body)
+        try:
+            async with (
+                self._client() as client,
+                client.stream(
+                    method.upper(),
+                    _normalized_path(path),
+                    params=query,
+                    content=body,
+                    headers=request_headers,
+                ) as response,
+            ):
+                raw = await _read_limited(response, _MAX_RESPONSE_BYTES)
+        except PocketBaseTransportError:
+            raise
+        except httpx.TransportError:
+            raise PocketBaseTransportError("PocketBase sidecar is unavailable") from None
+        return _decode_response(response.status_code, raw, tuple(expected_status))
 
     async def request_multipart(
         self,
@@ -93,14 +118,65 @@ class StdlibPocketBaseTransport:
         headers: Mapping[str, str] | None = None,
         expected_status: Sequence[int] = (200,),
     ) -> Any:
-        return await asyncio.to_thread(
-            self._request_multipart_sync,
-            path,
-            json_body,
-            tuple(uploads),
-            dict(headers or {}),
-            tuple(expected_status),
-        )
+        if not uploads or len(uploads) > 32:
+            raise PocketBaseTransportError(
+                "Managed attachment upload count is invalid",
+                code="attachment.host_files_invalid",
+            )
+        request_json = _encode_json(json_body, sort_keys=True)
+        with ExitStack() as stack:
+            files: list[tuple[str, Any]] = [("request", (None, request_json, "application/json"))]
+            for handle, raw_path in uploads:
+                if not _UPLOAD_HANDLE.fullmatch(handle):
+                    raise PocketBaseTransportError(
+                        "Managed attachment upload handle is invalid",
+                        code="attachment.host_files_invalid",
+                    )
+                source = _regular_file(raw_path)
+                filename = _multipart_filename(source.name)
+                try:
+                    stream = stack.enter_context(source.open("rb"))
+                except OSError:
+                    raise PocketBaseTransportError(
+                        "Managed attachment file could not be read",
+                        code="attachment.host_file_unreadable",
+                    ) from None
+                files.append((f"upload:{handle}", (filename, stream, "application/octet-stream")))
+
+            request_headers = {
+                "Accept": "application/json",
+                "User-Agent": _USER_AGENT,
+                **dict(headers or {}),
+            }
+            try:
+                async with self._client() as client:
+                    request = client.build_request(
+                        "POST",
+                        _normalized_path(path),
+                        headers=request_headers,
+                        files=files,
+                    )
+                    length = request.headers.get("Content-Length")
+                    if length is None or int(length) > _MAX_MULTIPART_BYTES:
+                        raise PocketBaseTransportError(
+                            "Managed attachment upload is too large",
+                            code="attachment.host_files_too_large",
+                        )
+                    response = await client.send(request, stream=True)
+                    try:
+                        raw = await _read_limited(response, _MAX_RESPONSE_BYTES)
+                    finally:
+                        await response.aclose()
+            except PocketBaseTransportError:
+                raise
+            except httpx.TransportError:
+                raise PocketBaseTransportError("PocketBase sidecar is unavailable") from None
+            except OSError:
+                raise PocketBaseTransportError(
+                    "Managed attachment file could not be read",
+                    code="attachment.host_file_unreadable",
+                ) from None
+        return _decode_response(response.status_code, raw, tuple(expected_status))
 
     async def download_to_file(
         self,
@@ -112,234 +188,55 @@ class StdlibPocketBaseTransport:
         expected_status: Sequence[int] = (200,),
         maximum_bytes: int = 2 * 1024 * 1024 * 1024,
     ) -> int:
-        return await asyncio.to_thread(
-            self._download_to_file_sync,
-            path,
-            dict(query),
-            target_path,
-            dict(headers or {}),
-            tuple(expected_status),
-            maximum_bytes,
-        )
-
-    def _request_sync(
-        self,
-        method: str,
-        path: str,
-        query: dict[str, Any],
-        json_body: Any | None,
-        headers: dict[str, str],
-        expected_status: tuple[int, ...],
-    ) -> Any:
-        normalized_path = "/" + path.lstrip("/")
-        url = self._base_url + normalized_path
-        if query:
-            # Product routes such as history use repeated query parameters
-            # (for example ``action=insert&action=update``). ``doseq`` keeps
-            # that closed wire shape instead of serializing a Python list
-            # representation into a single parameter.
-            url += "?" + urlencode(query, doseq=True)
-        request_headers = {
-            "Accept": "application/json",
-            "User-Agent": "VibeTable-Next/pocketbase.adapter.v1",
-            **headers,
-        }
-        body: bytes | None = None
-        if json_body is not None:
-            request_headers["Content-Type"] = "application/json"
-            body = json.dumps(
-                json_body,
-                ensure_ascii=False,
-                allow_nan=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        request = Request(
-            url,
-            data=body,
-            headers=request_headers,
-            method=method.upper(),
-        )
-        try:
-            with urlopen(request, timeout=self._timeout) as response:
-                raw = response.read(_MAX_RESPONSE_BYTES + 1)
-                if len(raw) > _MAX_RESPONSE_BYTES:
-                    raise PocketBaseTransportError(
-                        "PocketBase response exceeded the safe size limit",
-                        code="sidecar.response_too_large",
-                    )
-                if response.status not in expected_status:
-                    raise PocketBaseTransportError(
-                        "PocketBase returned an unexpected status",
-                        code="sidecar.unexpected_status",
-                    )
-        except HTTPError as exc:
-            with exc:
-                error_body = exc.read(_MAX_RESPONSE_BYTES + 1)
-            raise _http_error(exc.code, error_body) from None
-        except (URLError, TimeoutError, OSError):
-            raise PocketBaseTransportError("PocketBase sidecar is unavailable") from None
-        if not raw:
-            return None
-        try:
-            return json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise PocketBaseTransportError(
-                "PocketBase returned invalid JSON",
-                code="sidecar.invalid_response",
-            ) from None
-
-    def _request_multipart_sync(
-        self,
-        path: str,
-        json_body: Mapping[str, Any],
-        uploads: tuple[tuple[str, str], ...],
-        headers: dict[str, str],
-        expected_status: tuple[int, ...],
-    ) -> Any:
-        if not uploads or len(uploads) > 32:
-            raise PocketBaseTransportError(
-                "Managed attachment upload count is invalid",
-                code="attachment.host_files_invalid",
-            )
-        boundary = "----VibeTable" + secrets.token_hex(24)
-        body = bytearray()
-
-        def append_part_header(name: str, filename: str | None = None) -> None:
-            body.extend(f"--{boundary}\r\n".encode())
-            disposition = f'Content-Disposition: form-data; name="{name}"'
-            if filename is not None:
-                disposition += f'; filename="{_multipart_filename(filename)}"'
-            body.extend((disposition + "\r\n").encode("utf-8"))
-            body.extend(
-                (
-                    "Content-Type: application/json\r\n\r\n"
-                    if filename is None
-                    else "Content-Type: application/octet-stream\r\n\r\n"
-                ).encode()
-            )
-
-        append_part_header("request")
-        body.extend(
-            json.dumps(
-                json_body,
-                ensure_ascii=False,
-                allow_nan=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode("utf-8")
-        )
-        body.extend(b"\r\n")
-        for handle, raw_path in uploads:
-            if not _UPLOAD_HANDLE.fullmatch(handle):
-                raise PocketBaseTransportError(
-                    "Managed attachment upload handle is invalid",
-                    code="attachment.host_files_invalid",
-                )
-            source = _regular_file(raw_path)
-            append_part_header(f"upload:{handle}", source.name)
-            try:
-                with source.open("rb") as stream:
-                    while chunk := stream.read(1024 * 1024):
-                        body.extend(chunk)
-                        if len(body) > _MAX_MULTIPART_BYTES:
-                            raise PocketBaseTransportError(
-                                "Managed attachment upload is too large",
-                                code="attachment.host_files_too_large",
-                            )
-            except PocketBaseTransportError:
-                raise
-            except OSError:
-                raise PocketBaseTransportError(
-                    "Managed attachment file could not be read",
-                    code="attachment.host_file_unreadable",
-                ) from None
-            body.extend(b"\r\n")
-        body.extend(f"--{boundary}--\r\n".encode())
-        if len(body) > _MAX_MULTIPART_BYTES:
-            raise PocketBaseTransportError(
-                "Managed attachment upload is too large",
-                code="attachment.host_files_too_large",
-            )
-        return self._request_bytes_sync(
-            "POST",
-            path,
-            bytes(body),
-            {
-                **headers,
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-            },
-            expected_status,
-        )
-
-    def _download_to_file_sync(
-        self,
-        path: str,
-        query: dict[str, Any],
-        target_path: str,
-        headers: dict[str, str],
-        expected_status: tuple[int, ...],
-        maximum_bytes: int,
-    ) -> int:
         if maximum_bytes <= 0:
             raise PocketBaseTransportError(
                 "Managed attachment size limit is invalid",
                 code="attachment.host_target_invalid",
             )
         target = _output_file(target_path)
-        url = self._base_url + "/" + path.lstrip("/")
-        if query:
-            url += "?" + urlencode(query, doseq=True)
-        request = Request(
-            url,
-            headers={
-                "Accept": "application/octet-stream",
-                "User-Agent": "VibeTable-Next/pocketbase.adapter.v1",
-                **headers,
-            },
-            method="GET",
-        )
+        request_headers = {
+            "Accept": "application/octet-stream",
+            "User-Agent": _USER_AGENT,
+            **dict(headers or {}),
+        }
         temporary: str | None = None
         try:
-            descriptor, temporary = tempfile.mkstemp(
-                prefix=".vibetable-attachment-",
-                suffix=".part",
-                dir=str(target.parent),
-            )
-            total = 0
-            with os.fdopen(descriptor, "wb") as output:
-                try:
-                    with urlopen(request, timeout=self._timeout) as response:
-                        if response.status not in expected_status:
+            async with (
+                self._client() as client,
+                client.stream(
+                    "GET",
+                    _normalized_path(path),
+                    params=query,
+                    headers=request_headers,
+                ) as response,
+            ):
+                if response.status_code not in expected_status:
+                    raw = await _read_limited(response, _MAX_RESPONSE_BYTES)
+                    raise _status_error(response.status_code, raw)
+                descriptor, temporary = tempfile.mkstemp(
+                    prefix=".vibetable-attachment-",
+                    suffix=".part",
+                    dir=str(target.parent),
+                )
+                total = 0
+                with os.fdopen(descriptor, "wb") as output:
+                    async for chunk in response.aiter_bytes(1024 * 1024):
+                        total += len(chunk)
+                        if total > maximum_bytes:
                             raise PocketBaseTransportError(
-                                "PocketBase returned an unexpected status",
-                                code="sidecar.unexpected_status",
+                                "Managed attachment download is too large",
+                                code="attachment.download_too_large",
                             )
-                        while chunk := response.read(1024 * 1024):
-                            total += len(chunk)
-                            if total > maximum_bytes:
-                                raise PocketBaseTransportError(
-                                    "Managed attachment download is too large",
-                                    code="attachment.download_too_large",
-                                )
-                            output.write(chunk)
-                        output.flush()
-                        os.fsync(output.fileno())
-                except HTTPError as exc:
-                    with exc:
-                        error_body = exc.read(_MAX_RESPONSE_BYTES + 1)
-                    raise _http_error(
-                        exc.code,
-                        error_body,
-                    ) from None
-                except PocketBaseTransportError:
-                    raise
-                except (URLError, TimeoutError, OSError):
-                    raise PocketBaseTransportError("PocketBase sidecar is unavailable") from None
+                        output.write(chunk)
+                    output.flush()
+                    os.fsync(output.fileno())
             os.replace(temporary, target)
             temporary = None
             return total
         except PocketBaseTransportError:
             raise
+        except httpx.TransportError:
+            raise PocketBaseTransportError("PocketBase sidecar is unavailable") from None
         except OSError:
             raise PocketBaseTransportError(
                 "Managed attachment could not be saved",
@@ -350,57 +247,62 @@ class StdlibPocketBaseTransport:
                 with contextlib.suppress(OSError):
                     os.unlink(temporary)
 
-    def _request_bytes_sync(
-        self,
-        method: str,
-        path: str,
-        body: bytes,
-        headers: dict[str, str],
-        expected_status: tuple[int, ...],
-    ) -> Any:
-        request = Request(
-            self._base_url + "/" + path.lstrip("/"),
-            data=body,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "VibeTable-Next/pocketbase.adapter.v1",
-                **headers,
-            },
-            method=method,
+    def _client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=self._timeout,
+            transport=self._http_transport,
+            trust_env=False,
         )
-        try:
-            with urlopen(request, timeout=self._timeout) as response:
-                raw = response.read(_MAX_RESPONSE_BYTES + 1)
-                if len(raw) > _MAX_RESPONSE_BYTES:
-                    raise PocketBaseTransportError(
-                        "PocketBase response exceeded the safe size limit",
-                        code="sidecar.response_too_large",
-                    )
-                if response.status not in expected_status:
-                    raise PocketBaseTransportError(
-                        "PocketBase returned an unexpected status",
-                        code="sidecar.unexpected_status",
-                    )
-        except HTTPError as exc:
-            with exc:
-                error_body = exc.read(_MAX_RESPONSE_BYTES + 1)
-            raise _http_error(
-                exc.code,
-                error_body,
-            ) from None
-        except PocketBaseTransportError:
-            raise
-        except (URLError, TimeoutError, OSError):
-            raise PocketBaseTransportError("PocketBase sidecar is unavailable") from None
-        if not raw:
-            return None
-        try:
-            return json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError):
+
+
+async def _read_limited(response: httpx.Response, maximum_bytes: int) -> bytes:
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        body.extend(chunk)
+        if len(body) > maximum_bytes:
             raise PocketBaseTransportError(
-                "PocketBase returned invalid JSON",
-                code="sidecar.invalid_response",
-            ) from None
+                "PocketBase response exceeded the safe size limit",
+                code="sidecar.response_too_large",
+            )
+    return bytes(body)
+
+
+def _decode_response(status: int, raw: bytes, expected_status: tuple[int, ...]) -> Any:
+    if status not in expected_status:
+        raise _status_error(status, raw)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise PocketBaseTransportError(
+            "PocketBase returned invalid JSON",
+            code="sidecar.invalid_response",
+        ) from None
+
+
+def _status_error(status: int, raw: bytes) -> Exception:
+    if status >= 400:
+        return _http_error(status, raw)
+    return PocketBaseTransportError(
+        "PocketBase returned an unexpected status",
+        code="sidecar.unexpected_status",
+    )
+
+
+def _encode_json(value: Any, *, sort_keys: bool = False) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=sort_keys,
+    ).encode("utf-8")
+
+
+def _normalized_path(path: str) -> str:
+    return "/" + path.lstrip("/")
 
 
 def _http_error(status: int, raw: bytes) -> Exception:
@@ -467,7 +369,7 @@ def _multipart_filename(value: str) -> str:
             "Managed attachment filename is invalid",
             code="attachment.host_file_invalid",
         )
-    return name.replace("\\", "\\\\").replace('"', '\\"')
+    return name
 
 
 __all__ = [

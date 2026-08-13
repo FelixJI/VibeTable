@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable, Mapping
-from contextlib import suppress
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+
+import httpx
+from httpx_sse import EventSource, ServerSentEvent, SSEError, aconnect_sse
 
 from backend.adapters.pocketbase.client import SESSION_HEADER
 from backend.adapters.pocketbase.transport import PocketBaseConfig, PocketBaseTransportError
@@ -33,7 +33,7 @@ class ProductEvent:
 
 
 class SSEConnection(Protocol):
-    async def readline(self, limit: int) -> bytes: ...
+    async def receive(self) -> ServerSentEvent: ...
 
     async def close(self) -> None: ...
 
@@ -43,56 +43,160 @@ class SSEConnector(Protocol):
 
 
 class StdlibSSEConnector:
-    """Opens only the validated private loopback origin from ``PocketBaseConfig``."""
+    """HTTPX-SSE connector kept under the stable adapter class name."""
 
-    def __init__(self, config: PocketBaseConfig) -> None:
+    def __init__(
+        self,
+        config: PocketBaseConfig,
+        *,
+        http_transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self._base_url = config.base_url.rstrip("/")
         self._secret = config.session_secret
         self._timeout = config.timeout_seconds
+        self._http_transport = http_transport
 
     async def connect(self, after_event_id: str | None) -> SSEConnection:
-        return await asyncio.to_thread(self._connect_sync, after_event_id)
-
-    def _connect_sync(self, after_event_id: str | None) -> SSEConnection:
-        query = "?" + urlencode({"after": after_event_id}) if after_event_id else ""
         headers = {
-            "Accept": "text/event-stream",
             "Cache-Control": "no-cache",
             "User-Agent": "VibeTable-Next/pocketbase.realtime.v1",
             SESSION_HEADER: self._secret,
         }
         if after_event_id:
             headers["Last-Event-ID"] = after_event_id
-        request = Request(self._base_url + EVENTS_PATH + query, headers=headers, method="GET")
+        client = httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=self._timeout,
+            transport=self._http_transport,
+            trust_env=False,
+        )
+        manager = aconnect_sse(
+            client,
+            "GET",
+            EVENTS_PATH,
+            params={"after": after_event_id} if after_event_id else None,
+            headers=headers,
+        )
+        entered = False
         try:
-            response = urlopen(request, timeout=self._timeout)
-        except HTTPError as exc:
-            code = _http_code(exc)
-            raise PocketBaseTransportError(
-                "PocketBase realtime subscription failed",
-                code=code,
-            ) from None
-        except (URLError, TimeoutError, OSError):
+            event_source = await manager.__aenter__()
+            entered = True
+            response = event_source.response
+            if response.status_code not in range(200, 300):
+                raw = await _read_error_body(response)
+                code = _http_code(raw)
+                raise PocketBaseTransportError(
+                    "PocketBase realtime subscription failed",
+                    code=code,
+                )
+            content_type = response.headers.get("Content-Type", "").partition(";")[0]
+            if content_type != "text/event-stream":
+                raise PocketBaseTransportError(
+                    "PocketBase returned an invalid realtime response",
+                    code="realtime.invalid_response",
+                )
+            if not isinstance(response.stream, httpx.AsyncByteStream):
+                raise PocketBaseTransportError(
+                    "PocketBase returned an invalid realtime response",
+                    code="realtime.invalid_response",
+                )
+            response.stream = _BoundedSSEStream(response.stream)
+            return _HttpxSSEConnection(client, manager, event_source.aiter_sse())
+        except PocketBaseTransportError:
+            if entered:
+                await manager.__aexit__(None, None, None)
+            await client.aclose()
+            raise
+        except (httpx.TransportError, SSEError):
+            if entered:
+                await manager.__aexit__(None, None, None)
+            await client.aclose()
             raise PocketBaseTransportError("PocketBase sidecar is unavailable") from None
-        content_type = response.headers.get_content_type()
-        if content_type != "text/event-stream":
-            response.close()
+
+
+class _BoundedSSEStream(httpx.AsyncByteStream):
+    """Enforces byte budgets before the SSE decoder buffers a complete event."""
+
+    def __init__(self, source: httpx.AsyncByteStream) -> None:
+        self._source = source
+        self._line_size = 0
+        self._event_size = 0
+        self._previous_cr = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        async for chunk in self._source:
+            self._validate(chunk)
+            yield chunk
+
+    async def aclose(self) -> None:
+        await self._source.aclose()
+
+    def _validate(self, chunk: bytes) -> None:
+        for value in chunk:
+            if value == 10:  # LF, including the LF half of CRLF.
+                if self._previous_cr:
+                    self._previous_cr = False
+                    continue
+                self._finish_line()
+                continue
+            if value == 13:  # CR is also a complete SSE line ending.
+                self._finish_line()
+                self._previous_cr = True
+                continue
+            self._previous_cr = False
+            self._line_size += 1
+            self._event_size += 1
+            if self._line_size > _MAX_LINE_BYTES or self._event_size > _MAX_EVENT_BYTES:
+                raise PocketBaseTransportError(
+                    "PocketBase realtime event exceeded the safe size limit",
+                    code="realtime.event_too_large",
+                )
+
+    def _finish_line(self) -> None:
+        if self._line_size == 0:
+            self._event_size = 0
+        self._line_size = 0
+
+
+class _HttpxSSEConnection:
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        manager: AbstractAsyncContextManager[EventSource],
+        events: AsyncIterator[ServerSentEvent],
+    ) -> None:
+        self._client = client
+        self._manager = manager
+        self._events = events
+        self._closed = False
+
+    async def receive(self) -> ServerSentEvent:
+        try:
+            return await anext(self._events)
+        except StopAsyncIteration:
+            raise PocketBaseTransportError(
+                "PocketBase realtime stream closed",
+                code="realtime.disconnected",
+            ) from None
+        except SSEError:
             raise PocketBaseTransportError(
                 "PocketBase returned an invalid realtime response",
                 code="realtime.invalid_response",
-            )
-        return _UrlopenSSEConnection(response)
-
-
-class _UrlopenSSEConnection:
-    def __init__(self, response: Any) -> None:
-        self._response = response
-
-    async def readline(self, limit: int) -> bytes:
-        return await asyncio.to_thread(self._response.readline, limit)
+            ) from None
+        except httpx.TransportError:
+            raise PocketBaseTransportError(
+                "PocketBase realtime stream disconnected",
+                code="realtime.disconnected",
+            ) from None
 
     async def close(self) -> None:
-        await asyncio.to_thread(self._response.close)
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            await self._manager.__aexit__(None, None, None)
+        finally:
+            await self._client.aclose()
 
 
 class PocketBaseRealtimeSession:
@@ -100,52 +204,29 @@ class PocketBaseRealtimeSession:
         self._connection = connection
 
     async def receive(self) -> ProductEvent | None:
-        event_id = ""
-        topic = ""
-        data_parts: list[bytes] = []
-        size = 0
-        while True:
-            try:
-                raw = await self._connection.readline(_MAX_LINE_BYTES + 1)
-            except (OSError, TimeoutError):
-                raise PocketBaseTransportError(
-                    "PocketBase realtime stream disconnected",
-                    code="realtime.disconnected",
-                ) from None
-            if not raw:
-                raise PocketBaseTransportError(
-                    "PocketBase realtime stream closed",
-                    code="realtime.disconnected",
-                )
-            if len(raw) > _MAX_LINE_BYTES:
-                raise PocketBaseTransportError(
-                    "PocketBase realtime line exceeded the safe size limit",
-                    code="realtime.event_too_large",
-                )
-            if raw in {b"\n", b"\r\n"}:
-                if not data_parts:
-                    return None
-                break
-            if raw.startswith(b":"):
-                continue
-            field, separator, value = raw.rstrip(b"\r\n").partition(b":")
-            if not separator:
-                continue
-            if value.startswith(b" "):
-                value = value[1:]
-            if field == b"id":
-                event_id = _decode_line(value)
-            elif field == b"event":
-                topic = _decode_line(value)
-            elif field == b"data":
-                size += len(value)
-                if size > _MAX_EVENT_BYTES:
-                    raise PocketBaseTransportError(
-                        "PocketBase realtime event exceeded the safe size limit",
-                        code="realtime.event_too_large",
-                    )
-                data_parts.append(value)
-        return _decode_event(event_id, topic, b"\n".join(data_parts))
+        try:
+            event = await self._connection.receive()
+        except PocketBaseTransportError:
+            raise
+        except (OSError, TimeoutError):
+            raise PocketBaseTransportError(
+                "PocketBase realtime stream disconnected",
+                code="realtime.disconnected",
+            ) from None
+        if not event.data:
+            return None
+        encoded_fields = (event.id.encode(), event.event.encode())
+        data_lines = event.data.split("\n")
+        if (
+            any(len(value) > _MAX_LINE_BYTES for value in encoded_fields)
+            or any(len(line.encode()) > _MAX_LINE_BYTES for line in data_lines)
+            or len(event.data.encode()) > _MAX_EVENT_BYTES
+        ):
+            raise PocketBaseTransportError(
+                "PocketBase realtime event exceeded the safe size limit",
+                code="realtime.event_too_large",
+            )
+        return _decode_event(event.id, event.event, event.data.encode())
 
     async def close(self) -> None:
         await self._connection.close()
@@ -290,13 +371,6 @@ def _validate_envelope(payload: Mapping[str, Any], event_id: str, topic: str) ->
             raise _invalid_event()
 
 
-def _decode_line(value: bytes) -> str:
-    try:
-        return value.decode("utf-8")
-    except UnicodeDecodeError:
-        raise _invalid_event() from None
-
-
 def _invalid_event() -> PocketBaseTransportError:
     return PocketBaseTransportError(
         "PocketBase returned an invalid realtime event",
@@ -304,14 +378,23 @@ def _invalid_event() -> PocketBaseTransportError:
     )
 
 
-def _http_code(exc: HTTPError) -> str:
+def _http_code(raw: bytes) -> str:
     try:
-        payload = json.loads(exc.read(1 << 20))
+        payload = json.loads(raw[: 1 << 20])
     except (UnicodeDecodeError, json.JSONDecodeError):
         return "realtime.subscribe_failed"
     if isinstance(payload, dict) and isinstance(payload.get("code"), str):
         return payload["code"]
     return "realtime.subscribe_failed"
+
+
+async def _read_error_body(response: httpx.Response) -> bytes:
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        body.extend(chunk)
+        if len(body) > 1 << 20:
+            return b""
+    return bytes(body)
 
 
 __all__ = [
