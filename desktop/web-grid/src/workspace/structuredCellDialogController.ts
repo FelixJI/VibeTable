@@ -203,9 +203,11 @@ export function createStructuredCellDialogController(
       dependencies.reportError(dependencies.translate("workspace.attachment.invalidField"));
       return;
     }
-    const trigger = triggerElement ?? activeElement();
+    const focused = activeElement();
+    const trigger = triggerElement ?? focused;
     attachmentTrigger = trigger;
-    trigger?.blur();
+    focused?.blur();
+    if (trigger !== focused) trigger?.blur();
     const epoch = ++attachmentEpoch;
     Object.assign(state.attachment, {
       show: true,

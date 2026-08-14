@@ -137,11 +137,13 @@ export function useDashboardService() {
   }
 
   async function refresh(): Promise<void> {
-    if (!store.current || store.offline || document.hidden) return;
+    if (!store.current || (store.phase !== "ready" && store.phase !== "failed") ||
+        store.offline || document.hidden) return;
     generation += 1;
     cancelActiveQueries();
     queue.clear();
     const refreshGeneration = generation;
+    store.beginRefresh();
     store.markAllStale();
     await queryAllPanels(refreshGeneration);
   }

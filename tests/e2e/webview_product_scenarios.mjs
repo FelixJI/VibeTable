@@ -4789,8 +4789,16 @@ async function scenario16(page, recorder, _network, runtime) {
 
   await page.keyboard.press("Escape");
   await page.getByTestId("dashboard-edit").click();
-  const editableItem = workspace.locator(".grid-stack-item").filter({ hasText: "Regional records" });
-  await editableItem.press("Alt+ArrowLeft");
+  await page.getByTestId("dashboard-configure").click();
+  const conflictSettings = page.getByTestId("dashboard-settings");
+  await conflictSettings.waitFor({ state: "visible", timeout: 10_000 });
+  await conflictSettings.locator("textarea").fill("local E2E edit before competing save");
+  await page.getByTestId("dashboard-settings-submit").click();
+  await page.waitForFunction(
+    () => !document.querySelector('[data-testid="dashboard-save"]')?.hasAttribute("disabled"),
+    undefined,
+    { timeout: 10_000 },
+  );
   const dashboardId = (await persisted.getAttribute("data-testid"))
     ?.replace("dashboard-select-", "");
   if (!dashboardId) throw new Error("persisted Dashboard id is unavailable");

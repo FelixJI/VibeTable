@@ -84,8 +84,9 @@ internal sealed class ApplicationRequestController : IDisposable
             _host.ApplyPreferences(CurrentPreferences);
             PostPreferences(request);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            TraceUnexpectedFailure("Application preferences read", exception);
             _reply.PostOperationFailed(
                 request.RequestId,
                 "无法读取桌面应用设置。",
@@ -113,8 +114,9 @@ internal sealed class ApplicationRequestController : IDisposable
             _host.ApplyPreferences(CurrentPreferences);
             PostPreferences(request);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            TraceUnexpectedFailure("Application preferences update", exception);
             _reply.PostOperationFailed(
                 request.RequestId,
                 "无法保存桌面应用设置，请检查当前用户权限后重试。",
@@ -215,8 +217,9 @@ internal sealed class ApplicationRequestController : IDisposable
                 exception.Message,
                 exception.Code);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            TraceUnexpectedFailure("Release update check", exception);
             _reply.PostOperationFailed(
                 request.RequestId,
                 "无法连接 GitHub 检查更新，请稍后重试。",
@@ -254,8 +257,9 @@ internal sealed class ApplicationRequestController : IDisposable
                 exception.Message,
                 exception.Code);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            TraceUnexpectedFailure("Release update install", exception);
             _reply.PostOperationFailed(
                 request.RequestId,
                 "更新包下载或暂存失败，现有程序与用户数据均未更改。",
@@ -343,6 +347,9 @@ internal sealed class ApplicationRequestController : IDisposable
                 updateProxy = CurrentPreferences.UpdateProxy,
                 customUpdateProxyUrl = CurrentPreferences.CustomUpdateProxyUrl ?? "",
             });
+
+    private void TraceUnexpectedFailure(string operation, Exception exception)
+        => _host.Trace($"{operation} failed; exception={exception.GetType().Name}");
 
     private Task RejectUnknownAsync(RoutedWebRequest request)
     {

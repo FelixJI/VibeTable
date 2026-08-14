@@ -86,6 +86,28 @@ describe("structured cell dialog controller", () => {
     trigger.remove();
   });
 
+  it("releases the active workspace when the attachment trigger is not focused", async () => {
+    const workspace = document.createElement("div");
+    workspace.tabIndex = 0;
+    const trigger = document.createElement("button");
+    workspace.append(trigger);
+    document.body.append(workspace);
+    workspace.focus();
+    const request = vi.fn().mockResolvedValue({ attachments: [] });
+    const { controller } = setup(request as HostBridge["request"]);
+
+    await controller.dispatch({
+      type: "attachment.open",
+      rowKey: "row-1",
+      column: attachmentColumn,
+      trigger,
+    });
+
+    expect(controller.state.attachment.show).toBe(true);
+    expect(document.activeElement).not.toBe(workspace);
+    workspace.remove();
+  });
+
   it("invalidates an obsolete attachment response when the dialog is reopened", async () => {
     const first = deferred<{ attachments: ManagedAttachmentRef[] }>();
     const second = deferred<{ attachments: ManagedAttachmentRef[] }>();

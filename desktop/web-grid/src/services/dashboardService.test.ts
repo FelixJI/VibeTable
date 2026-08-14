@@ -146,6 +146,47 @@ describe("dashboardService", () => {
     service.dispose();
   });
 
+  it("does not let refresh supersede a pending dashboard selection", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const store = useDashboardStore();
+    store.receiveWorkspace({
+      dashboard: { id: "old", name: "Old", note: "", panels: [] },
+      config: {}, revision: "r0", queryLimits: {},
+    });
+    const service = useDashboardService();
+
+    const selecting = service.select("d1");
+    await flushPromises();
+    await service.refresh();
+    reply(h, "dashboard.readRequested", "dashboard.loaded", {
+      dashboard: { id: "d1", name: "Ops", note: "", panels: [] },
+      config: {}, revision: "r1", queryLimits: {},
+    });
+    await selecting;
+
+    expect(store.phase).toBe("ready");
+    expect(store.current?.id).toBe("d1");
+    service.dispose();
+  });
+
+  it("recovers a loaded dashboard after a refreshable failure", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const store = useDashboardStore();
+    store.receiveWorkspace({
+      dashboard: { id: "d1", name: "Ops", note: "", panels: [] },
+      config: {}, revision: "r1", queryLimits: {},
+    });
+    store.fail("temporary failure");
+    const service = useDashboardService();
+
+    await service.refresh();
+
+    expect(store.phase).toBe("ready");
+    expect(store.error).toBeNull();
+    expect(store.lastRefreshAt).not.toBeNull();
+    service.dispose();
+  });
+
   it("copies a dashboard as a new draft and reports unsupported custom panels", () => {
     const h = harness(); setHostBridgeForTesting(h.bridge);
     const store = useDashboardStore();

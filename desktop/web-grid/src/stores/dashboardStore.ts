@@ -138,6 +138,12 @@ export const useDashboardStore = defineStore("dashboards", () => {
     error.value = message;
   }
 
+  function beginRefresh(): void {
+    if (!current.value) return;
+    phase.value = "ready";
+    error.value = null;
+  }
+
   function setPanelState(panelId: string, patch: Partial<DashboardPanelData>): void {
     panelData.value[panelId] = {
       ...(panelData.value[panelId] ?? emptyPanelData()),
@@ -181,7 +187,8 @@ export const useDashboardStore = defineStore("dashboards", () => {
     offline, lastRefreshAt, sessionFilterValues, panelData, panelCount,
     allowedPanelTypes, panelManifest, manifestVersion,
     beginList, receiveList, beginLoad, receiveWorkspace,
-    receiveManifest, beginSave, fail, setPanelState, markAllStale, setFilterValue, clearFilterValues, reset,
+    receiveManifest, beginSave, beginRefresh, fail, setPanelState, markAllStale,
+    setFilterValue, clearFilterValues, reset,
   };
 });
 

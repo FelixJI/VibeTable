@@ -100,6 +100,49 @@ public sealed class ApplicationRequestControllerTests
         Assert.IsFalse(ApplicationRequestController.Handles("workspace.v2.request"));
     }
 
+    [TestMethod]
+    public async Task UnexpectedProviderFailuresReturnStableCodesAndEmitSafeDiagnostics()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-application-controller-" + Guid.NewGuid().ToString("N"));
+        var sink = new FakeWebReplySink();
+        var host = new FakeApplicationRequestHost();
+        var preferences = new AppPreferencesService(
+            new ThrowingAppPreferencesStore(),
+            new InMemoryStartupRegistration());
+        using var controller = new ApplicationRequestController(
+            sink,
+            host,
+            preferences,
+            new ReleaseUpdateCoordinator(root, "1.0.0", installationEnabled: false),
+            new DailyQuoteHostClient(),
+            AppPreferences.Default);
+
+        await controller.DispatchAsync(Request("appPreferences.get", "{}"));
+        await controller.DispatchAsync(Request(
+            "appPreferences.update",
+            """{"minimizeToTrayOnClose":false}"""));
+        await controller.DispatchAsync(Request("update.check", "{}"));
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "APP_PREFERENCES_READ_FAILED",
+                "APP_PREFERENCES_WRITE_FAILED",
+                "UPDATE_CHECK_FAILED",
+            },
+            sink.Replies.Select(FailureCode).ToArray());
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "Application preferences read failed; exception=IOException",
+                "Application preferences update failed; exception=IOException",
+                "Release update check failed; exception=IOException",
+            },
+            host.Traces);
+    }
+
     private static ApplicationRequestController Controller(
         string root,
         FakeWebReplySink sink,
@@ -152,5 +195,13 @@ public sealed class ApplicationRequestControllerTests
         public void RequestExit() => RequestExitCalls++;
 
         public void Trace(string message) => Traces.Add(message);
+    }
+
+    private sealed class ThrowingAppPreferencesStore : IAppPreferencesStore
+    {
+        public PersistedAppPreferences Read() => throw new IOException("private path");
+
+        public void Write(PersistedAppPreferences preferences)
+            => throw new IOException("private path");
     }
 }

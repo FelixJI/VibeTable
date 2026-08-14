@@ -1,6 +1,6 @@
 # VibeTable 离线数据工作台全面完成实施方案
 
-> 状态：终审修正中；此前 quality/build/smoke 仅为旧 sourceHash 的历史证据，当前树须重新验证
+> 状态：本地实现、双轨终审修正、quality、release build 与 release eligibility 已完成；GitHub `required` 与 Win10/11 双平台验证待外部交付流程
 >
 > 日期：2026-08-12
 >
@@ -629,9 +629,9 @@ M2 与 M3 可在不同 worktree 并行；M4 与 M6 可并行；M5 与 M7 在共�
 
 ## 21. 当前实施与验收证据（2026-08-14）
 
-本节记录当前实现、M9 聚焦验证以及最近一次历史 quality/build/smoke/eligibility 证据，不替代各里程碑的
-删除清单，也不得冒充当前工作树、GitHub `required` 或 Win10/11 双平台发布验证。终审修正改变了
-sourceHash，以下 release 结果必须在修正与同步 `main` 后重新生成。
+本节记录当前实现、M9 聚焦验证和 2026-08-14 最终本地 quality/build/smoke/eligibility 证据，不替代各里程碑的
+删除清单，也不得冒充 GitHub `required` 或 Win10/11 双平台发布验证。最终报告绑定当前生产源码
+sourceHash `75735b5b2dc32fccb71c2b91ceb080f4d4c86302839cadcbbceaa8e614e69bf1`。
 
 ### 21.1 当前实现与 quality
 
@@ -640,16 +640,20 @@ sourceHash，以下 release 结果必须在修正与同步 `main` 后重新生�
   `GridRequestController`；M9 随后完成 Desktop/Web 深模块收口及 stale-race 回归。
 - Schema V2 codegen 覆盖 59 个 wire shapes；`schemaexecution.Table` 直接持有
   `v2.SchemaSnapshot`/`v2.FieldDefinition`，生产执行链不再以 legacy `schema.TableDefinition` 为模型。
-- M9 后、终审修正前的 `uv run python scripts/automation_project.py quality` 退出码为 0（365.3 s）；contracts、
-  Ruff/Pyright/mypy、Python、Web、Go 与 .NET 全部通过。Go 核心覆盖为 line/diff 90.09%（882/979）、
-  branch 82.67%（477/577）；Desktop 为 463/463 tests，独立 coverage gates 均通过。
+- 最终 `uv run python scripts/automation_project.py quality` 退出码为 0（255.7 s）；contracts、
+  Ruff/Pyright/mypy、Python、Web、Go 与 .NET 全部通过，Desktop 461/461，Desktop/PreviewHost 独立
+  coverage gates 均通过。
+- 终局竞态修复均有旧实现红灯：Lookup fanout 等待当前 mutation receipt 的 `source_event_id`，Dashboard
+  refresh 不再覆盖 pending selection，Dashboard CAS 场景使用确定置脏的公开设置操作；附件 modal 在显式
+  trigger 与当前焦点不同时先释放 workspace，再于关闭后恢复 trigger；Dashboard 在已有 current 的 failed phase
+  可通过 refresh 恢复，桌面兜底异常经安全 Trace seam 留下异常类型。最终 Web 全量为 163 files/1,145 tests。
 
-### 21.2 历史本地发布资格证据（当前树待重跑）
+### 21.2 当前本地发布资格证据
 
-- M9 后、终审修正前 `uv run python scripts/automation_project.py build` 退出码为 0（95.4 s），随后
-  `uv run python scripts/automation_project.py smoke` 退出码为 0（1,937.6 s）。最终
-  `build/automation/vibetable-release-eligibility.json`（2026-08-14T01:28:23Z）为 `ok=true`、
-  `releaseEligible=true`，21/21 stages 全部返回 0；该报告 sourceHash 已与当前树不一致。版本、
+- 最终 `uv run python scripts/automation_project.py build` 退出码为 0（54.3 s），随后
+  `uv run python scripts/automation_project.py smoke` 退出码为 0（1,702.4 s）。
+  `build/automation/vibetable-release-eligibility.json`（2026-08-14T11:58:14Z）为 `ok=true`、
+  `releaseEligible=true`，21/21 stages 全部返回 0。版本、
   package contract、Go fmt/vet/test/race/build、Python/contracts/tooling、.NET、Web test/build、
   fault injection、product E2E、workbench qualification 和 readonly smoke 全部成功。
 - real WPF/WebView2 product E2E 为 18/18 passed、0 failed、0 skipped；它包含此前分别闭环的
@@ -658,12 +662,12 @@ sourceHash，以下 release 结果必须在修正与同步 `main` 后重新生�
   真实宿主 sidecar kill/reconcile 共 3/3 passed。
 - `build/qa/workbench-qualification.json`（schema v3、`failures=[]`）实际物化并读取
   100,000 records、10,000 file documents、20 GiB（21,474,836,480 bytes）：peak RSS
-  246,185,984 bytes、first screen 0.739 ms、warm p95 0.999 ms、incremental p95 4.193 ms，
-  qualification 114.320 s。
+  243,257,344 bytes、first screen 1.507 ms、warm p95 0.568 ms、incremental p95 3.519 ms，
+  qualification 112.478 s。
 - 本地候选 `VibeTable-v0.5.1-win-x64.zip` SHA-256 为
-  `cc0e0a831508cb22edb299af4107faf3df50de7c69176fc0e9a06a4ccca5f547`，package tree SHA-256
-  为 `65d6ed5fc7ff090f51931c8199e6baad913cb12a821d5642eb4e0ee10ab6571d`，共 141,260,682 bytes、
-  179 files；identity 为 VibeTable 0.5.1/windows/x64，package identity SHA-256 为
+  `ca5a3676b12ad1c2d72a8df80ecb09601bf0b2b8b18c0e6a1bdddfaa4ccc082a`，package tree SHA-256
+  为 `ba35f882a105e8b7d9970410bf6f5cb9601340321972f7a0cbab91e017319688`，共 141,246,033 bytes、
+  177 files；identity 为 VibeTable 0.5.1/windows/x64，package identity SHA-256 为
   `c1d4cd1ccb0c60847797666cb489d5ad4fda9cfef743954be5f8d86c7d75e199`。`source_sha` 是 `local`，
   因此它不能替代提交后由 CI 绑定真实 source SHA、SBOM/provenance 和正式资产集合的发布候选。
 
@@ -685,7 +689,7 @@ sourceHash，以下 release 结果必须在修正与同步 `main` 后重新生�
 ### 21.4 M9 深模块收口已完成
 
 - `WorkspaceRequestDispatcher.cs`、`MainWindow.Product.cs`、`WorkspaceView.vue` 当前物理行数分别为
-  159、869、1,561。Dispatcher 只保留 allowlist/envelope/transport，MainWindow 只保留
+  159、869、1,555。Dispatcher 只保留 allowlist/envelope/transport，MainWindow 只保留
   composition/lifecycle；Desktop 产品状态机迁入 `HostRequestDispatcher`、`WorkspaceProductController`、
   `ProductWorkspaceController`、`WorkspaceTableRequestController` 等 closed controller interfaces，测试从
   相邻 module interface/fake host seam 进入。
@@ -693,7 +697,7 @@ sourceHash，以下 release 结果必须在修正与同步 `main` 后重新生�
   lookup provenance、plugin、session UI、table interaction 与 navigation 均进入 `src/workspace/` 深模块。
   relation `loadDraft` 以 editor epoch/accept-result seam 丢弃关闭后晚到的旧草稿；authoritative lookup 在
   `recordQuery` 时立即使旧 in-flight refresh generation 失效，下一次 refresh 使用新查询。
-- M9 Web 聚焦回归最终为 11 files/82 tests；全 Web 163 files/1,139 tests、typecheck 和 build 已通过。
+- M9 Web 聚焦回归最终为 11 files/82 tests；全 Web 163 files/1,145 tests、typecheck 和 build 已通过。
   workspace 模块中 `as unknown as`/`as never` 为 0，relation full-create/pending、table paste/CRUD、plugin
   start/resolve/cancel 与 lookup stale race 均通过公开 module interface 验证。其后 attachment modal 的
   显式 focus trigger 回归也进入正式 seam，并由最终 quality 与 18/18 product E2E 复验。

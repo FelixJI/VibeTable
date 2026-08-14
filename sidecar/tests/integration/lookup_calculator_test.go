@@ -386,18 +386,23 @@ func TestLookupCalculatorTraversesSavedMultiHopPath(t *testing.T) {
 		t.Fatalf("described multi-hop lookup = %#v, err=%v", described, err)
 	}
 
-	if _, err := kernel.Apply(ctx, mutationRequest(
+	updateReceipt, err := kernel.Apply(ctx, mutationRequest(
 		companies.TableID, companiesDefinition.Snapshot.SchemaRevision, "multihop-company-update",
 		mutation.Operation{
 			Kind: mutation.OperationUpdate, RecordID: &companyID,
 			Values: map[string]any{companyName.Definition.Identity.PhysicalName: "Difference Engines"},
 		},
-	)); err != nil {
+	))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(updateReceipt.EmittedEvents) != 1 {
+		t.Fatalf("company update emitted events = %#v", updateReceipt.EmittedEvents)
 	}
 	jobRecord, err := app.FindFirstRecordByFilter(
 		"vibetable_jobs",
-		"job_type='formula_fanout' && source_table_id={:table}", dbx.Params{"table": orders.TableID},
+		"job_type='formula_fanout' && source_event_id={:event} && source_table_id={:table}",
+		dbx.Params{"event": updateReceipt.EmittedEvents[0], "table": orders.TableID},
 	)
 	if err != nil {
 		t.Fatalf("multi-hop fanout job was not persisted: %v", err)
