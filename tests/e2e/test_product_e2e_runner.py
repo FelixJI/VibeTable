@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from scripts.node_toolchain import ensure_node
 from tests.e2e import product_e2e_runner as runner
 
 
@@ -1357,6 +1359,21 @@ def test_realtime_scenario_refreshes_the_active_table_without_reselection() -> N
     assert "stableForMs: 1_500" in scenario
     assert "waitForTimeout(750)" not in scenario
     assert "grid did not reach a stable expected state" in source
+
+
+def test_realtime_recovery_acknowledges_only_expected_backend_unavailability() -> None:
+    test_file = runner.NODE_RUNNER.with_name("bridge_failure_policy.test.mjs")
+    completed = subprocess.run(
+        [str(ensure_node(runner.ROOT)), "--test", str(test_file)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def test_realtime_scenario_recovers_a_packaged_backend_with_a_fresh_safe_session() -> None:

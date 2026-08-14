@@ -748,7 +748,11 @@ describe("useTabulator", () => {
     ));
     await flushPromises();
 
-    const row = (rowKey: number) => ({ getData: () => ({ rowKey }) });
+    const scrollTo = vi.fn();
+    const row = (rowKey: number) => ({
+      getData: () => ({ rowKey }),
+      scrollTo,
+    });
     lastMock!.getRows.mockImplementation((range?: string) =>
       range === "visible"
         ? [row(35), row(36)]
@@ -761,15 +765,14 @@ describe("useTabulator", () => {
     scrollHandler!();
     expect(onWindowBoundary).toHaveBeenCalledOnce();
 
-    const scrollTo = vi.fn();
     lastMock!.getSelectedRows.mockReturnValue([row(36)]);
-    lastMock!.getRow.mockReturnValue({ scrollTo });
     table.setDatasetReady(makeDatasetReady(
       Array.from({ length: 41 }, (_, index) => ({ rowKey: index + 1 })),
       [makeColumn("id")],
     ));
     await flushPromises();
 
+    expect(lastMock!.getRow).not.toHaveBeenCalled();
     expect(scrollTo).toHaveBeenCalledWith("top", false);
     expect(lastMock!.selectRow).toHaveBeenCalledWith([36]);
     wrapper.unmount();

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
+import { acknowledgeExpectedSidecarRecoveryFailure } from "./bridge_failure_policy.mjs";
 
 function parseArgs(argv) {
   const values = {};
@@ -3128,17 +3129,23 @@ async function waitForActiveTableBackend(page, tableId, expectedRows, timeoutMs 
         tableId,
         query: { filters: [], sorts: [], offset: 0, limit: 100 },
       });
-      if (
-        lastResponse.type === "query.page"
-        && lastResponse.payload?.rows?.length === expectedRows
-        && lastResponse.payload?.snapshot?.schemaRevision
-      ) {
-        return lastResponse.payload;
-      }
     } catch {
       // The host is intentionally restarting. Keep the selected table intact
       // and retry only the closed read contract; never click/reselect the UI.
+      await page.waitForTimeout(250);
+      continue;
     }
+    if (
+      lastResponse.type === "query.page"
+      && lastResponse.payload?.rows?.length === expectedRows
+      && lastResponse.payload?.snapshot?.schemaRevision
+    ) {
+      return lastResponse.payload;
+    }
+    await acknowledgeExpectedSidecarRecoveryFailure(
+      lastResponse,
+      response => acknowledgeExpectedBridgeFailure(page, response),
+    );
     await page.waitForTimeout(250);
   }
   throw new Error(`active table backend did not recover: ${JSON.stringify(lastResponse)}`);

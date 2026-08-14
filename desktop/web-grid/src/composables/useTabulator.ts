@@ -498,22 +498,23 @@ export function useTabulator(
     },
   ): Promise<void> {
     const viewportGrid = grid as unknown as {
-      getRows?: () => Array<{ getData: () => Record<string, unknown> }>;
-      getRow?: (rowKey: string | number) => {
+      getRows?: () => Array<{
+        getData: () => Record<string, unknown>;
         scrollTo?: (position?: string, ifVisible?: boolean) => Promise<void> | void;
-      } | false;
+      }>;
       selectRow?: (rowKeys: readonly (string | number)[]) => void;
     };
-    const currentRowKeys = new Set(
-      (viewportGrid.getRows?.() ?? []).flatMap((row) => {
-        const rowKey = row.getData().rowKey;
-        return typeof rowKey === "string" || typeof rowKey === "number" ? [rowKey] : [];
-      }),
-    );
-    if (state.anchor !== null && currentRowKeys.has(state.anchor)) {
-      const anchorRow = viewportGrid.getRow?.(state.anchor);
-      if (anchorRow) await Promise.resolve(anchorRow.scrollTo?.("top", false));
-    }
+    const currentRows = (viewportGrid.getRows?.() ?? []).flatMap((row) => {
+      const rowKey = row.getData().rowKey;
+      return typeof rowKey === "string" || typeof rowKey === "number"
+        ? [{ rowKey, row }]
+        : [];
+    });
+    const currentRowKeys = new Set(currentRows.map(item => item.rowKey));
+    const anchorRow = state.anchor === null
+      ? null
+      : currentRows.find(item => item.rowKey === state.anchor)?.row ?? null;
+    if (anchorRow) await Promise.resolve(anchorRow.scrollTo?.("top", false));
     const retainedSelection = state.selected.filter((rowKey) => currentRowKeys.has(rowKey));
     if (retainedSelection.length > 0) viewportGrid.selectRow?.(retainedSelection);
   }
