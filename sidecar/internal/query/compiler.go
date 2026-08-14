@@ -386,7 +386,7 @@ func CompileAggregate(
 				"query.aggregate.duplicate_group", "timeBucket.field",
 				"time bucket field collides with another group", nil)
 		}
-		expression, err := aggregateTimeBucketExpression(field.sql, bucket.Unit)
+		expression, err := c.aggregateTimeBucketExpression(field.sql, bucket.Unit)
 		if err != nil {
 			return "", nil, err
 		}
@@ -481,15 +481,15 @@ func CompileAggregate(
 	return sql, c.params, nil
 }
 
-func aggregateTimeBucketExpression(fieldSQL string, bucket GroupBucket) (string, error) {
+func (c *compiler) aggregateTimeBucketExpression(fieldSQL string, bucket GroupBucket) (string, error) {
 	switch bucket {
 	case GroupBucketDay:
-		return "strftime('%Y-%m-%dT00:00:00Z', " + fieldSQL + ")", nil
+		return "strftime(" + c.bind("%Y-%m-%dT00:00:00Z") + ", " + fieldSQL + ")", nil
 	case GroupBucketWeek:
-		return "strftime('%Y-%m-%dT00:00:00Z', julianday(" + fieldSQL +
-			") - ((CAST(strftime('%w', " + fieldSQL + ") AS INTEGER) + 6) % 7))", nil
+		return "strftime(" + c.bind("%Y-%m-%dT00:00:00Z") + ", julianday(" + fieldSQL +
+			") - ((CAST(strftime(" + c.bind("%w") + ", " + fieldSQL + ") AS INTEGER) + 6) % 7))", nil
 	case GroupBucketMonth:
-		return "strftime('%Y-%m-01T00:00:00Z', " + fieldSQL + ")", nil
+		return "strftime(" + c.bind("%Y-%m-01T00:00:00Z") + ", " + fieldSQL + ")", nil
 	default:
 		return "", productError(
 			"query.aggregate.invalid_time_bucket", "timeBucket.unit",

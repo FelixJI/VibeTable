@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
 import { defineComponent, h } from "vue";
-import { NDropdown, NMessageProvider, NModal } from "naive-ui";
+import { NDropdown, NMessageProvider } from "naive-ui";
 
 import WorkspaceView from "./WorkspaceView.vue";
 import GridHost from "@/components/grid/GridHost.vue";
@@ -129,7 +129,7 @@ vi.mock("@/grid/createGrid", () => ({
 
 let testPinia: Pinia;
 
-function mountView() {
+function mountView({ realTransitions = false }: { realTransitions?: boolean } = {}) {
   // WorkspaceView.setup() calls useMessage() (to surface history.lastError),
   // which requires an ancestor NMessageProvider. Mirror App.vue's wrapper here.
   // We mount the wrapper with attachTo so queries against document.body still
@@ -142,7 +142,10 @@ function mountView() {
   });
   const wrapper = mount(Host, {
     attachTo: document.body,
-    global: { plugins: [testPinia] },
+    global: {
+      plugins: [testPinia],
+      stubs: realTransitions ? { transition: false } : {},
+    },
   });
   mountedViews.push(wrapper);
   return wrapper;
@@ -1716,7 +1719,7 @@ describe("WorkspaceView", () => {
     document.body.append(trigger);
     trigger.focus();
 
-    const wrapper = mountView();
+    const wrapper = mountView({ realTransitions: true });
     await flushPromises();
     trigger.focus();
     wrapper.findComponent(GridHost).vm.$emit("jsonEdit", {
@@ -1739,24 +1742,21 @@ describe("WorkspaceView", () => {
     expect(dialog?.getAttribute("role")).toBe("dialog");
     expect(dialog?.getAttribute("aria-modal")).toBe("true");
     expect(dialog?.getAttribute("aria-labelledby")).toBe("json-editor-title");
-    const modal = wrapper
-      .findAllComponents(NModal)
-      .find((item) => item.props("show") === true);
-    expect(modal).toBeDefined();
+    await vi.waitFor(() => {
+      expect(
+        dialog?.contains(document.activeElement),
+        document.activeElement instanceof HTMLElement ? document.activeElement.outerHTML : "",
+      ).toBe(true);
+    });
+    expect(document.activeElement?.closest('[aria-hidden="true"]')).toBeNull();
 
     document.body.querySelector<HTMLElement>(
       '[data-testid="json-editor-close"]',
     )?.click();
     await flushPromises();
-    modal?.vm.$emit("afterLeave");
-    await flushPromises();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-    expect(
-      document.body.querySelector<HTMLElement>(
-        '[data-testid="json-editor-modal"]',
-      )?.style.display,
-    ).toBe("none");
-    expect(document.activeElement).toBe(trigger);
+    await vi.waitFor(() => {
+      expect(document.activeElement).toBe(trigger);
+    });
   });
 
   it("releases attachment gridcell focus before hiding the background for NModal", async () => {
@@ -1776,7 +1776,7 @@ describe("WorkspaceView", () => {
     workspace.selectTable("items");
     useUiStore().navigate("tables");
 
-    const wrapper = mountView();
+    const wrapper = mountView({ realTransitions: true });
     await flushPromises();
     const trigger = document.createElement("div");
     trigger.tabIndex = 0;
@@ -1805,18 +1805,71 @@ describe("WorkspaceView", () => {
 
     expect(document.activeElement).not.toBe(trigger);
     await flushPromises();
-    const modal = wrapper
-      .findAllComponents(NModal)
-      .find((item) => item.props("show") === true);
-    expect(modal).toBeDefined();
+    const dialog = document.body.querySelector<HTMLElement>(
+      '[data-testid="attachment-panel"]',
+    );
+    await vi.waitFor(() => {
+      expect(dialog?.contains(document.activeElement)).toBe(true);
+    });
+    expect(document.activeElement?.closest('[aria-hidden="true"]')).toBeNull();
 
     document.body.querySelector<HTMLButtonElement>(
       '[data-testid="attachment-panel"] header button',
     )?.click();
     await flushPromises();
-    modal?.vm.$emit("afterLeave");
+    await vi.waitFor(() => {
+      expect(document.activeElement).toBe(trigger);
+    });
+  });
+
+  it("focuses the lookup source dialog through its public grid event", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "items" }], { items: "Items" });
+    workspace.selectTable("items");
+    useUiStore().navigate("tables");
+
+    const wrapper = mountView({ realTransitions: true });
     await flushPromises();
-    expect(document.activeElement).toBe(trigger);
+    const trigger = document.createElement("div");
+    trigger.tabIndex = 0;
+    trigger.setAttribute("role", "gridcell");
+    document.body.append(trigger);
+    trigger.focus();
+
+    wrapper.findComponent(GridHost).vm.$emit("lookupSourcePage", {
+      fieldRef: "customer-name",
+      sourceRecordId: "order-1",
+      cell: {
+        state: "ok",
+        value: "Customer one",
+        diagnostic: null,
+        provenance: [{
+          collection: "customers",
+          collectionLabel: "Customers",
+          itemId: "customer-1",
+          recordLabel: "Customer one",
+          fieldId: "name-id",
+          fieldLabel: "Name",
+          value: "Customer one",
+        }],
+        provenanceTotal: 1,
+        provenanceTotalKnown: true,
+        provenanceOffset: 0,
+        provenanceLimit: 100,
+        provenanceHasMore: false,
+      },
+    });
+    await flushPromises();
+
+    const dialog = document.body.querySelector<HTMLElement>(
+      '[data-testid="lookup-sources-panel"]',
+    );
+    await vi.waitFor(() => {
+      expect(dialog?.contains(document.activeElement)).toBe(true);
+    });
+    expect(document.activeElement?.closest('[aria-hidden="true"]')).toBeNull();
   });
 
   it("routes managed attachment actions through opaque host commands", async () => {

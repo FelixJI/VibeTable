@@ -284,6 +284,14 @@ const structuredCellDialogs = createStructuredCellDialogController({
 });
 const attachmentPanel = structuredCellDialogs.state.attachment;
 const jsonEditor = structuredCellDialogs.state.json;
+const lookupSourcesDialog = ref<HTMLElement | null>(null);
+const attachmentDialog = ref<HTMLElement | null>(null);
+const jsonEditorDialog = ref<HTMLElement | null>(null);
+
+function focusModalDialog(dialog: HTMLElement | null): void {
+  dialog?.focus({ preventScroll: true });
+}
+
 const lookupProvenance = createLookupProvenanceController({
   readPage: request => relationLookupService.readLookupValuePage(request),
   selectTable: collection => tableService.selectTable(collection),
@@ -1081,17 +1089,20 @@ useKeyboard({
     />
 	<NModal
 		:show="lookupSources.show"
-		:auto-focus="true"
+		:auto-focus="false"
 		:trap-focus="true"
 		:close-on-esc="true"
 		:mask-closable="true"
 		@update:show="show => { if (!show) lookupProvenance.dispatch({ type: 'sources.close' }) }"
+		@after-enter="focusModalDialog(lookupSourcesDialog)"
 	>
-		<aside
+		<div
+			ref="lookupSourcesDialog"
 			class="lookup-sources-panel"
 			role="dialog"
 			aria-modal="true"
 			aria-labelledby="lookup-sources-title"
+			tabindex="-1"
 			data-testid="lookup-sources-panel"
 		>
 			<header>
@@ -1118,18 +1129,20 @@ useKeyboard({
 					{{ t("workspace.lookup.loadMoreSources") }}
 				</NButton>
 			</footer>
-		</aside>
+		</div>
 	</NModal>
     <NModal
       :show="attachmentPanel.show"
-      :auto-focus="true"
+      :auto-focus="false"
       :trap-focus="true"
       :close-on-esc="true"
       :mask-closable="true"
       @update:show="show => { if (!show) structuredCellDialogs.dispatch({ type: 'attachment.close' }) }"
+      @after-enter="focusModalDialog(attachmentDialog)"
       @after-leave="structuredCellDialogs.dispatch({ type: 'attachment.closed' })"
     >
-      <aside
+      <div
+        ref="attachmentDialog"
         class="attachment-panel"
         role="dialog"
         aria-modal="true"
@@ -1166,18 +1179,20 @@ useKeyboard({
           @preview="structuredCellDialogs.dispatch({ type: 'attachment.preview', storedName: $event })"
           @download="structuredCellDialogs.dispatch({ type: 'attachment.download', storedName: $event })"
         />
-      </aside>
+      </div>
     </NModal>
     <NModal
       :show="jsonEditor.show"
-      :auto-focus="true"
+      :auto-focus="false"
       :trap-focus="true"
       :close-on-esc="true"
       :mask-closable="true"
       @update:show="show => { if (!show) structuredCellDialogs.dispatch({ type: 'json.close' }) }"
+      @after-enter="focusModalDialog(jsonEditorDialog)"
       @after-leave="structuredCellDialogs.dispatch({ type: 'json.closed' })"
     >
-      <aside
+      <div
+        ref="jsonEditorDialog"
         class="json-editor-dialog"
         role="dialog"
         aria-modal="true"
@@ -1215,7 +1230,7 @@ useKeyboard({
             @click="structuredCellDialogs.dispatch({ type: 'json.save' })"
           >{{ t("workspace.json.save") }}</NButton>
         </footer>
-      </aside>
+      </div>
     </NModal>
     <PastePanel
       @confirm="tableInteractions.dispatch({ type: 'paste.confirm' })"

@@ -113,12 +113,58 @@ class CaseResult:
     error: str | None = None
 
 
+def _go_executable_version(executable: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            [executable, "version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode:
+        return None
+    for token in completed.stdout.split():
+        if token.startswith("go1"):
+            return token.removeprefix("go")
+    return None
+
+
 def _resolve(tool: str) -> str:
     if tool == "go":
+        go_mod = ROOT / "tools" / "recovery-tools" / "go.mod"
+        go_version = next(
+            (
+                line.removeprefix("go ").strip()
+                for line in go_mod.read_text(encoding="utf-8").splitlines()
+                if line.startswith("go ")
+            ),
+            "",
+        )
+        if not go_version:
+            raise RuntimeError("recovery Go toolchain version is missing")
         suffix = "go.exe" if os.name == "nt" else "go"
-        bundled = ROOT / ".tools" / "go-full" / "go" / "bin" / suffix
-        if bundled.is_file():
-            return str(bundled)
+        candidates = [
+            str(ROOT / ".tools" / f"go-{go_version}" / "go" / "bin" / suffix),
+            str(ROOT / ".tools" / "go" / "bin" / suffix),
+            str(ROOT / ".tools" / "go-full" / "go" / "bin" / suffix),
+        ]
+        path_go = shutil.which("go")
+        if path_go:
+            candidates.append(path_go)
+        checked: set[str] = set()
+        for candidate in candidates:
+            key = os.path.normcase(os.path.abspath(candidate))
+            if key in checked or not Path(candidate).is_file():
+                continue
+            checked.add(key)
+            if _go_executable_version(candidate) == go_version:
+                return candidate
+        raise RuntimeError(f"Go {go_version} toolchain is required but was not found")
     if tool == "dotnet":
         bundled = ROOT / ".tools" / "dotnet" / "dotnet.exe"
         if bundled.is_file():
@@ -216,8 +262,22 @@ def _run(
 
 def _run_go(run_root: Path) -> CaseResult:
     pattern = "^(" + "|".join(GO_TESTS) + ")$"
+    try:
+        go = _resolve("go")
+    except (OSError, RuntimeError) as exc:
+        evidence = run_root / "go-tests.jsonl"
+        evidence.write_text(str(exc) + "\n", encoding="utf-8")
+        return CaseResult(
+            name="go-workspace-v2-durability-faults",
+            status="failed",
+            elapsed=0.0,
+            command=["go", "test"],
+            returncode=127,
+            evidence=str(evidence),
+            error=str(exc),
+        )
     command = [
-        _resolve("go"),
+        go,
         "test",
         "-json",
         *GO_PACKAGES,

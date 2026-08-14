@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
+
 from qa import fault_injection
+from scripts import build_next
 
 
 def test_release_gate_has_all_required_named_faults() -> None:
@@ -26,6 +30,52 @@ def test_release_gate_has_all_required_named_faults() -> None:
     } <= names
     assert "FaultGateKilledSidecar" in fault_injection.DOTNET_TEST
     assert fault_injection.PRODUCT_SCENARIO == "10-sse-reconnect"
+
+
+def test_fault_gate_prefers_the_exact_versioned_go_toolchain(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    suffix = "go.exe" if os.name == "nt" else "go"
+    exact = tmp_path / ".tools" / f"go-{build_next.RECOVERY_GO_VERSION}" / "go" / "bin" / suffix
+    stale = tmp_path / ".tools" / "go-full" / "go" / "bin" / suffix
+    exact.parent.mkdir(parents=True)
+    stale.parent.mkdir(parents=True)
+    exact.write_bytes(b"exact")
+    stale.write_bytes(b"stale")
+    go_mod = tmp_path / "tools" / "recovery-tools" / "go.mod"
+    go_mod.parent.mkdir(parents=True)
+    go_mod.write_text(f"module example.invalid/tools\n\ngo {build_next.RECOVERY_GO_VERSION}\n")
+    monkeypatch.setattr(fault_injection, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        fault_injection,
+        "_go_executable_version",
+        lambda executable: build_next.RECOVERY_GO_VERSION if executable == str(exact) else "1.26.5",
+    )
+
+    assert fault_injection._resolve("go") == str(exact)
+
+
+def test_fault_gate_rejects_mismatched_go_toolchains(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    suffix = "go.exe" if os.name == "nt" else "go"
+    stale = tmp_path / ".tools" / "go-full" / "go" / "bin" / suffix
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"stale")
+    go_mod = tmp_path / "tools" / "recovery-tools" / "go.mod"
+    go_mod.parent.mkdir(parents=True)
+    go_mod.write_text(f"module example.invalid/tools\n\ngo {build_next.RECOVERY_GO_VERSION}\n")
+    monkeypatch.setattr(fault_injection, "ROOT", tmp_path)
+    monkeypatch.setattr(fault_injection.shutil, "which", lambda _tool: str(stale))
+    monkeypatch.setattr(fault_injection, "_go_executable_version", lambda _executable: "1.26.5")
+
+    with pytest.raises(
+        RuntimeError,
+        match=f"Go {build_next.RECOVERY_GO_VERSION} toolchain is required",
+    ):
+        fault_injection._resolve("go")
 
 
 def test_go_gate_rejects_success_when_required_tests_are_missing(
