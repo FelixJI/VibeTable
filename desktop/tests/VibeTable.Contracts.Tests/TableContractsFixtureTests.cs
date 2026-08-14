@@ -37,7 +37,7 @@ public sealed class TableContractsFixtureTests
             new[] { "contracts" },
             (System.Collections.ICollection)result!.Tables);
         Assert.AreEqual(0, result.Views.Count);
-        Assert.IsNull(result.DisplayNames, "legacy payloads omit the optional displayNames map");
+        Assert.AreEqual("Contracts", result.DisplayNames["contracts"]);
     }
 
     [TestMethod]
@@ -51,7 +51,36 @@ public sealed class TableContractsFixtureTests
 
         Assert.IsNotNull(result);
         Assert.AreEqual("vt_t_01K0000000000000", result!.Tables[0]);
-        Assert.AreEqual("客户清单 ✅", result.DisplayNames![result.Tables[0]]);
+        Assert.AreEqual("客户清单 ✅", result.DisplayNames[result.Tables[0]]);
+    }
+
+    [TestMethod]
+    public void DatabaseOpenResult_RejectsMissingDisplayNames()
+    {
+        const string json = """
+            {"tables":["orders"],"views":[]}
+            """;
+
+        Assert.ThrowsExactly<JsonException>(
+            () => JsonSerializer.Deserialize<DatabaseOpenResult>(json, Options));
+    }
+
+    [TestMethod]
+    public void DatabaseOpenResult_RejectsNonCanonicalDisplayNames()
+    {
+        foreach (string displayNames in new[]
+        {
+            "null",
+            "{}",
+            "{\"orders\":\"   \"}",
+        })
+        {
+            string json = $$"""
+                {"tables":["orders"],"views":[],"displayNames":{{displayNames}}}
+                """;
+            Assert.ThrowsExactly<JsonException>(
+                () => JsonSerializer.Deserialize<DatabaseOpenResult>(json, Options));
+        }
     }
 
     [TestMethod]
@@ -91,7 +120,7 @@ public sealed class TableContractsFixtureTests
         Assert.AreEqual(0, page.Offset);
         Assert.AreEqual(500, page.Limit);
         Assert.AreEqual(3, page.TotalRows);
-        Assert.AreEqual("client", page.Mode);
+        Assert.AreEqual("remote", page.Mode);
     }
 
     [TestMethod]
@@ -103,7 +132,7 @@ public sealed class TableContractsFixtureTests
                "fieldId":"orders.contract","kind":"relation","relationId":"provider:7:m2o"},
               {"name":"contract_price","title":"Contract price","dataType":"decimal","editable":false,"nullable":true,
                "scale":2,"fieldId":"orders.contract_price","kind":"lookup","lookupId":"orders.contract_price"}
-            ],"rows":[],"offset":0,"limit":100,"totalRows":0,"mode":"client"}
+            ],"rows":[],"offset":0,"limit":100,"totalRows":0,"mode":"remote"}
             """;
 
         var page = JsonSerializer.Deserialize<TablePage>(json, Options);

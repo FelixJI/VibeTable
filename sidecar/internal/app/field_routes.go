@@ -15,7 +15,8 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
-	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 const maxFieldRequestBytes = 1 << 20
@@ -39,6 +40,12 @@ func registerFieldRoutes(
 		fieldchange.WithMigrationScheduler(migration),
 		fieldchange.WithExecutorLogger(logger),
 	}
+	if formulaJobs != nil {
+		executorOptions = append(
+			executorOptions,
+			fieldchange.WithFormulaBackfillScheduler(formulaJobs),
+		)
+	}
 	if protectionVerifier != nil {
 		executorOptions = append(
 			executorOptions,
@@ -46,12 +53,106 @@ func registerFieldRoutes(
 		)
 	}
 	executor := fieldchange.NewExecutor(app, store, executorOptions...)
+	schemaCore, coreErr := schemacore.New(catalog, planner, executor)
+	if coreErr != nil {
+		panic(coreErr)
+	}
+	tableLifecycle, lifecycleErr := schemacore.NewTableLifecycle(app)
+	if lifecycleErr != nil {
+		panic(lifecycleErr)
+	}
+
+	r.GET("/api/vibetable/v2/schema/tables/{tableId}", func(
+		request *core.RequestEvent,
+	) error {
+		table, err := schemaexecution.Describe(
+			request.Request.Context(), app, request.Request.PathValue("tableId"),
+		)
+		if err != nil {
+			if errors.Is(err, schemaexecution.ErrTableNotFound) {
+				return request.JSON(http.StatusNotFound, map[string]any{
+					"contract": v2.Contract,
+					"code":     "schema.table.not_found", "path": "tableId",
+					"message": "table was not found", "details": map[string]any{},
+					"retryable": false, "occurredAt": time.Now().UTC().Format(time.RFC3339Nano),
+				})
+			}
+			return writeFieldError(request, err)
+		}
+		return request.JSON(http.StatusOK, table.Snapshot)
+	})
+
+	r.POST("/api/vibetable/v2/schema/tables", func(
+		request *core.RequestEvent,
+	) error {
+		var intent v2.TableCreateIntent
+		if err := decodeFieldRequest(request.Request.Body, &intent); err != nil {
+			return writeFieldError(request, err)
+		}
+		if replay, found, err := tableLifecycle.FindReplay(intent); err != nil {
+			return writeFieldError(request, err)
+		} else if found {
+			return request.JSON(http.StatusOK, replay)
+		}
+		var receipt v2.TableCreateReceipt
+		err := runIdempotentBusinessWrite(
+			request.Request.Context(),
+			gates,
+			"schema.table.create",
+			intent.OperationID,
+			func(ctx context.Context) error {
+				var createErr error
+				receipt, createErr = tableLifecycle.Create(ctx, intent)
+				return createErr
+			},
+		)
+		if err != nil {
+			return writeFieldError(request, err)
+		}
+		if receipt.TableID == "" {
+			var replayErr error
+			receipt, replayErr = tableLifecycle.Replay(intent)
+			if replayErr != nil {
+				return writeFieldError(request, replayErr)
+			}
+		}
+		return request.JSON(http.StatusOK, receipt)
+	})
+
+	r.POST("/api/vibetable/v2/schema/table-settings", func(
+		request *core.RequestEvent,
+	) error {
+		var intent v2.TableSettingsIntent
+		if err := decodeFieldRequest(request.Request.Body, &intent); err != nil {
+			return writeFieldError(request, err)
+		}
+		var receipt v2.TableSettingsReceipt
+		err := runIdempotentBusinessWrite(
+			request.Request.Context(), gates, "schema.table.settings", intent.OperationID,
+			func(ctx context.Context) error {
+				var configureErr error
+				receipt, configureErr = tableLifecycle.Configure(ctx, intent)
+				return configureErr
+			},
+		)
+		if err != nil {
+			return writeFieldError(request, err)
+		}
+		if receipt.TableID == "" {
+			var replayErr error
+			receipt, replayErr = tableLifecycle.Configure(request.Request.Context(), intent)
+			if replayErr != nil {
+				return writeFieldError(request, replayErr)
+			}
+		}
+		return request.JSON(http.StatusOK, receipt)
+	})
 
 	r.GET("/api/vibetable/v2/field-settings/{tableId}", func(
 		request *core.RequestEvent,
 	) error {
 		tableID := request.Request.PathValue("tableId")
-		revisions, err := catalog.Revisions(request.Request.Context(), tableID)
+		snapshot, err := schemaCore.Describe(request.Request.Context(), tableID)
 		if err != nil {
 			return writeFieldError(request, err)
 		}
@@ -65,22 +166,14 @@ func registerFieldRoutes(
 				return writeFieldError(request, err)
 			}
 		}
-		capabilities := make([]v2.Capability, 0, len(v2.LogicalTypes))
-		for _, logicalType := range v2.LogicalTypes {
-			capability, capabilityErr := v2.CapabilityFor(logicalType)
-			if capabilityErr != nil {
-				return writeFieldError(request, capabilityErr)
-			}
-			capabilities = append(capabilities, capability)
-		}
 		return request.JSON(http.StatusOK, map[string]any{
 			"contract":                   v2.Contract,
 			"tableId":                    tableID,
 			"fieldId":                    fieldID,
-			"schemaRevision":             revisions.Schema,
-			"dataRevision":               revisions.Data,
+			"schemaRevision":             snapshot.SchemaRevision,
+			"dataRevision":               snapshot.DataRevision,
 			"definition":                 definition,
-			"capabilities":               capabilities,
+			"capabilities":               snapshot.Capabilities,
 			"recommendedDefaultsVersion": 1,
 		})
 	})
@@ -106,7 +199,7 @@ func registerFieldRoutes(
 			),
 			func(ctx context.Context) error {
 				var planErr error
-				plan, planErr = planner.Plan(ctx, intent)
+				plan, planErr = schemaCore.Plan(ctx, intent)
 				return planErr
 			},
 		)
@@ -131,31 +224,12 @@ func registerFieldRoutes(
 			body.OperationID,
 			func(ctx context.Context) error {
 				var applyErr error
-				receipt, applyErr = executor.Apply(ctx, body)
+				receipt, applyErr = schemaCore.Apply(ctx, body)
 				return applyErr
 			},
 		)
 		if err != nil {
 			return writeFieldError(request, err)
-		}
-		definition, err := schemaapi.New(app).Describe(
-			request.Request.Context(), receipt.TableID,
-		)
-		if err != nil {
-			return writeFieldError(request, err)
-		}
-		if definitionNeedsBackfill(definition) {
-			backfill, startErr := formulaJobs.StartFormulaBackfill(
-				request.Request.Context(), definition.TableID, definition.SchemaRevision,
-			)
-			if startErr != nil {
-				return writeJobError(request, startErr)
-			}
-			if dispatchErr := dispatchFormulaBackfill(
-				request.Request.Context(), formulaJobs, backfill,
-			); dispatchErr != nil {
-				return writeJobError(request, dispatchErr)
-			}
 		}
 		return request.JSON(http.StatusOK, receipt)
 	})
@@ -268,7 +342,9 @@ func writeFieldError(request *core.RequestEvent, err error) error {
 	}
 	if code == "field.change.schema_conflict" ||
 		code == "field.change.data_conflict" ||
-		code == "field.change.operation_conflict" {
+		code == "field.change.operation_conflict" ||
+		code == "schema.table.revision_conflict" ||
+		code == "schema.table.operation_conflict" {
 		status = http.StatusConflict
 	}
 	if code == "field.change.plan_not_found" ||

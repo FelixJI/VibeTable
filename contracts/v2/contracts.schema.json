@@ -78,7 +78,7 @@
       ],
       "properties": {
         "contractVersion": {"$ref": "#/$defs/ContractVersion"},
-        "formatVersion": {"type": "integer", "minimum": 1},
+        "formatVersion": {"const": 2},
         "workspaceId": {"$ref": "#/$defs/Uuid"},
         "displayName": {"type": "string", "minLength": 1},
         "createdAt": {"$ref": "#/$defs/Timestamp"},
@@ -616,7 +616,7 @@
           "properties": {
             "code": {
               "type": "string",
-              "pattern": "^(workspace|snapshot|repository|lease|replica|conflict|file_history|history|retention)\\.[a-z0-9_]+$"
+              "pattern": "^(workspace|snapshot|repository|lease|replica|conflict|file_history|workspace_search|history|retention)\\.[a-z0-9_]+$"
             },
             "message": {"type": "string", "minLength": 1},
             "details": {"$ref": "#/$defs/JsonObject"},

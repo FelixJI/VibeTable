@@ -191,3 +191,20 @@ def test_preset_view_rejects_more_than_fifty_conditions_across_groups() -> None:
                 "view": {"filters": groups},
             }
         )
+
+
+@pytest.mark.parametrize("legacy_key", ["query", "queryJson", "query_json"])
+def test_preset_view_rejects_legacy_query_json(legacy_key: str) -> None:
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        SavePresetParams.model_validate(
+            {
+                "collection": "orders",
+                "name": "Legacy query",
+                "operationId": f"op-reject-{legacy_key}",
+                "view": {
+                    "filters": [],
+                    "sorts": [],
+                    legacy_key: {"filters": [{"field": "status", "operator": "eq"}]},
+                },
+            }
+        )

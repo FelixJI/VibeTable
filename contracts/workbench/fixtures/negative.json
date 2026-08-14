@@ -1,0 +1,13 @@
+[
+  {"name":"view-query-unknown","model":"ViewQuery","payload":{"contractVersion":"1.0","tableId":"tbl_orders","fields":["name"],"filters":[],"sorts":[],"cursor":null,"pageSize":100,"rawSql":"select 1"}},
+  {"name":"binding-invalid-query","model":"DataBinding","payload":{"bindingId":"binding_orders","query":{"contractVersion":"1.0","tableId":"","fields":[],"filters":[],"sorts":[],"cursor":null,"pageSize":0},"variables":[]}},
+  {"name":"interface-action-arbitrary-rpc","model":"InterfaceAction","payload":{"actionId":"action_1","kind":"rpc","bindingId":null,"targetPageId":null,"pluginId":null,"pluginActionId":null,"requiresConfirmation":false}},
+  {"name":"interface-element-absolute-layout","model":"InterfaceElement","payload":{"elementId":"element_1","kind":"text","bindingId":null,"actionId":null,"text":"Hello","width":"absolute","children":[]}},
+  {"name":"interface-definition-requires-page","model":"InterfaceDefinition","payload":{"contractVersion":"1.0","interfaceId":"if_orders","name":"Orders","bindings":[],"actions":[],"pages":[]}},
+  {"name":"content-profile-empty-search-fields","model":"ContentProfile","payload":{"contractVersion":"1.0","tableId":"tbl_orders","titleFieldId":"title","bodyFieldId":"body","summaryFieldId":null,"searchableFieldIds":[]}},
+  {"name":"record-document-link-invalid-identity","model":"RecordDocumentLink","payload":{"contractVersion":"1.0","linkId":"link_1","tableId":"tbl_orders","recordId":"record_1","documentId":"not-a-uuid","role":"reference","order":0}},
+  {"name":"search-request-missing-query","model":"SearchRequest","payload":{"contractVersion":"1.0","logic":"and","filters":[],"sorts":[],"scope":"current","cursor":null,"limit":50}},
+  {"name":"search-filter-raw-sql","model":"SearchFilter","payload":{"field":"rawSql","operator":"eq","value":"select 1"}},
+  {"name":"search-status-invalid-state","model":"SearchStatus","payload":{"state":"silentFallback","generation":2,"checkpoint":null,"processed":0,"total":null,"errorCode":null}},
+  {"name":"computed-null-version","model":"ComputedCellEnvelope","payload":{"state":"ready","value":"42","definitionVersion":null,"sourceDataRevision":8,"dependencyWatermark":8,"diagnostic":null}}
+]

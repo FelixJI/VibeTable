@@ -63,8 +63,55 @@ internal static class ProductDataRpcRegistry
             (g, p, t) => g.ListRecycledFieldsAsync(p, t)),
         new("schema.getTable", p => Safe(p) && HasExactProperties(p, "tableId") && HasString(p, "tableId"),
             (g, p, t) => g.GetTableSchemaAsync(p, t)),
+        new("contentProfile.load", p => Safe(p)
+            && HasExactProperties(p, "tableId") && HasString(p, "tableId"),
+            (g, p, t) => g.LoadContentProfileAsync(p, t)),
+        new("contentProfile.commit", p => Safe(p)
+            && HasExactProperties(p, "profile", "expectedRevision", "idempotencyKey")
+            && HasObject(p, "profile") && HasNullableString(p, "expectedRevision")
+            && HasString(p, "idempotencyKey"),
+            (g, p, t) => g.CommitContentProfileAsync(p, t),
+            MutatesWorkspace: true,
+            RequiresProtectionSnapshot: true),
+        new("contentProfile.delete", p => Safe(p)
+            && HasExactProperties(p, "tableId", "expectedRevision", "idempotencyKey")
+            && HasStrings(p, "tableId", "expectedRevision", "idempotencyKey"),
+            (g, p, t) => g.DeleteContentProfileAsync(p, t),
+            MutatesWorkspace: true,
+            RequiresProtectionSnapshot: true),
+        new("recordDocumentLink.list", p => Safe(p)
+            && HasExactProperties(p, "tableId", "recordId")
+            && HasStrings(p, "tableId", "recordId"),
+            (g, p, t) => g.ListRecordDocumentLinksAsync(p, t)),
+        new("recordDocumentLink.commit", p => Safe(p)
+            && HasExactProperties(p, "link", "expectedRevision", "idempotencyKey")
+            && HasObject(p, "link") && HasNullableString(p, "expectedRevision")
+            && HasString(p, "idempotencyKey"),
+            (g, p, t) => g.CommitRecordDocumentLinkAsync(p, t),
+            MutatesWorkspace: true,
+            RequiresProtectionSnapshot: true),
+        new("recordDocumentLink.repair", p => Safe(p)
+            && HasExactProperties(
+                p, "linkId", "documentId", "expectedRevision", "idempotencyKey")
+            && HasStrings(
+                p, "linkId", "documentId", "expectedRevision", "idempotencyKey"),
+            (g, p, t) => g.RepairRecordDocumentLinkAsync(p, t),
+            MutatesWorkspace: true,
+            RequiresProtectionSnapshot: true),
+        new("recordDocumentLink.delete", p => Safe(p)
+            && HasExactProperties(p, "linkId", "expectedRevision", "idempotencyKey")
+            && HasStrings(p, "linkId", "expectedRevision", "idempotencyKey"),
+            (g, p, t) => g.DeleteRecordDocumentLinkAsync(p, t),
+            MutatesWorkspace: true,
+            RequiresProtectionSnapshot: true),
         new("query.page", p => Safe(p) && HasString(p, "tableId") && HasObject(p, "query"),
             (g, p, t) => g.QueryPageAsync(p, t)),
+        new("query.cursorOpen", p => Safe(p) && HasExactProperties(p, "tableId", "query")
+            && HasString(p, "tableId") && HasObject(p, "query"),
+            (g, p, t) => g.OpenQueryCursorAsync(p, t)),
+        new("query.cursorFetch", p => Safe(p) && HasExactProperties(p, "cursor")
+            && HasString(p, "cursor"),
+            (g, p, t) => g.FetchQueryCursorAsync(p, t)),
         new("query.view", p => Safe(p) && HasExactProperties(p, "tableId", "view")
             && HasString(p, "tableId") && HasObject(p, "view"),
             (g, p, t) => g.QueryViewAsync(p, t)),
@@ -90,13 +137,18 @@ internal static class ProductDataRpcRegistry
             MutatesWorkspace: true),
         new("task.status", p => Safe(p) && HasString(p, "taskId"),
             (g, p, t) => g.GetTaskStatusAsync(p, t)),
-        new("formula.validate", p => Safe(p) && HasObject(p, "definition"),
+        new("formula.validate", p => Safe(p)
+            && HasExactProperties(p, "tableId", "field")
+            && HasString(p, "tableId") && HasObject(p, "field"),
             (g, p, t) => g.ValidateFormulaAsync(p, t)),
         new("formula.draft.validate", p => Safe(p)
             && HasStrings(p, "tableId", "displaySource")
             && HasExactProperties(p, "tableId", "displaySource"),
             (g, p, t) => g.ValidateFormulaDraftAsync(p, t)),
-        new("formula.preview", p => Safe(p) && HasObject(p, "definition") && HasObject(p, "row") && HasArray(p, "changedFieldIds"),
+        new("formula.preview", p => Safe(p)
+            && HasExactProperties(p, "tableId", "field", "row", "changedFieldIds")
+            && HasString(p, "tableId") && HasObject(p, "field")
+            && HasObject(p, "row") && HasArray(p, "changedFieldIds"),
             (g, p, t) => g.PreviewFormulaAsync(p, t)),
         new("file.list", p => Safe(p) && HasStrings(p, "tableId", "recordId", "fieldId"),
             (g, p, t) => g.ListAttachmentRefsAsync(p, t)),
@@ -202,6 +254,9 @@ internal static class ProductDataRpcRegistry
     private static bool HasOptionalString(JsonElement payload, string name)
         => !payload.TryGetProperty(name, out var value)
             || value.ValueKind == JsonValueKind.String;
+    private static bool HasNullableString(JsonElement payload, string name)
+        => payload.TryGetProperty(name, out var value)
+            && value.ValueKind is JsonValueKind.String or JsonValueKind.Null;
     private static bool HasOnlyProperties(JsonElement payload, params string[] names)
     {
         var allowed = new HashSet<string>(names, StringComparer.Ordinal);

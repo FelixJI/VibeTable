@@ -17,6 +17,7 @@
     "go-fmt",
     "go-vet",
     "go-test",
+    "go-coverage",
     "go-race",
     "go-build",
     "sidecar-smoke",
@@ -30,6 +31,7 @@
     "web-build",
     "fault-injection",
     "product-e2e",
+    "workbench-qualification",
     "smoke"
   ],
   "releaseIdentityInputs": [
@@ -188,14 +190,15 @@
       "sidecar/migrations/manifest.json",
       "sidecar/migrations/2026072401_bootstrap.go",
       "sidecar/migrations/2026072402_internal_collections.go",
-      "sidecar/migrations/2026072403_internal_metadata_channel.go",
       "sidecar/migrations/2026072404_realtime_outbox_retention.go",
       "sidecar/migrations/2026072801_field_settings_v2_metadata.go",
       "sidecar/migrations/2026072805_audit_outbox.go",
-      "sidecar/migrations/2026080501_relation_pairs.go"
+      "sidecar/migrations/2026080501_relation_pairs.go",
+      "sidecar/migrations/2026081201_interfaces.go",
+      "sidecar/migrations/2026081202_content_links.go",
+      "sidecar/migrations/2026081203_view_v2_metadata.go"
     ],
     "capabilities": [
-      "sidecar/internal/schema/capabilities.go",
       "sidecar/internal/schema/v2/capabilities.go",
       "contracts/v2/README.md",
       "contracts/v2/fixtures/product-rpc-catalog.json",

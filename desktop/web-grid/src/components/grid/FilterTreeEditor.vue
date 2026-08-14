@@ -1,7 +1,14 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { NButton, NInput, NSelect } from "naive-ui";
-import type { ColumnSchema, FilterCondition, FilterExpression, FilterOperator } from "@/contracts";
+import { computed, ref } from "vue";
+import { NButton, NDatePicker, NDynamicTags, NInput, NInputNumber, NSelect } from "naive-ui";
+import type {
+  ColumnSchema,
+  FilterCondition,
+  FilterExpression,
+  FilterOperator,
+  NormalizedRelationDescriptor,
+  RelationTargetRef,
+} from "@/contracts";
 
 defineOptions({ name: "FilterTreeEditor" });
 const props = withDefaults(defineProps<{
@@ -9,6 +16,8 @@ const props = withDefaults(defineProps<{
   columns: readonly ColumnSchema[];
   depth?: number;
   totalConditions?: number;
+  relations?: readonly NormalizedRelationDescriptor[];
+  searchRelationTargets?: (relationId: string, query: string) => Promise<readonly RelationTargetRef[]>;
 }>(), { depth: 1 });
 const emit = defineEmits<{ update: [nodes: FilterExpression[]] }>();
 
@@ -32,6 +41,8 @@ const operatorOptionsFor = (field: string) => {
 const localConditionCount = computed(() => countConditions(props.nodes));
 const conditionCount = computed(() => props.totalConditions ?? localConditionCount.value);
 const atConditionLimit = computed(() => conditionCount.value >= 50);
+const relationOptions = ref<Record<string, Array<{ label: string; value: string }>>>({});
+const relationLoading = ref<Record<string, boolean>>({});
 
 function countConditions(nodes: readonly FilterExpression[]): number {
   return nodes.reduce((count, node) => count + (isCondition(node)
@@ -94,6 +105,38 @@ function updateOperator(index: number, operator: FilterOperator): void {
 function columnFor(field: string): ColumnSchema | undefined {
   return props.columns.find(item => item.name === field);
 }
+function filterInputFor(field: string): NonNullable<ColumnSchema["filterInput"]> {
+  return columnFor(field)?.filterInput ?? "text";
+}
+function filterOptionsFor(field: string) {
+  return [...(columnFor(field)?.filterOptions ?? [])];
+}
+function relationIdFor(field: string): string | null {
+  const column = columnFor(field);
+  if (column?.filterInput !== "relation") return null;
+  if (column.relationId) return column.relationId;
+  const fieldIdentity = column.fieldId ?? column.name;
+  return props.relations?.find(relation => relation.fieldRef === fieldIdentity)?.relationId ?? null;
+}
+async function searchRelation(field: string, query: string): Promise<void> {
+  const relationId = relationIdFor(field);
+  if (!relationId || !props.searchRelationTargets) return;
+  relationLoading.value = { ...relationLoading.value, [field]: true };
+  try {
+    const targets = await props.searchRelationTargets(relationId, query);
+    relationOptions.value = {
+      ...relationOptions.value,
+      [field]: targets.map(target => ({ label: target.label, value: target.itemId })),
+    };
+  } finally {
+    relationLoading.value = { ...relationLoading.value, [field]: false };
+  }
+}
+function optionValue(node: FilterCondition): string | string[] | null {
+  if (Array.isArray(node.value)) return node.value.map(value => String(value));
+  if (typeof node.value === "string" || typeof node.value === "number") return String(node.value);
+  return null;
+}
 function initialValue(field: string, operator: FilterOperator): unknown {
   if (operator === "is_null" || operator === "is_not_null") return undefined;
   if (operator === "between") return ["", ""];
@@ -121,12 +164,13 @@ function updateBetweenValue(index: number, part: number, value: string): void {
   previous[part] = parseScalar(current.field, value);
   updateCondition(index, { value: previous.slice(0, 2) });
 }
-function updateInValue(index: number, value: string): void {
+function updateDiscreteValues(index: number, values: Array<string | number>): void {
   const current = props.nodes[index];
   if (!current || !isCondition(current)) return;
   updateCondition(index, {
-    value: value.split(",").map(item => item.trim()).filter(Boolean)
-      .map(item => parseScalar(current.field, item)),
+    value: values.map(value => typeof value === "string"
+      ? parseScalar(current.field, value)
+      : value),
   });
 }
 </script>
@@ -162,28 +206,88 @@ function updateInValue(index: number, value: string): void {
           @update:value="operator => updateOperator(index, operator)"
         />
         <div v-if="node.operator === 'between'" class="between-inputs">
+          <NDatePicker
+            v-if="filterInputFor(node.field) === 'date' || filterInputFor(node.field) === 'dateTime'"
+            size="small"
+            :type="filterInputFor(node.field) === 'dateTime' ? 'datetime' : 'date'"
+            :formatted-value="String(Array.isArray(node.value) ? (node.value[0] ?? '') : '') || null"
+            :value-format="filterInputFor(node.field) === 'dateTime' ? 'yyyy-MM-dd HH:mm:ss' : 'yyyy-MM-dd'"
+            aria-label="筛选起始值"
+            @update:formatted-value="value => updateBetweenValue(index, 0, value ?? '')"
+          />
+          <NInputNumber
+            v-else-if="filterInputFor(node.field) === 'number'"
+            size="small"
+            :value="Number(Array.isArray(node.value) ? node.value[0] : null)"
+            :show-button="false"
+            aria-label="筛选起始值"
+            @update:value="value => updateBetweenValue(index, 0, String(value ?? ''))"
+          />
           <NInput
+            v-else
             size="small"
             :value="String(Array.isArray(node.value) ? (node.value[0] ?? '') : '')"
             aria-label="筛选起始值"
             @update:value="value => updateBetweenValue(index, 0, value)"
           />
           <span>至</span>
+          <NDatePicker
+            v-if="filterInputFor(node.field) === 'date' || filterInputFor(node.field) === 'dateTime'"
+            size="small"
+            :type="filterInputFor(node.field) === 'dateTime' ? 'datetime' : 'date'"
+            :formatted-value="String(Array.isArray(node.value) ? (node.value[1] ?? '') : '') || null"
+            :value-format="filterInputFor(node.field) === 'dateTime' ? 'yyyy-MM-dd HH:mm:ss' : 'yyyy-MM-dd'"
+            aria-label="筛选结束值"
+            @update:formatted-value="value => updateBetweenValue(index, 1, value ?? '')"
+          />
+          <NInputNumber
+            v-else-if="filterInputFor(node.field) === 'number'"
+            size="small"
+            :value="Number(Array.isArray(node.value) ? node.value[1] : null)"
+            :show-button="false"
+            aria-label="筛选结束值"
+            @update:value="value => updateBetweenValue(index, 1, String(value ?? ''))"
+          />
           <NInput
+            v-else
             size="small"
             :value="String(Array.isArray(node.value) ? (node.value[1] ?? '') : '')"
             aria-label="筛选结束值"
             @update:value="value => updateBetweenValue(index, 1, value)"
           />
         </div>
-        <NInput
-          v-else-if="node.operator === 'in'"
+        <NSelect
+          v-else-if="node.operator === 'in' && filterOptionsFor(node.field).length > 0"
           size="small"
           class="value-input"
-          :value="Array.isArray(node.value) ? node.value.join(', ') : ''"
-          placeholder="多个值用逗号分隔"
+          multiple
+          :value="Array.isArray(node.value) ? node.value : []"
+          :options="filterOptionsFor(node.field)"
           aria-label="筛选值列表"
-          @update:value="value => updateInValue(index, value)"
+          @update:value="(value: string[]) => updateDiscreteValues(index, value)"
+        />
+        <NDynamicTags
+          v-else-if="node.operator === 'in' && filterInputFor(node.field) !== 'relation'"
+          class="value-input"
+          :value="Array.isArray(node.value) ? node.value.map(value => String(value)) : []"
+          aria-label="筛选值列表"
+          @update:value="(value: string[]) => updateDiscreteValues(index, value)"
+        />
+        <NSelect
+          v-else-if="filterInputFor(node.field) === 'relation'"
+          size="small"
+          class="value-input"
+          filterable
+          remote
+          clearable
+          :multiple="node.operator === 'in'"
+          :loading="relationLoading[node.field] === true"
+          :value="optionValue(node)"
+          :options="relationOptions[node.field] ?? []"
+          aria-label="关联记录筛选值"
+          @search="query => searchRelation(node.field, query)"
+          @focus="searchRelation(node.field, '')"
+          @update:value="value => updateCondition(index, { value })"
         />
         <NSelect
           v-else-if="columnFor(node.field)?.dataType === 'boolean' && node.operator !== 'is_null' && node.operator !== 'is_not_null'"
@@ -193,6 +297,35 @@ function updateInValue(index: number, value: string): void {
           :options="[{ label: '是', value: 'true' }, { label: '否', value: 'false' }]"
           aria-label="布尔筛选值"
           @update:value="value => updateCondition(index, { value: value === 'true' })"
+        />
+        <NSelect
+          v-else-if="filterInputFor(node.field) === 'select' || filterInputFor(node.field) === 'multiSelect'"
+          size="small"
+          class="value-input"
+          :multiple="filterInputFor(node.field) === 'multiSelect'"
+          :value="optionValue(node)"
+          :options="filterOptionsFor(node.field)"
+          aria-label="选项筛选值"
+          @update:value="value => updateCondition(index, { value })"
+        />
+        <NDatePicker
+          v-else-if="filterInputFor(node.field) === 'date' || filterInputFor(node.field) === 'dateTime'"
+          size="small"
+          class="value-input"
+          :type="filterInputFor(node.field) === 'dateTime' ? 'datetime' : 'date'"
+          :formatted-value="typeof node.value === 'string' ? node.value : null"
+          :value-format="filterInputFor(node.field) === 'dateTime' ? 'yyyy-MM-dd HH:mm:ss' : 'yyyy-MM-dd'"
+          aria-label="日期筛选值"
+          @update:formatted-value="value => updateCondition(index, { value })"
+        />
+        <NInputNumber
+          v-else-if="filterInputFor(node.field) === 'number'"
+          size="small"
+          class="value-input"
+          :value="typeof node.value === 'number' ? node.value : null"
+          :show-button="false"
+          aria-label="数值筛选值"
+          @update:value="value => updateCondition(index, { value })"
         />
         <NInput
           v-else-if="node.operator !== 'is_null' && node.operator !== 'is_not_null'"
@@ -220,6 +353,8 @@ function updateInValue(index: number, value: string): void {
           :columns="columns"
           :depth="depth + 1"
           :total-conditions="conditionCount"
+          :relations="relations"
+          :search-relation-targets="searchRelationTargets"
           @update="filters => replace(index, { ...node, filters })"
         />
       </div>

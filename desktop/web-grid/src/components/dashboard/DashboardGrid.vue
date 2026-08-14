@@ -2,7 +2,8 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { GridStack, type GridStackNode } from "gridstack";
 import "gridstack/dist/gridstack.min.css";
-import type { DashboardPanel, PanelPosition } from "@/dashboard";
+import type { DashboardPanel, PanelPosition, ProductPanelType } from "@/dashboard";
+import type { DashboardManifestEntryPayload } from "@/contracts";
 import { adjustPositionWithKeyboard, type LayoutArrow } from "@/dashboard";
 import type { DashboardPanelData } from "@/stores/dashboardStore";
 import DashboardPanelView from "./DashboardPanel.vue";
@@ -12,6 +13,7 @@ const props = defineProps<{
   panels: readonly DashboardPanel[];
   data: Readonly<Record<string, DashboardPanelData>>;
   editing: boolean;
+  manifest: Partial<Record<ProductPanelType, DashboardManifestEntryPayload>>;
 }>();
 const emit = defineEmits<{
   layout: [panelId: string, position: PanelPosition];
@@ -21,6 +23,7 @@ const emit = defineEmits<{
   exportCsv: [panel: DashboardPanel];
   exportPng: [panel: DashboardPanel];
   select: [panel: DashboardPanel, value: unknown];
+  visibility: [panelIds: readonly string[]];
 }>();
 const root = ref<HTMLElement | null>(null);
 const visible = ref(new Set<string>());
@@ -79,6 +82,12 @@ function keyboardLayout(event: KeyboardEvent, panel: DashboardPanel): void {
   emit("layout", panel.id, position);
 }
 
+function minimum(panel: DashboardPanel): { width: number; height: number } {
+  if (panel.productType === "custom" || panel.productType === "unknown") return { width: 1, height: 1 };
+  const value = props.manifest[panel.productType]?.minSize;
+  return { width: value?.width ?? 1, height: value?.height ?? 1 };
+}
+
 function observeVisibility(): void {
   intersectionObserver?.disconnect();
   intersectionObserver = new IntersectionObserver((entries) => {
@@ -90,6 +99,7 @@ function observeVisibility(): void {
       else next.delete(panelId);
     }
     visible.value = next;
+    emit("visibility", [...next]);
   }, { root: root.value?.parentElement, rootMargin: "300px" });
   root.value?.querySelectorAll<HTMLElement>(".grid-stack-item").forEach((item) => intersectionObserver?.observe(item));
 }
@@ -134,6 +144,8 @@ onBeforeUnmount(() => {
       :gs-y="panel.position.y"
       :gs-w="panel.position.width"
       :gs-h="panel.position.height"
+      :gs-min-w="minimum(panel).width"
+      :gs-min-h="minimum(panel).height"
       :gs-no-move="!editing || !panel.editable"
       :gs-no-resize="!editing || !panel.editable"
       :tabindex="editing && panel.editable ? 0 : undefined"

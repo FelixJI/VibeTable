@@ -8,7 +8,6 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 )
@@ -17,20 +16,12 @@ func TestRelationDisplayFieldBlocksTargetLifecycleChange(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	target, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition:       baseTable("tbl_relation_target", "t_relation_target", []schema.FieldDefinition{}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition:       baseTable("tbl_relation_source", "t_relation_source", []schema.FieldDefinition{}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	target := createV2IntegrationTable(
+		t, ctx, app, "Relation targets", "op_relation_target_table",
+	)
+	source := createV2IntegrationTable(
+		t, ctx, app, "Relation sources", "op_relation_source_table",
+	)
 	catalog := fieldchange.NewCatalog(app)
 	store := fieldchange.NewPocketBasePlanStore(app)
 	planner := fieldchange.NewPlanner(
@@ -258,18 +249,8 @@ func TestRelationPairApplyRejectsTargetRevisionChangeWithoutCreatingEitherField(
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	target, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("tbl_pair_target", "t_pair_target", nil), ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("tbl_pair_source", "t_pair_source", nil), ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	target := createV2IntegrationTable(t, ctx, app, "Pair targets", "op_pair_target_table")
+	source := createV2IntegrationTable(t, ctx, app, "Pair sources", "op_pair_source_table")
 	catalog := fieldchange.NewCatalog(app)
 	store := fieldchange.NewPocketBasePlanStore(app)
 	planner := fieldchange.NewPlanner(catalog, catalog, store, nil)
@@ -318,8 +299,11 @@ func TestRelationPairApplyRejectsTargetRevisionChangeWithoutCreatingEitherField(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if integrationFieldByID(reloadedSource, plan.After.Identity.FieldID) != nil {
-		t.Fatalf("failed reciprocal apply left main field behind: %#v", reloadedSource.Fields)
+	if _, exists := reloadedSource.Field(plan.After.Identity.FieldID); exists {
+		t.Fatalf(
+			"failed reciprocal apply left main field behind: %#v",
+			reloadedSource.Snapshot.Fields,
+		)
 	}
 }
 
@@ -327,13 +311,9 @@ func TestSelfRelationBatchKeepsReciprocalStateAndAllowsSelfLinkedDelete(t *testi
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	table, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition:       baseTable("tbl_self_relation", "t_self_relation", nil),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	table := createV2IntegrationTable(
+		t, ctx, app, "Self relations", "op_self_relation_table",
+	)
 	catalog := fieldchange.NewCatalog(app)
 	store := fieldchange.NewPocketBasePlanStore(app)
 	planner := fieldchange.NewPlanner(catalog, catalog, store, nil)

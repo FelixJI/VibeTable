@@ -14,9 +14,10 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Protocol
+
+from pydantic import JsonValue
 
 from backend.contracts.data_profile import collection_profile_from_definition
 from backend.contracts.plugin import (
@@ -36,6 +37,22 @@ _STORAGE_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 class PluginWorkerError(RuntimeError):
     """Safe, diagnostic failure at the local plugin isolation boundary."""
+
+
+class _QueryPage(Protocol):
+    @property
+    def rows(self) -> list[dict[str, JsonValue]]: ...
+
+
+class _PluginDataClient(Protocol):
+    async def query_page(
+        self,
+        *,
+        table_id: str,
+        query: dict[str, JsonValue],
+    ) -> _QueryPage: ...
+
+    async def describe_table(self, table_id: str) -> dict[str, JsonValue]: ...
 
 
 @dataclass(frozen=True)
@@ -60,7 +77,7 @@ class NodePluginWorkerAdapter:
         *,
         store: Any,
         profiles: dict[str, Any],
-        client: Any,
+        client: _PluginDataClient,
         node_executable: str | None = None,
         timeout_seconds: float = 15.0,
         max_concurrency: int = 2,
@@ -366,27 +383,11 @@ class NodePluginWorkerAdapter:
             raise PluginWorkerError("data.read cursor is invalid")
         if offset < 0:
             raise PluginWorkerError("data.read cursor is invalid")
-        legacy_read = getattr(self._client, "read_items_with_fields", None)
-        if callable(legacy_read):
-            items, _meta, _plan = await cast(
-                Callable[
-                    [Any, TableQuery, list[str]],
-                    Awaitable[tuple[list[dict[str, Any]], Any, Any]],
-                ],
-                legacy_read,
-            )(
-                profile,
-                TableQuery(offset=offset, limit=page_size),
-                fields,
-            )
-        else:
-            page = await self._client.query_page(
-                table_id=profile.collection,
-                query=TableQuery(offset=offset, limit=page_size).model_dump(
-                    by_alias=True, mode="json"
-                ),
-            )
-            items = [{field: row.get(field) for field in fields} for row in page.rows]
+        page = await self._client.query_page(
+            table_id=profile.collection,
+            query=TableQuery(offset=offset, limit=page_size).model_dump(by_alias=True, mode="json"),
+        )
+        items = [{field: row.get(field) for field in fields} for row in page.rows]
         value = {
             "items": items,
             "nextCursor": str(offset + len(items)) if len(items) == page_size else None,

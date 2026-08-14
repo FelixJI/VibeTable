@@ -42,7 +42,7 @@ describe("FormulaPreviewCoordinator", () => {
     await vi.advanceTimersByTimeAsync(1);
 
     expect(preview).toHaveBeenCalledTimes(1);
-    expect(sent?.definition.fields?.[0]?.formula?.source).toBe("qty * 3");
+    expect(sent?.field.formula?.source).toBe("qty * 3");
   });
 
   it("aborts the prior request and suppresses a stale response", async () => {
@@ -117,38 +117,42 @@ describe("FormulaPreviewCoordinator", () => {
 
 function request(source: string): FormulaPreviewRequest {
   return {
-    definition: {
-      contractVersion: "2.0",
-      tableId: "tbl_preview",
-      physicalName: "preview",
-      displayName: "Preview",
-      kind: "base",
-      schemaRevision: "schema_0000",
-      archivePolicy: { mode: "none", fieldId: null, archivedValue: null },
-      indexes: [],
-      fields: [{
-        fieldId: "fld_total",
-        physicalName: "total",
-        displayName: "Total",
-        kind: "formula",
-        dataType: "formula",
-        storageType: "number",
-        nullable: false,
-        defaultValue: null,
-        constraints: [],
-        editor: { kind: "formula", config: {} },
-        readOnly: true,
-        formula: {
-          language: "cel-v1",
-          source,
-          resultType: "float",
-          version: 1,
-          status: "ready",
-        },
-        relation: null,
-        lookup: null,
-        attachmentPolicy: null,
-      }],
+    tableId: "tbl_preview",
+    field: {
+      contract: "vibetable.schema.v2",
+      identity: {
+        fieldId: "fld_formula_preview",
+        physicalName: "f_formula_preview",
+        providerFieldId: "pb_formula_preview",
+      },
+      displayName: "Total",
+      help: "",
+      logicalType: "formula",
+      lifecycle: { state: "active", retiredAt: null },
+      value: {
+        required: false,
+        default: { enabled: false, value: null, source: "recommended", defaultsVersion: 1 },
+        presence: { mode: "computed" },
+      },
+      constraints: {
+        unique: { enabled: false, blankPolicy: "ignoreMissing" },
+        range: { min: null, max: null },
+        length: { min: null, max: null },
+        pattern: { enabled: false, value: "" },
+        domains: { only: [], except: [] },
+        selection: { min: 0, max: null },
+      },
+      storage: {
+        kind: "computed",
+        options: { onlyInt: false, maxSize: 0, convertURLs: false, presentable: false },
+      },
+      display: {
+        kind: "readonly", preset: "number", displayScale: 2, scaleMode: "max",
+        trimTrailingZeros: true, useGrouping: true, currency: "",
+        percentStorage: "ratio", unit: null, precision: "exact", timezone: "UTC",
+        mode: "default", trueLabel: "true", falseLabel: "false",
+      },
+      formula: { language: "cel-v1", source, resultType: "number" },
     },
     row: { qty: 2 },
     changedFieldIds: ["fld_qty"],

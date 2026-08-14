@@ -44,8 +44,8 @@ describe("workspaceService display names", () => {
     expect(store.displayNames.vt_t_01).toBe("客户清单");
     expect(store.collections[0]).toMatchObject({
       collection: "vt_t_01",
-      displayName: "客户清单",
     });
+    expect(store.collections[0]).not.toHaveProperty("displayName");
   });
 
   it("replaces labels on collectionsChanged", () => {
@@ -69,6 +69,7 @@ describe("workspaceService display names", () => {
     emit("database.opened", {
       tables: ["orders"],
       views: [],
+      displayNames: { orders: "Orders" },
       projectKey: "local:workspace-a",
       projectRevision: "workspace-r7",
       currentUser: { id: "user-7", displayName: "Alice" },
@@ -94,6 +95,7 @@ describe("workspaceService display names", () => {
 
     emit("database.collectionsChanged", {
       tables: ["orders"],
+      displayNames: { orders: "Orders" },
       projectRevision: "workspace-r8",
     });
 

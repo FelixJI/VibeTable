@@ -86,7 +86,6 @@ describe("tableService realtime product wiring", () => {
       mode: "remote",
       rows: [{ rowKey: 1 }],
       totalRows: 25_001,
-      loadedRows: 1,
     });
 
     expect(table.loading).toBe(false);
@@ -95,6 +94,109 @@ describe("tableService realtime product wiring", () => {
       "events.reconcile",
       expect.objectContaining({ dataRevision: "data_0012" }),
     ));
+    service.dispose();
+  });
+
+  it("requests and appends the next opaque cursor window", () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const table = useTableStore();
+    const snapshot = querySnapshot(12);
+    table.setDatasetReady({
+      ...dataset(12),
+      rows: [{ rowKey: 1 }],
+      totalRows: 50_000,
+      mode: "remote",
+      querySnapshot: snapshot,
+      nextCursor: "opaque-window-2",
+      hasMore: true,
+    });
+    const service = useTableService();
+    service.init();
+
+    service.loadNextWindow();
+    service.loadNextWindow();
+    expect(harness.notify).toHaveBeenCalledTimes(1);
+    expect(harness.notify).toHaveBeenCalledWith(
+      "table.cursorRequested",
+      { cursor: "opaque-window-2" },
+    );
+
+    harness.emit("table.windowLoaded", {
+      ...dataset(12),
+      rows: [{ rowKey: 2 }],
+      totalRows: 50_000,
+      mode: "remote",
+      querySnapshot: snapshot,
+      nextCursor: null,
+      hasMore: false,
+    });
+    expect(table.allRows.map(row => row.rowKey)).toEqual([1, 2]);
+    expect(table.windowLoading).toBe(false);
+    expect(table.hasMoreWindows).toBe(false);
+    service.dispose();
+  });
+
+  it("unlocks cursor loading after a classified cursor failure", () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    const table = useTableStore();
+    table.setDatasetReady({
+      ...dataset(12),
+      querySnapshot: querySnapshot(12),
+      nextCursor: "retry-cursor",
+      hasMore: true,
+    });
+    const service = useTableService();
+    service.init();
+
+    service.loadNextWindow();
+    expect(table.windowLoading).toBe(true);
+    harness.emit("operation.failed", {
+      message: "cursor expired",
+      operation: "query.cursor",
+    });
+    expect(table.windowLoading).toBe(false);
+    service.loadNextWindow();
+    expect(harness.notify).toHaveBeenCalledTimes(2);
+    service.dispose();
+  });
+
+  it("reopens the current canonical query after query.cursor_stale", () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const table = useTableStore();
+    table.setDatasetReady({
+      ...dataset(12),
+      rows: [{ rowKey: 1 }],
+      querySnapshot: querySnapshot(12),
+      nextCursor: "stale-cursor",
+      hasMore: true,
+    });
+    const service = useTableService();
+    service.init();
+    service.loadNextWindow();
+    harness.notify.mockClear();
+
+    harness.emit("operation.failed", {
+      message: "cursor revision changed",
+      operation: "query.cursor",
+      code: "query.cursor_stale",
+    });
+
+    expect(table.loading).toBe(true);
+    expect(table.allRows).toEqual([{ rowKey: 1 }]);
+    expect(harness.notify).toHaveBeenCalledWith("table.queryRequested", {
+      table: "orders",
+      query: expect.objectContaining({
+        filters: [],
+        sorts: [],
+        offset: 0,
+        limit: 500,
+      }),
+    });
     service.dispose();
   });
 
@@ -268,13 +370,24 @@ function dataset(revision: number, table = "orders"): DatasetReadyPayload {
     offset: 0,
     limit: 100,
     totalRows: 0,
-    mode: "client",
-    loadedRows: 0,
+    mode: "remote",
     revision: {
       databaseSessionId: "pocketbase",
       schemaRevision: "schema_0007",
       dataRevision: revision,
     },
+  };
+}
+
+function querySnapshot(dataRevision: number) {
+  return {
+    snapshotId: `snapshot-${dataRevision}`,
+    digest: `sha256:${"a".repeat(64)}`,
+    databaseId: "database-1",
+    table: "orders",
+    schemaRevision: "schema_0007",
+    dataRevision,
+    normalizedQuery: {},
   };
 }
 

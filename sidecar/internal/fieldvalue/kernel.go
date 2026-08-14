@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	legacyschema "github.com/vibetable/vibetable/sidecar/internal/schema"
+	"github.com/vibetable/vibetable/sidecar/internal/jsonschemavalidation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
@@ -417,6 +417,9 @@ func normalizeSelect(
 	value any,
 	multiple bool,
 ) (any, error) {
+	if definition.Select == nil {
+		return nil, invalid("value", "select definition is incomplete")
+	}
 	values := []string{}
 	if multiple {
 		var ok bool
@@ -460,6 +463,9 @@ func normalizeSelect(
 }
 
 func normalizeRelation(definition v2.FieldDefinition, value any) (any, error) {
+	if definition.Relation == nil {
+		return nil, invalid("value", "relation definition is incomplete")
+	}
 	if definition.Relation.Cardinality == "one" {
 		recordID, ok := value.(string)
 		if !ok || recordID == "" {
@@ -482,6 +488,9 @@ func normalizeRelation(definition v2.FieldDefinition, value any) (any, error) {
 }
 
 func normalizeFiles(definition v2.FieldDefinition, value any) (any, error) {
+	if definition.File == nil {
+		return nil, invalid("value", "file definition is incomplete")
+	}
 	values, ok := stringSlice(value)
 	if !ok {
 		return nil, invalid("value", "file value must be a stored-name array")
@@ -509,6 +518,9 @@ func normalizeGeoPoint(value any) (map[string]any, error) {
 }
 
 func normalizeJSON(definition v2.FieldDefinition, value any) (any, error) {
+	if definition.JSON == nil {
+		return nil, invalid("value", "JSON definition is incomplete")
+	}
 	raw, err := json.Marshal(value)
 	if err != nil || len(raw) > definition.JSON.MaxSize {
 		return nil, invalid("value", "JSON value is invalid or exceeds maxSize")
@@ -541,14 +553,7 @@ func normalizeJSON(definition v2.FieldDefinition, value any) (any, error) {
 		return nil, invalid("json.rootType", "unknown JSON root type")
 	}
 	if len(definition.JSON.Schema) != 0 {
-		field := legacyschema.FieldDefinition{
-			DataType: legacyschema.DataTypeJSON,
-			Constraints: []legacyschema.FieldConstraint{{
-				Kind:   legacyschema.ConstraintJSONSchema,
-				Schema: definition.JSON.Schema,
-			}},
-		}
-		if err := legacyschema.ValidateFieldValue(field, value); err != nil {
+		if err := jsonschemavalidation.ValidateValue(definition.JSON.Schema, value); err != nil {
 			return nil, invalid("value", "JSON value does not satisfy schema")
 		}
 	}

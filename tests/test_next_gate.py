@@ -50,12 +50,13 @@ def test_console_output_is_safe_on_legacy_windows_code_pages() -> None:
 
 def test_ci_gate_runs_go_and_real_sidecar_before_desktop_stacks() -> None:
     removed_provider = "".join(["di", "rectus"])
-    assert next_gate.STAGES[:8] == (
+    assert next_gate.STAGES[:9] == (
         "version",
         "package",
         "go-fmt",
         "go-vet",
         "go-test",
+        "go-coverage",
         "go-race",
         "go-build",
         "sidecar-smoke",
@@ -105,6 +106,16 @@ def test_go_commands_target_sidecar_module() -> None:
     assert command[:3] == [next_gate._resolve("go"), "test", "-race"]
     assert "isolated batches" in command[-1]
     assert Path(cwd) == next_gate.SIDECAR_DIR
+
+    command, cwd = next_gate.stage_command("go-coverage")
+    assert command == [
+        next_gate.sys.executable,
+        str(next_gate.REPO_ROOT / "qa" / "go_coverage.py"),
+        "--go",
+        next_gate._resolve("go"),
+    ]
+    assert Path(cwd) == next_gate.REPO_ROOT
+    assert "go-coverage" in next_gate.LANE_STAGES["core"]
 
     command, cwd = next_gate.stage_command("sidecar-smoke")
     assert command[0] == next_gate.sys.executable
@@ -270,6 +281,21 @@ def test_product_e2e_deepest_plugin_cache_path_stays_below_windows_max_path() ->
 
     assert evidence_root.name == "p"
     assert len(str(deepest_path)) < 260
+
+
+def test_workbench_qualification_stage_freezes_representative_scale_and_report() -> None:
+    command, cwd = next_gate.stage_command("workbench-qualification")
+
+    assert command[:3] == [next_gate._resolve("go"), "run", "./cmd/workbench-qualification"]
+    assert command[command.index("--profile") + 1] == "release"
+    assert command[command.index("--records") + 1] == "100000"
+    assert command[command.index("--files") + 1] == "10000"
+    assert command[command.index("--logical-bytes") + 1] == str(20 << 30)
+    assert Path(command[command.index("--report") + 1]) == (
+        next_gate.REPO_ROOT / "build" / "qa" / "workbench-qualification.json"
+    )
+    assert Path(cwd) == next_gate.SIDECAR_DIR
+    assert "workbench-qualification" in next_gate.LANE_STAGES["resilience"]
 
 
 def test_packaged_recovery_tools_are_injected_into_go_interoperability_stages(
@@ -1231,19 +1257,91 @@ def test_dotnet_gate_keeps_project_coverage_ratchets_enabled() -> None:
     assert Path(cwd) == next_gate.REPO_ROOT
 
     expected_thresholds = {
-        "VibeTable.Desktop.Tests": "45",
-        "VibeTable.Infrastructure.Tests": "65",
-        "VibeTable.Workspace.Tests": "80",
+        "VibeTableDesktopLineCoverageMinimum": 51,
+        "VibeTableDesktopBranchCoverageMinimum": 43,
+        "VibeTablePreviewHostLineCoverageMinimum": 41,
+        "VibeTablePreviewHostBranchCoverageMinimum": 50,
     }
-    for project_name, threshold in expected_thresholds.items():
+    assert next_gate.dotnet_coverage_properties() == expected_thresholds
+    for property_name, threshold in expected_thresholds.items():
+        assert f"/p:{property_name}={threshold}" in command
+
+    measured_baselines = {
+        "VibeTableDesktopLineCoverageMinimum": 52.54,
+        "VibeTableDesktopBranchCoverageMinimum": 44.88,
+        "VibeTablePreviewHostLineCoverageMinimum": 42.13,
+        "VibeTablePreviewHostBranchCoverageMinimum": 51.78,
+    }
+    for property_name, measured in measured_baselines.items():
+        margin = measured - expected_thresholds[property_name]
+        assert 0 < margin <= 2
+
+    expected_projects = {
+        "VibeTable.Desktop.Tests": (
+            "$(VibeTableDesktopLineCoverageMinimum),$(VibeTableDesktopBranchCoverageMinimum)",
+            "ValidateDesktopCoverageThresholds",
+        ),
+        "VibeTable.PreviewHost.Tests": (
+            "$(VibeTablePreviewHostLineCoverageMinimum),$(VibeTablePreviewHostBranchCoverageMinimum)",
+            "ValidatePreviewHostCoverageThresholds",
+        ),
+    }
+    for project_name, (threshold, validation_target) in expected_projects.items():
         project = (
             next_gate.REPO_ROOT / "desktop" / "tests" / project_name / f"{project_name}.csproj"
         )
+        root = ET.parse(project).getroot()
         properties = {
-            child.tag: child.text
-            for group in ET.parse(project).getroot().findall("PropertyGroup")
-            for child in group
+            child.tag: child.text for group in root.findall("PropertyGroup") for child in group
         }
         assert properties["Threshold"] == threshold
-        assert properties["ThresholdType"] == "line"
+        assert properties["ThresholdType"] == "line,branch"
         assert properties["ThresholdStat"] == "total"
+        target = root.find(f"Target[@Name='{validation_target}']")
+        assert target is not None
+        assert target.find("Error") is not None
+
+
+@pytest.mark.parametrize(
+    ("failed_property", "passing_property", "measured"),
+    [
+        (
+            "VibeTableDesktopLineCoverageMinimum",
+            "VibeTablePreviewHostLineCoverageMinimum",
+            50.99,
+        ),
+        (
+            "VibeTablePreviewHostBranchCoverageMinimum",
+            "VibeTableDesktopBranchCoverageMinimum",
+            49.99,
+        ),
+    ],
+)
+def test_dotnet_coverage_projects_are_independent_fail_closed_ratchets(
+    tmp_path: Path,
+    failed_property: str,
+    passing_property: str,
+    measured: float,
+) -> None:
+    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
+    config = tmp_path / "project.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+    properties = next_gate.dotnet_coverage_properties(config)
+    assert measured < properties[failed_property]
+    assert measured != properties[passing_property]
+    assert (
+        failed_property.split("CoverageMinimum", maxsplit=1)[0]
+        != passing_property.split("CoverageMinimum", maxsplit=1)[0]
+    )
+
+
+def test_dotnet_coverage_config_rejects_missing_metric_instead_of_disabling_gate(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
+    del payload["quality"]["dotnet_coverage"]["projects"]["VibeTable.Desktop"]["minimum"]["branch"]
+    config = tmp_path / "project.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"must declare line and branch for VibeTable\.Desktop"):
+        next_gate.dotnet_coverage_properties(config)

@@ -100,4 +100,106 @@ describe("Schema v2 contracts", () => {
       ).toThrow();
     }
   });
+
+  it("accepts every product logical-type settings family as a closed v2 definition", () => {
+    const cases: Array<[string, string, Record<string, unknown>]> = [
+      ["select", "select", { options: [{
+        optionId: "opt_open", label: "Open", color: "", order: 0, state: "active",
+      }] }],
+      ["multiSelect", "select", { options: [{
+        optionId: "opt_retired", label: "Retired", color: "gray", order: 1, state: "retired",
+      }] }],
+      ["relation", "relation", {
+        targetTableId: "tbl_users", cardinality: "many", deletePolicy: "restrict",
+        displayFieldId: "", pairId: "pair_1", reciprocalFieldId: "fld_back",
+      }],
+      ["file", "file", {
+        maxFiles: 3, maxBytesPerFile: 1024, allowedMimeTypes: ["text/plain"],
+        thumbs: ["100x100"], protected: true,
+      }],
+      ["json", "json", { rootType: "object", maxSize: 2048, schema: { type: "object" } }],
+      ["autoDate", "autoDate", { role: "updatedAt" }],
+      ["formula", "formula", { language: "cel-v1", source: "1 + 1", resultType: "number" }],
+      ["lookup", "lookup", {
+        path: [{ relationFieldId: "fld_customer" }, { relationFieldId: "fld_region" }],
+        targetFieldId: "fld_name",
+      }],
+    ];
+
+    for (const [logicalType, settingsKey, settings] of cases) {
+      const field = structuredClone(fixture()) as Record<string, any>;
+      field.logicalType = logicalType;
+      field[settingsKey] = settings;
+      expect(parseFieldDefinitionV2(field).logicalType).toBe(logicalType);
+    }
+  });
+
+  it("parses rich plans, receipts, migration diagnostics, and recycle-bin definitions", () => {
+    const definition = fixture();
+    const plan = structuredClone(fixture("field-change-plan.json")) as Record<string, any>;
+    plan.before = definition;
+    plan.after = definition;
+    plan.classes = ["display", "metadata", "constraint", "schema", "migration", "danger"];
+    plan.intent.relationPair = {
+      reciprocalDisplayName: "订单", reciprocalCardinality: "one",
+      sourceDisplayFieldId: "fld_name",
+    };
+    plan.impact.failures = [{ recordId: "rec_1", reason: "invalid" }];
+    plan.impact.dependencies = [{ kind: "view", id: "view_1", name: "Main" }];
+    plan.steps = [{ kind: "copy", details: { batchSize: 100 } }];
+    plan.warnings = [{ code: "warning", path: "", message: "review", details: { count: 1 } }];
+    plan.errors = [{ code: "error", path: "$.value", message: "invalid", details: {} }];
+    plan.relatedChanges = [{
+      tableId: "tbl_users", fieldId: "fld_back", before: definition, after: definition,
+      expectedSchemaRevision: "schema_7",
+    }];
+    expect(parseFieldChangePlanV2(plan).relatedChanges).toHaveLength(1);
+
+    const receipt = structuredClone(fixture("apply-receipt.json")) as Record<string, any>;
+    receipt.definition = definition;
+    receipt.related = [{
+      tableId: "tbl_users", fieldId: "fld_back", schemaRevision: "schema_8",
+      definition,
+    }];
+    expect(parseFieldApplyReceiptV2(receipt).related).toHaveLength(1);
+
+    const status = structuredClone(fixture("migration-status.json")) as Record<string, any>;
+    status.phase = "failed";
+    status.error = { code: "copy.failed", path: "", message: "offline", details: {} };
+    expect(parseFieldMigrationStatusV2(status).error?.code).toBe("copy.failed");
+
+    const describe = structuredClone(fixture("field-settings-describe.json")) as Record<string, any>;
+    describe.definition = null;
+    expect(parseFieldSettingsDescribeResultV2(describe).definition).toBeNull();
+    expect(parseFieldRecycleBinResultV2({
+      contract: "vibetable.schema.v2", fields: [definition],
+    }).fields).toHaveLength(1);
+  });
+
+  it("rejects malformed primitive, nullable, enum, and optional-spec boundaries", () => {
+    const mutations: Array<(field: Record<string, any>) => void> = [
+      field => { field.contract = "v1"; },
+      field => { field.logicalType = "password"; },
+      field => { field.displayName = 7; },
+      field => { field.lifecycle.retiredAt = 7; },
+      field => { field.value.required = "yes"; },
+      field => { field.value.default.defaultsVersion = -1; },
+      field => { field.constraints.range.min = Number.POSITIVE_INFINITY; },
+      field => { field.constraints.range.max = {}; },
+      field => { field.constraints.length.min = 1.5; },
+      field => { field.constraints.domains.only = [7]; },
+      field => { field.display.indent = 3; },
+      field => { field.select = { options: {} }; field.logicalType = "select"; },
+      field => { field.lookup = { path: [], targetFieldId: "fld_1" }; field.logicalType = "lookup"; },
+      field => { field.lookup = { path: Array.from({ length: 9 }, () => ({ relationFieldId: "fld_1" })), targetFieldId: "fld_1" }; field.logicalType = "lookup"; },
+      field => { field.json = { rootType: "binary", maxSize: 1, schema: {} }; field.logicalType = "json"; },
+    ];
+    for (const mutate of mutations) {
+      const field = structuredClone(fixture()) as Record<string, any>;
+      mutate(field);
+      expect(() => parseFieldDefinitionV2(field)).toThrow("field.contract.invalid");
+    }
+    expect(() => parseFieldDefinitionV2(null)).toThrow("expected object");
+    expect(() => parseFieldDefinitionV2([])).toThrow("expected object");
+  });
 });

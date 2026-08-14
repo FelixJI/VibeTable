@@ -21,6 +21,7 @@ import {
 import { ArchiveRestore, Plus, RefreshCw, Trash2 } from "lucide-vue-next";
 import type {
   FieldDraftV2,
+  JsonValueV2,
   LogicalTypeV2,
   SelectOptionV2,
 } from "@/contracts";
@@ -139,7 +140,7 @@ const lookupRelationOptions = computed(() => store.lookupSchemas.map(schema => s
   .filter(column => column.kind === "relation" && column.fieldId && column.relationId)
   .flatMap(column => {
     const relation = schema.normalizedRelations.find(item => item.relationId === column.relationId);
-    if (!relation?.relatedCollection || relation.kind === "m2a" || relation.junction) return [];
+    if (!relation?.relatedCollection) return [];
     return [{
       label: column.title,
       value: column.fieldId!,
@@ -169,8 +170,7 @@ const formulaRelations = computed(() => (store.formulaSourceSchema?.columns ?? [
       item => item.relationId === column.relationId,
     );
     const target = store.formulaTargetSchemas[column.fieldId!];
-    if (!descriptor?.relatedCollection || descriptor.kind === "m2a"
-      || descriptor.junction || !target) return [];
+    if (!descriptor?.relatedCollection || !target) return [];
     return [{
       label: column.title,
       canonicalName: column.name,
@@ -298,11 +298,12 @@ function patchJSONText(kind: "default" | "schema", text: string): void {
   else jsonSchemaText.value = text;
   try {
     const parsed = JSON.parse(text) as unknown;
+    if (!isJsonValue(parsed)) throw new Error("值必须是有限 JSON 值");
     if (kind === "schema") {
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      if (!isJsonObject(parsed)) {
         throw new Error("JSON Schema 必须是对象");
       }
-      patchJson({ schema: parsed as Readonly<Record<string, unknown>> });
+      patchJson({ schema: parsed });
     } else {
       patchDefault({ value: parsed });
     }
@@ -310,6 +311,20 @@ function patchJSONText(kind: "default" | "schema", text: string): void {
   } catch (error) {
     jsonEditorError.value = error instanceof Error ? error.message : String(error);
   }
+}
+
+function isJsonValue(value: unknown): value is JsonValueV2 {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  if (typeof value !== "object") return false;
+  return Object.values(value).every(isJsonValue);
+}
+
+function isJsonObject(
+  value: JsonValueV2,
+): value is Readonly<Record<string, JsonValueV2>> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function changeType(value: LogicalTypeV2): void {

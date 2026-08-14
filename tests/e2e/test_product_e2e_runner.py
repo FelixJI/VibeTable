@@ -11,25 +11,72 @@ import pytest
 from tests.e2e import product_e2e_runner as runner
 
 
-def test_manifest_has_exactly_sixteen_unique_product_scenarios() -> None:
+def test_manifest_accepts_capability_tagged_scenarios_without_a_fixed_count(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "scenarios.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "01-query-window",
+                    "title": "窗口查询",
+                    "requirement": "只加载可见窗口。",
+                    "capabilities": ["view-query.window", "release.smoke"],
+                },
+                {
+                    "id": "02-search-rebuild",
+                    "title": "搜索重建",
+                    "requirement": "索引重建时工作区仍可用。",
+                    "capabilities": ["workspace-search.rebuild"],
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    scenarios = runner.load_scenarios(manifest)
+
+    assert [item.id for item in scenarios] == ["01-query-window", "02-search-rebuild"]
+    assert scenarios[0].capabilities == ("view-query.window", "release.smoke")
+
+
+def test_manifest_has_unique_capability_tagged_product_scenarios() -> None:
     scenarios = runner.load_scenarios()
 
-    assert len(scenarios) == 16
-    assert [item.id[:2] for item in scenarios] == [f"{index:02d}" for index in range(1, 17)]
-    assert all(item.title and item.requirement for item in scenarios)
+    assert scenarios
+    assert len({item.id for item in scenarios}) == len(scenarios)
+    assert all(item.title and item.requirement and item.capabilities for item in scenarios)
     by_id = {item.id: item.requirement for item in scenarios}
     assert "规范化深比较" in by_id["04-json-round-trip"]
     assert "SHA-256" in by_id["07-attachment-history"]
     assert "幂等键" in by_id["09-atomic-import-scale"]
     assert "BFF" in by_id["10-sse-reconnect"]
     assert "session epoch" in by_id["10-sse-reconnect"]
-    assert "审计快照精确一致" in by_id["12-backup-consistency"]
+    assert "外部 ledger 链" in by_id["12-backup-consistency"]
+    assert "搜索 generation" in by_id["12-backup-consistency"]
     assert "repository.verify" in by_id["13-protection-policy"]
     assert "retention.apply" in by_id["13-protection-policy"]
     assert "真实 TXT 历史版本" in by_id["14-document-diff"]
     assert "工作区切换" in by_id["15-workspace-snapshot-package"]
     assert "损坏快照包" in by_id["15-workspace-snapshot-package"]
     assert "Dashboard" in by_id["16-dashboard-lifecycle"]
+    assert "RecordDocumentLink" in by_id["18-workspace-search"]
+    assert "Markdown/JSON" in by_id["18-workspace-search"]
+
+
+def test_capability_selection_drives_the_release_smoke_subset() -> None:
+    selected = runner.select_scenarios(
+        runner.load_scenarios(),
+        capabilities=("release.smoke",),
+    )
+
+    assert [item.id for item in selected] == [
+        "01-offline-first-start",
+        "02-all-field-schema",
+        "08-stale-conflict",
+        "16-dashboard-lifecycle",
+    ]
 
 
 def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
@@ -38,6 +85,10 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
         source.index("async function scenario15") : source.index("async function scenario16")
     ]
     dashboard = source[source.index("async function scenario16") : source.index("const scenarios")]
+    interface = source[
+        source.index("async function scenario17") : source.index("async function scenario18")
+    ]
+    search = source[source.index("async function scenario18") : source.index("const scenarios")]
 
     assert 'getByTestId("workspace-create")' in workspace
     assert 'getByTestId("snapshot-create")' in workspace
@@ -48,6 +99,68 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert 'getByTestId("dashboard-create")' in dashboard
     assert 'getByTestId("dashboard-save")' in dashboard
     assert 'getByTestId("dashboard-refresh")' in dashboard
+    assert 'getByTestId("nav-interfaces")' in interface
+    assert 'getByTestId("interface-add-text")' in interface
+    assert 'getByTestId("interface-save")' in interface
+    assert 'getByTestId("interface-run")' in interface
+    assert 'getByTestId("nav-search")' in search
+    assert 'getByTestId("workspace-search-rebuild")' in search
+    assert 'getByTestId("workspace-search-submit")' in source
+
+
+def test_content_search_and_restore_scenarios_cover_m6_m7_m8_product_boundaries() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    restore = source[
+        source.index("async function scenario12") : source.index("async function scenario13")
+    ]
+    search = source[source.index("async function scenario18") : source.index("const scenarios")]
+
+    assert 'getByTestId("content-profile-save")' in search
+    assert 'getByTestId("content-record-save")' in search
+    assert 'getByTestId("content-link-create")' in search
+    assert 'getByTestId("content-link-repair")' in search
+    assert 'getByTestId("document-unlink")' in search
+    assert 'getByTestId("document-unlink-confirm")' in search
+    assert '"fileHistory.queryDocuments"' in search
+    assert '{ field: "extension", operator: "eq", value: "md" }' in search
+    assert '{ field: "extension", operator: "eq", value: ".md" }' not in search
+    assert (
+        'requestSidecarKill(runtime, "verify ContentProfile and repaired link survive restart")'
+        in search
+    )
+    assert "submitWorkspaceSearch(page, { keyboard: true })" in search
+    assert 'kinds.includes("attachment")' in search
+    assert 'andKinds.every((kind) => ["record", "attachment"].includes(kind))' in search
+    assert 'andKinds.includes("record")' in search
+    assert 'andKinds.includes("attachment")' in search
+    assert '!andKinds.includes("file")' in search
+    assert 'andKinds.every((kind) => kind === "record")' not in search
+    assert 'const staleBefore = await rawBridgeRequest(page, "query.page"' in search
+    assert "expectedDigest: staleBeforeRow.__vibetableDigest" in search
+    assert "contentSaved.payload?.rows?.[0]?.__vibetableDigest" not in search
+    assert 'staleMutation.type !== "mutation.apply"' in search
+    assert 'staleMutation.payload?.status !== "applied"' in search
+    assert "staleMutation.payload?.error?.code" in search
+    assert "staleAfterRevision > staleBeforeRevision" in search
+    assert "staleMessageWasVisible" in search
+    assert 'page.getByTestId("workspace-search-input").locator("input")' in search
+    assert "await activeSearchInput.isVisible()" in search
+    assert "activeSearchInput.evaluate((element) => element === document.activeElement)" in search
+    assert "staleRecord.evaluate((element) => element === document.activeElement)" not in search
+    assert '"workspaceSearch.status"' in restore
+    assert 'getByTestId("workspace-search-rebuild")' in restore
+    assert "restoredSearchStatus.result?.generation" in restore
+    assert "snapshotStorageProof.auditLedger.anchorHash" in restore
+
+
+def test_content_search_runner_provisions_real_markdown_json_and_attachment_files() -> None:
+    source = Path(runner.__file__).read_text(encoding="utf-8")
+
+    assert '"18-workspace-search": "e2e-search-attachment"' in source
+    assert 'content_markdown_source = controls_dir / "content-reference-a.md"' in source
+    assert 'content_json_source = controls_dir / "content-reference-b.json"' in source
+    assert "Marigold appears in visible Markdown text" in source
+    assert "Cobalt appears in JSON content" in source
 
 
 def test_lifecycle_harness_requires_a_normal_close_and_empty_process_evidence() -> None:
@@ -379,18 +492,26 @@ def test_run_scenario_fails_closed_when_lifecycle_observation_raises(
 
 
 def test_normal_close_control_is_limited_to_the_test_mode_host_boundary() -> None:
-    source = (
+    composition = (
         runner.ROOT / "desktop" / "src" / "VibeTable.Desktop" / "MainWindow.Product.cs"
     ).read_text(encoding="utf-8")
+    controller = (
+        runner.ROOT
+        / "desktop"
+        / "src"
+        / "VibeTable.Desktop"
+        / "Services"
+        / "TestModeHostController.cs"
+    ).read_text(encoding="utf-8")
 
-    assert "_e2eControlsDir = startup.TestMode" in source
-    assert '"host-normal-close.request"' in source
-    assert "CheckTestModeHostControls" in source
-    assert "Dispatcher.HasShutdownStarted" in source
-    assert "Dispatcher.HasShutdownFinished" in source
-    assert 'TryConsumeTestModeControl("host-normal-close.request")' in source
-    assert 'DispatchTestModeControl("normal close", RequestExit)' in source
-    assert 'request.Type == "host.normalClose"' not in source
+    assert "_e2eControlsDir = startup.TestMode" in composition
+    assert "new TestModeHostController(" in composition
+    assert "Dispatcher.HasShutdownStarted" in composition
+    assert "Dispatcher.HasShutdownFinished" in composition
+    assert '"host-normal-close.request"' in controller
+    assert 'TryConsume("host-normal-close.request")' in controller
+    assert 'request.Type == "host.normalClose"' not in composition
+    assert 'request.Type == "host.normalClose"' not in controller
 
 
 def test_packaged_host_lifecycle_uses_fixed_test_mode_tray_controls() -> None:
@@ -476,9 +597,9 @@ def test_aggregate_reports_failures_without_skips(tmp_path: Path) -> None:
     )
 
     assert report["summary"] == {
-        "total": 16,
+        "total": len(scenarios),
         "passed": 0,
-        "failed": 16,
+        "failed": len(scenarios),
         "skipped": 0,
     }
     assert report["status"] == "failed"
@@ -908,9 +1029,9 @@ def test_storage_proof_reads_all_transactional_surfaces_read_only(
             INSERT INTO vibetable_tables(table_id, physical_name)
             VALUES ('tbl_e2e_atomic_import', 'e2e_atomic_import');
             INSERT INTO vibetable_idempotency_keys(key)
-            VALUES ('metadata:identifier:create:test');
+            VALUES ('metadata:settings:update:test');
             INSERT INTO vibetable_outbox(event_id, payload_json)
-            VALUES ('metadata-event', '{"tableId":"metadata:identifier_mappings"}');
+            VALUES ('metadata-event', '{"tableId":"metadata:shared_settings"}');
             """
         )
         connection.commit()

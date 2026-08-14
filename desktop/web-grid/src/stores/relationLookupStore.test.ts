@@ -53,13 +53,45 @@ describe("relationLookupStore", () => {
         dataRevision: 1,
         normalizedQuery: {},
       },
-    })).toBe(false);
+    }, 1)).toBe(false);
+  });
+
+  it("rejects Lookup rows from the revision before the current local mutation", () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("orders");
+    store.acceptContext(generation, schema("orders"), [], capabilities);
+
+    expect(store.acceptLookup({
+      contract: "vibetable.lookup-query.v1",
+      collection: "orders",
+      requestGeneration: generation,
+      schemaRevision: "s1",
+      permissionRevision: "p1",
+      lookupRevision: "l1",
+      columns: [],
+      rows: [{ rowKey: "order-1", price: 10 }],
+      groups: [],
+      offset: 0,
+      limit: 100,
+      filteredRows: 1,
+      totalRows: 1,
+      snapshot: {
+        snapshotId: "snapshot-1",
+        digest: `sha256:${"a".repeat(64)}`,
+        databaseId: "database-1",
+        table: "orders",
+        schemaRevision: "s1",
+        dataRevision: 1,
+        normalizedQuery: {},
+      },
+    }, 2)).toBe(false);
+    expect(store.lookupResult).toBeNull();
   });
 
   it("stages a multi-value selection without mutating the original", () => {
     const store = useRelationLookupStore();
-    const first = { collection: "tags", itemId: "1", label: "A", junctionValues: {} };
-    const second = { collection: "tags", itemId: "2", label: "B", junctionValues: {} };
+    const first = { collection: "tags", itemId: "1", label: "A" };
+    const second = { collection: "tags", itemId: "2", label: "B" };
     store.openDraft("articles.tags", "article-1", [first]);
     store.toggleDraftTarget(second);
     expect(store.draft?.original).toEqual([first]);
@@ -69,9 +101,9 @@ describe("relationLookupStore", () => {
   it("matches a searched target to an existing junction row by logical target", () => {
     const store = useRelationLookupStore();
     store.openDraft("articles.tags", "article-1", [{
-      collection: "tags", itemId: "1", label: "A", junctionId: "junction-9", junctionValues: {},
+      collection: "tags", itemId: "1", label: "A",
     }]);
-    store.toggleDraftTarget({ collection: "tags", itemId: "1", label: "A", junctionValues: {} });
+    store.toggleDraftTarget({ collection: "tags", itemId: "1", label: "A" });
     expect(store.draft?.selected).toEqual([]);
   });
 });

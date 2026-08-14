@@ -163,7 +163,7 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
-    public void Route_RemovedIdentifierMutationTypes_AreRejected()
+    public void Route_RemovedIdentifierManagementTypes_AreRejected()
     {
         var dispatched = new List<RoutedWebRequest>();
         var router = new WebMessageRouter(req => dispatched.Add(req))
@@ -176,6 +176,9 @@ public sealed class WebMessageRouterTests
             "identifierMappings.importRequested",
             "identifierMappings.deleteRequested",
             "identifierMappings.purgeRequested",
+            "identifierMappings.listRequested",
+            "identifierMappings.updateAliasesRequested",
+            "identifierMappings.reconcileRequested",
         })
         {
             HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new
@@ -191,7 +194,7 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
-    public void Route_AllFourWhitelistedTypes_AreAccepted()
+    public void Route_CoreWorkspaceTypes_AreAccepted()
     {
         var dispatched = new List<RoutedWebRequest>();
         var router = new WebMessageRouter(req => dispatched.Add(req))
@@ -203,8 +206,7 @@ public sealed class WebMessageRouterTests
         {
             ("app.ready", """{}"""),
             ("database.openRequested", """{"path":"C:\\x.db"}"""),
-            ("table.selected", """{"table":"t"}"""),
-            ("table.pageRequested", """{"table":"t","offset":0,"limit":50}""")
+            ("table.selected", """{"table":"t"}""")
         })
         {
             var json = $"{{\"type\":\"{type}\",\"requestId\":\"id-{type}\",\"payload\":{payload}}}";
@@ -212,7 +214,7 @@ public sealed class WebMessageRouterTests
             Assert.IsNull(reply, $"{type} should be accepted");
         }
 
-        Assert.AreEqual(4, dispatched.Count);
+        Assert.AreEqual(3, dispatched.Count);
     }
 
     [TestMethod]
@@ -498,16 +500,6 @@ public sealed class WebMessageRouterTests
 
         Assert.AreEqual("drop failed", document.RootElement.GetProperty("message").GetString());
         Assert.AreEqual("DROP_CODE", document.RootElement.GetProperty("code").GetString());
-    }
-
-    [TestMethod]
-    public void ExternalDropWithoutNativePaths_ProducesMissingObjectsFailure()
-    {
-        var failure = MainWindow.ValidateExternalDropPaths([]);
-
-        Assert.IsNotNull(failure);
-        Assert.AreEqual("DOCUMENT_DROP_OBJECTS_MISSING", failure!.Code);
-        Assert.IsNull(MainWindow.ValidateExternalDropPaths([@"C:\safe\file.txt"]));
     }
 
     [TestMethod]

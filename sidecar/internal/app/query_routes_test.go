@@ -111,12 +111,19 @@ func TestValidateQueryOperationRequiresExactlyOnePayload(t *testing.T) {
 	page := query.TableQuery{}
 	view := query.ViewQuery{}
 	aggregate := query.AggregateQuery{}
+	cursor := "opaque-cursor"
 	for name, input := range map[string]queryOperationRequest{
 		"view": {
 			Operation: "view", TableID: "orders", View: &view,
 		},
 		"page": {
 			Operation: "page", TableID: "orders", Query: &page,
+		},
+		"cursor open": {
+			Operation: "cursor.open", TableID: "orders", Query: &page,
+		},
+		"cursor fetch": {
+			Operation: "cursor.fetch", Cursor: &cursor,
 		},
 		"read rows": {
 			Operation: "readRows", TableID: "orders", RowIDs: []string{},
@@ -139,6 +146,18 @@ func TestValidateQueryOperationRequiresExactlyOnePayload(t *testing.T) {
 		},
 		"mixed page payload": {
 			Operation: "page", Query: &page, Aggregate: &aggregate,
+		},
+		"missing cursor open query": {
+			Operation: "cursor.open",
+		},
+		"mixed cursor open payload": {
+			Operation: "cursor.open", Query: &page, Cursor: &cursor,
+		},
+		"missing cursor fetch token": {
+			Operation: "cursor.fetch",
+		},
+		"cursor fetch with table": {
+			Operation: "cursor.fetch", TableID: "orders", Cursor: &cursor,
 		},
 		"mixed view payload": {
 			Operation: "view", View: &view, Query: &page,

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h } from "vue";
 import { NButton, NButtonGroup, NDropdown, NIcon, NTooltip } from "naive-ui";
-import { ChevronDown, Download, History, Keyboard, MoreHorizontal, Network, Plus, RefreshCw, Table2, Trash2, Upload } from "lucide-vue-next";
+import { BookOpenText, ChevronDown, Download, History, Keyboard, MoreHorizontal, Network, Plus, RefreshCw, Table2, Trash2, Upload } from "lucide-vue-next";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { collectionLabel } from "./collectionLabel";
 import { t } from "@/i18n";
@@ -29,6 +29,7 @@ const emit = defineEmits<{
   openHistory: [];
   openArchivedHistory: [];
   openFieldManager: [];
+  openContent: [];
   importData: [];
   exportData: [];
   cancelDataTask: [];
@@ -140,6 +141,21 @@ function onSelectTable(key: string) {
           >{{ action.label }}</NButton>
         </template>
         插件动作 · {{ action.risk === 'read' ? '只读' : action.risk === 'write' ? '写入' : '危险' }}
+      </NTooltip>
+      <NTooltip placement="bottom" :delay="450">
+        <template #trigger>
+          <NButton
+            size="small"
+            quaternary
+            :disabled="!workspace.currentTable"
+            aria-label="打开内容记录"
+            data-testid="toolbar-content-record"
+            @click="emit('openContent')"
+          >
+            <template #icon><NIcon><BookOpenText /></NIcon></template>
+          </NButton>
+        </template>
+        内容记录
       </NTooltip>
       <NTooltip placement="bottom" :delay="450">
         <template #trigger>

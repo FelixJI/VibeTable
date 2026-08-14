@@ -10,40 +10,42 @@ import (
 	"time"
 
 	"github.com/google/cel-go/cel"
+	celenv "github.com/google/cel-go/common/env"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 const (
-	DefaultSourceLimit    = 4096
-	DefaultASTNodeLimit   = 512
-	DefaultRecursionLimit = 64
-	DefaultCollectionMax  = 1024
-	DefaultCostLimit      = 10_000
-	DefaultEvalTimeout    = 50 * time.Millisecond
+	DefaultSourceLimit     = 4096
+	DefaultASTNodeLimit    = 512
+	DefaultRecursionLimit  = 64
+	DefaultCollectionBytes = 32 << 20
+	DefaultCostLimit       = 10_000
+	DefaultEvalTimeout     = 50 * time.Millisecond
 )
 
 type Limits struct {
-	SourceBytes    int
-	ASTNodes       int
-	RecursionDepth int
-	CollectionSize int
-	Cost           uint64
-	EvalTimeout    time.Duration
+	SourceBytes     int
+	ASTNodes        int
+	RecursionDepth  int
+	CollectionBytes int
+	Cost            uint64
+	EvalTimeout     time.Duration
 }
 
 func DefaultLimits() Limits {
 	return Limits{
-		SourceBytes:    DefaultSourceLimit,
-		ASTNodes:       DefaultASTNodeLimit,
-		RecursionDepth: DefaultRecursionLimit,
-		CollectionSize: DefaultCollectionMax,
-		Cost:           DefaultCostLimit,
-		EvalTimeout:    DefaultEvalTimeout,
+		SourceBytes:     DefaultSourceLimit,
+		ASTNodes:        DefaultASTNodeLimit,
+		RecursionDepth:  DefaultRecursionLimit,
+		CollectionBytes: DefaultCollectionBytes,
+		Cost:            DefaultCostLimit,
+		EvalTimeout:     DefaultEvalTimeout,
 	}
 }
 
@@ -62,8 +64,8 @@ func NewCompiler(limits Limits) *Compiler {
 	if limits.RecursionDepth <= 0 {
 		limits.RecursionDepth = defaults.RecursionDepth
 	}
-	if limits.CollectionSize <= 0 {
-		limits.CollectionSize = defaults.CollectionSize
+	if limits.CollectionBytes <= 0 {
+		limits.CollectionBytes = defaults.CollectionBytes
 	}
 	if limits.Cost == 0 {
 		limits.Cost = defaults.Cost
@@ -77,7 +79,7 @@ func NewCompiler(limits Limits) *Compiler {
 type CompiledFormula struct {
 	FieldID                string
 	PhysicalName           string
-	ResultType             schema.DataType
+	ResultType             ValueType
 	Nullable               bool
 	Source                 string
 	CanonicalSource        string
@@ -92,11 +94,19 @@ type CompiledFormula struct {
 	hasDivision            bool
 }
 
+// ValueType is the formula runtime's compact value contract. Schema V2 uses
+// one logical number type, while PocketBase's onlyInt binding determines the
+// CEL integer/double distinction and must remain part of compilation.
+type ValueType struct {
+	LogicalType v2.LogicalType
+	OnlyInt     bool
+}
+
 func (compiler *Compiler) Compile(
-	definition schema.TableDefinition,
-	field schema.FieldDefinition,
+	definition schemaexecution.Table,
+	field v2.FieldDefinition,
 ) (*CompiledFormula, *Error) {
-	if field.Kind != schema.FieldKindFormula || field.Formula == nil {
+	if field.LogicalType != v2.LogicalFormula || field.Formula == nil {
 		return nil, formulaError("formula.type", "field is not a formula field", nil)
 	}
 	if field.Formula.Language != "cel-v1" {
@@ -152,7 +162,8 @@ func (compiler *Compiler) Compile(
 		})
 	}
 
-	expected, err := celTypeForDataType(field.Formula.ResultType)
+	resultType := valueTypeForField(field)
+	expected, err := celTypeForValueType(resultType)
 	if err != nil {
 		return nil, formulaError("formula.type", "formula result type is unsupported", map[string]any{
 			"resultType": field.Formula.ResultType,
@@ -169,11 +180,12 @@ func (compiler *Compiler) Compile(
 	if err != nil {
 		return nil, formulaError("formula.runtime", "formula AST could not be normalized", nil)
 	}
-	hashInput := "cel-v1\x00" + canonical + "\x00" + string(field.Formula.ResultType)
+	hashInput := "cel-v1\x00" + canonical + "\x00" + string(resultType.LogicalType) +
+		fmt.Sprintf("\x00%t", resultType.OnlyInt)
 	sum := sha256.Sum256([]byte(hashInput))
 	dependencies := make([]string, 0, len(dependencyNames))
 	for _, name := range dependencyNames {
-		dependencies = append(dependencies, fieldsByName[name].FieldID)
+		dependencies = append(dependencies, fieldsByName[name].Identity.FieldID)
 	}
 	sort.Strings(dependencies)
 
@@ -186,10 +198,10 @@ func (compiler *Compiler) Compile(
 		return nil, formulaError("formula.runtime", "formula program could not be created", nil)
 	}
 	return &CompiledFormula{
-		FieldID:                field.FieldID,
-		PhysicalName:           field.PhysicalName,
-		ResultType:             field.Formula.ResultType,
-		Nullable:               field.Nullable,
+		FieldID:                field.Identity.FieldID,
+		PhysicalName:           field.Identity.PhysicalName,
+		ResultType:             resultType,
+		Nullable:               !field.Value.Required,
 		Source:                 source,
 		CanonicalSource:        canonical,
 		ASTHash:                hex.EncodeToString(sum[:]),
@@ -204,27 +216,27 @@ func (compiler *Compiler) Compile(
 	}, nil
 }
 
-func (compiler *Compiler) InferSource(
-	definition schema.TableDefinition,
+func (compiler *Compiler) InferExecutionSource(
+	definition schemaexecution.Table,
 	source string,
-) (schema.DataType, *Error) {
+) (ValueType, *Error) {
 	source = strings.TrimSpace(source)
 	if source == "" {
-		return "", formulaError("formula.syntax", "formula source is empty", nil)
+		return ValueType{}, formulaError("formula.syntax", "formula source is empty", nil)
 	}
 	if len(source) > compiler.limits.SourceBytes {
-		return "", formulaError(
+		return ValueType{}, formulaError(
 			"formula.resource_limit", "formula source exceeds the size limit",
 			map[string]any{"limit": compiler.limits.SourceBytes},
 		)
 	}
 	env, fieldsByName, environmentErr := compiler.environment(definition)
 	if environmentErr != nil {
-		return "", environmentErr
+		return ValueType{}, environmentErr
 	}
 	parsed, issues := env.Parse(source)
 	if issues != nil && issues.Err() != nil {
-		return "", formulaError(
+		return ValueType{}, formulaError(
 			"formula.syntax", "formula could not be parsed",
 			map[string]any{"reason": issues.Err().Error()},
 		)
@@ -237,48 +249,47 @@ func (compiler *Compiler) InferSource(
 			code = "formula.dependency"
 			message = "formula references an unknown field or function"
 		}
-		return "", formulaError(code, message, map[string]any{
+		return ValueType{}, formulaError(code, message, map[string]any{
 			"reason": issues.Err().Error(),
 		})
 	}
 	checked, err := cel.AstToCheckedExpr(ast)
 	if err != nil {
-		return "", formulaError("formula.runtime", "checked formula AST is unavailable", nil)
+		return ValueType{}, formulaError("formula.runtime", "checked formula AST is unavailable", nil)
 	}
 	if _, _, _, _, _, _, validationErr := inspectExpression(
 		checked.GetExpr(), fieldsByName, compiler.limits,
 	); validationErr != nil {
-		return "", validationErr
+		return ValueType{}, validationErr
 	}
-	return dataTypeForCELType(ast.OutputType())
+	return valueTypeForCELType(ast.OutputType())
 }
 
 func (compiler *Compiler) environment(
-	definition schema.TableDefinition,
-) (*cel.Env, map[string]schema.FieldDefinition, *Error) {
-	fieldsByName := make(map[string]schema.FieldDefinition, len(definition.Fields))
+	definition schemaexecution.Table,
+) (*cel.Env, map[string]v2.FieldDefinition, *Error) {
+	fieldsByName := make(map[string]v2.FieldDefinition, len(definition.Snapshot.Fields))
 	options := []cel.EnvOption{
 		cel.ParserExpressionSizeLimit(compiler.limits.SourceBytes),
 		cel.ParserRecursionLimit(compiler.limits.RecursionDepth),
 		cel.DefaultUTCTimeZone(true),
 		cel.HomogeneousAggregateLiterals(),
 	}
-	for _, candidate := range definition.Fields {
-		if candidate.DataType == schema.DataTypeSecret ||
-			candidate.DataType == schema.DataTypeHash ||
-			candidate.Kind == schema.FieldKindAttachment ||
-			candidate.Kind == schema.FieldKindSystem {
-			continue
-		}
+	for _, candidate := range definition.Snapshot.Fields {
 		fieldType, err := celTypeForField(candidate)
 		if err != nil {
 			continue
 		}
-		fieldsByName[candidate.PhysicalName] = candidate
-		options = append(options, cel.Variable(candidate.PhysicalName, fieldType))
+		fieldsByName[candidate.Identity.PhysicalName] = candidate
+		options = append(options, cel.Variable(candidate.Identity.PhysicalName, fieldType))
 	}
 	options = append(options, functionOptions()...)
-	env, err := cel.NewEnv(options...)
+	options = append([]cel.EnvOption{
+		cel.StdLib(cel.StdLibSubset(&celenv.LibrarySubset{
+			ExcludeFunctions: []*celenv.Function{{Name: "_*_"}},
+		})),
+	}, options...)
+	env, err := cel.NewCustomEnv(options...)
 	if err != nil {
 		return nil, nil, formulaError(
 			"formula.runtime", "formula environment initialization failed", nil,
@@ -287,20 +298,20 @@ func (compiler *Compiler) environment(
 	return env, fieldsByName, nil
 }
 
-func dataTypeForCELType(output *cel.Type) (schema.DataType, *Error) {
+func valueTypeForCELType(output *cel.Type) (ValueType, *Error) {
 	switch output.String() {
 	case "bool":
-		return schema.DataTypeBoolean, nil
+		return ValueType{LogicalType: v2.LogicalBool}, nil
 	case "int":
-		return schema.DataTypeInteger, nil
+		return ValueType{LogicalType: v2.LogicalNumber, OnlyInt: true}, nil
 	case "double":
-		return schema.DataTypeFloat, nil
+		return ValueType{LogicalType: v2.LogicalNumber}, nil
 	case "string":
-		return schema.DataTypeShortText, nil
-	case "timestamp":
-		return schema.DataTypeDateTime, nil
+		return ValueType{LogicalType: v2.LogicalText}, nil
+	case "timestamp", "google.protobuf.Timestamp":
+		return ValueType{LogicalType: v2.LogicalDateTime}, nil
 	default:
-		return "", formulaError(
+		return ValueType{}, formulaError(
 			"formula.type", "formula result type cannot be inferred",
 			map[string]any{"actual": output.String()},
 		)
@@ -309,7 +320,7 @@ func dataTypeForCELType(output *cel.Type) (schema.DataType, *Error) {
 
 func inspectExpression(
 	expression *exprpb.Expr,
-	fields map[string]schema.FieldDefinition,
+	fields map[string]v2.FieldDefinition,
 	limits Limits,
 ) (int, []string, []string, []string, []string, bool, *Error) {
 	dependencies := map[string]struct{}{}
@@ -376,18 +387,12 @@ func inspectExpression(
 				}
 			}
 		case *exprpb.Expr_ListExpr:
-			if len(kind.ListExpr.Elements) > limits.CollectionSize {
-				return formulaError("formula.resource_limit", "formula list literal exceeds the collection limit", nil)
-			}
 			for _, element := range kind.ListExpr.Elements {
 				if err := walk(element); err != nil {
 					return err
 				}
 			}
 		case *exprpb.Expr_StructExpr:
-			if len(kind.StructExpr.Entries) > limits.CollectionSize {
-				return formulaError("formula.resource_limit", "formula map literal exceeds the collection limit", nil)
-			}
 			for _, entry := range kind.StructExpr.Entries {
 				if err := walk(entry.GetMapKey()); err != nil {
 					return err
@@ -429,7 +434,7 @@ func inspectExpression(
 
 func relationCountName(
 	call *exprpb.Expr_Call,
-	fields map[string]schema.FieldDefinition,
+	fields map[string]v2.FieldDefinition,
 ) (string, *Error) {
 	if len(call.Args) != 1 {
 		return "", formulaError("formula.syntax", "relation count requires one relation", nil)
@@ -441,7 +446,7 @@ func relationCountName(
 		)
 	}
 	relation, exists := fields[root.IdentExpr.Name]
-	if !exists || relation.Kind != schema.FieldKindRelation || relation.Relation == nil {
+	if !exists || relation.LogicalType != v2.LogicalRelation || relation.Relation == nil {
 		return "", formulaError(
 			"formula.dependency", "relation count root is not a relation field", nil,
 		)
@@ -460,7 +465,7 @@ func isRelationFieldAggregate(function string) bool {
 
 func relationAggregatePath(
 	call *exprpb.Expr_Call,
-	fields map[string]schema.FieldDefinition,
+	fields map[string]v2.FieldDefinition,
 ) (string, *Error) {
 	if len(call.Args) != 2 {
 		return "", formulaError(
@@ -474,7 +479,7 @@ func relationAggregatePath(
 		)
 	}
 	relation, exists := fields[root.IdentExpr.Name]
-	if !exists || relation.Kind != schema.FieldKindRelation || relation.Relation == nil {
+	if !exists || relation.LogicalType != v2.LogicalRelation || relation.Relation == nil {
 		return "", formulaError(
 			"formula.dependency", "relation aggregate root is not a relation field", nil,
 		)
@@ -528,67 +533,86 @@ var allowedFunctions = map[string]struct{}{
 	"relationCount": {}, "relationCountValues": {},
 }
 
-func celTypeForField(field schema.FieldDefinition) (*cel.Type, error) {
-	if field.Kind == schema.FieldKindFormula && field.Formula != nil {
-		return celTypeForDataType(field.Formula.ResultType)
-	}
-	if field.Kind == schema.FieldKindRelation {
+func celTypeForField(field v2.FieldDefinition) (*cel.Type, error) {
+	if field.LogicalType == v2.LogicalRelation {
 		// Relation values are resolved to immutable, schema-filtered objects by
 		// Calculator before evaluation. The exact target object shape belongs to
 		// the target table schema, so CEL must treat it as dynamic while the
 		// schema catalog performs the static cross-table checks.
 		return cel.DynType, nil
 	}
-	if field.Kind == schema.FieldKindLookup {
-		return celTypeForStorageType(field.StorageType)
-	}
-	return celTypeForDataType(field.DataType)
+	return celTypeForValueType(valueTypeForField(field))
 }
 
-func celTypeForStorageType(storage schema.StorageType) (*cel.Type, error) {
-	switch storage {
-	case schema.StorageBool:
-		return cel.BoolType, nil
-	case schema.StorageNumber:
-		return cel.DoubleType, nil
-	case schema.StorageDate, schema.StorageAutodate:
-		return cel.TimestampType, nil
-	case schema.StorageJSON, schema.StorageRelation, schema.StorageFile,
-		schema.StorageGeoPoint, schema.StorageSelect:
-		return cel.DynType, nil
-	case schema.StorageText, schema.StorageEditor, schema.StorageEmail,
-		schema.StorageURL:
-		return cel.StringType, nil
-	default:
-		return nil, fmt.Errorf("unsupported formula storage type %s", storage)
+func valueTypeForField(field v2.FieldDefinition) ValueType {
+	logicalType := field.LogicalType
+	if field.LogicalType == v2.LogicalFormula && field.Formula != nil {
+		logicalType = field.Formula.ResultType
 	}
+	return ValueType{LogicalType: logicalType, OnlyInt: field.Storage.Options.OnlyInt}
 }
 
-func celTypeForDataType(dataType schema.DataType) (*cel.Type, error) {
-	switch dataType {
-	case schema.DataTypeBoolean:
+func celTypeForValueType(valueType ValueType) (*cel.Type, error) {
+	switch valueType.LogicalType {
+	case v2.LogicalBool:
 		return cel.BoolType, nil
-	case schema.DataTypeInteger:
-		return cel.IntType, nil
-	case schema.DataTypeFloat, schema.DataTypeDecimal:
+	case v2.LogicalNumber:
+		if valueType.OnlyInt {
+			return cel.IntType, nil
+		}
 		return cel.DoubleType, nil
-	case schema.DataTypeDate, schema.DataTypeDateTime, schema.DataTypeAutoDate:
+	case v2.LogicalDate, v2.LogicalDateTime, v2.LogicalAutoDate:
 		return cel.TimestampType, nil
-	case schema.DataTypeMultiSelect, schema.DataTypeList:
+	case v2.LogicalMultiSelect:
 		return cel.ListType(cel.DynType), nil
-	case schema.DataTypeJSON, schema.DataTypeGeoPoint, schema.DataTypeGeoJSON:
+	case v2.LogicalJSON, v2.LogicalGeoPoint, v2.LogicalRelation, v2.LogicalFile,
+		v2.LogicalLookup:
 		return cel.DynType, nil
-	case schema.DataTypeShortText, schema.DataTypeLongText, schema.DataTypeRichText,
-		schema.DataTypeTime, schema.DataTypeEmail, schema.DataTypeURL, schema.DataTypeUUID,
-		schema.DataTypeSelect, schema.DataTypeHash:
+	case v2.LogicalText, v2.LogicalEditor, v2.LogicalTime, v2.LogicalEmail,
+		v2.LogicalURL, v2.LogicalSelect:
 		return cel.StringType, nil
 	default:
-		return nil, fmt.Errorf("unsupported formula data type %s", dataType)
+		return nil, fmt.Errorf("unsupported formula value type %s", valueType.LogicalType)
 	}
 }
 
 func functionOptions() []cel.EnvOption {
 	options := []cel.EnvOption{
+		cel.Function("_*_",
+			cel.Overload(
+				"vibetable_multiply_int_int",
+				[]*cel.Type{cel.IntType, cel.IntType}, cel.IntType,
+			),
+			cel.Overload(
+				"vibetable_multiply_double_double",
+				[]*cel.Type{cel.DoubleType, cel.DoubleType}, cel.DoubleType,
+			),
+			cel.Overload(
+				"vibetable_multiply_uint_uint",
+				[]*cel.Type{cel.UintType, cel.UintType}, cel.UintType,
+			),
+			cel.Overload(
+				"vibetable_multiply_int_double",
+				[]*cel.Type{cel.IntType, cel.DoubleType}, cel.DoubleType,
+			),
+			cel.Overload(
+				"vibetable_multiply_double_int",
+				[]*cel.Type{cel.DoubleType, cel.IntType}, cel.DoubleType,
+			),
+			cel.SingletonBinaryBinding(func(left, right ref.Val) ref.Val {
+				switch left := left.(type) {
+				case types.Int:
+					if right, ok := right.(types.Double); ok {
+						return types.Double(float64(left) * float64(right))
+					}
+				case types.Double:
+					if right, ok := right.(types.Int); ok {
+						return types.Double(float64(left) * float64(right))
+					}
+				}
+				return left.(traits.Multiplier).Multiply(right)
+			}, traits.MultiplierType),
+		),
 		cel.Function("upper",
 			cel.Overload("vibetable_upper_string", []*cel.Type{cel.StringType}, cel.StringType,
 				cel.UnaryBinding(func(value ref.Val) ref.Val {

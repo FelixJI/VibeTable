@@ -13,7 +13,7 @@ public sealed class RelationLookupRpcRegistryTests
     {
         var types = RelationLookupRpcRegistry.RequestTypes;
 
-        Assert.HasCount(11, types);
+        Assert.HasCount(9, types);
         Assert.AreEqual(
             types.Count,
             types.Distinct(StringComparer.Ordinal).Count(),
@@ -22,6 +22,8 @@ public sealed class RelationLookupRpcRegistryTests
         Assert.IsFalse(RelationLookupRpcRegistry.Contains("lookup.create"));
         Assert.IsFalse(RelationLookupRpcRegistry.Contains("lookup.update"));
         Assert.IsFalse(RelationLookupRpcRegistry.Contains("lookup.delete"));
+        Assert.IsFalse(RelationLookupRpcRegistry.Contains("lookup.validate"));
+        Assert.IsFalse(RelationLookupRpcRegistry.Contains("lookup.preview"));
         Assert.IsFalse(RelationLookupRpcRegistry.Contains("table_admin.previewRelationChange"));
         Assert.IsFalse(RelationLookupRpcRegistry.Contains("table_admin.applyRelationChange"));
 

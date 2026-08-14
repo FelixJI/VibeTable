@@ -7,7 +7,7 @@ import type {
   ExportResult,
   MutationReceipt,
   PluginSnapshot,
-  ProductTableDefinition,
+  SchemaSnapshotV2,
 } from "./index";
 
 type Assert<T extends true> = T;
@@ -47,8 +47,8 @@ export type MutationReceiptGoldenKeys = Assert<HasExactKeys<
   | "emittedEvents"
   | "warnings"
 >>;
-export type TableDefinitionGoldenCoreKeys = Assert<
-  ("tableId" | "schemaRevision" | "fields") extends keyof ProductTableDefinition
+export type SchemaSnapshotGoldenCoreKeys = Assert<
+  ("tableId" | "schemaRevision" | "fields") extends keyof SchemaSnapshotV2
     ? true
     : false
 >;
@@ -121,12 +121,13 @@ describe("product contract v2 golden fixtures", () => {
 
       const wire = JSON.stringify(fixture).toLowerCase();
       expect(wire, name).not.toContain("dire" + "ctus");
-      expect(wire, name).not.toContain("pocketbase");
     }
   });
 
   it("carries both immutable autoDate roles in the shared table fixture", () => {
-    const table = readFixture("table-definition.json") as unknown as ProductTableDefinition;
+    const table = readFixture("table-definition.json") as unknown as {
+      fields: readonly { dataType: string; autoDate?: { role: string } }[];
+    };
     const roles = table.fields
       .filter((field) => field.dataType === "autoDate")
       .map((field) => field.autoDate?.role)
@@ -228,7 +229,7 @@ describe("product contract v2 golden fixtures", () => {
     }
 
     const table = cases.get("schema.getTable");
-    expect(table?.resultModel).toBe("TableDefinition");
+    expect(table?.resultModel).toBe("SchemaSnapshot");
     expect(table?.success.result).toEqual(expect.objectContaining({
       tableId: expect.any(String),
       schemaRevision: expect.any(String),

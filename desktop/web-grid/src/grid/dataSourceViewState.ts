@@ -1,6 +1,24 @@
-import type { ColumnState, FilterCondition, PresetView } from "@/contracts";
+import type {
+  ColumnState,
+  FilterCondition,
+  FilterExpression,
+  SortCondition,
+} from "@/contracts";
+import { computed, type Ref } from "vue";
+import type { TabulatorFull } from "tabulator-tables";
 import { ROW_NUMBER_FIELD } from "./createGrid";
 import { headerFilterConditions } from "./viewQuery";
+
+interface DataSourceViewState {
+  readonly columns?: readonly ColumnState[];
+  readonly sorts: readonly SortCondition[];
+  readonly filters: readonly FilterExpression[];
+  readonly search: string;
+  readonly layout: string;
+  readonly kind?: "table" | "calendar" | "timeline" | "kanban" | "gallery";
+  readonly density?: "compact" | "comfortable" | "cozy";
+  readonly isDefault?: boolean;
+}
 
 interface ViewColumn {
   getField(): string;
@@ -25,14 +43,58 @@ export interface DataSourceViewGrid {
   setHeaderFilterValue?(field: string, value: unknown): void;
 }
 
+export interface DataSourceViewGridSource {
+  readonly current: Readonly<Ref<DataSourceViewGrid | null>>;
+}
+
+function isObject(value: unknown): value is Record<PropertyKey, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function hasOptionalFunction(
+  value: Record<PropertyKey, unknown>,
+  property: PropertyKey,
+): boolean {
+  return value[property] === undefined || typeof value[property] === "function";
+}
+
+function isDataSourceViewGrid(value: unknown): value is DataSourceViewGrid {
+  if (!isObject(value) || typeof value.getColumns !== "function") return false;
+  return [
+    "getSorters",
+    "getHeaderFilters",
+    "setColumnLayout",
+    "setSort",
+    "clearHeaderFilter",
+    "setHeaderFilterValue",
+  ].every(property => hasOptionalFunction(value, property));
+}
+
+/**
+ * Isolates Tabulator's incomplete declarations from the stable view-state seam.
+ * Runtime capability checks keep the assertion at one verified composition boundary.
+ */
+export function createTabulatorDataSourceViewAdapter(
+  grid: TabulatorFull | null,
+): DataSourceViewGrid | null {
+  const candidate: unknown = grid;
+  return isDataSourceViewGrid(candidate) ? candidate : null;
+}
+
+export function createTabulatorDataSourceViewSource(
+  grid: Ref<TabulatorFull | null>,
+): DataSourceViewGridSource {
+  return { current: computed(() => createTabulatorDataSourceViewAdapter(grid.value)) };
+}
+
 function isDataField(field: string): boolean {
   return field !== "rowKey" && field !== ROW_NUMBER_FIELD && !field.startsWith("__");
 }
 
 export function captureDataSourceView(
   grid: DataSourceViewGrid | null,
-  options: { isDefault?: boolean; density?: PresetView["density"] } = {},
-): PresetView {
+  options: { isDefault?: boolean; density?: DataSourceViewState["density"] } = {},
+): DataSourceViewState {
   const gridColumns = grid && typeof grid.getColumns === "function"
     ? grid.getColumns()
     : [];
@@ -62,7 +124,6 @@ export function captureDataSourceView(
     sorts,
     filters,
     search: "",
-    visibleFields: columns.filter((column) => column.visible !== false).map((column) => column.name),
     density: options.density ?? "comfortable",
     isDefault: options.isDefault ?? false,
   };
@@ -70,9 +131,9 @@ export function captureDataSourceView(
 
 export async function applyDataSourceView(
   grid: DataSourceViewGrid | null,
-  view: PresetView,
+  view: DataSourceViewState,
 ): Promise<void> {
-  if (!grid || typeof grid.getColumns !== "function") return;
+  if (!grid || typeof grid.getColumns !== "function" || !Array.isArray(view.columns)) return;
   const currentColumns = grid.getColumns()
     .map((column, order) => ({
       column,
@@ -81,12 +142,10 @@ export async function applyDataSourceView(
     }))
     .filter(({ field }) => isDataField(field));
   const currentFields = new Set(currentColumns.map(({ field }) => field));
-  const savedColumns = [...(view.columns ?? [])]
+  const savedColumns = [...view.columns]
     .filter((column) => currentFields.has(column.name))
     .sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
   const savedFields = new Set(savedColumns.map((column) => column.name));
-  const legacyVisible = new Set(view.visibleFields);
-  const hasLegacyVisibility = legacyVisible.size > 0;
   const columns = savedColumns.length
     ? [
         ...savedColumns,
@@ -104,9 +163,7 @@ export async function applyDataSourceView(
         name: field,
         order,
         width: column.getWidth?.() ?? null,
-        visible: hasLegacyVisibility
-          ? legacyVisible.has(field)
-          : column.isVisible?.() ?? true,
+        visible: column.isVisible?.() ?? true,
         frozen: column.getDefinition?.().frozen ?? false,
       }));
   if (columns.length && grid.setColumnLayout) {

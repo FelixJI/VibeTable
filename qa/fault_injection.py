@@ -78,7 +78,7 @@ GO_TESTS = (
     "TestRuntimeFailsClosedForIdentityParamsAndEpoch",
     "TestReadPersistentMutationRevisionCoversCommittedApplyBeforeFinish",
     "TestAuthorityReceiptsCloseFileHistoryAndSnapshotKillWindows",
-    "TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen",
+    "TestSnapshotRestoreCommitsAuthorityAndRecoversFailedSearchRebuildAfterRestart",
     "TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness",
     "TestConflictExternalAttachmentFaultRestoresOldFilesAndTableTransaction",
     "TestRuntimeReopensAndResumesConflictAtPocketBaseReceiptRevision",
@@ -329,7 +329,11 @@ def _run_product(run_root: Path, package_root: Path | None = None) -> CaseResult
     evidence = run_root / "product-sidecar-kill.log"
     output = completed.stdout + completed.stderr
     evidence.write_text(output, encoding="utf-8")
-    reports = sorted(product_evidence.rglob("product-e2e-report.json"))
+    # The runner writes the aggregate report directly below its timestamped run
+    # directory. Do not recursively traverse `_runtime`: the product removes
+    # that mutable tree during shutdown and Windows raises FileNotFoundError if
+    # a directory disappears between pathlib's scan steps.
+    reports = sorted(product_evidence.glob("*/product-e2e-report.json"))
     observed = False
     if reports:
         try:

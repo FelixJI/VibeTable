@@ -14,7 +14,6 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
@@ -49,12 +48,12 @@ func (catalog *Catalog) InspectFormulaDraft(
 	if err := catalog.NormalizeDefinition(ctx, tableID, draft); err != nil {
 		return FormulaDraftInspection{}, err
 	}
-	legacy, err := catalog.legacyDefinition(tableID)
+	definition, err := catalog.formulaDefinition(ctx, tableID)
 	if err != nil {
 		return FormulaDraftInspection{}, err
 	}
-	upsertLegacyField(&legacy, toLegacyField(*draft))
-	plan, formulaErr := formula.NewCompiler(formula.DefaultLimits()).CompileTable(legacy)
+	upsertFormulaField(&definition, *draft)
+	plan, formulaErr := formula.NewCompiler(formula.DefaultLimits()).CompileV2Table(definition)
 	if formulaErr != nil {
 		return FormulaDraftInspection{}, formulaErr
 	}
@@ -84,52 +83,45 @@ func (catalog *Catalog) NormalizeDefinition(
 		definition.Formula == nil {
 		return nil
 	}
-	legacy, err := catalog.legacyDefinition(tableID)
+	current, err := catalog.formulaDefinition(ctx, tableID)
 	if err != nil {
 		return err
 	}
-	targets := make(map[string]schema.TableDefinition)
-	for _, field := range legacy.Fields {
-		if field.Kind != schema.FieldKindRelation || field.Relation == nil {
+	targets := make(map[string]formula.V2Table)
+	for _, field := range current.Fields {
+		if field.LogicalType != v2.LogicalRelation || field.Relation == nil {
 			continue
 		}
-		target := legacy
+		target := current
 		if field.Relation.TargetTableID != tableID {
-			target, err = catalog.legacyDefinition(field.Relation.TargetTableID)
+			target, err = catalog.formulaDefinition(ctx, field.Relation.TargetTableID)
 			if err != nil {
 				return err
 			}
 		}
-		targets[field.PhysicalName] = target
+		targets[field.Identity.PhysicalName] = target
 	}
-	canonical, formulaErr := formula.CanonicalizeDisplaySource(
-		legacy, targets, definition.Formula.Source,
+	canonical, formulaErr := formula.CanonicalizeV2DisplaySource(
+		current, targets, definition.Formula.Source,
 	)
 	if formulaErr != nil {
 		return formulaErr
 	}
-	withoutCurrent := legacy
-	withoutCurrent.Fields = append([]schema.FieldDefinition(nil), legacy.Fields...)
-	removeLegacyField(&withoutCurrent, definition.Identity.FieldID)
-	resultType, formulaErr := formula.NewCompiler(formula.DefaultLimits()).InferSource(
+	withoutCurrent := current
+	withoutCurrent.Fields = append([]v2.FieldDefinition(nil), current.Fields...)
+	removeFormulaField(&withoutCurrent, definition.Identity.FieldID)
+	resultType, onlyInt, formulaErr := formula.NewCompiler(formula.DefaultLimits()).InferV2Source(
 		withoutCurrent, canonical,
 	)
 	if formulaErr != nil {
 		return formulaErr
 	}
-	logicalType, ok := v2LogicalTypeForFormulaResult(resultType)
-	if !ok {
-		return productError(
-			"formula.type", "draft.formula.source",
-			"formula result type is not supported by a computed field",
-			map[string]any{"resultType": resultType},
-		)
-	}
 	definition.Formula.Source = canonical
-	definition.Formula.ResultType = logicalType
+	definition.Formula.ResultType = resultType
+	definition.Storage.Options.OnlyInt = onlyInt
 	candidate := withoutCurrent
-	upsertLegacyField(&candidate, toLegacyField(*definition))
-	plan, formulaErr := formula.NewCompiler(formula.DefaultLimits()).CompileTable(candidate)
+	upsertFormulaField(&candidate, *definition)
+	plan, formulaErr := formula.NewCompiler(formula.DefaultLimits()).CompileV2Table(candidate)
 	if formulaErr != nil {
 		return formulaErr
 	}
@@ -139,14 +131,14 @@ func (catalog *Catalog) NormalizeDefinition(
 		}
 		for _, reference := range compiled.ReferencePaths {
 			if err := validateAuthoredRelationReference(
-				legacy, targets, reference, false,
+				current, targets, reference, false,
 			); err != nil {
 				return err
 			}
 		}
 		for _, reference := range compiled.RelationAggregatePaths {
 			if err := validateAuthoredRelationReference(
-				legacy, targets, reference, true,
+				current, targets, reference, true,
 			); err != nil {
 				return err
 			}
@@ -155,45 +147,20 @@ func (catalog *Catalog) NormalizeDefinition(
 	return nil
 }
 
-func (catalog *Catalog) legacyDefinition(tableID string) (schema.TableDefinition, error) {
-	record, err := catalog.tableRecord(catalog.app, tableID)
+func (catalog *Catalog) formulaDefinition(
+	ctx context.Context,
+	tableID string,
+) (formula.V2Table, error) {
+	fields, err := catalog.Fields(ctx, tableID, false)
 	if err != nil {
-		return schema.TableDefinition{}, err
+		return formula.V2Table{}, err
 	}
-	raw, err := json.Marshal(record.GetRaw("definition_json"))
-	if err != nil {
-		return schema.TableDefinition{}, fmt.Errorf("encode stored table definition: %w", err)
-	}
-	var definition schema.TableDefinition
-	if err := json.Unmarshal(raw, &definition); err != nil {
-		return schema.TableDefinition{}, fmt.Errorf("decode stored table definition: %w", err)
-	}
-	return definition, nil
-}
-
-func v2LogicalTypeForFormulaResult(result schema.DataType) (v2.LogicalType, bool) {
-	switch result {
-	case schema.DataTypeBoolean:
-		return v2.LogicalBool, true
-	case schema.DataTypeInteger, schema.DataTypeFloat, schema.DataTypeDecimal:
-		return v2.LogicalNumber, true
-	case schema.DataTypeDate:
-		return v2.LogicalDate, true
-	case schema.DataTypeDateTime, schema.DataTypeAutoDate:
-		return v2.LogicalDateTime, true
-	case schema.DataTypeTime:
-		return v2.LogicalTime, true
-	case schema.DataTypeShortText, schema.DataTypeLongText, schema.DataTypeRichText,
-		schema.DataTypeEmail, schema.DataTypeURL:
-		return v2.LogicalText, true
-	default:
-		return "", false
-	}
+	return formula.V2Table{TableID: tableID, Fields: fields}, nil
 }
 
 func validateAuthoredRelationReference(
-	definition schema.TableDefinition,
-	targets map[string]schema.TableDefinition,
+	definition formula.V2Table,
+	targets map[string]formula.V2Table,
 	reference string,
 	aggregate bool,
 ) error {
@@ -205,14 +172,14 @@ func validateAuthoredRelationReference(
 			map[string]any{"reference": reference},
 		)
 	}
-	var relation *schema.FieldDefinition
+	var relation *v2.FieldDefinition
 	for index := range definition.Fields {
-		if definition.Fields[index].PhysicalName == parts[0] {
+		if definition.Fields[index].Identity.PhysicalName == parts[0] {
 			relation = &definition.Fields[index]
 			break
 		}
 	}
-	if relation == nil || relation.Kind != schema.FieldKindRelation || relation.Relation == nil {
+	if relation == nil || relation.LogicalType != v2.LogicalRelation || relation.Relation == nil {
 		return productError(
 			"formula.dependency", "draft.formula.source",
 			"formula relation field is unavailable", map[string]any{"reference": reference},
@@ -225,10 +192,10 @@ func validateAuthoredRelationReference(
 			map[string]any{"reference": reference},
 		)
 	}
-	target := targets[relation.PhysicalName]
+	target := targets[relation.Identity.PhysicalName]
 	for _, field := range target.Fields {
-		if field.PhysicalName == parts[1] && field.DataType != schema.DataTypeSecret &&
-			field.DataType != schema.DataTypeHash && field.Kind != schema.FieldKindRelation {
+		if field.Identity.PhysicalName == parts[1] &&
+			field.LogicalType != v2.LogicalRelation {
 			return nil
 		}
 	}
@@ -237,6 +204,26 @@ func validateAuthoredRelationReference(
 		"formula relation target field was not found",
 		map[string]any{"reference": reference},
 	)
+}
+
+func upsertFormulaField(table *formula.V2Table, field v2.FieldDefinition) {
+	for index := range table.Fields {
+		if table.Fields[index].Identity.FieldID == field.Identity.FieldID {
+			table.Fields[index] = field
+			return
+		}
+	}
+	table.Fields = append(table.Fields, field)
+}
+
+func removeFormulaField(table *formula.V2Table, fieldID string) {
+	filtered := table.Fields[:0]
+	for _, field := range table.Fields {
+		if field.Identity.FieldID != fieldID {
+			filtered = append(filtered, field)
+		}
+	}
+	table.Fields = filtered
 }
 
 func (catalog *Catalog) Revisions(
@@ -259,9 +246,27 @@ func (catalog *Catalog) Revisions(
 		return Revisions{}, fmt.Errorf("invalid stored data revision")
 	}
 	return Revisions{
-		Schema: schema.FormatSchemaRevision(schemaRevision),
+		Schema: v2.FormatSchemaRevision(schemaRevision),
 		Data:   dataRevision,
 	}, nil
+}
+
+func (catalog *Catalog) TableDisplayName(
+	ctx context.Context,
+	tableID string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	record, err := catalog.tableRecord(catalog.app, tableID)
+	if err != nil {
+		return "", err
+	}
+	name := strings.TrimSpace(record.GetString("display_name"))
+	if name == "" {
+		return "", fmt.Errorf("stored table display name is blank")
+	}
+	return name, nil
 }
 
 func (catalog *Catalog) Field(

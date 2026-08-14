@@ -55,10 +55,13 @@ export default defineConfig({
       exclude: [
         "src/**/*.test.ts",
         "src/**/*.d.ts",
+        "src/contracts/generated/**",
         "src/test/**",
         "src/main.ts",
       ],
       thresholds: {
+        lines: 80,
+        branches: 75,
         // Application logic is already above the repository-wide 85% line
         // target. Vue SFCs are tracked separately so the large, currently
         // presentation-heavy view layer cannot make the logic gate meaningless.
@@ -67,6 +70,18 @@ export default defineConfig({
         },
         "src/**/*.vue": {
           lines: 55,
+        },
+        "src/{components/dashboard,dashboard,services/dashboard*,stores/dashboard*,views/DashboardWorkspaceView.vue}/**/*.{ts,vue}": {
+          lines: 70,
+          branches: 60,
+        },
+        "src/{components/surfaces,surfaces,services/surface*,stores/surface*,views/InterfaceWorkspaceView.vue}/**/*.{ts,vue}": {
+          lines: 75,
+          branches: 65,
+        },
+        "src/{components/files,search,services/documentWorkspace*,stores/documentWorkspace*,views/FileWorkspaceView.vue}/**/*.{ts,vue}": {
+          lines: 75,
+          branches: 65,
         },
       },
     },

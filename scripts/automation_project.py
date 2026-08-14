@@ -129,6 +129,8 @@ def bootstrap() -> None:
 
 def contracts() -> None:
     """Verify the shared v2 wire contract through every runtime consumer."""
+    _run("uv", "run", "python", "contracts/schema-v2/generate_dtos.py", "--check")
+    _run("uv", "run", "python", "contracts/workbench/generate_dtos.py", "--check")
     _run("uv", "run", "python", "contracts/v2/generate_product_rpc_catalog.py", "--check")
     _run("uv", "run", "python", "contracts/v2/generate_rpc_catalog.py", "--check")
     _run(
@@ -139,6 +141,8 @@ def contracts() -> None:
         "pytest",
         "tests/contract/test_v2_contracts.py",
         "tests/contract/test_product_contracts.py",
+        "tests/contract/test_schema_v2_dto_codegen.py",
+        "tests/contract/test_workbench_dto_codegen.py",
         "tests/backend/contracts/test_workspace_v2_models.py",
         "-q",
         "--no-cov",
@@ -167,6 +171,8 @@ def contracts() -> None:
         "test",
         "./internal/contracts/v2",
         "./internal/contracts",
+        "./internal/contracts/schemav2wire",
+        "./internal/contracts/workbench",
         "./internal/protocolv2",
         cwd=REPO_ROOT / "sidecar",
     )
@@ -213,6 +219,7 @@ def quality() -> None:
     _run("uv", "run", "python", "qa/go_format_check.py")
     _run("go", "vet", "./...", cwd=REPO_ROOT / "sidecar")
     _run("uv", "run", "python", "qa/next.py", "--stage", "go-test")
+    _run("uv", "run", "python", "qa/next.py", "--stage", "go-coverage")
     sidecar_output = REPO_ROOT / "build/automation/sidecar/vibetable-pb.exe"
     sidecar_output.parent.mkdir(parents=True, exist_ok=True)
     _run(
@@ -225,16 +232,7 @@ def quality() -> None:
         "./cmd/vibetable-pb",
         cwd=REPO_ROOT / "sidecar",
     )
-    _run(
-        "dotnet",
-        "test",
-        "desktop/VibeTable.Desktop.sln",
-        "--configuration",
-        "Release",
-        "--no-restore",
-        "/p:CollectCoverage=true",
-        "/p:CoverletOutputFormat=cobertura",
-    )
+    _run("uv", "run", "python", "qa/next.py", "--stage", "dotnet")
 
 
 def _artifacts_dir() -> Path:
@@ -273,6 +271,48 @@ def build_candidate() -> None:
     )
     _write_build_identity(artifacts / "build-identity.json", version, archive)
     _write_spdx(artifacts / "SBOM.spdx.json", version, archive)
+
+
+def pr_e2e() -> None:
+    """Build a package, run four tagged journeys, and qualify a real quick corpus."""
+    _run(
+        "uv",
+        "run",
+        "python",
+        "scripts/build_next.py",
+        env=_node_environment(),
+    )
+    _run(
+        "go",
+        "run",
+        "./cmd/workbench-qualification",
+        "--profile",
+        "pr",
+        "--records",
+        "1000",
+        "--files",
+        "100",
+        "--logical-bytes",
+        str(64 << 20),
+        "--report",
+        "../build/qa/workbench-qualification-pr.json",
+        "--work-root",
+        "../build/qa/workbench-qualification-runs",
+        cwd=REPO_ROOT / "sidecar",
+    )
+    _run(
+        "uv",
+        "run",
+        "python",
+        "qa/product_acceptance.py",
+        "--package-root",
+        "dist/VibeTable.Next",
+        "--evidence-root",
+        "build/qa/pr-product-e2e",
+        "--capability",
+        "release.smoke",
+        env=_node_environment(),
+    )
 
 
 def _spdx_id(value: str) -> str:
@@ -527,6 +567,7 @@ def _parser() -> argparse.ArgumentParser:
             "bootstrap",
             "contracts",
             "quality",
+            "pr-e2e",
             "build",
             "smoke",
             "smoke-lane",
@@ -550,6 +591,7 @@ def main(argv: list[str] | None = None) -> int:
         "bootstrap": bootstrap,
         "contracts": contracts,
         "quality": quality,
+        "pr-e2e": pr_e2e,
         "build": build_candidate,
         "smoke": release_smoke,
     }

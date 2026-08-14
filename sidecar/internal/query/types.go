@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+
+	"github.com/pocketbase/pocketbase/core"
 )
 
 type Operator string
@@ -187,16 +189,16 @@ func isJSONNull(raw []byte) bool {
 }
 
 type RelationDescriptor struct {
-	TableName  string                     `json:"tableName"`
-	PrimaryKey string                     `json:"primaryKey"`
-	Fields     map[string]FieldDescriptor `json:"fields"`
-	Multiple   bool                       `json:"multiple"`
+	TableName       string                     `json:"tableName"`
+	PrimaryKey      string                     `json:"primaryKey"`
+	RowRevisionName string                     `json:"rowRevisionName,omitempty"`
+	Fields          map[string]FieldDescriptor `json:"fields"`
+	Multiple        bool                       `json:"multiple"`
 }
 
 type EnumValueDescriptor struct {
-	Value              any    `json:"value"`
-	StorageValue       string `json:"storageValue"`
-	LegacyStorageValue string `json:"legacyStorageValue,omitempty"`
+	Value        any    `json:"value"`
+	StorageValue string `json:"storageValue"`
 }
 
 type EnumDescriptor struct {
@@ -205,16 +207,18 @@ type EnumDescriptor struct {
 }
 
 type FieldDescriptor struct {
-	PhysicalName     string              `json:"physicalName"`
-	Type             FieldType           `json:"type"`
-	AutoDate         bool                `json:"autoDate,omitempty"`
-	Searchable       bool                `json:"searchable,omitempty"`
-	ComputedEnvelope bool                `json:"computedEnvelope,omitempty"`
-	ComputedReady    bool                `json:"computedReady,omitempty"`
-	ComputedStatus   string              `json:"computedStatus,omitempty"`
-	ComputedError    *ComputedDiagnostic `json:"computedError,omitempty"`
-	Relation         *RelationDescriptor `json:"relation,omitempty"`
-	Enum             *EnumDescriptor     `json:"enum,omitempty"`
+	PhysicalName                string              `json:"physicalName"`
+	Type                        FieldType           `json:"type"`
+	AutoDate                    bool                `json:"autoDate,omitempty"`
+	Searchable                  bool                `json:"searchable,omitempty"`
+	ComputedEnvelope            bool                `json:"computedEnvelope,omitempty"`
+	ComputedReady               bool                `json:"computedReady,omitempty"`
+	ComputedStatus              string              `json:"computedStatus,omitempty"`
+	ComputedError               *ComputedDiagnostic `json:"computedError,omitempty"`
+	ComputedDefinitionVersion   int                 `json:"computedDefinitionVersion,omitempty"`
+	ComputedDependencyWatermark string              `json:"computedDependencyWatermark,omitempty"`
+	Relation                    *RelationDescriptor `json:"relation,omitempty"`
+	Enum                        *EnumDescriptor     `json:"enum,omitempty"`
 }
 
 type ComputedDiagnostic struct {
@@ -236,12 +240,16 @@ type TableDescriptor struct {
 	// non-queryable secrets. QueryPort hashes their raw values server-side but
 	// never returns those values.
 	DigestFields []string `json:"-"`
+	// DigestProjector is supplied by the product schema adapter. It must use
+	// the same projection as MutationKernel before a row digest is computed.
+	DigestProjector func(*core.Record) map[string]any `json:"-"`
 	// PresenceFields maps product field aliases to hidden companion columns.
 	// QueryCompiler selects them only as transport-internal projection inputs.
-	PresenceFields map[string]string `json:"-"`
-	ArchiveMode    ArchiveMode       `json:"archiveMode,omitempty"`
-	ArchiveField   string            `json:"archiveField,omitempty"`
-	ArchiveValue   any               `json:"archiveValue,omitempty"`
+	PresenceFields  map[string]string `json:"-"`
+	RowRevisionName string            `json:"-"`
+	ArchiveMode     ArchiveMode       `json:"archiveMode,omitempty"`
+	ArchiveField    string            `json:"archiveField,omitempty"`
+	ArchiveValue    any               `json:"archiveValue,omitempty"`
 }
 
 type CompiledQuery struct {
@@ -278,14 +286,24 @@ type Page struct {
 	Snapshot     QuerySnapshot    `json:"querySnapshot"`
 }
 
+type CursorWindow struct {
+	Rows         []map[string]any `json:"rows"`
+	NextCursor   *string          `json:"nextCursor"`
+	HasMore      bool             `json:"hasMore"`
+	FilteredRows int64            `json:"filteredRows"`
+	TotalRows    int64            `json:"totalRows"`
+	Snapshot     QuerySnapshot    `json:"querySnapshot"`
+}
+
 type AggregateFunction string
 
 const (
-	AggregateCount AggregateFunction = "count"
-	AggregateSum   AggregateFunction = "sum"
-	AggregateAvg   AggregateFunction = "avg"
-	AggregateMin   AggregateFunction = "min"
-	AggregateMax   AggregateFunction = "max"
+	AggregateCount         AggregateFunction = "count"
+	AggregateCountDistinct AggregateFunction = "countDistinct"
+	AggregateSum           AggregateFunction = "sum"
+	AggregateAvg           AggregateFunction = "avg"
+	AggregateMin           AggregateFunction = "min"
+	AggregateMax           AggregateFunction = "max"
 )
 
 type AggregateMetric struct {
@@ -294,11 +312,19 @@ type AggregateMetric struct {
 	Alias    string            `json:"alias"`
 }
 
+type AggregateTimeBucket struct {
+	Field    string      `json:"field"`
+	Unit     GroupBucket `json:"unit"`
+	Timezone string      `json:"timezone,omitempty"`
+}
+
 type AggregateQuery struct {
-	Filters []FilterExpression `json:"filters,omitempty"`
-	GroupBy []string           `json:"groupBy,omitempty"`
-	Metrics []AggregateMetric  `json:"metrics"`
-	Limit   int                `json:"limit,omitempty"`
+	Filters    []FilterExpression   `json:"filters,omitempty"`
+	GroupBy    []string             `json:"groupBy,omitempty"`
+	Metrics    []AggregateMetric    `json:"metrics"`
+	TimeBucket *AggregateTimeBucket `json:"timeBucket,omitempty"`
+	TopN       int                  `json:"topN,omitempty"`
+	Limit      int                  `json:"limit,omitempty"`
 }
 
 type AggregateResult struct {

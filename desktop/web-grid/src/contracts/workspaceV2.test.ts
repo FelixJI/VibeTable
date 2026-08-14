@@ -89,6 +89,13 @@ describe("workspace v2 strict contracts", () => {
     })).toThrow();
   });
 
+  it.each([1, 3])("rejects unsupported workspace format %s explicitly", (formatVersion) => {
+    const manifest = fixture("workspace-manifest.json") as Record<string, unknown>;
+
+    expect(() => parseWorkspaceManifestV2({ ...manifest, formatVersion }))
+      .toThrow("workspace.format_unsupported");
+  });
+
   it("accepts provisional file revisions without allocating canonical numbers", () => {
     const canonical = fixture("file-revision.json") as Record<string, unknown>;
     const provisional = parseFileRevisionV2({

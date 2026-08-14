@@ -37,6 +37,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SIDECAR_DIR = REPO_ROOT / "sidecar"
 WEB_GRID_DIR = REPO_ROOT / "desktop" / "web-grid"
 DESKTOP_SLN = REPO_ROOT / "desktop" / "VibeTable.Desktop.sln"
+PROJECT_CONFIG = REPO_ROOT / ".ci" / "project.json"
 DEV_LAUNCHER = REPO_ROOT / "scripts" / "dev.py"
 SIDECAR_MATRIX = REPO_ROOT / "tests" / "integration" / "packaged_sidecar_matrix.py"
 FAULT_INJECTION = REPO_ROOT / "qa" / "fault_injection.py"
@@ -102,7 +103,6 @@ RACE_PACKAGE_SECONDS = {
     "github.com/vibetable/vibetable/sidecar/internal/snapshotpkg": 33.968,
     "github.com/vibetable/vibetable/sidecar/internal/startup": 9.032,
     "github.com/vibetable/vibetable/sidecar/internal/workspacedb": 11.765,
-    "github.com/vibetable/vibetable/sidecar/internal/workspacemigrator": 7.110,
     "github.com/vibetable/vibetable/sidecar/internal/workspacev2": 741.750,
     "github.com/vibetable/vibetable/sidecar/internal/writecoordinator": 17.344,
     "github.com/vibetable/vibetable/sidecar/migrations": 99.656,
@@ -250,26 +250,85 @@ def _select_race_package_plans(
 
 
 def _resolve(name: str) -> str:
+    tool_roots = [REPO_ROOT]
+    git_marker = REPO_ROOT / ".git"
+    if git_marker.is_file():
+        try:
+            marker = git_marker.read_text(encoding="utf-8").strip()
+            if marker.startswith("gitdir:"):
+                common_root = Path(marker.removeprefix("gitdir:").strip()).resolve().parents[2]
+                tool_roots.append(common_root)
+        except (OSError, IndexError):
+            pass
     if name == "go":
         suffix = "go.exe" if os.name == "nt" else "go"
-        candidate = REPO_ROOT / ".tools" / "go-full" / "go" / "bin" / suffix
-        if candidate.is_file():
-            return str(candidate)
-    if name == "gcc" and os.name == "nt":
-        for candidate in (
-            REPO_ROOT / ".tools" / "w64devkit" / "bin" / "gcc.exe",
-            REPO_ROOT / ".tools" / "w64devkit" / "w64devkit" / "bin" / "gcc.exe",
-        ):
+        for tool_root in tool_roots:
+            candidate = tool_root / ".tools" / "go-full" / "go" / "bin" / suffix
             if candidate.is_file():
                 return str(candidate)
+    if name == "gcc" and os.name == "nt":
+        for tool_root in tool_roots:
+            for candidate in (
+                tool_root / ".tools" / "w64devkit" / "bin" / "gcc.exe",
+                tool_root / ".tools" / "w64devkit" / "w64devkit" / "bin" / "gcc.exe",
+            ):
+                if candidate.is_file():
+                    return str(candidate)
     if name == "dotnet":
-        bundled = REPO_ROOT / ".tools" / "dotnet" / "dotnet.exe"
-        if bundled.is_file():
-            return str(bundled)
+        for tool_root in tool_roots:
+            bundled = tool_root / ".tools" / "dotnet" / "dotnet.exe"
+            if bundled.is_file():
+                return str(bundled)
         system = Path(r"C:\Program Files\dotnet\dotnet.exe")
         if system.is_file():
             return str(system)
     return shutil.which(name) or name
+
+
+def dotnet_coverage_properties(config_path: Path = PROJECT_CONFIG) -> dict[str, int]:
+    """Load per-assembly Coverlet ratchets from the authoritative project config."""
+
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        projects = payload["quality"]["dotnet_coverage"]["projects"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError(f"invalid dotnet coverage configuration: {exc}") from exc
+    if not isinstance(projects, dict) or not projects:
+        raise ValueError("dotnet coverage projects must be a non-empty object")
+
+    properties: dict[str, int] = {}
+    test_projects: set[Path] = set()
+    for assembly, raw in projects.items():
+        if not isinstance(assembly, str) or not assembly or not isinstance(raw, dict):
+            raise ValueError("dotnet coverage project entries must be named objects")
+        prefix = raw.get("msbuild_prefix")
+        test_project = raw.get("test_project")
+        minimum = raw.get("minimum")
+        if not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", prefix):
+            raise ValueError(f"invalid dotnet coverage msbuild_prefix for {assembly}")
+        if not isinstance(test_project, str) or not test_project:
+            raise ValueError(f"invalid dotnet coverage test_project for {assembly}")
+        project_path = (REPO_ROOT / test_project).resolve()
+        tests_root = (REPO_ROOT / "desktop" / "tests").resolve()
+        if (
+            not project_path.is_relative_to(tests_root)
+            or project_path.suffix != ".csproj"
+            or not project_path.is_file()
+            or project_path in test_projects
+        ):
+            raise ValueError(f"invalid dotnet coverage test_project for {assembly}")
+        test_projects.add(project_path)
+        if not isinstance(minimum, dict) or set(minimum) != {"line", "branch"}:
+            raise ValueError(f"dotnet coverage minimum must declare line and branch for {assembly}")
+        for metric in ("line", "branch"):
+            value = minimum[metric]
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= 100:
+                raise ValueError(f"invalid dotnet {metric} coverage minimum for {assembly}")
+            property_name = f"{prefix}{metric.title()}CoverageMinimum"
+            if property_name in properties:
+                raise ValueError(f"duplicate dotnet coverage property: {property_name}")
+            properties[property_name] = value
+    return properties
 
 
 def stage_command(
@@ -293,6 +352,13 @@ def stage_command(
         return [go, "vet", "./..."], str(SIDECAR_DIR)
     if stage == "go-test":
         return [go, "test", "./..."], str(SIDECAR_DIR)
+    if stage == "go-coverage":
+        return [
+            sys.executable,
+            str(REPO_ROOT / "qa" / "go_coverage.py"),
+            "--go",
+            go,
+        ], str(REPO_ROOT)
     if stage == "go-race":
         return [
             go,
@@ -380,7 +446,7 @@ def stage_command(
             "no:cacheprovider",
         ], str(REPO_ROOT)
     if stage == "dotnet":
-        return [
+        command = [
             _resolve("dotnet"),
             "test",
             str(DESKTOP_SLN),
@@ -388,7 +454,9 @@ def stage_command(
             "Release",
             "/p:CollectCoverage=true",
             "/p:CoverletOutputFormat=cobertura",
-        ], str(REPO_ROOT)
+        ]
+        command.extend(f"/p:{name}={value}" for name, value in dotnet_coverage_properties().items())
+        return command, str(REPO_ROOT)
     if stage == "web-test":
         return [_resolve("npm"), "run", "test:coverage"], str(WEB_GRID_DIR)
     if stage == "web-build":
@@ -412,6 +480,24 @@ def stage_command(
         if package_root is not None:
             command.extend(["--package-root", str(package_root)])
         return command, str(REPO_ROOT)
+    if stage == "workbench-qualification":
+        return [
+            go,
+            "run",
+            "./cmd/workbench-qualification",
+            "--profile",
+            "release",
+            "--records",
+            "100000",
+            "--files",
+            "10000",
+            "--logical-bytes",
+            str(20 << 30),
+            "--report",
+            str(REPO_ROOT / "build" / "qa" / "workbench-qualification.json"),
+            "--work-root",
+            str(REPO_ROOT / "build" / "qa" / "workbench-qualification-runs"),
+        ], str(SIDECAR_DIR)
     if stage == "smoke":
         return [
             sys.executable,

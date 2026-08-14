@@ -323,6 +323,49 @@ async function fillNInput(page, testId, value) {
   await page.getByTestId(testId).locator("input, textarea").first().fill(value);
 }
 
+async function selectVisibleNOption(page, testId, label) {
+  const select = page.getByTestId(testId);
+  await select.locator(".n-base-selection").click();
+  const option = page.locator(".n-base-select-option:visible")
+    .filter({ hasText: label })
+    .first();
+  await option.waitFor({ state: "visible", timeout: 10_000 });
+  await option.click();
+  await option.waitFor({ state: "hidden", timeout: 10_000 });
+}
+
+async function selectVisibleNOptions(page, testId, labels) {
+  const select = page.getByTestId(testId);
+  const selection = select.locator(".n-base-selection");
+  for (const label of labels) {
+    const selectedChip = select.getByText(label, { exact: true }).first();
+    if (await selectedChip.isVisible()) {
+      continue;
+    }
+
+    let openMenu = page.locator(".n-base-select-menu:visible").first();
+    if (!(await openMenu.count())) {
+      await selection.waitFor({ state: "visible", timeout: 10_000 });
+      await selection.click();
+      openMenu = page.locator(".n-base-select-menu:visible").first();
+      await openMenu.waitFor({ state: "visible", timeout: 10_000 });
+    }
+
+    const option = openMenu
+      .locator(".n-base-select-option")
+      .filter({ hasText: label })
+      .first();
+    await option.waitFor({ state: "visible", timeout: 10_000 });
+    await option.click();
+    await selectedChip.waitFor({ state: "visible", timeout: 10_000 });
+  }
+  const openMenu = page.locator(".n-base-select-menu:visible").first();
+  if (await openMenu.count()) {
+    await page.keyboard.press("Escape");
+    await openMenu.waitFor({ state: "hidden" });
+  }
+}
+
 async function closeVisibleNSelectMenu(page) {
   const visibleMenu = page.locator(".n-base-select-menu:visible").first();
   if (!await visibleMenu.count()) return;
@@ -734,6 +777,22 @@ async function scenario01(page, recorder, network, runtime) {
 
 async function scenario02(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
+  await page.evaluate(() => {
+    window.__vibetableE2eEditSchemaRejections = [];
+    window.chrome?.webview?.addEventListener("message", (event) => {
+      let value = event.data;
+      if (typeof value === "string") {
+        try {
+          value = JSON.parse(value);
+        } catch {
+          return;
+        }
+      }
+      if (value?.type === "table.editRejected" && value?.payload?.operation === "editSchema") {
+        window.__vibetableE2eEditSchemaRejections.push(value);
+      }
+    });
+  });
   await page.getByTestId("nav-tables").click();
   await page.getByTestId("sidebar-new-table").waitFor();
   const target = await createSimpleTable(page, "E2E Relation Target V2", "Label");
@@ -838,6 +897,7 @@ async function scenario02(page, recorder, _network, runtime) {
   await waitForVisibleRowCount(page, 1);
   await page.evaluate(() => {
     window.__vibetableE2eEditCommitted = false;
+    window.__vibetableE2eEditOutcome = null;
     window.chrome?.webview?.addEventListener("message", (event) => {
       let value = event.data;
       if (typeof value === "string") {
@@ -850,23 +910,41 @@ async function scenario02(page, recorder, _network, runtime) {
       if (value?.type === "table.editCommitted") {
         window.__vibetableE2eEditCommitted = true;
       }
+      if (["table.editCommitted", "table.editRejected", "operation.failed"].includes(value?.type)) {
+        window.__vibetableE2eEditOutcome = value;
+      }
     });
   });
   const undoCell = page.locator(
     `.tabulator-cell[tabulator-field="${titleField.physicalName}"]`,
   ).first();
-  const undoEditor = await beginCellEdit(undoCell);
+  let undoEditor;
+  try {
+    undoEditor = await beginCellEdit(undoCell);
+  } catch (error) {
+    const editSchemaRejections = await page.evaluate(
+      () => window.__vibetableE2eEditSchemaRejections,
+    );
+    throw new Error(
+      `${error.message}; editSchemaRejections=${JSON.stringify(editSchemaRejections)}`,
+    );
+  }
   await undoEditor.fill("undo-this-data-edit");
   await undoEditor.press("Enter");
-  await waitForQueryPage(
-    page,
-    {
-      tableId,
-      query: { filters: [], sorts: [], offset: 0, limit: 100 },
-    },
-    (payload) => payload?.rows?.length === 1
-      && payload.rows[0]?.[titleField.physicalName] === "undo-this-data-edit",
-  );
+  try {
+    await waitForQueryPage(
+      page,
+      {
+        tableId,
+        query: { filters: [], sorts: [], offset: 0, limit: 100 },
+      },
+      (payload) => payload?.rows?.length === 1
+        && payload.rows[0]?.[titleField.physicalName] === "undo-this-data-edit",
+    );
+  } catch (error) {
+    const editOutcome = await page.evaluate(() => window.__vibetableE2eEditOutcome);
+    throw new Error(`${error.message}; editOutcome=${JSON.stringify(editOutcome)}`);
+  }
   await page.waitForFunction(
     ({ field, value }) => document.querySelector(
       `.tabulator-cell[tabulator-field="${field}"]`,
@@ -3485,6 +3563,38 @@ async function scenario11(page, recorder, _network, runtime) {
   { message: await upgradeFailure.innerText() });
 }
 
+async function submitWorkspaceSearch(page, { keyboard = false } = {}) {
+  const submit = page.getByTestId("workspace-search-submit");
+  await submit.waitFor({ state: "visible" });
+  await beginWorkspaceV2MethodCapture(page, "workspaceSearch.query");
+  if (keyboard) {
+    const input = page.getByTestId("workspace-search-input").locator("input");
+    await input.focus();
+    await input.press("Enter");
+  } else {
+    await submit.click();
+  }
+  const response = await waitForCapturedBridgeMessage(page, 30_000);
+  if (response.payload?.ok !== true) {
+    throw new Error(`WorkspaceSearch query failed: ${JSON.stringify(response)}`);
+  }
+  return response.payload.result;
+}
+
+async function waitForWorkspaceSearchTerminal(page, timeout = 120_000) {
+  await page.waitForFunction(
+    () => {
+      const state = document.querySelector(".index-state")?.getAttribute("data-state");
+      return state === "ready" || state === "failed" || state === "degraded";
+    },
+    undefined,
+    { timeout },
+  );
+  return page.getByTestId("workspace-search-view")
+    .locator(".index-state")
+    .getAttribute("data-state");
+}
+
 async function scenario12(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
@@ -3676,6 +3786,25 @@ async function scenario12(page, recorder, _network, runtime) {
     expectedOriginalSize: originalBytes.length,
   });
 
+  await page.getByTestId("nav-search").click();
+  const searchWorkspace = page.getByTestId("workspace-search-view");
+  await searchWorkspace.waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("workspace-search-rebuild").click();
+  const beforeSnapshotSearchState = await waitForWorkspaceSearchTerminal(page);
+  await page.getByTestId("workspace-search-input").locator("input").fill("backup-original");
+  const beforeSnapshotSearch = await submitWorkspaceSearch(page);
+  const beforeSnapshotSearchStatus = await rawWorkspaceV2Request(
+    page,
+    "workspaceSearch.status",
+    {},
+  );
+  recorder.check("snapshot source has a ready search generation containing the attachment",
+    beforeSnapshotSearchState === "ready"
+      && beforeSnapshotSearch.hits.some((hit) => hit.kind === "attachment")
+      && Number.isInteger(beforeSnapshotSearchStatus.result?.generation)
+      && beforeSnapshotSearchStatus.result.generation > 0,
+  { beforeSnapshotSearch, beforeSnapshotSearchStatus: beforeSnapshotSearchStatus.result });
+
   await page.getByTestId("nav-settings").click();
   await page.getByTestId("settings-nav-versions").click();
   const existingSnapshotIds = await page.locator(".snapshot-row").evaluateAll(
@@ -3780,6 +3909,35 @@ async function scenario12(page, recorder, _network, runtime) {
       restoredSession: restoredBootstrap.payload?.session,
     },
   );
+
+  const postRestoreInitialSearch = await rawWorkspaceV2Request(
+    page,
+    "workspaceSearch.status",
+    {},
+  );
+  await page.getByTestId("nav-search").click();
+  await searchWorkspace.waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("workspace-search-rebuild").click();
+  const restoredSearchState = await waitForWorkspaceSearchTerminal(page);
+  await page.getByTestId("workspace-search-input").locator("input").fill("backup-original");
+  const restoredSearch = await submitWorkspaceSearch(page);
+  const restoredSearchStatus = await rawWorkspaceV2Request(
+    page,
+    "workspaceSearch.status",
+    {},
+  );
+  recorder.check("snapshot restore invalidates derived search and rebuilds a newer usable generation",
+    ["building", "degraded", "ready"].includes(postRestoreInitialSearch.result?.state)
+      && restoredSearchState === "ready"
+      && restoredSearchStatus.result?.generation
+        > beforeSnapshotSearchStatus.result?.generation
+      && restoredSearch.hits.some((hit) => hit.kind === "attachment"),
+  {
+    postRestoreInitialSearch: postRestoreInitialSearch.result,
+    beforeSnapshotSearchStatus: beforeSnapshotSearchStatus.result,
+    restoredSearchStatus: restoredSearchStatus.result,
+    restoredSearch,
+  });
 
   await page.getByTestId("nav-tables").click();
   await waitForTableRecovery(
@@ -4165,8 +4323,12 @@ async function scenario14(page, recorder, _network, runtime) {
   });
   await row.waitFor({ state: "visible", timeout: 30_000 });
 
-  const listed = await rawWorkspaceV2Request(page, "fileHistory.listDocuments", {
-    includeDeleted: false,
+  const listed = await rawWorkspaceV2Request(page, "fileHistory.queryDocuments", {
+    logic: "and",
+    filters: [{ field: "displayName", operator: "eq", value: "document-diff-source.txt" }],
+    sort: [{ field: "relativePath", direction: "asc" }],
+    limit: 50,
+    cursor: null,
   });
   const document = listed.result?.documents?.find(
     (item) => item.relativePath === "document-diff-source.txt",
@@ -4472,6 +4634,15 @@ async function scenario15(page, recorder, _network, runtime) {
 
 async function scenario16(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const seeded = await createSimpleTable(page, "E2E Dashboard Data", "Region");
+  const dashboardSeed = await applyProductMutation(page, seeded.tableId, [
+    { kind: "insert", recordId: null, values: { [seeded.field.physicalName]: "North" } },
+    { kind: "insert", recordId: null, values: { [seeded.field.physicalName]: "South" } },
+  ], "dashboard-seed");
+  recorder.check("Dashboard E2E starts from authoritative PocketBase records",
+    dashboardSeed.payload?.status === "applied", { dashboardSeed });
+
   await page.getByTestId("nav-dashboard").click();
   const workspace = page.getByTestId("dashboard-workspace");
   await workspace.waitFor({ state: "visible", timeout: 30_000 });
@@ -4491,6 +4662,94 @@ async function scenario16(page, recorder, _network, runtime) {
   await save.waitFor({ state: "visible", timeout: 10_000 });
   recorder.check("a blank Dashboard draft is created through the product UI",
     await save.isEnabled());
+
+  async function addPanel(name, typeLabel, dimensions = []) {
+    await page.getByTestId("dashboard-add-panel").click();
+    await page.getByTestId("dashboard-panel-editor").waitFor({ state: "visible" });
+    await fillNInput(page, "dashboard-panel-name", name);
+    await selectVisibleNOption(page, "dashboard-panel-type", typeLabel);
+    await selectVisibleNOption(page, "dashboard-panel-collection", seeded.tableId);
+    if (/Record list|明细列表/u.test(String(typeLabel))) {
+      await page.getByTestId("dashboard-panel-fields").waitFor({ state: "visible" });
+      await selectVisibleNOptions(page, "dashboard-panel-fields", ["Region"]);
+    } else if (dimensions.length > 0) {
+      await page.getByTestId("dashboard-panel-dimensions").waitFor({ state: "visible" });
+      await selectVisibleNOptions(page, "dashboard-panel-dimensions", dimensions);
+    }
+    const submit = page.getByTestId("dashboard-panel-submit");
+    await submit.waitFor({ state: "visible" });
+    await page.waitForFunction(
+      () => !document.querySelector('[data-testid="dashboard-panel-submit"]')?.hasAttribute("disabled"),
+      undefined,
+      { timeout: 20_000 },
+    );
+    await submit.click();
+    const panel = workspace.locator(".dashboard-panel").filter({ hasText: name });
+    await panel.waitFor({ state: "visible", timeout: 30_000 });
+    return panel;
+  }
+
+  const barPanel = await addPanel("Regional bars", /^(柱状图|Bar chart)$/u, ["Region"]);
+  const dataPanel = await addPanel("Regional records", /^(明细列表|Record list)$/u);
+  const metricPanel = await addPanel("Record count", /^(单指标|Metric)$/u);
+  const piePanel = await addPanel("Regional share", /^(饼图|Pie chart)$/u, ["Region"]);
+  await dataPanel.getByText("North", { exact: true }).waitFor({ timeout: 30_000 });
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".dashboard-panel")].every((panel) =>
+      !panel.textContent?.includes("正在加载") && !panel.textContent?.includes("Loading")),
+    undefined,
+    { timeout: 30_000 },
+  );
+  recorder.check("Dashboard renders four typed panel families over authoritative rows",
+    (await dataPanel.innerText()).includes("North")
+      && (await dataPanel.innerText()).includes("South")
+      && /2/u.test(await metricPanel.innerText())
+      && await barPanel.getByTestId("dashboard-chart-selection").isVisible()
+      && await piePanel.getByTestId("dashboard-chart-selection").isVisible(),
+  {
+    recordPanel: await dataPanel.innerText(),
+    metricPanel: await metricPanel.innerText(),
+    panelCount: await workspace.locator(".dashboard-panel").count(),
+  });
+
+  const layoutItem = workspace.locator(".grid-stack-item").filter({ hasText: "Regional records" });
+  const layoutBefore = {
+    x: await layoutItem.getAttribute("gs-x"),
+    height: await layoutItem.getAttribute("gs-h"),
+  };
+  await layoutItem.press("Alt+ArrowRight");
+  await layoutItem.press("Alt+Shift+ArrowDown");
+  const layoutAfter = {
+    x: await layoutItem.getAttribute("gs-x"),
+    height: await layoutItem.getAttribute("gs-h"),
+  };
+  recorder.check("Dashboard keyboard layout moves and resizes the selected panel",
+    layoutAfter.x !== layoutBefore.x && layoutAfter.height !== layoutBefore.height,
+  { layoutBefore, layoutAfter });
+
+  await page.getByTestId("dashboard-configure").click();
+  await page.getByTestId("dashboard-settings").waitFor({ state: "visible" });
+  await page.getByTestId("dashboard-add-interaction").click();
+  const interactionSource = page.getByTestId("dashboard-interaction-source-0");
+  const interactionSourceField = page.getByTestId("dashboard-interaction-source-field-0");
+  const interactionTargets = page.getByTestId("dashboard-interaction-targets-0");
+  recorder.check("Dashboard settings derives a visual chart-to-record interaction by default",
+    (await interactionSource.innerText()).includes("Regional bars")
+      && (await interactionSourceField.innerText()).includes("Region")
+      && (await interactionTargets.innerText()).includes("Regional records"),
+  {
+    source: await interactionSource.innerText(),
+    sourceField: await interactionSourceField.innerText(),
+    targets: await interactionTargets.innerText(),
+  });
+  await selectVisibleNOption(page, "dashboard-interaction-target-field-0", "Region");
+  const settingsSubmit = page.getByTestId("dashboard-settings-submit");
+  await page.waitForFunction(
+    () => !document.querySelector('[data-testid="dashboard-settings-submit"]')?.hasAttribute("disabled"),
+    undefined,
+    { timeout: 20_000 },
+  );
+  await settingsSubmit.click();
   await save.click();
 
   const persisted = workspace.locator('[data-testid^="dashboard-select-"]').filter({
@@ -4503,11 +4762,620 @@ async function scenario16(page, recorder, _network, runtime) {
   await persisted.waitFor({ state: "visible", timeout: 30_000 });
   await persisted.click();
   await page.getByTestId("dashboard-refresh").click();
-  recorder.check("the saved Dashboard reloads from the product UI and remains selectable",
-    await persisted.getAttribute("aria-selected") === "true",
-  { dashboardName: "E2E Dashboard" });
+  const reopenedPanel = workspace.locator(".dashboard-panel").filter({ hasText: "Regional records" });
+  await reopenedPanel.waitFor({ state: "visible", timeout: 30_000 });
+  const reopenedBar = workspace.locator(".dashboard-panel").filter({ hasText: "Regional bars" });
+  const chartSelection = reopenedBar.getByTestId("dashboard-chart-selection");
+  await chartSelection.waitFor({ state: "visible", timeout: 30_000 });
+  await chartSelection.selectOption({ label: "North" });
+  const drilldown = page.getByTestId("dashboard-drilldown");
+  await drilldown.waitFor({ state: "visible", timeout: 30_000 });
+  await drilldown.getByText("North", { exact: true }).first().waitFor({ timeout: 30_000 });
+  await page.waitForFunction(
+    () => {
+      const panel = [...document.querySelectorAll(".dashboard-panel")]
+        .find((item) => item.textContent?.includes("Regional records"));
+      return panel?.textContent?.includes("North") && !panel?.textContent?.includes("South");
+    },
+    undefined,
+    { timeout: 30_000 },
+  );
+  const linkedText = await reopenedPanel.innerText();
+  recorder.check("the saved Dashboard reopens and chart selection drives linked filtering plus drilldown",
+    await persisted.getAttribute("aria-selected") === "true"
+      && linkedText.includes("North") && !linkedText.includes("South")
+      && (await drilldown.innerText()).includes("North"),
+  { dashboardName: "E2E Dashboard", linkedText, drilldownText: await drilldown.innerText() });
+
+  await page.keyboard.press("Escape");
+  await page.getByTestId("dashboard-edit").click();
+  const editableItem = workspace.locator(".grid-stack-item").filter({ hasText: "Regional records" });
+  await editableItem.press("Alt+ArrowLeft");
+  const dashboardId = (await persisted.getAttribute("data-testid"))
+    ?.replace("dashboard-select-", "");
+  if (!dashboardId) throw new Error("persisted Dashboard id is unavailable");
+  const current = await rawBridgeRequest(page, "dashboard.readRequested", {
+    dashboardId,
+  }, 20_000, ["dashboard.loaded"]);
+  const server = current.payload;
+  const competing = await rawBridgeRequest(page, "dashboard.saveRequested", {
+    dashboardId: server.dashboard.id,
+    expectedRevision: server.revision,
+    idempotencyKey: crypto.randomUUID(),
+    name: server.dashboard.name,
+    note: "competing E2E save",
+    panels: server.dashboard.panels.map((panel) => ({
+      clientId: panel.id,
+      panelId: panel.id,
+      name: panel.name,
+      type: panel.type,
+      position: panel.position,
+      note: panel.note ?? null,
+      icon: panel.icon ?? null,
+      color: panel.color ?? null,
+      showHeader: panel.showHeader !== false,
+      options: panel.options,
+      query: panel.query,
+    })),
+    deletedPanelIds: [],
+    config: server.config,
+  }, 20_000, ["dashboard.saved"]);
+  recorder.check("a competing Dashboard commit advances the authoritative revision",
+    competing.type === "dashboard.saved"
+      && typeof competing.payload?.workspace?.revision === "string"
+      && competing.payload.workspace.revision !== server.revision,
+  {
+    before: server.revision,
+    after: competing.payload?.workspace?.revision,
+    responseType: competing.type,
+    error: competing.type === "operation.failed" ? competing.payload : undefined,
+  });
+  await save.click();
+  const conflict = page.getByTestId("dashboard-conflict-error");
+  await conflict.waitFor({ state: "visible", timeout: 30_000 });
+  const conflictText = await conflict.innerText();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByTestId("dashboard-reload-conflict").click();
+  await conflict.waitFor({ state: "hidden", timeout: 30_000 });
+  await acknowledgeExpectedBridgeFailureByCodeIfPresent(page, "dashboard_edit_conflict");
+  while (await acknowledgeExpectedBridgeFailureByCodeIfPresent(page, "DASHBOARD_CANCELLED")) {
+    // Rapid Dashboard reloads intentionally cancel superseded panel reads.
+  }
+  recorder.check("Dashboard exposes a CAS conflict and reloads the winning revision",
+    (await page.getByTestId("dashboard-edit").isVisible()) && !(await save.isVisible()),
+  { conflictText });
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "16-dashboard-lifecycle.png"),
+    fullPage: true,
+  });
+}
+
+async function scenario17(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-plugins").click();
+  await page.getByTestId("plugin-install-folder").click();
+  const pluginInstallPlan = page.getByTestId("plugin-install-plan");
+  await pluginInstallPlan.waitFor({ timeout: 30_000 });
+  const pluginInstallPlanText = await pluginInstallPlan.innerText();
+  await page.getByTestId("plugin-install-commit").click();
+  const interfacePlugin = page.locator("button.plugin-row")
+    .filter({ hasText: "com.vibetable.e2e.mutation-boundary" });
+  await interfacePlugin.waitFor({ timeout: 60_000 });
+  recorder.check("Interface packaged journey installs the real mutation-boundary plugin",
+    await interfacePlugin.isVisible(), { installPlan: pluginInstallPlanText });
+  await page.getByTestId("nav-tables").click();
+  const seeded = await createSimpleTable(page, "E2E Interface Data", "Subject");
+  await applyProductMutation(page, seeded.tableId, [{
+    kind: "insert", recordId: null, values: { [seeded.field.physicalName]: "Existing request" },
+  }], "interface-seed");
+  await page.getByTestId("nav-interfaces").click();
+  const workspace = page.getByTestId("interface-workspace");
+  await workspace.waitFor({ state: "visible", timeout: 30_000 });
+
+  page.once("dialog", (dialog) => dialog.accept("E2E Interface"));
+  await page.getByTestId("interface-create").click();
+  const nameInput = workspace.locator(".surface-name input");
+  await nameInput.fill("E2E Interface");
+  await page.getByTestId("interface-add-text").click();
+  const element = workspace.locator('[data-testid^="interface-builder-element-"]').first();
+  await element.waitFor({ state: "visible", timeout: 10_000 });
+  const inspectorText = workspace.locator(".inspector-panel label").filter({ hasText: "文本" })
+    .locator("input");
+  await inspectorText.fill("E2E Interface Content");
+  const saveButton = page.getByTestId("interface-save");
+  const saveDisabled = await saveButton.isDisabled();
+  if (saveDisabled) {
+    const diagnostic = await page.getByTestId("interface-diagnostics").textContent()
+      .catch(() => null);
+    throw new Error(`Interface save is disabled: ${diagnostic ?? "no diagnostic rendered"}`);
+  }
+  await beginBridgeMessageCapture(page, ["interface.committed"]);
+  await saveButton.click();
+  const initialCommit = await waitForCapturedBridgeMessage(page, 30_000);
+  const persistedEntry = {
+    interfaceId: initialCommit.payload?.definition?.interfaceId,
+    name: initialCommit.payload?.definition?.name,
+  };
+  if (!persistedEntry?.interfaceId) {
+    throw new Error(`Interface save did not commit a definition: ${JSON.stringify(initialCommit)}`);
+  }
+  const persisted = page.getByTestId(`interface-select-${persistedEntry.interfaceId}`);
+  await persisted.waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("nav-files").click();
+  await page.getByTestId("nav-interfaces").click();
+  await persisted.waitFor({ state: "visible", timeout: 30_000 });
+  await persisted.click();
+  const loaded = await rawBridgeRequest(page, "interface.loadRequested", {
+    interfaceId: persistedEntry.interfaceId,
+  }, 20_000, ["interface.loaded"]);
+  const interfaceId = loaded.payload?.definition?.interfaceId;
+  const definition = {
+    contractVersion: "1.0",
+    interfaceId,
+    name: "E2E Interface",
+    bindings: [{
+      bindingId: "requests",
+      query: {
+        contractVersion: "1.0", tableId: seeded.tableId,
+        fields: [seeded.field.physicalName], filters: [], sorts: [], cursor: null, pageSize: 100,
+      },
+      variables: [],
+    }],
+    actions: [
+      { actionId: "create", kind: "record.create", bindingId: "requests", targetPageId: null, pluginId: null, pluginActionId: null, requiresConfirmation: false },
+      { actionId: "update", kind: "record.update", bindingId: "requests", targetPageId: null, pluginId: null, pluginActionId: null, requiresConfirmation: true },
+      { actionId: "refresh", kind: "binding.refresh", bindingId: "requests", targetPageId: null, pluginId: null, pluginActionId: null, requiresConfirmation: false },
+      { actionId: "details", kind: "navigate", bindingId: null, targetPageId: "details", pluginId: null, pluginActionId: null, requiresConfirmation: false },
+      { actionId: "plugin-action", kind: "plugin", bindingId: null, targetPageId: null, pluginId: "com.vibetable.e2e.mutation-boundary", pluginActionId: "allowed-plan", requiresConfirmation: true },
+    ],
+    pages: [
+      { pageId: "main", title: "Requests", elements: [
+        { elementId: "list", kind: "record-list", bindingId: "requests", actionId: null, text: "Requests", width: "full", children: [] },
+        { elementId: "update", kind: "form", bindingId: "requests", actionId: "update", text: "Update request", width: "half", children: [] },
+        { elementId: "form", kind: "form", bindingId: "requests", actionId: "create", text: "New request", width: "half", children: [] },
+        { elementId: "refresh", kind: "button", bindingId: null, actionId: "refresh", text: "Refresh", width: "third", children: [] },
+        { elementId: "navigate", kind: "navigation", bindingId: null, actionId: "details", text: "Open details", width: "third", children: [] },
+        { elementId: "plugin-action", kind: "button", bindingId: "requests", actionId: "plugin-action", text: "Run plugin", width: "third", children: [] },
+      ] },
+      { pageId: "details", title: "Details", elements: [
+        { elementId: "detail-text", kind: "text", bindingId: null, actionId: null, text: "E2E Interface Details", width: "full", children: [] },
+      ] },
+    ],
+  };
+  const committed = await rawBridgeRequest(page, "interface.commitRequested", {
+    definition, expectedRevision: loaded.payload?.revision, idempotencyKey: crypto.randomUUID(),
+  }, 20_000, ["interface.committed"]);
+  recorder.check("Interface definition commits pages, binding and closed actions atomically",
+    committed.payload?.definition?.actions?.length === 5
+      && committed.payload?.definition?.pages?.length === 2,
+  { committed });
+  await persisted.click();
+  await page.getByTestId("interface-run").click();
+  const runtimeSurface = page.getByTestId("interface-runtime");
+  await runtimeSurface.waitFor({ state: "visible", timeout: 10_000 });
+  await runtimeSurface.getByText("Existing request", { exact: true }).waitFor({ timeout: 30_000 });
+  const updateForm = page.getByTestId("interface-runtime-update");
+  await updateForm.locator("input").fill("Updated through Interface");
+  page.once("dialog", (dialog) => dialog.accept());
+  await updateForm.getByRole("button", { name: "提交" }).click();
+  await runtimeSurface.getByText("操作已完成", { exact: true }).waitFor({ timeout: 30_000 });
+  await runtimeSurface.getByText("Updated through Interface", { exact: true }).waitFor({ timeout: 30_000 });
+  recorder.check("Interface runtime performs a confirmed CAS record update and refreshes the binding",
+    !(await runtimeSurface.innerText()).includes("Existing request"),
+  { runtimeText: await runtimeSurface.innerText() });
+  const form = page.getByTestId("interface-runtime-form");
+  await form.locator("input").fill("Created through Interface");
+  await form.getByRole("button", { name: "提交" }).click();
+  await runtimeSurface.getByText("操作已完成", { exact: true }).waitFor({ timeout: 30_000 });
+  await runtimeSurface.getByText("Created through Interface", { exact: true }).waitFor({ timeout: 30_000 });
+
+  const pluginAction = page.getByTestId("interface-runtime-plugin-action").getByRole("button");
+  page.once("dialog", (dialog) => dialog.accept());
+  await pluginAction.click();
+  const pluginConfirmation = page.getByTestId("plugin-confirmation");
+  await pluginConfirmation.waitFor({ timeout: 30_000 });
+  await page.getByTestId("plugin-confirm-reject").click();
+  await runtimeSurface.getByText("插件操作已拒绝", { exact: true }).waitFor({ timeout: 30_000 });
+  recorder.check("Interface plugin action exposes and records an explicit broker rejection",
+    !(await runtimeSurface.innerText()).includes("插件动作执行失败"));
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await pluginAction.click();
+  await pluginConfirmation.waitFor({ timeout: 30_000 });
+  await page.getByTestId("plugin-task-cancel").click();
+  await runtimeSurface.getByText("插件操作已取消", { exact: true }).waitFor({ timeout: 30_000 });
+  recorder.check("Interface plugin action cancels the authoritative in-flight task",
+    !(await runtimeSurface.innerText()).includes("操作已完成"));
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await pluginAction.click();
+  await pluginConfirmation.waitFor({ timeout: 30_000 });
+  const confirmationText = await pluginConfirmation.innerText();
+  await page.getByTestId("plugin-confirm-approve").click();
+  await runtimeSurface.getByText("操作已完成", { exact: true }).waitFor({ timeout: 30_000 });
+  recorder.check("Interface plugin action waits for broker approval and terminal success",
+    /FINAL WRITE CONFIRMATION/i.test(confirmationText), { confirmationText });
+
+  await page.getByTestId("interface-runtime-navigate").getByRole("button").click();
+  const runtimeText = await runtimeSurface.innerText();
+  recorder.check("Interface runtime creates a record, refreshes its binding and navigates pages",
+    runtimeText.includes("E2E Interface Details"),
+  { interfaceName: "E2E Interface", runtimeText });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "17-interface-lifecycle.png"),
+    fullPage: true,
+  });
+}
+
+async function scenario18(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const tableId = await createEmptyTable(page, "E2E Search Records");
+  const titleField = await createV2Field(page, tableId, "Title", "text");
+  const bodyField = await createV2Field(page, tableId, "Body", "editor");
+  const attachmentField = await createV2Field(page, tableId, "Attachment", "file");
+  await closeFieldSettingsDrawer(page);
+  const seeded = { tableId, field: titleField };
+  const recordSeed = await applyProductMutation(page, seeded.tableId, [{
+    kind: "insert", recordId: null,
+    values: {
+      [titleField.physicalName]: "E2E searchable record",
+      [bodyField.physicalName]: "A durable E2E body indexed from the authoritative record",
+    },
+  }], "search-seed");
+  const seededRow = recordSeed.payload?.affectedRows?.[0];
+  const seededRecordId = seededRow?.recordId;
+
+  await selectTable(page, "E2E Search Records");
+  await chooseToolbarMore(page, "refresh");
+  const titleCell = page.locator(
+    `.tabulator-cell[tabulator-field="${titleField.physicalName}"]`,
+  ).first();
+  await titleCell.waitFor({ state: "visible", timeout: 30_000 });
+  await titleCell.click();
+  await page.getByTestId("toolbar-content-record").click();
+  const profileConfig = page.getByTestId("content-profile-config");
+  await profileConfig.waitFor({ state: "visible", timeout: 30_000 });
+  await selectVisibleNOption(page, "content-profile-title", "Title");
+  await selectVisibleNOption(page, "content-profile-body", "Body");
+  await selectVisibleNOptions(page, "content-profile-searchable", ["Title", "Body"]);
+  await page.getByTestId("content-profile-save").click();
+  const contentPanel = page.getByTestId("content-record-panel");
+  await contentPanel.waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("content-edit").click();
+  const contentInputs = contentPanel.locator(".content-main .n-input input, .content-main .n-input textarea");
+  await contentInputs.nth(0).fill("E2E content record edited");
+  await contentInputs.nth(1).fill("Durable violet body saved through the content reading layout.");
+  await page.getByTestId("content-record-save").click();
+  const contentSaved = await waitForQueryPage(page, {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  }, (payload) => payload?.rows?.[0]?.[titleField.physicalName]
+      === "E2E content record edited"
+    && payload.rows[0]?.[bodyField.physicalName]
+      === "Durable violet body saved through the content reading layout.");
+  recorder.check("ContentProfile and record edits flow through the packaged content UI",
+    (await contentPanel.innerText()).includes("E2E content record edited")
+      && (await contentPanel.innerText()).includes("Durable violet body"),
+  { tableId, seededRecordId, contentSaved: contentSaved.payload?.rows?.[0] });
+  await page.locator(".n-drawer-header__close").last().click();
+
+  const schema = await rawBridgeRequest(page, "schema.describe", {
+    collection: tableId,
+    requestGeneration: 18_001,
+    accepts: ["vibetable.relation-capabilities.v1", "vibetable.lookup-query.v1"],
+  });
+  const attachmentColumn = schema.payload?.schema?.columns?.find(
+    (column) => column.name === attachmentField.physicalName,
+  );
+  if (!seededRecordId || !attachmentColumn?.fieldId) {
+    throw new Error(`search attachment identity unavailable: ${JSON.stringify({ recordSeed, schema })}`);
+  }
+  const attachmentCell = page.locator(
+    `.tabulator-cell[tabulator-field="${attachmentField.physicalName}"]`,
+  ).first();
+  await attachmentCell.dblclick();
+  await page.getByTestId("attachment-upload").click();
+  await waitForAttachmentList(
+    page,
+    { tableId, recordId: seededRecordId, fieldId: attachmentColumn.fieldId },
+    (attachments) => attachments.length === 1
+      && attachments[0]?.originalName === "e2e-search-attachment-original.txt",
+  );
+
+  await page.getByTestId("nav-files").click();
+  const documentControl = path.join(runtime.controlsDir, "document-source.txt");
+  await fs.writeFile(
+    documentControl,
+    `${path.join(runtime.controlsDir, "content-reference-a.md")}\n`,
+    "utf8",
+  );
+  await page.getByTestId("document-import").click();
+  const markdownRow = page.locator('[data-testid^="document-row-"]').filter({
+    hasText: "content-reference-a.md",
+  });
+  await markdownRow.waitFor({ state: "visible", timeout: 30_000 });
+  await fs.writeFile(
+    documentControl,
+    `${path.join(runtime.controlsDir, "content-reference-b.json")}\n`,
+    "utf8",
+  );
+  await page.getByTestId("document-import").click();
+  const jsonRow = page.locator('[data-testid^="document-row-"]').filter({
+    hasText: "content-reference-b.json",
+  });
+  await jsonRow.waitFor({ state: "visible", timeout: 30_000 });
+  const andDocuments = await rawWorkspaceV2Request(page, "fileHistory.queryDocuments", {
+    logic: "and",
+    filters: [
+      { field: "displayName", operator: "contains", value: "content-reference" },
+      { field: "extension", operator: "eq", value: "md" },
+    ],
+    sort: [{ field: "relativePath", direction: "asc" }],
+    limit: 50,
+    cursor: null,
+  });
+  const orDocuments = await rawWorkspaceV2Request(page, "fileHistory.queryDocuments", {
+    logic: "or",
+    filters: [
+      { field: "displayName", operator: "eq", value: "content-reference-b.json" },
+      { field: "extension", operator: "eq", value: "md" },
+    ],
+    sort: [{ field: "relativePath", direction: "asc" }],
+    limit: 50,
+    cursor: null,
+  });
+  const documents = orDocuments.result?.documents ?? [];
+  const markdownDocument = documents.find(
+    (item) => item.relativePath === "content-reference-a.md",
+  );
+  const jsonDocument = documents.find(
+    (item) => item.relativePath === "content-reference-b.json",
+  );
+  recorder.check("FileDocument metadata AND/OR preserves mandatory summary semantics",
+    andDocuments.result?.documents?.length === 1
+      && andDocuments.result.documents[0]?.documentId === markdownDocument?.documentId
+      && documents.length === 2
+      && documents.every((item) => item.relativePath
+        && item.displayName
+        && item.extension
+        && item.mimeType
+        && Number.isInteger(item.sizeBytes)
+        && item.sizeBytes > 0
+        && item.effectiveRevisionCreatedAt
+        && ["active", "deleted"].includes(item.status)),
+  { andDocuments: andDocuments.result, orDocuments: orDocuments.result });
+
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "E2E Search Records");
+  await titleCell.waitFor({ state: "visible", timeout: 30_000 });
+  await titleCell.click();
+  await page.getByTestId("toolbar-content-record").click();
+  await contentPanel.waitFor({ state: "visible", timeout: 30_000 });
+  await selectVisibleNOption(page, "content-link-document", "content-reference-a.md");
+  await page.getByTestId("content-link-create").click();
+  const linkedMarkdown = contentPanel.locator(".link-card").filter({
+    hasText: "content-reference-a.md",
+  });
+  await linkedMarkdown.waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("RecordDocumentLink is created through the content UI without copying identity",
+    (await linkedMarkdown.innerText()).includes("正常"),
+  { markdownDocument });
+  await page.locator(".n-drawer-header__close").last().click();
+
+  await page.getByTestId("nav-files").click();
+  await markdownRow.waitFor({ state: "visible", timeout: 30_000 });
+  await markdownRow.click({ button: "right" });
+  await page.getByTestId("document-unlink").click();
+  await page.getByTestId("document-unlink-confirm").click();
+  const deletedDocuments = await rawWorkspaceV2Request(page, "fileHistory.queryDocuments", {
+    logic: "and",
+    filters: [{ field: "displayName", operator: "eq", value: "content-reference-a.md" }],
+    sort: [{ field: "relativePath", direction: "asc" }],
+    limit: 50,
+    cursor: null,
+  });
+  recorder.check("unlink deletes only the FileHistory document and leaves the explicit link broken",
+    deletedDocuments.result?.documents?.length === 1
+      && deletedDocuments.result.documents[0]?.status === "deleted",
+  { deletedDocuments: deletedDocuments.result });
+
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "E2E Search Records");
+  await titleCell.waitFor({ state: "visible", timeout: 30_000 });
+  await titleCell.click();
+  await page.getByTestId("toolbar-content-record").click();
+  await contentPanel.waitFor({ state: "visible", timeout: 30_000 });
+  const brokenLink = contentPanel.locator(".link-card").filter({
+    hasText: "content-reference-a.md",
+  });
+  await brokenLink.getByText("关联已断开", { exact: true }).waitFor({ timeout: 30_000 });
+  await selectVisibleNOption(page, "content-link-document", "content-reference-b.json");
+  await brokenLink.getByTestId("content-link-repair").click();
+  const repairedLink = contentPanel.locator(".link-card").filter({
+    hasText: "content-reference-b.json",
+  });
+  await repairedLink.getByText("正常", { exact: true }).waitFor({ timeout: 30_000 });
+  const persistedLinks = await rawBridgeRequest(page, "recordDocumentLink.list", {
+    tableId,
+    recordId: seededRecordId,
+  });
+  recorder.check("broken RecordDocumentLink repairs to a second authority document",
+    persistedLinks.payload?.items?.length === 1
+      && persistedLinks.payload.items[0]?.link?.documentId === jsonDocument?.documentId,
+  { persistedLinks, jsonDocument });
+  await page.locator(".n-drawer-header__close").last().click();
+
+  await page.getByTestId("nav-search").click();
+  const workspace = page.getByTestId("workspace-search-view");
+  await workspace.waitFor({ state: "visible", timeout: 30_000 });
+
+  const rebuild = page.getByTestId("workspace-search-rebuild");
+  await rebuild.click();
+  const indexState = await waitForWorkspaceSearchTerminal(page);
+  recorder.check("WorkspaceSearch rebuild completes durably without a silent fallback",
+    indexState === "ready", { indexState });
+
+  await page.getByTestId("workspace-search-input").locator("input").fill("E2E");
+  await submitWorkspaceSearch(page, { keyboard: true });
+  const results = page.getByTestId("workspace-search-result");
+  await results.first().waitFor({ state: "visible", timeout: 30_000 });
+  const kinds = await results.evaluateAll((items) => items.map((item) => item.dataset.kind));
+  recorder.check("keyboard search returns current record, attachment, and file sources through the UI",
+    kinds.includes("record") && kinds.includes("attachment") && kinds.includes("file")
+      && kinds.every((kind) => ["record", "attachment", "file"].includes(kind)),
+  { kinds });
+
+  await page.getByTestId("workspace-search-scope-history").check();
+  await page.getByTestId("workspace-search-input").locator("input").fill("Marigold");
+  const markdownSearch = await submitWorkspaceSearch(page, { keyboard: true });
+  await results.first().waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("deleted Markdown visible text remains searchable only in history scope",
+    markdownSearch.hits.some((hit) => hit.kind === "file"
+      && hit.canonicalId === markdownDocument?.documentId),
+  { markdownSearch, markdownDocument });
+  await page.getByTestId("workspace-search-scope-current").check();
+  await page.getByTestId("workspace-search-input").locator("input").fill("Cobalt");
+  const jsonSearch = await submitWorkspaceSearch(page, { keyboard: true });
+  await results.first().waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("JSON textual values are extracted into WorkspaceSearch",
+    jsonSearch.hits.some((hit) => hit.kind === "file"
+      && hit.canonicalId === jsonDocument?.documentId),
+  { jsonSearch, jsonDocument });
+  await page.getByTestId("workspace-search-input").locator("input").fill("E2E");
+  await submitWorkspaceSearch(page);
+
+  await page.getByTestId("workspace-search-filters").locator("summary").click();
+  await page.getByTestId("workspace-search-filter-table").locator("input").fill(seeded.tableId);
+  await submitWorkspaceSearch(page);
+  await results.first().waitFor({ state: "visible", timeout: 30_000 });
+  const andKinds = await results.evaluateAll((items) => items.map((item) => item.dataset.kind));
+  recorder.check("WorkspaceSearch AND applies the table filter without leaking file hits",
+    andKinds.length > 0
+      && andKinds.every((kind) => ["record", "attachment"].includes(kind))
+      && andKinds.includes("record")
+      && andKinds.includes("attachment")
+      && !andKinds.includes("file"),
+  { andKinds });
+
+  await page.getByTestId("workspace-search-filter-extension").locator("input").fill(".json");
+  await workspace.locator(".segmented button", { hasText: "OR" }).click();
+  await submitWorkspaceSearch(page);
+  await results.first().waitFor({ state: "visible", timeout: 30_000 });
+  const orKinds = await results.evaluateAll((items) => items.map((item) => item.dataset.kind));
+  recorder.check("WorkspaceSearch OR combines table and extension filters across source kinds",
+    orKinds.includes("record") && orKinds.includes("file"),
+  { orKinds });
+
+  await page.getByTestId("workspace-search-filter-table").locator("input").fill("");
+  await page.getByTestId("workspace-search-filter-extension").locator("input").fill("");
+  await page.getByTestId("workspace-search-scope-history").check();
+  const historyResult = await submitWorkspaceSearch(page);
+  const expectedHistoryFileCount = historyResult.hits.filter((hit) => hit.kind === "file").length;
+  await page.waitForFunction(
+    (expected) => document.querySelectorAll(
+      '[data-testid="workspace-search-result"][data-kind="file"]',
+    ).length >= expected,
+    expectedHistoryFileCount,
+    { timeout: 30_000 },
+  );
+  const historyFiles = page.locator(
+    '[data-testid="workspace-search-result"][data-kind="file"]',
+  );
+  recorder.check("WorkspaceSearch history scope exposes immutable file revisions",
+    expectedHistoryFileCount >= 2 && await historyFiles.count() >= expectedHistoryFileCount,
+  { expectedHistoryFileCount, historyFileCount: await historyFiles.count(), historyResult });
+
+  await page.getByTestId("workspace-search-scope-current").check();
+  await page.getByTestId("workspace-search-filter-extension").locator("input").fill("");
+  await workspace.locator(".segmented button", { hasText: "AND" }).click();
+  await submitWorkspaceSearch(page);
+  const staleRecord = page.locator(
+    '[data-testid="workspace-search-result"][data-kind="record"]',
+  ).first();
+  await staleRecord.waitFor({ state: "visible", timeout: 30_000 });
+  if (!seededRecordId) throw new Error(`Search seed did not return a record id: ${JSON.stringify(recordSeed)}`);
+  const staleBefore = await rawBridgeRequest(page, "query.page", {
+    tableId: seeded.tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  });
+  const staleBeforeRow = staleBefore.payload?.rows?.find((row) => row.id === seededRecordId);
+  const staleBeforeRevision = Number(staleBefore.payload?.snapshot?.dataRevision);
+  if (!staleBeforeRow?.__vibetableDigest
+      || !staleBefore.payload?.snapshot?.schemaRevision
+      || !Number.isSafeInteger(staleBeforeRevision)) {
+    throw new Error(`stale SearchHit setup lacks current authority: ${JSON.stringify(staleBefore)}`);
+  }
+  const staleToken = `search-stale-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const staleMutation = await rawBridgeRequest(page, "mutation.apply", {
+    contractVersion: "2.0",
+    requestId: staleToken,
+    idempotencyKey: staleToken,
+    tableId: seeded.tableId,
+    schemaRevision: staleBefore.payload.snapshot.schemaRevision,
+    operations: [{
+      kind: "update", recordId: seededRecordId,
+      values: { [titleField.physicalName]: "E2E searchable record changed" },
+      expectedDigest: staleBeforeRow.__vibetableDigest,
+    }],
+    actor: { type: "user", id: "product-e2e", displayName: "Product E2E" },
+    expectedRevision: null,
+    expectedDigest: null,
+  }, 20_000, ["mutation.apply", "operation.failed"]);
+  if (staleMutation.type !== "mutation.apply"
+      || staleMutation.payload?.status !== "applied"
+      || staleMutation.payload?.error?.code) {
+    throw new Error(`stale SearchHit authority update failed: ${JSON.stringify(staleMutation)}`);
+  }
+  const staleAfter = await rawBridgeRequest(page, "query.page", {
+    tableId: seeded.tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  });
+  const staleAfterRevision = Number(staleAfter.payload?.snapshot?.dataRevision);
+  recorder.check("stale SearchHit setup commits a newer authority revision",
+    staleAfter.type === "query.page"
+      && Number.isSafeInteger(staleAfterRevision)
+      && staleAfterRevision > staleBeforeRevision
+      && staleAfter.payload?.rows?.find((row) => row.id === seededRecordId)
+        ?.[titleField.physicalName] === "E2E searchable record changed",
+  { staleBeforeRevision, staleAfterRevision, staleMutation, staleAfter });
+  await staleRecord.focus();
+  await staleRecord.press("Enter");
+  const staleMessage = page.locator(".n-message").last();
+  await staleMessage.waitFor({ state: "visible", timeout: 30_000 });
+  const staleMessageText = (await staleMessage.innerText()).trim();
+  const staleMessageWasVisible = await staleMessage.isVisible();
+  const activeSearchInput = page.getByTestId("workspace-search-input").locator("input");
+  await activeSearchInput.focus();
+  recorder.check("keyboard opening a stale SearchHit re-resolves authority and stays in Search",
+    staleMessageWasVisible
+      && staleMessageText.length > 0
+      && await workspace.isVisible()
+      && await activeSearchInput.isVisible()
+      && await activeSearchInput.evaluate((element) => element === document.activeElement),
+  { staleMessage: staleMessageText });
+
+  const restart = await requestSidecarKill(runtime, "verify ContentProfile and repaired link survive restart");
+  recorder.check("content restart terminated only the exact sidecar child",
+    restart.processName === "vibetable-pb.exe", { restart });
+  await waitForActiveTableBackend(page, tableId, 1, 90_000);
+  await page.getByTestId("nav-files").click();
+  await page.getByTestId("file-workspace").waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "E2E Search Records");
+  await titleCell.waitFor({ state: "visible", timeout: 30_000 });
+  await titleCell.click();
+  await page.getByTestId("toolbar-content-record").click();
+  await contentPanel.waitFor({ state: "visible", timeout: 30_000 });
+  const reopenedText = await contentPanel.innerText();
+  recorder.check("content record and repaired link survive packaged sidecar restart and reopen",
+    reopenedText.includes("Durable violet body")
+      && reopenedText.includes("content-reference-b.json")
+      && reopenedText.includes("正常")
+      && !reopenedText.includes("关联已断开"),
+  { reopenedText });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "18-workspace-search.png"),
     fullPage: true,
   });
 }
@@ -4529,6 +5397,8 @@ const scenarios = {
   "14-document-diff": scenario14,
   "15-workspace-snapshot-package": scenario15,
   "16-dashboard-lifecycle": scenario16,
+  "17-interface-lifecycle": scenario17,
+  "18-workspace-search": scenario18,
 };
 
 async function main() {

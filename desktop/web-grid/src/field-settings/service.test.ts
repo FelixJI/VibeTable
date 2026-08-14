@@ -295,9 +295,9 @@ describe("field settings service", () => {
       .mockResolvedValueOnce(schema("tbl_opaque", "fld_order_number", "订单号"))
       .mockResolvedValueOnce(schema("tbl_customers", "fld_customer_name", "客户名称"));
     useWorkspaceStore().setOpened([
-      { collection: "tbl_opaque", displayName: "订单" },
-      { collection: "tbl_customers", displayName: "客户" },
-    ]);
+      { collection: "tbl_opaque" },
+      { collection: "tbl_customers" },
+    ], { tbl_opaque: "订单", tbl_customers: "客户" });
     const service = useFieldSettingsService();
     const store = useFieldSettingsStore();
 
@@ -477,25 +477,6 @@ describe("field settings service", () => {
       if (method === "schema.describe") {
         return Promise.resolve(params.collection === "tbl_opaque" ? sourceSchema : targetSchema);
       }
-      if (method === "schema.getTable") {
-        return Promise.resolve({
-          contractVersion: "2.0",
-          tableId: "tbl_opaque",
-          physicalName: "orders",
-          displayName: "订单",
-          kind: "base",
-          schemaRevision: "schema_2",
-          archivePolicy: { mode: "none", fieldId: null, archivedValue: null },
-          indexes: [],
-          fields: [{
-            fieldId: "fld_price", physicalName: "f_price", displayName: "单价",
-            kind: "scalar", dataType: "float", storageType: "number",
-            nullable: false, defaultValue: null, constraints: [],
-            editor: { kind: "number", config: {} }, readOnly: false,
-            formula: null, relation: null, lookup: null, attachmentPolicy: null,
-          }],
-        });
-      }
       if (method === "formula.draft.validate") {
         return params.displaySource === "{单价} * 2" ? first : second;
       }
@@ -515,7 +496,7 @@ describe("field settings service", () => {
         dataType: "decimal", editable: true, nullable: false,
       }],
       rows: [{ rowKey: "order-1", id: "order-1", f_price: 21.25 }],
-      offset: 0, limit: 1, totalRows: 1, mode: "client",
+      offset: 0, limit: 1, totalRows: 1, mode: "remote",
     });
 
     await service.openCreate("tbl_opaque", "formula");

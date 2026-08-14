@@ -30,7 +30,10 @@ func TestCapturePublishesOnlyVerifiedCompleteSnapshotAndDeduplicatesRevision(t *
 	coordinator := NewCoordinator(repository, fakeBarrier{view: BarrierView{
 		MutationRevision: 11, SnapshotSequence: 1,
 		SchemaRevision: 3, BusinessSchemaVersion: 1,
-		FileRevision: 8, AuditRevision: 13,
+		DataRevision: 9, ComputationWatermark: 8, JobSchemaVersion: 1,
+		PendingWork:      PendingWork{Jobs: 2, BusinessOutbox: 1, SearchRebuild: true, SearchCheckpoint: "indexing"},
+		SearchGeneration: 4,
+		FileRevision:     8, AuditRevision: 13,
 		AuditAnchor: digest([]byte("anchor")), Database: snapshotDatabaseForTest(t),
 		Files: map[string][]byte{"b.txt": []byte("b"), "a.txt": []byte("a")},
 	}}, catalog)
@@ -56,7 +59,11 @@ func TestCapturePublishesOnlyVerifiedCompleteSnapshotAndDeduplicatesRevision(t *
 	var manifest Manifest
 	if err := json.Unmarshal(manifestRecord.Payload, &manifest); err != nil ||
 		manifest.BusinessDatabaseObjectID != first.ObjectMap["database"] ||
-		manifest.FileStateRootObjectID != first.ObjectMap["file-state-root"] {
+		manifest.FileStateRootObjectID != first.ObjectMap["file-state-root"] ||
+		manifest.SchemaRevision != 3 || manifest.DataRevision != 9 ||
+		manifest.ComputationWatermark != 8 || manifest.JobSchemaVersion != 1 ||
+		manifest.PendingWork.Jobs != 2 || !manifest.PendingWork.SearchRebuild ||
+		manifest.SearchGeneration != 4 {
 		t.Fatalf("manifest = %#v, %v", manifest, err)
 	}
 	sealRecord, err := repository.GetManifest(ctx, first.SealID)

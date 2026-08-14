@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
@@ -13,15 +14,8 @@ namespace VibeTable.Desktop.Services;
 public static class TableWorkspaceLimits
 {
     /// <summary>
-    /// Client-row budget. Collections with at most this many rows are loaded
-    /// in full by the host (client mode); larger tables page over RPC (remote
-    /// mode).
-    /// </summary>
-    public const int ClientRowBudget = 25_000;
-
-    /// <summary>
     /// Hard cap on a single product collection page. The workspace service
-    /// always requests pages of this size and never exceeds it.
+    /// opens cursor windows of this size and never exceeds it.
     /// </summary>
     public const int MaxPageLimit = 500;
 }
@@ -38,7 +32,7 @@ public static class TableWorkspaceLimits
 /// <item>The current logical source identifier.</item>
 /// <item>The current table name (set ONLY via <see cref="SelectTableAsync"/>,
 /// and only if the name was advertised by source discovery).</item>
-/// <item>Request generation: deterministic 500-row pages in client mode.</item>
+/// <item>Request generation: one revision-bound 500-row cursor window.</item>
 /// <item>A per-selection <see cref="CancellationTokenSource"/> that cancels
 /// immediately on table/database switch, suppressing stale pages.</item>
 /// </list>
@@ -50,7 +44,7 @@ public static class TableWorkspaceLimits
 /// <para>
 /// <b>Stale suppression.</b> Each <see cref="SelectTableAsync"/> call bumps an
 /// internal <c>generation</c> counter and links a fresh
-/// <see cref="CancellationToken"/>. The multi-page fetch loop checks BOTH the
+/// <see cref="CancellationToken"/>. The cursor open checks BOTH the
 /// token AND the generation before emitting a page, so a late-arriving page
 /// from a superseded table (e.g. token cancelled but the RPC already returned)
 /// is silently dropped.
@@ -58,9 +52,6 @@ public static class TableWorkspaceLimits
 /// </remarks>
 public sealed class TableWorkspaceService
 {
-    private const string ClientMode = "client";
-    private const string RemoteMode = "remote";
-
     private readonly ITableRpcGateway _gateway;
 
     /// <summary>
@@ -207,51 +198,8 @@ public sealed class TableWorkspaceService
     }
 
     /// <summary>
-    /// Reads a single page on demand (Phase A remote-mode paging). Used by the
-    /// <c>table.pageRequested</c> flow when the web layer wants a page beyond
-    /// what the host auto-fetched. Emits a single <c>table.pageLoaded</c>
-    /// notification and returns the page DTO.
-    /// </summary>
-    /// <remarks>
-    /// <paramref name="table"/> must be a known advertised name; the caller
-    /// (dispatcher) clamps <paramref name="limit"/> to 1..500 before invoking.
-    /// This method does NOT participate in the client-mode multi-page fetch —
-    /// it is the discrete "read one page" entrypoint.
-    /// </remarks>
-    public async Task<TablePage> ReadPageForRemoteAsync(
-        string table, int offset, int limit)
-    {
-        if (string.IsNullOrEmpty(table))
-        {
-            throw new ArgumentException(
-                "Table name must be a non-empty string.", nameof(table));
-        }
-        if (!ContainsName(_knownTables, table) && !ContainsName(_knownViews, table))
-        {
-            throw new ArgumentException(
-                $"Table '{table}' is not one of the names advertised by " +
-                $"source discovery for the current local data source.",
-                nameof(table));
-        }
-        int safeLimit = Math.Clamp(limit, 1, TableWorkspaceLimits.MaxPageLimit);
-
-        var page = await _gateway.ReadTablePageAsync(
-            table, offset, safeLimit, CancellationToken.None)
-            .ConfigureAwait(true);
-
-        Notification?.Invoke(new TableNotification
-        {
-            Type = "table.pageLoaded",
-            Page = page,
-            LoadedRows = page.Rows.Count,
-        });
-        return page;
-    }
-
-    /// <summary>
-    /// Drives the multi-page client-mode fetch (or the single remote page).
-    /// Emits <c>table.pageLoaded</c> per page and <c>table.datasetReady</c>
-    /// once the full client-mode dataset has loaded.
+    /// Opens one revision-bound cursor window. Further windows are requested
+    /// explicitly through the coordinator using the opaque next cursor.
     /// </summary>
     /// <remarks>
     /// Cancellation is EXPECTED on a table/database switch: the previous
@@ -262,15 +210,20 @@ public sealed class TableWorkspaceService
     private async Task FetchAsync(
         string table,
         int generation,
-        CancellationToken token,
-        int consistencyAttempt = 0)
+        CancellationToken token)
     {
-        TablePage firstPage;
+        TablePage firstWindow;
         try
         {
-            // First page: offset 0, limit 500. The mode + totalRows drive the rest.
-            firstPage = await _gateway.ReadTablePageAsync(
-                table, offset: 0, limit: TableWorkspaceLimits.MaxPageLimit, token)
+            JsonElement query = JsonSerializer.SerializeToElement(new
+            {
+                keyword = "",
+                filters = Array.Empty<object>(),
+                sorts = Array.Empty<object>(),
+                offset = 0,
+                limit = TableWorkspaceLimits.MaxPageLimit,
+            });
+            firstWindow = await _gateway.OpenTableCursorRawAsync(table, query, token)
                 .ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested || IsStale(generation))
@@ -287,120 +240,9 @@ public sealed class TableWorkspaceService
 
         Emit(generation, new TableNotification
         {
-            Type = "table.pageLoaded",
-            Page = firstPage,
-            LoadedRows = firstPage.Rows.Count,
+            Type = "table.datasetReady",
+            Page = firstWindow,
         });
-
-        // Remote mode: retain only the requested page. No datasetReady.
-        if (!string.Equals(firstPage.Mode, ClientMode, StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        // Client mode: fetch all remaining pages in deterministic 500-row
-        // chunks until loadedRows == totalRows.
-        int loadedRows = firstPage.Rows.Count;
-        int totalRows = firstPage.TotalRows;
-        int offset = TableWorkspaceLimits.MaxPageLimit;
-        var allColumns = firstPage.Columns;
-        var allRows = new List<Dictionary<string, object?>>(firstPage.Rows);
-
-        while (loadedRows < totalRows)
-        {
-            if (token.IsCancellationRequested || IsStale(generation))
-            {
-                return;
-            }
-
-            int limit = Math.Min(TableWorkspaceLimits.MaxPageLimit, totalRows - offset);
-            if (limit < 1)
-            {
-                break;
-            }
-
-            TablePage page;
-            try
-            {
-                page = await _gateway.ReadTablePageAsync(table, offset, limit, token)
-                    .ConfigureAwait(true);
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested || IsStale(generation))
-            {
-                return;
-            }
-
-            if (IsStale(generation))
-            {
-                return;
-            }
-
-            // Independent page queries can straddle a concurrent mutation.
-            // A datasetReady assembled from different product revisions would
-            // not represent any real snapshot, so restart the whole read. The
-            // renderer treats the retry's offset-zero page as a replacement.
-            if (!HaveSameReadRevision(firstPage, page))
-            {
-                const int maxConsistencyAttempts = 3;
-                if (consistencyAttempt + 1 >= maxConsistencyAttempts)
-                {
-                    throw new InvalidOperationException(
-                        "The table changed repeatedly while loading. Refresh and try again.");
-                }
-                await FetchAsync(
-                    table,
-                    generation,
-                    token,
-                    consistencyAttempt + 1).ConfigureAwait(true);
-                return;
-            }
-
-            allRows.AddRange(page.Rows);
-            loadedRows += page.Rows.Count;
-
-            Emit(generation, new TableNotification
-            {
-                Type = "table.pageLoaded",
-                Page = page,
-                LoadedRows = loadedRows,
-            });
-
-            offset += TableWorkspaceLimits.MaxPageLimit;
-        }
-
-        // datasetReady ONLY after loadedRows == totalRows.
-        if (!IsStale(generation) && loadedRows >= totalRows)
-        {
-            var fullPage = new TablePage(
-                Table: table,
-                Columns: allColumns,
-                Rows: allRows,
-                Offset: 0,
-                Limit: totalRows,
-                TotalRows: totalRows,
-                Mode: ClientMode,
-                FilteredRows: firstPage.FilteredRows,
-                QuerySnapshot: firstPage.QuerySnapshot,
-                Revision: firstPage.Revision);
-            Emit(generation, new TableNotification
-            {
-                Type = "table.datasetReady",
-                Page = fullPage,
-                LoadedRows = loadedRows,
-            });
-        }
-    }
-
-    private static bool HaveSameReadRevision(TablePage first, TablePage next)
-    {
-        // Older/custom gateways may not provide product revisions. Preserve
-        // their historical behaviour when both are absent, but never accept a
-        // partially versioned batch.
-        if (first.Revision is null || next.Revision is null)
-        {
-            return first.Revision is null && next.Revision is null;
-        }
-        return first.Revision == next.Revision;
     }
 
     /// <summary>
@@ -467,7 +309,7 @@ public sealed class TableWorkspaceService
                 return null;
             }
             Emit(generation, new TableNotification(
-                Type: "table.editSchemaLoaded", Page: null, LoadedRows: 0,
+                Type: "table.editSchemaLoaded", Page: null,
                 MutationResult: new MutationOutcome(
                     Kind: "editSchema", Success: true, Error: null, Result: schema)));
             return schema;
@@ -513,7 +355,7 @@ public sealed class TableWorkspaceService
                 return false;
             }
             EmitMutation(generation, table, new TableNotification(
-                Type: "table.editCommitted", Page: null, LoadedRows: 0,
+                Type: "table.editCommitted", Page: null,
                 MutationResult: new MutationOutcome(
                     Kind: "updateCell", Success: true, Error: null, Result: result),
                 RequestId: requestId));
@@ -526,7 +368,7 @@ public sealed class TableWorkspaceService
                 return false;
             }
             EmitMutation(generation, table, new TableNotification(
-                Type: "table.editRejected", Page: null, LoadedRows: 0,
+                Type: "table.editRejected", Page: null,
                 MutationResult: new MutationOutcome(
                     Kind: "updateCell",
                     Success: false,
@@ -559,7 +401,7 @@ public sealed class TableWorkspaceService
                 return false;
             }
             EmitMutation(generation, table, new TableNotification(
-                Type: "table.rowsInserted", Page: null, LoadedRows: 0,
+                Type: "table.rowsInserted", Page: null,
                 MutationResult: new MutationOutcome(
                     Kind: "insertRow", Success: true, Error: null, Result: result),
                 RequestId: requestId));
@@ -572,7 +414,7 @@ public sealed class TableWorkspaceService
                 return false;
             }
             EmitMutation(generation, table, new TableNotification(
-                Type: "table.editRejected", Page: null, LoadedRows: 0,
+                Type: "table.editRejected", Page: null,
                 MutationResult: new MutationOutcome(
                     Kind: "insertRow",
                     Success: false,
@@ -605,7 +447,7 @@ public sealed class TableWorkspaceService
                 return false;
             }
             EmitMutation(generation, table, new TableNotification(
-                Type: "table.rowsDeleted", Page: null, LoadedRows: 0,
+                Type: "table.rowsDeleted", Page: null,
                 MutationResult: new MutationOutcome(
                     Kind: "deleteRows", Success: true, Error: null, Result: result),
                 RequestId: requestId));
@@ -618,7 +460,7 @@ public sealed class TableWorkspaceService
                 return false;
             }
             EmitMutation(generation, table, new TableNotification(
-                Type: "table.editRejected", Page: null, LoadedRows: 0,
+                Type: "table.editRejected", Page: null,
                 MutationResult: new MutationOutcome(
                     Kind: "deleteRows",
                     Success: false,
@@ -636,7 +478,7 @@ public sealed class TableWorkspaceService
         string? requestId = null)
     {
         Emit(generation, new TableNotification(
-            Type: "table.editRejected", Page: null, LoadedRows: 0,
+            Type: "table.editRejected", Page: null,
             MutationResult: new MutationOutcome(
                 Kind: kind, Success: false, Error: error, Result: null),
             RequestId: requestId));
@@ -694,8 +536,8 @@ public sealed class TableWorkspaceService
 /// A Phase-A host -&gt; web notification from the table workspace.
 /// </summary>
 /// <remarks>
-/// <see cref="Type"/> is one of <c>table.pageLoaded</c> (per page),
-/// <c>table.datasetReady</c> (client-mode complete), or — for B1 mutations —
+/// <see cref="Type"/> is one of <c>table.pageLoaded</c> (bounded query window),
+/// <c>table.datasetReady</c> (initial authoritative window), or — for B1 mutations —
 /// <c>table.editSchemaLoaded</c> / <c>table.editCommitted</c> /
 /// <c>table.editRejected</c> / <c>table.rowsInserted</c> /
 /// <c>table.rowsDeleted</c>. <see cref="Page"/> carries the DTO for page
@@ -708,20 +550,17 @@ public sealed class TableNotification
     public TableNotification(
         string Type,
         TablePage? Page,
-        int LoadedRows,
         MutationOutcome? MutationResult = null,
         string? RequestId = null)
     {
         this.Type = Type;
         this.Page = Page;
-        this.LoadedRows = LoadedRows;
         this.MutationResult = MutationResult;
         this.RequestId = RequestId;
     }
 
     public string Type { get; set; } = string.Empty;
     public TablePage? Page { get; set; }
-    public int LoadedRows { get; set; }
     public MutationOutcome? MutationResult { get; set; }
     public string? RequestId { get; set; }
 }

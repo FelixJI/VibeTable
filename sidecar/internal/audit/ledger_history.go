@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
 const (
@@ -48,6 +50,21 @@ type ledgerBusinessReceipt struct {
 	MutationRevision uint64 `json:"mutationRevision"`
 	Kind             string `json:"kind"`
 	Identity         string `json:"identity"`
+}
+
+type ledgerSchemaAuditPayload struct {
+	Contract       string   `json:"contract"`
+	OperationID    string   `json:"operationId"`
+	PlanID         string   `json:"planId"`
+	Action         string   `json:"action"`
+	TableID        string   `json:"tableId"`
+	FieldID        string   `json:"fieldId"`
+	SchemaRevision string   `json:"schemaRevision"`
+	BeforeHash     string   `json:"beforeHash"`
+	AfterHash      string   `json:"afterHash"`
+	Actor          v2.Actor `json:"actor"`
+	Outcome        string   `json:"outcome"`
+	MigrationJobID string   `json:"migrationJobId"`
 }
 
 func (service *Service) readHistoryEvents(
@@ -127,13 +144,31 @@ func (service *Service) findHistoryEvent(
 
 func (service *Service) projectLedgerHistory(
 	ctx context.Context,
-) ([]*core.Record, error) {
+) (projected []*core.Record, err error) {
+	defer func() {
+		if err == nil ||
+			errors.Is(err, context.Canceled) ||
+			errors.Is(err, context.DeadlineExceeded) ||
+			service.logger == nil {
+			return
+		}
+		code := "history.storage_failed"
+		if errors.Is(err, auditledger.ErrChainCorrupt) {
+			code = "audit.chain_corrupt"
+		}
+		service.logger.ErrorContext(
+			ctx,
+			"history.ledger_projection_failed",
+			slog.String("module", "history"),
+			slog.String("errorCode", code),
+		)
+	}()
 	records, err := service.ledger.VerifiedRecords(ctx)
 	if err != nil {
 		return nil, err
 	}
 	collection := core.NewBaseCollection("vibetable_ledger_history")
-	projected := make([]*core.Record, 0, len(records))
+	projected = make([]*core.Record, 0, len(records))
 	for _, record := range records {
 		if !isBusinessHistoryEpoch(record.Envelope.SourceEpoch) {
 			if strings.HasPrefix(
@@ -256,6 +291,46 @@ func decodeLedgerHistoryPayload(
 				err = errors.New("audit.ledger_business_receipt_invalid")
 			}
 			return ledgerHistoryPayload{}, false, err
+		}
+		return ledgerHistoryPayload{}, false, nil
+	}
+	if contractRaw, contracted := header["contract"]; contracted {
+		var contract string
+		if err := json.Unmarshal(contractRaw, &contract); err != nil ||
+			contract != v2.Contract {
+			if err == nil {
+				err = errors.New("audit.ledger_contract_invalid")
+			}
+			return ledgerHistoryPayload{}, false, err
+		}
+		var schemaEvent ledgerSchemaAuditPayload
+		if err := decodeLedgerObject(raw, &schemaEvent); err != nil {
+			return ledgerHistoryPayload{}, false, err
+		}
+		for _, required := range []string{
+			"contract", "operationId", "planId", "action", "tableId",
+			"fieldId", "schemaRevision", "beforeHash", "afterHash", "actor",
+			"outcome", "migrationJobId",
+		} {
+			if _, exists := header[required]; !exists {
+				return ledgerHistoryPayload{}, false, fmt.Errorf(
+					"audit.ledger_schema_event_missing_%s", required,
+				)
+			}
+		}
+		if schemaEvent.Contract != v2.Contract ||
+			schemaEvent.OperationID == "" ||
+			schemaEvent.PlanID == "" ||
+			schemaEvent.Action == "" ||
+			schemaEvent.TableID == "" ||
+			schemaEvent.SchemaRevision == "" ||
+			schemaEvent.AfterHash == "" ||
+			schemaEvent.Actor.ID == "" ||
+			schemaEvent.Actor.Kind == "" ||
+			schemaEvent.Outcome == "" {
+			return ledgerHistoryPayload{}, false, errors.New(
+				"audit.ledger_schema_event_invalid",
+			)
 		}
 		return ledgerHistoryPayload{}, false, nil
 	}

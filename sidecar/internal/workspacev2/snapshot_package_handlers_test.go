@@ -406,6 +406,7 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 		t.Fatal(err)
 	}
 	defer reopenedRuntime.Close(ctx)
+	reopenedRuntime.restoreSearchRebuild = func(context.Context) error { return nil }
 	if err := reopenedRuntime.CompletePendingSnapshotRestore(ctx); err != nil {
 		t.Fatal(err)
 	}

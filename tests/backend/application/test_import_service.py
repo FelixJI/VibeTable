@@ -444,7 +444,6 @@ async def test_apply_is_one_atomic_product_mutation_and_consumes_grant(tmp_path:
             grant_id="grant-1",
             collection="vibetable_demo",
             token=plan.token.token,
-            chunk_size=1,
             idempotency_prefix="import-1",
         )
     )
@@ -499,7 +498,6 @@ async def test_thousand_row_import_uses_one_atomic_product_mutation(tmp_path: Pa
             grant_id="grant-1000",
             collection="vibetable_demo",
             token=plan.token.token,
-            chunk_size=100,
             idempotency_prefix="import-1000",
         )
     )

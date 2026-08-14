@@ -617,13 +617,6 @@ type workspaceRetentionSettingsBundle struct {
 }
 
 func validateWorkspaceSettingsObject(raw []byte) error {
-	keys, err := decodeStrictBundle[map[string]json.RawMessage](raw)
-	if err != nil || keys == nil {
-		return ErrBundleInvalid
-	}
-	if _, versioned := keys["formatVersion"]; !versioned {
-		return nil
-	}
 	value, err := decodeStrictBundle[workspaceSettingsBundle](raw)
 	if err != nil ||
 		value.FormatVersion != 1 ||

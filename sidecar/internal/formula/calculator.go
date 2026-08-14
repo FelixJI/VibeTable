@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -16,8 +15,11 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
+
+const relationMaterializationBytes = 32 << 20
 
 // Calculator implements mutation.FormulaCalculator without creating a package
 // dependency from the formula runtime back to the mutation kernel.
@@ -37,26 +39,22 @@ func NewCalculator(compiler *Compiler) *Calculator {
 func (calculator *Calculator) Calculate(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	record *core.Record,
 ) (map[string]any, error) {
 	plan, err := calculator.plan(definition)
 	if err != nil {
 		return nil, err
 	}
-	row := make(map[string]any, len(definition.Fields))
+	row := make(map[string]any, len(definition.Snapshot.Fields))
 	aggregateTargets, countRelations := relationAggregateRequirements(plan)
-	for _, field := range definition.Fields {
-		value := record.GetRaw(field.PhysicalName)
-		if field.DataType == schema.DataTypeSelect ||
-			field.DataType == schema.DataTypeMultiSelect {
-			value = schema.DecodeSelectValueFromStorage(field, value)
-		}
-		if field.Kind == schema.FieldKindRelation && field.Relation != nil {
+	for _, field := range definition.Snapshot.Fields {
+		value := record.GetRaw(field.Identity.PhysicalName)
+		if field.LogicalType == v2.LogicalRelation && field.Relation != nil {
 			var err error
 			recordIDs := relationRecordIDs(value)
-			targets, aggregates := aggregateTargets[field.PhysicalName]
-			_, counts := countRelations[field.PhysicalName]
+			targets, aggregates := aggregateTargets[field.Identity.PhysicalName]
+			_, counts := countRelations[field.Identity.PhysicalName]
 			if field.Relation.Cardinality != "one" && (aggregates || counts) {
 				value, err = calculator.resolveRelationAggregates(
 					ctx, app, field, recordIDs, targets,
@@ -68,7 +66,7 @@ func (calculator *Calculator) Calculate(
 				return nil, err
 			}
 		}
-		row[field.PhysicalName] = value
+		row[field.Identity.PhysicalName] = value
 	}
 	result, formulaErr := plan.Evaluate(ctx, row, nil)
 	if formulaErr != nil {
@@ -80,24 +78,15 @@ func (calculator *Calculator) Calculate(
 func (calculator *Calculator) resolveRelation(
 	ctx context.Context,
 	app core.App,
-	field schema.FieldDefinition,
+	field v2.FieldDefinition,
 	recordIDs []string,
 ) (any, error) {
-	if len(recordIDs) > calculator.compiler.limits.CollectionSize {
-		return nil, formulaError(
-			"formula.resource_limit",
-			"relation exceeds the formula collection limit",
-			map[string]any{
-				"fieldId": field.FieldID,
-				"limit":   calculator.compiler.limits.CollectionSize,
-			},
-		)
-	}
-	target, collection, targetErr := relationTarget(app, field)
+	target, collection, targetErr := relationTarget(ctx, app, field)
 	if targetErr != nil {
 		return nil, targetErr
 	}
 	values := make([]any, 0, len(recordIDs))
+	remainingBytes := relationMaterializationBytes
 	for _, recordID := range recordIDs {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -108,23 +97,33 @@ func (calculator *Calculator) resolveRelation(
 				"formula.dependency",
 				"relation references a missing target record",
 				map[string]any{
-					"fieldId":  field.FieldID,
+					"fieldId":  field.Identity.FieldID,
 					"recordId": recordID,
 				},
 			)
 		}
 		value := map[string]any{"id": targetRecord.Id}
-		for _, targetField := range target.Fields {
-			if targetField.DataType == schema.DataTypeSecret ||
-				targetField.DataType == schema.DataTypeHash {
-				continue
-			}
-			targetValue := targetRecord.GetRaw(targetField.PhysicalName)
-			if targetField.DataType == schema.DataTypeSelect ||
-				targetField.DataType == schema.DataTypeMultiSelect {
-				targetValue = schema.DecodeSelectValueFromStorage(targetField, targetValue)
-			}
-			value[targetField.PhysicalName] = targetValue
+		for _, targetField := range target.Snapshot.Fields {
+			targetValue := targetRecord.GetRaw(targetField.Identity.PhysicalName)
+			value[targetField.Identity.PhysicalName] = targetValue
+		}
+		encoded, encodeErr := json.Marshal(value)
+		if encodeErr != nil {
+			return nil, formulaError(
+				"formula.type", "relation value cannot be encoded",
+				map[string]any{"fieldId": field.Identity.FieldID},
+			)
+		}
+		remainingBytes -= len(encoded)
+		if remainingBytes < 0 {
+			return nil, formulaError(
+				"formula.resource_limit",
+				"relation exceeds the formula byte budget",
+				map[string]any{
+					"fieldId":    field.Identity.FieldID,
+					"limitBytes": relationMaterializationBytes,
+				},
+			)
 		}
 		values = append(values, value)
 	}
@@ -138,41 +137,24 @@ func (calculator *Calculator) resolveRelation(
 }
 
 func relationTarget(
+	ctx context.Context,
 	app core.App,
-	field schema.FieldDefinition,
-) (schema.TableDefinition, *core.Collection, error) {
-	meta, err := app.FindFirstRecordByFilter(
-		"vibetable_tables",
-		"table_id={:table}",
-		dbx.Params{"table": field.Relation.TargetTableID},
-	)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return schema.TableDefinition{}, nil, formulaError(
-				"formula.dependency",
-				"relation target table is unavailable",
-				map[string]any{"fieldId": field.FieldID},
-			)
-		}
-		return schema.TableDefinition{}, nil, err
-	}
-	var target schema.TableDefinition
-	raw, marshalErr := json.Marshal(meta.GetRaw("definition_json"))
-	if marshalErr != nil || json.Unmarshal(raw, &target) != nil {
-		return schema.TableDefinition{}, nil, formulaError(
+	field v2.FieldDefinition,
+) (schemaexecution.Table, *core.Collection, error) {
+	target, describeErr := schemaexecution.Describe(ctx, app, field.Relation.TargetTableID)
+	if describeErr != nil {
+		return schemaexecution.Table{}, nil, formulaError(
 			"formula.dependency",
 			"relation target schema is invalid",
-			map[string]any{"fieldId": field.FieldID},
+			map[string]any{"fieldId": field.Identity.FieldID},
 		)
 	}
-	collection, err := app.FindCollectionByNameOrId(
-		meta.GetString("collection_id"),
-	)
+	collection, err := app.FindCollectionByNameOrId(target.PhysicalName)
 	if err != nil {
-		return schema.TableDefinition{}, nil, formulaError(
+		return schemaexecution.Table{}, nil, formulaError(
 			"formula.dependency",
 			"relation target storage is unavailable",
-			map[string]any{"fieldId": field.FieldID},
+			map[string]any{"fieldId": field.Identity.FieldID},
 		)
 	}
 	return target, collection, nil
@@ -189,28 +171,26 @@ type relationSQLAggregate struct {
 func (calculator *Calculator) resolveRelationAggregates(
 	ctx context.Context,
 	app core.App,
-	field schema.FieldDefinition,
+	field v2.FieldDefinition,
 	recordIDs []string,
 	targetNames []string,
 ) (any, error) {
-	target, collection, err := relationTarget(app, field)
+	target, collection, err := relationTarget(ctx, app, field)
 	if err != nil {
 		return nil, err
 	}
 	recordIDs = uniqueSortedStrings(recordIDs)
-	fields := make(map[string]schema.FieldDefinition, len(target.Fields))
-	for _, candidate := range target.Fields {
-		fields[candidate.PhysicalName] = candidate
+	fields := make(map[string]v2.FieldDefinition, len(target.Snapshot.Fields))
+	for _, candidate := range target.Snapshot.Fields {
+		fields[candidate.Identity.PhysicalName] = candidate
 	}
 	carrierFields := make(map[string]any, len(targetNames))
 	for _, targetName := range targetNames {
 		targetField, exists := fields[targetName]
-		if !exists || targetField.Kind == schema.FieldKindRelation ||
-			targetField.DataType == schema.DataTypeSecret ||
-			targetField.DataType == schema.DataTypeHash {
+		if !exists || targetField.LogicalType == v2.LogicalRelation {
 			return nil, formulaError(
 				"formula.dependency", "relation aggregate target field is unavailable",
-				map[string]any{"fieldId": field.FieldID, "target": targetName},
+				map[string]any{"fieldId": field.Identity.FieldID, "target": targetName},
 			)
 		}
 		stats, aggregateErr := aggregateRelationField(
@@ -241,15 +221,15 @@ func aggregateRelationField(
 	ctx context.Context,
 	app core.App,
 	collectionName string,
-	field schema.FieldDefinition,
+	field v2.FieldDefinition,
 	recordIDs []string,
 ) (map[string]any, error) {
-	numeric := isNumericDataType(field.DataType)
+	numeric := valueTypeForField(field).LogicalType == v2.LogicalNumber
 	total := relationSQLAggregate{}
 	for start := 0; start < len(recordIDs); start += 400 {
 		end := min(start+400, len(recordIDs))
 		placeholders, params := relationIDParams(recordIDs[start:end])
-		column := quoteSQLiteIdentifier(field.PhysicalName)
+		column := quoteSQLiteIdentifier(field.Identity.PhysicalName)
 		numericColumn := "CAST(" + column + " AS REAL)"
 		query := fmt.Sprintf(
 			"SELECT COUNT(*) AS matched, COUNT(%s) AS value_count, "+
@@ -381,15 +361,10 @@ func quoteSQLiteIdentifier(value string) string {
 	return "`" + strings.ReplaceAll(value, "`", "``") + "`"
 }
 
-func isNumericDataType(value schema.DataType) bool {
-	return value == schema.DataTypeInteger || value == schema.DataTypeFloat ||
-		value == schema.DataTypeDecimal
-}
-
-func missingRelationTargetError(field schema.FieldDefinition, expected, matched int) error {
+func missingRelationTargetError(field v2.FieldDefinition, expected, matched int) error {
 	return formulaError(
 		"formula.dependency", "relation references missing target records",
-		map[string]any{"fieldId": field.FieldID, "expected": expected, "matched": matched},
+		map[string]any{"fieldId": field.Identity.FieldID, "expected": expected, "matched": matched},
 	)
 }
 
@@ -430,20 +405,20 @@ func relationRecordIDs(value any) []string {
 	}
 }
 
-func (calculator *Calculator) plan(definition schema.TableDefinition) (*Plan, error) {
+func (calculator *Calculator) plan(definition schemaexecution.Table) (*Plan, error) {
 	raw, marshalErr := json.Marshal(definition)
 	if marshalErr != nil {
 		return nil, fmt.Errorf("hash formula definition: %w", marshalErr)
 	}
 	sum := sha256.Sum256(raw)
-	key := definition.TableID + "\x00" + definition.SchemaRevision + "\x00" + hex.EncodeToString(sum[:])
+	key := definition.Snapshot.TableID + "\x00" + definition.Snapshot.SchemaRevision + "\x00" + hex.EncodeToString(sum[:])
 	calculator.mu.RLock()
 	plan := calculator.cache[key]
 	calculator.mu.RUnlock()
 	if plan != nil {
 		return plan, nil
 	}
-	compiled, err := calculator.compiler.CompileTable(definition)
+	compiled, err := calculator.compiler.CompileExecutionTable(definition)
 	if err != nil {
 		return nil, err
 	}

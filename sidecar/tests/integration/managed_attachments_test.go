@@ -21,38 +21,59 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/attachments"
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	fileField := field(
-		"documents_id", "documents", schema.FieldKindAttachment, schema.DataTypeFile,
+	table := createV2IntegrationTable(
+		t, ctx, app, "Attachment notes", "managed_attachments_table",
 	)
-	fileField.Editor.Kind = "file"
-	fileField.AttachmentPolicy = &schema.AttachmentPolicy{
+	title := createV2IntegrationField(
+		t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"),
+		"managed_attachments_title",
+	)
+	fileDraft := fieldDraftForIntegration(t, v2.LogicalFile, "Documents")
+	fileDraft.File = &v2.FileSpec{
 		MaxFiles: 2, MaxBytesPerFile: 1024,
-		AllowedMIMETypes:  []string{"text/plain"},
-		ThumbnailVariants: []string{}, Protected: true,
+		AllowedMIMETypes: []string{"text/plain"},
+		Thumbs:           []string{}, Protected: true,
 	}
-	fileField.Constraints = []schema.FieldConstraint{{
-		Kind: schema.ConstraintAttachment, Policy: fileField.AttachmentPolicy,
-	}}
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("attachment_notes", "attachment_notes", []schema.FieldDefinition{
-			field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-			fileField,
-			autoDateField("created_at", schema.AutoDateRoleCreatedAt),
-			autoDateField("updated_at", schema.AutoDateRoleUpdatedAt),
-		}),
-		ExpectedRevision: 0,
-	})
+	documents := createV2IntegrationField(
+		t, ctx, app, table.TableID, fileDraft, "managed_attachments_documents",
+	)
+	createdDraft := fieldDraftForIntegration(t, v2.LogicalAutoDate, "Created at")
+	createdDraft.AutoDate = &v2.AutoDateSpec{Role: "createdAt"}
+	created := createV2IntegrationField(
+		t, ctx, app, table.TableID, createdDraft, "managed_attachments_created",
+	)
+	updatedDraft := fieldDraftForIntegration(t, v2.LogicalAutoDate, "Updated at")
+	updatedDraft.AutoDate = &v2.AutoDateSpec{Role: "updatedAt"}
+	updated := createV2IntegrationField(
+		t, ctx, app, table.TableID, updatedDraft, "managed_attachments_updated",
+	)
+	definition, err := schemaapi.New(app).Describe(ctx, table.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	execution, err := schemaexecution.Describe(ctx, app, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title.Definition == nil || documents.Definition == nil ||
+		created.Definition == nil || updated.Definition == nil {
+		t.Fatal("V2 attachment fixture omitted field definitions")
+	}
+	titleName := title.Definition.Identity.PhysicalName
+	documentsID := documents.FieldID
+	documentsName := documents.Definition.Identity.PhysicalName
+	createdName := created.Definition.Identity.PhysicalName
+	updatedName := updated.Definition.Identity.PhysicalName
 	now := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
 	failAfterMetadata := false
 	failAfterVersionArchive := false
@@ -95,14 +116,15 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 		return kernel.Apply(ctx, mutation.Request{
 			ContractVersion: mutation.ContractVersion,
 			RequestID:       "request_" + key, IdempotencyKey: "idem_" + key,
-			TableID: definition.TableID, SchemaRevision: definition.SchemaRevision,
-			Operations: []mutation.Operation{operation},
-			Actor:      mutation.Actor{Type: "user", ID: "local-user"},
+			TableID:        definition.Snapshot.TableID,
+			SchemaRevision: definition.Snapshot.SchemaRevision,
+			Operations:     []mutation.Operation{operation},
+			Actor:          mutation.Actor{Type: "user", ID: "local-user"},
 		})
 	}
 	insertReceipt, err := apply("insert", mutation.Operation{
 		Kind: mutation.OperationInsert, RecordID: &recordID,
-		Values: map[string]any{"title": "with files"},
+		Values: map[string]any{titleName: "with files"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +135,7 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	}
 	insertUpdated, err := time.Parse(
 		time.RFC3339Nano,
-		insertReceipt.ComputedFields[recordID]["updated_at"].(string),
+		insertReceipt.ComputedFields[recordID][updatedName].(string),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +145,7 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	}
 	receipt, err := apply("upload_one", mutation.Operation{
 		Kind: mutation.OperationSetAttachments, RecordID: &recordID,
-		FieldID: "documents_id", UploadHandles: []string{"upload_one"},
+		FieldID: documentsID, UploadHandles: []string{"upload_one"},
 		RemoveStoredNames: []string{},
 	})
 	manager.Drop("upload_one")
@@ -138,10 +160,10 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	attachmentTimes := receipt.ComputedFields[recordID]
 	attachmentUpdated, parseErr := time.Parse(
 		time.RFC3339Nano,
-		attachmentTimes["updated_at"].(string),
+		attachmentTimes[updatedName].(string),
 	)
-	if insertTimes["created_at"] == nil ||
-		attachmentTimes["created_at"] != insertTimes["created_at"] ||
+	if insertTimes[createdName] == nil ||
+		attachmentTimes[createdName] != insertTimes[createdName] ||
 		parseErr != nil || !attachmentUpdated.After(insertUpdated) {
 		t.Fatalf(
 			"attachment Save autoDate receipt insert=%#v attachment=%#v",
@@ -149,16 +171,16 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 			attachmentTimes,
 		)
 	}
-	collection, _ := app.FindCollectionByNameOrId("attachment_notes")
+	collection, _ := app.FindCollectionByNameOrId(table.PhysicalName)
 	record, err := app.FindRecordById(collection, recordID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := record.GetStringSlice("documents")
+	names := record.GetStringSlice(documentsName)
 	if len(names) != 1 {
 		t.Fatalf("stored attachment names %#v", names)
 	}
-	refs, err := manager.Refs(ctx, app, definition, record, "documents_id")
+	refs, err := manager.Refs(ctx, app, execution, record, documentsID)
 	if err != nil || len(refs) != 1 ||
 		refs[0].OriginalName != "first.txt" ||
 		refs[0].StoredName != names[0] ||
@@ -166,7 +188,7 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 		t.Fatalf("managed refs %#v err=%v", refs, err)
 	}
 	token, err := manager.Token(
-		ctx, app, definition.TableID, recordID, "documents_id", names[0], "",
+		ctx, app, definition.Snapshot.TableID, recordID, documentsID, names[0], "",
 	)
 	if err != nil || token == "" {
 		t.Fatalf("issue file token: token=%q err=%v", token, err)
@@ -189,7 +211,7 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	}
 	now = now.Add(-5 * time.Minute)
 	if _, err := manager.Token(
-		ctx, app, definition.TableID, recordID, "documents_id", "missing.txt", "",
+		ctx, app, definition.Snapshot.TableID, recordID, documentsID, "missing.txt", "",
 	); err == nil {
 		t.Fatal("token was issued for a missing attachment")
 	}
@@ -222,7 +244,7 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	failAfterMetadata = true
 	_, err = apply("upload_fail", mutation.Operation{
 		Kind: mutation.OperationSetAttachments, RecordID: &recordID,
-		FieldID: "documents_id", UploadHandles: []string{"upload_fail"},
+		FieldID: documentsID, UploadHandles: []string{"upload_fail"},
 		RemoveStoredNames: []string{},
 	})
 	failAfterMetadata = false
@@ -233,7 +255,7 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 		t.Fatalf("fault error %#v", err)
 	}
 	record, _ = app.FindRecordById(collection, recordID)
-	if got := record.GetStringSlice("documents"); len(got) != 1 || got[0] != names[0] {
+	if got := record.GetStringSlice(documentsName); len(got) != 1 || got[0] != names[0] {
 		t.Fatalf("rollback attachment names %#v", got)
 	}
 	report, err = manager.Integrity(ctx, app)
@@ -269,9 +291,9 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 		t.Fatal(err)
 	}
 	restoredMetadata := core.NewRecord(metadataCollection)
-	restoredMetadata.Set("table_id", definition.TableID)
+	restoredMetadata.Set("table_id", definition.Snapshot.TableID)
 	restoredMetadata.Set("record_id", recordID)
-	restoredMetadata.Set("field_id", "documents_id")
+	restoredMetadata.Set("field_id", documentsID)
 	restoredMetadata.Set("stored_name", refs[0].StoredName)
 	restoredMetadata.Set("original_name", refs[0].OriginalName)
 	restoredMetadata.Set("mime", refs[0].MIMEType)
@@ -322,7 +344,7 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	failAfterVersionArchive = true
 	_, err = apply("replace", mutation.Operation{
 		Kind: mutation.OperationSetAttachments, RecordID: &recordID,
-		FieldID: "documents_id", UploadHandles: []string{"upload_two"},
+		FieldID: documentsID, UploadHandles: []string{"upload_two"},
 		RemoveStoredNames: []string{names[0]},
 	})
 	failAfterVersionArchive = false
@@ -331,21 +353,21 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 		t.Fatalf("version archive fault error %#v", err)
 	}
 	record, _ = app.FindRecordById(collection, recordID)
-	if got := record.GetStringSlice("documents"); len(got) != 1 ||
+	if got := record.GetStringSlice(documentsName); len(got) != 1 ||
 		got[0] != names[0] {
 		t.Fatalf("version archive fault did not roll back %#v", got)
 	}
 	assertRecordCount(t, app, "vibetable_attachment_versions", 0)
 	if _, err := apply("replace", mutation.Operation{
 		Kind: mutation.OperationSetAttachments, RecordID: &recordID,
-		FieldID: "documents_id", UploadHandles: []string{"upload_two"},
+		FieldID: documentsID, UploadHandles: []string{"upload_two"},
 		RemoveStoredNames: []string{names[0]},
 	}); err != nil {
 		t.Fatalf("replace attachment: %#v", err)
 	}
 	manager.Drop("upload_two")
 	record, _ = app.FindRecordById(collection, recordID)
-	replaced := record.GetStringSlice("documents")
+	replaced := record.GetStringSlice(documentsName)
 	if len(replaced) != 1 || replaced[0] == names[0] {
 		t.Fatalf("replacement names %#v", replaced)
 	}
@@ -371,7 +393,6 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	history, err := audit.New(
 		app,
 		kernel,
-		mutation.MetadataSchemaSource{},
 
 		audit.WithClock(func() time.Time { return now }),
 		audit.WithAttachmentHistory(manager))
@@ -399,7 +420,7 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 		t.Fatal(err)
 	}
 	_, err = history.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: recordID,
+		TableID: definition.Snapshot.TableID, ItemID: recordID,
 		TargetRevision: target.Id, Scope: "row",
 	})
 	var historyErr *audit.Error
@@ -469,16 +490,16 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	}
 
 	preview, err := history.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: recordID,
+		TableID: definition.Snapshot.TableID, ItemID: recordID,
 		TargetRevision: target.Id, Scope: "row",
 	})
 	if err != nil || !preview.CanApply ||
-		!containsString(preview.Restorable, "documents") {
+		!containsString(preview.Restorable, documentsName) {
 		t.Fatalf("attachment restore preview %#v err=%v", preview, err)
 	}
 	failAfterMetadata = true
 	_, err = history.ApplyRestore(ctx, audit.ApplyParams{
-		TableID: definition.TableID, ItemID: recordID, Token: preview.Token,
+		TableID: definition.Snapshot.TableID, ItemID: recordID, Token: preview.Token,
 	})
 	failAfterMetadata = false
 	if !errors.As(err, &historyErr) ||
@@ -486,31 +507,31 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 		t.Fatalf("attachment restore fault %#v", err)
 	}
 	record, _ = app.FindRecordById(collection, recordID)
-	if got := record.GetStringSlice("documents"); len(got) != 1 ||
+	if got := record.GetStringSlice(documentsName); len(got) != 1 ||
 		got[0] != replaced[0] {
 		t.Fatalf("failed restore did not roll back %#v", got)
 	}
 	assertRecordCount(t, app, "vibetable_attachment_versions", 1)
 
 	preview, err = history.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: recordID,
+		TableID: definition.Snapshot.TableID, ItemID: recordID,
 		TargetRevision: target.Id, Scope: "row",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := history.ApplyRestore(ctx, audit.ApplyParams{
-		TableID: definition.TableID, ItemID: recordID, Token: preview.Token,
+		TableID: definition.Snapshot.TableID, ItemID: recordID, Token: preview.Token,
 	}); err != nil {
 		t.Fatalf("restore replaced attachment: %#v", err)
 	}
 	record, _ = app.FindRecordById(collection, recordID)
-	restoredNames := record.GetStringSlice("documents")
+	restoredNames := record.GetStringSlice(documentsName)
 	if len(restoredNames) != 1 {
 		t.Fatalf("restored attachment names %#v", restoredNames)
 	}
 	restoredRefs, err := manager.Refs(
-		ctx, app, definition, record, "documents_id",
+		ctx, app, execution, record, documentsID,
 	)
 	if err != nil || len(restoredRefs) != 1 ||
 		restoredRefs[0].SHA256 != refs[0].SHA256 {
@@ -533,24 +554,24 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	}
 	if _, err := apply("clear", mutation.Operation{
 		Kind: mutation.OperationSetAttachments, RecordID: &recordID,
-		FieldID: "documents_id", UploadHandles: []string{},
+		FieldID: documentsID, UploadHandles: []string{},
 		RemoveStoredNames: restoredNames,
 	}); err != nil {
 		t.Fatalf("clear restored attachment: %#v", err)
 	}
 	record, _ = app.FindRecordById(collection, recordID)
-	if got := record.GetStringSlice("documents"); len(got) != 0 {
+	if got := record.GetStringSlice(documentsName); len(got) != 0 {
 		t.Fatalf("cleared attachment names %#v", got)
 	}
 	preview, err = history.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: recordID,
+		TableID: definition.Snapshot.TableID, ItemID: recordID,
 		TargetRevision: target.Id, Scope: "row",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := history.ApplyRestore(ctx, audit.ApplyParams{
-		TableID: definition.TableID, ItemID: recordID, Token: preview.Token,
+		TableID: definition.Snapshot.TableID, ItemID: recordID, Token: preview.Token,
 	}); err != nil {
 		t.Fatalf("restore cleared attachment: %#v", err)
 	}
@@ -569,19 +590,19 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 		t.Fatal(err)
 	}
 	preview, err = history.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: recordID,
+		TableID: definition.Snapshot.TableID, ItemID: recordID,
 		TargetRevision: deleteEvent.Id, Scope: "row",
 	})
 	if err != nil || !preview.CanApply {
 		t.Fatalf("deleted attachment preview %#v err=%v", preview, err)
 	}
 	if _, err := history.ApplyRestore(ctx, audit.ApplyParams{
-		TableID: definition.TableID, ItemID: recordID, Token: preview.Token,
+		TableID: definition.Snapshot.TableID, ItemID: recordID, Token: preview.Token,
 	}); err != nil {
 		t.Fatalf("restore hard-deleted attachment record: %#v", err)
 	}
 	record, err = app.FindRecordById(collection, recordID)
-	if err != nil || len(record.GetStringSlice("documents")) != 1 {
+	if err != nil || len(record.GetStringSlice(documentsName)) != 1 {
 		t.Fatalf("hard-delete attachment restore record=%#v err=%v", record, err)
 	}
 	orphanContent := []byte("orphan historical binary")
@@ -592,10 +613,10 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 		t.Fatal(err)
 	}
 	orphanVersion := core.NewRecord(versionCollection)
-	orphanVersion.Set("table_id", definition.TableID)
+	orphanVersion.Set("table_id", definition.Snapshot.TableID)
 	orphanVersion.Set("record_id", recordID)
-	orphanVersion.Set("field_id", "documents_id")
-	orphanVersion.Set("field_name", "documents")
+	orphanVersion.Set("field_id", documentsID)
+	orphanVersion.Set("field_name", documentsName)
 	orphanVersion.Set("stored_name", "orphan_history.txt")
 	orphanVersion.Set("original_name", "orphan.txt")
 	orphanVersion.Set("mime", "text/plain; charset=utf-8")
@@ -674,39 +695,39 @@ func TestManagedAttachmentOpenRejectsTamperedProtectedOriginalAndThumbnail(
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	fileField := field(
-		"images_id", "images", schema.FieldKindAttachment, schema.DataTypeFile,
+	table := createV2IntegrationTable(
+		t, ctx, app, "Protected images", "protected_images_table",
 	)
-	fileField.Editor.Kind = "file"
-	fileField.AttachmentPolicy = &schema.AttachmentPolicy{
-		MaxFiles:          1,
-		MaxBytesPerFile:   1 << 20,
-		AllowedMIMETypes:  []string{"image/png"},
-		ThumbnailVariants: []string{"1x1"},
-		Protected:         true,
+	title := createV2IntegrationField(
+		t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"),
+		"protected_images_title",
+	)
+	fileDraft := fieldDraftForIntegration(t, v2.LogicalFile, "Images")
+	fileDraft.File = &v2.FileSpec{
+		MaxFiles:         1,
+		MaxBytesPerFile:  1 << 20,
+		AllowedMIMETypes: []string{"image/png"},
+		Thumbs:           []string{"1x1"},
+		Protected:        true,
 	}
-	fileField.Constraints = []schema.FieldConstraint{{
-		Kind: schema.ConstraintAttachment, Policy: fileField.AttachmentPolicy,
-	}}
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"protected_images",
-			"protected_images",
-			[]schema.FieldDefinition{
-				field(
-					"title_id",
-					"title",
-					schema.FieldKindScalar,
-					schema.DataTypeShortText,
-				),
-				fileField,
-			},
-		),
-		ExpectedRevision: 0,
-	})
+	images := createV2IntegrationField(
+		t, ctx, app, table.TableID, fileDraft, "protected_images_file",
+	)
+	definition, err := schemaapi.New(app).Describe(ctx, table.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	execution, err := schemaexecution.Describe(ctx, app, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title.Definition == nil || images.Definition == nil {
+		t.Fatal("V2 protected image fixture omitted field definition")
+	}
+	titleName := title.Definition.Identity.PhysicalName
+	imagesID := images.FieldID
+	imagesName := images.Definition.Identity.PhysicalName
 	now := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
 	manager, err := attachments.New(
 
@@ -741,8 +762,8 @@ func TestManagedAttachmentOpenRejectsTamperedProtectedOriginalAndThumbnail(
 			ContractVersion: mutation.ContractVersion,
 			RequestID:       "request_" + key,
 			IdempotencyKey:  "idem_" + key,
-			TableID:         definition.TableID,
-			SchemaRevision:  definition.SchemaRevision,
+			TableID:         definition.Snapshot.TableID,
+			SchemaRevision:  definition.Snapshot.SchemaRevision,
 			Operations:      []mutation.Operation{operation},
 			Actor:           mutation.Actor{Type: "user", ID: "local-user"},
 		})
@@ -750,7 +771,7 @@ func TestManagedAttachmentOpenRejectsTamperedProtectedOriginalAndThumbnail(
 	if _, err := apply("insert", mutation.Operation{
 		Kind:     mutation.OperationInsert,
 		RecordID: &recordID,
-		Values:   map[string]any{"title": "protected image"},
+		Values:   map[string]any{titleName: "protected image"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -764,14 +785,14 @@ func TestManagedAttachmentOpenRejectsTamperedProtectedOriginalAndThumbnail(
 	if _, err := apply("upload", mutation.Operation{
 		Kind:              mutation.OperationSetAttachments,
 		RecordID:          &recordID,
-		FieldID:           "images_id",
+		FieldID:           imagesID,
 		UploadHandles:     []string{"protected_image"},
 		RemoveStoredNames: []string{},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	manager.Drop("protected_image")
-	collection, err := app.FindCollectionByNameOrId("protected_images")
+	collection, err := app.FindCollectionByNameOrId(table.PhysicalName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -780,7 +801,7 @@ func TestManagedAttachmentOpenRejectsTamperedProtectedOriginalAndThumbnail(
 		t.Fatal(err)
 	}
 	refs, err := manager.Refs(
-		ctx, app, definition, record, "images_id",
+		ctx, app, execution, record, imagesID,
 	)
 	if err != nil || len(refs) != 1 || len(refs[0].Thumbnails) != 1 {
 		t.Fatalf("protected image refs %#v err=%v", refs, err)
@@ -823,7 +844,7 @@ func TestManagedAttachmentOpenRejectsTamperedProtectedOriginalAndThumbnail(
 		t.Fatal(err)
 	}
 
-	storedNames := record.GetStringSlice("images")
+	storedNames := record.GetStringSlice(imagesName)
 	if len(storedNames) != 1 {
 		t.Fatalf("stored protected image names %#v", storedNames)
 	}

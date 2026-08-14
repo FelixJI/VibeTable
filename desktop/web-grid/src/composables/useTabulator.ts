@@ -96,6 +96,7 @@ export interface UseTabulatorOptions {
   readonly onAttachmentOpenRequested?: (
     rowKey: string | number,
     column: ColumnSchema,
+    trigger: HTMLElement | null,
   ) => void;
   /** User sort/filter/group intent; always executed against the full dataset. */
   readonly onViewQueryChanged?: (query: {
@@ -103,6 +104,8 @@ export interface UseTabulatorOptions {
     readonly sorts: readonly SortCondition[];
     readonly groups: readonly GroupCondition[];
   }) => void;
+  /** Requests the next revision-bound cursor window near the scroll boundary. */
+  readonly onWindowBoundary?: () => void;
   /**
    * Optional EXTERNAL ref to populate with the Tabulator instance. When
    * provided (Task M5: WorkspaceView creates the ref, provides it via
@@ -184,6 +187,7 @@ export function useTabulator(
   let groupChangedHandler: ((groups: unknown) => void) | null = null;
   let cellEditingHandler: (() => void) | null = null;
   let cellEditFinishedHandler: (() => void) | null = null;
+  let scrollVerticalHandler: (() => void) | null = null;
   let editing = false;
   let queuedColumnRefresh = false;
   let applyingColumns: Promise<void> | null = null;
@@ -285,6 +289,23 @@ export function useTabulator(
       eventGrid.on?.("dataSorted", viewQueryHandler);
       eventGrid.on?.("dataFiltered", viewQueryHandler);
       eventGrid.on?.("dataGrouped", groupChangedHandler);
+      scrollVerticalHandler = () => {
+        const cursorGrid = tabulator.value as unknown as {
+          getRows?: (range?: string) => Array<{ getData: () => Record<string, unknown> }>;
+        } | null;
+        const activeRows = cursorGrid?.getRows?.("active") ?? [];
+        const visibleRows = cursorGrid?.getRows?.("visible") ?? [];
+        const lastVisible = visibleRows.at(-1);
+        if (!lastVisible || activeRows.length === 0) return;
+        const lastVisibleKey = lastVisible.getData().rowKey;
+        const lastVisibleIndex = activeRows.findIndex(
+          (row) => row.getData().rowKey === lastVisibleKey,
+        );
+        if (lastVisibleIndex >= Math.max(0, activeRows.length - 20)) {
+          options?.onWindowBoundary?.();
+        }
+      };
+      eventGrid.on?.("scrollVertical", scrollVerticalHandler);
       cellEditingHandler = () => {
         editing = true;
       };
@@ -399,6 +420,7 @@ export function useTabulator(
       eventGrid?.off?.("dataFiltered", viewQueryHandler);
     }
     if (groupChangedHandler) eventGrid?.off?.("dataGrouped", groupChangedHandler);
+    if (scrollVerticalHandler) eventGrid?.off?.("scrollVertical", scrollVerticalHandler);
     if (cellEditingHandler) eventGrid?.off?.("cellEditing", cellEditingHandler);
     if (cellEditFinishedHandler) {
       eventGrid?.off?.("cellEdited", cellEditFinishedHandler);
@@ -435,7 +457,9 @@ export function useTabulator(
           const rows = queuedRows;
           queuedRows = null;
           lastSeededRows = rows;
+          const anchorAndSelection = captureViewportState(grid);
           await Promise.resolve(grid.setData([...rows]));
+          await restoreViewportState(grid, anchorAndSelection);
         }
       } finally {
         dataApplying.value = false;
@@ -445,6 +469,53 @@ export function useTabulator(
       if (!editing && queuedRows) await drainQueuedRows();
     })();
     await applyingRows;
+  }
+
+  function captureViewportState(grid: TabulatorFull): {
+    readonly anchor: string | number | null;
+    readonly selected: readonly (string | number)[];
+  } {
+    const viewportGrid = grid as unknown as {
+      getRows?: (range?: string) => Array<{ getData: () => Record<string, unknown> }>;
+      getSelectedRows?: () => Array<{ getData: () => Record<string, unknown> }>;
+    };
+    const anchorValue = viewportGrid.getRows?.("visible")?.[0]?.getData().rowKey;
+    const anchor = typeof anchorValue === "string" || typeof anchorValue === "number"
+      ? anchorValue
+      : null;
+    const selected = (viewportGrid.getSelectedRows?.() ?? []).flatMap((row) => {
+      const rowKey = row.getData().rowKey;
+      return typeof rowKey === "string" || typeof rowKey === "number" ? [rowKey] : [];
+    });
+    return { anchor, selected };
+  }
+
+  async function restoreViewportState(
+    grid: TabulatorFull,
+    state: {
+      readonly anchor: string | number | null;
+      readonly selected: readonly (string | number)[];
+    },
+  ): Promise<void> {
+    const viewportGrid = grid as unknown as {
+      getRows?: () => Array<{ getData: () => Record<string, unknown> }>;
+      getRow?: (rowKey: string | number) => {
+        scrollTo?: (position?: string, ifVisible?: boolean) => Promise<void> | void;
+      } | false;
+      selectRow?: (rowKeys: readonly (string | number)[]) => void;
+    };
+    const currentRowKeys = new Set(
+      (viewportGrid.getRows?.() ?? []).flatMap((row) => {
+        const rowKey = row.getData().rowKey;
+        return typeof rowKey === "string" || typeof rowKey === "number" ? [rowKey] : [];
+      }),
+    );
+    if (state.anchor !== null && currentRowKeys.has(state.anchor)) {
+      const anchorRow = viewportGrid.getRow?.(state.anchor);
+      if (anchorRow) await Promise.resolve(anchorRow.scrollTo?.("top", false));
+    }
+    const retainedSelection = state.selected.filter((rowKey) => currentRowKeys.has(rowKey));
+    if (retainedSelection.length > 0) viewportGrid.selectRow?.(retainedSelection);
   }
 
   function queueColumnRefresh(): void {

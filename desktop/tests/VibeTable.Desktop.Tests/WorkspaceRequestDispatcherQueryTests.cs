@@ -10,10 +10,37 @@ namespace VibeTable.Desktop.Tests;
 public sealed class WorkspaceRequestDispatcherQueryTests
 {
     [TestMethod]
-    public async Task TableQuery_ForwardsTypedFiltersAndSortsToGateway()
+    public void DispatcherComposesControllerOwnedRoutesWithoutFallbackUnion()
+    {
+        var dispatcher = new WorkspaceRequestDispatcher(
+            new TableWorkspaceService(new FakeTableRpcGateway()),
+            new FakeDatabasePicker("local://configured"),
+            new FakeWebReplySink());
+
+        Assert.IsTrue(dispatcher.Handles("table.queryRequested"));
+        Assert.IsTrue(dispatcher.Handles("dashboard.cancelRequested"));
+        Assert.IsTrue(dispatcher.Handles("interface.commitRequested"));
+        Assert.IsTrue(dispatcher.Handles("document.listRequested"));
+        Assert.IsFalse(dispatcher.Handles("plugin.catalog.list"));
+        Assert.IsFalse(dispatcher.Handles("unknown.request"));
+    }
+
+    [TestMethod]
+    public void ProductControllerHandlesOnlyRegisteredProductAndRelationRequests()
+    {
+        foreach (string type in ProductDataRpcRegistry.RequestTypes)
+            Assert.IsTrue(ProductDataRequestController.Handles(type), type);
+        foreach (string type in RelationLookupRpcRegistry.RequestTypes)
+            Assert.IsTrue(ProductDataRequestController.Handles(type), type);
+        Assert.IsFalse(ProductDataRequestController.Handles("rpc.invoke"));
+        Assert.IsFalse(ProductDataRequestController.Handles("schema.rawRequested"));
+    }
+
+    [TestMethod]
+    public async Task TableQuery_ForwardsCanonicalAstWithoutRepairingFields()
     {
         var gateway = new FakeTableRpcGateway();
-        gateway.QueryTablePageResults["records"] = new TablePage(
+        gateway.QueryWindowResults["records"] = new TablePage(
             "records",
             Array.Empty<ColumnSchema>(),
             Array.Empty<Dictionary<string, object?>>(),
@@ -72,44 +99,30 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             ""));
         await Task.Delay(GridStateCoordinator.QueryDebounceMs + 150);
 
-        var query = gateway.QueryTablePageQueries.First();
-        Assert.AreEqual("needle", query.Keyword);
-        Assert.AreEqual(25, query.Offset);
-        Assert.AreEqual(500, query.Limit);
-        Assert.AreEqual(2, query.Filters?.Count);
-        Assert.AreEqual("payload", query.Filters![0].Field);
-        Assert.AreEqual(FilterOperators.Contains, query.Filters[0].Operator);
-        Assert.AreEqual("8", query.Filters[0].Value);
-        Assert.AreEqual("AND", query.Filters[0].Logic);
-        var compositeValue = (object?[])query.Filters[1].Value!;
-        var objectValue = (Dictionary<string, object?>)compositeValue[0]!;
-        Assert.AreEqual(2L, objectValue["rank"]);
-        Assert.AreEqual(3L, compositeValue[1]);
-        Assert.AreEqual(true, compositeValue[2]);
-        Assert.AreEqual(1, query.Sorts?.Count);
-        Assert.AreEqual("payload", query.Sorts![0].Field);
-        Assert.AreEqual("desc", query.Sorts[0].Direction);
-        Assert.IsFalse(query.Sorts[0].NullsLast);
-        Assert.AreEqual(2, query.Groups?.Count);
-        Assert.AreEqual("number", query.Groups![0].Bucket);
-        Assert.AreEqual(50d, query.Groups[0].NumberInterval);
-        Assert.AreEqual("created", query.Groups![1].Field);
-        Assert.AreEqual("month", query.Groups[1].Bucket);
-        Assert.AreEqual(1, query.Summaries?.Count);
-        Assert.AreEqual("sum", query.Summaries![0].Function);
-        Assert.AreEqual(100, query.GroupOffset);
-        Assert.AreEqual(50, query.GroupLimit);
+        Assert.AreEqual(2, gateway.RawViewQueries.Count,
+            "grouped queries use the same opaque AST for cursor rows and aggregates");
+        JsonElement query = gateway.RawViewQueries[0];
+        Assert.AreEqual("needle", query.GetProperty("keyword").GetString());
+        Assert.AreEqual("not-forwarded", query.GetProperty("ignored").GetString());
+        Assert.AreEqual(
+            "not-forwarded",
+            query.GetProperty("filters")[0].GetProperty("ignored").GetString());
+        JsonElement composite = query.GetProperty("filters")[1].GetProperty("value");
+        Assert.AreEqual(2, composite[0].GetProperty("rank").GetInt32());
+        Assert.AreEqual(3, composite[1].GetInt32());
+        Assert.IsTrue(composite[2].GetBoolean());
     }
 
     [TestMethod]
-    public async Task TableQuery_DropsUnknownOperatorsAndUnknownObjectFields()
+    public async Task TableQuery_ForwardsUnknownOperatorsForSidecarValidation()
     {
         var gateway = new FakeTableRpcGateway();
         var coordinator = new GridStateCoordinator(gateway, _ => { });
+        var sink = new FakeWebReplySink();
         var dispatcher = new WorkspaceRequestDispatcher(
             new TableWorkspaceService(gateway),
             new FakeDatabasePicker("local://configured"),
-            new FakeWebReplySink(),
+            sink,
             coordinator);
         using var document = JsonDocument.Parse("""
             {
@@ -129,8 +142,11 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             ""));
         await Task.Delay(GridStateCoordinator.QueryDebounceMs + 150);
 
-        var query = gateway.QueryTablePageQueries.Single();
-        Assert.AreEqual(0, query.Filters?.Count);
+        Assert.AreEqual(
+            "raw_sql",
+            gateway.RawViewQueries.Single().GetProperty("filters")[0]
+                .GetProperty("operator").GetString());
+        Assert.IsFalse(sink.Replies.Any(reply => reply.Type == "operation.failed"));
     }
 
     [TestMethod]
@@ -168,12 +184,12 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             string.Empty));
         await Task.Delay(GridStateCoordinator.QueryDebounceMs + 150);
 
-        var group = gateway.QueryTablePageQueries.Single().Filters!.Single();
-        Assert.AreEqual("OR", group.Logic);
-        Assert.AreEqual("OR", group.GroupLogic);
-        Assert.AreEqual(2, group.Filters!.Count);
-        Assert.AreEqual("status", group.Filters[0].Field);
-        Assert.AreEqual("priority", group.Filters[1].Field);
+        JsonElement group = gateway.RawViewQueries.Single().GetProperty("filters")[0];
+        Assert.AreEqual("OR", group.GetProperty("logic").GetString());
+        Assert.AreEqual("OR", group.GetProperty("groupLogic").GetString());
+        Assert.AreEqual(2, group.GetProperty("filters").GetArrayLength());
+        Assert.AreEqual("status", group.GetProperty("filters")[0].GetProperty("field").GetString());
+        Assert.AreEqual("priority", group.GetProperty("filters")[1].GetProperty("field").GetString());
     }
 
     [TestMethod]
@@ -182,16 +198,15 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         await using var staleClient = new JsonRpcClient(new QueryTransport());
         using var staleGateway = new JsonRpcProductDataGateway(staleClient);
         var sink = new FakeWebReplySink();
-        var dispatcher = new WorkspaceRequestDispatcher(
+        var controller = new ProductDataRequestController(
             new TableWorkspaceService(new FakeTableRpcGateway()),
-            new FakeDatabasePicker("local://configured"),
             sink);
-        dispatcher.SetProductDataGateway(staleGateway);
+        controller.SetGateway(staleGateway);
         staleGateway.Dispose();
 
         using var document = JsonDocument.Parse(
             """{"tableId":"tbl_records","query":{"filters":[],"sorts":[],"offset":0,"limit":100}}""");
-        dispatcher.Dispatch(new RoutedWebRequest(
+        Task dispatch = controller.DispatchAsync(new RoutedWebRequest(
             "query.page",
             "recovering-query",
             document.RootElement.Clone(),
@@ -200,7 +215,8 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         await Task.Delay(50);
         await using var readyClient = new JsonRpcClient(new QueryTransport());
         using var readyGateway = new JsonRpcProductDataGateway(readyClient);
-        dispatcher.SetProductDataGateway(readyGateway);
+        controller.SetGateway(readyGateway);
+        await dispatch;
 
         FakeWebReplySink.Reply? reply = await sink.WaitForAsync("query.page", 4_000);
         Assert.IsNotNull(reply);
@@ -214,17 +230,16 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         await using var staleClient = new JsonRpcClient(new QueryTransport());
         using var staleGateway = new JsonRpcProductDataGateway(staleClient);
         var sink = new FakeWebReplySink();
-        var dispatcher = new WorkspaceRequestDispatcher(
+        var controller = new ProductDataRequestController(
             new TableWorkspaceService(new FakeTableRpcGateway()),
-            new FakeDatabasePicker("local://configured"),
             sink,
             readRecoveryTimeout: TimeSpan.FromMilliseconds(75));
-        dispatcher.SetProductDataGateway(staleGateway);
+        controller.SetGateway(staleGateway);
         staleGateway.Dispose();
 
         using var document = JsonDocument.Parse(
             """{"tableId":"tbl_records","query":{"filters":[],"sorts":[],"offset":0,"limit":100}}""");
-        dispatcher.Dispatch(new RoutedWebRequest(
+        await controller.DispatchAsync(new RoutedWebRequest(
             "query.page",
             "unavailable-query",
             document.RootElement.Clone(),
@@ -243,16 +258,15 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         await using var staleClient = new JsonRpcClient(new QueryTransport());
         using var staleGateway = new JsonRpcProductDataGateway(staleClient);
         var sink = new FakeWebReplySink();
-        var dispatcher = new WorkspaceRequestDispatcher(
+        var controller = new ProductDataRequestController(
             new TableWorkspaceService(new FakeTableRpcGateway()),
-            new FakeDatabasePicker("local://configured"),
             sink);
-        dispatcher.SetProductDataGateway(staleGateway);
+        controller.SetGateway(staleGateway);
         staleGateway.Dispose();
 
         using var document = JsonDocument.Parse(
             """{"tableId":"tbl_records","operations":[]}""");
-        dispatcher.Dispatch(new RoutedWebRequest(
+        await controller.DispatchAsync(new RoutedWebRequest(
             "mutation.apply",
             "unsafe-write",
             document.RootElement.Clone(),

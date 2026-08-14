@@ -38,6 +38,10 @@ interface MockTabulator {
   getSorters: ReturnType<typeof vi.fn>;
   getHeaderFilters: ReturnType<typeof vi.fn>;
   getRanges: ReturnType<typeof vi.fn>;
+  getRows: ReturnType<typeof vi.fn>;
+  getSelectedRows: ReturnType<typeof vi.fn>;
+  getRow: ReturnType<typeof vi.fn>;
+  selectRow: ReturnType<typeof vi.fn>;
 }
 
 let lastMock: MockTabulator | null = null;
@@ -56,6 +60,10 @@ vi.mock("@/grid/createGrid", () => ({
       getSorters: vi.fn().mockReturnValue([]),
       getHeaderFilters: vi.fn().mockReturnValue([]),
       getRanges: vi.fn().mockReturnValue([]),
+      getRows: vi.fn().mockReturnValue([]),
+      getSelectedRows: vi.fn().mockReturnValue([]),
+      getRow: vi.fn().mockReturnValue(false),
+      selectRow: vi.fn(),
     };
     lastMock = mock;
     return mock;
@@ -87,7 +95,7 @@ function makePage(
     offset: 0,
     limit: rows.length,
     totalRows: rows.length,
-    mode: "client",
+    mode: "remote",
     ...opts,
   };
 }
@@ -103,8 +111,7 @@ function makeDatasetReady(
     offset: 0,
     limit: rows.length,
     totalRows: rows.length,
-    mode: "client",
-    loadedRows: rows.length,
+    mode: "remote",
   };
 }
 
@@ -125,8 +132,6 @@ function relationDescriptor(
     sourceCollection: collection,
     kind: "m2o",
     relatedCollection: "targets",
-    allowedCollections: ["targets"],
-    junction: null,
     unique: true,
     nullable: true,
     onDelete: "nullify",
@@ -722,6 +727,82 @@ describe("useTabulator", () => {
     expect(onViewQueryChanged).toHaveBeenLastCalledWith(expect.objectContaining({
       groups: [{ field: "customer", direction: "asc", bucket: "value" }],
     }));
+    wrapper.unmount();
+  });
+
+  it("requests a cursor window near the bottom and restores the viewport after replacement", async () => {
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+    const onWindowBoundary = vi.fn();
+    const Host = defineComponent({
+      setup() {
+        useTabulator(gridEl, { onWindowBoundary });
+        return () => h("div");
+      },
+    });
+    const wrapper = mount(Host);
+    gridEl.value = document.createElement("div");
+    table.appendPage(makePage(
+      Array.from({ length: 40 }, (_, index) => ({ rowKey: index + 1 })),
+      [makeColumn("id")],
+    ));
+    await flushPromises();
+
+    const row = (rowKey: number) => ({ getData: () => ({ rowKey }) });
+    lastMock!.getRows.mockImplementation((range?: string) =>
+      range === "visible"
+        ? [row(35), row(36)]
+        : Array.from({ length: 40 }, (_, index) => row(index + 1)),
+    );
+    const scrollHandler = lastMock!.on.mock.calls.find(
+      call => call[0] === "scrollVertical",
+    )?.[1] as (() => void) | undefined;
+    expect(scrollHandler).toBeTypeOf("function");
+    scrollHandler!();
+    expect(onWindowBoundary).toHaveBeenCalledOnce();
+
+    const scrollTo = vi.fn();
+    lastMock!.getSelectedRows.mockReturnValue([row(36)]);
+    lastMock!.getRow.mockReturnValue({ scrollTo });
+    table.setDatasetReady(makeDatasetReady(
+      Array.from({ length: 41 }, (_, index) => ({ rowKey: index + 1 })),
+      [makeColumn("id")],
+    ));
+    await flushPromises();
+
+    expect(scrollTo).toHaveBeenCalledWith("top", false);
+    expect(lastMock!.selectRow).toHaveBeenCalledWith([36]);
+    wrapper.unmount();
+    expect(lastMock!.off).toHaveBeenCalledWith("scrollVertical", scrollHandler);
+  });
+
+  it("does not ask Tabulator to restore rows removed by a dataset replacement", async () => {
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+    const wrapper = mountHost(gridEl);
+    gridEl.value = document.createElement("div");
+    table.appendPage(makePage(
+      [{ rowKey: "removed" }, { rowKey: "kept" }],
+      [makeColumn("id")],
+    ));
+    await flushPromises();
+
+    const row = (rowKey: string) => ({ getData: () => ({ rowKey }) });
+    lastMock!.getRows.mockImplementation((range?: string) =>
+      range === "visible" ? [row("removed")] : [row("removed"), row("kept")],
+    );
+    lastMock!.getSelectedRows.mockReturnValue([row("removed"), row("kept")]);
+    lastMock!.setData.mockImplementation(async () => {
+      lastMock!.getRows.mockImplementation((range?: string) =>
+        range === "visible" ? [row("kept")] : [row("kept")],
+      );
+    });
+
+    table.setDatasetReady(makeDatasetReady([{ rowKey: "kept" }], [makeColumn("id")]));
+    await flushPromises();
+
+    expect(lastMock!.getRow).not.toHaveBeenCalled();
+    expect(lastMock!.selectRow).toHaveBeenCalledWith(["kept"]);
     wrapper.unmount();
   });
 

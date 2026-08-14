@@ -86,7 +86,6 @@ export function useDataIoService() {
       collection: session.plan.collection,
       token: session.plan.token.token,
       mode: session.mode,
-      chunkSize: 500,
       idempotencyPrefix: crypto.randomUUID(),
     }) as ApplyImportResult;
   }

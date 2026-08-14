@@ -23,9 +23,20 @@ describe("buildAuthoritativeLookupViewQuery", () => {
     expect(result.groups).toEqual([{ fieldRef: "orders.customer", direction: "asc" }]);
   });
 
-  it("accepts string groupBy snapshots without disabling grouping", () => {
-    const result = buildAuthoritativeLookupViewQuery({ groupBy: ["customer"] }, new Map());
-    expect(result.groups).toEqual([{ fieldRef: "customer", direction: "asc" }]);
+  it("rejects the removed groupBy query shape", () => {
+    expect(() => buildAuthoritativeLookupViewQuery({ groupBy: ["customer"] }, new Map()))
+      .toThrowError("Invalid Lookup view query.groupBy");
+  });
+
+  it.each([
+    [{ filters: [{ field: "status" }] }, "filters[0].operator"],
+    [{ filters: [{ groupLogic: "AND", filters: [{ operator: "eq" }] }] }, "filters[0].filters[0].field"],
+    [{ sorts: [{ field: "price", direction: "sideways" }] }, "sorts[0].direction"],
+    [{ groups: ["customer"] }, "groups[0]"],
+    [{ groups: [{ field: "customer", direction: "sideways" }] }, "groups[0].direction"],
+  ])("rejects the whole query when a current AST node is malformed", (query, path) => {
+    expect(() => buildAuthoritativeLookupViewQuery(query, new Map()))
+      .toThrowError(`Invalid Lookup view query.${path}`);
   });
 
   it("preserves nested filter logic while mapping every field to its stable ref", () => {

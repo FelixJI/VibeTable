@@ -67,6 +67,16 @@ describe("PluginActionPanel", () => {
     expect(wrapper.emitted("cancel")).toBeUndefined();
   });
 
+  it("renders only an embedded task lifecycle when the caller already supplied action input", () => {
+    const wrapper = mount(PluginActionPanel, {
+      props: { description, task, showForm: false, closable: false },
+    });
+
+    expect(wrapper.find('[data-testid="plugin-action-start"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="plugin-action-close"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="plugin-confirmation"]').text()).toContain("将覆盖 12 条记录");
+  });
+
   it("renders the safe error code, message and recovery guidance", () => {
     const wrapper = mount(PluginActionPanel, { props: { description, task: {
       ...task,

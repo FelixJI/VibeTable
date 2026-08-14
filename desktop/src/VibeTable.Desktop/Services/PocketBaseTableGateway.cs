@@ -41,55 +41,15 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         string path,
         CancellationToken token)
     {
-        // Preserve the established open-order contract: identifier aliases
-        // must be reconciled against the authoritative schema before the
-        // collection list is exposed to the renderer.  Keeping this inside
-        // the provider-neutral gateway also prevents a second, racy reconcile
-        // later in MainWindow.
-        try
-        {
-            await _product.ReconcileIdentifierMappingsAsync(
-                JsonSerializer.SerializeToElement(
-                    new Dictionary<string, object?>(),
-                    JsonOptions),
-                token).ConfigureAwait(false);
-        }
-        catch (RpcRemoteException exception)
-            when (IsWorkspaceV1WriteDisabled(exception))
-        {
-            // A restored Workspace V2 database can legitimately contain
-            // business tables without identifier aliases. Reconciliation is
-            // an old metadata write and must stay blocked by the v1 boundary;
-            // the authoritative schema still supplies safe display names.
-        }
         var summary = await ReadTableSummaryAsync(token).ConfigureAwait(false);
         return new DatabaseOpenResult(
             summary.Tables,
             summary.Views,
-            DisplayNames: summary.DisplayNames);
+            summary.DisplayNames);
     }
-
-    private static bool IsWorkspaceV1WriteDisabled(RpcRemoteException exception)
-        => exception.ErrorData is JsonElement data
-            && data.ValueKind == JsonValueKind.Object
-            && data.TryGetProperty("code", out JsonElement code)
-            && code.ValueKind == JsonValueKind.String
-            && code.GetString() == "workspace.v1_write_disabled";
 
     public Task<TableSummary> ListTablesAsync(CancellationToken token)
         => ReadTableSummaryAsync(token);
-
-    public Task<TablePage> ReadTablePageAsync(
-        string table,
-        int offset,
-        int limit,
-        CancellationToken token)
-        => QueryTablePageAsync(
-            table,
-            offset,
-            limit,
-            new TableQuery(Offset: offset, Limit: limit),
-            token);
 
     public async Task<EditSchemaResult> GetEditSchemaAsync(
         string table,
@@ -107,7 +67,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 : new Dictionary<string, object?> { ["kind"] = EditorKind(column.DataType) };
             var constraints = hasField
                 && field.TryGetProperty("constraints", out var constraintsElement)
-                ? ToDictionaryList(constraintsElement)
+                ? new[] { (IReadOnlyDictionary<string, object?>)ToDictionary(constraintsElement) }
                 : Array.Empty<IReadOnlyDictionary<string, object?>>();
             return new ColumnEditSchema(
                 column.Name,
@@ -206,8 +166,8 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         }
         var writable = schema.GetProperty("fields")
             .EnumerateArray()
-            .Where(field => !RequiredBoolean(field, "readOnly"))
-            .Select(field => RequiredString(field, "physicalName"))
+            .Where(field => !FieldReadOnly(schema, field))
+            .Select(field => FieldIdentityString(field, "physicalName"))
             .ToHashSet(StringComparer.Ordinal);
         var sanitizedValues = new Dictionary<string, object?>(StringComparer.Ordinal);
         foreach ((string name, object? value) in values)
@@ -323,96 +283,178 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         CancellationToken token)
         => _product.ApplyHistoryRestoreAsync(parameters, token);
 
-    public Task<TablePage> QueryTablePageAsync(
+    public Task<TablePage> QueryTableViewRawAsync(
         string table,
-        int offset,
-        int limit,
-        TableQuery query,
+        JsonElement query,
         CancellationToken token)
-        => QueryTableAsync(table, offset, limit, query, includeGroups: false, token);
+        => QueryTableRawViewAsync(table, query, token);
 
-    public Task<TablePage> QueryTableViewAsync(
+    public async Task<TablePage> OpenTableCursorRawAsync(
         string table,
-        int offset,
-        int limit,
-        TableQuery query,
-        CancellationToken token)
-        => QueryTableAsync(table, offset, limit, query, includeGroups: true, token);
-
-    private async Task<TablePage> QueryTableAsync(
-        string table,
-        int offset,
-        int limit,
-        TableQuery query,
-        bool includeGroups,
+        JsonElement query,
         CancellationToken token)
     {
-        JsonElement schema = await GetSchemaAsync(
-            table,
-            token,
-            refresh: offset == 0).ConfigureAwait(false);
+        JsonElement schema = await GetSchemaAsync(table, token, refresh: true).ConfigureAwait(false);
         JsonElement request = JsonSerializer.SerializeToElement(
             new Dictionary<string, object?>
             {
                 ["tableId"] = table,
-                [includeGroups ? "view" : "query"] = includeGroups
-                    ? ViewBody(query, offset, limit)
-                    : QueryBody(query, offset, limit),
+                ["query"] = OpaqueCursorQueryBody(query),
             },
             JsonOptions);
-        for (int attempt = 0; attempt < 2; attempt++)
+        JsonElement response = await _product.OpenQueryCursorAsync(request, token)
+            .ConfigureAwait(false);
+        return ReadCursorWindow(table, schema, response);
+    }
+
+    public async Task<TablePage> FetchTableCursorAsync(
+        string cursor,
+        CancellationToken token)
+    {
+        JsonElement response = await _product.FetchQueryCursorAsync(
+            JsonSerializer.SerializeToElement(
+                new Dictionary<string, object?> { ["cursor"] = cursor }, JsonOptions),
+            token).ConfigureAwait(false);
+        QuerySnapshot snapshot = ReadQuerySnapshot(
+            RequiredProperty(response, "querySnapshot"));
+        JsonElement schema = await GetSchemaAsync(snapshot.Table, token).ConfigureAwait(false);
+        return ReadCursorWindow(snapshot.Table, schema, response);
+    }
+
+    private async Task<TablePage> QueryTableRawViewAsync(
+        string table,
+        JsonElement query,
+        CancellationToken token)
+    {
+        if (query.ValueKind != JsonValueKind.Object)
         {
-            JsonElement response = includeGroups
-                ? await _product.QueryViewAsync(request, token).ConfigureAwait(false)
-                : await _product.QueryPageAsync(request, token).ConfigureAwait(false);
-            JsonElement page = includeGroups
-                ? RequiredProperty(response, "page")
-                : response;
-            QuerySnapshot snapshot = ReadQuerySnapshot(
-                RequiredProperty(page, "snapshot"));
-            string schemaRevision = RequiredString(schema, "schemaRevision");
-            if (!string.Equals(
-                snapshot.SchemaRevision,
-                schemaRevision,
-                StringComparison.Ordinal))
-            {
-                if (attempt == 0)
-                {
-                    schema = await GetSchemaAsync(
-                        table,
-                        token,
-                        refresh: true).ConfigureAwait(false);
-                    continue;
-                }
-                throw new InvalidOperationException(
-                    "The table schema changed while the page was loading.");
-            }
-
-            int total = RequiredInt(page, "totalRows");
-            int filtered = RequiredInt(page, "filteredRows");
-            var rows = ReadRows(page.GetProperty("rows"), FindPrimaryKey(schema));
-            return new TablePage(
-                table,
-                ReadColumns(schema),
-                rows,
-                RequiredInt(page, "offset"),
-                RequiredInt(page, "limit"),
-                total,
-                total <= TableWorkspaceLimits.ClientRowBudget ? "client" : "remote",
-                filtered,
-                snapshot,
-                new MutationRevision(
-                    "pocketbase",
-                    schemaRevision,
-                    snapshot.DataRevision),
-                includeGroups ? ReadGroupRows(RequiredProperty(response, "groupRows")) : null,
-                includeGroups ? RequiredInt(response, "groupOffset") : 0,
-                includeGroups ? RequiredInt(response, "groupLimit") : 100,
-                includeGroups && RequiredBoolean(response, "hasMoreGroups"));
+            throw new ArgumentException("Canonical ViewQuery must be an object.", nameof(query));
         }
+        JsonElement schema = await GetSchemaAsync(table, token, refresh: true).ConfigureAwait(false);
+        JsonElement request = JsonSerializer.SerializeToElement(
+            new Dictionary<string, object?>
+            {
+                ["tableId"] = table,
+                ["view"] = OpaqueViewBody(query),
+            },
+            JsonOptions);
+        JsonElement response = await _product.QueryViewAsync(request, token).ConfigureAwait(false);
+        return ReadViewPage(table, schema, response);
+    }
 
-        throw new InvalidOperationException(
-            "The table schema changed while the page was loading.");
+    private static Dictionary<string, object?> OpaqueViewBody(JsonElement flatQuery)
+    {
+        var query = new Dictionary<string, object?>(StringComparer.Ordinal);
+        var view = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["groups"] = Array.Empty<object>(),
+            ["summaries"] = Array.Empty<object>(),
+            ["groupOffset"] = 0,
+            ["groupLimit"] = 100,
+        };
+        foreach (JsonProperty property in flatQuery.EnumerateObject())
+        {
+            switch (property.Name)
+            {
+                case "groups":
+                case "summaries":
+                case "groupOffset":
+                case "groupLimit":
+                    view[property.Name] = property.Value.Clone();
+                    break;
+                default:
+                    query[property.Name] = property.Value.Clone();
+                    break;
+            }
+        }
+        view["query"] = query;
+        return view;
+    }
+
+    private static Dictionary<string, object?> OpaqueCursorQueryBody(JsonElement flatQuery)
+    {
+        var query = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (JsonProperty property in flatQuery.EnumerateObject())
+        {
+            if (property.Name is "groups" or "summaries" or "groupOffset" or "groupLimit")
+            {
+                continue;
+            }
+            query[property.Name] = property.Value.Clone();
+        }
+        return query;
+    }
+
+    private static TablePage ReadCursorWindow(
+        string table,
+        JsonElement schema,
+        JsonElement response)
+    {
+        QuerySnapshot snapshot = ReadQuerySnapshot(
+            RequiredProperty(response, "querySnapshot"));
+        string schemaRevision = RequiredString(schema, "schemaRevision");
+        if (snapshot.Table != table || snapshot.SchemaRevision != schemaRevision)
+        {
+            throw new InvalidOperationException("The cursor no longer matches the table schema.");
+        }
+        IReadOnlyList<Dictionary<string, object?>> rows = ReadRows(
+            RequiredProperty(response, "rows"), FindPrimaryKey(schema));
+        string? nextCursor = null;
+        JsonElement next = RequiredProperty(response, "nextCursor");
+        if (next.ValueKind == JsonValueKind.String)
+        {
+            nextCursor = next.GetString();
+        }
+        else if (next.ValueKind != JsonValueKind.Null)
+        {
+            throw new InvalidOperationException("PocketBase returned an invalid cursor token.");
+        }
+        bool hasMore = RequiredBoolean(response, "hasMore");
+        if (hasMore != (nextCursor is not null))
+        {
+            throw new InvalidOperationException("PocketBase returned inconsistent cursor state.");
+        }
+        return new TablePage(
+            table,
+            ReadColumns(schema),
+            rows,
+            0,
+            Math.Max(rows.Count, 1),
+            RequiredInt(response, "totalRows"),
+            "remote",
+            RequiredInt(response, "filteredRows"),
+            snapshot,
+            new MutationRevision("pocketbase", schemaRevision, snapshot.DataRevision),
+            NextCursor: nextCursor,
+            HasMore: hasMore);
+    }
+
+    private TablePage ReadViewPage(string table, JsonElement schema, JsonElement response)
+    {
+        JsonElement page = RequiredProperty(response, "page");
+        QuerySnapshot snapshot = ReadQuerySnapshot(RequiredProperty(page, "snapshot"));
+        string schemaRevision = RequiredString(schema, "schemaRevision");
+        if (!string.Equals(snapshot.SchemaRevision, schemaRevision, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The table schema changed while the page was loading.");
+        }
+        int total = RequiredInt(page, "totalRows");
+        int filtered = RequiredInt(page, "filteredRows");
+        return new TablePage(
+            table,
+            ReadColumns(schema),
+            ReadRows(page.GetProperty("rows"), FindPrimaryKey(schema)),
+            RequiredInt(page, "offset"),
+            RequiredInt(page, "limit"),
+            total,
+            "remote",
+            filtered,
+            snapshot,
+            new MutationRevision("pocketbase", schemaRevision, snapshot.DataRevision),
+            ReadGroupRows(RequiredProperty(response, "groupRows")),
+            RequiredInt(response, "groupOffset"),
+            RequiredInt(response, "groupLimit"),
+            RequiredBoolean(response, "hasMoreGroups"));
     }
 
     public async Task<SnapshotValidation> ValidateSnapshotAsync(
@@ -588,40 +630,54 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         bool hasRecordId = false;
         foreach (JsonElement field in fields.EnumerateArray())
         {
-            string fieldId = RequiredString(field, "fieldId");
+            string fieldId = FieldIdentityString(field, "fieldId");
             hasRecordId |= fieldId == "id"
-                || RequiredString(field, "physicalName") == "id";
-            string kind = RequiredString(field, "kind");
+                || FieldIdentityString(field, "physicalName") == "id";
+            string kind = FieldKind(field);
             string dataType = GridDataType(field);
             int? precision = null;
-            int? scale = null;
+            int? scale = RequiredInt(RequiredProperty(field, "display"), "displayScale");
+            var filterOptions = new List<ColumnFilterOption>();
             JsonElement constraints = RequiredProperty(field, "constraints");
-            if (constraints.ValueKind != JsonValueKind.Array)
+            if (constraints.ValueKind != JsonValueKind.Object)
             {
                 throw new InvalidOperationException(
                     "PocketBase returned invalid field constraints.");
             }
-            foreach (JsonElement constraint in constraints.EnumerateArray())
+            if (field.TryGetProperty("select", out JsonElement selection)
+                && selection.ValueKind == JsonValueKind.Object
+                && selection.TryGetProperty("options", out JsonElement options)
+                && options.ValueKind == JsonValueKind.Array)
             {
-                if (constraint.ValueKind != JsonValueKind.Object)
+                foreach (JsonElement option in options.EnumerateArray())
                 {
-                    throw new InvalidOperationException(
-                        "PocketBase returned invalid field constraint.");
-                }
-                if (constraint.TryGetProperty("kind", out var constraintKind)
-                    && constraintKind.ValueKind == JsonValueKind.String
-                    && constraintKind.GetString() == "precisionScale")
-                {
-                    precision = RequiredInt(constraint, "precision");
-                    scale = RequiredInt(constraint, "scale");
+                    if (RequiredString(option, "state") == "active")
+                    {
+                        filterOptions.Add(new ColumnFilterOption(
+                            RequiredString(option, "optionId"),
+                            RequiredString(option, "label")));
+                    }
                 }
             }
+            string logicalType = RequiredString(field, "logicalType");
+            string filterInput = kind == "relation" ? "relation" : logicalType switch
+            {
+                "select" => "select",
+                "multiSelect" => "multiSelect",
+                "date" => "date",
+                "dateTime" or "autoDate" => "dateTime",
+                "time" => "time",
+                "bool" => "boolean",
+                "number" => "number",
+                _ => "text",
+            };
+            JsonElement capability = FindCapability(schema, logicalType);
             result.Add(new ColumnSchema(
-                RequiredString(field, "physicalName"),
+                FieldIdentityString(field, "physicalName"),
                 RequiredString(field, "displayName"),
                 dataType,
-                !RequiredBoolean(field, "readOnly"),
-                RequiredBoolean(field, "nullable"),
+                !FieldReadOnly(schema, field),
+                !RequiredBoolean(RequiredProperty(field, "value"), "required"),
                 scale,
                 precision,
                 fieldId,
@@ -631,7 +687,9 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 kind == "attachment"
                     ? ReadAttachmentPolicy(field)
                     : null,
-                RequiredStringArray(field, "filterOperators")));
+                RequiredStringArray(capability, "filterOperators"),
+                filterInput,
+                filterOptions));
         }
         if (!hasRecordId)
         {
@@ -653,8 +711,8 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
     {
         foreach (JsonElement field in schema.GetProperty("fields").EnumerateArray())
         {
-            string physical = RequiredString(field, "physicalName");
-            if (physical == "id" || RequiredString(field, "fieldId") == "id")
+            string physical = FieldIdentityString(field, "physicalName");
+            if (physical == "id" || FieldIdentityString(field, "fieldId") == "id")
             {
                 return physical;
             }
@@ -671,7 +729,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
     {
         foreach (JsonElement field in schema.GetProperty("fields").EnumerateArray())
         {
-            if (RequiredString(field, "fieldId") == fieldId)
+            if (FieldIdentityString(field, "fieldId") == fieldId)
             {
                 result = field;
                 return true;
@@ -701,13 +759,18 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
     private static IReadOnlyDictionary<string, object?> ReadAttachmentPolicy(
         JsonElement field)
     {
-        if (!field.TryGetProperty("attachmentPolicy", out JsonElement policy)
+        if (!field.TryGetProperty("file", out JsonElement policy)
             || policy.ValueKind != JsonValueKind.Object)
         {
             throw new InvalidOperationException(
                 "PocketBase attachment field omitted 'attachmentPolicy'.");
         }
-        return ToDictionary(policy);
+        var result = ToDictionary(policy);
+        if (result.Remove("thumbs", out object? thumbs))
+        {
+            result["thumbnailVariants"] = thumbs;
+        }
+        return result;
     }
 
     private static List<Dictionary<string, object?>> ReadRows(
@@ -731,35 +794,6 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         }
         return result;
     }
-
-    private static Dictionary<string, object?> QueryBody(
-        TableQuery query,
-        int offset,
-        int limit)
-    {
-        var result = new Dictionary<string, object?>
-        {
-            ["keyword"] = query.Keyword ?? string.Empty,
-            ["filters"] = query.Filters ?? Array.Empty<FilterExpression>(),
-            ["sorts"] = query.Sorts ?? Array.Empty<SortCondition>(),
-            ["offset"] = offset,
-            ["limit"] = limit,
-        };
-        return result;
-    }
-
-    private static Dictionary<string, object?> ViewBody(
-        TableQuery query,
-        int offset,
-        int limit)
-        => new()
-        {
-            ["query"] = QueryBody(query, offset, limit),
-            ["groups"] = query.Groups ?? Array.Empty<GroupCondition>(),
-            ["summaries"] = query.Summaries ?? Array.Empty<SummaryCondition>(),
-            ["groupOffset"] = query.GroupOffset,
-            ["groupLimit"] = query.GroupLimit,
-        };
 
     private static IReadOnlyList<GroupRow> ReadGroupRows(JsonElement value)
     {
@@ -810,28 +844,39 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
 
     private static string GridDataType(JsonElement field)
     {
-        string value = RequiredString(field, "dataType");
+        string value = RequiredString(field, "logicalType");
         if (value == "formula")
         {
             value = RequiredString(RequiredProperty(field, "formula"), "resultType");
+            if (value == "number")
+            {
+                JsonElement options = RequiredProperty(RequiredProperty(field, "storage"), "options");
+                if (RequiredBoolean(options, "onlyInt"))
+                {
+                    value = "integer";
+                }
+            }
         }
         else if (value == "lookup")
         {
-            value = RequiredString(field, "storageType");
+            value = "json";
+        }
+        else if (value == "number")
+        {
+            JsonElement options = RequiredProperty(RequiredProperty(field, "storage"), "options");
+            value = RequiredBoolean(options, "onlyInt") ? "integer" : "number";
         }
         return value switch
         {
-            "shortText" or "longText" or "richText"
-                or "email" or "url" or "uuid" or "select"
-                or "multiSelect" or "list" or "hash" or "secret"
-                or "text" or "editor" => "text",
+            "text" or "editor" or "email" or "url" or "select"
+                or "multiSelect" => "text",
             "integer" => "integer",
-            "float" or "decimal" or "number" => "decimal",
-            "boolean" or "bool" => "boolean",
+            "number" => "decimal",
+            "bool" => "boolean",
             "date" => "date",
             "dateTime" or "autoDate" or "autodate" => "datetime",
             "time" => "time",
-            "json" or "geoPoint" or "geoJson" => "json",
+            "json" or "geoPoint" => "json",
             "file" or "relation" => "text",
             _ => throw new InvalidOperationException(
                 $"PocketBase returned unknown data type '{value}'."),
@@ -851,7 +896,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         JsonElement field,
         string rendererDataType)
     {
-        string productDataType = RequiredString(field, "dataType");
+        string productDataType = RequiredString(field, "logicalType");
         var editor = new Dictionary<string, object?>(StringComparer.Ordinal);
         switch (productDataType)
         {
@@ -866,20 +911,17 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 editor["allowCustom"] = false;
                 break;
             case "json":
-            case "geoJson":
             case "geoPoint":
-            case "list":
                 editor["kind"] = "json";
                 editor["schema"] = ReadJsonSchema(field);
                 break;
-            case "integer":
-            case "float":
-            case "decimal":
+            case "number":
                 editor["kind"] = "number";
-                editor["storage"] = productDataType == "integer" ? "integer" : "decimal";
+                JsonElement options = RequiredProperty(RequiredProperty(field, "storage"), "options");
+                editor["storage"] = RequiredBoolean(options, "onlyInt") ? "integer" : "decimal";
                 AddNumericEditorLimits(editor, field);
                 break;
-            case "boolean":
+            case "bool":
                 editor["kind"] = "boolean";
                 break;
             case "date":
@@ -900,7 +942,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 break;
             default:
                 editor["kind"] = EditorKind(rendererDataType);
-                editor["multiline"] = productDataType is "longText" or "richText";
+                editor["multiline"] = productDataType == "editor";
                 break;
         }
         return editor;
@@ -926,31 +968,25 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
 
     private static object?[] ReadEnumOptions(JsonElement field)
     {
-        foreach (JsonElement constraint in field.GetProperty("constraints").EnumerateArray())
+        if (!field.TryGetProperty("select", out JsonElement selection)
+            || !selection.TryGetProperty("options", out JsonElement options)
+            || options.ValueKind != JsonValueKind.Array)
         {
-            if (RequiredString(constraint, "kind") != "enum"
-                || !constraint.TryGetProperty("options", out JsonElement options)
-                || options.ValueKind != JsonValueKind.Array)
-            {
-                continue;
-            }
-            return options.EnumerateArray()
-                .Where(option => option.TryGetProperty("value", out _))
-                .Select(option => ToObject(option.GetProperty("value")))
-                .ToArray();
+            return Array.Empty<object?>();
         }
-        return Array.Empty<object?>();
+        return options.EnumerateArray()
+            .Where(option => RequiredString(option, "state") == "active")
+            .Select(option => ToObject(option.GetProperty("optionId")))
+            .ToArray();
     }
 
     private static object? ReadJsonSchema(JsonElement field)
     {
-        foreach (JsonElement constraint in field.GetProperty("constraints").EnumerateArray())
+        if (field.TryGetProperty("json", out JsonElement json)
+            && json.ValueKind == JsonValueKind.Object
+            && json.TryGetProperty("schema", out JsonElement schema))
         {
-            if (RequiredString(constraint, "kind") == "jsonSchema"
-                && constraint.TryGetProperty("schema", out JsonElement schema))
-            {
-                return ToObject(schema);
-            }
+            return ToObject(schema);
         }
         return null;
     }
@@ -959,20 +995,61 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         IDictionary<string, object?> editor,
         JsonElement field)
     {
-        foreach (JsonElement constraint in field.GetProperty("constraints").EnumerateArray())
+        JsonElement display = RequiredProperty(field, "display");
+        editor["scale"] = ToObject(RequiredProperty(display, "displayScale"));
+        editor["precision"] = RequiredString(display, "precision");
+        JsonElement range = RequiredProperty(RequiredProperty(field, "constraints"), "range");
+        JsonElement minimum = RequiredProperty(range, "min");
+        JsonElement maximum = RequiredProperty(range, "max");
+        if (minimum.ValueKind != JsonValueKind.Null)
         {
-            switch (RequiredString(constraint, "kind"))
+            editor["minValue"] = ToObject(minimum);
+        }
+        if (maximum.ValueKind != JsonValueKind.Null)
+        {
+            editor["maxValue"] = ToObject(maximum);
+        }
+    }
+
+    private static string FieldIdentityString(JsonElement field, string name)
+        => RequiredString(RequiredProperty(field, "identity"), name);
+
+    private static string FieldKind(JsonElement field)
+        => RequiredString(field, "logicalType") switch
+        {
+            "autoDate" => "system",
+            "relation" => "relation",
+            "file" => "attachment",
+            "formula" => "formula",
+            "lookup" => "lookup",
+            _ => "scalar",
+        };
+
+    private static bool FieldReadOnly(JsonElement schema, JsonElement field)
+    {
+        string logicalType = RequiredString(field, "logicalType");
+        JsonElement lifecycle = RequiredProperty(field, "lifecycle");
+        return RequiredString(schema, "kind") == "view"
+            || logicalType is "autoDate" or "formula" or "lookup"
+            || RequiredString(lifecycle, "state") != "active";
+    }
+
+    private static JsonElement FindCapability(JsonElement schema, string logicalType)
+    {
+        JsonElement capabilities = RequiredProperty(schema, "capabilities");
+        if (capabilities.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("PocketBase returned invalid capabilities.");
+        }
+        foreach (JsonElement capability in capabilities.EnumerateArray())
+        {
+            if (RequiredString(capability, "logicalType") == logicalType)
             {
-                case "precisionScale":
-                    editor["precision"] = ToObject(constraint.GetProperty("precision"));
-                    editor["scale"] = ToObject(constraint.GetProperty("scale"));
-                    break;
-                case "range":
-                    editor["minValue"] = ToObject(constraint.GetProperty("min"));
-                    editor["maxValue"] = ToObject(constraint.GetProperty("max"));
-                    break;
+                return capability;
             }
         }
+        throw new InvalidOperationException(
+            $"PocketBase omitted capability for '{logicalType}'.");
     }
 
     private static string RowId(object value)

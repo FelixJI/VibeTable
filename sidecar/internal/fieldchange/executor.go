@@ -18,9 +18,9 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/backupreceipt"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldresource"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaaudit"
 )
 
 const fieldOperationTTL = 24 * time.Hour
@@ -29,6 +29,7 @@ type Executor struct {
 	app             core.App
 	store           PlanStore
 	migration       MigrationScheduler
+	formulaBackfill FormulaBackfillScheduler
 	clock           func() time.Time
 	protectionProof ProtectionSnapshotVerifier
 	logger          *slog.Logger
@@ -46,6 +47,16 @@ type MigrationScheduler interface {
 	Start(jobID string) bool
 }
 
+type FormulaBackfillScheduler interface {
+	EnqueueFormulaBackfill(
+		ctx context.Context,
+		app core.App,
+		tableID string,
+		schemaRevision string,
+	) (string, error)
+	Start(jobID string) bool
+}
+
 type ExecutorOption func(*Executor)
 
 func WithExecutorClock(clock func() time.Time) ExecutorOption {
@@ -57,6 +68,12 @@ func WithExecutorClock(clock func() time.Time) ExecutorOption {
 func WithMigrationScheduler(scheduler MigrationScheduler) ExecutorOption {
 	return func(executor *Executor) {
 		executor.migration = scheduler
+	}
+}
+
+func WithFormulaBackfillScheduler(scheduler FormulaBackfillScheduler) ExecutorOption {
+	return func(executor *Executor) {
+		executor.formulaBackfill = scheduler
 	}
 }
 
@@ -171,6 +188,7 @@ func (executor *Executor) apply(
 		return v2.ApplyReceipt{}, err
 	}
 	var receipt v2.ApplyReceipt
+	var formulaBackfillJobID string
 	err = executor.app.RunInTransaction(func(txApp core.App) error {
 		replayed, replayErr := loadReplay(
 			txApp, request.OperationID, requestHash, executor.clock().UTC(),
@@ -275,7 +293,7 @@ func (executor *Executor) apply(
 				MigrationJobID: jobID,
 			}
 			if auditErr := saveSchemaAudit(
-				txApp, *plan, request, receipt, executor.clock().UTC(),
+				ctx, txApp, *plan, request, receipt, executor.clock().UTC(),
 			); auditErr != nil {
 				return auditErr
 			}
@@ -291,7 +309,7 @@ func (executor *Executor) apply(
 		if applyErr != nil {
 			return applyErr
 		}
-		nextRevision, parseErr := schema.ParseSchemaRevision(revisions.Schema)
+		nextRevision, parseErr := v2.ParseSchemaRevision(revisions.Schema)
 		if parseErr != nil {
 			return parseErr
 		}
@@ -300,7 +318,7 @@ func (executor *Executor) apply(
 			Contract: v2.Contract, OperationID: request.OperationID,
 			PlanID: plan.PlanID, Action: plan.Intent.Action,
 			TableID: plan.Intent.TableID, FieldID: fieldIDAfter(*plan),
-			SchemaRevision: schema.FormatSchemaRevision(nextRevision),
+			SchemaRevision: v2.FormatSchemaRevision(nextRevision),
 			Definition:     applied,
 		}
 		for _, related := range plan.RelatedChanges {
@@ -311,31 +329,50 @@ func (executor *Executor) apply(
 			if relatedApplyErr != nil {
 				return relatedApplyErr
 			}
-			relatedRevision, relatedParseErr := schema.ParseSchemaRevision(
+			relatedRevision, relatedParseErr := v2.ParseSchemaRevision(
 				related.ExpectedSchemaRevision,
 			)
 			if relatedParseErr != nil {
 				return relatedParseErr
 			}
 			relatedRevision++
-			if saveErr := saveTableRevisionAndLegacy(
+			if saveErr := saveTableRevisionAndComputedMetadata(
 				ctx, txApp, relatedPlan, relatedRevision,
 			); saveErr != nil {
 				return saveErr
 			}
 			receipt.Related = append(receipt.Related, v2.RelatedApplyReceipt{
 				TableID: related.TableID, FieldID: related.FieldID,
-				SchemaRevision: schema.FormatSchemaRevision(relatedRevision),
+				SchemaRevision: v2.FormatSchemaRevision(relatedRevision),
 				Definition:     relatedDefinition,
 			})
 		}
-		if saveErr := saveTableRevisionAndLegacy(
+		if saveErr := saveTableRevisionAndComputedMetadata(
 			ctx, txApp, *plan, nextRevision,
 		); saveErr != nil {
 			return saveErr
 		}
+		if formulaNeedsBackfill(plan.Before, plan.After) {
+			if executor.formulaBackfill == nil {
+				return productError(
+					"formula.backfill.unavailable",
+					"planId",
+					"formula schema changes require a durable backfill scheduler",
+					nil,
+				)
+			}
+			formulaBackfillJobID, err = executor.formulaBackfill.EnqueueFormulaBackfill(
+				ctx,
+				txApp,
+				plan.Intent.TableID,
+				receipt.SchemaRevision,
+			)
+			if err != nil {
+				return err
+			}
+		}
 		if auditErr := saveSchemaAudit(
-			txApp, *plan, request, receipt, executor.clock().UTC(),
+			ctx, txApp, *plan, request, receipt, executor.clock().UTC(),
 		); auditErr != nil {
 			return auditErr
 		}
@@ -361,6 +398,9 @@ func (executor *Executor) apply(
 	}
 	if receipt.MigrationJobID != "" {
 		executor.migration.Start(receipt.MigrationJobID)
+	}
+	if formulaBackfillJobID != "" {
+		executor.formulaBackfill.Start(formulaBackfillJobID)
 	}
 	if plan.Intent.Action == v2.ActionPurge {
 		// The cleanup set committed with the schema change. A transient blob
@@ -670,7 +710,7 @@ func saveDefinitionMetadata(
 	record.Set("field_id", definition.Identity.FieldID)
 	record.Set("physical_name", definition.Identity.PhysicalName)
 	record.Set("display_name", definition.DisplayName)
-	record.Set("kind", legacyKind(definition))
+	record.Set("kind", storedFieldKind(definition))
 	record.Set("data_type", string(definition.LogicalType))
 	record.Set("storage_type", string(definition.Storage.Kind))
 	record.Set("constraints_json", types.JSONRaw(constraints))
@@ -740,7 +780,6 @@ func syncRelationMetadata(
 	record.Set("source_field_id", definition.Identity.FieldID)
 	record.Set("target_table_id", definition.Relation.TargetTableID)
 	record.Set("cardinality", definition.Relation.Cardinality)
-	record.Set("junction_table_id", "")
 	record.Set("delete_policy", definition.Relation.DeletePolicy)
 	record.Set("pair_id", definition.Relation.PairID)
 	record.Set("reciprocal_field_id", definition.Relation.ReciprocalFieldID)
@@ -750,7 +789,7 @@ func syncRelationMetadata(
 	return nil
 }
 
-func legacyKind(definition v2.FieldDefinition) string {
+func storedFieldKind(definition v2.FieldDefinition) string {
 	switch definition.LogicalType {
 	case v2.LogicalRelation:
 		return "relation"
@@ -765,178 +804,58 @@ func legacyKind(definition v2.FieldDefinition) string {
 	}
 }
 
-func saveTableRevisionAndLegacy(
+func saveTableRevisionAndComputedMetadata(
 	ctx context.Context,
 	app core.App,
 	plan v2.FieldChangePlan,
 	nextRevision int64,
 ) error {
-	record, err := NewCatalog(app).tableRecord(app, plan.Intent.TableID)
+	catalog := NewCatalog(app)
+	record, err := catalog.tableRecord(app, plan.Intent.TableID)
 	if err != nil {
 		return err
 	}
 	record.Set("schema_revision", nextRevision)
-	raw, err := json.Marshal(record.GetRaw("definition_json"))
+	fields, err := catalog.Fields(ctx, plan.Intent.TableID, false)
 	if err != nil {
-		return fmt.Errorf("encode legacy table definition: %w", err)
+		return err
 	}
-	var definition schema.TableDefinition
-	if err := json.Unmarshal(raw, &definition); err != nil {
-		return fmt.Errorf("decode legacy table definition: %w", err)
-	}
-	definition.SchemaRevision = schema.FormatSchemaRevision(nextRevision)
-	var projected *schema.FieldDefinition
-	if plan.After != nil {
-		value := toLegacyField(*plan.After)
-		if value.Formula != nil {
-			for _, existingField := range definition.Fields {
-				if existingField.FieldID != value.FieldID || existingField.Formula == nil {
-					continue
-				}
-				if !formulaDefinitionChanged(plan.Before, plan.After) {
-					value.Formula.Version = existingField.Formula.Version
-					value.Formula.Status = existingField.Formula.Status
-				} else {
-					value.Formula.Version = max(existingField.Formula.Version, 1) + 1
-				}
-				break
-			}
-		}
-		projected = &value
-	}
-	switch plan.Intent.Action {
-	case v2.ActionCreate:
-		definition.Fields = append(definition.Fields, *projected)
-	case v2.ActionUpdate, v2.ActionConvert, v2.ActionRestore:
-		upsertLegacyField(&definition, *projected)
-	case v2.ActionRetire, v2.ActionPurge:
-		removeLegacyField(&definition, plan.Intent.FieldID)
-	}
-	definition.PrimaryDisplayFieldID = selectPrimaryDisplayField(
-		definition.Fields, definition.PrimaryDisplayFieldID,
+	record.Set(
+		"primary_display_field_id",
+		selectPrimaryDisplayField(fields, record.GetString("primary_display_field_id")),
 	)
-	record.Set("primary_display_field_id", definition.PrimaryDisplayFieldID)
-	definitionRaw, err := json.Marshal(definition)
-	if err != nil {
-		return fmt.Errorf("encode updated legacy table definition: %w", err)
-	}
-	record.Set("definition_json", types.JSONRaw(definitionRaw))
 	if err := app.Save(record); err != nil {
 		return fmt.Errorf("save table schema revision: %w", err)
 	}
-	return schemaapi.New(app).SyncComputedMetadata(ctx, definition)
+	return schemaapi.New(app).SyncComputedMetadataForTable(ctx, plan.Intent.TableID)
 }
 
 func selectPrimaryDisplayField(
-	fields []schema.FieldDefinition,
+	fields []v2.FieldDefinition,
 	current string,
 ) string {
 	for _, field := range fields {
-		if field.FieldID == current && !field.ReadOnly &&
-			field.Kind != schema.FieldKindRelation {
+		if field.Identity.FieldID == current && isDisplayField(field) {
 			return current
 		}
 	}
 	for _, field := range fields {
-		if !field.ReadOnly && field.Kind != schema.FieldKindRelation {
-			return field.FieldID
+		if isDisplayField(field) {
+			return field.Identity.FieldID
 		}
 	}
 	if len(fields) != 0 {
-		return fields[0].FieldID
+		return fields[0].Identity.FieldID
 	}
 	return ""
 }
 
-func toLegacyField(definition v2.FieldDefinition) schema.FieldDefinition {
-	dataType, storage := legacyTypes(definition.LogicalType)
-	constraints := []schema.FieldConstraint{
-		{Kind: schema.ConstraintRequired, Value: definition.Value.Required},
-		{Kind: schema.ConstraintUnique, Value: definition.Constraints.Unique.Enabled},
-	}
-	if definition.Value.Default.Enabled {
-		constraints = append(constraints, schema.FieldConstraint{
-			Kind: schema.ConstraintDefault, Value: definition.Value.Default.Value,
-		})
-	}
-	field := schema.FieldDefinition{
-		FieldID: definition.Identity.FieldID, PhysicalName: definition.Identity.PhysicalName,
-		DisplayName: definition.DisplayName, Kind: schema.FieldKind(legacyKind(definition)),
-		DataType: dataType, StorageType: storage, Nullable: !definition.Value.Required,
-		DefaultValue: definition.Value.Default.Value, Constraints: constraints,
-		Editor: schema.EditorDefinition{
-			Kind: string(definition.Display.Kind),
-			Config: map[string]any{
-				"preset":       definition.Display.Preset,
-				"displayScale": definition.Display.DisplayScale,
-			},
-		},
-		ReadOnly: definition.LogicalType == v2.LogicalAutoDate ||
-			definition.LogicalType == v2.LogicalFormula ||
-			definition.LogicalType == v2.LogicalLookup,
-	}
-	if definition.AutoDate != nil {
-		field.AutoDate = &schema.AutoDateSpec{Role: schema.AutoDateRole(definition.AutoDate.Role)}
-	}
-	if definition.Relation != nil {
-		field.Relation = &schema.RelationSpec{
-			TargetTableID:     definition.Relation.TargetTableID,
-			Cardinality:       definition.Relation.Cardinality,
-			DeletePolicy:      definition.Relation.DeletePolicy,
-			PairID:            definition.Relation.PairID,
-			ReciprocalFieldID: definition.Relation.ReciprocalFieldID,
-		}
-	}
-	if definition.Formula != nil {
-		resultType, resultStorage := legacyTypes(definition.Formula.ResultType)
-		field.StorageType = resultStorage
-		field.Formula = &schema.FormulaSpec{
-			Language:   definition.Formula.Language,
-			Source:     definition.Formula.Source,
-			ResultType: resultType,
-			Version:    1,
-			Status:     "backfilling",
-		}
-	}
-	if definition.Lookup != nil {
-		path := make([]schema.LookupPathStep, 0, len(definition.Lookup.Path))
-		for _, step := range definition.Lookup.Path {
-			path = append(path, schema.LookupPathStep{RelationFieldID: step.RelationFieldID})
-		}
-		field.Lookup = &schema.LookupSpec{
-			RelationFieldID: path[0].RelationFieldID,
-			Path:            path,
-			TargetFieldID:   definition.Lookup.TargetFieldID,
-			Aggregate:       "none",
-		}
-	}
-	if definition.File != nil {
-		field.AttachmentPolicy = &schema.AttachmentPolicy{
-			MaxFiles:          definition.File.MaxFiles,
-			MaxBytesPerFile:   definition.File.MaxBytesPerFile,
-			AllowedMIMETypes:  append([]string(nil), definition.File.AllowedMIMETypes...),
-			ThumbnailVariants: append([]string(nil), definition.File.Thumbs...),
-			Protected:         definition.File.Protected,
-		}
-	}
-	if definition.Select != nil {
-		options := make([]schema.SelectOption, 0, len(definition.Select.Options))
-		for _, option := range definition.Select.Options {
-			if option.State == v2.OptionActive {
-				options = append(options, schema.SelectOption{
-					Value: option.OptionID, DisplayName: option.Label,
-				})
-			}
-		}
-		field.Constraints = append(field.Constraints, schema.FieldConstraint{
-			Kind:        schema.ConstraintEnum,
-			Multiple:    definition.LogicalType == v2.LogicalMultiSelect,
-			MinSelected: definition.Constraints.Selection.Min,
-			MaxSelected: definition.Constraints.Selection.Max,
-			Options:     options,
-		})
-	}
-	return field
+func isDisplayField(field v2.FieldDefinition) bool {
+	return field.Lifecycle.State == v2.LifecycleActive &&
+		field.LogicalType != v2.LogicalRelation &&
+		field.LogicalType != v2.LogicalFormula &&
+		field.LogicalType != v2.LogicalLookup &&
+		field.LogicalType != v2.LogicalAutoDate
 }
 
 func formulaDefinitionChanged(before, after *v2.FieldDefinition) bool {
@@ -946,6 +865,13 @@ func formulaDefinitionChanged(before, after *v2.FieldDefinition) bool {
 	return before.Formula.Language != after.Formula.Language ||
 		before.Formula.Source != after.Formula.Source ||
 		before.Formula.ResultType != after.Formula.ResultType
+}
+
+func formulaNeedsBackfill(before, after *v2.FieldDefinition) bool {
+	if after == nil || after.Formula == nil {
+		return false
+	}
+	return before == nil || before.Formula == nil || formulaDefinitionChanged(before, after)
 }
 
 func clearComputedPhysicalValue(
@@ -963,67 +889,6 @@ func clearComputedPhysicalValue(
 		return fmt.Errorf("clear stale computed values: %w", err)
 	}
 	return nil
-}
-
-func legacyTypes(logical v2.LogicalType) (schema.DataType, schema.StorageType) {
-	switch logical {
-	case v2.LogicalText:
-		return schema.DataTypeShortText, schema.StorageText
-	case v2.LogicalEditor:
-		return schema.DataTypeRichText, schema.StorageEditor
-	case v2.LogicalNumber:
-		return schema.DataTypeFloat, schema.StorageNumber
-	case v2.LogicalBool:
-		return schema.DataTypeBoolean, schema.StorageBool
-	case v2.LogicalDate:
-		return schema.DataTypeDate, schema.StorageDate
-	case v2.LogicalDateTime:
-		return schema.DataTypeDateTime, schema.StorageDate
-	case v2.LogicalTime:
-		return schema.DataTypeTime, schema.StorageText
-	case v2.LogicalAutoDate:
-		return schema.DataTypeAutoDate, schema.StorageAutodate
-	case v2.LogicalEmail:
-		return schema.DataTypeEmail, schema.StorageEmail
-	case v2.LogicalURL:
-		return schema.DataTypeURL, schema.StorageURL
-	case v2.LogicalSelect:
-		return schema.DataTypeSelect, schema.StorageSelect
-	case v2.LogicalMultiSelect:
-		return schema.DataTypeMultiSelect, schema.StorageSelect
-	case v2.LogicalRelation:
-		return schema.DataTypeRelation, schema.StorageRelation
-	case v2.LogicalFile:
-		return schema.DataTypeFile, schema.StorageFile
-	case v2.LogicalGeoPoint:
-		return schema.DataTypeGeoPoint, schema.StorageGeoPoint
-	case v2.LogicalFormula:
-		return schema.DataTypeFormula, schema.StorageJSON
-	case v2.LogicalLookup:
-		return schema.DataTypeLookup, schema.StorageJSON
-	default:
-		return schema.DataTypeJSON, schema.StorageJSON
-	}
-}
-
-func upsertLegacyField(table *schema.TableDefinition, field schema.FieldDefinition) {
-	for index := range table.Fields {
-		if table.Fields[index].FieldID == field.FieldID {
-			table.Fields[index] = field
-			return
-		}
-	}
-	table.Fields = append(table.Fields, field)
-}
-
-func removeLegacyField(table *schema.TableDefinition, fieldID string) {
-	filtered := table.Fields[:0]
-	for _, field := range table.Fields {
-		if field.FieldID != fieldID {
-			filtered = append(filtered, field)
-		}
-	}
-	table.Fields = filtered
 }
 
 func validateApplyRequest(request v2.ApplyRequest) error {
@@ -1143,6 +1008,7 @@ func saveReplay(
 }
 
 func saveSchemaAudit(
+	ctx context.Context,
 	app core.App,
 	plan v2.FieldChangePlan,
 	request v2.ApplyRequest,
@@ -1180,7 +1046,19 @@ func saveSchemaAudit(
 	if err := app.Save(record); err != nil {
 		return fmt.Errorf("save schema audit: %w", err)
 	}
-	return nil
+	return schemaaudit.SaveOutbox(ctx, app, schemaaudit.Event{
+		OperationID:    request.OperationID,
+		PlanID:         plan.PlanID,
+		Action:         string(plan.Intent.Action),
+		TableID:        plan.Intent.TableID,
+		FieldID:        receipt.FieldID,
+		SchemaRevision: receipt.SchemaRevision,
+		BeforeHash:     beforeHash,
+		AfterHash:      afterHash,
+		Actor:          request.Actor,
+		Outcome:        "applied",
+		MigrationJobID: receipt.MigrationJobID,
+	}, now)
 }
 
 func saveFailedSchemaAudit(

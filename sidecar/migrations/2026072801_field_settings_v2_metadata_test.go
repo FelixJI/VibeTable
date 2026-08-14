@@ -23,6 +23,10 @@ func TestFieldSettingsV2MigrationCreatesClosedMetadataCollections(t *testing.T) 
 	if err := app.RunAllMigrations(); err != nil {
 		t.Fatal(err)
 	}
+	tables, err := app.FindCollectionByNameOrId("vibetable_tables")
+	if err != nil || tables.Fields.GetByName("view_v2_json") == nil {
+		t.Fatalf("vibetable_tables is missing view_v2_json: %v", err)
+	}
 
 	fields, err := app.FindCollectionByNameOrId("vibetable_fields")
 	if err != nil {

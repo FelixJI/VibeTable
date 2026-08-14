@@ -11,7 +11,7 @@ namespace VibeTable.Desktop.Services;
 /// Phase A defines three notification types: <c>database.opened</c>,
 /// <c>table.pageLoaded</c>, and the framework <c>operation.failed</c> (built by
 /// <see cref="WebMessageRouter.BuildOperationFailed"/>). Task 10 adds
-/// <c>table.datasetReady</c> as a client-mode completion signal.
+/// <c>table.datasetReady</c> as the initial authoritative-window signal.
 /// </remarks>
 public interface IWebReplySink
 {

@@ -12,6 +12,7 @@ import (
 	sidecarapp "github.com/vibetable/vibetable/sidecar/internal/app"
 	"github.com/vibetable/vibetable/sidecar/internal/buildinfo"
 	"github.com/vibetable/vibetable/sidecar/internal/config"
+	"github.com/vibetable/vibetable/sidecar/internal/diagnostics"
 	"github.com/vibetable/vibetable/sidecar/internal/startup"
 	"github.com/vibetable/vibetable/sidecar/internal/workspacev2"
 	"github.com/vibetable/vibetable/sidecar/migrations"
@@ -198,14 +199,14 @@ func run(args []string) int {
 
 	logger := newLogger(cfg.Dev)
 	if err := startup.CheckDataDirectory(cfg.DataDir); err != nil {
-		logger.Error("sidecar startup preflight", "error", err)
+		logger.Error("sidecar.startup_preflight", "errorCode", diagnosticCode("startup preflight", err))
 		return 1
 	}
 	if err := startup.ValidateMigrationManifest(func() error {
 		_, loadErr := migrations.LoadManifest()
 		return loadErr
 	}); err != nil {
-		logger.Error("sidecar startup preflight", "error", err)
+		logger.Error("sidecar.startup_preflight", "errorCode", diagnosticCode("startup preflight", err))
 		return 1
 	}
 	restored := false
@@ -219,14 +220,14 @@ func run(args []string) int {
 	}
 	if err != nil {
 		logger.Error(
-			"apply staged restore",
-			"error",
-			startup.Classify("apply staged restore", err),
+			"snapshot.restore_apply_failed",
+			"errorCode",
+			diagnosticCode("apply staged restore", err),
 		)
 		return 1
 	}
 	if restored {
-		logger.Info("staged restore installed")
+		logger.Info("snapshot.restore_installed")
 	}
 	appOptions := sidecarapp.Options{
 		DataDir:     cfg.DataDir,
@@ -247,7 +248,7 @@ func run(args []string) int {
 				return err
 			}
 			restoreCommitted = true
-			logger.Info("staged snapshot restore committed")
+			logger.Info("snapshot.restore_committed")
 			return nil
 		},
 	}
@@ -271,14 +272,14 @@ func run(args []string) int {
 			err = errors.Join(err, rollbackErr)
 		}
 		logger.Error(
-			"initialize sidecar",
-			"error",
-			startup.Classify("initialize sidecar", err),
+			"sidecar.initialize_failed",
+			"errorCode",
+			diagnosticCode("initialize sidecar", err),
 		)
 		return 1
 	}
 
-	logger.Info("sidecar starting",
+	logger.Info("sidecar.starting",
 		"version", buildinfo.Version,
 		"pocketbaseVersion", buildinfo.PocketBaseVersion,
 		"migrationHash", migrations.Hash(),
@@ -293,13 +294,13 @@ func run(args []string) int {
 			err = errors.Join(err, rollbackErr)
 		}
 		logger.Error(
-			"sidecar stopped with error",
-			"error",
-			startup.Classify("start sidecar", err),
+			"sidecar.start_failed",
+			"errorCode",
+			diagnosticCode("start sidecar", err),
 		)
 		return 1
 	}
-	logger.Info("sidecar stopped")
+	logger.Info("sidecar.stopped")
 	return 0
 }
 
@@ -314,9 +315,18 @@ func newLogger(dev bool) *slog.Logger {
 	if dev {
 		level = slog.LevelDebug
 	}
-	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	return slog.New(diagnostics.NewJSONHandler(os.Stderr, level))
 }
 
 func logError(message string, err error) {
-	newLogger(false).Error(message, "error", err)
+	newLogger(false).Error(message, "errorCode", diagnosticCode(message, err))
+}
+
+func diagnosticCode(operation string, err error) string {
+	classified := startup.Classify(operation, err)
+	var stable *startup.Error
+	if errors.As(classified, &stable) {
+		return stable.Code
+	}
+	return startup.CodeStartFailed
 }

@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "schemaVersion": 7,
+  "schemaVersion": 10,
   "migrations": [
     {
       "id": 2026072401,
@@ -12,13 +12,7 @@
       "id": 2026072402,
       "name": "internal_collections",
       "source": "2026072402_internal_collections.go",
-      "sha256": "d5f19dc86c416134bd41e7ba43a0bdf359cfe3ee89fdd36ef94440d4050f2d08"
-    },
-    {
-      "id": 2026072403,
-      "name": "internal_metadata_channel",
-      "source": "2026072403_internal_metadata_channel.go",
-      "sha256": "a1cfd35365cad2aba864ff2aa038f666b2ddd80c41b29a29bc7aceb7c04a30b8"
+      "sha256": "0387ed83f09da242d3e6c87a8fb2080547b64cde3103ba35f74d39d5a84102b3"
     },
     {
       "id": 2026072404,
@@ -43,6 +37,24 @@
       "name": "relation_pairs",
       "source": "2026080501_relation_pairs.go",
       "sha256": "7214a4f7ff5988b4b73373b3d4b0c560522c7cc61188637f6876a1b5a31f332e"
+    },
+    {
+      "id": 2026081201,
+      "name": "interfaces",
+      "source": "2026081201_interfaces.go",
+      "sha256": "f9b0c65a0434f528ac9b6b5a769663144505d5faf8c385d0f90989b7b0b97937"
+    },
+    {
+      "id": 2026081202,
+      "name": "content_links",
+      "source": "2026081202_content_links.go",
+      "sha256": "fbcf7fca1c594866aff97b39aa899a1fc1e4eed66fc3420ff6e05e2d13799ee4"
+    },
+    {
+      "id": 2026081203,
+      "name": "view_v2_metadata",
+      "source": "2026081203_view_v2_metadata.go",
+      "sha256": "ca3bc00025aa676417b4c0202ba8a4a942b85350f12c638277fe7983879795fc"
     }
   ]
 }

@@ -305,7 +305,7 @@ func TestCompetingProvisionalBranchesAreAcceptedWithoutLosingEither(t *testing.T
 	}
 }
 
-func TestLegacyV2RootReopensAndUpgradesOnNextCommit(t *testing.T) {
+func TestLegacyV2RootIsRejected(t *testing.T) {
 	fixture := newHistoryFixture(t)
 	ctx := context.Background()
 	saved, err := fixture.save(ctx, SaveRequest{
@@ -324,7 +324,7 @@ func TestLegacyV2RootReopensAndUpgradesOnNextCommit(t *testing.T) {
 	if err := decodeStrict(record.Payload, &legacy); err != nil {
 		t.Fatal(err)
 	}
-	legacy.FormatVersion = legacyRootFormatVersion
+	legacy.FormatVersion = 2
 	raw, err := json.Marshal(legacy)
 	if err != nil {
 		t.Fatal(err)
@@ -343,35 +343,14 @@ func TestLegacyV2RootReopensAndUpgradesOnNextCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := Open(
+	_, err = Open(
 		ctx,
 		fixture.repository,
 		fixture.coordinator,
 		receipt.Manifests["filehistory-root"],
 	)
-	if err != nil {
-		t.Fatalf("legacy v2 root did not reopen: %v", err)
-	}
-	next, err := reopened.Save(ctx, SaveRequest{
-		Token: fixture.token, DocumentID: testDocumentOne,
-		ExpectedEffectiveRevision: stringRef(saved.Revision.RevisionID),
-		Kind:                      RevisionAutosave, Content: []byte("upgraded"),
-		MimeType: "text/plain", CreatedBy: "test-user",
-		DeviceID: testDeviceID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	upgraded, err := fixture.repository.GetManifest(ctx, next.Root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var root rootPayload
-	if err := decodeStrict(upgraded.Payload, &root); err != nil {
-		t.Fatal(err)
-	}
-	if root.FormatVersion != rootFormatVersion {
-		t.Fatalf("upgraded root format = %d", root.FormatVersion)
+	if !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("legacy v2 root error = %v", err)
 	}
 }
 
@@ -424,7 +403,7 @@ func TestProvisionalValidationRejectsMissingOrDuplicateLocalSequence(t *testing.
 	}
 
 	root.Documents = []Document{first.Document}
-	root.FormatVersion = legacyRootFormatVersion
+	root.FormatVersion = 2
 	raw, err = json.Marshal(root)
 	if err != nil {
 		t.Fatal(err)

@@ -1,18 +1,65 @@
 from __future__ import annotations
 
+import inspect
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
 from backend.adapters.pocketbase.client import PocketBaseClient
-from backend.adapters.pocketbase.product_rpc import (
-    PocketBaseProductRpc,
-    _lookup_revision,
-    _renderer_columns,
-    _renderer_relation,
-)
+from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
+
+
+def _formula_v2_field() -> dict[str, Any]:
+    path = Path(__file__).parents[3] / "contracts/schema-v2/fixtures/field-definition.json"
+    field = json.loads(path.read_text(encoding="utf-8"))
+    field["logicalType"] = "formula"
+    field["storage"]["kind"] = "computed"
+    field["value"]["presence"] = {"mode": "computed"}
+    field["display"]["kind"] = "readonly"
+    field["formula"] = {"language": "cel-v1", "source": "1 + 1", "resultType": "number"}
+    return field
+
+
+def _schema_v2_field(
+    *, field_id: str, physical_name: str, display_name: str, logical_type: str
+) -> dict[str, Any]:
+    path = Path(__file__).parents[3] / "contracts/schema-v2/fixtures/field-definition.json"
+    field = json.loads(path.read_text(encoding="utf-8"))
+    field["identity"] = {
+        "fieldId": field_id,
+        "physicalName": physical_name,
+        "providerFieldId": f"pb_{field_id.removeprefix('fld_')}",
+    }
+    field["displayName"] = display_name
+    field["logicalType"] = logical_type
+    if logical_type == "relation":
+        field["relation"] = {
+            "targetTableId": "customers",
+            "cardinality": "one",
+            "deletePolicy": "restrict",
+            "displayFieldId": "fld_00000002",
+        }
+    return field
+
+
+def _schema_v2_snapshot(
+    fields: list[dict[str, Any]], *, table_id: str = "orders", revision: str = "schema_4"
+) -> dict[str, Any]:
+    return {
+        "contract": "vibetable.schema.v2",
+        "tableId": table_id,
+        "displayName": table_id.title(),
+        "kind": "base",
+        "schemaRevision": revision,
+        "dataRevision": 1,
+        "archivePolicy": {"mode": "none", "fieldId": None, "archivedValue": None},
+        "fields": fields,
+        "capabilities": [],
+    }
 
 
 class FakeTransport:
@@ -51,6 +98,16 @@ def test_params_reject_credentials_recursively() -> None:
         ProductParams.model_validate({"nested": {"sessionSecret": "secret"}})
 
 
+def test_root_adapter_exposes_only_the_closed_invoke_interface() -> None:
+    public_async_methods = {
+        name
+        for name, member in inspect.getmembers(PocketBaseProductRpc, inspect.iscoroutinefunction)
+        if not name.startswith("_")
+    }
+
+    assert public_async_methods == {"invoke"}
+
+
 @pytest.mark.asyncio
 async def test_invoke_dispatches_registered_method_through_closed_adapter_seam() -> None:
     service, transport = _service([{"tables": []}])
@@ -59,7 +116,7 @@ async def test_invoke_dispatches_registered_method_through_closed_adapter_seam()
     result = await service.invoke("schema.list", params)
 
     assert result == {"tables": []}
-    assert transport.requests[0]["path"] == "/api/vibetable/v1/schema/tables"
+    assert transport.requests[0]["path"] == "/api/vibetable/v2/schema/tables"
 
 
 def test_schema_v2_plan_params_defer_domain_validation_but_keep_transport_closed() -> None:
@@ -159,10 +216,10 @@ async def test_field_settings_methods_use_only_frozen_v2_routes() -> None:
     )
     recycle = PRODUCT_RPC_REGISTRY["field.recycleBin.list"].model_validate({"tableId": "orders"})
 
-    await service.describe_field_settings(describe)
-    await service.plan_field_change(plan)
-    await service.apply_field_change(apply)
-    await service.list_recycled_fields(recycle)
+    await service.invoke("field.settings.describe", describe)
+    await service.invoke("field.change.plan", plan)
+    await service.invoke("field.change.apply", apply)
+    await service.invoke("field.recycleBin.list", recycle)
 
     assert [request["path"] for request in transport.requests] == [
         "/api/vibetable/v2/field-settings/orders",
@@ -177,109 +234,14 @@ async def test_field_settings_methods_use_only_frozen_v2_routes() -> None:
     }
 
 
-def test_renderer_columns_use_composite_relation_and_lookup_catalog_ids() -> None:
-    columns = _renderer_columns(
-        {
-            "tableId": "orders",
-            "fields": [
-                {
-                    "fieldId": "customer",
-                    "physicalName": "customer",
-                    "displayName": "Customer",
-                    "kind": "relation",
-                    "dataType": "relation",
-                    "readOnly": False,
-                    "nullable": True,
-                    "constraints": [],
-                },
-                {
-                    "fieldId": "customer_name",
-                    "physicalName": "customer_name",
-                    "displayName": "Customer name",
-                    "kind": "lookup",
-                    "dataType": "lookup",
-                    "readOnly": True,
-                    "nullable": True,
-                    "constraints": [],
-                },
-            ],
-        }
-    )
-
-    assert columns[1]["relationId"] == "orders.customer"
-    assert columns[2]["lookupId"] == "orders.customer_name"
-
-
-def test_renderer_columns_use_formula_result_type() -> None:
-    columns = _renderer_columns(
-        {
-            "tableId": "items",
-            "fields": [
-                {
-                    "fieldId": "doubled",
-                    "physicalName": "doubled",
-                    "displayName": "Doubled",
-                    "kind": "formula",
-                    "dataType": "formula",
-                    "storageType": "number",
-                    "readOnly": True,
-                    "nullable": True,
-                    "constraints": [],
-                    "formula": {
-                        "language": "cel-v1",
-                        "source": "quantity * 2",
-                        "resultType": "integer",
-                    },
-                }
-            ],
-        }
-    )
-
-    assert columns[1]["dataType"] == "integer"
-    assert columns[1]["editable"] is False
-
-
-def test_renderer_relation_accepts_sidecar_null_allowlist_and_schema_field_name() -> None:
-    definition = {
-        "tableId": "orders",
-        "fields": [
-            {
-                "fieldId": "customer",
-                "physicalName": "customer_record",
-                "nullable": True,
-            }
-        ],
-    }
-    relation = _renderer_relation(
-        {
-            "relationId": "orders.customer",
-            "sourceTableId": "orders",
-            "sourceFieldId": "customer",
-            # The field name belongs to the normalized table definition; older
-            # catalogs did not duplicate it on the relation descriptor.
-            "mode": "direct",
-            "targetTableId": "customers",
-            "cardinality": "one",
-            "deletePolicy": "setNull",
-            "junctionTableId": None,
-            "allowedTargetTableIds": None,
-        },
-        definition,
-    )
-
-    assert relation["fieldRef"] == "customer_record"
-    assert relation["manyField"] == "customer_record"
-    assert relation["allowedCollections"] == ["customers"]
-    assert relation["onDelete"] == "nullify"
-
-
 @pytest.mark.asyncio
 async def test_schema_description_rejects_path_and_query_delimiters() -> None:
     service, transport = _service([])
 
     for table_id in ("../orders", "orders?admin=true", "orders#fragment", "%2fadmin"):
         with pytest.raises(ValueError, match="table id is invalid"):
-            await service.describe_schema(
+            await service.invoke(
+                "schema.describe",
                 ProductParams.model_validate(
                     {
                         "collection": table_id,
@@ -289,7 +251,7 @@ async def test_schema_description_rejects_path_and_query_delimiters() -> None:
                             "vibetable.lookup-query.v1",
                         ],
                     }
-                )
+                ),
             )
 
     assert transport.requests == []
@@ -299,7 +261,13 @@ async def test_schema_description_rejects_path_and_query_delimiters() -> None:
 async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
     service, transport = _service(
         [
-            {"definition": {}, "capabilities": {}},
+            {
+                "contract": "vibetable.schema.v2",
+                "operationId": "operation-create-table-12345678",
+                "tableId": "tbl_orders",
+                "displayName": "订单",
+                "schemaRevision": "schema_0001",
+            },
             {
                 "canonicalSource": 'relationSum(f_lines, "f_amount")',
                 "resultType": "number",
@@ -311,18 +279,30 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
         ]
     )
 
-    await service.validate_schema(
-        ProductParams.model_validate({"definition": {}, "expectedRevision": 0})
+    await service.invoke(
+        "schema.table.create",
+        PRODUCT_RPC_REGISTRY["schema.table.create"].model_validate(
+            {
+                "displayName": "订单",
+                "operationId": "operation-create-table-12345678",
+                "actor": {"id": "desktop-host", "kind": "host"},
+            }
+        ),
     )
-    inspected = await service.validate_formula_draft(
+    inspected = await service.invoke(
+        "formula.draft.validate",
         PRODUCT_RPC_REGISTRY["formula.draft.validate"].model_validate(
             {"tableId": "orders", "displaySource": "SUM({明细}.{金额})"}
-        )
+        ),
     )
-    await service.preview_formula(
-        ProductParams.model_validate({"definition": {}, "row": {}, "changedFieldIds": []})
+    await service.invoke(
+        "formula.preview",
+        ProductParams.model_validate(
+            {"tableId": "orders", "field": _formula_v2_field(), "row": {}, "changedFieldIds": []}
+        ),
     )
-    token = await service.create_file_token(
+    token = await service.invoke(
+        "file.token",
         ProductParams.model_validate(
             {
                 "tableId": "orders",
@@ -330,13 +310,13 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
                 "fieldId": "invoice",
                 "storedName": "invoice.pdf",
             }
-        )
+        ),
     )
 
     assert token["downloadCapability"] == "cap"
     assert inspected["resultType"] == "number"
     assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v1/schema/validate",
+        "/api/vibetable/v2/schema/tables",
         "/api/vibetable/v1/formulas/draft/validate",
         "/api/vibetable/v1/formulas/preview",
         "/api/vibetable/v1/files/token",
@@ -350,8 +330,9 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
 async def test_schema_delete_uses_fixed_route_and_revision_guard() -> None:
     service, transport = _service([{"deleted": True, "tableId": "orders"}])
 
-    result = await service.delete_schema(
-        ProductParams.model_validate({"tableId": "orders", "expectedRevision": "schema_0002"})
+    result = await service.invoke(
+        "schema.delete",
+        ProductParams.model_validate({"tableId": "orders", "expectedRevision": "schema_0002"}),
     )
 
     assert result == {"deleted": True, "tableId": "orders"}
@@ -398,7 +379,7 @@ async def test_relation_delta_translates_legacy_target_names() -> None:
         }
     )
 
-    await service.preview_relation_delta(params)
+    await service.invoke("relation.previewDelta", params)
 
     assert transport.requests[0]["json_body"]["adds"] == [
         {"tableId": "customers", "recordId": "customer-1", "label": "Ada"}
@@ -421,37 +402,19 @@ async def test_reconcile_validates_sidecar_action() -> None:
         ]
     )
 
-    result = await service.reconcile(
+    result = await service.invoke(
+        "events.reconcile",
         ProductParams.model_validate(
             {
                 "tableId": "orders",
                 "schemaRevision": "schema_0001",
                 "dataRevision": "data_0001",
             }
-        )
+        ),
     )
 
     assert result["action"] == "refresh-data"
     assert transport.requests[0]["path"] == "/api/vibetable/v1/events/reconcile"
-
-
-@pytest.mark.asyncio
-async def test_workspace_authority_uses_product_table_catalog_and_query_port() -> None:
-    service, transport = _service(
-        [
-            {"tables": [{"tableId": "orders"}, {"tableId": "customers"}]},
-            {"rows": [{"id": "order-1"}]},
-        ]
-    )
-
-    assert await service.list_table_ids() == ["orders", "customers"]
-    assert await service.record_exists("orders", "order-1") is True
-    assert transport.requests[0]["path"] == "/api/vibetable/v1/schema/tables"
-    assert transport.requests[1]["json_body"] == {
-        "operation": "readRows",
-        "tableId": "orders",
-        "rowIds": ["order-1"],
-    }
 
 
 @pytest.mark.asyncio
@@ -465,7 +428,8 @@ async def test_history_and_attachment_refs_use_closed_product_routes() -> None:
         ]
     )
 
-    await service.read_history(
+    await service.invoke(
+        "history.read",
         ProductParams.model_validate(
             {
                 "collection": "orders",
@@ -475,9 +439,10 @@ async def test_history_and_attachment_refs_use_closed_product_routes() -> None:
                 "offset": 0,
                 "actions": ["update", "restore"],
             }
-        )
+        ),
     )
-    await service.preview_history_restore(
+    await service.invoke(
+        "history.previewRestore",
         ProductParams.model_validate(
             {
                 "collection": "orders",
@@ -485,17 +450,19 @@ async def test_history_and_attachment_refs_use_closed_product_routes() -> None:
                 "targetRevision": "rev-1",
                 "scope": "row",
             }
-        )
+        ),
     )
-    await service.apply_history_restore(
+    await service.invoke(
+        "history.applyRestore",
         ProductParams.model_validate(
             {"collection": "orders", "itemId": "order-1", "token": "restore-token"}
-        )
+        ),
     )
-    await service.list_attachment_refs(
+    await service.invoke(
+        "file.list",
         ProductParams.model_validate(
             {"tableId": "orders", "recordId": "order-1", "fieldId": "invoice"}
-        )
+        ),
     )
 
     assert transport.requests[0]["path"] == "/api/vibetable/v1/history/change-sets"
@@ -517,7 +484,8 @@ async def test_trusted_host_attachment_upload_uses_one_guarded_multipart_mutatio
         ]
     )
 
-    result = await service.apply_host_attachment_change(
+    result = await service.invoke(
+        "file.applyHostChange",
         ProductParams.model_validate(
             {
                 "tableId": "orders",
@@ -528,7 +496,7 @@ async def test_trusted_host_attachment_upload_uses_one_guarded_multipart_mutatio
                 "hostPaths": [r"C:\host-selected\invoice.pdf"],
                 "removeStoredNames": [],
             }
-        )
+        ),
     )
 
     request = transport.requests[0]
@@ -559,7 +527,8 @@ async def test_trusted_host_attachment_download_keeps_capability_and_path_native
         ]
     )
 
-    result = await service.save_attachment_to_host(
+    result = await service.invoke(
+        "file.saveHostFile",
         ProductParams.model_validate(
             {
                 "tableId": "orders",
@@ -568,7 +537,7 @@ async def test_trusted_host_attachment_download_keeps_capability_and_path_native
                 "storedName": "invoice_abcd.pdf",
                 "outputPath": r"C:\host-selected\invoice.pdf",
             }
-        )
+        ),
     )
 
     assert result == {
@@ -601,11 +570,13 @@ async def test_table_catalog_rows_and_snapshot_use_fixed_routes() -> None:
         ]
     )
 
-    assert await service.list_tables(ProductParams.model_validate({})) == {"tables": []}
-    assert await service.read_rows(
-        ProductParams.model_validate({"tableId": "orders", "rowIds": ["row-1"]})
+    assert await service.invoke("schema.list", ProductParams.model_validate({})) == {"tables": []}
+    assert await service.invoke(
+        "query.readRows",
+        ProductParams.model_validate({"tableId": "orders", "rowIds": ["row-1"]}),
     ) == {"rows": [{"id": "row-1"}]}
-    await service.validate_snapshot(
+    await service.invoke(
+        "query.validateSnapshot",
         ProductParams.model_validate(
             {
                 "snapshot": {
@@ -624,11 +595,11 @@ async def test_table_catalog_rows_and_snapshot_use_fixed_routes() -> None:
                     },
                 }
             }
-        )
+        ),
     )
 
     assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v1/schema/tables",
+        "/api/vibetable/v2/schema/tables",
         "/api/vibetable/v1/query",
         "/api/vibetable/v1/query/validate-snapshot",
     ]
@@ -636,32 +607,16 @@ async def test_table_catalog_rows_and_snapshot_use_fixed_routes() -> None:
 
 @pytest.mark.asyncio
 async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> None:
-    definition = {
-        "contractVersion": "2.0",
-        "tableId": "orders",
-        "physicalName": "orders",
-        "displayName": "Orders",
-        "kind": "base",
-        "schemaRevision": "schema_4",
-        "archivePolicy": {
-            "mode": "none",
-            "fieldId": None,
-            "archivedValue": None,
-        },
-        "fields": [
-            {
-                "fieldId": "customer",
-                "physicalName": "customer",
-                "displayName": "Customer",
-                "kind": "relation",
-                "dataType": "relation",
-                "nullable": True,
-                "constraints": [],
-                "readOnly": False,
-            }
-        ],
-        "indexes": [],
-    }
+    definition = _schema_v2_snapshot(
+        [
+            _schema_v2_field(
+                field_id="fld_customer1",
+                physical_name="f_customer1",
+                display_name="Customer",
+                logical_type="relation",
+            )
+        ]
+    )
     lookup = {
         "lookupId": "orders.customer_name",
         "tableId": "orders",
@@ -670,7 +625,6 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
         "displayName": "Customer name",
         "relationFieldId": "customer",
         "targetFieldId": "name",
-        "aggregate": "none",
         "resultCardinality": "one",
         "outputStorage": "text",
         "revision": 3,
@@ -678,13 +632,11 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
     relation = {
         "relationId": "orders.customer",
         "sourceTableId": "orders",
-        "sourceFieldId": "customer",
-        "physicalName": "customer",
-        "mode": "direct",
+        "sourceFieldId": "fld_customer1",
+        "physicalName": "f_customer1",
         "targetTableId": "customers",
         "cardinality": "one",
         "deletePolicy": "restrict",
-        "allowedTargetTableIds": [],
     }
     service, transport = _service(
         [
@@ -709,7 +661,6 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
                         "tableId": "customers",
                         "recordId": "customer-1",
                         "label": "Ada",
-                        "junctionValues": {},
                     }
                 ],
                 "result": [],
@@ -720,7 +671,8 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
         ]
     )
 
-    described = await service.describe_schema(
+    described = await service.invoke(
+        "schema.describe",
         ProductParams.model_validate(
             {
                 "collection": "orders",
@@ -730,29 +682,32 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
                     "vibetable.lookup-query.v1",
                 ],
             }
-        )
+        ),
     )
     assert described["capabilities"]["lookupMaxDepth"] == 8
-    listed = await service.list_lookups(ProductParams.model_validate({"collection": "orders"}))
-    preview = await service.preview_relation_delta(
+    listed = await service.invoke(
+        "lookup.list",
+        ProductParams.model_validate({"collection": "orders"}),
+    )
+    preview = await service.invoke(
+        "relation.previewDelta",
         ProductParams.model_validate(
             {
                 "relationId": "orders.customer",
                 "sourceItemId": "order-1",
                 "expectedSchemaRevision": "schema_4",
                 "adds": [],
-                "updates": [],
                 "removes": [],
                 "idempotencyKey": "rel-1",
             }
-        )
+        ),
     )
 
     assert described["contract"] == "vibetable.schema-describe.v1"
     assert described["requestGeneration"] == 9
     assert described["schema"]["normalizedRelations"][0]["kind"] == "m2o"
     assert listed["collection"] == "orders"
-    assert listed["definitions"][0]["aggregation"] == "single"
+    assert "aggregation" not in listed["definitions"][0]
     assert listed["lookupRevision"] == described["schema"]["lookupRevision"]
     assert preview == {
         "delta": {
@@ -760,7 +715,6 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
             "sourceItemId": "order-1",
             "expectedSchemaRevision": "schema_4",
             "adds": [],
-            "updates": [],
             "removes": [],
             "idempotencyKey": "rel-1",
         },
@@ -770,16 +724,13 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
                 "itemId": "customer-1",
                 "label": "Ada",
                 "secondaryLabel": None,
-                "junctionId": None,
-                "junctionRevision": None,
-                "junctionValues": {},
             }
         ],
         "diagnostics": [],
         "canApply": True,
     }
     assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v1/schema/tables/orders",
+        "/api/vibetable/v2/schema/tables/orders",
         "/api/vibetable/v1/relations/describe",
         "/api/vibetable/v1/lookups/describe",
         "/api/vibetable/v1/relations/preview-delta",
@@ -796,7 +747,6 @@ async def test_lookup_value_page_maps_physical_field_ref_to_stable_field_id() ->
         "displayName": "Line SKUs",
         "relationFieldId": "lines_id",
         "targetFieldId": "sku_id",
-        "aggregate": "none",
         "outputStorage": "json",
         "revision": 1,
     }
@@ -826,9 +776,10 @@ async def test_lookup_value_page_maps_physical_field_ref_to_stable_field_id() ->
         "provenanceHasMore": True,
     }
     service, transport = _service([catalog, page])
-    lookup_revision = _lookup_revision("schema_7", [lookup])
+    lookup_revision = "sha256:6bd7460cb0333244b51b9ba40a0f4ce61198cdf9f6012ad812152671fdbb329e"
 
-    result = await service.lookup_value_page(
+    result = await service.invoke(
+        "lookup.valuePage",
         ProductParams.model_validate(
             {
                 "collection": "orders",
@@ -840,7 +791,7 @@ async def test_lookup_value_page_maps_physical_field_ref_to_stable_field_id() ->
                 "permissionRevision": "schema_7",
                 "lookupRevision": lookup_revision,
             }
-        )
+        ),
     )
 
     assert result["provenanceTotal"] == 10_001
@@ -853,134 +804,3 @@ async def test_lookup_value_page_maps_physical_field_ref_to_stable_field_id() ->
         "offset": 100,
         "limit": 100,
     }
-
-
-@pytest.mark.asyncio
-async def test_multihop_lookup_validation_persists_and_round_trips_path() -> None:
-    def table(
-        table_id: str,
-        fields: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        return {
-            "contractVersion": "2.0",
-            "tableId": table_id,
-            "physicalName": table_id,
-            "displayName": table_id.title(),
-            "kind": "base",
-            "schemaRevision": "schema_1",
-            "archivePolicy": {
-                "mode": "none",
-                "fieldId": None,
-                "archivedValue": None,
-            },
-            "fields": fields,
-            "indexes": [],
-        }
-
-    def relation(field_id: str, target: str) -> dict[str, Any]:
-        return {
-            "fieldId": field_id,
-            "physicalName": field_id,
-            "displayName": field_id.title(),
-            "kind": "relation",
-            "dataType": "relation",
-            "storageType": "relation",
-            "nullable": True,
-            "defaultValue": None,
-            "constraints": [],
-            "editor": {"kind": "relation", "config": {}},
-            "readOnly": False,
-            "formula": None,
-            "relation": {
-                "mode": "direct",
-                "targetTableId": target,
-                "cardinality": "one",
-                "deletePolicy": "setNull",
-                "junctionTableId": None,
-                "junctionSourceFieldId": "",
-                "junctionTargetFieldId": "",
-                "junctionDiscriminatorFieldId": "",
-                "allowedTargetTableIds": [],
-            },
-            "lookup": None,
-            "attachmentPolicy": None,
-        }
-
-    scalar = {
-        "fieldId": "name_id",
-        "physicalName": "name",
-        "displayName": "Name",
-        "kind": "scalar",
-        "dataType": "shortText",
-        "storageType": "text",
-        "nullable": True,
-        "defaultValue": None,
-        "constraints": [],
-        "editor": {"kind": "text", "config": {}},
-        "readOnly": False,
-        "formula": None,
-        "relation": None,
-        "lookup": None,
-        "attachmentPolicy": None,
-    }
-    orders = table("orders", [relation("customer_id", "customers")])
-    customers = table("customers", [relation("company_id", "companies")])
-    companies = table("companies", [scalar])
-    descriptor = {
-        "lookupId": "orders.company_name_id",
-        "tableId": "orders",
-        "fieldId": "company_name_id",
-        "physicalName": "company_name",
-        "displayName": "Company name",
-        "relationFieldId": "customer_id",
-        "path": [
-            {"relationId": "orders.customer_id"},
-            {"relationId": "customers.company_id"},
-        ],
-        "targetFieldId": "name_id",
-        "aggregate": "none",
-        "resultCardinality": "one",
-        "outputStorage": "text",
-        "revision": 1,
-    }
-    service, transport = _service(
-        [
-            orders,
-            customers,
-            companies,
-            {"definition": orders, "capabilities": {}},
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_1",
-                "lookups": [descriptor],
-            },
-        ]
-    )
-    definition = {
-        "lookupId": "orders.company_name_id",
-        "collection": "orders",
-        "fieldKey": "company_name",
-        "displayName": "Company name",
-        "path": [
-            {"relationId": "orders.customer_id"},
-            {"relationId": "customers.company_id"},
-        ],
-        "source": {"kind": "target_field", "fieldRef": "name"},
-        "m2aFieldMapping": [],
-    }
-
-    validated = await service.validate_lookup(
-        ProductParams.model_validate({"definition": definition, "existing": []})
-    )
-    listed = await service.list_lookups(ProductParams.model_validate({"collection": "orders"}))
-
-    sent_lookup = transport.requests[3]["json_body"]["definition"]["fields"][-1]["lookup"]
-    assert sent_lookup["relationFieldId"] == "customer_id"
-    assert sent_lookup["path"] == [
-        {"relationFieldId": "customer_id"},
-        {"relationFieldId": "company_id"},
-    ]
-    assert validated["valid"] is True
-    assert validated["definition"]["aggregation"] == "single"
-    assert validated["definition"]["outputType"] == "text"
-    assert listed["definitions"][0]["path"] == definition["path"]

@@ -170,7 +170,16 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
       actions.push({ method: "snapshot.list", params: { cursor: null, limit: 50 } });
     }
     if (session.fileHistoryEnabled) {
-      actions.push({ method: "fileHistory.listDocuments", params: { includeDeleted: false } });
+      actions.push({
+        method: "fileHistory.queryDocuments",
+        params: {
+          logic: "and",
+          filters: [{ field: "status", operator: "eq", value: "active" }],
+          sort: [{ field: "relativePath", direction: "asc" }],
+          limit: 500,
+          cursor: null,
+        },
+      });
       actions.push({ method: "fileHistory.listPendingChanges", params: {} });
     }
     if (session.policyEnabled) {
@@ -273,7 +282,7 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
       protection.setFileTree(result);
     } else if (method === "fileHistory.listPendingChanges") {
       protection.setPendingFileChanges(result.changes);
-    } else if (method === "fileHistory.listDocuments") {
+    } else if (method === "fileHistory.queryDocuments") {
       protection.setDocuments(result.documents);
     } else if (method === "fileHistory.applyPendingChange") {
       protection.removePendingFileChange(result.changeId);

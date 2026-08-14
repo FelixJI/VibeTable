@@ -5,8 +5,10 @@ from typing import Any
 import pytest
 
 from backend.adapters.pocketbase.client import (
+    LookupViewQueryCommand,
     PocketBaseClient,
     PocketBaseProductError,
+    QueryCursorOpenCommand,
 )
 
 
@@ -138,6 +140,55 @@ async def test_query_page_uses_query_port_and_preserves_json_values() -> None:
 
 
 @pytest.mark.asyncio
+async def test_query_cursor_open_and_fetch_forward_opaque_ast_and_token() -> None:
+    snapshot = {
+        "snapshotId": "0" * 32,
+        "databaseId": "db",
+        "table": "orders",
+        "schemaRevision": "schema-1",
+        "dataRevision": 2,
+        "normalizedQuery": {"filters": [], "sorts": [], "offset": 0, "limit": 1},
+        "digest": "d" * 64,
+    }
+    transport = FakeTransport(
+        [
+            {
+                "rows": [{"id": "1"}],
+                "nextCursor": "opaque-next",
+                "hasMore": True,
+                "filteredRows": 2,
+                "totalRows": 2,
+                "querySnapshot": snapshot,
+            },
+            {
+                "rows": [{"id": "2"}],
+                "nextCursor": None,
+                "hasMore": False,
+                "filteredRows": 2,
+                "totalRows": 2,
+                "querySnapshot": snapshot,
+            },
+        ]
+    )
+    client = PocketBaseClient(transport=transport, session_secret="b" * 64)
+    ast = {"filters": [{"field": "payload", "operator": "eq", "value": {"x": 1}}], "limit": 1}
+
+    first = await client.open_query_cursor(QueryCursorOpenCommand(table_id="orders", query=ast))
+    second = await client.fetch_query_cursor(cursor=first.next_cursor or "")
+
+    assert [row["id"] for row in [*first.rows, *second.rows]] == ["1", "2"]
+    assert transport.requests[0]["json_body"] == {
+        "operation": "cursor.open",
+        "tableId": "orders",
+        "query": ast,
+    }
+    assert transport.requests[1]["json_body"] == {
+        "operation": "cursor.fetch",
+        "cursor": "opaque-next",
+    }
+
+
+@pytest.mark.asyncio
 async def test_aggregate_uses_frozen_query_port_operation() -> None:
     transport = FakeTransport([{"rows": [{"region": "east", "total": 12}]}])
     client = PocketBaseClient(transport=transport, session_secret="d" * 64)
@@ -214,6 +265,45 @@ async def test_view_query_returns_independently_paged_full_result_groups() -> No
         "operation": "view",
         "tableId": "orders",
         "view": view,
+    }
+
+
+@pytest.mark.asyncio
+async def test_lookup_view_uses_one_typed_bounded_query_command() -> None:
+    transport = FakeTransport(
+        [
+            {
+                "rows": [],
+                "offset": 0,
+                "limit": 1,
+                "filteredRows": 0,
+                "totalRows": 0,
+                "querySnapshot": {},
+                "groupRows": [],
+                "groupOffset": 0,
+                "groupLimit": 50,
+                "hasMoreGroups": False,
+            }
+        ]
+    )
+    client = PocketBaseClient(transport=transport, session_secret="e" * 64)
+
+    await client.query_lookup_view(
+        LookupViewQueryCommand(
+            table_id="orders",
+            schema_revision="schema-1",
+            query={"filters": [], "limit": 1},
+            groups=[{"field": "region", "direction": "asc"}],
+            group_limit=50,
+        )
+    )
+
+    assert transport.requests[0]["json_body"] == {
+        "tableId": "orders",
+        "schemaRevision": "schema-1",
+        "query": {"filters": [], "limit": 1},
+        "groups": [{"field": "region", "direction": "asc"}],
+        "groupLimit": 50,
     }
 
 

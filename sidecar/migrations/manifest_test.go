@@ -1,28 +1,32 @@
 package migrations
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/pocketbase/pocketbase/tools/types"
 )
+
+const expectedMigrationManifestHash = "125efc10962d65fbe0103efda320d632d3aea8ab9d49f48ff2fcf21067390db9"
 
 func TestManifestIsValidAndHashIsStableShape(t *testing.T) {
 	manifest, err := LoadManifest()
 	if err != nil {
 		t.Fatalf("LoadManifest(): %v", err)
 	}
-	if manifest.SchemaVersion != 7 || len(manifest.Migrations) != 7 {
+	if manifest.SchemaVersion != 10 || len(manifest.Migrations) != 9 {
 		t.Fatalf("unexpected manifest: %#v", manifest)
 	}
-	if hash := Hash(); len(hash) != 64 || strings.Trim(hash, "0123456789abcdef") != "" {
-		t.Fatalf("invalid manifest hash %q", hash)
+	if hash := Hash(); hash != expectedMigrationManifestHash {
+		t.Fatalf("manifest hash = %q, want %q", hash, expectedMigrationManifestHash)
+	}
+	last := manifest.Migrations[len(manifest.Migrations)-1]
+	if last.ID != 2026081203 ||
+		last.Source != "2026081203_view_v2_metadata.go" ||
+		last.SHA256 != "ca3bc00025aa676417b4c0202ba8a4a942b85350f12c638277fe7983879795fc" {
+		t.Fatalf("unexpected pinned latest migration entry: %#v", last)
 	}
 }
 
@@ -83,7 +87,61 @@ func TestPocketBaseMigrationRunnerIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestRealtimeOutboxRetentionUpgradesPopulatedV3Database(t *testing.T) {
+func TestFreshMetadataCollectionsUseCanonicalSchema(t *testing.T) {
+	app := newMigratedTestApp(t)
+
+	for _, fixture := range []struct {
+		name   string
+		fields []string
+	}{
+		{"vibetable_shared_settings", []string{"logical_id", "payload_json"}},
+		{"vibetable_dashboards", []string{"logical_id", "payload_json"}},
+		{"vibetable_panels", []string{"logical_id", "payload_json", "parent_id"}},
+		{"vibetable_presets", []string{"logical_id", "payload_json"}},
+		{"vibetable_content_versions", []string{"logical_id", "payload_json"}},
+	} {
+		collection, err := app.FindCollectionByNameOrId(fixture.name)
+		if err != nil {
+			t.Fatalf("find %s: %v", fixture.name, err)
+		}
+		customFields := 0
+		for _, field := range collection.Fields {
+			if !field.GetSystem() {
+				customFields++
+			}
+		}
+		if customFields != len(fixture.fields) {
+			t.Fatalf("%s custom field count = %d, want %d", fixture.name, customFields, len(fixture.fields))
+		}
+		for _, name := range fixture.fields {
+			if collection.Fields.GetByName(name) == nil {
+				t.Fatalf("%s missing canonical field %s", fixture.name, name)
+			}
+		}
+		logical, ok := collection.Fields.GetByName("logical_id").(*core.TextField)
+		if !ok || !logical.Required || logical.Max != 128 {
+			t.Fatalf("%s logical_id = %#v", fixture.name, logical)
+		}
+		payload, ok := collection.Fields.GetByName("payload_json").(*core.JSONField)
+		// PocketBase treats empty JSON containers as blank. The metadata module
+		// owns logical presence validation so `{}`, `[]`, and `null` remain valid.
+		if !ok || payload.Required {
+			t.Fatalf("%s payload_json = %#v", fixture.name, payload)
+		}
+		if collection.GetIndex("uniq_"+fixture.name+"_logical_id") == "" {
+			t.Fatalf("%s logical_id unique index missing", fixture.name)
+		}
+	}
+	panels, err := app.FindCollectionByNameOrId("vibetable_panels")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if panels.GetIndex("idx_vibetable_panels_parent_id") == "" {
+		t.Fatal("vibetable_panels parent_id index missing")
+	}
+}
+
+func TestRealtimeOutboxRetentionPreservesPopulatedInitialDatabase(t *testing.T) {
 	app := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir:  t.TempDir(),
 		HideStartBanner: true,
@@ -98,27 +156,25 @@ func TestRealtimeOutboxRetentionUpgradesPopulatedV3Database(t *testing.T) {
 		}
 	}()
 
-	v3Migrations := core.MigrationsList{}
-	allMigrations := core.MigrationsList{}
+	initialMigrations := core.MigrationsList{}
+	retentionMigrations := core.MigrationsList{}
 	for _, migration := range core.AppMigrations.Items() {
 		if strings.HasPrefix(migration.File, "2026072401_") ||
 			strings.HasPrefix(migration.File, "2026072402_") ||
-			strings.HasPrefix(migration.File, "2026072403_") ||
 			strings.HasPrefix(migration.File, "2026072404_") ||
 			strings.HasPrefix(migration.File, "2026072801_") ||
 			strings.HasPrefix(migration.File, "2026072805_") {
-			allMigrations.Register(migration.Up, migration.Down, migration.File)
+			retentionMigrations.Register(migration.Up, migration.Down, migration.File)
 		}
 		if strings.HasPrefix(migration.File, "2026072401_") ||
-			strings.HasPrefix(migration.File, "2026072402_") ||
-			strings.HasPrefix(migration.File, "2026072403_") {
-			v3Migrations.Register(migration.Up, migration.Down, migration.File)
+			strings.HasPrefix(migration.File, "2026072402_") {
+			initialMigrations.Register(migration.Up, migration.Down, migration.File)
 		}
 	}
-	if applied, err := core.NewMigrationsRunner(app, v3Migrations).Up(); err != nil {
-		t.Fatalf("apply v3 migrations: %v", err)
-	} else if len(applied) != 3 {
-		t.Fatalf("applied v3 migrations = %#v", applied)
+	if applied, err := core.NewMigrationsRunner(app, initialMigrations).Up(); err != nil {
+		t.Fatalf("apply initial migrations: %v", err)
+	} else if len(applied) != 2 {
+		t.Fatalf("applied initial migrations = %#v", applied)
 	}
 
 	_, err := app.DB().NewQuery(`
@@ -140,18 +196,18 @@ func TestRealtimeOutboxRetentionUpgradesPopulatedV3Database(t *testing.T) {
 		FROM sequence
 	`).Execute()
 	if err != nil {
-		t.Fatalf("seed v3 outbox: %v", err)
+		t.Fatalf("seed initial outbox: %v", err)
 	}
 	assertOutboxRetentionState(t, app, 10005, "event0000000001", false)
 
-	runner := core.NewMigrationsRunner(app, allMigrations)
+	runner := core.NewMigrationsRunner(app, retentionMigrations)
 	if applied, err := runner.Up(); err != nil {
-		t.Fatalf("upgrade v3 to v6: %v", err)
+		t.Fatalf("apply retention migrations: %v", err)
 	} else if len(applied) != 3 ||
 		!strings.HasPrefix(applied[0], "2026072404_") ||
 		!strings.HasPrefix(applied[1], "2026072801_") ||
 		!strings.HasPrefix(applied[2], "2026072805_") {
-		t.Fatalf("applied v4-v6 migrations = %#v", applied)
+		t.Fatalf("applied retention migrations = %#v", applied)
 	}
 	assertOutboxRetentionState(t, app, 10000, "event0000000006", true)
 
@@ -159,26 +215,44 @@ func TestRealtimeOutboxRetentionUpgradesPopulatedV3Database(t *testing.T) {
 	assertOutboxRetentionState(t, app, 10000, "event0000000007", true)
 
 	if reverted, err := runner.Down(3); err != nil {
-		t.Fatalf("downgrade v6 through v4: %v", err)
+		t.Fatalf("revert retention migrations: %v", err)
 	} else if len(reverted) != 3 ||
 		!strings.HasPrefix(reverted[0], "2026072805_") ||
 		!strings.HasPrefix(reverted[1], "2026072801_") ||
 		!strings.HasPrefix(reverted[2], "2026072404_") {
-		t.Fatalf("reverted v6-v4 migrations = %#v", reverted)
+		t.Fatalf("reverted retention migrations = %#v", reverted)
 	}
 	assertOutboxRetentionState(t, app, 10000, "event0000000007", false)
 	insertRawOutboxRecord(t, app, 10007)
 	assertOutboxRetentionState(t, app, 10001, "event0000000007", false)
 
 	if applied, err := runner.Up(); err != nil {
-		t.Fatalf("reapply v4-v6: %v", err)
+		t.Fatalf("reapply retention migrations: %v", err)
 	} else if len(applied) != 3 ||
 		!strings.HasPrefix(applied[0], "2026072404_") ||
 		!strings.HasPrefix(applied[1], "2026072801_") ||
 		!strings.HasPrefix(applied[2], "2026072805_") {
-		t.Fatalf("reapplied v4-v6 migrations = %#v", applied)
+		t.Fatalf("reapplied retention migrations = %#v", applied)
 	}
 	assertOutboxRetentionState(t, app, 10000, "event0000000008", true)
+}
+
+func TestCanonicalRelationAndLookupCollectionsOmitRemovedFields(t *testing.T) {
+	app := newMigratedTestApp(t)
+	for collectionName, removedFields := range map[string][]string{
+		"vibetable_relations": {"junction_table_id"},
+		"vibetable_lookups":   {"aggregate"},
+	} {
+		collection, err := app.FindCollectionByNameOrId(collectionName)
+		if err != nil {
+			t.Fatalf("find %s: %v", collectionName, err)
+		}
+		for _, field := range removedFields {
+			if collection.Fields.GetByName(field) != nil {
+				t.Fatalf("%s still exposes removed field %s", collectionName, field)
+			}
+		}
+	}
 }
 
 func insertRawOutboxRecord(t *testing.T, app core.App, sequence int) {
@@ -240,73 +314,5 @@ func assertOutboxRetentionState(
 	}
 	if got := triggerCount == 1; got != wantTrigger {
 		t.Fatalf("outbox retention trigger present = %v, want %v", got, wantTrigger)
-	}
-}
-
-func TestInternalMetadataMigrationBackfillsLegacyRecords(t *testing.T) {
-	dataDir := t.TempDir()
-	t.Cleanup(func() {
-		for attempt := 0; attempt < 5; attempt++ {
-			if err := os.RemoveAll(dataDir); err == nil {
-				return
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-	})
-	app := pocketbase.NewWithConfig(pocketbase.Config{
-		DefaultDataDir:  dataDir,
-		HideStartBanner: true,
-	})
-	Register(app)
-	if err := app.Bootstrap(); err != nil {
-		t.Fatalf("Bootstrap(): %v", err)
-	}
-	defer func() {
-		if err := app.ResetBootstrapState(); err != nil {
-			t.Errorf("ResetBootstrapState(): %v", err)
-		}
-	}()
-	if err := app.RunAllMigrations(); err != nil {
-		t.Fatal(err)
-	}
-	upgrade := metadataCollectionUpgrades[0]
-	if err := revertMetadataCollectionUpgrade(app, upgrade); err != nil {
-		t.Fatalf("revert metadata upgrade: %v", err)
-	}
-	collection, err := app.FindCollectionByNameOrId(upgrade.name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacy := core.NewRecord(collection)
-	legacy.Set("key", "theme")
-	legacy.Set(
-		"value_json",
-		types.JSONRaw(`{"mode":"dark"}`),
-	)
-	legacy.Set("revision", 4)
-	if err := app.Save(legacy); err != nil {
-		t.Fatalf("save legacy record: %v", err)
-	}
-	if err := applyMetadataCollectionUpgrade(app, upgrade); err != nil {
-		t.Fatalf("apply metadata upgrade: %v", err)
-	}
-	collection, err = app.FindCollectionByNameOrId(upgrade.name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reloaded, err := app.FindRecordById(collection, legacy.Id)
-	if err != nil || reloaded.GetString("logical_id") != "theme" {
-		t.Fatalf("backfilled record = %#v, err=%v", reloaded, err)
-	}
-	raw, err := json.Marshal(reloaded.GetRaw("payload_json"))
-	if err != nil || !strings.Contains(
-		string(raw), `"value_json":{"mode":"dark"}`,
-	) {
-		t.Fatalf("backfilled payload = %s, err=%v", raw, err)
-	}
-	if collection.GetIndex(
-		"uniq_vibetable_shared_settings_logical_id",
-	) == "" {
-		t.Fatal("backfilled index missing")
 	}
 }

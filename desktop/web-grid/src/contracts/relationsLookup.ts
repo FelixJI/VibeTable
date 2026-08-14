@@ -2,23 +2,14 @@
  * Product relation + realtime lookup wire contracts.
  *
  * Keep these names aligned with backend/contracts/{relation_admin,lookup}.py.
- * In particular, `m2a` is always lower-case on the wire.
+ * Only direct PocketBase relation fields are exposed on the product wire.
  */
 import type { ColumnSchema, FilterExpression, SortCondition } from "./index";
 
-export type RelationKind = "m2o" | "o2m" | "m2m" | "m2a";
+export type RelationKind = "m2o" | "o2m" | "m2m";
 export type RelationPreset = "standard" | "file" | "files" | "translations";
 export type RelationState = "valid" | "readonly" | "invalid";
 export type RelationDeletePolicy = "nullify" | "restrict" | "cascade";
-
-export interface JunctionProfile {
-  readonly collection: string;
-  readonly sourceField: string;
-  readonly targetField: string;
-  readonly collectionField?: string | null;
-  readonly sortField?: string | null;
-  readonly contextFields: readonly string[];
-}
 
 export interface RelationDiagnostic {
   readonly code: string;
@@ -32,10 +23,8 @@ export interface NormalizedRelationDescriptor {
   readonly sourceCollection: string;
   readonly kind: RelationKind;
   readonly relatedCollection?: string | null;
-  readonly allowedCollections: readonly string[];
   readonly manyField?: string | null;
   readonly oneField?: string | null;
-  readonly junction?: JunctionProfile | null;
   readonly unique: boolean;
   readonly nullable: boolean;
   readonly onDelete: RelationDeletePolicy;
@@ -57,15 +46,11 @@ export interface RelationTargetRef {
   readonly itemId: string;
   readonly label: string;
   readonly secondaryLabel?: string | null;
-  readonly junctionId?: string | null;
-  readonly junctionRevision?: string | null;
-  readonly junctionValues: Readonly<Record<string, unknown>>;
 }
 
 export interface RelationSearchParams {
   readonly relationId: string;
   readonly query?: string;
-  readonly collection?: string | null;
   readonly offset?: number;
   readonly limit?: number;
 }
@@ -77,7 +62,6 @@ export interface RelationSearchResult {
 
 export interface RelationCreateTargetParams {
   readonly relationId: string;
-  readonly collection?: string | null;
   readonly label?: string;
   readonly values?: Readonly<Record<string, unknown>>;
   readonly idempotencyKey: string;
@@ -95,14 +79,8 @@ export interface RelationDelta {
   readonly expectedSchemaRevision: string;
   readonly expectedDateUpdated?: string | null;
   readonly adds: ReadonlyArray<{ readonly target: RelationTargetRef }>;
-  readonly updates: ReadonlyArray<{
-    readonly junctionId: string;
-    readonly values: Readonly<Record<string, unknown>>;
-    readonly expectedRevision?: string | null;
-  }>;
   readonly removes: ReadonlyArray<{
     readonly target: RelationTargetRef;
-    readonly expectedRevision?: string | null;
   }>;
   readonly idempotencyKey: string;
 }
@@ -122,7 +100,6 @@ export interface RelationSingleUpdateResult {
   readonly requestId: string;
 }
 
-export type LookupAggregation = "single" | "values";
 export type LookupOutputType =
   | "text" | "integer" | "decimal" | "boolean" | "date"
   | "datetime" | "time" | "json";
@@ -131,12 +108,10 @@ export type LookupCellState = "ok" | "restricted" | "invalid" | "too_expensive";
 
 export interface LookupPathStep {
   readonly relationId: string;
-  readonly m2aCollection?: string | null;
 }
 
 export type LookupSource =
   | { readonly kind: "target_field"; readonly fieldRef: string }
-  | { readonly kind: "junction_field"; readonly fieldRef: string }
   | { readonly kind: "lookup"; readonly lookupId: string };
 
 export interface LookupDiagnostic {
@@ -152,31 +127,12 @@ export interface LookupDefinition {
   readonly displayName: string;
   readonly path: readonly LookupPathStep[];
   readonly source: LookupSource;
-  readonly m2aFieldMapping: ReadonlyArray<{
-    readonly collection: string;
-    readonly fieldRef: string;
-  }>;
-  readonly aggregation: LookupAggregation;
   readonly outputType: LookupOutputType;
   readonly outputScale?: number | null;
   readonly revision: number;
   readonly state: LookupState;
   readonly diagnostics: readonly LookupDiagnostic[];
   readonly dependencies: readonly string[];
-}
-
-export interface LookupDraftDefinition {
-  readonly lookupId: string;
-  readonly collection: string;
-  readonly fieldKey: string;
-  readonly displayName: string;
-  readonly path: readonly LookupPathStep[];
-  readonly source: LookupSource;
-  readonly m2aFieldMapping: ReadonlyArray<{
-    readonly collection: string;
-    readonly fieldRef: string;
-  }>;
-  readonly outputScale?: number | null;
 }
 
 export interface LookupValueProvenance {
@@ -320,20 +276,6 @@ export interface LookupListResult {
   readonly collection: string;
   readonly definitions: readonly LookupDefinition[];
   readonly lookupRevision: string;
-}
-
-export interface LookupValidateParams {
-  readonly definition: LookupDraftDefinition;
-  readonly existing: readonly LookupDefinition[];
-}
-export interface LookupValidationResult {
-  readonly definition: LookupDefinition;
-  readonly valid: boolean;
-  readonly diagnostics: readonly LookupDiagnostic[];
-  readonly lookupRevision: string;
-}
-export interface LookupPreviewParams extends LookupQueryParams {
-  readonly definitions: readonly LookupDraftDefinition[];
 }
 
 export interface RelationUpdateSingleParams {

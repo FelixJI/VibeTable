@@ -1,7 +1,10 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows;
+using VibeTable.Infrastructure.Diagnostics;
 using VibeTable.PreviewHost;
 
 namespace VibeTable.Desktop;
@@ -53,6 +56,8 @@ public partial class App : Application
         _ = SetCurrentProcessExplicitAppUserModelID(
             ApplicationUserModelId);
         base.OnStartup(e);
+        InstallDesktopDiagnosticTrace();
+        InstallCrashDiagnostics();
         if (e.Args is ["--preview-host", .. var previewArguments])
         {
             int exitCode = PreviewHostEntry.Start(
@@ -117,5 +122,60 @@ public partial class App : Application
             window.Hide();
         }
         window.ReportTestModeStartupVisibility();
+    }
+
+    private static void InstallCrashDiagnostics()
+    {
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+            WriteCrashDiagnostic("desktop.appdomain_unhandled", args.ExceptionObject as Exception);
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.UnhandledException += (_, args) =>
+            WriteCrashDiagnostic("desktop.dispatcher_unhandled", args.Exception);
+    }
+
+    private static void InstallDesktopDiagnosticTrace()
+    {
+        try
+        {
+            Trace.Listeners.Add(new RotatingDiagnosticTraceListener(
+                Path.Combine(DesktopLogDirectory(), "desktop.log")));
+        }
+        catch
+        {
+            // Diagnostics must not prevent application startup.
+        }
+    }
+
+    internal static string DesktopLogDirectory() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "VibeTable",
+        "logs");
+
+    private static void WriteCrashDiagnostic(string eventName, Exception? exception)
+    {
+        try
+        {
+            string root = DesktopLogDirectory();
+            string line = JsonSerializer.Serialize(new
+            {
+                timestamp = DateTimeOffset.UtcNow,
+                level = "critical",
+                module = "VibeTable.Desktop",
+                @event = eventName,
+                errorCode = exception?.GetType().Name ?? "UnknownException",
+                requestId = (string?)null,
+                operationId = (string?)null,
+                workspaceId = (string?)null,
+                sessionEpoch = (long?)null,
+                jobId = (string?)null,
+                durationMs = (double?)null,
+            });
+            var sink = new RotatingLogSink(Path.Combine(root, "desktop.log"));
+            sink.WriteLineAsync(line).AsTask().GetAwaiter().GetResult();
+            sink.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // A crash reporter must never mask or replace the original fault.
+        }
     }
 }

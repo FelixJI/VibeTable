@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using VibeTable.Contracts;
 using VibeTable.Infrastructure.Workspace;
 
@@ -51,6 +52,7 @@ public sealed class WorkspaceLayoutTests
             WorkspaceEncryptionMode.Protected);
         var paths = WorkspaceLayout.Paths(root);
 
+        Assert.AreEqual(2UL, result.Manifest.FormatVersion);
         Assert.AreEqual(result.Manifest.WorkspaceId, WorkspaceLayout.ReadManifest(root).WorkspaceId);
         foreach (var directory in new[]
         {
@@ -59,6 +61,30 @@ public sealed class WorkspaceLayoutTests
         })
             Assert.IsTrue(Directory.Exists(directory), directory);
         Assert.IsFalse(Directory.Exists(Path.Combine(root, ".backup")));
+    }
+
+    [TestMethod]
+    [DataRow(1)]
+    [DataRow(3)]
+    public void UnsupportedWorkspaceFormatIsExplicitlyRejected(int formatVersion)
+    {
+        using var fixture = new LayoutFixture();
+        string root = Path.Combine(fixture.Root, "Unsupported");
+        WorkspaceLayout.Create(
+            root,
+            "Unsupported",
+            WorkspaceStorageMode.Direct,
+            WorkspaceEncryptionMode.None);
+        string path = Path.Combine(root, ".vibetable", "workspace.json");
+        JsonObject manifest = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        manifest["formatVersion"] = formatVersion;
+        File.WriteAllText(path, manifest.ToJsonString());
+
+        WorkspaceRegistryException error =
+            Assert.ThrowsExactly<WorkspaceRegistryException>(
+                () => WorkspaceLayout.ReadManifest(root));
+
+        Assert.AreEqual("workspace.format_unsupported", error.Code);
     }
 
     [TestMethod]

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
+	workbenchcontracts "github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
@@ -139,7 +140,7 @@ func (runtime *Runtime) stagePendingSnapshotRestore(
 	if err != nil {
 		return errors.Join(errors.New("restore.settings_invalid"), err)
 	}
-	if _, _, err := decodeWorkspaceSettingsSnapshot(settingsRaw); err != nil {
+	if _, err := decodeWorkspaceSettingsSnapshot(settingsRaw); err != nil {
 		return errors.Join(errors.New("restore.settings_invalid"), err)
 	}
 	files := make(map[string]restoreStagedFile)
@@ -769,6 +770,19 @@ func (runtime *Runtime) CompletePendingSnapshotRestore(
 		journal.Phase != restorePhaseInstalled {
 		return errors.New("restore.journal_state_invalid")
 	}
+	runtime.quiesceWorkspaceSearch()
+	// Search is derived and deliberately excluded from snapshots. Invalidate
+	// its generation before committing completion, so a failure keeps the
+	// installed journal recoverable and no restored job resumes on a stale hit.
+	searchCode := "workspace_search.restore_rebuild_required"
+	if invalidateErr := runtime.search.Invalidate(ctx); invalidateErr != nil {
+		return publicSearchError(invalidateErr)
+	}
+	runtime.searchMu.Lock()
+	runtime.searchStatus = workbenchcontracts.SearchStatus{
+		State: "degraded", ErrorCode: &searchCode,
+	}
+	runtime.searchMu.Unlock()
 	occurredAt, err := time.Parse(
 		time.RFC3339Nano,
 		journal.CompletionOccurredAt,
@@ -895,7 +909,21 @@ func (runtime *Runtime) CompletePendingSnapshotRestore(
 	if err := writeRestoreJournal(paths, journal); err != nil {
 		return err
 	}
-	return cleanupCommittedRestore(paths, journal)
+	if err := cleanupCommittedRestore(paths, journal); err != nil {
+		return err
+	}
+	if err := runtime.startRestoreSearchRebuild(context.Background()); err != nil {
+		return errors.New("workspace_search.restore_rebuild_required")
+	}
+	return nil
+}
+
+func (runtime *Runtime) startRestoreSearchRebuild(ctx context.Context) error {
+	if runtime.restoreSearchRebuild != nil {
+		return runtime.restoreSearchRebuild(ctx)
+	}
+	_, err := runtime.rebuildWorkspaceSearch(ctx, nil, json.RawMessage("{}"))
+	return err
 }
 
 func cleanupCommittedRestore(

@@ -401,46 +401,23 @@
     "RelationDefinition": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["targetTableId", "cardinality", "deletePolicy", "junctionTableId"],
+      "required": ["targetTableId", "cardinality", "deletePolicy"],
       "properties": {
-        "mode": {
-          "type": "string",
-          "enum": ["direct", "junction", "m2a"]
-        },
         "targetTableId": {"type": "string", "minLength": 1},
         "cardinality": {"type": "string", "enum": ["one", "many"]},
         "deletePolicy": {
           "type": "string",
           "enum": ["restrict", "cascade", "setNull"]
-        },
-        "junctionTableId": {"type": ["string", "null"]},
-        "junctionSourceFieldId": {"type": "string", "minLength": 1},
-        "junctionTargetFieldId": {"type": "string", "minLength": 1},
-        "junctionDiscriminatorFieldId": {"type": "string", "minLength": 1},
-        "allowedTargetTableIds": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {"type": "string", "minLength": 1}
         }
       }
     },
     "LookupDefinition": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["relationFieldId", "targetFieldId", "aggregate"],
+      "required": ["relationFieldId", "targetFieldId"],
       "properties": {
         "relationFieldId": {"type": "string", "minLength": 1},
-        "targetFieldId": {"type": "string", "minLength": 1},
-        "junctionFieldId": {"type": "string", "minLength": 1},
-        "targetFieldIds": {
-          "type": "object",
-          "additionalProperties": {"type": "string", "minLength": 1}
-        },
-        "aggregate": {
-          "type": "string",
-          "enum": ["none", "first", "count", "sum", "min", "max"]
-        }
+        "targetFieldId": {"type": "string", "minLength": 1}
       }
     },
     "FormulaDefinition": {

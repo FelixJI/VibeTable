@@ -11,9 +11,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldresource"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
-	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 )
 
 func TestFileFieldPurgeRequiresCurrentBackupAndRemovesEveryPhysicalResource(
@@ -22,13 +20,7 @@ func TestFileFieldPurgeRequiresCurrentBackupAndRemovesEveryPhysicalResource(
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	table, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition:       baseTable("tbl_files", "t_files", []schema.FieldDefinition{}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	table := createV2IntegrationTable(t, ctx, app, "Files", "op_file_purge_table")
 	recommended, err := v2.RecommendedDefaults(v2.LogicalFile)
 	if err != nil {
 		t.Fatal(err)

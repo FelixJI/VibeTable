@@ -73,57 +73,6 @@ describe("tableAdminService Schema v2 bootstrap", () => {
     expect(ui.createModalOpen).toBe(false);
   });
 
-  it("opens the field drawer when the new opaque ID arrives before its display name", async () => {
-    const harness = bridgeHarness();
-    setHostBridgeForTesting(harness.bridge);
-    const opened: string[] = [];
-    const service = useTableAdminService();
-    service.init((tableId) => { opened.push(tableId); });
-    const admin = useTableAdminStore();
-    const ui = useUiStore();
-    admin.openCreate();
-    ui.openCreate();
-    admin.form.name = "订单";
-    await service.createTable();
-
-    harness.emit("database.collectionsChanged", {
-      tables: ["tbl_opaque"],
-    });
-
-    expect(opened).toEqual(["tbl_opaque"]);
-    expect(admin.phase).toBe("idle");
-    expect(ui.createModalOpen).toBe(false);
-  });
-
-  it("keeps the create baseline until a later event identifies the new table", async () => {
-    const harness = bridgeHarness();
-    setHostBridgeForTesting(harness.bridge);
-    const opened: string[] = [];
-    const service = useTableAdminService();
-    service.init((tableId) => { opened.push(tableId); });
-    const admin = useTableAdminStore();
-    admin.openCreate();
-    admin.form.name = "订单";
-    await service.createTable();
-
-    harness.emit("database.collectionsChanged", {
-      tables: ["tbl_existing", "tbl_created"],
-    });
-    expect(opened).toEqual([]);
-    expect(admin.phase).toBe("submitting");
-
-    harness.emit("database.collectionsChanged", {
-      tables: ["tbl_existing", "tbl_created"],
-      displayNames: {
-        tbl_existing: "客户",
-        tbl_created: "订单",
-      },
-    });
-
-    expect(opened).toEqual(["tbl_created"]);
-    expect(admin.phase).toBe("idle");
-  });
-
   it("does not mistake an existing table refresh for the pending create", async () => {
     const harness = bridgeHarness();
     setHostBridgeForTesting(harness.bridge);

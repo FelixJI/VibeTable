@@ -7,17 +7,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 
-	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
+	"github.com/vibetable/vibetable/sidecar/internal/productrow"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
-	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 type Source struct {
@@ -52,112 +52,90 @@ func (source *Source) DescribeQueryTable(
 			Message: "query schema source is not configured",
 		}
 	}
-	catalog := schemaapi.New(app)
-	definition, err := catalog.Describe(ctx, tableID)
+	table, err := schemaexecution.Describe(ctx, app, tableID)
 	if err != nil {
 		return query.TableDescriptor{}, mapSchemaError(err)
 	}
-	dataRevision, err := catalog.GetDataRevision(ctx, tableID)
-	if err != nil {
-		return query.TableDescriptor{}, mapSchemaError(err)
-	}
-	fields, err := source.describeFields(ctx, app, definition)
+	fields, err := source.describeFields(ctx, app, table)
 	if err != nil {
 		return query.TableDescriptor{}, err
 	}
 	descriptor := query.TableDescriptor{
-		DatabaseID: source.databaseID, TableID: definition.TableID,
-		PhysicalName: definition.PhysicalName, PrimaryKey: "id",
-		SchemaRevision: definition.SchemaRevision, DataRevision: dataRevision,
-		Fields: fields, ArchiveMode: query.ArchiveMode(definition.ArchivePolicy.Mode),
-		ArchiveValue: definition.ArchivePolicy.ArchivedValue,
+		DatabaseID: source.databaseID, TableID: table.Snapshot.TableID,
+		PhysicalName: table.PhysicalName, PrimaryKey: "id",
+		SchemaRevision:  table.Snapshot.SchemaRevision,
+		DataRevision:    table.Snapshot.DataRevision,
+		Fields:          fields,
+		ArchiveMode:     query.ArchiveMode(table.ArchivePolicy.Mode),
+		RowRevisionName: relatedcomputation.RowRevisionField,
+		ArchiveValue:    table.ArchivePolicy.ArchivedValue,
 	}
-	descriptor.DigestFields = make([]string, 0, len(definition.Fields))
-	for _, field := range definition.Fields {
+	descriptor.DigestFields = make([]string, 0, len(table.Snapshot.Fields))
+	descriptor.PresenceFields = make(map[string]string)
+	for _, field := range table.Snapshot.Fields {
 		descriptor.DigestFields = append(
 			descriptor.DigestFields,
-			field.PhysicalName,
+			field.Identity.PhysicalName,
 		)
-	}
-	descriptor.PresenceFields, err = v2PresenceFields(ctx, app, definition.TableID)
-	if err != nil {
-		return query.TableDescriptor{}, err
-	}
-	if definition.ArchivePolicy.FieldID != nil {
-		for _, field := range definition.Fields {
-			if field.FieldID == *definition.ArchivePolicy.FieldID {
-				descriptor.ArchiveField = field.PhysicalName
-				break
-			}
+		if field.Value.Presence.Mode == v2.PresenceCompanion {
+			descriptor.PresenceFields[field.Identity.PhysicalName] =
+				field.Value.Presence.PhysicalName
 		}
-		if descriptor.ArchiveField == "" {
+	}
+	descriptor.DigestProjector = func(record *core.Record) map[string]any {
+		return projectRecord(table.Snapshot.Fields, record)
+	}
+	if table.ArchivePolicy.FieldID != nil {
+		field, ok := table.Field(*table.ArchivePolicy.FieldID)
+		if !ok {
 			return query.TableDescriptor{}, &query.ProductError{
 				Code: "query.schema.invalid", Path: "archivePolicy.fieldId",
 				Message: "archive field is not queryable",
 			}
 		}
+		descriptor.ArchiveField = field.Identity.PhysicalName
 	}
 	return descriptor, nil
 }
 
-func v2PresenceFields(
-	ctx context.Context,
-	app core.App,
-	tableID string,
-) (map[string]string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	records, err := app.FindRecordsByFilter(
-		"vibetable_fields",
-		"table_id={:table} && schema_model_version=2 && lifecycle_state='active'",
-		"id",
-		0,
-		0,
-		dbx.Params{"table": tableID},
-	)
-	if err != nil {
-		return nil, &query.ProductError{
-			Code: "query.schema.failed", Path: "table",
-			Message: "v2 field projection metadata could not be loaded",
+func projectRecord(fields []v2.FieldDefinition, record *core.Record) map[string]any {
+	fieldNames := make([]string, 0, len(fields))
+	physical := make(map[string]any, len(fields)*2)
+	for _, field := range fields {
+		name := field.Identity.PhysicalName
+		fieldNames = append(fieldNames, name)
+		physical[name] = record.GetRaw(name)
+		if field.Value.Presence.PhysicalName != "" {
+			physical[field.Value.Presence.PhysicalName] =
+				record.GetRaw(field.Value.Presence.PhysicalName)
 		}
 	}
-	result := map[string]string{}
-	for _, record := range records {
-		raw, marshalErr := json.Marshal(record.GetRaw("definition_v2_json"))
-		if marshalErr != nil {
-			return nil, marshalErr
+	row := productrow.FromRecord(fieldNames, record)
+	for _, field := range fields {
+		name := field.Identity.PhysicalName
+		if isComputed(field) {
+			row[name] = relatedcomputation.ProjectStored(row[name])
+			continue
 		}
-		var definition v2.FieldDefinition
-		if decodeErr := v2.StrictDecode(raw, &definition); decodeErr != nil {
-			return nil, decodeErr
-		}
-		if definition.Value.Presence.Mode == v2.PresenceCompanion {
-			result[definition.Identity.PhysicalName] =
-				definition.Value.Presence.PhysicalName
-		}
+		row[name] = (fieldprojection.Descriptor{Definition: field}).ProductValue(physical)
 	}
-	return result, nil
+	return row
 }
 
 func (source *Source) describeFields(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	table schemaexecution.Table,
 ) (map[string]query.FieldDescriptor, error) {
 	fields := map[string]query.FieldDescriptor{
 		"id": {PhysicalName: "id", Type: query.FieldTypeText},
 	}
-	for _, field := range definition.Fields {
-		if field.DataType == schema.DataTypeSecret ||
-			field.DataType == schema.DataTypeHash {
-			continue
-		}
-		descriptor, err := source.describeField(ctx, app, field)
+	for _, field := range table.Snapshot.Fields {
+		descriptor, err := source.describeField(ctx, app, table, field)
 		if err != nil {
 			return nil, err
 		}
-		fields[field.PhysicalName] = descriptor
+		fields[field.Identity.PhysicalName] = descriptor
 	}
 	return fields, nil
 }
@@ -165,189 +143,215 @@ func (source *Source) describeFields(
 func (source *Source) describeField(
 	ctx context.Context,
 	app core.App,
-	field schema.FieldDefinition,
+	table schemaexecution.Table,
+	field v2.FieldDefinition,
 ) (query.FieldDescriptor, error) {
 	fieldType, err := queryFieldType(field)
+	if err == nil && field.LogicalType == v2.LogicalLookup && field.Lookup != nil {
+		fieldType, err = source.lookupResultFieldType(ctx, app, table, *field.Lookup)
+	}
 	if err != nil {
 		return query.FieldDescriptor{}, err
 	}
-	result := query.FieldDescriptor{
-		PhysicalName: field.PhysicalName,
-		Type:         fieldType,
-		AutoDate:     field.DataType == schema.DataTypeAutoDate,
-		Searchable:   isSearchable(field),
-		ComputedEnvelope: field.Kind == schema.FieldKindFormula ||
-			field.Kind == schema.FieldKindLookup,
-		ComputedReady: field.Kind != schema.FieldKindFormula ||
-			(field.Formula != nil && field.Formula.Status == "ready"),
+	computed := isComputed(field)
+	computedReady := field.LogicalType != v2.LogicalFormula
+	formulaStatus := ""
+	if field.LogicalType == v2.LogicalFormula {
+		formulaStatus = table.FormulaRuntime[field.Identity.FieldID].Status
+		computedReady = formulaStatus == "ready"
 	}
-	if field.Kind == schema.FieldKindFormula && !result.ComputedReady {
+	result := query.FieldDescriptor{
+		PhysicalName:     field.Identity.PhysicalName,
+		Type:             fieldType,
+		AutoDate:         field.LogicalType == v2.LogicalAutoDate,
+		Searchable:       isSearchable(field),
+		ComputedEnvelope: computed,
+		ComputedReady:    computedReady,
+	}
+	if result.ComputedEnvelope && result.ComputedReady {
+		expectation, expectationErr := relatedcomputation.ExpectationFor(
+			ctx, app, table.Snapshot.TableID, table.Snapshot.Fields,
+			field.Identity.FieldID, 1,
+		)
+		if expectationErr != nil {
+			return query.FieldDescriptor{}, &query.ProductError{
+				Code:    "query.computed.version_unavailable",
+				Path:    "fields." + field.Identity.PhysicalName,
+				Message: "computed field version is unavailable",
+			}
+		}
+		result.ComputedDefinitionVersion = expectation.DefinitionVersion
+		result.ComputedDependencyWatermark = expectation.DependencyWatermark
+	}
+	if field.LogicalType == v2.LogicalFormula && !result.ComputedReady {
 		result.ComputedStatus = "updating"
 		result.ComputedError = &query.ComputedDiagnostic{
-			Code: "calculation.pending", Path: "fields." + field.PhysicalName,
+			Code: "calculation.pending", Path: "fields." + field.Identity.PhysicalName,
 			Message: "formula value is being recalculated", Details: map[string]any{},
 		}
-		if field.Formula != nil && field.Formula.Status == "failed" {
+		if formulaStatus == "failed" {
 			result.ComputedStatus = "error"
 			result.ComputedError.Code = "calculation.failed"
 			result.ComputedError.Message = "formula recalculation failed"
-		} else if field.Formula != nil && field.Formula.Status == "cancelled" {
+		} else if formulaStatus == "cancelled" {
 			result.ComputedStatus = "error"
 			result.ComputedError.Code = "calculation.cancelled"
 			result.ComputedError.Message = "formula recalculation was cancelled"
 		}
 	}
-	if field.DataType == schema.DataTypeSelect ||
-		field.DataType == schema.DataTypeMultiSelect {
-		options, optionErr := schema.EnumStorageOptions(field)
-		if optionErr != nil {
+	if field.LogicalType == v2.LogicalSelect ||
+		field.LogicalType == v2.LogicalMultiSelect {
+		if field.Select == nil {
 			return query.FieldDescriptor{}, &query.ProductError{
-				Code: "query.schema.invalid", Path: "fields." + field.PhysicalName,
-				Message: optionErr.Error(),
+				Code: "query.schema.invalid", Path: "fields." + field.Identity.PhysicalName,
+				Message: "select options are unavailable",
 			}
 		}
-		result.Enum = &query.EnumDescriptor{
-			Multiple: field.DataType == schema.DataTypeMultiSelect,
-			Options:  make([]query.EnumValueDescriptor, len(options)),
-		}
-		for index, option := range options {
-			result.Enum.Options[index] = query.EnumValueDescriptor{
-				Value: option.Value, StorageValue: option.StorageValue,
-				LegacyStorageValue: option.LegacyStorageValue,
-			}
-		}
+		result.Enum = enumDescriptor(field)
 	}
-	if field.DataType != schema.DataTypeRelation || field.Relation == nil {
+	if field.LogicalType != v2.LogicalRelation || field.Relation == nil {
 		return result, nil
 	}
-	target, err := schemaapi.New(app).Describe(ctx, field.Relation.TargetTableID)
+	target, err := schemaexecution.Describe(ctx, app, field.Relation.TargetTableID)
 	if err != nil {
 		return query.FieldDescriptor{}, mapSchemaError(err)
 	}
 	targetFields := map[string]query.FieldDescriptor{
 		"id": {PhysicalName: "id", Type: query.FieldTypeText},
 	}
-	for _, targetField := range target.Fields {
-		if targetField.DataType == schema.DataTypeSecret ||
-			targetField.DataType == schema.DataTypeHash ||
-			targetField.DataType == schema.DataTypeRelation {
+	for _, targetField := range target.Snapshot.Fields {
+		if targetField.LogicalType == v2.LogicalRelation {
 			continue
 		}
-		targetType, typeErr := queryFieldType(targetField)
-		if typeErr != nil {
-			return query.FieldDescriptor{}, typeErr
+		targetDescriptor, describeErr := source.describeField(
+			ctx, app, target, targetField,
+		)
+		if describeErr != nil {
+			return query.FieldDescriptor{}, describeErr
 		}
-		targetFields[targetField.PhysicalName] = query.FieldDescriptor{
-			PhysicalName: targetField.PhysicalName,
-			Type:         targetType,
-			AutoDate:     targetField.DataType == schema.DataTypeAutoDate,
-			Searchable:   isSearchable(targetField),
-			ComputedEnvelope: targetField.Kind == schema.FieldKindFormula ||
-				targetField.Kind == schema.FieldKindLookup,
-			ComputedReady: targetField.Kind != schema.FieldKindFormula ||
-				(targetField.Formula != nil && targetField.Formula.Status == "ready"),
-		}
-		if targetField.DataType == schema.DataTypeSelect ||
-			targetField.DataType == schema.DataTypeMultiSelect {
-			options, optionErr := schema.EnumStorageOptions(targetField)
-			if optionErr != nil {
-				return query.FieldDescriptor{}, &query.ProductError{
-					Code:    "query.schema.invalid",
-					Path:    "fields." + targetField.PhysicalName,
-					Message: optionErr.Error(),
-				}
-			}
-			enum := &query.EnumDescriptor{
-				Multiple: targetField.DataType == schema.DataTypeMultiSelect,
-				Options:  make([]query.EnumValueDescriptor, len(options)),
-			}
-			for index, option := range options {
-				enum.Options[index] = query.EnumValueDescriptor{
-					Value: option.Value, StorageValue: option.StorageValue,
-					LegacyStorageValue: option.LegacyStorageValue,
-				}
-			}
-			descriptor := targetFields[targetField.PhysicalName]
-			descriptor.Enum = enum
-			targetFields[targetField.PhysicalName] = descriptor
-		}
+		targetFields[targetField.Identity.PhysicalName] = targetDescriptor
 	}
 	result.Relation = &query.RelationDescriptor{
 		TableName: target.PhysicalName, PrimaryKey: "id",
-		Fields: targetFields, Multiple: field.Relation.Cardinality == "many",
+		RowRevisionName: relatedcomputation.RowRevisionField,
+		Fields:          targetFields,
+		Multiple:        field.Relation.Cardinality == "many",
 	}
 	return result, nil
 }
 
-func queryFieldType(field schema.FieldDefinition) (query.FieldType, error) {
-	dataType := field.DataType
-	if dataType == schema.DataTypeFormula && field.Formula != nil {
-		dataType = field.Formula.ResultType
+func (source *Source) lookupResultFieldType(
+	ctx context.Context,
+	app core.App,
+	table schemaexecution.Table,
+	spec v2.LookupSpec,
+) (query.FieldType, error) {
+	current := table
+	resultMany := false
+	for index, step := range spec.Path {
+		relationField, found := current.Field(step.RelationFieldID)
+		if !found || relationField.Relation == nil {
+			return "", &query.ProductError{
+				Code:    "query.schema.invalid",
+				Path:    fmt.Sprintf("fields.lookup.path[%d]", index),
+				Message: "lookup path relation metadata is unavailable",
+			}
+		}
+		if relationField.Relation.Cardinality == "many" {
+			resultMany = true
+		}
+		target, err := schemaexecution.Describe(
+			ctx, app, relationField.Relation.TargetTableID,
+		)
+		if err != nil {
+			return "", mapSchemaError(err)
+		}
+		current = target
 	}
-	if field.DataType == schema.DataTypeLookup {
-		return queryFieldTypeForStorage(field.StorageType)
+	targetField, found := current.Field(spec.TargetFieldID)
+	if !found {
+		return "", &query.ProductError{
+			Code: "query.schema.invalid", Path: "fields.lookup.targetFieldId",
+			Message: "lookup target field is unavailable",
+		}
 	}
-	switch dataType {
-	case schema.DataTypeShortText, schema.DataTypeLongText, schema.DataTypeRichText,
-		schema.DataTypeTime, schema.DataTypeEmail, schema.DataTypeURL,
-		schema.DataTypeUUID, schema.DataTypeSelect, schema.DataTypeHash:
+	if resultMany {
+		return query.FieldTypeJSON, nil
+	}
+	return queryFieldType(targetField)
+}
+
+func enumDescriptor(field v2.FieldDefinition) *query.EnumDescriptor {
+	options := make([]query.EnumValueDescriptor, 0, len(field.Select.Options))
+	for _, option := range field.Select.Options {
+		if option.State != v2.OptionActive {
+			continue
+		}
+		options = append(options, query.EnumValueDescriptor{
+			Value: option.OptionID, StorageValue: option.OptionID,
+		})
+	}
+	return &query.EnumDescriptor{
+		Multiple: field.LogicalType == v2.LogicalMultiSelect,
+		Options:  options,
+	}
+}
+
+func queryFieldType(field v2.FieldDefinition) (query.FieldType, error) {
+	logicalType := field.LogicalType
+	if logicalType == v2.LogicalFormula {
+		if field.Formula == nil {
+			return unsupportedField(field)
+		}
+		logicalType = field.Formula.ResultType
+	}
+	switch logicalType {
+	case v2.LogicalText, v2.LogicalEditor, v2.LogicalTime,
+		v2.LogicalEmail, v2.LogicalURL, v2.LogicalSelect:
 		return query.FieldTypeText, nil
-	case schema.DataTypeBoolean:
+	case v2.LogicalBool:
 		return query.FieldTypeBool, nil
-	case schema.DataTypeInteger, schema.DataTypeFloat, schema.DataTypeDecimal:
+	case v2.LogicalNumber:
 		return query.FieldTypeNumber, nil
-	case schema.DataTypeDate, schema.DataTypeDateTime, schema.DataTypeAutoDate:
+	case v2.LogicalDate, v2.LogicalDateTime, v2.LogicalAutoDate:
 		return query.FieldTypeDate, nil
-	case schema.DataTypeRelation:
+	case v2.LogicalRelation:
 		if field.Relation != nil && field.Relation.Cardinality == "many" {
 			return query.FieldTypeMultiRelation, nil
 		}
 		return query.FieldTypeRelation, nil
-	case schema.DataTypeJSON, schema.DataTypeGeoPoint, schema.DataTypeGeoJSON,
-		schema.DataTypeFile, schema.DataTypeList, schema.DataTypeMultiSelect:
+	case v2.LogicalJSON, v2.LogicalGeoPoint, v2.LogicalFile,
+		v2.LogicalMultiSelect, v2.LogicalLookup:
 		return query.FieldTypeJSON, nil
 	default:
-		return "", &query.ProductError{
-			Code: "query.schema.unsupported_field", Path: "fields." + field.PhysicalName,
-			Message: "field type is not queryable",
-		}
+		return unsupportedField(field)
 	}
 }
 
-func queryFieldTypeForStorage(
-	storage schema.StorageType,
-) (query.FieldType, error) {
-	switch storage {
-	case schema.StorageText, schema.StorageEditor, schema.StorageEmail,
-		schema.StorageURL, schema.StorageSelect:
-		return query.FieldTypeText, nil
-	case schema.StorageBool:
-		return query.FieldTypeBool, nil
-	case schema.StorageNumber:
-		return query.FieldTypeNumber, nil
-	case schema.StorageDate, schema.StorageAutodate:
-		return query.FieldTypeDate, nil
-	case schema.StorageRelation:
-		return query.FieldTypeRelation, nil
-	case schema.StorageJSON, schema.StorageGeoPoint, schema.StorageFile:
-		return query.FieldTypeJSON, nil
-	default:
-		return "", &query.ProductError{
-			Code: "query.schema.unsupported_field", Path: "storageType",
-			Message: "field storage type is not queryable",
-		}
+func unsupportedField(field v2.FieldDefinition) (query.FieldType, error) {
+	return "", &query.ProductError{
+		Code:    "query.schema.unsupported_field",
+		Path:    "fields." + field.Identity.PhysicalName,
+		Message: "field type is not queryable",
 	}
 }
 
-func isSearchable(field schema.FieldDefinition) bool {
-	switch field.DataType {
-	case schema.DataTypeShortText, schema.DataTypeLongText, schema.DataTypeRichText,
-		schema.DataTypeEmail, schema.DataTypeURL, schema.DataTypeUUID,
-		schema.DataTypeSelect:
+func isSearchable(field v2.FieldDefinition) bool {
+	logicalType := field.LogicalType
+	if logicalType == v2.LogicalFormula && field.Formula != nil {
+		logicalType = field.Formula.ResultType
+	}
+	switch logicalType {
+	case v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail,
+		v2.LogicalURL, v2.LogicalSelect:
 		return true
 	default:
 		return false
 	}
+}
+
+func isComputed(field v2.FieldDefinition) bool {
+	return field.LogicalType == v2.LogicalFormula || field.LogicalType == v2.LogicalLookup
 }
 
 func mapSchemaError(err error) error {
@@ -357,8 +361,7 @@ func mapSchemaError(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return context.DeadlineExceeded
 	}
-	var productErr *schema.ProductError
-	if errors.As(err, &productErr) && productErr.Code == "schema.table.not_found" {
+	if errors.Is(err, schemaexecution.ErrTableNotFound) {
 		return &query.ProductError{
 			Code: "query.table.not_found", Path: "table",
 			Message: "table was not found",

@@ -127,6 +127,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		)),
 		mutation.WithAttachmentManager(attachmentManager),
 		mutation.WithPublisher(jobService),
+		mutation.WithComputationInvalidator(jobService),
 		mutation.WithPublishContext(jobService.PublishContext()),
 	}
 	if barrier := newE2EMutationBarrierFromEnvironment(); barrier != nil {
@@ -161,6 +162,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 	}
 	auditOptions := []audit.Option{
 		audit.WithAttachmentHistory(attachmentManager),
+		audit.WithLogger(options.Logger),
 	}
 	if options.WorkspaceV2 != nil {
 		auditOptions = append(
@@ -171,7 +173,6 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 	auditService, err := audit.New(
 		pb,
 		mutationKernel,
-		mutation.MetadataSchemaSource{},
 		auditOptions...,
 	)
 	if err != nil {
@@ -237,9 +238,9 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 					defer cancel()
 					if err := event.Server.Shutdown(ctx); err != nil {
 						options.Logger.Error(
-							"graceful shutdown failed",
-							"error",
-							err,
+							"sidecar.shutdown_failed",
+							"errorCode",
+							"sidecar.shutdown_failed",
 						)
 					}
 				}()
@@ -366,7 +367,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			importvalue.New(fieldchange.NewCatalog(pb)),
 		)
 		registerQueryRoutes(event.Router, queryPort)
-		registerFormulaRoutes(event.Router, formulaCompiler)
+		registerFormulaRoutes(event.Router, pb, formulaCompiler)
 		registerJobRoutes(event.Router, jobService)
 		registerMutationRoutes(event.Router, mutationKernel, attachmentManager, businessGate)
 		registerAttachmentRoutes(event.Router, attachmentManager)
@@ -375,7 +376,12 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		registerRealtimeRoutes(
 			event.Router, realtimeHub, schemaapi.New(pb),
 		)
-		registerMetadataRoutes(event.Router, metadata.New(pb), businessGate)
+		registerMetadataRoutes(
+			event.Router,
+			metadata.New(pb),
+			businessGate,
+			idempotentBusinessGate,
+		)
 		if options.WorkspaceV2 == nil {
 			if err := jobService.ResumePending(jobService.Context()); err != nil {
 				_ = rawListener.Close()
@@ -390,16 +396,17 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			workspaceRuntime, err = workspacev2.Open(
 				context.Background(),
 				workspacev2.Options{
-					App:             pb,
-					DataDir:         options.DataDir,
-					WorkspaceID:     options.WorkspaceV2.WorkspaceID,
-					SessionEpoch:    options.WorkspaceV2.SessionEpoch,
-					FenceEpoch:      options.WorkspaceV2.FenceEpoch,
-					ClaimID:         options.WorkspaceV2.ClaimID,
-					Ledger:          ledger,
-					Audit:           auditService,
-					RequestShutdown: requestShutdown,
-					ReplicaRoot:     options.WorkspaceV2.ReplicaRoot,
+					App:                    pb,
+					DataDir:                options.DataDir,
+					WorkspaceID:            options.WorkspaceV2.WorkspaceID,
+					SessionEpoch:           options.WorkspaceV2.SessionEpoch,
+					FenceEpoch:             options.WorkspaceV2.FenceEpoch,
+					ClaimID:                options.WorkspaceV2.ClaimID,
+					Ledger:                 ledger,
+					Audit:                  auditService,
+					RequestShutdown:        requestShutdown,
+					ReplicaRoot:            options.WorkspaceV2.ReplicaRoot,
+					DeferBackgroundWorkers: true,
 				},
 			)
 			if err != nil {
@@ -450,7 +457,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				if err := launch.WriteReady(options.ReadyWriter, ready); err != nil {
 					return err
 				}
-				options.Logger.Info("sidecar listener ready", "address", address)
+				options.Logger.Info("sidecar.listener_ready")
 				return nil
 			},
 		)
@@ -476,7 +483,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		workspaceRuntime = nil
 		_, drainErr := auditDrainer.Drain(ctx, auditOutbox)
 		closeErr := ledger.Close()
-		options.Logger.Info("sidecar graceful shutdown", "restart", event.IsRestart)
+		options.Logger.Info("sidecar.graceful_shutdown")
 		terminateErr := errors.Join(
 			workspaceCloseErr,
 			drainErr,
@@ -485,9 +492,9 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		)
 		if terminateErr != nil {
 			options.Logger.Error(
-				"sidecar graceful shutdown failed",
-				"error",
-				terminateErr,
+				"sidecar.shutdown_failed",
+				"errorCode",
+				"sidecar.shutdown_failed",
 			)
 		}
 		return terminateErr

@@ -27,11 +27,15 @@ export interface DocumentEntry {
   /** Opaque, session-bound capability. It is never a local path. */
   readonly entryHandle: string;
   readonly displayName: string;
+  readonly relativePath: string;
+  readonly extension: string;
   readonly authority: DocumentAuthority;
   readonly availability: DocumentAvailability;
-  readonly mimeType?: string;
-  readonly size?: number;
-  readonly modifiedAt?: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+  readonly effectiveRevisionCreatedAt: string;
+  readonly formalVersion: number | null;
+  readonly status: "active" | "deleted";
   readonly versionLabel?: string;
   readonly effectiveRevisionId?: string;
   readonly capabilities: readonly DocumentCapability[];
@@ -44,6 +48,9 @@ export type InspectorTab = "preview" | "history";
 export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => {
   const phase = ref<DocumentWorkspacePhase>("idle");
   const entries = ref<readonly DocumentEntry[]>([]);
+  const documentLabels = ref<Readonly<Record<string, string>>>({});
+  const nextCursor = ref<string | null>(null);
+  const topologyRevision = ref<number | null>(null);
   const selectedHandles = ref<readonly string[]>([]);
   const primaryHandle = ref<string | null>(null);
   const selectionAnchor = ref<number | null>(null);
@@ -74,6 +81,9 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   registerWorkspaceEpochReset("document-workspace", () => {
     phase.value = "idle";
     entries.value = [];
+    documentLabels.value = {};
+    nextCursor.value = null;
+    topologyRevision.value = null;
     query.value = "";
     lastError.value = null;
     lastErrorCode.value = null;
@@ -84,11 +94,8 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   });
 
   const visibleEntries = computed(() => {
-    const needle = query.value.trim().toLocaleLowerCase();
     return entries.value.filter(
-      (entry) =>
-        entry.authority === authorityFilter.value &&
-        (!needle || entry.displayName.toLocaleLowerCase().includes(needle)),
+      (entry) => entry.authority === authorityFilter.value,
     );
   });
 
@@ -104,18 +111,38 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   }
 
   function setEntries(next: readonly DocumentEntry[]): void {
+    setPage(next, null, 0, false);
+  }
+
+  function setPage(
+    next: readonly DocumentEntry[],
+    cursor: string | null,
+    revision: number,
+    append: boolean,
+  ): void {
+    const labels = { ...documentLabels.value };
+    for (const entry of next) {
+      labels[entry.documentId] = entry.displayName;
+    }
+    documentLabels.value = labels;
+    const merged = append
+      ? [...entries.value.filter((current) =>
+          !next.some((candidate) => candidate.documentId === current.documentId)), ...next]
+      : next;
     const target = diffTarget.value;
     if (target) {
-      const current = next.find((entry) => entry.entryHandle === target.entryHandle);
+      const current = merged.find((entry) => entry.entryHandle === target.entryHandle);
       if (!current || current.effectiveRevisionId !== target.effectiveRevisionId) {
         resetDiff();
       }
     }
-    entries.value = next;
+    entries.value = merged;
+    nextCursor.value = cursor;
+    topologyRevision.value = revision;
     phase.value = "ready";
     lastError.value = null;
     lastErrorCode.value = null;
-    const handles = new Set(next.map((entry) => entry.entryHandle));
+    const handles = new Set(merged.map((entry) => entry.entryHandle));
     selectedHandles.value = selectedHandles.value.filter((handle) => handles.has(handle));
     if (!primaryHandle.value || !handles.has(primaryHandle.value)) {
       primaryHandle.value = null;
@@ -127,6 +154,20 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     phase.value = "failed";
     lastError.value = message;
     lastErrorCode.value = code;
+  }
+
+  function removeActiveDocument(documentId: string): void {
+    const removed = entries.value.find((entry) => entry.documentId === documentId);
+    if (!removed) return;
+    entries.value = entries.value.filter((entry) => entry.documentId !== documentId);
+    selectedHandles.value = selectedHandles.value.filter(
+      (handle) => handle !== removed.entryHandle,
+    );
+    if (primaryHandle.value === removed.entryHandle) {
+      primaryHandle.value = null;
+      selectionAnchor.value = null;
+    }
+    if (diffTarget.value?.entryHandle === removed.entryHandle) resetDiff();
   }
 
   function setQuery(next: string): void {
@@ -228,6 +269,9 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   function clear(): void {
     phase.value = "idle";
     entries.value = [];
+    documentLabels.value = {};
+    nextCursor.value = null;
+    topologyRevision.value = null;
     query.value = "";
     lastError.value = null;
     lastErrorCode.value = null;
@@ -238,6 +282,9 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   return {
     phase,
     entries,
+    documentLabels,
+    nextCursor,
+    topologyRevision,
     selectedHandles,
     primaryHandle,
     primaryEntry,
@@ -253,7 +300,9 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     visibleEntries,
     beginLoad,
     setEntries,
+    setPage,
     setFailed,
+    removeActiveDocument,
     setQuery,
     setAuthorityFilter,
     selectAt,

@@ -4,14 +4,14 @@ import type { LookupDefinition, NormalizedRelationDescriptor } from "@/contracts
 
 const relation = {
   relationId: "orders.contract", fieldRef: "orders.contract", sourceCollection: "orders",
-  kind: "m2o", relatedCollection: "contracts", allowedCollections: [], unique: false,
+  kind: "m2o", relatedCollection: "contracts", unique: false,
   nullable: true, onDelete: "nullify", preset: "standard", selfRelation: false,
   managed: true, state: "valid", diagnostics: [],
 } satisfies NormalizedRelationDescriptor;
 const targetLookup = {
   lookupId: "contracts.tax", collection: "contracts", fieldKey: "tax", displayName: "税额",
   path: [{ relationId: "contracts.tax_rate" }], source: { kind: "target_field", fieldRef: "rates.value" },
-  m2aFieldMapping: [], aggregation: "single", outputType: "decimal", outputScale: 2,
+  outputType: "decimal", outputScale: 2,
   revision: 1, state: "valid", diagnostics: [], dependencies: [],
 } satisfies LookupDefinition;
 

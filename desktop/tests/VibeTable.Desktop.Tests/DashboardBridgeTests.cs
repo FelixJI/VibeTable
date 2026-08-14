@@ -38,6 +38,36 @@ public sealed class DashboardBridgeTests
     }
 
     [TestMethod]
+    public async Task Controller_InterfaceCorrelatesValidRequests()
+    {
+        var gateway = new FakeDashboardGateway();
+        var sink = new FakeWebReplySink();
+        var controller = new DashboardRequestController(sink, TimeSpan.FromSeconds(1));
+        controller.SetGateway(gateway);
+
+        await controller.DispatchAsync(Request("dashboard.listRequested", "direct-list", "{}"));
+
+        FakeWebReplySink.Reply? reply = await sink.WaitForAsync("dashboard.listLoaded");
+        Assert.AreEqual("direct-list", reply!.RequestId);
+        Assert.AreEqual(1, gateway.ListCalls);
+    }
+
+    [TestMethod]
+    public async Task Controller_InterfaceRejectsUnknownTypeAndInvalidPayload()
+    {
+        var sink = new FakeWebReplySink();
+        var controller = new DashboardRequestController(sink, TimeSpan.FromSeconds(1));
+
+        await controller.DispatchAsync(Request("dashboard.unknownRequested", "unknown", "{}"));
+        await controller.DispatchAsync(Request("dashboard.queryRequested", "invalid", "[]"));
+
+        FakeWebReplySink.Reply unknown = sink.Replies.Single(reply => reply.RequestId == "unknown");
+        FakeWebReplySink.Reply invalid = sink.Replies.Single(reply => reply.RequestId == "invalid");
+        Assert.AreEqual("UNKNOWN_TYPE", ((dynamic)unknown.Payload!).code);
+        Assert.AreEqual("BAD_PAYLOAD", ((dynamic)invalid.Payload!).code);
+    }
+
+    [TestMethod]
     public async Task Dispatcher_CorrelatesListReadManifestQueryAndSave()
     {
         var (dispatcher, gateway, sink) = CreateDispatcher();
@@ -73,26 +103,16 @@ public sealed class DashboardBridgeTests
     }
 
     [TestMethod]
-    public async Task Dispatcher_DisabledFeatureRejectsWithoutCallingGateway()
+    public async Task Dispatcher_AcceptsDashboardQueryDiscriminatorAfterRoundTripSorting()
     {
-        var gateway = new FakeDashboardGateway();
-        var sink = new FakeWebReplySink();
-        var dispatcher = new WorkspaceRequestDispatcher(
-            new TableWorkspaceService(new FakeTableRpcGateway()),
-            new FakeDatabasePicker("db"), sink,
-            dashboardFeatures: DashboardFeatureOptions.Disabled);
-        dispatcher.SetDashboardGateway(gateway);
+        var (dispatcher, gateway, sink) = CreateDispatcher();
 
-        dispatcher.Dispatch(Request("dashboard.listRequested", "disabled-1", "{}"));
-        var failure = await sink.WaitForFailedAsync();
-        Assert.AreEqual("DASHBOARD_DISABLED", ((dynamic)failure!.Payload!).code);
-        Assert.AreEqual(0, gateway.ListCalls);
+        dispatcher.Dispatch(Request(
+            "dashboard.saveRequested", "save-roundtrip",
+            """{"dashboardId":"123e4567-e89b-42d3-a456-426614174010","expectedRevision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","idempotencyKey":"123e4567-e89b-42d3-a456-426614174011","name":"Sales","note":"","panels":[{"clientId":"123e4567-e89b-42d3-a456-426614174012","panelId":"123e4567-e89b-42d3-a456-426614174012","name":"By region","type":"bar","position":{"x":0,"y":0,"width":4,"height":3},"options":{},"query":{"collection":"orders","dimensions":["region"],"filters":[],"kind":"aggregate","limit":100,"measures":[{"field":null,"key":"value","op":"count"}],"timeBucket":null,"topN":null}}],"deletedPanelIds":[],"config":{"configVersion":1,"globalFilters":[],"interactions":[],"refreshInterval":0}}"""));
 
-        dispatcher.Dispatch(Request("dashboard.queryRequested", "disabled-invalid", "{}"));
-        Assert.IsTrue(SpinWait.SpinUntil(() => sink.Replies.Any(reply =>
-            reply.Type == "operation.failed" && reply.RequestId == "disabled-invalid"), 2_000));
-        failure = sink.Replies.Single(reply => reply.RequestId == "disabled-invalid");
-        Assert.AreEqual("DASHBOARD_DISABLED", ((dynamic)failure.Payload!).code);
+        Assert.AreEqual("save-roundtrip", (await sink.WaitForAsync("dashboard.saved"))!.RequestId);
+        Assert.IsInstanceOfType<DashboardAggregateQuery>(gateway.Saves.Single().Panels.Single().Query);
     }
 
     [TestMethod]
@@ -160,7 +180,6 @@ public sealed class DashboardBridgeTests
         var dispatcher = new WorkspaceRequestDispatcher(
             new TableWorkspaceService(new FakeTableRpcGateway()),
             new FakeDatabasePicker("db"), sink,
-            dashboardFeatures: DashboardFeatureOptions.EnabledForTests,
             dashboardRequestTimeout: TimeSpan.FromMilliseconds(30));
         dispatcher.SetDashboardGateway(gateway);
 
@@ -213,18 +232,6 @@ public sealed class DashboardBridgeTests
         Assert.IsFalse(((string)((dynamic)failure.Payload!).message).Contains("private", StringComparison.Ordinal));
     }
 
-    [TestMethod]
-    public void FeatureOptions_DefaultOffAndExplicitTrueValuesEnable()
-    {
-        Assert.IsTrue(DashboardFeatureOptions.FromEnvironment(_ => null).Enabled);
-        Assert.IsFalse(DashboardFeatureOptions.FromEnvironment(_ => "false").Enabled);
-        Assert.IsTrue(DashboardFeatureOptions.FromEnvironment(_ => "true").Enabled);
-        Assert.IsTrue(DashboardFeatureOptions.FromEnvironment(_ => "1").Enabled);
-        Assert.IsTrue(AutoDateFeatureOptions.FromEnvironment(_ => null).Enabled);
-        Assert.IsFalse(AutoDateFeatureOptions.FromEnvironment(_ => "off").Enabled);
-        Assert.IsTrue(AutoDateFeatureOptions.FromEnvironment(_ => "yes").Enabled);
-    }
-
     private static (WorkspaceRequestDispatcher Dispatcher, FakeDashboardGateway Gateway, FakeWebReplySink Sink)
         CreateDispatcher()
     {
@@ -232,8 +239,7 @@ public sealed class DashboardBridgeTests
         var sink = new FakeWebReplySink();
         var dispatcher = new WorkspaceRequestDispatcher(
             new TableWorkspaceService(new FakeTableRpcGateway()),
-            new FakeDatabasePicker("db"), sink,
-            dashboardFeatures: DashboardFeatureOptions.EnabledForTests);
+            new FakeDatabasePicker("db"), sink);
         dispatcher.SetDashboardGateway(gateway);
         return (dispatcher, gateway, sink);
     }

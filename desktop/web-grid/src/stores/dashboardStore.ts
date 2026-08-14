@@ -1,7 +1,11 @@
 import { computed, ref, toRaw } from "vue";
 import { defineStore } from "pinia";
 import { PRODUCT_PANEL_TYPES, parseWireDashboard, type Dashboard, type DashboardPanel, type ProductPanelType } from "@/dashboard";
-import type { DashboardFilterVariablePayload, DashboardInteractionPayload } from "@/contracts";
+import type {
+  DashboardFilterVariablePayload,
+  DashboardInteractionPayload,
+  DashboardManifestEntryPayload,
+} from "@/contracts";
 
 export interface DashboardListEntry {
   readonly id: string;
@@ -56,7 +60,6 @@ const DEFAULT_LIMITS: DashboardQueryLimits = {
 };
 
 export const useDashboardStore = defineStore("dashboards", () => {
-  const featureEnabled = ref(false);
   const phase = ref<"idle" | "loading-list" | "loading" | "ready" | "saving" | "failed">("idle");
   const list = ref<DashboardListEntry[]>([]);
   const current = ref<Dashboard | null>(null);
@@ -69,13 +72,10 @@ export const useDashboardStore = defineStore("dashboards", () => {
   const sessionFilterValues = ref<Record<string, unknown>>({});
   const panelData = ref<Record<string, DashboardPanelData>>({});
   const allowedPanelTypes = ref<ProductPanelType[]>([]);
+  const panelManifest = ref<Partial<Record<ProductPanelType, DashboardManifestEntryPayload>>>({});
   const manifestVersion = ref<string | null>(null);
 
   const panelCount = computed(() => current.value?.panels.length ?? 0);
-
-  function setFeatureEnabled(enabled: boolean): void {
-    featureEnabled.value = enabled;
-  }
 
   function beginList(): void {
     phase.value = "loading-list";
@@ -119,11 +119,11 @@ export const useDashboardStore = defineStore("dashboards", () => {
     const source = isRecord(value) ? value : {};
     const manifest = isRecord(source.manifest) ? source.manifest : {};
     const supported = new Set<string>(PRODUCT_PANEL_TYPES);
-    allowedPanelTypes.value = Array.isArray(manifest.panels)
-      ? manifest.panels.flatMap((entry) => isRecord(entry) && typeof entry.type === "string" && supported.has(entry.type)
-        ? [entry.type as ProductPanelType]
-        : [])
+    const entries = Array.isArray(manifest.panels)
+      ? manifest.panels.flatMap((entry) => parseManifestEntry(entry, supported))
       : [];
+    panelManifest.value = Object.fromEntries(entries.map((entry) => [entry.type, entry]));
+    allowedPanelTypes.value = entries.map((entry) => entry.type);
     manifestVersion.value = typeof manifest.manifestVersion === "string" ? manifest.manifestVersion : null;
     limits.value = normalizeLimits(source.queryLimits);
   }
@@ -172,17 +172,38 @@ export const useDashboardStore = defineStore("dashboards", () => {
     error.value = null;
     lastRefreshAt.value = null;
     allowedPanelTypes.value = [];
+    panelManifest.value = {};
     manifestVersion.value = null;
   }
 
   return {
-    featureEnabled, phase, list, current, revision, config, limits, error,
+    phase, list, current, revision, config, limits, error,
     offline, lastRefreshAt, sessionFilterValues, panelData, panelCount,
-    allowedPanelTypes, manifestVersion,
-    setFeatureEnabled, beginList, receiveList, beginLoad, receiveWorkspace,
+    allowedPanelTypes, panelManifest, manifestVersion,
+    beginList, receiveList, beginLoad, receiveWorkspace,
     receiveManifest, beginSave, fail, setPanelState, markAllStale, setFilterValue, clearFilterValues, reset,
   };
 });
+
+function parseManifestEntry(
+  value: unknown,
+  supported: ReadonlySet<string>,
+): Array<DashboardManifestEntryPayload & { readonly type: ProductPanelType }> {
+  if (!isRecord(value) || typeof value.type !== "string" || !supported.has(value.type) ||
+      value.rendererVersion !== "2" || !isRecord(value.minSize) || !isRecord(value.optionsSchema)) return [];
+  const width = value.minSize.width;
+  const height = value.minSize.height;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || Number(width) < 1 ||
+      Number(width) > 12 || Number(height) < 1) return [];
+  return [{
+    type: value.type as ProductPanelType,
+    minSize: {
+      x: 0, y: 0, width: Number(width), height: Number(height),
+    },
+    optionsSchema: structuredClone(value.optionsSchema),
+    rendererVersion: value.rendererVersion,
+  }];
+}
 
 export const useDashboardDraftStore = defineStore("dashboardDraft", () => {
   const editing = ref(false);
@@ -198,7 +219,7 @@ export const useDashboardDraftStore = defineStore("dashboardDraft", () => {
     dirty.value = false;
     baseRevision.value = revision;
     draft.value = cloneDashboard(source);
-    config.value = structuredClone(toRaw(sourceConfig));
+    config.value = cloneDashboardData(sourceConfig);
     deletedPanelIds.value = [];
     conflict.value = null;
   }
@@ -248,7 +269,7 @@ export const useDashboardDraftStore = defineStore("dashboardDraft", () => {
   }
 
   function updateConfig(next: DashboardManagedConfig): void {
-    config.value = structuredClone(toRaw(next));
+    config.value = cloneDashboardData(next);
     dirty.value = true;
   }
 
@@ -323,7 +344,18 @@ function emptyPanelData(): DashboardPanelData {
 }
 
 function cloneDashboard(source: Dashboard): Dashboard {
-  return structuredClone(toRaw(source));
+  return cloneDashboardData(source);
+}
+
+/**
+ * Dashboard definitions are JSON contracts, but Vue may wrap any nested array
+ * or object in a Proxy after it has been read. `structuredClone(toRaw(value))`
+ * unwraps only the root and therefore still throws DataCloneError for those
+ * nested proxies. A JSON round trip both enforces the persisted data boundary
+ * and produces independent plain data for the draft controller.
+ */
+export function cloneDashboardData<T extends object>(value: T): T {
+  return JSON.parse(JSON.stringify(toRaw(value))) as T;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

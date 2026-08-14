@@ -42,11 +42,23 @@ function onSelect(event: MouseEvent, index: number): void {
 }
 
 function availabilityLabel(entry: DocumentEntry): string {
+  if (entry.status === "deleted") return t("files.deleted");
   if (entry.availability === "missing") return t("files.missing");
   if (entry.availability === "unmounted") return t("files.unmounted");
   if (entry.availability === "unmanaged") return t("files.unmanaged");
   if (entry.availability === "unsafe") return t("files.unsafe");
   return t("files.authority.workspace");
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatRevisionTime(value: string): string {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
 function onKeydown(event: KeyboardEvent, entry: DocumentEntry, index: number): void {
@@ -84,6 +96,8 @@ function onDragStart(event: DragEvent, entry: DocumentEntry): void {
   <div class="document-list" role="grid" :aria-label="t('files.listLabel')">
     <div class="document-head" role="row">
       <span role="columnheader">{{ t("files.column.name") }}</span>
+      <span role="columnheader">{{ t("files.column.size") }}</span>
+      <span role="columnheader">{{ t("files.column.revisionTime") }}</span>
       <span role="columnheader">{{ t("files.column.version") }}</span>
     </div>
     <button
@@ -111,10 +125,12 @@ function onDragStart(event: DragEvent, entry: DocumentEntry): void {
         <span class="name-copy">
           <strong>{{ entry.displayName }}</strong>
           <small>
-            <NIcon v-if="!['available', 'remote'].includes(entry.availability)" :size="12"><AlertTriangle /></NIcon>{{ availabilityLabel(entry) }}
+            <NIcon v-if="!['available', 'remote'].includes(entry.availability)" :size="12"><AlertTriangle /></NIcon>{{ entry.relativePath }} · {{ availabilityLabel(entry) }}
           </small>
         </span>
       </span>
+      <span role="gridcell">{{ formatSize(entry.sizeBytes) }}</span>
+      <span role="gridcell">{{ formatRevisionTime(entry.effectiveRevisionCreatedAt) }}</span>
       <span role="gridcell">{{ entry.versionLabel ?? "—" }}</span>
     </button>
   </div>
@@ -124,7 +140,7 @@ function onDragStart(event: DragEvent, entry: DocumentEntry): void {
 .document-list { min-width: 480px; color: var(--vt-fg); }
 .document-head, .document-row {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 100px;
+  grid-template-columns: minmax(260px, 1fr) 90px 170px 80px;
   align-items: center;
 }
 .document-head {

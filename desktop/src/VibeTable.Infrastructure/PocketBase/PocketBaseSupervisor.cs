@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using VibeTable.Infrastructure.Diagnostics;
 
 namespace VibeTable.Infrastructure.PocketBase;
 
@@ -518,23 +519,12 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         TextReader reader,
         string sessionSecret)
     {
-        StreamWriter? writer = null;
+        RotatingLogSink? writer = null;
         try
         {
             if (!string.IsNullOrWhiteSpace(_options.LogPath))
             {
-                string? directory = Path.GetDirectoryName(_options.LogPath);
-                if (!string.IsNullOrWhiteSpace(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
-                writer = new StreamWriter(
-                    _options.LogPath,
-                    append: true,
-                    Encoding.UTF8)
-                {
-                    AutoFlush = true,
-                };
+                writer = new RotatingLogSink(_options.LogPath);
             }
 
             while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
@@ -544,7 +534,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
                 {
                     _log.AppendLine(safe);
                 }
-                if (writer is not null)
+                if (writer is not null && DiagnosticLogLine.IsSafe(safe))
                 {
                     await writer.WriteLineAsync(safe).ConfigureAwait(false);
                 }

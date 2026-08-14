@@ -12,6 +12,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/vibetable/vibetable/sidecar/internal/computed"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	"github.com/vibetable/vibetable/sidecar/internal/lookup"
@@ -19,9 +20,11 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	"github.com/vibetable/vibetable/sidecar/internal/realtime"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 type failingLiveDataPublisher struct{}
@@ -37,47 +40,31 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	catalog := schemaapi.New(app)
-
-	authors, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("authors", "authors", []schema.FieldDefinition{
-			field("name_id", "name", schema.FieldKindScalar, schema.DataTypeShortText),
-		}),
-		ExpectedRevision: 0,
-	})
+	authors := createV2IntegrationTable(t, ctx, app, "Authors", "lookup_authors_table")
+	authorName := createV2IntegrationField(t, ctx, app, authors.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Name"), "lookup_authors_name")
+	articles := createV2IntegrationTable(t, ctx, app, "Articles", "lookup_articles_table")
+	title := createV2IntegrationField(t, ctx, app, articles.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"), "lookup_articles_title")
+	authorRelation := createV2IntegrationRelation(t, ctx, app, articles.TableID,
+		title.FieldID, authors.TableID, authorName.FieldID, "Author", "Articles", "one",
+		"lookup_articles_author")
+	lookupDraft := fieldDraftForIntegration(t, v2.LogicalLookup, "Author name")
+	lookupDraft.Lookup = &v2.LookupSpec{
+		Path:          []v2.LookupPathStep{{RelationFieldID: authorRelation.FieldID}},
+		TargetFieldID: authorName.FieldID,
+	}
+	authorLookup := createV2IntegrationField(t, ctx, app, articles.TableID, lookupDraft,
+		"lookup_articles_author_name")
+	if authorName.Definition == nil || title.Definition == nil || authorRelation.Definition == nil ||
+		authorLookup.Definition == nil {
+		t.Fatalf("incomplete V2 receipts: %#v %#v %#v %#v", authorName, title, authorRelation, authorLookup)
+	}
+	authorsDefinition, err := schemaapi.New(app).Describe(ctx, authors.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorRelation := field(
-		"author_id", "author",
-		schema.FieldKindRelation, schema.DataTypeRelation,
-	)
-	authorRelation.Relation = &schema.RelationSpec{
-		TargetTableID: "authors", Cardinality: "one", DeletePolicy: "setNull",
-	}
-	authorRelation.Constraints = []schema.FieldConstraint{{
-		Kind: schema.ConstraintRelation, TargetTableID: "authors",
-		Cardinality: "one", DeletePolicy: "setNull",
-	}}
-	authorName := field(
-		"author_name_id", "author_name",
-		schema.FieldKindLookup, schema.DataTypeLookup,
-	)
-	authorName.StorageType = schema.StorageText
-	authorName.ReadOnly = true
-	authorName.Lookup = &schema.LookupSpec{
-		RelationFieldID: "author_id",
-		TargetFieldID:   "name_id",
-		Aggregate:       "none",
-	}
-	articles, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("articles", "articles", []schema.FieldDefinition{
-			field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-			authorRelation,
-			authorName,
-		}),
-		ExpectedRevision: 0,
-	})
+	articlesDefinition, err := schemaapi.New(app).Describe(ctx, articles.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,14 +80,14 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 	)
 	missingAuthorID := "missingauthor001"
 	_, err = kernel.Apply(ctx, mutationRequest(
-		"articles",
-		articles.SchemaRevision,
+		articles.TableID,
+		articlesDefinition.Snapshot.SchemaRevision,
 		"lookup-missing-author",
 		mutation.Operation{
 			Kind: mutation.OperationInsert,
 			Values: map[string]any{
-				"title":  "Invalid",
-				"author": missingAuthorID,
+				title.Definition.Identity.PhysicalName:          "Invalid",
+				authorRelation.Definition.Identity.PhysicalName: missingAuthorID,
 			},
 		},
 	))
@@ -108,54 +95,58 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 	if !errors.As(err, &productErr) ||
 		productErr.Code != "mutation.relation.target_not_found" ||
 		productErr.Path == nil ||
-		*productErr.Path != "operations[0].values.author" {
+		*productErr.Path != "operations[0].values."+authorRelation.Definition.Identity.PhysicalName {
 		t.Fatalf("missing relation target error = %#v", err)
 	}
 	authorID := "authorrecord001"
 	if _, err := kernel.Apply(ctx, mutationRequest(
-		"authors",
-		authors.SchemaRevision,
+		authors.TableID,
+		authorsDefinition.Snapshot.SchemaRevision,
 		"lookup-author",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &authorID,
-			Values: map[string]any{"name": "Ada"},
+			Values: map[string]any{authorName.Definition.Identity.PhysicalName: "Ada"},
 		},
 	)); err != nil {
 		t.Fatalf("insert author: %#v", err)
 	}
 	articleID := "articlerecord01"
 	receipt, err := kernel.Apply(ctx, mutationRequest(
-		"articles",
-		articles.SchemaRevision,
+		articles.TableID,
+		articlesDefinition.Snapshot.SchemaRevision,
 		"lookup-article",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &articleID,
-			Values: map[string]any{"title": "Notes", "author": authorID},
+			Values: map[string]any{title.Definition.Identity.PhysicalName: "Notes", authorRelation.Definition.Identity.PhysicalName: authorID},
 		},
 	))
 	if err != nil {
 		t.Fatalf("insert article: %#v", err)
 	}
-	if got := receipt.ComputedFields[articleID]["author_name"]; got != "Ada" {
+	if got := receipt.ComputedFields[articleID][authorLookup.Definition.Identity.PhysicalName]; got != "Ada" {
 		t.Fatalf("computed lookup = %#v", got)
 	}
-	collection, _ := app.FindCollectionByNameOrId("articles")
+	collection, _ := app.FindCollectionByNameOrId(articles.PhysicalName)
 	record, err := app.FindRecordById(collection, articleID)
-	if err != nil || record.GetString("author_name") != "Ada" {
+	if err != nil || relatedcomputation.ProjectStored(record.GetRaw(authorLookup.Definition.Identity.PhysicalName)) != "Ada" {
 		t.Fatalf("stored lookup = %#v, err=%v", record, err)
 	}
-	cells, err := lookup.NewCalculator().CalculateCells(ctx, app, articles, record)
+	execution, err := schemaexecution.Describe(ctx, app, articles.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cell := cells["author_name"]
+	cells, err := lookup.NewCalculator().CalculateCells(ctx, app, execution, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cell := cells[authorLookup.Definition.Identity.PhysicalName]
 	if cell.State != "ok" || cell.Value != "Ada" || len(cell.Provenance) != 1 ||
 		cell.Provenance[0].Collection != authors.TableID ||
-		cell.Provenance[0].CollectionLabel != authors.DisplayName ||
+		cell.Provenance[0].CollectionLabel != "Authors" ||
 		cell.Provenance[0].ItemID != authorID ||
 		cell.Provenance[0].RecordLabel != "Ada" ||
-		cell.Provenance[0].FieldID != "name_id" ||
-		cell.Provenance[0].FieldLabel != "name" ||
+		cell.Provenance[0].FieldID != authorName.FieldID ||
+		cell.Provenance[0].FieldLabel != authorName.Definition.DisplayName ||
 		cell.Provenance[0].Value != "Ada" {
 		t.Fatalf("lookup provenance = %#v", cell)
 	}
@@ -169,14 +160,26 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 		query.NewPort(app, querySource),
 		kernel,
 	)
-	catalogResult, err := relationService.Describe(ctx, "articles")
+	catalogResult, err := relationService.Describe(ctx, articles.TableID)
 	if err != nil || len(catalogResult.Relations) != 1 ||
 		len(catalogResult.Lookups) != 1 ||
-		catalogResult.LookupMaxDepth != schema.MaxLookupPathDepth {
+		catalogResult.LookupMaxDepth != v2.MaxLookupPathDepth {
 		t.Fatalf("relation catalog = %#v, err=%v", catalogResult, err)
 	}
+	groupedLookup, err := relationService.QueryLookups(ctx, relation.LookupQueryRequest{
+		TableID: articles.TableID, SchemaRevision: articlesDefinition.Snapshot.SchemaRevision,
+		Query: query.TableQuery{Limit: 100},
+		Groups: []query.GroupSpec{{
+			Field: authorLookup.Definition.Identity.PhysicalName,
+		}},
+		GroupLimit: 1,
+	})
+	if err != nil || len(groupedLookup.GroupRows) != 1 || groupedLookup.HasMoreGroups ||
+		fmt.Sprint(groupedLookup.GroupRows[0].Key[0]) != "Ada" {
+		t.Fatalf("fresh lookup groups = %#v, err=%v", groupedLookup, err)
+	}
 	search, err := relationService.SearchTargets(ctx, relation.SearchRequest{
-		RelationID: "articles.author_id", Query: "Ada", Limit: 20,
+		RelationID: articles.TableID + "." + authorRelation.FieldID, Query: "Ada", Limit: 20,
 	})
 	if err != nil || len(search.Items) != 1 ||
 		search.Items[0].RecordID != authorID ||
@@ -184,46 +187,46 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 		t.Fatalf("relation search = %#v, err=%v", search, err)
 	}
 	createdTarget, err := relationService.CreateTarget(ctx, relation.CreateTargetRequest{
-		RelationID: "articles.author_id", Label: "Grace",
+		RelationID: articles.TableID + "." + authorRelation.FieldID, Label: "Grace",
 		RequestID: "create-related-author", IdempotencyKey: "create-related-author",
 		Actor: mutation.Actor{Type: "user", ID: "local"},
 	})
-	if err != nil || createdTarget.Target.TableID != "authors" ||
+	if err != nil || createdTarget.Target.TableID != authors.TableID ||
 		createdTarget.Target.RecordID == "" || createdTarget.Target.Label != "Grace" ||
 		createdTarget.Receipt.Status != mutation.StatusApplied {
 		t.Fatalf("created relation target = %#v, err=%v", createdTarget, err)
 	}
 	createdSearch, err := relationService.SearchTargets(ctx, relation.SearchRequest{
-		RelationID: "articles.author_id", Query: "Grace", Limit: 20,
+		RelationID: articles.TableID + "." + authorRelation.FieldID, Query: "Grace", Limit: 20,
 	})
 	if err != nil || len(createdSearch.Items) != 1 ||
 		createdSearch.Items[0].RecordID != createdTarget.Target.RecordID {
 		t.Fatalf("created target search = %#v, err=%v", createdSearch, err)
 	}
 	lookupPage, err := relationService.QueryLookups(ctx, relation.LookupQueryRequest{
-		TableID: "articles", SchemaRevision: articles.SchemaRevision,
+		TableID: articles.TableID, SchemaRevision: articlesDefinition.Snapshot.SchemaRevision,
 		Query: query.TableQuery{Limit: 100},
 	})
 	if err != nil || len(lookupPage.Rows) != 1 {
 		t.Fatalf("lookup query = %#v, err=%v", lookupPage, err)
 	}
-	queryCell, ok := lookupPage.Rows[0]["author_name"].(lookup.CellValue)
+	queryCell, ok := lookupPage.Rows[0][authorLookup.Definition.Identity.PhysicalName].(lookup.CellValue)
 	if !ok || queryCell.Value != "Ada" || len(queryCell.Provenance) != 1 ||
 		queryCell.Provenance[0].ItemID != authorID {
 		t.Fatalf("lookup query cell = %#v", lookupPage.Rows[0]["author_name"])
 	}
 	broken := core.NewRecord(collection)
-	broken.Set("title", "Broken reference")
+	broken.Set(title.Definition.Identity.PhysicalName, "Broken reference")
 	if err := app.Save(broken); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.DB().NewQuery(fmt.Sprintf(
-		"UPDATE `%s` SET `author`={:target} WHERE `id`={:id}", collection.Name,
+		"UPDATE `%s` SET `%s`={:target} WHERE `id`={:id}", collection.Name, authorRelation.Definition.Identity.PhysicalName,
 	)).Bind(dbx.Params{"target": "missingauthor01", "id": broken.Id}).Execute(); err != nil {
 		t.Fatal(err)
 	}
 	lookupPage, err = relationService.QueryLookups(ctx, relation.LookupQueryRequest{
-		TableID: "articles", SchemaRevision: articles.SchemaRevision,
+		TableID: articles.TableID, SchemaRevision: articlesDefinition.Snapshot.SchemaRevision,
 		Query: query.TableQuery{Limit: 100},
 	})
 	if err != nil || len(lookupPage.Rows) != 2 {
@@ -232,7 +235,7 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 	var missingCell lookup.CellValue
 	for _, row := range lookupPage.Rows {
 		if row["id"] == broken.Id {
-			missingCell, _ = row["author_name"].(lookup.CellValue)
+			missingCell, _ = row[authorLookup.Definition.Identity.PhysicalName].(lookup.CellValue)
 		}
 	}
 	if missingCell.State != "invalid" || missingCell.Diagnostic == nil ||
@@ -240,11 +243,11 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 		t.Fatalf("missing-source cell = %#v", missingCell)
 	}
 	delta := relation.DeltaRequest{
-		RelationID:     "articles.author_id",
+		RelationID:     articles.TableID + "." + authorRelation.FieldID,
 		SourceRecordID: articleID,
-		SchemaRevision: articles.SchemaRevision,
+		SchemaRevision: articlesDefinition.Snapshot.SchemaRevision,
 		Removes: []relation.TargetRef{{
-			TableID: "authors", RecordID: authorID, Label: "Ada",
+			TableID: authors.TableID, RecordID: authorID, Label: "Ada",
 		}},
 		Adds:           []relation.TargetRef{},
 		RequestID:      "relation-clear",
@@ -262,8 +265,8 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 		t.Fatalf("relation delta apply = %#v, err=%v", applied, err)
 	}
 	record, err = app.FindRecordById(collection, articleID)
-	if err != nil || record.GetString("author") != "" ||
-		record.GetString("author_name") != "" {
+	if err != nil || record.GetString(authorRelation.Definition.Identity.PhysicalName) != "" ||
+		relatedcomputation.ProjectStored(record.GetRaw(authorLookup.Definition.Identity.PhysicalName)) != nil {
 		t.Fatalf("cleared relation record = %#v, err=%v", record, err)
 	}
 }
@@ -272,84 +275,41 @@ func TestLookupCalculatorTraversesSavedMultiHopPath(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	catalog := schemaapi.New(app)
-
-	companies, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"lookup_companies",
-			"lookup_companies",
-			[]schema.FieldDefinition{
-				field(
-					"name_id", "name",
-					schema.FieldKindScalar, schema.DataTypeShortText,
-				),
-			},
-		),
-		ExpectedRevision: 0,
-	})
+	companies := createV2IntegrationTable(t, ctx, app, "Lookup companies", "multihop_companies_table")
+	companyName := createV2IntegrationField(t, ctx, app, companies.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Name"), "multihop_companies_name")
+	customers := createV2IntegrationTable(t, ctx, app, "Lookup customers", "multihop_customers_table")
+	customerName := createV2IntegrationField(t, ctx, app, customers.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Name"), "multihop_customers_name")
+	companyRelation := createV2IntegrationRelation(t, ctx, app, customers.TableID,
+		customerName.FieldID, companies.TableID, companyName.FieldID, "Company", "Customers", "one",
+		"multihop_customers_company")
+	orders := createV2IntegrationTable(t, ctx, app, "Lookup orders", "multihop_orders_table")
+	orderName := createV2IntegrationField(t, ctx, app, orders.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Name"), "multihop_orders_name")
+	customerRelation := createV2IntegrationRelation(t, ctx, app, orders.TableID,
+		orderName.FieldID, customers.TableID, customerName.FieldID, "Customer", "Orders", "one",
+		"multihop_orders_customer")
+	lookupDraft := fieldDraftForIntegration(t, v2.LogicalLookup, "Company name")
+	lookupDraft.Lookup = &v2.LookupSpec{
+		Path:          []v2.LookupPathStep{{RelationFieldID: customerRelation.FieldID}, {RelationFieldID: companyRelation.FieldID}},
+		TargetFieldID: companyName.FieldID,
+	}
+	companyLookup := createV2IntegrationField(t, ctx, app, orders.TableID, lookupDraft,
+		"multihop_orders_company_name")
+	if companyName.Definition == nil || customerName.Definition == nil || orderName.Definition == nil ||
+		companyRelation.Definition == nil || customerRelation.Definition == nil || companyLookup.Definition == nil {
+		t.Fatalf("incomplete V2 receipts: %#v %#v %#v %#v %#v %#v", companyName, customerName, orderName, companyRelation, customerRelation, companyLookup)
+	}
+	companiesDefinition, err := schemaapi.New(app).Describe(ctx, companies.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	companyRelation := field(
-		"company_id", "company",
-		schema.FieldKindRelation, schema.DataTypeRelation,
-	)
-	companyRelation.Relation = &schema.RelationSpec{
-		TargetTableID: "lookup_companies",
-		Cardinality:   "one",
-		DeletePolicy:  "setNull",
-	}
-	companyRelation.Constraints = []schema.FieldConstraint{{
-		Kind: schema.ConstraintRelation, TargetTableID: "lookup_companies",
-		Cardinality: "one", DeletePolicy: "setNull",
-	}}
-	customers, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"lookup_customers",
-			"lookup_customers",
-			[]schema.FieldDefinition{companyRelation},
-		),
-		ExpectedRevision: 0,
-	})
+	customersDefinition, err := schemaapi.New(app).Describe(ctx, customers.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	customerRelation := field(
-		"customer_id", "customer",
-		schema.FieldKindRelation, schema.DataTypeRelation,
-	)
-	customerRelation.Relation = &schema.RelationSpec{
-		TargetTableID: "lookup_customers",
-		Cardinality:   "one",
-		DeletePolicy:  "setNull",
-	}
-	customerRelation.Constraints = []schema.FieldConstraint{{
-		Kind: schema.ConstraintRelation, TargetTableID: "lookup_customers",
-		Cardinality: "one", DeletePolicy: "setNull",
-	}}
-	companyName := field(
-		"company_name_id", "company_name",
-		schema.FieldKindLookup, schema.DataTypeLookup,
-	)
-	companyName.StorageType = schema.StorageText
-	companyName.ReadOnly = true
-	companyName.Lookup = &schema.LookupSpec{
-		RelationFieldID: "customer_id",
-		Path: []schema.LookupPathStep{
-			{RelationFieldID: "customer_id"},
-			{RelationFieldID: "company_id"},
-		},
-		TargetFieldID: "name_id",
-		Aggregate:     "none",
-	}
-	orders, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"lookup_orders",
-			"lookup_orders",
-			[]schema.FieldDefinition{customerRelation, companyName},
-		),
-		ExpectedRevision: 0,
-	})
+	ordersDefinition, err := schemaapi.New(app).Describe(ctx, orders.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,41 +330,42 @@ func TestLookupCalculatorTraversesSavedMultiHopPath(t *testing.T) {
 	jobService.SetKernel(kernel)
 	companyID := "lookupcompany01"
 	if _, err := kernel.Apply(ctx, mutationRequest(
-		"lookup_companies", companies.SchemaRevision, "multihop-company",
+		companies.TableID, companiesDefinition.Snapshot.SchemaRevision, "multihop-company",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &companyID,
-			Values: map[string]any{"name": "Analytical Engines"},
+			Values: map[string]any{companyName.Definition.Identity.PhysicalName: "Analytical Engines"},
 		},
 	)); err != nil {
 		t.Fatal(err)
 	}
 	customerID := "lookupcustomer1"
 	if _, err := kernel.Apply(ctx, mutationRequest(
-		"lookup_customers", customers.SchemaRevision, "multihop-customer",
+		customers.TableID, customersDefinition.Snapshot.SchemaRevision, "multihop-customer",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &customerID,
-			Values: map[string]any{"company": companyID},
+			Values: map[string]any{companyRelation.Definition.Identity.PhysicalName: companyID},
 		},
 	)); err != nil {
 		t.Fatal(err)
 	}
 	orderID := "lookuporder0001"
 	receipt, err := kernel.Apply(ctx, mutationRequest(
-		"lookup_orders", orders.SchemaRevision, "multihop-order",
+		orders.TableID, ordersDefinition.Snapshot.SchemaRevision, "multihop-order",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &orderID,
-			Values: map[string]any{"customer": customerID},
+			Values: map[string]any{customerRelation.Definition.Identity.PhysicalName: customerID},
 		},
 	))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := receipt.ComputedFields[orderID]["company_name"]; got != "Analytical Engines" {
+	if got := receipt.ComputedFields[orderID][companyLookup.Definition.Identity.PhysicalName]; got != "Analytical Engines" {
 		t.Fatalf("multi-hop lookup = %#v", got)
 	}
-	reloaded, err := catalog.Describe(ctx, "lookup_orders")
-	if err != nil || len(reloaded.Fields[1].Lookup.EffectivePath()) != 2 {
-		t.Fatalf("reloaded lookup path = %#v, err=%v", reloaded.Fields[1].Lookup, err)
+	reloadedLookup := integrationFieldByID(ordersDefinition, companyLookup.FieldID)
+	if err != nil || reloadedLookup == nil || reloadedLookup.Lookup == nil ||
+		len(reloadedLookup.Lookup.Path) != 2 {
+		t.Fatalf("reloaded lookup path = %#v, err=%v", reloadedLookup, err)
 	}
 	querySource, err := queryschema.New(app.DataDir())
 	if err != nil {
@@ -417,26 +378,26 @@ func TestLookupCalculatorTraversesSavedMultiHopPath(t *testing.T) {
 			querySource),
 
 		kernel,
-	).Describe(ctx, "lookup_orders")
+	).Describe(ctx, orders.TableID)
 	if err != nil || len(described.Lookups) != 1 ||
 		len(described.Lookups[0].Path) != 2 ||
 		described.Lookups[0].Path[1].RelationID !=
-			"lookup_customers.company_id" {
+			customers.TableID+"."+companyRelation.FieldID {
 		t.Fatalf("described multi-hop lookup = %#v, err=%v", described, err)
 	}
 
 	if _, err := kernel.Apply(ctx, mutationRequest(
-		"lookup_companies", companies.SchemaRevision, "multihop-company-update",
+		companies.TableID, companiesDefinition.Snapshot.SchemaRevision, "multihop-company-update",
 		mutation.Operation{
 			Kind: mutation.OperationUpdate, RecordID: &companyID,
-			Values: map[string]any{"name": "Difference Engines"},
+			Values: map[string]any{companyName.Definition.Identity.PhysicalName: "Difference Engines"},
 		},
 	)); err != nil {
 		t.Fatal(err)
 	}
 	jobRecord, err := app.FindFirstRecordByFilter(
 		"vibetable_jobs",
-		"job_type='formula_fanout' && source_table_id='lookup_orders'",
+		"job_type='formula_fanout' && source_table_id={:table}", dbx.Params{"table": orders.TableID},
 	)
 	if err != nil {
 		t.Fatalf("multi-hop fanout job was not persisted: %v", err)
@@ -457,10 +418,10 @@ func TestLookupCalculatorTraversesSavedMultiHopPath(t *testing.T) {
 		snapshot.Progress.Completed != 1 {
 		t.Fatalf("multi-hop fanout snapshot = %#v, err=%v", snapshot, err)
 	}
-	orderCollection, _ := app.FindCollectionByNameOrId("lookup_orders")
+	orderCollection, _ := app.FindCollectionByNameOrId(orders.PhysicalName)
 	orderRecord, err := app.FindRecordById(orderCollection, orderID)
 	if err != nil ||
-		orderRecord.GetString("company_name") != "Difference Engines" {
+		relatedcomputation.ProjectStored(orderRecord.GetRaw(companyLookup.Definition.Identity.PhysicalName)) != "Difference Engines" {
 		t.Fatalf("multi-hop fanout result = %#v, err=%v", orderRecord, err)
 	}
 }
@@ -469,69 +430,33 @@ func TestFormulaRelationFanoutJobResumesAfterCancellation(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	catalog := schemaapi.New(app)
-	authors, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"fanout_authors", "fanout_authors",
-			[]schema.FieldDefinition{
-				field(
-					"name_id", "name",
-					schema.FieldKindScalar,
-					schema.DataTypeShortText,
-				),
-			},
-		),
-		ExpectedRevision: 0,
-	})
+	authors := createV2IntegrationTable(t, ctx, app, "Fanout authors", "fanout_authors_table")
+	authorName := createV2IntegrationField(t, ctx, app, authors.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Name"), "fanout_authors_name")
+	articles := createV2IntegrationTable(t, ctx, app, "Fanout articles", "fanout_articles_table")
+	articleName := createV2IntegrationField(t, ctx, app, articles.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Name"), "fanout_articles_name")
+	relationField := createV2IntegrationRelation(t, ctx, app, articles.TableID,
+		articleName.FieldID, authors.TableID, authorName.FieldID, "Author", "Articles", "one",
+		"fanout_articles_author")
+	lookupDraft := fieldDraftForIntegration(t, v2.LogicalLookup, "Lookup name")
+	lookupDraft.Lookup = &v2.LookupSpec{
+		Path: []v2.LookupPathStep{{RelationFieldID: relationField.FieldID}}, TargetFieldID: authorName.FieldID,
+	}
+	lookupField := createV2IntegrationField(t, ctx, app, articles.TableID, lookupDraft,
+		"fanout_articles_lookup")
+	labelDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "Author label")
+	labelDraft.Formula = &v2.FormulaDraftSpec{Language: "cel-v1", Source: `concat({Author}.{Name}, "")`}
+	label := createV2IntegrationFormula(t, ctx, app, articles.TableID, labelDraft,
+		"fanout_articles_label")
+	if authorName.Definition == nil || relationField.Definition == nil || lookupField.Definition == nil || label.Definition == nil {
+		t.Fatalf("incomplete V2 receipts: %#v %#v %#v %#v", authorName, relationField, lookupField, label)
+	}
+	authorsDefinition, err := schemaapi.New(app).Describe(ctx, authors.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	relationField := field(
-		"author_id", "author",
-		schema.FieldKindRelation, schema.DataTypeRelation,
-	)
-	relationField.Relation = &schema.RelationSpec{
-		TargetTableID: "fanout_authors",
-		Cardinality:   "one",
-		DeletePolicy:  "setNull",
-	}
-	relationField.Constraints = []schema.FieldConstraint{{
-		Kind:          schema.ConstraintRelation,
-		TargetTableID: "fanout_authors",
-		Cardinality:   "one",
-		DeletePolicy:  "setNull",
-	}}
-	label := field(
-		"label_id", "author_label",
-		schema.FieldKindFormula, schema.DataTypeFormula,
-	)
-	label.StorageType = schema.StorageText
-	label.ReadOnly = true
-	label.Formula = &schema.FormulaSpec{
-		Language: "cel-v1", Source: "author.name",
-		ResultType: schema.DataTypeShortText,
-		Version:    1, Status: "draft",
-	}
-	lookupField := field(
-		"lookup_name_id", "lookup_name",
-		schema.FieldKindLookup, schema.DataTypeLookup,
-	)
-	lookupField.StorageType = schema.StorageText
-	lookupField.ReadOnly = true
-	lookupField.Lookup = &schema.LookupSpec{
-		RelationFieldID: "author_id",
-		TargetFieldID:   "name_id",
-		Aggregate:       "none",
-	}
-	articles, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"fanout_articles", "fanout_articles",
-			[]schema.FieldDefinition{
-				relationField, lookupField, label,
-			},
-		),
-		ExpectedRevision: 0,
-	})
+	articlesDefinition, err := schemaapi.New(app).Describe(ctx, articles.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,32 +486,32 @@ func TestFormulaRelationFanoutJobResumesAfterCancellation(t *testing.T) {
 	jobService.SetKernel(kernel)
 	authorID := "fanoutauthor001"
 	if _, err := kernel.Apply(ctx, mutationRequest(
-		"fanout_authors", authors.SchemaRevision,
+		authors.TableID, authorsDefinition.Snapshot.SchemaRevision,
 		"fanout-author-insert",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &authorID,
-			Values: map[string]any{"name": "Before"},
+			Values: map[string]any{authorName.Definition.Identity.PhysicalName: "Before"},
 		},
 	)); err != nil {
 		t.Fatal(err)
 	}
 	articleID := "fanoutarticle01"
 	if _, err := kernel.Apply(ctx, mutationRequest(
-		"fanout_articles", articles.SchemaRevision,
+		articles.TableID, articlesDefinition.Snapshot.SchemaRevision,
 		"fanout-article-insert",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &articleID,
-			Values: map[string]any{"author": authorID},
+			Values: map[string]any{relationField.Definition.Identity.PhysicalName: authorID},
 		},
 	)); err != nil {
 		t.Fatal(err)
 	}
 	receipt, err := kernel.Apply(ctx, mutationRequest(
-		"fanout_authors", authors.SchemaRevision,
+		authors.TableID, authorsDefinition.Snapshot.SchemaRevision,
 		"fanout-author-update",
 		mutation.Operation{
 			Kind: mutation.OperationUpdate, RecordID: &authorID,
-			Values: map[string]any{"name": "After"},
+			Values: map[string]any{authorName.Definition.Identity.PhysicalName: "After"},
 		},
 	))
 	if err != nil {
@@ -696,10 +621,10 @@ func TestFormulaRelationFanoutJobResumesAfterCancellation(t *testing.T) {
 			snapshot, snapshot.Error, err,
 		)
 	}
-	collection, _ := app.FindCollectionByNameOrId("fanout_articles")
+	collection, _ := app.FindCollectionByNameOrId(articles.PhysicalName)
 	article, err := app.FindRecordById(collection, articleID)
-	if err != nil || article.GetString("author_label") != "After" ||
-		article.GetString("lookup_name") != "After" {
+	if err != nil || relatedcomputation.ProjectStored(article.GetRaw(label.Definition.Identity.PhysicalName)) != "After" ||
+		relatedcomputation.ProjectStored(article.GetRaw(lookupField.Definition.Identity.PhysicalName)) != "After" {
 		t.Fatalf("fan-out materialized article = %#v, err=%v", article, err)
 	}
 }
@@ -708,72 +633,39 @@ func TestFormulaDereferencesValidatedRelationTarget(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	catalog := schemaapi.New(app)
-
-	authors, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"formula_authors",
-			"formula_authors",
-			[]schema.FieldDefinition{
-				field(
-					"name_id", "name",
-					schema.FieldKindScalar,
-					schema.DataTypeShortText,
-				),
-			},
-		),
-		ExpectedRevision: 0,
-	})
+	authors := createV2IntegrationTable(t, ctx, app, "Formula authors", "formula_authors_table")
+	authorName := createV2IntegrationField(t, ctx, app, authors.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Name"), "formula_authors_name")
+	articles := createV2IntegrationTable(t, ctx, app, "Formula articles", "formula_articles_table")
+	articleName := createV2IntegrationField(t, ctx, app, articles.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Name"), "formula_articles_name")
+	author := createV2IntegrationRelation(t, ctx, app, articles.TableID,
+		articleName.FieldID, authors.TableID, authorName.FieldID, "Author", "Articles", "one",
+		"formula_articles_author")
+	labelDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "Author label")
+	labelDraft.Formula = &v2.FormulaDraftSpec{Language: "cel-v1", Source: `concat({Author}.{Name}, "")`}
+	label := createV2IntegrationFormula(t, ctx, app, articles.TableID, labelDraft,
+		"formula_articles_label")
+	if authorName.Definition == nil || author.Definition == nil || label.Definition == nil {
+		t.Fatalf("incomplete V2 receipts: %#v %#v %#v", authorName, author, label)
+	}
+	authorsDefinition, err := schemaapi.New(app).Describe(ctx, authors.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	author := field(
-		"author_id", "author",
-		schema.FieldKindRelation, schema.DataTypeRelation,
-	)
-	author.Relation = &schema.RelationSpec{
-		TargetTableID: "formula_authors",
-		Cardinality:   "one",
-		DeletePolicy:  "setNull",
-	}
-	author.Constraints = []schema.FieldConstraint{{
-		Kind:          schema.ConstraintRelation,
-		TargetTableID: "formula_authors",
-		Cardinality:   "one",
-		DeletePolicy:  "setNull",
-	}}
-	label := field(
-		"label_id", "author_label",
-		schema.FieldKindFormula, schema.DataTypeFormula,
-	)
-	label.StorageType = schema.StorageText
-	label.ReadOnly = true
-	label.Formula = &schema.FormulaSpec{
-		Language: "cel-v1", Source: "author.name",
-		ResultType: schema.DataTypeShortText,
-		Version:    1,
-		Status:     "draft",
-	}
-	articles, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"formula_articles",
-			"formula_articles",
-			[]schema.FieldDefinition{author, label},
-		),
-		ExpectedRevision: 0,
-	})
+	articlesDefinition, err := schemaapi.New(app).Describe(ctx, articles.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dependencies, err := app.FindRecordsByFilter(
 		"vibetable_formula_dependencies",
-		"source_table_id='formula_articles'",
+		fmt.Sprintf("source_table_id=%q", articles.TableID),
 		"",
 		10,
 		0,
 	)
 	if err != nil || len(dependencies) != 1 ||
-		dependencies[0].GetString("target_field_id") != "name_id" {
+		dependencies[0].GetString("target_field_id") != authorName.FieldID {
 		t.Fatalf("formula dependency metadata = %#v, err=%v", dependencies, err)
 	}
 
@@ -790,20 +682,20 @@ func TestFormulaDereferencesValidatedRelationTarget(t *testing.T) {
 	)
 	authorID := "formauthor00001"
 	if _, err := kernel.Apply(ctx, mutationRequest(
-		"formula_authors",
-		authors.SchemaRevision,
+		authors.TableID,
+		authorsDefinition.Snapshot.SchemaRevision,
 		"formula-author-insert",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &authorID,
-			Values: map[string]any{"name": "Grace"},
+			Values: map[string]any{authorName.Definition.Identity.PhysicalName: "Grace"},
 		},
 	)); err != nil {
 		t.Fatal(err)
 	}
 	blankArticleID := "blankarticle001"
 	blankReceipt, err := kernel.Apply(ctx, mutationRequest(
-		"formula_articles",
-		articles.SchemaRevision,
+		articles.TableID,
+		articlesDefinition.Snapshot.SchemaRevision,
 		"formula-blank-article-insert",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &blankArticleID,
@@ -813,40 +705,44 @@ func TestFormulaDereferencesValidatedRelationTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nullable relation formula must permit a blank relation: %v", err)
 	}
-	if got := blankReceipt.ComputedFields[blankArticleID]["author_label"]; got != nil {
+	if got := blankReceipt.ComputedFields[blankArticleID][label.Definition.Identity.PhysicalName]; got != nil {
 		t.Fatalf("blank relation formula = %#v, want nil", got)
 	}
 	articleID := "formarticle0001"
 	receipt, err := kernel.Apply(ctx, mutationRequest(
-		"formula_articles",
-		articles.SchemaRevision,
+		articles.TableID,
+		articlesDefinition.Snapshot.SchemaRevision,
 		"formula-article-insert",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &articleID,
-			Values: map[string]any{"author": authorID},
+			Values: map[string]any{author.Definition.Identity.PhysicalName: authorID},
 		},
 	))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := receipt.ComputedFields[articleID]["author_label"]; got != "Grace" {
+	if got := receipt.ComputedFields[articleID][label.Definition.Identity.PhysicalName]; got != "Grace" {
 		t.Fatalf("relation formula = %#v", got)
 	}
 
-	invalid := articles
-	invalid.SchemaRevision = "schema_1"
-	invalid.Fields[1].Formula = &schema.FormulaSpec{
-		Language: "cel-v1", Source: "author.missing",
-		ResultType: schema.DataTypeShortText,
-		Version:    1,
-		Status:     "draft",
+	catalog := fieldchange.NewCatalog(app)
+	store := fieldchange.NewPocketBasePlanStore(app)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
+	revisions, err := catalog.Revisions(ctx, articles.TableID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, err = catalog.ValidateChange(ctx, schemaapi.Change{
-		Definition: invalid, ExpectedRevision: 1,
+	invalidDraft := fieldDraftForIntegration(t, v2.LogicalFormula, label.Definition.DisplayName)
+	invalidDraft.Formula = &v2.FormulaDraftSpec{Language: "cel-v1", Source: `concat({Author}.{Missing}, "")`}
+	_, err = planner.Plan(ctx, v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: articles.TableID, FieldID: label.FieldID,
+		ExpectedSchemaRev: revisions.Schema, Draft: &invalidDraft,
+		Actor: v2.Actor{ID: "local-user", Kind: "user"},
 	})
-	var schemaErr *schema.ProductError
-	if !errors.As(err, &schemaErr) ||
-		schemaErr.Code != "schema.formula.target_field_not_found" {
+	var formulaErr *formula.Error
+	if !errors.As(err, &formulaErr) || formulaErr.Code != "formula.dependency" ||
+		formulaErr.Details["scope"] != "relation target" ||
+		formulaErr.Details["displayName"] != "Missing" {
 		t.Fatalf("invalid relation formula error = %#v", err)
 	}
 }

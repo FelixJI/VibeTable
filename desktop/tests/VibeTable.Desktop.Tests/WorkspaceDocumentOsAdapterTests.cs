@@ -11,6 +11,27 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class WorkspaceDocumentOsAdapterTests
 {
+    [TestMethod]
+    public void DocumentControllerHandlesOnlyTheClosedBrowseAndDiffUnion()
+    {
+        foreach (string type in new[]
+        {
+            "document.listRequested",
+            "document.openRequested",
+            "document.revealRequested",
+            "document.previewRequested",
+            "document.diffRequested",
+            "document.diffCancelRequested",
+            "document.pickRequested",
+            "document.relinkRequested",
+        })
+        {
+            Assert.IsTrue(DocumentBrowseRequestController.Handles(type), type);
+        }
+        Assert.IsFalse(DocumentBrowseRequestController.Handles("document.rawRequested"));
+        Assert.IsFalse(DocumentBrowseRequestController.Handles("file.uploadRequested"));
+    }
+
     private const string DiffOperationId =
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     private static readonly Guid WorkspaceId =
@@ -125,8 +146,8 @@ public sealed class WorkspaceDocumentOsAdapterTests
             JsonElement root = body.RootElement;
             sequences.Add(root.GetProperty("wire").GetProperty("sequence").GetUInt64());
             return root.GetProperty("method").GetString() ==
-                WorkspaceDocumentOsAdapter.ListDocumentsMethod
-                    ? RpcSuccess(root, "{\"documents\":[]}")
+                WorkspaceDocumentOsAdapter.QueryDocumentsMethod
+                    ? RpcSuccess(root, "{\"documents\":[],\"nextCursor\":null,\"topologyRevision\":0}")
                     : RpcSuccess(root, FileDocument("report.txt", 2));
         });
         var epochs = new FakeEpochLeaseSource(initialSequence: 100);
@@ -135,7 +156,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
             workspaceRoot,
             gateway,
             [
-                WorkspaceDocumentOsAdapter.ListDocumentsMethod,
+                WorkspaceDocumentOsAdapter.QueryDocumentsMethod,
                 WorkspaceDocumentOsAdapter.ImportDocumentMethod,
             ],
             epochs);
@@ -167,13 +188,13 @@ public sealed class WorkspaceDocumentOsAdapterTests
             JsonElement root = body.RootElement;
             return RpcSuccess(
                 root,
-                $$"""{"documents":[{{FileDocument("reports/q3.txt", 4)}}]}""");
+                DocumentQueryResult(FileDocumentSummary("reports/q3.txt", 3)));
         });
         using WorkspaceV2HttpGateway gateway = Gateway(handler);
         using WorkspaceDocumentOsAdapter adapter = Adapter(
             workspaceRoot,
             gateway,
-            [WorkspaceDocumentOsAdapter.ListDocumentsMethod]);
+            [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
 
         DocumentListPayload result =
             await adapter.ListGlobalAsync(CancellationToken.None);
@@ -183,6 +204,61 @@ public sealed class WorkspaceDocumentOsAdapterTests
         Assert.AreEqual(RevisionId.ToString("D"), entry.EffectiveRevisionId);
         Assert.AreEqual("available", entry.Availability);
         Assert.AreEqual("q3.txt", entry.DisplayName);
+    }
+
+    [TestMethod]
+    public async Task CursorPageKeepsCapabilitiesIssuedForEarlierPages()
+    {
+        using var directory = new TemporaryDirectory();
+        string workspaceRoot = Path.Combine(directory.Path, "workspace");
+        string firstPath = Path.Combine(workspaceRoot, "files", "first.txt");
+        string secondPath = Path.Combine(workspaceRoot, "files", "second.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(firstPath)!);
+        await File.WriteAllTextAsync(firstPath, "first");
+        await File.WriteAllTextAsync(secondPath, "second");
+        int requests = 0;
+        Guid secondDocumentId = Guid.Parse(
+            "44444444-4444-4444-8444-444444444444");
+        Guid secondRevisionId = Guid.Parse(
+            "55555555-5555-4555-8555-555555555555");
+        var handler = new RecordingHandler(request =>
+        {
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            JsonElement root = body.RootElement;
+            requests += 1;
+            if (requests == 1)
+            {
+                Assert.AreEqual(
+                    JsonValueKind.Null,
+                    root.GetProperty("params").GetProperty("cursor").ValueKind);
+                return RpcSuccess(
+                    root,
+                    $$"""{"documents":[{{FileDocumentSummary("first.txt", 1)}}],"nextCursor":"opaque-next","topologyRevision":4}""");
+            }
+            Assert.AreEqual(
+                "opaque-next",
+                root.GetProperty("params").GetProperty("cursor").GetString());
+            string second = FileDocumentSummary("second.txt", 1)
+                .Replace(DocumentId.ToString("D"), secondDocumentId.ToString("D"))
+                .Replace(RevisionId.ToString("D"), secondRevisionId.ToString("D"));
+            return RpcSuccess(root, DocumentQueryResult(second));
+        });
+        using WorkspaceV2HttpGateway gateway = Gateway(handler);
+        using WorkspaceDocumentOsAdapter adapter = Adapter(
+            workspaceRoot,
+            gateway,
+            [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+
+        DocumentListPayload first = await adapter.ListGlobalAsync(
+            CancellationToken.None);
+        DocumentQueryInput nextQuery = DocumentQueryInput.Default with
+        {
+            Cursor = first.NextCursor,
+        };
+        await adapter.ListGlobalAsync(CancellationToken.None, nextQuery);
+
+        adapter.Open(first.Entries.Single().EntryHandle);
     }
 
     [TestMethod]
@@ -206,11 +282,11 @@ public sealed class WorkspaceDocumentOsAdapterTests
                 request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
             JsonElement root = body.RootElement;
             string method = root.GetProperty("method").GetString()!;
-            if (method == WorkspaceDocumentOsAdapter.ListDocumentsMethod)
+            if (method == WorkspaceDocumentOsAdapter.QueryDocumentsMethod)
             {
                 return RpcSuccess(
                     root,
-                    $$"""{"documents":[{{FileDocument("reports/q3.txt", 4)}}]}""");
+                    DocumentQueryResult(FileDocumentSummary("reports/q3.txt", 3)));
             }
             if (method == WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod)
             {
@@ -256,7 +332,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
             workspaceRoot,
             gateway,
             [
-                WorkspaceDocumentOsAdapter.ListDocumentsMethod,
+                WorkspaceDocumentOsAdapter.QueryDocumentsMethod,
                 WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod,
                 WorkspaceDocumentOsAdapter.AssertEffectiveRevisionMethod,
             ],
@@ -285,7 +361,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
     }
 
     [TestMethod]
-    public async Task DispatcherCancelCooperativelyCancelsTheRunningDiffEngine()
+    public async Task DocumentControllerCancelCooperativelyCancelsTheRunningDiffEngine()
     {
         using var directory = new TemporaryDirectory();
         string workspaceRoot = Path.Combine(directory.Path, "workspace");
@@ -304,11 +380,11 @@ public sealed class WorkspaceDocumentOsAdapterTests
                 request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
             JsonElement root = body.RootElement;
             string method = root.GetProperty("method").GetString()!;
-            if (method == WorkspaceDocumentOsAdapter.ListDocumentsMethod)
+            if (method == WorkspaceDocumentOsAdapter.QueryDocumentsMethod)
             {
                 return RpcSuccess(
                     root,
-                    $$"""{"documents":[{{FileDocument("reports/q3.txt", 4)}}]}""");
+                    DocumentQueryResult(FileDocumentSummary("reports/q3.txt", 3)));
             }
             Assert.AreEqual(
                 WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod,
@@ -338,7 +414,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
             workspaceRoot,
             gateway,
             [
-                WorkspaceDocumentOsAdapter.ListDocumentsMethod,
+                WorkspaceDocumentOsAdapter.QueryDocumentsMethod,
                 WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod,
                 WorkspaceDocumentOsAdapter.AssertEffectiveRevisionMethod,
             ],
@@ -348,13 +424,10 @@ public sealed class WorkspaceDocumentOsAdapterTests
         DocumentBridgeEntry entry = (await adapter.ListGlobalAsync(
             CancellationToken.None)).Entries.Single();
         var sink = new FakeWebReplySink();
-        var dispatcher = new WorkspaceRequestDispatcher(
-            new TableWorkspaceService(new FakeTableRpcGateway()),
-            new FakeDatabasePicker("db"),
-            sink);
-        dispatcher.SetDocumentWorkspace(adapter);
+        var controller = new DocumentBrowseRequestController(sink);
+        controller.SetWorkspace(adapter);
 
-        dispatcher.Dispatch(Request(
+        Task diff = controller.DispatchAsync(Request(
             "document.diffRequested",
             "diff-1",
             $$"""
@@ -366,7 +439,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
             }
             """));
         await engine.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        dispatcher.Dispatch(Request(
+        await controller.DispatchAsync(Request(
             "document.diffCancelRequested",
             "cancel-1",
             $$"""
@@ -375,6 +448,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
               "operationId":"{{DiffOperationId}}"
             }
             """));
+        await diff;
 
         FakeWebReplySink.Reply? cancel = await sink.WaitForAsync(
             "document.diffCancelCompleted");
@@ -393,7 +467,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
     }
 
     [TestMethod]
-    public async Task DispatcherCancelBeforeRegistrationIsAppliedToTheSameDiffOperation()
+    public async Task DocumentControllerRegistersDiffBeforeCancellation()
     {
         using var directory = new TemporaryDirectory();
         string workspaceRoot = Path.Combine(directory.Path, "workspace");
@@ -411,11 +485,11 @@ public sealed class WorkspaceDocumentOsAdapterTests
                 request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
             JsonElement root = body.RootElement;
             string method = root.GetProperty("method").GetString()!;
-            if (method == WorkspaceDocumentOsAdapter.ListDocumentsMethod)
+            if (method == WorkspaceDocumentOsAdapter.QueryDocumentsMethod)
             {
                 return RpcSuccess(
                     root,
-                    $$"""{"documents":[{{FileDocument("reports/q3.txt", 4)}}]}""");
+                    DocumentQueryResult(FileDocumentSummary("reports/q3.txt", 3)));
             }
             Assert.AreEqual(
                 WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod,
@@ -449,7 +523,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
             workspaceRoot,
             gateway,
             [
-                WorkspaceDocumentOsAdapter.ListDocumentsMethod,
+                WorkspaceDocumentOsAdapter.QueryDocumentsMethod,
                 WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod,
                 WorkspaceDocumentOsAdapter.AssertEffectiveRevisionMethod,
             ],
@@ -459,13 +533,10 @@ public sealed class WorkspaceDocumentOsAdapterTests
         DocumentBridgeEntry entry = (await adapter.ListGlobalAsync(
             CancellationToken.None)).Entries.Single();
         var sink = new FakeWebReplySink();
-        var dispatcher = new WorkspaceRequestDispatcher(
-            new TableWorkspaceService(new FakeTableRpcGateway()),
-            new FakeDatabasePicker("db"),
-            sink);
-        dispatcher.SetDocumentWorkspace(adapter);
+        var controller = new DocumentBrowseRequestController(sink);
+        controller.SetWorkspace(adapter);
 
-        dispatcher.Dispatch(Request(
+        Task diff = controller.DispatchAsync(Request(
             "document.diffRequested",
             "diff-after-cancel",
             $$"""
@@ -476,7 +547,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
               "expectedEffectiveRevisionId":"{{RevisionId:D}}"
             }
             """));
-        dispatcher.Dispatch(Request(
+        await controller.DispatchAsync(Request(
             "document.diffCancelRequested",
             "cancel-before-registration",
             $$"""
@@ -485,6 +556,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
               "operationId":"{{DiffOperationId}}"
             }
             """));
+        await diff;
 
         FakeWebReplySink.Reply? cancel = await sink.WaitForAsync(
             "document.diffCancelCompleted");
@@ -549,6 +621,26 @@ public sealed class WorkspaceDocumentOsAdapterTests
           "nextFormalVersion":{{nextFormalVersion}}
         }
         """;
+
+    private static string FileDocumentSummary(string relativePath, ulong formalVersion)
+        => $$"""
+        {
+          "contractVersion":"2.0",
+          "documentId":"{{DocumentId:D}}",
+          "relativePath":"{{relativePath}}",
+          "displayName":"{{Path.GetFileName(relativePath)}}",
+          "extension":"{{Path.GetExtension(relativePath).TrimStart('.')}}",
+          "mimeType":"text/plain",
+          "sizeBytes":12,
+          "effectiveRevisionId":"{{RevisionId:D}}",
+          "effectiveRevisionCreatedAt":"2026-08-12T09:00:00Z",
+          "formalVersion":{{formalVersion}},
+          "status":"active"
+        }
+        """;
+
+    private static string DocumentQueryResult(string document)
+        => $$"""{"documents":[{{document}}],"nextCursor":null,"topologyRevision":4}""";
 
     private static HttpResponseMessage RpcSuccess(
         JsonElement request,

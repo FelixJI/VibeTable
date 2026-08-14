@@ -15,7 +15,6 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
   const collections = ref<readonly CollectionSummary[]>([]);
   const pendingDelete = ref<string | null>(null);
   const error = ref<string | null>(null);
-  const autoDateProducerEnabled = ref(false);
   const form = reactive({ name: "" });
 
   const canSubmit = computed(() =>
@@ -24,10 +23,6 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
 
   function setCollections(values: readonly CollectionSummary[]): void {
     collections.value = values;
-  }
-
-  function setAutoDateProducerEnabled(enabled: boolean): void {
-    autoDateProducerEnabled.value = enabled;
   }
 
   function openCreate(): void {
@@ -70,11 +65,9 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
     collections,
     pendingDelete,
     error,
-    autoDateProducerEnabled,
     form,
     canSubmit,
     setCollections,
-    setAutoDateProducerEnabled,
     openCreate,
     beginSubmit,
     requestDelete,

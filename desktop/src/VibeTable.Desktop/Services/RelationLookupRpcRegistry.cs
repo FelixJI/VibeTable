@@ -64,14 +64,6 @@ internal static class RelationLookupRpcRegistry
             payload => HasString(payload, "collection"),
             (gateway, payload, token) => gateway.ListLookupsAsync(payload, token)),
         new(
-            "lookup.validate",
-            payload => HasObject(payload, "definition") && HasArray(payload, "existing"),
-            (gateway, payload, token) => gateway.ValidateLookupAsync(payload, token)),
-        new(
-            "lookup.preview",
-            payload => IsValidLookupQuery(payload) && HasArray(payload, "definitions"),
-            (gateway, payload, token) => gateway.PreviewLookupAsync(payload, token)),
-        new(
             "lookup.query",
             IsValidLookupQuery,
             (gateway, payload, token) => gateway.QueryLookupsAsync(payload, token)),

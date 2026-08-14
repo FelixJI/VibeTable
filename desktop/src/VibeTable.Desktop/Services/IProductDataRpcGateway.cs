@@ -22,8 +22,7 @@ public interface IProductDataRpcGateway : IDisposable, IRelationLookupRpcGateway
     Task<JsonElement> GetFieldChangeStatusAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> CancelFieldChangeAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ListRecycledFieldsAsync(JsonElement parameters, CancellationToken token);
-    Task<JsonElement> ValidateSchemaAsync(JsonElement parameters, CancellationToken token);
-    Task<JsonElement> ApplySchemaAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> CreateTableAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> DeleteSchemaAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ListTablesAsync(JsonElement parameters, CancellationToken token);
     /// <summary>
@@ -32,7 +31,16 @@ public interface IProductDataRpcGateway : IDisposable, IRelationLookupRpcGateway
     /// relation-capability compatibility envelope.
     /// </summary>
     Task<JsonElement> GetTableSchemaAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> LoadContentProfileAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> CommitContentProfileAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> DeleteContentProfileAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> ListRecordDocumentLinksAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> CommitRecordDocumentLinkAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> RepairRecordDocumentLinkAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> DeleteRecordDocumentLinkAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> QueryPageAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> OpenQueryCursorAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> FetchQueryCursorAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> QueryViewAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ReadRowsAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ValidateSnapshotAsync(JsonElement parameters, CancellationToken token);
@@ -61,9 +69,6 @@ public interface IProductDataRpcGateway : IDisposable, IRelationLookupRpcGateway
     Task<RestorePreview> PreviewHistoryRestoreAsync(PreviewRestoreParams parameters, CancellationToken token);
     Task<RestoreResult> ApplyHistoryRestoreAsync(ApplyRestoreParams parameters, CancellationToken token);
     Task<JsonElement> ReconcileAsync(JsonElement parameters, CancellationToken token);
-    Task<JsonElement> ListIdentifierMappingsAsync(JsonElement parameters, CancellationToken token);
-    Task<JsonElement> UpdateIdentifierAliasesAsync(JsonElement parameters, CancellationToken token);
-    Task<JsonElement> ReconcileIdentifierMappingsAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ListPresetsAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> SavePresetAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> DeletePresetAsync(JsonElement parameters, CancellationToken token);

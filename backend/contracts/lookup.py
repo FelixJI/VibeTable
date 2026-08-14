@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, JsonValue, model_validator
 
 from backend.contracts.query import FilterCondition, FilterExpression, SortCondition
 from backend.contracts.selection import QuerySnapshot
 from backend.contracts.table import CamelModel
 
-LookupAggregation = Literal["single", "values"]
 LookupOutputType = Literal[
     "text",
     "integer",
@@ -26,23 +25,10 @@ LookupState = Literal["valid", "restricted", "invalid"]
 
 class LookupPathStep(CamelModel):
     relation_id: str = Field(min_length=1, max_length=128)
-    # ``to_camel`` would spell the acronym as m2A; keep the public product
-    # terminology stable across Python, TypeScript and C# instead.
-    m2a_collection: str | None = Field(
-        default=None,
-        alias="m2aCollection",
-        min_length=1,
-        max_length=128,
-    )
 
 
 class TargetFieldSource(CamelModel):
     kind: Literal["target_field"] = "target_field"
-    field_ref: str = Field(min_length=1, max_length=128)
-
-
-class JunctionFieldSource(CamelModel):
-    kind: Literal["junction_field"] = "junction_field"
     field_ref: str = Field(min_length=1, max_length=128)
 
 
@@ -52,14 +38,9 @@ class LookupReferenceSource(CamelModel):
 
 
 LookupSource = Annotated[
-    TargetFieldSource | JunctionFieldSource | LookupReferenceSource,
+    TargetFieldSource | LookupReferenceSource,
     Field(discriminator="kind"),
 ]
-
-
-class LookupM2AFieldMapping(CamelModel):
-    collection: str = Field(min_length=1, max_length=128)
-    field_ref: str = Field(min_length=1, max_length=128)
 
 
 class LookupDiagnostic(CamelModel):
@@ -77,11 +58,6 @@ class LookupDefinition(CamelModel):
     # arbitrary saved hop count, protect the runtime.
     path: list[LookupPathStep] = Field(min_length=1)
     source: LookupSource
-    m2a_field_mapping: list[LookupM2AFieldMapping] = Field(
-        default_factory=list,
-        alias="m2aFieldMapping",
-    )
-    aggregation: LookupAggregation = "single"
     output_type: LookupOutputType
     output_scale: int | None = Field(default=None, ge=0, le=30)
     revision: int = Field(default=1, ge=1)
@@ -93,27 +69,11 @@ class LookupDefinition(CamelModel):
     def validate_definition(self) -> LookupDefinition:
         if self.output_type != "decimal" and self.output_scale is not None:
             raise ValueError("outputScale is only valid for decimal Lookups")
-        if self.aggregation == "values" and self.output_type != "json":
-            raise ValueError("list Lookups must output json")
         if isinstance(self.source, LookupReferenceSource):
             deps = set(self.dependencies)
             if self.source.lookup_id not in deps:
                 raise ValueError("lookup sources must be declared as dependencies")
         return self
-
-
-class LookupDraftDefinition(CamelModel):
-    lookup_id: str = Field(min_length=1, max_length=128)
-    collection: str = Field(min_length=1, max_length=128)
-    field_key: str = Field(min_length=1, max_length=128)
-    display_name: str = Field(min_length=1, max_length=128)
-    path: list[LookupPathStep] = Field(min_length=1)
-    source: LookupSource
-    m2a_field_mapping: list[LookupM2AFieldMapping] = Field(
-        default_factory=list,
-        alias="m2aFieldMapping",
-    )
-    output_scale: int | None = Field(default=None, ge=0, le=30)
 
 
 class LookupCollectionParams(CamelModel):
@@ -130,18 +90,6 @@ class LookupListResult(CamelModel):
     lookup_revision: str
 
 
-class LookupValidateParams(CamelModel):
-    definition: LookupDraftDefinition
-    existing: list[LookupDefinition] = Field(default_factory=list, max_length=256)
-
-
-class LookupValidationResult(CamelModel):
-    definition: LookupDefinition
-    valid: bool
-    diagnostics: list[LookupDiagnostic] = Field(default_factory=list)
-    lookup_revision: str
-
-
 class LookupValueProvenance(CamelModel):
     collection: str = Field(min_length=1, max_length=128)
     collection_label: str = Field(min_length=1, max_length=256)
@@ -149,12 +97,12 @@ class LookupValueProvenance(CamelModel):
     record_label: str = Field(min_length=1, max_length=512)
     field_id: str = Field(min_length=1, max_length=128)
     field_label: str = Field(min_length=1, max_length=256)
-    value: Any = None
+    value: JsonValue = None
 
 
 class LookupCellValue(CamelModel):
     state: Literal["ok", "restricted", "invalid", "too_expensive"] = "ok"
-    value: Any = None
+    value: JsonValue = None
     provenance: list[LookupValueProvenance] = Field(default_factory=list)
     provenance_total: int = Field(default=0, ge=0)
     provenance_total_known: bool = True
@@ -172,9 +120,9 @@ class LookupGroup(CamelModel):
 class LookupQuery(CamelModel):
     filters: list[FilterExpression] = Field(default_factory=list, max_length=50)
     sorts: list[SortCondition] = Field(default_factory=list, max_length=16)
-    groups: list[LookupGroup] = Field(default_factory=list, max_length=8)
+    groups: list[LookupGroup] = Field(default_factory=list, max_length=2)
     offset: int = Field(default=0, ge=0)
-    limit: int = Field(default=100, ge=1, le=10_000)
+    limit: int = Field(default=100, ge=1, le=500)
 
     @model_validator(mode="after")
     def validate_filter_tree(self) -> LookupQuery:
@@ -214,10 +162,6 @@ class LookupQueryParams(CamelModel):
     lookup_revision: str = Field(min_length=1, max_length=128)
 
 
-class LookupPreviewParams(LookupQueryParams):
-    definitions: list[LookupDraftDefinition] = Field(min_length=1, max_length=256)
-
-
 class LookupValuePageParams(CamelModel):
     collection: str = Field(min_length=1, max_length=128)
     field_ref: str = Field(min_length=1, max_length=128)
@@ -239,10 +183,10 @@ class LookupColumnResult(CamelModel):
 
 
 class LookupGroupNode(CamelModel):
-    path: list[Any] = Field(default_factory=list)
-    key: Any = None
+    path: list[JsonValue] = Field(default_factory=list)
+    key: JsonValue = None
     count: int = Field(ge=0)
-    aggregates: dict[str, Any] = Field(default_factory=dict)
+    aggregates: dict[str, JsonValue] = Field(default_factory=dict)
     child_cursor: str | None = None
 
 
@@ -254,7 +198,7 @@ class LookupQueryResult(CamelModel):
     permission_revision: str
     lookup_revision: str
     columns: list[LookupColumnResult]
-    rows: list[dict[str, Any]]
+    rows: list[dict[str, JsonValue]]
     groups: list[LookupGroupNode] = Field(default_factory=list)
     offset: int = Field(ge=0)
     limit: int = Field(ge=1)
@@ -297,30 +241,23 @@ def validate_lookup_dependency_graph(definitions: list[LookupDefinition]) -> Non
 
 
 __all__ = [
-    "JunctionFieldSource",
-    "LookupAggregation",
     "LookupCellValue",
     "LookupCollectionParams",
     "LookupColumnResult",
     "LookupDefinition",
     "LookupDiagnostic",
-    "LookupDraftDefinition",
     "LookupGroup",
     "LookupGroupNode",
     "LookupIdentityParams",
     "LookupListResult",
-    "LookupM2AFieldMapping",
     "LookupOutputType",
     "LookupPathStep",
-    "LookupPreviewParams",
     "LookupQuery",
     "LookupQueryParams",
     "LookupQueryResult",
     "LookupReferenceSource",
     "LookupSource",
     "LookupState",
-    "LookupValidateParams",
-    "LookupValidationResult",
     "LookupValueProvenance",
     "TargetFieldSource",
     "validate_lookup_dependency_graph",

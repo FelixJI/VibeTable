@@ -49,6 +49,13 @@ function makeWebview(): WebViewShim & {
   };
 }
 
+function queryPayload(table: string, limit: number) {
+  return {
+    table,
+    query: { keyword: "", filters: [], sorts: [], offset: 0, limit },
+  };
+}
+
 describe("HostBridge", () => {
   let webview: ReturnType<typeof makeWebview>;
 
@@ -70,13 +77,13 @@ describe("HostBridge", () => {
     });
     bridge.start();
 
-    const payload = { table: "contracts", offset: 0, limit: 50 };
-    const pending = bridge.request("table.pageRequested", payload);
+    const payload = queryPayload("contracts", 50);
+    const pending = bridge.request("table.queryRequested", payload);
 
     // Outbound envelope shape.
     expect(webview.postMessage).toHaveBeenCalledTimes(1);
     const posted = webview.postMessage.mock.calls[0]![0] as BridgeMessage;
-    expect(posted.type).toBe("table.pageRequested");
+    expect(posted.type).toBe("table.queryRequested");
     expect(posted.requestId).toBe("req-1");
     expect(posted.payload).toEqual(payload);
 
@@ -90,7 +97,7 @@ describe("HostBridge", () => {
       offset: 0,
       limit: 50,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     };
     webview.emit({ type: "table.pageLoaded", requestId: "req-1", payload: page });
 
@@ -389,14 +396,10 @@ describe("HostBridge", () => {
       generateRequestId: () => "scoped-legacy-1",
     });
     bridge.start();
-    const pending = bridge.request("table.pageRequested", {
-      table: "contracts",
-      offset: 0,
-      limit: 50,
-    });
+    const pending = bridge.request("table.queryRequested", queryPayload("contracts", 50));
     const posted = webview.postMessage.mock.calls[0]![0] as BridgeMessage;
     expect(posted).toMatchObject({
-      type: "table.pageRequested",
+      type: "table.queryRequested",
       requestId: "scoped-legacy-1",
       scope: {
         scope: "workspace",
@@ -416,7 +419,7 @@ describe("HostBridge", () => {
         offset: 0,
         limit: 50,
         totalRows: 0,
-        mode: "client",
+        mode: "remote",
       },
     });
     await expect(pending).resolves.toMatchObject({ table: "contracts" });
@@ -432,16 +435,8 @@ describe("HostBridge", () => {
     });
     bridge.start();
 
-    const a = bridge.request("table.pageRequested", {
-      table: "a",
-      offset: 0,
-      limit: 10,
-    });
-    const b = bridge.request("table.pageRequested", {
-      table: "b",
-      offset: 0,
-      limit: 10,
-    });
+    const a = bridge.request("table.queryRequested", queryPayload("a", 10));
+    const b = bridge.request("table.queryRequested", queryPayload("b", 10));
 
     const postedA = webview.postMessage.mock.calls[0]![0] as BridgeMessage;
     const postedB = webview.postMessage.mock.calls[1]![0] as BridgeMessage;
@@ -464,7 +459,7 @@ describe("HostBridge", () => {
     webview.emit({
       type: "table.pageLoaded",
       requestId: "req-2",
-      payload: { table: "b", columns: [], rows: [], offset: 0, limit: 10, totalRows: 0, mode: "client" },
+      payload: { table: "b", columns: [], rows: [], offset: 0, limit: 10, totalRows: 0, mode: "remote" },
     });
 
     await expect(b).resolves.toBeTruthy();
@@ -483,11 +478,7 @@ describe("HostBridge", () => {
     });
     bridge.start();
 
-    const pending = bridge.request("table.pageRequested", {
-      table: "x",
-      offset: 0,
-      limit: 10,
-    });
+    const pending = bridge.request("table.queryRequested", queryPayload("x", 10));
 
     webview.emit({
       type: "operation.failed",
@@ -632,7 +623,7 @@ describe("HostBridge", () => {
     // No pending request() was made for this id; ensure the bridge does not
     // falsely resolve an unrelated pending entry.
     bridge
-      .request("table.pageRequested", { table: "x", offset: 0, limit: 10 })
+      .request("table.queryRequested", queryPayload("x", 10))
       .catch(() => undefined); // swallow eventual stop() rejection
 
     webview.emit({
@@ -658,11 +649,7 @@ describe("HostBridge", () => {
     });
     bridge.start();
 
-    const pending = bridge.request("table.pageRequested", {
-      table: "t",
-      offset: 0,
-      limit: 10,
-    });
+    const pending = bridge.request("table.queryRequested", queryPayload("t", 10));
 
     // Pre-timeout: still pending.
     vi.advanceTimersByTime(149);
@@ -742,7 +729,11 @@ describe("HostBridge", () => {
     bridge.on("task.changed", taskHandler);
     bridge.start();
 
-    const opened: DatabaseOpenedPayload = { tables: ["contracts"], views: [] };
+    const opened: DatabaseOpenedPayload = {
+      tables: ["contracts"],
+      views: [],
+      displayNames: { contracts: "Contracts" },
+    };
     webview.emit({ type: "database.opened", payload: opened });
 
     expect(openedHandler).toHaveBeenCalledTimes(1);
@@ -782,7 +773,11 @@ describe("HostBridge", () => {
     bridge.on("database.opened", openedHandler);
     bridge.start();
 
-    const opened: DatabaseOpenedPayload = { tables: ["contracts", "users"], views: [] };
+    const opened: DatabaseOpenedPayload = {
+      tables: ["contracts", "users"],
+      views: [],
+      displayNames: { contracts: "Contracts", users: "Users" },
+    };
     // Mirrors the real wire shape: a single JSON.stringify of the envelope.
     webview.emit(JSON.stringify({ type: "database.opened", payload: opened }));
 

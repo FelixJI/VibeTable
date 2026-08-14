@@ -9,6 +9,7 @@ import type {
   SummaryCondition,
   LookupDefinition,
   NormalizedRelationDescriptor,
+  RelationTargetRef,
 } from "@/contracts";
 import FilterTreeEditor from "./FilterTreeEditor.vue";
 import { cloneFilterExpressions } from "@/stores/viewQueryStore";
@@ -21,6 +22,7 @@ const props = defineProps<{
   visibleFields: readonly string[];
   relations?: readonly NormalizedRelationDescriptor[];
   lookups?: readonly LookupDefinition[];
+  searchRelationTargets?: (relationId: string, query: string) => Promise<readonly RelationTargetRef[]>;
 }>();
 const emit = defineEmits<{ change: [value: {
   filters: FilterExpression[];
@@ -46,7 +48,7 @@ const groupColumns = computed(() => props.columns.filter((column) => {
     return !!column.relationId && relationsById.value.get(column.relationId)?.kind === "m2o";
   }
   if (column.kind === "lookup") {
-    return !!column.lookupId && lookupsById.value.get(column.lookupId)?.aggregation === "single";
+    return !!column.lookupId && lookupsById.value.get(column.lookupId)?.outputType !== "json";
   }
   return true;
 }));
@@ -125,7 +127,13 @@ function isNumericField(field: string): boolean {
       </template>
       <div class="control-card control-card--wide">
         <header><strong>筛选记录</strong><span>最多 3 级、50 个条件</span></header>
-        <FilterTreeEditor :nodes="draftFilters" :columns="columns" @update="nodes => draftFilters = nodes" />
+        <FilterTreeEditor
+          :nodes="draftFilters"
+          :columns="columns"
+          :relations="relations"
+          :search-relation-targets="searchRelationTargets"
+          @update="nodes => draftFilters = nodes"
+        />
         <footer><NButton size="small" type="primary" data-testid="view-filter-apply" @click="commit">应用</NButton></footer>
       </div>
     </NPopover>

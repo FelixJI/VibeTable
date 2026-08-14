@@ -73,6 +73,28 @@ func TestGoldenFixturesDecodeStrictly(t *testing.T) {
 	}
 }
 
+func TestWorkspaceManifestRejectsEveryUnsupportedFormat(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(fixturesDir(t), "workspace-manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []float64{1, 3} {
+		manifest["formatVersion"] = version
+		encoded, marshalErr := json.Marshal(manifest)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		_, decodeErr := DecodeStrict[WorkspaceManifest](encoded)
+		if decodeErr == nil || !strings.Contains(decodeErr.Error(), "workspace.format_unsupported") {
+			t.Fatalf("formatVersion %v was not rejected explicitly: %v", version, decodeErr)
+		}
+	}
+}
+
 func TestFileRevisionAcceptsProvisionalIdentityWithoutCanonicalNumbers(t *testing.T) {
 	raw, err := os.ReadFile(
 		filepath.Join(fixturesDir(t), "file-revision.json"),
@@ -287,7 +309,7 @@ func TestDecodeStrictRejectsUnknownMissingInvalidAndTrailing(t *testing.T) {
 	if _, err := DecodeStrict[WorkspaceManifest]([]byte(unknown)); err == nil {
 		t.Fatal("unknown field was accepted")
 	}
-	missing := strings.Replace(string(raw), `"formatVersion": 1,`, "", 1)
+	missing := strings.Replace(string(raw), `"formatVersion": 2,`, "", 1)
 	if _, err := DecodeStrict[WorkspaceManifest]([]byte(missing)); err == nil {
 		t.Fatal("missing formatVersion was accepted")
 	}

@@ -155,21 +155,25 @@ function closeDrilldown(): void {
       <DashboardToolbar v-if="activeDashboard" :name="activeDashboard.name" :editing="draft.editing" :dirty="draft.dirty" :saving="store.phase === 'saving'" :refresh-interval="activeConfig.refreshInterval" @refresh="refreshActive" @edit="service.beginEdit" @copy="copyDashboard" @delete="deleteDashboard" @save="service.save" @discard="discard" @add-panel="openNewPanel" @configure="settingsOpen = true" @refresh-interval="updateRefresh" @export-png="exportPng()" @print="printDashboard" />
       <DashboardFilterBar v-if="activeDashboard" :filters="filters" :values="store.sessionFilterValues" @change="updateFilter" @clear="clearFilters" />
       <NAlert v-if="draft.conflict" type="warning" class="dashboard-alert" data-testid="dashboard-conflict-error">
-        {{ t("dashboard.error.conflict") }} {{ draft.conflict.message }}
-        <template #action><NButton size="small" data-testid="dashboard-reload-conflict" @click="reloadConflict">{{ t("dashboard.action.reloadServer") }}</NButton></template>
+        <div class="dashboard-conflict-content">
+          <span>{{ t("dashboard.error.conflict") }} {{ draft.conflict.message }}</span>
+          <NButton size="small" data-testid="dashboard-reload-conflict" @click="reloadConflict">
+            {{ t("dashboard.action.reloadServer") }}
+          </NButton>
+        </div>
       </NAlert>
       <NAlert v-if="store.offline" type="info" class="dashboard-alert">{{ t("dashboard.state.offline") }}</NAlert>
       <NAlert v-if="store.error" type="error" closable class="dashboard-alert" data-testid="dashboard-operation-error">{{ store.error }}</NAlert>
       <div v-if="store.phase === 'loading'" class="dashboard-state"><NSpin />{{ t("dashboard.state.loading") }}</div>
       <div v-else-if="activeDashboard" ref="surface" class="dashboard-surface">
-        <DashboardGrid :panels="activeDashboard.panels" :data="store.panelData" :editing="draft.editing" @layout="updateLayout" @remove="draft.removePanel" @edit="openPanel" @refresh="refreshPanel" @export-csv="exportCsv" @export-png="exportPng" @select="selectPanel" />
+        <DashboardGrid :panels="activeDashboard.panels" :data="store.panelData" :editing="draft.editing" :manifest="store.panelManifest" @layout="updateLayout" @remove="draft.removePanel" @edit="openPanel" @refresh="refreshPanel" @export-csv="exportCsv" @export-png="exportPng" @select="selectPanel" @visibility="service.setVisiblePanels" />
         <NEmpty v-if="activeDashboard.panels.length === 0" :description="t('dashboard.empty.panels')" class="dashboard-empty"><template #icon><NIcon><LayoutDashboard /></NIcon></template><NButton v-if="draft.editing" type="primary" @click="openNewPanel"><template #icon><NIcon><Plus /></NIcon></template>{{ t("dashboard.action.addPanel") }}</NButton></NEmpty>
       </div>
       <NEmpty v-else :description="t('dashboard.empty.select')" class="dashboard-state"><template #icon><NIcon><LayoutDashboard /></NIcon></template><NButton type="primary" data-testid="dashboard-create-empty" @click="createOpen = true">{{ t("dashboard.action.create") }}</NButton></NEmpty>
     </main>
     <DashboardCreateModal :show="createOpen" @close="createOpen = false" @create="createDashboard" />
-    <DashboardPanelEditor :show="panelEditorOpen" :panel="editingPanel" :dashboard-id="activeDashboard?.id ?? ''" :collections="collections" :allowed-types="store.allowedPanelTypes" @close="panelEditorOpen = false" @submit="submitPanel" />
-    <DashboardSettingsDrawer v-if="activeDashboard" :show="settingsOpen" :name="activeDashboard.name" :note="activeDashboard.note" :config="activeConfig" :panels="activeDashboard.panels" @close="settingsOpen = false" @submit="updateSettings" />
+    <DashboardPanelEditor :show="panelEditorOpen" :panel="editingPanel" :dashboard-id="activeDashboard?.id ?? ''" :collections="collections" :allowed-types="store.allowedPanelTypes" :manifest="store.panelManifest" :load-schema="service.describeCollection" @close="panelEditorOpen = false" @submit="submitPanel" />
+    <DashboardSettingsDrawer v-if="activeDashboard" :show="settingsOpen" :name="activeDashboard.name" :note="activeDashboard.note" :config="activeConfig" :panels="activeDashboard.panels" :load-schema="service.describeCollection" @close="settingsOpen = false" @submit="updateSettings" />
     <DashboardDrilldownDrawer v-bind="drilldown" @close="closeDrilldown" />
   </div>
 </template>
@@ -181,6 +185,7 @@ function closeDrilldown(): void {
 .dashboard-state { display:flex; flex:1; align-items:center; justify-content:center; gap:10px; color:var(--vt-fg-muted); }
 .dashboard-empty { margin-top:14vh; }
 .dashboard-alert { margin:8px 12px 0; }
+.dashboard-conflict-content { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 @media print { :deep(.dashboard-sidebar), :deep(.dashboard-toolbar), :deep(.dashboard-filter-bar) { display:none!important; } .dashboard-surface { overflow:visible; } }
 @media (max-width:760px) { :deep(.dashboard-sidebar) { flex-basis:180px; } }
 </style>

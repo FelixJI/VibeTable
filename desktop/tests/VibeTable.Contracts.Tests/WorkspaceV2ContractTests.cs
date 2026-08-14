@@ -60,6 +60,20 @@ public sealed class WorkspaceV2ContractTests
     }
 
     [TestMethod]
+    [DataRow(1)]
+    [DataRow(3)]
+    public void WorkspaceManifestRejectsEveryUnsupportedFormat(int formatVersion)
+    {
+        JsonObject manifest = JsonNode.Parse(ReadFixture("workspace-manifest.json"))!.AsObject();
+        manifest["formatVersion"] = formatVersion;
+
+        JsonException error = Assert.ThrowsExactly<JsonException>(
+            () => WorkspaceV2Json.DeserializeStrict<WorkspaceManifestV2>(manifest.ToJsonString()));
+
+        StringAssert.Contains(error.Message, "workspace.format_unsupported");
+    }
+
+    [TestMethod]
     public void SharedNegativeFixtureCorpusFailsClosed()
     {
         var corpus = JsonNode.Parse(ReadFixture(Path.Combine("..", "negative-fixtures.json")))!

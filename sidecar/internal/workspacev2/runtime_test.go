@@ -1086,19 +1086,19 @@ func TestRuntimeListsCanonicalDocumentsAndRestoresRevision(t *testing.T) {
 		t,
 		runtime,
 		1,
-		"fileHistory.listDocuments",
-		`{"includeDeleted":false}`,
+		"fileHistory.queryDocuments",
+		`{"logic":"and","filters":[{"field":"extension","operator":"eq","value":"txt"}],"sort":[{"field":"effectiveRevisionCreatedAt","direction":"desc"}],"limit":50,"cursor":null}`,
 	)
 	if response.Error != nil {
-		t.Fatalf("list documents error = %#v", response.Error)
+		t.Fatalf("query documents error = %#v", response.Error)
 	}
-	documents := response.Result.(map[string]any)["documents"].([]contractsv2.FileDocument)
-	if len(documents) != 1 ||
-		documents[0].DocumentID != documentID ||
-		documents[0].RelativePath != "plans/q3.txt" ||
-		documents[0].EffectiveRevisionID == nil ||
-		*documents[0].EffectiveRevisionID != second.Revision.RevisionID {
-		t.Fatalf("documents = %#v", documents)
+	queryResult := response.Result.(filehistory.DocumentQueryResult)
+	if len(queryResult.Documents) != 1 ||
+		queryResult.Documents[0].SizeBytes != int64(len("second")) ||
+		queryResult.Documents[0].FormalVersion == nil ||
+		*queryResult.Documents[0].FormalVersion != 2 ||
+		queryResult.TopologyRevision == 0 {
+		t.Fatalf("query documents = %#v", queryResult)
 	}
 	response = dispatch(
 		t,
@@ -1194,7 +1194,7 @@ func TestValidateStartupBindingRejectsMismatchBeforeCreatingLayout(t *testing.T)
 		t.Fatal(err)
 	}
 	raw := `{
-		"contractVersion":"2.0","formatVersion":1,
+		"contractVersion":"2.0","formatVersion":2,
 		"workspaceId":"11111111-1111-4111-8111-111111111111",
 		"displayName":"Identity","createdAt":"2026-07-28T08:00:00Z",
 		"storageMode":"direct","encryptionMode":"convenient",
@@ -1241,7 +1241,7 @@ func createWorkspace(t *testing.T, workspaceID string) string {
 	}
 	manifest := map[string]any{
 		"contractVersion":         "2.0",
-		"formatVersion":           1,
+		"formatVersion":           2,
 		"workspaceId":             workspaceID,
 		"displayName":             "测试工作区",
 		"createdAt":               time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC).Format(time.RFC3339),

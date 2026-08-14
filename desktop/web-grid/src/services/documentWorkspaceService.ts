@@ -4,6 +4,7 @@ import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
 import type {
   DocumentDiffCompletedPayload,
   DocumentListLoadedPayload,
+  FileDocumentQuery,
 } from "@/contracts";
 import { useHostBridge } from "./bridgeContext";
 
@@ -16,7 +17,7 @@ export type DocumentWorkspaceScope =
     };
 
 export type DocumentWorkspaceIntent =
-  | { readonly type: "document.listRequested"; readonly scope: DocumentWorkspaceScope; readonly authority: DocumentAuthority }
+  | { readonly type: "document.listRequested"; readonly scope: DocumentWorkspaceScope; readonly authority: DocumentAuthority; readonly query: FileDocumentQuery }
   | { readonly type: "document.importRequested"; readonly scope: DocumentWorkspaceScope }
   | { readonly type: "document.externalDropRequested"; readonly scope: DocumentWorkspaceScope; readonly files: readonly File[] }
   | { readonly type: "document.dragOutRequested"; readonly handle: string }
@@ -38,7 +39,7 @@ export type DocumentWorkspaceIntent =
   | { readonly type: "document.relinkRequested"; readonly handle: string };
 
 export interface DocumentWorkspaceService {
-  list(scope: DocumentWorkspaceScope, authority: DocumentAuthority): void;
+  list(scope: DocumentWorkspaceScope, authority: DocumentAuthority, query?: FileDocumentQuery): void;
   importFiles(scope: DocumentWorkspaceScope): void;
   externalDrop(scope: DocumentWorkspaceScope, files: readonly File[]): void;
   dragOut(handle: string): void;
@@ -63,7 +64,9 @@ export function createDocumentWorkspaceService(
 ): DocumentWorkspaceService {
   const diffOperations = new Map<string, string>();
   return {
-    list: (scope, authority) => dispatch({ type: "document.listRequested", scope, authority }),
+    list: (scope, authority, query = defaultDocumentQuery()) => dispatch({
+      type: "document.listRequested", scope, authority, query,
+    }),
     importFiles: (scope) => dispatch({ type: "document.importRequested", scope }),
     externalDrop: (scope, files) => dispatch({ type: "document.externalDropRequested", scope, files }),
     dragOut: (handle) => dispatch({ type: "document.dragOutRequested", handle }),
@@ -101,18 +104,35 @@ export function useDocumentWorkspaceService(): {
   const bridge = useHostBridge();
   const store = useDocumentWorkspaceStore();
   let lastScope: DocumentWorkspaceScope = { kind: "global" };
+  let listGeneration = 0;
 
   async function execute(intent: DocumentWorkspaceIntent): Promise<void> {
     try {
       switch (intent.type) {
         case "document.listRequested": {
+          const generation = ++listGeneration;
           lastScope = intent.scope;
           store.beginLoad();
-          const payload = await bridge.request(intent.type, {
-            scope: intent.scope,
-            authority: intent.authority,
-          }) as DocumentListLoadedPayload;
-          store.setEntries(payload.entries.map((entry) => toStoreEntry(entry, intent.authority)));
+          let payload: DocumentListLoadedPayload;
+          try {
+            payload = await bridge.request(intent.type, {
+              scope: intent.scope,
+              authority: intent.authority,
+              query: intent.query,
+            }) as DocumentListLoadedPayload;
+          } catch (error) {
+            if (generation === listGeneration) {
+              store.setFailed(error instanceof Error ? error.message : String(error));
+            }
+            return;
+          }
+          if (generation !== listGeneration) return;
+          store.setPage(
+            payload.entries.map((entry) => toStoreEntry(entry, intent.authority)),
+            payload.nextCursor,
+            payload.topologyRevision,
+            intent.query.cursor !== null,
+          );
           return;
         }
         case "document.importRequested":
@@ -178,6 +198,7 @@ export function useDocumentWorkspaceService(): {
       type: "document.listRequested",
       scope: lastScope,
       authority: store.authorityFilter,
+      query: defaultDocumentQuery(store.query),
     });
   });
   bridge.on("document.operationFailed", (payload) => {
@@ -202,10 +223,30 @@ function toStoreEntry(
     displayName: entry.displayName,
     authority,
     availability: entry.availability,
-    mimeType: entry.mimeType ?? undefined,
+    relativePath: entry.relativePath,
+    extension: entry.extension,
+    mimeType: entry.mimeType,
+    sizeBytes: entry.sizeBytes,
+    effectiveRevisionCreatedAt: entry.effectiveRevisionCreatedAt,
+    formalVersion: entry.formalVersion,
+    status: entry.status,
     versionLabel: entry.currentRevision ?? undefined,
     effectiveRevisionId: entry.effectiveRevisionId ?? undefined,
     capabilities: normalizeCapabilities(entry.capabilities),
+  };
+}
+
+export function defaultDocumentQuery(search = "", cursor: string | null = null): FileDocumentQuery {
+  const needle = search.trim();
+  return {
+    logic: "and",
+    filters: [
+      { field: "status", operator: "eq", value: "active" },
+      ...(needle ? [{ field: "displayName" as const, operator: "contains" as const, value: needle }] : []),
+    ],
+    sort: [{ field: "effectiveRevisionCreatedAt", direction: "desc" }],
+    limit: 100,
+    cursor,
   };
 }
 

@@ -24,12 +24,30 @@
     "desktop/src/VibeTable.Infrastructure/Workspace/WorkspaceMountStore.cs",
     "desktop/tests/VibeTable.Desktop.Tests/ProductDataRootManagerTests.cs",
     "desktop/tests/VibeTable.Infrastructure.Tests/Workspace/WorkspaceMountStoreTests.cs",
+    "desktop/tests/VibeTable.Desktop.Tests/DatabaseOpenModeTests.cs",
+    "sidecar/internal/workspacemigrator",
+    "sidecar/internal/schema/capabilities.go",
+    "sidecar/internal/schema/compiler.go",
+    "sidecar/internal/schema/enum_codec.go",
+    "sidecar/internal/schema/enum_codec_test.go",
+    "sidecar/internal/schema/query_capabilities.go",
+    "sidecar/internal/schema/query_capabilities_test.go",
+    "sidecar/internal/schema/revision.go",
+    "sidecar/internal/schema/schema_test.go",
+    "sidecar/internal/schema/types.go",
+    "sidecar/internal/schema/validate.go",
+    "sidecar/internal/schema/value.go",
     "desktop/web-grid/src/contracts/backupContracts.ts",
     "desktop/web-grid/src/services/backupService.ts",
     "desktop/web-grid/src/services/backupService.test.ts",
     "desktop/web-grid/src/bridge/backupBridge.test.ts",
     "desktop/web-grid/src/services/dataRootService.ts",
-    "desktop/web-grid/src/services/dataRootService.test.ts"
+    "desktop/web-grid/src/services/dataRootService.test.ts",
+    "backend/application/identifier_mapping_service.py",
+    "backend/contracts/table_admin.py",
+    "desktop/web-grid/src/services/identifierMappingService.ts",
+    "desktop/web-grid/src/services/identifierMappingService.test.ts",
+    "desktop/web-grid/src/stores/identifierMappingStore.ts"
   ],
   "forbiddenRpcMethods": [
     "backup.list",
@@ -45,7 +63,10 @@
     "workspace.registerDocument",
     "workspace.unlinkDocument",
     "dataRoot.get",
-    "dataRoot.chooseMigrationRequested"
+    "dataRoot.chooseMigrationRequested",
+    "identifier.list",
+    "identifier.updateAliases",
+    "identifier.reconcile"
   ],
   "forbiddenDtoFields": [
     "mainHead",
@@ -59,6 +80,26 @@
       "literals": [
         "internal/backup",
         "registerBackupRoutes"
+      ]
+    },
+    {
+      "path": "sidecar/internal/metadata/types.go",
+      "literals": [
+        "identifier_mappings",
+        "NamespaceIdentifierMappings"
+      ]
+    },
+    {
+      "path": "sidecar/internal/metadata/service.go",
+      "literals": [
+        "vibetable_identifier_mappings",
+        "NamespaceIdentifierMappings"
+      ]
+    },
+    {
+      "path": "sidecar/migrations/2026072402_internal_collections.go",
+      "literals": [
+        "vibetable_identifier_mappings"
       ]
     },
     {
@@ -77,7 +118,9 @@
       "path": "backend/__main__.py",
       "literals": [
         "_register_backup_methods",
-        "_register_workspace_methods"
+        "_register_workspace_methods",
+        "IdentifierManagementService",
+        "IdentifierRegistry"
       ]
     },
     {
@@ -89,7 +132,14 @@
         "create_backup",
         "delete_backup",
         "restore_backup",
-        "/api/vibetable/v1/backups"
+        "/api/vibetable/v1/backups",
+        "identifier_mappings"
+      ]
+    },
+    {
+      "path": "backend/adapters/pocketbase/internal_metadata.py",
+      "literals": [
+        "identifier_mappings"
       ]
     },
     {
@@ -119,6 +169,10 @@
       "path": "desktop/src/VibeTable.Desktop/Services/WebMessageRouter.cs",
       "literals": [
         "\"backup.openFolder\"",
+        "\"identifierMappings.listRequested\"",
+        "\"identifierMappings.updateAliasesRequested\"",
+        "\"identifierMappings.reconcileRequested\"",
+        "\"identifierMappings.result\"",
         "\"document.schemeListRequested\"",
         "\"document.schemeCreateRequested\"",
         "\"document.schemeRenameRequested\"",
@@ -134,13 +188,21 @@
         "\"backup.delete\"",
         "\"backup.restore\"",
         "\"dataRoot.get\"",
-        "\"dataRoot.chooseMigrationRequested\""
+        "\"dataRoot.chooseMigrationRequested\"",
+        "\"identifierMappings.listRequested\"",
+        "\"identifierMappings.updateAliasesRequested\"",
+        "\"identifierMappings.reconcileRequested\"",
+        "\"identifierMappings.result\""
       ]
     },
     {
       "path": "desktop/web-grid/src/contracts/index.ts",
       "literals": [
-        "readonly taskType: \"formulaBackfill\" | \"import\" | \"export\" | \"reconcile\" | \"backup\" | \"restore\";"
+        "readonly taskType: \"formulaBackfill\" | \"import\" | \"export\" | \"reconcile\" | \"backup\" | \"restore\";",
+        "IdentifierMappingEntry",
+        "IdentifierMappingsResult",
+        "identifierMappings.",
+        "readonly displayNames?:"
       ]
     },
     {
@@ -169,7 +231,154 @@
         "backup.list",
         "backup.create",
         "backup.delete",
-        "backup.restore"
+        "backup.restore",
+        "settings.mapping",
+        "identifierMapping"
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/views/WorkspaceView.vue",
+      "literals": [
+        "identifierMappingService",
+        "load-mappings",
+        "save-mapping-aliases",
+        "reconcile-mappings"
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/components/layout/collectionLabel.ts",
+      "literals": [
+        "displayNames?:",
+        "item.displayName",
+        "item.title",
+        "metadata?.displayName",
+        "metadata?.title"
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/stores/workspaceStore.ts",
+      "literals": [
+        "names: Readonly<Record<string, string>> = {}"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Contracts/TableContracts.cs",
+      "literals": [
+        "\"client\"",
+        "DisplayNames = null",
+        "? DisplayNames"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/IProductDataRpcGateway.cs",
+      "literals": [
+        "IdentifierMappings"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/JsonRpcProductDataGateway.cs",
+      "literals": [
+        "identifier.list",
+        "identifier.updateAliases",
+        "identifier.reconcile"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/TableWorkspaceService.cs",
+      "literals": [
+        "ReadPageForRemoteAsync",
+        "client-mode",
+        "LoadedRows"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/ITableRpcGateway.cs",
+      "literals": [
+        "ReadTablePageAsync",
+        "QueryTablePageAsync",
+        "QueryTableViewAsync"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/PocketBaseTableGateway.cs",
+      "literals": [
+        "ReadTablePageAsync",
+        "QueryTablePageAsync",
+        "QueryTableViewAsync",
+        "private static Dictionary<string, object?> QueryBody(",
+        "private static Dictionary<string, object?> ViewBody(",
+        "ReconcileIdentifierMappingsAsync",
+        "workspace.v1_write_disabled"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/LazyProductTableGateway.cs",
+      "literals": [
+        "ReadTablePageAsync",
+        "QueryTablePageAsync",
+        "QueryTableViewAsync"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/GridStateCoordinator.cs",
+      "literals": [
+        "TableQuery query"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/WorkspaceTableRequestController.cs",
+      "literals": [
+        "\"table.pageRequested\"",
+        "identifierMappings.",
+        "RunIdentifierRequestAsync"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/WebMessageRouter.cs",
+      "literals": [
+        "\"table.pageRequested\""
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/bridge/hostBridge.ts",
+      "literals": [
+        "\"table.pageRequested\""
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/contracts/index.ts",
+      "literals": [
+        "\"table.pageRequested\"",
+        "\"client\""
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/grid/queryAdapter.ts",
+      "literals": [
+        "shouldUseRemoteMode",
+        "25_000"
+      ]
+    },
+    {
+      "path": "backend/adapters/pocketbase/product_rpc.py",
+      "literals": [
+        "_group_lookup_rows",
+        "range(0, page.filtered_rows, 500)"
+      ]
+    },
+    {
+      "path": "desktop/web-grid/src/services/relationLookupService.ts",
+      "literals": [
+        "queryDataset",
+        "for (let offset = pageSize"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Contracts/TableContracts.cs",
+      "literals": [
+        "string OpenMode = \"read_write\"",
+        "LeaseHolder",
+        "retained for wire compatibility"
       ]
     },
     {
@@ -220,10 +429,6 @@
     {
       "path": "scripts/release.py",
       "purpose": "Installer upgrade safety copy and rollback primitive outside the product Snapshot model."
-    },
-    {
-      "path": "sidecar/internal/workspacemigrator",
-      "purpose": "Read-only old-format detection and staged workspace-format upgrade."
     },
     {
       "path": "sidecar/internal/filehistory/materializer.go",

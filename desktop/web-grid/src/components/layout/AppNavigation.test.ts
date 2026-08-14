@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import AppNavigation from "./AppNavigation.vue";
-import { useDashboardStore } from "@/stores/dashboardStore";
 
 describe("AppNavigation", () => {
   beforeEach(() => {
@@ -13,11 +12,12 @@ describe("AppNavigation", () => {
   it("emits navigation intent so the workspace can guard dirty drafts", async () => {
     const wrapper = mount(AppNavigation);
     await wrapper.get('[data-testid="nav-tables"]').trigger("click");
+    await wrapper.get('[data-testid="nav-interfaces"]').trigger("click");
     await wrapper.get('[data-testid="nav-files"]').trigger("click");
     await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
     await wrapper.get('[data-testid="nav-settings"]').trigger("click");
     expect(wrapper.emitted("navigate")?.map((args) => args[0])).toEqual([
-      "tables", "files", "plugins", "settings",
+      "tables", "interfaces", "files", "plugins", "settings",
     ]);
   });
 
@@ -36,12 +36,8 @@ describe("AppNavigation", () => {
     }
   });
 
-  it("keeps dashboards hidden until the host feature gate is enabled", async () => {
-    const dashboards = useDashboardStore();
+  it("always exposes the completed Dashboard surface", async () => {
     const wrapper = mount(AppNavigation);
-    expect(wrapper.find('[data-testid="nav-dashboard"]').exists()).toBe(false);
-    dashboards.setFeatureEnabled(true);
-    await wrapper.vm.$nextTick();
     const button = wrapper.get('[data-testid="nav-dashboard"]');
     expect(button.attributes("aria-label")).toBe("仪表盘");
     await button.trigger("click");

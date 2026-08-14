@@ -21,9 +21,9 @@ func (runtime *Runtime) registerFileHistoryHandlers() {
 		runtime.importFileDocument,
 	)
 	runtime.dispatcher.Register(
-		"fileHistory.listDocuments",
+		"fileHistory.queryDocuments",
 		protocolv2.WorkspaceScope,
-		runtime.listFileDocuments,
+		runtime.queryFileDocuments,
 	)
 	runtime.dispatcher.Register(
 		"fileHistory.listPendingChanges",
@@ -448,37 +448,16 @@ func (runtime *Runtime) relinkFileDocument(
 	return projectFileDocument(result.Document)
 }
 
-type listFileDocumentsParams struct {
-	IncludeDeleted *bool `json:"includeDeleted"`
-}
-
-func (runtime *Runtime) listFileDocuments(
+func (runtime *Runtime) queryFileDocuments(
 	_ context.Context,
 	_ json.RawMessage,
 	paramsRaw json.RawMessage,
 ) (any, error) {
-	params, err := decodeStrict[listFileDocumentsParams](paramsRaw)
-	if err != nil || params.IncludeDeleted == nil {
-		return nil, errors.New("file_history.request_invalid")
+	params, err := decodeStrict[filehistory.DocumentQueryRequest](paramsRaw)
+	if err != nil {
+		return nil, filehistory.ErrDocumentQueryInvalid
 	}
-	const maximumDocuments = 10_000
-	source := runtime.history.List()
-	if len(source) > maximumDocuments {
-		return nil, errors.New("file_history.document_limit")
-	}
-	documents := make([]contractsv2.FileDocument, 0, len(source))
-	for _, document := range source {
-		if document.Status == filehistory.DocumentDeleted &&
-			!*params.IncludeDeleted {
-			continue
-		}
-		projection, err := projectFileDocument(document)
-		if err != nil {
-			return nil, errors.Join(filehistory.ErrStateCorrupt, err)
-		}
-		documents = append(documents, projection)
-	}
-	return map[string]any{"documents": documents}, nil
+	return runtime.history.QueryDocuments(params)
 }
 
 type importFileDocumentParams struct {

@@ -29,7 +29,7 @@ function makePage(
     offset: opts.offset ?? 0,
     limit: opts.limit ?? rows.length,
     totalRows: opts.totalRows ?? rows.length,
-    mode: opts.mode ?? "client",
+    mode: opts.mode ?? "remote",
     ...opts,
   };
 }
@@ -45,9 +45,8 @@ function makeColumn(name: string): ColumnSchema {
 }
 
 /**
- * `DatasetReadyPayload extends TablePage`, so it carries the full dataset.
- * The store treats it as the authoritative final page (replacing accumulated
- * incremental pages, mirroring the legacy `tableFlow.ts` behavior).
+ * `DatasetReadyPayload` is the initial authoritative cursor window. The store
+ * replaces the current window instead of accumulating an unbounded dataset.
  */
 function makeDatasetReady(
   rows: Record<string, unknown>[],
@@ -61,8 +60,7 @@ function makeDatasetReady(
     offset: 0,
     limit: rows.length,
     totalRows,
-    mode: "client",
-    loadedRows: rows.length,
+    mode: "remote",
   };
 }
 
@@ -75,6 +73,13 @@ function lookupSnapshot(dataRevision: number) {
     schemaRevision: "s",
     dataRevision,
     normalizedQuery: {},
+  };
+}
+
+function cursorSnapshot(dataRevision: number) {
+  return {
+    ...lookupSnapshot(dataRevision),
+    table: "users",
   };
 }
 
@@ -104,13 +109,12 @@ describe("tableStore", () => {
     expect(s.datasetReady).toBe(false);
   });
 
-  it("appendPage accumulates rows", () => {
+  it("appendPage keeps only the latest authoritative window", () => {
     const s = useTableStore();
     s.beginLoad();
     s.appendPage(makePage([{ id: 1 }, { id: 2 }]));
     s.appendPage(makePage([{ id: 3 }], { offset: 2 }));
-    expect(s.allRows).toHaveLength(3);
-    expect(s.allRows).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    expect(s.allRows).toEqual([{ id: 3 }]);
   });
 
   it("appendPage adopts the authoritative revision used by remote mode", () => {
@@ -134,8 +138,6 @@ describe("tableStore", () => {
     s.beginLoad();
     s.appendPage(makePage([{ id: 1 }], { mode: "remote", offset: 0 }));
     s.appendPage(makePage([{ id: 501 }], { mode: "remote", offset: 500 }));
-    s.finishPageLoad();
-
     expect(s.allRows).toEqual([{ id: 501 }]);
     expect(s.loading).toBe(false);
     expect(s.datasetReady).toBe(false);
@@ -187,6 +189,39 @@ describe("tableStore", () => {
     // The accumulated pages are replaced by the single datasetReady page;
     // rows must not be double-counted.
     expect(s.allRows).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+  });
+
+  it("retains at most five revision-bound cursor windows and rejects stale windows", () => {
+    const s = useTableStore();
+    s.setDatasetReady({
+      ...makeDatasetReady([{ rowKey: 0 }]),
+      mode: "remote",
+      querySnapshot: cursorSnapshot(7),
+      nextCursor: "cursor-1",
+      hasMore: true,
+    });
+
+    for (let index = 1; index <= 6; index += 1) {
+      expect(s.beginNextWindow()).toBe(`cursor-${index}`);
+      expect(s.beginNextWindow()).toBeNull();
+      expect(s.appendWindow(makePage([{ rowKey: index }], {
+        mode: "remote",
+        querySnapshot: cursorSnapshot(7),
+        nextCursor: `cursor-${index + 1}`,
+        hasMore: true,
+      }))).toBe(true);
+    }
+
+    expect(s.pages).toHaveLength(5);
+    expect(s.allRows.map(row => row.rowKey)).toEqual([2, 3, 4, 5, 6]);
+    expect(s.appendWindow(makePage([{ rowKey: 7 }], {
+      mode: "remote",
+      querySnapshot: cursorSnapshot(8),
+      nextCursor: null,
+      hasMore: false,
+    }))).toBe(false);
+    expect(s.windowLoading).toBe(false);
+    expect(s.allRows.map(row => row.rowKey)).toEqual([2, 3, 4, 5, 6]);
   });
 
   it("appends independently paged authoritative group rows", () => {
@@ -433,7 +468,6 @@ describe("tableStore mutation extensions", () => {
     const authoritative = makeRevision({ dataRevision: 42 });
     s.setDatasetReady({
       ...makePage([]),
-      loadedRows: 0,
       revision: authoritative,
     });
 
@@ -524,8 +558,8 @@ describe("tableStore mutation extensions", () => {
     const s = useTableStore();
     s.setDatasetReady({
       ...makeDatasetReady([
-        { rowKey: "o1", amount: "10.00", contractPrice: null },
-        { rowKey: "o2", amount: "20.00", contractPrice: null },
+        { rowKey: "o1", amount: "10.00", contractPrice: null, __vibetableDigest: `sha256:${"1".repeat(64)}` },
+        { rowKey: "o2", amount: "20.00", contractPrice: null, __vibetableDigest: `sha256:${"2".repeat(64)}` },
       ], [
         { ...makeColumn("amount"), fieldId: "orders.amount" },
         { ...makeColumn("contractPrice"), fieldId: "orders.contract_price", kind: "lookup", lookupId: "orders.contract_price" },
@@ -541,8 +575,8 @@ describe("tableStore mutation extensions", () => {
       lookupRevision: "l",
       columns: [],
       rows: [
-        { rowKey: "o2", "orders.contract_price": "99.00" },
-        { rowKey: "o1", "orders.contract_price": "11.00" },
+        { rowKey: "o2", "orders.contract_price": "99.00", __vibetableDigest: `sha256:${"a".repeat(64)}` },
+        { rowKey: "o1", "orders.contract_price": "11.00", __vibetableDigest: `sha256:${"b".repeat(64)}` },
       ],
       groups: [{
         path: [{ fieldRef: "customer", key: "Acme" }],
@@ -555,6 +589,10 @@ describe("tableStore mutation extensions", () => {
     });
     expect(s.allRows.map((row) => row.rowKey)).toEqual(["o2", "o1"]);
     expect(s.allRows.map((row) => row.contractPrice)).toEqual(["99.00", "11.00"]);
+    expect(s.allRows.map((row) => row.__vibetableDigest)).toEqual([
+      `sha256:${"a".repeat(64)}`,
+      `sha256:${"b".repeat(64)}`,
+    ]);
     expect(s.allRows[0]?.amount).toBe("20.00");
     expect(s.lookupGroups).toEqual([{
       path: [{ fieldRef: "customer", key: "Acme" }],

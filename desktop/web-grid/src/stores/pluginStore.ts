@@ -200,11 +200,12 @@ export const usePluginStore = defineStore("plugins", () => {
   function beginAction(
     description: WebPluginActionDescription,
     context: PluginCommandContext,
+    openPanel = true,
   ): void {
     describedAction.value = description;
     activeContext.value = context;
     activeTaskId.value = null;
-    actionOpen.value = true;
+    actionOpen.value = openPanel;
   }
   function closeAction(): void {
     actionOpen.value = false;

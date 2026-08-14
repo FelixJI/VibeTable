@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
 func TestRPCCatalogPinsEveryMethodAndEventEnvelope(t *testing.T) {
@@ -140,7 +140,7 @@ func TestRPCCatalogPinsHighRiskMethodSpecificResponseDTOs(t *testing.T) {
 	}
 
 	table := cases["schema.getTable"]
-	if table.model != "TableDefinition" {
+	if table.model != "SchemaSnapshot" {
 		t.Fatalf("schema.getTable model = %q", table.model)
 	}
 	requireObjectKeys(t, table.result, "tableId", "schemaRevision", "fields")
@@ -148,11 +148,9 @@ func TestRPCCatalogPinsHighRiskMethodSpecificResponseDTOs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var definition schema.TableDefinition
-	tableDecoder := json.NewDecoder(bytes.NewReader(rawTable))
-	tableDecoder.DisallowUnknownFields()
-	if err := tableDecoder.Decode(&definition); err != nil {
-		t.Fatalf("schema.getTable does not decode as schema.TableDefinition: %v", err)
+	var snapshot v2.SchemaSnapshot
+	if err := v2.StrictDecode(rawTable, &snapshot); err != nil {
+		t.Fatalf("schema.getTable does not decode as Schema V2 snapshot: %v", err)
 	}
 
 	plugins := cases["plugin.listCatalog"]

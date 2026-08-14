@@ -19,6 +19,10 @@ const fixturePath = resolve(
   import.meta.dirname,
   "../../../../contracts/schema-v2/fixtures/field-definition.json",
 );
+const capabilityFixturePath = resolve(
+  import.meta.dirname,
+  "../../../../contracts/schema-v2/fixtures/capability.json",
+);
 
 function field(): FieldDefinitionV2 {
   return JSON.parse(readFileSync(fixturePath, "utf8")) as FieldDefinitionV2;
@@ -26,6 +30,7 @@ function field(): FieldDefinitionV2 {
 
 function capability(definition: FieldDefinitionV2): CapabilityV2 {
   return {
+    ...(JSON.parse(readFileSync(capabilityFixturePath, "utf8")) as CapabilityV2),
     logicalType: definition.logicalType,
     generalSettings: ["displayName", "required", "default"],
     advancedSettings: ["unique"],

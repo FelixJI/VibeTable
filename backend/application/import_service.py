@@ -12,9 +12,8 @@ Process
   :class:`ImportPlan` bound to the source hash + capability hash via a
   single-use token.
 * :meth:`apply` submits every valid planned row in one frozen mutation request.
-  ``chunkSize`` remains a host compatibility hint only: it never creates
-  independent commits. Cancellation is checked before submission; a rejected
-  request therefore leaves zero rows committed.
+  Cancellation is checked before submission; a rejected request therefore
+  leaves zero rows committed.
 
 The Qt/controller ``confirm_cb`` callback is gone: preview is zero-write and
 returns the full plan; the host shows it and the user confirms via apply.
@@ -366,9 +365,7 @@ class ImportService:
             relation = relations.get(field)
             explicit = explicit_by_source.get(header[col_index].strip())
             if relation is None:
-                if explicit and (
-                    explicit.relation_id or explicit.match_field or explicit.relation_lookup
-                ):
+                if explicit and (explicit.relation_id or explicit.match_field):
                     relation_mapping_errors[col_index] = (
                         "relation_mapping_not_relation",
                         f"field {field!r} is not a relation",

@@ -19,7 +19,7 @@ def test_release_gate_has_all_required_named_faults() -> None:
         "TestCapturePublishesOnlyVerifiedCompleteSnapshotAndDeduplicatesRevision",
         "TestReadPersistentMutationRevisionCoversCommittedApplyBeforeFinish",
         "TestAuthorityReceiptsCloseFileHistoryAndSnapshotKillWindows",
-        "TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen",
+        "TestSnapshotRestoreCommitsAuthorityAndRecoversFailedSearchRebuildAfterRestart",
         "TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness",
         "TestConflictExternalAttachmentFaultRestoresOldFilesAndTableTransaction",
         "TestRuntimeReopensAndResumesConflictAtPocketBaseReceiptRevision",
@@ -123,6 +123,44 @@ def test_product_gate_requires_exact_passed_scenario_report(
     monkeypatch.setattr(fault_injection, "_run", fake_run)
 
     result = fault_injection._run_product(tmp_path, tmp_path / "package")
+
+    assert result.status == "passed"
+
+
+def test_product_gate_does_not_traverse_disposable_runtime_evidence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(
+        _command: list[str],
+        _cwd: Path,
+    ) -> tuple[subprocess.CompletedProcess[str], float]:
+        run_root = tmp_path / "real-product" / "run"
+        volatile_runtime = run_root / "_runtime" / "workspace"
+        volatile_runtime.mkdir(parents=True)
+        (volatile_runtime / "transient.json").write_text("{}", encoding="utf-8")
+        (run_root / "product-e2e-report.json").write_text(
+            json.dumps(
+                {
+                    "scenarios": [
+                        {
+                            "scenario": fault_injection.PRODUCT_SCENARIO,
+                            "status": "passed",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(["product-e2e"], 0, "", ""), 0.01
+
+    def reject_recursive_scan(_self: Path, _pattern: str):
+        raise AssertionError("fault gate must not traverse disposable runtime evidence")
+
+    monkeypatch.setattr(fault_injection, "_run", fake_run)
+    monkeypatch.setattr(Path, "rglob", reject_recursive_scan)
+
+    result = fault_injection._run_product(tmp_path)
 
     assert result.status == "passed"
 

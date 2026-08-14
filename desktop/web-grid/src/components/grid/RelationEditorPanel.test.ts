@@ -3,7 +3,67 @@ import { mount } from "@vue/test-utils";
 import { NModal, NSelect } from "naive-ui";
 
 import RelationEditorPanel from "./RelationEditorPanel.vue";
-import type { NormalizedRelationDescriptor, RelationTargetRef } from "@/contracts";
+import type {
+  FieldDefinitionV2,
+  LogicalTypeV2,
+  NormalizedRelationDescriptor,
+  RelationTargetRef,
+} from "@/contracts";
+
+function v2Field(
+  fieldId: string,
+  physicalName: string,
+  displayName: string,
+  logicalType: LogicalTypeV2,
+  options: {
+    required?: boolean;
+    select?: readonly { optionId: string; label: string }[];
+    relation?: boolean;
+  } = {},
+): FieldDefinitionV2 {
+  return {
+    contract: "vibetable.schema.v2",
+    identity: { fieldId, physicalName, providerFieldId: `pb_${fieldId}` },
+    displayName,
+    help: "",
+    logicalType,
+    lifecycle: { state: "active", retiredAt: null },
+    value: {
+      required: options.required ?? false,
+      default: { enabled: false, value: null, source: "recommended", defaultsVersion: 1 },
+      presence: { mode: "native" },
+    },
+    constraints: {
+      unique: { enabled: false, blankPolicy: "ignoreMissing" },
+      range: { min: null, max: null },
+      length: { min: null, max: null },
+      pattern: { enabled: false, value: "" },
+      domains: { only: [], except: [] },
+      selection: { min: 0, max: null },
+    },
+    storage: {
+      kind: logicalType === "relation" ? "pocketbase-relation" : "pocketbase-text",
+      options: { onlyInt: false, maxSize: 0, convertURLs: false, presentable: true },
+    },
+    display: {
+      kind: logicalType === "relation" ? "relation" : "text",
+      preset: "default", displayScale: 0, scaleMode: "fixed", trimTrailingZeros: false,
+      useGrouping: false, currency: "", percentStorage: "ratio", unit: null,
+      precision: "exact", timezone: "local", mode: "plain", trueLabel: "是", falseLabel: "否",
+    },
+    ...(options.select ? {
+      select: { options: options.select.map((item, order) => ({
+        ...item, color: "neutral", order, state: "active" as const,
+      })) },
+    } : {}),
+    ...(options.relation ? {
+      relation: {
+        targetTableId: "regions", cardinality: "one", deletePolicy: "restrict",
+        displayFieldId: "name_id",
+      },
+    } : {}),
+  };
+}
 
 const descriptor: NormalizedRelationDescriptor = {
   relationId: "orders.customer",
@@ -11,8 +71,6 @@ const descriptor: NormalizedRelationDescriptor = {
   sourceCollection: "orders",
   kind: "m2o",
   relatedCollection: "customers",
-  allowedCollections: [],
-  junction: null,
   unique: true,
   nullable: true,
   onDelete: "nullify",
@@ -30,7 +88,6 @@ const target: RelationTargetRef = {
   itemId: "customer-1",
   label: "Acme",
   secondaryLabel: "华东区 · A-001",
-  junctionValues: {},
 };
 
 describe("RelationEditorPanel accessibility", () => {
@@ -136,20 +193,8 @@ describe("RelationEditorPanel accessibility", () => {
         query: "Grace",
         targetDisplayField: "name",
         targetFields: [
-          {
-            fieldId: "name_id", physicalName: "name", displayName: "名称",
-            kind: "scalar", dataType: "shortText", storageType: "text",
-            nullable: false, defaultValue: null, constraints: [],
-            editor: { kind: "text", config: {} }, readOnly: false,
-            formula: null, relation: null, lookup: null, attachmentPolicy: null,
-          },
-          {
-            fieldId: "region_id", physicalName: "region", displayName: "区域",
-            kind: "scalar", dataType: "shortText", storageType: "text",
-            nullable: false, defaultValue: null, constraints: [],
-            editor: { kind: "text", config: {} }, readOnly: false,
-            formula: null, relation: null, lookup: null, attachmentPolicy: null,
-          },
+          v2Field("name_id", "name", "名称", "text", { required: true }),
+          v2Field("region_id", "region", "区域", "text", { required: true }),
         ],
       },
       global: { stubs: { teleport: true } },
@@ -172,33 +217,13 @@ describe("RelationEditorPanel accessibility", () => {
         descriptor: { ...descriptor, quickCreateEligible: false },
         selected: [], candidates: [], query: "Grace", targetDisplayField: "name",
         targetFields: [
-          {
-            fieldId: "name_id", physicalName: "name", displayName: "名称",
-            kind: "scalar", dataType: "shortText", storageType: "text",
-            nullable: false, defaultValue: null, constraints: [],
-            editor: { kind: "text", config: {} }, readOnly: false,
-            formula: null, relation: null, lookup: null, attachmentPolicy: null,
-          },
-          {
-            fieldId: "region_id", physicalName: "region", displayName: "区域",
-            kind: "scalar", dataType: "select", storageType: "select",
-            nullable: false, defaultValue: null,
-            constraints: [{
-              kind: "enum", options: [{ value: 7, displayName: "华东" }],
-            }],
-            editor: { kind: "select", config: {} }, readOnly: false,
-            formula: null, relation: null, lookup: null, attachmentPolicy: null,
-          },
-          {
-            fieldId: "tags_id", physicalName: "tags", displayName: "标签",
-            kind: "scalar", dataType: "multiSelect", storageType: "select",
-            nullable: false, defaultValue: null,
-            constraints: [{
-              kind: "enum", options: [{ value: true, displayName: "重点" }],
-            }],
-            editor: { kind: "multiSelect", config: {} }, readOnly: false,
-            formula: null, relation: null, lookup: null, attachmentPolicy: null,
-          },
+          v2Field("name_id", "name", "名称", "text", { required: true }),
+          v2Field("region_id", "region", "区域", "select", {
+            required: true, select: [{ optionId: "east", label: "华东" }],
+          }),
+          v2Field("tags_id", "tags", "标签", "multiSelect", {
+            required: true, select: [{ optionId: "priority", label: "重点" }],
+          }),
         ],
       },
       global: { stubs: { teleport: true } },
@@ -223,7 +248,7 @@ describe("RelationEditorPanel accessibility", () => {
     await wrapper.vm.$nextTick();
     await wrapper.get('[data-testid="relation-full-create-submit"]').trigger("click");
     expect(wrapper.emitted("createFull")?.[0]?.[0]).toEqual({
-      name: "Grace", region: 7, tags: [true],
+      name: "Grace", region: "east", tags: ["priority"],
     });
   });
 
@@ -242,23 +267,13 @@ describe("RelationEditorPanel accessibility", () => {
         selected: [], candidates: [], query: "Grace", targetDisplayField: "name",
         targetRelations: [regionRelation],
         targetRelationOptions: {
-          region: [{ collection: "regions", itemId: "region-1", label: "华东", junctionValues: {} }],
+          region: [{ collection: "regions", itemId: "region-1", label: "华东" }],
         },
         targetFields: [
-          {
-            fieldId: "name_id", physicalName: "name", displayName: "名称",
-            kind: "scalar", dataType: "shortText", storageType: "text",
-            nullable: false, defaultValue: null, constraints: [],
-            editor: { kind: "text", config: {} }, readOnly: false,
-            formula: null, relation: null, lookup: null, attachmentPolicy: null,
-          },
-          {
-            fieldId: "region_id", physicalName: "region", displayName: "区域",
-            kind: "relation", dataType: "relation", storageType: "relation",
-            nullable: false, defaultValue: null, constraints: [],
-            editor: { kind: "relation", config: {} }, readOnly: false,
-            formula: null, relation: {}, lookup: null, attachmentPolicy: null,
-          },
+          v2Field("name_id", "name", "名称", "text", { required: true }),
+          v2Field("region_id", "region", "区域", "relation", {
+            required: true, relation: true,
+          }),
         ],
       },
       global: { stubs: { teleport: true } },

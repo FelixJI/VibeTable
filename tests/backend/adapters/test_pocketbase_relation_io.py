@@ -16,6 +16,7 @@ from backend.adapters.pocketbase.relation_io import (
 from backend.application.paste_service import ApplyPasteResult
 from backend.contracts.data_io import ImportPlanRow
 from backend.contracts.data_profile import CollectionProfile
+from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
 
 def _page(rows: list[dict[str, Any]]) -> QueryPageResult:
@@ -52,21 +53,11 @@ class FakeProductClient:
 
     async def describe_table(self, table_id: str) -> dict[str, Any]:
         assert table_id == "contracts"
-        return {
-            "tableId": "contracts",
-            "fields": [
-                {
-                    "fieldId": "contract_number",
-                    "physicalName": "number",
-                    "constraints": [{"kind": "unique", "value": True}],
-                },
-                {
-                    "fieldId": "contract_name",
-                    "physicalName": "name",
-                    "constraints": [],
-                },
-            ],
-        }
+        return snapshot_v2(
+            "contracts",
+            [field_v2("numberkey", unique=True), field_v2("namekey")],
+            revision="schema-1",
+        )
 
     async def query_page(
         self,
@@ -153,12 +144,12 @@ async def test_relation_import_requires_unique_product_field_and_exact_query() -
         collection="orders",
         target_field="contract",
         relation_id="orders_contract",
-        match_field="contract_number",
+        match_field="fld_numberke",
     )
     matches = await provider.find_exact(target, "C-001")
 
     assert target.target_collection == "contracts"
-    assert target.match_field == "number"
+    assert target.match_field == "f_numberke"
     assert matches == ["contract-1"]
     assert client.query_calls == [
         {
@@ -166,7 +157,7 @@ async def test_relation_import_requires_unique_product_field_and_exact_query() -
             "query": {
                 "filters": [
                     {
-                        "field": "number",
+                        "field": "f_numberke",
                         "operator": "eq",
                         "value": "C-001",
                         "logic": "AND",
@@ -184,7 +175,7 @@ async def test_relation_import_requires_unique_product_field_and_exact_query() -
             collection="orders",
             target_field="contract",
             relation_id="orders_contract",
-            match_field="contract_name",
+            match_field="fld_namekey0",
         )
     assert error.value.code == "relation_match_field_not_unique"
 

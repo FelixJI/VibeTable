@@ -13,6 +13,20 @@ public sealed class JsonRpcProductDataGatewayTests
     public async Task ClosedProductMethodsNeverEmitRetiredProviderOrSecrets()
     {
         var transport = new AutoRespondTransport();
+        transport.Results["schema.getTable"] =
+            """
+            {
+              "contract":"vibetable.schema.v2",
+              "tableId":"tbl_orders",
+              "displayName":"Orders",
+              "kind":"base",
+              "schemaRevision":"schema_1",
+              "dataRevision":0,
+              "archivePolicy":{"mode":"none","fieldId":null,"archivedValue":null},
+              "fields":[],
+              "capabilities":[]
+            }
+            """;
         await using var client = new JsonRpcClient(transport);
         using var gateway = new JsonRpcProductDataGateway(client);
         JsonElement payload = JsonDocument.Parse("""{"tableId":"tbl_orders"}""").RootElement.Clone();
@@ -29,12 +43,14 @@ public sealed class JsonRpcProductDataGatewayTests
             gateway.CancelFieldChangeAsync(payload, CancellationToken.None));
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
             gateway.ListRecycledFieldsAsync(payload, CancellationToken.None));
-        await gateway.ValidateSchemaAsync(payload, CancellationToken.None);
-        await gateway.ApplySchemaAsync(payload, CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            gateway.CreateTableAsync(payload, CancellationToken.None));
         await gateway.DeleteSchemaAsync(payload, CancellationToken.None);
         await gateway.ListTablesAsync(payload, CancellationToken.None);
         await gateway.GetTableSchemaAsync(payload, CancellationToken.None);
         await gateway.QueryPageAsync(payload, CancellationToken.None);
+        await gateway.OpenQueryCursorAsync(payload, CancellationToken.None);
+        await gateway.FetchQueryCursorAsync(payload, CancellationToken.None);
         await gateway.QueryViewAsync(payload, CancellationToken.None);
         await gateway.ReadRowsAsync(payload, CancellationToken.None);
         await gateway.ValidateSnapshotAsync(payload, CancellationToken.None);
@@ -48,9 +64,6 @@ public sealed class JsonRpcProductDataGatewayTests
         await gateway.ApplyHostAttachmentChangeAsync(payload, CancellationToken.None);
         await gateway.SaveAttachmentToHostAsync(payload, CancellationToken.None);
         await gateway.ReconcileAsync(payload, CancellationToken.None);
-        await gateway.ListIdentifierMappingsAsync(payload, CancellationToken.None);
-        await gateway.UpdateIdentifierAliasesAsync(payload, CancellationToken.None);
-        await gateway.ReconcileIdentifierMappingsAsync(payload, CancellationToken.None);
         await gateway.ListPresetsAsync(payload, CancellationToken.None);
         await gateway.SavePresetAsync(payload, CancellationToken.None);
         await gateway.DeletePresetAsync(payload, CancellationToken.None);
@@ -66,15 +79,15 @@ public sealed class JsonRpcProductDataGatewayTests
             {
                 "field.settings.describe", "field.change.plan", "field.change.apply",
                 "field.change.status", "field.change.cancel", "field.recycleBin.list",
-                "schema.validate", "schema.apply", "schema.delete", "schema.list",
+                "schema.table.create", "schema.delete", "schema.list",
                 "schema.getTable",
-                "query.page", "query.view", "query.readRows", "query.validateSnapshot",
+                "query.page", "query.cursorOpen", "query.cursorFetch", "query.view",
+                "query.readRows", "query.validateSnapshot",
                 "mutation.preview", "mutation.apply",
                 "formula.validate", "formula.draft.validate", "formula.preview",
                 "file.list", "file.token",
                 "file.applyHostChange", "file.saveHostFile",
                 "events.reconcile",
-                "identifier.list", "identifier.updateAliases", "identifier.reconcile",
                 "preset.list", "preset.save", "preset.delete",
                 "version.list", "version.create", "version.save", "version.compare",
                 "version.promote", "version.delete",

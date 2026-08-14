@@ -2,6 +2,7 @@ package query
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -33,6 +34,7 @@ type compiler struct {
 type resolvedField struct {
 	sql           string
 	descriptor    FieldDescriptor
+	readySQL      string
 	jsonExtracted bool
 	jsonTypeSQL   string
 }
@@ -89,8 +91,14 @@ func Compile(descriptor TableDescriptor, input TableQuery) (CompiledQuery, error
 	fields := sortedFieldNames(descriptor.Fields)
 	selects := make([]string, 0, len(fields))
 	for _, name := range fields {
+		valueSQL := quote(descriptor.Fields[name].PhysicalName)
+		if descriptor.Fields[name].ComputedEnvelope {
+			valueSQL = c.computedWireSQL(
+				valueSQL, quote(descriptor.RowRevisionName), descriptor.Fields[name],
+			)
+		}
 		selects = append(selects, fmt.Sprintf(
-			`%s AS %s`, quote(descriptor.Fields[name].PhysicalName), quote(name)))
+			`%s AS %s`, valueSQL, quote(name)))
 	}
 	presenceNames := make([]string, 0, len(descriptor.PresenceFields))
 	for name := range descriptor.PresenceFields {
@@ -127,6 +135,157 @@ func Compile(descriptor TableDescriptor, input TableQuery) (CompiledQuery, error
 	}, nil
 }
 
+type keysetTerm struct {
+	sql       string
+	direction SortDirection
+	field     string
+	nullRank  bool
+}
+
+func CompileKeyset(
+	descriptor TableDescriptor,
+	input TableQuery,
+	after []any,
+	limit int,
+) (CompiledQuery, error) {
+	if limit < 1 || limit > 501 {
+		return CompiledQuery{}, productError(
+			"query.cursor.invalid", "limit", "cursor window limit is invalid", nil,
+		)
+	}
+	normalized, err := Normalize(input)
+	if err != nil {
+		return CompiledQuery{}, err
+	}
+	input = normalized
+	input.Offset = 0
+	c := &compiler{descriptor: descriptor, params: map[string]any{}, nextParam: 1000}
+	terms, err := c.keysetTerms(input.Sorts)
+	if err != nil {
+		return CompiledQuery{}, err
+	}
+	plan, err := Compile(descriptor, input)
+	if err != nil {
+		return CompiledQuery{}, err
+	}
+	c.params = plan.Params
+	if after != nil && len(after) != len(terms) {
+		return CompiledQuery{}, productError(
+			"query.cursor.invalid", "cursor", "cursor key count does not match query sort", nil,
+		)
+	}
+	orderAt := strings.LastIndex(plan.SQL, " ORDER BY ")
+	if orderAt < 0 {
+		return CompiledQuery{}, errors.New("compiled query omitted ordering")
+	}
+	prefix := plan.SQL[:orderAt]
+	orderAndPage := plan.SQL[orderAt:]
+	if pageAt := strings.LastIndex(orderAndPage, " LIMIT "); pageAt >= 0 {
+		orderAndPage = orderAndPage[:pageAt]
+	}
+	if after != nil {
+		parts := make([]string, 0, len(terms))
+		for index, term := range terms {
+			equalities := make([]string, 0, index)
+			for previous := 0; previous < index; previous++ {
+				equalities = append(
+					equalities,
+					terms[previous].sql+" IS "+c.bind(after[previous]),
+				)
+			}
+			operator := ">"
+			if term.direction == SortDescending {
+				operator = "<"
+			}
+			comparison := term.sql + " " + operator + " " + c.bind(after[index])
+			if len(equalities) != 0 {
+				comparison = "(" + strings.Join(equalities, " AND ") + " AND " + comparison + ")"
+			}
+			parts = append(parts, comparison)
+		}
+		predicate := "(" + strings.Join(parts, " OR ") + ")"
+		if strings.Contains(prefix, " WHERE ") {
+			prefix += " AND " + predicate
+		} else {
+			prefix += " WHERE " + predicate
+		}
+	}
+	delete(c.params, "offset")
+	c.params["limit"] = limit
+	plan.SQL = prefix + orderAndPage + " LIMIT {:limit}"
+	plan.Params = c.params
+	return plan, nil
+}
+
+func KeysetValues(
+	descriptor TableDescriptor,
+	query TableQuery,
+	row map[string]any,
+) ([]any, error) {
+	c := &compiler{descriptor: descriptor, params: map[string]any{}}
+	terms, err := c.keysetTerms(query.Sorts)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]any, 0, len(terms))
+	for _, term := range terms {
+		value, ok := row[term.field]
+		if !ok {
+			return nil, productError(
+				"query.cursor.invalid", "rows", "cursor sort field is missing from row", nil,
+			)
+		}
+		if term.nullRank {
+			values = append(values, value == nil)
+		} else {
+			values = append(values, value)
+		}
+	}
+	return values, nil
+}
+
+func (c *compiler) keysetTerms(sorts []SortCondition) ([]keysetTerm, error) {
+	terms := make([]keysetTerm, 0, len(sorts)*2+1)
+	seen := make(map[string]struct{}, len(sorts)+1)
+	for index, sortCondition := range sorts {
+		if strings.Contains(sortCondition.Field, ".") {
+			return nil, productError(
+				"query.cursor.unsupported_sort", fmt.Sprintf("sorts[%d].field", index),
+				"cursor pagination currently requires direct fields", nil,
+			)
+		}
+		if _, exists := seen[sortCondition.Field]; exists {
+			continue
+		}
+		field, err := c.resolve(sortCondition.Field, fmt.Sprintf("sorts[%d].field", index))
+		if err != nil {
+			return nil, err
+		}
+		nullDirection := SortAscending
+		if sortCondition.NullsLast != nil && !*sortCondition.NullsLast {
+			nullDirection = SortDescending
+		}
+		terms = append(terms, keysetTerm{
+			sql: field.sql + " IS NULL", direction: nullDirection,
+			field: sortCondition.Field, nullRank: true,
+		})
+		terms = append(terms, keysetTerm{
+			sql: field.sql, direction: sortCondition.Direction, field: sortCondition.Field,
+		})
+		seen[sortCondition.Field] = struct{}{}
+	}
+	if _, exists := seen[c.descriptor.PrimaryKey]; !exists {
+		primary, err := c.resolve(c.descriptor.PrimaryKey, "primaryKey")
+		if err != nil {
+			return nil, err
+		}
+		terms = append(terms, keysetTerm{
+			sql: primary.sql, direction: SortAscending, field: c.descriptor.PrimaryKey,
+		})
+	}
+	return terms, nil
+}
+
 func presenceAlias(name string) string {
 	return "__vibetable_presence_" + name
 }
@@ -151,6 +310,10 @@ func CompileAggregate(
 		return "", nil, productError(
 			"query.aggregate.invalid_limit", "limit", "limit must be between 1 and 5000", nil)
 	}
+	if input.TopN < 0 || input.TopN > maxAggregateRows {
+		return "", nil, productError(
+			"query.aggregate.invalid_top_n", "topN", "topN must be between 1 and 5000", nil)
+	}
 	filterCount := 0
 	for index := range input.Filters {
 		if err := normalizeFilter(
@@ -170,9 +333,10 @@ func CompileAggregate(
 	if err != nil {
 		return "", nil, err
 	}
-	selects := make([]string, 0, len(input.GroupBy)+len(input.Metrics))
-	groups := make([]string, 0, len(input.GroupBy))
-	outputNames := make(map[string]struct{}, len(input.GroupBy)+len(input.Metrics))
+	selects := make([]string, 0, len(input.GroupBy)+len(input.Metrics)+1)
+	groups := make([]string, 0, len(input.GroupBy)+1)
+	groupOutputNames := make([]string, 0, len(input.GroupBy)+1)
+	outputNames := make(map[string]struct{}, len(input.GroupBy)+len(input.Metrics)+1)
 	for index, name := range input.GroupBy {
 		outputName := strings.ToLower(name)
 		if _, exists := outputNames[outputName]; exists {
@@ -197,6 +361,38 @@ func CompileAggregate(
 		}
 		selects = append(selects, field.sql+" AS "+quote(name))
 		groups = append(groups, field.sql)
+		groupOutputNames = append(groupOutputNames, name)
+		outputNames[outputName] = struct{}{}
+	}
+	if input.TimeBucket != nil {
+		bucket := input.TimeBucket
+		if bucket.Timezone != "" && bucket.Timezone != "UTC" {
+			return "", nil, productError(
+				"query.aggregate.invalid_timezone", "timeBucket.timezone",
+				"time buckets currently require UTC", nil)
+		}
+		field, err := c.resolve(bucket.Field, "timeBucket.field")
+		if err != nil {
+			return "", nil, err
+		}
+		if field.descriptor.Type != FieldTypeDate {
+			return "", nil, productError(
+				"query.aggregate.type_mismatch", "timeBucket.field",
+				"time bucket field must be a date", nil)
+		}
+		outputName := strings.ToLower(bucket.Field)
+		if _, exists := outputNames[outputName]; exists {
+			return "", nil, productError(
+				"query.aggregate.duplicate_group", "timeBucket.field",
+				"time bucket field collides with another group", nil)
+		}
+		expression, err := aggregateTimeBucketExpression(field.sql, bucket.Unit)
+		if err != nil {
+			return "", nil, err
+		}
+		selects = append(selects, expression+" AS "+quote(bucket.Field))
+		groups = append(groups, expression)
+		groupOutputNames = append(groupOutputNames, bucket.Field)
 		outputNames[outputName] = struct{}{}
 	}
 	for index, metric := range input.Metrics {
@@ -224,6 +420,12 @@ func CompileAggregate(
 				}
 				expression = "COUNT(" + field.sql + ")"
 			}
+		case AggregateCountDistinct:
+			field, err := c.resolve(metric.Field, fmt.Sprintf("metrics[%d].field", index))
+			if err != nil {
+				return "", nil, err
+			}
+			expression = "COUNT(DISTINCT " + field.sql + ")"
 		case AggregateSum, AggregateAvg, AggregateMin, AggregateMax:
 			field, err := c.resolve(metric.Field, fmt.Sprintf("metrics[%d].field", index))
 			if err != nil {
@@ -261,11 +463,38 @@ func CompileAggregate(
 	}
 	if len(groups) > 0 {
 		sql += " GROUP BY " + strings.Join(groups, ", ")
-		sql += " ORDER BY " + strings.Join(groups, ", ")
+		orderBy := make([]string, 0, len(groupOutputNames)+1)
+		if input.TopN > 0 {
+			orderBy = append(orderBy, quote(input.Metrics[0].Alias)+" DESC")
+		}
+		for _, name := range groupOutputNames {
+			orderBy = append(orderBy, quote(name)+" ASC")
+		}
+		sql += " ORDER BY " + strings.Join(orderBy, ", ")
 	}
-	c.params["aggregate_limit"] = input.Limit
+	effectiveLimit := input.Limit
+	if input.TopN > 0 && input.TopN < effectiveLimit {
+		effectiveLimit = input.TopN
+	}
+	c.params["aggregate_limit"] = effectiveLimit
 	sql += " LIMIT {:aggregate_limit}"
 	return sql, c.params, nil
+}
+
+func aggregateTimeBucketExpression(fieldSQL string, bucket GroupBucket) (string, error) {
+	switch bucket {
+	case GroupBucketDay:
+		return "strftime('%Y-%m-%dT00:00:00Z', " + fieldSQL + ")", nil
+	case GroupBucketWeek:
+		return "strftime('%Y-%m-%dT00:00:00Z', " + fieldSQL +
+			", '-' || ((CAST(strftime('%w', " + fieldSQL + ") AS INTEGER) + 6) % 7) || ' days')", nil
+	case GroupBucketMonth:
+		return "strftime('%Y-%m-01T00:00:00Z', " + fieldSQL + ")", nil
+	default:
+		return "", productError(
+			"query.aggregate.invalid_time_bucket", "timeBucket.unit",
+			"time bucket must be day, week, or month", nil)
+	}
 }
 
 type compiledViewGroups struct {
@@ -356,11 +585,19 @@ func compileViewGroups(
 		if err != nil {
 			return compiledViewGroups{}, err
 		}
-		if !aggregateGroupTypeAllowed(field.descriptor.Type) {
+		if !aggregateGroupTypeAllowed(field.descriptor.Type) &&
+			!(field.descriptor.Type == FieldTypeJSON && field.descriptor.ComputedEnvelope) {
 			return compiledViewGroups{}, productError(
 				"view.group.unsupported_field", fmt.Sprintf("groups[%d].field", index),
 				"field type cannot be used for grouping", nil,
 			)
+		}
+		if field.readySQL != "" {
+			if where == "" {
+				where = field.readySQL
+			} else {
+				where = "(" + where + ") AND (" + field.readySQL + ")"
+			}
 		}
 		bucket := group.Bucket
 		if bucket == "" {
@@ -386,7 +623,12 @@ func compileViewGroups(
 		selects = append(selects, expression+" AS "+quote(alias))
 		groupExpressions = append(groupExpressions, expression)
 		orderExpressions = append(orderExpressions, expression+" "+strings.ToUpper(string(direction)))
-		groupFields = append(groupFields, field.descriptor)
+		groupOutput := field.descriptor
+		// The SQL expression already projects the authoritative scalar from a
+		// computed envelope. Group row decoding must not try to decode it as an
+		// envelope a second time.
+		groupOutput.ComputedEnvelope = false
+		groupFields = append(groupFields, groupOutput)
 		groupBuckets = append(groupBuckets, bucket)
 		seenGroups[group.Field] = struct{}{}
 	}
@@ -1271,8 +1513,14 @@ func (c *compiler) resolve(fieldPath string, path string) (resolvedField, error)
 		return resolvedField{}, unknownField(path, fieldPath)
 	}
 	sql := c.productValueSQL(segments[0], field.PhysicalName)
+	readySQL := ""
+	if field.ComputedEnvelope {
+		readySQL = c.computedFreshSQL(
+			quote(field.PhysicalName), quote(c.descriptor.RowRevisionName), field,
+		)
+	}
 	if len(segments) == 1 {
-		return resolvedField{sql: sql, descriptor: field}, nil
+		return resolvedField{sql: sql, descriptor: field, readySQL: readySQL}, nil
 	}
 	for _, segment := range segments[1:] {
 		if !identifierPattern.MatchString(segment) {
@@ -1298,11 +1546,11 @@ func (c *compiler) resolve(fieldPath string, path string) (resolvedField, error)
 		}
 		targetSQL := "r0." + quote(target.PhysicalName)
 		if target.ComputedEnvelope {
-			if !target.ComputedReady {
-				targetSQL = "NULL"
-			} else {
-				targetSQL = "json_extract(" + targetSQL + ", '$')"
-			}
+			targetSQL = c.computedValueSQL(
+				targetSQL,
+				"r0."+quote(field.Relation.RowRevisionName),
+				target,
+			)
 		}
 		return resolvedField{
 			sql: fmt.Sprintf(
@@ -1326,16 +1574,55 @@ func (c *compiler) resolve(fieldPath string, path string) (resolvedField, error)
 func (c *compiler) productValueSQL(productName, physicalName string) string {
 	value := quote(physicalName)
 	if field, ok := c.descriptor.Fields[productName]; ok && field.ComputedEnvelope {
-		if !field.ComputedReady {
-			return "NULL"
-		}
-		value = "json_extract(" + value + ", '$')"
+		value = c.computedValueSQL(
+			value, quote(c.descriptor.RowRevisionName), field,
+		)
 	}
 	presence, ok := c.descriptor.PresenceFields[productName]
 	if !ok || presence == "" {
 		return value
 	}
 	return "(CASE WHEN " + quote(presence) + " THEN " + value + " ELSE NULL END)"
+}
+
+func (c *compiler) computedFreshSQL(
+	valueSQL string,
+	rowRevisionSQL string,
+	field FieldDescriptor,
+) string {
+	if !field.ComputedReady || field.ComputedDefinitionVersion < 1 ||
+		field.ComputedDependencyWatermark == "" || rowRevisionSQL == "\"\"" {
+		return "0"
+	}
+	return "json_valid(" + valueSQL + ")" +
+		" AND json_extract(" + valueSQL + ", '$.state') = 'ready'" +
+		" AND json_extract(" + valueSQL + ", '$.version.definitionVersion') = " +
+		c.bind(field.ComputedDefinitionVersion) +
+		" AND json_extract(" + valueSQL + ", '$.version.sourceDataRevision') = " +
+		rowRevisionSQL +
+		" AND json_extract(" + valueSQL + ", '$.version.dependencyWatermark') = " +
+		c.bind(field.ComputedDependencyWatermark)
+}
+
+func (c *compiler) computedValueSQL(
+	valueSQL string,
+	rowRevisionSQL string,
+	field FieldDescriptor,
+) string {
+	return "(CASE WHEN " + c.computedFreshSQL(valueSQL, rowRevisionSQL, field) +
+		" THEN json_extract(" + valueSQL + ", '$.value') ELSE NULL END)"
+}
+
+func (c *compiler) computedWireSQL(
+	valueSQL string,
+	rowRevisionSQL string,
+	field FieldDescriptor,
+) string {
+	pending := "json_object('state','updating','value',NULL," +
+		"'diagnostic',json_object('code','calculation.pending'," +
+		"'message','computed value is waiting for recalculation','details',json('{}')))"
+	return "(CASE WHEN " + c.computedFreshSQL(valueSQL, rowRevisionSQL, field) +
+		" THEN " + valueSQL + " ELSE " + pending + " END)"
 }
 
 func (c *compiler) compileSorts(sorts []SortCondition) (string, error) {

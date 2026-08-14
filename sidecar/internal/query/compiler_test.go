@@ -73,6 +73,51 @@ func TestCompilerMatchesGoldenOperatorsAndParameterizesValues(t *testing.T) {
 	}
 }
 
+func TestKeysetCompilerUsesNullValueAndPrimaryKeyTupleWithoutOffset(t *testing.T) {
+	descriptor := descriptorFixture()
+	nullsLast := true
+	input := query.TableQuery{
+		Sorts: []query.SortCondition{{
+			Field: "amount", Direction: query.SortDescending, NullsLast: &nullsLast,
+		}},
+		Limit: 2,
+	}
+	plan, err := query.CompileKeyset(
+		descriptor,
+		input,
+		[]any{false, float64(100), "record-a"},
+		3,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plan.SQL, "OFFSET") ||
+		!strings.Contains(plan.SQL, `"amount" IS NULL >`) ||
+		!strings.Contains(plan.SQL, `"amount" <`) ||
+		!strings.Contains(plan.SQL, `"id" >`) ||
+		!strings.HasSuffix(plan.SQL, "LIMIT {:limit}") {
+		t.Fatalf("keyset SQL = %s", plan.SQL)
+	}
+	if plan.Params["limit"] != 3 {
+		t.Fatalf("keyset params = %#v", plan.Params)
+	}
+}
+
+func TestKeysetCompilerRejectsRelationPathSortInsteadOfFallingBack(t *testing.T) {
+	_, err := query.CompileKeyset(
+		descriptorFixture(),
+		query.TableQuery{
+			Sorts: []query.SortCondition{{
+				Field: "customer.name", Direction: query.SortAscending,
+			}},
+			Limit: 10,
+		},
+		nil,
+		11,
+	)
+	assertProductError(t, err, "query.cursor.unsupported_sort")
+}
+
 func TestPresenceCompanionControlsFilterSortAndAggregateSemantics(t *testing.T) {
 	descriptor := descriptorFixture()
 	descriptor.PresenceFields = map[string]string{"amount": "__present_amount"}
@@ -466,6 +511,39 @@ func TestAggregateCompilerRejectsOutputCollisionsAndBoundsRows(t *testing.T) {
 	}
 	if !strings.HasSuffix(sql, " LIMIT {:aggregate_limit}") || params["aggregate_limit"] != 1000 {
 		t.Fatalf("aggregate limit missing: sql=%s params=%#v", sql, params)
+	}
+}
+
+func TestAggregateCompilerExecutesDistinctUtcBucketAndDeterministicTopN(t *testing.T) {
+	descriptor := descriptorFixture()
+	sql, params, err := query.CompileAggregate(descriptor, query.AggregateQuery{
+		GroupBy: []string{"status"},
+		Metrics: []query.AggregateMetric{{
+			Function: query.AggregateCountDistinct,
+			Field:    "name",
+			Alias:    "unique_names",
+		}},
+		TimeBucket: &query.AggregateTimeBucket{
+			Field: "created_at",
+			Unit:  query.GroupBucketMonth,
+		},
+		TopN:  5,
+		Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("CompileAggregate(semantic query): %v", err)
+	}
+	for _, expected := range []string{
+		`strftime('%Y-%m-01T00:00:00Z', "created_at") AS "created_at"`,
+		`COUNT(DISTINCT "name") AS "unique_names"`,
+		`ORDER BY "unique_names" DESC, "status" ASC, "created_at" ASC`,
+	} {
+		if !strings.Contains(sql, expected) {
+			t.Fatalf("aggregate SQL omitted %q: %s", expected, sql)
+		}
+	}
+	if params["aggregate_limit"] != 5 {
+		t.Fatalf("top N did not bind the effective limit: %#v", params)
 	}
 }
 

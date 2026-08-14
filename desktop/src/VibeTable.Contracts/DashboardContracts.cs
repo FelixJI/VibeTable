@@ -17,10 +17,37 @@ public static class DashboardAggregates
 
 public sealed record DashboardMeasure(string Key, string Op, string? Field = null);
 
-public sealed record DashboardTimeBucket(
-    string Field,
-    string Unit,
-    string Timezone = "UTC");
+public sealed record DashboardTimeBucket
+{
+    private static readonly HashSet<string> Units = new(StringComparer.Ordinal)
+    {
+        "day", "week", "month",
+    };
+
+    [JsonConstructor]
+    public DashboardTimeBucket(string field, string unit, string timezone = "UTC")
+    {
+        if (string.IsNullOrWhiteSpace(field))
+        {
+            throw new ArgumentException("A time bucket field is required.", nameof(field));
+        }
+        if (!Units.Contains(unit))
+        {
+            throw new ArgumentOutOfRangeException(nameof(unit), unit, "Only UTC day, week, and month buckets are supported.");
+        }
+        if (!string.Equals(timezone, "UTC", StringComparison.Ordinal))
+        {
+            throw new ArgumentOutOfRangeException(nameof(timezone), timezone, "Dashboard time buckets require UTC.");
+        }
+        Field = field;
+        Unit = unit;
+        Timezone = timezone;
+    }
+
+    public string Field { get; init; }
+    public string Unit { get; init; }
+    public string Timezone { get; init; }
+}
 
 /// <summary>
 /// Discriminated dashboard query root. Only the two declared structured query
@@ -134,8 +161,3 @@ public sealed record DashboardQueryResult(
 public sealed record DashboardManifestBundle(
     PanelManifestResult Manifest,
     DashboardQueryLimits QueryLimits);
-
-/// <summary>Runtime host capabilities sent with database.opened.</summary>
-public sealed record HostFeatureFlags(
-    bool Dashboards = false,
-    bool AutoDateFields = false);

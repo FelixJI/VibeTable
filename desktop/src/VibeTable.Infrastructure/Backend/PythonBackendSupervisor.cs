@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
+using VibeTable.Infrastructure.Diagnostics;
 using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Infrastructure.Backend;
@@ -545,22 +546,12 @@ public sealed class PythonBackendSupervisor : IAsyncDisposable
     {
         _stderrTask = Task.Run(async () =>
         {
-            StreamWriter? logWriter = null;
+            RotatingLogSink? logWriter = null;
             try
             {
                 if (!string.IsNullOrEmpty(_options.LogPath))
                 {
-                    var dir = Path.GetDirectoryName(_options.LogPath);
-                    if (!string.IsNullOrEmpty(dir))
-                    {
-                        Directory.CreateDirectory(dir);
-                    }
-                    logWriter = new StreamWriter(_options.LogPath!,
-                        append: true,
-                        Encoding.UTF8)
-                    {
-                        AutoFlush = true,
-                    };
+                    logWriter = new RotatingLogSink(_options.LogPath!);
                 }
 
                 var sr = process.StandardError;
@@ -586,7 +577,7 @@ public sealed class PythonBackendSupervisor : IAsyncDisposable
                         _stderrBuffer.AppendLine(line);
                     }
                     PublishLogLine(line);
-                    if (logWriter is not null)
+                    if (logWriter is not null && DiagnosticLogLine.IsSafe(line))
                     {
                         try
                         {
@@ -606,7 +597,10 @@ public sealed class PythonBackendSupervisor : IAsyncDisposable
             }
             finally
             {
-                logWriter?.Dispose();
+                if (logWriter is not null)
+                {
+                    await logWriter.DisposeAsync().ConfigureAwait(false);
+                }
             }
         });
     }

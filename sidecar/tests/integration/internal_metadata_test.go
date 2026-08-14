@@ -203,20 +203,6 @@ func TestDashboardCommitIsAtomicAcrossDashboardAndPanels(t *testing.T) {
 		t, app, first.ChangeSetID, first.EmittedEvents,
 		"metadata:dashboards", "sales", "insert", 3,
 	)
-	for _, logicalID := range []string{"revenue", "orders"} {
-		record, findErr := app.FindFirstRecordByFilter(
-			"vibetable_panels",
-			"logical_id={:logicalId}",
-			dbx.Params{"logicalId": logicalID},
-		)
-		if findErr != nil ||
-			record.GetString("dashboard_id") != "sales" {
-			t.Fatalf(
-				"panel %s dashboard link = %q, err=%v",
-				logicalID, record.GetString("dashboard_id"), findErr,
-			)
-		}
-	}
 	replayed, err := service.CommitDashboard(
 		ctx,
 		metadata.DashboardCommitRequest{

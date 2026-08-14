@@ -20,7 +20,8 @@ public readonly record struct MutationError(
     string Message,
     IReadOnlyDictionary<string, object?>? CurrentRow = null,
     IReadOnlyList<object>? ConflictingRowKeys = null,
-    IReadOnlyDictionary<string, string>? FieldErrors = null);
+    IReadOnlyDictionary<string, string>? FieldErrors = null,
+    string? Code = null);
 
 public enum MutationErrorKind
 {
@@ -132,7 +133,9 @@ public static class MutationErrorMapper
 
             default:
                 return new MutationError(
-                    MutationErrorKind.Unknown, remote.Message);
+                    MutationErrorKind.Unknown,
+                    remote.Message,
+                    Code: ReadString(data, "code"));
         }
     }
 

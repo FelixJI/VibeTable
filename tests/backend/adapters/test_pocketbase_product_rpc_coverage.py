@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-import re
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
 from backend.adapters.pocketbase.client import PocketBaseClient
-from backend.adapters.pocketbase.product_rpc import (
-    PocketBaseProductRpc,
-    _group_lookup_rows,
-    _lookup_revision,
-    _precision_scale,
-    _renderer_lookup,
-)
+from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
+from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
 
 class ScriptedTransport:
@@ -76,13 +72,25 @@ def scalar_field(
     }
 
 
+def formula_v2_field() -> dict[str, Any]:
+    path = Path(__file__).parents[3] / "contracts/schema-v2/fixtures/field-definition.json"
+    field = json.loads(path.read_text(encoding="utf-8"))
+    field["logicalType"] = "formula"
+    field["storage"]["kind"] = "computed"
+    field["value"]["presence"] = {"mode": "computed"}
+    field["display"]["kind"] = "readonly"
+    field["formula"] = {
+        "language": "cel-v1",
+        "source": "price * quantity",
+        "resultType": "number",
+    }
+    return field
+
+
 def relation_field(
     field_id: str = "customer",
     *,
     target: str = "customers",
-    mode: str = "direct",
-    junction_table: str | None = None,
-    allowed: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         **scalar_field(field_id),
@@ -90,15 +98,9 @@ def relation_field(
         "dataType": "relation",
         "storageType": "relation",
         "relation": {
-            "mode": mode,
             "targetTableId": target,
-            "cardinality": "many" if mode != "direct" else "one",
+            "cardinality": "one",
             "deletePolicy": "setNull",
-            "junctionTableId": junction_table,
-            "junctionSourceFieldId": "source",
-            "junctionTargetFieldId": "target",
-            "junctionDiscriminatorFieldId": "kind",
-            "allowedTargetTableIds": allowed or [],
         },
     }
 
@@ -124,7 +126,6 @@ def table_schema(
 def lookup_renderer(
     *,
     revision: int = 1,
-    aggregation: str = "single",
     output_type: str = "text",
 ) -> dict[str, Any]:
     return {
@@ -134,8 +135,6 @@ def lookup_renderer(
         "displayName": "Customer name",
         "path": [{"relationId": "orders.customer"}],
         "source": {"kind": "target_field", "fieldRef": "name"},
-        "m2aFieldMapping": [],
-        "aggregation": aggregation,
         "outputType": output_type,
         "revision": revision,
         "state": "valid",
@@ -153,7 +152,6 @@ def lookup_descriptor(revision: int = 1) -> dict[str, Any]:
         "displayName": "Customer name",
         "relationFieldId": "customer",
         "targetFieldId": "name",
-        "aggregate": "none",
         "resultCardinality": "one",
         "outputStorage": "text",
         "revision": revision,
@@ -202,12 +200,40 @@ def test_product_params_enforce_json_size_depth_and_closed_shapes() -> None:
     with pytest.raises(ValidationError, match="must not be empty"):
         query_model.model_validate({"tableId": "", "query": {}})
 
+    cursor_open = PRODUCT_RPC_REGISTRY["query.cursorOpen"]
+    assert cursor_open.model_validate({"tableId": "orders", "query": {"limit": 50}}).root[
+        "query"
+    ] == {"limit": 50}
+    cursor_fetch = PRODUCT_RPC_REGISTRY["query.cursorFetch"]
+    assert cursor_fetch.model_validate({"cursor": "opaque"}).root == {"cursor": "opaque"}
+    with pytest.raises(ValidationError, match="unknown fields"):
+        cursor_fetch.model_validate({"cursor": "opaque", "tableId": "orders"})
+
+
+@pytest.mark.parametrize(
+    "non_finite",
+    [float("nan"), float("inf"), float("-inf")],
+    ids=["nan", "positive-infinity", "negative-infinity"],
+)
+@pytest.mark.asyncio
+async def test_public_invoke_rejects_non_finite_product_response(non_finite: float) -> None:
+    service, _transport = service_with([{"tables": [non_finite]}])
+
+    with pytest.raises(ValueError, match="non-finite JSON number"):
+        await service.invoke("schema.list", ProductParams.model_validate({}))
+
 
 @pytest.mark.asyncio
 async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_attachment() -> None:
     service, transport = service_with(
         [
-            {"definition": {"tableId": "orders"}},
+            {
+                "contract": "vibetable.schema.v2",
+                "operationId": "operation-create-table-12345678",
+                "tableId": "tbl_orders",
+                "displayName": "订单",
+                "schemaRevision": "schema_0001",
+            },
             page([{"id": "row-1"}], limit=1),
             {"canApply": True, "operations": []},
             {"status": "applied", "receipt": {"id": "change-1"}},
@@ -220,7 +246,6 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
                     "tableId": "customers",
                     "recordId": "c-2",
                     "label": "Grace",
-                    "junctionValues": {},
                 }
             },
             {"current": [{"tableId": "customers", "recordId": "c-1", "label": "Ada"}]},
@@ -228,25 +253,36 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
     )
 
     assert (
-        await service.apply_schema(
-            ProductParams.model_validate({"definition": {"tableId": "orders"}})
+        await service.invoke(
+            "schema.table.create",
+            PRODUCT_RPC_REGISTRY["schema.table.create"].model_validate(
+                {
+                    "displayName": "订单",
+                    "operationId": "operation-create-table-12345678",
+                    "actor": {"id": "desktop-host", "kind": "host"},
+                }
+            ),
         )
-    )["definition"]["tableId"] == "orders"
-    queried = await service.query_page(
-        ProductParams.model_validate({"tableId": "orders", "query": {"limit": 1}})
+    )["tableId"] == "tbl_orders"
+    queried = await service.invoke(
+        "query.page", ProductParams.model_validate({"tableId": "orders", "query": {"limit": 1}})
     )
     assert queried["rows"] == [{"id": "row-1"}]
     assert queried["snapshot"] == {"digest": "snapshot"}
-    assert (await service.preview_mutation(ProductParams.model_validate({"operations": []})))[
-        "canApply"
-    ] is True
-    assert (await service.apply_mutation(ProductParams.model_validate({"operations": []})))[
-        "status"
-    ] == "applied"
     assert (
-        await service.validate_formula(ProductParams.model_validate({"source": "price * quantity"}))
+        await service.invoke("mutation.preview", ProductParams.model_validate({"operations": []}))
+    )["canApply"] is True
+    assert (
+        await service.invoke("mutation.apply", ProductParams.model_validate({"operations": []}))
+    )["status"] == "applied"
+    assert (
+        await service.invoke(
+            "formula.validate",
+            ProductParams.model_validate({"tableId": "orders", "field": formula_v2_field()}),
+        )
     )["valid"] is True
-    await service.create_file_token(
+    await service.invoke(
+        "file.token",
         ProductParams.model_validate(
             {
                 "tableId": "orders",
@@ -255,9 +291,10 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
                 "storedName": "invoice.pdf",
                 "variant": "thumb",
             }
-        )
+        ),
     )
-    removed = await service.apply_host_attachment_change(
+    removed = await service.invoke(
+        "file.applyHostChange",
         ProductParams.model_validate(
             {
                 "tableId": "orders",
@@ -268,31 +305,31 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
                 "hostPaths": [],
                 "removeStoredNames": ["old.pdf"],
             }
-        )
+        ),
     )
     assert removed["status"] == "applied"
 
-    searched = await service.search_relation_targets(
+    searched = await service.invoke(
+        "relation.searchTargets",
         ProductParams.model_validate(
             {
                 "relationId": "orders.customer",
-                "collection": "customers",
                 "query": "ad",
                 "offset": 0,
                 "limit": 10,
             }
-        )
+        ),
     )
     assert searched["items"][0]["collection"] == "customers"
-    created = await service.create_relation_target(
+    created = await service.invoke(
+        "relation.createTarget",
         PRODUCT_RPC_REGISTRY["relation.createTarget"].model_validate(
             {
                 "relationId": "orders.customer",
-                "collection": "customers",
                 "label": "Grace",
                 "idempotencyKey": "create-customer-1",
             }
-        )
+        ),
     )
     assert created == {
         "outcome": "committed",
@@ -301,15 +338,13 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
             "itemId": "c-2",
             "label": "Grace",
             "secondaryLabel": None,
-            "junctionId": None,
-            "junctionRevision": None,
-            "junctionValues": {},
         },
         "requestId": "create-customer-1",
     }
     assert transport.requests[-1]["path"] == "/api/vibetable/v1/relations/create-target"
-    assert transport.requests[-1]["json_body"]["targetTableId"] == "customers"
-    applied = await service.apply_relation_delta(
+    assert "targetTableId" not in transport.requests[-1]["json_body"]
+    applied = await service.invoke(
+        "relation.applyDelta",
         ProductParams.model_validate(
             {
                 "relationId": "orders.customer",
@@ -320,7 +355,7 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
                 "updates": [],
                 "idempotencyKey": "relation-op-1",
             }
-        )
+        ),
     )
     assert applied["outcome"] == "committed"
     assert applied["current"][0]["itemId"] == "c-1"
@@ -331,11 +366,15 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
 async def test_route_validation_rejects_bad_rows_attachments_files_and_history() -> None:
     service, transport = service_with([])
     with pytest.raises(ValueError, match="rowIds"):
-        await service.read_rows(ProductParams.model_validate({"tableId": "orders", "rowIds": [""]}))
+        await service.invoke(
+            "query.readRows",
+            ProductParams.model_validate({"tableId": "orders", "rowIds": [""]}),
+        )
     with pytest.raises(ValueError, match="does not accept"):
-        await service.list_tables(ProductParams.model_validate({"unexpected": 1}))
+        await service.invoke("schema.list", ProductParams.model_validate({"unexpected": 1}))
     with pytest.raises(ValueError, match="variant must be a string"):
-        await service.create_file_token(
+        await service.invoke(
+            "file.token",
             ProductParams.model_validate(
                 {
                     "tableId": "orders",
@@ -344,14 +383,15 @@ async def test_route_validation_rejects_bad_rows_attachments_files_and_history()
                     "storedName": "invoice.pdf",
                     "variant": 1,
                 }
-            )
+            ),
         )
     for change in (
         {"hostPaths": [], "removeStoredNames": []},
         {"hostPaths": [""] * 33, "removeStoredNames": []},
     ):
         with pytest.raises(ValueError, match="attachment change"):
-            await service.apply_host_attachment_change(
+            await service.invoke(
+                "file.applyHostChange",
                 ProductParams.model_validate(
                     {
                         "tableId": "orders",
@@ -361,10 +401,11 @@ async def test_route_validation_rejects_bad_rows_attachments_files_and_history()
                         "expectedDigest": "sha256:" + "a" * 64,
                         **change,
                     }
-                )
+                ),
             )
     with pytest.raises(ValueError, match="expectedDigest"):
-        await service.apply_host_attachment_change(
+        await service.invoke(
+            "file.applyHostChange",
             ProductParams.model_validate(
                 {
                     "tableId": "orders",
@@ -375,14 +416,15 @@ async def test_route_validation_rejects_bad_rows_attachments_files_and_history()
                     "hostPaths": [],
                     "removeStoredNames": ["old.pdf"],
                 }
-            )
+            ),
         )
     with pytest.raises(ValueError, match="actions"):
-        await service.read_history(
-            ProductParams.model_validate({"collection": "orders", "actions": [""]})
+        await service.invoke(
+            "history.read", ProductParams.model_validate({"collection": "orders", "actions": [""]})
         )
     with pytest.raises(ValueError, match="field"):
-        await service.preview_history_restore(
+        await service.invoke(
+            "history.previewRestore",
             ProductParams.model_validate(
                 {
                     "collection": "orders",
@@ -391,26 +433,19 @@ async def test_route_validation_rejects_bad_rows_attachments_files_and_history()
                     "scope": "field",
                     "field": "",
                 }
-            )
+            ),
         )
-    with pytest.raises(ValueError, match="collection"):
-        await service.search_relation_targets(
-            ProductParams.model_validate({"relationId": "orders.customer", "collection": ""})
+    with pytest.raises(ValidationError, match="unknown fields: collection"):
+        PRODUCT_RPC_REGISTRY["relation.searchTargets"].model_validate(
+            {"relationId": "orders.customer", "collection": "customers"}
         )
     assert transport.requests == []
 
 
 @pytest.mark.asyncio
-async def test_lookup_preview_and_grouped_query_return_renderer_envelopes() -> None:
-    source = table_schema("orders", [relation_field()])
-    customers = table_schema("customers", [scalar_field()])
-    renderer = lookup_renderer()
+async def test_lookup_grouped_query_returns_renderer_envelope() -> None:
     descriptor = lookup_descriptor()
-    revision = _lookup_revision("schema_3", [descriptor])
-    preview_rows = [
-        {"id": "o-1", "customer_name": "Ada", "region": "EU"},
-        {"id": "o-2", "customer_name": "Bob", "region": "US"},
-    ]
+    revision = "sha256:86864bd289da0d7c8dc42fb321de98f66b1e69fc7ac41f853f2843b044b9700b"
     query_rows = [
         {"id": "o-1", "customer_name": "Ada", "region": "EU"},
         {"id": "o-2", "customer_name": "Bob", "region": "US"},
@@ -418,42 +453,46 @@ async def test_lookup_preview_and_grouped_query_return_renderer_envelopes() -> N
     ]
     service, transport = service_with(
         [
-            source,
-            customers,
-            page(preview_rows),
             {
                 "tableId": "orders",
                 "schemaRevision": "schema_3",
                 "relations": [],
                 "lookups": [descriptor],
             },
-            page(query_rows, limit=2),
-            page(query_rows, limit=500),
+            {
+                **page(query_rows[:2], limit=2),
+                "groupRows": [
+                    {
+                        "key": ["US", "Bob"],
+                        "count": 1,
+                        "summaries": [],
+                        "parentCount": 1,
+                        "parentSummaries": [],
+                    },
+                    {
+                        "key": ["EU", "Ada"],
+                        "count": 1,
+                        "summaries": [],
+                        "parentCount": 2,
+                        "parentSummaries": [],
+                    },
+                    {
+                        "key": ["EU", "Ana"],
+                        "count": 1,
+                        "summaries": [],
+                        "parentCount": 2,
+                        "parentSummaries": [],
+                    },
+                ],
+                "groupOffset": 0,
+                "groupLimit": 5000,
+                "hasMoreGroups": False,
+            },
         ]
     )
 
-    preview = await service.preview_lookup(
-        ProductParams.model_validate(
-            {
-                "collection": "orders",
-                "definitions": [renderer],
-                "query": {
-                    "offset": 0,
-                    "limit": 50,
-                    "groups": [{"fieldRef": "region", "direction": "asc"}],
-                },
-                "fieldRefs": ["customer_name"],
-                "requestGeneration": 7,
-                "schemaRevision": "schema_3",
-                "permissionRevision": "schema_3",
-                "lookupRevision": revision,
-            }
-        )
-    )
-    assert preview["columns"][0]["title"] == "Customer name"
-    assert preview["groups"][0]["key"] == "EU"
-
-    result = await service.query_lookups(
+    result = await service.invoke(
+        "lookup.query",
         ProductParams.model_validate(
             {
                 "collection": "orders",
@@ -471,72 +510,62 @@ async def test_lookup_preview_and_grouped_query_return_renderer_envelopes() -> N
                 "permissionRevision": "schema_3",
                 "lookupRevision": revision,
             }
-        )
+        ),
     )
     assert result["columns"][0]["outputType"] == "text"
     assert result["groups"][0]["key"] == "US"
     assert any(group["path"] == ["EU"] for group in result["groups"])
+    lookup_request = transport.requests[1]["json_body"]
+    assert lookup_request["groups"] == [
+        {"field": "region", "direction": "desc"},
+        {"field": "customer_name", "direction": "asc"},
+    ]
+    assert lookup_request["groupLimit"] == 5000
     assert transport.responses == []
 
 
 @pytest.mark.asyncio
-async def test_lookup_normalization_supports_junction_and_terminal_m2a_sources() -> None:
-    junction_source = table_schema(
-        "orders",
-        [relation_field(mode="junction", junction_table="order_customers")],
-    )
-    junction_schema = table_schema("order_customers", [scalar_field("note")])
-    m2a_source = table_schema(
-        "orders",
+async def test_lookup_grouped_query_fails_closed_when_group_window_is_exhausted() -> None:
+    descriptor = lookup_descriptor()
+    revision = "sha256:86864bd289da0d7c8dc42fb321de98f66b1e69fc7ac41f853f2843b044b9700b"
+    service, transport = service_with(
         [
-            relation_field(
-                field_id="subject",
-                target="customers",
-                mode="m2a",
-                allowed=["customers", "vendors"],
-            )
-        ],
+            {
+                "tableId": "orders",
+                "schemaRevision": "schema_3",
+                "relations": [],
+                "lookups": [descriptor],
+            },
+            {
+                **page([], limit=1),
+                "groupRows": [],
+                "groupOffset": 0,
+                "groupLimit": 5000,
+                "hasMoreGroups": True,
+            },
+        ]
     )
-    customers = table_schema("customers", [scalar_field()])
-    vendors = table_schema("vendors", [scalar_field()])
-    service, transport = service_with([customers, junction_schema, customers, vendors])
 
-    junction, junction_renderer = await service._normalized_lookup_field(
-        {
-            **lookup_renderer(),
-            "lookupId": "orders.relation_note",
-            "fieldKey": "relation_note",
-            "path": [{"relationId": "orders.customer"}],
-            "source": {"kind": "junction_field", "fieldRef": "note"},
-        },
-        junction_source,
-    )
-    assert junction["lookup"]["junctionFieldId"] == "note"
-    assert junction["storageType"] == "json"
-    assert junction_renderer["aggregation"] == "values"
-    assert junction_renderer["outputType"] == "json"
+    with pytest.raises(ValueError, match="bounded window"):
+        await service.invoke(
+            "lookup.query",
+            ProductParams.model_validate(
+                {
+                    "collection": "orders",
+                    "fieldRefs": ["customer_name"],
+                    "query": {
+                        "limit": 1,
+                        "groups": [{"fieldRef": "customer_name", "direction": "asc"}],
+                    },
+                    "requestGeneration": 9,
+                    "schemaRevision": "schema_3",
+                    "permissionRevision": "schema_3",
+                    "lookupRevision": revision,
+                }
+            ),
+        )
 
-    polymorphic, polymorphic_renderer = await service._normalized_lookup_field(
-        {
-            **lookup_renderer(),
-            "lookupId": "orders.subject_name",
-            "fieldKey": "subject_name",
-            "path": [{"relationId": "orders.subject"}],
-            "m2aFieldMapping": [
-                {"collection": "customers", "fieldRef": "name"},
-                {"collection": "vendors", "fieldRef": "name"},
-            ],
-            "outputScale": None,
-        },
-        m2a_source,
-    )
-    assert polymorphic["lookup"]["targetFieldIds"] == {
-        "customers": "name",
-        "vendors": "name",
-    }
-    assert polymorphic["storageType"] == "json"
-    assert polymorphic_renderer["aggregation"] == "values"
-    assert polymorphic_renderer["outputType"] == "json"
+    assert len(transport.requests) == 2
     assert transport.responses == []
 
 
@@ -547,7 +576,6 @@ async def test_single_relation_update_translates_current_and_desired_targets() -
         "sourceTableId": "orders",
         "sourceFieldId": "customer",
         "physicalName": "customer_id",
-        "mode": "direct",
         "targetTableId": "customers",
         "cardinality": "one",
         "deletePolicy": "setNull",
@@ -565,7 +593,8 @@ async def test_single_relation_update_translates_current_and_desired_targets() -
         ]
     )
 
-    result = await service.update_single_relation(
+    result = await service.invoke(
+        "relation.updateSingle",
         ProductParams.model_validate(
             {
                 "relationId": "orders.customer",
@@ -579,7 +608,7 @@ async def test_single_relation_update_translates_current_and_desired_targets() -
                 "idempotencyKey": "single-relation-1",
                 "expectedDigest": "sha256:" + "b" * 64,
             }
-        )
+        ),
     )
 
     assert result["outcome"] == "committed"
@@ -597,10 +626,8 @@ async def test_single_relation_update_translates_current_and_desired_targets() -
 async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths() -> None:
     service, transport = service_with(
         [
-            {"tableId": "orders", "schemaRevision": "schema_3"},
+            snapshot_v2("orders", [field_v2("name")], revision="schema_3"),
             {"valid": True},
-            {"tables": "invalid"},
-            {"tables": ["invalid"]},
             {
                 "tableId": "orders",
                 "schemaRevision": "schema_3",
@@ -609,21 +636,21 @@ async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths
             },
         ]
     )
-    assert (await service.get_table_schema(ProductParams.model_validate({"tableId": "orders"})))[
-        "tableId"
-    ] == "orders"
-    await service.validate_snapshot(
-        ProductParams.model_validate({"snapshot": {"digest": "x"}, "currentQuery": {"limit": 10}})
+    assert (
+        await service.invoke(
+            "schema.getTable",
+            ProductParams.model_validate({"tableId": "orders"}),
+        )
+    )["tableId"] == "orders"
+    await service.invoke(
+        "query.validateSnapshot",
+        ProductParams.model_validate({"snapshot": {"digest": "x"}, "currentQuery": {"limit": 10}}),
     )
     assert transport.requests[1]["json_body"]["currentQuery"] == {"limit": 10}
 
-    with pytest.raises(ValueError, match="table catalog"):
-        await service.list_table_ids()
-    with pytest.raises(ValueError, match="table catalog"):
-        await service.list_table_ids()
-    assert await service.record_exists("", "row-1") is False
     with pytest.raises(ValueError, match="variant"):
-        await service.save_attachment_to_host(
+        await service.invoke(
+            "file.saveHostFile",
             ProductParams.model_validate(
                 {
                     "tableId": "orders",
@@ -633,10 +660,11 @@ async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths
                     "outputPath": "invoice.pdf",
                     "variant": "",
                 }
-            )
+            ),
         )
     with pytest.raises(ValueError, match=r"query\.groups"):
-        await service.query_lookups(
+        await service.invoke(
+            "lookup.query",
             ProductParams.model_validate(
                 {
                     "collection": "orders",
@@ -647,10 +675,11 @@ async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths
                     "permissionRevision": "schema_3",
                     "lookupRevision": "stale",
                 }
-            )
+            ),
         )
     with pytest.raises(ValueError, match="revisions are stale"):
-        await service.query_lookups(
+        await service.invoke(
+            "lookup.query",
             ProductParams.model_validate(
                 {
                     "collection": "orders",
@@ -661,44 +690,5 @@ async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths
                     "permissionRevision": "schema_2",
                     "lookupRevision": "stale",
                 }
-            )
+            ),
         )
-
-
-def test_lookup_helpers_validate_grouping_rendering_and_precision() -> None:
-    groups = _group_lookup_rows(
-        [{"kind": "b"}, {"kind": "a"}, {"kind": "a"}],
-        [{"fieldRef": "kind", "direction": "asc"}],
-    )
-    assert [(item["key"], item["count"]) for item in groups] == [("a", 2), ("b", 1)]
-    with pytest.raises(ValueError, match="rows"):
-        _group_lookup_rows("bad", [])
-    with pytest.raises(ValueError, match="contain objects"):
-        _group_lookup_rows([], ["bad"])
-    with pytest.raises(ValueError, match="direction"):
-        _group_lookup_rows([], [{"fieldRef": "kind", "direction": "sideways"}])
-
-    assert _precision_scale([]) == (None, None)
-    assert _precision_scale([{"kind": "precisionScale", "precision": 18, "scale": 2}]) == (18, 2)
-    with pytest.raises(ValueError, match="field constraints"):
-        _precision_scale(None)
-    with pytest.raises(ValueError, match="precision constraints"):
-        _precision_scale([{"kind": "precisionScale", "precision": True, "scale": 2}])
-
-    descriptor = lookup_descriptor()
-    assert _renderer_lookup(descriptor)["aggregation"] == "single"
-    cases = (
-        ({**descriptor, "aggregate": "median"}, "unsupported Lookup aggregate"),
-        ({**descriptor, "resultCardinality": "unknown"}, "invalid Lookup result cardinality"),
-        ({**descriptor, "outputStorage": "bytes"}, "PocketBase returned an unknown data type"),
-        ({**descriptor, "path": []}, "invalid Lookup path"),
-        ({**descriptor, "path": ["bad"]}, "invalid Lookup path"),
-        ({**descriptor, "junctionFieldId": ""}, "invalid junction Lookup field"),
-        (
-            {**descriptor, "targetFieldIds": {"customers": ""}},
-            "invalid m2a Lookup mappings",
-        ),
-    )
-    for invalid, expected in cases:
-        with pytest.raises(ValueError, match=re.escape(expected)):
-            _renderer_lookup(invalid)

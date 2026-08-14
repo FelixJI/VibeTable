@@ -161,6 +161,58 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 	if gotIDs[0] != wantIDs[0] || gotIDs[1] != wantIDs[1] {
 		t.Fatalf("stable pages = %#v, want %#v", gotIDs, wantIDs)
 	}
+	input.Offset = 0
+	windowOne, err := port.OpenCursor(ctx, "orders", input)
+	if err != nil {
+		t.Fatalf("OpenCursor: %v", err)
+	}
+	if !windowOne.HasMore || windowOne.NextCursor == nil || len(windowOne.Rows) != 1 {
+		t.Fatalf("first cursor window = %#v", windowOne)
+	}
+	windowTwo, err := port.FetchCursor(ctx, *windowOne.NextCursor)
+	if err != nil {
+		t.Fatalf("FetchCursor: %v", err)
+	}
+	cursorIDs := []any{windowOne.Rows[0]["id"], windowTwo.Rows[0]["id"]}
+	if cursorIDs[0] != wantIDs[0] || cursorIDs[1] != wantIDs[1] || windowTwo.HasMore {
+		t.Fatalf("stable keyset windows = %#v, want %#v", cursorIDs, wantIDs)
+	}
+	fiftyConditions := make([]query.FilterExpression, 50)
+	for index := range fiftyConditions {
+		fiftyConditions[index] = query.FilterExpression{
+			Field: "amount", Operator: query.OperatorGreaterEq, Value: 0,
+		}
+	}
+	boundaryPage, err := port.QueryPage(ctx, "orders", query.TableQuery{
+		Filters: []query.FilterExpression{{
+			Filters: []query.FilterExpression{{
+				Filters: fiftyConditions, GroupLogic: query.LogicAnd,
+			}},
+			GroupLogic: query.LogicAnd,
+		}},
+		Limit: 1,
+	})
+	if err != nil || boundaryPage.FilteredRows != 4 {
+		t.Fatalf("50-condition/3-level boundary = %#v err=%v", boundaryPage, err)
+	}
+	staleCursor := *windowOne.NextCursor
+	source.descriptor.DataRevision++
+	_, err = port.FetchCursor(ctx, staleCursor)
+	var stale *query.ProductError
+	if !errors.As(err, &stale) || stale.Code != "query.cursor_stale" {
+		t.Fatalf("stale cursor error = %#v", err)
+	}
+	source.descriptor.DataRevision--
+	replacement := "A"
+	if staleCursor[0] == 'A' {
+		replacement = "B"
+	}
+	tamperedCursor := replacement + staleCursor[1:]
+	_, err = port.FetchCursor(ctx, tamperedCursor)
+	var invalid *query.ProductError
+	if !errors.As(err, &invalid) || invalid.Code != "query.cursor.invalid" {
+		t.Fatalf("tampered cursor error = %#v", err)
+	}
 	view, err := port.ExecuteViewQuery(ctx, "orders", query.ViewQuery{
 		Query: query.TableQuery{
 			Filters: []query.FilterExpression{{
@@ -219,6 +271,7 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 		Summaries: []query.SummarySpec{
 			{Field: "amount", Function: query.AggregateSum},
 			{Field: "amount", Function: query.AggregateAvg},
+			{Field: "amount", Function: query.AggregateMin},
 		},
 		GroupLimit: 1,
 	})
@@ -228,8 +281,32 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 	twoLevelRow := twoLevel.GroupRows[0]
 	if twoLevelRow.ParentCount == nil || *twoLevelRow.ParentCount != 2 ||
 		fmt.Sprint(twoLevelRow.ParentSummaries[0]) != "181" ||
-		fmt.Sprint(twoLevelRow.ParentSummaries[1]) != "90.5" {
+		fmt.Sprint(twoLevelRow.ParentSummaries[1]) != "90.5" ||
+		fmt.Sprint(twoLevelRow.ParentSummaries[2]) != "81" {
 		t.Fatalf("two-level complete parent aggregate = %#v", twoLevelRow)
+	}
+	_, err = port.ExecuteViewQuery(ctx, "orders", query.ViewQuery{
+		Query: query.TableQuery{Limit: 1},
+		Groups: []query.GroupSpec{
+			{Field: "status"}, {Field: "order_date"}, {Field: "amount"},
+		},
+	})
+	var groupLimit *query.ProductError
+	if !errors.As(err, &groupLimit) || groupLimit.Code != "view.group.limit" {
+		t.Fatalf("three-group error = %#v", err)
+	}
+	_, err = port.ExecuteViewQuery(ctx, "orders", query.ViewQuery{
+		Query: query.TableQuery{Limit: 1},
+		Summaries: []query.SummarySpec{
+			{Field: "amount", Function: query.AggregateSum},
+			{Field: "amount", Function: query.AggregateAvg},
+			{Field: "amount", Function: query.AggregateMin},
+			{Field: "amount", Function: query.AggregateMax},
+		},
+	})
+	var summaryLimit *query.ProductError
+	if !errors.As(err, &summaryLimit) || summaryLimit.Code != "view.summary.limit" {
+		t.Fatalf("four-summary error = %#v", err)
 	}
 	dateGroups, err := port.ExecuteViewQuery(ctx, "orders", query.ViewQuery{
 		Query: query.TableQuery{
@@ -326,6 +403,28 @@ func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T
 		t.Fatalf("Aggregate(): %#v err=%v", aggregate, err)
 	}
 	assertAggregateRows(t, aggregate.Rows)
+	dashboardAggregate, err := port.Aggregate(ctx, "orders", query.AggregateQuery{
+		Filters: []query.FilterExpression{{
+			Field: "order_date", Operator: query.OperatorIsNotNull,
+		}},
+		Metrics: []query.AggregateMetric{{
+			Function: query.AggregateCountDistinct,
+			Field:    "name",
+			Alias:    "unique_names",
+		}},
+		TimeBucket: &query.AggregateTimeBucket{
+			Field: "order_date", Unit: query.GroupBucketMonth, Timezone: "UTC",
+		},
+		TopN:  1,
+		Limit: 100,
+	})
+	if err != nil || len(dashboardAggregate.Rows) != 1 {
+		t.Fatalf("Aggregate(dashboard semantics): %#v err=%v", dashboardAggregate, err)
+	}
+	if dashboardAggregate.Rows[0]["order_date"] != "2026-01-01T00:00:00Z" ||
+		dashboardAggregate.Rows[0]["unique_names"] != int64(2) {
+		t.Fatalf("dashboard aggregate result = %#v", dashboardAggregate.Rows)
+	}
 	relationAggregate, err := port.Aggregate(ctx, "orders", query.AggregateQuery{
 		GroupBy: []string{"customer.active"},
 		Metrics: []query.AggregateMetric{{

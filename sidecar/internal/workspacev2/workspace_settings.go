@@ -70,33 +70,17 @@ func cloneUint64(value *uint64) *uint64 {
 	return &cloned
 }
 
-// decodeWorkspaceSettingsSnapshot accepts the empty object emitted by
-// pre-v1 snapshots. It means "this snapshot predates external workspace
-// settings" and therefore restores no setting. Every versioned object is
-// otherwise decoded as a strict closed object.
 func decodeWorkspaceSettingsSnapshot(
 	raw []byte,
-) (workspaceSettingsSnapshot, bool, error) {
-	var legacy map[string]json.RawMessage
-	if err := decodeWorkspaceSettingsStrict(raw, &legacy); err != nil {
-		return workspaceSettingsSnapshot{}, false,
-			errors.New("workspace.settings_invalid")
-	}
-	if legacy == nil {
-		return workspaceSettingsSnapshot{}, false,
-			errors.New("workspace.settings_invalid")
-	}
-	if _, versioned := legacy["formatVersion"]; !versioned {
-		return workspaceSettingsSnapshot{}, true, nil
-	}
+) (workspaceSettingsSnapshot, error) {
 	var value workspaceSettingsSnapshot
 	if err := decodeWorkspaceSettingsStrict(raw, &value); err != nil ||
 		value.FormatVersion != workspaceSettingsFormatVersion ||
 		!validWorkspaceRetentionSettings(value.Retention) {
-		return workspaceSettingsSnapshot{}, false,
+		return workspaceSettingsSnapshot{},
 			errors.New("workspace.settings_invalid")
 	}
-	return value, false, nil
+	return value, nil
 }
 
 func decodeWorkspaceSettingsStrict(raw []byte, value any) error {
@@ -129,8 +113,8 @@ func replaceWorkspaceSettings(
 	raw []byte,
 	mutationRevision uint64,
 ) error {
-	target, legacy, err := decodeWorkspaceSettingsSnapshot(raw)
-	if err != nil || legacy {
+	target, err := decodeWorkspaceSettingsSnapshot(raw)
+	if err != nil {
 		return err
 	}
 	current, currentMutationRevision, err := store.retention(ctx)
@@ -167,21 +151,13 @@ func replaceWorkspaceSettings(
 }
 
 func workspaceSettingsDiffer(currentRaw []byte, targetRaw []byte) (bool, error) {
-	current, currentLegacy, err := decodeWorkspaceSettingsSnapshot(currentRaw)
+	current, err := decodeWorkspaceSettingsSnapshot(currentRaw)
 	if err != nil {
 		return false, err
 	}
-	target, targetLegacy, err := decodeWorkspaceSettingsSnapshot(targetRaw)
+	target, err := decodeWorkspaceSettingsSnapshot(targetRaw)
 	if err != nil {
 		return false, err
-	}
-	// A legacy empty object carried no external setting and must not reset a
-	// newer workspace to defaults.
-	if targetLegacy {
-		return false, nil
-	}
-	if currentLegacy {
-		return true, nil
 	}
 	return !reflect.DeepEqual(current.Retention, target.Retention), nil
 }
@@ -205,7 +181,7 @@ func (runtime *Runtime) readWorkspaceSettingsObject(
 	if len(raw) > 1<<20 {
 		return nil, errors.New("workspace.settings_resource_limit")
 	}
-	if _, _, err := decodeWorkspaceSettingsSnapshot(raw); err != nil {
+	if _, err := decodeWorkspaceSettingsSnapshot(raw); err != nil {
 		return nil, err
 	}
 	return raw, nil

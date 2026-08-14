@@ -10,12 +10,14 @@ import (
 type Namespace string
 
 const (
-	NamespaceSharedSettings     Namespace = "shared_settings"
-	NamespaceDashboards         Namespace = "dashboards"
-	NamespacePanels             Namespace = "panels"
-	NamespacePresets            Namespace = "presets"
-	NamespaceIdentifierMappings Namespace = "identifier_mappings"
-	NamespaceContentVersions    Namespace = "content_versions"
+	NamespaceSharedSettings      Namespace = "shared_settings"
+	NamespaceDashboards          Namespace = "dashboards"
+	NamespacePanels              Namespace = "panels"
+	NamespacePresets             Namespace = "presets"
+	NamespaceContentVersions     Namespace = "content_versions"
+	NamespaceInterfaces          Namespace = "interfaces"
+	NamespaceContentProfiles     Namespace = "content_profiles"
+	NamespaceRecordDocumentLinks Namespace = "record_document_links"
 
 	StatusApplied  = "applied"
 	StatusReplayed = "replayed"
@@ -26,8 +28,10 @@ var namespaceOrder = []Namespace{
 	NamespaceDashboards,
 	NamespacePanels,
 	NamespacePresets,
-	NamespaceIdentifierMappings,
 	NamespaceContentVersions,
+	NamespaceInterfaces,
+	NamespaceContentProfiles,
+	NamespaceRecordDocumentLinks,
 }
 
 func Namespaces() []Namespace {

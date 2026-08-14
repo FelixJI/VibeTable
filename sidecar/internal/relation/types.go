@@ -3,27 +3,20 @@ package relation
 import (
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
 )
 
 type Descriptor struct {
-	RelationID                   string   `json:"relationId"`
-	SourceTableID                string   `json:"sourceTableId"`
-	SourceFieldID                string   `json:"sourceFieldId"`
-	PhysicalName                 string   `json:"physicalName"`
-	Mode                         string   `json:"mode"`
-	TargetTableID                string   `json:"targetTableId"`
-	Cardinality                  string   `json:"cardinality"`
-	DeletePolicy                 string   `json:"deletePolicy"`
-	JunctionTableID              *string  `json:"junctionTableId,omitempty"`
-	JunctionSourceFieldID        string   `json:"junctionSourceFieldId,omitempty"`
-	JunctionTargetFieldID        string   `json:"junctionTargetFieldId,omitempty"`
-	JunctionDiscriminatorFieldID string   `json:"junctionDiscriminatorFieldId,omitempty"`
-	AllowedTargetTableIDs        []string `json:"allowedTargetTableIds"`
-	PairID                       string   `json:"pairId,omitempty"`
-	ReciprocalFieldID            string   `json:"reciprocalFieldId,omitempty"`
-	QuickCreateEligible          bool     `json:"quickCreateEligible"`
-	QuickCreateReason            string   `json:"quickCreateReason,omitempty"`
+	RelationID          string `json:"relationId"`
+	SourceTableID       string `json:"sourceTableId"`
+	SourceFieldID       string `json:"sourceFieldId"`
+	PhysicalName        string `json:"physicalName"`
+	TargetTableID       string `json:"targetTableId"`
+	Cardinality         string `json:"cardinality"`
+	DeletePolicy        string `json:"deletePolicy"`
+	PairID              string `json:"pairId,omitempty"`
+	ReciprocalFieldID   string `json:"reciprocalFieldId,omitempty"`
+	QuickCreateEligible bool   `json:"quickCreateEligible"`
+	QuickCreateReason   string `json:"quickCreateReason,omitempty"`
 }
 
 type LookupDescriptor struct {
@@ -35,17 +28,13 @@ type LookupDescriptor struct {
 	RelationFieldID   string                 `json:"relationFieldId"`
 	Path              []LookupPathDescriptor `json:"path"`
 	TargetFieldID     string                 `json:"targetFieldId"`
-	JunctionFieldID   string                 `json:"junctionFieldId,omitempty"`
-	TargetFieldIDs    map[string]string      `json:"targetFieldIds,omitempty"`
-	Aggregate         string                 `json:"aggregate"`
 	ResultCardinality string                 `json:"resultCardinality"`
-	OutputStorage     schema.StorageType     `json:"outputStorage"`
+	OutputStorage     string                 `json:"outputStorage"`
 	Revision          int                    `json:"revision"`
 }
 
 type LookupPathDescriptor struct {
-	RelationID    string `json:"relationId"`
-	M2ACollection string `json:"m2aCollection,omitempty"`
+	RelationID string `json:"relationId"`
 }
 
 type CatalogResult struct {
@@ -58,27 +47,17 @@ type CatalogResult struct {
 
 type SearchRequest struct {
 	RelationID    string `json:"relationId"`
-	TargetTableID string `json:"targetTableId,omitempty"`
 	Query         string `json:"query"`
 	Offset        int    `json:"offset"`
 	Limit         int    `json:"limit"`
+	TargetTableID string `json:"-"`
 }
 
 type TargetRef struct {
-	TableID          string         `json:"tableId"`
-	RecordID         string         `json:"recordId"`
-	Label            string         `json:"label"`
-	SecondaryLabel   string         `json:"secondaryLabel,omitempty"`
-	JunctionID       string         `json:"junctionId,omitempty"`
-	JunctionRevision string         `json:"junctionRevision,omitempty"`
-	JunctionValues   map[string]any `json:"junctionValues"`
-}
-
-type JunctionUpdate struct {
-	JunctionID       string         `json:"junctionId"`
-	Values           map[string]any `json:"values"`
-	ExpectedRevision *string        `json:"expectedRevision,omitempty"`
-	ExpectedDigest   *string        `json:"expectedDigest,omitempty"`
+	TableID        string `json:"tableId"`
+	RecordID       string `json:"recordId"`
+	Label          string `json:"label"`
+	SecondaryLabel string `json:"secondaryLabel,omitempty"`
 }
 
 type SearchResult struct {
@@ -89,12 +68,12 @@ type SearchResult struct {
 
 type CreateTargetRequest struct {
 	RelationID     string         `json:"relationId"`
-	TargetTableID  string         `json:"targetTableId,omitempty"`
 	Label          string         `json:"label"`
 	Values         map[string]any `json:"values,omitempty"`
 	RequestID      string         `json:"requestId"`
 	IdempotencyKey string         `json:"idempotencyKey"`
 	Actor          mutation.Actor `json:"actor"`
+	TargetTableID  string         `json:"-"`
 }
 
 type CreateTargetResult struct {
@@ -103,16 +82,15 @@ type CreateTargetResult struct {
 }
 
 type DeltaRequest struct {
-	RelationID     string           `json:"relationId"`
-	SourceRecordID string           `json:"sourceRecordId"`
-	SchemaRevision string           `json:"schemaRevision"`
-	Adds           []TargetRef      `json:"adds"`
-	Updates        []JunctionUpdate `json:"updates"`
-	Removes        []TargetRef      `json:"removes"`
-	RequestID      string           `json:"requestId"`
-	IdempotencyKey string           `json:"idempotencyKey"`
-	ExpectedDigest *string          `json:"expectedDigest,omitempty"`
-	Actor          mutation.Actor   `json:"actor"`
+	RelationID     string         `json:"relationId"`
+	SourceRecordID string         `json:"sourceRecordId"`
+	SchemaRevision string         `json:"schemaRevision"`
+	Adds           []TargetRef    `json:"adds"`
+	Removes        []TargetRef    `json:"removes"`
+	RequestID      string         `json:"requestId"`
+	IdempotencyKey string         `json:"idempotencyKey"`
+	ExpectedDigest *string        `json:"expectedDigest,omitempty"`
+	Actor          mutation.Actor `json:"actor"`
 }
 
 type DeltaPreview struct {
@@ -131,15 +109,19 @@ type DeltaResult struct {
 }
 
 type LookupQueryRequest struct {
-	TableID        string           `json:"tableId"`
-	SchemaRevision string           `json:"schemaRevision"`
-	Query          query.TableQuery `json:"query"`
+	TableID        string            `json:"tableId"`
+	SchemaRevision string            `json:"schemaRevision"`
+	Query          query.TableQuery  `json:"query"`
+	Groups         []query.GroupSpec `json:"groups,omitempty"`
+	GroupLimit     int               `json:"groupLimit,omitempty"`
 }
 
-type LookupPreviewRequest struct {
-	Definition schema.TableDefinition `json:"definition"`
-	FieldIDs   []string               `json:"fieldIds"`
-	Query      query.TableQuery       `json:"query"`
+type LookupQueryResult struct {
+	query.Page
+	GroupRows     []query.GroupRow `json:"groupRows"`
+	GroupOffset   int              `json:"groupOffset"`
+	GroupLimit    int              `json:"groupLimit"`
+	HasMoreGroups bool             `json:"hasMoreGroups"`
 }
 
 type LookupValuePageRequest struct {

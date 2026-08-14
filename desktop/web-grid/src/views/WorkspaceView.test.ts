@@ -6,7 +6,11 @@ import { NDropdown, NMessageProvider, NModal } from "naive-ui";
 
 import WorkspaceView from "./WorkspaceView.vue";
 import GridHost from "@/components/grid/GridHost.vue";
+import DataSourceViewBar from "@/components/grid/DataSourceViewBar.vue";
 import RelationEditorPanel from "@/components/grid/RelationEditorPanel.vue";
+import ContentRecordPanel from "@/content/ContentRecordPanel.vue";
+import FileWorkspaceView from "./FileWorkspaceView.vue";
+import ManagedAttachmentCell from "@/components/attachments/ManagedAttachmentCell.vue";
 import AppToolbar from "@/components/layout/AppToolbar.vue";
 import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
@@ -18,12 +22,20 @@ import { usePasteStore } from "@/stores/pasteStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
+import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
+import { useSurfaceStore } from "@/stores/surfaceStore";
+import { usePresetVersionStore } from "@/stores/presetVersionStore";
 import { setLocale } from "@/i18n";
+import {
+  setWorkspaceV2UiPort,
+  type WorkspaceV2UiPort,
+} from "@/services/workspaceV2UiPort";
 import type {
   NormalizedRelationDescriptor,
   PastePlan,
   PasteSummary,
   RelationTargetRef,
+  PresetEntry,
 } from "@/contracts";
 
 /**
@@ -179,6 +191,7 @@ describe("WorkspaceView", () => {
     for (const wrapper of mountedViews.splice(0)) wrapper.unmount();
     document.body.innerHTML = "";
     setHostBridgeForTesting(null);
+    setWorkspaceV2UiPort(null);
     vi.restoreAllMocks();
   });
 
@@ -215,11 +228,372 @@ describe("WorkspaceView", () => {
     expect(wrapper.get(".tables-view").isVisible()).toBe(true);
   });
 
+  it("renders every top-level product workspace from the shared navigation state", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    useWorkspaceSessionStore().configureCapabilities(["conflict.center.v2"]);
+    const ui = useUiStore();
+    const wrapper = mountView();
+    await flushPromises();
+
+    const cases = [
+      ["home", ".home-view"],
+      ["tables", ".tables-view"],
+      ["dashboard", null],
+      ["interfaces", null],
+      ["files", "[data-testid='file-workspace']"],
+      ["search", "[data-testid='workspace-search-view']"],
+      ["conflicts", "[data-testid='conflict-center']"],
+      ["plugins", ".plugin-center"],
+      ["settings", "[data-testid='settings-view']"],
+    ] as const;
+    for (const [view, selector] of cases) {
+      await wrapper.get(`[data-testid="nav-${view}"]`).trigger("click");
+      await flushPromises();
+      expect(ui.activeView).toBe(view);
+      if (selector === null) continue;
+      await vi.waitFor(() => {
+        expect(wrapper.find(selector).exists(), `${view} should render`).toBe(true);
+      });
+    }
+  });
+
+  it("passes remembered document labels to a Content panel after WorkspaceView remounts", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const documents = useDocumentWorkspaceStore();
+    const documentId = "11111111-1111-4111-8111-111111111111";
+    documents.setPage([{
+      documentId,
+      entryHandle: "entry-1",
+      displayName: "content-reference-a.md",
+      relativePath: "content-reference-a.md",
+      extension: "md",
+      authority: "workspace",
+      availability: "available",
+      mimeType: "text/markdown",
+      sizeBytes: 71,
+      effectiveRevisionCreatedAt: "2026-08-13T00:00:00Z",
+      formalVersion: 1,
+      status: "active",
+      capabilities: [],
+    }], null, 14, false);
+    documents.setPage([], null, 15, false);
+
+    const firstView = mountView();
+    await flushPromises();
+    expect(firstView.findComponent(ContentRecordPanel).props("documentLabels")).toEqual({
+      [documentId]: "content-reference-a.md",
+    });
+    firstView.unmount();
+
+    const reopenedView = mountView();
+    await flushPromises();
+    expect(reopenedView.findComponent(ContentRecordPanel).props("documentLabels")).toEqual({
+      [documentId]: "content-reference-a.md",
+    });
+  });
+
+  it("projects a successful unlink out of the active Content document set", async () => {
+    const handlers = new Map<string, (payload: never) => void>();
+    const documentId = "11111111-1111-4111-8111-111111111111";
+    const activeDocument = {
+      documentId,
+      entryHandle: "entry-1",
+      displayName: "content-reference-a.md",
+      relativePath: "content-reference-a.md",
+      extension: "md",
+      availability: "available",
+      mimeType: "text/markdown",
+      sizeBytes: 71,
+      effectiveRevisionCreatedAt: "2026-08-13T00:00:00Z",
+      formalVersion: 1,
+      status: "active",
+      currentRevision: "revision-1",
+      effectiveRevisionId: "22222222-2222-4222-8222-222222222222",
+      capabilities: ["open", "unlink"],
+    };
+    setHostBridgeForTesting({
+      request: vi.fn((type: string) => type === "document.listRequested"
+        ? Promise.resolve({ entries: [activeDocument], nextCursor: null, topologyRevision: 14 })
+        : new Promise(() => undefined)),
+      notify: vi.fn(),
+      on: vi.fn((type: string, handler: (payload: never) => void) => {
+        handlers.set(type, handler);
+        return () => handlers.delete(type);
+      }),
+    } as unknown as HostBridge);
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2", "fileHistory.tree.v2"]);
+    session.setWorkspaces([{
+      contractVersion: "2.0",
+      workspaceId: "33333333-3333-4333-8333-333333333333",
+      displayName: "测试工作区",
+      selectedRoot: "D:\\Workspace",
+      activityRoot: null,
+      storageKind: "fixed",
+      coordinationStrength: "strong",
+      lastOpenedAt: "2026-08-13T00:00:00Z",
+      lastKnownHealth: "healthy",
+      lastSnapshotAt: null,
+      lastSyncAt: null,
+      pendingSync: false,
+    }]);
+    session.applySession({
+      contractVersion: "2.0",
+      workspaceId: "33333333-3333-4333-8333-333333333333",
+      sessionEpoch: 1,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+    setWorkspaceV2UiPort({
+      request: vi.fn(async () => ({
+        ...activeDocument,
+        contractVersion: "2.0",
+        status: "deleted",
+      })),
+    } as unknown as WorkspaceV2UiPort);
+    useUiStore().navigate("files");
+    const wrapper = mountView();
+    await flushPromises();
+
+    wrapper.findComponent(FileWorkspaceView).vm.$emit("intent", {
+      type: "document.listRequested",
+      scope: { kind: "global" },
+      authority: "workspace",
+      query: {
+        logic: "and",
+        filters: [{ field: "status", operator: "eq", value: "active" }],
+        sort: [],
+        limit: 100,
+        cursor: null,
+      },
+    });
+    await flushPromises();
+    const documents = useDocumentWorkspaceStore();
+    expect(documents.entries[0]?.status).toBe("active");
+    expect(documents.documentLabels[documentId]).toBe("content-reference-a.md");
+
+    wrapper.findComponent(FileWorkspaceView).vm.$emit("workspaceV2Action", {
+      method: "fileHistory.unlink",
+      params: {
+        documentId,
+        expectedEffectiveRevisionId: activeDocument.effectiveRevisionId,
+      },
+    });
+    await flushPromises();
+
+    expect(documents.entries).toEqual([]);
+    expect(documents.documentLabels[documentId]).toBe("content-reference-a.md");
+    expect(wrapper.findComponent(ContentRecordPanel).props("documents")).toEqual([]);
+  });
+
+  it("switches the active data source through every supported record presentation", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders", metadata: {} }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    useUiStore().navigate("tables");
+    const table = useTableStore();
+    table.setDatasetReady({
+      table: "orders",
+      columns: [
+        { name: "title", title: "标题", dataType: "text", editable: true, nullable: true },
+        { name: "status", title: "状态", dataType: "text", editable: true, nullable: true },
+        { name: "start", title: "开始", dataType: "date", editable: true, nullable: true },
+        { name: "end", title: "结束", dataType: "date", editable: true, nullable: true },
+        { name: "cover", title: "封面", dataType: "text", editable: true, nullable: true },
+      ],
+      rows: [{ rowKey: "1", title: "任务", status: "进行中", start: "2026-08-12", end: "2026-08-13", cover: null }],
+      offset: 0,
+      limit: 100,
+      totalRows: 1,
+      mode: "remote",
+      revision: { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 1 },
+    });
+    const presets = usePresetVersionStore();
+    const entries = (["table", "calendar", "timeline", "kanban", "gallery"] as const)
+      .map((kind, index): PresetEntry => ({
+        id: `view-${kind}`,
+        collection: "orders",
+        name: kind,
+        scope: "personal",
+        revision: `revision-${index}`,
+        emittedEvents: [],
+        view: {
+          kind,
+          layout: kind,
+          filters: [],
+          sorts: [],
+          search: "",
+          visibleFields: ["title", "status", "start", "end", "cover"],
+          dateField: "start",
+          endDateField: "end",
+          titleField: "title",
+          groupField: "status",
+          coverField: "cover",
+        },
+      }));
+    presets.receivePresets({ collection: "orders", presets: entries });
+    const wrapper = mountView();
+    await flushPromises();
+    workspace.selectTable("orders");
+    useUiStore().navigate("tables");
+    table.setDatasetReady({
+      table: "orders",
+      columns: table.schema ?? [],
+      rows: [{ rowKey: "1", title: "任务", status: "进行中", start: "2026-08-12", end: "2026-08-13", cover: null }],
+      offset: 0,
+      limit: 100,
+      totalRows: 1,
+      mode: "remote",
+      revision: { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 1 },
+    });
+    presets.receivePresets({ collection: "orders", presets: entries });
+    await flushPromises();
+
+    const selectors: Record<(typeof entries)[number]["view"]["kind"] & string, string> = {
+      table: ".grid-host",
+      calendar: "[data-testid='record-calendar-view']",
+      timeline: "[data-testid='record-timeline-view']",
+      kanban: "[data-testid='record-kanban-view']",
+      gallery: "[data-testid='record-gallery-view']",
+    };
+    for (const entry of entries) {
+      presets.activatePreset(entry.id);
+      await flushPromises();
+      expect(
+        wrapper.find(selectors[entry.view.kind!]).exists(),
+        `${entry.view.kind} should render`,
+      ).toBe(true);
+    }
+  });
+
+  it("manages persisted views through create, duplicate, rename, default, switch, save, and delete", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders", metadata: {} }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    useUiStore().navigate("tables");
+    const table = useTableStore();
+    table.setDatasetReady({
+      table: "orders",
+      columns: [
+        { name: "title", title: "标题", dataType: "text", editable: true, nullable: true },
+        { name: "status", title: "状态", dataType: "text", editable: true, nullable: true },
+        { name: "start", title: "开始", dataType: "date", editable: true, nullable: true },
+      ],
+      rows: [{ rowKey: "1", title: "任务", status: "进行中", start: "2026-08-12" }],
+      offset: 0, limit: 100, totalRows: 1, mode: "remote",
+      revision: { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 1 },
+    });
+    const entry = (id: string, name: string, isDefault = false): PresetEntry => ({
+      id, collection: "orders", name, scope: "personal", revision: `revision-${id}`,
+      emittedEvents: [],
+      view: {
+        kind: "table", layout: "table", filters: [], sorts: [], search: "",
+        visibleFields: ["title", "status", "start"], isDefault,
+      },
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    workspace.selectTable("orders");
+    table.setDatasetReady({
+      table: "orders", columns: table.schema ?? [],
+      rows: [{ rowKey: "1", title: "任务", status: "进行中", start: "2026-08-12" }],
+      offset: 0, limit: 100, totalRows: 1, mode: "remote",
+      revision: { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 1 },
+    });
+    await flushPromises();
+    const listRequest = [...posted].reverse().find((item) => item.type === "preset.list")!;
+    const first = entry("view-1", "默认", true);
+    const second = entry("view-2", "备选");
+    emit({ type: "preset.list", requestId: listRequest.requestId, payload: { collection: "orders", presets: [first, second] } });
+    await flushPromises();
+
+    const bar = wrapper.findComponent(DataSourceViewBar);
+    expect(bar.exists()).toBe(true);
+    const answerSave = async (saved: PresetEntry) => {
+      await flushPromises();
+      const request = [...posted].reverse().find((item) => item.type === "preset.save")!;
+      emit({ type: "preset.save", requestId: request.requestId, payload: saved });
+      await flushPromises();
+    };
+
+    bar.vm.$emit("create", {
+      name: "日历", kind: "calendar", dateField: "start", endDateField: null,
+      titleField: "title", groupField: null, coverField: null,
+    });
+    const created = { ...entry("view-3", "日历"), view: { ...entry("view-3", "日历").view, kind: "calendar" as const, layout: "calendar" as const, dateField: "start", titleField: "title" } };
+    await answerSave(created);
+    expect(usePresetVersionStore().activePresetId).toBe("view-3");
+
+    bar.vm.$emit("duplicate", created, "日历副本");
+    const duplicated = { ...created, id: "view-4", name: "日历副本", revision: "revision-view-4", view: { ...created.view, isDefault: false } };
+    await answerSave(duplicated);
+    bar.vm.$emit("rename", duplicated, "迭代日历");
+    const renamed = { ...duplicated, name: "迭代日历", revision: "revision-renamed" };
+    await answerSave(renamed);
+
+    bar.vm.$emit("setDefault", renamed);
+    const promoted = { ...renamed, view: { ...renamed.view, isDefault: true } };
+    await answerSave(promoted);
+    await answerSave({ ...first, view: { ...first.view, isDefault: false } });
+    expect(usePresetVersionStore().activePresetId).toBe("view-4");
+
+    bar.vm.$emit("switch", second);
+    await answerSave(promoted);
+    expect(usePresetVersionStore().activePresetId).toBe("view-2");
+    bar.vm.$emit("save", second);
+    await answerSave({ ...second, revision: "revision-saved" });
+
+    bar.vm.$emit("delete", second);
+    await flushPromises();
+    const deleteRequest = [...posted].reverse().find((item) => item.type === "preset.delete")!;
+    emit({ type: "preset.delete", requestId: deleteRequest.requestId, payload: { deleted: second.id } });
+    await flushPromises();
+    expect(usePresetVersionStore().presets.some((item) => item.id === second.id)).toBe(false);
+  });
+
+  it("opens Interfaces and guards its unsaved draft before leaving", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    vi.spyOn(window, "prompt").mockReturnValue("Operations");
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="nav-interfaces"]').trigger("click");
+    await flushPromises();
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="interface-workspace"]').exists()).toBe(true);
+    });
+    expect(posted.some((item) => item.type === "interface.listRequested")).toBe(true);
+
+    await wrapper.get('[data-testid="interface-create"]').trigger("click");
+    expect(useSurfaceStore().dirty).toBe(true);
+    await wrapper.get('[data-testid="nav-files"]').trigger("click");
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(useUiStore().activeView).toBe("interfaces");
+
+    confirm.mockReturnValue(true);
+    await wrapper.get('[data-testid="nav-files"]').trigger("click");
+    await flushPromises();
+    expect(useUiStore().activeView).toBe("files");
+    expect(useSurfaceStore().dirty).toBe(false);
+  });
+
   it("shows a localized non-blocking recovery path for stale edits", async () => {
     const { bridge, emit, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "orders" }]);
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
     workspace.selectTable("orders");
     const wrapper = mountView();
     await flushPromises();
@@ -252,7 +626,7 @@ describe("WorkspaceView", () => {
     const { bridge, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "orders" }]);
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
     workspace.selectTable("orders");
     const wrapper = mountView();
     await flushPromises();
@@ -284,7 +658,7 @@ describe("WorkspaceView", () => {
     const { bridge, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "orders" }]);
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
     workspace.selectTable("orders");
     const wrapper = mountView();
     await flushPromises();
@@ -315,7 +689,7 @@ describe("WorkspaceView", () => {
     const { bridge } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "orders" }]);
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
     workspace.selectTable("orders");
     const wrapper = mountView();
     await flushPromises();
@@ -342,7 +716,7 @@ describe("WorkspaceView", () => {
     const { bridge, posted, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "orders" }]);
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
     workspace.selectTable("orders");
     const wrapper = mountView();
     await flushPromises();
@@ -394,7 +768,7 @@ describe("WorkspaceView", () => {
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
     const table = useTableStore();
-    workspace.setOpened([{ collection: "orders" }]);
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
     workspace.selectTable("orders");
     table.revision = {
       databaseSessionId: "session-1",
@@ -484,7 +858,10 @@ describe("WorkspaceView", () => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "orders" }, { collection: "contracts" }]);
+    workspace.setOpened(
+      [{ collection: "orders" }, { collection: "contracts" }],
+      { orders: "Orders", contracts: "Contracts" },
+    );
     workspace.selectTable("orders");
     mountView();
     await flushPromises();
@@ -507,12 +884,12 @@ describe("WorkspaceView", () => {
   it("creates a visual relation target and applies it as one target object", async () => {
     const descriptor: NormalizedRelationDescriptor = {
       relationId: "orders.contract", fieldRef: "contract", sourceCollection: "orders", kind: "m2o",
-      relatedCollection: "contracts", allowedCollections: [], unique: false, nullable: true,
+      relatedCollection: "contracts", unique: false, nullable: true,
       onDelete: "nullify", preset: "standard", selfRelation: false, managed: true, state: "valid",
       diagnostics: [],
     };
     const target: RelationTargetRef = {
-      collection: "contracts", itemId: "contract-7", label: "CT-0007", junctionValues: {},
+      collection: "contracts", itemId: "contract-7", label: "CT-0007",
     };
     const request = vi.fn(async (method: string, payload: unknown) => {
       if (method === "schema.describe") {
@@ -556,7 +933,7 @@ describe("WorkspaceView", () => {
       stop: vi.fn(),
     } as unknown as HostBridge);
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "orders" }]);
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
     workspace.selectTable("orders");
     const table = useTableStore();
     table.appendPage({
@@ -582,7 +959,7 @@ describe("WorkspaceView", () => {
     expect(table.allRows[0]?.contract).toEqual(target);
     expect(Array.isArray(table.allRows[0]?.contract)).toBe(false);
     expect(request).toHaveBeenCalledWith("relation.createTarget", expect.objectContaining({
-      relationId: "orders.contract", label: "CT-0007", collection: "contracts",
+      relationId: "orders.contract", label: "CT-0007",
     }));
     wrapper.unmount();
   });
@@ -590,13 +967,13 @@ describe("WorkspaceView", () => {
   it("ignores a nested relation search response from a previously closed editor", async () => {
     const mainRelation = (field: string, targetCollection: string): NormalizedRelationDescriptor => ({
       relationId: `orders.${field}`, fieldRef: field, sourceCollection: "orders", kind: "m2o",
-      relatedCollection: targetCollection, allowedCollections: [], unique: false, nullable: true,
+      relatedCollection: targetCollection, unique: false, nullable: true,
       onDelete: "nullify", preset: "standard", selfRelation: false, managed: true,
       quickCreateEligible: false, state: "valid", diagnostics: [],
     });
     const nestedRelation = (collection: string): NormalizedRelationDescriptor => ({
       relationId: `${collection}.region`, fieldRef: "region", sourceCollection: collection,
-      kind: "m2o", relatedCollection: "regions", allowedCollections: [], unique: false,
+      kind: "m2o", relatedCollection: "regions", unique: false,
       nullable: false, onDelete: "restrict", preset: "standard", selfRelation: false,
       managed: true, quickCreateEligible: true, state: "valid", diagnostics: [],
     });
@@ -668,7 +1045,7 @@ describe("WorkspaceView", () => {
       stop: vi.fn(),
     } as unknown as HostBridge);
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "orders" }]);
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
     workspace.selectTable("orders");
     const table = useTableStore();
     table.appendPage({
@@ -702,21 +1079,21 @@ describe("WorkspaceView", () => {
     editor = wrapper.findComponent(RelationEditorPanel);
     editor.vm.$emit("searchCreateRelation", "region", "新区域");
     current.resolve({
-      items: [{ collection: "regions", itemId: "same-id", label: "新区域", junctionValues: {} }],
+      items: [{ collection: "regions", itemId: "same-id", label: "新区域" }],
       total: 1,
     });
     await flushPromises();
     expect(editor.props("targetRelationOptions")).toEqual({
-      region: [{ collection: "regions", itemId: "same-id", label: "新区域", junctionValues: {} }],
+      region: [{ collection: "regions", itemId: "same-id", label: "新区域" }],
     });
 
     stale.resolve({
-      items: [{ collection: "regions", itemId: "same-id", label: "旧区域", junctionValues: {} }],
+      items: [{ collection: "regions", itemId: "same-id", label: "旧区域" }],
       total: 1,
     });
     await flushPromises();
     expect(editor.props("targetRelationOptions")).toEqual({
-      region: [{ collection: "regions", itemId: "same-id", label: "新区域", junctionValues: {} }],
+      region: [{ collection: "regions", itemId: "same-id", label: "新区域" }],
     });
   });
 
@@ -724,7 +1101,7 @@ describe("WorkspaceView", () => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "orders" }]);
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
     workspace.selectTable("orders");
     const wrapper = mountView();
     await flushPromises();
@@ -855,7 +1232,7 @@ describe("WorkspaceView", () => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "users", metadata: {} }]);
+    workspace.setOpened([{ collection: "users", metadata: {} }], { users: "Users" });
 
     mountView();
     await flushPromises();
@@ -876,7 +1253,7 @@ describe("WorkspaceView", () => {
     workspace.setOpened([
       { collection: "orders" },
       { collection: "users" },
-    ]);
+    ], { orders: "Orders", users: "Users" });
     workspace.selectTable("orders");
 
     const wrapper = mountView();
@@ -917,7 +1294,7 @@ describe("WorkspaceView", () => {
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
     const table = useTableStore();
-    workspace.setOpened([{ collection: "orders", metadata: {} }]);
+    workspace.setOpened([{ collection: "orders", metadata: {} }], { orders: "Orders" });
     workspace.selectTable("orders");
     table.setEditSchema([{
       name: "name",
@@ -946,8 +1323,7 @@ describe("WorkspaceView", () => {
       offset: 0,
       limit: 100,
       totalRows: 0,
-      loadedRows: 0,
-      mode: "client",
+      mode: "remote",
       revision: {
         databaseSessionId: "session-1",
         schemaRevision: "schema-1",
@@ -975,7 +1351,7 @@ describe("WorkspaceView", () => {
     setHostBridgeForTesting(bridge);
     const ui = useUiStore();
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "orders", metadata: {} }]);
+    workspace.setOpened([{ collection: "orders", metadata: {} }], { orders: "Orders" });
 
     mountView();
     await flushPromises();
@@ -1032,7 +1408,7 @@ describe("WorkspaceView", () => {
     const ui = useUiStore();
 
     // Stage the paste flow: a current collection + a previewed plan + open panel.
-    workspace.setOpened([{ collection: "users", metadata: {} }]);
+    workspace.setOpened([{ collection: "users", metadata: {} }], { users: "Users" });
     workspace.selectTable("users");
     paste.setPlan(makePlan("tok-xyz"));
     paste.toggleAck(); // canConfirm requires phase=previewing && acked
@@ -1119,7 +1495,7 @@ describe("WorkspaceView", () => {
       offset: 0,
       limit: 2,
       totalRows: 2,
-      mode: "client",
+      mode: "remote",
     });
 
     // Stage an active Tabulator range with two selected rows. mutationService
@@ -1271,7 +1647,7 @@ describe("WorkspaceView", () => {
     workspace.setOpened([
       { collection: "users", metadata: {} },
       { collection: "orders", metadata: {} },
-    ]);
+    ], { users: "Users", orders: "Orders" });
 
     // Seed the history with a fake entry so we can observe the clear.
     history.push({
@@ -1332,7 +1708,7 @@ describe("WorkspaceView", () => {
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
     const ui = useUiStore();
-    workspace.setOpened([{ collection: "items" }]);
+    workspace.setOpened([{ collection: "items" }], { items: "Items" });
     workspace.selectTable("items");
     ui.navigate("tables");
     const trigger = document.createElement("button");
@@ -1381,5 +1757,253 @@ describe("WorkspaceView", () => {
       )?.style.display,
     ).toBe("none");
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it("releases attachment gridcell focus before hiding the background for NModal", async () => {
+    setHostBridgeForTesting({
+      request: vi.fn(async (method: string) => {
+        if (method === "file.list") return { attachments: [] };
+        throw new Error(`unexpected request: ${method}`);
+      }),
+      notify: vi.fn(),
+      notifyWithAdditionalObjects: vi.fn(() => false),
+      on: vi.fn(() => vi.fn()),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as HostBridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "items" }], { items: "Items" });
+    workspace.selectTable("items");
+    useUiStore().navigate("tables");
+
+    const wrapper = mountView();
+    await flushPromises();
+    const trigger = document.createElement("div");
+    trigger.tabIndex = 0;
+    trigger.setAttribute("role", "gridcell");
+    document.body.append(trigger);
+    trigger.focus();
+
+    wrapper.findComponent(GridHost).vm.$emit("attachmentOpen", {
+      rowKey: "row-1",
+      column: {
+        name: "photos",
+        title: "Photos",
+        fieldId: "photos-id",
+        dataType: "file",
+        editable: true,
+        nullable: true,
+        attachmentPolicy: {
+          maxFiles: 3,
+          maxBytesPerFile: 1024,
+          allowedMimeTypes: ["image/png"],
+          thumbnailVariants: [],
+          protected: false,
+        },
+      },
+    });
+
+    expect(document.activeElement).not.toBe(trigger);
+    await flushPromises();
+    const modal = wrapper
+      .findAllComponents(NModal)
+      .find((item) => item.props("show") === true);
+    expect(modal).toBeDefined();
+
+    document.body.querySelector<HTMLButtonElement>(
+      '[data-testid="attachment-panel"] header button',
+    )?.click();
+    await flushPromises();
+    modal?.vm.$emit("afterLeave");
+    await flushPromises();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("routes managed attachment actions through opaque host commands", async () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const file = {
+      contractVersion: "2.0" as const,
+      tableId: "items",
+      recordId: "row-1",
+      fieldId: "photos-id",
+      storedName: "stored.png",
+      originalName: "photo.png",
+      mimeType: "image/png",
+      size: 12,
+      sha256: `sha256:${"b".repeat(64)}`,
+      downloadCapability: "download-1",
+      thumbnails: [],
+    };
+    const request = vi.fn(async (method: string) => {
+      if (method === "file.list") return { attachments: [file] };
+      if (method === "file.replaceRequested" || method === "file.uploadRequested") {
+        return { status: "applied" };
+      }
+      if (method === "file.removeRequested") return { status: "applied" };
+      throw new Error(`unexpected request: ${method}`);
+    });
+    const notify = vi.fn();
+    setHostBridgeForTesting({
+      request,
+      notify,
+      notifyWithAdditionalObjects: vi.fn(() => false),
+      on: vi.fn(() => vi.fn()),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as HostBridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "items" }], { items: "Items" });
+    workspace.selectTable("items");
+    useUiStore().navigate("tables");
+    useTableStore().setDatasetReady({
+      table: "items",
+      columns: [],
+      rows: [{ rowKey: "row-1", __vibetableDigest: digest }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "remote",
+      revision: {
+        databaseSessionId: "session-1",
+        schemaRevision: "schema-1",
+        dataRevision: 1,
+      },
+    });
+    const wrapper = mountView();
+    await flushPromises();
+
+    const open = async () => {
+      wrapper.findComponent(GridHost).vm.$emit("attachmentOpen", {
+        rowKey: "row-1",
+        column: {
+          name: "photos",
+          title: "Photos",
+          fieldId: "photos-id",
+          dataType: "file",
+          editable: true,
+          nullable: true,
+          attachmentPolicy: {
+            maxFiles: 3,
+            maxBytesPerFile: 1024,
+            allowedMimeTypes: ["image/png"],
+            thumbnailVariants: [],
+            protected: false,
+          },
+        },
+      });
+      await flushPromises();
+      return wrapper.findComponent(ManagedAttachmentCell);
+    };
+
+    let panel = await open();
+    expect(panel.exists()).toBe(true);
+    panel.vm.$emit("preview", "stored.png");
+    panel.vm.$emit("download", "stored.png");
+    expect(notify).toHaveBeenCalledWith("file.previewRequested", expect.objectContaining({
+      storedName: "stored.png",
+    }));
+    expect(notify).toHaveBeenCalledWith("file.downloadRequested", expect.objectContaining({
+      originalName: "photo.png",
+    }));
+
+    panel.vm.$emit("replace", "stored.png");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith("file.replaceRequested", expect.objectContaining({
+      expectedDigest: digest,
+      schemaRevision: "schema-1",
+    }));
+
+    panel = await open();
+    panel.vm.$emit("remove", "stored.png");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith("file.removeRequested", expect.objectContaining({
+      storedName: "stored.png",
+    }));
+
+    panel = await open();
+    panel.vm.$emit("upload");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith("file.uploadRequested", expect.objectContaining({
+      recordId: "row-1",
+      fieldId: "photos-id",
+    }));
+  });
+
+  it("commits valid JSON through the table mutation seam and blocks invalid JSON", async () => {
+    const notify = vi.fn();
+    const request = vi.fn(async (method: string) => {
+      throw new Error(`unexpected request: ${method}`);
+    });
+    setHostBridgeForTesting({
+      request,
+      notify,
+      notifyWithAdditionalObjects: vi.fn(() => false),
+      on: vi.fn(() => vi.fn()),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as HostBridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "items" }], { items: "Items" });
+    workspace.selectTable("items");
+    useUiStore().navigate("tables");
+    useTableStore().setDatasetReady({
+      table: "items",
+      columns: [],
+      rows: [{ rowKey: "row-1", metadata: { approved: true } }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "remote",
+      revision: {
+        databaseSessionId: "session-1",
+        schemaRevision: "schema-1",
+        dataRevision: 1,
+      },
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    wrapper.findComponent(GridHost).vm.$emit("jsonEdit", {
+      rowKey: "row-1",
+      column: {
+        name: "metadata",
+        title: "Metadata",
+        dataType: "json",
+        editable: true,
+        nullable: true,
+      },
+      value: { approved: true },
+      expectedDigest: null,
+    });
+    await flushPromises();
+
+    const input = document.body.querySelector<HTMLTextAreaElement>(
+      '[data-testid="json-editor-input"]',
+    );
+    expect(input).not.toBeNull();
+    input!.value = "{";
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPromises();
+    const save = document.body.querySelector<HTMLButtonElement>(
+      '[data-testid="json-editor-save"]',
+    );
+    expect(save?.disabled).toBe(true);
+    expect(notify).not.toHaveBeenCalledWith("table.updateCellRequested", expect.anything());
+
+    input!.value = '{"approved":false}';
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPromises();
+    const validSave = document.body.querySelector<HTMLButtonElement>(
+      '[data-testid="json-editor-save"]',
+    );
+    expect(validSave?.disabled).toBe(false);
+    validSave?.click();
+    await flushPromises();
+    expect(notify).toHaveBeenCalledWith("table.updateCellRequested", expect.objectContaining({
+      table: "items",
+      rowKey: "row-1",
+      column: "metadata",
+      newValue: { approved: false },
+      schemaRevision: "schema-1",
+    }));
   });
 });

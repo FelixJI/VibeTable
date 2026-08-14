@@ -1,9 +1,11 @@
 package query
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,6 +31,8 @@ type SchemaSource interface {
 
 type QueryPort interface {
 	QueryPage(ctx context.Context, tableID string, input TableQuery) (Page, error)
+	OpenCursor(ctx context.Context, tableID string, input TableQuery) (CursorWindow, error)
+	FetchCursor(ctx context.Context, cursor string) (CursorWindow, error)
 	ExecuteViewQuery(ctx context.Context, tableID string, input ViewQuery) (ViewResult, error)
 	ReadRows(ctx context.Context, tableID string, rowIDs []string) ([]map[string]any, error)
 	Aggregate(ctx context.Context, tableID string, input AggregateQuery) (AggregateResult, error)
@@ -37,6 +41,14 @@ type QueryPort interface {
 		snapshot QuerySnapshot,
 		currentQuery *TableQuery,
 	) (SnapshotValidation, error)
+}
+
+type cursorEnvelope struct {
+	Version  int           `json:"version"`
+	Snapshot QuerySnapshot `json:"snapshot"`
+	After    []any         `json:"after"`
+	PageSize int           `json:"pageSize"`
+	Digest   string        `json:"digest"`
 }
 
 const (
@@ -51,6 +63,168 @@ type Port struct {
 
 func NewPort(app core.App, source SchemaSource) *Port {
 	return &Port{app: app, source: source}
+}
+
+func (port *Port) OpenCursor(
+	ctx context.Context,
+	tableID string,
+	input TableQuery,
+) (CursorWindow, error) {
+	if input.Offset != 0 {
+		return CursorWindow{}, productError(
+			"query.cursor.invalid", "offset", "cursor queries cannot use offset", nil,
+		)
+	}
+	normalized, err := Normalize(input)
+	if err != nil {
+		return CursorWindow{}, err
+	}
+	return port.cursorWindow(ctx, tableID, normalized, nil, nil)
+}
+
+func (port *Port) FetchCursor(ctx context.Context, cursor string) (CursorWindow, error) {
+	envelope, err := decodeCursor(cursor)
+	if err != nil {
+		return CursorWindow{}, err
+	}
+	if err := port.validateSnapshotSignature(envelope.Snapshot); err != nil {
+		return CursorWindow{}, err
+	}
+	return port.cursorWindow(
+		ctx,
+		envelope.Snapshot.Table,
+		envelope.Snapshot.NormalizedQuery,
+		envelope.After,
+		&envelope.Snapshot,
+	)
+}
+
+func (port *Port) cursorWindow(
+	ctx context.Context,
+	tableID string,
+	normalized TableQuery,
+	after []any,
+	expected *QuerySnapshot,
+) (CursorWindow, error) {
+	if err := port.validateConfigured(); err != nil {
+		return CursorWindow{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return CursorWindow{}, err
+	}
+	var result CursorWindow
+	err := port.app.RunInTransaction(func(txApp core.App) error {
+		descriptor, err := port.describe(ctx, txApp, tableID)
+		if err != nil {
+			return err
+		}
+		if expected != nil {
+			if descriptor.DatabaseID != expected.DatabaseID ||
+				descriptor.SchemaRevision != expected.SchemaRevision ||
+				descriptor.DataRevision != expected.DataRevision {
+				return productError(
+					"query.cursor_stale", "cursor",
+					"cursor revisions no longer match the authoritative table", nil,
+				)
+			}
+		}
+		plan, err := CompileKeyset(descriptor, normalized, after, normalized.Limit+1)
+		if err != nil {
+			return err
+		}
+		rows, err := port.queryRows(ctx, txApp, plan.SQL, plan.Params, descriptor)
+		if err != nil {
+			return operationError(err)
+		}
+		hasMore := len(rows) > normalized.Limit
+		if hasMore {
+			rows = rows[:normalized.Limit]
+		}
+		var filteredRows, totalRows int64
+		if err := txApp.DB().NewQuery(plan.CountSQL).
+			WithContext(ctx).Bind(dbx.Params(plan.Params)).Row(&filteredRows); err != nil {
+			return operationError(err)
+		}
+		if err := txApp.DB().NewQuery(plan.TotalSQL).
+			WithContext(ctx).Bind(dbx.Params(plan.Params)).Row(&totalRows); err != nil {
+			return operationError(err)
+		}
+		snapshot := QuerySnapshot{}
+		if expected == nil {
+			snapshot, err = port.buildSnapshot(descriptor, normalized)
+			if err != nil {
+				return err
+			}
+		} else {
+			snapshot = *expected
+		}
+		var next *string
+		if hasMore && len(rows) != 0 {
+			keys, keyErr := KeysetValues(descriptor, normalized, rows[len(rows)-1])
+			if keyErr != nil {
+				return keyErr
+			}
+			encoded, encodeErr := encodeCursor(cursorEnvelope{
+				Version: 1, Snapshot: snapshot, After: keys, PageSize: normalized.Limit,
+			})
+			if encodeErr != nil {
+				return encodeErr
+			}
+			next = &encoded
+		}
+		result = CursorWindow{
+			Rows: rows, NextCursor: next, HasMore: hasMore,
+			FilteredRows: filteredRows, TotalRows: totalRows, Snapshot: snapshot,
+		}
+		return nil
+	})
+	if err != nil {
+		return CursorWindow{}, operationError(err)
+	}
+	return result, nil
+}
+
+func encodeCursor(envelope cursorEnvelope) (string, error) {
+	envelope.Digest = ""
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		return "", productError("query.cursor.invalid", "cursor", "cursor could not be encoded", nil)
+	}
+	sum := sha256.Sum256(raw)
+	envelope.Digest = hex.EncodeToString(sum[:])
+	raw, err = json.Marshal(envelope)
+	if err != nil {
+		return "", productError("query.cursor.invalid", "cursor", "cursor could not be encoded", nil)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func decodeCursor(value string) (cursorEnvelope, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil || len(raw) > 64*1024 {
+		return cursorEnvelope{}, productError("query.cursor.invalid", "cursor", "cursor is invalid", nil)
+	}
+	var envelope cursorEnvelope
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
+	if err := decoder.Decode(&envelope); err != nil || envelope.Version != 1 ||
+		envelope.PageSize < 1 || envelope.PageSize > 500 {
+		return cursorEnvelope{}, productError("query.cursor.invalid", "cursor", "cursor is invalid", nil)
+	}
+	provided := envelope.Digest
+	envelope.Digest = ""
+	canonical, err := json.Marshal(envelope)
+	if err != nil {
+		return cursorEnvelope{}, productError("query.cursor.invalid", "cursor", "cursor is invalid", nil)
+	}
+	sum := sha256.Sum256(canonical)
+	if provided != hex.EncodeToString(sum[:]) {
+		return cursorEnvelope{}, productError("query.cursor.invalid", "cursor", "cursor integrity check failed", nil)
+	}
+	envelope.Digest = provided
+	envelope.Snapshot.NormalizedQuery.Limit = envelope.PageSize
+	return envelope, nil
 }
 
 func (port *Port) QueryPage(
@@ -514,15 +688,20 @@ func (port *Port) queryRows(
 		if err != nil {
 			return nil, err
 		}
-		digestRow := productrow.FromRecord(descriptor.DigestFields, record)
-		for name, presence := range descriptor.PresenceFields {
-			if !record.GetBool(presence) {
-				digestRow[name] = nil
+		var digestRow map[string]any
+		if descriptor.DigestProjector != nil {
+			digestRow = descriptor.DigestProjector(record)
+		} else {
+			digestRow = productrow.FromRecord(descriptor.DigestFields, record)
+			for name, presence := range descriptor.PresenceFields {
+				if !record.GetBool(presence) {
+					digestRow[name] = nil
+				}
 			}
-		}
-		for name, field := range descriptor.Fields {
-			if value, exists := digestRow[name]; exists {
-				digestRow[name] = decodeFieldValue(value, field)
+			for name, field := range descriptor.Fields {
+				if value, exists := digestRow[name]; exists {
+					digestRow[name] = decodeFieldValue(value, field)
+				}
 			}
 		}
 		digest, err := productrow.Digest(digestRow)
@@ -631,6 +810,24 @@ func decodeFieldValue(value any, field FieldDescriptor) any {
 			if json.Unmarshal(typed, &decoded) == nil {
 				value = decoded
 			}
+		}
+		if envelope, ok := value.(map[string]any); ok {
+			if envelope["state"] == "ready" {
+				return envelope["value"]
+			}
+			return map[string]any{
+				"state":      envelope["state"],
+				"value":      nil,
+				"diagnostic": envelope["diagnostic"],
+			}
+		}
+		return map[string]any{
+			"state": "updating", "value": nil,
+			"diagnostic": map[string]any{
+				"code":    "calculation.pending",
+				"message": "computed value is waiting for recalculation",
+				"details": map[string]any{},
+			},
 		}
 	}
 	if field.AutoDate && value != nil {

@@ -1,10 +1,13 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +38,26 @@ func appendLedgerPayload(
 	}
 	if _, err := ledger.Append(context.Background(), envelope); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func schemaAuditPayload() map[string]any {
+	return map[string]any{
+		"contract":       "vibetable.schema.v2",
+		"operationId":    "operation-schema-1",
+		"planId":         "plan-schema-1",
+		"action":         "create",
+		"tableId":        "orders",
+		"fieldId":        "fld_status",
+		"schemaRevision": "schema_0002",
+		"beforeHash":     "",
+		"afterHash":      "sha256:after",
+		"actor": map[string]any{
+			"kind": "user",
+			"id":   "actor-1",
+		},
+		"outcome":        "applied",
+		"migrationJobId": "",
 	}
 }
 
@@ -70,13 +93,41 @@ func TestLedgerHistoryIgnoresKnownReceiptAndRejectsUnknownTypedEvent(
 		}
 		defer ledger.Close()
 		appendLedgerPayload(t, ledger, 1, map[string]any{
-			"type": "workspace.v2.unknown-business-event",
+			"type": "workspace.v2.unknown-secret-business-event",
 		})
-		service := &Service{ledger: ledger}
+		var logs bytes.Buffer
+		service := &Service{
+			ledger: ledger,
+			logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+		}
 		if _, err := service.projectLedgerHistory(
 			context.Background(),
 		); !errors.Is(err, auditledger.ErrChainCorrupt) {
 			t.Fatalf("unknown typed event accepted: %v", err)
+		}
+		logged := logs.String()
+		if !strings.Contains(logged, `"msg":"history.ledger_projection_failed"`) ||
+			!strings.Contains(logged, `"errorCode":"audit.chain_corrupt"`) {
+			t.Fatalf("missing safe history diagnostic: %s", logged)
+		}
+		if strings.Contains(logged, "unknown-secret-business-event") {
+			t.Fatalf("payload escaped into history diagnostic: %s", logged)
+		}
+	})
+	t.Run("malformed schema audit", func(t *testing.T) {
+		ledger, err := auditledger.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ledger.Close()
+		payload := schemaAuditPayload()
+		delete(payload, "outcome")
+		appendLedgerPayload(t, ledger, 1, payload)
+		service := &Service{ledger: ledger}
+		if _, err := service.projectLedgerHistory(
+			context.Background(),
+		); !errors.Is(err, auditledger.ErrChainCorrupt) {
+			t.Fatalf("malformed schema audit accepted: %v", err)
 		}
 	})
 	t.Run("malformed rotated business epoch", func(t *testing.T) {
@@ -116,6 +167,42 @@ func TestLedgerHistoryIgnoresKnownReceiptAndRejectsUnknownTypedEvent(
 			t.Fatalf("malformed business epoch accepted: %v", err)
 		}
 	})
+}
+
+func TestLedgerHistoryIgnoresSchemaAuditAndProjectsRowMutation(t *testing.T) {
+	ledger, err := auditledger.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledger.Close()
+	appendLedgerPayload(t, ledger, 1, schemaAuditPayload())
+	appendLedgerPayload(t, ledger, 2, map[string]any{
+		"revisionId":     "revision-1",
+		"changeSetId":    "change-set-1",
+		"sequence":       1,
+		"tableId":        "orders",
+		"recordId":       "record-1",
+		"operation":      "update",
+		"before":         map[string]any{"status": "todo"},
+		"after":          map[string]any{"status": "done"},
+		"schemaRevision": 2,
+		"dataRevision":   1,
+		"requestId":      "request-1",
+		"actor": map[string]any{
+			"type":        "user",
+			"id":          "actor-1",
+			"displayName": nil,
+		},
+	})
+
+	service := &Service{ledger: ledger}
+	events, err := service.projectLedgerHistory(context.Background())
+	if err != nil {
+		t.Fatalf("mixed schema and row history projection failed: %v", err)
+	}
+	if len(events) != 1 || events[0].Id != "revision-1" {
+		t.Fatalf("projected events = %#v", events)
+	}
 }
 
 func TestBusinessHistoryEpochValidation(t *testing.T) {
