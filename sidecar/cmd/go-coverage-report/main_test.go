@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -22,6 +23,22 @@ func TestParseProfileRejectsMalformedInput(t *testing.T) {
 	}
 	if _, err := parseProfile(path); err == nil {
 		t.Fatal("expected malformed profile to be rejected")
+	}
+}
+
+func TestParseProfileRejectsCoordinatesOutsideNativeInt(t *testing.T) {
+	tooLarge := "2147483648"
+	if strconv.IntSize == 64 {
+		tooLarge = "9223372036854775808"
+	}
+	path := filepath.Join(t.TempDir(), "coverage.out")
+	profile := "mode: count\nexample.com/vibetable/sidecar/file.go:" +
+		tooLarge + ".1,2.2 1 1\n"
+	if err := os.WriteFile(path, []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseProfile(path); err == nil {
+		t.Fatal("expected out-of-range coordinate to be rejected")
 	}
 }
 

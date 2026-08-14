@@ -8,13 +8,14 @@ import type {
 } from "@/contracts";
 
 interface NavigationGridRow {
+  getIndex(): string | number;
   scrollTo(position: "center", ifVisible: boolean): Promise<void>;
   select(): void;
   getElement(): HTMLElement;
 }
 
 interface NavigationGrid {
-  getRow(key: string | number): NavigationGridRow | false;
+  getRows(): NavigationGridRow[];
 }
 
 export interface LookupProvenanceState {
@@ -159,7 +160,9 @@ export function createLookupProvenanceController(
       if (typeof rowKey !== "string" && typeof rowKey !== "number") return;
       await nextTick();
       try {
-        const row = (rawGrid as NavigationGrid).getRow(rowKey);
+        const row = (rawGrid as NavigationGrid)
+          .getRows()
+          .find(candidate => String(candidate.getIndex()) === String(rowKey));
         if (!row) throw new Error("lookup source row is no longer rendered");
         await row.scrollTo("center", true);
         row.select();

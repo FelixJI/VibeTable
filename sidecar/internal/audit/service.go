@@ -1267,7 +1267,7 @@ func digestRow(row map[string]any) (string, error) {
 }
 
 func productRow(definition schemaexecution.Table, record *core.Record) map[string]any {
-	row := make(map[string]any, len(definition.Snapshot.Fields)+1)
+	row := make(map[string]any)
 	row["id"] = record.Id
 	for _, field := range definition.Snapshot.Fields {
 		physicalName := field.Identity.PhysicalName

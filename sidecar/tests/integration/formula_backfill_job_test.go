@@ -90,6 +90,9 @@ type countingFanoutKernel struct {
 	mu             sync.Mutex
 	operationCount int
 	batchCount     int
+	expectedCount  int
+	completed      chan struct{}
+	completedOnce  sync.Once
 }
 
 func (kernel *countingFanoutKernel) Apply(
@@ -99,7 +102,11 @@ func (kernel *countingFanoutKernel) Apply(
 	kernel.mu.Lock()
 	kernel.operationCount += len(request.Operations)
 	kernel.batchCount++
+	reachedExpected := kernel.expectedCount > 0 && kernel.operationCount >= kernel.expectedCount
 	kernel.mu.Unlock()
+	if reachedExpected {
+		kernel.completedOnce.Do(func() { close(kernel.completed) })
+	}
 	return mutation.Receipt{
 		ContractVersion: mutation.ContractVersion,
 		Status:          mutation.StatusApplied,
@@ -917,7 +924,10 @@ func TestFormulaFanoutPagesMoreThanTenThousandSourceRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	countingKernel := &countingFanoutKernel{}
+	countingKernel := &countingFanoutKernel{
+		expectedCount: 10_000,
+		completed:     make(chan struct{}),
+	}
 	service := jobs.New(app, countingKernel)
 	defer service.Shutdown()
 	if err := service.Publish(ctx, committedEvent); err != nil {
@@ -930,6 +940,26 @@ func TestFormulaFanoutPagesMoreThanTenThousandSourceRecords(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	testDeadline, ok := t.Deadline()
+	if !ok {
+		t.Fatal("10,000-row fan-out test requires the go test deadline")
+	}
+	completionWait := time.Until(testDeadline) - 5*time.Second
+	if completionWait <= 0 {
+		t.Fatal("10,000-row fan-out test deadline leaves no completion window")
+	}
+	completionTimer := time.NewTimer(completionWait)
+	defer completionTimer.Stop()
+	select {
+	case <-countingKernel.completed:
+	case <-completionTimer.C:
+		operationCount, batchCount := countingKernel.counts()
+		t.Fatalf(
+			"10,000-row fan-out did not reach the counting kernel: operations=%d batches=%d",
+			operationCount,
+			batchCount,
+		)
 	}
 	completed := waitForJobState(t, service, job.Id, "complete")
 	if completed.Progress.Completed != 10_001 || completed.Progress.Total != 10_001 {

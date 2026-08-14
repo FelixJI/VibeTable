@@ -100,7 +100,7 @@ func (source *Source) DescribeQueryTable(
 
 func projectRecord(fields []v2.FieldDefinition, record *core.Record) map[string]any {
 	fieldNames := make([]string, 0, len(fields))
-	physical := make(map[string]any, len(fields)*2)
+	physical := make(map[string]any)
 	for _, field := range fields {
 		name := field.Identity.PhysicalName
 		fieldNames = append(fieldNames, name)

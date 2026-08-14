@@ -547,6 +547,28 @@ func TestAggregateCompilerExecutesDistinctUtcBucketAndDeterministicTopN(t *testi
 	}
 }
 
+func TestAggregateCompilerUsesNumericUtcOffsetForWeekBucket(t *testing.T) {
+	descriptor := descriptorFixture()
+	sql, _, err := query.CompileAggregate(descriptor, query.AggregateQuery{
+		Metrics: []query.AggregateMetric{{Function: query.AggregateCount, Alias: "count"}},
+		TimeBucket: &query.AggregateTimeBucket{
+			Field: "created_at",
+			Unit:  query.GroupBucketWeek,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompileAggregate(week bucket): %v", err)
+	}
+	want := `strftime('%Y-%m-%dT00:00:00Z', julianday("created_at") - ` +
+		`((CAST(strftime('%w', "created_at") AS INTEGER) + 6) % 7))`
+	if !strings.Contains(sql, want) {
+		t.Fatalf("week bucket SQL = %s, want expression %s", sql, want)
+	}
+	if strings.Contains(sql, `|| ' days'`) {
+		t.Fatalf("week bucket SQL still constructs a quoted modifier: %s", sql)
+	}
+}
+
 func assertProductError(t *testing.T, err error, code string) {
 	t.Helper()
 	productErr, ok := err.(*query.ProductError)

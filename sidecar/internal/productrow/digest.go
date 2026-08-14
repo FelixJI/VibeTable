@@ -44,7 +44,7 @@ func Project(
 	fields []v2.FieldDefinition,
 	record *core.Record,
 ) map[string]any {
-	fieldNames := make([]string, 0, len(fields)*2)
+	fieldNames := make([]string, 0, len(fields))
 	for _, field := range fields {
 		fieldNames = append(fieldNames, field.Identity.PhysicalName)
 		if field.Value.Presence.PhysicalName != "" {

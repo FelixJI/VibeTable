@@ -486,8 +486,8 @@ func aggregateTimeBucketExpression(fieldSQL string, bucket GroupBucket) (string,
 	case GroupBucketDay:
 		return "strftime('%Y-%m-%dT00:00:00Z', " + fieldSQL + ")", nil
 	case GroupBucketWeek:
-		return "strftime('%Y-%m-%dT00:00:00Z', " + fieldSQL +
-			", '-' || ((CAST(strftime('%w', " + fieldSQL + ") AS INTEGER) + 6) % 7) || ' days')", nil
+		return "strftime('%Y-%m-%dT00:00:00Z', julianday(" + fieldSQL +
+			") - ((CAST(strftime('%w', " + fieldSQL + ") AS INTEGER) + 6) % 7))", nil
 	case GroupBucketMonth:
 		return "strftime('%Y-%m-01T00:00:00Z', " + fieldSQL + ")", nil
 	default:

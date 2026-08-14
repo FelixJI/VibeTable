@@ -272,7 +272,7 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 			return PreviewResult{}, err
 		}
 	}
-	fields := make(map[string]v2.FieldDefinition, len(definition.Snapshot.Fields)*2)
+	fields := make(map[string]v2.FieldDefinition)
 	for _, field := range definition.Snapshot.Fields {
 		fields[field.Identity.FieldID] = field
 		fields[field.Identity.PhysicalName] = field

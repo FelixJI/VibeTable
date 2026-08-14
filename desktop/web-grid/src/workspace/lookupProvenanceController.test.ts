@@ -84,6 +84,7 @@ describe("lookup provenance controller", () => {
     const openContent = vi.fn();
     const reportLocated = vi.fn();
     const row = {
+      getIndex: () => "one",
       scrollTo: vi.fn(async () => undefined),
       select: vi.fn(),
       getElement: () => document.createElement("div"),
@@ -113,7 +114,7 @@ describe("lookup provenance controller", () => {
     await nextTick();
     expect(queryRecord).toHaveBeenCalledWith("customers", "id", "one");
 
-    grid.value = { getRow: vi.fn(() => row) };
+    grid.value = { getRows: vi.fn(() => [row]) };
     rows.value = [{ rowKey: "one" }];
     await nextTick();
     await vi.waitFor(() => expect(openContent).toHaveBeenCalledWith("one"));

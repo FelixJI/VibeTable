@@ -142,18 +142,22 @@ func parseProfile(path string) (map[string]fileCoverage, error) {
 			continue
 		}
 		relative := "sidecar/" + filepath.ToSlash(pathPart)[index+len(marker):]
-		values := make([]int64, 5)
-		for index, raw := range parts[2:] {
-			value, parseErr := strconv.ParseInt(raw, 10, 64)
+		coordinates := make([]int, 4)
+		for index, raw := range parts[2:6] {
+			value, parseErr := strconv.Atoi(raw)
 			if parseErr != nil {
 				return nil, fmt.Errorf("parse coverprofile line %q: %w", line, parseErr)
 			}
-			values[index] = value
+			coordinates[index] = value
+		}
+		count, parseErr := strconv.ParseInt(parts[6], 10, 64)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse coverprofile line %q: %w", line, parseErr)
 		}
 		entry := result[relative]
 		block := profileBlock{
-			startLine: int(values[0]), startCol: int(values[1]),
-			endLine: int(values[2]), endCol: int(values[3]), count: values[4],
+			startLine: coordinates[0], startCol: coordinates[1],
+			endLine: coordinates[2], endCol: coordinates[3], count: count,
 		}
 		merged := false
 		for index := range entry.blocks {

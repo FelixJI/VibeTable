@@ -1,6 +1,6 @@
 # VibeTable 离线数据工作台全面完成实施方案
 
-> 状态：本地实现、双轨终审修正、quality、release build 与 release eligibility 已完成；GitHub `required` 与 Win10/11 双平台验证待外部交付流程
+> 状态：本地实现、双轨终审修正及 CI race/resilience 修复后的 quality、release build、release eligibility 已完成；GitHub `required` 与 Win10/11 双平台验证待外部交付流程
 >
 > 日期：2026-08-12
 >
@@ -629,9 +629,10 @@ M2 与 M3 可在不同 worktree 并行；M4 与 M6 可并行；M5 与 M7 在共�
 
 ## 21. 当前实施与验收证据（2026-08-14）
 
-本节记录当前实现、M9 聚焦验证和 2026-08-14 最终本地 quality/build/smoke/eligibility 证据，不替代各里程碑的
-删除清单，也不得冒充 GitHub `required` 或 Win10/11 双平台发布验证。最终报告绑定当前生产源码
-sourceHash `75735b5b2dc32fccb71c2b91ceb080f4d4c86302839cadcbbceaa8e614e69bf1`。
+本节记录当前实现、M9 聚焦验证和 2026-08-14 CI race/resilience 修复后的最终本地
+quality/build/smoke/eligibility 证据，不替代各里程碑的删除清单，也不得冒充 GitHub `required` 或
+Win10/11 双平台发布验证。最终报告绑定当前生产源码 sourceHash
+`82adc6ba372d811fc7224a3a18bc4cfe631ab6e321bf7097b62d8b3350bd9574`。
 
 ### 21.1 当前实现与 quality
 
@@ -640,7 +641,7 @@ sourceHash `75735b5b2dc32fccb71c2b91ceb080f4d4c86302839cadcbbceaa8e614e69bf1`。
   `GridRequestController`；M9 随后完成 Desktop/Web 深模块收口及 stale-race 回归。
 - Schema V2 codegen 覆盖 59 个 wire shapes；`schemaexecution.Table` 直接持有
   `v2.SchemaSnapshot`/`v2.FieldDefinition`，生产执行链不再以 legacy `schema.TableDefinition` 为模型。
-- 最终 `uv run python scripts/automation_project.py quality` 退出码为 0（255.7 s）；contracts、
+- 最终 `uv run python scripts/automation_project.py quality` 退出码为 0（326.9 s）；contracts、
   Ruff/Pyright/mypy、Python、Web、Go 与 .NET 全部通过，Desktop 461/461，Desktop/PreviewHost 独立
   coverage gates 均通过。
 - 终局竞态修复均有旧实现红灯：Lookup fanout 等待当前 mutation receipt 的 `source_event_id`，Dashboard
@@ -650,9 +651,9 @@ sourceHash `75735b5b2dc32fccb71c2b91ceb080f4d4c86302839cadcbbceaa8e614e69bf1`。
 
 ### 21.2 当前本地发布资格证据
 
-- 最终 `uv run python scripts/automation_project.py build` 退出码为 0（54.3 s），随后
-  `uv run python scripts/automation_project.py smoke` 退出码为 0（1,702.4 s）。
-  `build/automation/vibetable-release-eligibility.json`（2026-08-14T11:58:14Z）为 `ok=true`、
+- 最终 `uv run python scripts/automation_project.py build` 退出码为 0（56.9 s），随后
+  `uv run python scripts/automation_project.py smoke` 退出码为 0（1,752.7 s）。
+  `build/automation/vibetable-release-eligibility.json`（2026-08-14T13:53:28Z）为 `ok=true`、
   `releaseEligible=true`，21/21 stages 全部返回 0。版本、
   package contract、Go fmt/vet/test/race/build、Python/contracts/tooling、.NET、Web test/build、
   fault injection、product E2E、workbench qualification 和 readonly smoke 全部成功。
@@ -662,11 +663,11 @@ sourceHash `75735b5b2dc32fccb71c2b91ceb080f4d4c86302839cadcbbceaa8e614e69bf1`。
   真实宿主 sidecar kill/reconcile 共 3/3 passed。
 - `build/qa/workbench-qualification.json`（schema v3、`failures=[]`）实际物化并读取
   100,000 records、10,000 file documents、20 GiB（21,474,836,480 bytes）：peak RSS
-  243,257,344 bytes、first screen 1.507 ms、warm p95 0.568 ms、incremental p95 3.519 ms，
-  qualification 112.478 s。
+  261,214,208 bytes、first screen 1.403 ms、warm p95 1.000 ms、incremental p95 3.509 ms，
+  qualification 115.552 s。
 - 本地候选 `VibeTable-v0.5.1-win-x64.zip` SHA-256 为
-  `ca5a3676b12ad1c2d72a8df80ecb09601bf0b2b8b18c0e6a1bdddfaa4ccc082a`，package tree SHA-256
-  为 `ba35f882a105e8b7d9970410bf6f5cb9601340321972f7a0cbab91e017319688`，共 141,246,033 bytes、
+  `aa821a4203721599ef9e33d860a1aef336bff14f00ebfc645dd847a3cc9c17c2`，package tree SHA-256
+  为 `0f24ecc907e40391ce7aac42917f54420cf84ef03f3ffe97096dde91e133cae0`，共 141,247,241 bytes、
   177 files；identity 为 VibeTable 0.5.1/windows/x64，package identity SHA-256 为
   `c1d4cd1ccb0c60847797666cb489d5ad4fda9cfef743954be5f8d86c7d75e199`。`source_sha` 是 `local`，
   因此它不能替代提交后由 CI 绑定真实 source SHA、SBOM/provenance 和正式资产集合的发布候选。
@@ -702,7 +703,15 @@ sourceHash `75735b5b2dc32fccb71c2b91ceb080f4d4c86302839cadcbbceaa8e614e69bf1`。
   start/resolve/cancel 与 lookup stale race 均通过公开 module interface 验证。其后 attachment modal 的
   显式 focus trigger 回归也进入正式 seam，并由最终 quality 与 18/18 product E2E 复验。
 
-### 21.5 外部交付门禁
+### 21.5 最终双轴复审
+
+- 以 `GitHub/main` 为固定基线，对包含 CodeQL、CI race/resilience 与完成文档收口的最终差异重新执行
+  Standards/Spec 双轴复审；两轴均为 0 findings。Standards 审查中发现的 fanout completion 无界等待已改为
+  从 `go test` deadline 派生的有界清理路径，并以 CI 同型 `-race -count=3` 复验。
+- CodeQL 的 native int、容量提示与 week bucket SQL 修复未改变产品语义；lookup provenance 改用已渲染
+  row 集合定位，保留 locate/open/filtered 契约，并在最终 18/18 E2E 中消除旧 Tabulator warning。
+
+### 21.6 外部交付门禁
 
 - GitHub PR 必须在严格同步最新 `main` 后通过完整 `required`，并由 CI 重新生成绑定真实 source SHA 的
   release candidate；本地 `releaseEligible=true` 不是远端 check 结论。
