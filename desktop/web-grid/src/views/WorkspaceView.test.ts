@@ -569,6 +569,8 @@ describe("WorkspaceView", () => {
     setHostBridgeForTesting(bridge);
     vi.spyOn(window, "prompt").mockReturnValue("Operations");
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const ui = useUiStore(testPinia);
+    const surfaces = useSurfaceStore(testPinia);
     const wrapper = mountView();
     await flushPromises();
 
@@ -580,16 +582,19 @@ describe("WorkspaceView", () => {
     expect(posted.some((item) => item.type === "interface.listRequested")).toBe(true);
 
     await wrapper.get('[data-testid="interface-create"]').trigger("click");
-    expect(useSurfaceStore().dirty).toBe(true);
+    expect(surfaces.dirty).toBe(true);
     await wrapper.get('[data-testid="nav-files"]').trigger("click");
     expect(confirm).toHaveBeenCalledOnce();
-    expect(useUiStore().activeView).toBe("interfaces");
+    expect(ui.activeView).toBe("interfaces");
 
     confirm.mockReturnValue(true);
     await wrapper.get('[data-testid="nav-files"]').trigger("click");
+    expect(ui.activeView).toBe("files");
     await flushPromises();
-    expect(useUiStore().activeView).toBe("files");
-    expect(useSurfaceStore().dirty).toBe(false);
+    await vi.waitFor(() => {
+      expect(wrapper.findComponent(FileWorkspaceView).exists()).toBe(true);
+    });
+    expect(surfaces.dirty).toBe(false);
   });
 
   it("shows a localized non-blocking recovery path for stale edits", async () => {
