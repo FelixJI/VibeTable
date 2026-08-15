@@ -535,10 +535,21 @@ func (service *Service) ApplyRestore(
 					true,
 				)
 			}
+			// Keep the underlying mutation diagnostics: PocketBase validation
+			// failures surface their field path and message only here, and
+			// dropping them makes apply-time fail-closed rejections (for
+			// example a preview/apply race on shared state) undiagnosable.
+			details := map[string]any{"mutationCode": productErr.Code}
+			if productErr.Path != nil && *productErr.Path != "" {
+				details["mutationField"] = *productErr.Path
+			}
+			if productErr.Message != "" {
+				details["mutationMessage"] = productErr.Message
+			}
 			return RestoreResult{}, &Error{
 				Code:      "restore_validation_failed",
 				Message:   "restore no longer satisfies current table constraints",
-				Details:   map[string]any{"mutationCode": productErr.Code},
+				Details:   details,
 				Retryable: false,
 			}
 		}

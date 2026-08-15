@@ -506,6 +506,12 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 		historyErr.Code != "restore_validation_failed" {
 		t.Fatalf("attachment restore fault %#v", err)
 	}
+	if gotCode, _ := historyErr.Details["mutationCode"].(string); gotCode != "mutation.attachment.failed" {
+		t.Fatalf("restore fault lost the underlying code: %#v", historyErr.Details)
+	}
+	if gotMessage, _ := historyErr.Details["mutationMessage"].(string); gotMessage == "" {
+		t.Fatalf("restore fault lost the underlying message: %#v", historyErr.Details)
+	}
 	record, _ = app.FindRecordById(collection, recordID)
 	if got := record.GetStringSlice(documentsName); len(got) != 1 ||
 		got[0] != replaced[0] {
