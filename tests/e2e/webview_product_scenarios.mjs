@@ -8,6 +8,7 @@ import { acknowledgeExpectedSidecarRecoveryFailure } from "./bridge_failure_poli
 import { installBridgeDiagnosticsInPage } from "./bridge_diagnostics_instrumentation.mjs";
 import {
   beginRawBridgeRequestInPage,
+  requestLifecycleWorkspaceV2InPage,
   requestWorkspaceV2InPage,
 } from "./bridge_raw_request.mjs";
 
@@ -1225,6 +1226,18 @@ async function rawWorkspaceV2Request(
   return page.evaluate(
     requestWorkspaceV2InPage,
     { method, params },
+  );
+}
+
+async function rawLifecycleWorkspaceV2Request(
+  page,
+  method,
+  params,
+  timeoutMs = 20_000,
+) {
+  return page.evaluate(
+    requestLifecycleWorkspaceV2InPage,
+    { method, params, timeoutMs },
   );
 }
 
@@ -2944,27 +2957,30 @@ async function scenario09(page, recorder, _network, runtime) {
   const historyDeadline = Date.now() + 30_000;
   let history;
   do {
-    history = await rawWorkspaceV2Request(page, "history.query", {
-      collection: tableId,
-      scope: "table",
-      itemId: null,
-      field: null,
-      search: "",
-      dateFrom: null,
-      dateTo: null,
-      actorId: null,
-      actions: [],
-      recordId: null,
-      limit: 100,
-      offset: 0,
-    }, 5_000);
-    if (history.ok === true) break;
+    try {
+      history = await rawWorkspaceV2Request(page, "history.query", {
+        collection: tableId,
+        scope: "table",
+        itemId: null,
+        field: null,
+        search: "",
+        dateFrom: null,
+        dateTo: null,
+        actorId: null,
+        actions: [],
+        recordId: null,
+        limit: 100,
+        offset: 0,
+      });
+      break;
+    } catch {
+      history = null;
+    }
     await page.waitForTimeout(250);
   } while (Date.now() < historyDeadline);
-  const historyPage = history.result;
+  const historyPage = history?.result;
   recorder.check("failed import exposed no partially committed audit entries",
-    history.method === "history.query"
-      && history.ok === true
+    history !== null
       && historyPage?.collection === tableId
       && historyPage?.scope === "table"
       && historyPage?.total === 0
@@ -3083,7 +3099,7 @@ async function scenario10(page, recorder, _network, runtime) {
     backendSourceSession.sessionEpoch,
     "workspace.open",
   );
-  const closed = await rawWorkspaceV2Request(
+  const closed = await rawLifecycleWorkspaceV2Request(
     page,
     "workspace.close",
     { reason: "user" },
@@ -3531,8 +3547,6 @@ async function scenario12(page, recorder, _network, runtime) {
       && beforeBackupAttachment?.originalName === path.basename(original)
       && beforeBackupAttachment?.sha256 === expectedOriginalHash
       && beforeBackupAttachment?.size === originalBytes.length
-      && beforeBackupHistoryReply.method === "history.query"
-      && beforeBackupHistoryReply.ok === true
       && beforeBackupHistory?.collection === tableId
       && Array.isArray(beforeBackupHistory?.changeSets)
       && beforeBackupHistory.changeSets.length > 0
@@ -3815,9 +3829,7 @@ async function scenario12(page, recorder, _network, runtime) {
       ),
   );
   recorder.check("append-only history preserved the snapshot prefix and post-snapshot mutations after restore",
-    afterRestoreHistoryReply.method === "history.query"
-      && afterRestoreHistoryReply.ok === true
-      && beforeBackupHistory.changeSets.every(
+    beforeBackupHistory.changeSets.every(
         (changeSet) => preservedChangeSetIds.has(changeSet.changeSetId),
       )
       && postSnapshotValuePreserved
