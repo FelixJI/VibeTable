@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { beginRawBridgeRequestInPage } from "./bridge_raw_request.mjs";
+import {
+  beginRawBridgeRequestInPage,
+  requestWorkspaceV2InPage,
+} from "./bridge_raw_request.mjs";
 
 test("async raw bridge requests reserve a formal workspace scope", () => {
   const posted = [];
@@ -50,6 +53,29 @@ test("async raw bridge requests reserve a formal workspace scope", () => {
       window.__vibetableE2ERawRequests[requestId].message.payload.status,
       "applied",
     );
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("workspace v2 probes use the formal serialized UI port", async () => {
+  const requested = [];
+  globalThis.window = {
+    __vibetableE2EWorkspaceWirePort: {
+      async request(action) {
+        requested.push(action);
+        return { policyRevision: 7 };
+      },
+    },
+  };
+  try {
+    const reply = await requestWorkspaceV2InPage({
+      method: "retention.get",
+      params: {},
+    });
+
+    assert.deepEqual(requested, [{ method: "retention.get", params: {} }]);
+    assert.deepEqual(reply, { result: { policyRevision: 7 } });
   } finally {
     delete globalThis.window;
   }

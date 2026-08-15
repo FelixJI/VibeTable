@@ -955,7 +955,7 @@ def _run_go_race(
 
 
 def _is_windows_tempdir_cleanup_flake(output: str) -> bool:
-    """Recognize only the narrow PocketBase watcher cleanup race, never Go races."""
+    """Recognize only the narrow Windows TempDir cleanup race, never Go races."""
 
     if os.name != "nt":
         return False
@@ -1011,7 +1011,7 @@ def run_stage(
         )
         attempt = 1
         while (
-            stage == "go-test"
+            stage in {"go-test", "go-coverage"}
             and returncode
             and attempt < WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS
             and _is_windows_tempdir_cleanup_flake(stdout + "\n" + stderr)
@@ -1031,7 +1031,7 @@ def run_stage(
                 (
                     previous_stdout,
                     "known Windows TempDir watcher cleanup flake; "
-                    "retried the exact go-test command in a fresh process "
+                    "retried the exact Go stage command in a fresh process "
                     f"(attempt {attempt}/"
                     f"{WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS})",
                     stdout,

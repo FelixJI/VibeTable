@@ -6,7 +6,10 @@ import process from "node:process";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import { acknowledgeExpectedSidecarRecoveryFailure } from "./bridge_failure_policy.mjs";
 import { installBridgeDiagnosticsInPage } from "./bridge_diagnostics_instrumentation.mjs";
-import { beginRawBridgeRequestInPage } from "./bridge_raw_request.mjs";
+import {
+  beginRawBridgeRequestInPage,
+  requestWorkspaceV2InPage,
+} from "./bridge_raw_request.mjs";
 
 function parseArgs(argv) {
   const values = {};
@@ -1218,78 +1221,10 @@ async function rawWorkspaceV2Request(
   page,
   method,
   params,
-  timeoutMs = 20_000,
 ) {
   return page.evaluate(
-    ({ rpcMethod, rpcParams, timeout }) =>
-      new Promise((resolve, reject) => {
-        const wirePort = window.__vibetableE2EWorkspaceWirePort;
-        if (!wirePort) {
-          reject(new Error(`workspace wire E2E port unavailable for ${rpcMethod}`));
-          return;
-        }
-        const operationId = crypto.randomUUID();
-        const requestId = `e2e-${operationId}`;
-        let wire;
-        try {
-          wire = wirePort.reserve(operationId);
-        } catch (error) {
-          reject(error);
-          return;
-        }
-        const envelope = {
-          type: "workspace.v2.request",
-          requestId,
-          payload: { method: rpcMethod, params: rpcParams, wire },
-          wire,
-        };
-        const timer = setTimeout(() => {
-          window.chrome.webview.removeEventListener("message", handler);
-          reject(new Error(`workspace v2 timeout for ${rpcMethod}`));
-        }, timeout);
-        const handler = (event) => {
-          let message = event.data;
-          if (typeof message === "string") {
-            try { message = JSON.parse(message); } catch { return; }
-          }
-          if (
-            !message
-            || message.requestId !== requestId
-            || !["workspace.v2.response", "workspace.v2.reply", "operation.failed"]
-              .includes(message.type)
-          ) {
-            return;
-          }
-          clearTimeout(timer);
-          window.chrome.webview.removeEventListener("message", handler);
-          if (message.type === "operation.failed") {
-            reject(new Error(
-              `${rpcMethod} failed: ${JSON.stringify(message.payload)}`,
-            ));
-            return;
-          }
-          const reply = message.payload;
-          if (
-            reply?.method !== rpcMethod
-            || reply?.wire?.operationId !== operationId
-          ) {
-            reject(new Error(
-              `${rpcMethod} returned a mismatched reply: ${JSON.stringify(reply)}`,
-            ));
-            return;
-          }
-          if (reply.ok !== true) {
-            reject(new Error(
-              `${rpcMethod} failed closed: ${JSON.stringify(reply.error)}`,
-            ));
-            return;
-          }
-          resolve(reply);
-        };
-        window.chrome.webview.addEventListener("message", handler);
-        window.chrome.webview.postMessage(envelope);
-      }),
-    { rpcMethod: method, rpcParams: params, timeout: timeoutMs },
+    requestWorkspaceV2InPage,
+    { method, params },
   );
 }
 

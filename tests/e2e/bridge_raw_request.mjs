@@ -33,3 +33,17 @@ export function beginRawBridgeRequestInPage({
   });
   return requestId;
 }
+
+export async function requestWorkspaceV2InPage({ method, params }) {
+  const wirePort = window.__vibetableE2EWorkspaceWirePort;
+  if (!wirePort) {
+    throw new Error(`workspace wire E2E port unavailable for ${method}`);
+  }
+  try {
+    const result = await wirePort.request({ method, params });
+    return { result };
+  } catch (error) {
+    const code = typeof error?.code === "string" ? error.code : "workspace.operation_failed";
+    throw new Error(`${method} failed closed: ${JSON.stringify({ code })}`);
+  }
+}

@@ -204,6 +204,55 @@ function fakeBridge(resultFor?: (payload: WorkspaceV2RequestPayload) => unknown)
 describe("workspace v2 production host adapter", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
+  it("keeps concurrent workspace requests in their allocated sequence order", async () => {
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const fake = fakeBridge();
+    fake.request.mockImplementation(async (
+      _type: string,
+      payload: WorkspaceV2RequestPayload,
+    ) => {
+      if (fake.request.mock.calls.length === 1) await firstGate;
+      return {
+        method: payload.method,
+        wire: payload.wire,
+        ok: true,
+        result: {
+          contractVersion: "2.0",
+          policyRevision: 2,
+          snapshotDays: 30,
+          snapshotCount: 20,
+          snapshotBuckets: ["daily"],
+          fileRevisionDays: 30,
+          fileRevisionCount: 20,
+          fileRevisionBuckets: ["weekly"],
+          trashMonths: 3,
+          repositoryLimitBytes: null,
+        },
+        error: null,
+      };
+    });
+    const { port } = createWorkspaceV2HostAdapter(fake.bridge);
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(bootstrap().capabilities);
+    session.applySession(bootstrap().session);
+
+    const first = port.request({ method: "retention.get", params: {} });
+    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(1));
+    const second = port.request({ method: "retention.get", params: {} });
+    await Promise.resolve();
+    expect(fake.request).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await first;
+    await second;
+    expect(fake.request).toHaveBeenCalledTimes(2);
+    const sequences = fake.request.mock.calls.map((call) => call[1].wire.sequence);
+    expect(sequences[1]).toBeGreaterThan(sequences[0]);
+  });
+
   it("does not request replica status for a direct repository", async () => {
     const fake = fakeBridge();
     createWorkspaceV2HostAdapter(fake.bridge);

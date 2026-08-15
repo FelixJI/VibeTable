@@ -49,7 +49,7 @@ const disposeE2EWirePort = new URL(window.location.href).searchParams
             sessionEpoch: session.sessionEpoch,
           }
         : null;
-    })
+    }, workspaceV2Adapter.port)
   : () => undefined;
 app.mount("#app");
 

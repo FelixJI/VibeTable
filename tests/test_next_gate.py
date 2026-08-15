@@ -836,8 +836,10 @@ def test_fault_injection_uses_the_selected_immutable_candidate(tmp_path: Path) -
     ]
 
 
-def test_go_test_retries_only_the_narrow_windows_tempdir_cleanup_flake(
+@pytest.mark.parametrize("stage", ["go-test", "go-coverage"])
+def test_go_stage_retries_only_the_narrow_windows_tempdir_cleanup_flake(
     monkeypatch,
+    stage: str,
 ) -> None:
     monkeypatch.setattr(next_gate.os, "name", "nt")
     monkeypatch.setattr(
@@ -866,7 +868,7 @@ def test_go_test_retries_only_the_narrow_windows_tempdir_cleanup_flake(
         return 0, "ok\n", ""
 
     monkeypatch.setattr(next_gate, "_run_command", run)
-    result = next_gate.run_stage("go-test")
+    result = next_gate.run_stage(stage)
 
     assert result.returncode == 0
     assert calls == next_gate.WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS
